@@ -219,6 +219,33 @@ _RUN_QUEUES: dict[str, "asyncio.Queue[dict[str, Any] | None]"] = {}
 # yet (no write is converted this slice).
 _RUN_ORG: dict[str, str] = {}
 
+#: H-236: the run ids of the streamed runs that bound ``no_egress=True``. The
+#: gateway reads it after a run ends, to skip the memory extraction of a
+#: covered conversation (``gateway/routes/agent.py``). It is bounded, and a
+#: read never removes an entry, so a run id that a client reused can only
+#: make one more extraction skip, never let one through. Process-local, as
+#: the run and its end callback share the gateway process.
+_NO_EGRESS_RUNS: dict[str, None] = {}
+_NO_EGRESS_RUNS_MAX = 4096
+
+
+def _remember_no_egress_run(run_id: str | None) -> None:
+    """Record that the streamed run *run_id* bound ``no_egress=True``."""
+    if not run_id:
+        return
+    _NO_EGRESS_RUNS.pop(run_id, None)
+    _NO_EGRESS_RUNS[run_id] = None
+    while len(_NO_EGRESS_RUNS) > _NO_EGRESS_RUNS_MAX:
+        _NO_EGRESS_RUNS.pop(next(iter(_NO_EGRESS_RUNS)))
+
+
+def run_was_no_egress(run_id: str | None) -> bool:
+    """True when the streamed run *run_id* bound ``no_egress=True`` (H-236).
+
+    The server decided it at the run's start. Nothing in a request reaches it.
+    """
+    return bool(run_id) and run_id in _NO_EGRESS_RUNS
+
 
 def _opener_for_org(org: str | None):
     """Map an already-resolved tenant to the ``acb_graph`` session opener.
@@ -2502,7 +2529,7 @@ async def _run_agent_inner(
     # H-236: decide this run's no_egress once, from the parent's binding and
     # this agent's own cover, and bind it before anything can fail. A load
     # error then retries (self-anneal) with this answer, never the parent's.
-    _no_egress = _run_no_egress(agent_name, _parent_ctx)
+    _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
     derive_artifact_context(no_egress=_no_egress)
 
     # ── Run correlation for the batch path (usage attribution) ─────────────
@@ -3277,8 +3304,10 @@ async def run_agent_stream(
     # bind it. A covered agent's run is a covered run, whatever its parent.
     from acb_skills.write_artifact import artifact_context as _ctx_now
     from acb_skills.write_artifact import derive_artifact_context as _derive_ctx
-    _stream_no_egress = _run_no_egress(agent_name, _ctx_now())
+    _stream_no_egress = _run_no_egress(agent_name, _ctx_now(), organization_id)
     _derive_ctx(no_egress=_stream_no_egress)
+    if _stream_no_egress:
+        _remember_no_egress_run(run_id)
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)

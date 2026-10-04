@@ -2622,9 +2622,11 @@ The last line needs Docker, and `sandbox-docker.yml` runs it.
   WS43-F24). A covered run and each run under it bind `no_egress`, and the
   rule fails closed: such a run holds only the delegation tools, the sandbox
   tools and tools that say `open_world=False`. At the flip, the owner
-  accepts the residual that §16.3 names, by name: an agent that a member
-  assigns by hand, a delayed send through a store, and what an agent from
-  another repo does on its own servers.
+  accepts the six residual items that §16.3 names, by name. They are an
+  agent that a member assigns by hand, a delayed send through a store, what
+  an agent from another repo does on its own servers, a workflow on a task
+  event, a remote image in the answer text, and the answer that an
+  uncovered parent gets.
 
 **Done when:**
 
@@ -3320,12 +3322,20 @@ decision inside D86, after review: the control fails closed.
   and tools whose annotation says `open_world=False` explicitly.
 - **A tool with no annotation is an egress tool.** So is a tool whose
   annotation has no `open_world` key, an MCP tool, and a tool that MAF made
-  from an MCP server. A write to a shared memory store is one too
-  (`egress.STORE_WRITES`): `save_memory`, `save_episode`, `save_agent_memory`
-  and `save_org_memory`.
-  `acb_skills.egress.is_egress_tool` holds the rule. The injection seam also
-  keeps `sandbox_tools.HOST_NETWORK_TOOLS` out, whatever their annotation
-  says. An agent from another repo keeps none of its unannotated tools.
+  from an MCP server. A tool write to a store that later runs read is one
+  too (`egress.STORE_WRITES`): `save_memory`, `save_episode`,
+  `save_agent_memory`, `save_org_memory` and `save_note`, whose `NOTES.md`
+  every later session reads. `acb_skills.egress.is_egress_tool` holds the
+  rule. The injection seam also keeps `sandbox_tools.HOST_NETWORK_TOOLS` out,
+  whatever their annotation says. An agent from another repo keeps none of
+  its unannotated tools.
+- **A platform entry is trusted only for the platform's own tool.** A tool
+  object takes a registry entry that the platform made only when its
+  callable comes from a platform package and carries the tool's name
+  (`egress._platform_owned`). So a tool of another repo that borrows the
+  name `run_diagnostics` or `write_artifact` is an egress tool. The Copilot
+  guard gets only a name, so it finds the tool object of that name in the
+  session's own tool list, and it fails closed when the list has none.
 - **Every tool of every in-repo agent states `open_world`.** The fence reads
   the real registry: `_AGENT_REGISTRY`, the dynamic registry and
   `agents.json`. `annotate()` has no default for `open_world`. An agent's own
@@ -3341,7 +3351,12 @@ decision inside D86, after review: the control fails closed.
 - **When an agent counts as covered.** `covers()` is true for the agent and
   the run's org. It is also true when the scope names the `projects` target
   for that org while the broker is not healthy. A broker error sets the
-  flag. No request field and no tool argument reaches the decision.
+  flag. No request field and no tool argument reaches the decision. A batch
+  run passes the org that it was handed, because it decides the flag before
+  it binds its tenant.
+- **A health flap has a cost, and it is fail-closed by design.** With the
+  scope set, a broker health flap puts projects-assistant into `no_egress`,
+  so it has no web tools and assigns no agent until the run ends.
 - **A child cannot clear it.** The artifact context is an immutable mapping
   per run. A child inherits the flag before it decides anything of its own.
   Any value that is not an explicit `False` reads as set, and a frame with
@@ -3360,7 +3375,10 @@ decision inside D86, after review: the control fails closed.
   The batch path answers it before the self-anneal and the self-mutation. A
   self-anneal retry of any other fault injects with the run's own answer.
 - **The covered run itself.** The rule binds it too. So it holds no
-  `run_workflow`, no web tool and no store write. The fence pins its full
+  `run_workflow`, no web tool and no store write. The gateway does not
+  extract its conversation into memory after the run: the run records its
+  cover by run id at its start (`executor.run_was_no_egress`), and the end
+  callback reads that record, never the request. The fence pins its full
   tool list, 109 tools on 2026-10-04. They are every Projects tool,
   `run_command`, the eight file tools, the delegation tools, and the platform
   tools that say `open_world=False`.
@@ -3369,7 +3387,13 @@ decision inside D86, after review: the control fails closed.
   flag does not reach. So in a `no_egress` run, `create_task`, `assign`,
   `bulk_update`, the edit form and the plan of `propose_plan` refuse an agent
   assignee before any write (`skill_projects.writes._refuse_agent_assignee`).
-  Taking an agent off a task is not refused.
+  The tool answers with the refusal text, so the model can read why. Taking
+  an agent off a task is not refused.
+- **The risk block is per agent.** The addendum of a Copilot agent lists
+  the platform's own names, and that agent's own tools that are destructive
+  or say `open_world=True` (`tool_annotations.risk_summary_block`, `own=`).
+  It no longer depends on what one process imported, and task-manager sees
+  `my_tasks_delegate` on its open-world line. The fence pins its block.
 - **What it keeps.** Its reads, its compute and delegation. A called agent
   can still read and answer, and it cannot send. The fence proves it for
   email-assistant, crm-assistant and the orchestrator.
@@ -3406,6 +3430,15 @@ decision inside D86, after review: the control fails closed.
      a send tool, could read and send them.
   3. An agent from another repo keeps none of its unannotated tools. What its
      own servers do with a task text is outside this control.
+  4. A task write still emits its event. `create_task` and `comment` emit
+     `pm.task.created` and `pm.task.comment_added`. The workflows sink runs
+     any published workflow on them, and an `http.request` node can post the
+     payload. The member's card gates each such write.
+  5. A remote image in the answer text. A separate fix is in flight: a
+     remote image in an agent message loads only on a member's click.
+  6. An uncovered parent that calls a covered agent gets its answer, and the
+     parent keeps its own tools. The answer holds only what the member may
+     see, as it did before the sandbox.
 
 **Broker rule 5, for this target.** The run-data dir is a second read-write
 mount, at `/workspace/.run/`. The thread's output folder (below) is a third,

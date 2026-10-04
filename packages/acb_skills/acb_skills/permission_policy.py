@@ -435,20 +435,34 @@ EGRESS_WITHHELD_REASON = (
 _NO_EGRESS_KINDS = frozenset({"read", "write", "custom-tool"})
 
 
-def is_egress_request(request: Any) -> bool:
+def is_egress_request(request: Any, tools: Any = None) -> bool:
     """True when *request* could carry data off the platform (H-236).
 
     Only a read, a write, and a call to a tool that is not an egress tool
     pass. A request of any other kind, or with no kind, is an egress request,
     so a new kind of a later SDK fails closed.
+
+    A custom-tool request carries a NAME only. *tools* is a zero-argument
+    callable that returns the session's own tool list. The name passes only
+    when that list holds a tool of that name and the tool OBJECT is not an
+    egress tool, so a tool of another repo that borrows a platform name fails
+    (fix round 2). With no *tools*, or no such tool, it fails closed.
     """
     kind = str(_field(request, "kind") or "").strip().lower()
     if kind not in _NO_EGRESS_KINDS or is_shell_request(request):
         return True
     if kind == "custom-tool":
-        from acb_skills.egress import is_egress_tool
+        from acb_skills.egress import DELEGATION_TOOLS, is_egress_tool, tool_name
 
-        return is_egress_tool(str(_field(request, "tool_name") or ""))
+        name = str(_field(request, "tool_name") or "")
+        if name in DELEGATION_TOOLS:
+            return False
+        try:
+            held = list(tools() if callable(tools) else [])
+        except Exception:
+            return True
+        match = [t for t in held if tool_name(t) == name]
+        return not match or any(is_egress_tool(t) for t in match)
     return False
 
 
@@ -463,8 +477,12 @@ def _egress_withheld_result() -> Any:
     )
 
 
-def guard_shared_agent_shell(handler: Any) -> Any:
+def guard_shared_agent_shell(handler: Any, *, tools: Any = None) -> Any:
     """*handler*, with the D85 shell refusal and the H-236 egress refusal in front.
+
+    *tools* returns the session's own tool list, for the H-236 check of a
+    custom-tool request (:func:`is_egress_request`). The one install function
+    (``_copilot_session._install_copilot_permission_handler``) passes it.
 
     It refuses every shell request of a run whose host shell is refused, and
     every egress request (:func:`is_egress_request`) of a ``no_egress`` run.
@@ -482,7 +500,7 @@ def guard_shared_agent_shell(handler: Any) -> Any:
     def _guarded(request: Any, invocation: Any) -> Any:
         from acb_skills.egress import no_egress_for_this_run
 
-        if no_egress_for_this_run() and is_egress_request(request):
+        if no_egress_for_this_run() and is_egress_request(request, tools):
             _log.info(
                 "permission.decision",
                 mode=_mode(),

@@ -64,6 +64,7 @@ from skill_projects.writes import (
     _split,
     _task,
     _vocab,
+    agent_assignee_refusal_as_text,
 )
 
 try:
@@ -502,6 +503,7 @@ def _bulk_impact(body: dict[str, Any], n: int) -> str:
 
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 @takes_priority
+@agent_assignee_refusal_as_text
 async def bulk_update(
     task_ids: str,
     status: str = "",

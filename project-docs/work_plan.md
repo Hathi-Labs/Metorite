@@ -4948,10 +4948,12 @@ and one thing that cannot be written until a second person exists.
 > run and each run under it hold only the delegation tools, the sandbox
 > tools and tools that say `open_world=False`, and the control refuses a
 > call to any other tool (`specs/maf_coding_engine.md` §16.3, fence
-> WS43-F24). At the flip, the owner accepts the NAMED residual, by name:
-> an agent that a member assigns by hand, a delayed send through a store,
-> and what an agent from another repo does on its own servers. An agent
-> may not take that acceptance as given. The three acts of WS-43w stay
+> WS43-F24). At the flip, the owner accepts the NAMED residual of §16.3,
+> by name. It has six items: an agent that a member assigns by hand, a
+> delayed send through a store, what an agent from another repo does on its
+> own servers, a workflow on a task event, a remote image in the answer
+> text, and the answer that an uncovered parent gets. An agent may not take
+> that acceptance as given. The three acts of WS-43w stay
 > owner acts.
 >
 > **WS-29 — moving any customer onto the pooled tier.** Cutover is a data move against

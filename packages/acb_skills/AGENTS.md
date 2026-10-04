@@ -95,9 +95,14 @@ clone cache.
    `DELEGATION_TOOLS`, the sandbox tools and tools whose annotation says
    `open_world=False` explicitly. `is_egress_tool()` is the one test: a tool
    with no annotation, or no `open_world` key, is an egress tool, and so is an
-   MCP tool, an MCP-born tool and a `STORE_WRITES` member. An agent's own tool
-   carries its annotation on the function (`__tool_risk__`), so another
-   repo's tool that shares a name with ours still fails closed.
+   MCP tool, an MCP-born tool and a `STORE_WRITES` member (the four memory
+   writes and `save_note`). An agent's own tool carries its annotation on the
+   function (`__tool_risk__`). A registry entry that the platform made is
+   trusted for a tool OBJECT only when its callable comes from `acb_skills.`
+   or `orchestrator.` and carries the tool's name, or is a MAF sandbox tool
+   (`_platform_owned`). So a tool of another repo that borrows a platform
+   name fails closed. The Copilot guard resolves a request's name in the
+   session's own tool list, and fails closed when it finds none.
    `no_egress_for_this_run()` is the one reader: a frame with no run context
    and any value but an explicit `False` read as `no_egress`.
    `EgressGuardProvider` adds the per-run MAF middleware.
@@ -107,9 +112,12 @@ clone cache.
    Fence: tests/unit/test_delegation_no_egress.py (WS43-F24).
 5g. tool_annotations.py -- `annotate()` has NO default for `open_world`
    (H-236). Every tool of every in-repo agent states it, and the WS43-F24
-   fence reads the real registry to check. The risk block of the addendum
-   lists the platform's own names only: an agent's own tools, the sandbox
-   tools and the names that H-236 added stay out, so the block stays static.
+   fence reads the real registry to check. The risk block of the addendum is
+   PER AGENT and deterministic: `risk_summary_block(own=)` lists the
+   platform's own names (`_PLATFORM_STATIC`, without the sandbox tools) and
+   that agent's own destructive or `open_world=True` tools, which the caller
+   takes from the agent's own tool list (`_tool_injection._own_risk`). An
+   agent's read tools stay out. The fence pins task-manager's block.
 5h. tool_guard.py -- the ONE per-run middleware pair (`WithholdTools`,
    `RefuseTools`) that takes a rule. The host-tool control of
    `sandbox_tools` and the egress control of `egress` both use it. Do not

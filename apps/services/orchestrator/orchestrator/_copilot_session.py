@@ -40,7 +40,7 @@ def _refuse_every_request(request: Any, invocation: Any) -> Any:
     )
 
 
-def _copilot_permission_handler(existing: Any = None) -> Any:
+def _copilot_permission_handler(existing: Any = None, *, tools: Any = None) -> Any:
     """Return the Copilot-SDK permission handler for a run (B6 / HH-6).
 
     With no *existing* handler: ``AGENT_PERMISSION_MODE=approve_all`` → the
@@ -60,6 +60,9 @@ def _copilot_permission_handler(existing: Any = None) -> Any:
     load, it returns :func:`_refuse_every_request`, never a bare
     ``approve_all``. Call :func:`_install_copilot_permission_handler`, which
     is the one way a Copilot agent gets its handler.
+
+    *tools* returns the session's own tool list, so the H-236 guard can check
+    a custom-tool request against the tool OBJECT and not its name alone.
     """
     from copilot import PermissionHandler as _PH  # noqa: PLC0415
 
@@ -72,12 +75,12 @@ def _copilot_permission_handler(existing: Any = None) -> Any:
         _log.error("copilot.permission_policy_unavailable")
         return _refuse_every_request
     if existing is not None:
-        return guard_shared_agent_shell(existing)
+        return guard_shared_agent_shell(existing, tools=tools)
     if os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower() == (
         "approve_all"
     ):
-        return guard_shared_agent_shell(_PH.approve_all)
-    return guard_shared_agent_shell(risk_aware_permission_handler)
+        return guard_shared_agent_shell(_PH.approve_all, tools=tools)
+    return guard_shared_agent_shell(risk_aware_permission_handler, tools=tools)
 
 
 def _install_copilot_permission_handler(agent: Any) -> None:
@@ -98,6 +101,8 @@ def _install_copilot_permission_handler(agent: Any) -> None:
     try:
         agent._permission_handler = _copilot_permission_handler(
             agent._permission_handler,
+            # H-236: the session's own tools, read when a request arrives.
+            tools=lambda: list(getattr(agent, "_tools", None) or []),
         )
     except Exception as exc:  # fail closed: never leave the old handler
         _log.error(

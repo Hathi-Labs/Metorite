@@ -44,6 +44,7 @@ from skill_projects.views import _emit, _plain, _template
 from skill_projects.writes import (
     CANCELLED,
     MAX_BATCH,
+    AgentAssigneeRefused,
     _confirm,
     _fields_block,
     _fits_on_card,
@@ -52,6 +53,7 @@ from skill_projects.writes import (
     _statuses_of,
     _task,
     _unknown_addresses,
+    agent_assignee_refusal_as_text,
     update_project,
     update_task,
 )
@@ -552,6 +554,8 @@ async def _soft_owner(value: str) -> tuple[str, str]:
     """
     try:
         return await _resolve_assignee(value), ""
+    except AgentAssigneeRefused:
+        raise  # H-236: refused before the card, never noted on it
     except GatewayRefusal as exc:
         return value.strip().lower(), str(exc)
 
@@ -806,6 +810,7 @@ def _confirm_card(
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@agent_assignee_refusal_as_text
 async def propose_plan(
     name: str,
     tasks: str,

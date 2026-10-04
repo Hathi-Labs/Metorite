@@ -215,7 +215,7 @@ class NoEgressRefused(RuntimeError):
     """
 
 
-def _run_covered(agent_name: str) -> bool:
+def _run_covered(agent_name: str, organization_id: str | None = None) -> bool:
     """True when a run of *agent_name* on this frame is, or may be, covered (H-236).
 
     It is true when ``covers()`` is true for the agent and the run's org. It is
@@ -225,10 +225,14 @@ def _run_covered(agent_name: str) -> bool:
     broker that answers with an error fails closed. Each run boundary asks it
     ONCE, at the start, and binds the answer (:func:`_run_no_egress`), so a
     change of the scope during the run cannot clear the flag of its delegations.
+
+    *organization_id* is the org that the run boundary itself was handed
+    (server-side, never input). A batch run decides its flag before it binds
+    its tenant, so it passes its org here (fix round 2).
     """
     if not agent_name:
         return False
-    org = _run_org()
+    org = organization_id or _run_org()
     if not org:
         return False
     try:
@@ -265,7 +269,9 @@ def _delegated_no_egress(parent_ctx: Any) -> bool:
     return _run_covered(str(parent_ctx.get("agent_name") or ""))
 
 
-def _run_no_egress(agent_name: str | None, parent_ctx: Any) -> bool:
+def _run_no_egress(
+    agent_name: str | None, parent_ctx: Any, organization_id: str | None = None,
+) -> bool:
     """The ``no_egress`` answer of a run of *agent_name* that starts now (H-236).
 
     One rule binds a covered run and every run under it. So the answer is set
@@ -273,16 +279,9 @@ def _run_no_egress(agent_name: str | None, parent_ctx: Any) -> bool:
     this run's own agent is covered (:func:`_run_covered`), whatever its parent.
     Each run boundary computes it once, before anything can fail, and binds it.
     """
-    return _delegated_no_egress(parent_ctx) or _run_covered(str(agent_name or ""))
-
-
-def _no_egress_bound() -> bool:
-    """``no_egress`` of the run already bound on this frame (H-236)."""
-    try:
-        from acb_skills.egress import no_egress_for_this_run
-    except ImportError:
-        return True
-    return no_egress_for_this_run()
+    return _delegated_no_egress(parent_ctx) or _run_covered(
+        str(agent_name or ""), organization_id,
+    )
 
 
 def _is_egress(tool: Any) -> bool:
@@ -787,6 +786,7 @@ def _build_injected_tools_addendum(
     *,
     is_sub_agent: bool = False,
     effective_scope: frozenset[str] | None = None,
+    own_risk: frozenset[tuple[str, bool, bool]] = frozenset(),
 ) -> str:
     """Return a system-prompt addendum describing the Metorite-injected tools.
 
@@ -827,11 +827,43 @@ def _build_injected_tools_addendum(
         # acb_skills absent means _collect_injectable_platform_tools() returned
         # [] and nothing was injected — an empty addendum is the truthful text.
         return ""
+    from acb_skills.tool_annotations import risk_summary_block
+
+    # H-236: the risk block is per agent. ``own_risk`` names THIS agent's own
+    # destructive and outward tools (:func:`_own_risk`), and it is part of the
+    # cache key, so each agent keeps a byte-stable prefix of its own.
     return render_injected_tools_addendum(
         is_sub_agent=is_sub_agent,
         effective_scope=effective_scope,
         registry_block=_build_registry_block(),
+        risk_block=risk_summary_block(own=own_risk),
     )
+
+
+def _own_risk(tools: list[Any]) -> frozenset[tuple[str, bool, bool]]:
+    """``(name, destructive, open_world)`` of each risky tool in *tools* (H-236).
+
+    *tools* is one agent's own tool list, plus the app and workflow tools that
+    it was given. A platform name of ``tool_annotations._PLATFORM_STATIC`` is
+    left out, because the block lists those already. A tool joins only when it
+    is destructive or reaches outside Metorite, so read tools never do.
+    """
+    try:
+        from acb_skills.egress import _risk_of, tool_name
+        from acb_skills.tool_annotations import _PLATFORM_STATIC
+    except ImportError:
+        return frozenset()
+    out: set[tuple[str, bool, bool]] = set()
+    for item in tools:
+        name = tool_name(item)
+        if not name or name in _PLATFORM_STATIC:
+            continue
+        hints = _risk_of(item, name) or {}
+        destructive = bool(hints.get("destructive"))
+        open_world = hints.get("open_world") is True
+        if destructive or open_world:
+            out.add((name, destructive, open_world))
+    return frozenset(out)
 
 
 @functools.lru_cache(maxsize=1)
@@ -1340,6 +1372,8 @@ def _inject_agent_tools(
                             frozenset(_scope_names)
                             if _scope_names is not None else None
                         ),
+                        # H-236: this agent's own risky tools, from its own list.
+                        own_risk=_own_risk(list(agent._tools)),
                     )
                     opts = getattr(agent, "_default_options", None)
                     if isinstance(opts, dict):

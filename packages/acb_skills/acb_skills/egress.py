@@ -69,13 +69,19 @@ DELEGATION_TOOLS: frozenset[str] = frozenset({
     "call_agent", "call_agents_parallel", "call_agent_background", "delegate_to_agent",
 })
 
-#: The writes to a memory store that other runs read later. A run that holds
-#: member data could park it there, and a later run with a send could send
-#: it. The writes say ``open_world=False``, which is true of the write
-#: itself, so this set names them. A ``no_egress`` run reads its memory and
-#: writes none.
+#: The tool writes to a store that later runs read: the four memory writes,
+#: and ``save_note``, whose ``agent-data/NOTES.md`` every later session reads
+#: (and, for a shared agent, every member of the organization). A run that
+#: holds member data could park it there, and a later run with a send could
+#: send it. Each write says ``open_world=False``, which is true of the write
+#: itself, so this set names them, and a ``no_egress`` run holds none.
+#:
+#: This set does NOT close every delayed path, and §16.3 names the rest. The
+#: run can still write its own files. The gateway's memory extraction after
+#: the run is skipped for a covered run (``executor.run_was_no_egress``). A
+#: task write still emits its event, and a published workflow may run on it.
 STORE_WRITES: frozenset[str] = frozenset({
-    "save_memory", "save_episode", "save_agent_memory", "save_org_memory",
+    "save_memory", "save_episode", "save_agent_memory", "save_org_memory", "save_note",
 })
 
 #: The answer to a call that the control refuses. It names what is true of
@@ -103,14 +109,58 @@ def _from_mcp(item: Any) -> bool:
     return isinstance(props, Mapping) and bool(props.get("_mcp_is_tool"))
 
 
+#: The packages whose callables ARE the platform's tools. A registry entry
+#: that the platform made (not an agent's ``annotate`` call) is trusted for a
+#: tool object only when the object's callable comes from one of these.
+_PLATFORM_PACKAGES = ("acb_skills.", "orchestrator.")
+#: MAF's own provider tools (the file and skill tools of a sandboxed run).
+#: Their callables are closures inside ``agent_framework``, so their names
+#: differ from the tool names, and only the sandbox names are trusted there.
+_MAF_PROVIDER_PACKAGE = "agent_framework."
+
+
+def _base_callable(item: Any) -> Any:
+    """The callable under a tool object, through its wrappers."""
+    fn = getattr(item, "func", item)
+    for _ in range(16):
+        inner = getattr(fn, "__wrapped__", None)
+        if inner is None:
+            break
+        fn = inner
+    return fn
+
+
+def _platform_owned(item: Any, name: str) -> bool:
+    """True when the tool object *item*, called *name*, is the platform's own.
+
+    Module and name (H-236, fix round 2): the callable comes from a platform
+    package and carries the tool's name, as every injected tool, sandbox tool,
+    workflow tool and app tool does. Or it is one of MAF's provider tools of a
+    sandboxed run. A tool of another repo that only borrows a platform name
+    (its own ``run_diagnostics`` or ``write_artifact``) fails this test.
+    """
+    from acb_skills.tool_annotations import SANDBOX_TOOL_NAMES
+
+    fn = _base_callable(item)
+    module = str(getattr(fn, "__module__", "") or "")
+    if module.startswith(_PLATFORM_PACKAGES):
+        return str(getattr(fn, "__name__", "") or "") == name
+    return module.startswith(_MAF_PROVIDER_PACKAGE) and name in SANDBOX_TOOL_NAMES
+
+
 def _risk_of(item: Any, name: str) -> Mapping[str, Any] | None:
     """The annotation of a tool object, or of a bare name when *item* is None.
 
-    An agent's own tool carries its annotation on the function
-    (``annotate`` sets ``__tool_risk__``). So a tool OBJECT takes the
-    registry entry of its name only when no ``annotate`` call made that
-    entry. Another repo's tool that merely shares a name with an annotated
-    tool of ours then reads as unannotated, and fails closed.
+    For a tool OBJECT it fails closed. An agent's own tool carries its
+    annotation on the function (``annotate`` sets ``__tool_risk__``). A
+    registry entry that the platform made is trusted only when the object is
+    the platform's own callable (:func:`_platform_owned`). Every other object
+    reads as unannotated, so another repo's tool that shares a name with one
+    of ours is an egress tool.
+
+    A bare name reads the registry. Only a caller that resolved the object
+    first may trust that answer: the Copilot guard resolves the name in the
+    session's own tool list (``permission_policy.is_egress_request``).
     """
     from acb_skills.tool_annotations import _AGENT_OWN, TOOL_ANNOTATIONS
 
@@ -120,7 +170,7 @@ def _risk_of(item: Any, name: str) -> Mapping[str, Any] | None:
         hints = getattr(obj, "__tool_risk__", None)
         if isinstance(hints, Mapping):
             return hints
-    if name in _AGENT_OWN:
+    if name in _AGENT_OWN or not _platform_owned(item, name):
         return None
     return TOOL_ANNOTATIONS.get(name)
 

@@ -35,6 +35,8 @@ project's own list the way a status is, every match and never the first.
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from skill_projects.client import (
@@ -216,6 +218,31 @@ AGENT_ASSIGNEE_REFUSED = (
 )
 
 
+class AgentAssigneeRefused(GatewayRefusal):
+    """H-236 refused an agent assignee. :func:`agent_assignee_refusal_as_text`
+    turns it into the tool's own answer, so the model reads why."""
+
+
+def agent_assignee_refusal_as_text(
+    fn: Callable[..., Awaitable[str]],
+) -> Callable[..., Awaitable[str]]:
+    """A Projects tool that answers an H-236 refusal with its text.
+
+    The refusal is raised deep in :func:`_resolve_assignee`. A raised error
+    reaches the model as "Error: Function failed.", so the tools that can
+    assign return :data:`AGENT_ASSIGNEE_REFUSED` instead (fix round 2).
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> str:
+        try:
+            return await fn(*args, **kwargs)
+        except AgentAssigneeRefused as exc:
+            return str(exc)
+
+    return wrapper
+
+
 def _refuse_agent_assignee(assignee: str) -> str:
     """*assignee*, unless it names an agent and this run may not send (H-236).
 
@@ -231,9 +258,9 @@ def _refuse_agent_assignee(assignee: str) -> str:
     try:
         from acb_skills.egress import no_egress_for_this_run
     except ImportError:  # no platform package: no run can be checked
-        raise GatewayRefusal(AGENT_ASSIGNEE_REFUSED) from None
+        raise AgentAssigneeRefused(AGENT_ASSIGNEE_REFUSED) from None
     if no_egress_for_this_run():
-        raise GatewayRefusal(AGENT_ASSIGNEE_REFUSED)
+        raise AgentAssigneeRefused(AGENT_ASSIGNEE_REFUSED)
     return assignee
 
 
@@ -378,6 +405,7 @@ def _priority_card(
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 @takes_priority
+@agent_assignee_refusal_as_text
 async def create_task(
     project_id: str,
     title: str,
@@ -584,6 +612,7 @@ async def update_task(
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@agent_assignee_refusal_as_text
 async def assign(task_id: str, assignees: str) -> str:
     """Set who holds a task. assignees is comma-separated: emails,
     agent:<name>, or people's names (resolved through the picker, one match
@@ -974,7 +1003,7 @@ async def create_project(
     if description.strip():
         payload["description"] = description.strip()
     if lead.strip():
-        payload["lead"] = await _resolve_assignee(lead)
+        payload["lead"] = await _resolve_assignee(lead, dispatch=False)
     if not await _confirm(
         title=f"Create this {which}?",
         detail=f"{data(label)} under {parent_label}",
@@ -1012,7 +1041,7 @@ async def update_project(
         payload["status"] = state
         before["status"] = node.get("status")
     if lead.strip():
-        payload["lead"] = await _resolve_assignee(lead)
+        payload["lead"] = await _resolve_assignee(lead, dispatch=False)
         before["lead"] = node.get("lead")
     if not payload:
         return "Nothing to change. Pass at least one field."

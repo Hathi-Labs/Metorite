@@ -24,6 +24,7 @@ for it. Fence: ``tests/unit/test_delegation_no_egress.py``.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, Callable
 
 # name → {read_only, destructive, idempotent, open_world}
@@ -136,11 +137,16 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "save_agent_memory", "save_org_memory",
 })
 
-#: Every name that :func:`annotate` registered: an agent's OWN tool. The risk
-#: block leaves them out. They used to join it whenever their module was
-#: imported, so the block changed with the import order of one process, and
-#: H-236 annotates every own tool of every in-repo agent.
+#: Every name that :func:`annotate` registered: an agent's OWN tool. They
+#: used to join the risk block whenever their module was imported, so the
+#: block changed with the import order of one process. Now each agent's block
+#: names its own risky tools only (:func:`risk_summary_block`, ``own=``).
 _AGENT_OWN: set[str] = set()
+
+#: The platform's own names: the entries this module defines, captured before
+#: any :func:`annotate` call or runtime registration. The risk block lists
+#: these, so it no longer depends on what one process imported.
+_PLATFORM_STATIC: frozenset[str] = frozenset(TOOL_ANNOTATIONS)
 
 
 def annotate(
@@ -195,22 +201,38 @@ def is_destructive(tool: str | Callable[..., Any]) -> bool:
     return bool(hints and hints["destructive"])
 
 
-def risk_summary_block() -> str:
+def risk_summary_block(own: Iterable[tuple[str, bool, bool]] = ()) -> str:
     """Byte-stable addendum block summarising tool risk classes.
 
     Rendered into the injected-tools system-prompt addendum so the agent can
     reason about which calls are safe to make freely vs. which reach outside
     the platform or mutate state.
+
+    It is PER AGENT and deterministic (H-236). It lists the platform's own
+    names (:data:`_PLATFORM_STATIC`, without the sandbox tools), plus the
+    agent's own tools in *own*: ``(name, destructive, open_world)`` for each
+    tool of THIS agent that is destructive or reaches outside Metorite. The
+    caller builds *own* from the agent's own tool list, never from the
+    process-wide registry. An agent's read tools stay out, so the block does
+    not grow with every annotated tool.
     """
-    unlisted = SANDBOX_TOOL_NAMES | _H236_UNLISTED | _AGENT_OWN
-    listed = {n: h for n, h in TOOL_ANNOTATIONS.items() if n not in unlisted}
+    unlisted = SANDBOX_TOOL_NAMES | _H236_UNLISTED
+    listed = {
+        n: TOOL_ANNOTATIONS.get(n, {}) for n in _PLATFORM_STATIC if n not in unlisted
+    }
     read_only = sorted(n for n, h in listed.items() if h.get("read_only"))
     writes = sorted(
         n for n, h in listed.items()
         if not h.get("read_only") and not h.get("destructive")
     )
-    destructive = sorted(n for n, h in listed.items() if h.get("destructive"))
-    open_world = sorted(n for n, h in listed.items() if h.get("open_world"))
+    destructive = sorted(
+        {n for n, h in listed.items() if h.get("destructive")}
+        | {n for n, d, _o in own if d}
+    )
+    open_world = sorted(
+        {n for n, h in listed.items() if h.get("open_world")}
+        | {n for n, _d, o in own if o}
+    )
 
     lines = [
         "### Tool risk annotations",
