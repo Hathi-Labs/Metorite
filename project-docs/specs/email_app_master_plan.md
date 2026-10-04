@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2).
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). 🔨 **EM-G3a is BUILT, not merged (2026-10-05), branch `email-gmail-g3a`:** Gmail send and drafts (§12.3.3).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -6136,6 +6136,8 @@ change.
 > **The split of EM-G4 (2026-10-05).** EM-G4a and EM-G4b take the place of EM-G4 (§12.3.5).
 > EM-G4a is ✅ MERGED (#629, §12.3.5.1). EM-G4b is ✅ MERGED (#632, §12.3.5.2).
 
+> **EM-G3a (2026-10-05).** 🔨 BUILT, not merged, on the branch `email-gmail-g3a` (§12.3.3).
+
 > **The slice names.** The slices are EM-G1 to EM-G10. §10.4.7 already uses the bare names G1 to
 > G5 for the gaps of EM-T6c, so the prefix keeps the two sets apart (R2).
 
@@ -6645,6 +6647,9 @@ owns it, and it needs its own audit.
 
 #### 12.3.3 EM-G3a — send and drafts
 
+**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g3a`. The as-built notes, the
+fences and the mutation table are at the end of this section.
+
 **Gate.** 🟢 AGENT-SAFE · R8, because the draft row is SQL. No migration.
 
 **Order.** After EM-G4a, and after the orchestrator answers O-GM-2. The scope follows the
@@ -6769,6 +6774,134 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 
 The R8 tests must show PASSED, with 0 skips. Run each other test that patches
 `_upsert_local_draft`, or that calls `send_draft`, `update_draft` or `create_draft`, too.
+
+**As built (2026-10-05, branch `email-gmail-g3a`).** The build follows items 1 to 9 and E-A1 to
+E-A5. It adds no migration, no column, no flag and no change to Outlook. Production holds no Gmail
+mailbox, so no live mailbox changes.
+
+- **The builder.** `_build_gmail_raw` in `gmail.py` is the one builder. Each part is UTF-8. A
+  header goes out only when the caller gives its value, so an update with no `Cc` writes no `Cc`.
+- **The type of a file.** `application/octet-stream` counts as no type, because the send route
+  gives it when the browser gives none. Then `mimetypes.guess_type` of the name decides. A type
+  with parameters keeps its main type and its subtype only.
+- **The parent.** `_reply_headers` reads `messages/{id}` or `threads/{id}` with `format=metadata`
+  and the two `metadataHeaders`. The header read has no case, as in EM-G2. A parent with no
+  Message-ID gives no header. `References` is the `References` of the parent, then its Message-ID.
+- **The failed read (E-A3).** Each error of the read gives no header, a rate limit too. The line
+  `gmail.parent_read_failed` names the kind, the id, the class of the error and the status.
+- **The draft ids (O-GM-2).** `_remember_draft` keeps each pair from the answer of `drafts.create`
+  and `drafts.update`, and an update drops the old message id. An answer with no draft id or no
+  message id raises `ValueError`, so no row stores a wrong id. `_draft_id_for` reads
+  `drafts.list` with 500 drafts on a page and 20 pages at most. It stops at the page that holds
+  the id.
+- **The cache.** A miss of `update_draft` or `send_draft` reads the list again. A miss of
+  `trash_message` after one full read answers "no draft", so the trashes of one provider cost one
+  read.
+- **The trash rule (E-A5).** `trash_message` sends a draft to `drafts.delete`, and it adds the
+  message id to `discarded_drafts`. A lookup that fails for a reason other than a rate limit
+  trashes the message as before, and it logs `gmail.draft_lookup_failed`. `move_to_folder` calls
+  `trash_message` for `trash`, so it discards a draft too.
+- **The Discard button.** It calls `DELETE /email/messages/{id}` (`transport/messages.py`). That
+  route deletes the local row of a discarded draft. Each other row goes to the folder `trash`, as
+  before.
+- **The save path (item 8, E-A2).** `_move_local_draft` (`drafting.py`) runs when the id that
+  comes back differs from the id of the row. That is the Gmail update and the IMAP fallback.
+  Outlook returns the same id, so its save sends no statement of the move. `_upsert_local_draft`
+  keeps its key.
+- **The send path (E-A1).** `send_draft_endpoint` sends the id that `update_draft` returns. It
+  sends the old id only when the update returns none.
+- **D-EM-31.** `drafts.delete` removes a draft for good, and D-EM-31 says that no code path
+  deletes a message for good. Gmail itself puts no discarded draft in Trash. The scope
+  `gmail.modify` allows `drafts.delete`.
+- **Anchors at `241dddccf`.** `send_message` was at `gmail.py:712`, `create_draft` at `:767`,
+  `update_draft` at `:816`, `send_draft` at `:875` and `trash_message` at `:901`. The save path
+  was at `drafting.py:2126-2196`, and the send path at `:2264-2280`.
+
+**The tests that changed (E-A4), as built.** The update case of
+`test_email_reply_threading.py` answers `drafts.list` with the draft `r-1`, and it asserts the PUT
+to `/users/me/drafts/r-1`. Its body is `multipart/alternative`, with the HTML part second. The
+four send cases there use one client that answers `client.get` with a parent with no Message-ID.
+The `drafts.send` case of `test_gmail_rate_limits.py` answers `drafts.list`, and it sends the
+message id `m-draft-1`.
+
+**The fences, as built.** `tests/unit/test_gmail_send_and_drafts.py` holds 35 cases. 30 are
+hermetic, on a fake Gmail on `httpx.MockTransport` that keeps its state. 5 are R8.
+
+| Test | What it proves |
+|---|---|
+| `test_send_has_a_text_part_and_an_html_part` | The send body is `multipart/alternative`, text first, and each part keeps its own body. |
+| `test_a_body_with_no_html_is_one_text_part` | A body with no HTML stays one `text/plain` part. |
+| `test_create_draft_has_a_text_part_and_an_html_part` | `create_draft` uses the same builder. |
+| `test_an_update_has_a_text_part_and_an_html_part` | `update_draft` uses the same builder. |
+| `test_an_attachment_keeps_its_mime_type` (5 cases) | The given type, the given type over the name, the name over `application/octet-stream`, the name alone, and an unknown name. |
+| `test_a_file_name_outside_ascii_survives` (3 cases) | A quote, an umlaut and CJK letters survive, through RFC 2231. |
+| `test_a_reply_sets_in_reply_to_and_references` (2 cases) | The send and the draft read the parent with `format=metadata`, set both headers and keep `threadId`. |
+| `test_a_reply_with_only_a_thread_id_reads_the_newest_message_that_is_no_draft` | Item 5. A newer draft in the thread is not the parent. |
+| `test_an_update_sets_in_reply_to_again` | An update sets both headers again, from the thread. |
+| `test_a_mail_that_is_no_reply_reads_no_parent` | A new mail makes no parent read and gets no header. |
+| `test_a_failed_parent_read_still_sends` (4 cases) | E-A3: a 500, a 404, a rate limit and a thread 503. One line, with no subject and no address. |
+| `test_create_and_update_return_the_message_id` | Item 6. |
+| `test_update_and_send_resolve_a_message_id_to_its_draft` | Item 7. A draft with only a message id updates and sends, with one `drafts.list`. |
+| `test_a_message_id_that_is_no_draft_raises_a_clear_error` | Item 7. `GmailDraftNotFound`, not an HTTP error, and no write. |
+| `test_the_draft_lookup_reads_each_page` | Item 7. Three pages, and the cache serves the next lookup. |
+| `test_the_lookup_after_an_update_drops_the_old_id` | After an update, the old id is no draft. |
+| `test_trash_of_a_draft_discards_it` | E-A5. `drafts.delete` for a draft, `messages.trash` for a mail, one `drafts.list`. |
+| `test_a_failed_draft_lookup_still_trashes_a_mail` | A failed `drafts.list` still trashes a mail, and logs one line. |
+| `test_a_signed_send_sends_the_id_that_the_update_returns` | E-A1. The route signs, then sends the new message id. |
+| `test_a_signed_send_of_a_provider_that_keeps_its_id_is_unchanged` | Outlook sends the same id as before. |
+| R8 `test_a_draft_saved_here_is_one_row_after_the_sync` | A saved draft and its sync copy are one row. |
+| R8 `test_an_update_moves_the_row_to_the_new_message_id` | The row keeps its row id, and each request builds its own provider. |
+| R8 `test_a_sync_copy_of_the_new_id_folds_into_the_local_row` | E-A2. A sync copy that commits before the move goes, and one row stays. |
+| R8 `test_an_update_that_keeps_its_id_moves_nothing` | Outlook: no statement of the move reaches Postgres. |
+| R8 `test_a_discarded_gmail_draft_leaves_no_row` | E-A5. The route deletes the row of a discarded draft, and a mail goes to `trash`. |
+
+`test_email_reply_threading.py::test_gmail_reply_sets_in_reply_to_and_references` is the case for
+the two headers there.
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against
+`test_gmail_send_and_drafts.py`, `test_email_reply_threading.py` and `test_gmail_rate_limits.py`,
+on a real Postgres with 0 skips. It then wrote back the original bytes, and the SHA-256 of
+`gmail.py`, `drafting.py` and `messages.py` matched each time. Each mutation turned a named test
+red.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M1 | The builder puts back `MIMEText(body_text, "html")` | 10, with the three MIME tests and the update case of `test_email_reply_threading.py` |
+| M2 | No `In-Reply-To` | 5, with both cases of the reply test and the new case of `test_email_reply_threading.py` |
+| M3 | Each file goes as `application/octet-stream` | the 4 cases of the type test that name a type |
+| M4 | `create_draft` returns the draft id | `test_create_and_update_return_the_message_id` and the 4 R8 tests of the Gmail save |
+| M5 | The save skips the move | the R8 move test and the R8 collision test |
+| M6 | The signed send passes the old id | `test_a_signed_send_sends_the_id_that_the_update_returns` |
+| M7 | A failed parent read fails the send | the 4 cases of `test_a_failed_parent_read_still_sends` |
+| M8 | The move keeps the sync copy and gives way to it, so a second row stays | the R8 collision test |
+| M8a | The move keeps the sync copy, so the move meets the unique key | the R8 collision test |
+| M9 | A draft goes to `messages.trash` | 3, with `test_trash_of_a_draft_discards_it` and the R8 discard test |
+| M10 | The delete route keeps the row of a discarded draft | the R8 discard test |
+| M11 | The parent of a thread can be a draft | the thread-only test and the update test |
+| M12 | The lookup reads the first page only | `test_the_draft_lookup_reads_each_page` |
+
+**Known limit EM-G3a-f1.** A member edits a draft in Gmail web, then in Metorite before the next
+sync. Gmail gave the draft a new message id, so the local row holds an old id. `update_draft` then
+raises `GmailDraftNotFound`, and the route answers 500. The sync writes the new id as a second
+row, and the old row stays until a reconcile removes it (EM-G4b, EM-G5).
+
+**Known limit EM-G3a-f2.** A sync can hold its copy of the new id in an open transaction while the
+save moves its row. The move then waits for that transaction, and it fails on the unique key. The
+draft then meets EM-G3a-f1. The window is the time between the answer of Gmail and the move.
+
+**Known limit EM-G3a-f3.** Three paths keep the local row of a discarded Gmail draft in the folder
+`trash`. They are the PATCH of a message to `trash`, the rule action `TRASH` and a bulk trash by
+sender. Gmail holds no such draft, so the row stays until a reconcile (EM-G5). The Discard button
+uses the delete route, which deletes the row.
+
+**Finding EM-G3a-f4 (on main before EM-G3a).** IMAP `create_draft` returns `draft-<folder>`, so
+each IMAP draft that Metorite makes writes onto one shared row. Before EM-G3a, an IMAP save wrote
+over that shared row. Now the move of item 8 deletes it. So the other draft leaves Metorite in both
+cases, and the move adds no loss. A later slice owns the fix of the IMAP id, with its own audit.
+
+**Known limit EM-G3a-f5.** A Gmail draft row from before EM-G3a holds a draft id, so its update and
+its send raise `GmailDraftNotFound`. Production holds no Gmail mailbox, so no such row exists
+there.
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 

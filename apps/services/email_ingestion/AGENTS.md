@@ -224,6 +224,28 @@ All providers implement the `BaseEmailProvider` abstract interface:
       `gmail.fetch_abandoned` for each message that still fails. The cursor
       holds no message id. A rate limit fails the cycle.
 
+11. **Gmail send and drafts (WS-17 EM-G3a, O-GM-2).** Fence:
+    `tests/unit/test_gmail_send_and_drafts.py`.
+    - `_build_gmail_raw` is the one MIME builder of `send_message`,
+      `create_draft` and `update_draft`. Do not add a second one. A body
+      with HTML is `multipart/alternative`, with the text part first. Each
+      attachment takes the type that the caller gives, else the type of its
+      name.
+    - A reply reads its parent from Gmail (`format=metadata`), never from
+      the local row, and sets `In-Reply-To` and `References`. A parent read
+      that fails never fails the send.
+    - **The draft id rule.** A Gmail draft has a draft id and a message id.
+      `create_draft` and `update_draft` return the MESSAGE id, and the local
+      row holds it, because the sync finds that id. `update_draft` and
+      `send_draft` take the message id and find the draft id through
+      `drafts.list`. Gmail gives a draft a new message id at each update,
+      so a caller moves its row to the id that `update_draft` returns, and
+      it sends that id. A message id that is no draft raises
+      `GmailDraftNotFound`.
+    - `trash_message` discards a draft with `drafts.delete`, which removes
+      it for good, as Gmail does. It adds the id to `discarded_drafts`, so
+      the caller deletes the local row.
+
 ## Inbound SMTP Server
 
 `inbound.py` runs an aiosmtpd SMTP server that accepts inbound emails and persists
