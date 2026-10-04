@@ -6449,7 +6449,8 @@ a user label is a label. The scope follows that answer.
     address and no real content. The set is (a) `multipart/mixed` with a nested
     `multipart/alternative` and a PDF, (b) single-part HTML, (c) `multipart/related` with an inline
     image, (d) a lower-case `Message-Id`, (e) a name with a quoted comma, (f) an archived message
-    with a user label, (g) an ISO-8859-1 body, and (h) an RFC 2047 display name (E6).
+    with a user label, (g) an ISO-8859-1 body, (h) an RFC 2047 display name (E6), and (i) a forward
+    as an inline `message/rfc822` part (review round 1).
 
 **Non-goals.** No send change (EM-G3a). No cursor (EM-G4). No new column and no migration. The
 folder tree of the UI is EM-G8 item 5.
@@ -6517,14 +6518,15 @@ mailbox, so no live row changes.
   `attachment` and a `message/*` part, and each part below them. So the body of an attached mail
   never becomes the body of the mail that carries it.
 - **The charset (item 3).** `_decode_gmail_part` decodes with the charset of the part. An unknown
-  charset falls back to UTF-8. It adds the base64 padding when Gmail sends none.
+  charset, or a codec that raises `UnicodeError`, falls back to UTF-8 (review round 1). It adds the
+  base64 padding when Gmail sends none.
 - **The headers (items 4 and 5).** `_parse_headers` keys each name in lower case.
   `_gmail_message_id` trims the value, and it keeps the angle brackets and the case.
-- **The addresses (item 6, E6).** `getaddresses` splits the raw header, and
-  `_decode_display_name` decodes each name after the split. A name that does not decode stays as it
-  came. An entry with no address is left out.
-- **The sender.** A `From` that `getaddresses` cannot read keeps the old reading, the text between
-  the angle brackets. So the sender never goes blank.
+- **The addresses (item 6, E6).** `_split_addresses` runs `getaddresses` with `strict=False` on the
+  raw header, and `_decode_display_name` decodes each name after the split. A name that does not
+  decode stays as it came. An entry with no `@` is left out (review round 1).
+- **The sender.** When the first entry of `From` has no `@`, the old reading holds. The address is
+  the text inside the angle brackets, and the name is the text before them (review round 1).
 - **The folder (items 7 to 10).** `_gmail_folder_from_labels` returns `archive` when no system
   label matches. `list_messages` no longer writes `msg.folder`. The folder key `archive`, or a
   `canonical_override` of `archive`, sends `GMAIL_ARCHIVE_QUERY` with the query of the caller and
@@ -6552,7 +6554,7 @@ mailbox, so no live row changes.
 - **Anchors.** Each anchor of the brief matched at `b0e09c23a`. The Outlook `internetMessageId`
   is at `outlook.py:1975` and its body at `:1960-1961`, a few lines below `:1971` and `:1955-1956`.
 
-**The fences, as built.** `tests/unit/test_gmail_parse.py` holds 18 cases, and all are hermetic.
+**The fences, as built.** `tests/unit/test_gmail_parse.py` holds 30 cases, and all are hermetic.
 They drive `get_message` or `list_messages` through a fake HTTP client that answers from the
 fixtures. The R8 case runs on a real Postgres as `acb_app_h3rls`.
 
@@ -6572,7 +6574,13 @@ fixtures. The R8 case runs on a real Postgres as `acb_app_h3rls`.
 | `test_a_label_page_keeps_the_folder_of_the_parse` | hermetic | A user-label page files its rows as `inbox` and `archive`. |
 | `test_the_archive_page_sends_a_query_and_no_label` | hermetic | The Archive page sends `GMAIL_ARCHIVE_QUERY` and the query of the caller. |
 | `test_a_user_label_named_archive_does_not_replace_the_query` | hermetic | The arguments of `transport/folders.py` still send the query. |
-| `test_each_fixture_is_a_gmail_message_with_no_real_address` | hermetic | Eight fixtures, the shape of `format=full`, and only RFC 2606 domains. |
+| `test_a_codec_that_raises_decodes_as_utf8` (3 cases, round 1) | hermetic | `idna`, `punycode` and `undefined` decode as UTF-8, and `list_messages` keeps the mail. |
+| `test_an_attached_mail_never_becomes_the_body` (round 1) | hermetic | Fixture (i): the inner body of an inline `message/rfc822` part is not the body. |
+| `test_a_text_part_with_attachment_disposition_is_not_the_body` (round 1) | hermetic | A `text/plain` part with the disposition `attachment` is not the text body. |
+| `test_a_bare_comma_in_from_keeps_the_real_sender` (2 cases, round 1) | hermetic | `Doe, John <…>` and `Müller, Jürgen <…>` keep the name and the real address. |
+| `test_a_bare_comma_in_to_keeps_each_real_address` (2 cases, round 1) | hermetic | The same forms in `To` keep each real address and no fragment. |
+| `test_a_loose_address_list_keeps_each_real_address` (3 cases, round 1) | hermetic | A trailing comma, a `;` and an empty element keep both addresses. |
+| `test_each_fixture_is_a_gmail_message_with_no_real_address` | hermetic | Nine fixtures, the shape of `format=full`, and only RFC 2606 domains. |
 | `test_two_parsed_gmail_fixtures_with_one_message_id_write_two_rows` | R8 | Two parses of fixture (a), each with its own Gmail id, keep two rows over two syncs through `_write_messages`. |
 
 **Mutations, as run (2026-10-05).** Each mutation ran against `test_gmail_parse.py`,
@@ -6593,6 +6601,41 @@ mutation turned a named test red.
 | M8 | Each part decodes as UTF-8 only | `test_the_charset_of_the_part_decodes_the_body` |
 | M9 | A single-part body goes into `body_text` | `test_single_part_html_fills_body_html` |
 | E6 | The names decode before the split | `test_an_encoded_display_name_decodes` |
+| MX1 | A `message/*` part is not a file | `test_an_attached_mail_never_becomes_the_body` |
+| MX2 | The disposition `attachment` is not a file | `test_a_text_part_with_attachment_disposition_is_not_the_body` |
+| MX3 | `From` takes its first entry with no check for `@` | both cases of `test_a_bare_comma_in_from_keeps_the_real_sender` |
+| R1 | A list keeps an entry with no `@` | both cases of `test_a_bare_comma_in_to_keeps_each_real_address` |
+| R2 | Only `LookupError` falls back to UTF-8 | the three cases of `test_a_codec_that_raises_decodes_as_utf8` |
+| R3 | `getaddresses` is strict | the trailing-comma and `;` cases of `test_a_loose_address_list_keeps_each_real_address` |
+
+Review round 1 ran all 17 rows again on the new code, against 34 tests with 0 skips. Each row was
+red, and each restore matched the SHA-256 of `gmail.py`. M2 then turned 13 tests red, because the
+new address tests read `From`, `To` and `Cc` too.
+
+**Review round 1 (2026-10-05).** The verifier found one P2 regression and three P3 defects. Each fix
+has a fence.
+
+- **P2, a comma outside quotes in `From`.** `From: Doe, John <john@example.org>` gave the sender
+  `Doe` with no address, and main gave the real one. The fix: when the first entry has no `@`,
+  `_parse_from` uses the old reading. A list leaves out each entry with no `@`, so a fragment never
+  becomes a recipient. Fences: `test_a_bare_comma_in_from_keeps_the_real_sender` and
+  `test_a_bare_comma_in_to_keeps_each_real_address`, each in ASCII and in non-ASCII.
+- **P3a, a codec that raises.** `charset=idna`, `punycode` or `undefined` raised `UnicodeError`.
+  The parse failed, and `list_messages` then skipped the mail at each sync, so a sender could hide a
+  mail. The fix: `_decode_gmail_part` falls back to UTF-8 on `UnicodeError` too. Fence:
+  `test_a_codec_that_raises_decodes_as_utf8`.
+- **P3b, a strict address parse.** On Python 3.12.12, `getaddresses` refuses a whole header for one
+  defect, so `a@example.org, b@example.org,` gave no recipient. The fix: `_split_addresses` passes
+  `strict=False`, and it falls back to the plain call on a Python with no such keyword. The lenient
+  parser splits on `;` too. Fence: `test_a_loose_address_list_keeps_each_real_address`.
+- **P3c, three rules with no fence.** The verifier removed the rule for a `message/*` part, the rule
+  for the disposition `attachment` and the `From` fallback, and each mutation survived. Fixture (i)
+  and two new tests now hold them (MX1 to MX3 above).
+
+**Known limit EM-G2-f1 (P3d, on main before EM-G2).** Gmail can send a large text part with
+`body.attachmentId` and no `body.data`. The body walk then reads nothing for that part, and the body
+stays empty. The fix needs a call of `users.messages.attachments.get` for that part. A later slice
+owns it, and it needs its own audit.
 
 #### 12.3.3 EM-G3a — send and drafts
 
@@ -7146,6 +7189,13 @@ user (Q-GM-3) and gives the go. An agent writes the env under gate `env-write` a
 10. Save a draft in Metorite. Gmail shows one draft. Send a draft made in Gmail web from Metorite.
 11. Turn sync off for one hour, send mail, and turn it on. No mail is lost.
 12. Disconnect Gmail. The copy in Metorite goes, and the mail stays in Gmail.
+13. Read one mail with an RFC 2047 sender name through `format=full` (EM-G2 review round 1). Record
+    whether Gmail sends the encoded word raw or decoded. A decoded name with a comma and no quotes,
+    such as `Müller, Jürgen`, still splits in a `To` list.
+14. Open the Archive folder and "Load older". Record that Gmail search takes `GMAIL_ARCHIVE_QUERY`
+    (`-in:inbox -in:sent -in:drafts`) and gives the archived mail.
+15. Read one mail with an ISO-8859-1 body. Record that `body.data` keeps the charset of its part,
+    so the body shows with no U+FFFD.
 
 **Evidence.** The log lines of each step, the row counts and the screenshots. Report each
 production act in the same message (CLAUDE.md §3a rule 2).

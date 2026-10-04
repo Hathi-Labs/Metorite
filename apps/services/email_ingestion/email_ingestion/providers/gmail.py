@@ -172,11 +172,17 @@ def _decode_gmail_part(part: dict, data: str) -> str:
     Gmail sends the bytes as base64url. The charset of the part decodes them,
     and UTF-8 decodes them when the part names no charset or an unknown one.
     The padding is added, because base64url can come without it.
+
+    ⚠️ A sender picks the charset. ``idna``, ``punycode`` and ``undefined``
+    are real codecs, and each raises ``UnicodeError`` even with
+    ``errors="replace"``. A raise here fails the parse, and
+    ``list_messages`` then skips the mail at each sync. So a codec that
+    raises falls back to UTF-8 too (EM-G2 review round 1, P3a).
     """
     raw = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
     try:
         return raw.decode(_gmail_part_charset(part), errors="replace")
-    except LookupError:
+    except (LookupError, UnicodeError):
         return raw.decode("utf-8", errors="replace")
 
 
@@ -226,6 +232,22 @@ def _decode_display_name(name: str) -> str:
         return str(make_header(decode_header(name)))
     except (LookupError, ValueError, HeaderParseError):
         return name
+
+
+def _split_addresses(header: str) -> list[tuple[str, str]]:
+    """The ``(name, address)`` pairs of one raw address header.
+
+    ``getaddresses`` runs with ``strict=False``. Since the fix of
+    CVE-2023-27043 the strict parser refuses a whole header for one defect,
+    so ``a@x.org, b@x.org,`` gave no address at all. The lenient parser keeps
+    each real address. It also splits on ``;`` and keeps a quoted ``;``
+    inside its name. A Python with no ``strict`` keyword parses leniently
+    already (EM-G2 review round 1, P3b).
+    """
+    try:
+        return getaddresses([header], strict=False)
+    except TypeError:  # a Python from before the CVE-2023-27043 fix
+        return getaddresses([header])
 
 
 def _parse_list_unsubscribe(header: str) -> str | None:
@@ -1276,17 +1298,21 @@ class GmailProvider(BaseEmailProvider):
     def _parse_address_list(header: str) -> list[EmailAddress]:
         """Each address of one address header (WS-17 EM-G2 item 6, GM-4).
 
-        ``getaddresses`` splits the RAW header, so a quoted comma, as in
+        ``_split_addresses`` splits the RAW header, so a quoted comma, as in
         ``"Doe, John" <j@x.com>``, stays inside its name. The encoded words of
         each name decode AFTER the split, because a decoded name can hold a
-        comma with no quotes. An entry with no address is left out.
+        comma with no quotes.
+
+        An entry with no ``@`` is left out. A comma outside quotes, as in
+        ``Doe, John <j@x.com>``, splits off the fragment ``Doe``, and a
+        fragment must never become a recipient (review round 1, P2).
         """
         if not header:
             return []
         addresses: list[EmailAddress] = []
-        for name, email in getaddresses([header]):
+        for name, email in _split_addresses(header):
             email = email.strip()
-            if email:
+            if "@" in email:
                 addresses.append(EmailAddress(
                     name=_decode_display_name(name.strip()), email=email))
         return addresses
@@ -1295,10 +1321,20 @@ class GmailProvider(BaseEmailProvider):
     def _parse_from(cls, header: str) -> EmailAddress:
         """The sender: the first address of ``From``.
 
-        A ``From`` that ``getaddresses`` cannot read keeps the old reading,
-        the text between the angle brackets, so the sender never goes blank.
+        A comma outside quotes, as in ``Doe, John <j@x.com>``, makes the
+        first entry the fragment ``Doe``, with no ``@`` (review round 1, P2).
+        Then the old reading holds: the address is the text inside the angle
+        brackets, and the name is the text before them. A header with no
+        angle brackets keeps its text as the address, so the sender never
+        goes blank.
         """
-        found = cls._parse_address_list(header)
-        if found:
-            return found[0]
-        return EmailAddress(name="", email=cls._extract_email(header))
+        pairs = _split_addresses(header) if header else []
+        name, email = pairs[0] if pairs else ("", "")
+        if "@" in email:
+            return EmailAddress(
+                name=_decode_display_name(name.strip()), email=email.strip())
+        if "<" in header and ">" in header:
+            before = header.split("<", 1)[0].strip().strip('"').strip()
+            return EmailAddress(name=_decode_display_name(before),
+                                email=cls._extract_email(header))
+        return EmailAddress(name="", email=header.strip())

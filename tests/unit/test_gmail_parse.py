@@ -24,15 +24,20 @@ no real address and no real content.
 - (g) ``g_iso_8859_1_body.json``: an ISO-8859-1 body.
 - (h) ``h_rfc2047_display_name.json``: RFC 2047 display names. One decoded
   name holds a comma with no quotes.
+- (i) ``i_forwarded_rfc822.json``: a forward as an inline ``message/rfc822``
+  part with no file name (review round 1).
 
 R7 fences named here:
 
 * ``gmail-parse-body``: the walk reads the tree at any depth, a single-part
-  HTML mail fills ``body_html``, and the charset of the part decodes it.
+  HTML mail fills ``body_html``, and the charset of the part decodes it. An
+  attached mail and a text part with the disposition ``attachment`` never
+  become the body. A codec that raises falls back to UTF-8.
 * ``gmail-parse-message-id``: each case of the header name fills
   ``internet_message_id``, in the form of Graph.
 * ``gmail-parse-addresses``: a quoted comma and a decoded comma stay inside
-  one name.
+  one name. A comma outside quotes keeps the real sender and each real
+  recipient. A loose list keeps each real address.
 * ``gmail-folder-model``: the system labels decide the folder, else
   ``archive``. A user label never sets it. ``list_messages`` keeps the folder
   of the parse, and the Archive folder pages with a query.
@@ -46,6 +51,7 @@ Run::
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 from pathlib import Path
@@ -198,7 +204,7 @@ async def test_the_charset_of_the_part_decodes_the_body() -> None:
     assert "Le café est prêt. À bientôt." in msg.body_text
     assert msg.body_html is not None
     assert "Le café est prêt. À bientôt." in msg.body_html
-    assert "�" not in msg.body_text + msg.body_html
+    assert "\ufffd" not in msg.body_text + msg.body_html
     # A part that names no charset, or an unknown one, decodes as UTF-8.
     assert _gmail_part_charset({"headers": []}) == "utf-8"
     assert _gmail_part_charset({"headers": [
@@ -209,6 +215,69 @@ async def test_the_charset_of_the_part_decodes_the_body() -> None:
     text_part["body"]["data"] = "Q2Fmw6k"  # base64url of "Café" in UTF-8, no padding
     unknown = await _parse_raw(raw)
     assert unknown.body_text == "Café"
+
+
+@pytest.mark.parametrize("charset", ["idna", "punycode", "undefined"])
+async def test_a_codec_that_raises_decodes_as_utf8(charset: str) -> None:
+    """Review round 1, P3a. A sender picks the charset. These three are real
+    codecs, and each raises ``UnicodeError`` even with ``errors="replace"``.
+    The raise failed the parse, and ``list_messages`` then skipped the mail
+    at each sync. So a sender could hide a mail from Metorite."""
+    raw = _fixture("g_iso_8859_1_body.json")
+    for part in raw["payload"]["parts"]:
+        part["headers"][0]["value"] = f"{part['mimeType']}; charset={charset}"
+    msg = await _parse_raw(raw)
+    assert msg.body_text.startswith("Bonjour,")
+    assert msg.body_html is not None
+    assert msg.body_html.startswith("<p>Bonjour,</p>")
+    fake = _FakeGmail({raw["id"]: raw})
+    listed, _ = await _provider(fake).list_messages(folder="INBOX")
+    assert [m.provider_message_id for m in listed] == [raw["id"]]
+
+
+async def test_an_attached_mail_never_becomes_the_body() -> None:
+    """Review round 1, P3c. Fixture (i) forwards a mail as an inline
+    ``message/rfc822`` part with no file name. The outer mail has a text part
+    only. The walk must not read into the attached mail, or the HTML of the
+    attached mail becomes the HTML body of the outer mail."""
+    msg = await _parse("i_forwarded_rfc822.json")
+    assert msg.body_text == "See the mail below.\r\n\r\nRavi\r\n"
+    assert msg.body_html is None
+    assert msg.attachments == []
+
+
+async def test_a_text_part_with_attachment_disposition_is_not_the_body() -> None:
+    """Review round 1, P3c. A ``text/plain`` part with the disposition
+    ``attachment`` and no file name is a file, such as a log. It must not
+    become the text body of an HTML mail."""
+    raw = _fixture("b_single_part_html.json")
+    single = raw["payload"]
+    log_text = b"build.log line 1\n"
+    raw["payload"] = {
+        "partId": "", "mimeType": "multipart/mixed", "filename": "",
+        "headers": [h for h in single["headers"]
+                    if h["name"] != "Content-Type"] + [
+            {"name": "Content-Type",
+             "value": 'multipart/mixed; boundary="b_log"'}],
+        "body": {"size": 0},
+        "parts": [
+            {"partId": "0", "mimeType": "text/html", "filename": "",
+             "headers": [{"name": "Content-Type",
+                          "value": "text/html; charset=UTF-8"}],
+             "body": single["body"]},
+            {"partId": "1", "mimeType": "text/plain", "filename": "",
+             "headers": [{"name": "Content-Type",
+                          "value": "text/plain; charset=UTF-8"},
+                         {"name": "Content-Disposition",
+                          "value": "attachment"}],
+             "body": {"size": len(log_text),
+                      "data": base64.urlsafe_b64encode(log_text).decode()}},
+        ],
+    }
+    msg = await _parse_raw(raw)
+    assert msg.body_text == ""
+    assert msg.body_html is not None
+    assert msg.body_html.startswith("<html><body><p>Your invoice")
 
 
 # ── gmail-parse-message-id (items 4 and 5, GM-1, E7) ────────────────────────
@@ -283,6 +352,59 @@ def test_an_address_header_with_no_address_gives_no_entry() -> None:
     entry with an empty address would reach the recipient lists."""
     assert GmailProvider._parse_address_list("undisclosed-recipients:;") == []
     assert GmailProvider._parse_address_list("") == []
+
+
+@pytest.mark.parametrize(("header", "name", "email"), [
+    ("Doe, John <john.doe@example.org>", "Doe, John", "john.doe@example.org"),
+    ("Müller, Jürgen <juergen@example.net>", "Müller, Jürgen",
+     "juergen@example.net"),
+], ids=["ascii", "non-ascii"])
+async def test_a_bare_comma_in_from_keeps_the_real_sender(
+    header: str, name: str, email: str,
+) -> None:
+    """Review round 1, P2. Main read ``Doe, John <john.doe@example.org>`` as
+    the name ``Doe, John`` at that address. The first build read the fragment
+    ``Doe`` as the sender. A first entry with no ``@`` now falls back to the
+    old reading. Gmail sends the non-ASCII form if it decodes an encoded word
+    (an EM-G10 check)."""
+    raw = _fixture("e_quoted_comma_name.json")
+    _set_header(raw, "From", "From", header)
+    msg = await _parse_raw(raw)
+    assert msg.from_address == EmailAddress(name=name, email=email)
+
+
+@pytest.mark.parametrize(("header", "emails"), [
+    ("Doe, John <john.doe@example.org>, ops@example.com",
+     ["john.doe@example.org", "ops@example.com"]),
+    ("Müller, Jürgen <juergen@example.net>, Rao, Asha <asha@example.com>",
+     ["juergen@example.net", "asha@example.com"]),
+], ids=["ascii", "non-ascii"])
+async def test_a_bare_comma_in_to_keeps_each_real_address(
+    header: str, emails: list[str],
+) -> None:
+    """Review round 1, P2. A comma outside quotes splits off a fragment with
+    no ``@``. The fragment never becomes a recipient, and each real address
+    stays."""
+    raw = _fixture("e_quoted_comma_name.json")
+    _set_header(raw, "To", "To", header)
+    msg = await _parse_raw(raw)
+    assert [a.email for a in msg.to_addresses] == emails
+
+
+@pytest.mark.parametrize("header", [
+    "a@example.org, b@example.org,",
+    "a@example.org; b@example.org",
+    "a@example.org,, b@example.org",
+], ids=["trailing-comma", "semicolon", "empty-element"])
+async def test_a_loose_address_list_keeps_each_real_address(header: str) -> None:
+    """Review round 1, P3b. The strict ``getaddresses`` of this Python
+    refuses a whole header for one defect, so a trailing comma gave no
+    recipient at all. Main kept both addresses, and so does the parse now."""
+    raw = _fixture("e_quoted_comma_name.json")
+    _set_header(raw, "Cc", "Cc", header)
+    msg = await _parse_raw(raw)
+    assert [a.email for a in msg.cc_addresses] == [
+        "a@example.org", "b@example.org"]
 
 
 # ── gmail-folder-model (items 7 to 10, GM-5 to GM-7, D-EM-33) ────────────────
@@ -378,12 +500,12 @@ async def test_a_user_label_named_archive_does_not_replace_the_query() -> None:
 
 
 def test_each_fixture_is_a_gmail_message_with_no_real_address() -> None:
-    """Item 11. The eight fixtures exist, each has the shape of
+    """Item 11. The nine fixtures exist, each has the shape of
     ``users.messages.get`` with ``format=full``, and each address is at a
     reserved example domain (RFC 2606)."""
     names = sorted(p.name for p in _FIXTURES.glob("*.json"))
     assert [n[:2] for n in names] == [
-        "a_", "b_", "c_", "d_", "e_", "f_", "g_", "h_"], names
+        "a_", "b_", "c_", "d_", "e_", "f_", "g_", "h_", "i_"], names
     for name in names:
         raw = _fixture(name)
         assert {"id", "threadId", "labelIds", "snippet", "payload",

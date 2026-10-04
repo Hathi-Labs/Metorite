@@ -142,14 +142,21 @@ All providers implement the `BaseEmailProvider` abstract interface:
    - The body walk reads the tree at any depth. It takes the first
      `text/plain` part and the first `text/html` part, and it skips each file.
      A single-part HTML mail fills `body_html` only, as Outlook does.
-   - Each part decodes with the charset of its `Content-Type`, else UTF-8.
+   - Each part decodes with the charset of its `Content-Type`, else UTF-8. A
+     sender picks the charset, so a codec that raises falls back to UTF-8 too.
+     A raise fails the parse, and `list_messages` then skips the mail.
+   - A part with a file name, a part with the disposition `attachment` and a
+     `message/*` part are files. The body walk skips them.
    - `_parse_headers` keys each header by its lower-case name. Read a header
      by that name.
    - `internet_message_id` is the `Message-ID` value, trimmed. It keeps its
      angle brackets and its case, the form of Graph, because
      `automation/identity.py` compares the column with `=`.
-   - `getaddresses` splits each address header on its raw text. The encoded
-     words of each name decode after the split.
+   - `_split_addresses` runs `getaddresses` with `strict=False` on the raw
+     text of each address header. The strict parser drops a whole list for
+     one stray comma. The encoded words of each name decode after the split.
+   - A list leaves out each entry with no `@`. When the first entry of
+     `From` has no `@`, the address is the text inside the angle brackets.
    - The system labels set the folder: `TRASH`, `SPAM`, `DRAFT`, `SENT`,
      `INBOX`, else `archive`. A user label never sets it (O-GM-1). The user
      labels go to `categories`.

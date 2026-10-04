@@ -1,0 +1,161 @@
+{
+  "id": "1927f3e2d1c0b9a8",
+  "threadId": "1927f3e2d1c0b9a8",
+  "labelIds": [
+    "CATEGORY_PERSONAL",
+    "INBOX"
+  ],
+  "snippet": "See the mail below. Ravi",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Delivered-To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Received",
+        "value": "by 2002:a05:7300:5b1a:b0:12a:3c4d:5e6f with SMTP id x9csp1234567; Tue, 08 Oct 2024 15:30:00 +0530"
+      },
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "From",
+        "value": "Ravi Kumar <ravi@example.org>"
+      },
+      {
+        "name": "Date",
+        "value": "Tue, 08 Oct 2024 15:30:00 +0530"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<CAKx7Qm1+fwd.po4471@mail.example.org>"
+      },
+      {
+        "name": "Subject",
+        "value": "Fwd: Purchase order 4471"
+      },
+      {
+        "name": "To",
+        "value": "Asha Rao <asha@example.com>"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/mixed; boundary=\"000000000000b7c8d9e0f1a2b3c4\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        "partId": "0",
+        "mimeType": "text/plain",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain; charset=\"UTF-8\""
+          }
+        ],
+        "body": {
+          "size": 29,
+          "data": "U2VlIHRoZSBtYWlsIGJlbG93Lg0KDQpSYXZpDQo="
+        }
+      },
+      {
+        "partId": "1",
+        "mimeType": "message/rfc822",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "message/rfc822"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline"
+          }
+        ],
+        "body": {
+          "size": 1290
+        },
+        "parts": [
+          {
+            "partId": "1.0",
+            "mimeType": "multipart/alternative",
+            "filename": "",
+            "headers": [
+              {
+                "name": "From",
+                "value": "Procurement <po@example.net>"
+              },
+              {
+                "name": "To",
+                "value": "ravi@example.org"
+              },
+              {
+                "name": "Subject",
+                "value": "Purchase order 4471"
+              },
+              {
+                "name": "Date",
+                "value": "Mon, 07 Oct 2024 18:02:11 +0000"
+              },
+              {
+                "name": "Message-ID",
+                "value": "<po4471.approved@example.net>"
+              },
+              {
+                "name": "Content-Type",
+                "value": "multipart/alternative; boundary=\"inner_po4471\""
+              }
+            ],
+            "body": {
+              "size": 0
+            },
+            "parts": [
+              {
+                "partId": "1.0.0",
+                "mimeType": "text/plain",
+                "filename": "",
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain; charset=\"UTF-8\""
+                  }
+                ],
+                "body": {
+                  "size": 29,
+                  "data": "SW5uZXI6IFBPIDQ0NzEgaXMgYXBwcm92ZWQuDQo="
+                }
+              },
+              {
+                "partId": "1.0.1",
+                "mimeType": "text/html",
+                "filename": "",
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "text/html; charset=\"UTF-8\""
+                  }
+                ],
+                "body": {
+                  "size": 34,
+                  "data": "PHA-SW5uZXI6IFBPIDQ0NzEgaXMgYXBwcm92ZWQuPC9wPg=="
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "sizeEstimate": 4096,
+  "historyId": "2817760",
+  "internalDate": "1728381600000"
+}
