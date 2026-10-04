@@ -938,6 +938,7 @@ def test_a_covered_run_reads_its_own_attachment_and_no_other(sandbox, monkeypatc
 import threading  # noqa: E402
 import time  # noqa: E402
 import zlib  # noqa: E402
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 
 
 def _raw_pdf(objs: list[bytes]) -> bytes:
@@ -1010,41 +1011,91 @@ def test_a_slow_pdf_is_refused_and_frees_its_slot(ws, monkeypatch) -> None:
     assert _free_slots() == tools.MAX_PARSES
 
 
-def test_the_slot_frees_at_the_deadline_when_a_parse_runs_on(ws, monkeypatch) -> None:
-    """A parse that ignores its deadline keeps its worker thread, but not its
-    slot: the await frees the slot when the deadline and the margin pass."""
-    go_on, done = threading.Event(), threading.Event()
+class _NoDefaultPool(ThreadPoolExecutor):
+    """An executor that refuses every job: the loop's default pool must stay unused."""
 
-    def _stuck(_data: bytes, _suffix: str) -> Any:
+    def __init__(self) -> None:
+        super().__init__(max_workers=1)
+        self.jobs: list[Any] = []
+
+    def submit(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        self.jobs.append(fn)
+        raise RuntimeError("H-229 trap: the default executor ran a job")
+
+
+
+def _live_parse_threads() -> int:
+    return sum(1 for t in threading.enumerate() if t.name.startswith("attachment-parse"))
+
+
+def test_a_runaway_parse_keeps_its_slot_and_the_parse_threads_stay_capped(ws, monkeypatch) -> None:
+    """PR #609 fix round 2. A parse that ignores its deadline keeps its thread,
+    so it keeps its slot too. Two runaways fill both slots, a third call is
+    refused at once, the default pool is never used, and no more than
+    MAX_PARSES parse threads ever live."""
+    go_on = threading.Event()
+    started: list[str] = []
+
+    def _stuck(_data: bytes, suffix: str) -> Any:
+        started.append(suffix)
         go_on.wait(10)
-        done.set()
         raise at.AttachmentRefused("late")
 
-    async def _go() -> str:
+    async def _call(name: str) -> str:
         bind_artifact_context(session_id=SID_A, agent_name=AGENT, run_id="r-h229",
                               workspace_root=str(ws), instance=KEY)
-        return await tools.read_attachment("a.txt")
+        return await tools.read_attachment(name)
 
     monkeypatch.setattr(at, "DEADLINE_SECONDS", 0.2)
     monkeypatch.setattr(tools, "_WAIT_MARGIN", 0.3)
     monkeypatch.setattr(tools, "extract_text", _stuck)
-    _attach(ws, SID_A, "a.txt", b"hello")
-    # A loop that stays open, as the gateway's does. asyncio.run would wait
-    # for the stuck worker when it shuts the default executor down.
+    for name in ("a.txt", "b.txt", "c.txt"):
+        _attach(ws, SID_A, name, b"hello")
+    trap = _NoDefaultPool()
     loop = asyncio.new_event_loop()
+    loop.set_default_executor(trap)
     try:
-        started = time.monotonic()
-        assert "took too long" in loop.run_until_complete(_go())
-        assert time.monotonic() - started < 2.0
-        assert not done.is_set()
-        assert _free_slots() == tools.MAX_PARSES
+        for name in ("a.txt", "b.txt"):
+            begun = time.monotonic()
+            assert "took too long" in loop.run_until_complete(_call(name))
+            assert time.monotonic() - begun < 2.0
+        assert _free_slots() == 0
+        begun = time.monotonic()
+        third = loop.run_until_complete(_call("c.txt"))
+        assert third == "I could not read c.txt. Another file is being read now. Try again in a moment."
+        assert time.monotonic() - begun < 0.5
+        assert started == [".txt", ".txt"]
+        assert _live_parse_threads() <= tools.MAX_PARSES
+        assert trap.jobs == []
     finally:
         go_on.set()
-        assert done.wait(5)
         loop.close()
-    time.sleep(0.1)
-    # The worker's own release, after the await's, gives back nothing twice.
+    deadline = time.monotonic() + 5
+    while _free_slots() < tools.MAX_PARSES and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert _free_slots() == tools.MAX_PARSES
+
+
+def test_the_tool_never_uses_the_default_executor(ws) -> None:
+    """The reads and the parse each run on a pool of the tool's own."""
+    _attach(ws, SID_A, "brief.docx", _docx(["own pools only"]))
+    _attach(ws, SID_A, "brief.pdf", _pdf(["own pools too"]))
+
+    async def _call(name: str) -> str:
+        bind_artifact_context(session_id=SID_A, agent_name=AGENT, run_id="r-h229",
+                              workspace_root=str(ws), instance=KEY)
+        return await tools.read_attachment(name)
+
+    trap = _NoDefaultPool()
+    loop = asyncio.new_event_loop()
+    loop.set_default_executor(trap)
+    try:
+        assert "own pools only" in loop.run_until_complete(_call("brief.docx"))
+        assert "own pools too" in loop.run_until_complete(_call("brief.pdf"))
+        assert "No file named gone.docx" in loop.run_until_complete(_call("gone.docx"))
+    finally:
+        loop.close()
+    assert trap.jobs == []
 
 
 def _bomb_docx(encoding: str, decl: str) -> bytes:
@@ -1271,3 +1322,137 @@ def test_the_parser_refuses_an_entity_even_past_the_utf8_check(monkeypatch) -> N
     data = _zip({"word/document.xml": _UTF16_ENTITY.encode("utf-16")})
     with pytest.raises(at.AttachmentRefused):
         at.extract_text(data, ".docx")
+
+
+# ── 13. Fix round 2 of PR #609: the font phase, and a stop in the last page ──
+
+
+def _cmap(entries: int) -> bytes:
+    """A ToUnicode CMap of *entries* bfchar lines: 20,000 give about 285 KB."""
+    lines = [b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap",
+             b"/CMapName /X def 1 begincodespacerange <0000> <FFFF> endcodespacerange"]
+    for first in range(0, entries, 100):
+        count = min(100, entries - first)
+        lines.append(f"{count} beginbfchar".encode())
+        lines += [f"<{k:04X}> <{(k + 0x4E00) & 0xFFFF:04X}>".encode()
+                  for k in range(first, first + count)]
+        lines.append(b"endbfchar")
+    lines.append(b"endcmap CMapName currentdict /CMap defineresource pop end end")
+    return b"\n".join(lines)
+
+
+def _fonts_pdf(entries: int, cmap_entries: int = 0, *, in_form: bool = False) -> bytes:
+    """One page whose font dictionary has *entries* names for ONE font. With
+    *cmap_entries*, that font has a ToUnicode CMap, which pypdf parses again
+    for each name. With *in_form*, the names sit in a form that the page enters."""
+    font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica"
+    if cmap_entries:
+        font += b" /ToUnicode 3 0 R"
+    font += b" >>"
+    names = " ".join(f"/F{i} 4 0 R" for i in range(entries)).encode()
+    text = b"BT /F0 12 Tf 10 10 Td (Hello world text) Tj ET"
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [6 0 R] /Count 1 >>",
+        _flate(_cmap(cmap_entries or 1)),
+        font,
+    ]
+    if in_form:
+        objs += [
+            _flate(b"/X0 Do"),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources "
+            b"<< /XObject << /X0 7 0 R >> >> /Contents 5 0 R >>",
+            _flate(text, b"/Type /XObject /Subtype /Form /BBox [0 0 612 792] "
+                         b"/Resources << /Font << " + names + b" >> >> "),
+        ]
+    else:
+        objs += [
+            _flate(text),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources "
+            b"<< /Font << " + names + b" >> >> /Contents 5 0 R >>",
+        ]
+    return _raw_pdf(objs)
+
+
+def test_a_page_with_many_font_entries_is_refused_at_once() -> None:
+    """The entry cap: 100 names for one plain font, no CMap at all."""
+    started = time.monotonic()
+    with pytest.raises(at.AttachmentRefused, match="too many fonts"):
+        at.extract_text(_fonts_pdf(100), ".pdf")
+    assert time.monotonic() - started < 1.0
+    # A page under the cap reads.
+    assert "Hello world text" in at.extract_text(_fonts_pdf(10), ".pdf").text
+
+
+def test_many_entries_that_share_a_large_cmap_are_refused_within_the_deadline() -> None:
+    """The reviewer's file: 40 names, under the entry cap, that share one
+    285 KB CMap. pypdf parses it 40 times before the first operator, about
+    3.8 s past a 1-second deadline. The font byte budget refuses it first."""
+    data = _fonts_pdf(40, cmap_entries=20_000)
+    started = time.monotonic()
+    with pytest.raises(at.AttachmentRefused, match="too many fonts"):
+        at.extract_text(data, ".pdf", seconds=1.0)
+    assert time.monotonic() - started < 1.0 + 0.5
+
+
+def test_the_fonts_of_a_form_the_page_enters_count_too() -> None:
+    data = _fonts_pdf(40, cmap_entries=20_000, in_form=True)
+    started = time.monotonic()
+    with pytest.raises(at.AttachmentRefused, match="too many fonts"):
+        at.extract_text(data, ".pdf", seconds=1.0)
+    assert time.monotonic() - started < 1.0 + 0.5
+
+
+def test_a_stop_inside_a_form_on_the_last_page_is_not_a_whole_read() -> None:
+    """The reviewer's case: one page, one text form, a 0.05 s deadline. The
+    deadline fires inside the form, pypdf drops the error, and the page ends
+    with no operator left. That once came back as 8 characters, "[Page 1]",
+    with stopped=False."""
+    data = _slow_pdf(invocations=1)
+    with pytest.raises(at.AttachmentRefused, match="too long"):
+        at.extract_text(data, ".pdf", seconds=0.05)
+
+
+class _FiresInsideForms(at._Deadline):
+    """A deadline that passes only once pypdf is inside a form XObject.
+
+    So the stop lands where pypdf drops the error, with no page operator
+    after it: the exact path of the review, with no timing in the test.
+    """
+
+    def check(self) -> None:
+        import sys
+
+        frame = sys._getframe(1)
+        while frame is not None:
+            if frame.f_code.co_name == "_extract_text__xform":
+                self.fired = True
+                raise at.AttachmentRefused(at._TOO_SLOW)
+            frame = frame.f_back
+
+
+def test_a_stop_that_pypdf_drops_inside_the_last_form_is_refused(monkeypatch) -> None:
+    monkeypatch.setattr(at, "_Deadline", _FiresInsideForms)
+    data = _slow_pdf(form_bytes=600, invocations=1)
+    with pytest.raises(at.AttachmentRefused, match="too long"):
+        at.extract_text(data, ".pdf")
+
+
+def test_a_stop_inside_a_form_after_real_text_is_marked_stopped(monkeypatch) -> None:
+    """With enough text before the stop, the read comes back, and says so."""
+    monkeypatch.setattr(at, "_Deadline", _FiresInsideForms)
+    line = b"BT /F1 12 Tf 10 10 Td (" + b"word " * 60 + b") Tj ET\n"
+    font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    data = _raw_pdf([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [6 0 R] /Count 1 >>",
+        font,
+        _flate(line, b"/Type /XObject /Subtype /Form /BBox [0 0 612 792] "
+                     b"/Resources << /Font << /F1 3 0 R >> >> "),
+        _flate(line * 2 + b"/X0 Do\n"),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources "
+        b"<< /Font << /F1 3 0 R >> /XObject << /X0 4 0 R >> >> /Contents 5 0 R >>",
+    ])
+    got = at.extract_text(data, ".pdf")
+    assert got.stopped is True and (got.read, got.total) == (1, 1)
+    assert "word word" in got.text

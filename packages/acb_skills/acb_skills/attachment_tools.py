@@ -36,9 +36,12 @@ lock is released, on the bytes in memory. The tool is not in
 
 **The parse.** :mod:`acb_skills.attachment_text`, pure parsing with caps and a
 deadline, in a worker thread. At most :data:`MAX_PARSES` parses run at once,
-because the gateway's default thread pool serves every tenant. A parse frees
-its slot when it ends, or when the deadline and :data:`_WAIT_MARGIN` pass,
-whichever comes first (PR #609 fix round 1).
+because the gateway's default thread pool serves every tenant. The parses
+run on their own pool of :data:`MAX_PARSES` threads, and the reads on
+another small pool, never on the default one. A parse holds its slot until
+its worker really ends, so at most :data:`MAX_PARSES` parse threads live,
+and a third call gets "Another file is being read now" at once (PR #609
+fix round 2).
 
 Fence: ``tests/unit/test_read_attachment.py``.
 """
@@ -50,6 +53,7 @@ import hashlib
 import os
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -76,6 +80,14 @@ MAX_OUTPUT_CHARS = 40_000
 #: Parses that may run at one time, in the whole process.
 MAX_PARSES = 2
 _SLOTS = threading.BoundedSemaphore(MAX_PARSES)
+#: The parses run here, never on the default executor. That pool serves every
+#: ``asyncio.to_thread`` of the gateway, for every org, and a parse that runs
+#: past its deadline keeps its thread (PR #609 fix round 2). With a pool of
+#: MAX_PARSES threads and a slot held until the worker ends, at most
+#: MAX_PARSES parse threads live, whatever pypdf does.
+_PARSE_POOL = ThreadPoolExecutor(max_workers=MAX_PARSES, thread_name_prefix="attachment-parse")
+#: The bounded file reads and listings run here, for the same reason.
+_IO_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="attachment-io")
 #: The parse stops itself at ``attachment_text.DEADLINE_SECONDS`` (measured:
 #: at most 0.8 s late). The await gives up this much later, and frees the slot.
 _WAIT_MARGIN = 2.0
@@ -187,11 +199,12 @@ async def _on_the_dir(fn: Callable[..., Any], root: str, *args: Any) -> Any:
     from the broker's binding, the same root as the file tools of the
     sandbox.
     """
+    loop = asyncio.get_running_loop()
     broker = _covered_broker()
     if broker is None:
-        return await asyncio.to_thread(fn, root, *args)
+        return await loop.run_in_executor(_IO_POOL, fn, root, *args)
     async with broker.host_dir() as binding:
-        return await asyncio.to_thread(fn, str(binding.workspace), *args)
+        return await loop.run_in_executor(_IO_POOL, fn, str(binding.workspace), *args)
 
 
 async def _uploaded_in_this_thread(
@@ -216,12 +229,12 @@ async def _uploaded_in_this_thread(
 
 
 class _Slot:
-    """One held parse slot, released once: by the worker or by the deadline.
+    """One held parse slot, released once, when its worker really ends.
 
-    The worker releases it when the parse ends. The await releases it when
-    the deadline and the margin pass, so a parse that runs late never keeps
-    a slot past the deadline, and two slow files cannot block every org
-    (PR #609 review, P1). The second release does nothing.
+    So a slot is a live parse thread. A parse past its deadline keeps its
+    slot, and a third call gets "Another file is being read now" at once and
+    never queues (PR #609 fix round 2). A job that the pool cancels before
+    it runs releases the slot too. The second release does nothing.
     """
 
     def __init__(self) -> None:
@@ -248,21 +261,25 @@ async def _parse(data: bytes, suffix: str) -> Extracted | str:
     if not _SLOTS.acquire(blocking=False):
         return "Another file is being read now. Try again in a moment."
     slot = _Slot()
-    loop = asyncio.get_running_loop()
     try:
-        future = loop.run_in_executor(
-            None, contextvars.copy_context().run, _parse_and_release, data, suffix, slot,
+        job: Future[Extracted] = _PARSE_POOL.submit(
+            contextvars.copy_context().run, _parse_and_release, data, suffix, slot,
         )
     except BaseException:
         slot.release()
         raise
+    job.add_done_callback(lambda done: slot.release() if done.cancelled() else None)
+    future = asyncio.wrap_future(job)
+    # A result that the await gave up on is read here, so no "exception was
+    # never retrieved" line reaches the log.
+    future.add_done_callback(lambda done: None if done.cancelled() else done.exception())
     wait = attachment_text.DEADLINE_SECONDS + _WAIT_MARGIN
     try:
         return await asyncio.wait_for(asyncio.shield(future), wait)
     except AttachmentRefused as exc:
         return str(exc)
     except TimeoutError:
-        slot.release()
+        # The slot stays held until the worker ends.
         return "Reading this file took too long, so I stopped."
     except Exception as exc:  # a bug here is a refusal, never a crash
         _log.warning("attachment.parse_failed", kind=suffix, error=type(exc).__name__)

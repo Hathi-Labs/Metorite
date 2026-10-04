@@ -24,6 +24,11 @@ The rules, each with a test in ``tests/unit/test_read_attachment.py``:
   checks :data:`DEADLINE_SECONDS` before each operator, through pypdf's
   visitor, also inside a page. A Word part checks it between chunks and
   inside a chunk.
+* **The font setup of a PDF page has caps** (fix round 2). pypdf builds every
+  font entry before the first operator, where the visitor does not run. So
+  each resource dictionary that a page can reach holds at most
+  :data:`PDF_MAX_FONTS` entries and :data:`PDF_MAX_FONT_BYTES` of font program
+  bytes (:func:`_check_fonts`).
 * **A Word part is UTF-8 and has no DTD.** Another encoding is refused before
   the parse, and the parser refuses a DTD and an entity declaration at its
   first event, so no entity is ever expanded. The parse keeps no tree, each
@@ -81,6 +86,23 @@ PDF_STREAM_LIMIT = 1024 * 1024
 #: Form XObject entries in one page. pypdf parses a form again at each entry,
 #: and its own default is 5,000. A header, a footer or a logo needs few.
 PDF_MAX_FORM_INVOCATIONS = 100
+#: Font entries in one resource dictionary: a page, or a form that it enters.
+#: pypdf builds every entry before the first operator, where the deadline hook
+#: does not run (PR #609 fix round 2). Real pages hold 2 to 40 fonts (LaTeX
+#: math about 25, office documents about 10). 64 entries that share one font
+#: with 65,000 widths take 0.95 s (measured 2026-10-04).
+PDF_MAX_FONTS = 64
+#: The font program bytes that pypdf parses for one resource dictionary: the
+#: ToUnicode CMap of each entry, or the Type1 font file of an entry with none.
+#: pypdf parses them again at each entry, with no cache, at about 3 MB/s
+#: (measured: a 285 KB CMap in 0.094 s). So 2 MB bounds the font setup of one
+#: dictionary to under 1 s, and a shared CMap counts once for each entry.
+PDF_MAX_FONT_BYTES = 2 * 1024 * 1024
+#: The XObject entries that the font walk of one page looks at.
+_MAX_XOBJECT_WALK = 2_000
+#: A read that the deadline cut inside a form, with less text than this, is
+#: refused. With more, it comes back marked ``stopped``.
+_MIN_PARTIAL_CHARS = 200
 #: Read at each call, so a test can lower it.
 DEADLINE_SECONDS = 20.0
 
@@ -116,18 +138,27 @@ class Extracted:
     stopped: bool
 
 
+_TOO_SLOW = (
+    "Reading this file took too long, so I stopped. "
+    "Ask the member for a shorter file or a plain text copy."
+)
+
+
 class _Deadline:
-    """A wall-clock limit that the parse loops check."""
+    """A wall-clock limit that the parse loops check.
+
+    ``fired`` stays true once a check has refused. pypdf drops an error that
+    is raised inside a form, so the PDF loop reads the flag after each page.
+    """
 
     def __init__(self, seconds: float) -> None:
         self._end = time.monotonic() + seconds
+        self.fired = False
 
     def check(self) -> None:
         if time.monotonic() > self._end:
-            raise AttachmentRefused(
-                "Reading this file took too long, so I stopped. "
-                "Ask the member for a shorter file or a plain text copy."
-            )
+            self.fired = True
+            raise AttachmentRefused(_TOO_SLOW)
 
 
 def extract_text(data: bytes, suffix: str, *, seconds: float | None = None) -> Extracted:
@@ -517,26 +548,112 @@ def _open_pdf(data: bytes) -> Any:
     return reader
 
 
-def _page_text(pages: Any, index: int, deadline: _Deadline) -> str:
-    """One page's text. A page that does not parse says so, and the rest go on.
+_TOO_MANY_FONTS = (
+    "This PDF has a page with too many fonts, or with too much font data, so "
+    "I did not read it. Ask the member for a text copy."
+)
 
-    pypdf calls the visitor before each operator, also before the ``Do`` that
-    enters a form XObject. So the deadline stops a page in the middle (PR #609
-    review, P1). pypdf drops an error raised inside a form, so the stop takes
-    effect at the next operator of the page, after at most one stream parse,
-    which :data:`PDF_STREAM_LIMIT` bounds.
+
+def _resolve(obj: Any) -> Any:
+    """*obj* with an indirect reference followed, or ``None``."""
+    try:
+        return obj.get_object() if obj is not None else None
+    except Exception:  # a broken reference is no font
+        return None
+
+
+def _font_bytes(font: Any, sizes: dict[int, int]) -> int:
+    """The font program bytes that pypdf parses for one font entry.
+
+    That is the entry's ToUnicode CMap, or for a Type1 font with none, its
+    font file. *sizes* keeps each stream's size by object, so a stream that
+    many entries share decodes once here.
+    """
+    from pypdf.generic import DictionaryObject, StreamObject
+
+    if not isinstance(font, DictionaryObject):
+        return 0
+    target = _resolve(font.get("/ToUnicode"))
+    if target is None and font.get("/Subtype") == "/Type1":
+        descriptor = _resolve(font.get("/FontDescriptor"))
+        if isinstance(descriptor, DictionaryObject):
+            target = _resolve(descriptor.get("/FontFile"))
+    if not isinstance(target, StreamObject):
+        return 0
+    key = id(target)
+    if key not in sizes:
+        try:
+            sizes[key] = len(target.get_data())
+        except Exception:  # pypdf fails this font at once, so it costs nothing
+            sizes[key] = 0
+    return sizes[key]
+
+
+def _check_fonts(page: Any, deadline: _Deadline) -> None:
+    """Refuse a page whose font setup the deadline could not stop in time.
+
+    pypdf builds every font entry of a page, and of each form it enters,
+    before the first operator, and the deadline hook runs only between
+    operators (PR #609 fix round 2). So this walks the page's resources and
+    the resources of every form it can reach, and refuses a dictionary with
+    more than :data:`PDF_MAX_FONTS` entries or :data:`PDF_MAX_FONT_BYTES`
+    of font program bytes.
+    """
+    from pypdf.generic import DictionaryObject, StreamObject
+
+    sizes: dict[int, int] = {}
+    seen: set[int] = set()
+    stack = [_resolve(page.get_inherited("/Resources", None))]
+    walked = 0
+    while stack:
+        deadline.check()
+        resources = stack.pop()
+        if not isinstance(resources, DictionaryObject):
+            continue
+        fonts = _resolve(resources.get("/Font"))
+        if isinstance(fonts, DictionaryObject):
+            if len(fonts) > PDF_MAX_FONTS:
+                raise AttachmentRefused(_TOO_MANY_FONTS)
+            if sum(_font_bytes(_resolve(fonts[n]), sizes) for n in fonts) > PDF_MAX_FONT_BYTES:
+                raise AttachmentRefused(_TOO_MANY_FONTS)
+        xobjects = _resolve(resources.get("/XObject"))
+        if not isinstance(xobjects, DictionaryObject):
+            continue
+        for name in xobjects:
+            walked += 1
+            if walked > _MAX_XOBJECT_WALK:
+                raise AttachmentRefused(_TOO_MANY_FONTS)
+            form = _resolve(xobjects[name])
+            if (isinstance(form, StreamObject) and form.get("/Subtype") == "/Form"
+                    and id(form) not in seen):
+                seen.add(id(form))
+                stack.append(_resolve(form.get("/Resources")))
+
+
+def _page_text(pages: Any, index: int, deadline: _Deadline) -> tuple[str, int]:
+    """One page's text and its count of characters.
+
+    A page that does not parse says so, and the rest go on. pypdf calls the
+    visitor before each operator, also before the ``Do`` that enters a form
+    XObject. So the deadline stops a page in the middle (PR #609 review, P1).
+    pypdf drops an error raised inside a form, so the stop takes effect at
+    the next operator of the page, after at most one stream parse, which
+    :data:`PDF_STREAM_LIMIT` bounds. :func:`_check_fonts` bounds the font
+    setup that runs before the first operator.
     """
 
     def _visit(*_args: Any) -> None:
         deadline.check()
 
     try:
+        _check_fonts(pages[index], deadline)
         text = (pages[index].extract_text(visitor_operand_before=_visit) or "").strip()
     except AttachmentRefused:
         raise
     except Exception:  # one bad page is not a bad file
         text = "(The text of this page could not be read.)"
-    return f"[Page {index + 1}]\n{text}" if text else f"[Page {index + 1}]"
+    head = f"[Page {index + 1}]"
+    return (f"{head}\n{text}" if text else head), len(text)
 
 
 def _pdf_text(data: bytes, deadline: _Deadline) -> Extracted:
@@ -544,15 +661,22 @@ def _pdf_text(data: bytes, deadline: _Deadline) -> Extracted:
 
     parts: list[str] = []
     chars = 0
+    words = 0
     try:
         with pypdf.apply_configuration(**_PDF_CONFIG):
             pages = _open_pdf(data).pages
             total = len(pages)
             for index in range(min(total, MAX_PDF_PAGES)):
                 deadline.check()
-                parts.append(_page_text(pages, index, deadline))
-                chars += len(parts[-1]) + 1
-                if chars >= MAX_EXTRACT_CHARS:
+                part, count = _page_text(pages, index, deadline)
+                parts.append(part)
+                words += count
+                chars += len(part) + 1
+                # A stop inside a form leaves the page short, with no error
+                # (PR #609 fix round 2, P2). Little text is a refusal.
+                if deadline.fired and words < _MIN_PARTIAL_CHARS:
+                    raise AttachmentRefused(_TOO_SLOW)
+                if deadline.fired or chars >= MAX_EXTRACT_CHARS:
                     break
     except AttachmentRefused:
         raise
@@ -561,8 +685,8 @@ def _pdf_text(data: bytes, deadline: _Deadline) -> Extracted:
     read = len(parts)
     text = "\n".join(parts)
     # The char cap can cut the last page read, so "every page read" is not
-    # "every word read" (PR #609 review, P2).
+    # "every word read" (PR #609 review, P2). Nor is a page the deadline cut.
     return Extracted(
         text=text[:MAX_EXTRACT_CHARS], kind="pdf", unit="page", read=read, total=total,
-        stopped=read < total or len(text) > MAX_EXTRACT_CHARS,
+        stopped=read < total or deadline.fired or len(text) > MAX_EXTRACT_CHARS,
     )
