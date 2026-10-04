@@ -416,10 +416,13 @@ async def dispatch_checks():
         }
         await set_status(ROOT, "on_hold")
         await agent_dispatch.on_event("projects", "pm.task.assigned", payload)
+        # The sink starts each run in the background (2026-10-04).
+        await agent_dispatch.wait_for_runs()
         check("no agent is dispatched into a paused project", calls, [])
 
         await set_status(ROOT, "active")
         await agent_dispatch.on_event("projects", "pm.task.assigned", payload)
+        await agent_dispatch.wait_for_runs()
         check("...and the same assignment dispatches once it is active",
               calls, ["researcher"])
     finally:
@@ -492,6 +495,7 @@ async def ancestor_checks():
             "task_id": T_AGENT, "assignees": ["agent:researcher"],
             "organization_id": ORG,
         })
+        await agent_dispatch.wait_for_runs()
         check("...and dispatches no agent either", calls, [])
     finally:
         agent_dispatch._run_and_record = original

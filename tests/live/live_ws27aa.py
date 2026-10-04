@@ -278,6 +278,8 @@ async def dispatch_checks(orgs):
         await agent_dispatch.on_event("projects", "pm.task.assigned", {
             "task_id": A_AGENT_TASK, "assignees": ["agent:researcher"],
         })
+        # The sink starts each run in the background (2026-10-04).
+        await agent_dispatch.wait_for_runs()
         check("an event with no tenant dispatches nothing", dispatched, [])
         check("an event with no tenant writes nothing",
               await activities(A_AGENT_TASK), [])
@@ -287,6 +289,7 @@ async def dispatch_checks(orgs):
             "task_id": A_AGENT_TASK, "assignees": ["agent:researcher"],
             "organization_id": orgs["alpha"],
         })
+        await agent_dispatch.wait_for_runs()
         check("a bound dispatch runs the agent",
               dispatched, [("researcher", A_AGENT_TASK, orgs["alpha"])])
         rows = await activities(A_AGENT_TASK)
