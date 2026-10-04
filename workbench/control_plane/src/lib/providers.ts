@@ -6,9 +6,11 @@
  * fallback key check in the model picker — is derived automatically.
  *
  * Mirror list: apps/services/gateway/gateway/routes/settings.py (_PROVIDER_ENV_MAP)
- * Backend allowlist: apps/services/gateway/gateway/routes/integrations.py (_ALLOWED_ENV_KEYS)
- * Both are kept in sync via a comment; see the "Adding a provider" instructions
- * in project-docs/system_architecture.md.
+ * Backend writer: POST /settings/llm/key, gated by BYOK. Since 2026-10-05 the
+ * Integrations routes do not write a provider key: the env-write deny list
+ * (packages/acb_common/acb_common/env_guard.py) holds every one of them, and
+ * settings.py `_MODELS_PAGE_ENV_KEYS` is the one surface that owns them. See the
+ * "Adding a provider" instructions in project-docs/system_architecture.md.
  */
 
 export interface ProviderGuide {

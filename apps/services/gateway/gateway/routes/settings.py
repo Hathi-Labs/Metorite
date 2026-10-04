@@ -167,13 +167,6 @@ def _infra_dir() -> Path:
     raise FileNotFoundError("infra/ directory not found from %s" % here)
 
 
-#: The platform keys that the Models page owns (``acb_common.env_guard``,
-#: layer B). ``COPILOT_CHAT_MODEL`` is a model name: a per-deployment choice,
-#: not a secret and not a URL. Layer A still applies to its value.
-#: ``VLLM_BASE_URL`` is NOT here. It is a URL, and a vLLM client sends its key
-#: to the host it names, so ``POST /settings/llm/key`` refuses it (2026-10-05).
-_MODELS_PAGE_ENV_KEYS: frozenset[str] = frozenset({"COPILOT_CHAT_MODEL"})
-
 
 def _env_file_path() -> Path:
     """The repo-root .env (same file Settings and integrations use)."""
@@ -336,6 +329,21 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
     "ollama":      "",        # local — always "configured" if URL reachable
     "vllm":        "VLLM_BASE_URL",
 }
+
+#: The platform keys that the Models routes own (``acb_common.env_guard``,
+#: layer B, ``owned``). They are the one legitimate writer of these names, and
+#: layer A still applies to every value.
+#:
+#: * ``COPILOT_CHAT_MODEL``, a model name.
+#: * The LLM and speech provider keys of ``_PROVIDER_ENV_MAP``. The deny list
+#:   holds them, so no Integrations route writes them (round 1, 2026-10-05).
+#:   ``POST /settings/llm/key`` writes them only while BYOK is on.
+#:
+#: ``VLLM_BASE_URL`` is NOT here. It is a URL, and a vLLM client sends its key
+#: to the host it names, so ``POST /settings/llm/key`` refuses it.
+_MODELS_PAGE_ENV_KEYS: frozenset[str] = frozenset({"COPILOT_CHAT_MODEL"}) | frozenset(
+    v for v in _PROVIDER_ENV_MAP.values() if v and v != "VLLM_BASE_URL"
+)
 
 _PROVIDER_LABELS: dict[str, str] = {
     "gemini":      "Google Gemini",

@@ -72,14 +72,22 @@ router = APIRouter(
 # `/integrations/status`'s `configured` / `env-file` columns stay deployment-wide
 # too — only the `db_keys` / `encrypted-db` half is per organization.
 #
-# 🔒 **Three layers narrow that write (security fix, 2026-10-05).** They only
-# remove ability, and the rule lives in ONE module, `acb_common.env_guard`.
-#   A. A key or a value with a control character or a line separator is 400,
-#      and so is a value that the shell reads as code under `source`.
-#   B. A platform name (`env_guard.is_platform_env`) is 403, for every route
-#      here: configure, put, delete, custom registration, the GitHub writers.
-#   C. `POST /integrations/configure` takes only a key that a setup guide, the
-#      LLM key list or a registered custom integration declares, else 422.
+# 🔒 **Three layers narrow that write (security fix, 2026-10-05, round 1).**
+# They only remove ability. The rule for A and B lives in ONE module,
+# `acb_common.env_guard`.
+#   A. A key or a value with a control character or a line separator is 400.
+#      So is a value over 4096 bytes, and a value that the shell reads as
+#      code under `source`.
+#   B. A platform name (`env_guard.is_platform_env`) or an operator-only guide
+#      key (`OPERATOR_ONLY_ENV_KEYS`: a URL, host, domain, port or path) is
+#      403, on configure, put, delete, custom registration and the GitHub
+#      writers.
+#   C. THE GATE. Only a key in `BUILTIN_ENV_KEYS`, which a built-in guide
+#      declares, reaches `os.environ` and the env file. A key that a custom
+#      integration declares goes to the store of the organization only. Any
+#      other key is 422. The deny list of B can never be complete, so C does
+#      not depend on it.
+# The BYOK gate covers GITHUB_TOKEN on put, delete and the GitHub writers.
 # Each route checks the WHOLE request before its first write, and
 # `_upsert_env_var` checks again. The fence is
 # `tests/unit/test_integrations_env_hardening.py`. Per-request credentials,
@@ -205,7 +213,14 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
         "description": "Generic outbound email via SMTP.",
         "setup_url": "",
         "docs_url": "",
-        "instructions": "Set your SMTP server host, port, username, and password.",
+        "instructions": (
+            "The operator sets the SMTP host and port on the server.\n"
+            "Enter the username and the password here.\n"
+            "Paste an app password without its spaces (Google shows them in "
+            "groups of four).\n"
+            "A value cannot hold a space, a quote, a backslash, or any of "
+            "$ ` ; & | < > ( ). It cannot start with ~ or #."
+        ),
         "env_vars": [
             {"key": "SMTP_HOST", "label": "Host", "sensitive": False},
             {"key": "SMTP_PORT", "label": "Port (default 587)", "sensitive": False},
@@ -435,33 +450,39 @@ def _is_configured(service_name: str, settings: Any) -> bool:
 # .env file writer (dev / bare-metal deployments)
 # ---------------------------------------------------------------------------
 
-# Allowed env var keys — only these may be written via the API.
-# Derived from all env_vars in _SETUP_GUIDES (business integrations) PLUS
-# the LLM provider keys used by Settings → Models.  This allows the
-# /integrations/configure endpoint to serve as the fallback write path for
-# LLM provider keys when the gateway is running code that predates the
-# /settings/llm/key endpoint's knowledge of those providers.
+# 🔒 Layer C: ONLY a built-in guide key reaches the env file (security fix
+# round 1, 2026-10-05). These three sets are derived from `_SETUP_GUIDES` and
+# pinned by `tests/unit/test_integrations_env_hardening.py`.
 #
-# Layer C reads this set, plus the keys of the registered custom
-# integrations. Layer B still refuses the platform names in it:
-# LITELLM_MASTER_KEY, COPILOT_CHAT_MODEL, VLLM_BASE_URL and the mail-app keys.
-_ALLOWED_ENV_KEYS: frozenset[str] = frozenset(
+# * `GUIDE_ENV_KEYS`: every key that a built-in guide declares.
+# * `OPERATOR_ONLY_ENV_KEYS`: a guide key whose value is a URL, a host, a
+#   domain, a port, a file path or an endpoint. A tenant route refuses it
+#   with 403, and the operator sets it in the env file of the box. A
+#   redirected Zoho accounts URL or SMTP host receives the deployment's
+#   secrets on the next refresh. ZOHO_REGION is named, because its value
+#   picks the Zoho data-centre domain.
+# * `BUILTIN_ENV_KEYS`: the allowlist. The guide keys minus the operator-only
+#   keys minus the platform names (the mail-app keys). Configure and
+#   `PUT /integrations/keys` write `os.environ` and the env file for these
+#   keys only. A key that a CUSTOM integration declares goes to the
+#   per-organization store and never to the env.
+#
+# The LLM provider keys left this path. Their writer is the BYOK-gated
+# `POST /settings/llm/key` (`routes/settings.py`).
+GUIDE_ENV_KEYS: frozenset[str] = frozenset(
     var["key"]
     for guide in _SETUP_GUIDES.values()
     for var in guide["env_vars"]
-) | frozenset({
-    # LLM provider keys (Settings → Models page)
-    "GEMINI_API_KEY",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENROUTER_API_KEY",
-    "GROQ_API_KEY",
-    "MISTRAL_API_KEY",
-    "TOGETHER_API_KEY",
-    "VLLM_BASE_URL",
-    "LITELLM_MASTER_KEY",
-    "COPILOT_CHAT_MODEL",
-})
+)
+_OPERATOR_SUFFIXES = ("_URL", "_HOST", "_DOMAIN", "_PATH", "_ENDPOINT", "_DIR", "_PORT")
+_OPERATOR_NAMED = frozenset({"ZOHO_REGION"})
+OPERATOR_ONLY_ENV_KEYS: frozenset[str] = frozenset(
+    k for k in GUIDE_ENV_KEYS if k.endswith(_OPERATOR_SUFFIXES) or k in _OPERATOR_NAMED
+)
+BUILTIN_ENV_KEYS: frozenset[str] = frozenset(
+    k for k in GUIDE_ENV_KEYS
+    if k not in OPERATOR_ONLY_ENV_KEYS and not env_guard.is_platform_env(k)
+)
 
 
 def _find_env_file() -> Path:
@@ -560,7 +581,10 @@ def _refuse_unsafe_env_writes(
                 "shell character."
             ),
         )
-    platform = sorted({k.strip().upper() for k, _ in pairs if env_guard.is_platform_env(k)})
+    platform = sorted({
+        k.strip().upper() for k, _ in pairs
+        if env_guard.is_platform_env(k) or k.strip().upper() in OPERATOR_ONLY_ENV_KEYS
+    })
     if platform:
         _log.warning(
             "integrations.env_write_refused", layer="B", refused=platform, actor=actor,
@@ -569,6 +593,20 @@ def _refuse_unsafe_env_writes(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=PLATFORM_KEY_REFUSAL.format(keys=", ".join(platform)),
         )
+
+
+def _refuse_provider_key_without_byok(names: Iterable[str]) -> None:
+    """403 while BYOK is off, when a write names an LLM provider variable.
+
+    The same guard as ``POST /settings/llm/key`` (``refuse_if_byok_disabled``).
+    ``GITHUB_TOKEN`` is in ``_PROVIDER_ENV_MAP``, because it also routes the
+    Copilot models, so the GitHub writers and ``PUT``/``DELETE`` take it too.
+    """
+    from gateway.routes.settings import _PROVIDER_ENV_MAP, refuse_if_byok_disabled
+
+    _provider_vars = {v for v in _PROVIDER_ENV_MAP.values() if v}
+    if any(str(n).strip().upper() in _provider_vars for n in names):
+        refuse_if_byok_disabled()
 
 
 def _guide_env_var(service: str, key_name: str) -> str | None:
@@ -586,13 +624,15 @@ def _guide_env_var(service: str, key_name: str) -> str | None:
     return None
 
 
-async def _custom_declared_keys() -> frozenset[str]:
-    """The env var names that the registered custom integrations declare.
+async def _custom_key_services() -> dict[str, str]:
+    """Each key that a registered custom integration declares, and its service.
 
-    Layer C. It runs the SAME query as ``integration_status`` and
-    ``list_custom_apis``, so configure takes exactly the keys that the
-    Integrations page shows. A failed read answers an empty set, so a custom
-    key is refused and never accepted on a guess.
+    Layer C. A custom key goes to the per-organization store under
+    ``<service_id>:<key in lower case>``, and NEVER to ``os.environ`` or the env
+    file. When two definitions declare one key, the oldest one names it. It
+    runs the SAME query as ``integration_status`` and ``list_custom_apis``. A
+    failed read answers an empty map, so a custom key is refused and never
+    accepted on a guess.
     """
     try:
         rows = await _db_query(
@@ -600,13 +640,13 @@ async def _custom_declared_keys() -> frozenset[str]:
         )
     except Exception as exc:
         _log.warning("integrations.custom_keys_unreadable", error=str(exc))
-        return frozenset()
-    keys: set[str] = set()
+        return {}
+    services: dict[str, str] = {}
     for row in rows:
         for var in row.get("env_vars") or []:
             if isinstance(var, dict) and isinstance(var.get("key"), str):
-                keys.add(var["key"])
-    return frozenset(keys)
+                services.setdefault(var["key"], str(row.get("service_id", "")))
+    return services
 
 
 # ---------------------------------------------------------------------------
@@ -693,6 +733,19 @@ async def integration_status(
     for svc in services:
         guide = _SETUP_GUIDES.get(svc, {})
         configured = _is_configured(svc, settings)
+        # 🔒 A form offers only the keys that a tenant may write
+        # (`BUILTIN_ENV_KEYS`). The rest go to `operator_env_vars`, which the
+        # Integrations page shows read-only: the operator sets them on the box.
+        # Without the split, the agent wizard and the setup card, which save
+        # only when every field is filled, would send a key that layer B
+        # refuses, and the whole save would fail.
+        tenant_vars = [
+            v for v in guide.get("env_vars", []) if v["key"] in BUILTIN_ENV_KEYS
+        ]
+        operator_vars = [
+            {"key": v["key"], "label": v["label"]}
+            for v in guide.get("env_vars", []) if v["key"] not in BUILTIN_ENV_KEYS
+        ]
         # For GitHub, always compute missing_keys from actual env vars
         # because the service can be "configured" via PAT (GITHUB_TOKEN)
         # alone, but the OAuth device flow (Option B) needs
@@ -701,7 +754,7 @@ async def integration_status(
         if svc == "github":
             missing_keys = [
                 v["key"]
-                for v in guide.get("env_vars", [])
+                for v in tenant_vars
                 if not os.getenv(v["key"], "").strip()
             ]
         else:
@@ -710,7 +763,7 @@ async def integration_status(
                 if configured
                 else [
                     v["key"]
-                    for v in guide.get("env_vars", [])
+                    for v in tenant_vars
                     if not os.getenv(v["key"], "").strip()
                 ]
             )
@@ -737,7 +790,8 @@ async def integration_status(
                 "setup_url": guide.get("setup_url", ""),
                 "docs_url": guide.get("docs_url", ""),
                 "instructions": guide.get("instructions", ""),
-                "env_vars": guide.get("env_vars", []),
+                "env_vars": tenant_vars,
+                "operator_env_vars": operator_vars,
                 "missing_keys": missing_keys,
                 "db_keys": db_stored_keys,
                 "storage": storage,
@@ -751,41 +805,57 @@ async def integration_status(
         custom_rows = await _db_query(
             "SELECT * FROM custom_api_definitions ORDER BY created_at"
         )
+        known = {r["service"] for r in result}
         for row in custom_rows:
-            svc = row["service_id"]
-            if any(r["service"] == svc for r in result):
+            if row["service_id"] in known:
                 continue  # skip if service_id conflicts with built-in
-            env_vars = row.get("env_vars") or []
-            configured = bool(
-                env_vars
-                and all(os.getenv(v.get("key", ""), "") for v in env_vars if v.get("key"))
-            )
-            missing = [
-                v["key"] for v in env_vars
-                if not os.getenv(v.get("key", ""), "")
-            ]
-            result.append({
-                "service": svc,
-                "label": row.get("label", svc),
-                "configured": configured,
-                "mandatory": False,
-                "description": row.get("description", ""),
-                "domain": row.get("domain", ""),
-                "uses": [],
-                "setup_url": row.get("setup_url", ""),
-                "docs_url": row.get("docs_url", ""),
-                "instructions": row.get("instructions", ""),
-                "env_vars": env_vars,
-                "missing_keys": missing,
-                "db_keys": [],
-                "storage": "none" if not configured else "env-file",
-                "category": row.get("category", "custom"),
-                "is_custom": True,
-            })
+            result.append(_custom_status_row(row, db_keys_by_service))
     except Exception:
         pass  # graceful degradation if table doesn't exist yet
 
     return result
+
+
+def _custom_status_row(
+    row: dict[str, Any], db_keys_by_service: dict[str, list[str]],
+) -> dict[str, Any]:
+    """The status of one custom integration.
+
+    🔒 A custom key lives in the store of the organization
+    (``<service_id>:<key in lower case>``), and never in the env since
+    2026-10-05. A value that an older env write left still counts.
+    """
+    svc = row["service_id"]
+    env_vars = row.get("env_vars") or []
+    custom_db = db_keys_by_service.get(svc, [])
+
+    def _held(key: str) -> bool:
+        return key.lower() in custom_db or bool(os.getenv(key, ""))
+
+    configured = bool(
+        env_vars and all(_held(v.get("key", "")) for v in env_vars if v.get("key"))
+    )
+    missing = [v["key"] for v in env_vars if not _held(v.get("key", ""))]
+    storage = "encrypted-db" if custom_db else ("env-file" if configured else "none")
+    return {
+        "service": svc,
+        "label": row.get("label", svc),
+        "configured": configured,
+        "mandatory": False,
+        "description": row.get("description", ""),
+        "domain": row.get("domain", ""),
+        "uses": [],
+        "setup_url": row.get("setup_url", ""),
+        "docs_url": row.get("docs_url", ""),
+        "instructions": row.get("instructions", ""),
+        "env_vars": env_vars,
+        "operator_env_vars": [],
+        "missing_keys": missing,
+        "db_keys": custom_db,
+        "storage": storage,
+        "category": row.get("category", "custom"),
+        "is_custom": True,
+    }
 
 
 @router.post(
@@ -802,12 +872,14 @@ async def configure_integrations(
     for LLM provider keys.  They are also set in os.environ for immediate
     effect and written to .env as a bootstrap fallback.
 
-    Only keys present in the allowed list (derived from _SETUP_GUIDES) may
-    be written — all others are rejected with 422.
-
     🔒 Layers A (400), B (403) and C (422) refuse the WHOLE request before
     any write (2026-10-05). A value is written with its surrounding space
     removed, which is the value systemd reads from the file anyway.
+
+    🔒 Layer C, round 1: only a key in ``BUILTIN_ENV_KEYS`` reaches
+    ``os.environ`` and the env file. A key that a registered CUSTOM
+    integration declares goes to the store of the organization ONLY, and the
+    answer lists it under ``store_only``. Any other key is 422.
     """
     # Layers A and B, over every key and value of the request.
     _refuse_unsafe_env_writes(
@@ -819,7 +891,7 @@ async def configure_integrations(
     _env_var_re = re.compile(r"^[A-Z][A-Z0-9_]{1,100}$")
     illegal = [
         v.key for v in req.vars
-        if v.key not in _ALLOWED_ENV_KEYS and not _env_var_re.fullmatch(v.key)
+        if v.key not in BUILTIN_ENV_KEYS and not _env_var_re.fullmatch(v.key)
     ]
     if illegal:
         raise HTTPException(
@@ -830,13 +902,16 @@ async def configure_integrations(
             ),
         )
 
-    # Layer C: a key that no setup guide, no LLM key entry and no registered
-    # custom integration declares is refused. The custom read runs only when a
-    # key is outside the static set.
-    declared: frozenset[str] = _ALLOWED_ENV_KEYS
-    if any(v.key not in declared for v in req.vars):
-        declared = declared | await _custom_declared_keys()
-    undeclared = sorted({v.key for v in req.vars if v.key not in declared})
+    # Layer C: a key outside the built-in allowlist must be declared by a
+    # registered custom integration, and then it goes to the store only. The
+    # custom read runs only when a key is outside the allowlist.
+    custom_services: dict[str, str] = {}
+    if any(v.key not in BUILTIN_ENV_KEYS for v in req.vars):
+        custom_services = await _custom_key_services()
+    undeclared = sorted({
+        v.key for v in req.vars
+        if v.key not in BUILTIN_ENV_KEYS and v.key not in custom_services
+    })
     if undeclared:
         _log.warning(
             "integrations.env_write_refused", layer="C", refused=undeclared,
@@ -861,11 +936,9 @@ async def configure_integrations(
     # Only the LLM provider variables are refused. Every other integration
     # credential (Slack, GitHub OAuth, WhatsApp and the rest) is untouched,
     # because BYOK is about who supplies the MODEL, not about integrations.
-    from gateway.routes.settings import _PROVIDER_ENV_MAP, refuse_if_byok_disabled
-
-    _provider_vars = {v for v in _PROVIDER_ENV_MAP.values() if v}
-    if any(v.key in _provider_vars for v in req.vars):
-        refuse_if_byok_disabled()
+    # One helper holds the rule for every route here
+    # (`_refuse_provider_key_without_byok`).
+    _refuse_provider_key_without_byok(v.key for v in req.vars)
 
 
     # Build reverse mapping: env_var → (service, suffix)
@@ -879,11 +952,41 @@ async def configure_integrations(
     env_path = _find_env_file()
     written: list[str] = []
     db_written: list[str] = []
+    store_only: list[str] = []
+    from acb_llm.key_store import get_key_store
+    store = get_key_store()
 
     for var in req.vars:
         value = var.value.strip()
         if not value:
             continue  # skip empties
+
+        # 0. A custom key: the store of this organization, and nothing else.
+        #    No `os.environ`, no env file. A failed put is an error, because
+        #    the store is the only place the value goes.
+        if var.key not in BUILTIN_ENV_KEYS:
+            custom_svc = custom_services[var.key]
+            provider = f"{custom_svc}:{var.key.lower()}"
+            try:
+                await store.put(
+                    provider,
+                    value,
+                    credential_type="integration",
+                    service=custom_svc,
+                    organization_id=current_tenant(),
+                )
+            except Exception as exc:
+                _log.warning(
+                    "integrations.custom_store_failed", key=var.key, error=str(exc),
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Could not store {var.key} for this organization.",
+                ) from None
+            db_written.append(provider)
+            store_only.append(var.key)
+            _log.info("integrations.configure_custom", key=var.key, actor=user.email)
+            continue
 
         # 1. Write to encrypted DB store (primary persistence)
         svc_suffix = _env_to_service_suffix.get(var.key)
@@ -891,8 +994,6 @@ async def configure_integrations(
             svc, suffix = svc_suffix
             provider = f"{svc}:{suffix}"
             try:
-                from acb_llm.key_store import get_key_store
-                store = get_key_store()
                 await store.put(
                     provider,
                     value,
@@ -934,6 +1035,7 @@ async def configure_integrations(
     return {
         "written": written,
         "db_stored": db_written,
+        "store_only": store_only,
         "env_file": str(env_path),
         "reload": "Settings cache cleared — new values active immediately.",
         "storage": (
@@ -1043,8 +1145,10 @@ async def put_integration_key(
             ),
         )
 
-    # Layers A and B, before the store write, the env var and the file.
+    # Layers A and B, before the store write, the env var and the file. Then
+    # the BYOK gate: GITHUB_TOKEN is a provider key (round 1, decision 4).
     _refuse_unsafe_env_writes([(env_var, value)], actor=user.email)
+    _refuse_provider_key_without_byok([env_var])
 
     # Store in encrypted DB
     provider = f"{req.service}:{req.key_name}"
@@ -1125,6 +1229,7 @@ async def delete_integration_key(
     popped = _guide_env_var(req.service, req.key_name)
     if popped is not None:
         _refuse_unsafe_env_writes([(popped, "")], actor=user.email)
+        _refuse_provider_key_without_byok([popped])
 
     provider = f"{req.service}:{req.key_name}"
     from acb_llm.key_store import get_key_store
@@ -2018,7 +2123,10 @@ async def github_device_poll(
         {status: "slow_down", interval: int} — increase polling interval
         {status: "expired"}                 — code expired, restart flow
         {status: "denied"}                  — user denied access
+
+    🔒 It writes GITHUB_TOKEN, a provider key, so the BYOK gate runs first.
     """
+    _refuse_provider_key_without_byok(["GITHUB_TOKEN"])
     settings = get_settings()
     client_id: str = getattr(settings, "github_client_id", "")
     if not client_id.strip():
@@ -2192,7 +2300,10 @@ async def github_connect_cli(
     If the token lacks the `copilot` scope, the import still succeeds (repo
     cloning will work) but `has_copilot` is False and `refresh_command` is
     returned so the user knows what to run to gain model access.
+
+    🔒 It writes GITHUB_TOKEN, a provider key, so the BYOK gate runs first.
     """
+    _refuse_provider_key_without_byok(["GITHUB_TOKEN"])
     # 1. Read token from gh CLI
     try:
         proc = subprocess.run(

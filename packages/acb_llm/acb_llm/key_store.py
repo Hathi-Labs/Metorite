@@ -26,7 +26,7 @@ import os
 from typing import Any
 
 from acb_common import get_logger, get_settings
-from acb_common.env_guard import control_problem
+from acb_common.env_guard import EnvWriteRefused, check_env_write, is_platform_env
 from cryptography.fernet import Fernet
 
 _log = get_logger("key_store")
@@ -351,10 +351,15 @@ class ProviderKeyStore:
         Integration → env var mapping mirrors _SETUP_GUIDES in
         apps/services/gateway/gateway/routes/integrations.py.
 
-        🔒 A stored value with a control character is skipped and logged,
-        never set (``acb_common.env_guard``, layer A, 2026-10-05). A row that
-        an older route wrote must not reach ``os.environ``. A NUL raises
-        there, and that aborts the whole loop.
+        🔒 Layers A and B (``acb_common.env_guard.check_env_write``, security
+        fix round 1, 2026-10-05). A stored row whose value fails layer A (a
+        control character, more than 4096 bytes, or a shell character) or
+        whose name fails layer B (a platform or operator-only name, such as a
+        mail-app key or ``ZOHO_API_DOMAIN``) is skipped and logged with the
+        key name only. It never reaches ``os.environ``. A row that an older
+        route wrote must not override the env value of the box, and a NUL
+        raises in ``os.environ``, which aborts the whole loop. A platform name
+        is never copied from the env into the store either.
         """
         # Service name → {provider suffix → env var name}
         _integration_env_map: dict[str, dict[str, str]] = {
@@ -420,21 +425,23 @@ class ProviderKeyStore:
             for suffix, env_var in key_map.items():
                 provider = f"{service}:{suffix}"
                 key = await self.get(provider)
-                if key and control_problem(key):
-                    _log.warning(
-                        "key_store.integration_value_refused",
-                        service=service,
-                        env_var=env_var,
-                    )
-                    continue
                 if key:
+                    try:
+                        check_env_write(env_var, key)
+                    except EnvWriteRefused as exc:
+                        _log.warning(
+                            "key_store.integration_row_refused",
+                            env_var=env_var,
+                            rule="platform" if exc.platform else "value",
+                        )
+                        continue
                     os.environ[env_var] = key
                     _log.debug(
                         "key_store.integration_configured",
                         service=service,
                         env_var=env_var,
                     )
-                else:
+                elif not is_platform_env(env_var):
                     # Preserve any existing env var (from .env bootstrap)
                     existing = os.environ.get(env_var, "")
                     if existing and existing.strip():
@@ -478,17 +485,26 @@ class ProviderKeyStore:
             "assemblyai": ("assemblyai_api_key",  "ASSEMBLYAI_API_KEY"),
         }
 
+        # 🔒 Layers A and B (acb_common.env_guard). The provider keys are on
+        # the deny list, and this loader owns exactly the names of its map.
+        owned = frozenset(env for _, env in _provider_config.values())
+
         all_keys = await self.get_all()
         for provider, key in all_keys.items():
             if not key:
                 continue
             cfg = _provider_config.get(provider)
-            if cfg and control_problem(key):
-                # Layer A (acb_common.env_guard): skip, never set.
-                _log.warning("key_store.litellm_value_refused", provider=provider)
-                continue
             if cfg:
                 litellm_attr, env_var = cfg
+                try:
+                    check_env_write(env_var, key, owned=owned)
+                except EnvWriteRefused as exc:
+                    _log.warning(
+                        "key_store.litellm_row_refused",
+                        env_var=env_var,
+                        rule="platform" if exc.platform else "value",
+                    )
+                    continue
                 setattr(_litellm, litellm_attr, key)
                 os.environ[env_var] = key
                 _log.debug("key_store.litellm_configured", provider=provider)

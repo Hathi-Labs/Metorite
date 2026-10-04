@@ -28,6 +28,13 @@ export interface IntegrationStatus {
   docs_url: string;
   instructions: string;
   env_vars: IntegrationEnvVar[];
+  /**
+   * Keys of the guide that a tenant may NOT set: a URL, host, domain, port or
+   * path, or a platform key. The operator sets them on the server, so the
+   * page shows them read-only and no form sends them (security fix,
+   * 2026-10-05). Absent from an older gateway.
+   */
+  operator_env_vars?: { key: string; label: string }[];
   missing_keys: string[];
   /** Which credential keys are stored in the encrypted Postgres DB (e.g. ["client_id", "client_secret"]). */
   db_keys?: string[];
