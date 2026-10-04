@@ -20,6 +20,9 @@ Decision policy (see specs/permissions_sandbox_b6.md for the table):
   * shell commands of a SHARED agent (D85)     → DENY in every mode, until the
                                                  sandbox covers it
                                                  (:func:`guard_shared_agent_shell`)
+  * any request but a read, a write or a       → DENY in every mode
+    non-egress tool, in a run that a covered     (:func:`guard_shared_agent_shell`,
+    run delegated to (H-236)                     ``acb_skills.egress``)
   * file writes outside the agent workspace    → DENY (out of bounds)
   * network                                    → APPROVE (open_world is normal),
                                                  logged for exfil visibility
@@ -413,11 +416,59 @@ def _shell_withheld_result() -> Any:
     )
 
 
+# ── H-236: no egress in a run that a covered run delegated to ────────────────
+# The executor binds ``no_egress`` into the artifact context of every run that
+# a covered run delegates to (``acb_skills.egress``). A Copilot sub-agent then
+# keeps only the requests that cannot reach the network: a file read, a file
+# write (which ``decide()`` contains) and a call to one of its own tools that
+# is not an egress tool. Everything else is refused, an unknown kind included:
+# the CLI's URL fetch, an MCP call, the shell, memory, hooks and extensions.
+# Fence: tests/unit/test_delegation_no_egress.py (WS43-F24).
+
+#: The text the model reads when the H-236 control refuses a request.
+EGRESS_WITHHELD_REASON = (
+    "A run that another agent called during a sandboxed turn may not send "
+    "data off the platform, H-236"
+)
+
+#: The request kinds that a ``no_egress`` run may still make.
+_NO_EGRESS_KINDS = frozenset({"read", "write", "custom-tool"})
+
+
+def is_egress_request(request: Any) -> bool:
+    """True when *request* could carry data off the platform (H-236).
+
+    Only a read, a write, and a call to a tool that is not an egress tool
+    pass. A request of any other kind, or with no kind, is an egress request,
+    so a new kind of a later SDK fails closed.
+    """
+    kind = str(_field(request, "kind") or "").strip().lower()
+    if kind not in _NO_EGRESS_KINDS or is_shell_request(request):
+        return True
+    if kind == "custom-tool":
+        from acb_skills.egress import is_egress_tool
+
+        return is_egress_tool(str(_field(request, "tool_name") or ""))
+    return False
+
+
+def _egress_withheld_result() -> Any:
+    """The SDK refusal for an H-236 request. No person can approve it."""
+    from copilot.generated.rpc import PermissionDecisionReject
+    return PermissionDecisionReject(
+        feedback=(
+            "Blocked by Metorite: " + EGRESS_WITHHELD_REASON + ". Read and "
+            "compute with your own tools, and give the answer back."
+        ),
+    )
+
+
 def guard_shared_agent_shell(handler: Any) -> Any:
-    """*handler*, with the D85 shell refusal in front of it.
+    """*handler*, with the D85 shell refusal and the H-236 egress refusal in front.
 
     It refuses every shell request of a run whose host shell is refused, and
-    it passes every other request to *handler* unchanged. It holds in EVERY
+    every egress request (:func:`is_egress_request`) of a ``no_egress`` run.
+    It passes every other request to *handler* unchanged. It holds in EVERY
     ``AGENT_PERMISSION_MODE``, and whatever handler the agent's factory set.
     Production runs ``enforce`` (the box's ``.env`` sets no mode, read on
     2026-10-03). The guard still ignores the mode, so a later switch to
@@ -429,6 +480,19 @@ def guard_shared_agent_shell(handler: Any) -> Any:
 
     @functools.wraps(handler)
     def _guarded(request: Any, invocation: Any) -> Any:
+        from acb_skills.egress import no_egress_for_this_run
+
+        if no_egress_for_this_run() and is_egress_request(request):
+            _log.info(
+                "permission.decision",
+                mode=_mode(),
+                approved=False,
+                would_deny=True,
+                reason="no_egress",
+                detail=str(_field(request, "kind") or "")[:40],
+                surface="copilot_no_egress",
+            )
+            return _egress_withheld_result()
         if is_shell_request(request) and host_shell_refused_for_this_run():
             command = str(_field(request, "full_command_text") or "")
             _log.info(

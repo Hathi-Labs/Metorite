@@ -83,6 +83,7 @@ from orchestrator._tool_injection import (
     _apply_own_tool_scope,
     _build_injected_tools_addendum,
     _build_registry_block,
+    _delegated_no_egress,
     _gate_injected_tool,
     _host_shell_refused,
     _inject_agent_tools,
@@ -852,6 +853,9 @@ async def _run_sub_agent_streaming(
     # The parent run's acting member, from the parent's bound context and
     # never from the delegated message (H-201 P2-c).
     _parent_member = str(artifact_context().get("member") or "")
+    # H-236: no egress tool for this sub-run when its parent is covered, or
+    # when its parent holds no_egress. From the parent's binding only.
+    _sub_no_egress = _delegated_no_egress(artifact_context())
 
     # ── Redis relay fallback for paths without _active_run_queue ──────
     # Tier 1 (MAF AG-UI) and Tier 1.5 (Copilot SDK) don't set
@@ -939,6 +943,8 @@ async def _run_sub_agent_streaming(
                 # D85: a shared sub-agent gets no shell tool until the
                 # sandbox broker covers it.
                 agent_config=getattr(loaded, "config", None),
+                # H-236: and no egress tool when its parent is covered.
+                no_egress=_sub_no_egress,
             )
             if not agents:
                 return f"({agent_name!r} returned empty agent list)"
@@ -1010,6 +1016,9 @@ async def _run_sub_agent_streaming(
                 host_shell_refused=_host_shell_refused(
                     agent_name, getattr(loaded, "config", None),
                 ),
+                # H-236: set from the parent's binding, never cleared here.
+                # The batch run of a MAF sub-agent reads it as its parent.
+                no_egress=_sub_no_egress,
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -2486,6 +2495,8 @@ async def _run_agent_inner(
         bind_artifact_context,
     )
     _parent_ctx = artifact_context()
+    # H-236: the same parent decides this run's no_egress, read here too.
+    _no_egress = _delegated_no_egress(_parent_ctx)
 
     # ── Run correlation for the batch path (usage attribution) ─────────────
     # The streaming path binds the same fields. `run_agent` opened the scope
@@ -2702,6 +2713,7 @@ async def _run_agent_inner(
                 tool_scope=loaded.config.get("tool_scope") or None,
                 agent_name=agent_name,
                 agent_config=loaded.config,  # D85: the sharing block
+                no_egress=_no_egress,  # H-236: from the parent's binding
             )  # inject call_agent / call_agent_background
 
             # Set write_artifact context + ensure visible workspace dirs exist.
@@ -2741,6 +2753,9 @@ async def _run_agent_inner(
                 host_shell_refused=_host_shell_refused(
                     agent_name, loaded.config,
                 ),
+                # H-236: a delegated run of a covered parent sends nothing
+                # off the platform. Its own delegations inherit this.
+                no_egress=_no_egress,
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -3336,6 +3351,10 @@ async def run_agent_stream(
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
+            # H-236: a run that starts inside another run's context is a
+            # delegation. A top-level chat run has no such context: False.
+            from acb_skills.write_artifact import artifact_context as _ctx_now
+            _stream_no_egress = _delegated_no_egress(_ctx_now())
             _inject_agent_tools(
                 agents,
                 # .agent.md's VS Code tools widen (never narrow) the scope, so a
@@ -3345,9 +3364,12 @@ async def run_agent_stream(
                 ),
                 agent_name=agent_name,
                 agent_config=loaded.config,  # D85: the sharing block
+                no_egress=_stream_no_egress,  # H-236
             )  # inject call_agent / call_agent_background
-            # Inject MCP servers from the registry into every agent at runtime
-            for _a in agents:
+            # Inject MCP servers from the registry into every agent at runtime.
+            # H-236: an MCP server reaches outside the platform, so a
+            # no_egress run gets none.
+            for _a in agents if not _stream_no_egress else []:
                 await _inject_mcp_servers(_a, agent_name)
 
             # Per-session workspace override (Custom Apps builder sessions):
@@ -3428,6 +3450,10 @@ async def run_agent_stream(
                 host_shell_refused=_host_shell_refused(
                     agent_name, loaded.config,
                 ),
+                # H-236: False for a top-level run. A covered run does not
+                # bind True for itself: its delegations compute it from
+                # covers(), and the sandbox middleware withholds its own.
+                no_egress=_stream_no_egress,
             )
             try:
                 # Ensure the three visible workspace directories exist so the

@@ -207,6 +207,123 @@ def _host_shell_refused(
     return not (agent_name and org and _copilot_cli_in_broker_sandbox(agent_name, org))
 
 
+def _parent_run_covered(agent_name: str) -> bool:
+    """True when the run of *agent_name* on this frame is, or may be, covered (H-236).
+
+    It is true when ``covers()`` is true for the agent and the run's org. It is
+    also true when the scope names the ``projects`` target for that agent and
+    org while the broker is not healthy. A health probe that failed between
+    the turn that read member data and the call to another agent must not
+    clear the control. The org comes from the run binding, never from input
+    (R5). A broker that answers with an error fails closed.
+    """
+    if not agent_name:
+        return False
+    org = _run_org()
+    if not org:
+        return False
+    try:
+        from orchestrator import sandbox_broker as sb
+    except ImportError:  # no broker in this process, so no run was covered
+        return False
+    try:
+        if sb.covers(agent_name, org):
+            return True
+        return sb.target_for_agent(agent_name) == sb.PROJECTS_TARGET and (
+            sb.maf_coding_scope_allows(sb.PROJECTS_TARGET, org)
+        )
+    except Exception:  # fail closed: a broker bug must not open the control
+        _log.warning("executor.parent_cover_check_failed", agent=agent_name)
+        return True
+
+
+def _delegated_no_egress(parent_ctx: Any) -> bool:
+    """The ``no_egress`` answer of a run that starts on this frame (H-236).
+
+    *parent_ctx* is the artifact context of the frame, read BEFORE the new run
+    binds its own. An empty context means no parent, so the run is not a
+    delegation and the answer is ``False``. A parent that holds ``no_egress``
+    passes it on, so a child can never clear it, and a value that is not an
+    explicit ``False`` reads as set. Else the answer is whether the parent's
+    own run is covered (:func:`_parent_run_covered`). Only the server decides
+    it: no request field and no tool argument reaches this function.
+    """
+    if not parent_ctx:
+        return False
+    if parent_ctx.get("no_egress", False) is not False:
+        return True
+    return _parent_run_covered(str(parent_ctx.get("agent_name") or ""))
+
+
+def _no_egress_bound() -> bool:
+    """``no_egress`` of the run already bound on this frame (H-236)."""
+    try:
+        from acb_skills.egress import no_egress_for_this_run
+    except ImportError:
+        return False
+    return no_egress_for_this_run()
+
+
+def _is_egress(tool: Any) -> bool:
+    try:
+        from acb_skills.egress import is_egress_tool
+    except ImportError:  # no acb_skills means no tool was injected at all
+        return False
+    return is_egress_tool(tool)
+
+
+def _withhold_egress_from_agent(agent: Any) -> list[str]:
+    """Take every egress tool and MCP server out of ONE per-run agent (H-236).
+
+    The factory built this agent object for this run, as every injection site
+    assumes. The lists are filtered in place, as ``_apply_own_tool_scope``
+    does. Returns the names it took out.
+    """
+    removed: list[str] = []
+
+    def _filter(pool: Any) -> None:
+        if not isinstance(pool, list):
+            return
+        kept = [t for t in pool if not _is_egress(t)]
+        removed.extend(_tool_name(t) for t in pool if _is_egress(t))
+        pool[:] = kept
+
+    _do = getattr(agent, "default_options", None)
+    if isinstance(_do, dict):
+        _filter(_do.get("tools"))
+    for attr in ("tools", "_tools"):
+        _filter(getattr(agent, attr, None))
+    opts = getattr(agent, "_default_options", None)
+    if isinstance(opts, dict):
+        _filter(opts.get("tools"))
+        if opts.pop("mcp_servers", None):
+            removed.append("mcp_servers")
+    elif opts is not None:
+        _filter(getattr(opts, "tools", None))
+    return removed
+
+
+def _with_egress_guard(agent: Any) -> Any:
+    """A per-run view of a native MAF agent that refuses egress calls (H-236).
+
+    A Copilot agent gets its refusal from the permission guard instead
+    (``permission_policy.guard_shared_agent_shell``), so it is returned as it
+    is. So is an object that is not a MAF ``Agent``.
+    """
+    if hasattr(agent, "_permission_handler"):
+        return agent
+    try:
+        from acb_skills.egress import EgressGuardProvider
+        from agent_framework import Agent
+    except ImportError:
+        return agent
+    if not isinstance(agent, Agent):
+        return agent
+    from orchestrator._native_run_context import agent_with_providers
+
+    return agent_with_providers(agent, [EgressGuardProvider()])
+
+
 def _drop_withheld(tools: list[Any], withheld: frozenset[str]) -> list[Any]:
     """*tools* without the D85 withheld names. A no-op when none is withheld."""
     if not withheld:
@@ -898,6 +1015,7 @@ def _inject_agent_tools(
     agents: list[Any], *, is_sub_agent: bool = False,
     tool_scope: list[str] | None = None, agent_name: str | None = None,
     agent_config: dict[str, Any] | None = None,
+    no_egress: bool | None = None,
 ) -> None:
     """Inject cross-agent delegation tools into every loaded agent.
 
@@ -907,6 +1025,13 @@ def _inject_agent_tools(
     covers it. ``None`` reads as shared, so a caller that forgets it fails
     closed. Every executor call site passes it, and
     ``tests/unit/test_shared_agent_shell_tools.py`` says so.
+
+    ``no_egress`` (H-236) is the answer of :func:`_delegated_no_egress` for
+    this run. ``True`` takes every egress tool (``acb_skills.egress``) out of
+    the injected set, the scope and the agent's own tools, takes its MCP
+    servers away, and puts a native MAF agent behind the egress middleware,
+    as a per-run view in ``agents``. ``None`` reads the flag of the run that
+    is bound on this frame (a self-anneal retry). ``False`` changes nothing.
 
     Adds ``call_agent`` and ``call_agent_background`` from ``acb_skills.agent_tools``
     so that any agent — MAF or GitHub Copilot SDK — can delegate sub-tasks to
@@ -938,8 +1063,12 @@ def _inject_agent_tools(
                                    + appends tool guidance to ``_default_options.system_message``
         Legacy Copilot SDK path  — appends to ``agent._default_options.tools`` (list)
     """
+    if no_egress is None:
+        no_egress = _no_egress_bound()
     _all_tools = _collect_injectable_platform_tools()
     if not _all_tools:
+        if no_egress:  # H-236 holds even when nothing else is injected
+            _apply_no_egress(agents, agent_name)
         return  # acb_skills not installed in this env — skip silently
 
     # ── Tool scoping: a guaranteed core floor + optional per-agent scope ───
@@ -971,8 +1100,15 @@ def _inject_agent_tools(
             "executor.shell_tools_withheld",
             agent=agent_name, tools=sorted(_withheld),
         )
+    # H-236: a run that a covered run delegated to gets no egress tool. The
+    # names leave the SCOPE as well, so the addendum never offers one.
+    _egress = (
+        frozenset(fn.__name__ for fn in _all_tools if _is_egress(fn))
+        if no_egress else frozenset()
+    )
     _scope_names = _resolve_injected_scope(
-        tool_scope, disabled_families=_disabled_families, withheld=_withheld,
+        tool_scope, disabled_families=_disabled_families,
+        withheld=_withheld | _egress,
     )
     if _scope_names is not None:
         # Scope-typo guard (multi_agent_orchestration.md Phase 0.3): an entry
@@ -1037,6 +1173,10 @@ def _inject_agent_tools(
     # chain, shell tools included. So the withheld names leave the final
     # list too, whatever branch built it.
     _extra_tools = _drop_withheld(_extra_tools, _withheld)
+    # H-236, the same last word: an app or workflow tool that reaches outside
+    # the platform leaves too, whatever branch added it.
+    if no_egress:
+        _extra_tools = [fn for fn in _extra_tools if not _is_egress(fn)]
 
     # Gate every injected tool with the risk-aware permission policy (B6). This
     # closes the live gap where injected function-tools (web_search, …) executed
@@ -1335,6 +1475,37 @@ def _inject_agent_tools(
                 "executor.tool_injection_no_shape_matched",
                 agent=_agent_label, agent_type=type(agent).__name__,
             )
+
+    # H-236: the agent's OWN egress tools and MCP servers leave as well, and
+    # a native MAF agent gets the call-time refusal, as a per-run view.
+    if no_egress:
+        _apply_no_egress(agents, agent_name, injected=_egress)
+
+
+def _apply_no_egress(
+    agents: list[Any], agent_name: str | None, *, injected: frozenset[str] = frozenset(),
+) -> None:
+    """The H-236 control on every agent of ONE run.
+
+    It replaces each native MAF agent in *agents* with its guarded view, so
+    the caller must read ``agents`` again after injection, as every call
+    site does. *injected* is the platform tools that the run did not get.
+    It fails closed: when it cannot filter an agent, it raises, and the run
+    fails before the agent can call an egress tool.
+    """
+    removed: set[str] = set(injected)
+    for i, agent in enumerate(agents):
+        try:
+            removed.update(_withhold_egress_from_agent(agent))
+            agents[i] = _with_egress_guard(agent)
+        except Exception as exc:
+            _log.error(
+                "executor.no_egress_failed", agent=agent_name, error=str(exc)[:200],
+            )
+            raise
+    _log.info(
+        "executor.egress_tools_withheld", agent=agent_name, tools=sorted(removed),
+    )
 
 
 def merge_mcp_servers(
