@@ -168,8 +168,9 @@ def _same_sender_sql(copy: str, mail: str) -> str:
 #: serves each lookup of a copy as an index condition, because the equality
 #: implies the NOT NULL. Measured on 40,000 rows after ANALYZE, so the read
 #: needs no new index.
-#: ⚠️ Only the Outlook provider stores ``internet_message_id`` today, so only
-#: two Outlook mailboxes pair (the Known limit of EM-T8g-3).
+#: ⚠️ Outlook stores ``internet_message_id``, and Gmail does too since WS-17
+#: EM-G2. IMAP stores none, so an IMAP mailbox pairs with nothing. EM-G9
+#: proves a Gmail and Outlook pair (spec §12.3.11).
 ALSO_IN_SQL = f"""
     SELECT m.id::text AS id, p.id::text AS other
       FROM email_messages m
@@ -323,8 +324,9 @@ def recipient_lists_sql(alias: str) -> str:
 #:   that mail names the outsider, not A (round 2)
 #:
 #: ``idx_email_messages_internet_message_id`` (migration 89) serves the join.
-#: ⚠️ Only the Outlook provider stores ``internet_message_id`` today, so the
-#: proof exists only between two Outlook mailboxes (§11.6 edge case 26).
+#: ⚠️ Outlook stores ``internet_message_id``, and Gmail does too since WS-17
+#: EM-G2. IMAP stores none, so the proof never holds for an IMAP mailbox
+#: (§11.6 edge case 26). EM-G9 proves it from Gmail to Outlook and back.
 _PROVEN_OWN_SEND_SQL = f"""
     SELECT 1
       FROM email_messages m

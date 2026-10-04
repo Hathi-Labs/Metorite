@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). Nothing else is built yet.
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -6126,8 +6126,8 @@ change.
 > D-EM-4 say for Microsoft. The flow is Connect, then consent, then done. A member never
 > configures an OAuth client, never pastes a key and never opens Integrations.
 
-> **Status (2026-10-04).** 📝 SPECIFIED by EM-G0, and only EM-G1 is ✅ MERGED
-> (#625, §12.3.1). Each anchor below is
+> **Status (2026-10-05).** 📝 SPECIFIED by EM-G0. EM-G1 is ✅ MERGED (#625, §12.3.1), and
+> EM-G2 is ✅ MERGED (#626, §12.3.2). Each anchor below is
 > verified against the code at `d0627789a` on 2026-10-04. Re-verify each anchor at dispatch,
 > because the code is the fact. This section wins over §1 and §11 where they say that Outlook is
 > the only provider.
@@ -6231,7 +6231,7 @@ D-EM-35 for this plan. Each one is an agent decision, and the owner can reverse 
 |---|---|
 | **D-EM-31** | **The Google scopes are `gmail.modify` and `gmail.settings.basic`.** They replace `https://mail.google.com/`. The pair is the narrowest set that covers read, send, drafts, labels and filters. Both are restricted scopes, but a narrower request makes the review of Google easier. `gmail.modify` covers the profile, the history, the watch, the messages, the drafts and the labels. `gmail.settings.basic` covers the filters. No code path deletes a message for good, so `gmail.modify` loses nothing. The callback reads the granted scope. A grant that lacks either scope saves no mailbox, and the member sees a clear message. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-32** | **Polling first, push later.** EM-G4 makes a poll cheap with the history cursor, so an idle mailbox costs one call. Push (EM-G6a, EM-G6b) ships dark behind `EMAIL_GMAIL_PUSH`, which is `off` by default. Push needs a design for how a push finds its tenant, and that design gets its own audit (O-GM-4). *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
-| **D-EM-33** | **The folder model of Gmail.** The system labels decide the folder, in this order: `TRASH`, `SPAM`, `DRAFT`, `SENT`, `INBOX`. A Gmail message with no system label is in `archive`. A move to a user label adds that label and removes `INBOX`. The Archive folder pages with a query, never with `labelIds=["archive"]`. O-GM-1 asks whether a user label is also a folder. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-33** | **The folder model of Gmail.** The system labels decide the folder, in this order: `TRASH`, `SPAM`, `DRAFT`, `SENT`, `INBOX`. A Gmail message with no system label is in `archive`. A move to a user label adds that label and removes `INBOX`. The Archive folder pages with a query, never with `labelIds=["archive"]`. The orchestrator decided O-GM-1 on 2026-10-04: a user label is a label and never a folder. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-34** | **The re-key reclaim runs only for a provider that re-keys its ids.** That is Outlook, whose ids change on a move. Gmail never re-keys an id, so Gmail never folds two rows on one Message-ID. The provider attribute is false by default. IMAP stores no Message-ID today, so IMAP sees no change. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-35** | **Gmail shows only when the Google app is installed.** The UI reads a capability from the gateway: for each provider, whether its app credentials are set. Gmail is a live choice only when the answer is true. No member ever sees "configure Integrations". *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 
@@ -6408,10 +6408,13 @@ follow-up EM-G1-f1 owns the fix, and it needs its own audit before a build.
 
 #### 12.3.2 EM-G2 — the parse and the folder model
 
+**Status.** ✅ MERGED #626 (2026-10-05). The as-built notes and the
+mutation table are at the end of this section.
+
 **Gate.** 🟢 AGENT-SAFE. No migration.
 
-**Order.** After EM-G1 merges, and after the orchestrator answers O-GM-1. The scope follows the
-recommendation of O-GM-1.
+**Order.** After EM-G1, which merged as #625. The orchestrator decided O-GM-1 on 2026-10-04 (§12.2):
+a user label is a label. The scope follows that answer.
 
 **Size.** M. About 200 lines in `gmail.py`, with fixtures and tests of about 300 lines.
 
@@ -6446,11 +6449,16 @@ recommendation of O-GM-1.
     address and no real content. The set is (a) `multipart/mixed` with a nested
     `multipart/alternative` and a PDF, (b) single-part HTML, (c) `multipart/related` with an inline
     image, (d) a lower-case `Message-Id`, (e) a name with a quoted comma, (f) an archived message
-    with a user label, and (g) an ISO-8859-1 body.
+    with a user label, (g) an ISO-8859-1 body, (h) an RFC 2047 display name (E6), and (i) a forward
+    as an inline `message/rfc822` part (review round 1).
 
-**Non-goals.** No send change (EM-G3a). No cursor (EM-G4). No new column and no migration. No
-backfill of old Gmail rows: the next fetch of each row corrects it. The folder tree of the UI is
-EM-G8 item 5.
+**Non-goals.** No send change (EM-G3a). No cursor (EM-G4). No new column and no migration. The
+folder tree of the UI is EM-G8 item 5.
+
+**No backfill of old Gmail rows (R6, E11).** A fetch of a row writes the new parse. But until EM-G4
+and EM-G5 land, the sweep reads only the first page of each label, so an older row keeps its old
+folder. That is acceptable, because production holds no Gmail mailbox (two Microsoft mailboxes
+only, checked 2026-10-04).
 
 **Fences (R7).** A new `tests/unit/test_gmail_parse.py` reads the fixtures.
 
@@ -6465,15 +6473,27 @@ EM-G8 item 5.
 - `test_a_label_page_keeps_the_folder_of_the_parse`
 - `test_the_archive_page_sends_a_query_and_no_label`
 - `test_a_user_label_named_archive_does_not_replace_the_query`
+- `test_an_encoded_display_name_decodes` (E6, fixture (h))
+
+`test_message_id_reads_in_any_case` runs on `Message-ID`, `Message-Id` and `message-id` (E7).
 
 One more R8 case in `test_email_rekey_reclaim.py`,
 `test_two_parsed_gmail_fixtures_with_one_message_id_write_two_rows`, runs the real parse through
 `_write_messages`.
 
-**Mutations.** M1 reads the top level only, and the nested test fails. M2 makes the header read
-case-sensitive, and the `Message-Id` test fails. M3 puts back the `inbox` fallback, and the archive
-test fails. M4 honours `canonical_override`, and the label-page test fails. M5 sends
-`labelIds=["archive"]`, and the archive-page test fails.
+**Mutations.** Each one must turn a named test red. E8 added M6 to M9.
+
+| Id | Mutation | The test that fails |
+|---|---|---|
+| M1 | Read the top level only | the nested test |
+| M2 | Make the header read case-sensitive | the `Message-Id` test |
+| M3 | Put back the `inbox` fallback | the archive test |
+| M4 | Honour `canonical_override` | the label-page test |
+| M5 | Send `labelIds=["archive"]` | the archive-page test |
+| M6 | Strip the angle brackets, or lower the case, of the Message-ID | `test_message_id_keeps_the_form_of_graph` |
+| M7 | Split the address list on each comma | `test_a_quoted_comma_is_one_address` |
+| M8 | Decode each part as UTF-8 only | `test_the_charset_of_the_part_decodes_the_body` |
+| M9 | Put single-part HTML into `body_text` | `test_single_part_html_fills_body_html` |
 
 **Verify with.**
 
@@ -6486,6 +6506,136 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_gmail_parse.py
 ```
 
 The R8 tests must show PASSED, with 0 skips.
+
+**As built (2026-10-05, branch `email-gmail-g2`).** The build follows items 1 to 11 and the rules
+E5 to E12 of the audit. It adds no migration, no flag and no column. Production holds no Gmail
+mailbox, so no live row changes.
+
+- **One walk (items 1 and 2).** `_iter_gmail_parts` is the one walk of the MIME tree.
+  `_collect_gmail_attachments` uses it too, with the same order and the same result.
+  `_gmail_bodies` takes the first `text/plain` part and the first `text/html` part that hold data.
+- **What the body walk skips.** It skips a part with a file name, a part with the disposition
+  `attachment` and a `message/*` part, and each part below them. So the body of an attached mail
+  never becomes the body of the mail that carries it.
+- **The charset (item 3).** `_decode_gmail_part` decodes with the charset of the part. An unknown
+  charset, or a codec that raises `UnicodeError`, falls back to UTF-8 (review round 1). It adds the
+  base64 padding when Gmail sends none.
+- **The headers (items 4 and 5).** `_parse_headers` keys each name in lower case.
+  `_gmail_message_id` trims the value, and it keeps the angle brackets and the case.
+- **The addresses (item 6, E6).** `_split_addresses` runs `getaddresses` with `strict=False` on the
+  raw header, and `_decode_display_name` decodes each name after the split. A name that does not
+  decode stays as it came. An entry with no `@` is left out (review round 1).
+- **The sender.** When the first entry of `From` has no `@`, the old reading holds. The address is
+  the text inside the angle brackets, and the name is the text before them (review round 1).
+- **The folder (items 7 to 10).** `_gmail_folder_from_labels` returns `archive` when no system
+  label matches. `list_messages` no longer writes `msg.folder`. The folder key `archive`, or a
+  `canonical_override` of `archive`, sends `GMAIL_ARCHIVE_QUERY` with the query of the caller and
+  no `labelIds`.
+- **The sweep.** The code of the sweep and the deep sync did not change. Their comments said that
+  the system labels come last to win the upsert. Now they say that the order sets no folder.
+
+**The decisions of the audit, as built.**
+
+- **E5.** `tests/unit/test_email_folders.py` expected `inbox` for a message with no system label.
+  It now expects `archive`, ON PURPOSE. A comment on that assert and a comment in
+  `_gmail_folder_from_labels` say so. Do not change it back.
+- **E9.** From this merge, "Also in", the draft dedupe and the Sent-copy proof compare Gmail rows
+  too, because a Gmail row now holds a Message-ID. Gmail stays hidden (D-EM-35), so this has no
+  live effect. EM-G2 corrected the comments that said only Outlook stores it, and EM-G9 lost its
+  comment item.
+- **E11.** The paragraph "No backfill of old Gmail rows" above records the limit of the sweep.
+- **E12.** From EM-G2 to EM-G8, "Load older" in a Gmail user-label view files each row as `inbox`
+  or `archive`. So that folder view gets no new rows. This is accepted while Gmail stays hidden.
+  EM-G8 item 5 fixes the tree, because the user labels then show in the label filter.
+- **The clock flake.** `test_email_storage_limit.py::test_a_before_that_is_not_a_past_date_answers_400`
+  computed "now + 5 minutes" at collection. On a slow run that date is in the past, and the test
+  fails. A sentinel parameter now names the case, and the body of the test computes the date. No
+  other line of that file changed.
+- **Anchors.** Each anchor of the brief matched at `b0e09c23a`. The Outlook `internetMessageId`
+  is at `outlook.py:1975` and its body at `:1960-1961`, a few lines below `:1971` and `:1955-1956`.
+
+**The fences, as built.** `tests/unit/test_gmail_parse.py` holds 30 cases, and all are hermetic.
+They drive `get_message` or `list_messages` through a fake HTTP client that answers from the
+fixtures. The R8 case runs on a real Postgres as `acb_app_h3rls`.
+
+| Test | Kind | What it proves |
+|---|---|---|
+| `test_a_nested_alternative_gives_text_and_html` (2 cases) | hermetic | Fixtures (a) and (c) give both bodies. (a) keeps its PDF, and (c) lists no inline image. |
+| `test_single_part_html_fills_body_html` | hermetic | Fixture (b) fills `body_html`, and `body_text` is empty. |
+| `test_the_charset_of_the_part_decodes_the_body` | hermetic | Fixture (g) decodes with no U+FFFD. No charset, or an unknown one, decodes as UTF-8. |
+| `test_message_id_reads_in_any_case` (3 cases, E7) | hermetic | `Message-ID`, `Message-Id` and `message-id` each fill `internet_message_id`. |
+| `test_message_id_keeps_the_form_of_graph` | hermetic | The value equals what the Outlook parse gives for the same Graph value. No header gives None. |
+| `test_a_quoted_comma_is_one_address` | hermetic | Fixture (e): `"Doe, John"` and `"Rao, Asha"` stay one address each. |
+| `test_an_encoded_display_name_decodes` (E6) | hermetic | Fixture (h): `Müller, Jürgen` and `Rao, Asha` decode after the split. |
+| `test_an_address_header_with_no_address_gives_no_entry` | hermetic | A group with no member gives no address. |
+| `test_no_system_label_files_as_archive` | hermetic | Fixture (f) files as `archive`. |
+| `test_the_system_labels_decide_in_order` | hermetic | The order of D-EM-33. |
+| `test_a_user_label_never_sets_the_folder` | hermetic | A user label named Archive goes to `categories` only. |
+| `test_a_label_page_keeps_the_folder_of_the_parse` | hermetic | A user-label page files its rows as `inbox` and `archive`. |
+| `test_the_archive_page_sends_a_query_and_no_label` | hermetic | The Archive page sends `GMAIL_ARCHIVE_QUERY` and the query of the caller. |
+| `test_a_user_label_named_archive_does_not_replace_the_query` | hermetic | The arguments of `transport/folders.py` still send the query. |
+| `test_a_codec_that_raises_decodes_as_utf8` (3 cases, round 1) | hermetic | `idna`, `punycode` and `undefined` decode as UTF-8, and `list_messages` keeps the mail. |
+| `test_an_attached_mail_never_becomes_the_body` (round 1) | hermetic | Fixture (i): the inner body of an inline `message/rfc822` part is not the body. |
+| `test_a_text_part_with_attachment_disposition_is_not_the_body` (round 1) | hermetic | A `text/plain` part with the disposition `attachment` is not the text body. |
+| `test_a_bare_comma_in_from_keeps_the_real_sender` (2 cases, round 1) | hermetic | `Doe, John <…>` and `Müller, Jürgen <…>` keep the name and the real address. |
+| `test_a_bare_comma_in_to_keeps_each_real_address` (2 cases, round 1) | hermetic | The same forms in `To` keep each real address and no fragment. |
+| `test_a_loose_address_list_keeps_each_real_address` (3 cases, round 1) | hermetic | A trailing comma, a `;` and an empty element keep both addresses. |
+| `test_each_fixture_is_a_gmail_message_with_no_real_address` | hermetic | Nine fixtures, the shape of `format=full`, and only RFC 2606 domains. |
+| `test_two_parsed_gmail_fixtures_with_one_message_id_write_two_rows` | R8 | Two parses of fixture (a), each with its own Gmail id, keep two rows over two syncs through `_write_messages`. |
+
+**Mutations, as run (2026-10-05).** Each mutation ran against `test_gmail_parse.py`,
+`test_email_folders.py` and the R8 class of `test_email_rekey_reclaim.py`, on a real Postgres with
+0 skips. A script then wrote back the original bytes of `gmail.py` and checked its SHA-256. Each
+mutation turned a named test red.
+
+| Id | Mutation (`gmail.py`) | Red tests |
+|---|---|---|
+| M1 | The body walk reads the top level only | `test_a_nested_alternative_gives_text_and_html`, both cases |
+| M2 | `_parse_headers` keeps the case of each name | the `Message-ID` and `Message-Id` cases of `test_message_id_reads_in_any_case`, `test_message_id_keeps_the_form_of_graph`, the two address tests and the R8 case |
+| M3 | The fallback is `inbox` | `test_no_system_label_files_as_archive`, `test_a_user_label_never_sets_the_folder`, the three page tests and `test_email_folders.py::test_gmail_folder_from_labels_priority` |
+| M4 | `list_messages` writes `canonical_override` into the folder | `test_a_label_page_keeps_the_folder_of_the_parse` |
+| M5 | The Archive branch never runs, so `labelIds` goes out | `test_the_archive_page_sends_a_query_and_no_label`, `test_a_user_label_named_archive_does_not_replace_the_query` |
+| M6a | The Message-ID loses its angle brackets | `test_message_id_keeps_the_form_of_graph`, the three cases of `test_message_id_reads_in_any_case`, the R8 case |
+| M6b | The Message-ID is lower-cased | the same five tests as M6a |
+| M7 | The address list splits on each comma | `test_a_quoted_comma_is_one_address` |
+| M8 | Each part decodes as UTF-8 only | `test_the_charset_of_the_part_decodes_the_body` |
+| M9 | A single-part body goes into `body_text` | `test_single_part_html_fills_body_html` |
+| E6 | The names decode before the split | `test_an_encoded_display_name_decodes` |
+| MX1 | A `message/*` part is not a file | `test_an_attached_mail_never_becomes_the_body` |
+| MX2 | The disposition `attachment` is not a file | `test_a_text_part_with_attachment_disposition_is_not_the_body` |
+| MX3 | `From` takes its first entry with no check for `@` | both cases of `test_a_bare_comma_in_from_keeps_the_real_sender` |
+| R1 | A list keeps an entry with no `@` | both cases of `test_a_bare_comma_in_to_keeps_each_real_address` |
+| R2 | Only `LookupError` falls back to UTF-8 | the three cases of `test_a_codec_that_raises_decodes_as_utf8` |
+| R3 | `getaddresses` is strict | the trailing-comma and `;` cases of `test_a_loose_address_list_keeps_each_real_address` |
+
+Review round 1 ran all 17 rows again on the new code, against 34 tests with 0 skips. Each row was
+red, and each restore matched the SHA-256 of `gmail.py`. M2 then turned 13 tests red, because the
+new address tests read `From`, `To` and `Cc` too.
+
+**Review round 1 (2026-10-05).** The verifier found one P2 regression and three P3 defects. Each fix
+has a fence.
+
+- **P2, a comma outside quotes in `From`.** `From: Doe, John <john@example.org>` gave the sender
+  `Doe` with no address, and main gave the real one. The fix: when the first entry has no `@`,
+  `_parse_from` uses the old reading. A list leaves out each entry with no `@`, so a fragment never
+  becomes a recipient. Fences: `test_a_bare_comma_in_from_keeps_the_real_sender` and
+  `test_a_bare_comma_in_to_keeps_each_real_address`, each in ASCII and in non-ASCII.
+- **P3a, a codec that raises.** `charset=idna`, `punycode` or `undefined` raised `UnicodeError`.
+  The parse failed, and `list_messages` then skipped the mail at each sync, so a sender could hide a
+  mail. The fix: `_decode_gmail_part` falls back to UTF-8 on `UnicodeError` too. Fence:
+  `test_a_codec_that_raises_decodes_as_utf8`.
+- **P3b, a strict address parse.** On Python 3.12.12, `getaddresses` refuses a whole header for one
+  defect, so `a@example.org, b@example.org,` gave no recipient. The fix: `_split_addresses` passes
+  `strict=False`, and it falls back to the plain call on a Python with no such keyword. The lenient
+  parser splits on `;` too. Fence: `test_a_loose_address_list_keeps_each_real_address`.
+- **P3c, three rules with no fence.** The verifier removed the rule for a `message/*` part, the rule
+  for the disposition `attachment` and the `From` fallback, and each mutation survived. Fixture (i)
+  and two new tests now hold them (MX1 to MX3 above).
+
+**Known limit EM-G2-f1 (P3d, on main before EM-G2).** Gmail can send a large text part with
+`body.attachmentId` and no `body.data`. The body walk then reads nothing for that part, and the body
+stays empty. The fix needs a call of `users.messages.attachments.get` for that part. A later slice
+owns it, and it needs its own audit.
 
 #### 12.3.3 EM-G3a — send and drafts
 
@@ -6984,8 +7134,11 @@ The theme suite holds the design-system fences, so keep it in the run.
    the two is not cold and not awaiting (D-EM-27).
 4. **The known limits.** Update §11.6 edge cases 10, 11 and 26. Update the F2 note of EM-T8e-1
    (§11.7.5) and the note of EM-T8g-3 on `internet_message_id` (§11.7.7).
-5. **The comments.** Update `automation/identity.py:171-172`, `:326-327` and the line in
-   `apps/services/gateway/AGENTS.md:54`.
+
+**The comments moved to EM-G2 (E9).** EM-G2 corrected each comment that said only Outlook stores
+the Message-ID. They sit above `ALSO_IN_SQL` and `_PROVEN_OWN_SEND_SQL` in `automation/identity.py`,
+in two lines of `apps/services/gateway/AGENTS.md`, and in the docstrings of
+`test_email_duplicates.py` and `test_email_ai_context.py`. This slice has no comment item.
 
 **Fences (R7).** New R8 cases in `tests/unit/test_email_duplicates.py` and
 `tests/unit/test_email_ai_context.py`. The Gmail rows come from the real parse of an EM-G2
@@ -7036,6 +7189,13 @@ user (Q-GM-3) and gives the go. An agent writes the env under gate `env-write` a
 10. Save a draft in Metorite. Gmail shows one draft. Send a draft made in Gmail web from Metorite.
 11. Turn sync off for one hour, send mail, and turn it on. No mail is lost.
 12. Disconnect Gmail. The copy in Metorite goes, and the mail stays in Gmail.
+13. Read one mail with an RFC 2047 sender name through `format=full` (EM-G2 review round 1). Record
+    whether Gmail sends the encoded word raw or decoded. A decoded name with a comma and no quotes,
+    such as `Müller, Jürgen`, still splits in a `To` list.
+14. Open the Archive folder and "Load older". Record that Gmail search takes `GMAIL_ARCHIVE_QUERY`
+    (`-in:inbox -in:sent -in:drafts`) and gives the archived mail.
+15. Read one mail with an ISO-8859-1 body. Record that `body.data` keeps the charset of its part,
+    so the body shows with no U+FFFD.
 
 **Evidence.** The log lines of each step, the row counts and the screenshots. Report each
 production act in the same message (CLAUDE.md §3a rule 2).

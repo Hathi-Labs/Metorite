@@ -284,12 +284,17 @@ def test_the_storage_steps_open_no_session_and_never_commit() -> None:
 # ── 4. The cutoff of a request (hermetic) ───────────────────────────────────
 
 
+#: A sentinel for "five minutes from now". The test body computes the date,
+#: because a value computed at collection is a past date on a slow run.
+_FIVE_MINUTES_AHEAD = "<now + 5 minutes>"
+
+
 @pytest.mark.parametrize("value", [
-    "", "x", "2026-13-01",
-    (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
-    "2999-01-01",
+    "", "x", "2026-13-01", _FIVE_MINUTES_AHEAD, "2999-01-01",
 ])
 def test_a_before_that_is_not_a_past_date_answers_400(value) -> None:
+    if value == _FIVE_MINUTES_AHEAD:
+        value = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
     with pytest.raises(HTTPException) as err:
         storage_routes._cutoff(value)
     assert err.value.status_code == 400

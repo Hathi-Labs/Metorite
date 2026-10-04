@@ -1,0 +1,61 @@
+{
+  "id": "1927a9b8c7d6e5f4",
+  "threadId": "1927a9b8c7d6e5f4",
+  "labelIds": [
+    "UNREAD",
+    "IMPORTANT",
+    "CATEGORY_PERSONAL",
+    "INBOX"
+  ],
+  "snippet": "Guten Tag, die Lieferung kommt am Mittwoch.",
+  "payload": {
+    "partId": "",
+    "mimeType": "text/plain",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Delivered-To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Received",
+        "value": "by 2002:a05:7300:5b1a:b0:12a:3c4d:5e6f with SMTP id x9csp1234567; Mon, 07 Oct 2024 10:10:10 +0200"
+      },
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "From",
+        "value": "=?UTF-8?B?TcO8bGxlciwgSsO8cmdlbg==?= <juergen.mueller@example.net>"
+      },
+      {
+        "name": "Date",
+        "value": "Mon, 07 Oct 2024 10:10:10 +0200"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<lieferung.1007@mail.example.net>"
+      },
+      {
+        "name": "Subject",
+        "value": "Lieferung"
+      },
+      {
+        "name": "To",
+        "value": "=?UTF-8?Q?Andr=C3=A9_Dupont?= <andre@example.com>, =?UTF-8?B?UmFvLCBBc2hh?= <asha@example.com>"
+      },
+      {
+        "name": "Content-Type",
+        "value": "text/plain; charset=\"UTF-8\""
+      }
+    ],
+    "body": {
+      "size": 44,
+      "data": "R3V0ZW4gVGFnLCBkaWUgTGllZmVydW5nIGtvbW10IGFtIE1pdHR3b2NoLgo="
+    }
+  },
+  "sizeEstimate": 4096,
+  "historyId": "2817701",
+  "internalDate": "1728288610000"
+}

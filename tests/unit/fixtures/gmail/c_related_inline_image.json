@@ -1,0 +1,137 @@
+{
+  "id": "1924f1e2d3c4b5a6",
+  "threadId": "1924f1e2d3c4b5a6",
+  "labelIds": [
+    "CATEGORY_PERSONAL",
+    "INBOX"
+  ],
+  "snippet": "Please find the new layout below. Thanks, Lena",
+  "payload": {
+    "partId": "",
+    "mimeType": "multipart/related",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Delivered-To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Received",
+        "value": "by 2002:a05:7300:5b1a:b0:12a:3c4d:5e6f with SMTP id x9csp1234567; Wed, 02 Oct 2024 17:05:12 +0200"
+      },
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "From",
+        "value": "Lena Vogel <lena@example.net>"
+      },
+      {
+        "name": "Date",
+        "value": "Wed, 02 Oct 2024 17:05:12 +0200"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<a1b2c3d4-0001-4e5f-8a9b-layout@example.net>"
+      },
+      {
+        "name": "Subject",
+        "value": "New layout"
+      },
+      {
+        "name": "To",
+        "value": "Asha Rao <asha@example.com>"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/related; boundary=\"000000000000e7f8a9b0c1d2e3f4\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        "partId": "0",
+        "mimeType": "multipart/alternative",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "multipart/alternative; boundary=\"000000000000f5a6b7c8d9e0f1a2\""
+          }
+        ],
+        "body": {
+          "size": 0
+        },
+        "parts": [
+          {
+            "partId": "0.0",
+            "mimeType": "text/plain",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=\"UTF-8\""
+              }
+            ],
+            "body": {
+              "size": 73,
+              "data": "UGxlYXNlIGZpbmQgdGhlIG5ldyBsYXlvdXQgYmVsb3cuDQpbaW1hZ2U6IGxheW91dC5wbmddDQoNClRoYW5rcywNCkxlbmENCg=="
+            }
+          },
+          {
+            "partId": "0.1",
+            "mimeType": "text/html",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=\"UTF-8\""
+              }
+            ],
+            "body": {
+              "size": 138,
+              "data": "PGRpdiBkaXI9Imx0ciI-UGxlYXNlIGZpbmQgdGhlIG5ldyBsYXlvdXQgYmVsb3cuPGRpdj48aW1nIHNyYz0iY2lkOmlpX20xbGF5b3V0MCIgYWx0PSJsYXlvdXQucG5nIj48L2Rpdj48ZGl2PlRoYW5rcyw8YnI-TGVuYTwvZGl2PjwvZGl2Pg0K"
+            }
+          }
+        ]
+      },
+      {
+        "partId": "1",
+        "mimeType": "image/png",
+        "filename": "layout.png",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "image/png; name=\"layout.png\""
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=\"layout.png\""
+          },
+          {
+            "name": "Content-Transfer-Encoding",
+            "value": "base64"
+          },
+          {
+            "name": "Content-ID",
+            "value": "<ii_m1layout0>"
+          },
+          {
+            "name": "X-Attachment-Id",
+            "value": "ii_m1layout0"
+          }
+        ],
+        "body": {
+          "attachmentId": "ANGjdJ_fixture_attachment_layout_png",
+          "size": 20480
+        }
+      }
+    ]
+  },
+  "sizeEstimate": 4096,
+  "historyId": "2817455",
+  "internalDate": "1727881512000"
+}
