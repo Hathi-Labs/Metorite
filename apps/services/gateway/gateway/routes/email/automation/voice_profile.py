@@ -23,6 +23,7 @@ import json
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion.llm_cap import automation_job, llm_slot
 from fastapi import BackgroundTasks, Depends, HTTPException, Query, status
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.core import (
@@ -335,6 +336,7 @@ async def _store_kb_suggestions(
     return stored
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _build_voice_profile_job(
     account_id: str, sources: list[str], start: Any, end: Any,
     extract_knowledge: bool, token: int,
@@ -696,12 +698,14 @@ async def sample_voice_profile(
             "email body (greeting through sign-off) — no subject, no "
             "commentary. Invent plausible but generic specifics.\n\n" + block
         )
-        resp, _ = await acompletion_with_fallback(
-            model="tier-powerful",
-            messages=[{"role": "system", "content": sys_prompt},
-                      {"role": "user", "content": f"Scenario: {scenario}"}],
-            temperature=0.4, max_tokens=700,
-        )
+        # A member drives the sample, so the slot binds nothing (EM-T4b).
+        async with llm_slot():
+            resp, _ = await acompletion_with_fallback(
+                model="tier-powerful",
+                messages=[{"role": "system", "content": sys_prompt},
+                          {"role": "user", "content": f"Scenario: {scenario}"}],
+                temperature=0.4, max_tokens=700,
+            )
         sample = (resp.choices[0].message.content or "").strip()
     except Exception as exc:
         _log.warning("email.voice_profile_sample_failed", error=str(exc)[:160])

@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion.llm_cap import automation_job, llm_slot
 from fastapi import BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from gateway.routes.email.automation.assistant import (
@@ -528,6 +529,7 @@ def _resolve_memory_scope(
     return ("GLOBAL", "")
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _learn_from_sent(account_id: str, thread_id: str, sent_text: str) -> None:
     """Background: if the user edited the assistant's draft for this thread,
     extract scoped reply memories (sender/domain/topic/global) and store them
@@ -654,13 +656,14 @@ async def _llm_summarize_writing_style(prefs: list[str]) -> str:
             "bullet guidelines (tone, length, greeting/sign-off, formatting, what "
             "to include or omit). No preamble — just the bullet lines."
         )
-        resp, _ = await acompletion_with_fallback(
-            model="tier-powerful",
-            messages=[{"role": "system", "content": sys_prompt},
-                      {"role": "user", "content": "Preferences:\n"
-                       + "\n".join(f"- {p}" for p in prefs[:25])}],
-            temperature=0.2, max_tokens=1000,
-        )
+        async with llm_slot():  # EM-T4b: the cap and the daily budget
+            resp, _ = await acompletion_with_fallback(
+                model="tier-powerful",
+                messages=[{"role": "system", "content": sys_prompt},
+                          {"role": "user", "content": "Preferences:\n"
+                           + "\n".join(f"- {p}" for p in prefs[:25])}],
+                temperature=0.2, max_tokens=1000,
+            )
         return (resp.choices[0].message.content or "").strip()[:1500]
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.summarize_style_failed", error=str(exc)[:160])
@@ -929,16 +932,19 @@ async def _llm_draft_reply(
             # Streaming path (SSE compose): live deltas reach the composer;
             # the cleaned final body below still wins over the preview.
             from acb_llm.context import acompletion_stream_text  # noqa: PLC0415
-            raw, _used = await acompletion_stream_text(
-                model=model,
-                messages=_messages, temperature=0.3, max_tokens=3000,
-                on_delta=on_delta,
-            )
+            # EM-T4b: the slot holds for the whole stream, the leaf call.
+            async with llm_slot():
+                raw, _used = await acompletion_stream_text(
+                    model=model,
+                    messages=_messages, temperature=0.3, max_tokens=3000,
+                    on_delta=on_delta,
+                )
         else:
-            resp, _used = await acompletion_with_fallback(
-                model=model,
-                messages=_messages, temperature=0.3, max_tokens=3000,
-            )
+            async with llm_slot():
+                resp, _used = await acompletion_with_fallback(
+                    model=model,
+                    messages=_messages, temperature=0.3, max_tokens=3000,
+                )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
     except Exception as exc:  # noqa: BLE001
@@ -1079,16 +1085,19 @@ async def _llm_compose_assist(
             # Streaming path (SSE compose): live deltas reach the composer;
             # the cleaned final body below still wins over the preview.
             from acb_llm.context import acompletion_stream_text  # noqa: PLC0415
-            raw, _used = await acompletion_stream_text(
-                model=model,
-                messages=_messages, temperature=0.3, max_tokens=3000,
-                on_delta=on_delta,
-            )
+            # EM-T4b: the slot holds for the whole stream, the leaf call.
+            async with llm_slot():
+                raw, _used = await acompletion_stream_text(
+                    model=model,
+                    messages=_messages, temperature=0.3, max_tokens=3000,
+                    on_delta=on_delta,
+                )
         else:
-            resp, _used = await acompletion_with_fallback(
-                model=model,
-                messages=_messages, temperature=0.3, max_tokens=3000,
-            )
+            async with llm_slot():
+                resp, _used = await acompletion_with_fallback(
+                    model=model,
+                    messages=_messages, temperature=0.3, max_tokens=3000,
+                )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
     except Exception as exc:  # noqa: BLE001
@@ -1181,12 +1190,6 @@ async def _draft_consult_plan(
             on_activity, kind="qualify", emailKind="", consults=0,
             detail="qualifier unavailable — drafting from the thread alone")
         return []
-
-
-def _strip_draft_markers(text: str) -> str:
-    """Remove any standalone '---' fence lines the agent may wrap a draft in."""
-    lines = [ln for ln in (text or "").splitlines() if ln.strip() != "---"]
-    return "\n".join(lines).strip()
 
 
 _PLACEHOLDER_LINE_RE = re.compile(
@@ -1285,70 +1288,6 @@ def _recipient_greeting_name(recipient: str) -> str:
     if not name or "@" in name:
         return ""
     return name
-
-
-async def _draft_via_maf_agent(
-    email: dict[str, str], about: str, signature: str, user_email: str,
-    *, instructions: str = "",
-) -> str | None:
-    """Draft by running the email-assistant MAF agent (which can hand off to
-    agent-sales-assistant / task-manager and read memory). Returns None on any failure so the
-    caller can fall back to the in-gateway orchestrator.
-
-    NOTE: currently dead — ``_agent_draft_reply`` always routes to
-    ``_orchestrate_draft`` instead (see the comment there). The bare-email memory
-    scope below would be a per-account retrieval MISS if this is ever revived;
-    thread ``account_id`` through and use ``email_memory_scope`` if you do. (It
-    can't be scoped here anyway without breaking the agent's X-User-Email auth —
-    the executor re-derives the ContextVar from the run_agent payload below.)"""
-    try:
-        from acb_skills.memory_tools import _set_memory_user_id  # noqa: PLC0415
-        _set_memory_user_id(user_email or "")
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from orchestrator.executor import run_agent  # noqa: PLC0415
-        task = instructions or (
-            "Draft a reply to the email below. First gather context: use "
-            "remember() for the sender, and call_agent('agent-sales-assistant' or 'task-manager') "
-            "ONLY if the email is clearly about a deal or a project."
-        )
-        thread = (email.get("thread") or "").strip()
-        thread_block = (
-            "\nEarlier in this thread (oldest to newest):\n"
-            f"{thread[:_DRAFT_THREAD_MAX_CHARS]}\n"
-            if thread else ""
-        )
-        msg = (
-            f"{task} Then write ONLY the message body — no subject line, no "
-            "preamble, no '---' fences, no confidence line.\n\n"
-            f"From: {email.get('from', '')}\nSubject: {email.get('subject', '')}\n"
-            f"{thread_block}"
-            "Latest message (reply to this):\n"
-            f"{(email.get('body', '') or '')[:_DRAFT_BODY_MAX_CHARS]}"
-        )
-        res = await asyncio.wait_for(
-            run_agent(
-                "email-assistant",
-                {"message": msg, "about": about, "signature": signature,
-                 "user_email": user_email},
-            ),
-            timeout=150.0,
-        )
-        ans = ""
-        if isinstance(res, dict):
-            ans = res.get("answer") or ""
-            if not ans and isinstance(res.get("result"), dict):
-                ans = res["result"].get("content") or ""
-            if not ans and isinstance(res.get("result"), str):
-                ans = res["result"]
-        ans = _strip_draft_markers(ans)
-        if ans:
-            # Signature appended at send time (signature.build_signed_bodies).
-            return ans
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("email.maf_draft_failed", error=str(exc)[:200])
-    return None
 
 
 _FOLLOW_UP_INSTRUCTION = (
@@ -1574,13 +1513,15 @@ async def _orchestrate_draft(
                     on_activity, kind="consult", status="start",
                     agent=item["agent"], question=item["question"])
                 try:
-                    res = await asyncio.wait_for(
-                        run_agent(
-                            item["agent"],
-                            {"message": item["question"], "user_email": user_email},
-                        ),
-                        timeout=agent_timeout,
-                    )
+                    # EM-T4b: one permit for the consult, the leaf call.
+                    async with llm_slot():
+                        res = await asyncio.wait_for(
+                            run_agent(
+                                item["agent"],
+                                {"message": item["question"], "user_email": user_email},
+                            ),
+                            timeout=agent_timeout,
+                        )
                     ans = ""
                     if isinstance(res, dict):
                         ans = str(res.get("answer") or res.get("result") or "")

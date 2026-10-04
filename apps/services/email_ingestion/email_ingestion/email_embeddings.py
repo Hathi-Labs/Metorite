@@ -33,6 +33,8 @@ from typing import Any
 
 from sqlalchemy import text
 
+from email_ingestion.llm_cap import llm_slot
+
 logger = logging.getLogger(__name__)
 
 # Messages embedded per sweep tick — bounded so the extra embedding calls never
@@ -84,13 +86,16 @@ async def _embed_batch(texts: list[str], model: str) -> list[list[float]] | None
         from acb_common.settings import get_settings  # noqa: PLC0415
         litellm.drop_params = True
         settings = get_settings()
-        resp = await litellm.aembedding(
-            model=model,
-            input=texts,
-            api_base=settings.litellm_base_url.rstrip("/") + "/v1",
-            api_key=settings.litellm_master_key,
-            custom_llm_provider="openai",
-        )
+        # EM-T4b: inside the automation scope (the cleanup backfill) the
+        # cap and the daily budget bind the embed. Elsewhere this is a no-op.
+        async with llm_slot():
+            resp = await litellm.aembedding(
+                model=model,
+                input=texts,
+                api_base=settings.litellm_base_url.rstrip("/") + "/v1",
+                api_key=settings.litellm_master_key,
+                custom_llm_provider="openai",
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("email_embed.batch_failed model=%s err=%s",
                        model, str(exc)[:160])

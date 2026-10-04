@@ -42,6 +42,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion import import_window
+from email_ingestion.llm_cap import automation_job
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.routes.email.automation.engine import (
     _load_rule_patterns,
@@ -700,6 +701,7 @@ def _sweep_tick(account_id: str, applied: int, scanned: int = 0,
             job["scanned"] = scanned
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _sweep_job(
     account_id: str, limit: int, owner: str, token: int | None = None,
 ) -> None:
@@ -866,6 +868,7 @@ async def _mark_history_held_back(
     return int(getattr(res, "rowcount", 0) or 0)
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _backfill_and_clean_job(
     account_id: str, since: datetime | None, owner: str,
     token: int | None = None,

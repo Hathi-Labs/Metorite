@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
 from gateway.routes.email.automation.assistant import _load_assistant_about
@@ -679,6 +680,11 @@ async def _llm_determine_thread_status(
                 if st in allowed:
                     return st, True
             return fallback, False
+        except LLMBudgetExhausted:
+            # EM-T4b item 13: a spent daily budget is not an answer. Raise it
+            # again and write no `· auto` fallback, so nothing guesses a
+            # status, and a later cycle asks again.
+            raise
         except Exception as exc:  # noqa: BLE001
             _log.warning("email.determine_status_failed", error=str(exc)[:160])
             return fallback, False
@@ -1573,6 +1579,7 @@ async def recompute_thread_status(
     return rz_status, label
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _mark_thread_replied(
     account_id: str, thread_id: str,
     sent_body: str | None = None, sent_subject: str | None = None,
@@ -2068,6 +2075,7 @@ async def _count_reply_zero_backlog(db: Any, account_id: str) -> int:
     ), {"aid": account_id})).scalar() or 0
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _reclassify_reply_zero_job(
     account_id: str, *, token: int | None = None,
 ) -> None:

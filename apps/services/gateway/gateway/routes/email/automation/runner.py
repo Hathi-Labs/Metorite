@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion.llm_cap import automation_job
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.engine import (
@@ -1439,6 +1440,7 @@ async def _download_past_range(
     return failure
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _process_past_emails_job(
     account_id: str, start: datetime | None, end: datetime | None,
     limit: int, dry_run: bool, user_email: str, only_unread: bool = False,
@@ -1663,6 +1665,7 @@ _NEW_MAIL_ONLY = f"""
        AND em.received_at >= {NEW_MAIL_FLOOR_SQL}"""
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _run_rules_job(
     account_id: str, limit: int, dry_run: bool, user_email: str
 ) -> None:

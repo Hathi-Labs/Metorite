@@ -42,6 +42,13 @@ os.environ.setdefault("CUSTOMER_CONSOLE_STARTER_CREDITS", "0")
 # No daily cap under test either: suites provision many orgs in a run, and a
 # cap would make grant assertions depend on test order. The cap test sets it.
 os.environ.setdefault("CUSTOMER_CONSOLE_STARTER_DAILY_CAP", "0")
+# The email model budget is OFF under test (WS-17 EM-T4b). The shipped
+# default is `log`, which counts each model call of a mailbox job in tenant
+# Redis. Under test that wrote real keys into whatever Redis a dev machine
+# runs, and each count then carried over to the next run. The budget suite
+# (`tests/unit/test_email_llm_cap.py`) sets each mode it tests, over a fake
+# Redis client.
+os.environ.setdefault("EMAIL_LLM_BUDGET_MODE", "off")
 
 
 @pytest.fixture(autouse=True)
