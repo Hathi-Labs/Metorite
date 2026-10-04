@@ -265,11 +265,20 @@ def _no_egress_bound() -> bool:
 
 
 def _is_egress(tool: Any) -> bool:
+    """The injection seam's test for an egress tool (H-236).
+
+    The annotation decides (``acb_skills.egress.is_egress_tool``). The two
+    host web tools of the sandbox (``sandbox_tools.HOST_NETWORK_TOOLS``) are
+    egress tools whatever their annotation says, so a drift in the registry
+    can never give them back to a ``no_egress`` run. It reuses that list.
+    """
     try:
         from acb_skills.egress import is_egress_tool
+        from acb_skills.sandbox_tools import HOST_NETWORK_TOOLS
     except ImportError:  # no acb_skills means no tool was injected at all
         return False
-    return is_egress_tool(tool)
+    name = tool if isinstance(tool, str) else _tool_name(tool)
+    return name in HOST_NETWORK_TOOLS or is_egress_tool(tool)
 
 
 def _withhold_egress_from_agent(agent: Any) -> list[str]:

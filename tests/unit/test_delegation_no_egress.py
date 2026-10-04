@@ -16,21 +16,29 @@ a bad value clears the flag; an uncovered parent's delegation changes at all;
 a tool that can send data off the platform loses its ``open_world``
 annotation; a run site binds no ``no_egress``.
 
-Mutations this suite catches (R7), each run red once by hand on 2026-10-04:
+Mutations this suite catches (R7). A script ran each one on 2026-10-04,
+and each one turned the suite red:
 
-* ``_delegated_no_egress`` drops the cover check: the covered-parent tests;
-* ``_delegated_no_egress`` drops the inherited flag: the transitive test and
-  the child-cannot-clear tests;
+* ``_delegated_no_egress`` drops the cover check: the covered-parent tests,
+  the batch test and the Copilot test;
+* ``_delegated_no_egress`` drops the inherited flag: the grandchild test,
+  the payload test and the bad-value test;
 * ``_delegated_no_egress`` answers ``True`` for any parent: the uncovered
-  byte-identical test;
+  byte-identical test and the uncovered Copilot test;
 * ``_parent_run_covered`` drops the scope fallback: the health-flap test;
-* ``_apply_no_egress`` skips the agent's own tools: the email test;
-* ``EgressGuardProvider`` adds no ``RefuseEgressTools``: the email test, which
-  reads the refusal in the next real request body;
-* ``guard_shared_agent_shell`` drops the H-236 branch: the Copilot tests;
-* ``is_egress_tool`` ignores the annotation: the egress-set test;
-* ``create_rule`` loses ``open_world=True``: the egress-set test;
-* the batch bind drops ``no_egress``: the transitive test and the AST fence.
+* ``_apply_no_egress`` skips the agent's own tools: the Copilot test and the
+  injection test;
+* ``EgressGuardProvider`` adds no ``RefuseEgressTools``, or no
+  ``WithholdEgressTools``: the call-time test;
+* ``guard_shared_agent_shell`` drops the H-236 branch: the Copilot test;
+* ``is_egress_tool`` ignores the annotation: thirteen tests;
+* ``create_rule`` loses ``open_world=True``: the egress-set test and the
+  email tests;
+* the batch bind, or the sub-agent derive, drops ``no_egress``: the
+  grandchild test and the AST fence;
+* the batch injection passes no ``no_egress``: the batch test and the AST
+  fence;
+* ``_is_egress`` drops the ``HOST_NETWORK_TOOLS`` floor: the drift test.
 
 No database. The model is a scripted transport under each agent's real
 client, so every request body here is the one the real client builds.
@@ -578,6 +586,31 @@ def test_an_uncovered_parent_delegates_exactly_as_before(sandbox, monkeypatch) -
     assert dump(delegated) == dump(alone.bodies[0])
 
 
+def test_a_batch_delegation_of_a_covered_parent_sends_nothing(sandbox, monkeypatch) -> None:  # noqa: F811
+    """The batch path: ``call_agent_background``, the fallback of
+    ``call_agent`` and ``delegate_to_agent`` all call ``run_agent`` from the
+    parent's own frame. The parent's context names projects-assistant and no
+    flag, so the sub-run decides it from the cover."""
+    _register_every_annotation()
+    email = _email_turns()
+    sent = _harness(monkeypatch, sandbox, {EMAIL: email})
+    from acb_common.db import bind_tenant, release_tenant
+
+    token = bind_tenant(ORG_A)
+    try:
+        with bound_run(ORG_A, agent=PA, thread=new_thread()):
+            asyncio.run(executor.run_agent(
+                EMAIL, {"message": "x", "mode": "background_sub_task"},
+                run_id="r-batch", organization_id=ORG_A,
+            ))
+    finally:
+        release_tenant(token)
+    for body in email.bodies:
+        assert not _offered(body) & EXPECTED_EGRESS, sorted(_offered(body) & EXPECTED_EGRESS)
+    assert any(_blocked(r) for r in _results(email.bodies[1]))
+    assert sent == []
+
+
 def test_a_payload_cannot_clear_the_flag(sandbox, monkeypatch) -> None:  # noqa: F811
     """A delegated batch run whose payload says ``no_egress: false`` still
     binds ``no_egress=True`` and is offered no egress tool."""
@@ -806,3 +839,20 @@ def test_injection_with_no_answer_reads_the_bound_flag() -> None:
     with artifact_context_scope():
         bind_artifact_context(agent_name=EMAIL)
         assert {"send_email", "web_search"} <= names(None)
+
+
+def test_the_host_web_tools_stay_withheld_if_their_annotation_drifts(monkeypatch) -> None:
+    """The injection seam keeps ``sandbox_tools.HOST_NETWORK_TOOLS`` out of a
+    ``no_egress`` run even when the registry says they reach nothing."""
+    from acb_skills import tool_annotations as ta
+
+    _register_every_annotation()
+    for name in ("web_search", "fetch_page"):
+        monkeypatch.setitem(
+            ta.TOOL_ANNOTATIONS, name, {**ta.TOOL_ANNOTATIONS[name], "open_world": False},
+        )
+    agents = _MODULES[EMAIL].build_agents()
+    ti._inject_agent_tools(agents, agent_name=EMAIL, agent_config={"name": EMAIL},
+                           no_egress=True)
+    names = {eg.tool_name(t) for t in agents[0].default_options["tools"]}
+    assert not names & {"web_search", "fetch_page"}, names

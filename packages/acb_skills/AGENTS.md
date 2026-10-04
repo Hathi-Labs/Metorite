@@ -72,8 +72,8 @@ clone cache.
    web tools `web_search` and `fetch_page` (`HOST_NETWORK_TOOLS`), so a
    covered run holds no web tool and its container has no network (§16.3).
    Do not write that no data leaves the platform: the owner kept delegation
-   on 2026-10-03, and an agent that the run calls runs outside the sandbox
-   (H-236). The store takes only the
+   on 2026-10-03, and an agent that the run calls runs outside the sandbox.
+   H-236 (5f) withholds every egress tool from that agent. The store takes only the
    heads agent-data/, inputs/, outputs/ and .run/, and a skill folder is its
    author's alone (`agent_paths.claim_skill`, `refused_write`).
    `decide()` runs too, with the whole command and with the real host path.
@@ -89,6 +89,20 @@ clone cache.
    tests/unit/test_projects_sandbox_tools.py (WS43-F21), and for the rules
    for code tests/unit/test_generated_addendum.py and
    tests/unit/test_projects_agent.py.
+5f. egress.py -- the network control on the agents that a covered run calls
+   (H-236, spec `maf_coding_engine.md` §16.3). A run that a covered run
+   delegates to, at any depth, binds `no_egress=True` in its artifact
+   context. `no_egress_for_this_run()` is the one reader, and any value but
+   an explicit `False` reads as set. `is_egress_tool()` is the one test: a
+   tool whose annotation says `open_world`, or an MCP tool. The four
+   delegation tools (`DELEGATION_TOOLS`) never are, because the flag travels
+   with them. So `open_world` is the egress annotation: a tool that can send
+   data off the platform MUST set it. `EgressGuardProvider` adds the
+   per-run middleware that hides and refuses egress tools on the MAF path.
+   `permission_policy.guard_shared_agent_shell` refuses an egress request on
+   the Copilot path (`is_egress_request`). The orchestrator decides the flag
+   (`_tool_injection._delegated_no_egress`), because this package cannot
+   import it. Fence: tests/unit/test_delegation_no_egress.py (WS43-F24).
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The

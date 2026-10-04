@@ -55,6 +55,12 @@ and streams chat responses as AG-UI events.
    - The member is the verified `user` of the run binding, the parent's for a delegated run. The org is `_current_run_org()`. `mutation._read_first_party` is the one first-party read, and "admin" is `admin:members:manage`.
    - A refusal raises `AgentNotFound` (an `AgentLoadError`). The batch path catches it BEFORE the `AgentLoadError` clause, which starts a self-mutation. The sync run API maps it to 404. Fence: `tests/unit/test_root_agent_first_party.py`.
 
+17. **An agent that a covered run calls sends nothing off the platform** (H-236, `project-docs/specs/maf_coding_engine.md` §16.3). The owner kept delegation in a covered Projects run on 2026-10-03, and the called agent runs on the host.
+   - `_tool_injection._delegated_no_egress(parent_ctx)` is the one decision. It reads the artifact context of the frame BEFORE the new run binds its own. An empty context is no delegation. A parent with `no_egress` passes it on. Else `_parent_run_covered` asks `covers()`, and also the scope alone, so a health probe cannot clear it. It never reads a request field or a tool argument.
+   - `run_agent_stream`, `_run_agent_inner` and `_run_sub_agent_streaming` each compute it before `_inject_agent_tools`, pass it as `no_egress=`, and bind it into the run's artifact context. `_run_sub_agent_streaming` binds it in its derive, so the batch run of a MAF sub-agent inherits it. A self-anneal retry passes nothing and reads the bound flag.
+   - With `no_egress`, `_inject_agent_tools` drops every egress tool from the platform tools, the scope and the agent's own tools. The test is `acb_skills.egress.is_egress_tool`, plus the floor `sandbox_tools.HOST_NETWORK_TOOLS`. It also pops `mcp_servers`. It replaces each native MAF agent in `agents` with a per-run view that carries `EgressGuardProvider`, so read `agents` again after injection. `run_agent_stream` injects no MCP server into such a run.
+   - Fence: `tests/unit/test_delegation_no_egress.py` (WS43-F24).
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature
