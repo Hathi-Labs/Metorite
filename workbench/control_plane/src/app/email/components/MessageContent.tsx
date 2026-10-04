@@ -4,6 +4,7 @@ import Icon from "@/components/Icon";
 import { useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { splitQuotedHtml, splitQuotedText } from "../lib/quoting";
+import { UNTRUSTED_FORBID_ATTR, UNTRUSTED_FORBID_TAGS } from "@/lib/untrustedHtml";
 
 interface MessageContentProps {
   /** Raw HTML body from the provider (preferred when present). */
@@ -33,10 +34,12 @@ function proxify(u: string): string {
  * never sees the user's IP. When false, remote loading is blocked by the iframe
  * CSP and we just report that remote content is present.
  */
-function sanitizeEmailHtml(
+export function sanitizeEmailHtml(
   raw: string,
   proxyRemote: boolean
 ): { clean: string; hasRemote: boolean } {
+  // Fail closed: with no DOM, DOMPurify hands the input back unchanged.
+  if (!DOMPurify.isSupported) return { clean: "", hasRemote: false };
   let hasRemote = false;
   const hook = "afterSanitizeAttributes";
   DOMPurify.addHook(hook, (node) => {
@@ -61,8 +64,9 @@ function sanitizeEmailHtml(
   const clean = DOMPurify.sanitize(raw, {
     // Defense in depth — the iframe sandbox already blocks scripts, but strip
     // the obvious dangerous structural tags too. <style> is intentionally kept.
-    FORBID_TAGS: ["script", "iframe", "object", "embed", "form", "base", "meta", "link"],
-    FORBID_ATTR: ["ping"],
+    // The base policy is shared with the .docx viewer (`lib/untrustedHtml.ts`).
+    FORBID_TAGS: [...UNTRUSTED_FORBID_TAGS],
+    FORBID_ATTR: [...UNTRUSTED_FORBID_ATTR],
     ADD_ATTR: ["target"],
     ALLOW_DATA_ATTR: false,
     WHOLE_DOCUMENT: false,
