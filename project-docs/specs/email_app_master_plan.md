@@ -19,6 +19,7 @@
 > ✅ **EM-T4e MERGED (#586, 2026-10-03, migration 226).** The rules and the account reads make one read for their child rows. One new index serves the thread reads (§10.4.6).
 > ✅ **EM-T4d MERGED (#614, 2026-10-04, no migration).** The Graph delta of Outlook runs in shadow beside the full sweep, behind `EMAIL_OUTLOOK_DELTA`, which is `off` by default. The sweep stays the one writer (§10.4.6). Review round 1 fixed seven findings, and the first is a host check on each delta link.
 > ✅ **EM-T4b MERGED (#617, 2026-10-04), dark.** One cap and one daily budget bind the email model calls. The cap is 0 and the budget mode is `log` (§10.4.6).
+> 🔨 **EM-T4a-2 PR-A BUILT, not merged (2026-10-04), branch `email-decision-core`.** `_mark_thread_replied` asks the thread status with no session open. A guard voids a status write when a newer inbound message arrived during the ask (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
@@ -1533,7 +1534,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 **Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). ✅ EM-T4f MERGED (#578, 2026-10-02). ✅ EM-T4e MERGED (#586, migration 226, 2026-10-03).
 
-✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). ✅ EM-T4b MERGED (#617, 2026-10-04, dark: cap 0, budget `log`). EM-T4a-2, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). ✅ EM-T4b MERGED (#617, 2026-10-04, dark: cap 0, budget `log`). 🔨 EM-T4a-2 PR-A BUILT, not merged (2026-10-04), branch `email-decision-core`. EM-T4a-2 PR-B, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box. The dev-phase window of CLAUDE.md §3a does NOT open `EMAIL_LLM_BUDGET_MODE=enforce`. `enforce` holds back triage and drafts from a paying mailbox. So it is a product limit, and the owner decides it.
 
@@ -1749,7 +1750,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 ##### EM-T4a-2 — the decision core
 
-**Status (2026-10-04).** 📝 NARROWED. The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The part ships as two PRs, and PR-A goes first. It adds no setting, no flag and no migration.
+**Status (2026-10-04).** 🔨 PR-A BUILT, not merged (2026-10-04), branch `email-decision-core`. PR-B is not built. The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The part ships as two PRs, and PR-A goes first. It adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
 
 **Gate.** 🟢 AGENT-SAFE for the whole part.
 
@@ -1816,6 +1817,41 @@ uv run pytest tests/unit/test_email_automation_tenancy.py tests/unit/test_email_
 With the database exported, the run shows 0 skips. At `04a64ba4d` with no database, the run shows 504 passed and 45 skipped.
 
 Ruff: compare the count of each changed file with the base. At `04a64ba4d` the counts are `engine.py` 7, `replyzero.py` 23, `learning.py` 6, `senders.py` 13 and `runner.py` 17. A new test file has 0.
+
+**PR-A as built (2026-10-04).**
+
+- `replyzero.py` has three steps. `read_thread_status(db, ...)` returns a `StatusRead`, or None for a thread with no rows. `ask_thread_status(read)` takes no `db`. `write_thread_status(db, read, verdict)` takes `db` and opens no block.
+- `StatusRead` holds the account, the thread, the trigger, the context, the about text, the corrections and the member. The context holds the self addresses. The ask and the write read none of them again.
+- `ThreadContext.newest_received_at` is the newest non-NULL `received_at` of the stored rows. `StatusRead.seen_at` returns it, and the guard compares with it.
+- `_upsert_thread_status` takes `guard` and `seen_at`, and it returns True when it wrote the row. With `guard`, the statement is `INSERT ... SELECT ... WHERE NOT EXISTS (...) ON CONFLICT ... RETURNING 1`. Without `guard`, the statement is the old one.
+- `_mark_thread_replied` keeps `@automation_job`. Block A reads. A self-only thread writes its FYI row in Block A and asks nothing. The ask runs with no block open. Block W writes the status.
+- A voided write logs `email.thread_status_write_voided` and ends the job. The job then builds no provider and reconciles no labels. Block B does not change, and EM-T4a-3 owns it.
+- The composed `recompute_thread_status(db, ...)` runs the three steps on one `db`. Its write uses the guard too.
+- PR-A adds no `llm_slot`, no setting, no flag and no migration.
+
+**An agent decision (D16).** The read can see no row with a date. Then `seen_at` is NULL, and any dated row outside `sent` and `drafts` voids the write. That follows the order of `build_thread_context` (`ASC NULLS FIRST`). The decision of item 6 did not name this case.
+
+**Fences (R7).** All are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-no-session-across-the-ask`: `test_the_status_ask_runs_with_no_session_open` in `off`, `shadow` and `on`. The companion is `test_the_ask_fence_can_fail`.
+- `email-status-write-guard`: `TestTheStatusWriteGuard` (R8, six cases), `test_the_guard_compares_with_the_newest_stored_row` and `test_a_voided_write_reconciles_no_labels`.
+- Two more cases: `test_a_self_only_thread_writes_in_the_read_block_and_asks_nothing` and `test_a_spent_budget_in_the_ask_writes_nothing`.
+
+Two fakes of `_upsert_thread_status` in `test_email_reply_zero.py` now return True, which is the new call shape. No expected value changed.
+
+**Mutations of PR-A.** Each mutation ran against `test_email_automation_tenancy.py` on a real Postgres. After each one, `replyzero.py` came back to the same SHA-256. A name in brackets is a case of `TestTheStatusWriteGuard`.
+
+| Mutation | Red |
+|---|---|
+| A block open across the ask in `_mark_thread_replied` | `test_the_status_ask_runs_with_no_session_open`, all three modes |
+| The guard removed (`WHERE true`) | `[newer-inbound-in-b]` |
+| The guard voids on a `sent` row | `[newer-sent-in-b]` |
+| The guard voids on a `drafts` row | `[newer-draft-in-b]` |
+| The guard compares with `ctx.last_message_at` | `[newer-inbound-in-b]` and `test_the_guard_compares_with_the_newest_stored_row` |
+| A tie voids (`>=` for `>`) | Five of the six R8 cases, because the stored row ties with itself |
+| The job reconciles the labels after a voided write | `[newer-inbound-in-b]` and `test_a_voided_write_reconciles_no_labels` |
+
+**Verified (2026-10-04).** On a private database, the Verify block gave 563 passed and 0 skipped. The 132 files `tests/unit/test_email_*.py` gave 2564 passed and 0 skipped. The ruff counts did not change: `replyzero.py` 23 and `test_email_automation_tenancy.py` 0.
 
 ##### EM-T4a-3 — the action tail on the sync path
 
