@@ -9,6 +9,7 @@ import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
 import { MailboxAvatar, mailboxLabel } from "./MailboxChip";
 import { allInboxesFolders } from "../lib/emailStore";
 import { hasAllInboxes, pooledMailboxes, separateMark, separateToggle } from "../lib/mailbox";
+import { storageMark } from "../lib/storage";
 
 interface AccountSidebarProps {
   accounts: EmailAccount[];
@@ -243,6 +244,18 @@ export function AccountSidebar({
                           className="text-warning flex-shrink-0"
                           aria-label="Needs attention"
                         />
+                      )}
+                      {storageMark(account) && (
+                        // Each mailbox at the storage limit, a separate one
+                        // too, so a full mailbox cannot hide (UC-12, EM-T6e D3).
+                        <span title={storageMark(account) ?? undefined} className="inline-flex flex-shrink-0">
+                          <AppIcon name="HardDrive"
+                            size={10}
+                            className="text-warning"
+                            role="img"
+                            aria-label={storageMark(account) ?? undefined}
+                          />
+                        </span>
                       )}
                       {account.isDefault && (
                         <AppIcon name="Star"

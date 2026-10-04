@@ -601,6 +601,7 @@ async def test_recompute_outbound_writes_and_may_move_done() -> None:
     async def fake_upsert(_db, _aid, tid, status, _mid, _mat, reason, **kw):
         cap.update(status=status, reason=reason,
                    preserve_done=kw.get("preserve_done"))
+        return True  # EM-T4a-2: the upsert answers whether it wrote the row
 
     det = AsyncMock(return_value=("DONE", True))
     with patch.object(_rz, "_llm_determine_thread_status", det), \
@@ -624,6 +625,7 @@ async def test_recompute_inbound_preserves_done_and_flags_fallback() -> None:
 
     async def fake_upsert(_db, _aid, tid, status, _mid, _mat, reason, **kw):
         cap.update(reason=reason, preserve_done=kw.get("preserve_done"))
+        return True  # EM-T4a-2: the upsert answers whether it wrote the row
 
     det = AsyncMock(return_value=("AWAITING_REPLY", False))  # low confidence
     with patch.object(_rz, "_llm_determine_thread_status", det), \

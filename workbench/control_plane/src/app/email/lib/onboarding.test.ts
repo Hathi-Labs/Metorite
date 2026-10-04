@@ -107,6 +107,40 @@ describe("onboardingStage (item 1)", () => {
   });
 });
 
+describe("email-storage-stage: the storage stage of EM-T6e (A7, D6)", () => {
+  const MB = 1_048_576;
+  // EM-T6c writes `initial_sync_done = true` with the phase `limit`.
+  const FULL: Partial<EmailAccount> = {
+    ...IMPORTING,
+    syncStatus: "idle",
+    initialSyncDone: true,
+    importPhase: "limit",
+    storedBytes: 512 * MB,
+    storageLimitBytes: 500 * MB,
+  };
+
+  it.each([
+    ["the phase limit at the limit", FULL, {}, "storage"],
+    ["the meter exactly at the limit", { ...FULL, storedBytes: 500 * MB }, {}, "storage"],
+    ["the phase limit under the limit (the gap of D2)", { ...FULL, storedBytes: 499 * MB }, {}, "rules"],
+    ["a removal that went under the limit and ended the phase", { ...FULL, storedBytes: 120 * MB, importPhase: "done" }, {}, "rules"],
+    ["'Keep it as it is'", FULL, { storageKept: true }, "rules"],
+    ["the meter at the limit in the phase done", { ...FULL, importPhase: "done" }, {}, "rules"],
+    ["a meter that has not run", { ...FULL, storedBytes: null }, {}, "rules"],
+    ["a gateway with no limit", { ...FULL, storageLimitBytes: undefined }, {}, "rules"],
+    ["a closed setup", { ...FULL, onboardingDone: true }, {}, null],
+    ["a sync error, which the reconnect banner owns", { ...FULL, syncStatus: "error" }, {}, null],
+    ["sync off", { ...FULL, syncEnabled: false }, {}, null],
+    ["a mailbox from before EM-T6", { ...FULL, importSince: null }, {}, null],
+  ] as const)("%s gives %s", (_name, account, opts, stage) => {
+    expect(onboardingStage(account, opts)).toBe(stage);
+  });
+
+  it("never draws the import panel for a mailbox at the limit", () => {
+    expect(firstSyncSurface(FULL)).toBe("banner");
+  });
+});
+
 describe("the progress with an estimate (item 4)", () => {
   const withEstimate = { ...IMPORTING, importPhase: "importing", importCount: 1240, importEstimate: 3100 };
 
@@ -347,11 +381,15 @@ describe("the page draws the panel where FirstSyncBanner drew (items 7 and 12)",
     );
     // One decision: the page does not test the phase itself. The surface
     // comes from firstSyncSurface, and the page reads the stage once, for
-    // the rules step of part 2.
+    // the storage step of EM-T6e and the rules step of part 2.
     expect(codeOnly(read("lib/onboarding.ts"))).toContain("surface: firstSyncSurface(account)");
     expect(PAGE).not.toMatch(/importPhase/);
     expect(PAGE.match(/onboardingStage\(/g)).toEqual(["onboardingStage("]);
-    expect(PAGE).toContain('onboardingStage(selectedAccount) === "rules"');
+    expect(PAGE).toContain(
+      "onboardingStage(selectedAccount, { storageKept: storageKept.includes(selectedAccount.id) })",
+    );
+    expect(PAGE).toContain('selectedAccount && setupStage === "rules"');
+    expect(PAGE).toContain('selectedAccount && setupStage === "storage"');
     expect(PAGE).toContain("progress={importProgress(account, { now: new Date() })}");
   });
 

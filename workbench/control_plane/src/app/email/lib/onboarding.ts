@@ -6,8 +6,8 @@
  * Vitest in this tree runs in the node environment, so each decision lives
  * here and `components/OnboardingPanel.tsx` only draws what it returns.
  *
- * Two stages: `importing` (part 1) and `rules` (part 2, items 8 to 11). The
- * storage step of EM-T6e adds `storage` later.
+ * Three stages: `importing` (part 1), `storage` (EM-T6e, D6) and `rules`
+ * (part 2, items 8 to 11).
  *
  * ⚠️ Every field this module reads is optional. A gateway before EM-T6a sends
  * no `importSince`, so the stage is `null`. A gateway with EM-T6a and before
@@ -21,18 +21,24 @@
 
 import { autoDraftRepliesOn } from "./assistantSettings";
 import { isFirstSyncPending } from "./connect";
+import { atStorageLimit } from "./storage";
 import type { AssistantSettings, AutomationRule, EmailAccount, RuleCopyResult } from "./types";
+import { shortDate } from "./utils";
+
+// `shortDate` moved to `utils.ts` with EM-T6e, so `storage.ts` reads it with
+// no import of this module. The re-export keeps its callers working.
+export { shortDate };
 
 // ── The stage ───────────────────────────────────────────────────────────────
 
 /** The step of the guided setup that a mailbox is in. `null` draws nothing. */
-export type OnboardingStage = "importing" | "rules" | null;
+export type OnboardingStage = "importing" | "storage" | "rules" | null;
 
 type StageFields = Pick<
   EmailAccount,
   "importSince" | "onboardingDone" | "syncStatus" | "initialSyncDone"
 > &
-  Partial<Pick<EmailAccount, "syncEnabled">>;
+  Partial<Pick<EmailAccount, "syncEnabled" | "importPhase" | "storedBytes" | "storageLimitBytes">>;
 
 /**
  * Which step of the guided setup to draw for one mailbox.
@@ -46,17 +52,30 @@ type StageFields = Pick<
  *   imports nothing, so a panel would freeze (EM-T6b review).
  * - `importing` while the first import runs. Only an explicit `false` counts,
  *   the same rule as `isFirstSyncPending` in `connect.ts`.
+ * - `storage` when the import ended at the storage limit (EM-T6e, D6). Three
+ *   things must be true: the phase is `limit`, the meter is at the limit
+ *   (`atStorageLimit`), and the member did not choose "Keep it as it is"
+ *   (`storageKept`). EM-T6c writes `initial_sync_done = true` with the phase
+ *   `limit`, so this arm sits under the ended import.
  * - `rules` when the import ended (`initialSyncDone === true`), until the
- *   member closes the setup (items 8 to 11).
+ *   member closes the setup (items 8 to 11). A mailbox that the member kept
+ *   at the limit, or that a removal took under it, moves on to `rules` here.
+ *   The storage notice still names it (D3).
  * - Otherwise `null`.
  */
-export function onboardingStage(account: StageFields): OnboardingStage {
+export function onboardingStage(
+  account: StageFields,
+  opts: { storageKept?: boolean } = {},
+): OnboardingStage {
   if (!account.importSince) return null;
   if (account.onboardingDone === true) return null;
   if (account.syncStatus === "error") return null;
   if (account.syncEnabled === false) return null;
   if (account.initialSyncDone === false) return "importing";
-  if (account.initialSyncDone === true) return "rules";
+  if (account.initialSyncDone === true) {
+    if (account.importPhase === "limit" && atStorageLimit(account) && !opts.storageKept) return "storage";
+    return "rules";
+  }
   return null;
 }
 
@@ -141,8 +160,6 @@ type ProgressFields = Pick<
   "importSince" | "importReachedAt" | "importPhase" | "importCount" | "importEstimate"
 >;
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
 function clampPercent(p: number): number {
   if (!Number.isFinite(p)) return 0;
   return Math.max(0, Math.min(100, p));
@@ -153,16 +170,6 @@ function parseDate(v: string | null | undefined): Date | null {
   if (!v) return null;
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d;
-}
-
-/**
- * "14 Sep" in the member's own time zone, with the year when it is not the
- * year of `now`. Month names come from a fixed list, so the text does not
- * change with the version of the runtime's date data.
- */
-export function shortDate(d: Date, now: Date): string {
-  const base = `${d.getDate()} ${MONTHS[d.getMonth()]}`;
-  return d.getFullYear() === now.getFullYear() ? base : `${base} ${d.getFullYear()}`;
 }
 
 /**
