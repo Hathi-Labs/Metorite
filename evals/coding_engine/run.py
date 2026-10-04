@@ -179,6 +179,8 @@ class Harness:
     stub: stub_api.RunningStub | None = None
     _patches: _Patches = field(default_factory=_Patches)
     _module: Any = None
+    #: The clone of the agent, named as the loader names it (:func:`clone_agent`).
+    agent_dir: Path | None = None
     #: Set before each session: how the factory's client reaches a model.
     _wire: Any = None
 
@@ -198,6 +200,7 @@ class Harness:
         url = self.stub.url
         self._patches.set(projects_client, "gateway_url", lambda: url)
         self._module = load_agent_module(AGENT_DIR)
+        self.agent_dir = clone_agent(self.state_root)
         self._patches.set(executor, "load_agent", lambda *a, **k: _LoadedCtx(self))
         self._patches.set(executor, "build_integrations", lambda *a, **k: ({}, {}))
         self._patches.set(routes_agent, "_load_dynamic_agents", lambda: [])
@@ -240,12 +243,27 @@ class Harness:
         return agent_paths.state_root() / rel
 
 
+def clone_agent(clone_root: Path) -> Path:
+    """A copy of the agent dir at ``<clone root>/repos/<agent name>``, as the loader makes it.
+
+    The executor names the tenant dir after ``agent_dir.name``, and the broker
+    refuses a working dir that is not ``state/<agent name>/<key>``. The loader
+    clones with ``clone_as=agent_name``, so in the product the two names agree.
+    The repo dir is ``agent-projects``, so a run from it got no sandbox tools.
+    """
+    target = clone_root / "repos" / AGENT
+    if not target.is_dir():
+        shutil.copytree(REPO_ROOT / AGENT_DIR, target,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    return target
+
+
 class _LoadedCtx:
     """What ``executor.load_agent`` returns: a context of the loaded agent."""
 
     def __init__(self, harness: Harness) -> None:
         self._harness = harness
-        self.agent_dir = REPO_ROOT / AGENT_DIR
+        self.agent_dir = harness.agent_dir or clone_agent(harness.state_root)
         self.agent_name = AGENT
         self.config = json.loads((self.agent_dir / "config.json").read_text(encoding="utf-8"))
 
@@ -449,6 +467,7 @@ async def run_task(
     started = time.monotonic()
     head = _head(harness, spec, run)
     if check_sandbox:
+        await preflight.warm_broker()
         gate = preflight.sandbox_tools(harness.org)
         if not gate.ok:
             return {**head, **_skipped(gate.reason), "wall_s": 0.0}

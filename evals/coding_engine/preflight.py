@@ -59,6 +59,29 @@ def sandbox_tools(org: str) -> Check:
     return Check(True, f"the broker covers {AGENT} for {org}")
 
 
+async def warm_broker() -> None:
+    """Wait for the first Docker answer of the broker, before :func:`sandbox_tools`.
+
+    ``SandboxBroker.healthy`` fails closed until its background probe answers,
+    and it only SCHEDULES that probe. A gateway meets the probe on an earlier
+    request. The runner asks ``covers()`` before it awaits anything, so the
+    probe never ran, and every task skipped on a healthy box (2026-10-05).
+    A failed probe records False, so the gate still skips with no Docker.
+    """
+    try:
+        from orchestrator import sandbox_broker
+    except ImportError:
+        return
+    get_broker = getattr(sandbox_broker, "get_broker", None)
+    probe = getattr(get_broker(), "probe_docker", None) if get_broker else None
+    if probe is None:
+        return
+    try:
+        await probe()
+    except Exception:  # noqa: BLE001 — the gate below reports the broker state
+        return
+
+
 def tool_names(body: dict[str, Any]) -> frozenset[str]:
     """The tool names of one ``/v1/chat/completions`` request body."""
     names = set()
