@@ -203,7 +203,7 @@ def is_destructive(tool: str | Callable[..., Any]) -> bool:
     return bool(hints and hints["destructive"])
 
 
-def risk_summary_block(own: Iterable[tuple[str, bool, bool]] = ()) -> str:
+def risk_summary_block(own: Iterable[tuple[str, bool, bool, bool]] = ()) -> str:
     """Byte-stable addendum block summarising tool risk classes.
 
     Rendered into the injected-tools system-prompt addendum so the agent can
@@ -211,30 +211,27 @@ def risk_summary_block(own: Iterable[tuple[str, bool, bool]] = ()) -> str:
     the platform or mutate state.
 
     It is PER AGENT and deterministic (H-236). It lists the platform's own
-    names (:data:`_PLATFORM_STATIC`, without the sandbox tools), plus the
-    agent's own tools in *own*: ``(name, destructive, open_world)`` for each
-    tool of THIS agent that is destructive or reaches outside Metorite. The
-    caller builds *own* from the agent's own tool list, never from the
-    process-wide registry. An agent's read tools stay out, so the block does
-    not grow with every annotated tool.
+    names (:data:`_PLATFORM_STATIC`, without the sandbox tools), plus every
+    annotated tool of THIS agent in *own*: ``(name, read_only, destructive,
+    open_world)``, on the same four lines as a platform name. The caller
+    builds *own* from the agent's own tool list, the app and workflow tools
+    it was given included, never from the process-wide registry. So no tool
+    of another agent joins the block, and the text does not depend on what
+    one process imported.
     """
     unlisted = SANDBOX_TOOL_NAMES | _H236_UNLISTED
-    listed = {
-        n: TOOL_ANNOTATIONS.get(n, {}) for n in _PLATFORM_STATIC if n not in unlisted
+    listed: dict[str, dict[str, bool]] = {
+        n: dict(TOOL_ANNOTATIONS.get(n, {})) for n in _PLATFORM_STATIC if n not in unlisted
     }
+    for name, ro, de, ow in own:
+        listed.setdefault(name, {"read_only": ro, "destructive": de, "open_world": ow})
     read_only = sorted(n for n, h in listed.items() if h.get("read_only"))
     writes = sorted(
         n for n, h in listed.items()
         if not h.get("read_only") and not h.get("destructive")
     )
-    destructive = sorted(
-        {n for n, h in listed.items() if h.get("destructive")}
-        | {n for n, d, _o in own if d}
-    )
-    open_world = sorted(
-        {n for n, h in listed.items() if h.get("open_world")}
-        | {n for n, _d, o in own if o}
-    )
+    destructive = sorted(n for n, h in listed.items() if h.get("destructive"))
+    open_world = sorted(n for n, h in listed.items() if h.get("open_world"))
 
     lines = [
         "### Tool risk annotations",

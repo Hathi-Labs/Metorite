@@ -1413,6 +1413,18 @@ def test_a_covered_runs_conversation_is_not_extracted_into_memory(
     assert "add_memories_background" not in ast.unparse(endpoint)
 
 
+def _my_tasks_tool_names() -> list[str]:
+    """The tools that task-manager's factory imports from skill_my_tasks."""
+    src = (REPO / "apps" / "agents" / "agent-task-manager" / "agents.py").read_text(
+        encoding="utf-8",
+    )
+    return [
+        a.name for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.ImportFrom) and node.module == "skill_my_tasks"
+        for a in node.names
+    ]
+
+
 def _risk_block(text: str) -> str:
     lines = text.splitlines()
     start = lines.index("### Tool risk annotations")
@@ -1439,30 +1451,89 @@ def _task_manager_block() -> str:
 TASK_MANAGER_RISK_BLOCK = (
     "### Tool risk annotations\n"
     "- Read-only (call freely): ask_questions, ask_user, decide, fetch_page, get_errors, "
-    "github_repo_search, github_search, list_integrations, load_design_system, query_history, "
-    "read_attachment, recall_notes, recall_timeline, remember, request_confirmation, "
-    "run_diagnostics, "
+    "get_workflow_run, github_repo_search, github_search, list_integrations, "
+    "list_workflows, load_design_system, my_tasks_accounts, my_tasks_clarify, "
+    "my_tasks_detail, my_tasks_inbox_insights, my_tasks_list, my_tasks_list_projects, "
+    "my_tasks_people, my_tasks_subtasks, my_tasks_sync, query_history, read_attachment, "
+    "recall_notes, recall_timeline, remember, request_confirmation, run_diagnostics, "
     "share_artifact, web_search\n"
-    "- State-writing (reversible): call_agent, call_agent_background, call_agents_parallel, "
-    "code_task, manage_todo_list, run_script, save_episode, save_memory, save_note, "
-    "write_artifact\n"
+    "- State-writing (reversible): call_agent, call_agent_background, "
+    "call_agents_parallel, code_task, manage_todo_list, my_tasks_add_subtasks, "
+    "my_tasks_archive, my_tasks_capture, my_tasks_capture_many, my_tasks_complete, "
+    "my_tasks_day_digest, my_tasks_delegate, my_tasks_estimate_stats, "
+    "my_tasks_list_schedule, my_tasks_move, my_tasks_organize, my_tasks_plan_day, "
+    "my_tasks_plan_project, my_tasks_replan_day, my_tasks_rollover, my_tasks_schedule, "
+    "my_tasks_set_one_thing, my_tasks_set_stage, my_tasks_unschedule, my_tasks_update, "
+    "run_script, run_workflow, save_episode, save_memory, save_note, write_artifact\n"
     "- DESTRUCTIVE (irreversible/outward \u2014 always confirm with the user first): "
     "install_dependency\n"
     "- Open-world (reaches outside Metorite): call_agent, call_agent_background, "
-    "call_agents_parallel, code_task, decide, fetch_page, github_repo_search, github_search, "
-    "install_dependency, my_tasks_delegate, run_script, run_workflow, web_search"
+    "call_agents_parallel, code_task, decide, fetch_page, github_repo_search, "
+    "github_search, install_dependency, my_tasks_delegate, run_script, run_workflow, "
+    "web_search"
 )
 
 
 def test_task_managers_risk_block_is_its_own_and_deterministic(monkeypatch) -> None:
-    """An uncovered live agent keeps every safety line: task-manager sees
-    ``my_tasks_delegate`` on the open-world line again. The block lists no
-    tool of another agent, so it does not depend on the import order."""
+    """An uncovered live agent keeps every line it had: task-manager sees
+    all 29 of its own tools again, on the lines that their annotations name,
+    and ``my_tasks_delegate`` on the open-world line. The block lists no tool
+    of another agent, so it does not depend on the import order."""
     monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
     _register_every_annotation()
     ti._build_injected_tools_addendum.cache_clear()
     block = _task_manager_block()
-    open_world = next(ln for ln in block.splitlines() if ln.startswith("- Open-world"))
-    assert "my_tasks_delegate" in open_world, open_world
+    lines = {ln.split(":", 1)[0]: ln for ln in block.splitlines() if ln.startswith("- ")}
+    assert "my_tasks_delegate" in lines["- Open-world (reaches outside Metorite)"]
+    for name in _my_tasks_tool_names():
+        assert name in block, f"task-manager lost its own {name}"
     assert "send_email" not in block and "create_lead" not in block, "another agent's tools"
     assert block == TASK_MANAGER_RISK_BLOCK, block
+
+
+def _main_lines(hints: dict[str, Any]) -> set[str]:
+    """The lines on which main's shared block put a tool with *hints*."""
+    out = set()
+    if hints.get("read_only"):
+        out.add("- Read-only")
+    if not hints.get("read_only") and not hints.get("destructive"):
+        out.add("- State-writing")
+    if hints.get("destructive"):
+        out.add("- DESTRUCTIVE")
+    if hints.get("open_world"):
+        out.add("- Open-world")
+    return out
+
+
+@pytest.mark.parametrize("slug", ["task-manager", "app-builder"])
+def test_a_live_copilot_agents_block_keeps_every_own_line_main_had(slug: str, monkeypatch) -> None:
+    """Every annotated tool that the agent holds after injection (its own,
+    and the workflow trio) sits on each line that main's shared block gave
+    it. So the block is a superset of main for the agent's own names."""
+    from gateway.routes.agent import _AGENT_REGISTRY
+
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", "approve_all")
+    _register_every_annotation()
+    ti._build_injected_tools_addendum.cache_clear()
+    rel = next(e["local_path"] for e in _AGENT_REGISTRY if e["name"] == slug)
+    agent = load_repo_agent(rel).build_agents()[0]
+    cfg = json.loads((REPO / rel / "config.json").read_text(encoding="utf-8"))
+    ti._inject_agent_tools([agent], tool_scope=cfg.get("tool_scope") or None,
+                           agent_name=slug, agent_config=cfg)
+    message = agent._default_options["system_message"]
+    block = _risk_block(message["content"] if isinstance(message, dict) else str(message))
+    lines = {ln.split(" (", 1)[0].split(":", 1)[0]: ln for ln in block.splitlines()
+             if ln.startswith("- ")}
+    from acb_skills.tool_annotations import _H236_UNLISTED
+
+    held = {eg.tool_name(t): t for t in agent._tools}
+    assert {"list_workflows", "get_workflow_run"} <= set(held), sorted(held)
+    for name, item in held.items():
+        hints = eg._risk_of(item, name)
+        # Main had no entry for the six names that H-236 registered, so its
+        # block never named them, and the per-agent block leaves them out too.
+        if not hints or name in _H236_UNLISTED:
+            continue
+        for line in _main_lines(dict(hints)):
+            names = lines.get(line, "").split(": ", 1)[-1].split(", ")
+            assert name in names, (slug, name, line)

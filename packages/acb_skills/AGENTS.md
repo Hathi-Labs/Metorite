@@ -138,9 +138,11 @@ clone cache.
    fence reads the real registry to check. The risk block of the addendum is
    PER AGENT and deterministic: `risk_summary_block(own=)` lists the
    platform's own names (`_PLATFORM_STATIC`, without the sandbox tools) and
-   that agent's own destructive or `open_world=True` tools, which the caller
-   takes from the agent's own tool list (`_tool_injection._own_risk`). An
-   agent's read tools stay out. The fence pins task-manager's block.
+   every annotated tool that the agent holds after injection, on all four
+   lines. The caller takes them from the agent's own tool list
+   (`_tool_injection._own_risk`), never from the process-wide registry, so
+   no tool of another agent joins. The fence pins task-manager's block, and
+   checks that each live Copilot agent keeps every own line that main had.
 5i. tool_guard.py -- the ONE per-run middleware pair (`WithholdTools`,
    `RefuseTools`) that takes a rule. The host-tool control of
    `sandbox_tools` and the egress control of `egress` both use it. Do not

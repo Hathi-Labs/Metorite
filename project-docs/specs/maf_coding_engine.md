@@ -3404,10 +3404,12 @@ decision inside D86, after review: the control fails closed.
   The tool answers with the refusal text, so the model can read why. Taking
   an agent off a task is not refused.
 - **The risk block is per agent.** The addendum of a Copilot agent lists
-  the platform's own names, and that agent's own tools that are destructive
-  or say `open_world=True` (`tool_annotations.risk_summary_block`, `own=`).
-  It no longer depends on what one process imported, and task-manager sees
-  `my_tasks_delegate` on its open-world line. The fence pins its block.
+  the platform's own names, and every annotated tool that this agent holds
+  after injection, on all four lines (`tool_annotations.risk_summary_block`,
+  `own=`). The workflow trio counts as its own. No tool of another agent
+  joins the block, so the text no longer depends on what one process
+  imported. For its own names, each live agent's block is a superset of the
+  block on main. The fence pins the block of task-manager.
 - **What it keeps.** Its reads, its compute and delegation. A called agent
   can still read and answer, and it cannot send. The fence proves it for
   email-assistant, crm-assistant and the orchestrator.

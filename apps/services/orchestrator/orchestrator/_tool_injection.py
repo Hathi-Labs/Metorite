@@ -786,7 +786,7 @@ def _build_injected_tools_addendum(
     *,
     is_sub_agent: bool = False,
     effective_scope: frozenset[str] | None = None,
-    own_risk: frozenset[tuple[str, bool, bool]] = frozenset(),
+    own_risk: frozenset[tuple[str, bool, bool, bool]] = frozenset(),
 ) -> str:
     """Return a system-prompt addendum describing the Metorite-injected tools.
 
@@ -830,7 +830,7 @@ def _build_injected_tools_addendum(
     from acb_skills.tool_annotations import risk_summary_block
 
     # H-236: the risk block is per agent. ``own_risk`` names THIS agent's own
-    # destructive and outward tools (:func:`_own_risk`), and it is part of the
+    # annotated tools (:func:`_own_risk`), and it is part of the
     # cache key, so each agent keeps a byte-stable prefix of its own.
     return render_injected_tools_addendum(
         is_sub_agent=is_sub_agent,
@@ -840,29 +840,33 @@ def _build_injected_tools_addendum(
     )
 
 
-def _own_risk(tools: list[Any]) -> frozenset[tuple[str, bool, bool]]:
-    """``(name, destructive, open_world)`` of each risky tool in *tools* (H-236).
+def _own_risk(tools: list[Any]) -> frozenset[tuple[str, bool, bool, bool]]:
+    """``(name, read_only, destructive, open_world)`` of each tool in *tools*.
 
-    *tools* is one agent's own tool list, plus the app and workflow tools that
-    it was given. A platform name of ``tool_annotations._PLATFORM_STATIC`` is
-    left out, because the block lists those already. A tool joins only when it
-    is destructive or reaches outside Metorite, so read tools never do.
+    H-236 (fix round 3). *tools* is ONE agent's tool list after injection:
+    its own tools, plus the app and workflow tools that it was given. Every
+    annotated tool joins, on the line its annotation names, as the shared
+    registry listed it before the block went per agent. A platform name of
+    ``tool_annotations._PLATFORM_STATIC`` is left out, because the block lists
+    those already. A tool with no annotation stays out, as it always did.
     """
     try:
         from acb_skills.egress import _risk_of, tool_name
         from acb_skills.tool_annotations import _PLATFORM_STATIC
     except ImportError:
         return frozenset()
-    out: set[tuple[str, bool, bool]] = set()
+    out: set[tuple[str, bool, bool, bool]] = set()
     for item in tools:
         name = tool_name(item)
         if not name or name in _PLATFORM_STATIC:
             continue
-        hints = _risk_of(item, name) or {}
-        destructive = bool(hints.get("destructive"))
-        open_world = hints.get("open_world") is True
-        if destructive or open_world:
-            out.add((name, destructive, open_world))
+        hints = _risk_of(item, name)
+        if not hints:
+            continue
+        out.add((
+            name, bool(hints.get("read_only")), bool(hints.get("destructive")),
+            hints.get("open_world") is True,
+        ))
     return frozenset(out)
 
 
