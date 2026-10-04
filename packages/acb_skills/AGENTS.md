@@ -50,7 +50,36 @@ clone cache.
    package cannot import it. `decide()` reads the SDK 1.0 shapes: a write's
    target is `file_name`, and a `read` request is a read, contained in the
    workspace. Fence: tests/unit/test_shared_agent_shell_tools.py.
-5d. attachment_text.py + attachment_tools.py -- `read_attachment` (H-229,
+5d. safe_open.py -- the ONE safe opener (WS-43d, spec `maf_coding_engine.md` §7.5 rule B).
+   Every host reader and writer of a dir that a sandbox container mounts opens
+   its paths here: `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` on Linux
+   5.6 or later, else a walk that opens each part with `O_NOFOLLOW`. A link at
+   any depth fails the call. Callers: the store below, the sweep of
+   `code_tools`, the rehydrate of `acb_memory` and the gateway's workspace
+   routes. Do not open a mounted dir any other way. Fence:
+   tests/unit/test_sandbox_safe_open.py (WS43-F14).
+5e. sandbox_tools.py + tenant_file_store.py -- the sandbox tools (WS-43d, D86,
+   spec §7.4 and §16.3). `run_command`, MAF's eight file tools over
+   `TenantFileStore`, and a `SkillsProvider` over `agent-data/skills/`. Only
+   `attach_for_run` hands them out, to ONE run, as a per-run view, and only
+   when `sandbox_broker.covers()` is true for the run's own tenant. They are
+   never injected (`_collect_injectable_platform_tools` never returns them).
+   The boundaries are structural, in every permission mode: the cover, the
+   broker exec with no host fallback, and the store's map and safe opener.
+   A covered run does not hold the host floor tools that open the dir with
+   plain path calls (`WITHHELD_HOST_TOOLS`): a per-run chat middleware hides
+   them and a function middleware refuses them. The same set holds the host
+   web tools `web_search` and `fetch_page` (`HOST_NETWORK_TOOLS`), so a
+   covered run has no network at all (§16.3). The store takes only the
+   heads agent-data/, inputs/, outputs/ and .run/, and a skill folder is its
+   author's alone (`agent_paths.claim_skill`, `refused_write`).
+   `decide()` runs too, with the whole command and with the real host path.
+   The store maps `outputs/` to the thread's own folder and `.run/` to the
+   run data, and it mirrors each kept write and delete. Fences:
+   tests/unit/test_run_command_tool.py (WS43-F6),
+   tests/unit/test_maf_code_session.py (WS43-F7, R8) and
+   tests/unit/test_projects_sandbox_tools.py (WS43-F21).
+5f. attachment_text.py + attachment_tools.py -- `read_attachment` (H-229,
    spec: project-docs/specs/projects_ai_chat.md §22). It returns the text of a
    `.docx`, `.pdf`, `.txt`, `.md` or `.csv` file attached in the caller's own
    chat. `attachment_text` parses bytes only: no subprocess, no code, and

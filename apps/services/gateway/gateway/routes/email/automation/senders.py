@@ -27,6 +27,7 @@ from gateway.routes.email.core import (
     KNOWN_LABELS_LOWER,
     _account_scope,
     _assert_account_owner,
+    _owned_accounts_sql,
     _tenant_session,
     _llm_json,
     _log,
@@ -102,7 +103,13 @@ async def list_senders(
     async with _tenant_session() as db:
         params: dict[str, Any] = {"uid": user.email or "anonymous",
                                   "limit": limit, "offset": offset}
-        scope = _account_scope(account_id, params)
+        # With no account_id this is a read of more than one mailbox, so the
+        # mail and the dispositions of a separate mailbox stay out of it
+        # (EM-T8g-1, D-EM-30). The three "never list the user" subqueries
+        # below keep EVERY mailbox of the member: a separate mailbox is still
+        # the member (D-EM-27).
+        scope = _account_scope(account_id, params, pooled_only=True)
+        owned = _owned_accounts_sql(account_id, params, pooled_only=True)
         # Already-disposed mail never counts toward "how noisy is this sender".
         folder_sql = f" AND {_NOT_DISPOSED}"
         if not include_archived:
@@ -110,8 +117,7 @@ async def list_senders(
             # a decision on, so their status tabs stay reviewable (see docstring).
             disp_sub = (
                 "SELECT LOWER(email) FROM email_newsletters WHERE account_id IN "
-                "(SELECT id FROM email_accounts WHERE user_id = :uid"
-                + (" AND id = :aid" if account_id else "") + ")"
+                f"({owned})"
             )
             folder_sql += (
                 " AND (LOWER(COALESCE(em.folder, '')) <> 'archive'"
@@ -123,10 +129,7 @@ async def list_senders(
             # inbox, so also include any sender carrying a saved disposition.
             # Otherwise the Unsubscribed / Auto-archive tabs go empty after a
             # refresh and the user can't review or undo their decisions.
-            nl_sub = "account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
-            if account_id:
-                nl_sub += " AND id = :aid"
-            nl_sub += ")"
+            nl_sub = f"account_id IN ({owned})"
             folder_sql += (
                 " AND (LOWER(em.folder) = LOWER(:folder)"
                 " OR LOWER(em.from_address->>'email') IN ("
@@ -181,12 +184,10 @@ async def list_senders(
         # Merge newsletter disposition (APPROVED/UNSUBSCRIBED/AUTO_ARCHIVED).
         nl_params: dict[str, Any] = {"uid": user.email or "anonymous"}
         nl_scope = (
-            "account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid"
+            "account_id IN ("
+            + _owned_accounts_sql(account_id, nl_params, pooled_only=True)
+            + ")"
         )
-        if account_id:
-            nl_scope += " AND id = :aid"
-            nl_params["aid"] = account_id
-        nl_scope += ")"
         nl_rows = (await db.execute(text(
             f"SELECT LOWER(email) AS email, status, auto_archive_filter_id "
             f"FROM email_newsletters WHERE {nl_scope}"
@@ -384,6 +385,11 @@ async def bulk_action(
     What IS refused is an *unfiltered* bulk action — no ids, no sender, no
     folder, no age. That request means "trash my entire mailbox", which is
     never what a click in the cleaner meant, and uncapping made it reachable.
+
+    EM-T8g-1 (D-EM-30): an act BY IDS keeps the owner scope only, because
+    ``manage_inbox`` sends mail ids with no ``account_id``. An act BY FILTER
+    with no ``account_id`` is an act on All inboxes, so it leaves out a
+    separate mailbox. Its own ``account_id`` still reaches it.
     """
     if req.action not in _BULK_DB_UPDATE:
         raise HTTPException(
@@ -401,7 +407,8 @@ async def bulk_action(
 
     async with _tenant_session() as db:
         params: dict[str, Any] = {"uid": user.email or "anonymous"}
-        scope = _account_scope(req.account_id, params)
+        scope = _account_scope(
+            req.account_id, params, pooled_only=not req.message_ids)
         clauses = [scope]
         if req.message_ids:
             clauses.append("em.id::text = ANY(:ids)")

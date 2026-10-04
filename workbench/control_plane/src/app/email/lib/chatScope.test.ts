@@ -28,6 +28,11 @@
 // dismiss handler cannot show in markup, so a source scan holds it. And no
 // file in `lib/` imports from `components/`.
 //
+// WS-17 EM-T8g-2 (§11.7.7) adds one fence here:
+//   * `email-chat-separate`: the All inboxes option needs two pooled
+//     mailboxes. The All inboxes persona lists only the pooled mailboxes. The
+//     picker still offers a separate mailbox as its own scope.
+//
 // Vitest here runs in node and cannot render `EmailAssistantChat`. So the
 // decisions are pure functions in `chatScope.ts`, tested by behaviour, and a
 // source scan proves that the component wires them.
@@ -496,5 +501,51 @@ describe("lib imports no component (review F8)", () => {
     const chip = codeOnly(read("components/MailboxChip.tsx"));
     expect(chip).not.toContain("function mailboxAccent(");
     expect(chip).toContain("export { mailboxAccent, mailboxLabel };");
+  });
+});
+
+// ── WS-17 EM-T8g-2 — "Keep separate" in the chat ───────────────────────────
+
+describe("email-chat-separate", () => {
+  const client = {
+    id: "acc-client", emailAddress: "vj@client.test", displayLabel: "Client", isDefault: false,
+    inAllInboxes: false,
+  };
+  const three = [work, home, client];
+
+  it("offers All inboxes only for two or more pooled mailboxes", () => {
+    expect(chatMailboxOptions(three).map((o) => o.id)).toEqual([ALL_INBOXES, "acc-work", "acc-home", "acc-client"]);
+    // One pooled mailbox: no All inboxes, and each option keeps its dot.
+    const two = chatMailboxOptions([work, client]);
+    expect(two.map((o) => o.id)).toEqual(["acc-work", "acc-client"]);
+    expect(two.every((o) => /^bg-cat-\d{1,2}$/.test(o.accent ?? ""))).toBe(true);
+  });
+
+  it("offers a separate mailbox as its own scope, and a pick of it holds", () => {
+    const option = chatMailboxOptions(three).find((o) => o.id === "acc-client");
+    expect(option).toEqual({ id: "acc-client", label: "Client · vj@client.test", accent: mailboxAccent(client).dot });
+    expect(chatScope(three, ALL_INBOXES, { against: ALL_INBOXES, scope: "acc-client" }))
+      .toEqual({ allInboxes: false, accountId: "acc-client", pickerId: "acc-client" });
+    expect(chatScope(three, "acc-client", null).accountId).toBe("acc-client");
+  });
+
+  it("falls back to the default mailbox when All inboxes has one pooled mailbox", () => {
+    expect(chatScope([work, client], ALL_INBOXES, null))
+      .toEqual({ allInboxes: false, accountId: "acc-work", pickerId: "acc-work" });
+    expect(chatScope([work, client], "acc-gone", null).allInboxes).toBe(false);
+    // Three pooled minus one separate is still All inboxes.
+    expect(chatScope(three, ALL_INBOXES, null).allInboxes).toBe(true);
+  });
+
+  it("lists only the pooled mailboxes in the All inboxes persona", () => {
+    const all = buildEmailAssistantPersona({ accounts: three, allInboxes: true });
+    expect(all).toContain("• Fracktal · vj@fracktal.in (account_id acc-work)");
+    expect(all).toContain("• Personal · vj@outlook.com (account_id acc-home)");
+    expect(all).not.toContain("acc-client");
+    expect(all).not.toContain("vj@client.test");
+    // The scope of one mailbox lists each mailbox, so the member can name one.
+    const one = buildEmailAssistantPersona({ accounts: three, selectedAccountId: "acc-client" });
+    expect(one).toContain("• Client · vj@client.test (account_id acc-client)");
+    expect(one).toContain('Active account: "Client · vj@client.test" (account_id: acc-client)');
   });
 });

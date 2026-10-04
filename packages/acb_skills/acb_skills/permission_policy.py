@@ -288,8 +288,16 @@ def _run_script_context(kwargs: dict) -> dict:
     }
 
 
+def _run_command_context(kwargs: dict) -> dict:
+    """``run_command`` (WS-43d, ``maf_coding_engine.md`` §7.4): the command IS
+    the text that runs, so the denylist reads it whole. It runs in the
+    container, never on the host, so no ``path`` is mapped."""
+    return {"full_command_text": str(kwargs.get("command") or "")}
+
+
 _TOOL_CONTEXT_BUILDERS: dict[str, Any] = {
     "run_script": _run_script_context,
+    "run_command": _run_command_context,
 }
 
 

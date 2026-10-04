@@ -95,6 +95,24 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-228 · Give `get_errors` and `run_diagnostics` a containment check · [AGENT]
+- **Check:** `rg -n "resolve_in_workspace|relative_to" packages/acb_skills/acb_skills/error_tools.py`.
+  No hit means the tool still has no containment check, and this is open.
+- **What happens today.** `get_errors` takes a list of paths from the model,
+  joins each one onto the working dir and resolves it
+  (`error_tools.py:71`). It never checks that the result stays in the
+  working dir. So `"../../../etc/x.py"`, or a link, reaches a host file. It
+  compiles that file, and it can return the text of a syntax error.
+  `run_diagnostics` is the same tool by another name.
+- **Why it matters.** It predates WS-43d. A run that the sandbox covers does
+  not hold the two tools (`sandbox_tools.WITHHELD_HOST_TOOLS`). Every other
+  run of every agent does.
+- **Do.**
+  1. Route each path through `write_artifact.resolve_in_workspace`, and
+     drop a path that leaves the working dir.
+  2. Read each file with `acb_skills.safe_open`, so a link fails too.
+  3. Add a fence: an escape and a link give "No Python files to check".
+
 ### H-227 · Scope the Projects chat documents to their thread · [AGENT]
 - **Check:** `rg -n 'outputs/<thread|thread_output' packages/acb_skills/acb_skills/write_artifact.py apps/services/gateway/gateway/routes/workspace.py`.
   No hit means no thread-scoped folder exists yet, and this is open. To

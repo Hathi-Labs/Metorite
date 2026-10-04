@@ -143,6 +143,7 @@ def bound_run(
     *,
     workspace: str | None = None,
     instance: str | None = None,
+    member: str = "member@example.com",
 ) -> Iterator[Path]:
     """Bind a run as the executor does, and yield its working dir.
 
@@ -164,7 +165,7 @@ def bound_run(
         with artifact_context_scope():
             bind_artifact_context(
                 session_id=thread, agent_name=agent, workspace_root=workspace,
-                instance=key, member="member@example.com",
+                instance=key, member=member,
             )
             yield Path(workspace) if workspace else Path()
     finally:

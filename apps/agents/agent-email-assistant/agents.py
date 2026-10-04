@@ -209,6 +209,41 @@ async def _accounts() -> list[dict[str, Any]]:
     return [a for a in accounts if isinstance(a, dict) and a.get("id")]
 
 
+def _in_all_inboxes(account: dict[str, Any]) -> bool:
+    """False only for a mailbox that the member keeps separate (D-EM-28).
+
+    A row with no ``in_all_inboxes`` is in All inboxes, as the column default
+    of migration 229 says.
+    """
+    return account.get("in_all_inboxes", True) is not False
+
+
+def _pooled(accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The mailboxes in All inboxes, and no other (EM-T8g-1, D-EM-28)."""
+    return [a for a in accounts if _in_all_inboxes(a)]
+
+
+def _choices(accounts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The mailboxes that a "Which mailbox?" question lists (EM-T8g-1).
+
+    The pooled mailboxes, when two or more are pooled, because then the chat
+    can be in All inboxes. Else each mailbox: a chat in the scope of a
+    separate mailbox must see that mailbox in the question. The list only
+    shortens a question. It never lets a tool bind a mailbox (review round 1).
+    """
+    pooled = _pooled(accounts)
+    return pooled if len(pooled) >= 2 else accounts
+
+
+async def _named(account_id: str) -> str:
+    """"Label · address" of the mailbox that a write acted in, for its answer.
+
+    The member sees in each answer which mailbox changed (EM-T8g-1 review
+    round 1). The id is the fallback when the list cannot name it.
+    """
+    return await _mailbox_name(account_id) or f"mailbox {account_id}"
+
+
 def _mailbox_text(account: dict[str, Any]) -> str:
     """"label · address" of one mailbox (MB-15, §11.4).
 
@@ -237,9 +272,15 @@ def _mailbox_choices(question: str, accounts: list[dict[str, Any]], then: str) -
 async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
     """The mailbox of a rule or a setting, as ``(account_id, question)``.
 
-    §11.3 rule 4. A named mailbox wins. With no name, the only mailbox of the
-    member acts. With two or more, the id is empty and the question asks
-    "Which mailbox?". The tool then returns the question and changes nothing.
+    §11.3 rule 4. A named mailbox wins. With no name, the mailbox acts only
+    when the member has exactly one mailbox in total. With two or more, the id
+    is empty and the question asks "Which mailbox?". The tool then returns the
+    question and changes nothing.
+
+    EM-T8g-1 review round 1: a separate mailbox never makes a tool bind the
+    other one. With Work in All inboxes and a separate NDA mailbox, a chat in
+    the scope of NDA sends no ``account_id``, so the tool asks. ``_choices``
+    only shortens the list of the question.
     """
     if account_id:
         return str(account_id), ""
@@ -257,7 +298,7 @@ async def _one_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
     return "", _mailbox_choices(
         "Which mailbox? A rule or a setting belongs to one mailbox, so nothing "
         "changed yet.",
-        accounts,
+        _choices(accounts),
         f"Ask the user, then call {tool} again with the account_id of that "
         "mailbox. If the user says all of them, call it once for each mailbox "
         "and name each one.",
@@ -271,6 +312,12 @@ async def _new_mail_mailbox(recipient: str) -> tuple[str, str]:
     ``GET /email/contacts/sent-from`` names the mailbox that last wrote to the
     first recipient, in lower case. An empty answer, or a failed read, gives
     the question "Send from which mailbox?". The tool never guesses.
+
+    EM-T8g-1 review round 1: only a member with exactly one mailbox in total
+    sends with no question. ``sent-from`` can bind a mailbox in All inboxes,
+    and only when two or more mailboxes are in All inboxes. A chat can be in
+    All inboxes only then. Otherwise the tool asks, and the question lists
+    each mailbox. An answer that names a separate mailbox counts as no answer.
     """
     try:
         accounts = await _accounts()
@@ -283,6 +330,15 @@ async def _new_mail_mailbox(recipient: str) -> tuple[str, str]:
         return "", "Not sent. No email accounts are connected."
     if len(accounts) == 1:
         return str(accounts[0]["id"]), ""
+    pooled = _pooled(accounts)
+    if len(pooled) < 2:
+        return "", _mailbox_choices(
+            "Send from which mailbox? Nothing was sent.",
+            accounts,
+            "The user keeps a mailbox separate, so I do not choose a mailbox "
+            "that the user did not name. Ask the user, then call send_email "
+            "again with the account_id of that mailbox.",
+        )
     addr = parseaddr(recipient or "")[1].strip().lower()
     hit: Any = {}
     if addr:
@@ -291,12 +347,12 @@ async def _new_mail_mailbox(recipient: str) -> tuple[str, str]:
         except Exception:
             hit = {}
     aid = str(hit.get(addr) or "") if isinstance(hit, dict) else ""
-    if aid in {str(a["id"]) for a in accounts}:
+    if aid in {str(a["id"]) for a in pooled}:
         return aid, ""
     return "", _mailbox_choices(
         "Send from which mailbox? Nothing was sent.",
-        accounts,
-        f"No mailbox of the user wrote to {addr or 'this recipient'} before. "
+        pooled,
+        f"No mailbox in All inboxes wrote to {addr or 'this recipient'} before. "
         "Ask the user, then call send_email again with the account_id of that "
         "mailbox.",
     )
@@ -346,13 +402,20 @@ async def list_accounts() -> str:
     accounts = await _accounts()
     if not accounts:
         return "No email accounts are connected."
-    total = sum(a.get("unread_count", 0) for a in accounts)
+    # A mailbox that the member keeps separate is marked, and its mail does
+    # not count in the total, as All inboxes leaves it out (EM-T8g-1 review
+    # round 1, D-EM-30). Its own line still gives its own count.
+    total = sum(a.get("unread_count", 0) for a in accounts if _in_all_inboxes(a))
     lines = [f"Connected accounts ({total} unread total):"]
     for a in accounts:
+        mark = "" if _in_all_inboxes(a) else " (separate)"
         lines.append(
-            f"• {_mailbox_text(a)} — id={a.get('id')}, "
+            f"• {_mailbox_text(a)}{mark} — id={a.get('id')}, "
             f"{a.get('unread_count', 0)} unread"
         )
+    if any(not _in_all_inboxes(a) for a in accounts):
+        lines.append(
+            "The total leaves out each separate mailbox, as All inboxes does.")
     return "\n".join(lines)
 
 
@@ -1065,7 +1128,7 @@ async def create_rule(
         "actions": actions,
     }
     res = await _post("/email/rules", rule)
-    return f"Created rule '{name}' (id={res.get('id')})."
+    return f"Created rule '{name}' (id={res.get('id')}) in {await _named(account_id)}."
 
 
 async def delete_rule(account_id: str, rule_id: str) -> str:
@@ -1107,11 +1170,12 @@ async def run_rules(
             "is_test": False, "include_read": include_read,
         })
         n = res.get("count", 0)
+        where = await _named(account_id)
         if not n:
-            return "No emails found in that range to process."
+            return f"No emails found in that range to process in {where}."
         return (
-            f"Processing {n} past email(s) from the last {days} day(s) — applied "
-            "actions stream into the History tab."
+            f"Processing {n} past email(s) from the last {days} day(s) in "
+            f"{where} — applied actions stream into the History tab."
         )
     await _post(
         "/email/rules/run",
@@ -1119,8 +1183,8 @@ async def run_rules(
     )
     mode = "Previewing" if dry_run else "Applying"
     return (
-        f"{mode} rules over up to {limit} recent message(s); results appear in "
-        "the History tab."
+        f"{mode} rules over up to {limit} recent message(s) in "
+        f"{await _named(account_id)}; results appear in the History tab."
     )
 
 
@@ -1212,7 +1276,10 @@ async def learn_rule_pattern(
                     subject_keyword and f'about "{subject_keyword}"'] if s
     ) or "matching"
     verb = "no longer match" if exclude else "always match"
-    return f"Learned: emails {signal} will {verb} that rule."
+    return (
+        f"Learned in {await _named(account_id)}: emails {signal} will {verb} "
+        "that rule."
+    )
 
 
 async def update_assistant_settings(
@@ -1307,7 +1374,7 @@ async def update_assistant_settings(
     setif("draft_model", draft_model)
     setif("chat_model", chat_model)
     await _patch_settings(body)
-    return "Assistant settings updated."
+    return f"Assistant settings updated for {await _named(account_id)}."
 
 
 async def list_knowledge(account_id: str) -> str:
@@ -1354,11 +1421,11 @@ async def save_knowledge(
         body["title"] = title
         body["content"] = content
         await _patch(f"/email/knowledge/{knowledge_id}", body)
-        return f"Updated knowledge entry '{title}'."
+        return f"Updated knowledge entry '{title}' in {await _named(account_id)}."
     await _post("/email/knowledge", {
         "account_id": account_id, "title": title, "content": content,
     })
-    return f"Saved knowledge entry '{title}'."
+    return f"Saved knowledge entry '{title}' in {await _named(account_id)}."
 
 
 async def generate_writing_style(account_id: str | None = None) -> str:
@@ -1376,9 +1443,13 @@ async def generate_writing_style(account_id: str | None = None) -> str:
         f"/email/assistant/writing-style/generate?account_id={account_id}", {}
     )
     style = res.get("writing_style", "")
+    where = await _named(account_id)
     if style:
-        return f"Derived and saved this writing style:\n{style}"
-    return "Could not derive a writing style yet (no sent mail to analyze)."
+        return f"Derived and saved this writing style for {where}:\n{style}"
+    return (
+        f"Could not derive a writing style for {where} yet (no sent mail to "
+        "analyze)."
+    )
 
 
 @_annotate_risk(destructive=True)
@@ -1399,26 +1470,37 @@ async def install_default_rules(
     if ask:
         return ask
     if reset:
+        # The card names the mailbox that loses its rules (EM-T8g-1 review
+        # round 1). An id that names no mailbox of the member stops here.
+        where = await _mailbox_name(account_id)
+        if where is None:
+            return (
+                f"Nothing changed. No connected mailbox has the id {account_id}. "
+                "Call list_accounts and ask the user which mailbox this is for."
+            )
         if not await _confirm_destructive(
-            title="Delete all rules and reinstall the defaults?",
-            detail="Every existing rule (including ones you customised) is "
-                   "deleted first, then the default set is installed fresh.",
+            title=f"Delete all rules of {where} and reinstall the defaults?",
+            detail=f"Mailbox: {where}. Every existing rule of this mailbox "
+                   "(including ones you customised) is deleted first, then the "
+                   "default set is installed fresh.",
         ):
             return "Cancelled — your rules were left unchanged."
         res = await _post(f"/email/rules/reset?account_id={account_id}", {})
         installed = res.get("installed", [])
         return (
-            f"Reset rules: reinstalled {len(installed)} default rule(s) "
-            f"({', '.join(installed)})."
+            f"Reset rules in {where}: reinstalled {len(installed)} default "
+            f"rule(s) ({', '.join(installed)})."
         )
     res = await _post(
         f"/email/rules/install-presets?account_id={account_id}", {}
     )
     installed = res.get("installed", [])
+    where = await _named(account_id)
     if not installed:
-        return "The default rules are already installed."
+        return f"The default rules are already installed in {where}."
     return (
-        f"Installed {len(installed)} default rule(s): {', '.join(installed)}."
+        f"Installed {len(installed)} default rule(s) in {where}: "
+        f"{', '.join(installed)}."
     )
 
 
@@ -2093,11 +2175,11 @@ async def create_rules_from_prompt(
     created = res.get("created", []) or []
     if not created:
         return (
-            "Couldn't turn that into a rule: "
+            f"Couldn't turn that into a rule in {await _named(account_id)}: "
             f"{res.get('error', 'try rephrasing the description.')}"
         )
     names = ", ".join(f"'{c.get('name', '?')}' (id={c.get('id')})" for c in created)
-    return f"Created {len(created)} rule(s): {names}."
+    return f"Created {len(created)} rule(s) in {await _named(account_id)}: {names}."
 
 
 async def test_rule_match(

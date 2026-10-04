@@ -183,6 +183,7 @@ source = { editable = "packages/acb_skills" }
 dependencies = [
     { name = "acb-common" },
     { name = "acb-llm" },
+    { name = "agent-framework-core" },
     { name = "ddgs" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -194,6 +195,7 @@ dependencies = [
 requires-dist = [
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-llm", editable = "packages/acb_llm" },
+    { name = "agent-framework-core", specifier = ">=1.19.0" },
     { name = "ddgs", specifier = ">=9.16" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.9" },

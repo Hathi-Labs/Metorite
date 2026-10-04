@@ -386,7 +386,7 @@ def test_covers_is_false_for_every_agent_until_ws43f(
     for agent in ("agent-x", "app-builder", "metorite", ""):
         for org in (ORG_A, "*", ""):
             assert sb.covers(agent, org) is False
-            assert sb.SandboxBroker.covers(agent, org) is False
+            assert sb.SandboxBroker().covers(agent, org) is False
 
 
 # ── rule 13: the startup sweep ALWAYS runs ───────────────────────────────────

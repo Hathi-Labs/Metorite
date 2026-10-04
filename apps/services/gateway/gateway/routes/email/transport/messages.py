@@ -10,6 +10,7 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.core import (
     HUMAN_SENDER_CATEGORIES_LOWER,
+    IN_ALL_INBOXES_SQL,
     KNOWN_LABELS_LOWER,
     MAX_BODY_HTML_BYTES,
     MAX_BODY_TEXT_BYTES,
@@ -63,6 +64,25 @@ def _parse_dt(value: str | None) -> Any:
         return None
 
 
+def _mailbox_clause(
+    account_id: str | None, thread_id: str | None, params: dict[str, Any],
+) -> str | None:
+    """The mailbox clause of the list and the facets, over ``em`` and ``ea``.
+
+    A named mailbox gives its own rows, and binds ``:account_id``. A thread
+    load with no ``account_id`` keeps the owner scope only, because the chat
+    reads a thread by its mail and sends no ``account_id``. Any other read is
+    a read of All inboxes, so it leaves out a separate mailbox (EM-T8g-1,
+    D-EM-30). The caller still writes the owner predicate ``ea.user_id``.
+    """
+    if account_id:
+        params["account_id"] = account_id
+        return "em.account_id = :account_id"
+    if thread_id:
+        return None
+    return f"ea.{IN_ALL_INBOXES_SQL}"
+
+
 @router.get("/messages/facets")
 async def message_facets(
     account_id: str | None = Query(None),
@@ -84,9 +104,10 @@ async def message_facets(
     async with _tenant_session() as db:
         params: dict[str, Any] = {"user_id": user.email or "anonymous"}
         where = ["ea.user_id = :user_id"]
-        if account_id:
-            where.append("em.account_id = :account_id")
-            params["account_id"] = account_id
+        # The counts of All inboxes leave out a separate mailbox (EM-T8g-1).
+        mailbox_sql = _mailbox_clause(account_id, None, params)
+        if mailbox_sql:
+            where.append(mailbox_sql)
         folder_sql = folder_scope(folder, params)
         if folder_sql:
             where.append(folder_sql)
@@ -186,9 +207,11 @@ async def list_messages(
             "offset": (page - 1) * page_size,
         }
 
-        if account_id:
-            where_clauses.append("em.account_id = :account_id")
-            params["account_id"] = account_id
+        # All inboxes leaves out a separate mailbox, and a thread load keeps
+        # the owner scope only (EM-T8g-1, D-EM-30).
+        mailbox_sql = _mailbox_clause(account_id, thread_id, params)
+        if mailbox_sql:
+            where_clauses.append(mailbox_sql)
         if thread_id:
             # Conversation view: every message in the thread, ignore the folder
             # filter (a thread spans inbox/sent/etc.).

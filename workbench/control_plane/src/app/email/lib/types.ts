@@ -115,6 +115,14 @@ export interface EmailAccount {
    * sorts last.
    */
   createdAt?: string | null;
+  /**
+   * False when the member keeps the mailbox separate (EM-T8g, D-EM-28). A
+   * separate mailbox stays out of All inboxes, its sums and its chat. Absent
+   * means true, so a gateway before EM-T8g-1 keeps each mailbox in All
+   * inboxes. Read it through `isSeparate` and `pooledMailboxes` in
+   * `lib/mailbox.ts`, never by hand.
+   */
+  inAllInboxes?: boolean;
 }
 
 // ── Contact card (the people card behind a sender's name/avatar) ────────────

@@ -19,7 +19,7 @@
  */
 import { ALL_INBOXES, pickInitialView } from "./emailStore";
 import { chatMailboxName, type PersonaAccount } from "./emailAssistantPersona";
-import { mailboxAccent } from "./mailbox";
+import { hasAllInboxes, mailboxAccent, type PoolFlag } from "./mailbox";
 import type { EmailAccount } from "./types";
 
 /** A pick in the chat, held against the page scope it was made on. When the
@@ -41,11 +41,12 @@ export interface ChatScope {
 /**
  * The scope of the chat. A pick wins while the page scope it was made on
  * stands. A scope on a mailbox that is gone falls back by the rule of
- * `pickInitialView`: All inboxes for two or more mailboxes, else the only
- * mailbox (§11.6 case 17).
+ * `pickInitialView`: All inboxes for two or more pooled mailboxes, else the
+ * default mailbox (§11.6 case 17). A pick of a separate mailbox holds, because
+ * that mailbox is still its own scope (EM-T8g-2 item 5).
  */
 export function chatScope(
-  accounts: ReadonlyArray<Pick<EmailAccount, "id" | "isDefault">>,
+  accounts: ReadonlyArray<Pick<EmailAccount, "id" | "isDefault"> & PoolFlag>,
   pageScope: string | null,
   pick: ChatScopePick | null,
 ): ChatScope {
@@ -65,10 +66,11 @@ export interface ChatMailboxOption {
 
 /**
  * The options of the picker. "All inboxes" comes first, and only for two or
- * more mailboxes. Each mailbox shows as "label · address". With two or more
- * mailboxes, each mailbox option carries the dot of `mailboxAccent()`, never
- * a hex value (EM-T8f-3 item 3). One mailbox gets no dot, because the chips
- * show only for two or more mailboxes (§11.0).
+ * more pooled mailboxes (EM-T8g-2 item 5). Each mailbox shows as "label ·
+ * address", and a separate mailbox stays an option of its own. With two or
+ * more mailboxes, each mailbox option carries the dot of `mailboxAccent()`,
+ * never a hex value (EM-T8f-3 item 3). One mailbox gets no dot, because the
+ * chips show only for two or more mailboxes (§11.0).
  */
 export function chatMailboxOptions(
   accounts: ReadonlyArray<PersonaAccount & { id: string; colorSlot?: number | null }>,
@@ -79,7 +81,7 @@ export function chatMailboxOptions(
     label: chatMailboxName(a),
     accent: mailboxAccent(a).dot,
   }));
-  return [{ id: ALL_INBOXES, label: "All inboxes" }, ...boxes];
+  return hasAllInboxes(accounts) ? [{ id: ALL_INBOXES, label: "All inboxes" }, ...boxes] : boxes;
 }
 
 /** What the chat holds of its scope from the render before (EM-T8f-3). */

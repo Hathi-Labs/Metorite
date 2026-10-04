@@ -281,6 +281,8 @@ def _account_row(i: int, **over: Any) -> SimpleNamespace:
         color_slot=i,
         # EM-T8f-1: each account read returns the time of the connect.
         created_at=_T0 + timedelta(minutes=i),
+        # EM-T8g-1 (migration 229): each account read returns "Keep separate".
+        in_all_inboxes=True,
     )
     base.update(over)
     return SimpleNamespace(**base)
