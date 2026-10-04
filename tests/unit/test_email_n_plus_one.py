@@ -283,6 +283,8 @@ def _account_row(i: int, **over: Any) -> SimpleNamespace:
         created_at=_T0 + timedelta(minutes=i),
         # EM-T8g-1 (migration 229): each account read returns "Keep separate".
         in_all_inboxes=True,
+        # EM-T6c: each account read returns the storage meter.
+        stored_bytes=None,
     )
     base.update(over)
     return SimpleNamespace(**base)

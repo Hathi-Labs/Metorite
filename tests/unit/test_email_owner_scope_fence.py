@@ -153,8 +153,9 @@ OUTSIDE_EMAIL_READERS: dict[str, str] = {
     ),
     "apps/services/email_ingestion/email_ingestion/": (
         "The sync engine. It reads and writes the mailbox it syncs, by "
-        "account id, with no member request. A member never reaches it with "
-        "an id of their choice."
+        "account id, with no member request. Since EM-T6c one route passes a "
+        "member's mailbox id into storage.py: transport/storage.py, after its "
+        "own owner check (user_id = :uid, or _assert_account_owner)."
     ),
 }
 

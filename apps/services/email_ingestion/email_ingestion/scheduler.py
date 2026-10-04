@@ -36,7 +36,8 @@ import functools
 import json
 import logging
 import os
-from contextlib import aclosing
+from collections.abc import AsyncIterator
+from contextlib import aclosing, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
@@ -954,6 +955,47 @@ def _leave_sync_lock(key: str) -> None:
     _sync_lock_users.pop(key, None)
     _sync_locks.pop(key, None)
     _sync_rerun.discard(key)
+
+
+class MailboxBusy(Exception):
+    """A sync held the mailbox for longer than the wait of the caller."""
+
+
+@asynccontextmanager
+async def hold_mailbox(account_id: str, *, wait_secs: float) -> AsyncIterator[None]:
+    """Hold the lock of a mailbox for a member act that is not a sync.
+
+    WS-17 EM-T6c gap G3. The removal of older mail holds the lock that each
+    sync takes (``_sync_account``), so no import writes older mail again
+    while the removal deletes it. It waits up to ``wait_secs``, then raises
+    ``MailboxBusy``, and the route answers 409.
+
+    The holder counts in ``_sync_lock_users`` like a sync does, so
+    ``sync_busy`` is true while it holds the lock or waits. A loop cycle or a
+    webhook sync during that time skips, and its new mail waits for the next
+    loop cycle. A waiter here is not a sync, so the rerun of a holder sync
+    can be lost too. The lock is released on every exit, a cancel included.
+
+    Call it with NO session open, because the wait must not hold a pool slot.
+    It opens no session itself. Fence: ``tests/unit/test_email_storage_limit.py``.
+    """
+    key = _lock_key(account_id)
+    lock = _sync_locks.setdefault(key, asyncio.Lock())
+    _sync_lock_users[key] = _sync_lock_users.get(key, 0) + 1
+    try:
+        try:
+            async with asyncio.timeout(wait_secs):
+                await lock.acquire()
+        except TimeoutError:
+            logger.info("sync.hold_busy account_id=%s waited=%s",
+                        account_id, wait_secs)
+            raise MailboxBusy(account_id) from None
+        try:
+            yield
+        finally:
+            lock.release()
+    finally:
+        _leave_sync_lock(key)
 
 
 async def _sync_account(

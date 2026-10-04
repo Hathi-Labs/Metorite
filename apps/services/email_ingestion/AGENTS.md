@@ -249,6 +249,15 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   and (f) do not run (owner answer Q3). New mail still syncs (Q2). The
   removal deletes Metorite's copy only, and `storage.py` imports nothing
   from `providers`. R7: `tests/unit/test_email_storage_limit.py`.
+  - **The steps of the removal (the gaps G1 to G5, 2026-10-04).** Each step
+    takes a session, opens none and never commits. `advance_import_since`
+    runs first, before any delete. The preview and `remove_older_chunk` skip
+    the folder `drafts` through `KEPT_FOLDERS_SQL`, so an unsent draft
+    stays. `delete_orphan_ai_drafts` deletes each `email_ai_drafts` row
+    whose thread has no message left. `end_limit_phase` writes
+    `import_phase = 'done'` only when the phase is `limit` and the new meter
+    is under the limit. No step touches Mem0, because no Mem0 key names one
+    mail.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
@@ -272,6 +281,13 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   pass a constant mode. The lock lives in this process, which is enough while
   the gateway is one uvicorn process. Call it with no session open. R7:
   `tests/unit/test_email_sync_one_at_a_time.py`.
+- ⚠️ **A member act that is not a sync holds the same lock through
+  `hold_mailbox` (WS-17 EM-T6c gap G3).** The removal of older mail is its
+  one caller. It waits `wait_secs`, then raises `MailboxBusy`, and the route
+  answers 409. It counts in `_sync_lock_users`, so `sync_busy` is true while
+  it holds or waits. A loop cycle or a webhook sync then skips, and its new
+  mail waits for the next loop cycle. Call it with no session open. Do not
+  add a second lock beside it. R7: `tests/unit/test_email_storage_limit.py`.
 - The loop stops when its row is gone (`ACCOUNT_GONE`). It drops its entry
   from `_scheduler_tasks` only while the entry is its own task, and it takes
   no `_scheduler_lock` for that.

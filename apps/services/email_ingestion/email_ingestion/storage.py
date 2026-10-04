@@ -19,11 +19,17 @@ This module is the ONE owner of four rules. Do not copy them:
   ``octet_length``, and do not take the size of a whole row.
 * **The preview.** :func:`preview_older` returns the count of messages and
   the bytes that a removal before a date would free. It writes nothing.
-* **The removal.** :func:`remove_older_chunk` deletes the
+* **The removal.** :func:`advance_import_since` moves the import floor
+  first, before any delete (G3). :func:`remove_older_chunk` then deletes the
   ``email_executed_rules`` rows of up to 1,000 messages, and then those
   messages. The attachment rows and the embeddings cascade. The rules, the
-  learned patterns, the rule guidance, the senders and the contacts stay.
-  :func:`delete_empty_thread_status` and :func:`advance_import_since` end it.
+  learned patterns, the rule guidance, the senders, the contacts and the
+  Mem0 memories stay. No Mem0 key names one mail. The last steps are
+  :func:`delete_empty_thread_status`, :func:`delete_orphan_ai_drafts` (G5),
+  the meter and :func:`end_limit_phase` (G4).
+* **Drafts stay (G1).** The preview and the removal skip the folder
+  ``drafts`` (:data:`KEPT_FOLDERS_SQL`), so an unsent draft stays. This is an
+  orchestrator decision of 2026-10-04, and the owner can reverse it.
 
 ⚠️ **The removal is Metorite's copy ONLY (D-EM-14).** This module imports
 nothing from ``email_ingestion.providers``, and it never calls the provider.
@@ -47,12 +53,15 @@ __all__ = [
     "ATTACHMENT_COLUMNS",
     "BYTES_PER_MB",
     "EMBEDDING_COLUMNS",
+    "KEPT_FOLDERS_SQL",
     "MESSAGE_COLUMNS",
     "REMOVE_CHUNK",
     "OlderMail",
     "advance_import_since",
     "at_limit",
     "delete_empty_thread_status",
+    "delete_orphan_ai_drafts",
+    "end_limit_phase",
     "measure_stored_bytes",
     "preview_older",
     "remove_older_chunk",
@@ -64,6 +73,11 @@ BYTES_PER_MB = 1_048_576
 
 #: The messages that one block of a removal deletes (EM-T6c item 10).
 REMOVE_CHUNK = 1000
+
+#: The filter that keeps the drafts out of a preview and a removal (G1). An
+#: unsent draft stays in Metorite. The test of the folder copies the one in
+#: ``body_backfill.py``, so a NULL folder is not a draft. It reads ``em``.
+KEPT_FOLDERS_SQL = "LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft')"
 
 #: The columns of variable length of each table that the meter counts. A
 #: column of fixed length (a uuid, a timestamp, a boolean) is the same size in
@@ -124,18 +138,19 @@ _MEASURE = text(
     RETURNING stored_bytes"""
 )
 
-#: The preview of a removal. It writes nothing.
+#: The preview of a removal. It writes nothing. It counts no draft (G1).
 _PREVIEW = text(
-    _bytes_cte(" AND em.received_at < :before")
+    _bytes_cte(f" AND em.received_at < :before AND {KEPT_FOLDERS_SQL}")
     + "\n       SELECT messages, bytes FROM total"
 )
 
 #: One chunk of a removal, oldest first. A message with no ``received_at``
-#: is not received before any date, so it stays.
+#: is not received before any date, so it stays. A draft stays (G1).
 _CHUNK_IDS = text(
-    """SELECT id FROM email_messages
-        WHERE account_id = :aid AND received_at < :before
-        ORDER BY received_at, id
+    f"""SELECT em.id FROM email_messages em
+        WHERE em.account_id = :aid AND em.received_at < :before
+          AND {KEPT_FOLDERS_SQL}
+        ORDER BY em.received_at, em.id
         LIMIT :lim"""
 )
 
@@ -161,6 +176,17 @@ _DELETE_EMPTY_THREAD_STATUS = text(
                              AND em.thread_id = ts.thread_id)"""
 )
 
+#: The reply drafts of the AI whose thread has no message left (G5). The
+#: drafter keys a row on the mailbox and the thread, so a row of a removed
+#: thread can never show again.
+_DELETE_ORPHAN_AI_DRAFTS = text(
+    """DELETE FROM email_ai_drafts d
+        WHERE d.account_id = :aid
+          AND NOT EXISTS (SELECT 1 FROM email_messages em
+                           WHERE em.account_id = d.account_id
+                             AND em.thread_id = d.thread_id)"""
+)
+
 #: A Resync then imports no mail older than ``before`` (EM-T6c item 12).
 #: ``GREATEST`` ignores a NULL, so a mailbox from before EM-T6 gets ``before``.
 _ADVANCE_IMPORT_SINCE = text(
@@ -168,6 +194,14 @@ _ADVANCE_IMPORT_SINCE = text(
           SET import_since = GREATEST(import_since, CAST(:before AS timestamptz)),
               updated_at = now()
         WHERE id = :aid"""
+)
+
+#: The end of the ``limit`` phase after a removal (G4). The ``WHERE`` keeps
+#: every other phase as it is, so a running import keeps its progress.
+_END_LIMIT_PHASE = text(
+    """UPDATE email_accounts
+          SET import_phase = 'done', updated_at = now()
+        WHERE id = :aid AND import_phase = 'limit'"""
 )
 
 
@@ -236,14 +270,41 @@ async def remove_older_chunk(
     return len(ids) if removed is None or removed < 0 else int(removed)
 
 
-async def delete_empty_thread_status(db: Any, account_id: str) -> int:
-    """Delete each ``email_thread_status`` row of the mailbox whose thread has
-    no message left. Returns how many it deleted."""
-    result = await db.execute(_DELETE_EMPTY_THREAD_STATUS, {"aid": account_id})
+def _rowcount(result: Any) -> int:
     removed = getattr(result, "rowcount", None)
     return 0 if removed is None or removed < 0 else int(removed)
 
 
+async def delete_empty_thread_status(db: Any, account_id: str) -> int:
+    """Delete each ``email_thread_status`` row of the mailbox whose thread has
+    no message left. Returns how many it deleted."""
+    return _rowcount(await db.execute(
+        _DELETE_EMPTY_THREAD_STATUS, {"aid": account_id}))
+
+
+async def delete_orphan_ai_drafts(db: Any, account_id: str) -> int:
+    """Delete each ``email_ai_drafts`` row of the mailbox whose thread has no
+    message left (G5). Returns how many it deleted.
+
+    It touches no Mem0 memory. No Mem0 key names one mail, so the memories of
+    the mailbox stay. The purge of a disconnect is the only Mem0 delete."""
+    return _rowcount(await db.execute(
+        _DELETE_ORPHAN_AI_DRAFTS, {"aid": account_id}))
+
+
 async def advance_import_since(db: Any, account_id: str, before: datetime) -> None:
-    """Move ``import_since`` to the later of itself and ``before``."""
+    """Move ``import_since`` to the later of itself and ``before``.
+
+    The removal calls it in its first block, before any delete (G3). So a
+    removal that fails part way still keeps a Resync from that mail."""
     await db.execute(_ADVANCE_IMPORT_SINCE, {"aid": account_id, "before": before})
+
+
+async def end_limit_phase(db: Any, account_id: str, stored_bytes: int | None) -> bool:
+    """Write ``import_phase = 'done'`` when the phase is ``limit`` and the new
+    meter is under the limit (G4). Returns True when it wrote the row.
+
+    ``None`` means the account row is gone, and it writes nothing."""
+    if stored_bytes is None or at_limit(stored_bytes):
+        return False
+    return _rowcount(await db.execute(_END_LIMIT_PHASE, {"aid": account_id})) > 0
