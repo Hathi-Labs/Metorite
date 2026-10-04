@@ -272,11 +272,11 @@ Seven rules on top of the three above. Each one exists because it was broken:
    `project-docs/specs/navigation_shell.md` §5 is the contract, and §5.3 maps
    every live app onto it.
    Fences: `src/lib/nav.test.ts` fails on a live pane with no team or
-   purpose. `src/lib/shell/seams.test.ts` arrives with NS-1, and its baseline
-   only goes down.
-   ⚠️ **Until NS-1 ships, this rule is advisory for what it fences.** Projects,
-   My Tasks and Email still carry their own palette, bell and rail. A NEW app
-   adds none of them.
+   purpose, from NS-2. `src/lib/shell/seams.test.ts` arrives with NS-1, and
+   its baseline only goes down.
+   ⚠️ **Until NS-1 and NS-2 ship, this rule is advisory.** Projects, My Tasks
+   and Email still carry their own palette, bell and rail. A NEW app adds
+   none of them.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that

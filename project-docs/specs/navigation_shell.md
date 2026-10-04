@@ -5,11 +5,12 @@ Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
 **Owner:** vjvarada.
 
+**Repair round 1, 2026-10-05.** The review found five P1 defects and six P2
+defects, and this version fixes them.
+
 **Design record:** the concept page "Metorite Navigation Concepts", version 3,
 2026-10-05, private to the owner. It holds a clickable prototype for four
-people. Where the page and this spec disagree, this spec wins. One known
-difference: the page offers a "Company" view to an org-tier grant, and §4.1
-replaces that grant, because D14 forbids it.
+people. Where the page and this spec disagree, this spec wins.
 
 **Single owner.** This spec owns the shell. That is the bar, the sidebar shape,
 Home, the command bar, the dock and the bell. It also owns the avatar menu,
@@ -91,10 +92,10 @@ through one manifest, and no app builds its own copy.
 | Assistant | Three rails on the shared `AgentChat`: `task-manager`, `projects-assistant` and `email-assistant` | `app/tasks/components/AssistantRail.tsx` · `app/projects/components/AssistantRail.tsx` · `app/email/components/EmailAssistantChat.tsx` |
 | Personal rollup | None. No spec defined its content before this one | — |
 | Live panes | **Eleven**, in four sections. Personal Center holds My Tasks, Calendar, My Profile, My Access and Email | `launch_surface.md` §2 · `src/lib/nav.ts` · `nav.test.ts` |
-| Groups for the UI | `/auth/me` returns roles and features, and no groups. `org_group` and `org_group_member` exist | `routes/admin/me.py:197-228` · `infra/postgres/138_groups_and_session_participants.sql` |
-| Per-member settings | `user_settings`, read and written by `GET` and `PUT /tasks/settings` | `infra/postgres/51_gtd_settings.sql` · `routes/tasks/settings.py:355` |
+| Who may see a team | `/auth/me` returns no groups. `reader_scope` and `subject_choices` already answer which people and teams a member may see, for the Reports app (`projects_reports.md` §7.1) | `routes/admin/me.py:197-228` · `routes/projects/report_scope.py:148`, `:332` |
+| Per-member settings | `user_settings`, read and written by `GET` and `PUT /tasks/settings`. That router requires `feature:tasks` | `infra/postgres/51_gtd_settings.sql` · `routes/tasks/settings.py:355` · `routes/tasks/core.py:41-44` |
 | First run | `WelcomeDialog`, mounted by `AppShell` | `AppShell.tsx:167` |
-| Calendar header | Its own `h1`, outside both shapes of `DESIGN_SYSTEM.md` §6a | `app/calendar/components/CalendarView.tsx` |
+| Calendar header | Its own `h1`, outside both shapes of `DESIGN_SYSTEM.md` §6a | `app/calendar/CalendarView.tsx:400` |
 | Projects by team | D22's grouping is not built. Only the `?center=` filter exists | `app/projects/lib/tree.ts` `filterByCenter` |
 
 **The pattern behind the gaps.** In each gap, one app solved a shell problem
@@ -141,9 +142,11 @@ Five groups, in this order:
 The launcher lists every app the member holds, grouped by team. Each tile
 shows the name and the manifest's one-line purpose. A star pins or unpins.
 
-**Admin panes leave the sidebar.** Approvals, Organisation and Appearance
-appear in the launcher under Admin, and in the avatar menu for an admin.
+**Admin panes leave the sidebar.** Approvals and Organisation appear in the
+launcher under Admin, and in the avatar menu, for a member who holds them.
 Approvals' items reach every approver through the bell and My Day.
+Appearance is a personal preference, so it moves to every member's avatar
+menu.
 
 ⚠️ **The live set does not change.** §2 of `launch_surface.md` still lists
 eleven live panes, and `nav.test.ts` still counts eleven. This spec changes
@@ -165,13 +168,18 @@ the member. The member does not work in them, so they leave the sidebar.
 | Altitude | Page title | Who sees it | Default for |
 |---|---|---|---|
 | **Personal** | My Day | Every member | Most members |
-| **A team** | The team's name | A member of the group in `org_group_member`, or a holder of a `group:<slug>` grant (D12) | A team lead |
-| **All my teams** | "Company" when the member holds every team, otherwise "All my teams" | A member who holds two teams or more | The founder |
+| **A team** | The team's name | A team that `reader_scope` allows: a team the member leads, or every team for a reader of HR fields | A team lead |
+| **All my teams** | "Company" when `reader_scope` returns `everyone`, otherwise "All my teams" | A member whom `reader_scope` allows two teams or more | The founder |
 
-**The top altitude needs no new grant.** It is the union of the teams the
-member already holds. D14 says `data:org:read` must not be relied on, and this
-spec does not rely on it. A founder who holds every group sees every team.
-That is the founder's real access, summed.
+**One rule decides who sees a team, and it already exists.** `reader_scope`
+in `routes/projects/report_scope.py` is the rule the Reports app uses, and the
+shell reads it. The chip never offers a team and then refuses it
+(`projects_reports.md` §7.1 rule 1). D14 forbids `data:org:read`, and this
+spec does not use it.
+
+**A plain member of a team gets the personal altitude only.** That is the
+same rule as Team pulse. To widen it is a change to `projects_reports.md`
+§7.1, never a second rule in the shell.
 
 **One chip, one meaning.** The first value of the chip is "Personal", the same
 word as the sidebar section. Personal Center is the section of apps about the
@@ -185,16 +193,16 @@ D87 keeps the team view. These five rules are the price of keeping it.
    value `scope=<slug>`, so Back and a shared link work.
 2. **No page built for one team.** A team view renders only the cards that apps
    declare. No team gets its own layout or its own apps.
-3. **No grant of its own.** The team view reads `org_group_member` and
-   `group:<slug>` grants. It never checks a `center.*` feature.
+3. **No rule of its own.** The team view reads `reader_scope`. It never
+   checks a `center.*` feature.
 4. **Nothing the member could not already open.** A card never shows a row
    that its owning app would refuse the member. A private task stays private.
 5. **`/centers/<slug>` stays unlinked.** A later release may redirect it to
    `/?scope=<slug>`. That change follows R6: add the redirect first, retire the
    route later.
 
-**Fence (NS-5).** `src/lib/nav.test.ts` fails if a pane's `href` starts with
-`/centers/` or names one team. A new `src/lib/shell/home.test.ts` fails if a
+**Fence (NS-5).** `src/lib/nav.test.ts` fails if a `live` pane's `href`
+starts with `/centers/`. The six `preview` Center panes stay (D49). A new `src/lib/shell/home.test.ts` fails if a
 Home file calls a `center.` feature check. A gateway test drives rule 4 with a
 private task of another member and asserts that no card returns it.
 
@@ -273,6 +281,12 @@ registry.
 values the form reads, so tier 2 may fill them (§6.6). A job never writes when
 it opens.
 
+**Jobs live in one JSON file**, `src/lib/shell/jobs.json`. `nav.ts` imports it,
+and the gateway reads the same file. Each job names the feature it needs, so
+the gateway filters jobs by the member's own features. The gateway never
+trusts a job list from the client (R5e). A test reads the file from both
+sides, so no mirror can drift.
+
 ### 5.2 The rules for every app, built or future
 
 1. **An app joins the shell through its manifest.** It never edits the
@@ -288,7 +302,10 @@ it opens.
    never saves.
 6. **A server provider runs on the request's session at the `get_db()` seam.**
    No provider opens its own connection (R5b).
-7. **A `preview` app may carry a manifest.** Nothing renders it until the
+7. **A provider calls its app's own authorized function.** It never writes a
+   visibility predicate of its own. The app already decides who may see a
+   row, and a second copy of that rule is a defect.
+8. **A `preview` app may carry a manifest.** Nothing renders it until the
    owner promotes the app (**H-21**).
 
 **Fence (NS-1, NS-2).** `src/lib/nav.test.ts` fails on a live pane with no
@@ -307,7 +324,7 @@ the same ratchet as `conformance.test.ts`.
 
 | App | `team` | Jobs | `search` | `needs` | Cards | `agent` | Work owed |
 |---|---|---|---|---|---|---|---|
-| My Tasks | personal | New task, Capture | the lens search (`app/tasks/lib/searchHit.ts`) | due today, overdue | Next actions | `task-manager` | Stop mounting the Projects palette and bell |
+| My Tasks | personal | New task, Capture | `GET /projects/search` (`routes/projects/search.py:221`). `app/tasks/lib/searchHit.ts` decides where a hit opens | due today, overdue | Next actions | `task-manager` | Stop mounting the Projects palette and bell |
 | Calendar | personal | Block focus time | — | — | Today | `task-manager` | Move its `h1` into the title slot |
 | Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its header drift (H-148) closes when it adopts the bar |
 | Projects | across | New task, New project | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
@@ -316,7 +333,7 @@ the same ratchet as `conformance.test.ts`.
 | Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |
 | Approvals | admin | — | — | `pending_actions` | Waiting for you | — | Its items feed the bell |
 | Organisation | admin | Invite a member | members | seat requests | — | — | Moves to the avatar menu |
-| Appearance | admin | — | — | — | — | — | Moves to the avatar menu |
+| Appearance | personal | — | — | — | — | — | Moves to every member's avatar menu |
 
 A `preview` app writes its manifest in the pull request that promotes it.
 
@@ -384,7 +401,8 @@ result that the member can already see.
 4. **Every answer has a way out.** "Continue in assistant" opens the dock with
    the question and the answer. The member never retypes.
 5. **It learns the member, not the company.** Recent and frequent jobs rank
-   higher for each member. The ranking lives in `user_settings`.
+   higher for each member. The ranking lives in the shell column of
+   `user_settings` (§8.2).
 6. **Scope is part of the question.** At the Sales altitude, "overdue
    invoices" means Sales customers. The answer names the scope it used.
 
@@ -446,9 +464,14 @@ NS-4b ships `job` and `handoff`. NS-4c adds `answer` and `workflow_draft`.
   opens the owning app.
 - **The stores stay.** `pm_notifications` keeps its read and unread rules.
   `pending_actions` keeps its own state. The bell reads both and owns neither.
-- **The first providers:** Projects (`pm_notifications`), Approvals
-  (`pending_actions`), Email (needs reply), and My Tasks (due today and
-  overdue).
+- **The first providers, and the check each one reuses:**
+  - Projects: `pm_notifications`, through the Projects notification read.
+  - Approvals: `pending_actions`, only for a member who passes the gate of
+    `routes/actions.py`. The table has no approver column, so any other
+    member gets no row.
+  - Email: needs reply, only for the accounts the member owns, through the
+    owner check of the email routes.
+  - My Tasks: due today and overdue, through the lens.
 
 ---
 
@@ -477,16 +500,23 @@ The eight presets: Founder, Sales manager, Marketing lead, Finance manager,
 Operations manager, Engineer, Accounts assistant (Desk mode) and New hire. The
 design record holds the table of what each one pins.
 
-**Fence (NS-7).** `src/lib/shell/presets.test.ts` imports every preset, runs it
-through `visibleSections` for a member with no grants, and asserts that
-nothing renders.
+**Fence (NS-7).** `src/lib/shell/presets.test.ts` takes every preset and
+several sets of grants, from none to partial to full. For each pair, it
+asserts that what renders is a subset of `visibleSections` for those grants.
 
 ### 8.2 Pins
 
-- One new nullable column on `user_settings`, for the pins, the card order and
-  the hidden cards. Take the migration number at build time (R1).
+- One new nullable column on `user_settings`, `shell_prefs`. It holds the
+  preset, the pins, the card order, the hidden cards and the job ranking.
+  Take the migration number at build time (R1).
 - It is nullable with no default value. A null means "use the preset" (R6).
-- `GET` and `PUT /tasks/settings` carry the field. No new route.
+- **Its own route, `GET` and `PUT /auth/me/shell`.** `/tasks/settings`
+  requires `feature:tasks`, and a guest does not hold it. The shell route
+  needs only a signed-in member, the same as `/auth/me`. It reads and writes
+  the one `user_settings` row, so it adds no store. A `PUT` of null resets
+  the member to the preset.
+- **If the read fails, the shell uses the preset.** It never blanks the
+  sidebar (`launch_surface.md` §8.2).
 - `user_settings` is already tenant-scoped, so `test_tenant_coverage.py`
   already covers it (R5a).
 - The ticket runs the migration and the route against a real Postgres (R8).
@@ -539,8 +569,9 @@ and a Menu tab opens a drawer (`AppShell.tsx:186-236`).
 
 ## 11. Tickets
 
-Every ticket ships dark behind its flag, default off. Each flag is off in every
-environment until the owner turns it on (§13).
+Every ticket ships dark behind its flag, default off. With a flag off, every
+surface renders as it does today, because a merge to `main` is a deploy. Each
+flag stays off in production until the owner turns it on (§13).
 
 ### NS-1 · The shell bar and the one ⌘K listener — AGENT-SAFE
 
@@ -555,8 +586,10 @@ Done when:
    draw no bar of their own.
 3. The command bar answers tier 0 from the registry and from
    `app/projects/lib/commands.ts`.
-4. `src/lib/shell/seams.test.ts` exists, and its ⌘K row is clean. The handlers
-   at `app/projects/lib/search.ts:143` and `app/email/page.tsx:678` are gone.
+4. `src/lib/shell/seams.test.ts` exists, with a baseline of today's sites.
+   With the flag on, only the shell's ⌘K listener fires. With the flag off,
+   the handlers at `app/projects/lib/search.ts:143` and `app/email/page.tsx:678`
+   run as today. NS-9 deletes them.
 5. With the flag off, every surface renders as it does today. A test pins the
    nav order and the bar's absence.
 6. The visual review of `DESIGN_SYSTEM.md` §8 ran: light mode, compact density,
@@ -590,8 +623,10 @@ Done when:
 1. With the flag on, `/` renders My Day with the personal cards of §4.5.
 2. `GET /shell/needs` merges the four providers of §7.2 on the request's
    session.
-3. A test proves rule 4 of §4.2: another member's private task reaches no card
-   and no needs row.
+3. Each of the four providers has its own negative test. Another member's
+   private task, notification, pending action and mail thread reach no card
+   and no needs row. A member without the approvals gate gets no pending
+   action.
 4. The needs SQL ran against a real Postgres (R8), and the run is in the pull
    request.
 5. With the flag off, `/` renders "Welcome back" as it does today.
@@ -604,10 +639,12 @@ provider per app that has search today.
 Done when:
 
 1. `GET /shell/search?q=&scope=` returns grouped records from each provider.
-2. Every provider runs on the request's session. No provider opens a
-   connection.
-3. A test proves that a record the member cannot read never returns.
-4. The SQL ran against a real Postgres (R8).
+2. Every provider runs on the request's session, and calls its app's
+   existing search function. No provider opens a connection, and no
+   provider writes its own visibility predicate.
+3. Each provider has its own negative test: a record the member cannot read
+   never returns.
+4. The route ran against a real Postgres (R8).
 
 ### NS-4b · Tier 2, filled jobs and the hand-off — AGENT-SAFE (build), owner (turn on)
 
@@ -617,8 +654,10 @@ Flag `COMMAND_BAR_AI` on the gateway, default off. Files:
 Done when:
 
 1. `POST /shell/intent` returns `job` or `handoff` (§6.6) through the Router.
-2. The prompt holds only the jobs the member can open. A test asserts that a
-   job behind a missing feature is absent.
+2. The prompt holds only the jobs the member can open. The server filters
+   `jobs.json` by the member's own features. One test asserts that a job
+   behind a missing feature is absent. A second test asserts that the server
+   ignores a job list from the client.
 3. Each call writes one usage row, and a test asserts it.
 4. At the hard cap, the route returns the paused state, and tiers 0 and 1 keep
    working.
@@ -632,19 +671,22 @@ through tools an agent already holds (§6.6).
 
 ### NS-5 · The scope chip and the team altitudes — AGENT-SAFE
 
-Flag `NEXT_PUBLIC_SHELL_SCOPE`. Files: `routes/admin/me.py`, the chip in
-`src/lib/shell/`, the team cards, and the Projects tree.
+Flag `NEXT_PUBLIC_SHELL_SCOPE`. Files: a new `GET /shell/scopes` in
+`gateway/routes/shell/`, `routes/projects/report_scope.py` (read only), the
+chip in `src/lib/shell/`, the team cards, and the Projects tree.
 
 Done when:
 
-1. `/auth/me` gains one field, `groups`. It lists the member's groups from
-   `org_group_member` and from `group:<slug>` grants. The field is additive
-   (R6).
-2. The chip lists Personal, each of those groups, and the top altitude when the
-   member holds two groups or more.
-3. The five rules of §4.2 hold, and their fences exist.
-4. Projects groups its tree by team, from the chip's value (D22).
-5. The server checks the grant on every scoped read. A test sends a scope the
+1. `GET /shell/scopes` returns the teams that `reader_scope` allows, and
+   whether it returns `everyone`. It adds no rule of its own. `/auth/me` does
+   not change.
+2. The chip lists Personal, each of those teams, and the top altitude when
+   `reader_scope` allows two teams or more. If the read fails, the chip shows
+   Personal only, and the page still renders.
+3. The route ran against a real Postgres (R8).
+4. The five rules of §4.2 hold, and their fences exist.
+5. Projects groups its tree by team, from the chip's value (D22).
+6. The server checks the grant on every scoped read. A test sends a scope the
    member does not hold and gets nothing back.
 
 ### NS-6 · One dock and one bell — AGENT-SAFE
@@ -655,25 +697,37 @@ rails, `AssistantToggle`, and `NotificationBell`.
 Done when:
 
 1. The dock opens the manifest's agent, and shares sessions with `/chat`.
-2. The three rails are gone, and `seams.test.ts`'s rail row is clean.
-3. The bell reads `GET /shell/needs`. Projects and My Tasks no longer mount
-   `NotificationBell`.
+2. With the flag on, the dock replaces the three rails, and the bell reads
+   `GET /shell/needs`.
+3. With the flag off, the three rails and `NotificationBell` render as today.
+   NS-9 deletes them.
 4. The Projects confirm cards pass their tests inside the dock.
 
 ### NS-7 · Presets, pins and the first sign-in — AGENT-SAFE
 
 Flag `NEXT_PUBLIC_SHELL_NAV`. Files: `src/lib/shell/presets.ts`, one migration
-(number taken at build time), `routes/tasks/settings.py`, and
-`WelcomeDialog`.
+(number taken at build time), `GET` and `PUT /auth/me/shell` in
+`routes/admin/me.py`, and `WelcomeDialog`.
 
 Done when:
 
-1. The eight presets exist, and `presets.test.ts` proves that a preset grants
-   nothing.
-2. The pins column is nullable with no default, and `GET` and `PUT
-   /tasks/settings` carry it.
+1. The eight presets exist, and `presets.test.ts` proves the subset rule of
+   §8.1.
+2. `shell_prefs` is nullable with no default, and `/auth/me/shell` reads and
+   writes it. A guest with no `feature:tasks` can save a pin.
 3. The migration and the route ran against a real Postgres (R8).
 4. `WelcomeDialog` asks the question, and the answer sets the preset.
+
+### NS-9 · Retire what the shell replaced — AGENT-SAFE, after the owner flip
+
+It starts when the NS-1 and NS-6 flags have been on in production for 7 days.
+
+Done when:
+
+1. The two app ⌘K handlers, the three rails, the `NotificationBell` mounts and
+   the per-app palette mounts are gone.
+2. Every row of the `seams.test.ts` baseline is zero.
+3. The flags of NS-1 and NS-6 are deleted from the code.
 
 ### NS-8 · Desk mode — BLOCKED
 
@@ -682,7 +736,8 @@ and this ticket gains acceptance.
 
 ### Order
 
-NS-1 → NS-2 → NS-3 → NS-4a → NS-5 → NS-6 → NS-4b → NS-4c → NS-7 → NS-8.
+NS-1 → NS-2 → NS-3 → NS-4a → NS-5 → NS-6 → NS-4b → NS-4c → NS-7 → NS-9 →
+NS-8.
 NS-1 to NS-3 change nothing about AI or cost. They give the product its shell
 first.
 
@@ -717,9 +772,14 @@ compact density, under a changed accent, and beside the neighbouring app.
 
 | Act | Why it is the owner's | Gate id |
 |---|---|---|
-| Turn on any `NEXT_PUBLIC_SHELL_*` flag or `NEXT_PUBLIC_MY_DAY` in production | It changes what every customer sees on day one | `enforcement-flip`. The dev-phase window grants it, so name the flag and the box |
+| Turn on any `NEXT_PUBLIC_SHELL_*` flag or `NEXT_PUBLIC_MY_DAY` in production | It changes what every customer sees on day one. The flags are build-time, so one flip reaches every organization at once, and it answers Q2 for all of them | Owner-only. The dev-phase window does NOT open it, and `enforcement-flip` does not cover it |
 | Turn on `COMMAND_BAR_AI` in production | It spends customer credits | Owner-only. The window does NOT open it (CLAUDE.md §3a rule 3) |
 | Promote a `preview` app so its manifest renders | It is the decision "this is finished enough to sell" | **H-21** |
+
+⚠️ **These two rows bind by prose only.** The `enforcement-flip` rule of
+`.claude/hooks/plan-guard.mjs` names eight fixed flags and none of these.
+A guard rule needs the `guard-write` grant. Until somebody adds one, this
+table is the only fence (R7, advisory).
 
 ### 13.2 Taken on 2026-10-05
 

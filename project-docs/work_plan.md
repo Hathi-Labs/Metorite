@@ -533,7 +533,7 @@ owning specs are the archive; this file owns ordering, gates and states only.
 | WS-40 | **Content-app write authority — who may ACT, not who may see** *(minted 2026-09-19)* | 🟡 **DOCUMENTED, NOT DISPATCHABLE.** The owner deferred it on 2026-09-19 and asked for a record instead. | `specs/org_access_control.md` §8d | ⚠️ **No PROJECTS route gates a write.** Measured 2026-09-19: `require_permission` returns nothing under `projects/`, `email/` or `notes/`, so visibility alone authorises every write — anybody who can SEE a project can rename, move, archive and delete it. 🟢 **The pattern to copy already exists**: `workflows/publish.py` gates publish, rollback and disable with `workflows:publish`, which is the `<app>:<verb>` shape §8d.4 asks about. Projects is the outlier, not the pioneer. 🔴 It stopped being theoretical when **H-8** put Delete (an unrecoverable cascade) on the Projects row menu in PR #298. §8d.4 holds the four questions an owner must answer first. Action entry **H-121** |
 | WS-41 | **Project import — bring work in from another tool by FILE** *(minted 2026-09-26 by **D80**)* | ● **ClickUp import LIVE on production** (2026-09-28, both flags on, box srv1914284, serving `b35399b8`) · I-1 to I-4, I-6 and I-7 built · **I-8 LIVE** 2026-09-30 (the Spaces step: skip, rename and sharing; status merge; unknown columns) · **I-9 built** (people added to People later get their tasks on the next import) · I-5 deferred (customer zero uses no custom fields) · 🟢 **A-1 next** (Asana) | **`specs/project_import.md`** | An admin uploads a ClickUp, Asana, Jira or similar export file. Metorite parses it into one canonical bundle and shows a dry run. The admin maps people, statuses and the target. Then one writer lands spaces, projects, tasks, subtasks and comments in `pm_*`. ⚠️ **No API, no token, no sync** — D80 amends D52.2 on exactly that condition, and two new fences hold it (`test_import_no_network.py`, `test_pm_task_insert_sites.py`). ClickUp first (I-1 to I-6), then one adapter per tool (A-1 to A-10). I-1 to I-6 are AGENT-SAFE. P-1 and the flag flip I-7 are OWNER. |
 | WS-42 | **Projects settings — one pane for every setting of the Projects app** *(minted 2026-09-29 by **D81**)* | ● **PS-1 LIVE** (2026-09-29, the pane) · **PS-2 LIVE** (task types) · **PS-3 LIVE** (shared vocabulary) · **PS-3b LIVE** 2026-10-01 (delete, merge and add shared entries; `PROJECTS_ORG_VOCABULARIES=1` on srv1914284, H-5 closed) · 🟢 PS-4 export next | **`specs/projects_settings.md`** | The owner asked for one settings button for Projects, like ClickUp's settings page, that rolls up statuses, fields, tags, colours and the import. One Projects app pane, in two named scopes. The row menus stay as shortcuts to the same bodies (`ManagerFrame`). AGENT-SAFE. |
-| WS-44 | **The shell — how a member finds an app, a job or an answer** *(minted 2026-10-05 by **D87**, **D88** and **D89**)* | 🟢 **Specified 2026-10-05. Nothing is built.** NS-1 (the shell bar and the one ⌘K listener) is next | **`specs/navigation_shell.md`** | One shell bar with an always-visible command bar. My Day at `/`, the personal rollup. One Home at three altitudes with a scope chip (D87). Three tiers of search, and only the AI tier is metered (D88). One app manifest that every app, built or future, follows (D89). One assistant dock and one bell. NS-1 to NS-7 are AGENT-SAFE and ship dark. NS-8 (Desk mode) waits for a live data-entry app. 🔴 To turn on a shell flag in production is `enforcement-flip`. `COMMAND_BAR_AI` spends credits and stays owner-only, and it also waits on H-171 and H-69. Q2, Q4, Q5 and Q6 are open with defaults (spec §13.3, HANDOFF **H-243**). |
+| WS-44 | **The shell — how a member finds an app, a job or an answer** *(minted 2026-10-05 by **D87**, **D88** and **D89**)* | 🟢 **Specified 2026-10-05. Nothing is built.** NS-1 (the shell bar and the one ⌘K listener) is next | **`specs/navigation_shell.md`** | One shell bar with an always-visible command bar. My Day at `/`, the personal rollup. One Home at three altitudes with a scope chip (D87). Three tiers of search, and only the AI tier is metered (D88). One app manifest that every app, built or future, follows (D89). One assistant dock and one bell. NS-1 to NS-7 are AGENT-SAFE and ship dark. NS-8 (Desk mode) waits for a live data-entry app. 🔴 To turn on a shell flag in production is owner-only, because each flag is build-time and reaches every organization at once. `COMMAND_BAR_AI` spends credits and is owner-only too, and it also waits on H-171 and H-69. Q2, Q4, Q5 and Q6 are open with defaults (spec §13.3, HANDOFF **H-243**). |
 
 ### Apps
 
@@ -4630,12 +4630,13 @@ Without a team view, a manager opens four apps and filters each one.
 
 1. No route and no nav entry per team. The scope rides on `/` as a query value.
 2. No page built for one team. A team view renders only the cards apps declare.
-3. No grant of its own. It never checks a `center.*` feature.
+3. No rule of its own. It reads `reader_scope`, the rule of the Reports app
+   (`projects_reports.md` §7.1). It never checks a `center.*` feature.
 4. Nothing the member could not already open in the owning app.
 5. `/centers/<slug>` stays unlinked.
 
 **What it does not change.** D49 stands. The top altitude is the union of the
-teams a member already holds, so it needs no new grant. D14 still forbids
+teams that `reader_scope` allows, so it needs no new grant. D14 still forbids
 `data:org:read`, and this decision does not use it.
 
 **Fences:** `src/lib/nav.test.ts` and a new `src/lib/shell/home.test.ts`
@@ -4962,7 +4963,7 @@ and one thing that cannot be written until a second person exists.
 | **D1** | **H3 — the tenant RLS promotion**, and **§H3.2's sign-in brick decision first** | 🔴 **The gate for customer #2.** As rehearsed, phase 4 breaks sign-in for every user; the fix is written up and not enacted |
 | **D2** | **WS-39 S3b/S3c** — the `gtd_*` backfill and drop (**H-29**) | Built on this branch, unrun |
 | **D3** | **MT-1j** against a real second organization | Composes three existing gates; H3 is a hard prerequisite |
-| **D4** | **Flipping any dark flag on a live box** | `ROUTER_SERVING_ENABLED`, `SELF_SERVE_SIGNUP_ENABLED`, `TASKS_LENS`, `MEMBER_INVITE_EMAIL_ENABLED`, `CUSTOMER_CONSOLE_RESOLVE_ENABLED` — each has its own entry below. Also `EMAIL_OUTLOOK_DELTA` with its account list `EMAIL_OUTLOOK_DELTA_ACCOUNTS` (WS-17 EM-T4d, gate `enforcement-flip`): any value other than `off`, and any account id in the list. `email_app_master_plan.md` §10.4.6 holds the rule. Also the WS-44 shell flags, gate `enforcement-flip`: `NEXT_PUBLIC_SHELL_BAR`, `NEXT_PUBLIC_SHELL_NAV`, `NEXT_PUBLIC_SHELL_SCOPE`, `NEXT_PUBLIC_SHELL_DOCK` and `NEXT_PUBLIC_MY_DAY`. `COMMAND_BAR_AI` is NOT in this class. See §6.1 |
+| **D4** | **Flipping any dark flag on a live box** | `ROUTER_SERVING_ENABLED`, `SELF_SERVE_SIGNUP_ENABLED`, `TASKS_LENS`, `MEMBER_INVITE_EMAIL_ENABLED`, `CUSTOMER_CONSOLE_RESOLVE_ENABLED` — each has its own entry below. Also `EMAIL_OUTLOOK_DELTA` with its account list `EMAIL_OUTLOOK_DELTA_ACCOUNTS` (WS-17 EM-T4d, gate `enforcement-flip`): any value other than `off`, and any account id in the list. `email_app_master_plan.md` §10.4.6 holds the rule. The WS-44 shell flags and `COMMAND_BAR_AI` are NOT in this class. They are owner-only, and §6.1 holds the rule |
 
 ---
 
@@ -5062,15 +5063,20 @@ and one thing that cannot be written until a second person exists.
 >
 > **WS-44 — the shell flags and `COMMAND_BAR_AI`.** *(Registered 2026-10-05
 > with D87 to D89.)* To build NS-1 to NS-7 is AGENT-SAFE, and each slice ships
-> dark. To turn on a `NEXT_PUBLIC_SHELL_*` flag or `NEXT_PUBLIC_MY_DAY` in
-> production changes what every customer sees on day one. That is
-> `enforcement-flip`, which the dev-phase window grants, so name the flag and
-> the box.
+> dark. To turn on `NEXT_PUBLIC_SHELL_BAR`, `NEXT_PUBLIC_SHELL_NAV`,
+> `NEXT_PUBLIC_SHELL_SCOPE`, `NEXT_PUBLIC_SHELL_DOCK` or `NEXT_PUBLIC_MY_DAY`
+> in production is an owner flip. Each flag is build-time, so one flip
+> changes what every organization sees on day one, and it answers Q2 for all
+> of them. The dev-phase window does NOT open it, and `enforcement-flip` does
+> not cover it.
 >
 > **`COMMAND_BAR_AI` on production is an owner flip**, because each tier-2
 > call spends the org's credits (CLAUDE.md §3a rule 3). The grant
 > `enforcement-flip` does not cover it. It also waits on H-171 and H-69.
 > `specs/navigation_shell.md` §13.1 is the authority.
+>
+> ⚠️ **No plan-guard rule names these flags**, so this text is the only fence.
+> A rule needs the `guard-write` grant.
 >
 > **WS-29 — moving any customer onto the pooled tier.** Cutover is a data move against
 > live customer data. AGENT-SAFE to build; **OWNER-GATE to execute.**
