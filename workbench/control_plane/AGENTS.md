@@ -124,6 +124,11 @@ Five rules on top of the three above. Each one exists because it was broken:
    every prose colour at a token. **Chat Markdown has one renderer,**
    `MarkdownBody` in `MarkdownMessage.tsx`. Fence:
    `src/components/chatVisualReview.test.ts`.
+   **A remote image in agent Markdown loads only on a click.** Every
+   renderer of agent text uses `MarkdownImage` as its `img`, and a renderer
+   with `rehype-raw` also runs `rehypeGateRemoteMedia` after it. Both live in
+   `src/lib/markdownMedia.ts` and `src/components/MarkdownImage.tsx`. Fence:
+   `src/components/markdownImage.test.ts`.
    **An entity in chat text is one pill,** `src/components/ui/EntityPill.tsx`
    (WS-27bm S9). Do not draw a task, a project or a person as bold text or
    as a second chip. Fence: `src/components/ui/EntityPill.test.ts`.

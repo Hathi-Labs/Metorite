@@ -4123,6 +4123,30 @@ line — never reclaim a number by deleting the other entry.
   §6.1 · `specs/maf_coding_engine.md` §16.3 and WS-43w
 - **Added:** 2026-10-04 · WS-43u
 
+### H-238 · Add an app-wide CSP that limits `img-src` and `script-src` · [AGENT]
+- **Check:** `grep -rn "Content-Security-Policy" workbench/control_plane/next.config.ts workbench/control_plane/src/proxy.ts`
+  → no hit means no app-wide CSP is set.
+- **What happens.** The control plane sends no CSP header. Each renderer
+  must gate a remote fetch by itself. The chat PR "a remote image in an
+  agent message loads only on a click" gates the Markdown renderers. A
+  renderer that a later change adds, and that forgets the gate, leaks
+  again. A CSP is the second wall behind the gate.
+- **Do.**
+  1. List every remote host the app loads on purpose. Avatars, org logos,
+     the integration logos and the OAuth images are the known ones.
+  2. Set the header in `src/proxy.ts` or in `next.config.ts` `headers()`.
+     Start with `Content-Security-Policy-Report-Only`, and read the reports.
+  3. Enforce `img-src 'self' data: blob:` plus the listed hosts, and a
+     `script-src` with no remote host.
+- **Test plan.** A Playwright spec loads `/chat` and reads the response
+  header. A second case renders a remote image after the click, and expects
+  the browser to refuse a host that is not on the list.
+- **Why not in the chat PR.** An enforced CSP can break avatars and other
+  surfaces at once. It needs its own list and its own report window.
+- **Authority:** `specs/projects_ai_chat.md` §14.8 ·
+  `src/lib/markdownMedia.ts`
+- **Added:** 2026-10-04 · the chat click-to-load PR
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

@@ -106,10 +106,12 @@ export function RemoteImagePlaceholder({
         {alt && <span className="break-words font-medium text-foreground">{alt}</span>}
         <span className="break-all">Image from {host}</span>
       </span>
+      {/* `md`, not `sm`: `sm` pins a px label size, which does not follow
+          the member's density the way the text beside it does. */}
       <Button
         type="button"
         variant="secondary"
-        size="sm"
+        size="md"
         onClick={load}
         title={src}
         aria-label={`Load image from ${host}`}

