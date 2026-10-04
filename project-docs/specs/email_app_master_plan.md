@@ -2548,7 +2548,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e not built. Anchors re-verified at `5e268c766` on 2026-10-04.
+**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e narrowed (2026-10-04), not built. Anchors re-verified at `3d11922c2` on 2026-10-04.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
@@ -2564,6 +2564,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 4. EM-T6e waits for EM-T6c and EM-T6d.
 5. EM-T4d waits for EM-T6b, because both change `sync_messages` in `providers/outlook.py`.
 6. EM-T4e and EM-T6a both change `transport/accounts.py`, and each takes a migration number. The second to merge rebases and takes its number again (R1).
+7. EM-T6f waits for EM-T6e. EM-T6f is a path that resumes the import of a mailbox in the phase `limit` under the limit. This spec records it and does not specify it (EM-T6e, open points).
 
 **Owner checks (answered, 2026-10-02).** §10.2 records each answer as a dated line. The reason for each check stays here.
 
@@ -2813,10 +2814,10 @@ The R8 tests must show PASSED, not SKIPPED.
 - R-4 still holds: measure the time of the meter on the box after the deploy.
 - Before merge, the orchestrator reads the meter of each production mailbox (R-8). The read is the SELECT form only.
 - EM-T6e draws the notice and the dialog.
-- **(Review round 1, item 3) Nothing closes the gap of a `limit` phase.** A loop cycle runs no import, because `initial_sync_done` is true. A Resync (`deep=True`) imports from now down to `import_since`, so it can fill the gap up to the limit. It writes no progress column, so the phase stays `limit` and `import_reached_at` does not move. Only a removal with `before` at or after `import_reached_at` ends the phase. EM-T6e must decide a resume path, for example a deep import that ends the phase when it reaches the floor under the limit.
+- **(Review round 1, item 3) Nothing closes the gap of a `limit` phase.** A loop cycle runs no import, because `initial_sync_done` is true. A Resync (`deep=True`) imports from now down to `import_since`, so it can fill the gap up to the limit. It writes no progress column, so the phase stays `limit` and `import_reached_at` does not move. Only a removal with `before` at or after `import_reached_at` ends the phase. EM-T6e must decide a resume path, for example a deep import that ends the phase when it reaches the floor under the limit. **Closed for EM-T6e (2026-10-04):** EM-T6e draws the gap as one line with no action (D2). EM-T6f owns the resume path (Order, item 7).
 - **(Review round 1, item 6) A draft in a non-English Outlook mailbox is not kept.** `email_messages` has no draft flag, and the Outlook provider does not read `isDraft`. `providers/outlook.py:419-422` does not request `wellKnownName`, because a consumer account answers 400 to it. So a Drafts folder with a local name (`Entwürfe`, `Brouillons`) is a user folder, and its rows get `folder = 'entwürfe'`. G1 does not keep them, and `body_backfill.py:120` has the same rule.
 - **(Item 6, the provider follow-up)** Classify the Drafts folder by the alias `/me/mailFolders/drafts`, or store `isDraft` for each message. Then `KEPT_FOLDERS_SQL` reads it. The branch `email-delta-shadow` changes `outlook.py` now, so this round did not.
-- **(Review round 1, item 9) A large removal can take longer than 30 seconds.** The chunk loop runs inside the request, and the Control Plane proxy gives a POST 30 seconds. EM-T6e must plan for a long removal. For example, the dialog reads the meter again after a timeout of the proxy.
+- **(Review round 1, item 9) A large removal can take longer than 30 seconds.** The chunk loop runs inside the request, and the Control Plane proxy gives a POST 30 seconds. EM-T6e must plan for a long removal. For example, the dialog reads the meter again after a timeout of the proxy. **Closed by EM-T6e (2026-10-04):** the BFF gives the removal 120 seconds, and the dialog follows a removal that outlives the proxy through the preview (D1).
 - **"Load older" takes no mailbox lock.** A "Load older" that runs during a removal can write a few rows older than `before`.
 - **"Load older" reads the meter of the last sync.** Under the limit, each call writes up to 300 messages, and the meter runs again at the next sync. So a member can go past the limit by the pages of one sync interval.
 - **A removal that fails part way keeps some orphan rows.** Its last block does not run, so the rows of the threads that its chunks emptied stay. A later removal does not see those threads. A disconnect deletes them, because both tables cascade from `email_accounts`.
@@ -2997,27 +2998,91 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 **Waits for** EM-T6c and EM-T6d.
 
+**Narrowed (orchestrator, 2026-10-04).** The spec-auditor cleared this slice as GO-NARROWED at `3d11922c2`. The orchestrator accepts the design decisions D1 to D7 below. EM-T6e changes the UI and the BFF proxy only, and the gateway does not change. The gate stays AGENT-SAFE (Gate, above). An agent must not run the removal route on a production mailbox, and the visual review uses the local stack only.
+
+**The two routes (EM-T6c, `transport/storage.py`).**
+
+- The preview is `GET /email/accounts/{id}/storage/older?before=<ISO>`. It answers `{before, messages, bytes}`, and `before` comes back as ISO text in UTC. It writes nothing, and it counts no draft (G1).
+- The removal is `POST /email/accounts/{id}/storage/remove-older` with `{"before": "<ISO>"}`. It answers `{before, removed, stored_bytes, storage_limit_bytes}`.
+- Both routes answer 400 for a `before` that is not ISO text or not in the past. A value with no zone is UTC. Both answer 404 for an id that is not a UUID, and for a mailbox of another member.
+- The removal answers 409 when a sync holds the mailbox for more than 5 seconds. The detail is "A sync is running for this mailbox. Try again when it ends." (`REMOVAL_BUSY_DETAIL`).
+- `GET /email/accounts` carries `stored_bytes` and `storage_limit_bytes` for each mailbox. `stored_bytes` is null before the first meter run. A null meter is not at the limit, and a meter equal to or over the limit is at the limit. The limit is the setting in MB times 1,048,576.
+
+**Design decisions (orchestrator, 2026-10-04).** The owner can reverse each one.
+
+- **D1. A long removal.** The BFF gives `accounts/<id>/storage/remove-older` a budget of 120 seconds. A pattern match in a small module makes that choice, and the module has its own test. After a 502, a 504 or a network error from the removal, the dialog says "The removal continues". It reads the preview again every 5 seconds, with the same `before`. At 0 messages, it reads the accounts again and shows the new meter.
+- **D1, the end.** After 3 minutes, the dialog says that Metorite cannot confirm the removal. It never reports a failure that it cannot prove. It does not read the meter alone, because the meter does not tell a removal in progress from a removal that stopped. The gateway does not change, and it gets no 202.
+- **D2. The gap.** A mailbox in the phase `limit` under the limit shows one line with no action. For example: "Metorite imported this mailbox back to 14 Sep. It stopped there at the storage limit." EM-T6f owns a path that resumes the import (Order, item 7).
+- **D3, which notice.** With one mailbox in view, Email shows the notice of that mailbox only. In All inboxes, Email shows one notice, for the first pooled mailbox at the limit in the order of the list. `storageMailbox` in `lib/mailbox.ts` decides it, beside `attentionMailbox`. A separate mailbox shows its notice in its own view only.
+- **D3, the switcher.** The switcher marks each mailbox at the limit, a separate one too. EM-T6e owns this mark of UC-12 (§11.5). The mark is a `Badge` or an icon with an `aria-label`, in the `warning` tone.
+- **D3, the name.** With two or more mailboxes, the notice and the dialog draw `MailboxChip` and the address, and the copy names the label. With one mailbox, the copy says "This mailbox". The dialog calls both routes with the id of the mailbox that it names, never the selected mailbox or `poolHome`.
+- **D3, the reconnect banner wins.** Email shows no storage notice for the mailbox that `attentionMailbox` names. It shows none for a mailbox while its stage is `storage`, because the storage step names it.
+- **D4. The copy.** See "The words" below.
+- **D5. The UI contract.** The dialog is `Modal` with `Button`s, as `MailboxEditDialog.tsx` is, because `ConfirmDialog` cannot disable its confirm. The date is `Input type="date"`, with `max` today. The month choices are a radio group of `Button`s, as in `ImportRangeStep.tsx`. The notice uses the `warning` tokens of the reconnect banner, with no raw amber. No file outside `src/components/ui/` imports `@base-ui/react`, and no `fixed inset-0` div draws.
+- **D6. The stage.** See scope item 4.
+- **D7. Load older.** No change.
+
 **Scope.**
 
-1. **The notice.** Email shows a notice when `stored_bytes` is at or over `storage_limit_bytes`, or when `import_phase` is `limit`. An example: "This mailbox uses 512 MB of its 500 MB in Metorite. Metorite stopped importing older mail." The action is "Remove older mail from Metorite".
-2. **The dialog.** The member picks a date. The choices keep the newest 1, 2, 3 or 6 months, or take a date from a picker. The dialog calls the preview route and shows "N messages, about X MB".
-3. **The words of the dialog.** It says: "This removes mail from Metorite only. Your Outlook mailbox does not change." The confirm button calls the removal route with `before`.
-4. **The stage.** `onboardingStage` gains `storage` between `importing` and `rules`. The panel offers the same dialog, and "Keep it as it is".
+1. **The fields.** `EmailAccount` in `lib/types.ts` gains `storedBytes?: number | null` and `storageLimitBytes?: number`. `mapAccount` in `lib/api.ts` maps them with `optionalCount`. When the gateway sends no `storage_limit_bytes`, Email draws no storage UI. The comment of `importPhase` names `limit`.
+2. **The calls.** `lib/api.ts` gains `previewOlderMail(accountId, before)` and `removeOlderMail(accountId, before)`.
+3. **The decisions.** A new pure `lib/storage.ts` holds `atStorageLimit`, the copy, the MB format, `keepNewestBefore(months, now)` and the state of the D1 follow-up. `storageMailbox` goes in `lib/mailbox.ts`.
+4. **The stage (D6).** `onboardingStage(account, { storageKept })` returns `storage` only when four things are true. The phase is `limit`, the meter is at the limit, `onboardingDone` is false, and the member did not choose "Keep it as it is". "Keep it as it is" stores the id of the mailbox in `localStorage`, with ids only and a `try` around each read and write. The stage then moves to `rules`, and the notice stays. After a removal that goes under the limit, the stage moves to `rules`, also with a gap. `page.tsx` draws the storage step between the import panels and the rules step, with the dialog and "Keep it as it is".
+5. **The notice (D3, D2).** `components/StorageNotice.tsx` draws below the reconnect banner in `page.tsx`.
+6. **The dialog.** `components/RemoveOlderMailDialog.tsx` is built on `Modal`. The member keeps the newest 1, 2, 3 or 6 months, or picks a date. The dialog calls the preview, then the removal, and it shows the 409 detail and the D1 follow-up. On success, it writes the new meter into the store and reads the accounts again.
+7. **The proxy budget (D1).** `src/app/api/email/[...path]/route.ts` reads the budget of a POST from the new module.
+8. **The switcher mark (UC-12).** `components/AccountSidebar.tsx` marks each mailbox at the limit.
 
-**Non-goals.** No backend change. No removal without a preview.
+**The words (D4).**
+
+- The notice: "This mailbox uses 512 MB of its 500 MB in Metorite. Metorite stopped importing older mail." The action: "Remove older mail from Metorite". With two or more mailboxes, the label takes the place of "This mailbox".
+- The dialog: "This removes mail from Metorite only. Your Outlook mailbox does not change." Then: "Your rules, senders and unsent drafts stay."
+- The note: "Load older can import this mail again, until the mailbox is at its limit."
+- The preview: "12,400 messages, about 380 MB". One MB is 1,048,576 bytes.
+- A 409 shows the detail of the gateway as it is.
+- `before` is the ISO instant of local midnight of the chosen day, never a bare date.
+
+**Non-goals.** No gateway change, and no 202. The BFF proxy may change (D1). No removal without a preview. No change to Load older (D7). No resume of the import (EM-T6f).
 
 **Done when.**
 
-- The notice draws for `stored_bytes` at the limit, and for `import_phase = 'limit'`. It does not draw under the limit.
-- The dialog calls the preview before the member can confirm. The confirm sends `before` as the chosen date.
+- The notice draws for `stored_bytes` at the limit, and for `import_phase = 'limit'`. In the phase `limit` under the limit, it draws the gap line of D2 with no action. It does not draw under the limit in any other phase.
+- The dialog calls the preview before the member can confirm. The confirm sends the `before` of that preview, the ISO instant of local midnight of the chosen day.
 - The dialog markup holds the sentence "Your Outlook mailbox does not change."
 - No copy in the notice or the dialog says that Metorite deletes mail in Outlook.
-- `onboardingStage` returns `storage` for `import_phase = 'limit'` when `onboarding_done` is false.
-- Do a visual review with the `visual-review` skill. Use light mode, compact density, a changed accent, mobile width, and a view beside Calendar. The PR carries the screenshots.
+- `onboardingStage` returns `storage` for `import_phase = 'limit'` when `onboarding_done` is false, the meter is at the limit, and the member did not keep it (D6).
+- A1. `atStorageLimit` is false for a null or absent meter, for an absent limit, and under the limit. It is true for a meter equal to or over the limit.
+- A2. For 512 MB of 500 MB, the notice reads "This mailbox uses 512 MB of its 500 MB in Metorite. Metorite stopped importing older mail."
+- A3. Under the limit with the phase `done`, no notice draws. In the phase `limit` under the limit, the gap line draws with no removal action.
+- A4. With two mailboxes, the notice and the dialog draw the chip and the address, and the copy names the label. With one mailbox, the copy says "This mailbox".
+- A5. In All inboxes, `storageMailbox` is the first pooled mailbox at the limit, and never a separate one. The dialog calls both routes with the id of that mailbox, not the id of `poolHome`.
+- A6. No notice draws for the mailbox that `attentionMailbox` names, or for a mailbox in the stage `storage`.
+- A7. The stage table of D6: `storage` in the phase `limit` at the limit, `rules` under the limit and after "Keep it as it is", and `null` with `onboardingDone`.
+- A8. The confirm stays disabled until the preview of the current choice answers, and at 0 messages. A late answer for an earlier choice does not enable it.
+- A9. The confirm sends the `before` of the preview that answered.
+- A10. The dialog holds the Metorite-only copy. No text in the notice or the dialog says that Metorite deletes mail in Outlook.
+- A11. A 409 shows the detail of the gateway, and the choice stays.
+- A12. The proxy gives 120,000 ms to `accounts/<id>/storage/remove-older` only. Each other POST keeps its budget.
+- A13. After a 502, a 504 or a network error, the dialog follows the removal (D1). It reads the preview every 5 seconds, confirms at 0 messages, and says that it cannot confirm after 3 minutes. It never reports a failure.
+- A14. After a removal, the store carries the `stored_bytes` of the answer, and the page reads the accounts again.
+- A15. A visual review on the local stack shows the notice, the dialog, the switcher mark and the step. It uses light mode, compact density and a changed accent.
 
-**Files.** Under `workbench/control_plane/src/app/email/`: a new `components/StorageNotice.tsx`, a new `components/RemoveOlderMailDialog.tsx`, `components/OnboardingPanel.tsx`, `lib/onboarding.ts`, `lib/api.ts` and the tests.
+**Files.** Under `workbench/control_plane/src/app/email/`, these change: `lib/types.ts`, `lib/api.ts`, `lib/onboarding.ts`, `lib/onboarding.test.ts`, `lib/mailbox.ts`, `page.tsx` and `components/AccountSidebar.tsx`. These are new: `lib/storage.ts` with its test, `components/StorageNotice.tsx`, `components/RemoveOlderMailDialog.tsx`, and a step component or a variant of the notice. Also `src/app/api/email/[...path]/route.ts`, and a new module for the rule of the proxy, with its test.
 
-**Verify with.** The command of EM-T6d.
+**Verify with.**
+
+```bash
+cd workbench/control_plane
+npx tsc --noEmit
+npx vitest run src/app/email src/app/api/email src/components src/lib/theme src/lib/nav.test.ts
+npx vitest run
+node ../../.claude/hooks/ste-lint.mjs --staged
+```
+
+**Open points.**
+
+- The notice has no close button. The owner can reverse this.
+- **EM-T6f, a resume path (backend, recorded).** Nothing resumes the import of a mailbox in the phase `limit` under the limit (EM-T6c, review round 1, item 3). The candidate of the auditor: a route sets `initial_sync_done = false` and `import_phase = 'importing'` for such a mailbox, so `_run_import` resumes at `import_reached_at`. It needs R8 and its own audit.
 
 ##### Recorded risks (EM-T6)
 
@@ -3852,7 +3917,7 @@ opens All inboxes. After that, Email opens the last scope.
 | **UC-9** | Remove one mailbox | The dialog names the mailbox and the counts. The other mailboxes, their rules and their mail stay. If it was the default, the dialog names the new default. |
 | **UC-10** | Keep a client mailbox apart | "Keep separate" in the mailbox menu. It leaves All inboxes and the All inboxes chat. Its own view still works. |
 | **UC-11** | Tell two mailboxes apart at a glance | Each one has its own label and colour. The member can rename and recolour it in the mailbox menu. |
-| **UC-12** | Reach the storage limit in one mailbox | Only that mailbox stops its import. Its chip shows the mark, and its banner names it. |
+| **UC-12** | Reach the storage limit in one mailbox | Only that mailbox stops its import. Its chip shows the mark, and its banner names it. EM-T6e owns the mark and the banner (§10.4.7, D3). |
 
 ### 11.6 Edge cases
 
