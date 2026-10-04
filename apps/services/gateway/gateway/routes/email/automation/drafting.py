@@ -2060,6 +2060,36 @@ async def _upsert_local_draft(
     return str(rid.id) if rid else ""
 
 
+#: E-A2: the copy of the sync of this same draft, when it holds the new id.
+_DROP_SYNC_COPY_SQL = (
+    "DELETE FROM email_messages WHERE account_id = :aid"
+    " AND provider_message_id = :pmid AND id <> :id")
+#: Item 8: the local row takes the new id, by its row id.
+_MOVE_LOCAL_DRAFT_SQL = (
+    "UPDATE email_messages SET provider_message_id = :pmid, updated_at = now()"
+    " WHERE id = :id AND account_id = :aid")
+
+
+async def _move_local_draft(
+    db: Any, account_id: str, local_id: str, provider_message_id: str,
+) -> None:
+    """Move the local row of a draft to a new provider id, by its row id.
+
+    WS-17 EM-G3a item 8 (``email_app_master_plan.md`` §12.3.3). Gmail gives a
+    draft a new message id at each update (O-GM-2), and the IMAP fallback
+    makes a new draft. The row keeps its row id, because other tables point
+    at it. Outlook keeps its id, so a caller moves nothing for Outlook.
+
+    E-A2: the sync can write the new id as its own row first. That row is the
+    copy that the sync made of this same draft, so it goes, and then the
+    local row moves. Both writes run on ``db``, in the one transaction of the
+    caller. ``_upsert_local_draft`` then finds the moved row on its key.
+    """
+    params = {"aid": account_id, "id": local_id, "pmid": provider_message_id}
+    await db.execute(text(_DROP_SYNC_COPY_SQL), params)
+    await db.execute(text(_MOVE_LOCAL_DRAFT_SQL), params)
+
+
 async def _fetch_message_dict(db: Any, message_id: str) -> dict[str, Any]:
     """Return one stored message in the API (snake_case) shape, or {}."""
     row = (await db.execute(text(
@@ -2152,6 +2182,12 @@ async def upsert_draft(
                         await provider.trash_message(drow.provider_message_id)
                     except Exception:  # noqa: BLE001
                         pass
+                # Gmail returns a new message id, and the IMAP fallback a new
+                # draft. The local row moves to it by its row id, so the draft
+                # keeps one row (EM-G3a item 8, E-A2). Outlook keeps its id.
+                if provider_id and provider_id != drow.provider_message_id:
+                    await _move_local_draft(
+                        db, req.account_id, req.draft_id, provider_id)
             elif req.reply_to_message_id:
                 # Accept either the local message id (inline reply) or the
                 # provider message id (full composer pop-out passes
@@ -2265,12 +2301,16 @@ async def send_draft_endpoint(
                 send_text, send_html = build_signed_bodies(
                     signature, drow.body_text or "", None)
                 try:
-                    await provider.update_draft(
+                    signed_id = await provider.update_draft(
                         drow.provider_message_id, to=to or None,
                         subject=drow.subject or None,
                         body_text=send_text, body_html=send_html,
                         thread_id=drow.thread_id or None)
-                    await provider.send_draft(drow.provider_message_id)
+                    # Gmail gives the draft a new message id at each update,
+                    # so the send takes the id that the update returns
+                    # (EM-G3a E-A1). Outlook returns the same id.
+                    await provider.send_draft(
+                        signed_id or drow.provider_message_id)
                 except NotImplementedError:
                     await _send_new_and_trash()
             else:

@@ -12,12 +12,16 @@ import asyncio
 import base64
 import json
 import logging
+import mimetypes
 import random
 from collections.abc import AsyncGenerator, Callable, Iterator
 from datetime import UTC, datetime, timezone
+from email import encoders
 from email.errors import HeaderParseError
 from email.header import decode_header, make_header
 from email.message import Message
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
@@ -587,6 +591,153 @@ class GmailBearer(RefreshingBearer):
             await _wait(wait)
 
 
+# ── Send and drafts (WS-17 EM-G3a, GM-10 to GM-13) ───────────────────────
+# ``email_app_master_plan.md`` §12.3.3. Fence: test_gmail_send_and_drafts.py.
+
+#: ``drafts.list`` gives 500 drafts at most on one page.
+GMAIL_DRAFT_PAGE_SIZE = 500
+#: The pages of one draft lookup, so a lookup has a bound. 20 pages hold
+#: 10,000 drafts.
+GMAIL_DRAFT_MAX_PAGES = 20
+#: The send route gives this type when the caller gives none, so it counts
+#: as no type (item 2).
+_OCTET_STREAM = "application/octet-stream"
+#: The parent read of a reply asks for these two headers only (item 4).
+_PARENT_PARAMS: dict[str, Any] = {
+    "format": "metadata", "metadataHeaders": ["Message-ID", "References"]}
+
+
+class GmailDraftNotFound(LookupError):
+    """Gmail holds no draft with this message id (EM-G3a item 7).
+
+    ``update_draft`` and ``send_draft`` take the message id that the local
+    row holds (O-GM-2). A message id that is no draft raises this error, and
+    never an HTTP 400 of Gmail."""
+
+    def __init__(self, message_id: str) -> None:
+        super().__init__(f"Gmail has no draft with the message id {message_id}")
+        self.message_id = message_id
+
+
+def _attachment_type(att: dict[str, Any]) -> tuple[str, str]:
+    """The MIME type of one attachment (EM-G3a item 2, GM-12).
+
+    The type that the caller gives wins. Else the type comes from the file
+    name (``mimetypes.guess_type``), else it is ``application/octet-stream``.
+    """
+    given = str(att.get("mime_type") or "").split(";", 1)[0].strip().lower()
+    if given and given != _OCTET_STREAM:
+        main, _, sub = given.partition("/")
+        if main and sub:
+            return main, sub
+    guessed, _ = mimetypes.guess_type(str(att.get("filename") or ""))
+    if guessed:
+        main, _, sub = guessed.partition("/")
+        return main, sub
+    return "application", "octet-stream"
+
+
+def _attachment_part(att: dict[str, Any]) -> MIMEBase:
+    """One attachment of a send or a draft (EM-G3a items 2 and 3)."""
+    main, sub = _attachment_type(att)
+    part = MIMEBase(main, sub)
+    part.set_payload(att.get("content") or b"")
+    encoders.encode_base64(part)
+    # ``add_header`` writes the name with RFC 2231 when it needs it, so a
+    # quote or a letter outside ASCII survives (item 3).
+    part.add_header("Content-Disposition", "attachment",
+                    filename=str(att.get("filename") or "attachment"))
+    return part
+
+
+def _build_gmail_raw(
+    *,
+    to: list[str] | None,
+    subject: str | None,
+    body_text: str | None,
+    body_html: str | None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    reply_headers: dict[str, str] | None = None,
+) -> str:
+    """The ``raw`` value of a send or a draft: an RFC 5322 mail in base64url.
+
+    The ONE builder of ``send_message``, ``create_draft`` and
+    ``update_draft`` (EM-G3a item 1, GM-10). With ``body_html`` the body is
+    ``multipart/alternative``, with the text part first. With attachments the
+    body sits inside ``multipart/mixed`` (item 2). ``reply_headers`` holds
+    ``In-Reply-To`` and ``References`` of a reply (item 4).
+
+    A header is written only when its value is given, so an update that
+    names no ``Cc`` writes none.
+    """
+    text_part = MIMEText(body_text or "", "plain", "utf-8")
+    body: Message
+    if body_html:
+        body = MIMEMultipart("alternative")
+        body.attach(text_part)
+        body.attach(MIMEText(body_html, "html", "utf-8"))
+    else:
+        body = text_part
+    msg: Message
+    if attachments:
+        msg = MIMEMultipart("mixed")
+        msg.attach(body)
+        for att in attachments:
+            msg.attach(_attachment_part(att))
+    else:
+        msg = body
+    if to is not None:
+        msg["To"] = ", ".join(a for a in to if a)
+    for name, addresses in (("Cc", cc), ("Bcc", bcc)):
+        listed = [a for a in (addresses or []) if a]
+        if listed:
+            msg[name] = ", ".join(listed)
+    if subject is not None:
+        msg["Subject"] = subject
+    for name, value in (reply_headers or {}).items():
+        msg[name] = value
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode()
+
+
+def _newest_parent(thread: dict[str, Any]) -> dict[str, Any] | None:
+    """The newest message of a thread that is not a draft (EM-G3a item 5).
+
+    Gmail lists a thread oldest first, so a tie keeps the later message."""
+    newest: dict[str, Any] | None = None
+    newest_at = -1
+    for message in thread.get("messages") or []:
+        if "DRAFT" in (message.get("labelIds") or []):
+            continue
+        try:
+            at = int(message.get("internalDate") or 0)
+        except (TypeError, ValueError):
+            at = 0
+        if at >= newest_at:
+            newest, newest_at = message, at
+    return newest
+
+
+def _reply_headers_of(parent: dict[str, Any] | None) -> dict[str, str]:
+    """``In-Reply-To`` and ``References`` that answer ``parent`` (item 4).
+
+    ``References`` is the ``References`` of the parent, then its
+    ``Message-ID`` (RFC 5322 §3.6.4). A parent with no ``Message-ID`` gives
+    no header, because no header can name it."""
+    if not parent:
+        return {}
+    headers = GmailProvider._parse_headers(
+        (parent.get("payload") or {}).get("headers", []))
+    message_id = _gmail_message_id(headers)
+    if not message_id:
+        return {}
+    references = headers.get("references", "").split()
+    if message_id not in references:
+        references.append(message_id)
+    return {"In-Reply-To": message_id, "References": " ".join(references)}
+
+
 class GmailProvider(BaseEmailProvider):
     """Gmail API email provider."""
 
@@ -618,6 +769,15 @@ class GmailProvider(BaseEmailProvider):
         #: The record of each message that a fetch could not read, for the
         #: life of this instance (EM-G4a item 10). No entry names content.
         self.fetch_failures: list[str] = []
+        #: The draft id of each draft message that this instance saw, by the
+        #: message id (EM-G3a item 7). One provider serves one request, so
+        #: the cache never spans two saves.
+        self._draft_ids: dict[str, str] = {}
+        #: True after one lookup read each page of ``drafts.list``.
+        self._drafts_listed = False
+        #: The message id of each draft that ``trash_message`` discarded. The
+        #: caller deletes the local row of each one (EM-G3a, E-A5).
+        self.discarded_drafts: set[str] = set()
 
     def credentials_dirty(self) -> bool:
         return self._creds_dirty
@@ -857,34 +1017,17 @@ class GmailProvider(BaseEmailProvider):
         attachments: list[dict[str, Any]] | None = None,
         thread_id: str | None = None,
     ) -> str:
-        # Build RFC 2822 message — multipart when file attachments are present.
-        msg: Any
-        if attachments:
-            from email import encoders  # noqa: PLC0415
-            from email.mime.base import MIMEBase  # noqa: PLC0415
-            from email.mime.multipart import MIMEMultipart  # noqa: PLC0415
-            msg = MIMEMultipart()
-            msg.attach(MIMEText(body_text, "plain" if not body_html else "html"))
-            for att in attachments:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(att.get("content") or b"")
-                encoders.encode_base64(part)
-                part.add_header(
-                    "Content-Disposition",
-                    f'attachment; filename="{att.get("filename", "attachment")}"',
-                )
-                msg.attach(part)
-        else:
-            msg = MIMEText(body_text, "plain" if not body_html else "html")
-        msg["To"] = ", ".join(to)
-        msg["Subject"] = subject
-        if cc:
-            msg["Cc"] = ", ".join(cc)
-        if bcc:
-            msg["Bcc"] = ", ".join(bcc)
+        """Send a mail (``messages.send``) and return its message id.
 
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-
+        ``_build_gmail_raw`` builds the body, the attachments and the reply
+        headers (WS-17 EM-G3a items 1 to 4). A reply also keeps ``threadId``.
+        The rate-limit helper sends this POST once only (EM-G4a).
+        """
+        raw = _build_gmail_raw(
+            to=to, subject=subject, body_text=body_text, body_html=body_html,
+            cc=cc, bcc=bcc, attachments=attachments,
+            reply_headers=await self._reply_headers(
+                reply_to_message_id, thread_id))
         body: dict[str, Any] = {"raw": raw}
         # Gmail threads by threadId. Prefer the real conversation id
         # (``thread_id``); fall back to ``reply_to_message_id`` only when a caller
@@ -912,34 +1055,18 @@ class GmailProvider(BaseEmailProvider):
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
     ) -> str:
-        """Create a Gmail draft (drafts.create); threads it when a thread id is
-        given so the reply lands in the right conversation. Adds file
-        attachments via a MIME multipart message when provided."""
-        msg: Any
-        if attachments:
-            from email.mime.multipart import MIMEMultipart  # noqa: PLC0415
-            from email.mime.base import MIMEBase  # noqa: PLC0415
-            from email import encoders  # noqa: PLC0415
-            msg = MIMEMultipart()
-            msg.attach(MIMEText(body_text, "plain" if not body_html else "html"))
-            for att in attachments:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(att.get("content") or b"")
-                encoders.encode_base64(part)
-                part.add_header(
-                    "Content-Disposition",
-                    f'attachment; filename="{att.get("filename", "attachment")}"',
-                )
-                msg.attach(part)
-        else:
-            msg = MIMEText(body_text, "plain" if not body_html else "html")
-        msg["To"] = ", ".join(to)
-        if cc:
-            msg["Cc"] = ", ".join(a for a in cc if a)
-        if bcc:
-            msg["Bcc"] = ", ".join(a for a in bcc if a)
-        msg["Subject"] = subject
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        """Create a Gmail draft (``drafts.create``) and return the MESSAGE id
+        of the draft (EM-G3a item 6, O-GM-2).
+
+        The local row holds that id, which is the id that the sync finds. So
+        one draft keeps one row (GM-13). A reply keeps ``threadId`` and gets
+        ``In-Reply-To`` and ``References`` (item 4).
+        """
+        raw = _build_gmail_raw(
+            to=to, subject=subject, body_text=body_text, body_html=body_html,
+            cc=cc, bcc=bcc, attachments=attachments,
+            reply_headers=await self._reply_headers(
+                reply_to_message_id, thread_id))
         message: dict[str, Any] = {"raw": raw}
         tid = thread_id or reply_to_message_id
         if tid:
@@ -947,7 +1074,7 @@ class GmailProvider(BaseEmailProvider):
         client = await self._get_client()
         resp = await client.post("/users/me/drafts", json={"message": message})
         resp.raise_for_status()
-        return resp.json().get("id", "")
+        return self._remember_draft(resp.json())
 
     async def update_draft(
         self,
@@ -961,59 +1088,147 @@ class GmailProvider(BaseEmailProvider):
         bcc: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> str:
-        """Replace a Gmail draft's content in place (drafts.update). Returns the
-        (unchanged) draft id so the editor keeps tracking the same draft.
+        """Replace a Gmail draft (``drafts.update``) and return its NEW message
+        id (EM-G3a items 6 and 7, O-GM-2).
 
-        When ``body_html`` is given the draft is written as HTML (so a signed
-        HTML body survives the update); otherwise it stays plain text. When
-        ``attachments`` are supplied the draft is rebuilt as a MIME multipart so
-        the files ride along (Gmail replaces the whole draft on update)."""
-        body_part = MIMEText(
-            body_html or body_text or "", "html" if body_html else "plain")
-        if attachments:
-            from email.mime.multipart import MIMEMultipart  # noqa: PLC0415
-            from email.mime.base import MIMEBase  # noqa: PLC0415
-            from email import encoders  # noqa: PLC0415
-            msg: Any = MIMEMultipart()
-            msg.attach(body_part)
-            for att in attachments:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(att.get("content") or b"")
-                encoders.encode_base64(part)
-                part.add_header(
-                    "Content-Disposition",
-                    f'attachment; filename="{att.get("filename", "attachment")}"',
-                )
-                msg.attach(part)
-        else:
-            msg = body_part
-        if to is not None:
-            msg["To"] = ", ".join(to)
-        if cc is not None:
-            msg["Cc"] = ", ".join(a for a in cc if a)
-        if bcc is not None:
-            msg["Bcc"] = ", ".join(a for a in bcc if a)
-        if subject is not None:
-            msg["Subject"] = subject
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        ``draft_id`` keeps the name of the base class, but it is the MESSAGE
+        id that the local row holds. The draft id comes from ``drafts.list``.
+        Gmail gives the draft a new message id at each update, so the caller
+        moves its local row to the id that this returns (item 8, E-A2).
+
+        Gmail replaces the whole draft. So the update builds the whole mail
+        again with the one builder, and it sets ``In-Reply-To`` and
+        ``References`` again from the newest message of the thread (item 5).
+        ``threadId`` MUST be sent again too, or Gmail drops the draft from its
+        conversation, and the sent reply starts a new one.
+        """
+        gmail_draft_id = await self._draft_id_for(draft_id)
+        raw = _build_gmail_raw(
+            to=to, subject=subject, body_text=body_text, body_html=body_html,
+            cc=cc, bcc=bcc, attachments=attachments,
+            reply_headers=await self._reply_headers(None, thread_id))
         message: dict[str, Any] = {"raw": raw}
-        # threadId MUST be re-supplied on update — Gmail drops the draft's thread
-        # otherwise, so the sent reply would start a new conversation.
         if thread_id:
             message["threadId"] = thread_id
         client = await self._get_client()
         resp = await client.put(
-            f"/users/me/drafts/{draft_id}", json={"message": message}
+            f"/users/me/drafts/{gmail_draft_id}", json={"message": message}
         )
         resp.raise_for_status()
-        return resp.json().get("id", draft_id)
+        return self._remember_draft(resp.json(), old_message_id=draft_id)
 
     async def send_draft(self, draft_id: str) -> str | None:
-        """Send an existing Gmail draft natively (drafts.send) — Drafts → Sent."""
+        """Send a Gmail draft natively (``drafts.send``): Drafts → Sent.
+
+        ``draft_id`` is the MESSAGE id of the draft, as the local row holds it
+        (EM-G3a item 7). A draft made in Gmail web has only that id, and it
+        now sends. Returns the id of the sent message.
+        """
+        gmail_draft_id = await self._draft_id_for(draft_id)
         client = await self._get_client()
-        resp = await client.post("/users/me/drafts/send", json={"id": draft_id})
+        resp = await client.post(
+            "/users/me/drafts/send", json={"id": gmail_draft_id})
         resp.raise_for_status()
+        self._draft_ids.pop(draft_id, None)
         return (resp.json() or {}).get("id")
+
+    async def _reply_headers(
+        self, reply_to_message_id: str | None, thread_id: str | None,
+    ) -> dict[str, str]:
+        """``In-Reply-To`` and ``References`` of a reply (EM-G3a items 4, 5).
+
+        The parent is the message that ``reply_to_message_id`` names. With
+        only ``thread_id``, it is the newest message of the thread that is not
+        a draft. The two headers come from Gmail (``format=metadata``), never
+        from the local row. With neither id, there is no parent.
+
+        A read that fails gives no header, and the mail still goes (E-A3).
+        The log line names the kind and the id only, never a subject or an
+        address.
+        """
+        if not (reply_to_message_id or thread_id):
+            return {}
+        kind, ref = (("message", reply_to_message_id) if reply_to_message_id
+                     else ("thread", thread_id))
+        try:
+            client = await self._get_client()
+            resp = await client.get(f"/users/me/{kind}s/{ref}",
+                                    params=_PARENT_PARAMS)
+            resp.raise_for_status()
+            data = resp.json()
+            parent = data if kind == "message" else _newest_parent(data)
+            return _reply_headers_of(parent)
+        except Exception as exc:  # E-A3: a failed read never fails the send
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning(
+                "gmail.parent_read_failed kind=%s id=%s error=%s status=%s",
+                kind, ref, type(exc).__name__, status)
+            return {}
+
+    def _remember_draft(
+        self, data: dict[str, Any], *, old_message_id: str | None = None,
+    ) -> str:
+        """Cache the pair of one draft answer, and return its message id.
+
+        ``drafts.create`` and ``drafts.update`` answer with the draft id and
+        the message of the draft (EM-G3a item 6). An update gives the draft a
+        new message id, so the old one leaves the cache."""
+        message_id = str((data.get("message") or {}).get("id") or "")
+        gmail_draft_id = str(data.get("id") or "")
+        if not message_id or not gmail_draft_id:
+            raise ValueError(
+                "Gmail answered a draft write with no draft id or message id")
+        if old_message_id and old_message_id != message_id:
+            self._draft_ids.pop(old_message_id, None)
+        self._draft_ids[message_id] = gmail_draft_id
+        return message_id
+
+    async def _draft_id_for(
+        self, message_id: str, *, required: bool = True,
+    ) -> str | None:
+        """The draft id of the draft whose message id is ``message_id``.
+
+        EM-G3a item 7 (O-GM-2). The local row holds the message id, and
+        ``drafts.list`` maps it to the draft id. The cache lives for this
+        instance. A lookup reads one page at a time, and it stops at the page
+        that holds the id, or after ``GMAIL_DRAFT_MAX_PAGES`` pages.
+
+        ``required`` (``update_draft`` and ``send_draft``): a miss of the
+        cache reads ``drafts.list`` again, and a message id that is no draft
+        raises :class:`GmailDraftNotFound`. Not ``required``
+        (``trash_message``): a miss after one full read answers None, so
+        many trashes cost one read.
+        """
+        if message_id in self._draft_ids:
+            return self._draft_ids[message_id]
+        if not required and self._drafts_listed:
+            return None
+        client = await self._get_client()
+        token: str | None = None
+        for _ in range(GMAIL_DRAFT_MAX_PAGES):
+            params: dict[str, Any] = {"maxResults": GMAIL_DRAFT_PAGE_SIZE}
+            if token:
+                params["pageToken"] = token
+            resp = await client.get("/users/me/drafts", params=params)
+            resp.raise_for_status()
+            data = resp.json() or {}
+            for draft in data.get("drafts") or []:
+                mid = (draft.get("message") or {}).get("id")
+                if mid and draft.get("id"):
+                    self._draft_ids[str(mid)] = str(draft["id"])
+            token = data.get("nextPageToken")
+            if not token or message_id in self._draft_ids:
+                break
+        found = self._draft_ids.get(message_id)
+        # The cache holds each draft after the last page, or after the bound
+        # of pages. A stop at the page of the id reads the rest later.
+        if not token or not found:
+            self._drafts_listed = True
+        if found:
+            return found
+        if required:
+            raise GmailDraftNotFound(message_id)
+        return None
 
     async def modify_message(
         self,
@@ -1035,11 +1250,43 @@ class GmailProvider(BaseEmailProvider):
         resp.raise_for_status()
 
     async def trash_message(self, provider_message_id: str) -> None:
+        """Move a message to Trash, or discard a draft (WS-17 EM-G3a, E-A5).
+
+        A draft goes through ``drafts.delete``, which is "Discard draft" in
+        Gmail. It removes the draft for good, as Gmail itself does, and the
+        scope ``gmail.modify`` allows it. Its message id goes into
+        ``discarded_drafts``, so a caller that moves rows deletes the local
+        row instead. Each other message goes to Trash (``messages.trash``).
+        """
+        draft_id = await self._draft_id_for_trash(provider_message_id)
         client = await self._get_client()
+        if draft_id:
+            resp = await client.delete(f"/users/me/drafts/{draft_id}")
+            resp.raise_for_status()
+            self._draft_ids.pop(provider_message_id, None)
+            self.discarded_drafts.add(provider_message_id)
+            return
         resp = await client.post(
             f"/users/me/messages/{provider_message_id}/trash"
         )
         resp.raise_for_status()
+
+    async def _draft_id_for_trash(self, provider_message_id: str) -> str | None:
+        """The draft id for a trash, or None when the id is no draft.
+
+        A lookup that fails for a reason other than a rate limit trashes the
+        message as before, so a failed ``drafts.list`` never blocks the trash
+        of a mail. A rate limit raises, as each Gmail call does (EM-G4a)."""
+        try:
+            return await self._draft_id_for(provider_message_id, required=False)
+        except GmailRateLimited:
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning(
+                "gmail.draft_lookup_failed message_id=%s error=%s status=%s",
+                provider_message_id, type(exc).__name__, status)
+            return None
 
     async def apply_flags(
         self,

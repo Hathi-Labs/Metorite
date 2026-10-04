@@ -335,7 +335,9 @@ async def _create_draft(p: GmailProvider) -> Any:
 
 
 async def _send_draft(p: GmailProvider) -> Any:
-    return await p.send_draft("r-draft-1")
+    # EM-G3a item 7: send_draft takes the MESSAGE id of the draft, and finds
+    # the draft id ``r-draft-1`` through ``drafts.list`` (E-A4).
+    return await p.send_draft("m-draft-1")
 
 
 @pytest.mark.parametrize("act, path", [
@@ -347,6 +349,8 @@ async def test_a_send_is_not_retried_after_the_request_was_sent(
         fake: _Gmail, act: Callable[[GmailProvider], Any], path: str) -> None:
     """M11. Each answer proves that the request reached Google. A second
     try could send the mail twice, so the 429 goes back to the caller."""
+    fake.on("GET", "/drafts", _ok({"drafts": [
+        {"id": "r-draft-1", "message": {"id": "m-draft-1"}}]}))
     fake.on("POST", path, _rate_limited("0"), _ok({"id": "m-sent"}))
 
     with pytest.raises(httpx.HTTPStatusError) as caught:
