@@ -36,7 +36,9 @@ lock is released, on the bytes in memory. The tool is not in
 
 **The parse.** :mod:`acb_skills.attachment_text`, pure parsing with caps and a
 deadline, in a worker thread. At most :data:`MAX_PARSES` parses run at once,
-because the gateway's default thread pool serves every tenant.
+because the gateway's default thread pool serves every tenant. A parse frees
+its slot when it ends, or when the deadline and :data:`_WAIT_MARGIN` pass,
+whichever comes first (PR #609 fix round 1).
 
 Fence: ``tests/unit/test_read_attachment.py``.
 """
@@ -54,10 +56,9 @@ from typing import Any
 
 from acb_common import get_logger
 
-from acb_skills import safe_open
+from acb_skills import attachment_text, safe_open
 from acb_skills.agent_paths import state_root, upload_dir_rel
 from acb_skills.attachment_text import (
-    DEADLINE_SECONDS,
     MAX_FILE_BYTES,
     SUPPORTED_SUFFIXES,
     AttachmentRefused,
@@ -75,8 +76,9 @@ MAX_OUTPUT_CHARS = 40_000
 #: Parses that may run at one time, in the whole process.
 MAX_PARSES = 2
 _SLOTS = threading.BoundedSemaphore(MAX_PARSES)
-#: The parse stops itself at ``DEADLINE_SECONDS``. The await stops a little later.
-_WAIT_SECONDS = DEADLINE_SECONDS + 5.0
+#: The parse stops itself at ``attachment_text.DEADLINE_SECONDS`` (measured:
+#: at most 0.8 s late). The await gives up this much later, and frees the slot.
+_WAIT_MARGIN = 2.0
 
 _KINDS = {
     "docx": "Word document",
@@ -213,34 +215,54 @@ async def _uploaded_in_this_thread(
     )
 
 
-def _parse_and_release(data: bytes, suffix: str) -> Extracted:
+class _Slot:
+    """One held parse slot, released once: by the worker or by the deadline.
+
+    The worker releases it when the parse ends. The await releases it when
+    the deadline and the margin pass, so a parse that runs late never keeps
+    a slot past the deadline, and two slow files cannot block every org
+    (PR #609 review, P1). The second release does nothing.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held = True
+
+    def release(self) -> None:
+        with self._lock:
+            if not self._held:
+                return
+            self._held = False
+        _SLOTS.release()
+
+
+def _parse_and_release(data: bytes, suffix: str, slot: _Slot) -> Extracted:
     try:
         return extract_text(data, suffix)
     finally:
-        _SLOTS.release()
+        slot.release()
 
 
 async def _parse(data: bytes, suffix: str) -> Extracted | str:
-    """The text of *data*, or a sentence that says why there is none.
-
-    The slot is released by the worker itself, so a parse that the await gave
-    up on still holds its slot until it ends.
-    """
+    """The text of *data*, or a sentence that says why there is none."""
     if not _SLOTS.acquire(blocking=False):
         return "Another file is being read now. Try again in a moment."
+    slot = _Slot()
     loop = asyncio.get_running_loop()
     try:
         future = loop.run_in_executor(
-            None, contextvars.copy_context().run, _parse_and_release, data, suffix,
+            None, contextvars.copy_context().run, _parse_and_release, data, suffix, slot,
         )
     except BaseException:
-        _SLOTS.release()
+        slot.release()
         raise
+    wait = attachment_text.DEADLINE_SECONDS + _WAIT_MARGIN
     try:
-        return await asyncio.wait_for(asyncio.shield(future), _WAIT_SECONDS)
+        return await asyncio.wait_for(asyncio.shield(future), wait)
     except AttachmentRefused as exc:
         return str(exc)
     except TimeoutError:
+        slot.release()
         return "Reading this file took too long, so I stopped."
     except Exception as exc:  # a bug here is a refusal, never a crash
         _log.warning("attachment.parse_failed", kind=suffix, error=type(exc).__name__)

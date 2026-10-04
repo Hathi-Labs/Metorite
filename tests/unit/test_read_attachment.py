@@ -926,3 +926,256 @@ def test_a_covered_run_reads_its_own_attachment_and_no_other(sandbox, monkeypatc
     assert "A colleague's secret" not in results
     assert "No file named secret.docx was attached in this chat" in results
     assert seen == [True, True], seen
+
+
+# ── 11. Fix round 1 of PR #609: the parser DoS findings ─────────────────────
+# The reviewer reproduced two P1 defects with pypdf 6.19.0: a one-page PDF
+# that ran 32 s past the deadline and held its parse slot, and a UTF-16
+# entity bomb that peaked near 2 GB. Deep nesting turned up a third: a
+# quadratic close that took 313 s.
+
+import threading  # noqa: E402
+import time  # noqa: E402
+import zlib  # noqa: E402
+
+
+def _raw_pdf(objs: list[bytes]) -> bytes:
+    out = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref}\n%%EOF\n").encode()
+    return bytes(out)
+
+
+def _flate(data: bytes, extra: bytes = b"") -> bytes:
+    packed = zlib.compress(data, 9)
+    return (b"<< /Length " + str(len(packed)).encode() + b" /Filter /FlateDecode " + extra
+            + b">>\nstream\n" + packed + b"\nendstream")
+
+
+def _slow_pdf(form_bytes: int = 256 * 1024, invocations: int = 100) -> bytes:
+    """The reviewer's file: ONE page that enters a flate form XObject many
+    times. pypdf parses the form again at each entry. About 1.6 KB."""
+    line = b"BT /F1 12 Tf 10 10 Td (Hello world text) Tj ET\n"
+    font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    return _raw_pdf([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [6 0 R] /Count 1 >>",
+        font,
+        _flate(line * (form_bytes // len(line)),
+               b"/Type /XObject /Subtype /Form /BBox [0 0 612 792] "
+               b"/Resources << /Font << /F1 3 0 R >> >> "),
+        _flate(b"/X0 Do\n" * invocations),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources "
+        b"<< /Font << /F1 3 0 R >> /XObject << /X0 4 0 R >> >> /Contents 5 0 R >>",
+    ])
+
+
+def test_a_slow_single_page_pdf_stops_at_the_deadline() -> None:
+    """The deadline stops the page in the middle, through pypdf's visitor.
+    Without it this file runs about 50 s and returns its text."""
+    data = _slow_pdf()
+    assert len(data) < 4096
+    started = time.monotonic()
+    with pytest.raises(at.AttachmentRefused, match="too long"):
+        at.extract_text(data, ".pdf", seconds=1.0)
+    assert time.monotonic() - started < 3.0
+
+
+def _free_slots() -> int:
+    """How many parse slots are free now. Takes them, counts, gives them back."""
+    taken = 0
+    while tools._SLOTS.acquire(blocking=False):
+        taken += 1
+    for _ in range(taken):
+        tools._SLOTS.release()
+    return taken
+
+
+def test_a_slow_pdf_is_refused_and_frees_its_slot(ws, monkeypatch) -> None:
+    monkeypatch.setattr(at, "DEADLINE_SECONDS", 1.0)
+    _attach(ws, SID_A, "slow.pdf", _slow_pdf())
+    started = time.monotonic()
+    out = _read(ws, SID_A, "slow.pdf")
+    assert "took too long" in out
+    assert time.monotonic() - started < 1.0 + tools._WAIT_MARGIN + 1.5
+    assert _free_slots() == tools.MAX_PARSES
+
+
+def test_the_slot_frees_at_the_deadline_when_a_parse_runs_on(ws, monkeypatch) -> None:
+    """A parse that ignores its deadline keeps its worker thread, but not its
+    slot: the await frees the slot when the deadline and the margin pass."""
+    go_on, done = threading.Event(), threading.Event()
+
+    def _stuck(_data: bytes, _suffix: str) -> Any:
+        go_on.wait(10)
+        done.set()
+        raise at.AttachmentRefused("late")
+
+    async def _go() -> str:
+        bind_artifact_context(session_id=SID_A, agent_name=AGENT, run_id="r-h229",
+                              workspace_root=str(ws), instance=KEY)
+        return await tools.read_attachment("a.txt")
+
+    monkeypatch.setattr(at, "DEADLINE_SECONDS", 0.2)
+    monkeypatch.setattr(tools, "_WAIT_MARGIN", 0.3)
+    monkeypatch.setattr(tools, "extract_text", _stuck)
+    _attach(ws, SID_A, "a.txt", b"hello")
+    # A loop that stays open, as the gateway's does. asyncio.run would wait
+    # for the stuck worker when it shuts the default executor down.
+    loop = asyncio.new_event_loop()
+    try:
+        started = time.monotonic()
+        assert "took too long" in loop.run_until_complete(_go())
+        assert time.monotonic() - started < 2.0
+        assert not done.is_set()
+        assert _free_slots() == tools.MAX_PARSES
+    finally:
+        go_on.set()
+        assert done.wait(5)
+        loop.close()
+    time.sleep(0.1)
+    # The worker's own release, after the await's, gives back nothing twice.
+    assert _free_slots() == tools.MAX_PARSES
+
+
+def _bomb_docx(encoding: str, decl: str) -> bytes:
+    ent = "A" * 10_000
+    xml = (f'<?xml version="1.0" encoding="{decl}"?><!DOCTYPE d [<!ENTITY a "{ent}">]>'
+           f"<w:document {_W}><w:body><w:p><w:r><w:t>{'&a;' * 5000}</w:t></w:r></w:p>"
+           "</w:body></w:document>")
+    return _zip({"word/document.xml": xml.encode(encoding)})
+
+
+@pytest.mark.parametrize(("encoding", "decl"), [
+    ("utf-16", "UTF-16"),        # with a byte order mark
+    ("utf-16-le", "UTF-16"),     # no byte order mark
+    ("utf-16-be", "UTF-16"),
+    ("utf-32", "UTF-32"),
+    ("utf-8", "UTF-8"),
+])
+def test_an_entity_bomb_in_any_encoding_is_refused_fast_and_small(encoding: str, decl: str) -> None:
+    """Each one expands to 50 MB of text. A 27 KB file once peaked near 2 GB."""
+    data = _bomb_docx(encoding, decl)
+    tracemalloc.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(at.AttachmentRefused):
+            at.extract_text(data, ".docx")
+        _now, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert time.monotonic() - started < 1.0
+    assert peak < 8 * 1024 * 1024, peak
+
+
+@pytest.mark.parametrize("xml", [
+    f'<?xml version="1.0" encoding="UTF-16"?><w:document {_W}/>'.encode("utf-16"),
+    f'<?xml version="1.0" encoding="UTF-16"?><w:document {_W}/>'.encode("utf-16-le"),
+    f'<?xml version="1.0" encoding="ISO-8859-1"?><w:document {_W}/>'.encode(),
+], ids=["utf-16-bom", "utf-16-no-bom", "declared-latin-1"])
+def test_a_word_part_that_is_not_utf8_is_refused(xml: bytes) -> None:
+    with pytest.raises(at.AttachmentRefused, match="not stored as UTF-8"):
+        at.extract_text(_zip({"word/document.xml": xml}), ".docx")
+
+
+def test_a_dtd_in_the_package_relationships_is_refused() -> None:
+    """`_rels/.rels` goes through the same parser. Here an entity would point
+    the main part at a real document, so only the refusal stops the read."""
+    rels = (
+        b'<?xml version="1.0"?><!DOCTYPE r [<!ENTITY t "word/document.xml">]>'
+        b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/'
+        b'2006/relationships/officeDocument" Target="&t;"/></Relationships>'
+    )
+    body = _word_part("<w:p><w:r><w:t>reached</w:t></w:r></w:p>")
+    with pytest.raises(at.AttachmentRefused, match="Word document"):
+        at.extract_text(_zip({"_rels/.rels": rels, "word/document.xml": body}), ".docx")
+
+
+def test_deep_nesting_parses_in_linear_time() -> None:
+    """30,000 nested paragraphs. Each close once summed every open one."""
+    depth = 30_000
+    xml = (f"<w:document {_W}><w:body>" + "<w:p>" * depth + "<w:r><w:t>hi</w:t></w:r>"
+           + "</w:p>" * depth + "</w:body></w:document>").encode()
+    started = time.monotonic()
+    got = at.extract_text(_zip({"word/document.xml": xml}), ".docx", seconds=20.0)
+    assert time.monotonic() - started < 2.0
+    assert got.text.startswith("hi")
+
+
+def test_the_deadline_stops_a_slow_handler_inside_one_chunk(monkeypatch) -> None:
+    """1,800 paragraphs fit in one 64 KB chunk. The check between chunks
+    alone would let a slow handler run to the end of it, 1.8 s here."""
+    real = at._Body._end_paragraph
+
+    def _slow(self: Any) -> None:
+        time.sleep(0.001)
+        real(self)
+
+    monkeypatch.setattr(at._Body, "_end_paragraph", _slow)
+    xml = (f"<w:document {_W}><w:body>" + "<w:p><w:r><w:t>x</w:t></w:r></w:p>" * 1800
+           + "</w:body></w:document>").encode()
+    assert len(xml) < at._CHUNK
+    started = time.monotonic()
+    with pytest.raises(at.AttachmentRefused, match="too long"):
+        at.extract_text(_zip({"word/document.xml": xml}), ".docx", seconds=0.3)
+    assert time.monotonic() - started < 2.5
+
+
+def test_a_pdf_cut_inside_its_last_page_says_it_stopped(monkeypatch) -> None:
+    monkeypatch.setattr(at, "MAX_EXTRACT_CHARS", 20)
+    got = at.extract_text(_pdf(["a single page with a long line of text"]), ".pdf")
+    assert (got.read, got.total) == (1, 1)
+    assert got.stopped is True and len(got.text) <= 20
+
+
+def test_a_word_paragraph_cut_by_the_char_cap_says_it_stopped(monkeypatch) -> None:
+    monkeypatch.setattr(at, "MAX_EXTRACT_CHARS", 10)
+    got = at.extract_text(_docx(["abcdefghijklmnopqrstuvwxyz"]), ".docx")
+    assert got.stopped is True
+    assert got.text == "abcdefghij"
+
+
+def test_the_instructions_name_read_attachment_for_a_sandboxed_chat_too() -> None:
+    text = (REPO / "apps/agents/agent-projects/instructions.md").read_text(encoding="utf-8")
+    assert "You have\n  no `read_file` tool" not in text
+    assert "There is no `read_file` tool." in text
+    assert "`file_access_*` tools, but they do not give the text of" in text
+
+
+def test_a_page_enters_a_form_at_most_the_capped_number_of_times() -> None:
+    """pypdf's own cap is 5,000 entries for each page. Ours is 100."""
+    data = _slow_pdf(form_bytes=60, invocations=500)
+    got = at.extract_text(data, ".pdf")
+    assert 0 < got.text.count("Hello world text") <= at.PDF_MAX_FORM_INVOCATIONS
+
+
+#: A content stream of 1.5 MiB: over the 1 MiB cap, under pypdf's own 75 MB.
+_STREAM_BYTES = 3 * 512 * 1024
+
+
+def test_a_content_stream_over_the_stream_cap_is_not_parsed() -> None:
+    """A page whose content unpacks past PDF_STREAM_LIMIT reads as a page
+    with no readable text, and the parse of it never starts."""
+    line = b"BT /F1 12 Tf 10 10 Td (Hello world text) Tj ET\n"
+    font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    data = _raw_pdf([
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [5 0 R] /Count 1 >>",
+        font,
+        _flate(line * (_STREAM_BYTES // len(line))),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources "
+        b"<< /Font << /F1 3 0 R >> >> /Contents 4 0 R >>",
+    ])
+    assert _STREAM_BYTES > at.PDF_STREAM_LIMIT
+    got = at.extract_text(data, ".pdf")
+    assert "Hello world text" not in got.text
+    assert "could not be read" in got.text
