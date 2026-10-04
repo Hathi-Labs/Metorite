@@ -1367,8 +1367,15 @@ async def _apply_write_rules(
         raise HTTPException(status_code=404, detail="File not found")
     if not claim or _own_thread_slug(workspace, session_id, user.organization_id) is None:
         return
+    from acb_skills.agent_paths import SkillOwnedElsewhere
+
     try:
         claimed = await asyncio.to_thread(claim_skill, workspace.resolve(), rel, user.email)
+    except SkillOwnedElsewhere:
+        # Another member claimed the folder between the check and the claim.
+        raise HTTPException(
+            status_code=403, detail="That skill belongs to another member.",
+        ) from None
     except ValueError:
         # No member id: no member, or no usable session secret. A skill folder
         # with no author would go to the next member who writes into it, with
