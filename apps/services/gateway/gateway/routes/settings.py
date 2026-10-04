@@ -15,6 +15,7 @@ import httpx
 import yaml
 from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger, get_settings
+from acb_common.env_guard import EnvWriteRefused, check_env_write
 from acb_llm.model_limits import FALLBACK_CONTEXT_WINDOWS, MODEL_CAPABILITIES
 from fastapi import APIRouter, Depends, HTTPException
 from gateway.db import current_tenant
@@ -166,37 +167,73 @@ def _infra_dir() -> Path:
     raise FileNotFoundError("infra/ directory not found from %s" % here)
 
 
-def _write_env_key(var: str, value: str) -> None:
-    """Upsert VAR=value in the repo-root .env (same file Settings and integrations use)."""
+#: The platform keys that the Models page owns (``acb_common.env_guard``,
+#: layer B). ``COPILOT_CHAT_MODEL`` is a model name: a per-deployment choice,
+#: not a secret and not a URL. Layer A still applies to its value.
+#: ``VLLM_BASE_URL`` is NOT here. It is a URL, and a vLLM client sends its key
+#: to the host it names, so ``POST /settings/llm/key`` refuses it (2026-10-05).
+_MODELS_PAGE_ENV_KEYS: frozenset[str] = frozenset({"COPILOT_CHAT_MODEL"})
+
+
+def _env_file_path() -> Path:
+    """The repo-root .env (same file Settings and integrations use)."""
     # Walk up to the workspace root (has [tool.uv.workspace] in pyproject.toml)
     here = Path(__file__).resolve()
-    env_file: Path | None = None
     for parent in here.parents:
         pyproject = parent / "pyproject.toml"
         if pyproject.exists():
             try:
                 if "[tool.uv.workspace]" in pyproject.read_text(encoding="utf-8"):
-                    env_file = parent / ".env"
-                    break
+                    return parent / ".env"
             except OSError:
                 pass
-    if env_file is None:
-        env_file = Path.cwd() / ".env"
-    lines = env_file.read_text(encoding="utf-8").splitlines(keepends=True) if env_file.exists() else []
+    return Path.cwd() / ".env"
+
+
+def _write_env_key(var: str, value: str) -> None:
+    """Upsert VAR=value in the repo-root .env (same file Settings and integrations use).
+
+    🔒 It refuses first (security fix, 2026-10-05), as
+    ``integrations._upsert_env_var`` does. ``check_env_write`` raises
+    ``EnvWriteRefused`` for a bad key, a value the file cannot hold, or a
+    platform name that the Models page does not own. A route checks before
+    this, to answer 400 or 403. It splits the file on ``\\n`` only, and it
+    reads and writes bytes, so a line that holds another line separator stays
+    one line.
+    """
+    check_env_write(var, value, owned=_MODELS_PAGE_ENV_KEYS)
+    env_file = _env_file_path()
+    text = env_file.read_bytes().decode("utf-8") if env_file.exists() else ""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
     pattern = re.compile(rf"^{re.escape(var)}\s*=")
     found = False
     new_lines: list[str] = []
     for line in lines:
         if pattern.match(line):
-            new_lines.append(f"{var}={value}\n")
+            new_lines.append(f"{var}={value}")
             found = True
         else:
             new_lines.append(line)
     if not found:
-        if new_lines and not new_lines[-1].endswith("\n"):
-            new_lines.append("\n")
-        new_lines.append(f"{var}={value}\n")
-    env_file.write_text("".join(new_lines), encoding="utf-8")
+        new_lines.append(f"{var}={value}")
+    env_file.write_bytes(("\n".join(new_lines) + "\n").encode("utf-8"))
+
+
+def _refuse_unsafe_env_write(var: str, value: str, *, actor: str | None) -> None:
+    """Layers A (400) and B (403) for a Models route, before any write.
+
+    The detail names the key and a character code, never the value.
+    """
+    try:
+        check_env_write(var, value, owned=_MODELS_PAGE_ENV_KEYS)
+    except EnvWriteRefused as exc:
+        _log.warning(
+            "settings.env_write_refused", key=exc.key, reason=exc.reason,
+            platform=exc.platform, actor=actor,
+        )
+        raise HTTPException(status_code=403 if exc.platform else 400, detail=str(exc)) from None
 
 
 def _recreate_litellm_bg() -> None:
@@ -817,11 +854,11 @@ async def test_tier(
 # product. The `byok_enabled` setting (default False) is the server half.
 #
 # ⚠️ There are TWO doors to a provider key, not one, and closing either alone
-# closes nothing. `POST /settings/llm/key` is the front door. The workbench
-# route `api/settings/llm/key/route.ts` falls back to
-# `POST /integrations/configure` whenever the front door answers "No env var
-# for provider", and that endpoint writes an arbitrary env var. Both call
-# this guard.
+# closes nothing: `POST /settings/llm/key` and `POST /integrations/configure`.
+# Both call this guard. The workbench route that once sent the first door's
+# misses to the second (`api/settings/llm/key/route.ts`) was deleted in #145
+# (WS-31 CP-5). No BFF route reaches `/settings/llm/key` now (measured
+# 2026-10-05), but a direct gateway call still can, so the guard stays.
 
 _BYOK_REFUSAL = (
     "Provider API keys are managed by Metorite on this deployment. "
@@ -861,6 +898,9 @@ async def set_provider_key(
         raise HTTPException(status_code=400, detail=f"No env var for provider: {req.provider}")
     if not req.api_key.strip():
         raise HTTPException(status_code=400, detail="api_key cannot be empty")
+    # Layers A and B (acb_common.env_guard), before the file, os.environ and
+    # the store. VLLM_BASE_URL is a URL, so it is refused here with 403.
+    _refuse_unsafe_env_write(env_var, req.api_key.strip(), actor=_user.email)
     try:
         _write_env_key(env_var, req.api_key.strip())
         # Update the live process environment so _is_provider_configured()
@@ -897,6 +937,9 @@ async def set_copilot_model(
     """Update the model used by GitHub Copilot SDK agents (Tier 1.5 path)."""
     if not req.model.strip():
         raise HTTPException(status_code=400, detail="model cannot be empty")
+    # Layer A (acb_common.env_guard) before the write. The Models page owns
+    # COPILOT_CHAT_MODEL, so layer B lets it through (_MODELS_PAGE_ENV_KEYS).
+    _refuse_unsafe_env_write("COPILOT_CHAT_MODEL", req.model.strip(), actor=_user.email)
     try:
         _write_env_key("COPILOT_CHAT_MODEL", req.model.strip())
     except Exception as exc:

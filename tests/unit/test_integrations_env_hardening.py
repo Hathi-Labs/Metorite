@@ -27,6 +27,7 @@ No test reads or writes a real ``.env`` and none needs a database.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,7 @@ from acb_common.settings import Settings, get_settings
 from fastapi import HTTPException
 from gateway.routes import integrations
 from gateway.routes import oauth as oauth_routes
+from gateway.routes import settings as settings_routes
 
 USER = UserContext(email="admin@example.test", role=UserRole.EXECUTIVE)
 
@@ -755,3 +757,124 @@ class TestEveryCallerStillWorks:
         assert "ZOHO_ACCESS_TOKEN=1000.access\n" in text
         assert "ZOHO_REFRESH_TOKEN=1000.refresh\n" in text
         assert "ZOHO_TOKEN_EXPIRY=" in text
+
+
+# ── The Models routes: the same guard on settings.py::_write_env_key ──────
+#
+# `POST /settings/llm/key` and `POST /settings/llm/copilot-model` write the
+# same env file through a second writer. No BFF route reaches either one
+# today (measured 2026-10-05), and a direct gateway call still can.
+
+
+@pytest.fixture()
+def models_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / ".env"
+    path.write_bytes(ENV_BEFORE)
+    monkeypatch.setattr(settings_routes, "_env_file_path", lambda: path)
+    return path
+
+
+async def _set_key(provider: str, api_key: str) -> dict[str, str]:
+    req = settings_routes.ProviderKeyRequest(provider=provider, api_key=api_key)
+    out = await settings_routes.set_provider_key(req, _user=USER)
+    await asyncio.sleep(0)  # let the scheduled store write run
+    return out
+
+
+async def _set_model(model: str) -> dict[str, str]:
+    req = settings_routes.CopilotModelRequest(model=model)
+    return await settings_routes.set_copilot_model(req, _user=USER)
+
+
+MODELS_BAD_VALUES = [
+    pytest.param("sk-x\nDATABASE_URL=postgres://evil", id="LF"),
+    pytest.param("sk-$(touch /tmp/p)", id="substitution"),
+    pytest.param("sk-x\x00y", id="NUL"),
+    pytest.param("sk-x\u2028GATEWAY_SESSION_SECRET=evil", id="U+2028"),
+    pytest.param("sk x", id="space"),
+]
+
+
+class TestTheModelsRoutesUseTheSameGuard:
+    @pytest.mark.parametrize("value", MODELS_BAD_VALUES)
+    async def test_the_key_route_refuses_and_writes_nothing(
+        self, value, models_env_file, store, byok_on,
+    ):
+        before = _snapshot(models_env_file)
+        await _expect(400, _set_key("openai", value))
+        _assert_untouched(models_env_file, before)
+        assert store.puts == []
+
+    @pytest.mark.parametrize("value", MODELS_BAD_VALUES)
+    async def test_the_copilot_model_route_refuses_and_writes_nothing(self, value, models_env_file):
+        before = _snapshot(models_env_file)
+        await _expect(400, _set_model(value))
+        _assert_untouched(models_env_file, before)
+
+    async def test_the_key_route_refuses_vllm_base_url(self, models_env_file, store, byok_on):
+        # A URL, and a vLLM client sends its key to the host it names.
+        before = _snapshot(models_env_file)
+        await _expect(403, _set_key("vllm", "http://evil.example/v1"))
+        _assert_untouched(models_env_file, before)
+        assert store.puts == []
+
+    async def test_the_model_setting_still_saves(self, models_env_file):
+        out = await _set_model("claude-sonnet-4-5")
+        assert out == {"ok": "true", "model": "claude-sonnet-4-5"}
+        assert models_env_file.read_bytes() == ENV_BEFORE + b"COPILOT_CHAT_MODEL=claude-sonnet-4-5\n"
+
+    async def test_a_provider_key_still_saves(self, models_env_file, store, byok_on):
+        out = await _set_key("openai", "sk-proj-AbC123_xyz")
+        assert out["env_var"] == "OPENAI_API_KEY"
+        assert models_env_file.read_bytes() == ENV_BEFORE + b"OPENAI_API_KEY=sk-proj-AbC123_xyz\n"
+        assert os.environ["OPENAI_API_KEY"] == "sk-proj-AbC123_xyz"
+        assert store.puts == [("openai", "sk-proj-AbC123_xyz")]
+
+    def test_only_vllm_base_url_of_the_provider_map_is_refused(self):
+        names = {v for v in settings_routes._PROVIDER_ENV_MAP.values() if v}
+        assert {n for n in names if env_guard.is_platform_env(n)} == {"VLLM_BASE_URL"}
+
+    def test_the_models_page_owns_exactly_one_platform_key(self):
+        # Growing this set lets a route write a platform key. It must be a
+        # model choice, never a secret and never a URL, so it is pinned.
+        assert frozenset({"COPILOT_CHAT_MODEL"}) == settings_routes._MODELS_PAGE_ENV_KEYS
+        assert env_guard.is_platform_env("COPILOT_CHAT_MODEL")
+
+    def test_owned_is_an_exact_name_exemption(self):
+        owned = settings_routes._MODELS_PAGE_ENV_KEYS
+        env_guard.check_env_write("COPILOT_CHAT_MODEL", "gpt-4o", owned=owned)
+        for key in ("COPILOT_SANDBOX_IMAGE", "COPILOT_LLM_BASE_URL", "VLLM_BASE_URL"):
+            with pytest.raises(env_guard.EnvWriteRefused) as caught:
+                env_guard.check_env_write(key, "x", owned=owned)
+            assert caught.value.platform is True, key
+        with pytest.raises(env_guard.EnvWriteRefused):
+            env_guard.check_env_write("COPILOT_CHAT_MODEL", "x\ny", owned=owned)
+
+    @pytest.mark.parametrize("value", MODELS_BAD_VALUES)
+    def test_write_env_key_itself_refuses(self, value, models_env_file):
+        with pytest.raises(env_guard.EnvWriteRefused) as caught:
+            settings_routes._write_env_key("OPENAI_API_KEY", value)
+        assert caught.value.platform is False
+        assert models_env_file.read_bytes() == ENV_BEFORE
+
+    def test_write_env_key_itself_refuses_a_platform_key(self, models_env_file):
+        for key in ("GATEWAY_SESSION_SECRET", "VLLM_BASE_URL", "DATABASE_URL"):
+            with pytest.raises(env_guard.EnvWriteRefused) as caught:
+                settings_routes._write_env_key(key, "x")
+            assert caught.value.platform is True, key
+        assert models_env_file.read_bytes() == ENV_BEFORE
+
+    @pytest.mark.parametrize("separator", ["\u2028", "\x0b", "\x85", "\r"])
+    def test_write_env_key_never_splits_an_old_line(self, separator, models_env_file):
+        old = f"OLD=a{separator}DATABASE_URL=evil\nOTHER=1\n".encode()
+        models_env_file.write_bytes(old)
+        settings_routes._write_env_key("OPENAI_API_KEY", "sk-1")
+        assert models_env_file.read_bytes() == old + b"OPENAI_API_KEY=sk-1\n"
+
+    def test_write_env_key_still_replaces_and_appends(self, models_env_file):
+        models_env_file.write_bytes(b"A=1\nCOPILOT_CHAT_MODEL=gpt-4o\n\n# note")
+        settings_routes._write_env_key("COPILOT_CHAT_MODEL", "o3-mini")
+        settings_routes._write_env_key("OPENAI_API_KEY", "sk-1")
+        assert models_env_file.read_bytes() == (
+            b"A=1\nCOPILOT_CHAT_MODEL=o3-mini\n\n# note\nOPENAI_API_KEY=sk-1\n"
+        )

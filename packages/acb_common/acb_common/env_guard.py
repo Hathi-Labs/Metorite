@@ -1,9 +1,10 @@
 """The one rule for a write to the deployment environment.
 
-Three surfaces write ``os.environ`` and the env file of the box: the
+Four surfaces write ``os.environ`` and the env file of the box: the
 Integrations routes (``gateway/routes/integrations.py``), the OAuth token
-writer (``gateway/routes/oauth.py``), and the startup load of the credential
-store (``acb_llm/key_store.py``). On the box the env file is
+writer (``gateway/routes/oauth.py``), the Models routes
+(``gateway/routes/settings.py::_write_env_key``), and the startup load of the
+credential store (``acb_llm/key_store.py``). On the box the env file is
 ``/opt/acb/app/.env``. It is the ``EnvironmentFile`` of ``acb-gateway.service``,
 and ``deploy/hostinger/deploy.sh`` runs ``source`` on it. One process env and
 one file serve every organization, so a write here changes the deployment.
@@ -219,13 +220,19 @@ def is_platform_env(name: str) -> bool:
     )
 
 
-def check_env_write(key: str, value: str) -> None:
+def check_env_write(key: str, value: str, *, owned: frozenset[str] = frozenset()) -> None:
     """Raise ``EnvWriteRefused`` unless ``KEY=value`` is safe to write.
 
     The whole rule, for a writer of the env file: the key shape, layer A on
     the key and the value, and layer B on the key. A route calls the parts
     first, to answer with the right status. The writer calls this again, so a
     caller that forgets cannot write.
+
+    ``owned`` names the platform keys that the CALLING surface owns, by exact
+    name. Layer B lets them through, and layer A still applies. Only a
+    per-deployment choice that is not a secret and not a URL may go in it.
+    Today one caller passes one name: ``routes/settings.py`` passes
+    ``COPILOT_CHAT_MODEL``, the model choice of the Models page.
     """
     problem = control_problem(key)
     if problem:
@@ -235,5 +242,5 @@ def check_env_write(key: str, value: str) -> None:
     problem = value_problem(value)
     if problem:
         raise EnvWriteRefused(key, f"the value: {problem}")
-    if is_platform_env(key):
+    if is_platform_env(key) and key not in owned:
         raise EnvWriteRefused(key, "it is a platform setting", platform=True)

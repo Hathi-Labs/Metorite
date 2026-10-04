@@ -852,10 +852,11 @@ async def configure_integrations(
 
     # ── BYOK off: this is the SECOND door to a provider key ────────────────
     #
-    # `api/settings/llm/key/route.ts` falls back to THIS endpoint whenever
-    # `POST /settings/llm/key` answers "No env var for provider". Guarding
-    # only the front door would leave that fallback wide open, and the
-    # fallback writes an arbitrary env var by design.
+    # `POST /settings/llm/key` is the front door, and this endpoint is a
+    # second door to the same provider variables. The workbench route that
+    # once sent the front door's misses here (`api/settings/llm/key/route.ts`)
+    # was deleted in #145. A direct gateway call still reaches both doors, so
+    # guarding only the front door would leave this one open.
     #
     # Only the LLM provider variables are refused. Every other integration
     # credential (Slack, GitHub OAuth, WhatsApp and the rest) is untouched,
