@@ -95,6 +95,21 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-243 · Answer WS-44's four open questions before a shell flag goes on · [OWNER]
+- **Check:** read `project-docs/specs/navigation_shell.md` §13.3. A row that
+  still shows only a default means that question is open.
+- **Why:** each question has a default, and an agent builds to it behind a
+  flag. The owner checks the default before the flag reaches customers.
+  1. **Q2.** Does `/` become My Day for every member? The default is yes.
+  2. **Q4.** Does the shell bar share one row with each app's bar? The
+     default is yes.
+  3. **Q5.** Fixed presets, or an editor for each organization? The default
+     is eight fixed presets.
+  4. **Q6.** Does Desk mode hide All apps? The default is yes.
+- **Authority:** `specs/navigation_shell.md` §13.3 · `work_plan.md` §6.0 C5 ·
+  board row WS-44.
+- **Added:** 2026-10-05 · the session that wrote `navigation_shell.md`.
+
 ### H-228 · Give `get_errors` and `run_diagnostics` a containment check · [AGENT]
 - **Check:** `rg -n "resolve_in_workspace|relative_to" packages/acb_skills/acb_skills/error_tools.py`.
   No hit means the tool still has no containment check, and this is open.
@@ -380,19 +395,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md` §10 · `acb_llm/key_store.py`
 - **Added:** 2026-10-02 · the Outlook onboarding session
 
-### H-209 · The two migration-order tests of 223 skip in CI · [AGENT]
-- **Check:** in the log of a `pr-check.yml` unit-test job, find
-  `test_email_account_unique_per_tenant.py::TestTheProductionOrder` and
-  `TestTheFreshLadderOrder`. If they show SKIPPED, this is open.
-- **Why.** CI did not prove migration 223 in the production order or on a fresh
-  ladder (run 36974344368). They passed on a local real database, and the box
-  showed the right indexes after the deploy. A later migration of the same
-  shape would ship with no CI proof.
-- **Do.** Find the condition that skips the two classes in CI, and make CI meet
-  it. Do not weaken the tests.
-- **Authority:** `specs/email_app_master_plan.md` §10.4.5 (EM-T2a) · R8
-- **Added:** 2026-10-02 · the Outlook onboarding session
-
 ### H-207 · 🔴 Rotate the Microsoft app secret that reached a chat transcript · [OWNER]
 - **Check:** in Entra, open the app `3bfeff54-14fb-4cee-8b17-2c8d41cad6a8` →
   Certificates & secrets. If a secret whose value ends `…scaAH` still exists,
@@ -485,16 +487,6 @@ line — never reclaim a number by deleting the other entry.
   estimate, and a naive reader stores that as `cost_source = 'vendor'`. Tell
   the two apart before trusting the figure. Found by the PR #500 review.
 - **Added:** 2026-09-28 · the dependency upgrade
-
-### H-189 · The out-of-workspace write veto never fires for a real write · [AGENT]
-- **Check:** in `apps/services/orchestrator/orchestrator/permission_policy.py`,
-  find the key that `decide` reads for a write's target. `path` alone means
-  this is open.
-- **Found 2026-09-26, by the SDK upgrade (H-181).** `decide` reads `path`, and
-  an SDK write request carries `file_name`. The 0.1.32 SDK did the same. So a
-  Copilot agent can write outside its workspace, and the veto never runs.
-- ⚠️ **The fix changes what production denies.** Build it as its own slice,
-  with a test that sends the SDK's real write request shape.
 
 ### H-181 · Prove the upgraded Copilot path on the live Router · [AGENT]
 - **Check:** run one `task-manager` chat on the box. Then read its
@@ -1638,19 +1630,6 @@ line — never reclaim a number by deleting the other entry.
   one instance of a pattern, not one bug. Nothing in the tree tests layout.
 - **Authority:** `app/projects/page.tsx` · `DESIGN_SYSTEM.md` §8 · H-8
 - **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
-
-### H-119 · ✅ DISSOLVED — a stop closes nothing, so there is no lane · [RESOLVED]
-- **Answered 2026-09-19, and the question turned out to be wrong.** The owner:
-  *"Stopping a project does not change its status, so the status of those
-  individual tasks remains the same as before. Only the project gets stopped."*
-- So there is no bulk close and no lane to choose. **D-PM-26's offer to close
-  open tasks on Stop is WITHDRAWN**, and the derive-never-write half of that
-  decision stands unchanged. Nothing was built against the withdrawn half.
-- **What replaced it: D-PM-32(b).** A stopped project's tasks leave the
-  reports. Paused and queued work stays, because hiding a stalled project from
-  the one surface that would reveal the stall is how its work goes missing.
-- **Delete this entry** once somebody has read it. Kept for one cycle because
-  H-8 and the WS-27 board row both pointed here.
 
 ### H-8 · Still owed on WS-27bg slice 2, and WS-27bg slice 3 / WS-27bh unbuilt · [AGENT]
 - **Check:** the WS-27 row in `work_plan.md` §2 — it names what is built. Read
@@ -3038,33 +3017,6 @@ line — never reclaim a number by deleting the other entry.
   unapplied and mark the two tests expected-fail with that reason. Today they
   are neither, which is the worst of the three.
 
-### H-117 · An outage tells a member they belong to no organization · [AGENT]
-- **Check:** `rg -n "no_organization" apps/services/gateway/gateway/main.py` →
-  the 403 arm answers on the presence of a user header alone.
-- **Why:** `_tenant_unbound` (shipped 2026-09-18, #293) answers **403
-  `no_organization`** whenever a request carries `X-User-Email` and no tenant
-  is bound. That is right for the ordinary case and WRONG during an outage:
-  `resolve_identity` also returns `(None, None)` when the database refuses the
-  read, so a member of long standing is told, in so many words, that they are
-  not a member of any organization.
-- **It is not hypothetical.** `EMAXCONNSESSION — max clients reached in session
-  mode, pool_size: 15` fired twice at 13:06:08 UTC on 2026-09-18, and
-  `auth.identity_resolve_failed` fired with it. That log line exists precisely
-  to tell the two apart — it was added in the same pull request — but it only
-  helps the operator. The member still reads the accusation.
-- **What it needs.** The distinction already exists at the point of failure and
-  is thrown away before the handler sees it. Carry it: mark the request when
-  `resolve_identity` raised rather than found nothing, and answer **503** for
-  that arm. A person should be told "we could not reach your workspace", never
-  "you have none".
-- **Related:** the pool blip above is its own question — two events in one
-  second during a restart is not yet a pattern, and `pool_size: 15` is the
-  Supabase session-mode pooler's limit, not ours. Watch it before tuning it.
-- **Authority:** `gateway/main.py` `_tenant_unbound` ·
-  `acb_auth/access.py` `resolve_identity` · D-MT-1c
-- **Added:** 2026-09-18 · the risk was named in #293's own description, and the
-  first day in production produced it.
-
 ### H-114 · R8 suites still run psycopg. The gateway runs asyncpg · [AGENT]
 - **Check:** `uv run pytest tests/unit/test_projects_sql_asyncpg.py
   tests/unit/test_auth_sql_asyncpg.py -q` with `TENANT_LADDER_DATABASE_URL`
@@ -3241,42 +3193,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `.claude/hooks/plan-guard.mjs` line 443 · CLAUDE.md §3.2 ·
   related: H-95, H-103, H-65
 - **Added:** 2026-09-18 · operator console workspace session
-
-### H-133 · The customer's page shows their BALANCE and never their USAGE · [AGENT]
-- **Check:** open `workbench/operator_console/src/app/customers/[slug]/page.tsx`
-  and read `loadOrg`. Five reads, none of them a usage read, means this is open.
-- 🔴 **It is the page where the question gets asked.** A customer writes in
-  saying their credits went faster than they expected. The operator opens that
-  customer and sees the balance, the lots and the ledger. The ledger says
-  `usage -1.29` eight hundred times. It cannot say which tier, which app or
-  which person, so the operator cannot answer.
-- ⚠️ **The read already exists and nothing calls it.** `GET
-  /admin/usage/daily?org_slug=<slug>` serves a per-organization series, and
-  `usageDaily(days, orgSlug)` in `lib/console.ts` already takes the slug. The
-  fleet board at `/usage` computes calls, credits, cost, margin, runway and
-  the silent flag per organization, and the per-customer page reads none of it.
-- **The slice.** One panel under Credit lots: the 30-day series, the same row
-  the fleet board draws for this organization, and a link to `/usage`. Judge
-  it with the functions in `lib/usage.ts` — a second verdict on one row is the
-  defect `golive.ts` and `fallback.ts` already record.
-- **Authority:** `specs/ai_metering_and_analytics.md` §5 · `customer_console.md` §6B
-- **Added:** 2026-09-20 · credit and usage review session
-
-### H-134 · D66 is BUILT and unwired — a customer sees a total and no breakdown · [AGENT]
-- **Check:** grep the workbench for `my/usage/activity` and `my/usage/members`.
-  No consumer means this is open.
-- 🔴 **Two endpoints answer "what did we spend it ON" and nothing asks them.**
-  `GET /my/usage/activity` is D66 (a), spend by activity. `GET
-  /my/usage/members` is D66 (b), spend per person. Both are implemented,
-  tested and reachable. `settings/billing` reads only `/me/billing`, so the
-  customer sees a balance, a burn figure and a runway.
-- ⚠️ **A customer who cannot see the breakdown cannot manage the spend.** They
-  can only ask us, which makes every credit question a support conversation.
-- ⚠️ **`/my/usage/members` must NOT grow a cap column.** Its own docstring says
-  so: showing a cap beside a spend implies the cap is enforced, and
-  `member_ai_cap` is not enforced. H-73 owns that.
-- **Authority:** D66 · `customer_console.md` · `specs/launch_surface.md` §7
-- **Added:** 2026-09-20 · credit and usage review session
 
 ### H-137 · 🔴 The deploy reports SUCCESS while `vps_apply.sh` dies half way · [AGENT]
 - **Check:** open the newest green `deploy.yml` run, job *Deploy to Hostinger*,

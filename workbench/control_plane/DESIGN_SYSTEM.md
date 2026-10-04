@@ -429,6 +429,12 @@ Naming both, because a third appears whenever the set is left implicit.
 layout AND a `PageHeader` inside a pane. The bar is app scope and the header
 is page scope, so they answer different questions.
 
+**The shell bar (WS-44, D89) is the frame around both, not a third shape.**
+When NS-1 ships, the rail, the title and the actions of the app bar move
+into the shell's one row as slots. An app then draws no strip of its own. A
+`PageHeader` inside a page does not change. `navigation_shell.md` §3.1 in
+`project-docs/specs/` owns the bar.
+
 ⚠️ **Do not take the app bar as licence for a third shape.** Measured
 2026-09-21: the Projects bar's own comment claims *"Same shape as Tasks and
 Email"*.
@@ -506,3 +512,6 @@ pair it with an icon or a label.
      and `--primary` is the token most often written by hand.
    - **The neighbouring app**, in whichever of those you picked. Continuity
      between two apps is what no test in this repo measures.
+4. **The app plugs into the shell** (`AGENTS.md` rule 10). It mounts no ⌘K
+   handler, palette, bell or assistant rail of its own. Its `NavPane` carries
+   its team, its one-line purpose and its jobs.
