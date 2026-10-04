@@ -4655,11 +4655,12 @@ the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
    store key `o:<org>` and the thread from the run. The routes tell a tenant
    dir from its path and the caller's tenant. Nothing reads the
    `.cc-instance` marker.
-2. **The history rule of a loose file.** A row must name this session and
-   the sha256 of the bytes on disk, and its action must write
-   (`workspace._session_wrote`). An upload, an edit in the file manager and
-   a document of the run all count. `read_attachment` keeps its narrower
-   form of the rule, an upload only (§22.4 rule 10).
+2. **The history rule of a loose file** (`workspace._session_wrote`). The
+   session must have begun the path. Its row is the oldest row there that
+   writes bytes. One of its rows must also name the sha256 of the bytes on
+   disk. So ownership never moves to a second session (fix round 1). An
+   upload, an edit and a document of the run all count. `read_attachment`
+   keeps its narrower form of the rule, an upload only (§22.4 rule 10).
 3. **Both store keys.** The routes read the tenant key `o:<org>` and the
    older `''` rows of the tenant (§21.15), in the caller's tenant.
 4. **The fault-in checks first.** For a loose file, it checks the stored
@@ -4667,8 +4668,8 @@ the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
 5. **One answer.** A loose file of another session, a new loose path and a
    folder of another thread all answer 404. So no answer tells a member
    which loose file exists.
-6. **The history route** shows a row of a loose file only when this session
-   wrote that row.
+6. **The history route.** A row of a loose file shows only to its writer,
+   when that session began the path.
 7. **A personal agent keeps its flat folders.** Its dir holds only the files
    of its member.
 8. **No thread folder, no document.** In a tenant dir, a run writes nothing
@@ -4748,14 +4749,86 @@ mutation of one layer alone stays green. The table shows those too.
 
 **What H-227 does not do.**
 
-- `save_note` and `recall_notes` keep plain paths. HANDOFF H-237 carries
-  them.
 - The files in the flat folders stay on disk. Nothing moves them into a
   thread folder, because a history row does not always name a thread.
 - A document from before S15 has no row (§21.15). So its link answers 404
   for every session, as before.
 - The history route reads the tenant key only, as before. So it does not
   show a row of the older `''` key.
+
+**Fix round 1 (the PR #616 review, 2026-10-04).**
+
+1. **`save_note` and `recall_notes` keep to the thread (P1).** Before the
+   fix, `save_note` on a colleague's loose file appended to it. Its history
+   row named the caller's session and the new sha256. So the rule of the
+   time gave the file to the caller, and took it from its owner. Now, in a
+   tenant dir, both tools read `inputs/` and `outputs/` as this chat's own
+   folders. `note_tools._notes_target` does it, over
+   `write_artifact._thread_scoped`. Both tools refuse a loose file and the
+   folder of another chat. `agent-data/NOTES.md` does not change (residual
+   1).
+2. **Ownership stays with the session that began the path (P1).** Rule 2
+   above. A later write of another session makes it no owner. The file
+   then opens for nobody.
+3. **A planted link shows nothing (P3).** A directory share of
+   `share_artifact` checks the resolved path, the path that the card shows.
+   It skips a link outright. So a link that a covered run plants in its own
+   folder shows no file of another chat.
+4. **A deleted chat takes its files.** A client chooses the id of a chat
+   session. `POST /chat/sessions` takes `id` from the body, and
+   `sessions.ts` makes it. So after a delete, a member who knows the id can
+   make a new session with it. The thread rule would then give that
+   session the old files. So the delete route calls
+   `workspace.purge_thread_files` after the row is gone. The purge works in
+   every tenant dir of the organization. It removes the two thread folders
+   and the loose files that the chat began. It removes their rows in the
+   blob store and in its history (`acb_memory.purge_files` and
+   `session_paths`). It removes the other history rows of the chat under
+   `inputs/` and `outputs/` too. So `read_attachment` reads none of its
+   older uploads. A loose file that another session began stays, and its
+   ownership does not move. The server still takes the id from the client.
+5. **An assigned task's run keeps no document (P2).** Rule 8. HANDOFF H-239
+   gives that document a home.
+
+**The mutations of fix round 1.** Each one turned at least one test of
+`tests/unit/test_h227_thread_scope.py` red, on 2026-10-04.
+
+| Mutation | Tests that fail |
+|---|---|
+| `save_note` takes a plain path again | 2 |
+| `recall_notes` takes a plain path again | 1 |
+| `_session_wrote` drops the first-writer check | 2 |
+| the history route drops the owner check of a loose row | 1 |
+| a directory share checks the link path and keeps links | 1 |
+| the delete route skips the purge | 1 |
+| the purge skips the loose files that the chat began | 1 |
+| the purge leaves the thread folders on disk | 1 |
+| the purge leaves the store rows of the thread folders | 1 |
+| the purge leaves the other history rows of the chat | 1 |
+
+**Residuals, named.**
+
+1. **`agent-data/` of a shared agent is one folder for the whole
+   organization, and so it is a channel between members.** A fact that one
+   member's run saves to `agent-data/NOTES.md` reaches the run of each other
+   member. The session routes serve `agent-data/` to every session. It is
+   older than H-227, and this PR keeps it. To make it per member or per
+   thread is a decision about the memory of a shared agent. HANDOFF H-237
+   carries it.
+2. **The purge runs once, after the delete.** On a database error it logs
+   `workspace.thread_purge_failed`, and the files stay. A live container of
+   the thread keeps its mounts of the removed folders until it stops.
+3. **The member purge of the admin routes deletes private chats and keeps
+   their folders** (`routes/admin/members.py`). Only the purged person knew
+   those ids. HANDOFF H-237 carries it.
+4. **Other state keyed by a chat id** is outside H-227: the room memory
+   `room:<id>` and the room stream. A new session with an old id can reach
+   it.
+5. **The Windows dev box only.** NTFS does not tell `OUTPUTS/` from
+   `outputs/`. The rules compare the head of a path as the caller wrote it.
+   So on a Windows dev box, `OUTPUTS/<thread slug>/x` names the folder of
+   that thread, and it passes the rules. Production runs on Linux. There
+   that path names another folder, and no route lists it.
 
 **Verification.**
 

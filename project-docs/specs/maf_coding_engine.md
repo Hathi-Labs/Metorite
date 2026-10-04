@@ -3512,14 +3512,26 @@ decision on WS43-Q6, and H-227, D12).**
   keep the room check of today.
 - **A loose file (H-227).** A file in `outputs/` or `inputs/` but in no
   thread folder comes from before the thread folders: an S8 document or an
-  upload. The routes list and serve it only to a session that the blob
-  history shows wrote those exact bytes. The row must name that session and
-  that sha256, and its action must write (`workspace._session_wrote`). The
-  history read takes the store key from the path and the caller's tenant,
-  never from the `.cc-instance` marker. It reads `o:<org>` and the older
-  `''` rows of the tenant. The fault-in checks the stored bytes before it
-  writes them to disk. A PUT of a new loose path answers 404, so a new file
-  goes in the thread's folder.
+  upload. The routes list and serve it only to the session that began the
+  path, the session of its oldest row that writes. That session must also
+  have written the exact bytes on disk (`workspace._session_wrote`). So
+  ownership never moves to a second session. The history read takes the
+  store key from the path and the caller's tenant, never from the
+  `.cc-instance` marker. It reads `o:<org>` and the older `''` rows of the
+  tenant. The fault-in checks the stored bytes before it writes them to
+  disk. A PUT of a new loose path answers 404, so a new file goes in the
+  thread's folder.
+- **The notes tools (H-227 fix round 1).** `save_note` and `recall_notes`
+  read `inputs/` and `outputs/` as the chat's own folders. They refuse a
+  loose file and the folder of another chat. `agent-data/` stays one folder
+  for the whole organization (HANDOFF H-237).
+- **A deleted chat (H-227 fix round 1).** A client chooses the id of a chat
+  session. So the delete route removes the thread folders of the chat, the
+  loose files that it began and their stored rows
+  (`workspace.purge_thread_files`). A new session with the old id then finds
+  none of them.
+- **A link (H-227 fix round 1).** A directory share of `share_artifact`
+  checks the resolved path and skips a link.
 - **The artifact cards** link to `outputs/<thread hash>/<name>`, for a
   sandbox run and for `write_artifact`.
 - **The fences.** `tests/unit/test_h227_thread_scope.py` (R8, the fake Docker

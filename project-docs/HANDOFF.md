@@ -113,34 +113,62 @@ line — never reclaim a number by deleting the other entry.
   2. Read each file with `acb_skills.safe_open`, so a link fails too.
   3. Add a fence: an escape and a link give "No Python files to check".
 
-### H-237 · Give `save_note` and `recall_notes` the thread rule of H-227 · [AGENT]
-- **Check:** `rg -n "_thread_scoped|is_loose_rel" packages/acb_skills/acb_skills/note_tools.py`.
-  No hit means the two tools still ignore the thread folders, and this is
-  open.
-- **What happens.** H-227 gave a shared agent's tenant dir one folder for
-  each thread under `inputs/` and `outputs/`. `write_artifact`,
-  `share_artifact`, the session routes, `TenantFileStore` and the container
-  keep to it. Two core floor tools do not. `recall_notes` reads a path of
-  the tenant dir with a plain path call. So it reads the folder of another
-  thread when the model knows its slug. It also reads a loose file by name.
-  `save_note` writes `outputs/x` as a loose file, which no session then
-  lists.
-- **Why it matters.** It is a gap in D12 at the tool level, and it is
-  smaller than H-227. The model needs the name of a loose file, or the slug
-  of another thread. Every agent holds the two tools. A run that the broker
-  covers does not hold them (`sandbox_tools.WITHHELD_HOST_TOOLS`).
+### H-237 · Close what H-227 left: the member purge, the shared `agent-data/`, and a live check · [AGENT]
+- **Check:** `rg -n "purge_thread_files" apps/services/gateway/gateway/routes/admin/members.py`.
+  No hit means step 1 is open. Steps 2 and 3 stay open until a decision
+  and a live check are on record.
+- **What happens.** H-227 (PR #616) keeps the uploads and the S8 documents
+  of a shared agent in the folders of their chat thread. Three items stay.
+  1. The member purge of the admin routes deletes the private chats of a
+     member (`routes/admin/members.py`, `private_chat_sessions`). It does
+     not call `workspace.purge_thread_files`, so their thread folders, and
+     the loose files that they began, stay on disk and in the store. A
+     client can choose a chat id, so a member who knows one of those ids
+     can make a new session with it and read those files.
+  2. `agent-data/` of a shared agent is one folder for the whole
+     organization. A fact that one member's run saves to
+     `agent-data/NOTES.md` reaches the run of each other member, and the
+     session routes serve `agent-data/` to every session. That is a
+     channel between members, older than H-227.
+  3. No live check is on record.
 - **Do.**
-  1. In a tenant dir, send each `inputs/` and `outputs/` path of both tools
-     through `write_artifact._thread_scoped`, as `share_artifact` does.
-  2. Make `recall_notes` refuse the folder of another thread and a loose
-     file.
-  3. Add a test and a mutation for each rule.
-  4. After the deploy of the H-227 PR, open a Projects chat document and an
+  1. Make the member purge call `purge_thread_files` for each private chat
+     that it deletes. Add an R8 test and a mutation.
+  2. Get a decision on `agent-data/` of a shared agent: one folder for each
+     member, one for each thread, or one for the organization as today.
+     Then build it, with the skill folders of WS-43d in mind.
+  3. After the deploy of PR #616, open a Projects chat document and an
      attachment from the session of another member of the same
      organization. Each must answer 404.
-- **Authority:** `specs/maf_coding_engine.md` §16.3 · `specs/projects_ai_chat.md`
-  §22.9 · D12
-- **Added:** 2026-10-04 · the H-227 PR
+- **Authority:** `specs/projects_ai_chat.md` §22.9 (the residuals) ·
+  `specs/maf_coding_engine.md` §16.3 · D12
+- **Added:** 2026-10-04 · the H-227 PR. Fix round 1 of PR #616 closed its
+  first scope, `save_note` and `recall_notes`. These three items replaced it.
+
+### H-239 · Give the document of an assigned task's run a home · [AGENT]
+- **Check:** `rg -n "thread_id=" apps/services/gateway/gateway/routes/projects/agent_dispatch.py`.
+  No hit means the run of an assigned task has no thread, and this is open.
+  Done means this: a shared agent's run for an assigned task calls
+  `write_artifact`, and the members of the task can open the document.
+- **What happens.** A member assigns a task to an agent, and
+  `agent_dispatch.py:237` calls `run_agent` with no thread. The executor
+  names the thread `<agent>:<run id>`, and that id names no folder. So in a
+  shared agent's tenant dir, `write_artifact` answers that nothing was
+  written (`specs/projects_ai_chat.md` §22.9 rule 8). The timeline keeps
+  only the first 2,000 characters of the answer (`agent_dispatch.py:252`).
+- **Why it matters.** Before H-227 the document went to the shared
+  `outputs/`, where each member of the organization could list it. That
+  was a gap in D12. Now the document is lost, which is safe but not useful.
+- **Do.**
+  1. Give the document a home that the members of the task can open. One
+     way is the attachments of the task. Another is a thread for each task
+     run, with its id on the timeline row.
+  2. Keep the visibility of the task: a member who cannot see the task
+     cannot open the document.
+  3. Add an R8 test of the Done line above, and a mutation.
+- **Authority:** `specs/projects_ai_chat.md` §22.9 rule 8 ·
+  `specs/project_management_app.md` §6.4 · D12
+- **Added:** 2026-10-04 · fix round 1 of PR #616 (review P2)
 
 ### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
 - **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.

@@ -31,8 +31,13 @@ clone cache.
    as the thread's own folders. `_thread_scoped` does it, over
    `agent_paths.thread_scoped_rel`. A thread id that names no folder writes
    nothing. `share_artifact` shows no loose file, one in `inputs/` or
-   `outputs/` but in no thread folder. `agent_paths.is_other_thread_rel` is
-   the ONE rule for another chat's folder, and it covers both folders. Fence:
+   `outputs/` but in no thread folder. A directory share checks the
+   resolved path and skips a link (`_shareable`). `note_tools.save_note` and
+   `recall_notes` apply the same rule (`_notes_target`), and they refuse a
+   loose file and the folder of another chat. `agent-data/NOTES.md` stays
+   one file for the tenant dir (HANDOFF H-237).
+   `agent_paths.is_other_thread_rel` is the ONE rule for another chat's
+   folder, and it covers both folders. Fence:
    tests/unit/test_h227_thread_scope.py.
 5a. skill_families.py -- WS-23 skill-family registry (spec: project-docs/specs/skills_registry.md).
    `SKILL_FAMILIES` maps family slug -> {label, description, tool names} and must
