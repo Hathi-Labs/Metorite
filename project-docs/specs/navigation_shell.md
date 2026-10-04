@@ -6,7 +6,8 @@ Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Owner:** vjvarada.
 
 **Repair round 1, 2026-10-05.** The review found five P1 defects and six P2
-defects, and this version fixes them.
+defects, and this version fixes them. Round 2 fixes what the verifier
+found: a wrong cap citation, three listener sites and five stale anchors.
 
 **Design record:** the concept page "Metorite Navigation Concepts", version 3,
 2026-10-05, private to the owner. It holds a clickable prototype for four
@@ -87,7 +88,7 @@ through one manifest, and no app builds its own copy.
 | `/dashboard` | A `ComingSoon` placeholder, and a `preview` pane | `src/app/dashboard/page.tsx` |
 | Desktop top bar | None in the shell. `AppShell` renders the sidebar and the page | `src/components/AppShell.tsx:158` |
 | App bar | `AppTopBar`, used by Projects and My Tasks. It holds "Search every project (⌘K)" | `src/components/AppTopBar.tsx` |
-| Search | Three palettes. Projects has `SearchPalette` and the command list `app/projects/lib/commands.ts`. My Tasks mounts the Projects palette. Email has its own `CommandPalette` | `app/projects/lib/search.ts:143` · `app/email/page.tsx:678` |
+| Search | Three palettes. Projects has `SearchPalette` and the command list `app/projects/lib/commands.ts`. My Tasks mounts the Projects palette. Email has its own `CommandPalette`. Three pages each hold a ⌘K listener | `app/projects/page.tsx:2635` · `app/tasks/page.tsx:180` · `app/email/page.tsx:678` · the key test `app/projects/lib/search.ts:143` |
 | Bell | `NotificationBell` belongs to Projects. Projects and My Tasks mount it. Approvals has no badge | `app/projects/components/NotificationBell.tsx` |
 | Assistant | Three rails on the shared `AgentChat`: `task-manager`, `projects-assistant` and `email-assistant` | `app/tasks/components/AssistantRail.tsx` · `app/projects/components/AssistantRail.tsx` · `app/email/components/EmailAssistantChat.tsx` |
 | Personal rollup | None. No spec defined its content before this one | — |
@@ -174,8 +175,8 @@ the member. The member does not work in them, so they leave the sidebar.
 **One rule decides who sees a team, and it already exists.** `reader_scope`
 in `routes/projects/report_scope.py` is the rule the Reports app uses, and the
 shell reads it. The chip never offers a team and then refuses it
-(`projects_reports.md` §7.1 rule 1). D14 forbids `data:org:read`, and this
-spec does not use it.
+(`projects_reports.md` §7.1 rule 1). D14 says that nothing may rely on
+`data:org:read`, and this spec does not use it.
 
 **A plain member of a team gets the personal altitude only.** That is the
 same rule as Team pulse. To widen it is a change to `projects_reports.md`
@@ -326,7 +327,7 @@ the same ratchet as `conformance.test.ts`.
 |---|---|---|---|---|---|---|---|
 | My Tasks | personal | New task, Capture | `GET /projects/search` (`routes/projects/search.py:221`). `app/tasks/lib/searchHit.ts` decides where a hit opens | due today, overdue | Next actions | `task-manager` | Stop mounting the Projects palette and bell |
 | Calendar | personal | Block focus time | — | — | Today | `task-manager` | Move its `h1` into the title slot |
-| Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its header drift (H-148) closes when it adopts the bar |
+| Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its `text-sm` heading drift (`app/email/page.tsx:963`) closes when it adopts the bar |
 | Projects | across | New task, New project | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
 | People | people | Request leave | the directory | — | Out today | — | None beyond the manifest |
 | My Profile, My Access | personal | — | — | — | — | — | Move to the avatar menu |
@@ -395,7 +396,7 @@ result that the member can already see.
    registry by grants first, then sends that list to the model.
 2. **A suggestion is not an act.** A job opens its form, filled in, and each
    filled field says "filled by AI". The member saves. A larger act goes to the
-   dock, as the confirm card of `generative_ui_2.md` §2.
+   dock, as the `confirmation` card of `generative_ui_2.md` §4.
 3. **Context is a visible token.** Inside an app, the bar shows "in CRM", and
    that app's results rank first. `Backspace` on an empty query removes it.
 4. **Every answer has a way out.** "Continue in assistant" opens the dock with
@@ -414,8 +415,9 @@ result that the member can already see.
   way an app does under D-AI-4. The customer never picks it (D32.7).
 - **The bar shows no price and no counter.** A member never weighs the cost of
   one search.
-- **At the hard cap (D19.3), tier 2 stops.** Tiers 0 and 1 keep working. The bar
-  shows one line: "AI suggestions are paused. Ask an admin to add credits."
+- **When the balance runs out, tier 2 stops.** The stop is the CP-6 balance gate, under `CUSTOMER_CONSOLE_SPEND_GATE`.
+  Tiers 0 and 1 keep working. The bar shows one line: "AI suggestions are
+  paused. Ask an admin to add credits."
 - **A repeat is free.** The same query, at the same scope, by the same member,
   within 5 minutes returns the cached answer. The cache key holds the member,
   because two members hold different grants. The key goes through the
@@ -445,8 +447,9 @@ NS-4b ships `job` and `handoff`. NS-4c adds `answer` and `workflow_draft`.
 ### 7.1 One dock
 
 - **One panel on the right**, `w-[380px]`, the side-panel width of
-  `DESIGN_SYSTEM.md` §6a. Below 1280 px it opens as an overlay sheet, the rule
-  that `app/projects/lib/chatDock.ts` holds today.
+  `DESIGN_SYSTEM.md` §6a. Below 1280 px there is no dock, and the toggle opens
+  the chat in the full slot. That is the rule `app/projects/lib/chatDock.ts`
+  holds today.
 - **The agent follows the app.** The dock opens the manifest's `agent`. On
   Home, or in an app with no agent, it opens the agent that `/chat` opens by
   default.
@@ -571,7 +574,8 @@ and a Menu tab opens a drawer (`AppShell.tsx:186-236`).
 
 Every ticket ships dark behind its flag, default off. With a flag off, every
 surface renders as it does today, because a merge to `main` is a deploy. Each
-flag stays off in production until the owner turns it on (§13).
+flag stays off in production until the owner turns it on (§13). To build is
+AGENT-SAFE. To turn any flag on in production is OWNER-GATE.
 
 ### NS-1 · The shell bar and the one ⌘K listener — AGENT-SAFE
 
@@ -588,8 +592,11 @@ Done when:
    `app/projects/lib/commands.ts`.
 4. `src/lib/shell/seams.test.ts` exists, with a baseline of today's sites.
    With the flag on, only the shell's ⌘K listener fires. With the flag off,
-   the handlers at `app/projects/lib/search.ts:143` and `app/email/page.tsx:678`
-   run as today. NS-9 deletes them.
+   the three listeners at `app/projects/page.tsx:2635`, `app/tasks/page.tsx:180`
+   and `app/email/page.tsx:678` run as today. NS-9 deletes them.
+   Two tests pin the My Tasks listener today, `app/tasks/lib/searchHit.test.ts`
+   and `app/tasks/lib/shortcuts.test.ts`. NS-1 keeps them green with the flag
+   off, and NS-9 rewrites them.
 5. With the flag off, every surface renders as it does today. A test pins the
    nav order and the bar's absence.
 6. The visual review of `DESIGN_SYSTEM.md` §8 ran: light mode, compact density,
@@ -613,7 +620,7 @@ Done when:
 5. With the flag on, the sidebar takes the §3.2 shape, and the avatar menu holds
    the §3.3 items.
 
-### NS-3 · My Day and the needs feed — AGENT-SAFE (build), owner (turn on)
+### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on)
 
 Flag `NEXT_PUBLIC_MY_DAY`. Files: `src/app/page.tsx`, the card components each
 app exports, and `gateway/routes/shell/needs.py` with its providers.
@@ -646,7 +653,7 @@ Done when:
    never returns.
 4. The route ran against a real Postgres (R8).
 
-### NS-4b · Tier 2, filled jobs and the hand-off — AGENT-SAFE (build), owner (turn on)
+### NS-4b · Tier 2, filled jobs and the hand-off — AGENT-SAFE (build), OWNER-GATE (turn on)
 
 Flag `COMMAND_BAR_AI` on the gateway, default off. Files:
 `gateway/routes/shell/intent.py`.
@@ -666,8 +673,17 @@ Done when:
 
 ### NS-4c · Tier 2 answers and workflow drafts — AGENT-SAFE (build)
 
-Waits on NS-4b. It adds `answer` and `workflow_draft`, and reads data only
-through tools an agent already holds (§6.6).
+Flag `COMMAND_BAR_AI`, the same flag as NS-4b. It waits on NS-4b.
+
+Done when:
+
+1. `POST /shell/intent` also returns `answer` and `workflow_draft` (§6.6).
+2. An `answer` reads data only through read tools that the app's agent
+   already holds. A test asserts that the route imports no SQL of its own.
+3. Each `answer` names its source apps, and a test asserts that a source
+   the member cannot open never appears.
+4. A `workflow_draft` opens Workflows with a draft that is off. A test
+   asserts that no workflow runs.
 
 ### NS-5 · The scope chip and the team altitudes — AGENT-SAFE
 
@@ -729,7 +745,7 @@ Done when:
 2. Every row of the `seams.test.ts` baseline is zero.
 3. The flags of NS-1 and NS-6 are deleted from the code.
 
-### NS-8 · Desk mode — BLOCKED
+### NS-8 · Desk mode — BLOCKED (AGENT-SAFE when unblocked)
 
 It waits for a live data-entry app. When one exists, its spec names the queue,
 and this ticket gains acceptance.
@@ -807,7 +823,7 @@ Each document below links here and adds nothing of its own.
 
 - `work_plan.md` §2 row **WS-44**, §3 **D87** to **D89**, and §4's registry row.
 - `INDEX.md`, ACTIVE.
-- `launch_surface.md` §3 and §8.4: the live set is unchanged, and every shell
+- `launch_surface.md` §2 and §8.4: the live set is unchanged, and every shell
   surface reads the one filter.
 - `department_centers.md`, its D49 banner: D22's three surfaces return as the
   three altitudes of Home.

@@ -4636,8 +4636,8 @@ Without a team view, a manager opens four apps and filters each one.
 5. `/centers/<slug>` stays unlinked.
 
 **What it does not change.** D49 stands. The top altitude is the union of the
-teams that `reader_scope` allows, so it needs no new grant. D14 still forbids
-`data:org:read`, and this decision does not use it.
+teams that `reader_scope` allows, so it needs no new grant. D14 still says
+that nothing may rely on `data:org:read`, and this decision does not use it.
 
 **Fences:** `src/lib/nav.test.ts` and a new `src/lib/shell/home.test.ts`
 (NS-5).
@@ -4653,7 +4653,8 @@ recommendations." Board: **WS-44**. Owning spec:
 - Tier 2 (AI intent) is metered at the cheapest chat tier that the operator
   sets, `tier-fast` today. The customer never picks it (D32.7).
 - The bar shows no price and no counter.
-- At D19.3's hard cap, tier 2 stops, and tiers 0 and 1 keep working.
+- When the balance runs out, the CP-6 balance gate, under `CUSTOMER_CONSOLE_SPEND_GATE` stops tier 2. Tiers 0 and 1
+  keep working.
 - One member's repeat of one query at one scope within 5 minutes comes from a
   cache, and it is free.
 
@@ -4675,7 +4676,7 @@ search, its "needs you" items, its Home cards and its agent. The sidebar, the
 launcher, the command bar, Home, the bell and the dock read it.
 
 **What an app may not do.** It may not mount a ⌘K handler, a palette, a bell
-or an assistant rail of its own, and it may not draw its own top bar. A job
+or an assistant rail of its own. It may not draw its own top bar. A job
 opens a form, and a person saves it.
 
 **Why.** Each gap in today's shell is a place where one app solved a shell

@@ -260,19 +260,19 @@ Seven rules on top of the three above. Each one exists because it was broken:
    and `useCachedResource.test.ts`. **Advisory:** nothing tests that a NEW
    surface adopts the cache instead of a cold fetch.
 10. **An app plugs into the shell. It never builds one.** *(D89, owner
-   directive 2026-10-05: "Future applications … should also follow the same
-   UI/UX rules.")* The shell owns the top bar, the command bar, the bell, the
-   assistant dock, the launcher and Home.
+   directive 2026-10-05.)* The owner said: "Future applications … should also
+   follow the same UI/UX rules." The shell owns the top bar, the command bar,
+   the bell, the assistant dock, the launcher and Home.
    An app declares a manifest on its `NavPane` in `src/lib/nav.ts`. The
-   manifest names its team, a one-line purpose, its jobs, its search, its
-   "needs you" items, its Home cards and its agent.
+   manifest names its team, a one-line purpose and its jobs. It also names
+   its search, its "needs you" items, its Home cards and its agent.
    Do not mount a ⌘K handler, a palette, a `NotificationBell` or an assistant
    rail in an app. Declare a job or a provider instead. A job opens a form,
    and a person saves it. The AI tier may fill the form, and it never saves.
    `project-docs/specs/navigation_shell.md` §5 is the contract, and §5.3 maps
    every live app onto it.
-   Fences: `src/lib/nav.test.ts` fails on a live pane with no team or
-   purpose, from NS-2. `src/lib/shell/seams.test.ts` arrives with NS-1, and
+   Fences: from NS-2, `src/lib/nav.test.ts` will fail on a live pane with no
+   team or purpose. `src/lib/shell/seams.test.ts` arrives with NS-1, and
    its baseline only goes down.
    ⚠️ **Until NS-1 and NS-2 ship, this rule is advisory.** Projects, My Tasks
    and Email still carry their own palette, bell and rail. A NEW app adds
