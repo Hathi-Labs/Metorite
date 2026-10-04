@@ -315,6 +315,68 @@ def _is_batch_run(ctx: Mapping[str, Any]) -> bool:
     return ctx.get("batch_thread") is True and is_tenant_instance(ctx.get("instance"))
 
 
+def _chat_document_path(clean_path: str, path: str, ctx: Mapping[str, Any]) -> str | dict:
+    """The path of a chat run's document (:func:`_thread_scoped`), or the error
+    to answer."""
+    scoped = _thread_scoped(clean_path, ctx)
+    if scoped is None:
+        return {"error": "This chat has no thread folder, so nothing was written."}
+    if scoped != clean_path and len(scoped.split("/")) < 3:  # the thread folder itself
+        return {"error": f"Path '{path}' names no file, so nothing was written."}
+    return scoped
+
+
+async def _path_has_history(rel: str, ctx: Mapping[str, Any]) -> bool:
+    """True when the blob history holds a write at *rel* in this run's store
+    key or its older ``''`` key. A file that the store still holds may be
+    missing on disk (the fault-in state), so the disk alone cannot say."""
+    try:
+        from acb_memory import file_history
+    except ImportError:
+        return False
+    agent = _current_agent_name()
+    if not agent:
+        return False
+    for key in (str(ctx.get("instance") or ""), ""):
+        rows = await file_history(agent, rel, 20, instance=key)
+        if any(r.get("action") != "delete" for r in rows):
+            return True
+    return False
+
+
+async def _take_batch_name(
+    root: Path, rel: str, data: bytes, ctx: Mapping[str, Any],
+) -> str:
+    """Write *data* at *rel*, or at ``name (n).ext``, and return the path taken.
+
+    The H-227 batch rule, fix round 2 of PR #616. A name is free only when the
+    history holds no write there (:func:`_path_has_history`), and
+    ``safe_open.write_bytes(..., exclusive=True)`` takes it in one call. So a
+    member's file that is missing on disk but kept in the store, and a second
+    batch run that races for the same name, never lose their bytes. Raises
+    ``FileExistsError`` after 1,000 names.
+    """
+    import asyncio
+    from pathlib import PurePosixPath
+
+    from acb_skills import safe_open
+
+    p = PurePosixPath(rel)
+    for counter in range(1000):
+        name = p.name if counter == 0 else f"{p.stem} ({counter}){p.suffix}"
+        candidate = str(p.with_name(name))
+        if await _path_has_history(candidate, ctx):
+            continue
+        try:
+            await asyncio.to_thread(
+                safe_open.write_bytes, root, candidate, data, exclusive=True,
+            )
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError(rel)
+
+
 def _thread_scoped(rel: str, ctx: Mapping[str, Any]) -> str | None:
     """*rel* in the thread's own folder, for a run in a shared agent's tenant dir.
 
@@ -433,12 +495,10 @@ async def write_artifact(
     # organization (`_is_batch_run`).
     batch = _is_batch_run(ctx)
     if not batch:
-        scoped = _thread_scoped(clean_path, ctx)
-        if scoped is None:
-            return {"error": "This chat has no thread folder, so nothing was written."}
+        scoped = _chat_document_path(clean_path, path, ctx)
+        if isinstance(scoped, dict):
+            return scoped
         if scoped != clean_path:
-            if len(scoped.split("/")) < 3:  # the thread folder itself
-                return {"error": f"Path '{path}' names no file, so nothing was written."}
             clean_path, target = scoped, root_r / scoped
     # WS-43d (review P1, fix round 1): never another chat's output folder,
     # another member's skill folder, or the skill author marker.
@@ -456,9 +516,8 @@ async def write_artifact(
     # Non-destructive by default: never clobber an existing file (a user upload
     # in inputs/, or a previously generated artifact). Uniquify to "name (1).ext"
     # — the same collision policy the upload endpoint uses. Pass overwrite=True to
-    # deliberately replace the file in place. A batch run never replaces a file
-    # in a tenant dir: that file may belong to a member's chat (H-227).
-    if target.exists() and (not overwrite or batch):
+    # deliberately replace the file in place.
+    if not batch and target.exists() and not overwrite:
         stem, ext = target.stem, target.suffix
         counter = 1
         while target.exists():
@@ -472,8 +531,20 @@ async def write_artifact(
     else:
         data = bytes(content)
 
-    _existed = target.exists()
-    target.write_bytes(data)
+    if batch:
+        # A batch run never replaces a file in a tenant dir: that file may
+        # belong to a member's chat (H-227). The name is free only when the
+        # disk AND the history hold nothing there, and one exclusive create
+        # takes it (fix round 2).
+        try:
+            clean_path = await _take_batch_name(root_r, clean_path, data, ctx)
+        except FileExistsError:
+            return {"error": f"No free name near '{path}', so nothing was written."}
+        target = root_r / clean_path
+        _existed = False
+    else:
+        _existed = target.exists()
+        target.write_bytes(data)
     digest = _sha256(data)
     size = len(data)
 

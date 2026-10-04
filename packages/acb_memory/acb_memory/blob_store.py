@@ -465,17 +465,15 @@ async def session_paths(
     session wrote, under *instance* or the older ``''`` key.
 
     The gateway reads it when a member deletes a chat (H-227), to find the
-    loose files that the chat began. ``[]`` on any error.
+    loose files that the chat began. It RAISES on a database error (fix round
+    2 of PR #616): an empty answer would let the purge delete the chat's
+    first-writer rows while its loose files stay on disk.
     """
     if not session_id:
         return []
-    try:
-        return await asyncio.to_thread(
-            _sync_session_paths, session_id, instance, _caller_tenant(organization_id),
-        )
-    except Exception as exc:
-        _log.warning("blob_store.session_paths_failed", error=str(exc)[:200])
-        return []
+    return await asyncio.to_thread(
+        _sync_session_paths, session_id, instance, _caller_tenant(organization_id),
+    )
 
 
 async def purge_files(

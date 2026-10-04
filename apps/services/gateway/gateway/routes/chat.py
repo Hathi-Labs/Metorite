@@ -353,6 +353,38 @@ def _patch_session(
         return result.rowcount > 0
 
 
+#: Who may delete a chat: its owner. Deliberately NOT the membership
+#: predicate: deleting takes the room away from everyone in it, so it stays an
+#: owner's act. A member who wants out leaves
+#: (DELETE /chat/sessions/{id}/participants/{me}). S14 round 3: the creator
+#: only while the room has no membership, the same rule as resolve_room_access.
+_MAY_DELETE_SQL = (
+    "s.id = :id AND ("
+    "    (s.user_id = :uid AND (s.user_id NOT LIKE '%@%' OR NOT EXISTS ("
+    "        SELECT 1 FROM chat_session_participant p0"
+    "        WHERE p0.session_id = s.id)))"
+    "    OR EXISTS (SELECT 1 FROM chat_session_participant p"
+    "               WHERE p.session_id = s.id AND p.subject = :uid"
+    "                 AND p.role = 'owner')"
+    ")"
+)
+
+
+def _may_delete_session(
+    session_id: str, user_id: str, *, organization_id: str | None,
+) -> bool:
+    """True when *user_id* may delete the chat (:data:`_MAY_DELETE_SQL`)."""
+    from acb_graph import tenant_session  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    with tenant_session(organization_id) as s:
+        row = s.execute(
+            text("SELECT 1 FROM chat_session s WHERE " + _MAY_DELETE_SQL),
+            {"id": session_id, "uid": user_id},
+        ).first()
+        return row is not None
+
+
 def _delete_session(
     session_id: str, user_id: str, *, organization_id: str | None,
 ) -> bool:
@@ -360,23 +392,8 @@ def _delete_session(
     from sqlalchemy import text  # noqa: PLC0415
 
     with tenant_session(organization_id) as s:
-        # Deliberately NOT the membership predicate: deleting takes the room
-        # away from everyone in it, so it stays an owner's act. A member who
-        # wants out leaves (DELETE /chat/sessions/{id}/participants/{me}).
         result = s.execute(
-            text(
-                "DELETE FROM chat_session s "
-                "WHERE s.id = :id AND ("
-                # S14 round 3: the creator only while the room has no
-                # membership, the same rule as resolve_room_access.
-                "    (s.user_id = :uid AND (s.user_id NOT LIKE '%@%' OR NOT EXISTS ("
-                "        SELECT 1 FROM chat_session_participant p0"
-                "        WHERE p0.session_id = s.id)))"
-                "    OR EXISTS (SELECT 1 FROM chat_session_participant p"
-                "               WHERE p.session_id = s.id AND p.subject = :uid"
-                "                 AND p.role = 'owner')"
-                ")"
-            ),
+            text("DELETE FROM chat_session s WHERE " + _MAY_DELETE_SQL),
             {"id": session_id, "uid": user_id},
         )
         return result.rowcount > 0
@@ -857,18 +874,29 @@ async def delete_session(
     session_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> None:
-    found = await asyncio.to_thread(
-        _delete_session, session_id, user.email or "default",
-        organization_id=user.organization_id,
-    )
-    if not found:
+    from gateway.routes.workspace import ThreadPurgeFailed, purge_thread_files
+
+    email, org = user.email or "default", user.organization_id
+    if not await asyncio.to_thread(
+        _may_delete_session, session_id, email, organization_id=org,
+    ):
         raise HTTPException(status_code=404, detail="Session not found")
     # H-227 (PR #616 review): a client chooses a session id, so a member who
-    # knows this id could make a new session with it. The files of the
-    # deleted chat go with it, so that session finds none of them.
-    from gateway.routes.workspace import purge_thread_files
-
-    await purge_thread_files(session_id, user.organization_id)
+    # knows this id could make a new session with it. The files of the chat
+    # go first, so a failed purge keeps the chat and the member can try
+    # again (fix round 2). A second pass after the delete sweeps a file that
+    # a run wrote in between.
+    try:
+        await purge_thread_files(session_id, org)
+    except ThreadPurgeFailed:
+        raise HTTPException(
+            status_code=503,
+            detail="The files of this chat could not be removed, so the chat is kept. Try again.",
+        ) from None
+    found = await asyncio.to_thread(_delete_session, session_id, email, organization_id=org)
+    if not found:
+        raise HTTPException(status_code=404, detail="Session not found")
+    await purge_thread_files(session_id, org, best_effort=True)
 
 
 @router.get("/sessions/{session_id}/messages", summary="Fetch messages for a session")

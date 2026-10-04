@@ -371,6 +371,50 @@ async def test_a_batch_run_writes_the_flat_folder_and_replaces_nothing(runs) -> 
     assert runs["actors"] == ["batch", "batch"]
 
 
+async def test_a_batch_run_never_takes_a_name_the_store_still_holds(runs, monkeypatch) -> None:
+    """Fix round 2: a member's loose file can be missing on disk and kept in
+    the store (the fault-in state). A batch run takes no name that the
+    history still holds, so the member's link keeps its bytes."""
+    import acb_memory
+    from acb_skills.write_artifact import derive_artifact_context
+
+    async def history(agent, path=None, limit=200, **_kw):
+        if path == "outputs/q3.md":
+            return [{"path": path, "action": "create", "session_id": "s-alice", "sha256": "a" * 64}]
+        return []
+
+    monkeypatch.setattr(acb_memory, "file_history", history)
+    run = f"r-{uuid.uuid4().hex[:6]}"
+    with bound_run(ORG_A, agent=PA, thread=f"{PA}:{run}") as ws:
+        derive_artifact_context(batch_thread=True, run_id=run)
+        doc = await _write("q3.md", "BATCH")
+    assert doc["path"] == "outputs/q3 (1).md", doc
+    assert not (ws / "outputs" / "q3.md").exists(), "the batch bytes took the member's name"
+
+
+async def test_two_batch_runs_never_write_one_name(runs, monkeypatch) -> None:
+    """Fix round 2: the name is taken by one exclusive create. A second batch
+    run that wins the name between the check and the write keeps its bytes."""
+    wa_mod = importlib.import_module("acb_skills.write_artifact")
+    from acb_skills.write_artifact import derive_artifact_context
+
+    run = f"r-{uuid.uuid4().hex[:6]}"
+    with bound_run(ORG_A, agent=PA, thread=f"{PA}:{run}") as ws:
+        derive_artifact_context(batch_thread=True, run_id=run)
+        (ws / "outputs").mkdir(exist_ok=True)
+
+        async def racer(rel: str, _ctx: Any) -> bool:
+            if rel == "outputs/weekly.md":  # the other run takes it right now
+                (ws / rel).write_text("THE OTHER RUN", encoding="utf-8")
+            return False
+
+        monkeypatch.setattr(wa_mod, "_path_has_history", racer)
+        doc = await _write("weekly.md", "THIS RUN")
+    assert doc["path"] == "outputs/weekly (1).md", doc
+    assert (ws / "outputs" / "weekly.md").read_text(encoding="utf-8") == "THE OTHER RUN"
+    assert (ws / "outputs" / "weekly (1).md").read_text(encoding="utf-8") == "THIS RUN"
+
+
 def test_a_batch_row_needs_both_marks() -> None:
     """A batch row needs the actor ``batch`` AND a session that ends with its
     own run id, the thread that the executor mints. Either mark alone is no
@@ -573,6 +617,12 @@ def test_alices_upload_and_document_are_invisible_to_bob(graph_as_app, disk) -> 
 
     # Alice lists and reads both, and the card's link opens.
     assert {upload, doc} <= _files(alice, sa)
+    # The empty dir of the alias mount (sandbox_broker.projects_mounts) is no
+    # file of the chat, and the tree lists only files.
+    alias = _tenant_dir(a) / "outputs" / slug / slug
+    if len(str(alias)) < 240:  # the 260-character limit of a Windows dev box
+        alias.mkdir(parents=True, exist_ok=True)
+        assert not any(f"{slug}/{slug}" in p for p in _files(alice, sa))
     assert alice.get(res["download_url"][len("/api"):]).text == "ALICE PLAN"
     assert alice.get(f"/agent/workspace/{sa}/file", params={"path": upload}).text == "ALICE UPLOAD"
 
@@ -858,6 +908,56 @@ def test_a_deleted_chat_leaves_nothing_for_a_new_session_with_its_id(graph_as_ap
     assert "ALICE UPLOAD" not in read and read.startswith(f"No file named {name}"), read
     read = _in_run(disk, a, sid, _BOB, lambda: read_attachment(again_name))
     assert "ALICE BRIEF" not in read and read.startswith(f"No file named {again_name}"), read
+
+
+@_DB_GATE
+def test_a_failed_purge_keeps_the_chat_and_every_row(graph_as_app, disk, monkeypatch) -> None:  # noqa: F811
+    """Fix round 2. The purge runs BEFORE the chat row goes. When it cannot
+    read what the chat wrote, the delete answers 503, the chat stays, and no
+    row or file goes, so no ownership moves. A second try then removes it
+    all."""
+    import acb_memory.blob_store as bs
+
+    a = graph_as_app.org_a
+    sid = f"chat-{uuid.uuid4().hex[:12]}"
+    alice = _chat_and_files(_user(_ALICE, a))
+    assert alice.post("/chat/sessions", json={
+        "id": sid, "agent_name": _S, "title": "Alice", "last_preview": None,
+        "message_count": 0,
+    }).status_code == 200
+    up = alice.post(f"/agent/workspace/{sid}/upload", files={"files": ("b.txt", b"ALICE UPLOAD")})
+    assert up.status_code == 200, up.text
+    upload = up.json()[0]["path"]
+    ws = _tenant_dir(a)
+    began = f"outputs/old-{uuid.uuid4().hex[:6]}.md"
+    (ws / "outputs").mkdir(parents=True, exist_ok=True)
+    (ws / began).write_bytes(b"ALICE OLD PLAN")
+    _seed_blob(a, began, b"ALICE OLD PLAN", session_id=sid, actor="agent")
+
+    def broken(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("the database is gone")
+
+    async def no_history(*_a: Any, **_k: Any) -> list:
+        return []
+
+    for patch in ((bs, "_sync_session_paths", broken), (bs, "file_history", no_history)):
+        with monkeypatch.context() as m:
+            m.setattr(*patch)
+            if patch[1] == "file_history":
+                import acb_memory
+
+                m.setattr(acb_memory, "file_history", no_history)
+            gone = alice.delete(f"/chat/sessions/{sid}")
+        assert gone.status_code == 503, (patch[1], gone.text)
+        assert {upload, began} <= _files(alice, sid), "the chat or a file went"
+        for rel in (upload, began):
+            assert (ws / rel).exists(), rel
+            assert _rows(graph_as_app, rel), rel
+            assert [h["session_id"] for h in _history(alice, sid, rel)] == [sid], rel
+
+    assert alice.delete(f"/chat/sessions/{sid}").status_code == 204
+    for rel in (upload, began):
+        assert not (ws / rel).exists() and _rows(graph_as_app, rel) == [], rel
 
 
 @_DB_GATE

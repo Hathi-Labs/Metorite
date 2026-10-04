@@ -1103,15 +1103,24 @@ async def _session_may_read_loose(
     return _may_read_loose(rows, session_id, hashlib.sha256(data).hexdigest())
 
 
-async def purge_thread_files(session_id: str, organization_id: str | None) -> None:
-    """Delete the files of a chat that its owner deleted (H-227, PR #616 review).
+class ThreadPurgeFailed(RuntimeError):
+    """The files of a chat could not all be removed. The chat must stay."""
+
+
+async def purge_thread_files(
+    session_id: str, organization_id: str | None, *, best_effort: bool = False,
+) -> None:
+    """Delete the files of a chat that its owner deletes (H-227, PR #616 review).
 
     A client chooses the id of a chat session (``POST /chat/sessions`` takes
     ``id`` from the body). So after a delete, any member who knows the id can
     make a new session with it, and the thread rule would hand that session
     the folders and the loose files of the old chat. So the delete route calls
-    this, after the row is gone. It removes, in every tenant dir of the
-    caller's organization:
+    this BEFORE it deletes the row (fix round 2): a failure raises
+    :class:`ThreadPurgeFailed`, the chat stays, and the member can try again.
+    After the row is gone the route calls it once more with *best_effort*,
+    for a file that a run wrote in between. It removes, in every tenant dir
+    of the caller's organization:
 
     * ``inputs/<thread slug>/`` and ``outputs/<thread slug>/`` on disk, with
       the safe opener, and their rows in the blob store and its history;
@@ -1119,19 +1128,20 @@ async def purge_thread_files(session_id: str, organization_id: str | None) -> No
       and in the store, so its ownership cannot move to another session;
     * every other history row of this chat under ``inputs/`` and ``outputs/``.
 
-    The organization is the caller's, from the authenticated identity. It
-    never raises: the chat is already gone, and a failure is logged as
-    ``workspace.thread_purge_failed``.
+    The organization is the caller's, from the authenticated identity. A
+    failure is logged as ``workspace.thread_purge_failed``.
     """
     if not session_id or not organization_id:
         return
     try:
         await _purge_thread_files(session_id, organization_id)
-    except Exception as exc:  # the delete answered already, so only log
+    except Exception as exc:
         _log.warning(
             "workspace.thread_purge_failed", session_id=session_id[:12],
-            error=str(exc)[:200],
+            error=str(exc)[:200], best_effort=best_effort,
         )
+        if not best_effort:
+            raise ThreadPurgeFailed(str(exc)[:200]) from exc
 
 
 def _tenant_dirs(organization_id: str) -> list[Path]:
@@ -1159,6 +1169,9 @@ def _tenant_dirs(organization_id: str) -> list[Path]:
 
 
 async def _purge_thread_files(session_id: str, organization_id: str) -> None:
+    """Read first, then change (fix round 2 of PR #616). Every read that can
+    fail runs before the first removal, so a failure changes nothing. The
+    disk goes before the store, so a retry still finds the rows it needs."""
     from acb_memory import file_history, purge_files, session_paths
     from acb_skills import safe_open
     from acb_skills.agent_paths import (
@@ -1173,14 +1186,7 @@ async def _purge_thread_files(session_id: str, organization_id: str) -> None:
         slug: str | None = thread_slug(session_id)
     except ValueError:
         slug = None  # an id that names no folder has no thread folders
-    dirs = {ws.parent.name: ws for ws in await asyncio.to_thread(_tenant_dirs, organization_id)}
-    if slug:
-        for ws in dirs.values():
-            for head in THREAD_HEADS:
-                try:
-                    await asyncio.to_thread(safe_open.remove_tree, ws, f"{head}/{slug}")
-                except safe_open.UnsafePath:
-                    _log.warning("workspace.thread_purge_link", path=f"{head}/{slug}")
+    # 1. The reads. `session_paths` raises on a database error.
     began: list[tuple[str, str]] = []
     for agent, path in await session_paths(
         session_id, instance=key, organization_id=organization_id,
@@ -1192,14 +1198,28 @@ async def _purge_thread_files(session_id: str, organization_id: str) -> None:
             rows += await file_history(
                 agent, path, 1000, instance=instance, organization_id=organization_id,
             )
-        if _first_writer(rows) != session_id:
-            continue
-        began.append((agent, path))
+        if not rows:
+            # The chat wrote at this path, so its history cannot be empty: the
+            # read failed. Stop before anything goes.
+            raise ThreadPurgeFailed(f"no history read for {path[:120]}")
+        if _first_writer(rows) == session_id:
+            began.append((agent, path))
+    dirs = {ws.parent.name: ws for ws in await asyncio.to_thread(_tenant_dirs, organization_id)}
+    # 2. The disk.
+    if slug:
+        for ws in dirs.values():
+            for head in THREAD_HEADS:
+                try:
+                    await asyncio.to_thread(safe_open.remove_tree, ws, f"{head}/{slug}")
+                except safe_open.UnsafePath:
+                    _log.warning("workspace.thread_purge_link", path=f"{head}/{slug}")
+    for agent, path in began:
         if agent in dirs:
             try:
                 await asyncio.to_thread(safe_open.unlink, dirs[agent], path)
             except (safe_open.UnsafePath, IsADirectoryError, OSError):
                 _log.warning("workspace.thread_purge_unlink_failed", path=path[:200])
+    # 3. The store.
     gone = await purge_files(
         instance=key, organization_id=organization_id,
         prefixes=tuple(f"{head}/{slug}/" for head in THREAD_HEADS) if slug else (),
