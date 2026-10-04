@@ -1026,9 +1026,11 @@ reason codes.
   `.txt`, `.md` or `.csv` file attached in that chat, and no code runs on the
   host (`projects_ai_chat.md` §22). It is not a `SHELL_TOOLS` member, so this
   block does not withhold it. A test turns red if it ever joins that set.
-  ⚠️ For PR #603: in a covered run a container can write into the tenant
-  dir. Then the tool must open its file through `safe_open` inside
-  `broker.host_files()`, or join `WITHHELD_HOST_TOOLS`. H-235 carries it.
+  The tool opens each file through `acb_skills.safe_open` (§7.5 rule B). In
+  a covered run it holds `broker.host_dir()`, the lock of the file tools,
+  during the read. So WS-43d's `WITHHELD_HOST_TOOLS` does not name it, and
+  a covered run keeps it. It takes the store key from the run, never from
+  the `.cc-instance` marker that a container could rewrite.
 - ⚠️ app-builder loses its build shell, `node build/build_t2.mjs`, so a
   Custom App build stops in the App Workshop. That pane is `preview`. WS-43h
   gives the shell back in the sandbox, and D86 parks WS-43h (§16.2).
@@ -3243,6 +3245,12 @@ projects-assistant declares no integration, so §7.7 condition 3 holds.
   host floor tools takes them out of each request and refuses a call to one.
   The fence is `test_a_covered_run_has_no_web_tool_so_no_data_leaves_the_platform`
   (WS43-F21). It traps every real HTTP send of the host.
+- **A covered run keeps `read_attachment` (H-229).** It opens the thread's
+  own upload folder, `inputs/<thread slug>/`, through the safe opener, and
+  it holds `host_dir()` during the read. It starts no process and sends
+  nothing out. The fence is
+  `test_a_covered_run_reads_its_own_attachment_and_no_other`
+  (`tests/unit/test_read_attachment.py`).
 
 **Broker rule 5, for this target.** The run-data dir is a second read-write
 mount, at `/workspace/.run/`. The thread's output folder (below) is a third,

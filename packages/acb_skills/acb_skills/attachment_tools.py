@@ -7,8 +7,10 @@ each thread has its own folder. This tool reads from that one folder and
 from nowhere else.
 
 **Scope (D12).** Every value comes from the run's artifact context, which the
-executor binds (H-201 part 4): the workspace, the session and so the thread.
-The model passes a file NAME only. The tool keeps the last path part of it,
+executor binds (H-201 part 4): the workspace, the session, the thread and the
+store key. The tool never reads the ``.cc-instance`` marker, because a
+sandbox container can rewrite the dir it mounts. The model passes a file NAME
+only. The tool keeps the last path part of it,
 so a path that names the folder of another thread reads this thread's folder.
 A shared agent's tenant dir is one folder for every member of the org, and
 another member's upload lies in their own thread's folder, out of reach.
@@ -19,12 +21,18 @@ shows that THIS session uploaded those exact bytes (``action='create'``,
 ``actor='user'``, the same ``session_id`` and the same sha256). Any other file
 in the flat folder reads as absent.
 
-**The file.** The tool refuses a link at each level below the workspace,
-opens the file with ``O_NOFOLLOW`` and ``O_NONBLOCK`` where the OS has them,
-and reads only a regular file of at most ``MAX_FILE_BYTES``. ⚠️ No
-``acb_skills.safe_open`` exists on ``main`` yet (PR #603 adds it). These
-checks close the static case, and a race on a parent folder stays open. No
-code runs on the host for a shared agent (D85), so nothing races it today.
+**The file.** Every open goes through :mod:`acb_skills.safe_open`, the one
+opener of a dir that a sandbox may mount (``maf_coding_engine.md`` §7.5 rule
+B). It refuses a link at any depth, also one that appears during the call,
+and anything that is not a regular file. The tool reads at most
+``MAX_FILE_BYTES``.
+
+**A covered run** (WS-43d, §16.3). When ``sandbox_broker.covers()`` is true
+for the run, a container mounts the tenant dir. The read then holds the
+broker's dir lock, ``host_dir()``, the same lock as the file tools of the
+sandbox, so no exec of a container runs during it. The parse runs after the
+lock is released, on the bytes in memory. The tool is not in
+``sandbox_tools.WITHHELD_HOST_TOOLS``, so a covered run keeps it.
 
 **The parse.** :mod:`acb_skills.attachment_text`, pure parsing with caps and a
 deadline, in a worker thread. At most :data:`MAX_PARSES` parses run at once,
@@ -38,14 +46,16 @@ import asyncio
 import contextvars
 import hashlib
 import os
-import stat
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from acb_common import get_logger
 
-from acb_skills.agent_paths import upload_dir_rel, workspace_blob_key
+from acb_skills import safe_open
+from acb_skills.agent_paths import state_root, upload_dir_rel
 from acb_skills.attachment_text import (
     DEADLINE_SECONDS,
     MAX_FILE_BYTES,
@@ -67,14 +77,6 @@ MAX_PARSES = 2
 _SLOTS = threading.BoundedSemaphore(MAX_PARSES)
 #: The parse stops itself at ``DEADLINE_SECONDS``. The await stops a little later.
 _WAIT_SECONDS = DEADLINE_SECONDS + 5.0
-
-_O_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_NONBLOCK", 0)
-    | getattr(os, "O_BINARY", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-)
 
 _KINDS = {
     "docx": "Word document",
@@ -106,48 +108,27 @@ def _clean_name(name: object) -> str | None:
     return base
 
 
-def _is_link_or_missing(path: Path) -> bool:
-    try:
-        return stat.S_ISLNK(os.lstat(path).st_mode)
-    except OSError:
-        return True
-
-
 def _read_regular(root: Path, rel: str) -> bytes | None:
-    """The bytes of ``root/rel`` when every part is real, else ``None``.
+    """The bytes of ``root/rel``, opened with the safe opener, else ``None``.
 
-    Raises :class:`AttachmentRefused` for a file over the size cap.
+    A link at any depth, a missing part and a file that is not regular read
+    as absent. A file over the size cap raises :class:`AttachmentRefused`
+    before one byte of it is read.
     """
-    parts = rel.split("/")
-    path = root
-    for part in parts:
-        path = path / part
-        if _is_link_or_missing(path):
-            return None
     try:
-        fd = os.open(path, _O_FLAGS)
-    except OSError:
+        fh = safe_open.open_read(root, rel)
+    except (safe_open.UnsafePath, OSError):
         return None
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            return None
-        if info.st_size > MAX_FILE_BYTES:
+    if fh is None:
+        return None
+    with fh:
+        size = os.fstat(fh.fileno()).st_size
+        if size > MAX_FILE_BYTES:
             raise AttachmentRefused(
-                f"This file is {info.st_size} bytes, and I read files of at "
-                f"most {MAX_FILE_BYTES} bytes."
+                f"This file is {size} bytes, and I read files of at most "
+                f"{MAX_FILE_BYTES} bytes."
             )
-        chunks: list[bytes] = []
-        left = MAX_FILE_BYTES + 1
-        while left > 0:
-            chunk = os.read(fd, min(left, 1024 * 1024))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            left -= len(chunk)
-    finally:
-        os.close(fd)
-    data = b"".join(chunks)
+        data = fh.read(MAX_FILE_BYTES + 1)
     if len(data) > MAX_FILE_BYTES:
         raise AttachmentRefused(f"This file is larger than {MAX_FILE_BYTES} bytes.")
     return data
@@ -171,17 +152,44 @@ def _load(root: str, folder: str, name: str) -> _Found | None:
 
 
 def _listing(root: str, folder: str) -> list[str]:
-    """The names in this thread's folder, for a "not found" answer."""
-    path = Path(root) / folder
-    if _is_link_or_missing(path):
-        return []
+    """The file names in this thread's folder, for a "not found" answer."""
     try:
-        return sorted(
-            p.name for p in path.iterdir()
-            if not p.name.startswith(".") and p.is_file() and not p.is_symlink()
-        )[:50]
-    except OSError:
+        entries = safe_open.list_dir(Path(root), folder) or []
+    except (safe_open.UnsafePath, OSError):
         return []
+    return [n for n, kind in entries if kind == "file" and not n.startswith(".")][:50]
+
+
+def _covered_broker() -> Any | None:
+    """The sandbox broker when it covers this run, else ``None`` (§16.3).
+
+    The binding and the cover are read from the run binding, never from the
+    model (R5). Outside a run, or for a run with no tenant, there is no
+    binding, so there is no cover.
+    """
+    try:
+        from orchestrator import sandbox_broker as sb
+    except ImportError:
+        return None
+    try:
+        binding = sb.read_run_binding()
+    except sb.SandboxError:
+        return None
+    return sb.get_broker() if sb.covers(binding.agent, binding.org) else None
+
+
+async def _on_the_dir(fn: Callable[..., Any], root: str, *args: Any) -> Any:
+    """Run the host file call *fn* on the run's dir, in a worker thread.
+
+    In a covered run it holds the broker's dir lock, and it takes the dir
+    from the broker's binding, the same root as the file tools of the
+    sandbox.
+    """
+    broker = _covered_broker()
+    if broker is None:
+        return await asyncio.to_thread(fn, root, *args)
+    async with broker.host_dir() as binding:
+        return await asyncio.to_thread(fn, str(binding.workspace), *args)
 
 
 async def _uploaded_in_this_thread(
@@ -289,7 +297,7 @@ async def read_attachment(name: str, offset: int = 0) -> str:
     if isinstance(found, str):
         return found
     if found is None:
-        names = await asyncio.to_thread(_listing, where.root, where.folder)
+        names = await _on_the_dir(_listing, where.root, where.folder)
         held = ", ".join(names) if names else "none"
         return (
             f"No file named {where.name} was attached in this chat. "
@@ -322,8 +330,11 @@ class _Where:
 def _where(name: object) -> _Where | str:
     """This thread's attachment folder and the asked name, or why there is none.
 
-    The workspace and the session come from the run's artifact context, which
-    the executor binds. Nothing here is taken from the model but the name.
+    The workspace, the session and the store key come from the run's
+    artifact context, which the executor binds. The agent name is the name
+    of the state dir in the PATH, the key of the gateway's blob rows. Nothing
+    here comes from the model but the name, and nothing comes from the
+    ``.cc-instance`` marker, which a container could rewrite.
     """
     ctx = artifact_context()
     root, session_id = ctx.get("workspace_root"), ctx.get("session_id")
@@ -338,7 +349,7 @@ def _where(name: object) -> _Where | str:
             f"I cannot read {clean}. I read .docx, .pdf, .txt, .md and .csv files. "
             "Ask the member for one of those."
         )
-    agent, instance = workspace_blob_key(str(root))
+    agent, instance = _store_key(Path(str(root)), ctx.get("instance"))
     try:
         folder = upload_dir_rel(instance, session_id)
     except ValueError:
@@ -346,11 +357,21 @@ def _where(name: object) -> _Where | str:
     return _Where(str(root), str(session_id), agent, instance, folder, clean, suffix)
 
 
+def _store_key(root: Path, instance: object) -> tuple[str, str]:
+    """``(agent, instance)``: the agent from the dir's path, the key from the run.
+
+    A state dir is ``state/<agent>/<slug>``, so its parent's name is the
+    agent. Any other dir is named for its agent.
+    """
+    agent = root.parent.name if root.parent.parent == state_root() else root.name
+    return agent, str(instance or "")
+
+
 async def _find(where: _Where) -> _Found | str | None:
     """This thread's file, an older upload that the history ties to this
     thread, ``None`` when neither exists, or a refusal."""
     try:
-        found = await asyncio.to_thread(_load, where.root, where.folder, where.name)
+        found = await _on_the_dir(_load, where.root, where.folder, where.name)
     except AttachmentRefused as exc:
         return str(exc)
     if found is not None and found.legacy and not await _uploaded_in_this_thread(

@@ -84,10 +84,14 @@ clone cache.
    `.docx`, `.pdf`, `.txt`, `.md` or `.csv` file attached in the caller's own
    chat. `attachment_text` parses bytes only: no subprocess, no code, and
    pypdf's `jbig2dec` is off. Every cap is a module constant there.
-   `attachment_tools` takes the workspace and the thread from
-   `artifact_context()`, and only a file name from the model.
+   `attachment_tools` takes the workspace, the thread and the store key from
+   `artifact_context()`, never from the `.cc-instance` marker, and only a
+   file name from the model. It opens through `safe_open` (5d). In a run that
+   `sandbox_broker.covers()`, it holds `broker.host_dir()` during the read,
+   so `WITHHELD_HOST_TOOLS` (5e) does not name it.
    `agent_paths.upload_dir_rel` is the ONE rule for where an upload lands:
    `inputs/<thread slug>/` in a shared agent's tenant dir, else `inputs/`.
+   It builds on `thread_slug`, the one slug of `outputs/<thread slug>/` too.
    The gateway upload route and this tool both call it. Do not add a second
    reader of an attachment. Fence: tests/unit/test_read_attachment.py.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.

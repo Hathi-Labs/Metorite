@@ -4340,8 +4340,9 @@ it in its `tool_scope`.
 1. **One path rule.** `acb_skills.agent_paths.upload_dir_rel(instance,
    thread_id)` gives `inputs/<thread slug>/` in a tenant dir. Every other
    workspace keeps `inputs/`. The thread slug is `thread_slug(thread_id)`,
-   the `instance_slug` form that `maf_coding_engine.md` §16.3 uses for the
-   outputs. The upload route writes there, and the tool reads there.
+   the ONE slug function. WS-43d builds `outputs/<thread slug>/` on it
+   (`thread_outputs_rel`, `maf_coding_engine.md` §16.3). The upload route
+   writes there, and the tool reads there.
 2. **One tool.** `acb_skills.attachment_tools.read_attachment(name,
    offset=0)`. The run's artifact context gives the workspace and the
    thread. The model gives a file name only.
@@ -4375,15 +4376,29 @@ it in its `tool_scope`.
    parser exception reaches the model.
 6. **This chat only (D12).** The tool keeps only the last part of the
    name. So a path into another thread's folder, or a `..` climb, reads
-   this thread's folder. A link at any level below the workspace is
-   refused. A file that is not a regular file is refused.
-7. **An older upload.** A file in the flat `inputs/` reads only when the
-   blob history shows that this session uploaded those bytes. The row must
-   say `create`, `user`, this `session_id` and the same sha256.
-8. **The text is data.** The tool output says so, and the instructions
-   say so.
-9. **A bounded load.** At most two parses run at a time in the process. A
-   third call gets "Another file is being read now".
+   this thread's folder.
+7. **The safe opener.** The tool opens each file and lists each folder
+   through `acb_skills.safe_open`, the one opener of a dir that a sandbox
+   may mount (`maf_coding_engine.md` §7.5 rule B). A link at any depth, also
+   one that appears during the call, reads as absent. So does a file that
+   is not a regular file. The upload route writes through the same opener.
+8. **A covered run** (WS-43d). When `covers()` is true for the run, the
+   read holds the broker's dir lock, `host_dir()`, as the sandbox file tools
+   do. So no exec of a container runs during the read. The parse runs after
+   the tool releases the lock. The tool is not in `WITHHELD_HOST_TOOLS`, so
+   a covered run keeps it.
+9. **No marker.** A container can rewrite the `.cc-instance` marker of the
+   dir that it mounts. So the tool takes the store key from the run's
+   artifact context. The upload route tells a tenant dir from its path and
+   the caller's tenant, as `_own_thread_slug` does. The route refuses a
+   thread id that names no folder with 400, and it writes no file.
+10. **An older upload.** A file in the flat `inputs/` reads only when the
+    blob history shows that this session uploaded those bytes. The row must
+    say `create`, `user`, this `session_id` and the same sha256.
+11. **The text is data.** The tool output says so, and the instructions
+    say so.
+12. **A bounded load.** At most two parses run at a time in the process. A
+    third call gets "Another file is being read now".
 
 ### 22.5 Acceptance
 
@@ -4403,6 +4418,12 @@ Each item has a test in `tests/unit/test_read_attachment.py`.
    and no shell tool. The tool result in the next request carries the text.
 7. The golden trajectory `evals/trajectories/test_attachment_scope_trajectory.py`
    locks the thread rule offline.
+8. A covered run, through the real executor with `covers()` true, reads its
+   own attachment while it holds the dir lock. A path into a colleague's
+   thread folder reads nothing. `WithholdHostTools` and `RefuseHostTools`
+   keep the tool.
+9. A rewritten marker moves no upload out of its thread, and opens no flat
+   file for the tool. A thread id that names no folder gets 400 (R8).
 
 ### 22.6 Mutations
 
@@ -4426,6 +4447,13 @@ Each mutation below turns at least one test red.
 | D85 counts it as a shell tool | 2 |
 | the PDF loop has no deadline | 1 |
 | no parse slot | 1 |
+| a covered run takes no dir lock | 1 |
+| a plain open in place of the safe opener | 1 |
+| WS-43d withholds `read_attachment` | 2 |
+| the tool reads the marker | 1 |
+| the upload route reads the marker | 1 |
+| the upload route writes the flat `inputs/` | 2 |
+| an odd thread id falls back to `inputs/` | 1 |
 
 ### 22.7 What H-229 does not do
 
@@ -4434,12 +4462,10 @@ Each mutation below turns at least one test red.
   the headers, the footers, the footnotes or the comments.
 - A scanned PDF has no text layer, so it reads as pages with no text. The
   tool runs no OCR.
-- The workspace tree and the file route still list and serve the whole
-  `inputs/` of the tenant dir. H-227 owns that rule, for `outputs/` too.
-- PR #603 (WS-43d) adds `acb_skills.safe_open` and a sandbox run. In a
-  covered run, a container can write into the tenant dir. Then this tool
-  must open its file through `safe_open` inside `broker.host_files()`.
-  H-235 carries that.
+- Only this tool keeps to the thread folder of `inputs/`. The workspace
+  tree, the file, history and delete routes, the sandbox file store and the
+  container mount still reach the `inputs/` folder of another thread.
+  WS-43d gave `outputs/` that rule. H-227 carries `inputs/`.
 - The browser message still names `read_file`. The instructions name the
   right tool.
 - A team agent keeps the flat `inputs/`.
@@ -4450,7 +4476,9 @@ Each mutation below turns at least one test red.
 eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_read_attachment.py \
   tests/unit/test_h201_tenant_workdirs.py \
+  tests/unit/test_projects_sandbox_tools.py \
   evals/trajectories/test_attachment_scope_trajectory.py -q -rs
 ```
 
-The `-rs` output must show no skip.
+The `-rs` output must show no skip, except the Windows-only skips of the
+sandbox suite.

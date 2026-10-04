@@ -439,11 +439,38 @@ def test_the_tool_refuses_an_oversized_file_before_it_reads_it(ws, monkeypatch) 
     with open(path, "wb") as fh:
         fh.truncate(at.MAX_FILE_BYTES + 1)  # sparse: no disk space used
     reads: list[int] = []
-    real_read = os.read
-    monkeypatch.setattr(tools.os, "read", lambda fd, n: reads.append(n) or real_read(fd, n))
+    real_open = tools.safe_open.open_read
+
+    class _Spy:
+        """The safe opener's handle, with each read recorded."""
+
+        def __init__(self, fh: Any) -> None:
+            self._fh = fh
+
+        def __enter__(self) -> _Spy:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            self._fh.close()
+
+        def fileno(self) -> int:
+            return self._fh.fileno()
+
+        def read(self, n: int = -1) -> bytes:
+            reads.append(n)
+            return self._fh.read(n)
+
+    def _spy_open(root: Path, rel: str) -> Any:
+        fh = real_open(root, rel)
+        return None if fh is None else _Spy(fh)
+
+    monkeypatch.setattr(tools.safe_open, "open_read", _spy_open)
     out = _read(ws, SID_A, "huge.txt")
     assert "I read files of at most" in out
     assert reads == []
+    # The control: a small file is read through the same spy.
+    _attach(ws, SID_A, "small.txt", b"small")
+    assert "small" in _read(ws, SID_A, "small.txt") and reads
 
 
 def test_a_malformed_attachment_gives_one_clean_sentence(ws) -> None:
@@ -741,3 +768,161 @@ def test_an_older_flat_upload_is_tied_to_its_thread_by_the_real_store(graph_as_a
     assert ws == agent_state_dir(_S, tenant_instance(a))
     assert "An upload from last week" in _run_read(disk, a, sa, name)
     assert _run_read(disk, a, sb, name).startswith(f"No file named {name}")
+
+
+# ── 9. A container cannot switch the thread rule off ────────────────────────
+# WS-43d (#603): in a covered run a container writes the tenant dir it mounts,
+# also its `.cc-instance` marker. So neither the tool nor the upload route
+# reads the marker. The tool takes the store key from the run, and the route
+# tells a tenant dir from its path and the caller's tenant.
+
+
+def test_a_rewritten_marker_does_not_switch_the_tools_rule_off(ws, monkeypatch) -> None:
+    _flat(ws, "old.txt", b"another thread's old upload")
+    _fake_history(monkeypatch, [])
+    (ws / ".cc-instance").write_text("u:intruder@x.io", encoding="utf-8")
+    out = _read(ws, SID_A, "old.txt")
+    assert "another thread's old upload" not in out
+    assert out.startswith("No file named old.txt")
+    _attach(ws, SID_A, "own.txt", b"own upload")
+    assert "own upload" in _read(ws, SID_A, "own.txt")
+
+
+def _seed_session_id(promoted, sid: str, org: str, owner: str, agent: str) -> str:  # noqa: F811
+    from sqlalchemy import text
+
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_session (id, user_id, agent_name, workspace_path, "
+            "organization_id) VALUES (:s, :u, :a, NULL, CAST(:o AS uuid))"),
+            {"s": sid, "u": owner, "a": agent, "o": org})
+    return sid
+
+
+@_DB_GATE
+def test_a_rewritten_marker_does_not_move_an_upload_out_of_its_thread(graph_as_app, disk) -> None:  # noqa: F811
+    a = graph_as_app.org_a
+    sa = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
+    ws = ensure_state_dir(_S, tenant_instance(a))
+    (ws / ".cc-instance").write_text("u:intruder@x.io", encoding="utf-8")
+    up = _client(_user(_ALICE, a)).post(
+        f"/agent/workspace/{sa}/upload", files={"files": ("m.txt", b"mine")},
+    )
+    assert up.status_code == 200, up.text
+    assert up.json()[0]["path"] == f"inputs/{thread_slug(sa)}/m.txt"
+    assert not (ws / "inputs" / "m.txt").exists()
+
+
+@_DB_GATE
+def test_a_thread_id_that_names_no_folder_gets_no_upload(graph_as_app, disk) -> None:  # noqa: F811
+    import uuid
+
+    a = graph_as_app.org_a
+    sid = _seed_session_id(graph_as_app, f"s15 odd:{uuid.uuid4().hex[:8]}", a, _ALICE, _S)
+    up = _client(_user(_ALICE, a)).post(
+        f"/agent/workspace/{sid}/upload", files={"files": ("m.txt", b"x")},
+    )
+    assert up.status_code == 400, up.text
+    assert "not a plain thread id" in up.json()["detail"]
+    assert not (ensure_state_dir(_S, tenant_instance(a)) / "inputs" / "m.txt").exists()
+
+
+# ── 10. A covered run (WS-43d): the safe opener under the broker's dir lock ──
+
+import contextlib  # noqa: E402
+import importlib  # noqa: E402
+
+from tests.unit._sandbox_tools_fakes import (  # noqa: E402, F401 — fixtures by name
+    new_thread,
+    sandbox,
+    short_tmp,
+)
+from tests.unit.test_projects_sandbox_tools import (  # noqa: E402
+    _covered_run,
+    _request_tools,
+)
+from tests.unit.test_projects_sandbox_tools import (  # noqa: E402
+    _tool_results as _covered_results,
+)
+
+
+def test_a_covered_run_keeps_read_attachment() -> None:
+    """#603 hides and refuses the host floor tools that open the dir with
+    plain path calls. ``read_attachment`` opens through the safe opener under
+    the dir lock, so it is not one of them."""
+    st = importlib.import_module("acb_skills.sandbox_tools")
+    assert "read_attachment" not in st.WITHHELD_HOST_TOOLS
+    held = [types.SimpleNamespace(name=n) for n in ("read_attachment", "write_artifact")]
+    ctx = types.SimpleNamespace(options={"tools": held})
+    seen: list[list[str]] = []
+
+    async def _next() -> None:
+        seen.append([t.name for t in ctx.options["tools"]])
+
+    asyncio.run(st.WithholdHostTools().process(ctx, _next))
+    assert seen == [["read_attachment"]]
+    call = types.SimpleNamespace(function=types.SimpleNamespace(name="read_attachment"), result=None)
+    ran: list[str] = []
+
+    async def _go() -> None:
+        ran.append("ran")
+
+    asyncio.run(st.RefuseHostTools().process(call, _go))
+    assert ran == ["ran"] and call.result is None
+
+
+def test_a_covered_run_reads_its_own_attachment_and_no_other(sandbox, monkeypatch) -> None:  # noqa: F811
+    """projects-assistant through the REAL executor, with ``covers()`` true.
+    The read of its own file holds the broker's dir lock. A path into a
+    colleague's thread folder in the same tenant dir reads nothing."""
+    from acb_skills.write_artifact import artifact_context
+
+    colleague = new_thread()
+
+    def _plant(index: int, _body: dict) -> None:
+        if index:
+            return
+        ctx = artifact_context()
+        root = Path(ctx["workspace_root"])
+        for thread, name, text in ((ctx["session_id"], "brief.docx", "Our own brief"),
+                                   (colleague, "secret.docx", "A colleague's secret")):
+            folder = root / upload_dir_rel(ctx["instance"], thread)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / name).write_bytes(_docx([text]))
+
+    inside = {"lock": False}
+    seen: list[bool] = []
+    real_host_dir = sandbox.broker.host_dir
+
+    @contextlib.asynccontextmanager
+    async def _spy_host_dir():
+        async with real_host_dir() as binding:
+            inside["lock"] = True
+            try:
+                yield binding
+            finally:
+                inside["lock"] = False
+
+    real_load = tools._load
+
+    def _spy_load(*args: Any) -> Any:
+        seen.append(inside["lock"])
+        return real_load(*args)
+
+    monkeypatch.setattr(sandbox.broker, "host_dir", _spy_host_dir)
+    monkeypatch.setattr(tools, "_load", _spy_load)
+    slug = thread_slug(colleague)
+    model, events, _built = _covered_run(monkeypatch, sandbox, [
+        tool_turn("read_attachment", json.dumps({"name": "brief.docx"})),
+        tool_turn("read_attachment", json.dumps({"name": f"inputs/{slug}/secret.docx"}),
+                  call_id="call_2"),
+        text_turn("done"),
+    ], on_request=_plant)
+    errors = [e for e in events if e.get("type") == "RUN_ERROR"]
+    assert not errors, errors
+    assert "read_attachment" in _request_tools(model.bodies[0])
+    results = "\n".join(_covered_results(model.bodies[-1]))
+    assert "Our own brief" in results
+    assert "A colleague's secret" not in results
+    assert "No file named secret.docx was attached in this chat" in results
+    assert seen == [True, True], seen

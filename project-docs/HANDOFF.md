@@ -138,8 +138,13 @@ line — never reclaim a number by deleting the other entry.
      folder under `outputs/`. Keep the room check of today.
   3. Link the artifact card to the new path. Keep the old link working for a
      member of that thread, through the fault-in of §21.15.
-  4. Check the uploads too. The session upload of §21.15 rule 11 writes to
-     the shared `inputs/`, so it may have the same gap.
+  4. Give the uploads the same rule. Since H-229 an upload of a shared agent
+     lands in `inputs/<thread slug>/`, and `read_attachment` reads only that
+     folder. The workspace tree, the file, history and delete routes, the
+     sandbox file store and the container mount still reach the `inputs/`
+     folder of another thread. Extend `agent_paths.is_other_thread_rel` to
+     `inputs/`, map `inputs/` in `TenantFileStore` as `outputs/` is mapped,
+     and mount the thread's `inputs/` folder over `/workspace/inputs/`.
   5. Add an R8 test: a member with another session of the same agent cannot
      list or read the document.
 - **Authority:** `specs/maf_coding_engine.md` §16.3 · `specs/projects_ai_chat.md`
@@ -4091,27 +4096,19 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/maf_coding_engine.md` §7.9 · the PR #598 verifier
 - **Added:** 2026-10-04 · fix round 2 of PR #598
 
-### H-235 · Finish chat attachments: `.xlsx`, the safe opener under PR #603, and one live read · [AGENT]
-- **Check:** `grep -c '".xlsx"' packages/acb_skills/acb_skills/attachment_text.py; grep -c "from acb_skills import safe_open" packages/acb_skills/acb_skills/attachment_tools.py`
-  → a `0` on either line means this is open. Step 3 stays open until a live read is on record.
+### H-235 · Finish chat attachments: `.xlsx`, and one live read · [AGENT]
+- **Check:** `grep -c '".xlsx"' packages/acb_skills/acb_skills/attachment_text.py`
+  → `0` means `.xlsx` is still unread. Step 2 stays open until a live read is on record.
 - **What happens.** H-229 built `read_attachment` for `.docx`, PDF, `.txt`,
-  `.md` and `.csv` (`projects_ai_chat.md` §22). Three items stay open.
+  `.md` and `.csv` (`projects_ai_chat.md` §22). It opens through the safe
+  opener, and under the dir lock in a covered run. Two items stay open.
   1. H-229 asked for `.xlsx` too. The supervisor narrowed the slice, so the
      tool refuses a `.xlsx` with one sentence.
-  2. PR #603 (WS-43d) mounts the tenant dir into a sandbox container for a
-     covered run. Then a container can make a link or a FIFO in
-     `inputs/<thread slug>/` while the host reads. The tool checks each part
-     with `lstat` and opens with `O_NOFOLLOW`, which closes only the static
-     case. The `WithholdHostTools` of #603 does not name `read_attachment`,
-     so a covered run keeps the tool.
-  3. No live read is on record. The test plan of H-229 needs production.
+  2. No live read is on record. The test plan of H-229 needs production.
 - **Do.**
   1. Read `.xlsx` in `acb_skills/attachment_text.py`: the zip, the shared
      strings and each sheet, with the same caps and a test for each cap.
-  2. After PR #603 merges, open the file through `acb_skills.safe_open`
-     inside `broker.host_files()` in a covered run. Or add `read_attachment`
-     to `WITHHELD_HOST_TOOLS`, and give the file tools the thread folder.
-  3. After the deploy, upload a `.docx` in the Projects chat of the
+  2. After the deploy, upload a `.docx` in the Projects chat of the
      smoke-chat org, and ask for its contents. The answer must quote the
      file, and the gateway log must show `attachment.read`.
 - **Authority:** `specs/projects_ai_chat.md` §22.7 ·
