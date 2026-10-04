@@ -31,6 +31,7 @@ from .base import (
     EmailAddress,
     EmailFolder,
     EmailMessage,
+    ProviderRateLimited,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
@@ -301,12 +302,13 @@ _REPEATABLE_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE"})
 _REPEATABLE_POST_ACTIONS = ("/modify", "/batchModify", "/trash", "/untrash")
 
 
-class GmailRateLimited(httpx.HTTPStatusError):
+class GmailRateLimited(httpx.HTTPStatusError, ProviderRateLimited):
     """Gmail refused a request for a rate limit, and the helper sends it no
     more (EM-G4a item 9). A sync that gets it fails, and the loop backs off.
 
     It is an ``httpx.HTTPStatusError``, so each caller that handles an HTTP
-    failure handles it too."""
+    failure handles it too. It is a ``ProviderRateLimited``, so the
+    scheduler never degrades it (EM-G4b review round 1, F2)."""
 
     def __init__(self, response: httpx.Response, *, tries: int) -> None:
         request = response.request
@@ -378,6 +380,140 @@ def _raise_rate_limit(exc: BaseException) -> None:
 async def _wait(seconds: float) -> None:
     """Wait for a rate limit. The tests replace it, so no test sleeps."""
     await asyncio.sleep(seconds)
+
+
+# ── The history cursor (WS-17 EM-G4b, spec §12.3.5.2) ─────────────────────────
+
+#: The history types that the cursor reads (GM-17).
+_HISTORY_TYPES = ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"]
+#: The history events that put a message into the fetch set (items 1 to 3). A
+#: label event fetches the message in full, as an added message does, so the
+#: upsert applies its new folder, read mark, star and labels.
+_HISTORY_FETCH_EVENTS = ("messagesAdded", "labelsAdded", "labelsRemoved")
+#: A fetch on the history path that a later cycle can fix (a 5xx or a
+#: transport error) holds the cursor at its old position. The cursor counts
+#: the cycles that it was held. On the cycle that reaches this count, it moves
+#: on past each message that still fails (EM-G4a-f2, review round 1 F1).
+GMAIL_FETCH_HOLD_CYCLES = 3
+#: The name of the sweep after a stale cursor in ``catch_up_folders``. The
+#: scheduler puts it into the ``sync_error`` note of a short catch-up.
+GMAIL_RESET_SWEEP_NAME = "all mail"
+
+
+class _StaleCursor(Exception):
+    """``history.list`` answered 404. Gmail holds no history after the
+    cursor, so the provider seeds again and sweeps (item 5)."""
+
+
+def _is_history_id(text: str) -> bool:
+    """True for a Gmail history id: ASCII digits only. ``str.isdigit`` also
+    takes other digits, such as Arabic-Indic digits (review round 1 F5)."""
+    return bool(text) and text.isascii() and text.isdigit()
+
+
+def _parse_cursor(raw: Any) -> tuple[str, int] | None:
+    """The history id of a stored cursor, and the cycles that it was held.
+
+    The cursor is a plain history id, or JSON while a failed fetch holds it:
+    ``{"held_cycles": <n>, "history_id": "<id>", "v": 1}``. Text that is
+    neither is no cursor, so the sync seeds again and does not send text to
+    Gmail that it refuses on each cycle."""
+    text = str(raw or "").strip()
+    if _is_history_id(text):
+        return text, 0
+    try:
+        data = json.loads(text)
+        history_id = str(data["history_id"])
+        held_cycles = max(int(data.get("held_cycles", 0)), 0)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+    return (history_id, held_cycles) if _is_history_id(history_id) else None
+
+
+def _format_cursor(history_id: str, held_cycles: int) -> str:
+    """The stored form of a cursor: the plain id, or JSON with the count of
+    held cycles. It holds no message id, so its size never grows (review
+    round 1 F7)."""
+    if held_cycles <= 0:
+        return history_id
+    return json.dumps({"v": 1, "history_id": history_id,
+                       "held_cycles": held_cycles},
+                      sort_keys=True, separators=(",", ":"))
+
+
+def _collect_history(
+    records: list[dict[str, Any]], fetch: dict[str, None],
+    deleted: dict[str, None],
+) -> None:
+    """Add the message ids of one history page to the fetch set and to the
+    delete set. Dicts keep the order of the history."""
+    for record in records:
+        for event in _HISTORY_FETCH_EVENTS:
+            for change in record.get(event) or []:
+                mid = (change.get("message") or {}).get("id")
+                if mid:
+                    fetch[mid] = None
+        for change in record.get("messagesDeleted") or []:
+            mid = (change.get("message") or {}).get("id")
+            if mid:
+                deleted[mid] = None
+
+
+def _deleted_marker(message_id: str) -> EmailMessage:
+    """The ``[DELETED]`` marker of a message that Gmail deleted (item 4).
+    ``scheduler._write_messages`` moves its row to trash, and deletes a row
+    in ``drafts`` (E-B2)."""
+    return EmailMessage(provider_message_id=message_id, thread_id=None,
+                        folder="TRASH", labels=["TRASH"], subject="[DELETED]",
+                        deletion_marker=True)
+
+
+def _transient(exc: BaseException) -> bool:
+    """True for a failed fetch that a later cycle can fix: a 5xx or a
+    transport error (EM-G4a-f2). A 404 means that the message is gone, and
+    a parse error or another 4xx stays the same, so none of them holds the
+    cursor."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return isinstance(status, int) and status >= 500
+
+
+def _cursor_after_read(
+    start: str, last_id: str | None, held_cycles: int, failed: list[str],
+    errors: list[str],
+) -> str:
+    """The cursor after one read of the history (item 2, EM-G4a-f2).
+
+    With no failed fetch, it is the ``historyId`` of the last answer, and the
+    count of held cycles goes back to 0. A fetch that a later cycle can fix
+    keeps the OLD position, and the count goes up by 1. The count belongs to
+    the cursor, not to a message, so a new failure on each cycle cannot hold
+    the cursor longer (review round 1 F1). On the cycle that reaches
+    ``GMAIL_FETCH_HOLD_CYCLES``, the cursor moves to the last answer. Each
+    message that still fails gets a log line and a record in ``errors``,
+    with its id only. A message that succeeds is not in them."""
+    if not failed:
+        return last_id or start
+    cycles = held_cycles + 1
+    if cycles < GMAIL_FETCH_HOLD_CYCLES:
+        return _format_cursor(start, cycles)
+    for mid in failed:
+        logger.warning("gmail.fetch_abandoned message_id=%s held_cycles=%d",
+                       mid, cycles)
+        errors.append(f"gmail.fetch_abandoned id={mid} held_cycles={cycles}")
+    return last_id or start
+
+
+def _reset_sweep_after(
+    catch_up: datetime | None, since: datetime | None,
+) -> datetime | None:
+    """How far back the sweep after a stale cursor reads (item 6): the
+    catch-up watermark, or the floor with no watermark. The floor binds
+    each sync (EM-T6a), so the later of the two wins."""
+    dates = [d if d.tzinfo else d.replace(tzinfo=UTC)
+             for d in (catch_up, since) if d is not None]
+    return max(dates) if dates else None
 
 
 class GmailBearer(RefreshingBearer):
@@ -1203,8 +1339,10 @@ class GmailProvider(BaseEmailProvider):
                 remove_labels=remove_ids or None,
             )
 
-    # Deep initial sync page ceiling per label (×500/page). The after:-query
-    # window normally exhausts well before this.
+    # Deep initial sync page ceiling per label. A page holds ``max_results``
+    # messages, 100 from the scheduler. The after:-query window normally
+    # exhausts well before this. The sweep after a stale cursor uses the same
+    # ceiling (EM-G4b E-B1).
     DEEP_SYNC_MAX_PAGES = 50
 
     async def _sweep_label(
@@ -1239,151 +1377,304 @@ class GmailProvider(BaseEmailProvider):
         *,
         delta_shadow: bool = False,
     ) -> SyncResult:
-        # ``catch_up`` is ignored: the history cursor already reads every
-        # change since the last sync (EM-T6b item 9). ``delta_shadow`` is
-        # ignored too: it is the Graph delta of Outlook (EM-T4d).
-        client = await self._get_client()
+        """One sync of a Gmail mailbox (WS-17 EM-G4b, spec §12.3.5.2).
+
+        * ``deep`` pages each label back to ``since``. The import uses it,
+          and it returns no cursor.
+        * With a cursor, the sync reads ``history.list`` from it, page by
+          page (items 2 to 4). The new cursor is the ``historyId`` of the
+          last answer. A fetch that a later cycle can fix holds the cursor
+          (EM-G4a-f2, ``_cursor_after_read``).
+        * With no cursor, ``users.getProfile`` gives the seed FIRST. The
+          sweep then reads the newest page of each label and returns the
+          seed (item 1). So the next history read gets each change made
+          during the sweep.
+        * A stale cursor (404) seeds again and sweeps back to the catch-up
+          watermark (items 5 and 6). A sweep that stops short returns no
+          cursor, so the stale one stays (E-B1).
+
+        ``catch_up`` is unused with a cursor, because the history reads each
+        change since the cursor (item 7, D-EM-13). Gmail keeps its history
+        for about one week, often longer. After a longer pause the cursor is
+        stale, and the sweep of item 6 is the catch-up. ``delta_shadow`` is
+        the Graph delta of Outlook, and Gmail ignores it (EM-T4d).
+        """
+        await self._get_client()
         # The fetch records of this call go into ``SyncResult.errors``
         # (EM-G4a item 10). A failed label still skips. A rate limit whose
         # tries are spent raises instead, so the sync fails (item 9).
         first_failure = len(self.fetch_failures)
-
         if deep:
-            # One-time deep backfill: page every label back to ``since`` (incl.
-            # SENT/DRAFT). The order of the labels does not set the folder:
-            # each message keeps the folder of its parse (WS-17 EM-G2 item 8).
-            deep_messages: list[EmailMessage] = []
+            return await self._deep_sweep(max_results, since, first_failure)
+        cursor = _parse_cursor(history_id) if history_id else None
+        if cursor is not None:
+            return await self._history_sync(cursor, max_results, since, catch_up)
+        return await self._first_sweep(max_results, first_failure)
+
+    async def seed_cursor(self) -> str | None:
+        """The history id of the mailbox now, from ``users.getProfile``
+        (WS-17 EM-G4b item 1, E-B3).
+
+        The call goes through the client seam, so a rate limit raises
+        ``GmailRateLimited``. Each other failure raises too. The scheduler
+        and the sweeps catch it (``_try_seed``), so a failed seed never
+        stops new mail."""
+        client = await self._get_client()
+        resp = await client.get("/users/me/profile")
+        resp.raise_for_status()
+        history_id = resp.json().get("historyId")
+        return str(history_id) if history_id else None
+
+    async def _try_seed(self) -> str | None:
+        """``seed_cursor`` for a sweep. A failure never stops new mail (owner
+        answer Q2): it logs ``gmail.seed_failed`` and gives None, so the
+        sweep still runs and the next cycle seeds again. A rate limit whose
+        tries are spent raises, so the sync fails (EM-G4a item 9)."""
+        try:
+            return await self.seed_cursor()
+        except Exception as exc:
+            _raise_rate_limit(exc)
+            logger.warning("gmail.seed_failed error=%s status=%s",
+                           type(exc).__name__, getattr(
+                               getattr(exc, "response", None),
+                               "status_code", None))
+            return None
+
+    async def _fetch_into(self, ids: list[str], result: SyncResult) -> list[str]:
+        """Fetch each message of *ids* in full into *result* (items 3 and 6).
+
+        A rate limit whose tries are spent raises, so the sync fails and the
+        cursor stays (EM-G4a item 9). Each other failure leaves its record in
+        ``result.errors`` (item 10). Returns the ids whose failure a later
+        cycle can fix (``_transient``)."""
+        failed: list[str] = []
+        for mid in ids:
             try:
-                folders = await self.list_folders()
+                result.messages.append(await self.get_message(mid))
             except Exception as exc:
                 _raise_rate_limit(exc)
-                folders = []
-            for f in folders:
-                if f.type != "user":
-                    continue
-                canon = canonical_folder(f.name)
-                if canon in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
-                    continue
-                try:
-                    deep_messages.extend(await self._sweep_label(
-                        f.provider_folder_id, max_results, since, canon
-                    ))
-                except Exception as exc:
-                    _raise_rate_limit(exc)
-                    continue
-            for label in ("INBOX", "SENT", "DRAFT", "SPAM", "TRASH"):
-                try:
-                    deep_messages.extend(
-                        await self._sweep_label(label, max_results, since)
-                    )
-                except Exception as exc:
-                    _raise_rate_limit(exc)
-                    continue
-            return SyncResult(
-                messages_synced=len(deep_messages), messages=deep_messages,
-                new_history_id=None,
-                errors=self.fetch_failures[first_failure:],
-            )
+                result.errors.append(self._record_fetch_failure(mid, exc))
+                if _transient(exc):
+                    failed.append(mid)
+                continue
+            result.messages_synced += 1
+        return failed
 
-        if history_id:
-            # Incremental sync via history.list
-            params: dict[str, Any] = {
-                "startHistoryId": history_id,
-                "maxResults": max_results,
-                "historyTypes": ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"],
-            }
+    async def _read_history(
+        self, start: str, max_results: int,
+    ) -> tuple[dict[str, None], dict[str, None], str | None]:
+        """Read ``history.list`` from *start* to the last page (item 2).
+
+        Returns the fetch set, the delete set and the ``historyId`` of the
+        last answer. A 404 raises ``_StaleCursor`` (item 5). Any other
+        failure raises, so the sync fails and the cursor stays."""
+        client = await self._get_client()
+        params: dict[str, Any] = {"startHistoryId": start,
+                                  "maxResults": max_results,
+                                  "historyTypes": _HISTORY_TYPES}
+        fetch: dict[str, None] = {}
+        deleted: dict[str, None] = {}
+        last_id: str | None = None
+        while True:
             resp = await client.get("/users/me/history", params=params)
+            if resp.status_code == 404:
+                raise _StaleCursor
             resp.raise_for_status()
             data = resp.json()
+            _collect_history(data.get("history") or [], fetch, deleted)
+            last_id = data.get("historyId") or last_id
+            token = data.get("nextPageToken")
+            if not token:
+                return fetch, deleted, last_id
+            params["pageToken"] = token
 
-            result = SyncResult(new_history_id=data.get("historyId"))
-            message_ids_to_fetch: set[str] = set()
-            message_ids_deleted: set[str] = set()
+    async def _history_sync(
+        self, cursor: tuple[str, int], max_results: int,
+        since: datetime | None, catch_up: datetime | None,
+    ) -> SyncResult:
+        """The sync from a cursor (items 2 to 5, EM-G4a-f2)."""
+        start, held_cycles = cursor
+        try:
+            fetch, deleted, last_id = await self._read_history(start, max_results)
+        except _StaleCursor:
+            return await self._recover_stale_cursor(max_results, since, catch_up)
+        result = SyncResult()
+        for mid in deleted:
+            result.messages.append(_deleted_marker(mid))
+        # A message that Gmail deleted has nothing to fetch.
+        failed = await self._fetch_into(
+            [mid for mid in fetch if mid not in deleted], result)
+        result.messages_synced += len(deleted)
+        result.new_history_id = _cursor_after_read(
+            start, last_id, held_cycles, failed, result.errors)
+        return result
 
-            for history in data.get("history", []):
-                for msg_added in history.get("messagesAdded", []):
-                    mid = msg_added.get("message", {}).get("id")
-                    if mid:
-                        message_ids_to_fetch.add(mid)
-                for msg_deleted in history.get("messagesDeleted", []):
-                    mid = msg_deleted.get("message", {}).get("id")
-                    if mid:
-                        message_ids_deleted.add(mid)
+    async def _recover_stale_cursor(
+        self, max_results: int, since: datetime | None,
+        catch_up: datetime | None,
+    ) -> SyncResult:
+        """A stale cursor (items 5 and 6, E-B1). Seed FIRST, then sweep all
+        mail back to the watermark.
 
-            # Mark deleted messages as such
-            for mid in message_ids_deleted:
-                result.messages.append(EmailMessage(
-                    provider_message_id=mid,
-                    folder="TRASH",
-                    labels=["TRASH"],
-                    subject="[DELETED]",
-                ))
-
-            # Fetch full message for each added/updated message
-            for mid in message_ids_to_fetch:
-                try:
-                    msg = await self.get_message(mid)
-                    result.messages.append(msg)
-                    result.messages_synced += 1
-                except Exception as e:
-                    # The sync fails, so the cursor stays (EM-G4a item 9).
-                    _raise_rate_limit(e)
-                    result.errors.append(self._record_fetch_failure(mid, e))
-
-            result.messages_synced += len(message_ids_deleted)
-            return result
+        A sweep that reads to the end returns the seed as the new cursor. A
+        sweep that stops short returns no new cursor, so the stale one
+        stays, and sets ``catch_up_incomplete``. The scheduler then keeps the
+        watermark, and the next cycle sweeps again. ``reseed_history_id``
+        always holds the seed, and the scheduler writes it only when it
+        abandons the catch-up (``CATCH_UP_MAX_MISSES``). A failed seed makes
+        the sweep short too, because it has no cursor to return.
+        ``cursor_reset`` tells the scheduler to log the reset with the
+        mailbox id, also when the seed failed (review round 1 F6)."""
+        seed = await self._try_seed()
+        result = SyncResult(reseed_history_id=seed, cursor_reset=True)
+        after = _reset_sweep_after(catch_up, since)
+        complete = await self._sweep_after_reset(max_results, after, result)
+        if complete and seed is not None:
+            result.new_history_id = seed
         else:
-            # Initial full sync. The user labels, then five system labels.
-            # The order does not set the folder: ``list_messages`` keeps the
-            # folder of the parse, from the system labels only (WS-17 EM-G2
-            # item 8, D-EM-33). A message that two labels carry comes twice,
-            # and both copies have one folder.
-            messages: list[EmailMessage] = []
+            result.catch_up_incomplete = True
+            result.catch_up_folders = [GMAIL_RESET_SWEEP_NAME]
+        return result
 
-            # User labels — so archived mail with a user label syncs. Such a
-            # message files as ``archive``, and its labels go to
-            # ``categories`` (O-GM-1). ``canonical_override`` sets no folder.
+    async def _sweep_after_reset(
+        self, max_results: int, after: datetime | None, result: SyncResult,
+    ) -> bool:
+        """Page all mail after *after* into *result* (item 6, E-B1).
+
+        One list with ``q=after:<epoch seconds>``, ``includeSpamTrash`` and
+        no ``labelIds``. It reads ``DEEP_SYNC_MAX_PAGES`` pages at most.
+        Returns True when it read to the end. A page that fails, the page
+        cap, or a fetch that a later cycle can fix makes it short. A rate
+        limit raises."""
+        client = await self._get_client()
+        params: dict[str, Any] = {"maxResults": max_results,
+                                  "includeSpamTrash": "true"}
+        if after is not None:
+            params["q"] = f"after:{int(after.timestamp())}"
+        complete = True
+        for _ in range(self.DEEP_SYNC_MAX_PAGES):
             try:
-                folders = await self.list_folders()
+                resp = await client.get("/users/me/messages", params=params)
+                resp.raise_for_status()
+                data = resp.json()
             except Exception as exc:
                 _raise_rate_limit(exc)
-                folders = []
-            for f in folders:
-                if f.type != "user":
-                    continue
-                canon = canonical_folder(f.name)
-                # Skip anything that collapses onto a system folder key.
-                if canon in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
-                    continue
-                try:
-                    user_msgs, _ = await self.list_messages(
-                        folder=f.provider_folder_id,
-                        max_results=max_results,
-                        canonical_override=canon,
-                    )
-                    messages.extend(user_msgs)
-                except Exception as exc:
-                    _raise_rate_limit(exc)
-                    continue
+                logger.warning("gmail.reset_sweep_failed error=%s status=%s",
+                               type(exc).__name__, getattr(
+                                   getattr(exc, "response", None),
+                                   "status_code", None))
+                return False
+            ids = [ref["id"] for ref in data.get("messages") or [] if ref.get("id")]
+            if await self._fetch_into(ids, result):
+                complete = False
+            token = data.get("nextPageToken")
+            if not token:
+                return complete
+            params["pageToken"] = token
+        return False
 
-            # System labels. EM-G5 owns the archived mail with no user label
-            # (GM-8), which no label of this sweep reaches.
-            for label in ("INBOX", "SENT", "DRAFT", "SPAM", "TRASH"):
-                try:
-                    label_msgs, _ = await self.list_messages(
-                        folder=label, max_results=max_results
-                    )
-                    messages.extend(label_msgs)
-                except Exception as exc:
-                    _raise_rate_limit(exc)
-                    continue
+    async def _deep_sweep(
+        self, max_results: int, since: datetime | None, first_failure: int,
+    ) -> SyncResult:
+        """The deep backfill of the import: page each label back to
+        ``since``. It returns no cursor."""
+        # One-time deep backfill: page every label back to ``since`` (incl.
+        # SENT/DRAFT). The order of the labels does not set the folder:
+        # each message keeps the folder of its parse (WS-17 EM-G2 item 8).
+        deep_messages: list[EmailMessage] = []
+        try:
+            folders = await self.list_folders()
+        except Exception as exc:
+            _raise_rate_limit(exc)
+            folders = []
+        for f in folders:
+            if f.type != "user":
+                continue
+            canon = canonical_folder(f.name)
+            if canon in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
+                continue
+            try:
+                deep_messages.extend(await self._sweep_label(
+                    f.provider_folder_id, max_results, since, canon
+                ))
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                continue
+        for label in ("INBOX", "SENT", "DRAFT", "SPAM", "TRASH"):
+            try:
+                deep_messages.extend(
+                    await self._sweep_label(label, max_results, since)
+                )
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                continue
+        return SyncResult(
+            messages_synced=len(deep_messages), messages=deep_messages,
+            new_history_id=None,
+            errors=self.fetch_failures[first_failure:],
+        )
 
-            return SyncResult(
-                messages_synced=len(messages),
-                messages=messages,
-                new_history_id=None,  # will be set after first history call
-                errors=self.fetch_failures[first_failure:],
-            )
+    async def _first_sweep(
+        self, max_results: int, first_failure: int,
+    ) -> SyncResult:
+        """The sync with no cursor (item 1). Seed FIRST from
+        ``users.getProfile``, then read the newest page of each label, and
+        return the seed as the new cursor. The next history read then gets
+        each change made during the sweep. A failed seed returns no cursor,
+        and the next cycle seeds again (``_try_seed``)."""
+        seed = await self._try_seed()
+        # Initial full sync. The user labels, then five system labels.
+        # The order does not set the folder: ``list_messages`` keeps the
+        # folder of the parse, from the system labels only (WS-17 EM-G2
+        # item 8, D-EM-33). A message that two labels carry comes twice,
+        # and both copies have one folder.
+        messages: list[EmailMessage] = []
+
+        # User labels — so archived mail with a user label syncs. Such a
+        # message files as ``archive``, and its labels go to
+        # ``categories`` (O-GM-1). ``canonical_override`` sets no folder.
+        try:
+            folders = await self.list_folders()
+        except Exception as exc:
+            _raise_rate_limit(exc)
+            folders = []
+        for f in folders:
+            if f.type != "user":
+                continue
+            canon = canonical_folder(f.name)
+            # Skip anything that collapses onto a system folder key.
+            if canon in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
+                continue
+            try:
+                user_msgs, _ = await self.list_messages(
+                    folder=f.provider_folder_id,
+                    max_results=max_results,
+                    canonical_override=canon,
+                )
+                messages.extend(user_msgs)
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                continue
+
+        # System labels. EM-G5 owns the archived mail with no user label
+        # (GM-8), which no label of this sweep reaches.
+        for label in ("INBOX", "SENT", "DRAFT", "SPAM", "TRASH"):
+            try:
+                label_msgs, _ = await self.list_messages(
+                    folder=label, max_results=max_results
+                )
+                messages.extend(label_msgs)
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                continue
+
+        return SyncResult(
+            messages_synced=len(messages),
+            messages=messages,
+            new_history_id=seed,
+            errors=self.fetch_failures[first_failure:],
+        )
+
 
     async def get_attachment(
         self, provider_message_id: str, provider_attachment_id: str

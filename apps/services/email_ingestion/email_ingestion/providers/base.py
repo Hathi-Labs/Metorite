@@ -21,6 +21,15 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+class ProviderRateLimited(Exception):
+    """A provider refused a request for a rate limit, and its tries are spent.
+
+    A typed error of a provider adds this class, as ``GmailRateLimited``
+    does. A sync that gets it fails, and the loop backs off (WS-17 EM-G4a
+    item 9). The scheduler reads it where it degrades other failures, so a
+    rate limit is never degraded (EM-G4b review round 1, F2)."""
+
+
 class _RefreshableProvider(Protocol):
     """What :class:`RefreshingBearer` reads from an OAuth provider."""
 
@@ -316,6 +325,11 @@ class EmailMessage:
     unsubscribe_link: str | None = None
     received_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # True only on a ``[DELETED]`` marker that a change feed made (WS-17
+    # EM-G4b E-B2, review round 1 F3). Only the Gmail history sets it. A
+    # marker with it deletes a row in ``drafts``. A real message whose
+    # subject is "[DELETED]" never has it, so the rule cannot meet its row.
+    deletion_marker: bool = False
 
 
 @dataclass
@@ -375,6 +389,17 @@ class SyncResult:
     # The record of the Graph delta in shadow (WS-17 EM-T4d), or None when no
     # delta ran. The scheduler logs it. It never changes the fields above.
     delta_report: DeltaShadowReport | None = None
+    # A fresh cursor that the provider read because its stored cursor was
+    # stale (WS-17 EM-G4b items 5 and 6). Only Gmail sets it. When the sweep
+    # back to the watermark read to the end, ``new_history_id`` holds the
+    # same value. When the sweep stopped short, ``new_history_id`` is None,
+    # so the stale cursor stays and the next cycle sweeps again (E-B1). The
+    # scheduler writes this value only when it abandons that catch-up.
+    reseed_history_id: str | None = None
+    # True when the provider found its cursor stale and swept again (WS-17
+    # EM-G4b review round 1 F6). The scheduler then logs the reset with the
+    # mailbox id. When ``reseed_history_id`` is None too, the seed failed.
+    cursor_reset: bool = False
 
 
 #: The callback that an import calls once, before its first batch, with the
@@ -760,6 +785,17 @@ class BaseEmailProvider(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support sending drafts"
         )
+
+    async def seed_cursor(self) -> str | None:
+        """The cursor of the mailbox at this moment, or None.
+
+        WS-17 EM-G4b (E-B3). ``_sync_cycle`` calls it BEFORE an import when
+        the mailbox has no cursor, and the sweep after the import then reads
+        each change from it. A change made during the import is not lost.
+        A provider with no cursor to seed keeps this default, so Outlook and
+        IMAP see no change. Gmail reads ``users.getProfile``.
+        """
+        return None
 
     @abstractmethod
     async def sync_messages(

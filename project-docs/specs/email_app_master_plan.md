@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1).
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -6126,14 +6126,15 @@ change.
 > D-EM-4 say for Microsoft. The flow is Connect, then consent, then done. A member never
 > configures an OAuth client, never pastes a key and never opens Integrations.
 
-> **Status (2026-10-05).** 📝 SPECIFIED by EM-G0. EM-G1 is ✅ MERGED (#625, §12.3.1), and
-> EM-G2 is ✅ MERGED (#626, §12.3.2). Each anchor below is
+> **Status (2026-10-05).** 📝 SPECIFIED by EM-G0. EM-G1 (#625, §12.3.1) and EM-G2 (#626,
+> §12.3.2) are ✅ MERGED, and EM-G4b is ✅ MERGED (#632,
+> §12.3.5.2). Each anchor below is
 > verified against the code at `d0627789a` on 2026-10-04. Re-verify each anchor at dispatch,
 > because the code is the fact. This section wins over §1 and §11 where they say that Outlook is
 > the only provider.
 
 > **The split of EM-G4 (2026-10-05).** EM-G4a and EM-G4b take the place of EM-G4 (§12.3.5).
-> EM-G4a is ✅ MERGED (#629, §12.3.5.1).
+> EM-G4a is ✅ MERGED (#629, §12.3.5.1). EM-G4b is ✅ MERGED (#632, §12.3.5.2).
 
 > **The slice names.** The slices are EM-G1 to EM-G10. §10.4.7 already uses the bare names G1 to
 > G5 for the gaps of EM-T6c, so the prefix keeps the two sets apart (R2).
@@ -6964,9 +6965,13 @@ limits. EM-G5 or a later slice owns a fix, with its own audit.
 
 **Known limit EM-G4a-f2.** On the history path, a fetch that fails with a 5xx leaves a record, and
 the cursor still moves past that message. Only a rate limit holds the cursor. EM-G4b decides
-whether a 5xx holds the cursor too.
+whether a 5xx holds the cursor too. EM-G4b decided it: a 5xx holds the cursor for 3 cycles at
+most (§12.3.5.2).
 
 ##### 12.3.5.2 EM-G4b — the history cursor and its recovery
+
+**Status.** ✅ MERGED #632 (2026-10-05). The as-built notes and
+the mutation table are at the end of this section.
 
 **Gate.** 🟢 AGENT-SAFE · R8, because the cursor write is SQL. No migration:
 `email_accounts.last_history_id` holds the cursor.
@@ -7007,6 +7012,7 @@ the folder rule of EM-G2. EM-G4b and EM-G3a go in any order.
 - **Open for the audit of EM-G4b.** A gap of more than 5,000 messages never completes, so each
   cycle sweeps the same newest pages. The recommendation is the abandon rule of the Outlook sweep.
   After `CATCH_UP_MAX_MISSES` (6) short cycles, the seed moves on, and the log names the gap.
+  The orchestrator took the recommendation on 2026-10-05. The as-built notes below record it.
 - **E-B2, a deleted draft. EM-G4b fixes it.** Each edit of a draft in Gmail web gives the draft a
   new message id and deletes the old one. `messagesDeleted` then moves the old row to Trash through
   `_TRASH_DELETED`, so each edit leaves one ghost in Trash. With the fix, a `[DELETED]` marker for
@@ -7055,10 +7061,185 @@ M17. So a new mutation of EM-G4b takes M18 or a later id.
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_gmail_history_cursor.py tests/unit/test_email_scheduler_tenancy.py \
   tests/unit/test_email_deep_sync.py tests/unit/test_email_provider_401_retry.py -v -rs
-uv run ruff check apps/services/email_ingestion tests/unit/test_gmail_history_cursor.py
+uv run ruff check tests/unit/test_gmail_history_cursor.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
 
-The R8 tests must show PASSED, with 0 skips.
+The R8 tests must show PASSED, with 0 skips. `ruff check apps/services/email_ingestion` exits 1 on
+old findings in other files, so the block above leaves it out (review round 1 F8). The counts of
+`gmail.py` and `scheduler.py` must stay at or below the counts on main.
+
+**As built (2026-10-05, branch `email-gmail-g4b`).** The build follows items 1 to 7 and 11, the
+rules E-B1 to E-B3, and the decisions of the orchestrator of 2026-10-05. It adds no migration, no
+column, no table and no flag. Production holds no Gmail mailbox, so no live mailbox changes.
+
+- **The seed (item 1, E-B3).** `GmailProvider.seed_cursor` reads `users.getProfile` through the
+  client seam. `BaseEmailProvider.seed_cursor` returns None, so Outlook and IMAP get no seed.
+  `scheduler._seed_before_import` calls it before `_import_in_batches` when the mailbox has no
+  cursor. The sweep of that cycle then reads the history from the seed.
+- **A failed seed.** A failed seed never stops new mail (owner answer Q2). The scheduler logs
+  `sync.seed_failed`, and the import and the sweep still run. The sweep then seeds on its own. A
+  second failure gives no cursor, and the next cycle seeds again. A spent rate limit on any seed
+  fails the sync, as each rate limit does. `ProviderRateLimited` in `base.py` marks it, and
+  `GmailRateLimited` adds that class (review round 1 F2).
+- **Every page (item 2).** `_read_history` follows `nextPageToken` to the last page. The new cursor
+  is the `historyId` of the last answer. One read has no page cap (known limit EM-G4b-f1).
+- **The events (items 3 and 4).** `messagesAdded`, `labelsAdded` and `labelsRemoved` put the
+  message id into one fetch set, so two events of one message cost one fetch. Each fetch is
+  `format=full`. `messagesDeleted` gives a `[DELETED]` marker, and the provider does not fetch a
+  deleted message.
+- **A defect that never ran.** The old marker set no `thread_id`, and `EmailMessage` needs it. So
+  the first delete on the old history path raised. The history path never ran, so production
+  never met it. The new fence found it.
+- **A stale cursor (items 5 and 6).** A 404 on any history page seeds again, then sweeps all
+  mail. The list sends `q=after:<epoch seconds>`, `includeSpamTrash=true` and no `labelIds`. It
+  reads back to the later of the catch-up watermark and the floor, because the floor binds each
+  sync (EM-T6a). With neither, it sends no `after:`.
+- **E-B1, a short sweep.** The sweep reads `DEEP_SYNC_MAX_PAGES` (50) pages at most. The page
+  cap, a page that fails, a fetch that a later cycle can fix or a failed seed makes it short. A
+  short sweep returns no new cursor. It sets `catch_up_incomplete` with the name `all mail`.
+  Phase (d) then keeps the stale cursor and the watermark, and the next cycle sweeps again.
+- **The abandon (the open point, decided).** The count of short sweeps is the count of the
+  Outlook catch-up: `_catch_up_misses` in `scheduler.py`, through `_watermark_outcome`. So one
+  policy and one constant serve both providers. The count lives in the process, only a loop cycle
+  adds to it, and a restart clears it. No column holds it.
+- **The write at the abandon.** After `CATCH_UP_MAX_MISSES` (6) short loop cycles,
+  `scheduler._next_cursor` writes `SyncResult.reseed_history_id`. That is the seed that the sweep
+  of the same cycle read first. The scheduler logs `email.gmail_history_gap_abandoned` with the
+  mailbox id and the count. A Resync recovers the older gap.
+- **The reset log.** `SyncResult.cursor_reset` marks each reset. The scheduler then logs
+  `gmail.history_reset` with the mailbox id, and says whether the sweep read to the end and
+  whether the seed worked. The provider does not know the mailbox id.
+- **A failed reseed (review round 1 F6).** The scheduler also logs `gmail.reseed_failed`, and the
+  cycle backs off, because the stale cursor stays. Before this rule, a sticky abandon swept all
+  mail at each interval while `getProfile` failed.
+- **A failed fetch (EM-G4a-f2, decided).** A fetch on the history path that fails with a 5xx or a
+  transport error keeps the OLD position. A later cycle cannot fix a 404, another 4xx or a parse
+  error, so they do not hold the cursor. The fetch record goes into `SyncResult.errors` each time.
+- **Where that count lives.** The stored cursor holds it. The cursor is a plain history id, or
+  JSON while a fetch holds it: `{"held_cycles": <n>, "history_id": "<id>", "v": 1}`. The count
+  belongs to the cursor, not to a message (review round 1 F1). The cursor holds no message id, so
+  its size never grows (F7). This form is the narrowest, with no migration and no second store,
+  and a restart keeps it.
+- **A history id.** A history id is ASCII digits only (F5). Text that is neither form is no
+  cursor, and a JSON object with no `history_id` is none either (F4). The sync then seeds again.
+- **The pass.** On the cycle that reaches `GMAIL_FETCH_HOLD_CYCLES` (3) held cycles, the cursor
+  moves to the last answer. Each message that still fails gets the log `gmail.fetch_abandoned` and
+  a record in `SyncResult.errors`, with its id only. A cycle with no failed fetch moves the cursor
+  and clears the count. So one bad message, or a new failure on each cycle, holds the cursor for
+  3 cycles at most. No line names a subject or an address.
+- **The sync log (F7).** `email_sync_log.provider_history_id` keeps a plain history id, and NULL
+  for a held JSON cursor (`scheduler._log_cursor`). The Outlook delta keeps its JSON out of the
+  log for the same reason (EM-T4d review round 1 F5).
+- **A rate limit.** A `GmailRateLimited` on a history page or on a fetch fails the cycle, as
+  EM-G4a says. The loop backs off, and the cursor does not move.
+- **E-B2, a deleted draft.** For a marker with `EmailMessage.deletion_marker`, `_write_messages`
+  runs `_DELETE_DELETED_DRAFT` before `_TRASH_DELETED`. Only the Gmail history sets that flag, so
+  a real subject cannot trigger the rule (review round 1 F3). A row in `drafts` or `draft`, in any
+  case, goes. Any other row moves to TRASH. Each table that points at a message row cascades or
+  sets NULL (the files 17, 19, 73 and 87 of `infra/postgres/`).
+- **No change to IMAP or Outlook.** Only `gmail.py` sets `deletion_marker`, so the E-B2 rule never
+  meets an IMAP or an Outlook row. Both keep the `seed_cursor` of the base class, so
+  `_seed_before_import` passes their stored value on as it is. ⚠️ A real message with the subject
+  "[DELETED]" still moves to TRASH, as on main. That defect of main stays out of this slice. ⚠️
+  The docstring of `reconcile.py` says that IMAP sends the marker. The code does not.
+- **Items 7 and 11.** The docstring of `sync_messages` says that a cursor makes `catch_up`
+  unnecessary. It also says that the sweep of item 6 is the catch-up after a long pause. A Resync
+  clears the cursor in phase (a), and the seed before the import gives the new one.
+- **The size.** `sync_messages` now calls `_deep_sweep`, `_history_sync` and `_first_sweep`, so
+  ruff finds no C901 in it. Ruff finds 18 issues in `gmail.py`, against 21 on main. The change to
+  `gmail.py` has about 550 lines, and the new test file has 1,235 lines.
+
+**Review round 1 (2026-10-05).** The verifier passed the branch with eight findings. The verifier
+also found the Outlook and IMAP sync the same as main in 10 cases. The build fixed each finding,
+and the bullets above give the rules that apply now.
+
+- **F1 (P2).** A count for each message let a new failure on each cycle hold the cursor with no
+  end. The count now belongs to the cursor.
+- **F2.** `_seed_before_import` degraded a spent rate limit. It now raises a
+  `ProviderRateLimited`, so the cycle fails before the import sends a request.
+- **F3.** The draft rule keyed on the subject "[DELETED]", so a real Outlook or IMAP draft with
+  that subject lost its row. It now keys on `deletion_marker`.
+- **F4 and F5.** A JSON object with no `history_id`, and a history id of other digits, now have
+  fences. A history id is ASCII digits only.
+- **F6.** The scheduler now logs a reset and a failed reseed with the mailbox id. A failed reseed
+  backs the loop off.
+- **F7.** The sync log keeps no held JSON, and the held cursor holds no message id.
+- **F8.** The "Verify with" block leaves out the ruff command that exits 1 on old findings.
+
+**Known limit EM-G4b-f1.** The cursor moves only at the end of a read. A backlog that one cycle
+cannot finish can fail on a rate limit before its end, such as a bulk label on 50,000 messages.
+The next cycle then starts again at the old cursor. A later slice can move the cursor at each
+history record.
+
+**The fences, as built.** `tests/unit/test_gmail_history_cursor.py` holds 49 cases. A fake Gmail
+on `httpx.MockTransport` answers the client. The provider sends no `authenticate` request, so the
+fake sees the calls of the sync in order.
+
+| Test | What it proves |
+|---|---|
+| `test_a_sweep_with_no_cursor_seeds_from_get_profile_first` | The first request is `getProfile`, and the sweep returns its id (item 1). |
+| `test_a_failed_seed_still_sweeps_and_returns_no_cursor` | A failed seed lands the mail and returns no cursor. |
+| `test_a_rate_limited_seed_fails_the_sync` | A rate limit on the seed raises. |
+| `test_text_that_is_no_cursor_seeds_again` (8 cases) | Text that is no cursor seeds again, and sends nothing to `history.list`. JSON with no `history_id` and other digits are no cursor (F4, F5). |
+| `test_history_reads_every_page` | Three pages, one fetch set, and no `messages.list` with a cursor (items 2 and 7). |
+| `test_the_new_cursor_is_the_id_of_the_last_answer` | The cursor is the id of the last page. |
+| `test_inbox_removed_in_gmail_files_the_row_as_archive` | A removed INBOX files the message as `archive`. |
+| `test_unread_removed_in_gmail_marks_the_row_read` | A read mark and a star reach the message, with one full fetch. |
+| `test_a_user_label_added_in_gmail_reaches_categories` | A user label reaches `categories`. |
+| `test_a_deleted_message_is_a_marker_and_is_not_fetched` | A deleted message is a marker, with no fetch (item 4). |
+| `test_a_rate_limit_on_a_later_history_page_fails_the_sync` | A rate limit on page 2 raises. |
+| `test_a_stale_cursor_reseeds_and_sweeps_back_to_the_watermark` | A 404 seeds, then lists all mail after the watermark (items 5 and 6). |
+| `test_the_reset_sweep_reads_back_to_the_later_of_watermark_and_floor` (3 cases) | The floor binds an older watermark, and with none the sweep sends no `after:`. |
+| `test_a_short_reset_sweep_keeps_the_stale_cursor` | At the page cap the sweep returns no cursor (E-B1). |
+| `test_a_reset_sweep_with_a_failure_is_short` (3 cases) | A failed page, fetch or seed makes the sweep short. |
+| `test_a_5xx_fetch_keeps_the_old_cursor` | A 5xx keeps the old position, and the record goes into `errors`. |
+| `test_a_transport_error_holds_the_cursor` | A transport error holds the cursor too. |
+| `test_a_held_cursor_holds_no_message_id` | 150 failed fetches leave a held cursor with three keys (F7). |
+| `test_a_failure_that_stays_does_not_hold_the_cursor` (3 cases) | A 404, a 400 and a failed parse move the cursor on. |
+| `test_a_message_that_fails_three_cycles_is_passed_and_recorded` | The third failure passes the message and records it. |
+| `test_a_new_failure_each_cycle_cannot_hold_the_cursor_longer` | With a new failure on each cycle, the cursor moves at cycle 3 and records both messages (F1). |
+| `test_a_message_that_recovers_drops_out_of_the_count` | A message that succeeds leaves the count. |
+| `test_the_first_import_seeds_before_it_imports` | The seed comes before the import, and an archive during the import lands (E-B3). |
+| `test_a_failed_seed_before_the_import_still_imports` | A failed seed before the import stops nothing. |
+| `test_a_resync_clears_the_cursor_and_seeds_a_new_one` | A Resync reads the history from the new seed (item 11). |
+| `test_a_provider_with_no_cursor_gets_no_seed` (2 cases) | Outlook and IMAP get no seed, and their value goes on as it is. |
+| `test_a_complete_reset_sweep_writes_the_seed` | Phase (d) writes the seed of a complete reset. |
+| `test_six_short_loop_cycles_abandon_the_gap_and_write_the_fresh_seed` | Five short loop cycles keep the cursor, and the sixth writes the seed. |
+| `test_a_short_cycle_of_a_member_act_does_not_count` | Six manual syncs abandon nothing. |
+| `test_a_spent_rate_limit_on_the_seed_fails_the_cycle_before_the_import` | Three 429 answers to the seed fail the cycle, and the import sends nothing (F2). |
+| `test_a_failed_reseed_logs_the_mailbox_and_backs_the_loop_off` | A sticky abandon with a failed reseed logs the mailbox and backs off (F6). |
+| `test_the_sync_log_keeps_no_held_cursor` | The sync log gets NULL for a held cursor, then the plain id (F7). |
+| R8 `test_the_cursor_reaches_last_history_id_and_the_next_cycle_reads_it` | Five cycles on Postgres: the seed, two pages, a held 5xx, a rate limit, then the move. The sync log holds no JSON. |
+| R8 `test_a_deleted_draft_leaves_no_row_in_trash` | A deleted draft row goes, and a deleted inbox row moves to TRASH (E-B2). |
+| R8 `test_a_real_subject_of_deleted_keeps_its_draft_row` | An Outlook draft and an IMAP draft with the subject "[DELETED]" keep their rows and attachments, as on main (F3). |
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against its named tests, with the
+database up. It then wrote back the original bytes. The SHA-256 of `gmail.py` and `scheduler.py`
+matched each time. Each mutation turned its named tests red. Review round 1 ran the whole table
+again, with M23 to M30 added.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M1 | `_first_sweep` reads no seed | `test_a_sweep_with_no_cursor_seeds_from_get_profile_first` |
+| M2 | The history read stops after one page | `test_history_reads_every_page` |
+| M3 | The label events leave the fetch set | the 3 label tests |
+| M4 | A 404 of `history.list` raises | `test_a_stale_cursor_reseeds_and_sweeps_back_to_the_watermark` |
+| M6 | The cursor keeps the id of the first page | `test_the_new_cursor_is_the_id_of_the_last_answer` |
+| M7 | A short reset sweep returns the seed | `test_a_short_reset_sweep_keeps_the_stale_cursor` |
+| M18 | A deleted draft moves to Trash (`scheduler.py`) | R8 `test_a_deleted_draft_leaves_no_row_in_trash` |
+| M19 | The seed comes after the import (`scheduler.py`) | `test_the_first_import_seeds_before_it_imports` |
+| M20 | The abandon rule never fires (`scheduler.py`) | `test_six_short_loop_cycles_abandon_the_gap_and_write_the_fresh_seed` |
+| M21 | A 5xx moves the cursor at once | `test_a_5xx_fetch_keeps_the_old_cursor` |
+| M22 | A failed fetch never moves the cursor | `test_a_message_that_fails_three_cycles_is_passed_and_recorded` |
+| M23 | F1: a count for each message again | `test_a_new_failure_each_cycle_cannot_hold_the_cursor_longer` |
+| M24 | F7: the held cursor stores the failed ids | `test_a_held_cursor_holds_no_message_id` |
+| M25 | F2: the seed degrades a spent rate limit (`scheduler.py`) | `test_a_spent_rate_limit_on_the_seed_fails_the_cycle_before_the_import` |
+| M26 | F6: a failed reseed does not back off (`scheduler.py`) | `test_a_failed_reseed_logs_the_mailbox_and_backs_the_loop_off` |
+| M27 | F7: the sync log keeps the held JSON (`scheduler.py`) | `test_the_sync_log_keeps_no_held_cursor` and the R8 cursor test |
+| M28 | F3: the draft rule keys on the subject again (`scheduler.py`) | R8 `test_a_real_subject_of_deleted_keeps_its_draft_row` |
+| M29 | F4: `KeyError` leaves the `except` of `_parse_cursor` | 2 cases of `test_text_that_is_no_cursor_seeds_again` |
+| M30 | F5: a history id takes any digit | 2 cases of `test_text_that_is_no_cursor_seeds_again` |
 
 #### 12.3.6 EM-G5 — the import and the reconcile
 

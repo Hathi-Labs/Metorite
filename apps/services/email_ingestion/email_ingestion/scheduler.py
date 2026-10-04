@@ -55,6 +55,7 @@ from sqlalchemy import text
 from email_ingestion import body_backfill, email_embeddings, import_window, storage
 from email_ingestion.persist import upsert_message
 from email_ingestion.post_sync import hooks, run_hook, run_label_learn_hook
+from email_ingestion.providers.base import ProviderRateLimited
 from email_ingestion.providers.factory import build_provider
 from email_ingestion.reconcile import (
     import_reconcile_candidates,
@@ -334,6 +335,18 @@ _TRASH_DELETED = text(
          AND provider_message_id = :provider_id"""
 )
 
+#: A ``[DELETED]`` marker for a row in ``drafts`` deletes that row (WS-17
+#: EM-G4b E-B2). Each edit of a draft in Gmail web gives the draft a new id
+#: and deletes the old one, so a move to Trash left one ghost for each edit.
+#: The folder set is the one of ``storage.KEPT_FOLDERS_SQL``. Each table that
+#: points at the row cascades or sets NULL.
+_DELETE_DELETED_DRAFT = text(
+    """DELETE FROM email_messages
+       WHERE account_id = :account_id
+         AND provider_message_id = :provider_id
+         AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')"""
+)
+
 _STORED_CATEGORIES = text(
     "SELECT categories FROM email_messages "
     "WHERE account_id = :aid AND provider_message_id = :pid"
@@ -512,9 +525,11 @@ async def _write_messages(
 
     The ONE write of phase (c) and of each import batch (EM-T6b). It drops
     each message below the floor first (``_drop_below_floor``). A
-    ``[DELETED]`` marker moves its row to TRASH. Every other message goes
-    through the shared upsert. With ``learn_labels``, it reads the stored
-    categories of an existing row first, because the upsert overwrites them.
+    ``[DELETED]`` marker deletes a row in ``drafts`` and moves any other row
+    to TRASH (WS-17 EM-G4b E-B2). Only the Gmail history sends the marker.
+    Every other message goes through the shared upsert. With
+    ``learn_labels``, it reads the stored categories of an existing row
+    first, because the upsert overwrites them.
     ``reclaim`` goes to the upsert. Each caller passes the
     ``REKEYS_MESSAGE_IDS`` attribute of its provider (WS-17 EM-G1, D-EM-34).
     It never calls ``commit()``."""
@@ -522,9 +537,15 @@ async def _write_messages(
     label_changes: list[Any] = []
     for msg in kept:
         if msg.subject == "[DELETED]":
-            await db.execute(_TRASH_DELETED, {
-                "account_id": account_id,
-                "provider_id": msg.provider_message_id})
+            params = {"account_id": account_id,
+                      "provider_id": msg.provider_message_id}
+            # Only a real marker deletes a draft, never a subject (review
+            # round 1 F3). The draft goes first, so the move to TRASH cannot
+            # keep it. A message whose subject is "[DELETED]" moves to TRASH,
+            # as on main.
+            if getattr(msg, "deletion_marker", False):
+                await db.execute(_DELETE_DELETED_DRAFT, params)
+            await db.execute(_TRASH_DELETED, params)
             continue
         old_categories = None
         if learn_labels:
@@ -650,6 +671,85 @@ def _cycle_result(
     if import_error:
         result["error"] = import_error
     return result
+
+
+def _next_cursor(
+    account_id: str, sync_result: Any, catch_up: _CatchUp,
+) -> tuple[Any, _CatchUp]:
+    """The cursor that phase (d) writes, and the catch-up outcome (WS-17
+    EM-G4b E-B1).
+
+    The cursor is ``new_history_id``. When that is None, phase (d) keeps the
+    stored cursor through ``COALESCE``. Only Gmail sets ``cursor_reset``,
+    after its cursor went stale and it swept back to the watermark. A sweep
+    that stopped short returns no cursor, so the stale one stays and the
+    next cycle sweeps again. When ``_watermark_outcome`` abandons that
+    catch-up after ``CATCH_UP_MAX_MISSES`` short loop cycles, phase (d)
+    writes ``reseed_history_id`` instead. A Resync then recovers the older
+    gap.
+
+    Each reset logs ``gmail.history_reset`` with the mailbox id. When the
+    seed failed too, it logs ``gmail.reseed_failed``, and the cycle backs
+    off, because the stale cursor stays and the next cycle sweeps again.
+    Without the back-off, a sticky abandon swept at each interval (review
+    round 1 F6). No line names a subject or an address."""
+    new = getattr(sync_result, "new_history_id", None)
+    if not getattr(sync_result, "cursor_reset", False):
+        return new, catch_up
+    fresh = getattr(sync_result, "reseed_history_id", None)
+    logger.warning("gmail.history_reset account=%s complete=%s seeded=%s",
+                   account_id, new is not None, fresh is not None)
+    if fresh is None:
+        logger.warning("gmail.reseed_failed account=%s", account_id)
+        return new, catch_up._replace(back_off=True)
+    if new is None and catch_up.note and not catch_up.back_off:
+        logger.warning("email.gmail_history_gap_abandoned account=%s misses=%d",
+                       account_id, CATCH_UP_MAX_MISSES)
+        return fresh, catch_up
+    return new, catch_up
+
+
+def _log_cursor(cursor: Any) -> Any:
+    """The cursor that ``email_sync_log.provider_history_id`` keeps (WS-17
+    EM-G4b review round 1 F7).
+
+    A JSON cursor goes in as NULL, as the cursor of the Outlook delta does
+    (EM-T4d review round 1 F5), because nothing reads that copy. So a held
+    Gmail cursor gives NULL, and a plain history id goes in as it is."""
+    if isinstance(cursor, str) and cursor.lstrip().startswith("{"):
+        return None
+    return cursor
+
+
+async def _seed_before_import(
+    account_id: str, provider: Any, history_id: Any,
+) -> Any:
+    """The cursor that the sweep after an import reads from (WS-17 EM-G4b
+    E-B3).
+
+    With no stored cursor, the provider seeds one BEFORE the import, so the
+    sweep of the same cycle reads each change made during the import. A
+    provider with no seed returns None, as Outlook and IMAP do, and the
+    stored value then goes on unchanged. A fake with no ``seed_cursor`` gets
+    the same. A failed seed never stops new mail (owner answer Q2): it logs
+    ``sync.seed_failed`` with the class of the error, and the import and
+    the sweep still run. The sweep then seeds on its own. A rate limit whose
+    tries are spent (``ProviderRateLimited``) is no failed seed. It fails
+    the cycle before the import sends a request (EM-G4a item 9, review
+    round 1 F2)."""
+    if history_id:
+        return history_id
+    seed = getattr(provider, "seed_cursor", None)
+    if seed is None:
+        return history_id
+    try:
+        return await seed() or history_id
+    except ProviderRateLimited:
+        raise
+    except Exception as exc:
+        logger.warning("sync.seed_failed account=%s error=%s",
+                       account_id, type(exc).__name__)
+        return history_id
 
 
 def _oldest_received(messages: list[Any]) -> datetime | None:
@@ -1178,6 +1278,8 @@ async def _sync_cycle(
         The first import, or the deep sync of a member act, runs here in
         batches (``_import_in_batches``, EM-T6b): it fetches each batch with
         NO session open, and one block writes the batch and its progress.
+        With no cursor, the provider seeds one BEFORE the import
+        (``_seed_before_import``, EM-G4b E-B3).
         The recurring sweep then fetches with NO session open;
     (c) drop each message below the floor that is not stored yet
         (``_drop_below_floor``), persist the messages, then the reconcile;
@@ -1314,6 +1416,10 @@ async def _sync_cycle(
         first_import = deep is None and not getattr(row, "initial_sync_done", False)
         imported, import_error, stopped_at_limit = 0, None, False
         if first_import or deep:
+            # With no cursor, the seed comes BEFORE the import, so the sweep
+            # below reads each change made during the import (EM-G4b E-B3).
+            history_id = await _seed_before_import(
+                account_id, provider, history_id)
             # A failed import does not raise. Phase (d) records its error,
             # and the next cycle resumes it (fix round 2). The storage limit
             # stops it after a batch (EM-T6c item 5).
@@ -1348,6 +1454,10 @@ async def _sync_cycle(
         # cycle counts toward the abandon (``_watermark_outcome``).
         catch_up = _watermark_outcome(
             account_id, sync_result, row, import_error, from_loop=from_loop)
+        # The cursor of phase (d). After a stale Gmail cursor, an abandoned
+        # catch-up writes the fresh seed (EM-G4b E-B1). A failed reseed
+        # backs the loop off (review round 1 F6).
+        cursor, catch_up = _next_cursor(account_id, sync_result, catch_up)
 
         # Capture pre-upsert categories so the post-sync learner can detect
         # label changes the USER made in their mail client — the upsert
@@ -1421,7 +1531,7 @@ async def _sync_cycle(
                            updated_at = now()
                        WHERE id = :id"""
                 ),
-                {"id": account_id, "history_id": sync_result.new_history_id,
+                {"id": account_id, "history_id": cursor,
                  "keep_watermark": catch_up.keep_watermark,
                  "sync_note": catch_up.note},
             )
@@ -1443,8 +1553,7 @@ async def _sync_cycle(
                     "log_id": sync_log_id,
                     "synced": persisted_count,
                     "skipped": 0,
-                    "history_id": (None if delta_shadow
-                                   else sync_result.new_history_id),
+                    "history_id": None if delta_shadow else _log_cursor(cursor),
                 },
             )
             # A failed import records its error after the new mail landed.
@@ -1460,7 +1569,7 @@ async def _sync_cycle(
             "sync.account_done account_id=%s provider=%s synced=%s",
             account_id, provider_name, persisted_count,
         )
-        return _cycle_result(persisted_count, sync_result.new_history_id,
+        return _cycle_result(persisted_count, cursor,
                              import_error, catch_up, limit=stopped_at_limit)
 
     except Exception as exc:
