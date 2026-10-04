@@ -6245,6 +6245,8 @@ otherwise, the scope of that slice changes before dispatch.
 | **O-GM-3** | **Does a disconnect revoke the Google grant?** | **No.** A revoke at Google can end each token that the same Google account gave to the Metorite client. Another member or another organization can hold a copy of the same address (D-EM-17, §11.6 edge cases 3 and 4), and a revoke would break that copy. The disconnect dialog tells the member where to remove access in the Google account. | nothing (EM-G7 lists it as a non-goal) |
 | **O-GM-4** | **How does a Gmail push find its tenant?** A push carries the address and a history id only. One address can be a mailbox in two organizations, and of two members (D-EM-17). | **Candidate (a).** (a) One unbound discovery read, in a `SECURITY DEFINER` function, maps an address to its pairs of organization and mailbox id, and returns nothing else. The route then queues one sync for each pair, inside its own tenant. (b) One Pub/Sub topic for each organization, each with a push subscription whose URL carries a signed `org`, as the Graph webhook does (EM-T1a item 5). (a) adds no cloud resource and no secret, and a push only starts a sync that each mailbox runs with its own token. (b) keeps the signed-org seam, but the box then needs a Pub/Sub admin credential to make a topic for each organization. The audit of EM-G6a decides, with a security review. | EM-G6a, EM-G6b |
 
+**Decided (orchestrator, 2026-10-04).** O-GM-1, O-GM-2 and O-GM-3 follow the recommendation, so the slice scopes stand as written. The EM-G6a audit decides O-GM-4. Candidate (a) is the lean, and the audit checks its cross-tenant read before any build.
+
 ### 12.3 Slices
 
 Each slice is one PR. Each slice that changes code ships dark: Gmail stays "Coming soon" until
