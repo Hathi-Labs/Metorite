@@ -26,6 +26,12 @@ R7 fences named here:
 * ``email-reclaim-caller-values`` (R8): ``_sync_account`` (the first import
   and the recurring sweep) and the "Load older" route pass the attribute of
   their provider, for a provider flagged true and for one flagged false.
+* ``email-reclaim-every-outlook-path`` (R8): the REAL factory builds an
+  Outlook provider (only the class it imports is swapped for one with no
+  network). The first import, a recurring sweep, a deep sync with ``since``
+  (Process past, cleanup, runner), a Resync and "Load older" each send
+  ``reclaim=True``, and the moved mail keeps one row. It fails when a later
+  edit wraps the provider, or branches the deep path to ``False``.
 
 ⚠️ Known limit EM-G1-f1, recorded in §12.3.1 and NOT proved correct here: the
 Outlook reclaim folds a mail that a member sends to their own address. The
@@ -49,7 +55,7 @@ import inspect
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -508,6 +514,121 @@ class TestEachCallerPassesTheAttribute:
             else:
                 assert pmids == [f"imp-{tag}", f"old-{tag}", f"swp-{tag}"], (
                     "a provider that keeps its ids had its row moved")
+        finally:
+            release_tenant(cleared)
+            _wipe(p.admin_engine, [x])
+
+
+class _NoNetOutlook(OutlookProvider):
+    """An Outlook provider with no network. It inherits
+    ``REKEYS_MESSAGE_IDS`` from ``OutlookProvider`` and sets nothing, so the
+    flag that reaches the upsert is the one the real class carries."""
+
+    built: ClassVar[list[_NoNetOutlook]] = []
+    count = 0
+    tag = ""
+    imid = ""
+
+    def __init__(self, credentials, *, app=None):
+        super().__init__(credentials, app=app)
+        _NoNetOutlook.built.append(self)
+
+    async def authenticate(self):
+        return True
+
+    def _next(self, kind: str, **kw) -> EmailMessage:
+        _NoNetOutlook.count += 1
+        return _message(f"{kind}{_NoNetOutlook.count}-{self.tag}", self.imid, **kw)
+
+    async def import_batches(self, **_kw):
+        yield [self._next("imp", folder="inbox")]
+
+    async def sync_messages(self, **_kw):
+        return SyncResult(messages=[self._next("swp", folder="archive")],
+                          new_history_id=None)
+
+    async def message_exists(self, _imid):
+        return True
+
+    async def get_message(self, _pmid):
+        raise RuntimeError("no body backfill in this test")
+
+    async def list_folders(self):
+        return []
+
+    async def list_messages(self, *, folder, max_results, page_token,
+                            canonical_override):
+        return [self._next("old", folder="inbox", days_ago=10)], None
+
+
+@_DB_GATE
+class TestEveryOutlookPathThroughTheRealFactory:
+    """``email-reclaim-every-outlook-path`` (review of EM-G1, findings 1 and 2)."""
+
+    async def test_every_outlook_path_passes_reclaim_true(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """The verifier found two gaps in ``email-reclaim-caller-values``.
+        It runs no deep sync, and it patches the factory. Here the real
+        ``build_provider`` and ``_instantiate_provider`` run each Outlook path.
+        Each of the eight upserts must carry ``reclaim=True``, and the one
+        mail that Outlook re-keys at each step keeps one row."""
+        import email_ingestion.providers.outlook as outlook_mod
+        from acb_llm import key_store
+        from gateway.routes.email.transport import folders
+
+        _assert_non_priv(app_engine)
+        p = promoted
+        tag = uuid.uuid4().hex[:8]
+        owner = f"every-{tag}@em-g1.test"
+        x = _account(p.admin_engine, org=p.org_b, provider="microsoft",
+                     owner=owner)
+        _NoNetOutlook.built = []
+        _NoNetOutlook.tag = tag
+        _NoNetOutlook.imid = f"<every-{tag}@contoso-em-g1.test>"
+        real_upsert = persist.upsert_message
+        seen: list[tuple[str, bool]] = []
+
+        async def _recording(db, account_id, msg, *, on_conflict="update",
+                             reclaim=False):
+            seen.append((msg.provider_message_id, reclaim))
+            await real_upsert(db, account_id, msg, on_conflict=on_conflict,
+                              reclaim=reclaim)
+
+        monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+        # The REAL factory runs. Only the class that it imports is swapped.
+        monkeypatch.setattr(outlook_mod, "OutlookProvider", _NoNetOutlook)
+        monkeypatch.setattr(sched, "upsert_message", _recording)
+        monkeypatch.setattr(persist, "upsert_message", _recording)
+        me = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                         organization_id=p.org_b)
+        cleared = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                org = p.org_b
+                steps = [
+                    await sched._sync_account(x, organization_id=org),
+                    await sched._sync_account(x, organization_id=org,
+                                              if_busy="skip"),
+                    await sched._sync_account(
+                        x, organization_id=org, deep=True,
+                        since=datetime.now(UTC) - timedelta(days=30)),
+                    await sched._sync_account(x, organization_id=org, deep=True,
+                                              if_busy="skip", reset_cursor=True),
+                ]
+                token = bind_tenant(org)
+                try:
+                    older = await folders.backfill_folder(
+                        x, folders.BackfillRequest(folder="inbox"), user=me)
+                finally:
+                    release_tenant(token)
+            assert all("error" not in step for step in steps), steps
+            assert older["synced"] == 1, older
+            assert len(_NoNetOutlook.built) == 5, _NoNetOutlook.built
+            assert all(isinstance(b, OutlookProvider) for b in _NoNetOutlook.built)
+            assert [flag for _, flag in seen] == [True] * 8, seen
+            assert len(_rows(p.admin_engine, x)) == 1, (
+                "an Outlook path wrote a second row for the re-keyed mail")
         finally:
             release_tenant(cleared)
             _wipe(p.admin_engine, [x])

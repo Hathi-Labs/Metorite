@@ -6392,10 +6392,13 @@ the file and checked its SHA-256.
 | M6 | The `_run_import` call reads `"REKEYS_MESSAGE_ID"` (`scheduler.py`) | `test_each_caller_passes_the_attribute_of_its_provider[rekeys]` |
 | M7 | The "Load older" call passes `reclaim=True` (`folders.py`) | `test_each_caller_passes_the_attribute_of_its_provider[keeps_ids]` |
 | M8 | `core._upsert_message` drops the keyword when it calls the upsert (`core.py`) | `test_each_upsert_caller_names_reclaim`, `test_each_caller_passes_the_attribute_of_its_provider[rekeys]` |
+| X2 (review) | The deep path passes `reclaim=... and progress`, so a deep sync gets False (`scheduler.py:808`) | `test_every_outlook_path_passes_reclaim_true` |
 
 M5 is the reason for the value fence (E4). The AST fence stays green for M5, M6 and M7, because
 each of those calls names `reclaim=`. Without the value fence, M5 gives each production Outlook
 mailbox a second row at each folder move.
+
+**Review (2026-10-05).** The verifier passed EM-G1 with four P3 findings. Two were gaps in the value fence: it ran no deep sync, and it patched the factory. The new fence `email-reclaim-every-outlook-path` closes both. The real factory builds each Outlook provider, and the first import, a sweep, a deep sync, a Resync and Load older each send `reclaim=True`. Mutation X2 survived before this fence and is red now.
 
 **Known limit EM-G1-f1 (a follow-up, not fixed here).** The Outlook reclaim folds a mail that a
 member sends to their own address. The Sent Items copy and the Inbox copy have two Graph ids and
