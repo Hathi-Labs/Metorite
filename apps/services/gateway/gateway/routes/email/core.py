@@ -760,15 +760,24 @@ async def _llm_json(
     Errors are the caller's concern: each call site wraps this in its own
     try/except with a fail-closed default, so this helper does not swallow
     exceptions.
+
+    WS-17 EM-T4b: the model await sits inside ``llm_slot``. In the automation
+    scope it holds one permit of the cap and counts one request against the
+    daily budget of the mailbox. In ``enforce`` past the limit it raises
+    ``LLMBudgetExhausted`` and makes no call. Outside the scope it does
+    nothing. The signature does not change: the scope carries the account.
     """
     from acb_llm.context import acompletion_with_fallback
-    resp, used = await acompletion_with_fallback(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        response_format={"type": "json_object"},
-    )
+    from email_ingestion.llm_cap import llm_slot
+
+    async with llm_slot():
+        resp, used = await acompletion_with_fallback(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
     content = resp.choices[0].message.content or ""
     return _safe_json(content), content, used
 

@@ -1635,7 +1635,7 @@ three product decisions were open. The owner answered all three on
   comes before the ban. A run without `run_command` keeps the ban, which
   now names no withheld tool. The owner kept delegation in such a run on
   2026-10-03, so the sandbox has no network, but an agent that the run calls
-  runs outside it (H-236).
+  runs outside it. Since H-236 (2026-10-04), that agent gets no egress tool.
 - **O2 · The server groups the data.** The route takes an optional `group_by`
   from an allowlist and a `measure` from an allowlist. The server returns
   exact figures. The model picks figures and explains them. It never adds

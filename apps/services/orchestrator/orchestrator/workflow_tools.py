@@ -140,9 +140,12 @@ def load_workflow_tools(agent_name: str) -> list[Any]:
         )
         # Not destructive itself: any outward write INSIDE the workflow is
         # already broker-gated / approval-noded — that is the whole point.
+        # H-236: open_world, because a workflow node can call an outside URL
+        # (``http.request``) with the payload the agent passes. A run that a
+        # covered Projects run delegates to does not get it.
         TOOL_ANNOTATIONS.setdefault(
             "run_workflow",
-            {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+            {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
         )
     except ImportError:
         pass

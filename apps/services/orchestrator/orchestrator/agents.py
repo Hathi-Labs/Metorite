@@ -43,6 +43,12 @@ except ImportError:
 
 _log = get_logger("orchestrator.agents")
 
+try:  # H-236: the risk registry is the one source of the egress set
+    from acb_skills.tool_annotations import annotate as _annotate_risk
+except ImportError:  # pragma: no cover — acb_skills ships with the platform
+    def _annotate_risk(**_hints: Any) -> Any:
+        return lambda fn: fn
+
 # ---------------------------------------------------------------------------
 # System instructions
 # ---------------------------------------------------------------------------
@@ -98,6 +104,7 @@ Rules:
 # Retrieval tools (sync Postgres calls wrapped in asyncio.to_thread)
 # ---------------------------------------------------------------------------
 
+@_annotate_risk(open_world=False)
 async def retrieve_entity_context(query: str) -> str:
     """Search the entity graph for projects, tasks, deals, and people relevant to the query."""
     # WS-29 acb_graph slice 7: resolve the run's tenant HERE, on the event-loop
@@ -119,6 +126,7 @@ async def retrieve_entity_context(query: str) -> str:
     return await asyncio.to_thread(_sync)
 
 
+@_annotate_risk(open_world=False)
 async def retrieve_sales_context(query: str) -> str:
     """Search the sales entity graph for customer 360 summaries and deal pipeline data."""
     # Same before-the-hop tenant capture as retrieve_entity_context (WS-29
@@ -137,6 +145,7 @@ async def retrieve_sales_context(query: str) -> str:
     return await asyncio.to_thread(_sync)
 
 
+@_annotate_risk(open_world=False)
 async def search_timeline(entity_name: str, query: str) -> str:
     """Search the bi-temporal knowledge graph for time-stamped facts about an entity.
 
@@ -159,6 +168,10 @@ async def search_timeline(entity_name: str, query: str) -> str:
     return await search_entity_timeline(entity_name, query)
 
 
+# H-236: open_world, because the container it starts has a network and a
+# GitHub token, and it pushes. A run that a covered Projects run delegates
+# to does not get it (``acb_skills.egress``).
+@_annotate_risk(open_world=True)
 async def spawn_copilot_agent(    task: str,
     agent_name: str = "orchestrator",
     agent_dir: str | None = None,
@@ -239,6 +252,7 @@ async def spawn_copilot_agent(    task: str,
     )
 
 
+@_annotate_risk(open_world=True)
 async def delegate_to_agent(agent_name: str, message: str) -> str:
     """Delegate a task to a specialist agent and return its response.
 
@@ -382,6 +396,14 @@ def _load_specialist_agents_as_tools() -> list[Any]:
 
             _specialist_fn.__name__ = _tool_name
             _specialist_fn.__doc__ = _description
+            # H-236: open_world, as call_agent says. A specialist acts beyond
+            # this run's view, so a run that a covered run delegates to does
+            # not hold these. It keeps call_agent and delegate_to_agent, and
+            # the run they start inherits no_egress.
+            _specialist_fn.__tool_risk__ = {  # type: ignore[attr-defined]
+                "read_only": False, "destructive": False,
+                "idempotent": False, "open_world": True,
+            }
 
             from agent_framework import FunctionTool  # noqa: PLC0415
             tool = FunctionTool(

@@ -29,6 +29,18 @@ from typing import Any
 import httpx
 from acb_common import get_logger, get_settings
 
+# H-236: every tool states ``open_world``. Each one is a read or a draft over
+# the gateway's own ``/whatsapp/*`` routes, and none sends (the DOCTRINE
+# above), so each says ``open_world=False``. A run that a covered Projects
+# run calls keeps them. A future send tool must say ``open_world=True``.
+try:
+    from acb_skills.tool_annotations import annotate as _annotate_risk
+except ImportError:  # older platform without the annotations registry
+    def _annotate_risk(**_hints):  # type: ignore[misc]
+        def _wrap(fn):
+            return fn
+        return _wrap
+
 _log = get_logger("agent.whatsapp_assistant")
 
 
@@ -169,6 +181,7 @@ async def _default_account_id() -> str | None:
 
 # ── Read / triage tools ───────────────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def list_whatsapp_accounts() -> str:
     """List the founder's connected WhatsApp Business numbers (id, number, name,
     sync status). Start here when a tool needs an account_id and none was given."""
@@ -185,6 +198,7 @@ async def list_whatsapp_accounts() -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def whatsapp_brief(account_id: str | None = None) -> str:
     """The WhatsApp morning brief: how many need a reply / are waiting / are muted,
     the top chats that need the founder first, promises the founder made that
@@ -227,6 +241,7 @@ async def whatsapp_brief(account_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def list_whatsapp_chats(
     stream: str = "needs_reply", account_id: str | None = None,
 ) -> str:
@@ -261,6 +276,7 @@ def _fmt_message(m: dict[str, Any]) -> str:
     return f"{who}: {body[:200]}"
 
 
+@_annotate_risk(open_world=False)
 async def read_whatsapp_chat(chat_id: str, limit: int = 20) -> str:
     """Read the recent messages of a chat (oldest→newest), including voice-note
     transcripts. Use before drafting a reply or answering a question about a
@@ -271,6 +287,7 @@ async def read_whatsapp_chat(chat_id: str, limit: int = 20) -> str:
     return "\n".join(_fmt_message(m) for m in msgs)
 
 
+@_annotate_risk(open_world=False)
 async def search_whatsapp(query: str, account_id: str | None = None) -> str:
     """Search the founder's WhatsApp history by meaning AND keyword (message
     bodies AND voice-note transcripts). Returns matches with chat_id + message_id.
@@ -295,6 +312,7 @@ async def search_whatsapp(query: str, account_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def whatsapp_waiting_on(account_id: str | None = None) -> str:
     """List the open promises OTHERS made to the founder (what to chase). Each
     carries a commitment_id you can pass to draft_waiting_on_nudge."""
@@ -317,6 +335,7 @@ async def whatsapp_waiting_on(account_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def whatsapp_my_commitments(account_id: str | None = None) -> str:
     """List the open promises the FOUNDER made (their word to keep). Each shows
     whether it's already been captured as a task."""
@@ -337,6 +356,7 @@ async def whatsapp_my_commitments(account_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def whatsapp_chat_context(chat_id: str) -> str:
     """The company standing behind a chat: who the contact is, their CRM/ERP
     link, open tasks/commitments, and what they owe the founder. The moat the
@@ -370,6 +390,7 @@ async def whatsapp_chat_context(chat_id: str) -> str:
 
 # ── Understanding tools (AI) ──────────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def summarize_whatsapp_group(chat_id: str) -> str:
     """Collapse a noisy group chat into one paragraph: what was discussed, the
     sentiment, whether the founder was addressed, and the points worth their eye.
@@ -385,6 +406,7 @@ async def summarize_whatsapp_group(chat_id: str) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def list_whatsapp_group_summaries(needs_you: bool = False) -> str:
     """List cached group summaries, the ones that need the founder first. Set
     needs_you=true to see only groups where the founder was addressed."""
@@ -402,6 +424,7 @@ async def list_whatsapp_group_summaries(needs_you: bool = False) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def transcribe_whatsapp_voice_note(message_id: str) -> str:
     """Transcribe a voice note by its message_id and fold it into triage (so a
     spoken promise becomes a real commitment). Returns the transcript."""
@@ -411,6 +434,7 @@ async def transcribe_whatsapp_voice_note(message_id: str) -> str:
 
 # ── Drafting tools (never sends) ──────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def draft_whatsapp_reply(chat_id: str) -> str:
     """Draft a reply to a chat in the founder's WhatsApp voice (short, warm, in
     the thread's language). This is a DRAFT — the founder reviews and sends it in
@@ -422,6 +446,7 @@ async def draft_whatsapp_reply(chat_id: str) -> str:
     )
 
 
+@_annotate_risk(open_world=False)
 async def draft_waiting_on_nudge(commitment_id: str) -> str:
     """Draft a gentle follow-up to chase something someone owes the founder,
     keyed on a commitment_id from whatsapp_waiting_on / whatsapp_brief. A DRAFT —

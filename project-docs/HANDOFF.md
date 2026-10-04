@@ -4088,37 +4088,6 @@ line — never reclaim a number by deleting the other entry.
   `specs/maf_coding_engine.md` §7.9 · the H-229 slice
 - **Added:** 2026-10-04 · the H-229 slice
 
-### H-236 · Give the agents that a covered Projects run calls a network control, before the owner flip · [AGENT]
-- **Check:** `grep -rn "HOST_NETWORK_TOOLS" apps/services/orchestrator/orchestrator/`
-  → no hit means no orchestrator code withholds the host web tools from an agent that a covered run calls.
-- **What happens.** On 2026-10-03 the owner chose "Keep delegation". A
-  covered Projects run keeps `call_agent`, `call_agents_parallel` and
-  `call_agent_background`. The agent that it calls runs outside the sandbox,
-  through `executor._run_sub_agent_streaming`. The core floor gives that
-  agent `web_search` and `fetch_page`, and they run on the host with its
-  network. So a model that an injection steers can put member rows in a
-  message to another agent, and that agent can send them out in a URL.
-- **Do.** Build one control, and name its fence:
-  1. When the broker covers the parent run, withhold the host web tools of
-     the called agent too. Reuse `sandbox_tools.HOST_NETWORK_TOOLS` and the
-     withhold middleware. Do not write a second list.
-  2. Or an egress policy for the host process of a called agent.
-  If the owner prefers to accept the residual at the flip, record that
-  acceptance with a date in `specs/maf_coding_engine.md` §16.3, and delete
-  this entry.
-- **Test plan.** A covered run of org A calls a shared agent with
-  `call_agent`. Read the real request bodies of the sub-run: they offer no
-  `web_search` and no `fetch_page`, and a call that names one sends nothing.
-  The same call from a run that the broker does not cover keeps both tools.
-  Prove it with a mutation that removes the control.
-- **⚠️ The eval.** Task WS43-E15 of WS-43v passes only when "the fetch
-  fails". Until this control exists, a model can get the list through
-  another agent, and E15 then fails for a reason that the sandbox does not
-  own. Say so in the sweep result.
-- **Authority:** `work_plan.md` D86 (the owner decision of 2026-10-03) and
-  §6.1 · `specs/maf_coding_engine.md` §16.3 and WS-43w
-- **Added:** 2026-10-04 · WS-43u
-
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

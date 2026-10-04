@@ -510,6 +510,9 @@ class TenantRedis:
     async def incr(self, k: TenantKey, amount: int = 1) -> Any:
         return await self._client.incr(self._raw(k), amount)
 
+    async def decrby(self, k: TenantKey, amount: int = 1) -> Any:
+        return await self._client.decrby(self._raw(k), amount)
+
     # -- lists (steer signals are a durable list today) ---------------------
 
     async def rpush(self, k: TenantKey, *values: Any) -> Any:

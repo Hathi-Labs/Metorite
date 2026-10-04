@@ -11,12 +11,16 @@ and a guard always refuses its Copilot CLI shell. WS-43d (Projects track
 step 1) is built and dark, merged in PR #603 (2026-10-04). WS-43u (Projects
 track step 2, the instructions for code) is built and dark (2026-10-04, in
 review): a run that holds `run_command` reads the sandbox section of §16.3,
-and a run without it keeps the ban. H-227 (the uploads and the S8 documents
-of a shared agent are thread-scoped, §16.3) is built (2026-10-04, in
-review), and WS-43w waits on its deploy. Every other slice is spec only.** Owner
-decisions, 2026-10-03. The owner kept delegation in a covered run on
-2026-10-03, so §16.3 no longer says that no data leaves the platform. WS-43w
-now waits on a network control for the agents that such a run calls (H-236).
+and a run without it keeps the ban. WS-43u merged in PR #612. H-236 (the
+network control on a covered run and every run under it) is built
+(2026-10-04, in review, fix round 1), and it acts only when the scope covers
+a run. H-227 (the uploads and the S8 documents of a shared agent are
+thread-scoped, §16.3) is built (2026-10-04, in review), and WS-43w waits on
+its deploy. Every other slice is spec only.**
+Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
+2026-10-03, so §16.3 no longer says that no data leaves the platform. The
+network control that WS-43w waited on is built (H-236, §16.3), and it fails
+closed. The owner accepts its named residual at the flip.
 
 Board row **WS-43**. This spec records **D82**, **D83**, **D84**, **D85**
 and **D86**.
@@ -1251,6 +1255,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F21 | `tests/unit/test_projects_sandbox_tools.py` | §16.3. The projects-assistant factory gives the sandbox tools to an organization that the scope does not name, attaches them to a shared agent object, or gives back `code_task`, `run_script` or `install_dependency` when `covers()` is true. WS-43u: the system text of a covered run lacks the sandbox section, or a run without `run_command` reads it |
 | WS43-F22 | `tests/unit/test_run_data_hygiene.py` | §16.3. A run-data dir lies under the tenant dir, shows in the container of another thread, outlives its run, reaches the blob store, `agent-data/` or `skills/`, or survives the startup sweep. Or a member of the same organization, with another session or another thread, can list or read the sandbox output folder of a thread, through the workspace routes or from that thread's container |
 | WS43-F23 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config`. The Copilot permission handler approves a shell request of a shared agent in any mode, with any factory handler, or under a cover, or refuses one of a personal agent. A frame with no flag allows the shell, or an artifact-context site binds no `shell_tools_withheld` or `host_shell_refused`. A sub-agent takes its parent's answer. Tier 2 drops `--deny-tool shell`. A CLI write or read outside the workspace is approved. A Metorite session loads file hooks. The task-manager probe refuses a `my_tasks_*` tool |
+| WS43-F24 | `tests/unit/test_delegation_no_egress.py` | §16.3, H-236. A run that a covered run delegates to, at any depth, gets an egress tool in its request or runs one, on the MAF path or the Copilot path. A child, its payload or a bad value clears `no_egress`. A health probe clears it. The delegation of an uncovered parent changes at all. A real egress tool loses `open_world`, or a new one joins with no review. A run site binds no `no_egress`, or a run boundary passes no answer to the injection |
 
 **Where the Docker tests run.** WS43-F4, WS43-F9, WS43-F12 and parts of
 WS43-F5 and WS43-F10 need a real Docker daemon. They carry a new
@@ -1299,7 +1304,7 @@ until its PR merges.
 | WS-43s | Drop `chat_session.service_session_id` | WS-43r, one release on production | **OWNER-GATE** to merge (WS43-G9). A one-way migration. ⏸ Parked by D86 |
 | WS-43t1 | The structured history path, behind `MAF_NATIVE_SESSIONS`. No SQL. **It comes EARLY** | PR #585 (its test harness) | AGENT-SAFE. Dark |
 | WS-43t2 | The session store: the table, load and save, the dedup, staleness and room rules, compaction and R8. **It comes EARLY.** WS-8i and WS-43q wait on its production soak | WS-43t1 | AGENT-SAFE. Dark. The production flip is WS43-G13. ⏸ Parked by D86 |
-| WS-43u | ▶ Projects track step 2: the instructions (H-226). Built, dark, in review | WS-43d | AGENT-SAFE |
+| WS-43u | ▶ Projects track step 2: the instructions (H-226). Built, dark, merged in PR #612 | WS-43d | AGENT-SAFE |
 | WS-43v | ▶ Projects track step 3: the light eval | WS-43d, WS-43u | AGENT-SAFE on a local stack |
 | WS-43w | ▶ Projects track step 4: the owner flip for Fracktal | WS-43v, PR #591, PR #598 | **OWNER-GATE** (WS43-G1, WS43-G2, WS43-G3) |
 | WS-43x | The Email track, a stub (§16.4) | WS-43w | Not written yet |
@@ -2587,7 +2592,11 @@ gives the files, the stack steps and the result format.
    `/workspace/.run/`, or the hygiene check proves nothing.
 4. **E15 and the host tools.** The core floor of `_tool_injection` gives
    projects-assistant `web_search` and `fetch_page`, which run on the host.
-   A success from either one fails the rule "the fetch fails".
+   A success from either one fails the rule "the fetch fails". A covered run
+   holds neither (WS43-F21). Since H-236 (2026-10-04), an agent that the run
+   calls holds neither too, so a delegation cannot fetch the list either,
+   and E15 can pass. A sweep result that names a fetch through another agent
+   is now a defect of H-236, and not a known residual.
 5. **E17 and another member.** A third session, by another member, asks for
    the burndown. The rule is advisory, because no rule here decides it. On
    PR #603 the whole organization shares the skills of a tenant dir.
@@ -2617,14 +2626,17 @@ The last line needs Docker, and `sandbox-docker.yml` runs it.
 - PR #591 (the broker) and PR #598 (D85) are merged and deployed.
 - WS-43d, WS-43u and WS-43v are done, and WS-43v passed.
 - The owner confirms that the caps of §7.1 rule 8 fit the box's memory.
-- **A network control covers the agents that a covered Projects run can
+- ✅ **A network control covers the agents that a covered Projects run can
   call** (added 2026-10-03, the owner decision "Keep delegation" of §16.3).
-  The tools are `call_agent`, `call_agents_parallel` and
-  `call_agent_background`. One way is to withhold the host web tools of the
-  called agent when the broker covers the parent run. Another is an egress
-  policy. H-236 builds it. Without the control, the owner accepts the
-  residual by name at the flip: a called agent runs outside the sandbox,
-  with the network of the host.
+  **Met for the built control, 2026-10-04: H-236** (§16.3, fence
+  WS43-F24). A covered run and each run under it bind `no_egress`, and the
+  rule fails closed: such a run holds only the delegation tools, the sandbox
+  tools and tools that say `open_world=False`. At the flip, the owner
+  accepts the six residual items that §16.3 names, by name. They are an
+  agent that a member assigns by hand, a delayed send through a store, what
+  an agent from another repo does on its own servers, a workflow on a task
+  event, a remote image in the answer text, and the answer that an
+  uncovered parent gets.
 - **H-227 is merged and deployed** (added 2026-10-04). The uploads and the
   S8 documents of a shared agent are thread-scoped, and a container mounts
   only the uploads of its own thread, read-only (§16.3). Without it, the
@@ -3196,7 +3208,7 @@ assistants for now.
 | Slice | State under D86 |
 |---|---|
 | WS-43d | ▶ **Built, dark, merged in PR #603.** Projects track step 1, narrowed (§16.3). `covers()` stands on the D85 seam (PR #598) |
-| WS-43u | ▶ **Built, dark, in review (2026-10-04).** Projects track step 2: the instructions |
+| WS-43u | ▶ **Built, dark, merged in PR #612 (2026-10-04).** Projects track step 2: the instructions |
 | WS-43v | ▶ **Active.** Projects track step 3: the light eval |
 | WS-43w | ▶ **Active.** Projects track step 4: the owner flip for Fracktal |
 | WS-43x | Next. The Email track, a stub (§16.4) |
@@ -3279,12 +3291,11 @@ projects-assistant declares no integration, so §7.7 condition 3 holds.
 - **The HR-only fields stay gated.** A script reads only the files that the
   agent wrote from tool results. So it cannot see more than the tools give.
 - **The sandbox has no network.** The container has `--network none`, and a
-  covered run holds no host web tool (the next item). That does not mean
-  that no data leaves the platform. A covered run keeps `call_agent`,
-  `call_agents_parallel` and `call_agent_background`. An agent that it calls
-  runs outside the sandbox, with its own tools, and the core floor gives
-  that agent `web_search` and `fetch_page` on the host. The owner chose this
-  on 2026-10-03 (below).
+  covered run holds no host web tool (the next item). A covered run keeps
+  `call_agent`, `call_agents_parallel` and `call_agent_background`. An agent
+  that it calls runs outside the sandbox, with its own tools. The owner
+  chose this on 2026-10-03 (below). Since H-236, that agent gets no tool
+  that can send data off the platform (the network control, below).
 - **A covered run holds no host web tool.** The core floor
   (`_CORE_STANDARD_TOOL_NAMES`) gives every agent `web_search` and
   `fetch_page`, and they run on the HOST with its network. Member data sits
@@ -3314,14 +3325,143 @@ agent be able to call other agents?" The owner answered "Keep delegation".
    host web tool. An agent that the run calls runs outside the sandbox.
    `sandbox_tools.NETWORK_WITHHELD_ANSWER` says the same to the model.
 3. Before the owner flip (WS-43w), a network control must cover the agents
-   that a covered run can call. One way is to withhold their host web tools
-   when the broker covers the parent run. Another is an egress policy. The owner
-   may instead accept the residual by name at the flip. H-236 builds the
-   control, and `work_plan.md` §6.1 records the prerequisite.
+   that a covered run can call. H-236 built it on 2026-10-04 (below). The
+   prerequisite is met for the control that H-236 built. At the flip, the
+   owner accepts the residual that the control names (below), by name.
 
 The record is a dated line in D86 of `work_plan.md` §3. It takes no D-number
 of its own, as the owner's answer "Admins of our own org only" in D85 did
 not.
+
+**The network control (H-236), built 2026-10-04, fix round 1 the same
+day.** Fence WS43-F24, `tests/unit/test_delegation_no_egress.py`. Engineering
+decision inside D86, after review: the control fails closed.
+
+- **The one rule.** A covered run, and each run that it delegates to at any
+  depth, binds `no_egress=True` in its artifact context. Such a run holds
+  only three kinds of tool: the four delegation tools, the sandbox tools,
+  and tools whose annotation says `open_world=False` explicitly.
+- **A tool with no annotation is an egress tool.** So is a tool whose
+  annotation has no `open_world` key, an MCP tool, and a tool that MAF made
+  from an MCP server. A tool write to a store that later runs read is one
+  too (`egress.STORE_WRITES`): `save_memory`, `save_episode`,
+  `save_agent_memory`, `save_org_memory` and `save_note`, whose `NOTES.md`
+  every later session reads. `acb_skills.egress.is_egress_tool` holds the
+  rule. The injection seam also keeps `sandbox_tools.HOST_NETWORK_TOOLS` out,
+  whatever their annotation says. An agent from another repo keeps none of
+  its unannotated tools.
+- **A platform entry is trusted only for the platform's own tool.** A tool
+  object takes a registry entry that the platform made only when its
+  callable comes from a platform package and carries the tool's name
+  (`egress._platform_owned`). So a tool of another repo that borrows the
+  name `run_diagnostics` or `write_artifact` is an egress tool. The Copilot
+  guard gets only a name, so it finds the tool object of that name in the
+  session's own tool list, and it fails closed when the list has none.
+- **Every tool of every in-repo agent states `open_world`.** The fence reads
+  the real registry: `_AGENT_REGISTRY`, the dynamic registry and
+  `agents.json`. `annotate()` has no default for `open_world`. An agent's own
+  tool carries its annotation on the function. So a tool of another repo
+  that only shares a name with one of ours still fails closed.
+- **The flag is decided once, at the start of each run.** Each run boundary
+  computes it before anything can fail, and binds it at once:
+  `_tool_injection._run_no_egress`. It is set when the parent was
+  `no_egress`, or when the parent's agent is covered, or when this run's own
+  agent is covered. So a run of a covered agent is a covered run, whatever
+  its parent, on the streaming path and on the batch path alike. A scope
+  change during the run cannot clear the flag of its later delegations.
+- **When an agent counts as covered.** `covers()` is true for the agent and
+  the run's org. It is also true when the scope names the `projects` target
+  for that org while the broker is not healthy. A broker error sets the
+  flag. No request field and no tool argument reaches the decision. A batch
+  run passes the org that it was handed, because it decides the flag before
+  it binds its tenant.
+- **A health flap has a cost, and it is fail-closed by design.** With the
+  scope set, a broker health flap puts projects-assistant into `no_egress`,
+  so it has no web tools and assigns no agent until the run ends.
+- **A child cannot clear it.** The artifact context is an immutable mapping
+  per run. A child inherits the flag before it decides anything of its own.
+  Any value that is not an explicit `False` reads as set, and a frame with
+  no run context reads as `no_egress` (`egress.no_egress_for_this_run`).
+- **What a `no_egress` run loses.** At injection it loses each egress tool,
+  among the platform tools and among the agent's own. It also loses each MCP
+  server: `mcp_servers`, a MAF agent's `mcp_tools` and the registry's. At
+  call time, on the MAF path: a per-run middleware takes egress tools out of
+  each request and refuses a call to one (`EgressGuardProvider`). On the
+  Copilot path: the permission guard passes only a read, a write and a tool
+  with an explicit `open_world=False`. It refuses a URL fetch, an MCP call,
+  the shell, memory and any unknown kind. One middleware pair serves this
+  control and the host-tool control of the sandbox (`acb_skills.tool_guard`).
+- **It fails closed, and nothing retries it.** An agent shape that the control
+  cannot read, for example a MAF workflow agent, raises `NoEgressRefused`.
+  The batch path answers it before the self-anneal and the self-mutation. A
+  self-anneal retry of any other fault injects with the run's own answer.
+- **The covered run itself.** The rule binds it too. So it holds no
+  `run_workflow`, no web tool and no store write. The gateway does not
+  extract its conversation into memory after the run: the run records its
+  cover by run id at its start (`executor.run_was_no_egress`), and the end
+  callback reads that record, never the request. The fence pins its full
+  tool list, 110 tools on 2026-10-04. They are every Projects tool,
+  `run_command`, the eight file tools, the delegation tools, and the platform
+  tools that say `open_world=False`, `read_attachment` (H-229) among them.
+- **Assignment is dispatch.** Assigning `agent:<name>` to a task starts that
+  agent's run in the gateway (`routes/projects/agent_dispatch.py`), where the
+  flag does not reach. So in a `no_egress` run, `create_task`, `assign`,
+  `bulk_update`, the edit form and the plan of `propose_plan` refuse an agent
+  assignee before any write (`skill_projects.writes._refuse_agent_assignee`).
+  The tool answers with the refusal text, so the model can read why. Taking
+  an agent off a task is not refused.
+- **The risk block is per agent.** The addendum of a Copilot agent lists
+  the platform's own names, and every annotated tool that this agent holds
+  after injection, on all four lines (`tool_annotations.risk_summary_block`,
+  `own=`). The workflow trio counts as its own. No tool of another agent
+  joins the block, so the text no longer depends on what one process
+  imported. For its own names, each live agent's block is a superset of the
+  block on main. The fence pins the block of task-manager.
+- **What it keeps.** Its reads, its compute and delegation. A called agent
+  can still read and answer, and it cannot send. The fence proves it for
+  email-assistant, crm-assistant and the orchestrator.
+- **An uncovered run changes nothing.** When neither the parent nor the
+  agent is covered, the fence proves that the sub-run's tools match the
+  agent's own batch run, byte for byte.
+- **The `open_world=True` tools of 2026-10-04.** The platform: `web_search`,
+  `fetch_page`, `github_search`, `github_repo_search`, `decide`,
+  `install_dependency`, `run_script`, `code_task`,
+  `request_network_access`, and the delegation tools, which a run keeps. The
+  workflow trio: `run_workflow`. The orchestrator: `spawn_copilot_agent`,
+  `delegate_to_agent` (kept) and one specialist tool for each registered
+  agent. email-assistant, for a send: `send_email`, `send_draft`,
+  `unsubscribe_sender` and `digest`. For a rule: `create_rule`,
+  `update_rule`, `run_rules`, `learn_rule_pattern`,
+  `create_rules_from_prompt` and `install_default_rules`. For the rest:
+  `update_assistant_settings`, `resolve_execution`, `save_knowledge`,
+  `manage_inbox`, `create_label` and `draft_reply`. crm-assistant:
+  `create_lead`, `update_deal_status`, `log_activity` and `convert_lead`.
+  task-manager: `my_tasks_delegate`. The fence pins this list.
+- **Four email tools are close calls, so they are named here.**
+  `save_knowledge` says `True`: the knowledge base feeds replies to outside
+  senders. `manage_inbox` and `create_label` say `True`: they write a label
+  or folder name that the model chose to the mail provider. `draft_reply`
+  says `True`: with `save=True` it puts a draft at the provider, one click
+  from a send. `sync_account` says `False`: it pulls mail in, and it carries
+  no text that the model chose.
+- **The residual, named. The owner accepts it at the flip.**
+  1. A MEMBER can still assign an agent to a task by hand, outside the run.
+     The agent's run then has no flag.
+  2. A delayed send through a store. A `no_egress` run can still write the
+     run's own files (`write_artifact` outside a covered run, and the Copilot
+     `write` kind into its workspace). A later run, with its own trigger and
+     a send tool, could read and send them.
+  3. An agent from another repo keeps none of its unannotated tools. What its
+     own servers do with a task text is outside this control.
+  4. A task write still emits its event. `create_task` and `comment` emit
+     `pm.task.created` and `pm.task.comment_added`. The workflows sink runs
+     any published workflow on them, and an `http.request` node can post the
+     payload. The member's card gates each such write.
+  5. A remote image in the answer text. A separate fix is in flight: a
+     remote image in an agent message loads only on a member's click.
+  6. An uncovered parent that calls a covered agent gets its answer, and the
+     parent keeps its own tools. The answer holds only what the member may
+     see, as it did before the sandbox.
 
 **Broker rule 5, for this target.** The run-data dir is a second read-write
 mount, at `/workspace/.run/`. The thread's output folder (below) is a third,
