@@ -207,15 +207,24 @@ def _host_shell_refused(
     return not (agent_name and org and _copilot_cli_in_broker_sandbox(agent_name, org))
 
 
-def _parent_run_covered(agent_name: str) -> bool:
-    """True when the run of *agent_name* on this frame is, or may be, covered (H-236).
+class NoEgressRefused(RuntimeError):
+    """H-236 cannot make this run safe, so the run must not start.
+
+    It is a refusal and not a fault, so nothing retries it: the batch path
+    answers it before the self-anneal and the self-mutation clauses.
+    """
+
+
+def _run_covered(agent_name: str) -> bool:
+    """True when a run of *agent_name* on this frame is, or may be, covered (H-236).
 
     It is true when ``covers()`` is true for the agent and the run's org. It is
     also true when the scope names the ``projects`` target for that agent and
-    org while the broker is not healthy. A health probe that failed between
-    the turn that read member data and the call to another agent must not
-    clear the control. The org comes from the run binding, never from input
-    (R5). A broker that answers with an error fails closed.
+    org while the broker is not healthy, so a health probe cannot clear the
+    control. The org comes from the run binding, never from input (R5). A
+    broker that answers with an error fails closed. Each run boundary asks it
+    ONCE, at the start, and binds the answer (:func:`_run_no_egress`), so a
+    change of the scope during the run cannot clear the flag of its delegations.
     """
     if not agent_name:
         return False
@@ -233,26 +242,38 @@ def _parent_run_covered(agent_name: str) -> bool:
             sb.maf_coding_scope_allows(sb.PROJECTS_TARGET, org)
         )
     except Exception:  # fail closed: a broker bug must not open the control
-        _log.warning("executor.parent_cover_check_failed", agent=agent_name)
+        _log.warning("executor.run_cover_check_failed", agent=agent_name)
         return True
 
 
 def _delegated_no_egress(parent_ctx: Any) -> bool:
-    """The ``no_egress`` answer of a run that starts on this frame (H-236).
+    """True when the PARENT of a run that starts on this frame was no_egress.
 
     *parent_ctx* is the artifact context of the frame, read BEFORE the new run
-    binds its own. An empty context means no parent, so the run is not a
-    delegation and the answer is ``False``. A parent that holds ``no_egress``
-    passes it on, so a child can never clear it, and a value that is not an
-    explicit ``False`` reads as set. Else the answer is whether the parent's
-    own run is covered (:func:`_parent_run_covered`). Only the server decides
-    it: no request field and no tool argument reaches this function.
+    binds its own. An empty context means no parent. A parent that holds
+    ``no_egress`` passes it on, so a child can never clear it, and a value that
+    is not an explicit ``False`` reads as set. Else the cover of the parent's
+    agent decides, asked again now: that can only ADD the flag, so a parent
+    whose binding predates a scope change, or a parent that bound no flag,
+    still passes it on. No request field and no tool argument reaches this
+    function.
     """
     if not parent_ctx:
         return False
     if parent_ctx.get("no_egress", False) is not False:
         return True
-    return _parent_run_covered(str(parent_ctx.get("agent_name") or ""))
+    return _run_covered(str(parent_ctx.get("agent_name") or ""))
+
+
+def _run_no_egress(agent_name: str | None, parent_ctx: Any) -> bool:
+    """The ``no_egress`` answer of a run of *agent_name* that starts now (H-236).
+
+    One rule binds a covered run and every run under it. So the answer is set
+    when the parent was ``no_egress`` (:func:`_delegated_no_egress`), or when
+    this run's own agent is covered (:func:`_run_covered`), whatever its parent.
+    Each run boundary computes it once, before anything can fail, and binds it.
+    """
+    return _delegated_no_egress(parent_ctx) or _run_covered(str(agent_name or ""))
 
 
 def _no_egress_bound() -> bool:
@@ -260,17 +281,18 @@ def _no_egress_bound() -> bool:
     try:
         from acb_skills.egress import no_egress_for_this_run
     except ImportError:
-        return False
+        return True
     return no_egress_for_this_run()
 
 
 def _is_egress(tool: Any) -> bool:
     """The injection seam's test for an egress tool (H-236).
 
-    The annotation decides (``acb_skills.egress.is_egress_tool``). The two
-    host web tools of the sandbox (``sandbox_tools.HOST_NETWORK_TOOLS``) are
-    egress tools whatever their annotation says, so a drift in the registry
-    can never give them back to a ``no_egress`` run. It reuses that list.
+    The rule decides (``acb_skills.egress.is_egress_tool``, which fails
+    closed). The two host web tools of the sandbox
+    (``sandbox_tools.HOST_NETWORK_TOOLS``) are egress tools whatever their
+    annotation says, so a drift in the registry can never give them back to
+    a ``no_egress`` run. It reuses that list.
     """
     try:
         from acb_skills.egress import is_egress_tool
@@ -281,12 +303,40 @@ def _is_egress(tool: Any) -> bool:
     return name in HOST_NETWORK_TOOLS or is_egress_tool(tool)
 
 
+#: The tool lists an injection knows how to read, by attribute.
+_TOOL_POOLS = ("tools", "_tools")
+
+
+def _inspectable(agent: Any) -> bool:
+    """True when H-236 can see every tool that *agent* can call.
+
+    A MAF ``Agent`` (its tools, its ``mcp_tools`` and its providers, which
+    the guard view covers), a Copilot-shaped agent (``_tools`` and the
+    permission guard) and a plain object with a known tool list. Any other
+    MAF agent, for example a workflow agent, holds tools that this module
+    cannot read, so the run is refused.
+    """
+    try:
+        from agent_framework import Agent, BaseAgent
+    except ImportError:
+        return False
+    if isinstance(agent, Agent) or hasattr(agent, "_permission_handler"):
+        return True
+    if isinstance(agent, BaseAgent):
+        return False
+    _do = getattr(agent, "default_options", None)
+    pools = [_do.get("tools") if isinstance(_do, dict) else None]
+    pools += [getattr(agent, attr, None) for attr in _TOOL_POOLS]
+    return any(isinstance(p, list) for p in pools)
+
+
 def _withhold_egress_from_agent(agent: Any) -> list[str]:
     """Take every egress tool and MCP server out of ONE per-run agent (H-236).
 
     The factory built this agent object for this run, as every injection site
     assumes. The lists are filtered in place, as ``_apply_own_tool_scope``
-    does. Returns the names it took out.
+    does. Returns the names it took out. The MCP servers of a MAF agent
+    (``mcp_tools``) leave on the guarded view (:func:`_with_egress_guard`).
     """
     removed: list[str] = []
 
@@ -300,7 +350,7 @@ def _withhold_egress_from_agent(agent: Any) -> list[str]:
     _do = getattr(agent, "default_options", None)
     if isinstance(_do, dict):
         _filter(_do.get("tools"))
-    for attr in ("tools", "_tools"):
+    for attr in _TOOL_POOLS:
         _filter(getattr(agent, attr, None))
     opts = getattr(agent, "_default_options", None)
     if isinstance(opts, dict):
@@ -309,28 +359,32 @@ def _withhold_egress_from_agent(agent: Any) -> list[str]:
             removed.append("mcp_servers")
     elif opts is not None:
         _filter(getattr(opts, "tools", None))
+    if getattr(agent, "mcp_tools", None):
+        removed.append("mcp_tools")
     return removed
 
 
 def _with_egress_guard(agent: Any) -> Any:
-    """A per-run view of a native MAF agent that refuses egress calls (H-236).
+    """A per-run view of a native MAF agent that holds no egress tool (H-236).
 
-    A Copilot agent gets its refusal from the permission guard instead
+    The view carries no MCP server (``mcp_tools``, which MAF expands into
+    tools at run time) and it carries the egress middleware. A Copilot agent
+    gets its refusal from the permission guard instead
     (``permission_policy.guard_shared_agent_shell``), so it is returned as it
-    is. So is an object that is not a MAF ``Agent``.
+    is. So is a plain object that is not a MAF agent.
     """
     if hasattr(agent, "_permission_handler"):
         return agent
-    try:
-        from acb_skills.egress import EgressGuardProvider
-        from agent_framework import Agent
-    except ImportError:
-        return agent
+    from acb_skills.egress import EgressGuardProvider
+    from agent_framework import Agent
+
     if not isinstance(agent, Agent):
         return agent
     from orchestrator._native_run_context import agent_with_providers
 
-    return agent_with_providers(agent, [EgressGuardProvider()])
+    view = agent_with_providers(agent, [EgressGuardProvider()])
+    view.mcp_tools = []
+    return view
 
 
 def _drop_withheld(tools: list[Any], withheld: frozenset[str]) -> list[Any]:
@@ -1024,7 +1078,7 @@ def _inject_agent_tools(
     agents: list[Any], *, is_sub_agent: bool = False,
     tool_scope: list[str] | None = None, agent_name: str | None = None,
     agent_config: dict[str, Any] | None = None,
-    no_egress: bool | None = None,
+    no_egress: bool = False,
 ) -> None:
     """Inject cross-agent delegation tools into every loaded agent.
 
@@ -1035,12 +1089,13 @@ def _inject_agent_tools(
     closed. Every executor call site passes it, and
     ``tests/unit/test_shared_agent_shell_tools.py`` says so.
 
-    ``no_egress`` (H-236) is the answer of :func:`_delegated_no_egress` for
-    this run. ``True`` takes every egress tool (``acb_skills.egress``) out of
-    the injected set, the scope and the agent's own tools, takes its MCP
-    servers away, and puts a native MAF agent behind the egress middleware,
-    as a per-run view in ``agents``. ``None`` reads the flag of the run that
-    is bound on this frame (a self-anneal retry). ``False`` changes nothing.
+    ``no_egress`` (H-236) is the answer of :func:`_run_no_egress` for this
+    run, and every executor call passes it by name (the WS43-F24 AST fence).
+    ``True`` takes every egress tool (``acb_skills.egress``) out of the
+    injected set, the scope and the agent's own tools, takes its MCP servers
+    away, and puts a native MAF agent behind the egress middleware, as a
+    per-run view in ``agents``. It raises :class:`NoEgressRefused` for an
+    agent whose tools it cannot read. ``False`` changes nothing.
 
     Adds ``call_agent`` and ``call_agent_background`` from ``acb_skills.agent_tools``
     so that any agent — MAF or GitHub Copilot SDK — can delegate sub-tasks to
@@ -1072,8 +1127,6 @@ def _inject_agent_tools(
                                    + appends tool guidance to ``_default_options.system_message``
         Legacy Copilot SDK path  — appends to ``agent._default_options.tools`` (list)
     """
-    if no_egress is None:
-        no_egress = _no_egress_bound()
     _all_tools = _collect_injectable_platform_tools()
     if not _all_tools:
         if no_egress:  # H-236 holds even when nothing else is injected
@@ -1499,11 +1552,21 @@ def _apply_no_egress(
     It replaces each native MAF agent in *agents* with its guarded view, so
     the caller must read ``agents`` again after injection, as every call
     site does. *injected* is the platform tools that the run did not get.
-    It fails closed: when it cannot filter an agent, it raises, and the run
-    fails before the agent can call an egress tool.
+    It fails closed. An agent whose tools it cannot read raises
+    :class:`NoEgressRefused`, and so does a filter that fails, so the run
+    ends before the agent can call an egress tool, and nothing retries it.
     """
     removed: set[str] = set(injected)
     for i, agent in enumerate(agents):
+        if not _inspectable(agent):
+            _log.error(
+                "executor.no_egress_refused", agent=agent_name,
+                agent_type=type(agent).__name__,
+            )
+            raise NoEgressRefused(
+                f"Agent {agent_name!r} cannot run here: it was called during a "
+                "sandboxed turn, and its tools cannot be checked for a send."
+            )
         try:
             removed.update(_withhold_egress_from_agent(agent))
             agents[i] = _with_egress_guard(agent)
@@ -1511,7 +1574,10 @@ def _apply_no_egress(
             _log.error(
                 "executor.no_egress_failed", agent=agent_name, error=str(exc)[:200],
             )
-            raise
+            raise NoEgressRefused(
+                f"Agent {agent_name!r} cannot run here: its tools could not be "
+                "checked for a send."
+            ) from exc
     _log.info(
         "executor.egress_tools_withheld", agent=agent_name, tools=sorted(removed),
     )

@@ -83,11 +83,12 @@ from orchestrator._tool_injection import (
     _apply_own_tool_scope,
     _build_injected_tools_addendum,
     _build_registry_block,
-    _delegated_no_egress,
     _gate_injected_tool,
     _host_shell_refused,
     _inject_agent_tools,
     _inject_mcp_servers,
+    NoEgressRefused,
+    _run_no_egress,
     _tool_name,
     _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
@@ -853,9 +854,11 @@ async def _run_sub_agent_streaming(
     # The parent run's acting member, from the parent's bound context and
     # never from the delegated message (H-201 P2-c).
     _parent_member = str(artifact_context().get("member") or "")
-    # H-236: no egress tool for this sub-run when its parent is covered, or
-    # when its parent holds no_egress. From the parent's binding only.
-    _sub_no_egress = _delegated_no_egress(artifact_context())
+    # H-236: no egress tool for this sub-run when its parent was no_egress,
+    # or when its own agent is covered. Decided once, from the parent's
+    # binding, and bound at once, so no later path reads the parent's frame.
+    _sub_no_egress = _run_no_egress(agent_name, artifact_context())
+    derive_artifact_context(no_egress=_sub_no_egress)
 
     # ── Redis relay fallback for paths without _active_run_queue ──────
     # Tier 1 (MAF AG-UI) and Tier 1.5 (Copilot SDK) don't set
@@ -2493,10 +2496,14 @@ async def _run_agent_inner(
     from acb_skills.write_artifact import (
         artifact_context,
         bind_artifact_context,
+        derive_artifact_context,
     )
     _parent_ctx = artifact_context()
-    # H-236: the same parent decides this run's no_egress, read here too.
-    _no_egress = _delegated_no_egress(_parent_ctx)
+    # H-236: decide this run's no_egress once, from the parent's binding and
+    # this agent's own cover, and bind it before anything can fail. A load
+    # error then retries (self-anneal) with this answer, never the parent's.
+    _no_egress = _run_no_egress(agent_name, _parent_ctx)
+    derive_artifact_context(no_egress=_no_egress)
 
     # ── Run correlation for the batch path (usage attribution) ─────────────
     # The streaming path binds the same fields. `run_agent` opened the scope
@@ -2900,6 +2907,13 @@ async def _run_agent_inner(
             str(exc), agent_name=agent_name, run_id=run_id, original=exc,
         ) from exc
 
+    except NoEgressRefused as exc:
+        # H-236: a refusal, never a fault. Before the self-anneal and the
+        # self-mutation clauses, so nothing retries a run the control refused.
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
     except AgentNotFound as exc:
         # §15.4: refused as absent. Before the AgentLoadError clause, because
         # that one starts a self-mutation. The agent is fine, and this caller
@@ -2964,6 +2978,8 @@ async def _run_agent_inner(
             event_payload=event_payload,
             agent_dir=_git_dir or _effective_agent_dir,
             error=exc,
+            # H-236: every retry injects with THIS run's answer.
+            no_egress=_no_egress,
         )
         if recovery is not None:
             return recovery
@@ -3257,6 +3273,12 @@ async def run_agent_stream(
         reset_artifact_context,
     )
     _artifact_token = enter_artifact_context()
+    # H-236: decide this run's no_egress ONCE, before anything can fail, and
+    # bind it. A covered agent's run is a covered run, whatever its parent.
+    from acb_skills.write_artifact import artifact_context as _ctx_now
+    from acb_skills.write_artifact import derive_artifact_context as _derive_ctx
+    _stream_no_egress = _run_no_egress(agent_name, _ctx_now())
+    _derive_ctx(no_egress=_stream_no_egress)
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)
@@ -3351,10 +3373,6 @@ async def run_agent_stream(
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
-            # H-236: a run that starts inside another run's context is a
-            # delegation. A top-level chat run has no such context: False.
-            from acb_skills.write_artifact import artifact_context as _ctx_now
-            _stream_no_egress = _delegated_no_egress(_ctx_now())
             _inject_agent_tools(
                 agents,
                 # .agent.md's VS Code tools widen (never narrow) the scope, so a
@@ -5246,8 +5264,12 @@ async def _self_anneal(
     event_payload: dict[str, Any],
     agent_dir: str | None,
     error: Exception,
+    no_egress: bool,
 ) -> dict[str, Any] | None:
     """Self-annealing loop.
+
+    *no_egress* is the H-236 answer of the run that failed. Every retry
+    injects with it, so a retry can never hold more tools than the run did.
 
     1. Classify the error.
     2. Apply an in-process fix if one exists for this error class.
@@ -5288,6 +5310,7 @@ async def _self_anneal(
                         _inject_agent_tools(
                             agents, agent_name=agent_name,
                             agent_config=loaded.config,  # D85
+                            no_egress=no_egress,  # H-236
                         )
                         result = await _run_with_maf_agent(
                             agents,
@@ -5334,6 +5357,7 @@ async def _self_anneal(
                     _inject_agent_tools(
                         agents, agent_name=agent_name,
                         agent_config=loaded.config,  # D85
+                        no_egress=no_egress,  # H-236
                     )
                     result = await _run_with_maf_agent(
                         agents,

@@ -373,7 +373,7 @@ def _row_line(slug: str, row: dict[str, Any]) -> str:
 
 # ── Read tools ───────────────────────────────────────────────────────────────
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def search_crm(
     query: str, entity: str | None = None, limit: int = 10,
 ) -> str:
@@ -408,7 +408,7 @@ async def search_crm(
     return f"Matches for '{query}' ({total}):\n\n" + "\n\n".join(sections)
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def get_pipeline(owner: str | None = None, per_lane: int = 5) -> str:
     """The deal pipeline as a board: every stage in order, how many deals sit in
     it and what they are worth, plus the most recently moved deals in each.
@@ -447,7 +447,7 @@ async def get_pipeline(owner: str | None = None, per_lane: int = 5) -> str:
     return "\n".join(out)
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def get_record(entity: str, record_id: str) -> str:
     """Read one CRM record in full — entity is 'leads', 'deals', 'contacts' or
     'organizations' and record_id is its id (from search_crm or get_pipeline).
@@ -508,7 +508,7 @@ def _email_line(thread: dict[str, Any]) -> str:
     )
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def get_timeline(entity: str, record_id: str, limit: int = 20) -> str:
     """What has happened to a CRM record, newest first: logged notes, calls,
     meetings and tasks, every status change with how long it sat in the

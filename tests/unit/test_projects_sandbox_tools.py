@@ -844,7 +844,13 @@ def test_a_covered_run_has_no_web_tool_and_the_host_sends_nothing(sandbox, monke
     ])
     for body in model.bodies:
         assert not _request_tools(body) & st.HOST_NETWORK_TOOLS, _request_tools(body)
-    refused = [r for body in model.bodies[1:] for r in _tool_results(body) if "has no network" in r]
+    # H-236 binds the covered run itself: its injection already leaves the
+    # two tools out, so a call that names one finds no such tool. The
+    # sandbox middleware still refuses it when a tool gets past injection.
+    refused = [
+        r for body in model.bodies[1:] for r in _tool_results(body)
+        if "has no network" in r or "off in this run" in r or "not found" in r
+    ]
     assert len(set(refused)) == 2, refused
     assert sent == []
     assert "no web access" in str(model.bodies[0].get("messages"))

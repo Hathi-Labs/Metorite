@@ -151,7 +151,7 @@ async def _status_names(root_ids: set[str]) -> dict[str, str]:
 # ── The tree and the summaries ───────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def projects_tree(include_archived: bool = False) -> str:
     """The spaces, folders, projects and subprojects the member can see, nested.
     Start here for "what is in this space?" or to find a project's id before
@@ -182,7 +182,7 @@ async def projects_tree(include_archived: bool = False) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def project_summary(project_id: str = "") -> str:
     """How a space, folder or project is doing: task totals by status category,
     what is overdue, and one line per child. Pass a project_id from
@@ -233,7 +233,7 @@ async def project_summary(project_id: str = "") -> str:
 # ── Finding and listing tasks ────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def find_tasks(query: str, limit: int = 10) -> str:
     """Search tasks by words in the title, or by task number, across every
     project the member can see. At least 3 characters. Returns ranked hits
@@ -254,7 +254,7 @@ async def find_tasks(query: str, limit: int = 10) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def list_tasks(
     project_id: str = "",
     include_subtree: bool = True,
@@ -380,7 +380,7 @@ async def _timeline_block(task_id: str) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def task_detail(task_id: str) -> str:
     """Everything about one task: fields, assignees, subtasks, links and
     blockers, attachments, and the latest timeline entries. Read this before
@@ -432,7 +432,7 @@ async def task_detail(task_id: str) -> str:
 # ── The member's own work ────────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_work(view: str = "assigned", include_done: bool = False, page: int = 1) -> str:
     """The member's own work. view="assigned" lists tasks assigned to them
     across every project. view="inbox" lists their personal lens with the
@@ -523,7 +523,7 @@ def _rule_text(rule: dict[str, Any] | None) -> str:
     return " · ".join(parts)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def recurrence(task_id: str) -> str:
     """Whether a task repeats, and its rule: frequency, interval, weekdays,
     anchor (from the due date or from the last completion), end date or
@@ -544,7 +544,7 @@ OVERLAY_FACTS = (
 )
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_task(task_id: str) -> str:
     """One task as the member's own lens sees it: the shared fields plus
     THEIR overlay (disposition, context, energy, next action, deferred
@@ -589,7 +589,7 @@ def _person_line(p: dict[str, Any]) -> str:
     return f"- {data(p.get('name'))} · " + " · ".join(facts)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     """Who could take a task: people and agents matching the query, with
     their role, current load and any warning (away, engagement ending). Pass
@@ -632,7 +632,7 @@ async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def vocabulary(project_id: str) -> str:
     """The words a project uses: its statuses (with category), task types,
     tags (with counts) and custom fields. Read this before you set a status,
@@ -693,7 +693,7 @@ def _scope_title(payload: dict[str, Any]) -> str:
     )
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_stuck(project_id: str = "") -> str:
     """Where work is stuck: open tasks banded by how long they have sat in
     their status, tasks blocked by unfinished work, and overdue counts by
@@ -718,7 +718,7 @@ async def analytics_stuck(project_id: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_load(project_id: str = "") -> str:
     """Who is overloaded: open tasks per assignee split into overdue, due in
     the next 7 days, and later. Unassigned is a row of its own, and it is
@@ -748,7 +748,7 @@ async def analytics_load(project_id: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_throughput(project_id: str = "", weeks: int = 8) -> str:
     """Are we getting faster: tasks finished per week and the cycle time from
     first in-progress to done, read from the activity spine. The current
@@ -774,7 +774,7 @@ async def analytics_throughput(project_id: str = "", weeks: int = 8) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_finished(
     project_id: str = "", weeks: int = 4, skip_current_week: bool = False
 ) -> str:
@@ -800,7 +800,7 @@ async def analytics_finished(
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_outlook(project_id: str = "") -> str:
     """Will this land, and when: a velocity forecast (the team's real rate
     minus the rate work arrives), a capacity forecast (estimated hours left
@@ -915,7 +915,7 @@ def _capacity_lines(row: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def team_capacity(project_id: str = "", horizon_days: int = 14) -> str:
     """Who holds the open work in a scope, and whether they have the hours.
     One row per person with open work here, plus Unassigned. For a member
@@ -995,7 +995,7 @@ def _candidate_lines(c: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def fit_for_task(task_id: str = "", title: str = "", tags: str = "", due: str = "") -> str:
     """Who fits one task best, ranked by skill, spare hours and availability:
     at most three people, each with the skills that matched, the spare hours
@@ -1058,7 +1058,7 @@ def _pickup_lines(person: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def rebalance(project_id: str = "", horizon_days: int = 14) -> str:
     """Who could help whom in a scope: the at-risk tasks with up to three
     helpers who fit each one, and the idle people with the unassigned tasks
@@ -1140,7 +1140,7 @@ def _conflict_lines(row: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def find_conflicts(project_id: str = "", horizon_days: int = 14) -> str:
     """Where the plan interferes with itself in a scope, as one list. Seven
     kinds: dependency_order (a task starts or is due before a task that
@@ -1349,7 +1349,7 @@ def _dataset_rows(payload: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def task_dataset(
     project_id: str = "",
     state: str = "open",
@@ -1414,7 +1414,7 @@ async def task_dataset(
 # ── Reports ──────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def report_list() -> str:
     """The saved report definitions in this organization. A report stores the
     question (scope, period, sections), never the answer. Use report_render
@@ -1431,7 +1431,7 @@ async def report_list() -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def report_render(report_id: str) -> str:
     """Render one saved report now, from the same numbers that the Overview
     of the Reports app shows. The member's own visibility applies. This never sends anything;

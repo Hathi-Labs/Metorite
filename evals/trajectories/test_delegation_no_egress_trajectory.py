@@ -40,12 +40,19 @@ def _read_email() -> str:
     return "mail"
 
 
+def _post_rows() -> str:
+    """Another repo's tool: no annotation at all."""
+    return "posted"
+
+
 def _injected(no_egress: bool) -> set[str]:
     from acb_skills.tool_annotations import annotate
 
     send = annotate(destructive=True, open_world=True)(_send_email)
-    read = annotate(read_only=True)(_read_email)
-    agent = types.SimpleNamespace(name="probe", default_options={"tools": [send, read]})
+    read = annotate(read_only=True, open_world=False)(_read_email)
+    agent = types.SimpleNamespace(
+        name="probe", default_options={"tools": [send, read, _post_rows]},
+    )
     agents = [agent]
     ti._inject_agent_tools(agents, agent_name="probe", agent_config={"name": "probe"},
                            no_egress=no_egress)
@@ -67,9 +74,9 @@ def test_an_uncovered_parent_marks_nothing(covered) -> None:
 def test_the_delegated_run_keeps_reads_and_delegation_and_loses_egress(covered) -> None:
     held = _injected(no_egress=True)
     assert "_read_email" in held and "call_agent" in held
-    assert not held & {"_send_email", "web_search", "fetch_page"}
+    assert not held & {"_send_email", "_post_rows", "web_search", "fetch_page"}
     open_run = _injected(no_egress=False)
-    assert {"_send_email", "web_search", "fetch_page"} <= open_run
+    assert {"_send_email", "_post_rows", "web_search", "fetch_page"} <= open_run
 
 
 async def test_a_named_egress_call_gets_the_refusal_not_a_send() -> None:

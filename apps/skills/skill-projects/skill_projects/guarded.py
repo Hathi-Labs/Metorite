@@ -167,7 +167,7 @@ def _short_ref(task: dict[str, Any]) -> str:
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def archive_project(project_id: str) -> str:
     """File a project and its whole subtree out of the default surfaces.
     ONE project per call. The card leads with how many projects the archive
@@ -210,7 +210,7 @@ async def archive_project(project_id: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def unarchive_project(project_id: str) -> str:
     """Bring an archived project back, with every row its own archive filed.
     ONE project per call. A project filed by an ANCESTOR's archive is refused
@@ -253,7 +253,7 @@ async def unarchive_project(project_id: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def move_project(
     project_id: str, parent_project_id: str = "", to_top_level: bool = False
 ) -> str:
@@ -320,7 +320,7 @@ async def _status_name(task: dict[str, Any]) -> str:
     return "(unknown)"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def archive_task(task_id: str) -> str:
     """Shelve one task from every board, list, calendar and search. ONE
     task per call, from any status; archiving is a filing decision and
@@ -352,7 +352,7 @@ async def archive_task(task_id: str) -> str:
     return "\n".join(["Archived:", *_task_line(merged)])
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def merge_tasks(target_task_id: str, source_task_ids: str) -> str:
     """Fold one or more tasks into a survivor, in the SAME project. Their
     comments, attachments, links, subtasks and watchers move to the
@@ -457,7 +457,10 @@ async def _bulk_body(
     if patch:
         body["patch"] = patch
     for key, raw in (("assignees_add", assignees_add), ("assignees_remove", assignees_remove)):
-        people = [await _resolve_assignee(a) for a in _split(raw)]
+        # H-236: only an assignee to ADD can start an agent's run.
+        people = [
+            await _resolve_assignee(a, dispatch=key == "assignees_add") for a in _split(raw)
+        ]
         if people:
             body[key] = people
     for key, raw in (("tags_add", tags_add), ("tags_remove", tags_remove)):
@@ -497,7 +500,7 @@ def _bulk_impact(body: dict[str, Any], n: int) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 @takes_priority
 async def bulk_update(
     task_ids: str,
@@ -582,7 +585,7 @@ async def _timeline_row(task_id: str, activity_id: str, kind: str) -> dict[str, 
     return None
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def delete_comment(task_id: str, comment_id: str) -> str:
     """Delete a comment the member wrote. The words are cleared and the row
     is hidden; replies keep their place. The author only, checked before the
@@ -621,7 +624,7 @@ def _change_lines(changes: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return out
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def revert_activity(task_id: str, activity_id: str) -> str:
     """Undo one field change from a task's timeline: the values it recorded
     as "old" are written back. activity_id comes from task_detail's
@@ -656,7 +659,7 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
 # ── Vocabulary deletes ───────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
     """Delete a lane, moving the tasks in it to move_to (a status NAME in
     the same set) first. The card leads with how many tasks move: the count
@@ -731,7 +734,7 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str:
     """Switch where a project's lanes come from. mode=inherit drops its own
     set and uses the parent's; mode=own gives it a set of its own, copied
@@ -787,7 +790,7 @@ async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_type(project_id: str, type_name: str) -> str:
     """Delete a task type from the project's root. Tasks that carry it keep
     existing, untyped. The route counts them as it deletes and the receipt
@@ -819,7 +822,7 @@ async def delete_type(project_id: str, type_name: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_field(project_id: str, field: str) -> str:
     """Delete a custom field AND every value filed under its key, across
     the project's tree. The route counts the values as it clears them and
@@ -852,7 +855,7 @@ async def delete_field(project_id: str, field: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_tag(project_id: str, tag: str) -> str:
     """Delete a tag and strip it from every task in the project's tree.
     The card leads with the impact read: how many tasks, in how many
@@ -878,7 +881,7 @@ async def delete_tag(project_id: str, tag: str) -> str:
     return f"Deleted tag {data(row.get('name'))}; {_plural(stripped, 'task')} untagged.\n  tag_id: {gid}"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def merge_tags(project_id: str, tag: str, into: str) -> str:
     """Fold one tag into another and delete the first. Every task wearing
     the first gets the second once. Same project only, root-local only.
@@ -922,7 +925,7 @@ async def merge_tags(project_id: str, tag: str, into: str) -> str:
 # ── Views, reports, attachments ──────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_view(project_id: str, view_name: str) -> str:
     """Delete a saved view, its hand-arranged order and every member's
     arrangement of it. The route counts both as it deletes and the receipt
@@ -951,7 +954,7 @@ async def delete_view(project_id: str, view_name: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def report_delete(report_id: str) -> str:
     """Delete a saved report definition, with its schedule and recipients.
     The numbers it renders are not stored, so nothing else is lost."""
@@ -978,7 +981,7 @@ async def report_delete(report_id: str) -> str:
     return f"Deleted report {data(row.get('name'))}.\n  report_id: {rid}"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def delete_attachment(task_id: str, attachment_id: str) -> str:
     """Detach a file from a task. The bytes are kept, because the same
     file may hang off another task. attachment_id comes from task_detail.

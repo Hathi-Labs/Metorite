@@ -1,4 +1,4 @@
-"""The network control on the agents that a covered run delegates to (H-236).
+"""The network control on a covered run and on every run under it (H-236).
 
 Spec ``project-docs/specs/maf_coding_engine.md`` §16.3, the owner decision
 "Keep delegation" of 2026-10-03, and the prerequisite of WS-43w. Fence
@@ -6,42 +6,40 @@ WS43-F24, ``tests/unit/test_delegation_no_egress.py``.
 
 **The threat.** A covered run of projects-assistant holds member data, in
 ``/workspace/.run/`` and in the model's context. The owner kept delegation,
-so the run may call another agent. That agent runs OUTSIDE the sandbox, on
-the host, with its own tools. A model that an injection steers could hand it
-member data and ask it to send the data out.
+so the run may call another agent, and that agent runs on the host with its
+own tools. A model that an injection steers could send the data out itself,
+or hand it to another agent and ask that agent to send it.
 
-**The control.** Every run that a covered run delegates to, directly or
-through another delegation, carries ``no_egress=True`` in its artifact
-context. The orchestrator decides it, from the PARENT's binding and never
-from input (``orchestrator._tool_injection._delegated_no_egress``). A child
-cannot clear it, because the artifact context is an immutable mapping per
-run, and a run inherits the flag before it computes anything of its own.
+**The one rule, and it fails closed.** A covered run, and every run that it
+delegates to at any depth, binds ``no_egress=True`` in its artifact context.
+Such a run holds only:
 
-A ``no_egress`` run:
+1. the four :data:`DELEGATION_TOOLS`, because the flag travels with them;
+2. the sandbox tools (``run_command``, the file tools and the skill tools),
+   which say ``open_world=False`` because the container has no network;
+3. tools whose risk annotation says ``open_world=False`` EXPLICITLY.
 
-1. gets no egress-capable tool at injection (:func:`is_egress_tool`), and no
-   MCP server or MCP tool;
-2. refuses a call to one at call time: :class:`RefuseEgressTools` on the MAF
-   path (as ``sandbox_tools.RefuseHostTools`` does), and
-   ``permission_policy.guard_shared_agent_shell`` on the Copilot path.
+A tool with no annotation, or with no ``open_world`` key, counts as an
+egress tool (:func:`is_egress_tool`). So an agent from another repo, whose
+tools nobody here annotated, keeps none of them in such a run. An MCP tool,
+and a tool that MAF made from an MCP server, is always an egress tool. The
+writes to a shared memory store (:data:`STORE_WRITES`) are egress tools too,
+because a later run can read the store.
 
-Delegation itself stays: :data:`DELEGATION_TOOLS` are never egress tools,
-because the flag travels with them. So a delegated agent can still read and
-compute, and it cannot send.
-
-**One source of truth.** A tool is egress-capable when its risk annotation
-says ``open_world`` (``acb_skills.tool_annotations``: "the tool reaches
-outside Metorite"). The four delegation tools are the one exception. A tool
-that can carry data off the platform MUST set ``open_world=True``, or this
-control cannot see it.
+The orchestrator decides the flag and withholds the tools at injection
+(``orchestrator._tool_injection``). This module holds the rule, the reader
+and the call-time refusal: :class:`EgressGuardProvider` on the MAF path, and
+``permission_policy.guard_shared_agent_shell`` on the Copilot path.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from acb_common import get_logger
-from agent_framework import ChatMiddleware, ContextProvider, FunctionMiddleware
+from agent_framework import ContextProvider
+
+from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
 
 _log = get_logger("acb_skills.egress")
 
@@ -49,10 +47,12 @@ __all__ = [
     "DELEGATION_TOOLS",
     "EGRESS_WITHHELD_ANSWER",
     "NO_EGRESS_KEY",
+    "STORE_WRITES",
     "EgressGuardProvider",
     "RefuseEgressTools",
     "WithholdEgressTools",
     "egress_tool_names",
+    "has_explicit_open_world",
     "is_egress_tool",
     "no_egress_for_this_run",
     "tool_name",
@@ -63,34 +63,28 @@ NO_EGRESS_KEY = "no_egress"
 SOURCE_ID = "metorite-no-egress"
 
 #: The tools that hand a task to another agent. The owner kept them in a
-#: covered run on 2026-10-03, so they are never egress tools. The sub-run
-#: inherits ``no_egress`` instead. The orchestrator's specialist tools
-#: (one per registered agent) carry no annotation, so they are never egress
-#: tools either, and they delegate through the same executor seam.
+#: covered run on 2026-10-03, so they are never egress tools. The run they
+#: start inherits ``no_egress`` instead.
 DELEGATION_TOOLS: frozenset[str] = frozenset({
     "call_agent", "call_agents_parallel", "call_agent_background", "delegate_to_agent",
+})
+
+#: The writes to a memory store that other runs read later. A run that holds
+#: member data could park it there, and a later run with a send could send
+#: it. The writes say ``open_world=False``, which is true of the write
+#: itself, so this set names them. A ``no_egress`` run reads its memory and
+#: writes none.
+STORE_WRITES: frozenset[str] = frozenset({
+    "save_memory", "save_episode", "save_agent_memory", "save_org_memory",
 })
 
 #: The answer to a call that the control refuses. It names what is true of
 #: this run and claims nothing about the whole platform.
 EGRESS_WITHHELD_ANSWER = (
-    "{name} is off in this run. Another agent called you during a sandboxed "
-    "turn, so this run may not send data off the platform. Read and compute "
-    "with your other tools, and give the answer back to the agent that called you."
+    "{name} is off in this run. This run works with member data from a "
+    "sandboxed turn, so it may not use a tool that can send data off the "
+    "platform. Read and compute with your other tools."
 )
-
-
-def tool_name(item: Any) -> str:
-    """The name of a tool in each shape the agents hold one."""
-    if isinstance(item, Mapping):
-        fn = item.get("function")
-        return str((fn or {}).get("name") or item.get("name") or "")
-    return str(
-        getattr(item, "name", None)
-        or getattr(item, "__name__", None)
-        or getattr(getattr(item, "func", item), "__name__", "")
-        or ""
-    )
 
 
 def _mcp_classes() -> tuple[type, ...]:
@@ -101,93 +95,106 @@ def _mcp_classes() -> tuple[type, ...]:
     return (MCPStdioTool, MCPStreamableHTTPTool, MCPWebsocketTool)
 
 
+def _from_mcp(item: Any) -> bool:
+    """A MAF MCP tool, or a FunctionTool that MAF made from an MCP server."""
+    if isinstance(item, _mcp_classes()):
+        return True
+    props = getattr(item, "additional_properties", None)
+    return isinstance(props, Mapping) and bool(props.get("_mcp_is_tool"))
+
+
 def _risk_of(item: Any, name: str) -> Mapping[str, Any] | None:
+    """The annotation of a tool object, or of a bare name when *item* is None.
+
+    An agent's own tool carries its annotation on the function
+    (``annotate`` sets ``__tool_risk__``). So a tool OBJECT takes the
+    registry entry of its name only when no ``annotate`` call made that
+    entry. Another repo's tool that merely shares a name with an annotated
+    tool of ours then reads as unannotated, and fails closed.
+    """
+    from acb_skills.tool_annotations import _AGENT_OWN, TOOL_ANNOTATIONS
+
+    if item is None:
+        return TOOL_ANNOTATIONS.get(name)
     for obj in (item, getattr(item, "func", None)):
         hints = getattr(obj, "__tool_risk__", None)
         if isinstance(hints, Mapping):
             return hints
-    from acb_skills.tool_annotations import TOOL_ANNOTATIONS
-
+    if name in _AGENT_OWN:
+        return None
     return TOOL_ANNOTATIONS.get(name)
 
 
-def is_egress_tool(item: Any) -> bool:
-    """True when *item* can send data off the platform (H-236).
+def has_explicit_open_world(item: Any) -> bool:
+    """True when *item* carries an ``open_world`` value, True or False."""
+    hints = _risk_of(None, item) if isinstance(item, str) else _risk_of(item, tool_name(item))
+    return isinstance(hints, Mapping) and isinstance(hints.get("open_world"), bool)
 
-    *item* is a tool object, a plain function, a dict spec or a bare name. An
-    MCP tool is always one: it reaches a server outside the platform. Else the
-    risk annotation decides (``open_world``), and a delegation tool never is.
+
+def is_egress_tool(item: Any) -> bool:
+    """True unless *item* may stay in a ``no_egress`` run (H-236). Fails closed.
+
+    *item* is a tool object, a plain function, a dict spec or a bare name. A
+    delegation tool may stay. An MCP tool, a store write, and a tool with no
+    explicit ``open_world=False`` may not.
     """
-    if not isinstance(item, str) and isinstance(item, _mcp_classes()):
+    if not isinstance(item, str) and _from_mcp(item):
         return True
     name = item if isinstance(item, str) else tool_name(item)
-    if not name or name in DELEGATION_TOOLS:
+    if name in DELEGATION_TOOLS:
         return False
-    hints = None if isinstance(item, str) else _risk_of(item, name)
-    if hints is None:
-        from acb_skills.tool_annotations import TOOL_ANNOTATIONS
-
-        hints = TOOL_ANNOTATIONS.get(name)
-    return bool(hints and hints.get("open_world"))
+    if not name or name in STORE_WRITES:
+        return True
+    hints = _risk_of(None if isinstance(item, str) else item, name)
+    return not (isinstance(hints, Mapping) and hints.get("open_world") is False)
 
 
-def egress_tool_names(tools: Iterable[Any] | None = None) -> frozenset[str]:
-    """The names of the egress tools among *tools*.
-
-    With no *tools*, every registered name that :func:`is_egress_tool` says
-    yes to. The fence pins that set.
-    """
-    if tools is None:
-        from acb_skills.tool_annotations import TOOL_ANNOTATIONS
-
-        tools = list(TOOL_ANNOTATIONS)
-    return frozenset(tool_name(t) if not isinstance(t, str) else t
+def egress_tool_names(tools: Iterable[Any]) -> frozenset[str]:
+    """The names of the egress tools among *tools*."""
+    return frozenset(t if isinstance(t, str) else tool_name(t)
                      for t in tools if is_egress_tool(t))
 
 
 def no_egress_for_this_run() -> bool:
-    """True when the run on this frame holds no egress tool (H-236).
+    """True when the run on this frame may not send data off the platform.
 
-    Only a missing key, or an explicit ``False``, reads as "may send". Any
-    other value reads as ``no_egress``, so a damaged flag fails closed.
+    THE reader. It fails closed: a frame with no run context reads as
+    ``no_egress``, and so does any value but an explicit ``False``. Only a
+    bound run whose context says ``no_egress=False``, or has no such key,
+    reads as open. Each run boundary of the executor binds the key.
     """
     try:
         from acb_skills.write_artifact import artifact_context
 
-        return artifact_context().get(NO_EGRESS_KEY, False) is not False
+        ctx = artifact_context()
     except Exception:
         return True
+    if not ctx:
+        return True
+    return ctx.get(NO_EGRESS_KEY, False) is not False
 
 
-class WithholdEgressTools(ChatMiddleware):
+def _egress_answer(name: str) -> str:
+    _log.info("egress.call_refused", tool=name)
+    return EGRESS_WITHHELD_ANSWER.format(name=name)
+
+
+class WithholdEgressTools(WithholdTools):
     """Takes every egress tool out of each model request of ONE run.
 
     Injection already left them out. This catches a tool that joined the run
-    later, for example through a context provider. It changes a copy of the
-    request's options, never an agent object.
+    later, for example a sandbox provider's tool or an MCP server's tool.
     """
 
-    async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
-        options = context.options
-        tools = options.get("tools") if isinstance(options, dict) else None
-        if tools:
-            kept = [t for t in tools if not is_egress_tool(t)]
-            if len(kept) != len(tools):
-                context.options = {**options, "tools": kept}
-        await call_next()
+    def __init__(self) -> None:
+        super().__init__(is_egress_tool)
 
 
-class RefuseEgressTools(FunctionMiddleware):
+class RefuseEgressTools(RefuseTools):
     """Refuses a call to an egress tool, in case the model names one."""
 
-    async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
-        function = getattr(context, "function", None)
-        if function is not None and is_egress_tool(function):
-            name = tool_name(function)
-            _log.info("egress.call_refused", tool=name)
-            context.result = EGRESS_WITHHELD_ANSWER.format(name=name)
-            return
-        await call_next()
+    def __init__(self) -> None:
+        super().__init__(is_egress_tool, _egress_answer)
 
 
 class EgressGuardProvider(ContextProvider):

@@ -207,9 +207,49 @@ async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
     return _one_named(await _statuses_of(project_id), status, "status", "statuses")
 
 
-async def _resolve_assignee(value: str) -> str:
+#: H-236: the refusal of an agent assignee in a run that may not send.
+AGENT_ASSIGNEE_REFUSED = (
+    "This chat works with member data from a sandboxed turn, so it cannot "
+    "assign a task to an agent: an assigned agent starts a run of its own, "
+    "outside this chat's controls. Assign a person, or ask the member to "
+    "assign the agent in the Projects app."
+)
+
+
+def _refuse_agent_assignee(assignee: str) -> str:
+    """*assignee*, unless it names an agent and this run may not send (H-236).
+
+    Assigning ``agent:<name>`` starts that agent's run in the gateway
+    (``routes/projects/agent_dispatch.py``), where this run's ``no_egress``
+    does not reach. So a run that holds the flag refuses the agent before
+    any write. The flag comes from the run binding
+    (``acb_skills.egress.no_egress_for_this_run``, which fails closed),
+    never from the request.
+    """
+    if not assignee.startswith("agent:"):
+        return assignee
+    try:
+        from acb_skills.egress import no_egress_for_this_run
+    except ImportError:  # no platform package: no run can be checked
+        raise GatewayRefusal(AGENT_ASSIGNEE_REFUSED) from None
+    if no_egress_for_this_run():
+        raise GatewayRefusal(AGENT_ASSIGNEE_REFUSED)
+    return assignee
+
+
+async def _resolve_assignee(value: str, *, dispatch: bool = True) -> str:
     """An email or ``agent:<name>`` passes through. A person's name resolves
-    through the picker, and only when exactly one person matches."""
+    through the picker, and only when exactly one person matches.
+
+    With *dispatch* (an assignee to ADD), an agent is refused in a run that
+    may not send (:func:`_refuse_agent_assignee`, H-236). A removal passes
+    ``dispatch=False``, because taking an agent off a task starts nothing.
+    """
+    resolved = await _resolve_assignee_name(value)
+    return _refuse_agent_assignee(resolved) if dispatch else resolved
+
+
+async def _resolve_assignee_name(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
         raise GatewayRefusal("An assignee needs a value.")
@@ -336,7 +376,7 @@ def _priority_card(
 # ── Tasks ────────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 @takes_priority
 async def create_task(
     project_id: str,
@@ -450,7 +490,7 @@ async def _parent_lane_label(project_id: str, parent: dict[str, Any]) -> str:
     return "the default (the parent's lane is closed or in another set)"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 @takes_priority
 async def update_task(
     task_id: str,
@@ -543,7 +583,7 @@ async def update_task(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def assign(task_id: str, assignees: str) -> str:
     """Set who holds a task. assignees is comma-separated: emails,
     agent:<name>, or people's names (resolved through the picker, one match
@@ -576,7 +616,7 @@ async def assign(task_id: str, assignees: str) -> str:
     return "\n".join(["Assigned:", *_task_line(task)])
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def comment(task_id: str, body: str, reply_to: str = "") -> str:
     """Add a comment to a task's timeline, in the member's own words.
     reply_to is the id of the comment it answers (one level deep). The card
@@ -599,7 +639,7 @@ async def comment(task_id: str, body: str, reply_to: str = "") -> str:
     return f"Commented on {_ref(task)} (comment id {row.get('id')}).\n  full_id: {tid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def add_subtasks(task_id: str, titles: str) -> str:
     """Break a task into steps. titles is one subtask per line, or
     comma-separated. ONE card lists every subtask; the member approves the
@@ -657,7 +697,7 @@ async def _lane_name(project_id: str, status_id: Any) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates_to") -> str:
     """Link two tasks. link_type is blocks (task_id blocks other_task_id),
     relates_to, or duplicates. The card names both tasks. unlink_tasks
@@ -685,7 +725,7 @@ async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def unlink_tasks(task_id: str, link_id: str) -> str:
     """Remove a link from a task. link_id comes from task_detail's Links
     list. The card names the task and the link."""
@@ -710,7 +750,7 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
     return f"Removed the link: {label}.\n  full_id: {tid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def move_task(
     task_ids: str, destination_project_id: str = "", parent_task_id: str = ""
 ) -> str:
@@ -796,7 +836,7 @@ async def move_task(
     return "Pass destination_project_id to move between projects, or parent_task_id to re-parent."
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
     """Watch a task or a project for the member, so its changes reach their
     notifications. kind is task or project. stop=true unwatches. Watching
@@ -825,7 +865,7 @@ async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
     return f"You now watch {label}.\n  full_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def complete(task_id: str) -> str:
     """Mark a task done. This moves the task's SHARED status to its
     project's done lane, for everyone. To reopen, set a status by name with
@@ -863,7 +903,7 @@ def _defer_scope(task: dict[str, Any]) -> str:
     return "your inbox only"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def defer(task_id: str, until: str) -> str:
     """Hide a task from the member's own inbox until a date (YYYY-MM-DD).
     Mine only: the team's board does not change, even on a finished task."""
@@ -883,7 +923,7 @@ async def defer(task_id: str, until: str) -> str:
     return f"Deferred {_ref(task)} until {when} in your inbox.\n  full_id: {tid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def unarchive_task(task_id: str) -> str:
     """Bring an archived task back onto its board. This is the undo of
     archiving. list_tasks with include_archived=true finds archived tasks."""
@@ -906,7 +946,7 @@ async def unarchive_task(task_id: str) -> str:
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def create_project(
     name: str,
     parent_project_id: str = "",
@@ -947,7 +987,7 @@ async def create_project(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def update_project(
     project_id: str, name: str = "", description: str = "", status: str = "", lead: str = ""
 ) -> str:
@@ -1043,7 +1083,7 @@ async def _report_change(
     return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def report_save(
     name: str, project_id: str = "", sections: str = "", weeks: int = 0, report_id: str = ""
 ) -> str:
@@ -1180,7 +1220,7 @@ def _next_position(rows: list[dict[str, Any]]) -> int:
     return (max(taken) + 10) if taken else 10
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def create_status(project_id: str, name: str, category: str = "todo", color: str = "") -> str:
     """Add a status lane. category is backlog, todo, in_progress, done,
     cancelled or triage. The lane lands LAST in the set the project uses;
@@ -1214,7 +1254,7 @@ async def create_status(project_id: str, name: str, category: str = "todo", colo
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def update_status(
     project_id: str,
     status: str,
@@ -1261,7 +1301,7 @@ async def update_status(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def create_type(
     project_id: str,
     name: str,
@@ -1310,7 +1350,7 @@ async def create_type(
     return f"Added type {data(row.get('name') or label)} to {where}.\n  type_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def update_type(
     project_id: str,
     type_name: str,
@@ -1402,7 +1442,7 @@ def _field_of(rows: list[dict[str, Any]], wanted: str) -> dict[str, Any]:
     raise GatewayRefusal(f"{data(wanted)} matches more than one field. Pass its key.")
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def create_field(
     project_id: str,
     name: str,
@@ -1466,7 +1506,7 @@ async def create_field(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def update_field(
     project_id: str,
     field: str,
@@ -1523,7 +1563,7 @@ async def update_field(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def create_tag(
     project_id: str, name: str, color: str = "", description: str = "", org_wide: bool = False
 ) -> str:
@@ -1557,7 +1597,7 @@ async def create_tag(
     return f"Added tag {data(row.get('name') or label)} to {where}.\n  tag_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def update_tag(
     project_id: str, tag: str, name: str = "", color: str = "", description: str = ""
 ) -> str:
@@ -1613,7 +1653,7 @@ async def update_tag(
 # ── A comment of the member's own ────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
     """Reword a comment the member wrote. comment_id comes from task_detail's
     timeline or from comment's receipt. Only the author can edit, and the
@@ -1702,7 +1742,7 @@ def _build_rule(
     return rule
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def set_recurrence(
     task_id: str,
     freq: str = "",
@@ -1758,7 +1798,7 @@ async def set_recurrence(
 # ── The member's own: a private capture, and the overlay ─────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def create_personal_task(
     title: str, notes: str = "", due: str = "", context: str = "", next_action: str = ""
 ) -> str:
@@ -1840,7 +1880,7 @@ def _overlay_card(
     return card
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def set_my_overlay(
     task_id: str,
     disposition: str = "",

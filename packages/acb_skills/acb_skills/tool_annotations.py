@@ -87,13 +87,57 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # ever injected, so the risk block below never names them.
     "run_command":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     "request_network_access": {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
+    # H-236: the other sandbox tools. MAF's eight file tools over the run's
+    # TenantFileStore and the three tools of its SkillsProvider. They touch
+    # only the run's own files, and a skill script runs in the container,
+    # which has no network. So each one says open_world=False explicitly.
+    "file_access_read":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "file_access_read_lines": {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "file_access_ls":         {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "file_access_grep":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "file_access_write":      {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "file_access_delete":     {"read_only": False, "destructive": True,  "idempotent": True,  "open_world": False},
+    "file_access_replace":    {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "file_access_replace_lines": {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "load_skill":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "read_skill_resource":    {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "run_skill_script":       {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # H-236: chain tools that had no entry. emit_generative_ui renders in the
+    # member's own sandboxed iframe, load_artifact_kit reads a bundled file,
+    # and the four agent and org memory tools read and write the platform's
+    # own store. None of them reaches outside Metorite.
+    "emit_generative_ui":    {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "load_artifact_kit":     {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "recall_agent":          {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "recall_org":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "save_agent_memory":     {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "save_org_memory":       {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
 }
 
 #: Tools that only a sandboxed run holds (WS-43d). ``_inject_agent_tools`` never
 #: adds them, and only a factory that the broker covers attaches them, to ONE
 #: run. :func:`risk_summary_block` leaves them out, so the addendum of every
 #: other agent stays byte-identical (``tests/unit/test_run_command_tool.py``).
-SANDBOX_TOOL_NAMES: frozenset[str] = frozenset({"run_command", "request_network_access"})
+SANDBOX_TOOL_NAMES: frozenset[str] = frozenset({
+    "run_command", "request_network_access",
+    "file_access_read", "file_access_read_lines", "file_access_ls", "file_access_grep",
+    "file_access_write", "file_access_delete", "file_access_replace",
+    "file_access_replace_lines", "load_skill", "read_skill_resource", "run_skill_script",
+})
+
+#: Names that H-236 registered only so that each one carries an explicit
+#: ``open_world``. The risk block leaves them out, so it stays the text it
+#: was before H-236.
+_H236_UNLISTED: frozenset[str] = frozenset({
+    "emit_generative_ui", "load_artifact_kit", "recall_agent", "recall_org",
+    "save_agent_memory", "save_org_memory",
+})
+
+#: Every name that :func:`annotate` registered: an agent's OWN tool. The risk
+#: block leaves them out. They used to join it whenever their module was
+#: imported, so the block changed with the import order of one process, and
+#: H-236 annotates every own tool of every in-repo agent.
+_AGENT_OWN: set[str] = set()
 
 
 def annotate(
@@ -101,24 +145,30 @@ def annotate(
     read_only: bool = False,
     destructive: bool = False,
     idempotent: bool = False,
-    open_world: bool = False,
+    open_world: bool | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator registering risk annotations for an agent-defined tool.
+
+    ``open_world`` has no default (H-236). A tool that omits it carries no
+    ``open_world`` key, and ``acb_skills.egress`` then counts it as able to
+    send data off the platform. So every tool states it.
 
     Example::
 
         @annotate(destructive=True, open_world=True)
         async def send_email(...): ...
     """
-    hints = {
+    hints: dict[str, bool] = {
         "read_only": read_only,
         "destructive": destructive,
         "idempotent": idempotent,
-        "open_world": open_world,
     }
+    if open_world is not None:
+        hints["open_world"] = bool(open_world)
 
     def _wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
         TOOL_ANNOTATIONS[fn.__name__] = hints
+        _AGENT_OWN.add(fn.__name__)
         fn.__tool_risk__ = hints  # type: ignore[attr-defined]
         return fn
 
@@ -149,14 +199,15 @@ def risk_summary_block() -> str:
     reason about which calls are safe to make freely vs. which reach outside
     the platform or mutate state.
     """
-    listed = {n: h for n, h in TOOL_ANNOTATIONS.items() if n not in SANDBOX_TOOL_NAMES}
-    read_only = sorted(n for n, h in listed.items() if h["read_only"])
+    unlisted = SANDBOX_TOOL_NAMES | _H236_UNLISTED | _AGENT_OWN
+    listed = {n: h for n, h in TOOL_ANNOTATIONS.items() if n not in unlisted}
+    read_only = sorted(n for n, h in listed.items() if h.get("read_only"))
     writes = sorted(
         n for n, h in listed.items()
-        if not h["read_only"] and not h["destructive"]
+        if not h.get("read_only") and not h.get("destructive")
     )
-    destructive = sorted(n for n, h in listed.items() if h["destructive"])
-    open_world = sorted(n for n, h in listed.items() if h["open_world"])
+    destructive = sorted(n for n, h in listed.items() if h.get("destructive"))
+    open_world = sorted(n for n, h in listed.items() if h.get("open_world"))
 
     lines = [
         "### Tool risk annotations",

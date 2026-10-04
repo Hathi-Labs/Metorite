@@ -103,7 +103,7 @@ def _clean(value: Any) -> str:
 # ── Edit a task ──────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def edit_task(task_id: str) -> str:
     """Open an editable form for a task in the chat: title, description,
     status (by name), due, start, the Important and Leveraged flags,
@@ -274,7 +274,7 @@ def _ref(task: dict[str, Any]) -> str:
 # ── Edit a project ───────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def edit_project(project_id: str) -> str:
     """Open an editable form for a space, folder or project: name,
     description, run state (active, paused, stopped), lead. The member
@@ -805,7 +805,7 @@ def _confirm_card(
     return card
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def propose_plan(
     name: str,
     tasks: str,

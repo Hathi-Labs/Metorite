@@ -571,7 +571,7 @@ def _ordered(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 # ── Capture ──────────────────────────────────────────────────────────────────
 
-@_annotate_risk(idempotent=False)
+@_annotate_risk(idempotent=False, open_world=False)
 async def my_tasks_capture(title: str, notes: str = "") -> str:
     """Capture one thought/task into the inbox (capture ≠ clarify).
 
@@ -600,7 +600,7 @@ async def my_tasks_capture(title: str, notes: str = "") -> str:
     return msg
 
 
-@_annotate_risk(idempotent=False)
+@_annotate_risk(idempotent=False, open_world=False)
 async def my_tasks_capture_many(lines: str) -> str:
     """Capture a brain-dump into the inbox. Freeform text is fine — a pasted
     paragraph is atomized into individual items by the AI (deterministic
@@ -664,7 +664,7 @@ _VIEW_QUERY: dict[str, dict[str, str]] = {
 }
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_list(view: str = "inbox", query: str = "",
                    context: str = "") -> str:
     """List tasks for a view.
@@ -702,7 +702,7 @@ async def my_tasks_list(view: str = "inbox", query: str = "",
         _fmt_item(i, mine) for i in shown)
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_list_projects() -> str:
     """List where a task can live: the member's own AREAS (private categories
     under their personal project) and the COMPANY's projects (shared with the
@@ -723,14 +723,14 @@ async def my_tasks_list_projects() -> str:
     return "\n".join(out)
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_accounts() -> str:
     """Connected PM-tool workspaces. There are none, and there cannot be (D52):
     answers with a short note and calls nothing."""
     return _NO_CONNECTOR
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_sync(account_id: str = "", full: bool = False) -> str:
     """Pull tasks from a connected PM tool. There is none (D52), so this is a
     no-op that says so and calls nothing. Kept as a tool so an agent that
@@ -739,7 +739,7 @@ async def my_tasks_sync(account_id: str = "", full: bool = False) -> str:
     return _NO_CONNECTOR
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_inbox_insights() -> str:
     """Whole-inbox health: counts per bucket, oldest capture, stale
     waiting-fors, projects missing a next action. Use before processing."""
@@ -754,7 +754,7 @@ async def my_tasks_inbox_insights() -> str:
     )
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_people(query: str = "") -> str:
     """Search the company's people — roles, skills, capacity, availability
     (the org-knowledge layer). Use to pick WHO should own a delegated task.
@@ -794,7 +794,7 @@ async def my_tasks_people(query: str = "") -> str:
 
 # ── Clarify / organize ───────────────────────────────────────────────────────
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_clarify(item_id: str) -> str:
     """Get the structured clarify proposal for one inbox item — disposition,
     next action, matched project, destination, default stage, confidence.
@@ -806,7 +806,7 @@ async def my_tasks_clarify(item_id: str) -> str:
     return json.dumps(p, indent=1)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_organize(
     item_id: str,
     kind: str,
@@ -911,7 +911,7 @@ def _fmt_project_plan(plan: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_plan_project(
     name: str,
     description: str = "",
@@ -1000,7 +1000,7 @@ async def _importance_patch(item_id: str, important: bool | None) -> int | None:
     return _importance_for(important, current)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
                      defer_until: str = "", context: str = "",
                      energy: str = "", time_estimate_mins: int = 0,
@@ -1072,7 +1072,7 @@ async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
 
 # ── Manage existing tasks (the app's action surface, over chat) ──────────────
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_complete(item_id: str, undo: bool = False) -> str:
     """Mark a task DONE — or reopen it with undo=True. Done moves the task's
     SHARED status into its project's first Done status, so the team's board
@@ -1126,7 +1126,7 @@ def _status_key(item: dict[str, Any]) -> str:
     return str(item.get("status_id") or item.get("workflow_stage") or "")
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_move(item_id: str, to: str) -> str:
     """Move a task between GTD buckets — reactivate a someday, park a next
     action, trash a dead item. (For DONE use my_tasks_complete; for delegating use
@@ -1157,7 +1157,7 @@ def _status_line(item: dict[str, Any], lanes: list[dict[str, Any]]) -> str:
         _lane_label(s) + (" ← current" if s is current else "") for s in lanes)
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_detail(item_id: str) -> str:
     """Full detail for one task: every field (context, energy, estimate,
     priority flags, deep-work, status, assignees, schedule), the latest
@@ -1226,7 +1226,7 @@ async def my_tasks_detail(item_id: str) -> str:
     return "\n".join(lines)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_set_stage(item_id: str, stage: str) -> str:
     """Move a task to one exact STATUS of its own set (D79: stages group,
     statuses write). Pass a status name, e.g. "In review". A stage word
@@ -1325,7 +1325,7 @@ async def my_tasks_delegate(
             f"{_fmt_item(item, mine)}{tail}")
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def my_tasks_subtasks(item_id: str) -> str:
     """List a task's subtasks (checklist steps), in order.
 
@@ -1347,7 +1347,7 @@ async def my_tasks_subtasks(item_id: str) -> str:
     return f"{len(subs)} subtask(s):\n" + "\n".join(lines)
 
 
-@_annotate_risk(idempotent=False)
+@_annotate_risk(idempotent=False, open_world=False)
 async def my_tasks_add_subtasks(item_id: str, titles: str) -> str:
     """Break a task into steps — add subtasks under it. Each is an ordinary
     task in the parent's project, assigned to you, created in the order given.
@@ -1426,7 +1426,7 @@ def _steps_receipt(
     return "\n".join(lines)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_archive(item_id: str, restore: bool = False) -> str:
     """Archive a task (hide it from every active view, yours AND the team's
     board) or un-archive it with restore=True. An open task is refused: the
@@ -1443,7 +1443,7 @@ async def my_tasks_archive(item_id: str, restore: bool = False) -> str:
 
 # ── Calendar / timeboxing ─────────────────────────────────────────────────────
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_schedule(item_id: str, start: str, end: str = "") -> str:
     """Timebox a task onto the calendar — set WHEN the user will do it. Your
     own block: two people assigned one task each block their own time.
@@ -1470,7 +1470,7 @@ async def my_tasks_schedule(item_id: str, start: str, end: str = "") -> str:
     return f"Scheduled → {await _show(await _my_task(item_id))}"
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_unschedule(item_id: str) -> str:
     """Remove a task's calendar time-block (it stays a next action).
 
@@ -1481,7 +1481,7 @@ async def my_tasks_unschedule(item_id: str) -> str:
     return f"Unscheduled → {await _show(await _my_task(item_id))}"
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_list_schedule(from_iso: str, to_iso: str) -> str:
     """List what's timeboxed on the calendar in a datetime window — so you can
     plan around existing blocks and never double-book. The window is
@@ -1556,7 +1556,7 @@ def _fmt_plan(plan: dict[str, Any], applied: bool) -> str:
     return "\n".join(lines)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_plan_day(apply: bool = False, energy_note: str = "") -> str:
     """Rebuild the user's day with AI. Reshuffles what's ALREADY on today's
     calendar (not-done, movable blocks) into the time that's left, SWEEPS IN any
@@ -1590,7 +1590,7 @@ async def my_tasks_plan_day(apply: bool = False, energy_note: str = "") -> str:
     return _fmt_plan(plan or {}, applied=bool((plan or {}).get("applied")))
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_replan_day(apply: bool = False) -> str:
     """Fit what's left — when the user fell behind, take today's not-done movable
     blocks (INCLUDING ones whose time already slipped past earlier today) and
@@ -1608,7 +1608,7 @@ async def my_tasks_replan_day(apply: bool = False) -> str:
     return _fmt_plan(plan or {}, applied=bool((plan or {}).get("applied")))
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_rollover(apply: bool = False) -> str:
     """Return overdue-but-incomplete time-blocks to the user's UNSCHEDULED list
     (clears their schedule) so they can re-plan them, rather than auto-cramming
@@ -1625,7 +1625,7 @@ async def my_tasks_rollover(apply: bool = False) -> str:
     return _fmt_plan(plan or {}, applied=bool((plan or {}).get("applied")))
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_day_digest() -> str:
     """A quick snapshot of the user's day — what's scheduled, how much is
     unscheduled, what's overdue, the ★ One Thing, and estimate accuracy. Use it
@@ -1666,7 +1666,7 @@ async def my_tasks_day_digest() -> str:
     return "\n".join(lines)
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_estimate_stats() -> str:
     """How accurate the user's time estimates are (planned vs actual over recent
     timed blocks) — answers "am I good at estimating?" (read-only)."""
@@ -1684,7 +1684,7 @@ async def my_tasks_estimate_stats() -> str:
             "The planner pads durations to match.")
 
 
-@_annotate_risk(idempotent=True)
+@_annotate_risk(idempotent=True, open_world=False)
 async def my_tasks_set_one_thing(item_id: str = "", date: str = "") -> str:
     """Set (or clear) the user's ★ One Thing — the single most important task for
     a day. The planner then protects it (first, in a peak-energy window, never

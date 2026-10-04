@@ -55,7 +55,7 @@ INTAKE_ACTIONS = ("accept", "decline", "duplicate", "snooze")
 # ── Reads ────────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def project_access(project_id: str) -> str:
     """Who may see a project: its grants, each a member address or a
     `group:<slug>`. Reading only; a grant write is not on the chat surface
@@ -72,7 +72,7 @@ async def project_access(project_id: str) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def project_views(project_id: str) -> str:
     """A project's saved views: name, type (list or board) and id. save_view
     adds or renames one; delete_view removes one."""
@@ -84,7 +84,7 @@ async def project_views(project_id: str) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def calendar(start: str, end: str, project_id: str = "", mine: bool = False) -> str:
     """Tasks on the calendar between two dates (YYYY-MM-DD). mine=true reads
     the member's own scheduled blocks (the Calendar app's read); otherwise
@@ -125,7 +125,7 @@ async def calendar(start: str, end: str, project_id: str = "", mine: bool = Fals
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_contexts() -> str:
     """The GTD contexts the member uses on their own overlay (@office,
     @calls), with how many open tasks carry each."""
@@ -136,7 +136,7 @@ async def my_contexts() -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_led_projects() -> str:
     """The projects the member LEADS, with how much open work each holds and
     the member's own open tasks in it first (WS-39 S6e). A project with no
@@ -156,7 +156,7 @@ async def my_led_projects() -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def watchers(target_id: str, kind: str = "task") -> str:
     """Who watches a task or a project, and whether the member does. For a
     project, `inherited` means an ancestor's watch already covers it."""
@@ -191,7 +191,7 @@ def _intake_facts(row: dict[str, Any]) -> str:
     return " · ".join(facts)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def intake_queue(project_id: str = "") -> str:
     """The intake queue: captured tasks waiting for a decision (accept,
     decline, duplicate, snooze). project_id narrows it. triage_intake
@@ -209,7 +209,7 @@ async def intake_queue(project_id: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def notifications(unread_only: bool = True) -> str:
     """The member's notifications, newest first: mentions, assignments,
     comments on watched tasks. The bell counts are the server's.
@@ -241,7 +241,7 @@ async def notifications(unread_only: bool = True) -> str:
 # ── Writes (class B) ─────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def save_view(project_id: str, name: str, view_type: str = "list", view_id: str = "") -> str:
     """Save a view on a project (name and type: list or board), or rename
     one (pass view_id). The card names the project. delete_view is the
@@ -280,7 +280,7 @@ async def save_view(project_id: str, name: str, view_type: str = "list", view_id
     return f"Saved view {data(row.get('name') or label)} [{kind}] in {data(node.get('name'))}.\n  view_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 @takes_priority
 async def capture_intake(
     title: str,
@@ -352,7 +352,7 @@ async def capture_intake(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def triage_intake(
     task_id: str, action: str, status: str = "", duplicate_of: str = "", until: str = ""
 ) -> str:
@@ -412,7 +412,7 @@ async def triage_intake(
     return "\n".join([f"Intake: {verb}.", *_task_line(merged)])
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def mark_notifications_read(ids: str = "", all_unread: bool = False) -> str:
     """Clear the bell: mark the listed notification ids read
     (comma-separated, from notifications), or every unread one with
