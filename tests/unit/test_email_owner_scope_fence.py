@@ -55,8 +55,8 @@ _OWNER_PREDICATE = re.compile(
 
 #: Each handler in ``routes/email`` with no owner proof in its own body, and
 #: why that is safe. The first 13 entries are the measurement of 2026-10-02.
-#: EM-T3d added the fourteenth. A new entry needs a reason that a reviewer can
-#: check against the code.
+#: EM-T3d added the fourteenth, and EM-G7 added ``oauth_providers``. A new
+#: entry needs a reason that a reviewer can check against the code.
 OWNER_SCOPE_EXEMPT: dict[str, str] = {
     "ai_chat": (
         "Delegates to _build_chat_context, which keeps account_id only when "
@@ -98,8 +98,14 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "own member and organization, and reads no mailbox."
     ),
     "oauth_app_info": (
-        "Returns the client ID and redirect URI of the Microsoft app, never "
-        "the secret. It reads no mailbox."
+        "Returns the client ID and redirect URI of the Microsoft or the Gmail "
+        "app (EM-G7 item 9), never the secret. It reads no mailbox."
+    ),
+    "oauth_providers": (
+        "EM-G7 item 8, D-EM-35. The capability read: one boolean per mail "
+        "provider, true when its app is configured (and, for Gmail, when "
+        "EMAIL_GMAIL_CONNECT is on). No client ID, no secret, no URL, and it "
+        "reads no mailbox and no table. Fence: test_email_gmail_connect.py."
     ),
     "oauth_callback": (
         "Writes the caller's OWN mailbox row. It checks that the session's "

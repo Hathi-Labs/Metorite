@@ -83,6 +83,8 @@ router = APIRouter(
 #      key (`OPERATOR_ONLY_ENV_KEYS`: a URL, host, domain, port or path) is
 #      403, on configure, put, delete, custom registration and the GitHub
 #      writers.
+#      The keys of the mail apps are platform names, so no tenant can aim
+#      the mail connect at a client of their own (WS-17 EM-G7, O-GM-5).
 #   C. THE GATE. Only a key in `BUILTIN_ENV_KEYS`, which a built-in guide
 #      declares, reaches `os.environ` and the env file. A key that a custom
 #      integration declares goes to the store of the organization only. Any
@@ -303,26 +305,14 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             {"key": "ANYMAILFINDER_API_KEY", "label": "API Key", "sensitive": True},
         ],
     },
-    "gmail-oauth": {
-        "label": "Gmail OAuth (user sign-in)",
-        "description": "Let users connect their personal Gmail accounts via Google sign-in. Required for the Email app.",
-        "setup_url": "https://console.cloud.google.com/apis/credentials",
-        "docs_url": "https://developers.google.com/gmail/api/guides/oauth-installed-app",
-        "instructions": (
-            "1. Go to Google Cloud Console → APIs & Services → Credentials.\n"
-            "2. Click 'Create Credentials' → 'OAuth client ID'.\n"
-            "3. Choose 'Web application'.\n"
-            "4. Add Authorized redirect URI:\n"
-            "   https://app.metorite.com/api/email/oauth/gmail/callback\n"
-            "   (or your workbench's public URL).\n"
-            "5. Copy the Client ID and Client Secret below.\n"
-            "6. Also enable the Gmail API under 'Enabled APIs & Services'."
-        ),
-        "env_vars": [
-            {"key": "GMAIL_OAUTH_CLIENT_ID", "label": "Client ID", "sensitive": False},
-            {"key": "GMAIL_OAUTH_CLIENT_SECRET", "label": "Client Secret", "sensitive": True},
-        ],
-    },
+    # ⚠️ NO `gmail-oauth` ENTRY (WS-17 EM-G7, O-GM-5). Metorite owns ONE
+    # Google mail app for every organization (D-EM-1, D-EM-5 amended), and an
+    # operator sets it in the env file of the box (`email_app_master_plan.md`
+    # §12.4). Layer B (`env_guard.is_platform_env`) refuses each
+    # `GMAIL_OAUTH_*`, `MSFT_OAUTH_*` and `AUTH_MICROSOFT_ENTRA_ID_*` key on
+    # every route here. The id stays reserved (`RESERVED_SERVICE_IDS`).
+    # `microsoft-oauth` stays for its status, which the banner of the
+    # Integrations page reads. Layer B refuses its two mail keys too.
     "microsoft-oauth": {
         "label": "Microsoft OAuth (Email)",
         "description": (
@@ -381,7 +371,6 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
 
 _GUIDE_CATEGORIES: dict[str, str] = {
     "github":           "core",
-    "gmail-oauth":      "communication",
     "microsoft-oauth":  "communication",
     "zoho-crm":         "crm",
     "apollo":         "prospecting",

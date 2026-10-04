@@ -162,8 +162,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "ACB_", "FERNET", "GATEWAY_", "LITELLM_", "AUTH_", "NEXTAUTH_",
     "SUPABASE_", "OPERATOR_", "CUSTOMER_CONSOLE_", "CONSOLE_", "ROUTER_",
     "RESEND_", "LANGFUSE_", "OTEL_", "GOOGLE_SSO_", "CC_",
-    # The mail apps (D-EM-1). WS-17 EM-G7 names the same three prefixes in
-    # `email_ingestion.providers.app_credentials.MAIL_APP_ENV_PREFIXES`.
+    # The mail apps (D-EM-1, WS-17 EM-G7, O-GM-5). This is the one list of
+    # them. `test_email_gmail_connect.py` fails when `oauth_app` reads a
+    # name that these prefixes do not cover.
     "GMAIL_OAUTH_", "MSFT_OAUTH_", "AUTH_MICROSOFT_ENTRA_ID_", "GMAIL_PUSH_",
     # Backup. acb-backup.service runs scripts/backup_db.sh as root with the
     # env file, so BACKUP_REMOTE sends every dump to the host it names, and

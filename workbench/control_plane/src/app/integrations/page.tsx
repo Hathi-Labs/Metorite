@@ -1001,10 +1001,12 @@ function EmailTab() {
   }, [fetchAccounts]);
 
   const [oauthStatus, setOauthStatus] = useState<{
-    gmail: boolean; microsoft: boolean;
-  }>({ gmail: false, microsoft: false });
+    microsoft: boolean;
+  }>({ microsoft: false });
 
-  // Check OAuth configuration status for Gmail + Microsoft
+  // Check OAuth configuration status for Microsoft. Gmail has no row here
+  // since WS-17 EM-G7 (O-GM-5): Metorite owns the Google app, and the Email
+  // app reads its availability from GET /email/oauth/providers (D-EM-35).
   useEffect(() => {
     const check = async () => {
       try {
@@ -1012,7 +1014,6 @@ function EmailTab() {
         if (!res.ok) return;
         const data: Array<{ service: string; configured: boolean }> = await res.json();
         setOauthStatus({
-          gmail: data.find((i: any) => i.service === "gmail-oauth")?.configured ?? false,
           microsoft: data.find((i: any) => i.service === "microsoft-oauth")?.configured ?? false,
         });
       } catch { /* non-fatal */ }
@@ -1103,7 +1104,7 @@ function EmailTab() {
       </div>
 
       {/* OAuth status banner — shows which providers are ready */}
-      {(!oauthStatus.gmail || !oauthStatus.microsoft) && (
+      {!oauthStatus.microsoft && (
         <div className="mx-4 mt-3 p-3 rounded-xl bg-warning/8 border border-warning/20">
           <div className="flex items-start gap-2.5">
             <Icon name="AlertCircle" className="w-4 h-4 text-warning mt-0.5 shrink-0" />
@@ -1112,19 +1113,11 @@ function EmailTab() {
                 OAuth sign-in not fully configured
               </p>
               <p className="text-[11px] text-muted-foreground leading-relaxed mb-2">
-                To connect Gmail or Outlook accounts via OAuth, you need to
-                register Metorite as an app with Google and Microsoft first.
-                This is a one-time setup.
+                To connect Outlook accounts via OAuth, you need to register
+                Metorite as an app with Microsoft first. This is a one-time
+                setup.
               </p>
               <div className="flex flex-wrap gap-1.5">
-                {!oauthStatus.gmail && (
-                  <a href="/integrations?tab=apis&search=Gmail+OAuth"
-                    className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors">
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-                    Gmail OAuth — not set up
-                    <Icon name="ExternalLink" className="w-2.5 h-2.5" />
-                  </a>
-                )}
                 {!oauthStatus.microsoft && (
                   <a href="/integrations?tab=apis&search=Microsoft+OAuth"
                     className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors">

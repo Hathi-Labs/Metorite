@@ -61,6 +61,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { bounceQuery } from "../../bounce";
 
 export const dynamic = "force-dynamic";
 
@@ -80,9 +81,14 @@ function relativeRedirect(location: string, status: number): NextResponse {
   return new NextResponse(null, { status, headers: { location } });
 }
 
-/** Send a failure to the callback page, because this is a navigation. */
-function failed(reason: string): NextResponse {
-  const qs = new URLSearchParams({ error: reason }).toString();
+/**
+ * Send a failure to the callback page, because this is a navigation.
+ *
+ * Each failure names its provider (EM-G7 E-C1). Pass the path segment as it
+ * came: `bounceQuery` lets only `gmail` and `microsoft` through.
+ */
+function failed(reason: string, provider: string): NextResponse {
+  const qs = bounceQuery(reason, provider);
   return relativeRedirect(`${CALLBACK_PAGE}?${qs}`, 303);
 }
 
@@ -148,7 +154,7 @@ export async function GET(
 ): Promise<NextResponse> {
   const { provider } = await params;
   if (!PROVIDER_SEGMENT.test(provider)) {
-    return failed("unknown_provider");
+    return failed("unknown_provider", provider);
   }
 
   // EM-T3c: before the session check, because the admin has no session.
@@ -180,28 +186,28 @@ export async function GET(
       signal: AbortSignal.timeout(CALLBACK_TIMEOUT_MS),
     });
   } catch {
-    return failed("gateway_unreachable");
+    return failed("gateway_unreachable", provider);
   }
 
   if (res.status < 300 || res.status >= 400) {
-    return failed(`callback_failed_${res.status}`);
+    return failed(`callback_failed_${res.status}`, provider);
   }
 
   const location = res.headers.get("location");
-  if (!location) return failed("callback_no_location");
+  if (!location) return failed("callback_no_location", provider);
 
   let target: URL;
   try {
     target = new URL(location);
   } catch {
-    return failed("callback_bad_location");
+    return failed("callback_bad_location", provider);
   }
   if (target.pathname !== CALLBACK_PAGE) {
-    return failed("callback_bad_location");
+    return failed("callback_bad_location", provider);
   }
   const expected = workbenchOrigin();
   if (expected !== null && target.origin !== expected) {
-    return failed("callback_bad_location");
+    return failed("callback_bad_location", provider);
   }
 
   return relativeRedirect(target.pathname + target.search, 302);

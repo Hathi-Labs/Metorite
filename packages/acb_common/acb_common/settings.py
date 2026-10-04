@@ -422,11 +422,29 @@ class Settings(BaseSettings):
     gmail_default_user: str = ""         # default mailbox to impersonate
     gmail_pubsub_token: str = ""         # bearer token expected on /webhooks/gmail
 
-    # Email OAuth (Gmail + Microsoft) — configured via Integrations → APIs UI
+    # Email OAuth (Gmail + Microsoft). Metorite owns ONE app for each provider
+    # (D-EM-1, D-EM-5 amended). An operator sets these on the box under gate
+    # `env-write`. Since WS-17 EM-G7 the Integrations writes REFUSE them
+    # (O-GM-5), because one organization must not set the mail app of all.
     gmail_oauth_client_id: str = ""
     gmail_oauth_client_secret: str = ""
     msft_oauth_client_id: str = ""
     msft_oauth_client_secret: str = ""
+
+    # ── The Gmail connect, dark (WS-17 EM-G7, orchestrator, 2026-10-05) ──────
+    #
+    # The production box already holds a Google client, so the app alone
+    # cannot keep Gmail hidden. While this is false, `GET /email/oauth/
+    # providers` answers `gmail: false`, and the authorize leg, the callback
+    # leg and `GET /email/oauth/gmail/app` all refuse. Microsoft ignores it.
+    # The one reader is
+    # `gateway.routes.email.transport.oauth.gmail_connect_enabled`.
+    # `get_settings()` is cached, so a change needs a restart.
+    #
+    # 🔴 A flip on a box is gate `enforcement-flip`. It waits for EM-G10,
+    # after EM-G2 to EM-G5 and EM-G9 merge (email_app_master_plan.md
+    # §12.3.12). Fence: tests/unit/test_email_gmail_connect.py.
+    email_gmail_connect: bool = False
 
     # Dynamic Agent Loader (v2 — ADR-013)
     # Repos are cloned ONCE into agents_clone_dir/repos/ and refreshed with
