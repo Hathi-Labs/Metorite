@@ -138,6 +138,23 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    "attachments": {
+        "label": "Chat attachments",
+        "summary": (
+            "Read the text of a document that the member attached in this "
+            "chat: Word, PDF, text, Markdown or CSV."
+        ),
+        "description": (
+            "Reads the text of a file attached in the caller's own chat "
+            "(H-229): .docx, .pdf, .txt, .md and .csv, by pure parsing with "
+            "caps and a deadline. It never reads a file of another chat, and "
+            "it runs no code."
+        ),
+        "tools": ("read_attachment",),
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     "coding": {
         "label": "Coding extras",
         "summary": (

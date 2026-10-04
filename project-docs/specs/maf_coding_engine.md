@@ -1024,10 +1024,18 @@ reason codes.
   the `install_dependency` that its scope names.
 - task-manager and app-builder also lose the Copilot CLI shell. The My Tasks
   flows use only the 29 `my_tasks_*` tools, so they do not change.
-- ⚠️ **One live Projects flow stops.** On 2026-10-02 and 2026-10-03, the
-  projects-assistant of a customer org used `code_task` to read an uploaded
-  `.docx` (production logs, PR #598 review). H-229 gives chat attachments
-  platform-side text extraction, so no code needs to run.
+- ⚠️ **One live Projects flow stopped, and H-229 gives it back.** On
+  2026-10-02 and 2026-10-03, the projects-assistant of a customer org used
+  `code_task` to read an uploaded `.docx` (production logs, PR #598 review).
+  ✅ Since 2026-10-04, `read_attachment` reads the text of a `.docx`, PDF,
+  `.txt`, `.md` or `.csv` file attached in that chat. No code runs on the
+  host (`projects_ai_chat.md` §22). It is not a `SHELL_TOOLS` member, so this
+  block does not withhold it. A test turns red if it ever joins that set.
+  The tool opens each file through `acb_skills.safe_open` (§7.5 rule B). In
+  a covered run it holds `broker.host_dir()`, the lock of the file tools,
+  during the read. So WS-43d's `WITHHELD_HOST_TOOLS` does not name it, and
+  a covered run keeps it. It takes the store key from the run, never from
+  the `.cc-instance` marker that a container could rewrite.
 - ⚠️ app-builder loses its build shell, `node build/build_t2.mjs`, so a
   Custom App build stops in the App Workshop. That pane is `preview`. WS-43h
   gives the shell back in the sandbox, and D86 parks WS-43h (§16.2).
@@ -3281,6 +3289,12 @@ projects-assistant declares no integration, so §7.7 condition 3 holds.
   The fence is `test_a_covered_run_has_no_web_tool_and_the_host_sends_nothing`
   (WS43-F21). It traps every real HTTP send of the host. WS-43u renamed it,
   because its old name said that no data leaves the platform.
+- **A covered run keeps `read_attachment` (H-229).** It opens the thread's
+  own upload folder, `inputs/<thread slug>/`, through the safe opener, and
+  it holds `host_dir()` during the read. The tool starts no process and
+  opens no network connection. The fence is
+  `test_a_covered_run_reads_its_own_attachment_and_no_other`
+  (`tests/unit/test_read_attachment.py`).
 
 **Owner decision, 2026-10-03: delegation stays in a covered run.** The
 question in chat was "During a sandboxed coding turn, should the Projects

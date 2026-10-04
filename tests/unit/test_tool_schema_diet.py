@@ -86,6 +86,10 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                                  'search': 'string', 'since_days': 'integer',
                                  'thread_id': 'string'},
                       'required': []},
+    # H-229 (projects_ai_chat.md §22). A file name and an offset only: the
+    # workspace and the thread come from the run's context, never the model.
+    'read_attachment': {'params': {'name': 'string', 'offset': 'integer'},
+                        'required': ['name']},
     'recall_agent': {'params': {'query': 'string'}, 'required': ['query']},
     'recall_notes': {'params': {'path': 'string', 'query': 'string'},
                      'required': ['path']},

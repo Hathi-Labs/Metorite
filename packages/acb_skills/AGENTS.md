@@ -89,6 +89,29 @@ clone cache.
    tests/unit/test_projects_sandbox_tools.py (WS43-F21), and for the rules
    for code tests/unit/test_generated_addendum.py and
    tests/unit/test_projects_agent.py.
+5f. attachment_text.py + attachment_tools.py -- `read_attachment` (H-229,
+   spec: project-docs/specs/projects_ai_chat.md §22). It returns the text of a
+   `.docx`, `.pdf`, `.txt`, `.md` or `.csv` file attached in the caller's own
+   chat. `attachment_text` parses bytes only: no subprocess, no code, and
+   pypdf's `jbig2dec` is off. Every cap is a module constant there. The PDF
+   deadline stops a page in the middle (pypdf's `visitor_operand_before`). A
+   Word part must be UTF-8, and `pyexpat` refuses a DTD at its first event.
+   Before each PDF page it caps the font setup that pypdf runs before the
+   first operator: 64 font entries and 2 MB of font program bytes for each
+   resource dictionary, the page's and every reachable form's. The parses
+   run on a pool of `MAX_PARSES` threads of their own, and the reads on
+   another small pool, never on the default executor. A slot is held until
+   its worker really ends.
+   `attachment_tools` takes the workspace, the thread and the store key from
+   `artifact_context()`, never from the `.cc-instance` marker, and only a
+   file name from the model. It opens through `safe_open` (5d). In a run that
+   `sandbox_broker.covers()`, it holds `broker.host_dir()` during the read,
+   so `WITHHELD_HOST_TOOLS` (5e) does not name it.
+   `agent_paths.upload_dir_rel` is the ONE rule for where an upload lands:
+   `inputs/<thread slug>/` in a shared agent's tenant dir, else `inputs/`.
+   It builds on `thread_slug`, the one slug of `outputs/<thread slug>/` too.
+   The gateway upload route and this tool both call it. Do not add a second
+   reader of an attachment. Fence: tests/unit/test_read_attachment.py.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The
