@@ -1911,6 +1911,53 @@ async def _mint_run_row_bounded(
         )
 
 
+async def _extract_run_memory(
+    run_id: str,
+    extract_user: str,
+    history: list[dict[str, str]],
+    message: str,
+    folded: dict[str, Any] | None,
+    *,
+    agent_name: str,
+    thread_id: str,
+) -> bool:
+    """Extract one finished turn into Mem0. Returns True when it extracted.
+
+    Best-effort: it never raises, so it never kills the relay.
+
+    H-236: a covered run's conversation holds member data from a sandboxed
+    turn, and memory is a store that later runs read. So the extraction is
+    skipped for a run that bound ``no_egress``. The run decided that at its
+    own start and recorded it by run id (``executor.run_was_no_egress``).
+    Nothing in the request reaches that answer, and an error skips the
+    extraction too. Fence: ``tests/unit/test_delegation_no_egress.py``.
+    """
+    if not (extract_user and folded):
+        return False
+    try:
+        from orchestrator.executor import run_was_no_egress
+        skip = run_was_no_egress(run_id)
+    except Exception:  # fail closed: no extraction
+        skip = True
+    if skip:
+        _log.info("agent.run_end_memory_extraction_skipped_no_egress",
+                  thread_id=thread_id[:12])
+        return False
+    try:
+        from acb_memory import add_memories_background
+        from gateway.chat_fold import build_extraction_conversation
+
+        conv = build_extraction_conversation(history, message, folded)
+        if not conv:
+            return False
+        await add_memories_background(extract_user, conv, agent_id=agent_name)
+        return True
+    except Exception:  # extraction must never kill the relay
+        _log.warning("agent.run_end_memory_extraction_failed",
+                     thread_id=thread_id[:12])
+        return False
+
+
 @router.post("/run/stream", summary="Stream a named agent run as AG-UI SSE events")
 async def run_agent_stream_endpoint(
     req: AgentRunRequest,
@@ -2227,24 +2274,10 @@ async def run_agent_stream_endpoint(
         # completed after a browser-gone/reconnect contributed nothing to
         # Mem0. The gateway is now the single extraction owner for this path
         # (route.ts no longer extracts for named agents). Best-effort.
-        if not (_extract_user and folded):
-            return
-        try:
-            from acb_memory import add_memories_background  # noqa: PLC0415
-
-            from gateway.chat_fold import (  # noqa: PLC0415
-                build_extraction_conversation,
-            )
-            conv = build_extraction_conversation(
-                _mem_history, _mem_message, folded,
-            )
-            if conv:
-                await add_memories_background(
-                    _extract_user, conv, agent_id=agent_name,
-                )
-        except Exception:  # noqa: BLE001 — extraction must never kill the relay
-            _log.warning("agent.run_end_memory_extraction_failed",
-                         thread_id=thread_id[:12])
+        await _extract_run_memory(
+            run_id, _extract_user, _mem_history, _mem_message, folded,
+            agent_name=agent_name, thread_id=thread_id,
+        )
 
     _actor = (getattr(user, "email", "") or "").strip()
     await _refuse_if_another_run_is_active(thread_id, _actor)

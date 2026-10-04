@@ -23,6 +23,16 @@ from typing import Any
 import httpx
 from acb_common import get_logger, get_settings
 
+# H-236: every tool states ``open_world``, and a tool that omits it counts as
+# a send (``acb_skills.egress`` fails closed). ``True`` marks a tool that can
+# carry text that the model chose off the platform: a send, a forward or reply
+# or webhook rule, a rule run that applies those, a signature on outgoing
+# mail, the approval of a pending send, and the knowledge base that feeds
+# replies to outside senders. ``manage_inbox``, ``create_label`` and
+# ``draft_reply`` write to the mail provider (a label or folder name, a saved
+# draft one click from a send), so they say ``True`` too. Reads, the
+# Reply-Zero state and the rules' own housekeeping say ``False``. A run that
+# a covered Projects run calls keeps only the ``False`` tools.
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -395,6 +405,7 @@ async def _mailbox_name(account_id: str) -> str | None:
     return None
 
 
+@_annotate_risk(open_world=False)
 async def list_accounts() -> str:
     """List the user's connected email accounts as "label · address", with
     the id and the unread count — also answers "how many unread do I have?"
@@ -457,6 +468,7 @@ def _fmt_recipients(lst: Any) -> str:
     return ", ".join(out)
 
 
+@_annotate_risk(open_world=False)
 async def read_email(email_id: str, full: bool = False) -> str:
     """Fetch one email by id — sender, To/Cc, subject, attachments, and body.
 
@@ -497,6 +509,7 @@ async def read_email(email_id: str, full: bool = False) -> str:
     return "\n".join(lines) + "\n---\n" + (e.get("body_text") or "")[:4000]
 
 
+@_annotate_risk(open_world=False)
 async def read_thread(email_id: str = "", thread_id: str = "") -> str:
     """Read an ENTIRE email conversation in ONE call — every message's sender,
     date and body, oldest first.
@@ -553,6 +566,7 @@ async def read_thread(email_id: str = "", thread_id: str = "") -> str:
     return "\n\n".join(out)
 
 
+@_annotate_risk(open_world=False)
 async def find_urgent(account_id: str | None = None) -> str:
     """Find emails that look urgent / need attention soon."""
     params: dict[str, Any] = {
@@ -580,6 +594,7 @@ async def find_urgent(account_id: str | None = None) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def find_needs_reply(account_id: str) -> str:
     """List threads whose latest message is inbound and awaiting your reply."""
     data = await _get(
@@ -597,6 +612,7 @@ async def find_needs_reply(account_id: str) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def find_priority(account_id: str, kind: str = "needs_reply") -> str:
     """Surface the emails that most need attention, by ``kind``:
 
@@ -619,6 +635,7 @@ async def find_priority(account_id: str, kind: str = "needs_reply") -> str:
     return await find_needs_reply(account_id)
 
 
+@_annotate_risk(open_world=False)
 async def get_account_overview(account_id: str) -> str:
     """High-level snapshot: totals, read-rate, top senders, sender categories."""
     overview = await _get(
@@ -645,6 +662,7 @@ async def get_account_overview(account_id: str) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def query_inbox(
     account_id: str,
     query: str | None = None,
@@ -724,6 +742,7 @@ async def query_inbox(
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def get_important_emails(account_id: str, days: int = 30) -> str:
     """The emails that most need attention — answers "what are the most important
     emails I need to check?".
@@ -747,6 +766,7 @@ async def get_important_emails(account_id: str, days: int = 30) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def present_email_groups(groups_json: str) -> str:
     """Render an INTERACTIVE, CATEGORIZED board of emails in the chat — use this
     whenever you're presenting emails split into named categories (e.g. HR,
@@ -848,7 +868,7 @@ async def present_email_groups(groups_json: str) -> str:
 
 # ── Inbox action tools ───────────────────────────────────────────────────────
 
-@_annotate_risk(destructive=True)
+@_annotate_risk(destructive=True, open_world=True)
 async def manage_inbox(
     action: str,
     message_ids: list[str],
@@ -920,6 +940,7 @@ async def manage_inbox(
     return f"{action}: affected {res.get('affected', 0)} message(s)."
 
 
+@_annotate_risk(open_world=True)
 async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str:
     """Draft a context-aware reply to an email. Set save=true to also create a
     provider draft in the user's Drafts folder. The draft is always made in
@@ -947,6 +968,7 @@ async def draft_reply(email_id: str, account_id: str, save: bool = False) -> str
 
 # ── Sender categorization tools ──────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def categorize_senders(account_id: str) -> str:
     """Re-project sender categories from the labels the user's rules applied.
 
@@ -964,6 +986,7 @@ async def categorize_senders(account_id: str) -> str:
     )
 
 
+@_annotate_risk(open_world=False)
 async def auto_categorize_inbox(account_id: str, apply: bool = False) -> str:
     """Categorize uncategorized inbox mail from patterns already learned.
 
@@ -1003,6 +1026,7 @@ async def auto_categorize_inbox(account_id: str, apply: bool = False) -> str:
     )
 
 
+@_annotate_risk(open_world=False)
 async def get_sender_categories(account_id: str) -> str:
     """Show the category vocabulary and how many senders fall in each."""
     data = await _get("/email/senders/categories", {"account_id": account_id})
@@ -1020,6 +1044,7 @@ async def get_sender_categories(account_id: str) -> str:
 
 # ── Rule / automation tools ──────────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def get_rules_and_settings(account_id: str) -> str:
     """List the account's automation rules and assistant settings."""
     rules = (await _get("/email/rules", {"account_id": account_id})).get("rules", [])
@@ -1046,6 +1071,7 @@ async def get_rules_and_settings(account_id: str) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=True)
 async def create_rule(
     account_id: str | None = None,
     *,
@@ -1131,6 +1157,7 @@ async def create_rule(
     return f"Created rule '{name}' (id={res.get('id')}) in {await _named(account_id)}."
 
 
+@_annotate_risk(open_world=False)
 async def delete_rule(account_id: str, rule_id: str) -> str:
     """Delete an automation rule permanently. Confirm with the user first —
     disabling (update_rule_state) is reversible; deleting is not."""
@@ -1138,6 +1165,7 @@ async def delete_rule(account_id: str, rule_id: str) -> str:
     return f"Deleted rule {rule_id}."
 
 
+@_annotate_risk(open_world=True)
 async def run_rules(
     account_id: str | None = None,
     scope: str = "new",
@@ -1188,6 +1216,7 @@ async def run_rules(
     )
 
 
+@_annotate_risk(open_world=True)
 async def update_rule(
     account_id: str,
     rule_id: str,
@@ -1239,6 +1268,7 @@ async def update_rule(
     return f"Updated rule '{rule.get('name')}'."
 
 
+@_annotate_risk(open_world=True)
 async def learn_rule_pattern(
     account_id: str | None = None, *, rule_id: str, sender: str = "",
     exclude: bool = False, subject_keyword: str = "",
@@ -1282,6 +1312,7 @@ async def learn_rule_pattern(
     )
 
 
+@_annotate_risk(open_world=True)
 async def update_assistant_settings(
     account_id: str | None = None,
     about: str | None = None,
@@ -1377,6 +1408,7 @@ async def update_assistant_settings(
     return f"Assistant settings updated for {await _named(account_id)}."
 
 
+@_annotate_risk(open_world=False)
 async def list_knowledge(account_id: str) -> str:
     """List the account's knowledge-base entries (reference snippets the
     assistant draws on when drafting replies)."""
@@ -1390,6 +1422,7 @@ async def list_knowledge(account_id: str) -> str:
     )
 
 
+@_annotate_risk(open_world=True)
 async def save_knowledge(
     account_id: str | None = None,
     *,
@@ -1428,6 +1461,7 @@ async def save_knowledge(
     return f"Saved knowledge entry '{title}' in {await _named(account_id)}."
 
 
+@_annotate_risk(open_world=False)
 async def generate_writing_style(account_id: str | None = None) -> str:
     """Analyze the user's recent sent emails and save a writing-style guide the
     assistant follows when drafting. Use when the user asks you to learn or match
@@ -1452,7 +1486,7 @@ async def generate_writing_style(account_id: str | None = None) -> str:
     )
 
 
-@_annotate_risk(destructive=True)
+@_annotate_risk(destructive=True, open_world=True)
 async def install_default_rules(
     account_id: str | None = None, reset: bool = False,
 ) -> str:
@@ -1508,6 +1542,7 @@ async def _patch_settings(body: dict[str, Any]) -> Any:
     return (await _request("PUT", "/email/assistant/settings", json=body)).json()
 
 
+@_annotate_risk(open_world=False)
 async def find_follow_ups(account_id: str) -> str:
     """Scan NOW for threads waiting too long for a reply, label them "Follow-up",
     and — when follow-up auto-draft is on — draft nudges. Use when the user asks
@@ -1536,6 +1571,7 @@ async def find_follow_ups(account_id: str) -> str:
     )
 
 
+@_annotate_risk(open_world=False)
 async def suggest_unsubscribes(account_id: str | None = None) -> str:
     """Surface likely newsletters/subscriptions to consider unsubscribing from."""
     params: dict[str, Any] = {"folder": "inbox", "limit": "200"}
@@ -1559,6 +1595,7 @@ async def suggest_unsubscribes(account_id: str | None = None) -> str:
 
 # ── Labels / folders / send ──────────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def list_labels(account_id: str) -> str:
     """List the user-applicable label/folder names on the account."""
     labels = await _get(f"/email/accounts/{account_id}/labels")
@@ -1571,6 +1608,7 @@ async def list_labels(account_id: str) -> str:
     return "Labels: " + ", ".join(n for n in names if n)
 
 
+@_annotate_risk(open_world=True)
 async def create_label(account_id: str, name: str) -> str:
     """Create (or reuse) a label/folder on the account."""
     res = await _post(f"/email/accounts/{account_id}/folders", {"name": name})
@@ -1751,6 +1789,7 @@ async def send_email(
 
 # ── Attachments / artifacts ──────────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def list_artifacts(agent_name: str = "email-assistant") -> str:
     """List the files you can attach to emails: the files in your own
     email-assistant workspace. Attach a file by passing its path in
@@ -1797,6 +1836,7 @@ async def send_draft(account_id: str, draft_id: str) -> str:
 
 # ── Knowledge base (edit/remove) ─────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def delete_knowledge(account_id: str, knowledge_id: str) -> str:
     """Delete a knowledge-base entry by id."""
     await _delete(f"/email/knowledge/{knowledge_id}")
@@ -1846,6 +1886,7 @@ async def unsubscribe_sender(
     )
 
 
+@_annotate_risk(open_world=False)
 async def keep_newsletter(account_id: str, email: str) -> str:
     """Keep receiving a sender's mail (undo an unsubscribe / mark approved)."""
     await _post("/email/newsletters", {
@@ -1854,6 +1895,7 @@ async def keep_newsletter(account_id: str, email: str) -> str:
     return f"Keeping {email} — marked approved."
 
 
+@_annotate_risk(open_world=False)
 async def list_cold_senders(account_id: str) -> str:
     """List senders flagged by the cold-email blocker."""
     data = await _get("/email/cold-senders", {"account_id": account_id})
@@ -1866,6 +1908,7 @@ async def list_cold_senders(account_id: str) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def set_cold_sender(
     account_id: str, from_email: str, is_cold: bool = True
 ) -> str:
@@ -1879,6 +1922,7 @@ async def set_cold_sender(
     return f"{from_email} {verb}."
 
 
+@_annotate_risk(open_world=False)
 async def set_sender_status(account_id: str, email: str, status: str) -> str:
     """Set how a sender is treated, by ``status``:
 
@@ -1900,6 +1944,7 @@ async def set_sender_status(account_id: str, email: str, status: str) -> str:
 
 # ── Reply Zero ───────────────────────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def mark_thread_done(
     account_id: str, thread_id: str, done: bool = True
 ) -> str:
@@ -1910,6 +1955,7 @@ async def mark_thread_done(
     return f"Thread {'marked done' if done else 'reopened'}."
 
 
+@_annotate_risk(open_world=False)
 async def reclassify_reply_zero(account_id: str) -> str:
     """Rebuild Reply Zero (To Reply / Awaiting / FYI) with the current rules.
     Runs in the background; check find_needs_reply afterwards."""
@@ -1919,6 +1965,7 @@ async def reclassify_reply_zero(account_id: str) -> str:
 
 # ── Rules history (approve / reject / undo) ──────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def list_rule_history(account_id: str, limit: int = 15) -> str:
     """List recent rule executions (what rules did to which mail), including
     PENDING items awaiting approval and APPLIED items you can undo."""
@@ -1938,6 +1985,7 @@ async def list_rule_history(account_id: str, limit: int = 15) -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=True)
 async def resolve_execution(execution_id: str, decision: str) -> str:
     """Act on a rule execution from list_rule_history:
 
@@ -2027,7 +2075,7 @@ async def digest(account_id: str, period: str = "day", send: bool = False) -> st
 
 # ── Account sync ─────────────────────────────────────────────────────────────
 
-@_annotate_risk(destructive=True)
+@_annotate_risk(destructive=True, open_world=False)
 async def sync_account(
     account_id: str, full: bool = False, purge: bool = False
 ) -> str:
@@ -2057,6 +2105,7 @@ async def sync_account(
 
 # ── Learned draft patterns ───────────────────────────────────────────────────
 
+@_annotate_risk(open_world=False)
 async def list_patterns(account_id: str, kind: str = "draft") -> str:
     """List the assistant's LEARNED patterns, by ``kind``:
 
@@ -2092,6 +2141,7 @@ async def list_patterns(account_id: str, kind: str = "draft") -> str:
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=False)
 async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
     """Forget a learned pattern by id. ``kind`` selects which store it's from:
     ``draft`` (writing preferences) or ``rule`` (rule-classification pins) —
@@ -2104,6 +2154,7 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
     return f"Forgot learned pattern {pattern_id}."
 
 
+@_annotate_risk(open_world=False)
 async def list_senders(
     account_id: str | None = None,
     view: str = "top",
@@ -2153,6 +2204,7 @@ async def list_senders(
     return "\n".join(lines)
 
 
+@_annotate_risk(open_world=True)
 async def create_rules_from_prompt(
     account_id: str | None = None, *, prompt: str,
 ) -> str:
@@ -2182,6 +2234,7 @@ async def create_rules_from_prompt(
     return f"Created {len(created)} rule(s) in {await _named(account_id)}: {names}."
 
 
+@_annotate_risk(open_world=False)
 async def test_rule_match(
     account_id: str,
     email_id: str | None = None,

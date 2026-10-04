@@ -116,7 +116,7 @@ def _change_text(meta: dict[str, Any]) -> tuple[str, str, str]:
 # ── The timeline ─────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def render_timeline(task_id: str, kind: str = "all") -> str:
     """Draw a task's timeline as a card: every comment, field change,
     assignment and system note, newest first, with who and when. kind is
@@ -202,7 +202,7 @@ def _list_params(project_id: str, **extra: Any) -> dict[str, Any]:
     return params
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def render_board(project_id: str, assignee: str = "", tags: str = "") -> str:
     """Draw a project's board as a card: one column per status lane, the
     OPEN tasks in each (done and cancelled lanes stay empty), with assignee
@@ -249,7 +249,7 @@ async def render_board(project_id: str, assignee: str = "", tags: str = "") -> s
     return "\n".join(lines)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def render_tasks(
     project_id: str = "",
     status_category: str = "",
@@ -681,7 +681,7 @@ def _subject_options(asked: str, found: dict[str, Any]) -> list[tuple[dict[str, 
     ]
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def render_report(report_id: str = "", template: str = "", subject: str = "") -> str:
     """Draw a report as a card: its headline numbers as tiles and each section
     as a table. The Reports app's own SQL computes the numbers now.
@@ -773,7 +773,7 @@ def _flag(child: dict[str, Any], blocked_ids: set[str], overdue_ids: set[str]) -
     return "on track"
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def status_report(project_id: str = "") -> str:
     """W2: a status report for a node or the portfolio. Every child project
     gets one flag from the server's reads: blocked (a task with an open

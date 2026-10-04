@@ -38,8 +38,11 @@ the boundaries are these:
    query (§16.3, the P3 review). The container has no network, and the run
    holds no web tool. The delegation tools stay: the owner kept them on
    2026-10-03, and an agent that the run calls runs outside the sandbox, with
-   its own tools. H-236 asks for a network control on those agents before the
-   owner flip (WS-43w).
+   its own tools. H-236 binds ``no_egress`` on the covered run itself and on
+   each run under it, and the rule fails closed (``acb_skills.egress``). The
+   injection seam reuses :data:`HOST_NETWORK_TOOLS` there as a floor. The
+   host-tool middleware here and the egress middleware share one pair
+   (``acb_skills.tool_guard``).
 6. The container sees ``/workspace`` READ-ONLY, except its own output folder
    and its run data. A skill loads, and its script runs, only for the member
    who made it. So no member's code or skill text reaches another member's
@@ -74,17 +77,16 @@ from typing import Any
 from acb_common import get_logger
 from agent_framework import (
     DEFAULT_FILE_ACCESS_INSTRUCTIONS,
-    ChatMiddleware,
     ContextProvider,
     FileAccessProvider,
     FileSkillsSource,
-    FunctionMiddleware,
     SkillsProvider,
     SkillsSource,
     tool,
 )
 
 from acb_skills.addendum import render_run_sections
+from acb_skills.tool_guard import RefuseTools, WithholdTools, tool_name
 from acb_skills.write_artifact import announce_artifact, artifact_context
 
 _log = get_logger("acb_skills.sandbox_tools")
@@ -515,41 +517,33 @@ class ProjectsSandboxProvider(ContextProvider):
         await _add_tools(broker, binding, agent, session, context, state)
 
 
-class WithholdHostTools(ChatMiddleware):
+def _is_host_tool(item: Any) -> bool:
+    return _one_tool_name(item) in WITHHELD_HOST_TOOLS
+
+
+def _host_answer(name: str) -> str:
+    answer = NETWORK_WITHHELD_ANSWER if name in HOST_NETWORK_TOOLS else WITHHELD_ANSWER
+    return answer.format(name=name)
+
+
+class WithholdHostTools(WithholdTools):
     """Takes :data:`WITHHELD_HOST_TOOLS` out of each model request of ONE run.
 
-    It changes a copy of the request's options, never an agent object.
+    The one pair of ``acb_skills.tool_guard``, with the host-tool rule.
     """
 
-    async def process(self, context: Any, call_next: Any) -> None:
-        options = context.options
-        tools = options.get("tools") if isinstance(options, dict) else None
-        if tools:
-            kept = [t for t in tools if _one_tool_name(t) not in WITHHELD_HOST_TOOLS]
-            if len(kept) != len(tools):
-                context.options = {**options, "tools": kept}
-        await call_next()
+    def __init__(self) -> None:
+        super().__init__(_is_host_tool)
 
 
-class RefuseHostTools(FunctionMiddleware):
+class RefuseHostTools(RefuseTools):
     """Refuses a call to a withheld host tool, in case the model names one."""
 
-    async def process(self, context: Any, call_next: Any) -> None:
-        name = getattr(getattr(context, "function", None), "name", "") or ""
-        if name in WITHHELD_HOST_TOOLS:
-            answer = NETWORK_WITHHELD_ANSWER if name in HOST_NETWORK_TOOLS else WITHHELD_ANSWER
-            context.result = answer.format(name=name)
-            return
-        await call_next()
+    def __init__(self) -> None:
+        super().__init__(_is_host_tool, _host_answer)
 
 
-def _one_tool_name(item: Any) -> str:
-    if isinstance(item, dict):
-        fn = item.get("function")
-        return str((fn or {}).get("name") or item.get("name") or "")
-    return str(getattr(item, "name", None) or getattr(
-        getattr(item, "func", item), "__name__", "",
-    ) or "")
+_one_tool_name = tool_name
 
 
 def _steered(item: Any) -> Any:

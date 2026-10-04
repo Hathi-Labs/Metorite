@@ -540,6 +540,19 @@ def _forms_answered(monkeypatch) -> None:
     form_stub(monkeypatch, FORM_ANSWERS)
 
 
+@pytest.fixture(autouse=True)
+def _an_open_run() -> Any:
+    """Each tool runs inside a run, as in production. This run may send
+    (``no_egress=False``). H-236 reads a frame with no run as ``no_egress``,
+    and then ``assign`` refuses the ``agent:`` assignee of the cases above.
+    ``test_delegation_no_egress.py`` covers the refusal."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    with artifact_context_scope():
+        bind_artifact_context(agent_name="projects-assistant", no_egress=False)
+        yield
+
+
 @pytest.mark.parametrize("tool", sorted(_WRITES))
 async def test_a_denied_card_writes_nothing(tool: str, monkeypatch) -> None:
     deny(monkeypatch)

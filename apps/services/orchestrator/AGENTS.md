@@ -56,6 +56,13 @@ and streams chat responses as AG-UI events.
    - The member is the verified `user` of the run binding, the parent's for a delegated run. The org is `_current_run_org()`. `mutation._read_first_party` is the one first-party read, and "admin" is `admin:members:manage`.
    - A refusal raises `AgentNotFound` (an `AgentLoadError`). The batch path catches it BEFORE the `AgentLoadError` clause, which starts a self-mutation. The sync run API maps it to 404. Fence: `tests/unit/test_root_agent_first_party.py`.
 
+17. **A covered run, and every run under it, sends nothing off the platform** (H-236, `project-docs/specs/maf_coding_engine.md` §16.3). The owner kept delegation in a covered Projects run on 2026-10-03, and a called agent runs on the host. The control FAILS CLOSED.
+   - `_tool_injection._run_no_egress(agent_name, parent_ctx)` is the one decision. It is set when the parent was `no_egress`, when the parent's agent is covered, or when this run's own agent is covered (`_run_covered`: `covers()`, or the scope alone, so a health probe cannot clear it). So a run of a covered agent is a covered run, whatever its parent. It never reads a request field or a tool argument.
+   - `run_agent_stream`, `_run_agent_inner` and `_run_sub_agent_streaming` each compute it ONCE, before anything can fail, and derive it into the artifact context at once. A batch run passes the `organization_id` it was handed, because it decides the flag before it binds its tenant. `run_agent_stream` records a covered run by run id (`run_was_no_egress`, bounded, never removed on read), so the gateway's memory extraction (`routes/agent.py::_extract_run_memory`) skips it. Then they pass it to `_inject_agent_tools(no_egress=)` and bind it again. `_self_anneal` takes it as a required argument and passes it to both retries. `_inject_agent_tools` defaults to `False`, so every executor call passes it by name, and the WS43-F24 AST fence says so.
+   - With `no_egress`, `_inject_agent_tools` drops every egress tool from the platform tools, the scope and the agent's own tools. The test is `acb_skills.egress.is_egress_tool`, plus the floor `sandbox_tools.HOST_NETWORK_TOOLS`. It pops `mcp_servers`. It replaces each native MAF agent in `agents` with a per-run view that carries `EgressGuardProvider` and no `mcp_tools`, so read `agents` again after injection. `run_agent_stream` injects no MCP server into such a run.
+   - An agent shape the control cannot read (a MAF agent that is not an `Agent` and not Copilot-shaped) raises `NoEgressRefused`. `_run_agent_inner` answers it before the self-anneal and the self-mutation, so nothing retries a refused run.
+   - Fence: `tests/unit/test_delegation_no_egress.py` (WS43-F24).
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature

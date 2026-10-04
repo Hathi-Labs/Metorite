@@ -87,6 +87,8 @@ from orchestrator._tool_injection import (
     _host_shell_refused,
     _inject_agent_tools,
     _inject_mcp_servers,
+    NoEgressRefused,
+    _run_no_egress,
     _tool_name,
     _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
@@ -216,6 +218,33 @@ _RUN_QUEUES: dict[str, "asyncio.Queue[dict[str, Any] | None]"] = {}
 # deleted in its ``finally``. WS-29 MT-1d (H4), slice 2 — DARK: nothing reads it
 # yet (no write is converted this slice).
 _RUN_ORG: dict[str, str] = {}
+
+#: H-236: the run ids of the streamed runs that bound ``no_egress=True``. The
+#: gateway reads it after a run ends, to skip the memory extraction of a
+#: covered conversation (``gateway/routes/agent.py``). It is bounded, and a
+#: read never removes an entry, so a run id that a client reused can only
+#: make one more extraction skip, never let one through. Process-local, as
+#: the run and its end callback share the gateway process.
+_NO_EGRESS_RUNS: dict[str, None] = {}
+_NO_EGRESS_RUNS_MAX = 4096
+
+
+def _remember_no_egress_run(run_id: str | None) -> None:
+    """Record that the streamed run *run_id* bound ``no_egress=True``."""
+    if not run_id:
+        return
+    _NO_EGRESS_RUNS.pop(run_id, None)
+    _NO_EGRESS_RUNS[run_id] = None
+    while len(_NO_EGRESS_RUNS) > _NO_EGRESS_RUNS_MAX:
+        _NO_EGRESS_RUNS.pop(next(iter(_NO_EGRESS_RUNS)))
+
+
+def run_was_no_egress(run_id: str | None) -> bool:
+    """True when the streamed run *run_id* bound ``no_egress=True`` (H-236).
+
+    The server decided it at the run's start. Nothing in a request reaches it.
+    """
+    return bool(run_id) and run_id in _NO_EGRESS_RUNS
 
 
 def _opener_for_org(org: str | None):
@@ -852,6 +881,11 @@ async def _run_sub_agent_streaming(
     # The parent run's acting member, from the parent's bound context and
     # never from the delegated message (H-201 P2-c).
     _parent_member = str(artifact_context().get("member") or "")
+    # H-236: no egress tool for this sub-run when its parent was no_egress,
+    # or when its own agent is covered. Decided once, from the parent's
+    # binding, and bound at once, so no later path reads the parent's frame.
+    _sub_no_egress = _run_no_egress(agent_name, artifact_context())
+    derive_artifact_context(no_egress=_sub_no_egress)
 
     # ── Redis relay fallback for paths without _active_run_queue ──────
     # Tier 1 (MAF AG-UI) and Tier 1.5 (Copilot SDK) don't set
@@ -939,6 +973,8 @@ async def _run_sub_agent_streaming(
                 # D85: a shared sub-agent gets no shell tool until the
                 # sandbox broker covers it.
                 agent_config=getattr(loaded, "config", None),
+                # H-236: and no egress tool when its parent is covered.
+                no_egress=_sub_no_egress,
             )
             if not agents:
                 return f"({agent_name!r} returned empty agent list)"
@@ -1010,6 +1046,9 @@ async def _run_sub_agent_streaming(
                 host_shell_refused=_host_shell_refused(
                     agent_name, getattr(loaded, "config", None),
                 ),
+                # H-236: set from the parent's binding, never cleared here.
+                # The batch run of a MAF sub-agent reads it as its parent.
+                no_egress=_sub_no_egress,
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -2484,8 +2523,14 @@ async def _run_agent_inner(
     from acb_skills.write_artifact import (
         artifact_context,
         bind_artifact_context,
+        derive_artifact_context,
     )
     _parent_ctx = artifact_context()
+    # H-236: decide this run's no_egress once, from the parent's binding and
+    # this agent's own cover, and bind it before anything can fail. A load
+    # error then retries (self-anneal) with this answer, never the parent's.
+    _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
+    derive_artifact_context(no_egress=_no_egress)
 
     # ── Run correlation for the batch path (usage attribution) ─────────────
     # The streaming path binds the same fields. `run_agent` opened the scope
@@ -2702,6 +2747,7 @@ async def _run_agent_inner(
                 tool_scope=loaded.config.get("tool_scope") or None,
                 agent_name=agent_name,
                 agent_config=loaded.config,  # D85: the sharing block
+                no_egress=_no_egress,  # H-236: from the parent's binding
             )  # inject call_agent / call_agent_background
 
             # Set write_artifact context + ensure visible workspace dirs exist.
@@ -2741,6 +2787,9 @@ async def _run_agent_inner(
                 host_shell_refused=_host_shell_refused(
                     agent_name, loaded.config,
                 ),
+                # H-236: a delegated run of a covered parent sends nothing
+                # off the platform. Its own delegations inherit this.
+                no_egress=_no_egress,
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -2885,6 +2934,13 @@ async def _run_agent_inner(
             str(exc), agent_name=agent_name, run_id=run_id, original=exc,
         ) from exc
 
+    except NoEgressRefused as exc:
+        # H-236: a refusal, never a fault. Before the self-anneal and the
+        # self-mutation clauses, so nothing retries a run the control refused.
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
     except AgentNotFound as exc:
         # §15.4: refused as absent. Before the AgentLoadError clause, because
         # that one starts a self-mutation. The agent is fine, and this caller
@@ -2949,6 +3005,8 @@ async def _run_agent_inner(
             event_payload=event_payload,
             agent_dir=_git_dir or _effective_agent_dir,
             error=exc,
+            # H-236: every retry injects with THIS run's answer.
+            no_egress=_no_egress,
         )
         if recovery is not None:
             return recovery
@@ -3242,6 +3300,14 @@ async def run_agent_stream(
         reset_artifact_context,
     )
     _artifact_token = enter_artifact_context()
+    # H-236: decide this run's no_egress ONCE, before anything can fail, and
+    # bind it. A covered agent's run is a covered run, whatever its parent.
+    from acb_skills.write_artifact import artifact_context as _ctx_now
+    from acb_skills.write_artifact import derive_artifact_context as _derive_ctx
+    _stream_no_egress = _run_no_egress(agent_name, _ctx_now(), organization_id)
+    _derive_ctx(no_egress=_stream_no_egress)
+    if _stream_no_egress:
+        _remember_no_egress_run(run_id)
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)
@@ -3345,9 +3411,12 @@ async def run_agent_stream(
                 ),
                 agent_name=agent_name,
                 agent_config=loaded.config,  # D85: the sharing block
+                no_egress=_stream_no_egress,  # H-236
             )  # inject call_agent / call_agent_background
-            # Inject MCP servers from the registry into every agent at runtime
-            for _a in agents:
+            # Inject MCP servers from the registry into every agent at runtime.
+            # H-236: an MCP server reaches outside the platform, so a
+            # no_egress run gets none.
+            for _a in agents if not _stream_no_egress else []:
                 await _inject_mcp_servers(_a, agent_name)
 
             # Per-session workspace override (Custom Apps builder sessions):
@@ -3428,6 +3497,10 @@ async def run_agent_stream(
                 host_shell_refused=_host_shell_refused(
                     agent_name, loaded.config,
                 ),
+                # H-236: False for a top-level run. A covered run does not
+                # bind True for itself: its delegations compute it from
+                # covers(), and the sandbox middleware withholds its own.
+                no_egress=_stream_no_egress,
             )
             try:
                 # Ensure the three visible workspace directories exist so the
@@ -5220,8 +5293,12 @@ async def _self_anneal(
     event_payload: dict[str, Any],
     agent_dir: str | None,
     error: Exception,
+    no_egress: bool,
 ) -> dict[str, Any] | None:
     """Self-annealing loop.
+
+    *no_egress* is the H-236 answer of the run that failed. Every retry
+    injects with it, so a retry can never hold more tools than the run did.
 
     1. Classify the error.
     2. Apply an in-process fix if one exists for this error class.
@@ -5262,6 +5339,7 @@ async def _self_anneal(
                         _inject_agent_tools(
                             agents, agent_name=agent_name,
                             agent_config=loaded.config,  # D85
+                            no_egress=no_egress,  # H-236
                         )
                         result = await _run_with_maf_agent(
                             agents,
@@ -5308,6 +5386,7 @@ async def _self_anneal(
                     _inject_agent_tools(
                         agents, agent_name=agent_name,
                         agent_config=loaded.config,  # D85
+                        no_egress=no_egress,  # H-236
                     )
                     result = await _run_with_maf_agent(
                         agents,
