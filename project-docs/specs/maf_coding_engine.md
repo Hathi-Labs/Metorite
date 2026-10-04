@@ -1771,10 +1771,14 @@ These facts change or add to the text above:
     `agent_paths.skill_author_id()`. `agent_paths.skill_owner()` reads the
     marker. An empty, unknown or unreadable marker belongs to no member. A
     marker from before WS-43v holds an email. It loads only for that member,
-    and that member's next read writes the id in its place. With no usable
-    secret, no member id exists, so no member can make or load a skill. A
-    new secret orphans each skill. The member UUID is not the key, because
-    IDENTITY_CUTOVER changes its UUID space. In a run
+    and that member's next skill list or write puts the id in its place,
+    with a temp file and a rename. With no usable secret, no member id
+    exists, so no member can make or load a skill. A new secret orphans each
+    skill (see "Rotate the session secret" below). The member UUID is not
+    the key, because IDENTITY_CUTOVER changes its UUID space.
+    `agent_paths.claim_skill` raises `SkillOwnedElsewhere` when the folder
+    is another member's, also when another member claims it between the
+    check and the write. The routes answer 403. In a run
     of another member, the `<available_skills>` block of each request does
     not name the skill, or the block is absent. A `load_skill` call for it
     answers `Error: Skill '<name>' not found.` The source of the list is
@@ -1792,6 +1796,38 @@ These facts change or add to the text above:
   - The steer drain runs at the eight file tools and the skill tools.
   - The sweep after a command covers only the thread's own output folder.
     A file whose content has not changed is not mirrored or shown again.
+- **A container sees only its own member's skills** (WS-43v). The
+  `/workspace` mount shows the whole tenant dir, so the broker covers
+  `/workspace/agent-data/skills` with an empty read-only dir. On that cover
+  it mounts each of the run member's own skill folders, read-only, at its
+  own path (`sandbox_broker.projects_mounts`, `agent_paths.own_skill_names`).
+  A folder that is a link, or whose marker is not the member's, is left out.
+  A container is reused only for the same skill set, so a new skill shows on
+  the next command in a fresh container. A member of the same thread who is
+  not the run member gets a fresh container too. No skill is shared by
+  design: a prebuilt skill of the agent lives in its code dir, and the tenant
+  dir holds none. Fence: `tests/unit/test_sandbox_skill_privacy.py`, with a
+  `sandbox_docker` test.
+- **What the `projects` container sees** (the WS-43v audit, 2026-10-05):
+
+  | Path under `/workspace` | Verdict |
+  |---|---|
+  | `agent-data/skills/<name>/` | Private to its author. Covered, and only the run member's own folders are mounted |
+  | `agent-data/` (each other file, such as `NOTES.md`) | Org-wide by design (H-201). The host file tools of each member read and write it too |
+  | `inputs/` | Covered by the thread's own upload folder (H-227). Another thread's uploads and the flat legacy uploads do not show |
+  | `outputs/` | Covered by the thread's own output folder. Another thread's folder and the flat S8 outputs do not show |
+  | `.run/` | Covered by this run's own run data |
+  | `.cc-instance` | Org-wide by design. It holds only `o:<org>`, and it is read-only |
+  | `.git` at the root | Covered by an empty mount. A deeper `.git` refuses the start |
+  | A file at the root | Org-wide. No writer puts one there: the routes and the file tools take only the three folders, and the blob store keeps only those |
+
+- **Rotate the session secret.** A new `GATEWAY_SESSION_SECRET` changes
+  every member id, so each skill folder then belongs to no member. Its name
+  stays taken and no member can load it. As part of the rotation, delete
+  `agent-data/skills/*` in each covered tenant dir, and delete the
+  `agent_blob` and `agent_file_history` rows of those paths, or the next
+  rehydrate brings them back.
+  `deploy/hostinger/README.md` holds the steps.
 - **The residual risk that stays.** `agent-data/` and `inputs/` stay shared
   by the organization, as H-201 built them. A member's model can still read
   a note from another member's run, and that note can carry an injection.

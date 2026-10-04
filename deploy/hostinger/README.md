@@ -99,6 +99,25 @@ Set at minimum:
 
 Then edit `deploy/hostinger/caddy/Caddyfile` and replace the placeholder hostnames with yours.
 
+### Rotate `GATEWAY_SESSION_SECRET`
+
+A skill folder records its author as an HMAC under this secret (spec
+`maf_coding_engine.md` §16.3). A new secret changes every member id, so each
+skill folder then belongs to no member, and its name stays taken. Clear the
+skills as part of the rotation:
+
+1. Set the new value in `/opt/acb/app/.env`.
+2. For each tenant dir that `MAF_CODING_SCOPE` covers, delete
+   `<agents_clone_dir>/state/projects-assistant/<tenant slug>/agent-data/skills/*`.
+3. Delete the blob-store rows of those paths, or the next rehydrate restores
+   them. Do it in `agent_blob` and in `agent_file_history`, with
+   `agent_name = 'projects-assistant' AND path LIKE 'agent-data/skills/%'`.
+   Run it as the owner role, after a backup.
+4. Restart `acb-gateway`. Each member makes their skills again.
+
+The secret also signs member proofs and the email connect state. Read
+`email_app_master_plan.md` R-1 before a rotation.
+
 ## Memory system (Mem0 + Graphiti)
 
 Metorite has two memory layers that persist across conversations:
