@@ -24,6 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. Nothing is built yet.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -74,6 +75,7 @@ second, new capability third.**
   several Outlook mailboxes of one member (2026-10-03, D-EM-17).** Provider parity is still not a
   goal: D-EM-5 keeps Outlook the only provider in the connect flow. *(History: the old success
   criterion "Connect 2+ Gmail + 1+ Microsoft accounts" is retired. Gmail and IMAP code stays latent.)*
+  **2026-10-04:** the owner amended D-EM-5. Gmail joins Outlook in the connect flow, and §12 owns that plan.
 - **Inbound SMTP receiving** — dead subsystem, removing (§6 decisions).
 - **Inbox-zero feature-checklist parity as an end in itself** — parity was the scaffolding;
   the roadmap now optimizes for this customer's jobs, not the reference app's feature list.
@@ -375,6 +377,8 @@ click-driven path already covers everyone the user cares about.
 | Unfinished tool merges (M7 `manage_rule`, M8 `manage_knowledge`, M13 `manage_labels`) | **Close the plan at 42 tools** — measured value of further merging is low; delete the fossil card keys instead |
 | `Support`/`Unknown` sender categories, `'user'` category-override reservation | Remove from the API vocabulary or build the manual set-category flow in 3.6 |
 
+**2026-10-04.** The Gmail row above is superseded. The owner amended D-EM-5, and §12 plans the Gmail work beside Outlook. IMAP stays latent.
+
 **Verified 2026-07-22:** every kill-candidate above is *still present in code* — the table records
 recommendations, not executed work. Evidence: `inbound.py` exists unlaunched (only its own
 docstring references its start function); `GET /newsletters` (`senders.py:465`) and
@@ -539,7 +543,7 @@ or API client to create a pattern by hand.
 | **D-EM-2** | **The app lives in a dedicated Metorite Entra directory**, not in `fracktal.in`. The directory of customer zero must not hold the product. ⚠️ **Interim (owner, 2026-10-01):** until that app exists, Metorite uses the publisher-verified Fracktal Works app `3bfeff54-14fb-4cee-8b17-2c8d41cad6a8` ("CommandCenter"), set to any Entra tenant plus personal accounts. The same app also serves Microsoft sign-in. A later move to a Hathi Labs app makes each mailbox reconnect once. |
 | **D-EM-3** | **The app gets Microsoft publisher verification**, so the consent screen shows a verified Metorite. Without it, many company tenants block the app. |
 | **D-EM-4** | **A mailbox is private to the member who connects it.** An org admin sees how many members connected, never their mail. This follows the private-first default of D12. |
-| **D-EM-5** | **Outlook is the only provider in the connect flow.** Google shows "coming soon". IMAP stays hidden until its connect path works. |
+| **D-EM-5** | ~~**Outlook is the only provider in the connect flow.** Google shows "coming soon".~~ **Amended by the owner, 2026-10-04: Gmail and Google Workspace mailboxes join Outlook in the connect flow.** Metorite owns ONE Google OAuth app, and the setup stays one click: Connect, consent, done. §12 owns the plan (D-EM-31 to D-EM-35, slices EM-G1 to EM-G10). IMAP stays hidden until its connect path works. |
 | **D-EM-6** | **Automatic reply drafting is OFF for a new mailbox. A member turns it on in AI settings.** Owner, 2026-10-02: "Turn the default autodraft emails to off." This reverses migration 82 for a new mailbox. A stored choice does not change. EM-T7 builds it (§10.4.9). |
 | **D-EM-7** | **Every email triage decision goes through the `decide` task on `tier-decide`, and no member can change it** (owner, 2026-10-02). The decisions are the rule match (one rule and multi-rule), the thread status, the cold check and the sender pin. Settings and the email agent lose the rules-model choice. Text work stays on the LLM tiers: drafts, compose, the digest brief, the voice profile, template fill, rule generation and chat. |
 | **D-EM-8** | **No fallback model** (owner, 2026-10-02, revised the same day). When `decide` gives no answer, the email stays undecided. No rule applies, `rules_processed_at` stays NULL, and the next cycle asks again. The log line is `decide.unavailable` with the reason. Resilience is a backup step in the Router chain of `tier-decide`, which an operator binds. For email, this replaces adoption rules 2 and 3 of `customer_console.md` §6A.14. |
@@ -1139,6 +1143,7 @@ an admin see that count, and never the mail.
 - No list of members, no address, no account id and no `sync_error` text.
 - No join to `app_user`. A purge deletes the mailbox of a removed member. Until then, it counts.
 - No pre-approval for Gmail or IMAP. Only Microsoft has an admin-consent step (D-EM-5).
+  For Gmail, EM-G8 adds help for a Workspace admin in its place (§12.3.10).
 - No new BFF route, and no copy of `adminConsentUrl` or `getMailAppInfo`.
 
 **Done when.**
@@ -2687,6 +2692,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 - Consequence: the reconcile of the recurring Outlook poll no longer reaches stored mail older than the floor. So a delete in Outlook of such mail stays in Metorite. This follows from item 5.
 - Consequence: stored mail below the floor no longer gets moves or read-state changes from Outlook, because the sweep no longer reads it. Graph gives a moved message a new id, and the provider sends no `ImmutableId` header.
 - F5: a reconnect no longer clears a stale Gmail `last_history_id`. Only a Resync clears it now. The risk is low, because D-EM-5 keeps Gmail out of the connect flow.
+  **2026-10-04:** D-EM-5 changed. EM-G4 reseeds a stale Gmail cursor with no Resync (§12.3.5).
 - Fix round 1 (2026-10-02). "Clean older mail → Everything" sends no date, and the route now passes the ceiling, never `import_since`. "Load older" (`POST /email/accounts/{id}/backfill`) writes no message older than the ceiling, and it stops at the first page that reaches below it. `sync_floor` returns UTC, because Outlook writes the wall time with a `Z`.
 
 **Scope.**
@@ -2763,6 +2769,7 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 
 - `import_batches` takes the keyword `on_estimate`. Outlook awaits it once, before the first batch. The core then writes the estimate in a block of its own.
 - The default import of the base class does not call `on_estimate`. So Gmail and IMAP show a count and no estimate.
+  EM-G5 gives Gmail its own import with an estimate (§12.3.6).
 - Outlook counts only the folders whose first page opened. A missing folder adds no count and does not make the estimate NULL.
 - A resume writes the count so far plus the new count as the estimate. The import writes the message at the resume point again, and the count and the estimate both include it.
 - Outlook pages each folder by time (fix rounds 1 and 2). Each next page is a new query with `lt` the second after the oldest message of the last page, and the stream drops the ids that it read again. A `$skip` link shifted when a message moved out of a folder, and the import lost the message at the page edge.
@@ -2782,6 +2789,7 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 - Then, with no session open, Outlook looks up each candidate by `internetMessageId`, at most 50 for each folder. A message that Graph still has keeps its row, because the member moved it in the Outlook client. A failed lookup, or a row with no internet message id, keeps its row too. The trash checks `updated_at` again in its own block.
 - EM-T6d part 2 (#581) closed the follow-up of the EM-T6b review. `isFirstSyncPending` and `onboardingStage` check `syncEnabled`, so the panel does not freeze when the member turns sync off during the import.
 - `sync_messages` takes `catch_up`. Gmail and IMAP accept it and ignore it, so `gmail.py` and `imap.py` change by one argument each.
+  ⚠️ Gmail stores no history cursor today, so a pause loses Gmail mail. EM-G4 fixes it (§12.1 GM-16 to GM-18, §12.3.5).
 - A deep sync of a member act writes no progress, also when the first import is not done. The next tick of the loop then runs the first import.
 - The `synced` result and `messages_synced` count the rows of the import and of the recurring sweep together.
 - Phase (c) and each batch of an import use one write, `_write_messages`.
@@ -3927,6 +3935,7 @@ mailbox connected through an earlier app must reconnect once, through the EM-T3 
 > **This section wins over §1** where §1 says "Multi-account / multi-provider parity is not a
 > near-term goal". It does not change D-EM-5: Outlook stays the only provider in the connect flow.
 > The design is the same for Gmail when D-EM-5 changes.
+> **2026-10-04:** D-EM-5 changed. §12 brings Gmail into this design.
 
 ### 11.0 The answer, in five rules
 
@@ -4158,6 +4167,8 @@ opens All inboxes. After that, Email opens the last scope.
 | 24 | A disconnect | The Mem0 drafting memories of the mailbox go too (MB-17) | EM-T8f |
 | 25 | A keyboard reply (`r`) in All inboxes | The mailbox of the focused mail, as for a click | EM-T8a |
 | 26 | An outside sender forges From as another mailbox of the member | The cold check runs. Only a Sent copy that proves the send stops it. The copy has the same Message-ID, and that ID is not empty. It sits in the `sent` folder of another mailbox of the member. It names this mailbox in To, Cc or Bcc, so a replayed Message-ID proves nothing. **Known limit:** only the Outlook provider stores the Message-ID, so the proof exists only between two Outlook mailboxes. A Gmail or IMAP pair gets the cold check, as before EM-T8e-1. **Accepted risk:** the classifier payload, Reply Zero, the digest and the cleanup still read a forged From as "self". The single address had the same exposure before EM-T8e-1. | EM-T8e-1 |
+
+**Gmail (2026-10-04).** The known limits of edge cases 10, 11 and 26 hold for Outlook only today. EM-G2 gives Gmail the Message-ID, and EM-G9 proves each case for a Gmail and Outlook pair (§12).
 
 ### 11.7 Slices
 
@@ -4541,6 +4552,7 @@ fixes its five small findings.
 - **Known limit (F2), not fixed.** Only the Outlook provider stores `internet_message_id`. Gmail
   and IMAP never set it. So "mail between two own mailboxes is never cold" holds only from
   Outlook to Outlook. Other pairs get the cold check, which is as safe as before EM-T8e-1.
+  EM-G2 and EM-G9 end this limit for Gmail (§12.3.2, §12.3.11).
 - **Mutation result.** The run killed 50 of 50 mutants: 42 from the first build and round 1,
   and 8 from round 2. Each fence below is in `tests/unit/test_email_ai_context.py`.
 
@@ -5344,6 +5356,7 @@ store and page files.
 - **`internet_message_id` for Gmail and IMAP.** Only `providers/outlook.py:1674` sets it. D-EM-5
   keeps Outlook the only provider in the connect flow. A fill also turns on the re-key reclaim of
   `persist.py:232-246` for Gmail and IMAP. That needs its own slice and its own R8 test.
+  **2026-10-04:** D-EM-5 changed. EM-G1 gates the reclaim, then EM-G2 fills the Message-ID for Gmail (§12).
 - **`/analytics/overview`.** It reads each mailbox with no `account_id`, but no caller sends it so.
 - **The contacts reads and the CRM timeline.** D-EM-28 does not name them.
 - **OWNER-GATE.** The build has none. The production migration is agent-safe under the `deploy`
@@ -6100,3 +6113,947 @@ change.
   and up to 500 MB of storage. The proposal is 5 for each member at launch, with an admin view of
   the count. Until the owner answers, the code sets no limit. The limit is a commercial choice, so
   the agent does not make it.
+
+---
+
+## 12. Gmail beside Outlook (2026-10-04)
+
+> **Owner decision, 2026-10-04.** The owner wants to work with Outlook mailboxes and with Gmail or
+> Google Workspace mailboxes together. This reverses D-EM-5, which kept Outlook the only provider
+> in the connect flow. §10.2 records the change on the row of D-EM-5.
+
+> **The setup stays one click for a customer.** Metorite owns ONE Google OAuth app, as D-EM-1 to
+> D-EM-4 say for Microsoft. The flow is Connect, then consent, then done. A member never
+> configures an OAuth client, never pastes a key and never opens Integrations.
+
+> **Status (2026-10-04).** 📝 SPECIFIED by EM-G0, docs only. Nothing is built. Each anchor below is
+> verified against the code at `d0627789a` on 2026-10-04. Re-verify each anchor at dispatch,
+> because the code is the fact. This section wins over §1 and §11 where they say that Outlook is
+> the only provider.
+
+> **The slice names.** The slices are EM-G1 to EM-G10. §10.4.7 already uses the bare names G1 to
+> G5 for the gaps of EM-T6c, so the prefix keeps the two sets apart (R2).
+
+**Short paths in this section.**
+
+- `providers/` is `apps/services/email_ingestion/email_ingestion/providers/`. `gmail.py`,
+  `outlook.py` and `base.py` live there.
+- `persist.py`, `scheduler.py` and `body_backfill.py` live in
+  `apps/services/email_ingestion/email_ingestion/`.
+- `transport/`, `automation/` and `core.py` live in `apps/services/gateway/gateway/routes/email/`.
+- `lib/`, `components/`, `oauth/callback/page.tsx` and `page.tsx` live in
+  `workbench/control_plane/src/app/email/`.
+
+### 12.0 The answer, in six rules
+
+1. **A Gmail mailbox does what an Outlook mailbox does.** Connect, import, sync in both directions,
+   send, reply and drafts work the same. Each feature of §11 works the same too.
+2. **The setup is one click.** Connect, consent, done. A Google Workspace admin acts only when the
+   company blocks new apps.
+3. **A change goes both ways.** A change in Metorite reaches Gmail at once. A change made in Gmail
+   reaches Metorite at the next sync. That covers an archive, a read mark, a star, a label and a
+   delete.
+4. **A Gmail mailbox sends real mail.** The body has a text part and an HTML part. A reply threads
+   at the recipient. An attachment keeps its type. One draft is one row in Metorite and one draft
+   in Gmail.
+5. **The import rules of §10.2 hold for Gmail.** The import goes newest first, shows an estimate
+   and resumes (D-EM-10 to D-EM-16). A pause loses no mail (D-EM-13).
+6. **Gmail shows only when Metorite can serve it.** The choice is live when the gateway reports the
+   Google app as installed (D-EM-35). Until then it stays "Coming soon".
+
+**What "Gmail works" means.** EM-G10 passes on production. One member connects a Gmail mailbox
+beside an Outlook mailbox, and each check of EM-G10 passes for both.
+
+**What does not change.** A mailbox stays private to its member (D-EM-4). The rules, the settings
+and the AI context stay per mailbox (D-EM-18, D-EM-24). Each triage decision still goes to the
+`decide` task (D-EM-7). The storage limit of 500 MB holds for each Gmail mailbox (D-EM-14).
+
+### 12.1 Measured state (2026-10-04)
+
+**Production.** D-EM-5 hid Gmail from the connect flow since 2026-10-01. EM-T8c removed the Gmail
+leg of Integrations (§11.7.3). No deploy template sets `GMAIL_OAUTH_CLIENT_ID` or
+`GMAIL_OAUTH_CLIENT_SECRET`, and `.env.example:98-99` leaves both empty. So this plan assumes no
+Gmail mailbox in production, and EM-G10 checks it first.
+
+**The provider exists, and much of it works.** `gmail.py` has 1169 lines. These parts work today:
+
+- Sign-in and refresh, with one refresh on a 401 (`gmail.py:198-249`, `RefreshingBearer` at
+  `base.py:51`).
+- Labels: list, create, colour and read back (`gmail.py:670`, `:779`, `:762`, `:309`, `:837`, and
+  `SUPPORTS_LABEL_READBACK` at `:145`).
+- Archive, trash, read, star, flag and the bulk acts (`gmail.py:645-660`, `:557`, `:564`, `:602`).
+- Filters: create and delete (`gmail.py:791`, `:828`). Attachments: list and download (`:82`,
+  `:1026`).
+- The multi-inbox features that need no Message-ID. These are the sending mailbox, the colour
+  slots, All inboxes, Keep separate and the settings of each mailbox. The account picker for one
+  more mailbox works too (`transport/oauth.py:179-207`).
+
+**The defects.** Each one is real at `d0627789a`. The last column names the slice that fixes it.
+
+| Id | Defect | Evidence | Slice |
+|---|---|---|---|
+| **GM-1** | **No Message-ID.** The parser sets no `internet_message_id`. The header read is case-sensitive, so it misses `Message-Id`. "Also in", the draft dedupe of a pair and the Sent-copy proof never see a Gmail mailbox. | `gmail.py:1093-1123`, `:1135-1143`, `automation/identity.py:173`, `:224`, `:247`, `:328` | EM-G2, proved by EM-G9 |
+| **GM-2** | **A Message-ID would turn on the re-key reclaim for Gmail.** The reclaim moves a row to a new provider id when one row holds the Message-ID. Gmail never re-keys an id. So two Gmail messages with one Message-ID would fold into one row, and that row would swap ids at each sync. | `persist.py:219-246`, `gmail.py:616` | EM-G1 |
+| **GM-3** | **A nested body is empty.** The parser reads the top-level parts only. In `multipart/mixed`, which is any mail with an attachment, the nested `multipart/alternative` stays unread. A single-part HTML mail lands in `body_text`, and `body_html` stays None. The rules, Reply Zero, the drafter and the embeddings then read an empty body. | `gmail.py:1043-1061`, read through `body_backfill.py:141`, `transport/messages.py:691`, `:1026` and `core.py:410` | EM-G2 |
+| **GM-4** | **The address parse splits on each comma.** `"Doe, John" <j@x.com>` becomes two broken addresses. | `gmail.py:1098-1104`, `:1145-1169` | EM-G2 |
+| **GM-5** | **Archived mail files as `inbox`.** The parse files a message with no system label as `inbox`. Each path that keeps the folder of the parse then shows archived mail in the Inbox, and the history branch is one of them. | `gmail.py:38-52` | EM-G2 (D-EM-33) |
+| **GM-6** | **The Archive folder cannot page.** Gmail has no `archive` label. "Load older" in Archive sends `labelIds=["archive"]`, and Gmail refuses it. | `transport/folders.py:375-398`, `gmail.py:282-285` | EM-G2 (D-EM-33) |
+| **GM-7** | **"Load older" in a user-label view moves Inbox mail out of the Inbox.** The page sets the folder of each message to the label name through `canonical_override`, also when the message has `INBOX`. | `transport/folders.py:391-397`, `gmail.py:295-302` | EM-G2 |
+| **GM-8** | **The import misses archived mail with no user label.** The deep sync and the sweep list the user labels and five system labels only. The sweep fetches a message with two user labels twice. | `gmail.py:903-933`, `:986-1018` | EM-G5 |
+| **GM-9** | **The provider fetches each message alone, and a failed fetch leaves no record.** No call handles a 429 or a rate-limit 403. | `gmail.py:296-304`, `:358-366` | EM-G4 (rate limits), EM-G5 (fetch in parallel) |
+| **GM-10** | **The send loses the HTML body.** `MIMEText(body_text, "html" if body_html)` sends the text with an HTML label and drops `body_html`. The HTML signature and the line breaks go. `create_draft` has the same defect. `update_draft` is correct. | `gmail.py:387`, `:398`, `:444`, `:455`, `:491-492` | EM-G3a |
+| **GM-11** | **A reply does not thread at the recipient.** The send sets `threadId` only. It sets no `In-Reply-To` and no `References`. | `gmail.py:399-415`, `:456-466` | EM-G3a |
+| **GM-12** | **Each attachment goes as `application/octet-stream`.** | `gmail.py:389`, `:446`, `:500` | EM-G3a |
+| **GM-13** | **One draft gets two rows, and a draft made in Gmail cannot send.** `create_draft` returns the draft id, and the local row stores it. The sync stores the message id of the same draft as a second row. A draft made in Gmail has only the message id, so `update_draft` and `send_draft` fail with an HTTP error. The fallback catches only `NotImplementedError`, so it never runs. | `gmail.py:470`, `:531-536`, `automation/drafting.py:2126-2153`, `:2191-2196`, `:2265-2279` | EM-G3a |
+| **GM-14** | **A move to a user label does nothing.** `move_to_folder` knows trash, archive, inbox and junk only. Outlook creates the folder and moves the mail. A rule move then logs `email.move_folder_noop`. | `gmail.py:645-660`, `outlook.py:1096-1120`, `automation/actions.py:430-448` | EM-G3b |
+| **GM-15** | **The list of upstream filters is empty.** Gmail has no `list_filters`, so the base returns `[]`. | `base.py:618-629`, `outlook.py:1173`, `automation/rules.py:721` | EM-G3b |
+| **GM-16** | **No history cursor is ever stored.** The first sync and the deep sync return `new_history_id=None`, and nothing calls `getProfile`. The scheduler keeps the NULL. So each poll runs the branch for no cursor: the first page of each user label and of five system labels, with each message fetched alone. | `gmail.py:930-933`, `:1020-1024`, `scheduler.py:1413-1414` | EM-G4 |
+| **GM-17** | **The history branch has four defects, and it never runs today.** It reads one page and ignores `nextPageToken`. It asks for the label events and drops them, so an archive, a read mark, a star or a label made in Gmail never syncs. It stores the current id of the mailbox after that one page, so the changes on the later pages are lost. A stale cursor answers 404, and `raise_for_status` fails each cycle until a Resync. | `gmail.py:935-979`, `:940`, `:943`, `:946`, `transport/sync.py:283-325` | EM-G4 |
+| **GM-18** | **A pause loses mail.** The provider ignores `catch_up`, so it never reads the mail past the first page of a label after a pause (against D-EM-13). `email_ingestion/AGENTS.md:40` said that the Gmail cursor reads each change. EM-G0 corrects that line. | `gmail.py:898-900` | EM-G4 |
+| **GM-19** | **The import has no stream, no estimate and no resume point.** Gmail uses the default of the base class, which fetches all, then sorts and cuts. The progress shows a count with no estimate (against D-EM-16). | `base.py:785-813` | EM-G5 |
+| **GM-20** | **No reconcile.** `import_full_snapshot` is False, and `message_exists` is absent. So Resync and Process past emails trash no row that Gmail deleted. | `base.py:407`, `scheduler.py:669`, `:780`, `outlook.py:1357`, `:1846` | EM-G5 |
+| **GM-21** | **No push.** Gmail has no watch and no stop. `_ensure_subscription` returns early for a provider that is not Microsoft. `/webhooks/gmail` is the Phase-1 receiver. It never finds an `email_accounts` row and never calls `_webhook_sync`. Gmail polls only. | `transport/sync.py:438-508`, `:469`, `apps/services/ingestion/ingestion/sources/gmail/webhook.py:41-149`, `gateway/main.py:597`, `:1200-1205` | EM-G6a, EM-G6b |
+| **GM-22** | **The scope is the widest restricted scope.** The authorize leg asks `https://mail.google.com/`. The callback never reads the granted scope, and Google lets a member clear a scope on the consent page. | `gmail.py:138`, `transport/oauth.py:201-207`, `:273-385` | EM-G7 (D-EM-31) |
+| **GM-23** | **Google errors map to a generic code.** Only `access_denied` maps, to `consent_declined`. | `transport/oauth.py:388-415` | EM-G7 |
+| **GM-24** | **A bounce never names the provider.** `_bounce` adds `error` only, so the callback page takes Microsoft for each failure. | `transport/oauth.py:303-306`, `oauth/callback/page.tsx:191-193` | EM-G7, EM-G8 |
+| **GM-25** | **A member reads an operator instruction.** With no Google app on the box, the authorize leg tells the member to paste a Google client into Integrations. | `transport/oauth.py:84-96`, `:193-194` | EM-G7 (D-EM-35) |
+| **GM-26** | **The UI says "Coming soon" and blocks each Gmail path.** `available` is false, and the retry and the range step refuse a provider that is not live. | `lib/connect.ts:46-53`, `:248-286`, `lib/connect.test.ts:116-122`, `:561-562`, `:722` | EM-G8 |
+| **GM-27** | **The copy names Microsoft only.** The empty state, the decline text, the generic failure and the callback page do so. | `components/ConnectEmptyState.tsx:75`, `lib/connect.ts:441`, `:469`, `oauth/callback/page.tsx:240` | EM-G8 |
+| **GM-28** | **No test reads real Gmail behaviour.** The Gmail cases in `tests/unit` use fakes. None covers the body parse, the history branch, the Message-ID, the HTML send, the two draft ids, a move to a label or a push. `test_gmail_normaliser.py` tests the Phase-1 normaliser, not this provider. | `tests/unit/test_email_*.py` | each slice adds its fence |
+
+### 12.2 Decisions (2026-10-04)
+
+D-EM-5 changed by owner decision, and §10.2 holds the amended row. The orchestrator took D-EM-31 to
+D-EM-35 for this plan. Each one is an agent decision, and the owner can reverse it.
+
+| Id | Decision |
+|---|---|
+| **D-EM-31** | **The Google scopes are `gmail.modify` and `gmail.settings.basic`.** They replace `https://mail.google.com/`. The pair is the narrowest set that covers read, send, drafts, labels and filters. Both are restricted scopes, but a narrower request makes the review of Google easier. `gmail.modify` covers the profile, the history, the watch, the messages, the drafts and the labels. `gmail.settings.basic` covers the filters. No code path deletes a message for good, so `gmail.modify` loses nothing. The callback reads the granted scope. A grant that lacks either scope saves no mailbox, and the member sees a clear message. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-32** | **Polling first, push later.** EM-G4 makes a poll cheap with the history cursor, so an idle mailbox costs one call. Push (EM-G6a, EM-G6b) ships dark behind `EMAIL_GMAIL_PUSH`, which is `off` by default. Push needs a design for how a push finds its tenant, and that design gets its own audit (O-GM-4). *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-33** | **The folder model of Gmail.** The system labels decide the folder, in this order: `TRASH`, `SPAM`, `DRAFT`, `SENT`, `INBOX`. A Gmail message with no system label is in `archive`. A move to a user label adds that label and removes `INBOX`. The Archive folder pages with a query, never with `labelIds=["archive"]`. O-GM-1 asks whether a user label is also a folder. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-34** | **The re-key reclaim runs only for a provider that re-keys its ids.** That is Outlook, whose ids change on a move. Gmail never re-keys an id, so Gmail never folds two rows on one Message-ID. The provider attribute is false by default. IMAP stores no Message-ID today, so IMAP sees no change. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-35** | **Gmail shows only when the Google app is installed.** The UI reads a capability from the gateway: for each provider, whether its app credentials are set. Gmail is a live choice only when the answer is true. No member ever sees "configure Integrations". *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+
+**Open questions for the orchestrator.** Each one blocks the slice in its last column. Each has a
+recommendation, and the slice scope below follows the recommendation. If the orchestrator decides
+otherwise, the scope of that slice changes before dispatch.
+
+| Id | Question | Recommendation | Blocks |
+|---|---|---|---|
+| **O-GM-1** | **Is a Gmail user label also a folder?** Today the sweep files a message under the name of a user label when the message has no system label. The `folder` column holds one value, and a Gmail message can carry many labels. So each path can give a different folder (GM-7). | **No. A user label is a label, as an Outlook category is.** The folder comes from the system labels only, and `archive` when there is none (D-EM-33 as written). The user labels stay in `categories`, where `list_labels` and `set_labels` already put them. The folder tree of a Gmail mailbox shows the well-known folders, and its user labels show in the label filter. The other answer files a message under its first user label by name. Then a message with two labels shows under one only, and a label view misses the labelled mail in the Inbox. | EM-G2, EM-G3b, EM-G8 item 5 |
+| **O-GM-2** | **Which id does the local row of a Gmail draft hold?** Gmail has a draft id and a message id for one draft. It also gives the draft a new message id at each update. | **The message id, which is the id that the sync finds.** `create_draft` and `update_draft` return the message id of the draft. `update_draft` and `send_draft` take a message id and find the draft id through `users.drafts.list`. The save then moves the local row to the new message id. This needs no column and no migration. The other answer stores the draft id. The sync must then read `drafts.list` at each cycle, and a column must hold the second id. | EM-G3a |
+| **O-GM-3** | **Does a disconnect revoke the Google grant?** | **No.** A revoke at Google can end each token that the same Google account gave to the Metorite client. Another member or another organization can hold a copy of the same address (D-EM-17, §11.6 edge cases 3 and 4), and a revoke would break that copy. The disconnect dialog tells the member where to remove access in the Google account. | nothing (EM-G7 lists it as a non-goal) |
+| **O-GM-4** | **How does a Gmail push find its tenant?** A push carries the address and a history id only. One address can be a mailbox in two organizations, and of two members (D-EM-17). | **Candidate (a).** (a) One unbound discovery read, in a `SECURITY DEFINER` function, maps an address to its pairs of organization and mailbox id, and returns nothing else. The route then queues one sync for each pair, inside its own tenant. (b) One Pub/Sub topic for each organization, each with a push subscription whose URL carries a signed `org`, as the Graph webhook does (EM-T1a item 5). (a) adds no cloud resource and no secret, and a push only starts a sync that each mailbox runs with its own token. (b) keeps the signed-org seam, but the box then needs a Pub/Sub admin credential to make a topic for each organization. The audit of EM-G6a decides, with a security review. | EM-G6a, EM-G6b |
+
+**Decided (orchestrator, 2026-10-04).** O-GM-1, O-GM-2 and O-GM-3 follow the recommendation, so the slice scopes stand as written. The EM-G6a audit decides O-GM-4. Candidate (a) is the lean, and the audit checks its cross-tenant read before any build.
+
+### 12.3 Slices
+
+Each slice is one PR. Each slice that changes code ships dark: Gmail stays "Coming soon" until
+EM-G8 merges and the box holds the Google app (D-EM-35). A slice that merges updates the status of
+this section and the WS-17 row in the same PR (R4).
+
+| Slice | Gate | Scope | Order | Size | Section |
+|---|---|---|---|---|---|
+| **EM-G1** | 🟢 AGENT-SAFE · R8 | The reclaim gate (D-EM-34, GM-2) | First | S | §12.3.1 |
+| **EM-G2** | 🟢 AGENT-SAFE | The body, the headers, the Message-ID, the addresses and the folder model (GM-1, GM-3 to GM-7) | After EM-G1 and O-GM-1 | M | §12.3.2 |
+| **EM-G3a** | 🟢 AGENT-SAFE · R8 | Send and drafts: the MIME body, threading, attachment types, the draft ids (GM-10 to GM-13) | After EM-G2 and O-GM-2 | M | §12.3.3 |
+| **EM-G3b** | 🟢 AGENT-SAFE | A move to a user label, and the filter list (GM-14, GM-15) | After EM-G2 and O-GM-1 | S | §12.3.4 |
+| **EM-G4** | 🟢 AGENT-SAFE · R8 | The history cursor, the label events, the stale cursor, the rate limits (GM-9, GM-16 to GM-18) | After EM-G2 | L | §12.3.5 |
+| **EM-G5** | 🟢 AGENT-SAFE · R8 | The import, the estimate, the resume and the reconcile (GM-8, GM-19, GM-20) | After EM-G4 | L | §12.3.6 |
+| **EM-G6a** | 🟢 AGENT-SAFE build · security review · R8 · 🔴 flip (`enforcement-flip`) | The push route and its tenant, dark (GM-21) | After EM-G4 and O-GM-4 | M | §12.3.7 |
+| **EM-G6b** | 🟢 AGENT-SAFE build · 🔴 flip (`enforcement-flip`) | The watch, its renewal and its stop, dark (GM-21) | After EM-G6a | M | §12.3.8 |
+| **EM-G7** | 🟢 AGENT-SAFE · security review | The connect backend: scopes, granted scope, errors, bounces, the capability read (GM-22 to GM-25) | Any time. Merges dark | M | §12.3.9 |
+| **EM-G8** | 🟢 AGENT-SAFE · visual review | The connect UI: availability, copy, the Workspace admin help (GM-24, GM-26, GM-27) | After EM-G1 to EM-G5 and EM-G7. Merges dark | M | §12.3.10 |
+| **EM-G9** | 🟢 AGENT-SAFE · R8 | Parity of a Gmail and Outlook pair, and the known limits | After EM-G2 and EM-G3a | S | §12.3.11 |
+| **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
+
+**The order, in one line.** EM-G1, then EM-G2, then EM-G3a, EM-G3b and EM-G4 in any order, then
+EM-G5. EM-G7 can go at any time. EM-G8 and EM-G9 follow, then EM-G10. EM-G6a and EM-G6b wait for
+O-GM-4, and EM-G10 does not need them (D-EM-32).
+
+**Sizes.** S is under 150 changed lines with tests. M is 150 to 500. L is more than 500. Each
+estimate counts code and tests.
+
+**Live tests.** EM-G7 and EM-G8 need the Google app of the owner (§12.4) for a live test. Each one
+can merge dark before that, because D-EM-35 keeps Gmail hidden on a box with no app.
+
+#### 12.3.1 EM-G1 — the reclaim gate (D-EM-34)
+
+**Gate.** 🟢 AGENT-SAFE · R8. No migration.
+
+**Order.** First. EM-G2 fills the Message-ID, so EM-G2 must not merge before EM-G1.
+
+**Size.** S. About 30 lines of code and one test file.
+
+**Scope.**
+
+1. `BaseEmailProvider` gains the class attribute `REKEYS_MESSAGE_IDS = False`. `OutlookProvider`
+   sets it to `True`.
+2. `persist.upsert_message` gains the keyword `reclaim: bool = False`. The reclaim block
+   (`persist.py:232-246`) runs only when `reclaim` is true.
+3. `scheduler._write_messages` gains the same keyword. Its two calls pass
+   `provider.REKEYS_MESSAGE_IDS` (`scheduler.py:804`, `:1360`).
+4. `core._upsert_message` gains the same keyword. Its one caller passes the attribute of its
+   provider (`transport/folders.py:404`).
+5. `inbound.py:282` keeps `on_conflict="nothing"`, which never reclaims.
+6. The comment at `persist.py:219-231` names D-EM-34.
+
+**Non-goals.** No change to the SQL of the reclaim. No merge of rows that already share a
+Message-ID. No change to IMAP.
+
+**Fences (R7).** A new `tests/unit/test_email_rekey_reclaim.py` runs on a real Postgres as the app
+role, in the harness of `test_email_duplicates.py`.
+
+- `test_two_gmail_messages_with_one_message_id_keep_two_rows`
+- `test_an_outlook_rekey_still_reclaims_its_row`
+- `test_the_default_is_no_reclaim`
+- `test_each_upsert_caller_names_reclaim`, an AST fence over `apps/services`. Each call of
+  `upsert_message`, `_write_messages` or `_upsert_message` with the update path passes `reclaim=`.
+
+`test_email_persist_upsert.py::test_a_rekeyed_message_reclaims_its_row_instead_of_ghosting` passes
+`reclaim=True`, and a twin case proves `reclaim=False`.
+
+**Mutations.** Each one must turn a named test red.
+
+- M1. Remove the gate. `test_two_gmail_messages_with_one_message_id_keep_two_rows` fails.
+- M2. Make the default `True`. `test_the_default_is_no_reclaim` fails.
+- M3. Set `OutlookProvider.REKEYS_MESSAGE_IDS = False`. `test_an_outlook_rekey_still_reclaims_its_row`
+  fails, because it reads the attribute.
+- M4. Drop `reclaim=` from `scheduler.py:1360`. The AST fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_rekey_reclaim.py tests/unit/test_email_persist_upsert.py \
+  tests/unit/test_email_import_batches.py tests/unit/test_email_deep_sync.py -v -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
+  tests/unit/test_email_rekey_reclaim.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.2 EM-G2 — the parse and the folder model
+
+**Gate.** 🟢 AGENT-SAFE. No migration.
+
+**Order.** After EM-G1 merges, and after the orchestrator answers O-GM-1. The scope follows the
+recommendation of O-GM-1.
+
+**Size.** M. About 200 lines in `gmail.py`, with fixtures and tests of about 300 lines.
+
+**Scope.**
+
+1. **The body walk (GM-3).** A recursive walk reads the payload at any depth. It takes the first
+   `text/plain` part and the first `text/html` part that is not an attachment.
+2. **A single-part HTML mail** fills `body_html` and leaves `body_text` empty, as Outlook does
+   (`outlook.py:1955-1956`). `body_backfill._html_to_text` fills the text later.
+3. **The charset.** The walk decodes each part with the `charset` of its `Content-Type`, and
+   UTF-8 when it names none.
+4. **The headers (GM-1).** `_parse_headers` reads each name in any case. `Message-ID` and
+   `Message-Id` both fill `internet_message_id`.
+5. **The form of the Message-ID.** The parse trims the value and keeps its angle brackets, the form in
+   which Graph gives `internetMessageId` (`outlook.py:1971`). One mail in a Gmail and an Outlook
+   mailbox then has one value.
+6. **The addresses (GM-4).** `From`, `To`, `Cc` and `Bcc` parse with `email.utils.getaddresses`.
+   An encoded word decodes.
+7. **The folder (GM-5, D-EM-33).** `TRASH`, `SPAM`, `DRAFT`, `SENT` and `INBOX` decide, in that
+   order, else `archive`. A user label never sets the folder (O-GM-1). The user labels stay in
+   `categories`.
+8. **One rule for the folder (GM-7).** Gmail `list_messages` keeps the folder of the parse and
+   ignores `canonical_override`. A page of any label view then files each message by its labels.
+9. **The Archive folder (GM-6).** `list_messages` maps the folder key `archive` to the query
+   `-in:inbox -in:sent -in:drafts`. It joins the query of the caller, and it sends no `labelIds`.
+   `messages.list` leaves out spam and trash by default.
+10. **A user label named Archive.** `transport/folders.py:380-386` maps the key `archive` to a
+    label whose name is Archive. So the Gmail provider also takes the query when
+    `canonical_override` is `archive`, and such a label never takes the place of the folder.
+11. **Fixtures.** `tests/unit/fixtures/gmail/` holds message JSON in the shape of
+    `users.messages.get` with `format=full`. Build each fixture from a real shape, with no real
+    address and no real content. The set is (a) `multipart/mixed` with a nested
+    `multipart/alternative` and a PDF, (b) single-part HTML, (c) `multipart/related` with an inline
+    image, (d) a lower-case `Message-Id`, (e) a name with a quoted comma, (f) an archived message
+    with a user label, and (g) an ISO-8859-1 body.
+
+**Non-goals.** No send change (EM-G3a). No cursor (EM-G4). No new column and no migration. No
+backfill of old Gmail rows: the next fetch of each row corrects it. The folder tree of the UI is
+EM-G8 item 5.
+
+**Fences (R7).** A new `tests/unit/test_gmail_parse.py` reads the fixtures.
+
+- `test_a_nested_alternative_gives_text_and_html`
+- `test_single_part_html_fills_body_html`
+- `test_the_charset_of_the_part_decodes_the_body`
+- `test_message_id_reads_in_any_case`
+- `test_message_id_keeps_the_form_of_graph`
+- `test_a_quoted_comma_is_one_address`
+- `test_no_system_label_files_as_archive`
+- `test_a_user_label_never_sets_the_folder`
+- `test_a_label_page_keeps_the_folder_of_the_parse`
+- `test_the_archive_page_sends_a_query_and_no_label`
+- `test_a_user_label_named_archive_does_not_replace_the_query`
+
+One more R8 case in `test_email_rekey_reclaim.py`,
+`test_two_parsed_gmail_fixtures_with_one_message_id_write_two_rows`, runs the real parse through
+`_write_messages`.
+
+**Mutations.** M1 reads the top level only, and the nested test fails. M2 makes the header read
+case-sensitive, and the `Message-Id` test fails. M3 puts back the `inbox` fallback, and the archive
+test fails. M4 honours `canonical_override`, and the label-page test fails. M5 sends
+`labelIds=["archive"]`, and the archive-page test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_parse.py tests/unit/test_email_rekey_reclaim.py \
+  tests/unit/test_email_attachment_inline.py tests/unit/test_email_unsubscribe.py \
+  tests/unit/test_email_folders.py tests/unit/test_email_deep_sync.py -v -rs
+uv run ruff check apps/services/email_ingestion tests/unit/test_gmail_parse.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.3 EM-G3a — send and drafts
+
+**Gate.** 🟢 AGENT-SAFE · R8, because the draft row is SQL. No migration.
+
+**Order.** After EM-G2, and after the orchestrator answers O-GM-2. The scope follows the
+recommendation of O-GM-2.
+
+**Size.** M. About 250 lines in `gmail.py` and `drafting.py`, with tests of about 250 lines.
+
+**Scope.**
+
+1. **One MIME builder (GM-10).** One private builder serves `send_message`, `create_draft` and
+   `update_draft`. With `body_html`, it builds `multipart/alternative`, with the text part first.
+2. **Attachments (GM-12).** With attachments, the body part sits inside `multipart/mixed`. Each
+   attachment takes the type that the caller gives, else `mimetypes.guess_type` of its name, else
+   `application/octet-stream`.
+3. **The file name.** The builder writes it with `add_header(..., filename=...)`, so a name with a
+   quote or a letter outside ASCII survives (RFC 2231).
+4. **Threading (GM-11).** For a reply, the provider reads the parent with `format=metadata` and the
+   headers `Message-ID` and `References`. It sets `In-Reply-To` and `References` from them, and it
+   keeps `threadId`.
+5. **The parent of a thread.** Sometimes the caller gives only `thread_id`. Then the parent is the
+   newest message of the thread that is not a draft (`users.threads.get`, `format=metadata`). An
+   update rebuilds the whole draft, so it sets the two headers again.
+6. **The draft ids (GM-13, O-GM-2).** `create_draft` and `update_draft` return the message id of
+   the draft (`message.id` in the answer of Gmail).
+7. **The draft lookup.** `update_draft` and `send_draft` take a message id. They find the draft id
+   through `users.drafts.list`, matched on `message.id`, and cache it for the life of the provider
+   instance. A message id that is no draft raises a clear error, not an HTTP 400.
+8. **The callers.** The save path (`automation/drafting.py:2126-2153`) writes the message id that
+   `update_draft` returns into the same local row, by its local id. The sync then finds that row.
+9. **The fallback.** The `NotImplementedError` fallback (`drafting.py:2144`, `:2274`, `:2279`)
+   stays for IMAP. A draft made in Gmail web syncs as one row, and it now sends.
+
+**Non-goals.** No change to Outlook drafts. No schedule-send. No migration. No change to the
+signature rules.
+
+**Fences (R7).** A new `tests/unit/test_gmail_send_and_drafts.py`.
+
+- `test_send_has_a_text_part_and_an_html_part`
+- `test_create_draft_has_a_text_part_and_an_html_part`
+- `test_a_reply_sets_in_reply_to_and_references`
+- `test_an_update_sets_in_reply_to_again`
+- `test_an_attachment_keeps_its_mime_type`
+- `test_a_file_name_outside_ascii_survives`
+- `test_update_and_send_resolve_a_message_id_to_its_draft`
+- R8: `test_a_draft_saved_here_is_one_row_after_the_sync`
+- R8: `test_an_update_moves_the_row_to_the_new_message_id`
+
+`tests/unit/test_email_reply_threading.py` gains a case for the two headers.
+
+**Mutations.** M1 puts back `MIMEText(body_text, "html")`, and the two MIME tests fail. M2 drops
+`In-Reply-To`, and the reply test fails. M3 sends each attachment as `application/octet-stream`,
+and the type test fails. M4 returns the draft id from `create_draft`, and the one-row R8 test
+fails. M5 skips the row move on update, and the second R8 test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_send_and_drafts.py tests/unit/test_email_reply_threading.py \
+  tests/unit/test_outlook_drafts.py tests/unit/test_email_signature_placement.py -v -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
+  tests/unit/test_gmail_send_and_drafts.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.4 EM-G3b — a move to a user label, and the filter list
+
+**Gate.** 🟢 AGENT-SAFE. No migration.
+
+**Order.** After EM-G2, and after the orchestrator answers O-GM-1.
+
+**Size.** S. About 120 lines with tests.
+
+**Scope.**
+
+1. **A move to a user label (GM-14, D-EM-33).** For a name that is not a well-known folder,
+   `move_to_folder` finds or creates the label (`_ensure_label_id`). It adds the label and removes
+   `INBOX` in one `modify` call. It returns `None`, because Gmail keeps the id.
+2. **The folder after a move.** `BaseEmailProvider.folder_after_move(name)` returns the folder key
+   that a move to `name` leaves. The base returns `canonical_folder(name)`. Gmail returns `archive`
+   for a user label (O-GM-1).
+3. **The local writes.** Two writes store that key: the rule move (`automation/actions.py:439-440`)
+   and the PATCH of a message (`transport/messages.py:795-797`). The row then matches the next parse.
+4. **The no-op log.** `email.move_folder_noop` (`automation/actions.py:445-448`) fires only for a
+   provider whose `REKEYS_MESSAGE_IDS` is true. Gmail returns no new id by design.
+5. **The filter list (GM-15).** Gmail `list_filters` reads `users.settings.filters.list`. It maps
+   each filter to `{id, name, enabled, from_addresses, summary}`, as `outlook.py:1173` does.
+6. **The filter summary.** The name comes from the criteria. A Gmail filter is always enabled. The
+   summary names each criterion beyond `from`, and each action. The actions are a label, skip the
+   Inbox, mark as read, star, forward and trash. A 403 gives an empty list, not an error.
+
+**Non-goals.** No edit of a Gmail filter. No change to `create_filter`.
+
+**Fences (R7).** A new `tests/unit/test_gmail_move_and_filters.py`.
+
+- `test_a_move_to_a_label_adds_it_and_removes_inbox`
+- `test_a_move_to_a_new_label_creates_it_first`
+- `test_the_folder_after_a_gmail_label_move_is_archive`
+- `test_a_rule_move_stores_the_folder_of_the_provider`
+- `test_list_filters_maps_criteria_and_actions`
+- `test_list_filters_answers_empty_on_a_403`
+
+**Mutations.** M1 drops `removeLabelIds`, and the move test fails. M2 makes Gmail return the label
+name from `folder_after_move`, and the folder test fails. M3 makes `list_filters` return `[]`, and
+the map test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_move_and_filters.py tests/unit/test_email_unsubscribe.py \
+  tests/unit/test_email_provider_rules_listing.py tests/unit/test_email_labels_upstream.py -v -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
+  tests/unit/test_gmail_move_and_filters.py
+```
+
+An R8 test in the named files must show PASSED, with 0 skips.
+
+#### 12.3.5 EM-G4 — the history cursor
+
+**Gate.** 🟢 AGENT-SAFE · R8, because the cursor write is SQL. No migration:
+`email_accounts.last_history_id` holds the cursor.
+
+**Order.** After EM-G2, because a label event uses the folder rule of EM-G2.
+
+**Size.** L. About 300 lines in `gmail.py`, with tests of about 350 lines.
+
+**Scope.**
+
+1. **The seed (GM-16).** With no cursor, the sweep reads `users.getProfile` FIRST and keeps its
+   `historyId`. It then runs the sweep and returns that id as `new_history_id`. The next history
+   call reads each change made during the sweep.
+2. **Every page (GM-17).** The history call follows `nextPageToken` to the last page. The new
+   cursor is the `historyId` of the last answer.
+3. **The label events (GM-17).** `labelsAdded` and `labelsRemoved` add the message id to the fetch
+   set. The provider fetches such a message in full, as it fetches an added message. A fetch costs
+   the same quota in each format, and a full fetch keeps `has_attachments` right.
+4. **A deleted message.** `messagesDeleted` keeps the `[DELETED]` marker, which moves the row to
+   trash (`scheduler.py:522-526`).
+5. **A stale cursor (GM-17).** A 404 from `history.list` is no failure. The provider seeds a new
+   cursor from `getProfile`, then sweeps all mail back to the catch-up watermark.
+6. **The sweep after a 404.** It lists with `q=after:<epoch seconds>` and `includeSpamTrash=true`,
+   and no `labelIds`. With no watermark, it uses the floor. It logs `gmail.history_reset` with the
+   mailbox id.
+7. **The catch-up (GM-18, D-EM-13).** With a cursor, `catch_up` stays unused, because the history
+   reads each change since the cursor. Gmail keeps its history for about one week, often longer.
+   Item 5 is the catch-up for a longer pause. The docstring at `gmail.py:898-900` says so.
+8. **Rate limits (GM-9).** One helper wraps each Gmail call. A 429, or a 403 with the reason
+   `rateLimitExceeded` or `userRateLimitExceeded`, waits for `Retry-After` or a back-off.
+9. **The limit of tries.** The helper tries 3 times, then raises a typed error. The scheduler
+   counts that error as a failed sync, backs off, and keeps the cursor.
+10. **No silent skip.** A fetch that still fails logs `gmail.fetch_failed` with the message id. It
+    goes into `SyncResult.errors` on the history path.
+11. **Resync** still clears the cursor (`transport/sync.py:283-325`), and item 1 seeds a new one.
+
+**Non-goals.** No push (EM-G6a, EM-G6b). No import change (EM-G5). No change to Outlook or IMAP.
+
+**Fences (R7).** A new `tests/unit/test_gmail_history_cursor.py`, with an `httpx.MockTransport`
+that answers as Gmail does.
+
+- `test_a_sweep_with_no_cursor_seeds_from_get_profile_first`
+- `test_history_reads_every_page`
+- `test_the_new_cursor_is_the_id_of_the_last_answer`
+- `test_inbox_removed_in_gmail_files_the_row_as_archive`
+- `test_unread_removed_in_gmail_marks_the_row_read`
+- `test_a_user_label_added_in_gmail_reaches_categories`
+- `test_a_stale_cursor_reseeds_and_sweeps_back_to_the_watermark`
+- `test_a_429_backs_off_and_keeps_the_cursor`
+- `test_a_failed_fetch_leaves_a_record`
+- R8: `test_the_cursor_reaches_last_history_id_and_the_next_cycle_reads_it`. It drives
+  `_sync_cycle` twice with a Gmail fake, in the harness of `test_email_scheduler_tenancy.py`.
+
+**Mutations.** Each one must turn the named test red.
+
+- M1 removes the seed, and the seed test fails.
+- M2 reads one page, and the page test fails.
+- M3 drops the label events, and both label tests fail.
+- M4 raises on a 404, and the stale test fails.
+- M5 removes the back-off, and the 429 test fails.
+- M6 keeps the id of the first page, and the last-answer test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_history_cursor.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_deep_sync.py tests/unit/test_email_provider_401_retry.py -v -rs
+uv run ruff check apps/services/email_ingestion tests/unit/test_gmail_history_cursor.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.6 EM-G5 — the import and the reconcile
+
+**Gate.** 🟢 AGENT-SAFE · R8, because the reconcile trashes rows. No migration.
+
+**Order.** After EM-G4, because the import uses the rate-limit helper of EM-G4.
+
+**Size.** L. About 250 lines in `gmail.py`, with tests of about 300 lines.
+
+**Scope.**
+
+1. **One list for all mail (GM-8, GM-19).** Gmail overrides `import_batches`. It pages one
+   `messages.list` with `q=after:<since> before:<until>` in epoch seconds, `includeSpamTrash=true`
+   and no `labelIds`.
+2. **The order.** Gmail lists the newest mail first, so each page is one batch. Each batch is
+   sorted again by `received_key`, and a message newer than `until` drops, as in the base.
+3. **The resume.** A resume passes `before:` the point that the import reached (EM-T6b, D-EM-13).
+4. **The fetch.** The import fetches each page of ids in parallel, with at most 10 calls at once,
+   through the rate-limit helper. It fetches a message with several labels once.
+5. **The estimate (D-EM-16).** The import awaits `on_estimate` once, with the
+   `resultSizeEstimate` of the first answer.
+6. **`message_exists` (GM-20).** It lists with `q=rfc822msgid:<id>` and `includeSpamTrash=true`.
+   It answers true when the list holds a message.
+7. **`import_full_snapshot = True`.** The import reads all mail back to the floor. So a deep sync
+   that a member starts reconciles the deletions (`scheduler.py:780`).
+8. **The recurring reconcile** of `reconcile_full_snapshot` stays for Outlook only. The Gmail
+   history reports each delete (EM-G4 item 4).
+
+**Non-goals.** No change to the default of the base class, so IMAP keeps it. No change to the
+progress UI. No change to the storage limit.
+
+**Fences (R7).** A new `tests/unit/test_gmail_import.py`.
+
+- `test_the_import_lists_all_mail_once_newest_first`
+- `test_the_import_reads_archived_mail_with_no_label`
+- `test_a_message_with_two_labels_is_fetched_once`
+- `test_the_estimate_comes_from_result_size_estimate`
+- `test_a_resume_passes_before`
+- `test_no_message_older_than_the_floor`
+- `test_message_exists_reads_rfc822msgid`
+- R8, in `tests/unit/test_email_import_batches.py`:
+  `test_a_gmail_resync_trashes_a_row_that_gmail_deleted`
+
+**Mutations.** M1 puts back `labelIds`, and the archived-mail test fails. M2 drops the estimate,
+and the estimate test fails. M3 sets `import_full_snapshot = False`, and the R8 test fails. M4 makes
+`message_exists` always true, and the R8 test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_import.py tests/unit/test_email_import_batches.py \
+  tests/unit/test_email_storage_limit.py tests/unit/test_email_deep_sync.py -v -rs
+uv run ruff check apps/services/email_ingestion tests/unit/test_gmail_import.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.7 EM-G6a — the push route and its tenant (dark)
+
+**Gate.** 🟢 AGENT-SAFE build · security review · R8. `EMAIL_GMAIL_PUSH` stays `off`. To change it
+on a box is gate `enforcement-flip`.
+
+**Order.** After EM-G4, and after the orchestrator answers O-GM-4. The audit of EM-G6a reads the
+chosen design first. The scope follows candidate (a) of O-GM-4.
+
+**Size.** M. About 200 lines with tests.
+
+**Scope.**
+
+1. **The route.** A public route `POST /email/webhook/gmail`. It is the one Gmail entry in
+   `PUBLIC_ROUTES` (`gateway/main.py:558`). It joins the exemption from the feature gate in
+   `core.py:58-62`, as `/email/webhook/microsoft` does. The Phase-1 `/webhooks/gmail` stays.
+2. **The OIDC check.** The route verifies the Pub/Sub token. It checks the signature against the
+   Google keys, the issuer and the audience `GMAIL_PUSH_AUDIENCE`. It checks the `email` claim
+   against `GMAIL_PUSH_SERVICE_ACCOUNT`, with `email_verified`. A failure answers 401 and queues
+   nothing.
+3. **The flag.** With `EMAIL_GMAIL_PUSH=off`, the route answers 204 after the check and queues
+   nothing.
+4. **The tenant (O-GM-4).** The route decodes `message.data` to `emailAddress` and `historyId`. One
+   discovery read gives the pairs of organization and mailbox id for that address, and nothing else.
+5. **The queue.** For each pair, the route queues `_webhook_sync(account_id, organization_id)`,
+   which binds that tenant. An address with no match queues nothing.
+6. **The answer.** The route answers 2xx fast, so Pub/Sub does not send again. A push for a mailbox
+   that syncs already joins the next rerun (EM-T4f).
+7. **Settings.** `GMAIL_PUSH_AUDIENCE` and `GMAIL_PUSH_SERVICE_ACCOUNT` go into `settings.py` and
+   `.env.example`, empty by default. An empty value refuses each push.
+
+**Non-goals.** No watch (EM-G6b). No change to the Phase-1 receiver.
+
+**Fences (R7).** A new `tests/unit/test_email_gmail_push.py`.
+
+- `test_a_push_with_no_token_queues_nothing`
+- `test_a_token_with_the_wrong_audience_queues_nothing`
+- `test_the_flag_off_queues_nothing`
+- `test_an_unknown_address_queues_nothing`
+- R8: `test_a_push_queues_one_sync_for_each_mailbox_in_its_own_tenant`, with one address in two
+  organizations
+- `tests/unit/test_org_access_enforcement.py` names the new public route, and no other Gmail route.
+
+**Mutations.** M1 skips the audience check, and the audience test fails. M2 ignores the flag, and
+the flag test fails. M3 queues with no tenant bound, and the R8 test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_gmail_push.py tests/unit/test_email_webhook.py \
+  tests/unit/test_org_access_enforcement.py tests/unit/test_email_tenant_bind_rls.py -v -rs
+uv run ruff check apps/services/gateway/gateway tests/unit/test_email_gmail_push.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.8 EM-G6b — the watch (dark)
+
+**Gate.** 🟢 AGENT-SAFE build. To set `EMAIL_GMAIL_PUSH` on a box is gate `enforcement-flip`.
+
+**Order.** After EM-G6a.
+
+**Size.** M. About 150 lines with tests.
+
+**Scope.**
+
+1. **The watch.** With the flag on, `_ensure_subscription` (`transport/sync.py:438-508`) handles a
+   Gmail row. It calls `users.watch` with `topicName` set to `GMAIL_PUSH_TOPIC`, and no label
+   filter.
+2. **The row.** It writes `webhook_subscription_id = 'gmail-watch'`, because a Gmail watch has no
+   id. It writes `webhook_expires_at` from the `expiration` of the answer.
+3. **The renewal.** Google asks for a watch call at least once in 7 days, and advises one each day.
+   The loop renews a Gmail watch when less than 6 days remain.
+4. **The stop.** A disconnect calls `users.stop`, best effort, where it drops the Graph
+   subscription (`transport/accounts.py:695`, `:773-800`). It does so for each row that holds a
+   watch, with the flag on or off.
+5. **The flag off.** No Gmail row makes a watch call.
+6. **The register.** `work_plan.md` §6.0 D4 lists `EMAIL_GMAIL_PUSH` with the dark flags, gate
+   `enforcement-flip`. `GMAIL_PUSH_TOPIC` goes into `settings.py` and `.env.example`, empty.
+
+**Non-goals.** No Pub/Sub setup from code. The owner makes the topic (§12.4 step 16).
+
+**Fences (R7).** A new `tests/unit/test_gmail_watch.py`.
+
+- `test_the_flag_on_watches_a_gmail_mailbox`
+- `test_the_flag_off_makes_no_watch_call`
+- `test_a_watch_renews_when_six_days_remain`
+- `test_a_disconnect_stops_the_watch`
+- R8: `test_a_gmail_watch_writes_its_own_row_only`
+
+**Mutations.** M1 ignores the flag, and the flag test fails. M2 renews at 1 day, and the renewal
+test fails. M3 drops the stop, and the disconnect test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_watch.py tests/unit/test_email_disconnect_order.py \
+  tests/unit/test_email_webhook.py -v -rs
+uv run ruff check apps/services tests/unit/test_gmail_watch.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.9 EM-G7 — the connect backend
+
+**Gate.** 🟢 AGENT-SAFE · security review. It merges dark. With no Google app on the box, a member
+sees no change.
+
+**Order.** Any time. It needs no other EM-G slice. A live test waits for §12.4 and EM-G10.
+
+**Size.** M. About 150 lines of code, with tests of about 250 lines.
+
+**Scope.**
+
+1. **The scopes (D-EM-31, GM-22).** `GMAIL_SCOPES` (`gmail.py:138`) holds `gmail.modify` and
+   `gmail.settings.basic`. The authorize leg keeps `access_type=offline` and `prompt=consent`.
+2. **The granted scope.** The callback reads `scope` in the token answer of Google. When either
+   scope is absent, it saves no mailbox and bounces `scope_missing`.
+3. **The refresh token.** A Google token answer with no `refresh_token` saves nothing and bounces
+   `token_exchange_failed`.
+4. **The Google errors (GM-23).** For Gmail, `access_denied` maps to `consent_declined`, and
+   `admin_policy_enforced` maps to `workspace_admin_blocked`. Each other plain code passes through
+   `_provider_error_reason`.
+5. **Errors that never return.** Google shows some errors on its own page, for example
+   `org_internal`. So EM-G8 adds the help for a Workspace admin before the click.
+6. **The provider on each bounce (GM-24).** `_bounce` adds `provider` from the path, so each
+   failure names its provider.
+7. **No operator text for a member (GM-25, D-EM-35).** Both entries of `_NOT_CONFIGURED` say only
+   that the provider is not available yet. Neither names Integrations or a client ID.
+8. **The capability read (D-EM-35).** A new gated route `GET /email/oauth/providers` answers one
+   entry for each provider: `id` and `available`. `available` is `oauth_app(provider).configured`.
+   The answer holds booleans and ids only, never a client ID or a secret.
+9. **The app facts for a Workspace admin.** `GET /email/oauth/gmail/app` returns the client ID and
+   the redirect URI, as it does for Microsoft (`transport/oauth.py:238-270`). An admin needs the
+   client ID to trust the app. Google shows both values in each authorize URL.
+
+**Non-goals.**
+
+- No PKCE. EM-T1a signs the state, and the Microsoft leg has none.
+- No `include_granted_scopes`. No `openid` scope, because `users/me/profile` gives the address.
+- No revoke on disconnect (O-GM-3).
+- The Integrations entry `gmail-oauth` (`routes/integrations.py:276-295`) stays, as
+  `microsoft-oauth` does.
+- No UI (EM-G8).
+- A mailbox connected with `https://mail.google.com/` works until its next reconnect.
+
+**Fences (R7).** A new `tests/unit/test_email_gmail_connect.py`. `test_email_connect_backend.py`,
+`test_email_oauth_authorize_wiring.py`, `test_email_oauth_app_info.py` and
+`test_email_oauth_state.py` change where they assert the old behaviour.
+
+- `test_gmail_asks_the_two_scopes_of_d_em_31`
+- `test_a_grant_without_settings_basic_saves_nothing`
+- `test_a_token_without_refresh_token_saves_nothing`
+- `test_each_bounce_names_the_provider`
+- `test_google_errors_map_to_their_reasons`
+- `test_not_configured_names_no_integrations`
+- `test_the_providers_route_answers_booleans_only`
+- `test_gmail_app_info_returns_the_client_id`
+
+**Mutations.** M1 accepts a partial grant, and the scope test fails. M2 bounces with no provider,
+and the bounce test fails. M3 adds the client ID to the providers route, and its test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_gmail_connect.py tests/unit/test_email_connect_backend.py \
+  tests/unit/test_email_oauth_authorize_wiring.py tests/unit/test_email_oauth_app_info.py \
+  tests/unit/test_email_oauth_state.py tests/unit/test_email_owner_scope_fence.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_gmail_connect.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/api/email
+```
+
+#### 12.3.10 EM-G8 — the connect UI
+
+**Gate.** 🟢 AGENT-SAFE · visual review. It merges dark. Gmail stays "Coming soon" until the
+capability read says that the app is installed.
+
+**Order.** After EM-G7, and after EM-G1 to EM-G5. A Gmail choice must not go live on a box with a
+provider that is half built.
+
+**Size.** M. About 200 lines of UI, with tests of about 200 lines.
+
+**Scope.**
+
+1. **Availability (D-EM-35, GM-26).** `CONNECT_PROVIDERS` no longer fixes `available`. The page
+   reads `GET /email/oauth/providers` through `gatewayFetch`, as `lib/api.ts:524` reads the app
+   facts.
+2. **A failed read** keeps Microsoft live and Gmail "Coming soon". `retryTarget` and
+   `rangeStepProviderFrom` (`lib/connect.ts:248-286`) take the live set from the read.
+3. **The copy (GM-27).** The empty state, the decline text, the generic failure and the callback
+   page name the provider of the try. The callback page reads `provider` from its URL (EM-G7
+   item 6).
+4. **The new reasons.** `scope_missing` says that Metorite needs both permissions, with a retry.
+   `workspace_admin_blocked` shows the help of item 6.
+5. **The folder tree of a Gmail mailbox** shows the well-known folders and Archive. Its user labels
+   show in the label filter (O-GM-1).
+6. **The help for a Workspace admin.** Under the Gmail choice, one line says that a company admin
+   can trust Metorite once. It opens a short help with the client ID from
+   `GET /email/oauth/gmail/app`. The help also gives the Admin console path of §12.4.
+7. **The reconnect banner** already handles Gmail (`page.tsx:1085-1101`). Check its copy.
+8. **Visual review.** Use the `visual-review` skill on the connect choices, the range step and the
+   callback page for each reason. Look in light mode, at compact density, with a changed accent
+   and at 390 px.
+
+**Non-goals.** No change to the Microsoft paths beyond copy that names the provider. No change to
+Integrations.
+
+**Fences (R7).** `src/app/email/lib/connect.test.ts` inverts the cases at `:116-122`, `:561-562`
+and `:722`. New cases carry these names:
+
+- `gmail-available-from-capability`
+- `gmail-coming-soon-when-the-read-fails`
+- `callback-copy-names-google`
+- `scope-missing-copy`
+- `workspace-admin-help-shows-the-client-id`
+- `gmail-folder-tree-shows-well-known-folders`
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/app/api/email src/lib/theme
+```
+
+The theme suite holds the design-system fences, so keep it in the run.
+
+#### 12.3.11 EM-G9 — parity of a Gmail and Outlook pair
+
+**Gate.** 🟢 AGENT-SAFE · R8. No migration.
+
+**Order.** After EM-G2 and EM-G3a.
+
+**Size.** S. Tests and docs, about 150 lines.
+
+**Scope.**
+
+1. **"Also in".** One member has a Gmail and an Outlook mailbox. A mail sent to both shows "Also
+   in" on each row (`ALSO_IN_SQL`, `automation/identity.py:173`).
+2. **The draft dedupe.** The second mailbox makes no draft when the first holds one
+   (`automation/identity.py:224`, `:247`).
+3. **The Sent-copy proof.** The proof holds from Gmail to Outlook and back (`:328`). Mail between
+   the two is not cold and not awaiting (D-EM-27).
+4. **The known limits.** Update §11.6 edge cases 10, 11 and 26. Update the F2 note of EM-T8e-1
+   (§11.7.5) and the note of EM-T8g-3 on `internet_message_id` (§11.7.7).
+5. **The comments.** Update `automation/identity.py:171-172`, `:326-327` and the line in
+   `apps/services/gateway/AGENTS.md:54`.
+
+**Fences (R7).** New R8 cases in `tests/unit/test_email_duplicates.py` and
+`tests/unit/test_email_ai_context.py`. The Gmail rows come from the real parse of an EM-G2
+fixture, not from a row built by hand.
+
+- `test_also_in_pairs_a_gmail_and_an_outlook_copy`
+- `test_draft_dedupe_spans_gmail_and_outlook`
+- `test_the_sent_proof_holds_from_gmail_to_outlook`
+- `test_the_sent_proof_holds_from_outlook_to_gmail`
+
+**Mutations.** M1 drops the Message-ID in the Gmail parse, and each R8 case fails. M2 strips the
+angle brackets in the Gmail parse only, and each R8 case fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_duplicates.py tests/unit/test_email_ai_context.py \
+  tests/unit/test_gmail_parse.py -v -rs
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.12 EM-G10 — live acceptance (owner)
+
+**Gate.** 🔴 OWNER-GATE. The owner registers the Google app (§12.4 steps 1 to 8), names the test
+user (Q-GM-3) and gives the go. An agent writes the env under gate `env-write` and runs the checks.
+
+**Order.** Last. After EM-G1 to EM-G5, EM-G7, EM-G8 and EM-G9. EM-G6a and EM-G6b are not needed
+(D-EM-32).
+
+**Size.** S. A run of the checks, and a report.
+
+**The checks,** on production, for one member with a Gmail mailbox and an Outlook mailbox.
+
+1. Before the connect, count the `gmail` rows in `email_accounts`. Record the count, not the rows.
+2. Open Email. The Gmail choice is live, and "Coming soon" is gone.
+3. Connect Gmail. Google shows the two scopes of D-EM-31, and the callback opens the range step.
+4. Clear one scope on the consent page in a second try. The callback shows `scope_missing` and
+   saves no row.
+5. Import 1 month. The progress shows a count and an estimate, newest first, and ends.
+6. Send one mail to both addresses. Each row shows "Also in".
+7. In Gmail web, archive, read, star and label one mail. Each change shows in Metorite within one
+   poll.
+8. Do the same acts in Metorite. Each change shows in Gmail at once.
+9. Reply from Metorite with the HTML signature. The reply threads in Gmail and at an Outlook
+   recipient.
+10. Save a draft in Metorite. Gmail shows one draft. Send a draft made in Gmail web from Metorite.
+11. Turn sync off for one hour, send mail, and turn it on. No mail is lost.
+12. Disconnect Gmail. The copy in Metorite goes, and the mail stays in Gmail.
+
+**Evidence.** The log lines of each step, the row counts and the screenshots. Report each
+production act in the same message (CLAUDE.md §3a rule 2).
+
+**Non-goals.** Google verification and CASA (§12.4 steps 10 to 15). They come before customers,
+not before this check.
+
+### 12.4 Owner runbook — register the Metorite Google mail app (D-EM-5 amended, D-EM-31)
+
+These are one-time owner acts. No customer ever repeats them. An agent cannot do them, because
+each one needs a Google account that Metorite owns (`work_plan.md` §6.0 B).
+
+**Now, for EM-G10 (Testing mode).**
+
+1. Create a Google Cloud project for mail only, under a Google account or organization that
+   Metorite owns. Do not use the project of the Google sign-in client (`AUTH_GOOGLE_ID`,
+   `GOOGLE_SSO_CLIENT_ID`). A restricted-scope review of the mail app then cannot stop sign-in.
+2. In **APIs & Services → Library**, enable the **Gmail API**. Enable the **Cloud Pub/Sub API**
+   only when EM-G6a is next.
+3. In **Google Auth Platform → Branding**, set the name `Metorite`, the logo and a support email.
+   Set the home page, the privacy URL and the terms URL on `metorite.com`.
+4. Add `metorite.com` as an authorized domain. Verify `metorite.com` in Google Search Console with
+   an account that owns the project.
+5. In **Audience**, set the user type to **External** and the status to **Testing**. Add each test
+   Gmail address as a test user. Google allows 100 at most.
+6. In **Data Access**, add `https://www.googleapis.com/auth/gmail.modify` and
+   `https://www.googleapis.com/auth/gmail.settings.basic` (D-EM-31). Both are restricted scopes.
+7. In **Clients**, create a client of the type **Web application**. Add the redirect URI
+   `https://app.metorite.com/api/email/oauth/gmail/callback`. For local tests, also add
+   `http://localhost:3001/api/email/oauth/gmail/callback`.
+8. Give the client ID and the secret to an agent session through a one-time channel. You can also
+   write them on the box yourself. Do not paste the secret into a chat (H-207 shows the cost).
+9. The agent writes `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` to the box under gate
+   `env-write`. It confirms `WORKBENCH_PUBLIC_URL`, `GATEWAY_PUBLIC_URL` and
+   `GATEWAY_SESSION_SECRET`, which Outlook uses already.
+
+**The limits of Testing.** Read these before EM-G10.
+
+- Google issues a refresh token that ends after 7 days for an External app in Testing. So each
+  test mailbox reconnects once a week, through the reconnect banner.
+- Google shows "Google hasn't verified this app" to each test user. Expect that screen.
+- **Optional, for a Workspace domain.** A Workspace admin can trust the app by its client ID. The
+  path is Admin console → Security → Access and data control → API controls.
+- Then open Manage third-party app access → Configure new app, and choose **Trusted**. Members of
+  that domain can then connect, also when the domain blocks apps that Google did not verify.
+- Trust does not remove the limit of 7 days.
+
+**Before customers (Production).**
+
+10. Submit the app for verification: the brand, and the restricted scopes. Give a reason for each
+    scope, and say why a narrower scope does not serve. Record a demo video of the OAuth flow and
+    of each feature that uses the scopes.
+11. Update `site/privacy.html` and the terms. Today they name Google for sign-in only
+    (`site/privacy.html:107`, `:149`).
+12. The privacy text says how Metorite reads, uses, stores and shares Gmail data. It states that
+    Metorite meets the Limited Use rules of the Google API Services User Data Policy.
+13. The privacy text names the AI sub-processors of D-EM-9 (TypeSafe, AI/ML API). It states that
+    no Gmail data trains a general AI model. Q-GM-5 asks the owner to confirm this.
+14. Pass the CASA security assessment with a lab that Google authorizes, once each year. It costs
+    a fee and takes weeks. 🔴 Money and a third party: an owner act only (CLAUDE.md §3a rule 3).
+15. Publish the app (**Audience → Publish app**) only when verification passes. An app that Google
+    did not verify shows the warning, and Google caps it at 100 new users.
+
+**For push (EM-G6a and EM-G6b), when push is next.**
+
+16. In Pub/Sub, create a topic for Gmail. Grant `gmail-api-push@system.gserviceaccount.com` the
+    role **Pub/Sub Publisher** on it.
+17. Create a push subscription to `<GATEWAY_PUBLIC_URL>/email/webhook/gmail`, with
+    authentication on. Choose a service account and an audience. The base is the base of the
+    Graph webhook.
+18. Give the topic name, the service account and the audience to an agent. It writes
+    `GMAIL_PUSH_TOPIC`, `GMAIL_PUSH_SERVICE_ACCOUNT` and `GMAIL_PUSH_AUDIENCE` under gate
+    `env-write`. To set `EMAIL_GMAIL_PUSH` is gate `enforcement-flip`.
+
+**Effect on mailboxes connected today.** No member has connected a Gmail mailbox (§12.1). A test
+mailbox that connects in Testing must reconnect once after the app moves to Production. Its
+refresh token from Testing still ends after 7 days.
+
+### 12.5 Owner questions
+
+- **Q-GM-1. Which Google account or organization owns the Google Cloud project of the mail app?**
+  The proposal is an organization that Metorite owns, apart from the project of Google sign-in.
+- **Q-GM-2. Start Google verification now, or after EM-G10 in Testing?** The proposal is to verify
+  the domain and the brand now, because that costs nothing and the review takes weeks. Start the
+  restricted-scope review and CASA after EM-G10, because the demo video needs the finished flow.
+- **Q-GM-3. Which Gmail account is the test user of EM-G10?** The proposal is one personal
+  `@gmail.com` account that Metorite owns, and one Workspace mailbox if Q-GM-4 names a domain.
+- **Q-GM-4. Which Google Workspace domain, if any, tests the app as Trusted?** A Workspace mailbox
+  shows the admin paths of EM-G8 that a personal account cannot show.
+- **Q-GM-5. Does D-EM-9 cover Gmail content?** Google's Limited Use rules bind each transfer of
+  Gmail data, also to TypeSafe and AI/ML API, and the privacy text must name them. The proposal is
+  yes, on the same terms as Outlook, with the text of §12.4 steps 12 and 13. This is a legal and
+  third-party call, so the agent does not make it.

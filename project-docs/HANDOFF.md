@@ -369,6 +369,25 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md` §10.2 (D-EM-2, interim) · §10.5
 - **Added:** 2026-10-01 · the Outlook onboarding session
 
+### H-241 · Register the Metorite Google mail app, so Gmail can connect · [OWNER]
+- **Check:** `ssh metorite 'sudo grep -c "^GMAIL_OAUTH_CLIENT_ID=." /opt/acb/app/.env'`
+  → `0` means open. The command prints a count, never the value.
+- **Why.** On 2026-10-04 the owner amended D-EM-5: Gmail and Google Workspace
+  mailboxes join Outlook. The code needs ONE Google OAuth app that Metorite
+  owns. An agent cannot create it, because it needs a Google account of
+  Metorite (`work_plan.md` §6.0 B).
+- **Do.**
+  1. Do steps 1 to 8 of `specs/email_app_master_plan.md` §12.4, in Testing mode.
+  2. Give the client ID and the secret to an agent through a one-time channel.
+     Do not paste the secret into a chat.
+  3. The agent writes the two keys on the box under gate `env-write`.
+  4. Answer Q-GM-1 to Q-GM-5 (§12.5).
+- **Then.** EM-G10 runs after EM-G1 to EM-G5, EM-G7, EM-G8 and EM-G9 merge.
+  Google verification and CASA (§12.4 steps 10 to 15) come before customers.
+- **Authority:** `specs/email_app_master_plan.md` §12.4 · D-EM-5 (amended) ·
+  D-EM-31
+- **Added:** 2026-10-04 · the EM-G0 spec session
+
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
@@ -4140,6 +4159,35 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §14.8 ·
   `src/lib/markdownMedia.ts`
 - **Added:** 2026-10-04 · the chat click-to-load PR
+
+### H-240 · Give a dispatched agent run the member who assigned the task · [AGENT]
+- **Check:** `grep -c "session_user" apps/services/gateway/gateway/routes/projects/agent_dispatch.py`
+  → `0` means the gap is open. The sink passes no member to `run_agent`.
+- **What happens.** `pm.task.assigned` carries the task, the new assignees
+  and the org, and no assigner. So `agent_dispatch` calls `run_agent` with no
+  `session_user`, and the executor logs `executor.run_has_no_acting_user`.
+  A tool that calls the gateway as the member refuses. The agent can reply on
+  the timeline, and it cannot comment on, move or edit the task.
+- **What the spec wants.** §6.4: the agent works the task under its own
+  `agent:<name>` identity, limited to the acting member through
+  `EffectiveAccess.intersect()`.
+- **Do.**
+  1. `set_assignees` puts the signed-in member on the event, from the
+     session and never from the body (R11).
+  2. The sink passes that member to `run_agent` as `session_user`, never as
+     a payload key.
+  3. Fence it on the R8 database: the run binds the member as verified, and
+     a `skill-projects` write in that run is limited to what the member may do.
+- **Two more items for the flip (no fix now).**
+  1. With the flag ON, no cap limits the number of dispatched runs at one
+     time. Only the Router's credit cap stops them.
+  2. A workflow node that assigns an agent no longer waits for the run,
+     because the sink starts each run in the background.
+- **Why it waits.** The run is dark (`PROJECTS_AGENT_DISPATCH`, PR #622).
+  This gap must close before the owner flips the flag.
+- **Authority:** `specs/project_management_app.md` §6.4 and §9.12.10 ·
+  `work_plan.md` §6.1
+- **Added:** 2026-10-04 · PR #622
 
 # DONE — deleted, not archived
 
