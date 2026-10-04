@@ -11,7 +11,7 @@
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
-> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume. 🔨 **EM-T6c BUILT, not merged (2026-10-04): branch `email-storage-limit`, a port of `8b4cb4dfc` that closes the gaps G1 to G5 and the findings of review round 1. No PR.**
+> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume. ✅ **EM-T6c MERGED (#615, 2026-10-04, no migration): a port of `8b4cb4dfc` that closes the gaps G1 to G5 and the findings of review round 1.**
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
 > ✅ **EM-T6d, part 2 (rules step, drafting step and Done) MERGED (#581, 2026-10-03).** UI only (§10.4.7).
@@ -601,7 +601,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
-| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c BUILT, not merged (branch `email-storage-limit`, 2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
+| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -2340,7 +2340,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c BUILT, not merged: branch `email-storage-limit` (2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed, no PR. EM-T6e not built. Anchors re-verified at `5e268c766` on 2026-10-04.
+**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e not built. Anchors re-verified at `5e268c766` on 2026-10-04.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
@@ -2562,7 +2562,7 @@ The R8 tests must show PASSED, not SKIPPED.
 - **G4. A removal can end the `limit` phase.** The last block writes `import_phase = 'done'` when the phase was `limit` and the new meter is under the limit. Review round 1 adds a third test: no gap is left below `import_reached_at`.
 - **G5. The last block deletes the orphan drafts of the AI.** It deletes the `email_ai_drafts` row of each thread that this removal emptied (review round 1).
 
-**Status.** 🔨 BUILT, not merged (2026-10-04). Branch `email-storage-limit`, four commits on `5e268c766`: the narrowing, the port of `8b4cb4dfc`, the gaps G1 to G5, and review round 1. It adds no migration. The fence is `tests/unit/test_email_storage_limit.py`: 72 tests, 28 of them R8, and 0 skip.
+**Status.** ✅ MERGED #615 (2026-10-04). Four commits on `5e268c766`: the narrowing, the port of `8b4cb4dfc`, the gaps G1 to G5, and review round 1. It adds no migration. The fence is `tests/unit/test_email_storage_limit.py`: 72 tests, 28 of them R8, and 0 skip.
 
 **As built.**
 
