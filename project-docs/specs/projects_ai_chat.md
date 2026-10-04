@@ -5029,11 +5029,18 @@ mutation of one layer alone stays green. The table shows those too.
 6. **A slow mint and a late create.** A run door purges a new id, and then
    the run's mint makes the row. When the mint times out, the run goes on
    with no row. A `POST /chat/sessions` that arrives then sees no row, and
-   its purge can remove the first files of that run.
+   its purge can remove the first files of that run. HANDOFF H-242 step 3.
 7. **The stream door with no thread id** mints the thread `<agent>:<run
    id>` from a run id that the client may choose. It makes no batch run.
    Its documents go in its own thread folder, never in a loose file, so it
    cannot forge an older batch row. The purge never deletes one.
+8. **A null room skips the purge.** A run door reads a room of `None` as
+   "not new". `_resolve_room` gives `None` on an exception, or when the
+   caller has no email. HANDOFF H-242 step 1.
+9. **The next writer can own the deleted chat's text** (fix round 3 item
+   5). The bytes that another session wrote can still hold the text of the
+   chat that began the file. HANDOFF H-242 step 2 decides: delete such a
+   file, or keep it with no owner.
 
 **Verification.**
 

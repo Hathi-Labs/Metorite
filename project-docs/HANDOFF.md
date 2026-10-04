@@ -171,6 +171,48 @@ line — never reclaim a number by deleting the other entry.
   document of an assigned task's run a home (rule 8). So this id now holds
   the count.
 
+### H-242 · Close the three edges of the H-227 new-chat purge · [AGENT]
+- **Check:** run these three searches.
+  1. `rg -n "room is None or not thread_id" apps/services/gateway/gateway/routes/agent.py`.
+     A hit means step 1 is open.
+  2. `rg -n "_last_write" apps/services/gateway/gateway/routes/workspace.py`.
+     A hit means step 2 is open.
+  3. `rg -n "pg_advisory_xact_lock" apps/services/gateway/gateway/routes/chat.py`.
+     No hit means step 3 is open, unless the run doors insert the row
+     before the run (the second form of Do 3).
+- **What happens.** Fix round 3 of PR #616 purges the id of a new chat
+  before its first row (`chat.prepare_new_session`). The reviewer found
+  three edges, each a P3.
+  1. **A null room skips the purge.** `agent._prepare_if_new_thread` reads a
+     room of `None` as "not new". `_resolve_room` gives `None` on an
+     exception, or when the caller has no email. So such a run purges
+     nothing before its mint makes the row.
+  2. **The next writer can own the deleted chat's text.** A chat began a
+     loose file, and another session wrote its newest bytes, for example
+     through the `save_note` append of main. The purge keeps that file
+     (`workspace._last_write`). The bytes on disk can still hold the deleted
+     chat's text, and the session that wrote them becomes the owner.
+  3. **The purge races the first row** (§22.9 residual 6). A run door purges
+     a new id, and then the best-effort mint makes the row within 2 s
+     (`_MINT_TIMEOUT_S`). When the mint times out, the run writes with no
+     row. A `POST /chat/sessions` in that window purges the run's first
+     files.
+- **Do.**
+  1. Read a room of `None` as "not new" only for the internal caller (the
+     rule of `_is_service_caller`). For any other caller, purge, or refuse
+     the run.
+  2. Decide one of two: the purge deletes such a file, or it keeps the file
+     with no owner. Then build it, and remove the `_last_write` branch.
+  3. Take `pg_advisory_xact_lock(hashtextextended(:id, 0))`. Then check
+     again that no row exists, purge, and insert the row, all in one
+     transaction. Or make each run door insert the row after the purge and
+     before the run, and answer 503 when the insert fails. That replaces
+     the best-effort mint for a new thread.
+  4. Add an R8 test and a mutation for each step.
+- **Authority:** `specs/projects_ai_chat.md` §22.9 (fix round 3, the
+  residuals) · D12
+- **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
+
 ### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
 - **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.
   A hit means this is open.
