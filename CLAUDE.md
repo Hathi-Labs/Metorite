@@ -115,6 +115,12 @@ reference tied to code. Do not put product specs in `docs/`.
   ⚠️ **ClickUp is gone** — no connector, no sync. A FILE importer reads export files and nothing else
   (D80, 2026-09-26, `specs/project_import.md`, board `WS-41`). Metorite
   is the PM system of record and root `AGENTS.md` constraint 8 is amended to say so.
+- **⚠️ The shell is ONE seam** *(D87–D89, 2026-10-05 — board `WS-44`)*. Every
+  app, built or future, joins it through a manifest on its `NavPane`. No app
+  builds its own ⌘K handler, palette, bell or assistant rail. Home is one page
+  at three altitudes: Personal, a team, and all my teams. A team view is a
+  filter, never a Center (D49 stands). `specs/navigation_shell.md` owns it,
+  and `workbench/control_plane/AGENTS.md` rule 10 carries it to UI work.
 - **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
   (`core`), everything live included. Center packages, add-ons and Complete are
   retired. `specs/launch_surface.md` §4 is the shape of record;
@@ -343,7 +349,7 @@ Rules that make it work:
 
 ## 5. What not to do
 
-- **Do not re-litigate decisions.** **D1–D69** are taken *(this read "D1–D31" until 2026-08-26, and "D1–D54" until 2026-08-31)*. If one looks wrong, say so
+- **Do not re-litigate decisions.** **D1–D89** are taken *(this read "D1–D31" until 2026-08-26, "D1–D54" until 2026-08-31, and "D1–D69" until 2026-10-05)*. If one looks wrong, say so
   and stop — do not build against your own alternative.
 - **Do not refactor the tree to conform** to R6/R7/R8. Those bind *new and
   changed* work. Existing violations are findings for the board.

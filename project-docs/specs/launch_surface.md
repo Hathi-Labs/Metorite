@@ -120,6 +120,8 @@ section label and nothing else.** It is a category of apps mapped one-to-one to
 the signed-in person. It is not a projection of a department. The directive
 keeps it by name.
 
+**Amended 2026-10-05 by D87.** "Personal" is also the first altitude of Home, My Day (`navigation_shell.md` §4.1). It is still not a destination, and it is still not a grant.
+
 ### Preview — in the application, absent from the surface
 
 Every other pane. Listed here so "which apps did we hold back" has one written
@@ -410,6 +412,8 @@ filter, or it is a second answer to one question.
 > "everything".
 
 Fence: `nav.test.ts` + `accessProvider.test.ts` (§9 LS-4/LS-5).
+
+**Extended 2026-10-05 by WS-44 (D89).** The shell adds four surfaces that read this one filter: the launcher, the command bar, My Day and the avatar menu. `navigation_shell.md` §5 owns them. They change WHERE a live pane renders, and never WHETHER it is live. The count in §2 stays the fence.
 
 ---
 
