@@ -4725,6 +4725,27 @@ the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
 | `_session_history` drops the older `''` rows | 1 |
 | the session filter of `file_history` names the wrong column | 4 |
 
+**The other-thread rule, route by route.** Bob asks for
+`inputs/<thread slug of Alice>/<name>` from his own session. The fence of
+each route is `test_alices_upload_and_document_are_invisible_to_bob`, except
+where the table names another test. Three routes have two layers, so a
+mutation of one layer alone stays green. The table shows those too.
+
+| Route or path | Mutation | Tests that fail |
+|---|---|---|
+| tree | the other-thread filter dropped | 1 |
+| `GET .../file` | the other-thread check dropped | 1 |
+| history | the row filter dropped | 1 |
+| history | the path check dropped, and the row filter kept | 0, the row filter holds |
+| history | both checks dropped | 1 |
+| DELETE | the route check and `_apply_write_rules` dropped | 1 |
+| DELETE | the route check dropped, and `refused_write` kept | 0, `refused_write` answers 404 |
+| PUT | the route check and the thread rule of `refused_write` dropped | 1 |
+| PUT | the route check dropped, and `refused_write` kept | 0, `refused_write` answers 404 |
+| promote | the other-thread check dropped | 1 |
+| `TenantFileStore` (`test_the_file_tools_see_only_this_threads_uploads`) | `inputs/` maps to the shared `inputs/` | 2 |
+| the container (`test_a_projects_container_mounts_only_its_own_uploads_read_only`, `test_docker_a_thread_sees_only_its_own_uploads`) | the upload cover dropped, or made writable | 2 each |
+
 **What H-227 does not do.**
 
 - `save_note` and `recall_notes` keep plain paths. HANDOFF H-237 carries
