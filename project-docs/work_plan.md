@@ -4956,6 +4956,17 @@ and one thing that cannot be written until a second person exists.
 > that acceptance as given. The three acts of WS-43w stay
 > owner acts.
 >
+> **Projects — `PROJECTS_AGENT_DISPATCH`, a run for an `agent:` assignee.**
+> *(Registered 2026-10-04 with PR #622.)* When a member assigns a task to
+> `agent:<name>`, the dispatch sink can start a run, and the run spends the
+> org's AI credits. The flag is OFF by default. With it OFF, the sink starts
+> no run and writes one timeline row that says so.
+>
+> To build and test the run is AGENT-SAFE. **To set the flag on a box is an owner flip**, because it
+> spends money (CLAUDE.md §3a rule 3). The grant `enforcement-flip` does not
+> cover it. `specs/project_management_app.md` §6.4 and §9.12.10 are the
+> authority, and H-240 is the open gap behind it.
+>
 > **WS-29 — moving any customer onto the pooled tier.** Cutover is a data move against
 > live customer data. AGENT-SAFE to build; **OWNER-GATE to execute.**
 >
