@@ -37,7 +37,10 @@ All providers implement the `BaseEmailProvider` abstract interface:
 - `send_message()`, `modify_message()`, `trash_message()`
 - `sync_messages(history_id)` — incremental sync, returns `SyncResult` with `messages` list.
   It takes `catch_up`, the watermark after a pause. Outlook reads more pages
-  back to it. Gmail and IMAP ignore it, because their cursors read each change.
+  back to it. IMAP ignores it and reads by its UID cursor. ⚠️ Gmail ignores it too,
+  but Gmail stores no history cursor today, so a pause loses the mail past the
+  first page of each label. `project-docs/specs/email_app_master_plan.md` §12
+  (GM-16 to GM-18) owns the fix, slice EM-G4.
   It takes `delta_shadow` too (WS-17 EM-T4d). Outlook then runs the Graph
   delta after the sweep, and Gmail and IMAP ignore it.
 - `import_batches(since, until, size)` — the import in lists, newest first

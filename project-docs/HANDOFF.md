@@ -349,6 +349,25 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md` §10.2 (D-EM-2, interim) · §10.5
 - **Added:** 2026-10-01 · the Outlook onboarding session
 
+### H-241 · Register the Metorite Google mail app, so Gmail can connect · [OWNER]
+- **Check:** `ssh metorite 'sudo grep -c "^GMAIL_OAUTH_CLIENT_ID=." /opt/acb/app/.env'`
+  → `0` means open. The command prints a count, never the value.
+- **Why.** On 2026-10-04 the owner amended D-EM-5: Gmail and Google Workspace
+  mailboxes join Outlook. The code needs ONE Google OAuth app that Metorite
+  owns. An agent cannot create it, because it needs a Google account of
+  Metorite (`work_plan.md` §6.0 B).
+- **Do.**
+  1. Do steps 1 to 8 of `specs/email_app_master_plan.md` §12.4, in Testing mode.
+  2. Give the client ID and the secret to an agent through a one-time channel.
+     Do not paste the secret into a chat.
+  3. The agent writes the two keys on the box under gate `env-write`.
+  4. Answer Q-GM-1 to Q-GM-5 (§12.5).
+- **Then.** EM-G10 runs after EM-G1 to EM-G5, EM-G7, EM-G8 and EM-G9 merge.
+  Google verification and CASA (§12.4 steps 10 to 15) come before customers.
+- **Authority:** `specs/email_app_master_plan.md` §12.4 · D-EM-5 (amended) ·
+  D-EM-31
+- **Added:** 2026-10-04 · the EM-G0 spec session
+
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
