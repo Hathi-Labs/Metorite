@@ -7,6 +7,7 @@ import {
   RuleGuidance, MessageTimeline,
   VoiceProfile, VoiceProfilePreview, VoiceProfileBuildStatus,
   ContactCard, SenderStatus, RuleCopyResult,
+  OlderMailPreview, RemoveOlderResult,
 } from "./types";
 import { mapMailAppInfo, type MailAppInfo } from "./connect";
 
@@ -87,6 +88,10 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     importPhase: optionalString(raw.import_phase),
     importCount: optionalCount(raw.import_count),
     importEstimate: optionalCount(raw.import_estimate),
+    // EM-T6c. Null before the first meter run. A limit the gateway does not
+    // send stays absent, and then Email draws no storage UI (EM-T6e).
+    storedBytes: optionalCount(raw.stored_bytes),
+    storageLimitBytes: optionalCount(raw.storage_limit_bytes) ?? undefined,
     // EM-T8f-1. ISO text with microseconds. The disconnect dialog names the
     // next default from it (EM-T8f-2).
     createdAt: optionalString(raw.created_at),
@@ -589,6 +594,61 @@ export async function updateEmailAccount(
  */
 export function setMailboxPooled(id: string, pooled: boolean): Promise<EmailAccount> {
   return updateEmailAccount(id, { inAllInboxes: pooled });
+}
+
+// ── Remove older mail from Metorite (EM-T6e, spec §10.4.7) ───────────────
+
+/**
+ * A count that the answer must carry: a finite number of 0 or more. Any
+ * other value throws (EM-T6e review round 1). The proxy sends `{}` for a 200
+ * body that it cannot read, and a missing count must never read as 0.
+ * A thrown preview is a failed count. A thrown removal has no `status`, so
+ * the dialog starts the D1 follow-up, and that finds the true count.
+ */
+function requiredCount(raw: Record<string, unknown> | undefined, field: string): number {
+  const v = raw?.[field];
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+    throw new Error(`The answer has no count in "${field}".`);
+  }
+  return v;
+}
+
+/**
+ * The count and the bytes of the mail of one mailbox received before
+ * `before` (EM-T6c). It writes nothing. `before` is an ISO instant.
+ *
+ * ⚠️ The value is encoded. The gateway answers `before` as Python ISO text,
+ * `2026-09-04T18:30:00+00:00`, and the D1 follow-up sends that text back.
+ * A bare `+` in a query is a space, so the gateway would answer 400.
+ */
+export async function previewOlderMail(accountId: string, before: string): Promise<OlderMailPreview> {
+  const raw = await gatewayFetch<Record<string, unknown>>(
+    `/email/accounts/${encodeURIComponent(accountId)}/storage/older?before=${encodeURIComponent(before)}`,
+  );
+  return {
+    before: String(raw?.before ?? before),
+    messages: requiredCount(raw, "messages"),
+    bytes: requiredCount(raw, "bytes"),
+  };
+}
+
+/**
+ * Remove the mail of one mailbox received before `before`, from Metorite
+ * only (EM-T6c, D-EM-14). The mailbox at the provider does not change. A
+ * thrown error keeps the `status` of `gatewayFetch`, so the dialog can tell a
+ * 409 from a proxy timeout (D1).
+ */
+export async function removeOlderMail(accountId: string, before: string): Promise<RemoveOlderResult> {
+  const raw = await gatewayFetch<Record<string, unknown>>(
+    `/email/accounts/${encodeURIComponent(accountId)}/storage/remove-older`,
+    { method: "POST", body: JSON.stringify({ before }) },
+  );
+  return {
+    before: String(raw?.before ?? before),
+    removed: requiredCount(raw, "removed"),
+    storedBytes: optionalCount(raw?.stored_bytes) ?? null,
+    storageLimitBytes: requiredCount(raw, "storage_limit_bytes"),
+  };
 }
 
 // ── Folders ──────────────────────────────────────────────────────────────

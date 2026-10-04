@@ -453,7 +453,7 @@ describe("the page wiring", () => {
 
   it("draws the rules step for the mailbox in view, where the import panel drew", () => {
     expect(page).toMatch(
-      /\{selectedAccount && onboardingStage\(selectedAccount\) === "rules" && \(\s*<OnboardingRulesStep\s+key=\{selectedAccount\.id\}\s+account=\{selectedAccount\}\s+onOpenAutomation=\{openFromSetup\}\s+onFinished=\{\(updated\) => \{\s*replaceAccount\(updated\);\s*void refreshAccounts\(\);\s*\}\}/,
+      /\{selectedAccount && setupStage === "rules" && \(\s*<OnboardingRulesStep\s+key=\{selectedAccount\.id\}\s+account=\{selectedAccount\}\s+onOpenAutomation=\{openFromSetup\}\s+onFinished=\{\(updated\) => \{\s*replaceAccount\(updated\);\s*void refreshAccounts\(\);\s*\}\}/,
     );
     // "<FirstSyncBanner" alone: since EM-T8f-3 a `key` comes before `address`,
     // and an indexOf of -1 would pass this check with no banner at all.

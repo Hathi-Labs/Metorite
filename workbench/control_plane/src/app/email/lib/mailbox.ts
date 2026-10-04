@@ -9,6 +9,7 @@
  */
 
 import { accentForSlot, categoricalAccent, type CategoricalAccent } from "@/lib/categorical";
+import { atStorageLimit, storageNoticeKind } from "./storage";
 
 /** The mailbox of a mail. The selection is only the fallback for a mail that
  *  carries no account id (an optimistic row, an old cache). */
@@ -291,6 +292,59 @@ export function attentionMailbox<T extends { id: string; syncStatus?: string }>(
     ? state.accounts
     : state.accounts.filter((a) => a.id === state.selectedAccountId);
   return scope.find((a) => a.syncStatus === "error" || !!state.authErrors[a.id]) ?? null;
+}
+
+/**
+ * The mailbox that the storage notice names (EM-T6e, D3), or null.
+ *
+ * - One mailbox in view: that mailbox, when it earns a notice
+ *   (`storageNoticeKind`: at the limit, or the gap of D2). A separate mailbox
+ *   shows its notice here, in its own view.
+ * - All inboxes: the first POOLED mailbox at the limit, in the order of the
+ *   list. A separate mailbox is never named here. The gap line shows in the
+ *   own view of its mailbox only.
+ *
+ * Two surfaces win over the notice, and their mailbox is skipped:
+ * - `attentionId`, the mailbox of the reconnect banner (`attentionMailbox`).
+ *   A failing sync comes first.
+ * - `storageStepId`, the mailbox whose guided setup draws the storage step.
+ *   The step names it already (D6).
+ *
+ * The dialog acts on the id of the mailbox this returns, never on the
+ * selected mailbox or `poolHome` (D3). Fence: `email-storage-mailbox` in
+ * `allInboxes.test.ts`.
+ */
+export function storageMailbox<
+  T extends { id: string } & PoolFlag & Parameters<typeof storageNoticeKind>[0],
+>(state: {
+  viewAll: boolean;
+  selectedAccountId: string | null;
+  accounts: ReadonlyArray<T>;
+  attentionId?: string | null;
+  storageStepId?: string | null;
+}): T | null {
+  const free = (a: T) => a.id !== state.attentionId && a.id !== state.storageStepId;
+  if (!state.viewAll) {
+    const box = state.accounts.find((a) => a.id === state.selectedAccountId);
+    return box && free(box) && storageNoticeKind(box) !== null ? box : null;
+  }
+  return pooledMailboxes(state.accounts).find((a) => free(a) && atStorageLimit(a)) ?? null;
+}
+
+/**
+ * The mailbox of the open removal dialog (EM-T6e), looked up in the list, or
+ * null. A mailbox can leave the list while the dialog is open: another tab
+ * disconnects it, or a re-read drops it. The dialog then draws nothing, and
+ * its `onClose` never runs. So the page shortcuts read this value, never the
+ * raw id, and the page clears an id that names no mailbox (review round 1).
+ * Fence: `email-storage-dialog-leaves` in `allInboxes.test.ts`.
+ */
+export function removalMailbox<T extends { id: string }>(
+  accounts: ReadonlyArray<T>,
+  removingId: string | null,
+): T | null {
+  if (removingId === null) return null;
+  return accounts.find((a) => a.id === removingId) ?? null;
 }
 
 /** The item of the mailbox menu that moves a mailbox in or out of All
