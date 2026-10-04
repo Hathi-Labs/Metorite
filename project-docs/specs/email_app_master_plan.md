@@ -1881,6 +1881,8 @@ Agent work that must land BEFORE the flip (review round 1, finding G). Neither i
 
 5. **The template fill at the budget.** `_render_template` (`actions.py:279-318`) catches `LLMBudgetExhausted` and returns the raw template. In `enforce`, a LABEL then gets a literal `{{...}}` name. A REPLY, DRAFT, FORWARD or SEND gets raw placeholders. A FORWARD note or a SEND subject can reach a third party, and the runner then stamps the row. The fix must decide what a rule with several actions does when one action cannot render.
 6. **One warning a day, not one a cycle.** In `enforce`, a spent mailbox logs WARNING lines on each cycle until UTC midnight. The lines are `decide.unavailable`, `email.classify_unavailable_skip` and `email.mark_thread_replied_failed`. Check the budget once for each job, and log once.
+7. **A timeout gives back spend that the model billed.** On a timeout, `_ask_all` gives back all its requests, also the ones that already answered (`llm_cap.py:303-309`). The drafter consult does the same for a whole agent run. In `enforce`, a mailbox whose calls keep running slow then never reaches its limit. Count the answered requests before the bound cancels them. In `log`, the same rule makes the count a little low for slow calls (re-verify of round 1, P2).
+8. **Shadow traffic shares the budget.** In `shadow`, the decide requests and the old call that acts spend one budget. In `enforce`, a shadow request can take the last unit, and the call that acts is then refused. Decide whether a shadow request counts.
 
 **Follow-ups.**
 
@@ -2035,6 +2037,14 @@ With the database exported, the run must show 0 skips. The baseline at `012483a4
 | G. Two gaps bind in `enforce` only. | Recorded as items 5 and 6 of the owner list above, as agent work before the flip. | None, recorded |
 
 **Verified after review round 1 (2026-10-04, a private database).** The Verify block gave 584 passed and 0 skipped. It gave 584 passed once more with `EMAIL_LLM_BUDGET_MODE=log` and a throwaway Redis index, and that index then held one key with a count of 1. On `3d11922c2`, all the `test_email_*.py` suites, with the seam fences, gave 2651 passed. The 2 skips there are the same two `test_tenant_coverage.py` tests.
+
+**The re-verify of round 1 (2026-10-04): PASS with findings.** No P0 and no P1. With the shipped defaults, the live rule match gave the same decisions and the same `decide.*` lines as `main`, apart from the count. Two P2 items went to the owner list above, as items 7 and 8. This note records the P3 items, and nothing fixes them yet:
+
+- A give-back after a timeout, or a `settle` after a failed request, can add 0.25 s past `ON_BOUND_S`. This happens once in each breaker window (`llm_cap.py:308`, `decide_features.py:557`).
+- The consult's `agent_timeout` now covers the wait for a permit (`drafting.py:1522`). With a cap set, a consult can time out while it waits, and the draft then goes on without it.
+- `DECRBY` on a key that expired leaves a negative key with no TTL (`llm_cap.py:383`). An `expire` that times out after the first `incr` of a day also leaves a key with no TTL. The cost is one stray key.
+- A 50% or 100% line can log twice in a day, when a give-back takes the count under the mark after the line logged.
+- The fence accepts any leaf in the gather of `_ask_all`, not only the decide leaf (`test_email_llm_cap.py:1326`). It also misses a coroutine built before the slot and awaited inside it, and a slot opened through an alias. No live site has these shapes. A later slice can make the fence narrow.
 
 ##### EM-T4c — refresh on a 401 during a sync, and try once more
 
