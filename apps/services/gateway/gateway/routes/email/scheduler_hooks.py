@@ -63,15 +63,20 @@ def as_mailbox_owner(fn: Any) -> Any:
     member a loop inherited from the request that started it, so a mailbox
     never bills whoever last saved its settings.
 
-    Fence: ``tests/unit/test_background_ai_member.py::TestTheEmailJobs``.
+    WS-17 EM-T4b: it also opens the automation scope of the mailbox, so the
+    cap and the daily budget bind each model call of the job.
+
+    Fences: ``tests/unit/test_background_ai_member.py::TestTheEmailJobs`` and
+    ``tests/unit/test_email_llm_cap.py``.
     """
 
     @functools.wraps(fn)
     async def _wrapped(account_id: str, *args: Any, **kwargs: Any) -> Any:
         from acb_common import job_member_scope
+        from email_ingestion.llm_cap import automation_scope
 
         owner = await mailbox_owner(account_id)
-        with job_member_scope(owner, app="email"):
+        with job_member_scope(owner, app="email"), automation_scope(account_id):
             return await fn(account_id, *args, **kwargs)
 
     return _wrapped

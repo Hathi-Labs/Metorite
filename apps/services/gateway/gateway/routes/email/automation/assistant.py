@@ -617,6 +617,7 @@ async def _llm_writing_style(samples: list[str]) -> str:
     model's context window (acompletion_with_fallback handles keys + fitting)."""
     try:
         from acb_llm.context import acompletion_with_fallback  # noqa: PLC0415
+        from email_ingestion.llm_cap import llm_slot
         joined = "\n\n---\n\n".join(samples)
         sys_prompt = (
             "Analyze the user's sent emails and describe their writing style as a "
@@ -626,12 +627,14 @@ async def _llm_writing_style(samples: list[str]) -> str:
             "could follow, e.g. 'Keep replies to 2-3 short sentences.' Output ONLY "
             "the guide."
         )
-        resp, _ = await acompletion_with_fallback(
-            model="tier-powerful",
-            messages=[{"role": "system", "content": sys_prompt},
-                      {"role": "user", "content": joined[:8000]}],
-            temperature=0, max_tokens=1000,
-        )
+        # A member drives the writing style, so the slot binds nothing (EM-T4b).
+        async with llm_slot():
+            resp, _ = await acompletion_with_fallback(
+                model="tier-powerful",
+                messages=[{"role": "system", "content": sys_prompt},
+                          {"role": "user", "content": joined[:8000]}],
+                temperature=0, max_tokens=1000,
+            )
         return (resp.choices[0].message.content or "").strip()
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.writing_style_failed", error=str(exc)[:200])

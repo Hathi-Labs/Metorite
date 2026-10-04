@@ -501,21 +501,48 @@ async def _ask_all(
     set of answers is not a decision about the email (§10.4.8 item 7). Each
     failure logs its own line. ``on`` selects the bound
     (:data:`ON_BOUND_S`, else :data:`SHADOW_BOUND_S`) and the log lines.
+
+    WS-17 EM-T4b (items 16 and 19): the call holds ONE permit of the email
+    cap for all of its requests, and the daily budget counts each request.
+    In ``on`` the wait for the permit counts inside the bound. In
+    ``shadow`` the call takes a permit only when one is free, or it logs
+    ``decide.shadow_skipped`` with ``reason=cap`` and asks nothing. A spent
+    budget in ``enforce`` asks nothing and gives the reason ``budget``.
+    A request that gets no answer counts nothing (review round 1, finding
+    B). The gather returns each failure and never raises, so this function
+    settles the charge itself after the slot. Outside the automation scope
+    none of this binds.
     """
     # The package attributes, as `acb_skills/decide_tools.py` reads them, so
     # one monkeypatch of `acb_llm.decide` reaches every caller.
     from acb_llm import DecideRequestInvalid, DecideUnavailable, Decision
     from acb_llm import decide as facade
+    from email_ingestion.llm_cap import LLMBudgetExhausted, NoFreeSlot, llm_slot
+
+    async def _send() -> tuple[Any, list[Any]]:
+        # The slot wraps the leaf `decide` awaits only (EM-T4b item 17). This
+        # gather is the ONE call that is not a leaf and that the AST fence
+        # lets into a slot (`test_email_llm_cap.py`, GATHER_EXCEPTION).
+        async with llm_slot(requests=len(requests), wait=on, settle=False) as charge:
+            results = await asyncio.gather(
+                *(facade(state, questions, **attribution) for state, questions in requests),
+                return_exceptions=True,
+            )
+        return charge, results
 
     started = time.monotonic()
     try:
-        results = await asyncio.wait_for(
-            asyncio.gather(
-                *(facade(state, questions, **attribution) for state, questions in requests),
-                return_exceptions=True,
-            ),
-            timeout=ON_BOUND_S if on else SHADOW_BOUND_S,
+        charge, results = await asyncio.wait_for(
+            _send(), timeout=ON_BOUND_S if on else SHADOW_BOUND_S,
         )
+    except NoFreeSlot:
+        # Shadow only: the cap is full, so the shadow asks nothing (item 16).
+        _log.info("decide.shadow_skipped", **ids, reason="cap")
+        return None
+    except LLMBudgetExhausted:
+        # `enforce`, past the limit: no Router call (item 12, F1).
+        _no_answer(ids, on=on, shadow_event="decide.fallback", reason="budget")
+        return None
     except TimeoutError:
         _no_answer(ids, on=on, shadow_event="decide.fallback", reason="timeout")
         return None
@@ -525,6 +552,9 @@ async def _ask_all(
         return None
 
     failures = [r for r in results if isinstance(r, BaseException)]
+    # EM-T4b review round 1, finding B: a request that got no answer gives its
+    # count back, and the 50% and 100% lines log for the rest. Never raises.
+    await charge.settle(failed=len(failures))
     if failures:
         invalid = next((e for e in failures if isinstance(e, DecideRequestInvalid)), None)
         unavailable = next((e for e in failures if isinstance(e, DecideUnavailable)), None)

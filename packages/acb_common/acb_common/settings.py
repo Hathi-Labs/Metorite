@@ -316,6 +316,30 @@ class Settings(BaseSettings):
     decide_feature_modes: str = ""
     decide_feature_orgs: str = ""
 
+    # ── The cap and the budget of the email model calls (WS-17 EM-T4b) ─────
+    #
+    # They bind the model calls of the email automation only, the calls
+    # inside `email_ingestion.llm_cap.automation_scope`. A call that a member
+    # drives takes no permit and counts nothing.
+    #
+    # `email_llm_concurrency` is the count of model calls that may run at one
+    # time in this process. 0 means no cap. 0 is the default, so the cap
+    # ships dark.
+    # `email_llm_daily_calls` is the count of model requests for each mailbox
+    # for each UTC day. A value under 1 means no limit. 2000 is a guess
+    # (spec R-6), and the owner sets the real limit at the flip to `enforce`.
+    # `email_llm_budget_mode` is `off`, `log` or `enforce`. `log` counts and
+    # logs, and it never refuses a call. An unknown value reads as `log`.
+    #
+    # 🔴 OWNER-GATE on a box: `EMAIL_LLM_BUDGET_MODE=enforce`. The dev-phase
+    # window of CLAUDE.md §3a does NOT open it, because `enforce` holds back
+    # triage and drafts from a paying mailbox (spec §10.4.6, "Gate").
+    # The one reader is `apps/services/email_ingestion/email_ingestion/llm_cap.py`.
+    # Fence: tests/unit/test_email_llm_cap.py.
+    email_llm_concurrency: int = 0
+    email_llm_daily_calls: int = 2000
+    email_llm_budget_mode: str = "log"
+
     # ── BYOK is OFF for the customer (owner directive, 2026-08-27) ──
     #
     # `customer_console.md` §5.1 already names the destination: the provider,

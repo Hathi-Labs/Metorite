@@ -17,6 +17,7 @@ import re
 from typing import Any
 
 import httpx
+from email_ingestion.llm_cap import llm_slot
 from gateway.routes.email.automation.drafting import (
     _agent_draft_reply,
     _build_reply_context,
@@ -302,13 +303,14 @@ async def _render_template(template: str, email: dict[str, str]) -> str:
         )
         # Field-fill is part of rule evaluation → fast tier. Prose output (a
         # filled template), so no JSON mode.
-        resp, _ = await acompletion_with_fallback(
-            model="tier-fast",
-            messages=[{"role": "system", "content": sys_prompt},
-                      {"role": "user",
-                       "content": f"Template:\n{template}\n\nEmail:\n{ctx}"}],
-            temperature=0, max_tokens=1000,
-        )
+        async with llm_slot():  # EM-T4b: the cap and the daily budget
+            resp, _ = await acompletion_with_fallback(
+                model="tier-fast",
+                messages=[{"role": "system", "content": sys_prompt},
+                          {"role": "user",
+                           "content": f"Template:\n{template}\n\nEmail:\n{ctx}"}],
+                temperature=0, max_tokens=1000,
+            )
         out = (resp.choices[0].message.content or "").strip()
         return out or template
     except Exception as exc:
