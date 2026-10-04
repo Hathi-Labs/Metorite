@@ -863,6 +863,12 @@ async def delete_session(
     )
     if not found:
         raise HTTPException(status_code=404, detail="Session not found")
+    # H-227 (PR #616 review): a client chooses a session id, so a member who
+    # knows this id could make a new session with it. The files of the
+    # deleted chat go with it, so that session finds none of them.
+    from gateway.routes.workspace import purge_thread_files
+
+    await purge_thread_files(session_id, user.organization_id)
 
 
 @router.get("/sessions/{session_id}/messages", summary="Fetch messages for a session")

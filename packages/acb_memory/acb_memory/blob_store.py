@@ -269,6 +269,69 @@ def _sync_history(
     ]
 
 
+_IN_KEPT_TREE = "(left(path, 7) = 'inputs/' OR left(path, 8) = 'outputs/')"
+
+
+def _sync_session_paths(
+    session_id: str, instance: str, organization_id: str | None,
+) -> list[tuple[str, str]]:
+    from acb_graph import tenant_session  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    with tenant_session(organization_id) as s:
+        rows = s.execute(
+            text(
+                "SELECT DISTINCT agent_name, path FROM agent_file_history "
+                "WHERE session_id = :sid AND instance IN (:i, '') "
+                f"AND action <> 'delete' AND {_IN_KEPT_TREE}"
+            ),
+            {"sid": session_id, "i": instance},
+        ).fetchall()
+    return [(str(r[0]), str(r[1])) for r in rows]
+
+
+def _sync_purge(
+    instance: str, organization_id: str | None, *,
+    prefixes: tuple[str, ...], paths: tuple[tuple[str, str], ...],
+    session_id: str | None,
+) -> int:
+    from acb_graph import tenant_session  # noqa: PLC0415
+    from sqlalchemy import text  # noqa: PLC0415
+
+    gone = 0
+    with tenant_session(organization_id) as s:
+        for prefix in prefixes:
+            # left() and not LIKE: a slug may hold '_', which LIKE reads as
+            # any one character.
+            for table in ("agent_blob", "agent_file_history"):
+                gone += s.execute(
+                    text(
+                        f"DELETE FROM {table} WHERE instance IN (:i, '') "  # noqa: S608
+                        "AND left(path, length(:p)) = :p"
+                    ),
+                    {"i": instance, "p": prefix},
+                ).rowcount or 0
+        for agent, path in paths:
+            for table in ("agent_blob", "agent_file_history"):
+                gone += s.execute(
+                    text(
+                        f"DELETE FROM {table} WHERE agent_name = :a "  # noqa: S608
+                        "AND instance IN (:i, '') AND path = :p"
+                    ),
+                    {"a": agent, "i": instance, "p": path},
+                ).rowcount or 0
+        if session_id:
+            gone += s.execute(
+                text(
+                    "DELETE FROM agent_file_history WHERE session_id = :sid "
+                    f"AND instance IN (:i, '') AND {_IN_KEPT_TREE}"
+                ),
+                {"sid": session_id, "i": instance},
+            ).rowcount or 0
+        s.commit()
+    return gone
+
+
 # ---------------------------------------------------------------------------
 # Public async API
 # ---------------------------------------------------------------------------
@@ -388,6 +451,51 @@ async def file_history(
     except Exception as exc:  # noqa: BLE001
         _log.debug("blob_store.history_failed", agent=agent_name, error=str(exc)[:120])
         return []
+
+
+async def session_paths(
+    session_id: str, *, instance: str, organization_id: str | None = None,
+) -> list[tuple[str, str]]:
+    """``(agent, path)`` of each ``inputs/`` or ``outputs/`` path that one chat
+    session wrote, under *instance* or the older ``''`` key.
+
+    The gateway reads it when a member deletes a chat (H-227), to find the
+    loose files that the chat began. ``[]`` on any error.
+    """
+    if not session_id:
+        return []
+    try:
+        return await asyncio.to_thread(
+            _sync_session_paths, session_id, instance, _caller_tenant(organization_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("blob_store.session_paths_failed", error=str(exc)[:200])
+        return []
+
+
+async def purge_files(
+    *, instance: str, organization_id: str | None = None,
+    prefixes: tuple[str, ...] = (), paths: tuple[tuple[str, str], ...] = (),
+    session_id: str | None = None,
+) -> int:
+    """Delete stored files AND their history, for a deleted chat (H-227).
+
+    In one tenant, under *instance* and the older ``''`` key:
+
+    * every row under each of *prefixes* (a thread's own folders), of any agent;
+    * every row at each ``(agent, path)`` of *paths* (the loose files the chat
+      began);
+    * every history row of *session_id* under ``inputs/`` or ``outputs/``.
+
+    Unlike :func:`delete_file` it keeps no delete row: a chat id can come back
+    from a client, and a row that names it would hand the next owner of the
+    id its files. Returns the rows deleted. Raises on a database error, so
+    the caller can log that the purge did not finish.
+    """
+    return await asyncio.to_thread(
+        _sync_purge, instance, _caller_tenant(organization_id),
+        prefixes=tuple(prefixes), paths=tuple(paths), session_id=session_id,
+    )
 
 
 # ---------------------------------------------------------------------------

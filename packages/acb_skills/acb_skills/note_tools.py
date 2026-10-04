@@ -38,6 +38,60 @@ def _get_agent_dir() -> str:
         return ""
 
 
+def _notes_target(root: Path, clean: str, path: str) -> tuple[Path, str] | str:
+    """The file that a notes path names, and its working-dir path, or a refusal.
+
+    Containment first (``write_artifact.resolve_in_workspace``). Then, in a
+    shared agent's tenant dir (the run's store key is ``o:<org>``), H-227
+    applies as it does to ``write_artifact`` and ``share_artifact``:
+
+    * ``inputs/x`` and ``outputs/x`` name this chat's own folders
+      (``write_artifact._thread_scoped``), so ``outputs/x`` lands in, and
+      reads from, ``outputs/<thread slug>/x``;
+    * a loose file (in ``inputs/`` or ``outputs/`` but in no thread folder)
+      and the folder of another chat are refused. Before this rule,
+      ``save_note`` on a colleague's loose file appended to it, and the
+      history row it wrote under this session took the file over (PR #616
+      review, P1).
+
+    ``agent-data/`` is not a thread folder, so ``agent-data/NOTES.md`` stays
+    one file for the whole tenant dir, as before. That file is shared by every
+    member of the organization (HANDOFF H-237).
+    """
+    from acb_skills.agent_paths import (  # noqa: PLC0415
+        THREAD_HEADS,
+        instance_slug,
+        is_loose_rel,
+        is_other_thread_rel,
+        is_tenant_instance,
+    )
+    from acb_skills.write_artifact import (  # noqa: PLC0415
+        _thread_scoped,
+        artifact_context,
+        resolve_in_workspace,
+    )
+
+    target = resolve_in_workspace(root, clean)
+    if target is None:
+        return f"Refused: path '{path}' escapes the workspace."
+    root_r = root.resolve()
+    rel = target.relative_to(root_r).as_posix()
+    ctx = artifact_context()
+    if not is_tenant_instance(ctx.get("instance")):
+        return target, rel
+    scoped = _thread_scoped(rel, ctx)
+    if scoped is None:
+        return "Refused: this chat has no thread folder."
+    session_id = ctx.get("session_id")
+    own = instance_slug(str(session_id)) if session_id else None
+    if is_loose_rel(scoped) or is_other_thread_rel(scoped, own):
+        return f"Refused: path '{path}' belongs to another chat."
+    parts = scoped.split("/")
+    if parts[0] in THREAD_HEADS and len(parts) < 3:
+        return f"Refused: path '{path}' names no file."
+    return root_r / scoped, scoped
+
+
 async def save_note(path: str, fact: str) -> str:
     """Append a dated fact to a notes file in the agent workspace.
 
@@ -73,12 +127,12 @@ async def save_note(path: str, fact: str) -> str:
     if not in_visible:
         clean = f"agent-data/{clean}"
 
-    # Containment guard: refuse a path that escapes the workspace (embedded
-    # ``..`` etc.) — see write_artifact.resolve_in_workspace. Fail closed.
-    from acb_skills.write_artifact import resolve_in_workspace  # noqa: PLC0415
-    target = resolve_in_workspace(root, clean)
-    if target is None:
-        return f"Refused: path '{path}' escapes the workspace."
+    # Containment guard, and the thread rule of H-227 (``_notes_target``).
+    # Fail closed.
+    placed = _notes_target(root, clean, path)
+    if isinstance(placed, str):
+        return placed
+    target, clean = placed
     # WS-43d (review P1, fix round 1): never another chat's output folder,
     # another member's skill folder, or the skill author marker.
     from acb_skills.agent_paths import refused_write  # noqa: PLC0415
@@ -86,7 +140,7 @@ async def save_note(path: str, fact: str) -> str:
 
     _ctx = artifact_context()
     _why = refused_write(
-        Path(root).resolve(), target.relative_to(Path(root).resolve()).as_posix(),
+        Path(root).resolve(), clean,
         member=_ctx.get("member"), thread_id=_ctx.get("session_id"),
     )
     if _why:
@@ -149,10 +203,12 @@ async def recall_notes(path: str, query: str = "") -> str:
         clean = f"agent-data/{clean}"
     # Containment guard: recall_notes is a file-READ primitive — an embedded
     # ``..`` would let an agent read arbitrary files outside the workspace.
-    from acb_skills.write_artifact import resolve_in_workspace  # noqa: PLC0415
-    target = resolve_in_workspace(root, clean)
-    if target is None:
-        return f"Refused: path '{path}' escapes the workspace."
+    # H-227: in a shared agent's tenant dir it reads no loose file and no
+    # folder of another chat (``_notes_target``).
+    placed = _notes_target(root, clean, path)
+    if isinstance(placed, str):
+        return placed
+    target, clean = placed
 
     if not target.exists():
         return f"{clean}: (file not found)"

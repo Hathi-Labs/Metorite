@@ -924,15 +924,38 @@ def _is_loose_path(rel: str, own_slug: str | None) -> bool:
     return is_loose_rel(rel)
 
 
-def _session_wrote(rows: list[dict], session_id: str, sha256: str) -> bool:
-    """THE history rule of a loose file (H-227): this session wrote these bytes.
+def _history_time(row: dict) -> Any:
+    """When a history row was written. A row with no readable time sorts last."""
+    from datetime import UTC, datetime
 
-    A row must name this session and this sha256, and it must write bytes,
-    so a ``delete`` row proves nothing. An upload (``user``), an edit in the
-    file manager (``user``) and a document of the run (``agent``) all
-    count, because each one is the session's own write. ``read_attachment``
-    keeps its narrower form of the rule, an upload only (H-229).
+    try:
+        when = datetime.fromisoformat(str(row.get("created_at") or ""))
+    except ValueError:
+        return datetime.max.replace(tzinfo=UTC)
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+def _session_wrote(rows: list[dict], session_id: str, sha256: str) -> bool:
+    """THE history rule of a loose file (H-227): this session owns these bytes.
+
+    *rows* are the history rows of ONE path, of every session. Two things
+    must hold:
+
+    1. **This session began the path.** Its row is the oldest row there that
+       writes bytes. So ownership never moves to a second session: a later
+       write of another session does not make that session the owner (PR
+       #616 review, P1, the ``save_note`` takeover).
+    2. **This session wrote these exact bytes.** One of its rows that writes
+       names this sha256. So when another session wrote the bytes that lie
+       there now, the file has no owner, and it opens for nobody.
+
+    A ``delete`` row proves nothing. An upload (``user``), an edit in the
+    file manager (``user``) and a document of the run (``agent``) all count.
+    ``read_attachment`` keeps its narrower form of the rule, an upload only
+    (H-229).
     """
+    if _first_writer(rows) != session_id:
+        return False
     return any(
         r.get("session_id") == session_id and r.get("sha256") == sha256
         and r.get("action") != "delete"
@@ -940,11 +963,20 @@ def _session_wrote(rows: list[dict], session_id: str, sha256: str) -> bool:
     )
 
 
-async def _session_history(
-    workspace: Path, organization_id: str | None, session_id: str,
-    path: str | None = None,
+def _first_writer(rows: list[dict]) -> str | None:
+    """The session of the oldest row that writes bytes: the session that began
+    the path. ``None`` when no row writes."""
+    writes = [r for r in rows if r.get("action") != "delete"]
+    if not writes:
+        return None
+    return min(writes, key=_history_time).get("session_id")
+
+
+async def _tenant_history(
+    workspace: Path, organization_id: str | None, *,
+    path: str | None = None, session_id: str | None = None,
 ) -> list[dict]:
-    """The rows of a tenant dir's blob history that *session_id* wrote.
+    """Rows of a tenant dir's blob history: of one *path*, or of one *session_id*.
 
     Call it only when :func:`_own_thread_slug` is not ``None``, so the
     workspace IS the caller's tenant dir. So the store key comes from the
@@ -960,7 +992,7 @@ async def _session_history(
         return []
     from acb_skills.agent_paths import tenant_instance
 
-    if not session_id or not organization_id:
+    if not organization_id or not (path or session_id):
         return []
     agent = workspace.resolve().parent.name
     rows: list[dict] = []
@@ -976,11 +1008,121 @@ async def _session_owns_loose(
     workspace: Path, rel: str, data: bytes, session_id: str,
     organization_id: str | None,
 ) -> bool:
-    """True when the history shows that *session_id* wrote *data* at *rel*."""
+    """True when the history shows that *session_id* owns *data* at *rel*."""
     import hashlib
 
-    rows = await _session_history(workspace, organization_id, session_id, rel)
+    if not session_id:
+        return False
+    rows = await _tenant_history(workspace, organization_id, path=rel)
     return _session_wrote(rows, session_id, hashlib.sha256(data).hexdigest())
+
+
+async def purge_thread_files(session_id: str, organization_id: str | None) -> None:
+    """Delete the files of a chat that its owner deleted (H-227, PR #616 review).
+
+    A client chooses the id of a chat session (``POST /chat/sessions`` takes
+    ``id`` from the body). So after a delete, any member who knows the id can
+    make a new session with it, and the thread rule would hand that session
+    the folders and the loose files of the old chat. So the delete route calls
+    this, after the row is gone. It removes, in every tenant dir of the
+    caller's organization:
+
+    * ``inputs/<thread slug>/`` and ``outputs/<thread slug>/`` on disk, with
+      the safe opener, and their rows in the blob store and its history;
+    * each loose file that this chat began (:func:`_first_writer`), on disk
+      and in the store, so its ownership cannot move to another session;
+    * every other history row of this chat under ``inputs/`` and ``outputs/``.
+
+    The organization is the caller's, from the authenticated identity. It
+    never raises: the chat is already gone, and a failure is logged as
+    ``workspace.thread_purge_failed``.
+    """
+    if not session_id or not organization_id:
+        return
+    try:
+        await _purge_thread_files(session_id, organization_id)
+    except Exception as exc:  # the delete answered already, so only log
+        _log.warning(
+            "workspace.thread_purge_failed", session_id=session_id[:12],
+            error=str(exc)[:200],
+        )
+
+
+def _tenant_dirs(organization_id: str) -> list[Path]:
+    """The tenant dir of every shared agent of one organization, links left out."""
+    from acb_skills.agent_paths import (
+        instance_slug,
+        is_valid_agent_name,
+        state_root,
+        tenant_instance,
+    )
+
+    root = state_root()
+    if not root.is_dir():
+        return []
+    name = instance_slug(tenant_instance(organization_id))
+    found = []
+    for agent_dir in sorted(root.iterdir()):
+        ws = agent_dir / name
+        if (
+            is_valid_agent_name(agent_dir.name) and not agent_dir.is_symlink()
+            and not ws.is_symlink() and ws.is_dir()
+        ):
+            found.append(ws)
+    return found
+
+
+async def _purge_thread_files(session_id: str, organization_id: str) -> None:
+    from acb_memory import file_history, purge_files, session_paths
+    from acb_skills import safe_open
+    from acb_skills.agent_paths import (
+        THREAD_HEADS,
+        is_loose_rel,
+        tenant_instance,
+        thread_slug,
+    )
+
+    key = tenant_instance(organization_id)
+    try:
+        slug: str | None = thread_slug(session_id)
+    except ValueError:
+        slug = None  # an id that names no folder has no thread folders
+    dirs = {ws.parent.name: ws for ws in await asyncio.to_thread(_tenant_dirs, organization_id)}
+    if slug:
+        for ws in dirs.values():
+            for head in THREAD_HEADS:
+                try:
+                    await asyncio.to_thread(safe_open.remove_tree, ws, f"{head}/{slug}")
+                except safe_open.UnsafePath:
+                    _log.warning("workspace.thread_purge_link", path=f"{head}/{slug}")
+    began: list[tuple[str, str]] = []
+    for agent, path in await session_paths(
+        session_id, instance=key, organization_id=organization_id,
+    ):
+        if not is_loose_rel(path):
+            continue
+        rows: list[dict] = []
+        for instance in (key, ""):
+            rows += await file_history(
+                agent, path, 1000, instance=instance, organization_id=organization_id,
+            )
+        if _first_writer(rows) != session_id:
+            continue
+        began.append((agent, path))
+        if agent in dirs:
+            try:
+                await asyncio.to_thread(safe_open.unlink, dirs[agent], path)
+            except (safe_open.UnsafePath, IsADirectoryError, OSError):
+                _log.warning("workspace.thread_purge_unlink_failed", path=path[:200])
+    gone = await purge_files(
+        instance=key, organization_id=organization_id,
+        prefixes=tuple(f"{head}/{slug}/" for head in THREAD_HEADS) if slug else (),
+        paths=tuple(began), session_id=session_id,
+    )
+    _log.info(
+        "workspace.thread_purged", session_id=session_id[:12],
+        dirs=len(dirs), loose=len(began), rows=gone,
+    )
 
 
 def _safe_sha256(root: Path, rel: str) -> str | None:
@@ -1006,10 +1148,12 @@ async def _session_owns_disk_file(
     workspace: Path, rel: str, session_id: str, organization_id: str | None,
 ) -> bool:
     """:func:`_session_owns_loose` for the file on disk. An absent file is not owned."""
+    if not session_id:
+        return False
     sha = await asyncio.to_thread(_safe_sha256, workspace, rel)
     if sha is None:
         return False
-    rows = await _session_history(workspace, organization_id, session_id, rel)
+    rows = await _tenant_history(workspace, organization_id, path=rel)
     return _session_wrote(rows, session_id, sha)
 
 
@@ -1017,25 +1161,26 @@ async def _keep_owned_loose(
     workspace: Path, files: list[FileEntry], session_id: str,
     organization_id: str | None,
 ) -> list[FileEntry]:
-    """*files* without the loose files that this session did not write (H-227).
+    """*files* without the loose files that this session does not own (H-227).
 
-    One history read per store key, for this session's rows only. A loose
-    file stays when its bytes on disk match a row of this session.
+    One history read per store key finds the paths this session wrote at
+    all. Only those paths cost a read of their whole history, which
+    :func:`_session_wrote` needs to find the session that began the path.
     """
     from acb_skills.agent_paths import is_loose_rel
 
     loose = [f for f in files if is_loose_rel(f.path)]
-    if not loose:
-        return files
-    by_path: dict[str, list[dict]] = defaultdict(list)
-    for r in await _session_history(workspace, organization_id, session_id):
-        by_path[str(r.get("path") or "")].append(r)
+    if not loose or not session_id:
+        return [f for f in files if not is_loose_rel(f.path)]
+    mine = {
+        str(r.get("path") or "")
+        for r in await _tenant_history(workspace, organization_id, session_id=session_id)
+    }
     kept: set[str] = set()
     for f in loose:
-        if f.path not in by_path:
+        if f.path not in mine:
             continue  # this session wrote nothing at that path, so no read
-        sha = await asyncio.to_thread(_safe_sha256, workspace, f.path)
-        if sha is not None and _session_wrote(by_path[f.path], session_id, sha):
+        if await _session_owns_disk_file(workspace, f.path, session_id, organization_id):
             kept.add(f.path)
     return [f for f in files if not is_loose_rel(f.path) or f.path in kept]
 
@@ -1977,16 +2122,25 @@ async def get_workspace_history(
     )
     # WS-43d (§16.3) and H-227: the files of another thread's folders are not
     # listed, not even by name. A row of a loose file shows only when this
-    # session wrote that row, so another session's versions stay hidden.
-    rows = [
-        r for r in rows
-        if not _is_other_thread_path(str(r.get("path") or ""), own)
-        and (
-            not _is_loose_path(str(r.get("path") or ""), own)
-            or r.get("session_id") == session_id
-        )
-    ]
-    return {"history": rows}
+    # session wrote that row AND began the path (:func:`_first_writer`), so
+    # another session's versions stay hidden, and a later write of this
+    # session on a colleague's file shows nothing either.
+    rows = [r for r in rows if not _is_other_thread_path(str(r.get("path") or ""), own)]
+    owned: dict[str, bool] = {}
+    kept = []
+    for r in rows:
+        rel = str(r.get("path") or "")
+        if _is_loose_path(rel, own):
+            if r.get("session_id") != session_id:
+                continue
+            if rel not in owned:
+                owned[rel] = _first_writer(await _tenant_history(
+                    workspace, _user.organization_id, path=rel,
+                )) == session_id
+            if not owned[rel]:
+                continue
+        kept.append(r)
+    return {"history": kept}
 
 
 # ---------------------------------------------------------------------------

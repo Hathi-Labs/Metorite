@@ -545,6 +545,26 @@ def _share_target(path: str, root: Path, ctx: Mapping[str, Any]) -> Path | str:
     return target
 
 
+def _shareable(p: Path, root: Path, not_this_chats: Callable[[str], bool]) -> Path | None:
+    """The real path of *p*, when a directory share may show it, else ``None``.
+
+    PR #616 review, P3: the check reads the RESOLVED path, the one that the
+    card shows, and never the name of a link. A link is skipped outright. So
+    a link that a run plants in its own folder never shows the name or the
+    size of a file of another chat.
+    """
+    if p.is_symlink() or not p.is_file():
+        return None
+    try:
+        real = p.resolve()
+        rel = real.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+    if not_this_chats(rel):
+        return None
+    return real
+
+
 def _not_this_chats(ctx: Mapping[str, Any]) -> Callable[[str], bool]:
     """A check: True for a working-dir path that this run may not show.
 
@@ -616,8 +636,9 @@ async def share_artifact(path: str) -> dict:
     files: list[Path] = []
     if target.is_dir():
         for p in sorted(target.rglob("*")):
-            if p.is_file() and not not_this_chats(p.relative_to(root).as_posix()):
-                files.append(p)
+            shared = _shareable(p, root, not_this_chats)
+            if shared is not None:
+                files.append(shared)
                 if len(files) >= 50:
                     break
     else:

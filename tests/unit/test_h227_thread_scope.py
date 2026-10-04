@@ -133,6 +133,26 @@ def test_the_history_rule_needs_this_session_and_these_bytes() -> None:
     assert not _session_wrote([], "s-alice", "a" * 64)
 
 
+def test_ownership_never_moves_to_a_second_session() -> None:
+    """PR #616 review, P1: a later write of another session (before H-227,
+    a ``save_note`` on a colleague's loose file) makes that session no
+    owner. The file then has no owner at all."""
+    from gateway.routes.workspace import _session_wrote
+
+    alice = {"path": "outputs/q3.md", "session_id": "s-alice", "sha256": "a" * 64,
+             "action": "create", "created_at": "2026-10-01 09:00:00+00:00"}
+    bob = {"path": "outputs/q3.md", "session_id": "s-bob", "sha256": "b" * 64,
+           "action": "modify", "created_at": "2026-10-02 09:00:00.250000+00:00"}
+    rows = [bob, alice]  # newest first, as file_history returns them
+    assert not _session_wrote(rows, "s-bob", "b" * 64), "the later writer took the file"
+    assert not _session_wrote(rows, "s-alice", "b" * 64), "these bytes are not Alice's"
+    assert _session_wrote(rows, "s-alice", "a" * 64)
+    # Alice's own later edit keeps the file hers.
+    edit = {**alice, "sha256": "c" * 64, "action": "modify",
+            "created_at": "2026-10-03 09:00:00+00:00"}
+    assert _session_wrote([edit, alice], "s-alice", "c" * 64)
+
+
 # ═════════════════════════ write_artifact and share_artifact ═══════════════
 
 
@@ -232,6 +252,78 @@ async def test_share_artifact_shows_only_this_chats_folders(runs) -> None:
     assert loose["artifacts"] == [] and "File not found" in loose["error"]
 
 
+async def test_save_note_and_recall_notes_keep_to_the_thread(runs) -> None:
+    """PR #616 review, P1: in a tenant dir the notes tools read ``inputs/``
+    and ``outputs/`` as this chat's own folders. A colleague's loose file
+    and the folder of another chat are out of reach. ``agent-data/NOTES.md``
+    stays where it was."""
+    from acb_skills.agent_paths import thread_slug
+    from acb_skills.note_tools import recall_notes, save_note
+
+    t = new_thread()
+    mine, other = thread_slug(t), thread_slug(new_thread())
+    secret = "Salary bands: confidential"
+    with bound_run(ORG_A, agent=PA, thread=t, member="bob@example.com") as ws:
+        for rel in ("outputs/q3-board-pack.md", f"outputs/{other}/plan.md",
+                    f"inputs/{other}/brief.txt"):
+            (ws / rel).parent.mkdir(parents=True, exist_ok=True)
+            (ws / rel).write_text(secret, encoding="utf-8")
+        saved = await save_note("outputs/q3-board-pack.md", "planted by bob")
+        read = await recall_notes("outputs/q3-board-pack.md")
+        refused = [await recall_notes(f"outputs/{other}/plan.md"),
+                   await recall_notes(f"inputs/{other}/brief.txt"),
+                   await save_note(f"outputs/{other}/plan.md", "x"),
+                   await save_note("outputs", "x")]
+        notes = await save_note("NOTES.md", "a fact")
+        rest = [x for x in asyncio.all_tasks() if x is not asyncio.current_task()]
+        await asyncio.gather(*rest, return_exceptions=True)
+    assert saved == f"Saved to outputs/{mine}/q3-board-pack.md", saved
+    assert (ws / "outputs" / "q3-board-pack.md").read_text(encoding="utf-8") == secret
+    assert "planted by bob" in read and secret not in read
+    assert all(r.startswith("Refused") and secret not in r for r in refused), refused
+    assert notes == "Saved to agent-data/NOTES.md"
+    assert runs["mirrored"] == [f"outputs/{mine}/q3-board-pack.md", "agent-data/NOTES.md"]
+
+
+async def test_a_personal_agent_keeps_its_flat_notes(runs) -> None:
+    from acb_skills.agent_paths import ensure_state_dir
+    from acb_skills.note_tools import recall_notes, save_note
+
+    key = "u:alice@example.com"
+    ws = ensure_state_dir(PA, key)
+    with bound_run(ORG_A, agent=PA, thread=new_thread(), instance=key, workspace=str(ws)):
+        assert await save_note("outputs/notes.md", "mine") == "Saved to outputs/notes.md"
+        assert "mine" in await recall_notes("outputs/notes.md")
+
+
+async def test_a_planted_link_never_shows_another_chats_file(runs) -> None:
+    """PR #616 review, P3: a run can plant a link in its own folder. A
+    directory share checks the real path, and it skips a link, so the name
+    and the size of a file of another chat never show."""
+    import os
+
+    from acb_skills.agent_paths import thread_slug
+
+    t = new_thread()
+    mine, other = thread_slug(t), thread_slug(new_thread())
+    with bound_run(ORG_A, agent=PA, thread=t) as ws:
+        (ws / "outputs" / other).mkdir(parents=True)
+        theirs = ws / "outputs" / other / "salaries-2026.xlsx"
+        theirs.write_bytes(b"x" * 4321)
+        (ws / "outputs" / mine / "sub").mkdir(parents=True)
+        (ws / "outputs" / mine / "mine.md").write_text("MINE", encoding="utf-8")
+        try:
+            os.symlink(theirs, ws / "outputs" / mine / "alias.xlsx")
+            os.symlink(ws / "outputs" / other, ws / "outputs" / mine / "sub" / "dir",
+                       target_is_directory=True)
+        except OSError as exc:  # pragma: no cover - CI is Linux
+            pytest.skip(f"no symlink here: {exc}")
+        shared = await wa.share_artifact("outputs")
+    shown = shared["artifacts"]
+    assert [a["path"] for a in shown] == [f"outputs/{mine}/mine.md"], shown
+    assert all(a["size"] != 4321 and "salaries" not in a["name"] for a in shown)
+
+
 # ═════════════════════════ the file store and the mounts ═══════════════════
 
 
@@ -316,6 +408,7 @@ from tests.unit.test_h201_tenant_workdirs import (  # noqa: E402,F401 — fixtur
     _P,
     _S,
     _client,
+    _rows,
     _run_write,
     _tenant_dir,
     disk,
@@ -485,6 +578,181 @@ def test_a_rewritten_marker_does_not_switch_the_loose_rule_off(graph_as_app, dis
     assert bob.get(f"/agent/workspace/{sbob}/file", params={"path": old}).status_code == 404
     assert old not in _files(bob, sbob)
     assert alice.get(f"/agent/workspace/{sa}/file", params={"path": old}).text == "ALICE OLD PLAN"
+
+
+def _in_run(disk_: Any, org: str, sid: str, member: str, call: Any) -> Any:
+    """Await *call()* in a run of the shared agent, bound as the executor binds
+    it: the tenant dir, the run's tenant and the real blob write-through."""
+    from acb_common.db import bind_tenant, release_tenant
+    from acb_skills.write_artifact import bind_artifact_context
+    from orchestrator.executor import _resolve_run_workspace
+
+    from tests.unit.test_h201_tenant_workdirs import _cfg
+
+    ws, key = _resolve_run_workspace(disk_.shared, _cfg(None), organization_id=org)
+
+    async def _go() -> Any:
+        token = bind_tenant(org)
+        bind_artifact_context(
+            session_id=sid, agent_name=_S, run_id=f"r-{uuid.uuid4().hex[:6]}",
+            workspace_root=ws, instance=key, member=member,
+            gateway_url="http://127.0.0.1:9", gateway_token="x",
+        )
+        try:
+            out = await call()
+            rest = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            await asyncio.gather(*rest, return_exceptions=True)
+            return out
+        finally:
+            release_tenant(token)
+
+    return asyncio.run(_go())
+
+
+_PACK = b"# Q3 board pack" + bytes([10]) + b"Salary bands: confidential" + bytes([10])
+
+
+@_DB_GATE
+def test_save_note_cannot_take_a_colleagues_loose_file(graph_as_app, disk) -> None:  # noqa: F811
+    """PR #616 review, P1, the exact scenario. Alice's loose
+    ``outputs/q3-board-pack.md`` came from before the thread folders. Bob, in
+    his own session of the same agent, calls ``save_note`` on its name. His
+    note goes to his own thread's folder, the real store records it there,
+    and Alice keeps her file through every route."""
+    from acb_skills.agent_paths import thread_slug
+    from acb_skills.note_tools import save_note
+
+    a = graph_as_app.org_a
+    sa = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
+    sbob = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
+    alice, bob = _client(_user(_ALICE, a)), _client(_user(_BOB, a))
+    assert alice.get(f"/agent/workspace/{sa}").status_code == 200  # makes the tenant dir
+    old = f"outputs/q3-board-pack-{uuid.uuid4().hex[:6]}.md"
+    ws = _tenant_dir(a)
+    (ws / old).parent.mkdir(parents=True, exist_ok=True)
+    (ws / old).write_bytes(_PACK)
+    _seed_blob(a, old, _PACK, session_id=sa, actor="agent")
+
+    said = _in_run(disk, a, sbob, _BOB, lambda: save_note(old, "planted by bob"))
+    assert said == f"Saved to outputs/{thread_slug(sbob)}/{old.split('/', 1)[1]}", said
+    assert (ws / old).read_bytes() == _PACK, "Bob's note changed Alice's file"
+    _absent_for(bob, sbob, old)
+    assert (ws / old).read_bytes() == _PACK
+    assert alice.get(f"/agent/workspace/{sa}/file", params={"path": old}).content == _PACK
+    assert old in _files(alice, sa)
+
+
+@_DB_GATE
+def test_a_later_write_of_another_session_takes_no_file(graph_as_app, disk) -> None:  # noqa: F811
+    """Before this PR, Bob's ``save_note`` appended to Alice's loose file and
+    wrote a ``modify`` row under his session. That row makes Bob no owner,
+    and the bytes are not Alice's either, so the file opens for nobody."""
+    from acb_memory import put_file
+    from acb_skills.agent_paths import tenant_instance
+
+    a = graph_as_app.org_a
+    sa = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
+    sbob = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
+    alice, bob = _client(_user(_ALICE, a)), _client(_user(_BOB, a))
+    assert alice.get(f"/agent/workspace/{sa}").status_code == 200
+    old = f"outputs/q3-board-pack-{uuid.uuid4().hex[:6]}.md"
+    forged = _PACK + b"- planted by bob"
+    ws = _tenant_dir(a)
+    (ws / old).parent.mkdir(parents=True, exist_ok=True)
+    _seed_blob(a, old, _PACK, session_id=sa, actor="agent")
+    (ws / old).write_bytes(forged)
+    assert asyncio.run(put_file(
+        _S, old, forged, action="modify", session_id=sbob, actor="agent",
+        instance=tenant_instance(a), organization_id=a,
+    )) is not None
+    _absent_for(bob, sbob, old)
+    assert alice.get(f"/agent/workspace/{sa}/file", params={"path": old}).status_code == 404
+
+
+def _chat_and_files(user: Any) -> Any:
+    """The real chat create and delete routes, beside the real workspace router."""
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes import workspace
+    from gateway.routes.chat import delete_session, upsert_session
+
+    app = FastAPI()
+    app.include_router(workspace.router)
+    app.post("/chat/sessions")(upsert_session)
+    app.delete("/chat/sessions/{session_id}", status_code=204)(delete_session)
+    app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app)
+
+
+@_DB_GATE
+def test_a_deleted_chat_leaves_nothing_for_a_new_session_with_its_id(graph_as_app, disk) -> None:  # noqa: F811
+    """PR #616 review: a client chooses the id of a chat session. After Alice
+    deletes her chat, Bob makes a new session with the SAME id. The delete
+    removed the thread folders, the loose file that the chat began and their
+    rows, so his session finds none of Alice's files. A loose file that
+    another session began stays, and its ownership does not move."""
+    from acb_skills.agent_paths import thread_slug
+    from acb_skills.attachment_tools import read_attachment
+
+    a = graph_as_app.org_a
+    # Any id the client picks. (A full UUID, as `sessions.ts` makes it, passes
+    # the 260-character path limit of a Windows dev box under pytest.)
+    sid = f"chat-{uuid.uuid4().hex[:12]}"
+    alice, bob = _chat_and_files(_user(_ALICE, a)), _chat_and_files(_user(_BOB, a))
+    made = alice.post("/chat/sessions", json={
+        "id": sid, "agent_name": _S, "title": "Alice", "last_preview": None,
+        "message_count": 0,
+    })
+    assert made.status_code == 200, made.text
+    name = f"brief-{uuid.uuid4().hex[:6]}.txt"
+    up = alice.post(f"/agent/workspace/{sid}/upload", files={"files": (name, b"ALICE UPLOAD")})
+    assert up.status_code == 200, up.text
+    upload = up.json()[0]["path"]
+    doc = _in_run(disk, a, sid, _ALICE, lambda: wa.write_artifact("plan.md", "ALICE PLAN"))["path"]
+    ws = _tenant_dir(a)
+    began = f"outputs/old-{uuid.uuid4().hex[:6]}.md"  # a loose file the chat began
+    (ws / began).write_bytes(b"ALICE OLD PLAN")
+    _seed_blob(a, began, b"ALICE OLD PLAN", session_id=sid, actor="agent")
+    carols = f"outputs/carol-{uuid.uuid4().hex[:6]}.md"  # another session began it
+    _seed_blob(a, carols, b"CAROL", session_id="s-carol", actor="agent")
+    (ws / carols).write_bytes(b"CAROL + ALICE")
+    _seed_blob(a, carols, b"CAROL + ALICE", session_id=sid, actor="agent")
+    # Carol uploaded a name before #609 and deleted it. Alice's chat then
+    # uploaded the same name. Carol began the path, so the file stays, and
+    # only the purge of the chat's own rows keeps read_attachment from it.
+    again_name = f"brief-{uuid.uuid4().hex[:6]}.txt"
+    (ws / "inputs").mkdir(exist_ok=True)
+    _seed_blob(a, f"inputs/{again_name}", b"CAROL BRIEF", session_id="s-carol", actor="user")
+    (ws / "inputs" / again_name).write_bytes(b"ALICE BRIEF")
+    _seed_blob(a, f"inputs/{again_name}", b"ALICE BRIEF", session_id=sid, actor="user")
+    assert "ALICE BRIEF" in _in_run(disk, a, sid, _ALICE, lambda: read_attachment(again_name))
+    assert {upload, doc, began} <= _files(alice, sid)
+
+    gone = alice.delete(f"/chat/sessions/{sid}")
+    assert gone.status_code == 204, gone.text
+    slug = thread_slug(sid)
+    for rel in (f"inputs/{slug}", f"outputs/{slug}", began):
+        assert not (ws / rel).exists(), rel
+    assert (ws / carols).read_bytes() == b"CAROL + ALICE", "a file Alice did not begin"
+    for rel in (upload, doc, began):
+        assert _rows(graph_as_app, rel) == [], rel
+
+    # Bob chooses the same id for a new chat of his own.
+    again = bob.post("/chat/sessions", json={
+        "id": sid, "agent_name": _S, "title": "Bob", "last_preview": None,
+        "message_count": 0,
+    })
+    assert again.status_code == 200, again.text
+    assert not ({upload, doc, began, carols} & _files(bob, sid))
+    for rel in (upload, doc, began, carols):
+        assert bob.get(f"/agent/workspace/{sid}/file", params={"path": rel}).status_code == 404, rel
+    hist = bob.get(f"/agent/workspace/{sid}/history").json()["history"]
+    assert not {h["path"] for h in hist} & {upload, doc, began, carols}, hist
+    read = _in_run(disk, a, sid, _BOB, lambda: read_attachment(name))
+    assert "ALICE UPLOAD" not in read and read.startswith(f"No file named {name}"), read
+    read = _in_run(disk, a, sid, _BOB, lambda: read_attachment(again_name))
+    assert "ALICE BRIEF" not in read and read.startswith(f"No file named {again_name}"), read
 
 
 @_DB_GATE
