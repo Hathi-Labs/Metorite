@@ -145,6 +145,13 @@ async def _drain_tasks() -> None:
     await asyncio.gather(*rest, return_exceptions=True)
 
 
+def _in_thread(rel: str, sid: str) -> str:
+    """Where a shared agent's run puts *rel*: its thread's own folder (H-227)."""
+    from acb_skills.agent_paths import thread_scoped_rel
+
+    return thread_scoped_rel(rel, sid)
+
+
 # ── Two runs on one event loop, through the MAF path ────────────────────────
 
 def test_two_overlapping_runs_each_write_into_their_own_tenant(disk, mirrors, queues) -> None:  # noqa: F811
@@ -182,9 +189,10 @@ def test_two_overlapping_runs_each_write_into_their_own_tenant(disk, mirrors, qu
     got = asyncio.run(_main())
     assert got["a"]["download_url"].startswith("/api/agent/workspace/sid-a/")
     assert got["b"]["download_url"].startswith("/api/agent/workspace/sid-b/")
-    assert (Path(ws_a) / rel).read_text(encoding="utf-8") == "FROM A"
-    assert (Path(ws_b) / rel).read_text(encoding="utf-8") == "FROM B"
-    assert got["qa"] == [rel] and got["qb"] == [rel]
+    ra, rb = _in_thread(rel, "sid-a"), _in_thread(rel, "sid-b")
+    assert (Path(ws_a) / ra).read_text(encoding="utf-8") == "FROM A"
+    assert (Path(ws_b) / rb).read_text(encoding="utf-8") == "FROM B"
+    assert got["qa"] == [ra] and got["qb"] == [rb]
     assert sorted((m["instance"], m["session"]) for m in mirrors) == [
         (key_a, "sid-a"), (key_b, "sid-b")]
 
@@ -267,9 +275,10 @@ def test_two_overlapping_copilot_runs_each_write_into_their_own_tenant(
 
     got = asyncio.run(_main())
     assert "sid-a" in got["res"][0] and "sid-b" in got["res"][1], got["res"]
-    assert (Path(ws_a) / rel).read_text(encoding="utf-8") == "COPILOT A"
-    assert (Path(ws_b) / rel).read_text(encoding="utf-8") == "COPILOT B"
-    assert got["qa"] == [rel] and got["qb"] == [rel]
+    ra, rb = _in_thread(rel, "sid-a"), _in_thread(rel, "sid-b")
+    assert (Path(ws_a) / ra).read_text(encoding="utf-8") == "COPILOT A"
+    assert (Path(ws_b) / rb).read_text(encoding="utf-8") == "COPILOT B"
+    assert got["qa"] == [ra] and got["qb"] == [rb]
     assert roots == {"a": ws_a, "b": ws_b}
     assert sorted(m["instance"] for m in mirrors) == sorted([key_a, key_b])
 
@@ -706,11 +715,12 @@ def test_two_overlapping_batch_runs_write_their_own_dirs_rows_and_sessions(
     got = asyncio.run(_main())
     assert got["a"]["download_url"].startswith("/api/agent/workspace/sid-a/")
     assert got["b"]["download_url"].startswith("/api/agent/workspace/sid-b/")
-    assert (_tenant_dir(a) / rel).read_text(encoding="utf-8") == "BODY A"
-    assert (_tenant_dir(b) / rel).read_text(encoding="utf-8") == "BODY B"
-    assert got["qa"] == [rel] and got["qb"] == [rel]
-    assert _rows(graph_as_app, rel) == sorted([
-        (a, f"o:{a}", "BODY A"), (b, f"o:{b}", "BODY B")])
+    ra, rb = _in_thread(rel, "sid-a"), _in_thread(rel, "sid-b")
+    assert (_tenant_dir(a) / ra).read_text(encoding="utf-8") == "BODY A"
+    assert (_tenant_dir(b) / rb).read_text(encoding="utf-8") == "BODY B"
+    assert got["qa"] == [ra] and got["qb"] == [rb]
+    assert _rows(graph_as_app, ra) == [(a, f"o:{a}", "BODY A")]
+    assert _rows(graph_as_app, rb) == [(b, f"o:{b}", "BODY B")]
 
 
 def test_the_global_dict_is_gone() -> None:
@@ -863,7 +873,7 @@ def test_the_stream_copilot_path_carries_the_run_context(disk, sdk_run, mirrors)
         return out
 
     events = asyncio.run(_collect())
-    rel = sdk_run.rel
+    rel = _in_thread(sdk_run.rel, tid)
     assert sdk_run.results and f"/api/agent/workspace/{tid}/" in sdk_run.results[0], (
         sdk_run.results, [e.get("type") for e in events])
     assert (_tenant_dir("org-t15") / rel).read_text(encoding="utf-8") == "SDK BODY"
@@ -887,7 +897,7 @@ def test_the_batch_copilot_path_carries_the_run_context(disk, sdk_run, mirrors, 
         return _events(q)
 
     got = asyncio.run(_main())
-    rel = sdk_run.rel
+    rel = _in_thread(sdk_run.rel, tid)
     assert sdk_run.results and f"/api/agent/workspace/{tid}/" in sdk_run.results[0], sdk_run.results
     assert (_tenant_dir("org-bt") / rel).read_text(encoding="utf-8") == "SDK BODY"
     assert [m["instance"] for m in mirrors] == ["o:org-bt"]

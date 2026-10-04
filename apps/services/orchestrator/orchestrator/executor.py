@@ -2514,6 +2514,10 @@ async def _run_agent_inner(
     _disable_agent_telemetry_once()
     settings = get_settings()
     run_id = run_id or str(uuid.uuid4())
+    # H-227 (the batch decision, PR #616): the executor mints the thread of a
+    # run with no chat. Only this code knows that, so a client can never claim
+    # it by the shape of an id it sends.
+    _minted_thread = not thread_id
     thread_id = thread_id or f"{agent_name}:{run_id}"
 
     # H-201 P2-c (§21.16): a batch run that starts inside the artifact context
@@ -2526,6 +2530,10 @@ async def _run_agent_inner(
         derive_artifact_context,
     )
     _parent_ctx = artifact_context()
+    # A run with no chat and no parent run is a BATCH run. Its documents
+    # belong to the organization (write_artifact). A delegated run is not:
+    # its parent's chat may hold a member's data.
+    _batch_thread = _minted_thread and not _parent_ctx.get("session_id")
     # H-236: decide this run's no_egress once, from the parent's binding and
     # this agent's own cover, and bind it before anything can fail. A load
     # error then retries (self-anneal) with this answer, never the parent's.
@@ -2758,6 +2766,9 @@ async def _run_agent_inner(
                 agent_name=agent_name,
                 run_id=run_id,
                 workspace_root=_effective_agent_dir,
+                # H-227: True only when this executor minted the thread of a
+                # run with no chat and no parent (see `_batch_thread`).
+                batch_thread=_batch_thread,
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration
                 # 136). A shared agent's tenant dir carries o:<org>.
@@ -3163,6 +3174,11 @@ async def run_agent_stream(
     """
     _disable_agent_telemetry_once()
     run_id = run_id or str(uuid.uuid4())
+    # H-227: a thread that this executor mints, for a run with no chat and no
+    # parent run, makes a batch run (see `_run_agent_inner`).
+    from acb_skills.write_artifact import artifact_context as _ctx_now
+
+    _batch_thread = not thread_id and not _ctx_now().get("session_id")
     thread_id = thread_id or f"{agent_name}:{run_id}"
 
     settings = get_settings()
@@ -3467,6 +3483,7 @@ async def run_agent_stream(
                 agent_name=agent_name,
                 run_id=run_id,
                 workspace_root=_effective_ws,
+                batch_thread=_batch_thread,  # H-227
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration
                 # 136). A shared agent's tenant dir carries o:<org>.

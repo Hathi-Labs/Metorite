@@ -32,6 +32,7 @@ if TYPE_CHECKING:  # import-cycle-free: the runtime import is function-local
 
 from acb_auth import (
     UserContext,
+    UserRole,
     assert_can_run_agent_in_session,
     get_current_user,
     require_internal_auth,
@@ -955,6 +956,51 @@ def _resolve_room(thread_id: str, email: str, organization_id: str | None):
     except Exception:
         _log.warning("agent.room_resolve_failed", thread_id=thread_id[:12], exc_info=True)
         return None
+
+
+async def _prepare_if_new_thread(
+    room: Any, thread_id: str | None, organization_id: str | None,
+) -> None:
+    """A run on a thread with no row makes a NEW chat, so prepare the id first.
+
+    H-227, fix round 3 of PR #616. The run's mint inserts the chat row, so
+    the run doors do what ``POST /chat/sessions`` does before a new row
+    (``chat.prepare_new_session``): refuse a run's id, then purge what the
+    id left. A room that exists, or that the lookup could not resolve, is
+    not new.
+    """
+    if (
+        room is None or not thread_id or not getattr(room, "unknown_session", False)
+        or getattr(room, "resolve_failed", False)
+    ):
+        return
+    from gateway.routes.chat import prepare_new_session
+
+    await prepare_new_session(thread_id, organization_id)
+
+
+async def _guard_run_thread(user: UserContext, thread_id: str | None) -> None:
+    """The room check and the new-chat step of the two run doors with no stream.
+
+    H-227, fix round 3 of PR #616. ``POST /agent/run`` and ``/agent/run/async``
+    took a client thread id with no room check, so a member who knew the id
+    of another member's chat ran a shared agent in it and read that thread's
+    folders. They now refuse a caller who may not send in the room, as the
+    stream door does. The internal service principal has no room to check.
+    """
+    import asyncio
+
+    if not thread_id:
+        return
+    if user.role is UserRole.AGENT and user.has_permission("*"):
+        return
+    org = getattr(user, "organization_id", None)
+    room = await asyncio.to_thread(
+        _resolve_room, thread_id, getattr(user, "email", "") or "", org,
+    )
+    if room is not None and not room.can_send:
+        raise HTTPException(status_code=403, detail=room.denied("send messages"))
+    await _prepare_if_new_thread(room, thread_id, org)
 
 
 def _room_agents(
@@ -1999,6 +2045,7 @@ async def run_agent_stream_endpoint(
     # endpoint is the boundary of record — a hand-crafted request naming an
     # agent the member cannot run is refused here, not in the UI.
     await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
+    await _prepare_if_new_thread(room, req.thread_id, _room_org)
 
     # The other people in the room find out what was asked, and by whom, the
     # moment it is asked — the run stream carries only the agent's side.
@@ -2699,6 +2746,9 @@ async def run_agent_sync(
         organization_id=getattr(user, "organization_id", None),
     )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
+    # H-227 fix round 3: the room check of the stream route, and the new-chat
+    # step before the run's first row.
+    await _guard_run_thread(user, req.thread_id)
     # H-201 part 3: the same live-run guard as the stream route. The thread id
     # is client input, and a run on it must not supersede another person's.
     if req.thread_id:
@@ -2763,6 +2813,9 @@ async def run_agent_async(
         organization_id=getattr(user, "organization_id", None),
     )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
+    # H-227 fix round 3: the room check of the stream route, and the new-chat
+    # step before the run's first row.
+    await _guard_run_thread(user, req.thread_id)
     # H-201 part 3: the same live-run guard as the stream route. The thread id
     # is client input, and a run on it must not supersede another person's.
     if req.thread_id:

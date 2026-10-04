@@ -296,8 +296,11 @@ async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -
       here. It is deleted when the run ends.
     * ``/workspace/outputs/`` is this chat's own output folder. A file a
       command writes here is kept, and shows in the chat as a card.
-    * The rest of ``/workspace`` (``agent-data/``, ``inputs/``) is read-only.
-      Write those with the file tools.
+    * ``/workspace/inputs/`` holds the files that the member attached in
+      this chat. It is read-only. The path that the upload message names,
+      ``inputs/<thread slug>/x``, reaches the same file.
+    * The rest of ``/workspace`` (``agent-data/``) is read-only. Write it with
+      the file tools.
 
     Args:
         command: The bash command, for example
@@ -434,7 +437,10 @@ def _file_instructions() -> str:
     return DEFAULT_FILE_ACCESS_INSTRUCTIONS + (
         "\n- These are the files that `run_command` sees under `/workspace`: "
         "`agent-data/`, `inputs/`, `outputs/` and `.run/`. `outputs/` is this "
-        "chat's own output folder. `.run/` holds the data files of this run, "
+        "chat's own output folder. `inputs/` holds the files that the member "
+        "attached in this chat. A path that the upload message or a card names, "
+        "with the chat's folder name after `inputs/` or `outputs/`, reaches the "
+        "same file. `.run/` holds the data files of this run, "
         "and it is deleted when the run ends. A command can write only "
         "`outputs/` and `.run/`."
         "\n- This chat has no web access: `web_search` and `fetch_page` are off."
@@ -613,6 +619,7 @@ async def _add_tools(
     store = TenantFileStore(
         workspace=binding.workspace, outputs_rel=binding.outputs_rel,
         run_data=binding.run_data, guard=guard, member=member,
+        inputs_rel=binding.inputs_rel,
     )
     files = FileAccessProvider(
         store,

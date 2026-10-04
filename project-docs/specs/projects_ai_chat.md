@@ -29,7 +29,9 @@ and a run without it keeps the ban (§13.7). H-229 (chat attachments, read
 on the platform, §22) was built 2026-10-04: projects-assistant reads an
 attached `.docx`, PDF or text file again, and no code runs. The security
 fix of §14.8 (a remote image in agent Markdown loads only on a click) was
-built and deployed on 2026-10-04 (PR #618).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+built and deployed on 2026-10-04 (PR #618). H-227 (§22.9) was built
+2026-10-04, in review: the uploads and the S8 documents of the chat are
+private to their thread.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -4131,6 +4133,14 @@ fault-in reads the blob row. The rules that follow come from that path.
 
 `test_an_old_document_opens_for_its_own_tenant_only` proves the first two.
 
+✅ **H-227 narrows the first rule to the thread (2026-10-04, §22.9).** A
+document of the Projects chat now goes to its thread's own folder,
+`outputs/<thread slug>/`, and only a session of that thread lists or opens
+it. A document from before H-227 lies in the flat `outputs/`. Its old link
+opens only for the session that the blob history shows wrote those bytes.
+The row can be the tenant row or the older `''` row. Any other member of
+the tenant gets 404, and the fault-in writes nothing for them.
+
 **The email follow-ups of the part 2 review.**
 
 1. (P1) `load_artifact_attachments` fails closed. One refused ref fails the
@@ -4637,10 +4647,10 @@ at the timeout" is the mutation that turns red.
   the headers, the footers, the footnotes or the comments.
 - A scanned PDF has no text layer, so it reads as pages with no text. The
   tool runs no OCR.
-- Only this tool keeps to the thread folder of `inputs/`. The workspace
-  tree, the file, history and delete routes, the sandbox file store and the
-  container mount still reach the `inputs/` folder of another thread.
-  WS-43d gave `outputs/` that rule. H-227 carries `inputs/`.
+- ✅ H-227 closed this gap on 2026-10-04 (§22.9). Before it, only this tool
+  kept to the thread folder of `inputs/`. The workspace routes, the sandbox
+  file store and the container mount reached the `inputs/` folder of another
+  thread.
 - The browser message still names `read_file`. The instructions name the
   right tool.
 - A team agent keeps the flat `inputs/`.
@@ -4657,3 +4667,391 @@ uv run pytest tests/unit/test_read_attachment.py \
 
 The `-rs` output must show no skip, except the Windows-only skips of the
 sandbox suite.
+
+### 22.9 H-227 — the uploads and the documents of one thread
+
+**Status: BUILT 2026-10-04, in review.** HANDOFF H-227. It is a
+prerequisite of the owner flip WS-43w (`maf_coding_engine.md` §16.3).
+
+**The gap.** Every session of projects-assistant in one organization opens
+the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
+
+1. `write_artifact` put an S8 document in the shared `outputs/`. So any
+   member of the organization could list and open it from a session of
+   their own.
+2. An upload went to `inputs/<thread slug>/` (§22.3). But the workspace
+   routes, `TenantFileStore` and the container still reached the upload
+   folder of another thread.
+
+**What H-227 builds.**
+
+1. **One slug rule, one folder rule.** `agent_paths.thread_slug` names both
+   folders of a thread, through `thread_outputs_rel` and the new
+   `thread_inputs_rel`. `upload_dir_rel` builds on it. `is_other_thread_rel`
+   now covers `inputs/` and `outputs/`. So each reader and writer that asks
+   it refuses the upload folder of another thread too. `is_loose_rel` names
+   a file in `inputs/` or `outputs/` but in no thread folder.
+2. **The S8 documents.** In a tenant dir, `write_artifact` puts `outputs/x`
+   in `outputs/<thread slug>/x` and `inputs/x` in `inputs/<thread slug>/x`
+   (`thread_scoped_rel`). The card and the link name that path. A thread id
+   that names no folder writes nothing. `share_artifact` reads a path the
+   same way, and it shows no loose file.
+3. **The routes.** The tree, file, history, PUT, DELETE and promote routes
+   apply the rule to a session of a shared agent. They serve it only the two
+   folders of its thread. The room check of today stays.
+4. **The old links.** A loose file opens only for the session that wrote
+   it (rule 2).
+5. **The file store.** `TenantFileStore` maps `inputs/` to
+   `inputs/<thread slug>/`, as it maps `outputs/`.
+6. **The container.** The broker mounts `inputs/<thread slug>/` at
+   `/workspace/inputs/`, read-only, over the shared `inputs/`.
+7. **One filter.** `acb_memory.file_history` takes a `session_id`, so the
+   routes read only the rows of the session.
+
+**Rules.**
+
+1. **The run or the path names the tenant dir.** `write_artifact` takes the
+   store key `o:<org>` and the thread from the run. The routes tell a tenant
+   dir from its path and the caller's tenant. Nothing reads the
+   `.cc-instance` marker.
+2. **The history rule of a loose file** (`workspace._session_wrote`). The
+   session must have begun the path. Its row is the oldest row there that
+   writes bytes. One of its rows must also name the sha256 of the bytes on
+   disk. So ownership never moves to a second session (fix round 1). An
+   upload, an edit and a document of the run all count. `read_attachment`
+   keeps its narrower form of the rule, an upload only (§22.4 rule 10).
+3. **Both store keys.** The routes read the tenant key `o:<org>` and the
+   older `''` rows of the tenant (§21.15), in the caller's tenant.
+4. **The fault-in checks first.** For a loose file, it checks the stored
+   bytes before it writes them. A refused file never reaches the disk.
+5. **One answer.** A loose file of another session, a new loose path and a
+   folder of another thread all answer 404. So no answer tells a member
+   which loose file exists.
+6. **The history route.** A row of a loose file shows only to its writer,
+   when that session began the path.
+7. **A personal agent keeps its flat folders.** Its dir holds only the files
+   of its member.
+8. **A batch document belongs to the organization** (the supervisor's
+   decision of 2026-10-04, which the owner may reverse). A batch run has no
+   chat. Examples are a workflow node, a run with no thread, and a task that
+   a member assigns to an agent. `write_artifact` in such a run writes the
+   flat `outputs/`, as before H-227. Its history row has the actor `batch`.
+   Only the executor marks a batch run (`batch_thread`). It does so when it
+   mints the thread `<agent>:<run id>` itself, with no parent run bound. A
+   thread id from a client never marks a batch run. Every member lists,
+   opens and reads the history of such a file. Nobody changes, deletes or
+   promotes it. A batch run never replaces an existing file. A name is
+   free only when the disk and the history hold nothing there. One
+   exclusive create takes it (fix round 2). The purge of a
+   deleted chat never touches a batch row.
+   A batch document from before H-227 has a row with the actor `agent` and
+   the session `<agent>:<run id>`. That exact form is a batch row too (fix
+   round 3). No new chat can take an id with a colon, so no chat can forge
+   it.
+9. **No thread folder in a chat, no document.** A chat run whose thread id
+   names no folder writes nothing. The upload route and the broker have the
+   same rule (§22.4 rule 9).
+
+**Acceptance.** Each item has a test in `tests/unit/test_h227_thread_scope.py`.
+
+1. Alice uploads through the real route, and her run writes a document
+   through the real `write_artifact`. Bob is in the same organization, with
+   his own session of the same agent. He cannot list, open, change, delete or
+   promote either file, and he cannot read its history (R8). The fault-in
+   restores nothing for him.
+2. An old flat document opens for the session of Alice that wrote it. That
+   is true for the tenant row and for the older `''` row. It opens for nobody
+   else (R8). Other bytes at that path open for nobody.
+3. An old flat upload opens and promotes only in its own thread (R8).
+4. A rewritten `.cc-instance` marker does not switch the rule off (R8).
+5. `write_artifact` writes into the thread folder, and the card and the link
+   name that path. A thread id that names no folder writes nothing.
+6. `share_artifact` shows only the folders of the chat.
+7. `TenantFileStore` reads and lists only the uploads of its own thread.
+8. The fake Docker mounts only the uploads of the thread, read-only. On the
+   coding image, Bob's container sees none of Alice's uploads and no loose
+   file (`sandbox_docker`).
+9. A personal agent keeps its flat folders.
+
+**Mutations.** Each mutation below turned at least one test red, on
+2026-10-04.
+
+| Mutation | Tests that fail |
+|---|---|
+| `is_other_thread_rel` checks `outputs/` only | 3 |
+| `write_artifact` writes the flat `outputs/` again | 9 |
+| `share_artifact` takes a path as it is again | 1 |
+| `share_artifact` shows a loose file | 1 |
+| `TenantFileStore` maps `inputs/` to the shared `inputs/` | 2 |
+| the broker drops the upload cover | 2 |
+| the upload cover is writable | 2 |
+| the tree route drops the loose rule | 4 |
+| the file route drops the loose rule | 4 |
+| the fault-in writes before the history check | 2 |
+| the history route drops the loose rule | 2 |
+| the DELETE route drops the loose rule | 3 |
+| the PUT route drops the loose rule | 3 |
+| the promote route takes the upload of another thread | 1 |
+| the promote route drops the loose rule | 1 |
+| `_session_wrote` ignores the session | 1 |
+| `_session_wrote` ignores the sha256 | 3 |
+| `_session_history` reads the marker for the store key | 6 |
+| `_session_history` drops the older `''` rows | 1 |
+| the session filter of `file_history` names the wrong column | 4 |
+
+**The other-thread rule, route by route.** Bob asks for
+`inputs/<thread slug of Alice>/<name>` from his own session. The fence of
+each route is `test_alices_upload_and_document_are_invisible_to_bob`, except
+where the table names another test. Three routes have two layers, so a
+mutation of one layer alone stays green. The table shows those too.
+
+| Route or path | Mutation | Tests that fail |
+|---|---|---|
+| tree | the other-thread filter dropped | 1 |
+| `GET .../file` | the other-thread check dropped | 1 |
+| history | the row filter dropped | 1 |
+| history | the path check dropped, and the row filter kept | 0, the row filter holds |
+| history | both checks dropped | 1 |
+| DELETE | the route check and `_apply_write_rules` dropped | 1 |
+| DELETE | the route check dropped, and `refused_write` kept | 0, `refused_write` answers 404 |
+| PUT | the route check and the thread rule of `refused_write` dropped | 1 |
+| PUT | the route check dropped, and `refused_write` kept | 0, `refused_write` answers 404 |
+| promote | the other-thread check dropped | 1 |
+| `TenantFileStore` (`test_the_file_tools_see_only_this_threads_uploads`) | `inputs/` maps to the shared `inputs/` | 2 |
+| the container (`test_a_projects_container_mounts_only_its_own_uploads_read_only`, `test_docker_a_thread_sees_only_its_own_uploads`) | the upload cover dropped, or made writable | 2 each |
+
+**What H-227 does not do.**
+
+- The files in the flat folders stay on disk. Nothing moves them into a
+  thread folder, because a history row does not always name a thread.
+- **A loose file with no history row opens for nobody.** Before H-227 the
+  routes served such a file to every member of the organization. Now nobody
+  lists or opens it. Who loses what: a document from before S15 had no row
+  (§21.15), so its link answered 404 already. A file that a run wrote while
+  the store was down, or a file that a member copied onto the disk, now
+  shows to nobody. HANDOFF H-239 counts such files on production. Then the
+  supervisor decides on an admin view.
+- The history route reads the tenant key only, as before. So it does not
+  show a row of the older `''` key.
+- **Who loses what, a batch document** (corrected in fix round 3). On main,
+  every member read a batch document in the flat `outputs/`. Fix rounds 1
+  and 2 read its row, actor `agent` and session `<agent>:<run id>`, as the
+  row of a chat. No chat had that id, so the document showed to nobody. The
+  verifier found it. Now that exact form is a batch row (rule 8). So every
+  member reads such a document again, and nobody changes it. A chat run's
+  document from before H-227 opens only for its own chat, as before.
+
+**Fix round 1 (the PR #616 review, 2026-10-04).**
+
+1. **`save_note` and `recall_notes` keep to the thread (P1).** Before the
+   fix, `save_note` on a colleague's loose file appended to it. Its history
+   row named the caller's session and the new sha256. So the rule of the
+   time gave the file to the caller, and took it from its owner. Now, in a
+   tenant dir, both tools read `inputs/` and `outputs/` as this chat's own
+   folders. `note_tools._notes_target` does it, over
+   `write_artifact._thread_scoped`. Both tools refuse a loose file and the
+   folder of another chat. `agent-data/NOTES.md` does not change (residual
+   1).
+2. **Ownership stays with the session that began the path (P1).** Rule 2
+   above. A later write of another session makes it no owner. The file
+   then opens for nobody.
+3. **A planted link shows nothing (P3).** A directory share of
+   `share_artifact` checks the resolved path, the path that the card shows.
+   It skips a link outright. So a link that a covered run plants in its own
+   folder shows no file of another chat.
+4. **A deleted chat takes its files.** A client chooses the id of a chat
+   session. `POST /chat/sessions` takes `id` from the body, and
+   `sessions.ts` makes it. So after a delete, a member who knows the id can
+   make a new session with it. The thread rule would then give that
+   session the old files. So the delete route calls
+   `workspace.purge_thread_files` before the row goes (fix round 2). The
+   purge works in
+   every tenant dir of the organization. It removes the two thread folders
+   and the loose files that the chat began. It removes their rows in the
+   blob store and in its history (`acb_memory.purge_files` and
+   `session_paths`). It removes the other history rows of the chat under
+   `inputs/` and `outputs/` too. So `read_attachment` reads none of its
+   older uploads. A loose file that another session began stays, and its
+   ownership does not move. The server still takes the id from the client.
+5. **An assigned task's run keeps its document (P2).** The batch decision,
+   rule 8, gives it a home: the flat `outputs/`, where each member reads it.
+6. **The path of the upload message works in a covered run** (the
+   verifier). The message and the cards name `inputs/<thread slug>/x`, and
+   the model copies that path. `TenantFileStore` reads the own slug as the
+   folder itself, and it refuses the slug of another thread. The broker
+   mounts each folder a second time at its own slug. So a command reaches
+   the file by that path too. The alias of the upload folder is read-only.
+7. **An odd name form answers as absent** (the verifier). A case-insensitive
+   file system read `INPUTS/<thread slug>/x` as the upload folder of that
+   thread. Every session route now refuses a head `inputs` or `outputs` in
+   any case but lower. It also refuses a name that ends in a dot or a space
+   (`workspace._odd_name_form`).
+
+**The mutations of fix round 1.** Each one turned at least one test of
+`tests/unit/test_h227_thread_scope.py` red, on 2026-10-04.
+
+| Mutation | Tests that fail |
+|---|---|
+| `save_note` takes a plain path again | 2 |
+| `recall_notes` takes a plain path again | 1 |
+| `_session_wrote` drops the first-writer check | 2 |
+| the history route drops the owner check of a loose row | 1 |
+| a directory share checks the link path and keeps links | 1 |
+| the delete route skips the purge | 1 |
+| the purge skips the loose files that the chat began | 1 |
+| the purge leaves the thread folders on disk | 1 |
+| the purge leaves the store rows of the thread folders | 1 |
+| the purge leaves the other history rows of the chat | 1 |
+| the store takes no own slug off a path | 2 |
+| the store takes the slug of another thread off too | 2 |
+| the broker drops the alias mounts | 2 |
+| the alias of the upload folder is writable | 2 |
+| a batch run writes the thread folder | 2 |
+| a batch run may replace a file | 1 |
+| the batch mark read from the shape of the thread id | 1 |
+| a thread id from a client makes a batch run | 1 |
+| a delegated run is a batch run | 1 |
+| the routes drop the batch read rule | 1 |
+| a batch document has an owner, so a member may change it | 1 |
+| a batch row told by its actor alone | 1 |
+| the history route hides the rows of a batch document | 1 |
+| the purge reaches a batch row | 1 |
+| no refusal of an odd name form | 1 |
+| a trailing dot allowed | 1 |
+
+**Fix round 2 (the second review, 2026-10-04).**
+
+1. **A batch run takes a free name in one step.** A member's loose file can
+   be missing on disk and kept in the store. So the batch run checks the
+   history of a name and the disk. Then
+   `safe_open.write_bytes(..., exclusive=True)` takes the name, so two batch
+   runs never write one name (`write_artifact._take_batch_name`).
+2. **The purge reads before it changes anything.** `session_paths` now
+   raises on a database error. An empty history read of a path that the
+   chat wrote raises too. So a failed read deletes no row and no file, and
+   no ownership moves.
+3. **The purge runs before the delete.** The route checks that the caller
+   owns the chat (`chat._may_delete_session`, the predicate of
+   `_delete_session`). Then it purges, and only then it deletes the row. A
+   failed purge answers 503, the chat stays, and the member can try again.
+   A second pass after the delete sweeps a file that a run wrote in
+   between. That pass only logs.
+4. **The empty dir of an alias mount** does not show in the Files tree,
+   because the tree lists files only.
+
+| Mutation | Tests that fail |
+|---|---|
+| a batch run checks no history before it takes a name | 2 |
+| a batch run writes with no exclusive create | 2 |
+| `session_paths` swallows its error | 1 |
+| an empty history read goes on | 1 |
+| a failed purge only logs | 1 |
+| the row goes before the purge | 3 |
+
+**Fix round 3 (the third review, 2026-10-05).**
+
+1. **A new chat never inherits files** (the supervisor's decision). On
+   main, the delete route removed the chat row and nothing else. So the
+   files and rows of such a chat stayed, and a member who made a chat with
+   the old id read them. Now every door that makes a new chat purges the id
+   first (`chat.prepare_new_session`). A purge that fails answers 503, and
+   no row is made. The doors are `POST /chat/sessions` when it inserts a row
+   (not when it updates one), and the three run doors when the room lookup
+   finds no row. So the step closes every leftover, old or future.
+2. **No new chat can take a run's id.** The executor mints `<agent>:<run
+   id>` for a run with no chat, and the card of its document shows the run
+   id. Each door above refuses a new id with a colon (400,
+   `chat.refuse_run_shaped_id`). Every client mints a chat id with
+   `crypto.randomUUID()` (`lib/sessions.ts`), so no real id has a colon.
+   The server mints `<agent>:<run id>` and `email-chat:...` itself, through
+   none of these doors. An existing row keeps its id.
+3. **An older batch document is the organization's again.** Rule 8 and the
+   who-loses-what line above. `workspace._is_batch_row` and
+   `blob_store._RUN_ROW` are the one rule in Python and in SQL. The tree,
+   the purge and `session_paths` use it.
+4. **The run doors with no stream check the room.** `POST /agent/run` and
+   `/agent/run/async` took a client thread id with no room check. So a
+   member who knew the id of another member's chat ran a shared agent in it
+   and read its folders. They now refuse a caller who may not send in the
+   room, as the stream door does (`agent._guard_run_thread`).
+5. **The purge keeps a file that another session rewrote.** Main let any
+   session change a loose file. When the newest write of a loose file that
+   the chat began is another session's, the purge keeps the file and its
+   other rows. It deletes only the rows of the chat. Then the oldest
+   remaining write is the first writer. When that session also wrote the
+   bytes on disk, that session owns the file. It owns only bytes that it
+   wrote, because the chat's bytes are not on disk and its rows are gone.
+   Otherwise nobody owns the file, and it shows to nobody.
+6. **One 404 for an odd name form.** `_open_rel` checks the name form
+   before the containment check. Windows resolved a missing `a /x` or
+   `a../x` outside the root, so a missing file answered 400 and a real one
+   answered 404. Now both answer 404.
+
+| Mutation | Tests that fail |
+|---|---|
+| the chat door skips the new-chat step | 3 |
+| the run door skips the new-chat step | 3 |
+| every upsert purges, not only a new row | 2 |
+| a failed purge still makes the chat | 1 |
+| a chat id with a colon is taken | 3 |
+| no older batch row in Python | 2 |
+| the older match is a suffix, not exact | 2 |
+| the SQL rule knows only the actor `batch` | 1 |
+| the purge deletes an older batch row | 1 |
+| the tree finds a batch file by the actor alone | 1 |
+| the purge deletes a file that another session rewrote | 1 |
+| the containment check runs first (Windows only) | 1 |
+| the run doors with no stream drop the room check | 1 |
+| the run doors with no stream skip the guard | 2 |
+
+**Residuals, named.**
+
+1. **`agent-data/` of a shared agent is one folder for the whole
+   organization, and so it is a channel between members.** A fact that one
+   member's run saves to `agent-data/NOTES.md` reaches the run of each other
+   member. The session routes serve `agent-data/` to every session. It is
+   older than H-227, and this PR keeps it. To make it per member or per
+   thread is a decision about the memory of a shared agent. HANDOFF H-237
+   carries it.
+2. **A live container of the thread** keeps its mounts of the removed
+   folders until it stops.
+3. **The member purge of the admin routes deletes private chats and keeps
+   their folders** (`routes/admin/members.py`). Only the purged person knew
+   those ids. HANDOFF H-237 carries it.
+4. **Other state keyed by a chat id** is outside H-227: the room memory
+   `room:<id>` and the room stream. A new session with an old id can reach
+   it. Its files and file rows are purged (fix round 3).
+5. **The Windows dev box only.** NTFS does not tell `OUTPUTS/` from
+   `outputs/`. The rules compare the head of a path as the caller wrote it.
+   So on a Windows dev box, `OUTPUTS/<thread slug>/x` names the folder of
+   that thread, and it passes the rules. Production runs on Linux. There
+   that path names another folder, and no route lists it.
+6. **A slow mint and a late create.** A run door purges a new id, and then
+   the run's mint makes the row. When the mint times out, the run goes on
+   with no row. A `POST /chat/sessions` that arrives then sees no row, and
+   its purge can remove the first files of that run. HANDOFF H-242 step 3.
+7. **The stream door with no thread id** mints the thread `<agent>:<run
+   id>` from a run id that the client may choose. It makes no batch run.
+   Its documents go in its own thread folder, never in a loose file, so it
+   cannot forge an older batch row. The purge never deletes one.
+8. **A null room skips the purge.** A run door reads a room of `None` as
+   "not new". `_resolve_room` gives `None` on an exception, or when the
+   caller has no email. HANDOFF H-242 step 1.
+9. **The next writer can own the deleted chat's text** (fix round 3 item
+   5). The bytes that another session wrote can still hold the text of the
+   chat that began the file. HANDOFF H-242 step 2 decides: delete such a
+   file, or keep it with no owner.
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_h227_thread_scope.py \
+  tests/unit/test_run_data_hygiene.py tests/unit/test_h201_tenant_workdirs.py \
+  tests/unit/test_h201_run_context.py tests/unit/test_h201_readers_under_rls.py \
+  tests/unit/test_read_attachment.py -q -rs
+uv run pytest tests/unit/test_h227_thread_scope.py \
+  tests/unit/test_run_data_hygiene.py -m sandbox_docker -rs
+```
+
+The `-rs` output must show no skip, except the Windows-only skips.

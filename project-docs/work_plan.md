@@ -4957,6 +4957,15 @@ and one thing that cannot be written until a second person exists.
 > that acceptance as given. The three acts of WS-43w stay
 > owner acts.
 >
+> **Added 2026-10-04 with H-227.**
+>
+> WS43-G3 waits on one more act, the merge and the deploy of H-227. H-227
+> makes the uploads and the S8 documents of a shared agent thread-scoped.
+> A container then mounts only the uploads of its own thread
+> (`specs/maf_coding_engine.md` §16.3). Without it, the container of one
+> member's covered run mounts the uploads of every other member of the
+> organization.
+>
 > **Projects — `PROJECTS_AGENT_DISPATCH`, a run for an `agent:` assignee.**
 > *(Registered 2026-10-04 with PR #622.)* When a member assigns a task to
 > `agent:<name>`, the dispatch sink can start a run, and the run spends the

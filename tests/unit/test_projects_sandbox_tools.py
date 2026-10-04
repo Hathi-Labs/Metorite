@@ -445,13 +445,19 @@ async def test_no_path_reaches_another_threads_folder(sandbox) -> None:  # noqa:
     store, ws, _ = _store(sandbox, mine)
     (ws / "outputs" / thread_slug(other)).mkdir(parents=True)
     (ws / "outputs" / thread_slug(other) / "theirs.txt").write_text("PRIVATE")
+    # H-227 fix round 1: the slug of another thread is refused outright. The
+    # own slug may lead a path (test_h227_thread_scope.py).
+    from acb_skills import safe_open
+
     with bound_run(ORG_A, agent=PA, thread=mine):
-        assert await store.read(f"outputs/{thread_slug(other)}/theirs.txt") is None
+        with pytest.raises(safe_open.UnsafePath):
+            await store.read(f"outputs/{thread_slug(other)}/theirs.txt")
         names = [e.name for e in await store.list_children("outputs")]
-        await store.write(f"outputs/{thread_slug(other)}/planted.txt", "x")
+        with pytest.raises(safe_open.UnsafePath):
+            await store.write(f"outputs/{thread_slug(other)}/planted.txt", "x")
     assert thread_slug(other) not in names
     assert not (ws / "outputs" / thread_slug(other) / "planted.txt").exists()
-    assert (ws / "outputs" / thread_slug(mine) / thread_slug(other) / "planted.txt").exists()
+    assert not (ws / "outputs" / thread_slug(mine) / thread_slug(other)).exists()
 
 
 async def test_the_root_listing_shows_run_and_hides_host_entries(sandbox) -> None:  # noqa: F811

@@ -26,6 +26,23 @@ clone cache.
    `reset_artifact_context`. Never add a module-level dict for run state. A
    tool with no context must fail closed, and never fall back to the cwd or a
    temp dir. Fence: tests/unit/test_h201_run_context.py.
+   H-227 (D12): a shared agent's tenant dir has the store key `o:<org>`.
+   There, `write_artifact` and `share_artifact` read `outputs/` and `inputs/`
+   as the thread's own folders. `_thread_scoped` does it, over
+   `agent_paths.thread_scoped_rel`. A thread id that names no folder writes
+   nothing. `share_artifact` shows no loose file, one in `inputs/` or
+   `outputs/` but in no thread folder. A directory share checks the
+   resolved path and skips a link (`_shareable`). `note_tools.save_note` and
+   `recall_notes` apply the same rule (`_notes_target`), and they refuse a
+   loose file and the folder of another chat. `agent-data/NOTES.md` stays
+   one file for the tenant dir (HANDOFF H-237).
+   `agent_paths.is_other_thread_rel` is the ONE rule for another chat's
+   folder, and it covers both folders. Fence:
+   tests/unit/test_h227_thread_scope.py.
+   A batch run (no chat, `batch_thread` from the executor) writes the flat
+   `outputs/`, never replaces a file, and records the actor `batch`
+   (`_is_batch_run`, `BATCH_ACTOR`). Its document is the organization's to
+   read (`projects_ai_chat.md` §22.9 rule 8).
 5a. skill_families.py -- WS-23 skill-family registry (spec: project-docs/specs/skills_registry.md).
    `SKILL_FAMILIES` maps family slug -> {label, description, tool names} and must
    cover EVERY tool `orchestrator._tool_injection` injects, each in exactly ONE
@@ -77,8 +94,12 @@ clone cache.
    heads agent-data/, inputs/, outputs/ and .run/, and a skill folder is its
    author's alone (`agent_paths.claim_skill`, `refused_write`).
    `decide()` runs too, with the whole command and with the real host path.
-   The store maps `outputs/` to the thread's own folder and `.run/` to the
-   run data, and it mirrors each kept write and delete. WS-43u: the provider
+   The store maps `outputs/` and `inputs/` to the thread's own folders, and
+   `.run/` to the run data. It maps the upload folder since H-227. The
+   thread's own slug may lead a path (`inputs/<slug>/x` is `inputs/x`),
+   because the upload message and the cards name a file so. The slug of
+   another thread is refused (`_own_folder_rest`). It
+   mirrors each kept write and delete. WS-43u: the provider
    adds the rules for code to the instructions of the turn, from
    `addendum.render_run_sections` over the tools that the turn holds. Put
    prose for a tool that only a sandboxed run holds in `addendum.RUN_SECTIONS`,
@@ -86,7 +107,8 @@ clone cache.
    there. Fences:
    tests/unit/test_run_command_tool.py (WS43-F6),
    tests/unit/test_maf_code_session.py (WS43-F7, R8),
-   tests/unit/test_projects_sandbox_tools.py (WS43-F21), and for the rules
+   tests/unit/test_projects_sandbox_tools.py (WS43-F21),
+   tests/unit/test_h227_thread_scope.py (H-227), and for the rules
    for code tests/unit/test_generated_addendum.py and
    tests/unit/test_projects_agent.py.
 5f. attachment_text.py + attachment_tools.py -- `read_attachment` (H-229,

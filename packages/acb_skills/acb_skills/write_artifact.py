@@ -12,6 +12,12 @@ The tool:
 5. PATCHes the gateway to register the workspace root on the session.
 6. Returns a ``download_url`` the agent SHOULD embed in its text response.
 
+In a shared agent's tenant dir (store key ``o:<org>``), every member of the
+organization opens the same dir. So a document of one chat goes to that
+chat's own folder, ``outputs/<thread slug>/``, and an ``inputs/`` path to
+``inputs/<thread slug>/``. The card links there, and the session routes
+serve it only to a session of that thread (H-227, D12).
+
 Usage by agents:
     result = await write_artifact("summary.md", "# Sales Summary\\n...")
     # File lands in outputs/summary.md (auto-prefixed)
@@ -23,7 +29,7 @@ import contextlib
 import contextvars
 import hashlib
 import mimetypes
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -287,6 +293,111 @@ def _normalise_path(path: str) -> str:
     return f"outputs/{clean}"
 
 
+#: The history actor of a document that a batch run wrote (H-227). The
+#: gateway lets every member of the organization read such a loose file, and
+#: nobody change it (``workspace._batch_readable``). No request can set it.
+BATCH_ACTOR = "batch"
+
+
+def _is_batch_run(ctx: Mapping[str, Any]) -> bool:
+    """True for a batch run in a shared agent's tenant dir (the H-227 decision).
+
+    A run with no chat: a workflow node, ``/agent/run`` or ``/agent/run/async``
+    with no thread, or a task that a member assigns to an agent. Its document
+    belongs to the organization, as it did before H-227, so it goes to the
+    flat folder and every member may read it. ``batch_thread`` comes only
+    from the executor, which sets it when it mints the thread itself and no
+    parent run is bound. A thread id that a client sends never sets it, also
+    one shaped ``<agent>:<run id>``.
+    """
+    from acb_skills.agent_paths import is_tenant_instance
+
+    return ctx.get("batch_thread") is True and is_tenant_instance(ctx.get("instance"))
+
+
+def _chat_document_path(clean_path: str, path: str, ctx: Mapping[str, Any]) -> str | dict:
+    """The path of a chat run's document (:func:`_thread_scoped`), or the error
+    to answer."""
+    scoped = _thread_scoped(clean_path, ctx)
+    if scoped is None:
+        return {"error": "This chat has no thread folder, so nothing was written."}
+    if scoped != clean_path and len(scoped.split("/")) < 3:  # the thread folder itself
+        return {"error": f"Path '{path}' names no file, so nothing was written."}
+    return scoped
+
+
+async def _path_has_history(rel: str, ctx: Mapping[str, Any]) -> bool:
+    """True when the blob history holds a write at *rel* in this run's store
+    key or its older ``''`` key. A file that the store still holds may be
+    missing on disk (the fault-in state), so the disk alone cannot say."""
+    try:
+        from acb_memory import file_history
+    except ImportError:
+        return False
+    agent = _current_agent_name()
+    if not agent:
+        return False
+    for key in (str(ctx.get("instance") or ""), ""):
+        rows = await file_history(agent, rel, 20, instance=key)
+        if any(r.get("action") != "delete" for r in rows):
+            return True
+    return False
+
+
+async def _take_batch_name(
+    root: Path, rel: str, data: bytes, ctx: Mapping[str, Any],
+) -> str:
+    """Write *data* at *rel*, or at ``name (n).ext``, and return the path taken.
+
+    The H-227 batch rule, fix round 2 of PR #616. A name is free only when the
+    history holds no write there (:func:`_path_has_history`), and
+    ``safe_open.write_bytes(..., exclusive=True)`` takes it in one call. So a
+    member's file that is missing on disk but kept in the store, and a second
+    batch run that races for the same name, never lose their bytes. Raises
+    ``FileExistsError`` after 1,000 names.
+    """
+    import asyncio
+    from pathlib import PurePosixPath
+
+    from acb_skills import safe_open
+
+    p = PurePosixPath(rel)
+    for counter in range(1000):
+        name = p.name if counter == 0 else f"{p.stem} ({counter}){p.suffix}"
+        candidate = str(p.with_name(name))
+        if await _path_has_history(candidate, ctx):
+            continue
+        try:
+            await asyncio.to_thread(
+                safe_open.write_bytes, root, candidate, data, exclusive=True,
+            )
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError(rel)
+
+
+def _thread_scoped(rel: str, ctx: Mapping[str, Any]) -> str | None:
+    """*rel* in the thread's own folder, for a run in a shared agent's tenant dir.
+
+    H-227 (D12). The run's store key ``o:<org>`` marks the tenant dir, and
+    the run's session id names the thread. Both come from the run's
+    artifact context, never from the model. ``inputs/x`` and ``outputs/x`` go
+    to ``inputs/<thread slug>/x`` and ``outputs/<thread slug>/x``
+    (``agent_paths.thread_scoped_rel``, over the one slug rule). Any other
+    workspace and any other folder keep *rel*. ``None`` means a tenant dir
+    with no thread folder, and the caller writes and shows nothing.
+    """
+    from acb_skills.agent_paths import is_tenant_instance, thread_scoped_rel
+
+    if not is_tenant_instance(ctx.get("instance")):
+        return rel
+    try:
+        return thread_scoped_rel(rel, ctx.get("session_id"))
+    except ValueError:
+        return None
+
+
 def resolve_in_workspace(root: str | Path, rel: str) -> Path | None:
     """Resolve *rel* under *root*, returning it ONLY if it stays inside the root.
 
@@ -323,6 +434,8 @@ async def write_artifact(
 
     Files are automatically placed in ``outputs/`` unless you specify
     ``inputs/`` (user-provided files) or ``agent-data/`` (reference data).
+    In a chat of a shared agent, ``outputs/`` and ``inputs/`` are that chat's
+    own folders, so the returned ``path`` shows where the file went.
 
     After calling this, **embed the returned ``download_url`` in your text
     response** so the operator can click to download.
@@ -374,6 +487,19 @@ async def write_artifact(
     if target is None:
         return {"error": f"Path '{path}' escapes the workspace and was refused."}
     clean_path = target.relative_to(root_r).as_posix()
+    # H-227 (D12): a shared agent's tenant dir is one folder for every member
+    # of the organization. So a document of this chat goes to the chat's own
+    # folder, outputs/<thread slug>/ (inputs/<thread slug>/ for inputs/), and
+    # its card links there. Only a session of this thread reads it. A batch
+    # run (no chat) writes the flat folder, and its document belongs to the
+    # organization (`_is_batch_run`).
+    batch = _is_batch_run(ctx)
+    if not batch:
+        scoped = _chat_document_path(clean_path, path, ctx)
+        if isinstance(scoped, dict):
+            return scoped
+        if scoped != clean_path:
+            clean_path, target = scoped, root_r / scoped
     # WS-43d (review P1, fix round 1): never another chat's output folder,
     # another member's skill folder, or the skill author marker.
     from acb_skills.agent_paths import refused_write
@@ -391,7 +517,7 @@ async def write_artifact(
     # in inputs/, or a previously generated artifact). Uniquify to "name (1).ext"
     # — the same collision policy the upload endpoint uses. Pass overwrite=True to
     # deliberately replace the file in place.
-    if target.exists() and not overwrite:
+    if not batch and target.exists() and not overwrite:
         stem, ext = target.stem, target.suffix
         counter = 1
         while target.exists():
@@ -405,8 +531,20 @@ async def write_artifact(
     else:
         data = bytes(content)
 
-    _existed = target.exists()
-    target.write_bytes(data)
+    if batch:
+        # A batch run never replaces a file in a tenant dir: that file may
+        # belong to a member's chat (H-227). The name is free only when the
+        # disk AND the history hold nothing there, and one exclusive create
+        # takes it (fix round 2).
+        try:
+            clean_path = await _take_batch_name(root_r, clean_path, data, ctx)
+        except FileExistsError:
+            return {"error": f"No free name near '{path}', so nothing was written."}
+        target = root_r / clean_path
+        _existed = False
+    else:
+        _existed = target.exists()
+        target.write_bytes(data)
     digest = _sha256(data)
     size = len(data)
 
@@ -420,6 +558,9 @@ async def write_artifact(
     _asyncio.ensure_future(mirror_to_blob_store(
         clean_path, data, mime_type=mime,
         action="modify" if (_existed and overwrite) else "create",
+        # H-227: "batch" marks a document of a run with no chat. Only the
+        # server sets it, and the session routes let every member read it.
+        actor=BATCH_ACTOR if batch else "agent",
     ))
 
     # Build download URL (relative path — works from the frontend chat UI).
@@ -480,6 +621,75 @@ async def write_artifact(
     return result
 
 
+def _share_target(path: str, root: Path, ctx: Mapping[str, Any]) -> Path | str:
+    """The existing file or dir that *path* names in *root*, or why there is none.
+
+    The target must stay inside the workspace root. H-227 (D12): in a shared
+    agent's tenant dir, ``inputs/`` and ``outputs/`` name this chat's own
+    folders, as they do for :func:`write_artifact`.
+    """
+    raw = (path or "").replace("\\", "/").strip().lstrip("/")
+    if not raw:
+        return "A file or directory path is required."
+    candidate = Path(raw)
+    target = (candidate if candidate.is_absolute() else root / raw).resolve()
+    if not target.is_relative_to(root):
+        return f"Path '{path}' is outside the workspace."
+    scoped = _thread_scoped(target.relative_to(root).as_posix(), ctx)
+    if scoped is None:
+        return "This chat has no thread folder, so nothing was shared."
+    target = (root / scoped).resolve()
+    if not target.is_relative_to(root):
+        return f"Path '{path}' is outside the workspace."
+    if not target.exists():
+        return f"File not found: {path}"
+    return target
+
+
+def _shareable(p: Path, root: Path, not_this_chats: Callable[[str], bool]) -> Path | None:
+    """The real path of *p*, when a directory share may show it, else ``None``.
+
+    PR #616 review, P3: the check reads the RESOLVED path, the one that the
+    card shows, and never the name of a link. A link is skipped outright. So
+    a link that a run plants in its own folder never shows the name or the
+    size of a file of another chat.
+    """
+    if p.is_symlink() or not p.is_file():
+        return None
+    try:
+        real = p.resolve()
+        rel = real.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+    if not_this_chats(rel):
+        return None
+    return real
+
+
+def _not_this_chats(ctx: Mapping[str, Any]) -> Callable[[str], bool]:
+    """A check: True for a working-dir path that this run may not show.
+
+    WS-43d (review P1, fix round 1): another chat's folder. H-227: in a
+    shared agent's tenant dir, also a loose file, one that lies in
+    ``inputs/`` or ``outputs/`` but in no thread folder.
+    """
+    from acb_skills.agent_paths import (
+        instance_slug,
+        is_loose_rel,
+        is_other_thread_rel,
+        is_tenant_instance,
+    )
+
+    session_id = ctx.get("session_id")
+    own = instance_slug(str(session_id)) if session_id else None
+    tenant_dir = is_tenant_instance(ctx.get("instance"))
+
+    def check(rel: str) -> bool:
+        return is_other_thread_rel(rel, own) or (tenant_dir and is_loose_rel(rel))
+
+    return check
+
+
 async def share_artifact(path: str) -> dict:
     """Surface a file you ALREADY created as a downloadable, previewable card in
     the chat — and get back a download link.
@@ -516,33 +726,20 @@ async def share_artifact(path: str) -> dict:
         return {"error": "No workspace is configured for this run.", "artifacts": []}
 
     root = Path(workspace_root).resolve()
-    raw = (path or "").replace("\\", "/").strip().lstrip("/")
-    if not raw:
-        return {"error": "A file or directory path is required.", "artifacts": []}
-    candidate = Path(raw)
-    target = (candidate if candidate.is_absolute() else root / raw).resolve()
-
-    # Path-traversal guard — the target must stay inside the workspace root.
-    try:
-        target.relative_to(root)
-    except ValueError:
-        return {"error": f"Path '{path}' is outside the workspace.", "artifacts": []}
-    if not target.exists():
-        return {"error": f"File not found: {path}", "artifacts": []}
-    # WS-43d (review P1, fix round 1): another chat's output folder is not
-    # this run's to show.
-    from acb_skills.agent_paths import instance_slug, is_other_thread_rel
-
-    own = instance_slug(str(session_id)) if session_id else None
-    if is_other_thread_rel(target.relative_to(root).as_posix(), own):
+    target = _share_target(path, root, ctx)
+    if isinstance(target, str):
+        return {"error": target, "artifacts": []}
+    not_this_chats = _not_this_chats(ctx)
+    if not_this_chats(target.relative_to(root).as_posix()):
         return {"error": f"Path '{path}' belongs to another chat.", "artifacts": []}
 
     # Collect the file(s) to share (a directory shares everything within it).
     files: list[Path] = []
     if target.is_dir():
         for p in sorted(target.rglob("*")):
-            if p.is_file() and not is_other_thread_rel(p.relative_to(root).as_posix(), own):
-                files.append(p)
+            shared = _shareable(p, root, not_this_chats)
+            if shared is not None:
+                files.append(shared)
                 if len(files) >= 50:
                     break
     else:

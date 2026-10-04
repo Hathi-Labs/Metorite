@@ -390,28 +390,30 @@ def test_another_member_cannot_list_or_read_a_threads_output_folder(graph_as_app
     alice, bob, carol = (_client(_user(e, o)) for e, o in ((_ALICE, a), (_BOB, a), (_CAROL, b)))
     slug1 = instance_slug(s1)
     chart = f"outputs/{slug1}/chart-{uuid.uuid4().hex[:6]}.txt"
-    flat = f"outputs/report-{uuid.uuid4().hex[:6]}.md"
 
     # Alice's run wrote the chart into her thread's folder. Its write-through
-    # gives a history row.
+    # gives a history row. (H-227: a file in no thread folder is a loose
+    # file, and test_h227_thread_scope.py holds its rule.)
     put = alice.put(f"/agent/workspace/{s1}/file", params={"path": chart},
                     json={"content": "T1 CHART"})
     assert put.status_code == 200, put.text
-    assert alice.put(f"/agent/workspace/{s1}/file", params={"path": flat},
-                     json={"content": "S8 REPORT"}).status_code == 200
 
     # Alice, in her own session, lists and reads it.
     tree_a = {f["path"] for f in alice.get(f"/agent/workspace/{s1}").json()["files"]}
-    assert chart in tree_a and flat in tree_a
+    assert chart in tree_a
     assert alice.get(f"/agent/workspace/{s1}/file", params={"path": chart}).text == "T1 CHART"
 
     # Bob, same organization, his own session: not listed, not served.
     tree_b = {f["path"] for f in bob.get(f"/agent/workspace/{s2}").json()["files"]}
     assert not any(p.startswith(f"outputs/{slug1}/") for p in tree_b)
-    assert flat in tree_b, "a file outside every thread folder stays served (S8)"
     assert bob.get(f"/agent/workspace/{s2}/file", params={"path": chart}).status_code == 404
+    # Bob's own file, so his history is not empty and the filter is seen.
+    mine = f"outputs/{instance_slug(s2)}/bob-{uuid.uuid4().hex[:6]}.txt"
+    assert bob.put(f"/agent/workspace/{s2}/file", params={"path": mine},
+                   json={"content": "BOB"}).status_code == 200
     hist = bob.get(f"/agent/workspace/{s2}/history").json()["history"]
-    assert hist and not any(h["path"].startswith(f"outputs/{slug1}/") for h in hist)
+    assert any(h["path"] == mine for h in hist)
+    assert not any(h["path"].startswith(f"outputs/{slug1}/") for h in hist)
     assert bob.get(f"/agent/workspace/{s2}/history", params={"path": chart}).json() == {"history": []}
     assert bob.put(f"/agent/workspace/{s2}/file", params={"path": chart},
                    json={"content": "BOB"}).status_code == 404
@@ -470,30 +472,37 @@ def test_a_member_cannot_change_another_members_skill_through_the_routes(graph_a
 
 @_DB_GATE
 def test_a_link_in_a_workspace_is_never_served_or_written_through(graph_as_app, disk) -> None:  # noqa: F811
-    """WS43-F14, §7.5 rule B, at the routes: the safe opener refuses a link."""
+    """WS43-F14, §7.5 rule B, at the routes: the safe opener refuses a link.
+
+    The links lie in Alice's own thread folder, where no H-227 rule hides
+    them, so only the safe opener stops each read and write."""
+    from acb_skills.agent_paths import thread_slug
+
     a = graph_as_app.org_a
     s1 = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
     alice = _client(_user(_ALICE, a))
     assert alice.get(f"/agent/workspace/{s1}").status_code == 200  # makes the tenant dir
     ws = _tenant_dir(a)
-    target = ws / "outputs" / "real.txt"
+    own = f"outputs/{thread_slug(s1)}"
+    (ws / own).mkdir(parents=True, exist_ok=True)
+    target = ws / own / "real.txt"
     target.write_text("REAL", encoding="utf-8")
-    os.symlink(target, ws / "outputs" / "alias.txt")
+    os.symlink(target, ws / own / "alias.txt")
     # The verifier's M7b: a RELATIVE link that never leaves the dir, as the
     # last name and as a dir on the way. Only RESOLVE_NO_SYMLINKS (or the
     # O_NOFOLLOW walk) refuses the second one.
-    os.symlink("real.txt", ws / "outputs" / "rel-alias.txt")
-    os.symlink(".", ws / "outputs" / "here", target_is_directory=True)
-    for rel in ("outputs/rel-alias.txt", "outputs/here/real.txt"):
+    os.symlink("real.txt", ws / own / "rel-alias.txt")
+    os.symlink(".", ws / own / "here", target_is_directory=True)
+    for rel in (f"{own}/rel-alias.txt", f"{own}/here/real.txt"):
         assert alice.get(f"/agent/workspace/{s1}/file", params={"path": rel}).status_code == 404, rel
         assert alice.put(f"/agent/workspace/{s1}/file", params={"path": rel},
                          json={"content": "THROUGH"}).status_code == 400, rel
-    assert alice.get(f"/agent/workspace/{s1}/file", params={"path": "outputs/alias.txt"}).status_code == 404
-    assert alice.put(f"/agent/workspace/{s1}/file", params={"path": "outputs/alias.txt"},
+    assert alice.get(f"/agent/workspace/{s1}/file", params={"path": f"{own}/alias.txt"}).status_code == 404
+    assert alice.put(f"/agent/workspace/{s1}/file", params={"path": f"{own}/alias.txt"},
                      json={"content": "THROUGH"}).status_code == 400
     assert target.read_text(encoding="utf-8") == "REAL"
     tree = {f["path"] for f in alice.get(f"/agent/workspace/{s1}").json()["files"]}
-    assert "outputs/alias.txt" not in tree
+    assert f"{own}/alias.txt" not in tree and f"{own}/real.txt" in tree
 
 
 # ═════════════════════════ the sandbox_docker half ══════════════════════════

@@ -113,43 +113,105 @@ line — never reclaim a number by deleting the other entry.
   2. Read each file with `acb_skills.safe_open`, so a link fails too.
   3. Add a fence: an escape and a link give "No Python files to check".
 
-### H-227 · Scope the Projects chat documents to their thread · [AGENT]
-- **Check:** `rg -n 'outputs/<thread|thread_output' packages/acb_skills/acb_skills/write_artifact.py apps/services/gateway/gateway/routes/workspace.py`.
-  No hit means no thread-scoped folder exists yet, and this is open. To
-  confirm, open a Projects chat document from the session of another member
-  of the same organization. If it opens, this is open.
-- **What happens today.** A shared agent's run works in its tenant dir,
-  `state/<agent>/<slug of o:<org>>/` (H-201 part 3). `write_artifact` puts a
-  document under `outputs/` there (`write_artifact.py:213-214`). Every session
-  of that agent in the organization gets the same tenant dir
-  (`_tenant_agent_workspace`, `gateway/routes/workspace.py:699`). So an S8
-  document of the Projects chat, such as a report on one member's visible
-  tasks or on a private project, is readable from any other member's session
-  of projects-assistant.
-- **Why it matters.** It is a gap in D12, the visibility rule inside a
-  tenant, and it dates from H-201 part 3. The supervisor's decision on
-  WS43-Q6 scopes the sandbox outputs per thread
-  (`specs/maf_coding_engine.md` §16.3). The documents of today need the same
-  rule.
+### H-237 · Close what H-227 left: the member purge, the shared `agent-data/`, and a live check · [AGENT]
+- **Check:** `rg -n "purge_thread_files" apps/services/gateway/gateway/routes/admin/members.py`.
+  No hit means step 1 is open. Steps 2 and 3 stay open until a decision
+  and a live check are on record.
+- **What happens.** H-227 (PR #616) keeps the uploads and the S8 documents
+  of a shared agent in the folders of their chat thread. Three items stay.
+  1. The member purge of the admin routes deletes the private chats of a
+     member (`routes/admin/members.py`, `private_chat_sessions`). It does
+     not call `workspace.purge_thread_files`, so their thread folders, and
+     the loose files that they began, stay on disk and in the store. A
+     client can choose a chat id, so a member who knows one of those ids
+     can make a new session with it and read those files.
+  2. `agent-data/` of a shared agent is one folder for the whole
+     organization. A fact that one member's run saves to
+     `agent-data/NOTES.md` reaches the run of each other member, and the
+     session routes serve `agent-data/` to every session. That is a
+     channel between members, older than H-227.
+  3. No live check is on record.
 - **Do.**
-  1. For a shared agent, write a document to `outputs/<thread hash>/`, with
-     the same thread hash as §16.3.
-  2. For a session of a shared agent, list and serve only that thread's
-     folder under `outputs/`. Keep the room check of today.
-  3. Link the artifact card to the new path. Keep the old link working for a
-     member of that thread, through the fault-in of §21.15.
-  4. Give the uploads the same rule. Since H-229 an upload of a shared agent
-     lands in `inputs/<thread slug>/`, and `read_attachment` reads only that
-     folder. The workspace tree, the file, history and delete routes, the
-     sandbox file store and the container mount still reach the `inputs/`
-     folder of another thread. Extend `agent_paths.is_other_thread_rel` to
-     `inputs/`, map `inputs/` in `TenantFileStore` as `outputs/` is mapped,
-     and mount the thread's `inputs/` folder over `/workspace/inputs/`.
-  5. Add an R8 test: a member with another session of the same agent cannot
-     list or read the document.
-- **Authority:** `specs/maf_coding_engine.md` §16.3 · `specs/projects_ai_chat.md`
-  §14 and §21.15 · D12
-- **Added:** 2026-10-03 · the D86 Projects-first PR
+  1. Make the member purge call `purge_thread_files` for each private chat
+     that it deletes. Add an R8 test and a mutation.
+  2. Get a decision on `agent-data/` of a shared agent: one folder for each
+     member, one for each thread, or one for the organization as today.
+     Then build it, with the skill folders of WS-43d in mind.
+  3. After the deploy of PR #616, open a Projects chat document and an
+     attachment from the session of another member of the same
+     organization. Each must answer 404.
+- **Authority:** `specs/projects_ai_chat.md` §22.9 (the residuals) ·
+  `specs/maf_coding_engine.md` §16.3 · D12
+- **Added:** 2026-10-04 · the H-227 PR. Fix round 1 of PR #616 closed its
+  first scope, `save_note` and `recall_notes`. These three items replaced it.
+
+### H-239 · Count the loose files with no history row, and decide on an admin view · [AGENT]
+- **Check:** count the loose files of the tenant dirs on production that
+  have no row in `agent_file_history`. A loose file lies in `inputs/` or
+  `outputs/`, in no thread folder. Read `agent_blob` for the store side, and
+  walk `state/*/o_*` for the disk side. Until a count and a decision are on
+  record, this is open.
+- **What happens.** Since H-227 (PR #616), a loose file opens only for the
+  session that began it. A file that a batch run wrote opens for every
+  member (`specs/projects_ai_chat.md` §22.9 rules 2 and 8). A loose file with no
+  history row opens for nobody. Before H-227 every member of the
+  organization could open it.
+- **Who loses what.** A document from before S15 had no row, so its link
+  answered 404 already. A file that a run wrote while the store was down,
+  or a file that a member copied onto the disk, now shows to nobody.
+- **Do.**
+  1. Count those files for each organization, on disk and in the store,
+     with no member data in the output.
+  2. With the count, the supervisor decides: no view, or an admin view that
+     lists them for the admins of their organization.
+  3. Record the count and the decision in `specs/projects_ai_chat.md` §22.9.
+- **Authority:** `specs/projects_ai_chat.md` §22.9 · D12 · the supervisor's
+  batch decision of 2026-10-04
+- **Added:** 2026-10-04 · fix round 1 of PR #616. The batch decision gave the
+  document of an assigned task's run a home (rule 8). So this id now holds
+  the count.
+
+### H-242 · Close the three edges of the H-227 new-chat purge · [AGENT]
+- **Check:** run these three searches.
+  1. `rg -n "room is None or not thread_id" apps/services/gateway/gateway/routes/agent.py`.
+     A hit means step 1 is open.
+  2. `rg -n "_last_write" apps/services/gateway/gateway/routes/workspace.py`.
+     A hit means step 2 is open.
+  3. `rg -n "pg_advisory_xact_lock" apps/services/gateway/gateway/routes/chat.py`.
+     No hit means step 3 is open, unless the run doors insert the row
+     before the run (the second form of Do 3).
+- **What happens.** Fix round 3 of PR #616 purges the id of a new chat
+  before its first row (`chat.prepare_new_session`). The reviewer found
+  three edges, each a P3.
+  1. **A null room skips the purge.** `agent._prepare_if_new_thread` reads a
+     room of `None` as "not new". `_resolve_room` gives `None` on an
+     exception, or when the caller has no email. So such a run purges
+     nothing before its mint makes the row.
+  2. **The next writer can own the deleted chat's text.** A chat began a
+     loose file, and another session wrote its newest bytes, for example
+     through the `save_note` append of main. The purge keeps that file
+     (`workspace._last_write`). The bytes on disk can still hold the deleted
+     chat's text, and the session that wrote them becomes the owner.
+  3. **The purge races the first row** (§22.9 residual 6). A run door purges
+     a new id, and then the best-effort mint makes the row within 2 s
+     (`_MINT_TIMEOUT_S`). When the mint times out, the run writes with no
+     row. A `POST /chat/sessions` in that window purges the run's first
+     files.
+- **Do.**
+  1. Read a room of `None` as "not new" only for the internal caller (the
+     rule of `_is_service_caller`). For any other caller, purge, or refuse
+     the run.
+  2. Decide one of two: the purge deletes such a file, or it keeps the file
+     with no owner. Then build it, and remove the `_last_write` branch.
+  3. Take `pg_advisory_xact_lock(hashtextextended(:id, 0))`. Then check
+     again that no row exists, purge, and insert the row, all in one
+     transaction. Or make each run door insert the row after the purge and
+     before the run, and answer 503 when the insert fails. That replaces
+     the best-effort mint for a new thread.
+  4. Add an R8 test and a mutation for each step.
+- **Authority:** `specs/projects_ai_chat.md` §22.9 (fix round 3, the
+  residuals) · D12
+- **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
 
 ### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
 - **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.

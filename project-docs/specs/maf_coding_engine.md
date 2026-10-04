@@ -16,8 +16,10 @@ network control on a covered run and every run under it) is built and
 merged in PR #613 (2026-10-04), and it acts only when the scope covers a
 run. Its follow-up is built (2026-10-04, in review). It trusts a platform
 tool by identity, keeps only the platform's own delegation tools, and lets
-the chat save to memory on unmount only the default agent's turns. Every
-other slice is spec only.**
+the chat save to memory on unmount only the default agent's turns. H-227
+(the uploads and the S8 documents of a shared agent are thread-scoped,
+§16.3) is built (2026-10-04, in review), and WS-43w waits on its deploy.
+Every other slice is spec only.**
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
 network control that WS-43w waited on is built (H-236, §16.3), and it fails
@@ -2638,6 +2640,11 @@ The last line needs Docker, and `sandbox-docker.yml` runs it.
   what an agent from another repo does on its own servers, a workflow on a
   task event, and the answer that an uncovered parent gets. PR #618 closed
   the sixth, a remote image in the answer text.
+- **H-227 is merged and deployed** (added 2026-10-04). The uploads and the
+  S8 documents of a shared agent are thread-scoped, and a container mounts
+  only the uploads of its own thread, read-only (§16.3). Without it, the
+  container of one member's covered run mounts the uploads of every other
+  member in `/workspace/inputs/`.
 
 **Done when:**
 
@@ -2700,7 +2707,7 @@ An agent refuses each of these by name:
 | WS43-Q3 | Do egress logs need a tenant-scoped table and a UI? | No. Log lines only |
 | WS43-Q4 | Which tier does `code_task` use? | `tier-balanced`, unless WS-43a shows another tier is better |
 | WS43-Q5 | Does self-mutation later move its loop to the host, with its commands in the broker? Then the mutation container needs no key and no network | No. The loop stays in the container (owner direction, §15.3) |
-| WS43-Q6 | Should `outputs/` of a shared agent be per member? | **Resolved 2026-10-03 by the supervisor, on D12 grounds.** A sandbox run's outputs are thread-scoped (§16.3). H-227 does the same for the S8 documents of today |
+| WS43-Q6 | Should `outputs/` of a shared agent be per member? | **Resolved 2026-10-03 by the supervisor, on D12 grounds.** A sandbox run's outputs are thread-scoped (§16.3). H-227 does the same for the S8 documents and the uploads (built 2026-10-04) |
 
 ## 14. Side findings
 
@@ -3502,33 +3509,94 @@ decision inside D86, after review: the control fails closed.
 
 **Broker rule 5, for this target.** The run-data dir is a second read-write
 mount, at `/workspace/.run/`. The thread's output folder (below) is a third,
-at `/workspace/outputs/`. No other target gets them.
+at `/workspace/outputs/`. The thread's upload folder is a fourth, READ-ONLY,
+at `/workspace/inputs/` (H-227). No other target gets them.
 
-**Outputs are thread-scoped (the supervisor's decision on WS43-Q6, D12).**
+**Outputs, uploads and S8 documents are thread-scoped (the supervisor's
+decision on WS43-Q6, and H-227, D12).**
 
 - **The gap it closes.** Every session of projects-assistant in one
   organization mounts the same tenant dir, `state/<agent>/<slug of o:<org>>/`.
   The session workspace routes serve that whole dir. Take a chart of one
   member's visible tasks, or of a private project. In the shared `outputs/`,
   any other member of the organization could read it from a session.
-- **The folder.** A sandbox run writes its outputs to the thread's own
-  folder, `outputs/<thread hash>/` in the tenant dir. The thread hash is the
-  `instance_slug` form of the thread id. The mirror keeps the folder under the
-  same path.
+- **The same gap, twice more (H-227).** An S8 document that `write_artifact`
+  wrote went to the shared `outputs/`. An upload went to
+  `inputs/<thread hash>/` (H-229), but the routes, the file store and the
+  container still reached the upload folder of another thread.
+- **The folders.** A run writes its outputs to the thread's own folder,
+  `outputs/<thread hash>/` in the tenant dir. An upload goes to
+  `inputs/<thread hash>/`. The thread hash is the `instance_slug` form of the
+  thread id, and `agent_paths.thread_slug` is the one rule for both folders.
+  The mirror keeps each folder under the same path.
+- **The S8 documents (H-227).** In a tenant dir (store key `o:<org>`),
+  `write_artifact` puts `outputs/x` in `outputs/<thread hash>/x` and
+  `inputs/x` in `inputs/<thread hash>/x` (`agent_paths.thread_scoped_rel`).
+  The store key and the thread come from the run, never from the model. A
+  thread id that names no folder writes nothing in a chat run. A batch run,
+  with no chat, writes the flat `outputs/` as before. Every member may read
+  its document, and nobody may change it (`projects_ai_chat.md` §22.9 rule
+  8).
+  `share_artifact` reads a path the same way, and it shows no loose file
+  (below). A personal agent keeps its flat folders.
 - **The container.** The broker mounts `outputs/<thread hash>/` at
-  `/workspace/outputs/`, over the shared `outputs/`. So a container sees only
-  its own thread's outputs, and never the parent folder. Every container on a
-  projects-assistant tenant dir gets that cover, so no container can reach
-  the folder of another thread. This is the one nested mount that the broker
-  allows within its own workspace. It creates the folder on the host with the
-  safe opener just before the start.
+  `/workspace/outputs/`, read-write, and `inputs/<thread hash>/` at
+  `/workspace/inputs/`, read-only (H-227). Each one lies over the shared
+  folder. So a container sees only its own thread's outputs and uploads, and
+  never the parent folder, a loose file or the folder of another thread.
+  Every container on a projects-assistant tenant dir gets both covers. They
+  are the only nested mounts that the broker allows within its own
+  workspace. It creates both folders on the host with the safe opener just
+  before the start.
 - **The host file tools.** For this target, `TenantFileStore` maps
-  `outputs/` to `outputs/<thread hash>/`, and it refuses the folder of
-  another thread.
-- **The session routes.** For a session of a shared agent, the workspace
-  routes list and serve only `outputs/<thread hash>/` of that session's
-  thread, under `outputs/`. They keep the room check of today.
-- **The artifact cards** link to `outputs/<thread hash>/<name>`.
+  `outputs/` to `outputs/<thread hash>/` and `inputs/` to
+  `inputs/<thread hash>/` (H-227). It refuses the folder of another thread.
+- **The session routes.** The tree, file, history, PUT, DELETE and promote
+  routes apply the rule to a session of a shared agent. Under `outputs/` and
+  `inputs/`, they list and serve only the two folders of that session's
+  thread. A folder of another thread answers 404, before the fault-in. They
+  keep the room check of today.
+- **A loose file (H-227).** A file in `outputs/` or `inputs/` but in no
+  thread folder comes from before the thread folders: an S8 document or an
+  upload. The routes list and serve it only to the session that began the
+  path, the session of its oldest row that writes. That session must also
+  have written the exact bytes on disk (`workspace._session_wrote`). So
+  ownership never moves to a second session. The history read takes the
+  store key from the path and the caller's tenant, never from the
+  `.cc-instance` marker. It reads `o:<org>` and the older `''` rows of the
+  tenant. The fault-in checks the stored bytes before it writes them to
+  disk. A PUT of a new loose path answers 404, so a new file goes in the
+  thread's folder.
+- **The notes tools (H-227 fix round 1).** `save_note` and `recall_notes`
+  read `inputs/` and `outputs/` as the chat's own folders. They refuse a
+  loose file and the folder of another chat. `agent-data/` stays one folder
+  for the whole organization (HANDOFF H-237).
+- **A deleted chat (H-227 fix round 1).** A client chooses the id of a chat
+  session. So the delete route removes the thread folders of the chat, the
+  loose files that it began and their stored rows
+  (`workspace.purge_thread_files`). A new session with the old id then finds
+  none of them.
+- **A new chat (H-227 fix round 3).** Each door that makes a new chat row
+  purges the id first, and refuses an id with a colon. So a chat that main
+  deleted with its files left behind hands them to nobody. No chat can take
+  the id `<agent>:<run id>` of a run with no chat
+  (`projects_ai_chat.md` §22.9).
+- **A link (H-227 fix round 1).** A directory share of `share_artifact`
+  checks the resolved path and skips a link.
+- **The own slug may lead a path (H-227 fix round 1).** The upload message
+  and the cards name `inputs/<thread hash>/x` and `outputs/<thread hash>/x`,
+  and the model copies them. `TenantFileStore` reads the own hash as the
+  folder itself, and it refuses the hash of another thread. The broker
+  mounts each folder a second time at its own hash, for example
+  `/workspace/inputs/<thread hash>`, so a command reaches the file by that
+  path too. The alias of the upload folder is read-only. Each alias stands
+  on an empty dir of that name in the thread's folder.
+- **Odd name forms (H-227 fix round 1).** Every session route refuses a head `inputs` or `outputs` in any
+  case but lower, and a name that ends in a dot or a space.
+- **The artifact cards** link to `outputs/<thread hash>/<name>`, for a
+  sandbox run and for `write_artifact`.
+- **The fences.** `tests/unit/test_h227_thread_scope.py` (R8, the fake Docker
+  and `sandbox_docker`) and WS43-F22 (`tests/unit/test_run_data_hygiene.py`).
 
 **The instructions (WS-43u), built 2026-10-04.** The rules are a per-run
 section keyed on `run_command`: `RUN_SECTIONS` in `acb_skills/addendum.py`.

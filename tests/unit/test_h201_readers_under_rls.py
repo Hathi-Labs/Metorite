@@ -501,9 +501,14 @@ def test_a_bad_agent_name_in_a_row_never_becomes_a_root(graph_as_app, clone_root
     assert _get_workspace_path(sid, _ALICE, a) == tenant
     got = client.get(f"/workspace/{sid}/file", params={"path": "outputs/ok.md"})
     assert got.status_code == 404 and "# ok" not in got.text
-    (tenant / "outputs").mkdir()
-    (tenant / "outputs" / "ok.md").write_text("# tenant ok", encoding="utf-8")
-    got = client.get(f"/workspace/{sid}/file", params={"path": "outputs/ok.md"})
+    # H-227: a file of the session's own thread folder. A loose file in the
+    # flat outputs/ opens only for the session that the history names.
+    from acb_skills.agent_paths import thread_outputs_rel
+
+    own = thread_outputs_rel(sid)
+    (tenant / own).mkdir(parents=True)
+    (tenant / own / "ok.md").write_text("# tenant ok", encoding="utf-8")
+    got = client.get(f"/workspace/{sid}/file", params={"path": f"{own}/ok.md"})
     assert got.status_code == 200 and "# tenant ok" in got.text
 
 
