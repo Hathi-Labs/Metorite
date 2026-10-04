@@ -32,6 +32,7 @@ watched fakes of the same test file fail on a call made with a block open.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -150,6 +151,97 @@ def download_failure(result: Any) -> str | None:
     if result.get("error"):
         return f"The download of older mail failed: {result['error']}"[:200]
     return None
+
+
+# -- The Graph delta of Outlook, in shadow (WS-17 EM-T4d) ---------------------
+
+#: The modes that a mailbox can run. ``on`` is not one of them: EM-T4d
+#: refuses it, and only an edit of the spec section can lift that.
+_DELTA_MODES = frozenset({"off", "shadow"})
+
+
+@functools.lru_cache(maxsize=16)
+def _resolve_delta_mode(raw: str) -> str:
+    """``off`` or ``shadow`` for the value *raw* of ``email_outlook_delta``.
+
+    ``on`` resolves to ``shadow`` and logs ``email.delta_mode_refused``. Any
+    other unknown value resolves to ``off`` and logs the same event. Cached
+    on the raw value, so a refusal logs once for each process and value,
+    not once for each poll."""
+    mode = raw.strip().lower()
+    if not mode:
+        return "off"
+    if mode == "on":
+        logger.warning("email.delta_mode_refused mode=on resolved=shadow")
+        return "shadow"
+    if mode not in _DELTA_MODES:
+        logger.warning("email.delta_mode_refused mode=%s resolved=off",
+                       mode[:20])
+        return "off"
+    return mode
+
+
+@functools.lru_cache(maxsize=16)
+def _delta_accounts(raw: str) -> frozenset[str]:
+    """The account ids in *raw*, in lower case. Empty means none."""
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def outlook_delta_mode(account_id: str) -> str:
+    """The delta mode of one Outlook mailbox for this poll: ``off`` or
+    ``shadow`` (WS-17 EM-T4d items 1, 2 and 10).
+
+    The ONE reader of ``email_outlook_delta`` and
+    ``email_outlook_delta_accounts``. The mode comes first, and then the
+    account list. A mailbox that the list does not name is ``off``, and an
+    empty list names none. Setting either on a box is OWNER-GATE
+    (``enforcement-flip``)."""
+    from acb_common.settings import get_settings
+
+    settings = get_settings()
+    mode = _resolve_delta_mode(str(settings.email_outlook_delta or ""))
+    if mode == "off":
+        return "off"
+    accounts = _delta_accounts(str(settings.email_outlook_delta_accounts or ""))
+    if str(account_id).strip().lower() not in accounts:
+        return "off"
+    return mode
+
+
+def _runs_delta_shadow(
+    provider_name: str, account_id: str, row: Any, *, deep: bool | None,
+) -> bool:
+    """True when this cycle runs the Graph delta in shadow (WS-17 EM-T4d).
+
+    Only a normal incremental cycle of a listed Outlook mailbox runs it
+    (review round 1 F6). A first import, the deep sync of a member act
+    (``deep=True``) and each cycle before ``initial_sync_done`` run none.
+    Those cycles already hold the mailbox lock for a long sweep. The delta
+    adds its Graph calls, so a manual sync could pass the 30 seconds of the
+    Control Plane proxy."""
+    if provider_name != "microsoft" or deep:
+        return False
+    if not getattr(row, "initial_sync_done", False):
+        return False
+    return outlook_delta_mode(account_id) == "shadow"
+
+
+def _log_delta_shadow(account_id: str, sync_result: Any) -> None:
+    """Log the record of the delta shadow of one poll (EM-T4d items 8, 11).
+
+    The record holds counts and statuses only: no subject, no address and no
+    link. A poll that ran no delta logs nothing."""
+    report = getattr(sync_result, "delta_report", None)
+    if report is None:
+        return
+    logger.info(
+        "email.delta_shadow account=%s folders=%d both=%d sweep_only=%d "
+        "delta_only=%d seeding=%d removed=%d",
+        account_id, report.folders, report.both, report.sweep_only,
+        report.delta_only, report.seeding, report.removed)
+    if report.failed:
+        logger.warning("email.delta_shadow_failed account=%s folders=%d status=%s",
+                       account_id, report.failed, ",".join(report.statuses))
 
 
 # -- The import in batches (WS-17 EM-T6b) -------------------------------------
@@ -1095,13 +1187,21 @@ async def _sync_cycle(
         # short of the watermark, the sweep keeps what it read and sets
         # ``catch_up_incomplete``. Phase (d) then writes that mail and keeps
         # ``last_synced_at``, so the next cycle reads the pause again.
+        # ``delta_shadow`` adds the Graph delta of a listed Outlook mailbox
+        # after the sweep (EM-T4d). The sweep stays the one writer, and the
+        # delta runs inside this one call, with no session open. A first
+        # import or a deep sync runs no delta (review round 1 F6).
+        delta_shadow = _runs_delta_shadow(provider_name, account_id, row,
+                                          deep=deep)
         sync_result = await provider.sync_messages(
             history_id=history_id,
             max_results=100,
             deep=False,
             since=floor,
             catch_up=_catch_up_watermark(row),
+            delta_shadow=delta_shadow,
         )
+        _log_delta_shadow(account_id, sync_result)
         # Fix rounds 3 and 4: whether phase (d) keeps the watermark, the note
         # of a short catch-up, and whether the loop backs off. Only a loop
         # cycle counts toward the abandon (``_watermark_outcome``).
@@ -1184,7 +1284,11 @@ async def _sync_cycle(
                  "sync_note": catch_up.note},
             )
 
-            # Mark sync log success
+            # Mark sync log success. A cycle with the delta in shadow writes
+            # NULL, as ``off`` does for Outlook. Its cursor is 3 to 17 KB,
+            # and a row for each poll would keep a copy that nothing reads.
+            # ``last_history_id`` above keeps the cursor (EM-T4d review
+            # round 1 F5).
             await db.execute(
                 text(
                     """UPDATE email_sync_log
@@ -1197,7 +1301,8 @@ async def _sync_cycle(
                     "log_id": sync_log_id,
                     "synced": persisted_count,
                     "skipped": 0,
-                    "history_id": sync_result.new_history_id,
+                    "history_id": (None if delta_shadow
+                                   else sync_result.new_history_id),
                 },
             )
             # A failed import records its error after the new mail landed.

@@ -427,12 +427,14 @@ class IMAPProvider(BaseEmailProvider):
         deep: bool = False,
         since: datetime | None = None,
         catch_up: datetime | None = None,
+        *,
+        delta_shadow: bool = False,
     ) -> SyncResult:
         """Incremental sync using IMAP UIDNEXT/UIDVALIDITY.
 
         history_id format: "last_uid:uidvalidity".  ``deep``/``since``/
-        ``catch_up`` are accepted for interface parity but unused (IMAP is
-        UID-incremental only).
+        ``catch_up``/``delta_shadow`` are accepted for interface parity but
+        unused (IMAP is UID-incremental only).
         """
         imap = await self._get_imap()
 

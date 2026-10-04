@@ -36,6 +36,9 @@ Two halves.
 * EM-T4a-1: the provider syncs headers only. Phase (e) writes each fetched
   body into the row of org B, and phase (f) writes the embeddings there.
   Org A reads none of them.
+* EM-T4d: a ``shadow`` cycle of the real ``OutlookProvider`` against a fake
+  Graph writes the JSON delta cursor into the row of org B. Org A reads no
+  cursor. A later ``off`` cycle keeps it.
 * ``mailbox_owner`` with a bound tenant returns the owner under FORCE RLS.
 
 Run (real Postgres)::
@@ -51,10 +54,11 @@ import inspect
 import json
 import uuid
 from contextlib import asynccontextmanager, contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 pytest.importorskip("sqlalchemy")
@@ -1072,6 +1076,107 @@ class TestTheSyncCoreWritesItsOwnTenant:
             with p.admin_engine.begin() as c:
                 c.execute(text("DELETE FROM email_embeddings WHERE account_id = "
                                "CAST(:a AS uuid)"), {"a": account_id})
+                c.execute(text("DELETE FROM email_messages WHERE account_id = "
+                               "CAST(:a AS uuid)"), {"a": account_id})
+            _purge(p.admin_engine, [account_id])
+
+    async def test_a_shadow_cursor_lands_in_org_b_and_off_keeps_it(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """EM-T4d (R8). A ``shadow`` cycle of a listed Outlook mailbox of
+        org B runs the real ``OutlookProvider`` against a fake Graph. It
+        writes the JSON cursor into the row of org B, and org A cannot read
+        it. The log row of org B holds NULL, not the cursor (review round 1
+        F5), and org A cannot read that row. A later ``off`` cycle sends no
+        delta request, and phase (d) keeps the cursor through its
+        ``COALESCE``."""
+        from acb_llm import key_store
+        from email_ingestion.providers.outlook import (
+            SWEEP_SYSTEM_FOLDERS,
+            parse_delta_cursor,
+        )
+
+        from tests.unit.test_outlook_delta_shadow import _Graph, _provider
+
+        _assert_non_priv(app_engine)
+        p = promoted
+        account_id = _seed_account(p.admin_engine, org=p.org_b,
+                                   owner="b@em-t4d.test")
+        with p.admin_engine.begin() as c:
+            c.execute(text("UPDATE email_accounts SET initial_sync_done = true "
+                           "WHERE id = CAST(:a AS uuid)"), {"a": account_id})
+        graph = _Graph()
+        graph.add("inbox", "in-1", datetime.now(UTC) - timedelta(hours=1))
+        graph.add("sentitems", "sent-1", datetime.now(UTC) - timedelta(hours=2))
+        transport = httpx.MockTransport(graph.handle)
+        real_client = httpx.AsyncClient
+
+        def _client(*args, **kwargs):
+            kwargs["transport"] = transport
+            return real_client(*args, **kwargs)
+
+        settings = get_settings()
+        monkeypatch.setattr(settings, "email_outlook_delta", "shadow")
+        monkeypatch.setattr(settings, "email_outlook_delta_accounts", account_id)
+        monkeypatch.setattr(settings, "email_semantic_search_enabled", False)
+        sched._resolve_delta_mode.cache_clear()
+        sched._delta_accounts.cache_clear()
+        monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+        monkeypatch.setattr(sched, "build_provider", lambda name, creds: _provider())
+        monkeypatch.setattr(httpx, "AsyncClient", _client)
+
+        def _stored() -> tuple[str | None, list[str | None]]:
+            with p.admin_engine.connect() as c:
+                cursor = c.execute(text(
+                    "SELECT last_history_id FROM email_accounts "
+                    "WHERE id = CAST(:a AS uuid)"), {"a": account_id}).scalar_one()
+                logged = c.execute(text(
+                    "SELECT provider_history_id FROM email_sync_log "
+                    "WHERE account_id = CAST(:a AS uuid) ORDER BY started_at"),
+                    {"a": account_id}).scalars().all()
+            return cursor, logged
+
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(app_dsn):
+                first = await sched._sync_account(account_id,
+                                                  organization_id=p.org_b)
+            assert "error" not in first, first
+            assert first["synced"] == 2
+            assert len(graph.deltas) == len(SWEEP_SYSTEM_FOLDERS)
+            cursor, logged = _stored()
+            parsed = parse_delta_cursor(cursor)
+            assert set(parsed) == set(SWEEP_SYSTEM_FOLDERS)
+            assert parsed["inbox"]["link"] == graph.issued["inbox"]
+            assert logged == [None], "a shadow cycle wrote its cursor into the log"
+
+            same = ("SELECT count(*) FROM email_accounts "
+                    "WHERE id = CAST(:a AS uuid) AND last_history_id = :c")
+            logs = ("SELECT count(*) FROM email_sync_log "
+                    "WHERE account_id = CAST(:a AS uuid) AND status = 'success' "
+                    "AND provider_history_id IS NULL")
+            params = {"a": account_id, "c": cursor}
+            assert _count_as(p.app_url, p.org_b, same, params) == 1
+            assert _count_as(p.app_url, p.org_b, logs, {"a": account_id}) == 1
+            assert _count_as(p.app_url, p.org_a, same, params) == 0, (
+                "org A read the cursor of org B"
+            )
+            assert _count_as(p.app_url, p.org_a, logs, {"a": account_id}) == 0
+
+            monkeypatch.setattr(settings, "email_outlook_delta", "off")
+            before = len(graph.deltas)
+            async with tenant_engine_scope(app_dsn):
+                second = await sched._sync_account(account_id,
+                                                   organization_id=p.org_b)
+            assert "error" not in second, second
+            assert len(graph.deltas) == before, "an off cycle sent a delta request"
+            kept, logged = _stored()
+            assert kept == cursor, "an off cycle changed the stored cursor"
+            assert logged == [None, None]
+        finally:
+            release_tenant(token)
+            with p.admin_engine.begin() as c:
                 c.execute(text("DELETE FROM email_messages WHERE account_id = "
                                "CAST(:a AS uuid)"), {"a": account_id})
             _purge(p.admin_engine, [account_id])

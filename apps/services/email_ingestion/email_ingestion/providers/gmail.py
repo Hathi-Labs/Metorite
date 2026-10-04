@@ -892,9 +892,12 @@ class GmailProvider(BaseEmailProvider):
         deep: bool = False,
         since: datetime | None = None,
         catch_up: datetime | None = None,
+        *,
+        delta_shadow: bool = False,
     ) -> SyncResult:
         # ``catch_up`` is ignored: the history cursor already reads every
-        # change since the last sync (EM-T6b item 9).
+        # change since the last sync (EM-T6b item 9). ``delta_shadow`` is
+        # ignored too: it is the Graph delta of Outlook (EM-T4d).
         client = await self._get_client()
 
         if deep:

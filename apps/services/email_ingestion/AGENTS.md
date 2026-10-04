@@ -36,6 +36,8 @@ All providers implement the `BaseEmailProvider` abstract interface:
 - `sync_messages(history_id)` — incremental sync, returns `SyncResult` with `messages` list.
   It takes `catch_up`, the watermark after a pause. Outlook reads more pages
   back to it. Gmail and IMAP ignore it, because their cursors read each change.
+  It takes `delta_shadow` too (WS-17 EM-T4d). Outlook then runs the Graph
+  delta after the sweep, and Gmail and IMAP ignore it.
 - `import_batches(since, until, size)` — the import in lists, newest first
   across every folder (WS-17 EM-T6b). The default of the base class calls a
   deep `sync_messages`, then sorts and cuts. Outlook merges one page stream
@@ -54,7 +56,10 @@ All providers implement the `BaseEmailProvider` abstract interface:
 
 3. **history_id format is provider-specific:**
    - Gmail: Google historyId (string)
-   - Outlook: deltaToken (string)
+   - Outlook: NULL, or the JSON cursor of the delta shadow,
+     `{"v": 1, "folders": {<sweep key>: {"link": <url>, "at": <UTC time>}}}`
+     (WS-17 EM-T4d). The sweep never reads it. Text that does not parse is
+     no cursor, and each folder seeds again.
    - IMAP: `"{last_uid}:{uidvalidity}"` — on UIDVALIDITY change, forces full resync
 
 4. **Credentials** stored as AES-256-GCM encrypted JSONB in `email_accounts.credentials_encrypted`,
@@ -188,6 +193,32 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   `providers/outlook.py`. On Inbox, Sent, Drafts, Junk or Deleted Items, a
   403 or a 404 fails the cycle, so the member sees the error. R7:
   `tests/unit/test_email_import_batches.py`.
+- ⚠️ **The Graph delta runs in shadow only, and the sweep stays the one
+  writer (WS-17 EM-T4d).** `email_outlook_delta` is `off`, `shadow` or `on`,
+  and `email_outlook_delta_accounts` lists the mailboxes that run it.
+  `scheduler.outlook_delta_mode` is the one reader. `on` resolves to `shadow`
+  and logs `email.delta_mode_refused`. In `shadow`, `sync_messages` reads the
+  delta of each swept folder AFTER the sweep. It compares the new mail, and
+  `_sync_cycle` logs `email.delta_shadow` with counts only. The cursor goes
+  into `last_history_id`. Phase (d) keeps it through `COALESCE`, so `off`
+  never clears it.
+  - A delta failure never changes the four sweep fields. A 410 or a 400 of
+    Graph drops the link of its folder, and any other failure keeps it.
+  - 🔴 **Each link must start with `GRAPH_API_BASE` and a slash** (review
+    round 1). `_graph_link` checks the stored link, each next link and the
+    delta link before a request or a store. Else the bearer goes to the host
+    that the cursor names. A refused link drops, and the log names no URL.
+  - Only a normal incremental cycle runs the delta. A first import, a deep
+    sync and a cycle before `initial_sync_done` run none
+    (`scheduler._runs_delta_shadow`).
+  - A shadow cycle writes NULL into `email_sync_log.provider_history_id`.
+    Only `last_history_id` keeps the cursor.
+  - No `@removed` item becomes a `[DELETED]` marker, so the reconcile reads
+    the sweep alone.
+  - One poll reads at most 20 delta pages for each folder.
+  - 🔴 A value other than `off` on a box is OWNER-GATE (`enforcement-flip`).
+    Shadow ADDS Graph calls, so list a test mailbox only. R7:
+    `tests/unit/test_outlook_delta_shadow.py`.
 - ⚠️ **An Outlook import pages by time, never by `$skip` (EM-T6b fix rounds
   1 and 2).** Each next page is a new query with `lt` the second after the
   oldest message of the last page. Exchange keeps a fraction of a second, and
