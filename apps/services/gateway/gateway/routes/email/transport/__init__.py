@@ -15,11 +15,12 @@ from gateway.routes.email.transport import (
     oauth,
     search,
     send,
+    storage,
     sync,
 )  # noqa: F401
 
 for _mod in (accounts, attachments, contacts, folders, messages, oauth, search,
-             send, sync):
+             send, storage, sync):
     for _k, _v in vars(_mod).items():
         if not _k.startswith("__"):
             globals()[_k] = _v

@@ -36,7 +36,9 @@ import functools
 import json
 import logging
 import os
-from contextlib import aclosing
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import aclosing, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
@@ -50,7 +52,7 @@ from acb_common.db import (
 )
 from sqlalchemy import text
 
-from email_ingestion import body_backfill, email_embeddings, import_window
+from email_ingestion import body_backfill, email_embeddings, import_window, storage
 from email_ingestion.persist import upsert_message
 from email_ingestion.post_sync import hooks, run_hook, run_label_learn_hook
 from email_ingestion.providers.factory import build_provider
@@ -283,6 +285,15 @@ _IMPORT_BATCH = text(
 _IMPORT_DONE = text(
     """UPDATE email_accounts
        SET initial_sync_done = true, import_phase = 'done', updated_at = now()
+       WHERE id = :id"""
+)
+
+#: The end of a first import that the storage limit stopped (WS-17 EM-T6c
+#: item 5). The newest mail is present, and the gap is at the old end
+#: (D-EM-12). The next cycle runs the recurring sweep only (owner answer Q2).
+_IMPORT_LIMIT = text(
+    """UPDATE email_accounts
+       SET initial_sync_done = true, import_phase = 'limit', updated_at = now()
        WHERE id = :id"""
 )
 
@@ -619,13 +630,17 @@ def _watermark_outcome(
 
 def _cycle_result(
     synced: int, history_id: Any, import_error: str | None, catch_up: _CatchUp,
+    *, limit: bool = False,
 ) -> dict[str, Any]:
     """The result of a sync cycle. A failed import is an error for each
     caller, after the new mail landed. A short catch-up is a soft failure:
     the loop backs off, and no caller sees an error (fix round 3). An
     abandoned catch-up is no failure, so the loop polls at its interval
-    (fix round 4)."""
+    (fix round 4). ``limit`` is true when the storage limit stopped the
+    import (WS-17 EM-T6c item 5), and the result then holds ``limit: true``."""
     result: dict[str, Any] = {"synced": synced, "history_id": history_id}
+    if limit:
+        result["limit"] = True
     if catch_up.back_off:
         result["catch_up_incomplete"] = True
     elif catch_up.note:
@@ -703,30 +718,40 @@ async def _reconcile_import(
 async def _import_in_batches(
     org: str, account_id: str, provider: Any, row: Any, *,
     floor: datetime, progress: bool,
-) -> tuple[int, str | None]:
-    """Run the import, and return the rows that it wrote and its error.
+) -> tuple[int, str | None, bool]:
+    """Run the import. Return the rows that it wrote, its error, and whether
+    the storage limit stopped it.
 
     The error is ``None`` when the import ended. A failed import does not
     raise (fix round 2): the cycle still runs the recurring sweep, so new mail
     lands (owner answer Q2), and then records the error. The next cycle
-    resumes the import."""
-    tally = {"written": 0}
+    resumes the import. The third value is true when the meter reached the
+    limit after a batch (WS-17 EM-T6c item 5)."""
+    tally: dict[str, Any] = {"written": 0, "limit": False}
     try:
         await _run_import(org, account_id, provider, row, floor=floor,
                           progress=progress, tally=tally)
     except Exception as exc:
         logger.warning("sync.import_failed account=%s written=%d error=%s",
                        account_id, tally["written"], str(exc)[:200])
-        return tally["written"], str(exc)
-    return tally["written"], None
+        return tally["written"], str(exc), tally["limit"]
+    return tally["written"], None, tally["limit"]
 
 
 async def _run_import(
     org: str, account_id: str, provider: Any, row: Any, *,
-    floor: datetime, progress: bool, tally: dict[str, int],
+    floor: datetime, progress: bool, tally: dict[str, Any],
 ) -> None:
     """Import the mail of the mailbox newest first, one batch at a time.
     ``tally`` counts the rows that it wrote. WS-17 EM-T6b items 4 to 8.
+
+    The storage limit stops it (WS-17 EM-T6c items 4 and 5). The block of
+    each batch runs the meter after its messages. At or over the limit, the
+    import fetches no next batch and sets ``tally["limit"]``. A first import
+    then writes ``import_phase = 'limit'`` and ``initial_sync_done = true``.
+    The deep sync of a member act stops in the same way. A stopped import
+    runs no reconcile, because a page that it did not read can hold rows of
+    the same second as its last message.
 
     It fetches each batch with NO session open. One ``tenant_session(org)``
     then writes the messages of the batch, and the progress when
@@ -782,17 +807,28 @@ async def _run_import(
                     await db.execute(_IMPORT_BATCH, {
                         "id": account_id, "reached": _oldest_received(kept),
                         "count": count})
+                stored = await storage.measure_stored_bytes(db, account_id)
             tally["written"] += len(kept)
             if snapshot is not None:
                 snapshot.extend((m.provider_message_id, m.folder, m.received_at)
                                 for m in kept)
-    if snapshot is not None:
+            if storage.at_limit(stored):
+                tally["limit"] = True
+                logger.info("sync.import_stopped_at_limit account=%s stored=%d "
+                            "written=%d", account_id, stored, tally["written"])
+                break
+    if snapshot is not None and tally["limit"]:
+        logger.info("sync.import_reconcile_skipped account=%s reason=limit",
+                    account_id)
+    elif snapshot is not None:
         await _reconcile_import(org, account_id, provider, snapshot,
                                 getattr(row, "db_now", None))
     if progress:
+        end = _IMPORT_LIMIT if tally["limit"] else _IMPORT_DONE
         async with tenant_session(org) as db:
-            await db.execute(_IMPORT_DONE, {"id": account_id})
-        logger.info("sync.import_done account=%s count=%d", account_id, count)
+            await db.execute(end, {"id": account_id})
+        logger.info("sync.import_done account=%s count=%d limit=%s",
+                    account_id, count, tally["limit"])
 
 
 def _credentials_json(provider: Any) -> str | None:
@@ -858,9 +894,62 @@ async def _write_credentials_refreshed_since(
     logger.error("sync.credentials_write_lost account=%s", account_id)
 
 
+async def _backfill_and_embed(
+    org: str, account_id: str, provider: Any, store: Any, written: str | None,
+    *, stored: int | None,
+) -> None:
+    """Phases (e) and (f) of a cycle, after phase (d) wrote the meter.
+
+    At or over the storage limit, neither phase runs, so the cycle makes no
+    provider call for a body and no model call (WS-17 EM-T6c item 6, owner
+    answer Q3). A message that the member opens still loads its body live.
+    Under the limit:
+
+    (e) drain a bounded slice of the empty-body backlog, so full-text search
+        can match on the body of mail the member has not opened (Outlook
+        syncs headers only). Best effort and bounded. The backlog empties over
+        successive ticks. No session is open across the provider calls.
+    (f) embed a bounded batch for semantic search. A no-op unless
+        ``email_semantic_search_enabled``. No session is open across the
+        model call.
+
+    Neither phase fails the sync. A 401 in phase (e) may rotate the tokens
+    after phase (d) wrote them (EM-T4c), so the write of the credentials runs
+    between the two phases at any meter value. It never raises."""
+    over_limit = storage.at_limit(stored)
+    if over_limit:
+        logger.info("sync.storage_limit account=%s stored=%s "
+                    "backfill=skipped embeddings=skipped", account_id, stored)
+    else:
+        try:
+            await _backfill_bodies(org, account_id, provider)
+        except Exception as exc:
+            logger.warning("sync.body_backfill_failed account=%s err=%s",
+                           account_id, str(exc)[:160])
+    await _write_credentials_refreshed_since(
+        org, account_id, provider, store, written)
+    if over_limit:
+        return
+    try:
+        await _embed_messages(org, account_id)
+    except Exception as exc:
+        logger.warning("sync.email_embed_failed account=%s err=%s",
+                       account_id, str(exc)[:160])
+
+
 def _lock_key(account_id: str) -> str:
-    """The key of a mailbox lock. A UUID in upper case is the same mailbox."""
-    return str(account_id).strip().lower()
+    """The key of a mailbox lock: the canonical form of the UUID.
+
+    A UUID in upper case, with no hyphens or in braces is the same mailbox,
+    because Postgres reads each form as the same ``uuid`` (WS-17 EM-T6c
+    review round 1). The manual sync takes the id from the request, so two
+    forms can meet here. An id that is not a UUID keeps its text in lower
+    case, and the key never raises."""
+    raw = str(account_id).strip()
+    try:
+        return str(uuid.UUID(raw))
+    except ValueError:
+        return raw.lower()
 
 
 def sync_busy(account_id: str) -> bool:
@@ -877,6 +966,47 @@ def _leave_sync_lock(key: str) -> None:
     _sync_lock_users.pop(key, None)
     _sync_locks.pop(key, None)
     _sync_rerun.discard(key)
+
+
+class MailboxBusy(Exception):
+    """A sync held the mailbox for longer than the wait of the caller."""
+
+
+@asynccontextmanager
+async def hold_mailbox(account_id: str, *, wait_secs: float) -> AsyncIterator[None]:
+    """Hold the lock of a mailbox for a member act that is not a sync.
+
+    WS-17 EM-T6c gap G3. The removal of older mail holds the lock that each
+    sync takes (``_sync_account``), so no import writes older mail again
+    while the removal deletes it. It waits up to ``wait_secs``, then raises
+    ``MailboxBusy``, and the route answers 409.
+
+    The holder counts in ``_sync_lock_users`` like a sync does, so
+    ``sync_busy`` is true while it holds the lock or waits. A loop cycle or a
+    webhook sync during that time skips, and its new mail waits for the next
+    loop cycle. A waiter here is not a sync, so the rerun of a holder sync
+    can be lost too. The lock is released on every exit, a cancel included.
+
+    Call it with NO session open, because the wait must not hold a pool slot.
+    It opens no session itself. Fence: ``tests/unit/test_email_storage_limit.py``.
+    """
+    key = _lock_key(account_id)
+    lock = _sync_locks.setdefault(key, asyncio.Lock())
+    _sync_lock_users[key] = _sync_lock_users.get(key, 0) + 1
+    try:
+        try:
+            async with asyncio.timeout(wait_secs):
+                await lock.acquire()
+        except TimeoutError:
+            logger.info("sync.hold_busy account_id=%s waited=%s",
+                        account_id, wait_secs)
+            raise MailboxBusy(account_id) from None
+        try:
+            yield
+        finally:
+            lock.release()
+    finally:
+        _leave_sync_lock(key)
 
 
 async def _sync_account(
@@ -1047,7 +1177,8 @@ async def _sync_cycle(
         The recurring sweep then fetches with NO session open;
     (c) drop each message below the floor that is not stored yet
         (``_drop_below_floor``), persist the messages, then the reconcile;
-    (d) the credentials, account and sync-log rows;
+    (d) the credentials, account and sync-log rows, and the storage meter
+        (``storage.measure_stored_bytes``, WS-17 EM-T6c item 4);
     (e) the body backfill (``_backfill_bodies``): read the empty-body
         candidates, fetch each body with NO session open, and write the
         bodies in a second block. A 401 on a body fetch refreshes the token
@@ -1057,6 +1188,11 @@ async def _sync_cycle(
     (f) the embeddings (``_embed_messages``): read the pending messages,
         call the model with NO session open, and write the vectors in a
         second block. It makes no provider call.
+
+    At or over the storage limit, phases (e) and (f) do not run, so they make
+    no provider call and no model call (owner answer Q3). The recurring sweep
+    and phase (c) still write new mail at any meter value (owner answer Q2).
+    An import that the limit stopped returns ``limit: true`` in its result.
 
     The error path writes in a new ``tenant_session(org)``. When a refresh
     during the sync changed the credentials, it writes them in that block too
@@ -1172,11 +1308,12 @@ async def _sync_cycle(
         # newest first, and only the first import writes progress (EM-T6b
         # items 4 to 8). A caller forces a deep sync with ``deep=True``.
         first_import = deep is None and not getattr(row, "initial_sync_done", False)
-        imported, import_error = 0, None
+        imported, import_error, stopped_at_limit = 0, None, False
         if first_import or deep:
             # A failed import does not raise. Phase (d) records its error,
-            # and the next cycle resumes it (fix round 2).
-            imported, import_error = await _import_in_batches(
+            # and the next cycle resumes it (fix round 2). The storage limit
+            # stops it after a batch (EM-T6c item 5).
+            imported, import_error, stopped_at_limit = await _import_in_batches(
                 org, account_id, provider, row, floor=floor,
                 progress=first_import)
 
@@ -1307,37 +1444,19 @@ async def _sync_cycle(
             )
             # A failed import records its error after the new mail landed.
             await _record_import_error(db, account_id, sync_log_id, import_error)
+            # The meter, after the new mail of this cycle (EM-T6c item 4).
+            stored = await storage.measure_stored_bytes(db, account_id)
 
-        # ── (e) drain a bounded slice of the empty-body backlog ─────────────
-        # So full-text search can match on the body of messages the user
-        # hasn't opened (Outlook syncs headers-only). Best-effort and bounded
-        # — never fails or stalls the sync; the backlog empties over
-        # successive ticks. No session is open across the provider calls.
-        try:
-            await _backfill_bodies(org, account_id, provider)
-        except Exception as exc:
-            logger.warning("sync.body_backfill_failed account=%s err=%s",
-                           account_id, str(exc)[:160])
-        # A 401 in phase (e) may have rotated the tokens after phase (d)
-        # wrote them (EM-T4c). It never raises, so the sync keeps its success.
-        await _write_credentials_refreshed_since(
-            org, account_id, provider, store, written)
-
-        # ── (f) semantic search: embed a bounded batch ──────────────────────
-        # No-op unless email_semantic_search_enabled. Best-effort; never fails
-        # the sync. No session is open across the model call.
-        try:
-            await _embed_messages(org, account_id)
-        except Exception as exc:
-            logger.warning("sync.email_embed_failed account=%s err=%s",
-                           account_id, str(exc)[:160])
+        # ── (e) and (f), which stop at the storage limit (Q3) ───────────────
+        await _backfill_and_embed(org, account_id, provider, store, written,
+                                  stored=stored)
 
         logger.info(
             "sync.account_done account_id=%s provider=%s synced=%s",
             account_id, provider_name, persisted_count,
         )
         return _cycle_result(persisted_count, sync_result.new_history_id,
-                             import_error, catch_up)
+                             import_error, catch_up, limit=stopped_at_limit)
 
     except Exception as exc:
         logger.warning(

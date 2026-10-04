@@ -26,6 +26,7 @@ providers/
 inbound.py         — aiosmtpd inbound SMTP receiver (persists to email_messages)
 scheduler.py       — Background sync scheduler (per-account asyncio tasks)
 import_window.py   — the import floor: the ceiling, the range and the floor (EM-T6a)
+storage.py         — the storage meter, the limit, and the removal of older mail (EM-T6c)
 ```
 
 ## Providers
@@ -238,6 +239,29 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   member moved it in the Outlook client. A failed lookup, or a row with no
   internet message id, keeps its row too. `trash_import_rows` checks
   `updated_at` again in its own block.
+- ⚠️ **Each mailbox has a storage limit (WS-17 EM-T6c, D-EM-14).**
+  `storage.py` is the one owner of the limit, the meter and the removal.
+  The limit is `email_mailbox_storage_limit_mb` (500) for each mailbox. The
+  meter sums `pg_column_size` of each column of variable length. Do not use
+  `octet_length` or the size of a whole row. It runs in the block of each
+  import batch and in phase (d). At the limit, the import fetches no next
+  batch, and a first import ends at `import_phase = 'limit'`. Phases (e)
+  and (f) do not run at the limit (owner answer Q3). New mail still syncs
+  (Q2). The removal deletes Metorite's copy only, and `storage.py` imports
+  nothing from `providers`. R7: `tests/unit/test_email_storage_limit.py`.
+  - **The steps of the removal (the gaps G1 to G5, 2026-10-04).** Each step
+    takes a session, opens none and never commits. `advance_import_since`
+    runs first, before any delete. The preview and `remove_older_chunk` skip
+    the folder `drafts` through `KEPT_FOLDERS_SQL`, so an unsent draft
+    stays. No step touches Mem0, because no Mem0 key names one mail.
+  - **Review round 1 (2026-10-04).** `remove_older_chunk` returns
+    `RemovedChunk`, with the threads of the mail that it deleted.
+    `delete_empty_thread_status` and `delete_orphan_ai_drafts` take those
+    threads, and they keep a row of any other thread. `end_limit_phase`
+    writes `import_phase = 'done'` only under the limit, and only when no
+    gap is left below `import_reached_at`. `advance_import_since` writes
+    `onboarding_done_at` for a mailbox with no `import_since`, so the guided
+    setup does not open for it.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
@@ -251,7 +275,9 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   `_sync_account` takes an `asyncio.Lock` for the mailbox, then runs
   `_sync_cycle`. Call `_sync_account` and never `_sync_cycle`, or two syncs
   of one mailbox upsert the same keys and one waits on the uncommitted rows
-  of the other. The lock key is the id in lower case. The loop, the webhook,
+  of the other. The lock key is the canonical UUID, `str(uuid.UUID(id))`, so
+  each form of one id takes one lock (EM-T6c review round 1). An id that is
+  not a UUID keeps its text in lower case. The loop, the webhook,
   the manual sync and the resync pass `if_busy="skip"` and get
   `SYNC_SKIPPED_BUSY`. A skip marks the mailbox, and the holder then runs ONE
   more shallow cycle under the lock (`_rerun_once`). The deep downloads wait
@@ -261,6 +287,13 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   pass a constant mode. The lock lives in this process, which is enough while
   the gateway is one uvicorn process. Call it with no session open. R7:
   `tests/unit/test_email_sync_one_at_a_time.py`.
+- ⚠️ **A member act that is not a sync holds the same lock through
+  `hold_mailbox` (WS-17 EM-T6c gap G3).** The removal of older mail is its
+  one caller. It waits `wait_secs`, then raises `MailboxBusy`, and the route
+  answers 409. It counts in `_sync_lock_users`, so `sync_busy` is true while
+  it holds or waits. A loop cycle or a webhook sync then skips, and its new
+  mail waits for the next loop cycle. Call it with no session open. Do not
+  add a second lock beside it. R7: `tests/unit/test_email_storage_limit.py`.
 - The loop stops when its row is gone (`ACCOUNT_GONE`). It drops its entry
   from `_scheduler_tasks` only while the entry is its own task, and it takes
   no `_scheduler_lock` for that.

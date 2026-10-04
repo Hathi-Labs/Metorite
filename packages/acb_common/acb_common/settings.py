@@ -712,6 +712,13 @@ class Settings(BaseSettings):
     email_outlook_delta: str = "off"
     email_outlook_delta_accounts: str = ""
 
+    # The storage limit of ONE mailbox, in MB (WS-17 EM-T6c, D-EM-14, owner
+    # answer Q1). The meter counts the copy that Metorite keeps, never the
+    # mailbox in Outlook. ``email_ingestion.storage`` reads it, and the limit
+    # in bytes is this value times 1,048,576. A change on a box is gate
+    # ``env-write``. Fence: tests/unit/test_email_storage_limit.py.
+    email_mailbox_storage_limit_mb: int = 500
+
     # Task-manager semantic capability matching (spec §5, Phase 2) — embed each
     # person's capability text (role · skills · résumé) into people
     # .capability_embedding and blend cosine similarity with the keyword match
