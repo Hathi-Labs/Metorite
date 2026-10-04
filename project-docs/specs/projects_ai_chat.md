@@ -4380,11 +4380,10 @@ it in its `tool_scope`.
    through pypdf's `visitor_operand_before`, also inside a page. pypdf parses
    a whole stream before the hook runs, so a stop comes at most one stream
    parse late: about 0.6 s at the 1 MB cap, and 0.81 s at most in the
-   measured cases. A Word part checks it between 64 KB chunks and every
-   1,024 elements. The tool waits 2 seconds past the deadline, and then it
-   frees the parse slot, also when the worker still runs. So a slow file
-   never holds a slot past its deadline. The proof is a real slow page, the
-   reviewer's one-page PDF (`test_a_slow_single_page_pdf_stops_at_the_deadline`).
+   measured cases. Rule 3d bounds the font setup that runs before the first
+   operator. A Word part checks the deadline between 64 KB chunks and every
+   1,024 elements. The proof is a real slow page, the reviewer's one-page PDF
+   (`test_a_slow_single_page_pdf_stops_at_the_deadline`).
 3a. **Why not a child process.** A child process with a hard kill was the
    other choice. The in-thread hook bounds the time, so the parse stays in
    the process, and the "no process" rule and its trap test hold as they are.
@@ -4400,6 +4399,34 @@ it in its `tool_scope`.
    parser refuses a part with more than 256 open elements, or with more
    than 1,000,000 elements. That part now peaks at about two copies of its
    XML.
+3d. **The font setup of a PDF page has caps** (fix round 2). pypdf builds
+   every font entry of a page, and of each form it enters, before the first
+   operator. The deadline hook does not run there, and pypdf parses each
+   entry's ToUnicode CMap again, with no cache. So 1,000 entries that share
+   one 285 KB CMap once ran 92 s past a 3 s deadline. Before each page the
+   tool walks the page's resources and those of every form it can reach,
+   and refuses the file when one dictionary has more than 64 font entries,
+   or more than 2 MB of font program bytes. A shared CMap counts once for
+   each entry, as pypdf parses it.
+   - Why 64: real pages hold 2 to 40 fonts (LaTeX math about 25, office
+     documents about 10). 64 entries that share one font with 65,000
+     widths take 0.95 s, inside pypdf's own cap of 100,000 widths.
+   - Why 2 MB: pypdf parses a CMap at about 3 MB/s (285 KB in 0.094 s), so
+     the font setup of one dictionary takes under 1 s.
+3e. **A stop inside a form on the last page** (fix round 2). pypdf drops the
+   error that the deadline raises inside a form. With no page operator after
+   the form, the page ends with no error. So the deadline keeps a flag, and
+   the loop reads it after every page, the last one too. With fewer than 200
+   characters read, the tool refuses the file. With more, the text comes back
+   marked `stopped`.
+3f. **The parses never use the shared thread pool** (fix round 2). A parse
+   past its deadline keeps its thread. So the parses run on a pool of two
+   threads of their own, and the file reads on another small pool, never on
+   the gateway's default pool, which every `asyncio.to_thread` of every org
+   uses. A parse holds its slot until its worker really ends. The tool waits
+   2 seconds past the deadline and then answers, but the slot stays held. So
+   at most two parse threads ever live, and a third call gets "Another file
+   is being read now" at once.
 4. **A zip bomb costs no more than the cap.** A part that declares more
    than 20 MB is refused before it is opened. A part that hides its size
    unpacks no more than the read asks for, which is the cap plus one byte.
@@ -4428,8 +4455,9 @@ it in its `tool_scope`.
     say `create`, `user`, this `session_id` and the same sha256.
 11. **The text is data.** The tool output says so, and the instructions
     say so.
-12. **A bounded load.** At most two parses run at a time in the process. A
-    third call gets "Another file is being read now".
+12. **A bounded load.** At most two parses run at a time in the process,
+    each on the tool's own pool (rule 3f). A third call gets "Another file is
+    being read now".
 
 ### 22.5 Acceptance
 
@@ -4467,6 +4495,13 @@ Each item has a test in `tests/unit/test_read_attachment.py`.
     peak memory. The UTF-16 internal entity "INJECTED BY DTD" never reaches
     the text, also through the tool. With the UTF-8 check taken away, the
     parser still refuses it.
+12. Fix round 2. The tool refuses a page with 100 font entries, and the
+    reviewer's file of 40 entries that share one 285 KB CMap, within half a
+    second of a 1-second deadline. The tool refuses the same entries inside
+    a form. A stop that pypdf drops inside the last form is refused, and
+    after real text it comes back marked `stopped`. Two runaway parses hold
+    both slots, a third call is refused at once, and the default pool runs
+    no job of the tool.
 
 ### 22.6 Mutations
 
@@ -4499,7 +4534,6 @@ Each mutation below turns at least one test red.
 | fix round 1: the PDF page has no deadline visitor | 1 |
 | fix round 1: pypdf's own cap of 5,000 form entries | 1 |
 | fix round 1: the old 8 MB stream cap | 1 |
-| fix round 1: the slot frees only when the worker ends | 1 |
 | fix round 1: no UTF-8 check | 3 |
 | fix round 1: any encoding, a DTD and no UTF-8 check | 4 |
 | fix round 1: the package relationships skip the safe parser | 1 |
@@ -4511,6 +4545,15 @@ Each mutation below turns at least one test red.
 | fix round 1: a PDF cut in its last page reads as whole | 1 |
 | fix round 1: a cut Word paragraph reads as whole | 1 |
 | fix round 1: the instructions say there is no file tool | 1 |
+| fix round 2: the parse runs on the default pool | 2 |
+| fix round 2: the reads run on the default pool | 1 |
+| fix round 2: the slot frees at the timeout | 1 |
+| fix round 2: no font entry cap | 1 |
+| fix round 2: no font byte budget | 1 |
+| fix round 2: the font walk skips forms | 1 |
+| fix round 2: no font walk at all | 2 |
+| fix round 2: no check of the deadline flag after a page | 1 |
+| fix round 2: a page that the deadline cut reads as whole | 1 |
 
 Two mutations stay green, each because a newer guard covers the same
 case:
@@ -4520,6 +4563,13 @@ case:
 - The quadratic close of a paragraph is harmless now. The depth cap and
   the paragraph cap bound the open paragraphs, so the depth-cap mutation
   stands for it. The close stays O(1).
+
+Fix round 2 changed one rule, so one fix-round-1 mutation is gone: "the
+slot frees only when the worker ends" is now the rule, and "the slot frees
+at the timeout" is the mutation that turns red.
+
+`_docx_text` reads the whole zip central directory before it checks
+`MAX_ZIP_ENTRIES`. The 25 MB file cap bounds that read, so it stays.
 
 ### 22.7 What H-229 does not do
 

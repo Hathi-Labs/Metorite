@@ -96,7 +96,12 @@ clone cache.
    pypdf's `jbig2dec` is off. Every cap is a module constant there. The PDF
    deadline stops a page in the middle (pypdf's `visitor_operand_before`). A
    Word part must be UTF-8, and `pyexpat` refuses a DTD at its first event.
-   The tool frees a parse slot at the deadline, also when the worker runs on.
+   Before each PDF page it caps the font setup that pypdf runs before the
+   first operator: 64 font entries and 2 MB of font program bytes for each
+   resource dictionary, the page's and every reachable form's. The parses
+   run on a pool of `MAX_PARSES` threads of their own, and the reads on
+   another small pool, never on the default executor. A slot is held until
+   its worker really ends.
    `attachment_tools` takes the workspace, the thread and the store key from
    `artifact_context()`, never from the `.cc-instance` marker, and only a
    file name from the model. It opens through `safe_open` (5d). In a run that
