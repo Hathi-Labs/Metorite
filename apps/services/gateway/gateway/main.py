@@ -458,6 +458,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    # Cancel the Projects agent runs that are still going. Each one writes an
+    # "interrupted by a restart" row first, so no task keeps a "started" row
+    # that nothing closes. Before the audit drain, so their audit rows flush.
+    try:
+        from gateway.routes.projects.agent_dispatch import stop_runs
+        await stop_runs()
+    except Exception:
+        pass
+
     # Flush audit writes that are still on worker threads. `acb_audit.record`
     # is non-blocking on the event loop (BO-10), which means an event recorded
     # moments before shutdown is in flight rather than committed; exiting here

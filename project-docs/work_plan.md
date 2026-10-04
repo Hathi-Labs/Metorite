@@ -4949,12 +4949,24 @@ and one thing that cannot be written until a second person exists.
 > tools and tools that say `open_world=False`, and the control refuses a
 > call to any other tool (`specs/maf_coding_engine.md` §16.3, fence
 > WS43-F24). At the flip, the owner accepts the NAMED residual of §16.3,
-> by name. It has six items: an agent that a member assigns by hand, a
+> by name. It has five open items: an agent that a member assigns by hand, a
 > delayed send through a store, what an agent from another repo does on its
-> own servers, a workflow on a task event, a remote image in the answer
-> text, and the answer that an uncovered parent gets. An agent may not take
+> own servers, a workflow on a task event, and the answer that an uncovered
+> parent gets. PR #618 closed the sixth, a remote image in the answer text.
+> An agent may not take
 > that acceptance as given. The three acts of WS-43w stay
 > owner acts.
+>
+> **Projects — `PROJECTS_AGENT_DISPATCH`, a run for an `agent:` assignee.**
+> *(Registered 2026-10-04 with PR #622.)* When a member assigns a task to
+> `agent:<name>`, the dispatch sink can start a run, and the run spends the
+> org's AI credits. The flag is OFF by default. With it OFF, the sink starts
+> no run and writes one timeline row that says so.
+>
+> To build and test the run is AGENT-SAFE. **To set the flag on a box is an owner flip**, because it
+> spends money (CLAUDE.md §3a rule 3). The grant `enforcement-flip` does not
+> cover it. `specs/project_management_app.md` §6.4 and §9.12.10 are the
+> authority, and H-240 is the open gap behind it.
 >
 > **WS-29 — moving any customer onto the pooled tier.** Cutover is a data move against
 > live customer data. AGENT-SAFE to build; **OWNER-GATE to execute.**

@@ -870,6 +870,18 @@ chokepoint on exactly the same terms as the owner's own — auto-applying while
 D-PM-9's Cost paragraph before building this: it names what that does and does not
 guarantee.
 
+> **Dark by default, 2026-10-04 (PR #622).** The run is behind
+> `PROJECTS_AGENT_DISPATCH`, default OFF. With it OFF, the sink starts no run.
+> It writes one `agent_run` row, "Assigning work to an AI agent is not
+> switched on for this workspace.", and logs `projects.agent_dispatch_disabled`.
+> The flip is the owner's, because a run spends credits (`work_plan.md` §6.1).
+>
+> ⚠️ The run has no acting member yet. The event carries no assigner, so the
+> agent can reply on the timeline and cannot edit the task. H-240 owns that gap.
+>
+> Fences: `tests/unit/test_projects_agent_dispatch_run.py` (the real sink and
+> the real executor, on the R8 database) and `tests/unit/test_projects_automation.py`.
+
 ### 6.5 Email / WhatsApp / Notes
 Bind at the activity spine: email-to-task capture (`capture_email.py`) gains a `pm_tasks`
 target beside `gtd_items`; Notes' action-item HITL (`actions.py`) gains "create as project
@@ -4611,6 +4623,10 @@ session. It is recorded here unplanned, so it is not lost and not half-designed.
 
 `agent_dispatch.py` exists, and §6.4 already records that assignment is
 dispatch. The seam is there. The product shape is not.
+
+The seam is dark. `PROJECTS_AGENT_DISPATCH` is OFF by default, and the flip
+is the owner's (§6.4, `work_plan.md` §6.1). The flip waits on this section and
+on H-240.
 
 #### 9.12.11 The order, and why
 
