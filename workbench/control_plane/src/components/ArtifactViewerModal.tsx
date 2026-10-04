@@ -20,6 +20,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import MarkdownImage from "@/components/MarkdownImage";
 import { markdownUrlTransform, rehypeGateRemoteMedia } from "@/lib/markdownMedia";
+import { sanitizeDocxHtml } from "@/lib/untrustedHtml";
 import SandboxedHtml from "@/components/SandboxedHtml";
 import SandboxedReact from "@/components/SandboxedReact";
 import { iconsUsedIn } from "@/lib/iconSvg";
@@ -368,7 +369,10 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
           try {
             const mammoth = await import("mammoth");
             const result = await mammoth.convertToHtml({ arrayBuffer: buf });
-            if (!cancelled) setState({ status: "docx", html: result.value });
+            // The docx can come from an email or an agent, and the HTML draws
+            // inline through dangerouslySetInnerHTML, which skips React's URL
+            // check. `sanitizeDocxHtml` is the gate (`lib/untrustedHtml.ts`).
+            if (!cancelled) setState({ status: "docx", html: sanitizeDocxHtml(result.value).html });
           } catch (convErr) {
             if (!cancelled) setState({ status: "error", message: `DOCX conversion failed: ${String(convErr)}` });
           }
