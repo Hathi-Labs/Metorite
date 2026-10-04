@@ -37,10 +37,10 @@ All providers implement the `BaseEmailProvider` abstract interface:
 - `send_message()`, `modify_message()`, `trash_message()`
 - `sync_messages(history_id)` — incremental sync, returns `SyncResult` with `messages` list.
   It takes `catch_up`, the watermark after a pause. Outlook reads more pages
-  back to it. IMAP ignores it and reads by its UID cursor. ⚠️ Gmail ignores it too,
-  but Gmail stores no history cursor today, so a pause loses the mail past the
-  first page of each label. `project-docs/specs/email_app_master_plan.md` §12
-  (GM-16 to GM-18) owns the fix, slice EM-G4b.
+  back to it. IMAP ignores it and reads by its UID cursor. Gmail ignores it while
+  it has a cursor, because its history reads each change since the cursor
+  (WS-17 EM-G4b, contract 10). After a pause longer than the history of Gmail,
+  the cursor is stale, and the sweep after the 404 reads back to `catch_up`.
   It takes `delta_shadow` too (WS-17 EM-T4d). Outlook then runs the Graph
   delta after the sweep, and Gmail and IMAP ignore it.
 - `import_batches(since, until, size)` — the import in lists, newest first
@@ -58,6 +58,8 @@ All providers implement the `BaseEmailProvider` abstract interface:
 
 2. **ON CONFLICT (account_id, provider_message_id) DO UPDATE** — the upsert makes sure
    that a sync is idempotent. Deleted messages move to `folder='TRASH'` locally.
+   A deleted row in `drafts` goes instead (WS-17 EM-G4b E-B2). Each edit of a
+   draft in Gmail web deletes its old id. Only Gmail sends the marker.
    - **`persist.upsert_message` reclaims a re-keyed row only with `reclaim=True`
      (WS-17 EM-G1, D-EM-34).** Each update-path caller passes
      `getattr(provider, "REKEYS_MESSAGE_IDS", False)`, and only Outlook sets it.
@@ -66,7 +68,10 @@ All providers implement the `BaseEmailProvider` abstract interface:
      `tests/unit/test_email_rekey_reclaim.py`.
 
 3. **history_id format is provider-specific:**
-   - Gmail: Google historyId (string)
+   - Gmail: the Google historyId as text. While a failed fetch holds the cursor,
+     it is `{"v": 1, "history_id": <id>, "held": {<message id>: <cycles>}}`
+     (contract 10). Text that is neither form is no cursor, and the sync seeds
+     again.
    - Outlook: NULL, or the JSON cursor of the delta shadow,
      `{"v": 1, "folders": {<sweep key>: {"link": <url>, "at": <UTC time>}}}`
      (WS-17 EM-T4d). The sweep never reads it. Text that does not parse is
@@ -191,6 +196,27 @@ All providers implement the `BaseEmailProvider` abstract interface:
      `SyncResult.errors`.
    - The `authenticate` probe and the token post use their own clients, so
      the seam does not wrap them.
+
+10. **The Gmail history cursor (WS-17 EM-G4b).** `email_accounts.last_history_id`
+    holds it, and no column was added. Fence:
+    `tests/unit/test_gmail_history_cursor.py`, with two R8 cases.
+    - **The seed.** `seed_cursor` reads `users.getProfile`. The base class
+      returns None, so Outlook and IMAP get no seed. With no cursor,
+      `scheduler._seed_before_import` seeds BEFORE the import, and the sweep
+      with no cursor seeds before it reads. A failed seed never stops new
+      mail. It logs, and the next cycle seeds again.
+    - **The read.** The history read follows each `nextPageToken`. The cursor
+      is the `historyId` of the last answer. `labelsAdded` and
+      `labelsRemoved` fetch the message in full, as `messagesAdded` does.
+    - **A stale cursor.** A 404 seeds, then lists all mail after the later of
+      the watermark and the floor, for `DEEP_SYNC_MAX_PAGES` pages at most. A
+      short sweep returns no cursor and sets `catch_up_incomplete`, so the
+      stale cursor stays. The count of the Outlook catch-up decides the
+      abandon. Then `_next_cursor` writes `SyncResult.reseed_history_id`.
+    - **A failed fetch.** A 5xx or a transport error keeps the old position.
+      The cursor counts the cycles of each message. After
+      `GMAIL_FETCH_HOLD_CYCLES` (3) cycles in a row, the cursor passes the
+      message and logs `gmail.fetch_abandoned`. A rate limit fails the cycle.
 
 ## Inbound SMTP Server
 

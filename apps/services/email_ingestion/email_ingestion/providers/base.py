@@ -375,6 +375,13 @@ class SyncResult:
     # The record of the Graph delta in shadow (WS-17 EM-T4d), or None when no
     # delta ran. The scheduler logs it. It never changes the fields above.
     delta_report: DeltaShadowReport | None = None
+    # A fresh cursor that the provider read because its stored cursor was
+    # stale (WS-17 EM-G4b items 5 and 6). Only Gmail sets it. When the sweep
+    # back to the watermark read to the end, ``new_history_id`` holds the
+    # same value. When the sweep stopped short, ``new_history_id`` is None,
+    # so the stale cursor stays and the next cycle sweeps again (E-B1). The
+    # scheduler writes this value only when it abandons that catch-up.
+    reseed_history_id: str | None = None
 
 
 #: The callback that an import calls once, before its first batch, with the
@@ -760,6 +767,17 @@ class BaseEmailProvider(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support sending drafts"
         )
+
+    async def seed_cursor(self) -> str | None:
+        """The cursor of the mailbox at this moment, or None.
+
+        WS-17 EM-G4b (E-B3). ``_sync_cycle`` calls it BEFORE an import when
+        the mailbox has no cursor, and the sweep after the import then reads
+        each change from it. A change made during the import is not lost.
+        A provider with no cursor to seed keeps this default, so Outlook and
+        IMAP see no change. Gmail reads ``users.getProfile``.
+        """
+        return None
 
     @abstractmethod
     async def sync_messages(
