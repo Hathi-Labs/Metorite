@@ -820,6 +820,124 @@ async def test_no_member_id_comes_from_a_public_secret(sandbox, monkeypatch) -> 
         assert not (ws / "agent-data" / "skills" / "fresh").exists()
 
 
+# ── the claim race and the legacy rewrite (the review of PR #630) ───────────
+#
+# Mutations, each run red once by hand on 2026-10-05:
+#
+# * ``claim_skill`` returns ``None`` for a FOREIGN folder: the foreign test;
+# * ``claim_skill`` returns ``None`` after ``FileExistsError``: the race test;
+# * the route maps ``SkillOwnedElsewhere`` to nothing: the route test;
+# * the legacy rewrite truncates and writes in place: the rewrite test;
+# * ``replace_bytes`` keeps the temp file after a failed rename: the rename
+#   test.
+
+
+async def test_a_claim_of_another_members_folder_raises(sandbox) -> None:  # noqa: F811
+    from acb_skills.agent_paths import SkillOwnedElsewhere, claim_skill
+
+    x_store, ws, _ = _store(sandbox, member=_X)
+    await x_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
+    assert claim_skill(ws, "agent-data/skills/chart/x.py", _X) is None
+    with pytest.raises(SkillOwnedElsewhere):
+        claim_skill(ws, "agent-data/skills/chart/x.py", _Y)
+
+
+async def test_a_claim_that_loses_the_race_raises(sandbox, monkeypatch) -> None:  # noqa: F811
+    """Y's check finds no marker, and X's marker lands before Y's write."""
+    import acb_skills.agent_paths as ap
+
+    x_store, ws, _ = _store(sandbox, member=_X)
+    await x_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
+    real = ap.skill_owner
+    calls = {"n": 0}
+
+    def first_unclaimed(*args: Any, **kwargs: Any) -> str:
+        calls["n"] += 1
+        return ap.SKILL_UNCLAIMED if calls["n"] == 1 else real(*args, **kwargs)
+
+    monkeypatch.setattr(ap, "skill_owner", first_unclaimed)
+    with pytest.raises(ap.SkillOwnedElsewhere):
+        ap.claim_skill(ws, "agent-data/skills/chart/evil.py", _Y)
+    calls["n"] = 0
+    assert ap.claim_skill(ws, "agent-data/skills/chart/more.py", _X) is None
+    # The file store turns the race into its refusal, and writes nothing.
+    calls["n"] = 0
+    monkeypatch.setattr(ap, "refused_write", lambda *a, **k: None)
+    y_store, _ws, _ = _store(sandbox, member=_Y)
+    with pytest.raises(ValueError, match="another member"):
+        await y_store.write("agent-data/skills/chart/evil.py", "import exfil")
+    assert not (ws / "agent-data/skills/chart/evil.py").exists()
+
+
+async def test_the_route_answers_403_when_another_member_claimed_first(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    import types
+
+    import acb_skills.agent_paths as ap
+    from fastapi import HTTPException
+    from gateway.routes import workspace as wsr
+
+    _x_store, ws, _ = _store(sandbox, member=_X)
+
+    def taken(*_a: Any, **_k: Any) -> None:
+        raise ap.SkillOwnedElsewhere("that skill belongs to another member")
+
+    monkeypatch.setattr(ap, "refused_write", lambda *a, **k: None)
+    monkeypatch.setattr(ap, "claim_skill", taken)
+    monkeypatch.setattr(wsr, "_own_thread_slug", lambda *a, **k: "slug")
+    user = types.SimpleNamespace(email=_Y, organization_id=ORG_A)
+    with pytest.raises(HTTPException) as caught:
+        await wsr._apply_write_rules(ws, "agent-data/skills/chart/x.py", user, "s", claim=True)
+    assert caught.value.status_code == 403
+    assert "another member" in caught.value.detail
+
+
+async def test_a_failed_legacy_rewrite_keeps_the_old_marker(sandbox, monkeypatch) -> None:  # noqa: F811
+    """A write that fails part way never leaves an empty marker (no owner)."""
+    from acb_skills import safe_open
+
+    ws = _store(sandbox, member=_X)[1]
+    (ws / "agent-data/skills/old").mkdir(parents=True)
+    (ws / "agent-data/skills/old/SKILL.md").write_text(_SKILL.format(name="old"))
+    _marker(ws, "old").write_text(_X)
+    real_write = safe_open.write_bytes
+
+    def write_then_fail(root: Path, rel: str, data: bytes, **kwargs: Any) -> None:
+        # The disk fills after the open: the target is made empty, then the
+        # write fails.
+        real_write(root, rel, b"", **kwargs)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(safe_open, "write_bytes", write_then_fail)
+    assert await _names(ws, _X) == ["old"]
+    assert _marker(ws, "old").read_text() == _X
+    assert [p.name for p in _marker(ws, "old").parent.iterdir() if ".tmp-" in p.name] == []
+    monkeypatch.setattr(safe_open, "write_bytes", real_write)
+    assert await _names(ws, _X) == ["old"]
+    assert _marker(ws, "old").read_text() == skill_author_id(_X)
+
+
+def test_a_failed_rename_leaves_the_old_file_and_no_temp(short_tmp, monkeypatch) -> None:  # noqa: F811
+    from acb_skills import safe_open
+
+    (short_tmp / "d").mkdir()
+    (short_tmp / "d" / "f").write_bytes(b"old")
+
+    def no_rename(*_a: Any, **_k: Any) -> None:
+        raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(os, "replace", no_rename)
+    with pytest.raises(OSError):
+        safe_open.replace_bytes(short_tmp, "d/f", b"new")
+    assert (short_tmp / "d" / "f").read_bytes() == b"old"
+    assert sorted(p.name for p in (short_tmp / "d").iterdir()) == ["f"]
+    monkeypatch.undo()
+    safe_open.replace_bytes(short_tmp, "d/f", b"new")
+    assert (short_tmp / "d" / "f").read_bytes() == b"new"
+    assert sorted(p.name for p in (short_tmp / "d").iterdir()) == ["f"]
+
+
 def test_the_withheld_names_are_the_host_floor_tools_that_open_the_dir() -> None:
     from orchestrator import _tool_injection as ti
 

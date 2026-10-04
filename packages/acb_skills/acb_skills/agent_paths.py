@@ -76,6 +76,7 @@ __all__ = [
     "TENANT_INSTANCE_PREFIX",
     "THREAD_HEADS",
     "InvalidAgentName",
+    "SkillOwnedElsewhere",
     "agent_code_dir",
     "agent_state_dir",
     "claim_skill",
@@ -87,6 +88,7 @@ __all__ = [
     "is_tenant_instance",
     "is_thread_slug",
     "is_valid_agent_name",
+    "own_skill_names",
     "refused_write",
     "require_agent_name",
     "run_data_rel",
@@ -484,15 +486,49 @@ def skill_owner(
     if upgraded is not None:
         data = mine.encode("ascii")
         try:
-            safe_open.write_bytes(Path(workspace), marker, data)
+            # A temp file and a rename, so a reader sees the old marker or the
+            # new one, and a failed write leaves the old marker as it was.
+            safe_open.replace_bytes(Path(workspace), marker, data)
         except safe_open.UnsafePath:
             return SKILL_FOREIGN
         except OSError:
-            # This read proved the author. A write that failed after the
-            # truncate leaves an empty marker, which no member owns (fail closed).
-            return SKILL_MINE
+            return SKILL_MINE  # this read proved the author; the next one tries again
         upgraded.append((marker, data))
     return SKILL_MINE
+
+
+#: A skill folder name that can be a mount target as it is: no dot first, no
+#: separator, and no character that a ``--mount`` spec cannot hold.
+_SKILL_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
+
+
+def own_skill_names(workspace: Path, member: str | None) -> tuple[str, ...]:
+    """The skill folders of *workspace* that are *member*'s own, sorted.
+
+    The sandbox mounts exactly these (``sandbox_broker.projects_mounts``), so
+    a container sees no skill of another member. A folder whose name cannot
+    be a mount target is left out. A link at ``agent-data``, at
+    ``agent-data/skills`` or at a folder gives nothing for that path.
+    """
+    from acb_skills import safe_open
+
+    if skill_author_id(member) is None:
+        return ()
+    try:
+        entries = safe_open.list_dir(Path(workspace), SKILLS_REL)
+    except (safe_open.UnsafePath, OSError):
+        return ()
+    names = []
+    for name, kind in entries or ():
+        if kind != "dir" or not _SKILL_NAME_RE.fullmatch(name):
+            continue
+        if skill_owner(workspace, f"{SKILLS_REL}/{name}", member) == SKILL_MINE:
+            names.append(name)
+    return tuple(sorted(names))
+
+
+class SkillOwnedElsewhere(PermissionError):
+    """Another member made this skill folder, or claimed it first (a race)."""
 
 
 def refused_write(
@@ -524,15 +560,22 @@ def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, byt
 
     Returns ``(marker rel, bytes)`` when it wrote the marker, so the caller can
     mirror it to the blob store, else ``None``. It also writes the marker when
-    it upgrades this member's own address marker to the member id. Raises
-    ``ValueError`` when there is no member id (no member, or no usable
-    secret), because a skill with no author never loads.
+    it upgrades this member's own address marker to the member id.
+
+    Raises ``ValueError`` when there is no member id (no member, or no usable
+    secret), because a skill with no author never loads. Raises
+    :class:`SkillOwnedElsewhere` when the folder is not this member's,
+    also when another member claimed it between the check and the write. So
+    ``None`` always means "this member's folder", and the caller may write.
     """
     top = skill_top_rel(rel)
     if top is None:
         return None
     upgraded: list[tuple[str, bytes]] = []
-    if skill_owner(workspace, top, member, upgraded=upgraded) != SKILL_UNCLAIMED:
+    owner = skill_owner(workspace, top, member, upgraded=upgraded)
+    if owner == SKILL_FOREIGN:
+        raise SkillOwnedElsewhere("that skill belongs to another member")
+    if owner == SKILL_MINE:
         return upgraded[0] if upgraded else None
     who = skill_author_id(member)
     if who is None:
@@ -544,7 +587,11 @@ def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, byt
     try:
         safe_open.write_bytes(Path(workspace), marker, data, exclusive=True)
     except FileExistsError:
-        return None
+        # Another writer made the marker after the check. It is this member's
+        # only when it holds this member's id.
+        if skill_owner(workspace, top, member) == SKILL_MINE:
+            return None
+        raise SkillOwnedElsewhere("that skill belongs to another member") from None
     return marker, data
 
 

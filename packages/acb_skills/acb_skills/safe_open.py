@@ -52,6 +52,7 @@ __all__ = [
     "open_read",
     "read_bytes",
     "remove_tree",
+    "replace_bytes",
     "split_rel",
     "stat_file",
     "unlink",
@@ -395,6 +396,39 @@ def write_bytes(
             view = view[written:]
     finally:
         os.close(fd)
+
+
+def replace_bytes(root: Path, rel: str, data: bytes) -> None:
+    """Replace the file ``root/rel`` with *data* in one step.
+
+    It writes a temp file with an exclusive create in the same dir, and then
+    renames it over the target through the dir descriptor. A reader sees the
+    old bytes or the new bytes, never an empty or a partial file, and a failed
+    write leaves the old file as it was. The rename replaces a link at the
+    target, and never follows it. The temp file is removed on any failure.
+    """
+    import secrets
+
+    parts = split_rel(rel)
+    if not parts:
+        raise UnsafePath("A replace needs a file name.")
+    tmp_name = f".{parts[-1]}.tmp-{secrets.token_hex(8)}"
+    tmp_rel = "/".join([*parts[:-1], tmp_name])
+    try:
+        write_bytes(root, tmp_rel, data, exclusive=True, make_parents=False)
+        if _FD_WALK:
+            with _dir_fd(root, parts[:-1]) as fd:
+                os.replace(tmp_name, parts[-1], src_dir_fd=fd, dst_dir_fd=fd)
+        else:
+            parent = _windows_dir(root, parts[:-1], create=False)
+            target = parent / parts[-1]
+            if target.is_symlink() or target.is_junction():
+                raise UnsafePath("The path has a symbolic link in it.")
+            os.replace(parent / tmp_name, target)
+    except BaseException:
+        with contextlib.suppress(OSError, UnsafePath):
+            unlink(root, tmp_rel)
+        raise
 
 
 def unlink(root: Path, rel: str) -> bool:

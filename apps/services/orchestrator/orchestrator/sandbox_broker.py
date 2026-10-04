@@ -79,6 +79,10 @@ GIT_COVER_TARGET = "/workspace/.git"
 OUTPUTS_TARGET = "/workspace/outputs"
 INPUTS_TARGET = "/workspace/inputs"
 RUN_DATA_TARGET = "/workspace/.run"
+#: The skills of the working dir. A ``projects`` container sees an empty cover
+#: here, with only the run member's own skill folders mounted on it.
+SKILLS_TARGET = "/workspace/agent-data/skills"
+SKILLS_MOUNTPOINT = "agent-data/skills"
 #: The placeholder dir in the working dir that ``/workspace/.run`` mounts on.
 #: The host makes it, so Docker never makes it as root.
 RUN_DATA_MOUNTPOINT = ".run"
@@ -221,6 +225,13 @@ class RunBinding:
     thread: str
     instance: str
     workspace: Path
+    #: The run's member, from the run binding (R5). The ``projects`` target
+    #: mounts only this member's skill folders.
+    member: str = ""
+    #: This member's own skill folders, as :meth:`SandboxBroker.acquire` read
+    #: them (``agent_paths.own_skill_names``). A container whose set differs
+    #: is not reused, so a new skill shows on the next command.
+    skills: tuple[str, ...] = ()
 
     @property
     def thread_hash(self) -> str:
@@ -377,7 +388,10 @@ def read_run_binding() -> RunBinding:
     except InvalidAgentName:
         raise SandboxRefused("The bound agent name is not valid.") from None
     source = _mount_source_for(agent, instance, org, workspace)
-    return RunBinding(org=org, agent=agent, thread=thread, instance=instance, workspace=source)
+    return RunBinding(
+        org=org, agent=agent, thread=thread, instance=instance, workspace=source,
+        member=str(ctx.get("member") or ""),
+    )
 
 
 # ── The mounts (§7.1 rule 5) ─────────────────────────────────────────────────
@@ -472,6 +486,8 @@ def prepare_projects_dirs(binding: RunBinding) -> None:
         safe_open.ensure_dir(binding.workspace, f"{binding.outputs_rel}/{binding.thread_slug}")
         safe_open.ensure_dir(binding.workspace, f"{binding.inputs_rel}/{binding.thread_slug}")
         safe_open.ensure_dir(binding.workspace, RUN_DATA_MOUNTPOINT)
+        # The mount point of the skills cover (projects_mounts).
+        safe_open.ensure_dir(binding.workspace, SKILLS_MOUNTPOINT)
         safe_open.ensure_dir(_real_state_root(), binding.run_data_rel)
         marker = binding.instance.encode("utf-8")
         if safe_open.read_bytes(binding.workspace, INSTANCE_MARKER, limit=4096) != marker:
@@ -492,7 +508,34 @@ def _real_dir(path: Path) -> Path:
     return path
 
 
-def projects_mounts(binding: RunBinding) -> list[Mount]:
+def _own_skill_mounts(binding: RunBinding) -> list[Mount]:
+    """A read-only mount of each of the run member's own skill folders.
+
+    Each one is checked again at the start: a real dir reached with no link,
+    whose marker still names this member. A folder that fails is left out.
+    """
+    from acb_skills.agent_paths import SKILL_MINE, SKILLS_REL, skill_owner
+
+    ws = binding.workspace
+    root = ws / SKILLS_MOUNTPOINT
+    if _is_link(ws / "agent-data") or _is_link(root):
+        return []
+    mounts = []
+    for name in binding.skills:
+        folder = root / name
+        try:
+            _check_source_text(folder)
+        except SandboxRefused:
+            continue
+        if _is_link(folder) or not folder.is_dir() or folder.resolve() != folder:
+            continue
+        if skill_owner(ws, f"{SKILLS_REL}/{name}", binding.member) != SKILL_MINE:
+            continue
+        mounts.append(Mount(folder, f"{SKILLS_TARGET}/{name}", readonly=True))
+    return mounts
+
+
+def projects_mounts(binding: RunBinding, skill_cover: Path) -> list[Mount]:
     """The nested mounts of the ``projects`` target (§16.3, H-227).
 
     - ``outputs/<thread slug>/`` at ``/workspace/outputs``, read-write, over
@@ -517,6 +560,11 @@ def projects_mounts(binding: RunBinding) -> list[Mount]:
     - The partition marker ``.cc-instance`` at itself, READ-ONLY. The
       gateway's write-through and fault-in read it, so a container must not
       rewrite it.
+    - *skill_cover* at ``/workspace/agent-data/skills``, READ-ONLY. It holds
+      only an empty dir for each of the run member's own skills
+      (:meth:`SandboxBroker.skill_cover`). Then each of those skill folders at
+      its own path, READ-ONLY. So a container never sees a skill of another
+      member: its text, its scripts or its name (WS-43v).
 
     :func:`prepare_projects_dirs` makes the dirs. This checks them again.
     """
@@ -528,6 +576,7 @@ def projects_mounts(binding: RunBinding) -> list[Mount]:
         _real_dir(outputs / slug)
         _real_dir(inputs / slug)
         _real_dir(ws / RUN_DATA_MOUNTPOINT)
+        _real_dir(ws / SKILLS_MOUNTPOINT)
         run_data = _real_dir(binding.run_data)
     except ValueError as exc:
         if isinstance(exc, SandboxError):
@@ -544,6 +593,8 @@ def projects_mounts(binding: RunBinding) -> list[Mount]:
         Mount(inputs, f"{INPUTS_TARGET}/{slug}", readonly=True),
         Mount(run_data, RUN_DATA_TARGET, readonly=False),
         Mount(marker, INSTANCE_MARKER_TARGET, readonly=True),
+        Mount(skill_cover, SKILLS_TARGET, readonly=True),
+        *_own_skill_mounts(binding),
     ]
 
 
@@ -551,6 +602,7 @@ def mount_list(
     binding: RunBinding,
     cover: GitCover,
     readonly_mounts: Sequence[tuple[Path, str]] = (),
+    skill_cover: Path | None = None,
 ) -> list[Mount]:
     """THE one function that builds the mounts of a container.
 
@@ -569,7 +621,8 @@ def mount_list(
     - A ``.git`` deeper in the working dir is refused, and so is a root
       ``.git`` that is a link.
     - The ``projects`` target adds its nested mounts
-      (:func:`projects_mounts`). No other target gets them.
+      (:func:`projects_mounts`). No other target gets them. It needs
+      *skill_cover*, and with none no container starts.
     - *readonly_mounts* come from code, never from a caller. WS-43h adds the
       app-builder list. A source with ``.git`` at any depth is refused.
     """
@@ -587,7 +640,10 @@ def mount_list(
     if git_cover is not None:
         mounts.append(git_cover)
     if binding.target == PROJECTS_TARGET:
-        mounts += projects_mounts(binding)
+        if skill_cover is None:
+            raise SandboxRefused("A projects container needs the cover of the skills folder.")
+        _check_readonly_source(skill_cover)
+        mounts += projects_mounts(binding, skill_cover)
     for source, target in readonly_mounts:
         _check_readonly_source(source)
         if not target.startswith("/") or target.startswith(WORKSPACE_TARGET):
@@ -1148,6 +1204,39 @@ class SandboxBroker:
             empty_file=_ensure_empty_file(base / "git-cover-file"),
         )
 
+    def _skill_covers_dir(self) -> Path:
+        return self.state_dir() / "skill-covers"
+
+    def skill_cover(self, binding: RunBinding) -> Path:
+        """The cover of ``/workspace/agent-data/skills`` for one start (WS-43v).
+
+        A dir that holds one EMPTY dir for each of the run member's own skill
+        folders and nothing else. The own folders are mounted on those empty
+        dirs. The dir is named by the container and the skill set, so a start
+        never changes a cover that a running container mounts. The startup
+        sweep removes every cover.
+        """
+        base = self._skill_covers_dir()
+        base.mkdir(parents=True, exist_ok=True)
+        if _is_link(base):
+            raise SandboxUnavailable("The skill cover dir is not a real dir.")
+        path = base / _digest(binding.name, *binding.skills, length=24)
+        want = set(binding.skills)
+        if _is_link(path) or (path.exists() and not path.is_dir()):
+            raise SandboxUnavailable("A skill cover is not a real dir.")
+        if path.is_dir():
+            have = {e.name: e for e in os.scandir(path)}
+            clean = set(have) == want and all(
+                e.is_dir(follow_symlinks=False) and not any(os.scandir(e.path))
+                for e in have.values()
+            )
+            if not clean:
+                shutil.rmtree(path)
+        path.mkdir(exist_ok=True)
+        for name in binding.skills:
+            (path / name).mkdir(exist_ok=True)
+        return path.resolve()
+
     def _lock_for(self, source: Path) -> asyncio.Lock:
         """The one lock of a mount source, shared by every container on it."""
         lock = self._dir_locks.get(source)
@@ -1419,6 +1508,7 @@ class SandboxBroker:
             )
         if binding.target == PROJECTS_TARGET:
             _require_thread_slug(binding)
+            binding = await self._with_own_skills(binding)
         await self._await_startup()
         self._check_free_disk()
         if not self._reusable(binding):
@@ -1438,12 +1528,27 @@ class SandboxBroker:
         self._ensure_reaper()
         return handle
 
+    async def _with_own_skills(self, binding: RunBinding) -> RunBinding:
+        """*binding* with the run member's own skill folders, read under the dir lock."""
+        from dataclasses import replace
+
+        from acb_skills.agent_paths import own_skill_names
+
+        async with self._lock_for(binding.workspace):
+            names = await asyncio.to_thread(own_skill_names, binding.workspace, binding.member)
+        return replace(binding, skills=names)
+
+    @staticmethod
+    def _same_mounts(held: SandboxHandle, binding: RunBinding) -> bool:
+        """True when *held* was started with the mounts that *binding* needs."""
+        return (
+            held.workspace == binding.workspace and not held.failed and not held.stale
+            and held.binding.skills == binding.skills
+        )
+
     def _reusable(self, binding: RunBinding) -> bool:
         held = self._live.get(binding.name)
-        return (
-            held is not None and held.workspace == binding.workspace
-            and not held.failed and not held.stale
-        )
+        return held is not None and self._same_mounts(held, binding)
 
     async def _preflight(self, binding: RunBinding) -> None:
         """Check every input of a start BEFORE a container is evicted for it.
@@ -1473,7 +1578,7 @@ class SandboxBroker:
             if held is not None:
                 if held.org != binding.org or held.agent != binding.agent:
                     raise SandboxRefused("A sandbox of another tenant holds this name.")
-                if held.workspace == binding.workspace and not held.failed and not held.stale:
+                if self._same_mounts(held, binding):
                     held.leases += 1
                     held.last_used = self._clock()
                     return held, victims, False
@@ -1574,9 +1679,11 @@ class SandboxBroker:
 
     def _build_mounts(self, binding: RunBinding, others: set[Path]) -> list[Mount]:
         check_not_nested(binding.workspace, others)
+        cover = None
         if binding.target == PROJECTS_TARGET:
             prepare_projects_dirs(binding)
-        return mount_list(binding, self.git_cover())
+            cover = self.skill_cover(binding)
+        return mount_list(binding, self.git_cover(), skill_cover=cover)
 
     # ── the projects target: host files and run data (§16.3) ────────────────
 
@@ -1998,6 +2105,11 @@ class SandboxBroker:
         except (OSError, SandboxError) as exc:
             _log.warning("sandbox_broker.trim_failed", error=str(exc)[:300])
             kept = -1
+        # WS-43v: no container is live, so no skill cover is mounted.
+        try:
+            await asyncio.to_thread(shutil.rmtree, self._skill_covers_dir(), True)
+        except (OSError, SandboxError) as exc:
+            _log.warning("sandbox_broker.skill_cover_sweep_failed", error=str(exc)[:300])
         # §16.3: a run-data dir that a crash left goes too. No run is live.
         try:
             run_data = await asyncio.to_thread(remove_all_run_data)

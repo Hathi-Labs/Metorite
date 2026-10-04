@@ -254,9 +254,15 @@ class TenantFileStore(FileSystemAgentFileStore):
             raise ValueError(f"Refused: {reason}.")
         if not create:
             return
-        claimed = await asyncio.to_thread(
-            claim_skill, self._workspace, place.store_rel, self._member,
-        )
+        from acb_skills.agent_paths import SkillOwnedElsewhere
+
+        try:
+            claimed = await asyncio.to_thread(
+                claim_skill, self._workspace, place.store_rel, self._member,
+            )
+        except SkillOwnedElsewhere:
+            # Another member claimed the folder after the check (a race).
+            raise ValueError("Refused: that skill belongs to another member.") from None
         if claimed is not None:
             from acb_skills.write_artifact import mirror_to_blob_store
 

@@ -46,7 +46,9 @@ the boundaries are these:
 6. The container sees ``/workspace`` READ-ONLY, except its own output folder
    and its run data. A skill loads, and its script runs, only for the member
    who made it. So no member's code or skill text reaches another member's
-   run (review P1, fix round 1).
+   run (review P1, fix round 1). The container sees only its own member's
+   skill folders: the broker covers ``agent-data/skills`` and mounts those
+   folders on the cover (WS-43v, ``sandbox_broker.projects_mounts``).
 
 **What the provider adds to ONE run**, at the start of each turn:
 
