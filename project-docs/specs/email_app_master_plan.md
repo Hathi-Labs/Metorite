@@ -598,7 +598,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #566 (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
-| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
+| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** 📝 **EM-T4b NARROWED (2026-10-04), not built.** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
@@ -1532,9 +1532,9 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 **Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). ✅ EM-T4f MERGED (#578, 2026-10-02). ✅ EM-T4e MERGED (#586, migration 226, 2026-10-03).
 
-✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). EM-T4a-2, EM-T4a-3, EM-T4a-4 and EM-T4b are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). EM-T4a-2, EM-T4a-3, EM-T4a-4 and EM-T4b (narrowed 2026-10-04) are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
-**Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
+**Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box. The dev-phase window of CLAUDE.md §3a does NOT open `EMAIL_LLM_BUDGET_MODE=enforce`. `enforce` holds back triage and drafts from a paying mailbox. So it is a product limit, and the owner decides it.
 
 **Order.**
 
@@ -1568,11 +1568,43 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 - 12 sites in jobs that a request starts still call `_get_db()`, for example `runner.py:1409`, `replyzero.py:1382` and `drafting.py:1781`. Each one carries an `# H4` marker.
 - `_get_db()` binds no tenant (`acb_common/db.py:177-187`). Under FORCE RLS such a session reads zero rows. So on the box these jobs most likely read nothing. Nobody has measured this on the box.
 
-**Measured state: the model calls.**
+**Measured state: the model calls (verified at `012483a43`, 2026-10-04).**
 
-- 11 sites call `core._llm_json` (`core.py:644`). 9 sites call a model directly: `actions.py:295`, `assistant.py:615`, `drafting.py:636`, `drafting.py:891`, `drafting.py:1036`, `drafting.py:1279`, `drafting.py:1526`, `voice_profile.py:695` and `email_embeddings.py:73`.
-- Nothing limits these calls across mailboxes. The gateway runs as one uvicorn process (`deploy/hostinger/acb-gateway.service:13`).
-- CP-7 owns credit budgets (`work_plan.md` §4, the Budgets row). The EM-T4 budget counts calls. It stops a loop that runs away, and it never prices anything.
+- 11 sites call `core._llm_json` (`core.py:726`), and its one model await is `core.py:749`. It has no `account_id` parameter (`core.py:726-732`).
+- `decide_features` has no `_ask`. The helper that sends the `decide` requests is `_ask_all` (`decide_features.py:489`).
+- Nothing limits these calls across mailboxes. The gateway runs as one uvicorn process with no `--workers` (`deploy/hostinger/acb-gateway.service:13`).
+- `customer_console.md` CP-7 owns the credit caps for each member (its §4.5). The EM-T4b budget counts model requests. It stops a loop that runs away, and it never prices anything.
+
+The four triage decisions. Each one has an `on` path and an old path. The old path runs in `off` and in `shadow`. On the box only the rule match runs `on`. The other three stay `off` until the owner's go (EM-T5b-2 in full, #593).
+
+| Decision | `on` | The old path |
+|---|---|---|
+| Rule match. `email.rule_match=on` is live for all organizations | `engine.py:761` `ask`, then `_ask_all` (`decide_features.py:512-514`). The Router path. The slot waits | `engine.py:860` and `:946`, `_llm_json` |
+| Thread status | `replyzero.py:559` `ask` | `replyzero.py:674` `_llm_json`, up to two tries |
+| Cold check | `senders.py:1339` `ask` | `senders.py:1353` `_llm_json` |
+| Sender pin. The caller is `runner.py:1245` | `learning.py:161` `ask` | `learning.py:183` `_llm_json` |
+| Shadow, all four | — | `shadow` (`decide_features.py:657`) starts the task at `:698`. The task tries for a slot, or it skips |
+
+The other model calls. "In" means inside the automation scope of EM-T4b item 5.
+
+| Call | The model await | Function | Scope |
+|---|---|---|---|
+| Template fill | `actions.py:305` | `_render_template` (`:278`) | In |
+| Drafter | `drafting.py:932` (stream) and `:938` | `_llm_draft_reply` (`:756`) | In from the rule DRAFT action (`actions.py:521`), the follow-ups (`followups.py:236`) and Process past. Out from `/draft-reply` (`drafting.py:1786`) and the reply mode of `/compose-assist` (`drafting.py:1924`) |
+| Consult plan | `drafting.py:1152` `_llm_json` | `_draft_consult_plan` (`:1108`) | As the drafter |
+| Specialist consults | `drafting.py:1577` `run_agent`, up to 90 s each, one after the other | `_orchestrate_draft` (`:1495`) | As the drafter |
+| MAF drafter | `drafting.py:1330` `run_agent` | `_draft_via_maf_agent` (`:1290`). Nothing calls it | Delete it in the build |
+| `/compose-assist` | `drafting.py:1082` and `:1088` | `_llm_compose_assist` (`:969`) | Out |
+| Reply memories | `drafting.py:484` `_llm_json` | `_llm_extract_reply_memories` (`:455`) | In |
+| Learned style | `drafting.py:657` | `_llm_summarize_writing_style` (`:644`) | In |
+| Digest | `digest.py:525` `_llm_json` | `_digest_brief` (`:488`) | In |
+| Voice profile build | `voice_profile.py:244` and `:281` `_llm_json` | `_llm_observe_batch` (`:215`) and `_llm_synthesize_profile` (`:253`) | In |
+| Voice sample | `voice_profile.py:699` | `sample_voice_profile` (`:673`) | Out |
+| Writing style | `assistant.py:629` | `_llm_writing_style` (`:613`) | Out |
+| Rule generation | `rules.py:619` `_llm_json` | `_llm_generate_rules` (`:588`) | Out |
+| Embeddings | `email_embeddings.py:87` `aembedding` | `_embed_batch` (`:78`), from `scheduler.py:357`. Off by default (`settings.py:690`) | In from the cleanup backfill only. See the follow-ups |
+| Chat | `chat.py:226` `run_agent_stream` | `ai_chat` (`:144`) | Exempt (EM-T4b item 15) |
+| Mem0 | `drafting.py:1528` (`remember`, two calls), `drafting.py:623`, `drafting.py:1628` and `assistant.py:691` (`add_memories_background`) | `_orchestrate_draft`, `_learn_from_sent` and `generate_writing_style` | Out of EM-T4b (its item 20) |
 
 **Measured state: the 401.**
 
@@ -1792,24 +1824,63 @@ API, and EM-T4b adds the shared cap and the budget.
 
 ##### EM-T4b — one cap and one daily budget for the model calls
 
-1. Add `apps/services/email_ingestion/email_ingestion/llm_cap.py`. It holds one `asyncio.Semaphore` for the process and one context manager, `llm_slot(account_id)`.
-2. Add three settings to `acb_common/settings.py`. `email_llm_concurrency` defaults to 4. `email_llm_daily_calls` defaults to 2000.
-3. `email_llm_budget_mode` is `off`, `log` or `enforce`. It defaults to `log`.
-4. An automation scope marks the calls that the cap and the budget bind. A ContextVar holds it.
-5. `as_mailbox_owner`, `process_new_mail` and each request job of EM-T4a-4 open the scope.
-6. Outside the scope, `llm_slot` takes no slot and counts nothing. A member who asks for a draft never waits behind the sync loop.
-7. `llm_slot` is re-entrant. A task that holds a slot goes through a nested `llm_slot` with no second permit.
-8. The budget counts calls for each mailbox for each UTC day. The key is `key("email-llm", account_id, <date>)` from `tenant_redis`.
-9. The helper uses `incr` and an `expire` of 2 days. It binds `organization_scope(current_tenant())` for the call.
-10. In `log` mode, a call past the limit runs. It logs `email.llm_budget_exceeded` once a day for each mailbox.
-11. In `enforce` mode, a call past the limit raises `LLMBudgetExhausted`, a new exception in `llm_cap.py`. It makes no model call.
-12. The rule pick turns any model failure into `LLMUnavailable` (`engine.py:334-338`). So the runner leaves the message unstamped, and static and pattern rules still apply.
-13. `_llm_determine_thread_status` raises `LLMBudgetExhausted` again. It does not write its `· auto` fallback for it.
-14. When Redis fails, the budget logs `email.llm_budget_unavailable` and the call runs. The cap still binds.
-15. `core._llm_json` and the 9 direct sites enter `llm_slot`. `run_agent_stream` (`chat.py:217`) is exempt, because a member drives it.
-16. In `shadow`, `decide_features._ask` takes a slot only when one is free. If none is free, it logs `decide.shadow_skipped` with `reason=cap` and makes no call. In `on` (EM-T5b-2), `decide_features.ask` waits for a slot, as `_llm_json` does.
+**Status.** 📝 Narrowed 2026-10-04, verified at 012483a43. GO-NARROWED: build at the defaults (budget `log`, cap 0), no box change.
 
-**Non-goals.** No credit budget, no price and no token count, because CP-7 owns them. No cap across processes, because the box runs one. No UI. No change to `acompletion_with_fallback`.
+**Order.** EM-T5 merged (#569), so item 2 of the EM-T4 order no longer holds this part. EM-T4a-2 splits functions in `engine.py` and `replyzero.py`, and items 12 and 13 below touch the same files. So EM-T4a-2 must not run in parallel with EM-T4b.
+
+1. Add `apps/services/email_ingestion/email_ingestion/llm_cap.py`. It holds one `asyncio.Semaphore` for the process, the automation scope and one context manager, `llm_slot()`.
+2. Add three settings to `acb_common/settings.py`. `email_llm_concurrency` defaults to 0, and 0 means no cap (item 18). `email_llm_daily_calls` defaults to 2000.
+3. `email_llm_budget_mode` is `off`, `log` or `enforce`. It defaults to `log`.
+4. An automation scope marks the calls that the cap and the budget bind. A ContextVar holds it, and the scope carries the account id of the mailbox. `llm_slot()` reads the account id from the scope. `_llm_json` keeps its signature.
+5. These functions open the scope:
+   - `as_mailbox_owner` (`scheduler_hooks.py:53`). It wraps `process_new_mail` (`:122-123`) and the hooks of the thread status, the digest and the follow-ups (`:307-309`).
+   - `_run_rules_job` (`runner.py:1666`) and `_process_past_emails_job` (`runner.py:1442`).
+   - `_reclassify_reply_zero_job` (`replyzero.py:2071`) and `_mark_thread_replied` (`replyzero.py:1576`).
+   - `_build_voice_profile_job` (`voice_profile.py:338`) and `_learn_from_sent` (`drafting.py:531`).
+   - The cleanup jobs `_sweep_job` (`cleanup.py:703`) and `_backfill_and_clean_job` (`cleanup.py:869`).
+
+   These stay outside the scope, because a member drives each one:
+   - `/compose-assist` (`_compose_assist_run`, `drafting.py:1863`) and `/draft-reply` (`draft_reply_smart`, `drafting.py:1765`).
+   - The voice sample (`voice_profile.py:673`), the writing style (`assistant.py:613`) and the rule generation (`rules.py:588`).
+   - The chat (`chat.py:144`).
+6. Outside the scope, `llm_slot` takes no slot and counts nothing. A member who asks for a draft never waits behind the sync loop.
+7. `llm_slot` is re-entrant, as a guard. A task that holds a slot goes through a nested `llm_slot` with no second permit. Item 17 keeps this case rare.
+8. The budget counts model requests for each mailbox for each UTC day. The key is `key("email-llm", account_id, <date>)` from `tenant_redis`.
+9. The helper uses `incr` and an `expire` of 2 days. It binds `organization_scope(current_tenant())` for the call.
+10. In `log` mode, each call runs, because `log` never refuses a call. The budget logs `email.llm_budget_count` when a mailbox reaches 50% and then 100% of the limit (R-6). Each line logs once a day for each mailbox. Past the limit, `email.llm_budget_exceeded` logs once a day for each mailbox.
+11. In `enforce` mode, a call past the limit raises `LLMBudgetExhausted`, a new exception in `llm_cap.py`. It makes no model call.
+12. The rule match at the budget, in `enforce`, by mode:
+    - With `email.rule_match=on` (live), `ask` makes no Router call. It logs `decide.unavailable` with `decide_reason=budget` and returns None. `_decide_rule_match` then raises `DecisionUnavailable` (`engine.py:767`).
+    - In `off` and `shadow`, `_llm_json` raises `LLMBudgetExhausted` in the `_old` path. Its handler (`engine.py:877-881`, and `:970-973` for multi-rule) turns it into `LLMUnavailable`.
+    - Either way the runner leaves `rules_processed_at` NULL (`runner.py:1777-1785`). So the mail stays undecided (D-EM-8), and a later cycle retries it.
+13. `_llm_determine_thread_status` raises `LLMBudgetExhausted` again (its handler is `replyzero.py:682-684`). It does not write its `· auto` fallback for it.
+14. When Redis fails, the budget logs `email.llm_budget_unavailable` and the call runs. The cap still binds.
+15. `core._llm_json` (`core.py:749`) and each other model await in the tables above enter `llm_slot`. Two kinds of call are exempt. A member drives `run_agent_stream` (`chat.py:226`), and Mem0 is out of this slice (item 20).
+16. In `shadow`, the `_ask_all` task (`decide_features.py:698`) takes a slot only when one is free. If none is free, it logs `decide.shadow_skipped` with `reason=cap` and makes no call. In `on`, `_ask_all` waits for a slot, as `_llm_json` does.
+17. `llm_slot` wraps only the model await itself, the leaf call. It never wraps an enclosing function. So a parent holds no permit while it awaits a child. Each child task takes its own permit at its own model await. If a parent held its permit at a cap of 1, its children could never get one. That is a deadlock.
+18. The cap has an off position. `EMAIL_LLM_CONCURRENCY=0` means no cap. 0 is the shipped default, so the cap ships dark (CLAUDE.md §4). The cap is one `asyncio.Semaphore` in the process. That is correct, because the gateway runs one uvicorn with no `--workers` (`deploy/hostinger/acb-gateway.service:13`). With the cap set, a call that waits longer than 1 second logs `email.llm_cap_wait` with the wait in ms.
+19. One `_ask_all` call holds one permit, because one bound covers all of its requests (`decide_features.py:512-518`). The slot wait counts inside `ON_BOUND_S` (10 s, `decide_features.py:137`). A wait past the bound leaves the mail undecided (D-EM-8), and a later cycle retries it. The budget counts each request that `_ask_all` sends, because the cost follows the requests.
+    - One call sends one request for each 16 questions (`QUESTION_LIMIT`, `decide_features.py:179`).
+    - The rule match asks one boolean for each candidate that is not a conversation rule, and the choices `conv` and `best` (`engine.py:506-561`). So one request holds up to 14 booleans with both choices. The presets give 8 questions, so one email sends one request.
+    - The thread status, the cold check and the sender pin each send one request with one question.
+20. Mem0 is OUT of this slice. Mem0 runs only with `MEM0_ENABLED`, which defaults to false (`mem0_enabled`, `acb_common/settings.py:676`). Turning it on is an open owner question. So the Mem0 sites of the table take no permit and count nothing.
+
+**Non-goals.** No credit budget, no price and no token count, because CP-7 owns them. No cap across processes, because the box runs one, and no cap for each organization (the known limit below). No UI. No change to `acompletion_with_fallback`, and no Mem0 (item 20).
+
+**Known limit for M1: the noisy neighbour.** The cap is global for the process. It is not a cap for each organization. So the import of one organization can hold every slot, and the mail of each other organization waits. This is a known limit for M1, "a second org can exist safely".
+
+**Owner decisions at the flip to `enforce`.**
+
+1. The go for `enforce`.
+2. The limit. 2000 is a guess (R-6).
+3. Whether "Process past emails" counts. Its ceiling is also 2000 (`runner.py:977`), so one run can spend the budget of a whole day.
+4. Q-MB-1 (§11.8), because the total of an organization is the count of its mailboxes times the limit.
+
+**Follow-ups.**
+
+- Mem0 joins the cap in its own slice when the owner turns it on.
+- Phase (f) runs `_embed_batch` from `_sync_account` (`scheduler.py:1225`), outside each scope of item 5. Only the cleanup backfill reaches it inside a scope. The slice that sets `email_semantic_search_enabled` on a box opens the scope for phase (f).
+- The build deletes `_draft_via_maf_agent` (`drafting.py:1290`), because nothing calls it. Its entry in `_RUN_AGENT_WITHOUT_SESSION_USER` (`test_background_ai_member.py:825-828`) goes with it.
 
 **Done when.**
 
@@ -1824,19 +1895,33 @@ API, and EM-T4b adds the shared cap and the budget.
 - With no free slot, a shadow call makes no `decide` call. The old answer returns with no extra wait.
 - An AST fence finds each model await in `routes/email` and `email_ingestion` inside `llm_slot` or inside `_llm_json`. A companion test proves the fence can fail.
 - `test_tenant_redis.py` passes with no new allowlist entry.
+- **F1.** With `email.rule_match=on`, a call past the limit in `enforce` makes no Router call. `ask` returns None with `decide_reason=budget`, and the runner leaves `rules_processed_at` NULL.
+- **F2.** The same case with the feature `off` takes the `_old` path and gets the same NULL stamp.
+- **F3.** With a cap of 1, a gather of two child model calls never runs two at once. It completes within a test timeout, with no deadlock.
+- **F4.** With the shipped defaults (`EMAIL_LLM_CONCURRENCY=0`), no call takes a permit.
+- **F5.** One `_ask_all` call takes one permit, and the budget counts the requests that it sends (item 19).
+- **F6.** A call from `/compose-assist`, `/draft-reply`, the voice sample or the chat takes no permit and counts nothing.
+- **F7.** In `log`, the 50% line and the 100% line each fire once for each mailbox for each day.
+- **F8.** The AST fence covers `routes/email/**`, `email_ingestion/**` and `gateway/decide_features.py`. Its callee list is `acompletion_with_fallback`, `acompletion_stream_text`, `aembedding`, `run_agent` and the `decide` facade (`ask`, `shadow` and `_ask_all`). A companion test proves that it can fail.
 
-**Files.** A new `email_ingestion/llm_cap.py`, `acb_common/settings.py`, `routes/email/core.py`, the 9 direct sites, `scheduler_hooks.py` and `gateway/decide_features.py`. The test is a new `tests/unit/test_email_llm_cap.py`.
+**Files.** A new `email_ingestion/llm_cap.py`, `acb_common/settings.py`, `routes/email/core.py` and `gateway/decide_features.py`. The direct sites of the tables above, and the scope functions of item 5 with `scheduler_hooks.py`. `routes/email/automation/engine.py` and `replyzero.py`, for items 12 and 13. The test is a new `tests/unit/test_email_llm_cap.py`, and `test_background_ai_member.py` drops the entry of the deleted MAF drafter.
 
 **Verify with.**
 
 ```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_llm_cap.py tests/unit/test_tenant_redis.py \
   tests/unit/test_email_classifier_unavailable.py tests/unit/test_email_apply_and_watermark.py \
   tests/unit/test_email_reply_zero.py tests/unit/test_email_decide_shadow.py \
+  tests/unit/test_email_decide_on.py tests/unit/test_email_decide_questions.py \
   tests/unit/test_background_ai_member.py tests/unit/test_email_layering.py \
-  tests/unit/test_email_process_past_cost_guard.py -q -rs
+  tests/unit/test_email_process_past_cost_guard.py tests/unit/test_email_rulepath_draft_parity.py \
+  tests/unit/test_email_follow_up_scan.py tests/unit/test_email_digest.py \
+  tests/unit/test_internal_ai_is_routed.py -q -rs
 uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway packages/acb_common tests/unit
 ```
+
+With the database exported, the run must show 0 skips. The baseline at `012483a43` with no database was 480 passed and 31 skipped, over the 14 files that exist today. `test_email_llm_cap.py` is new.
 
 ##### EM-T4c — refresh on a 401 during a sync, and try once more
 
@@ -3136,7 +3221,7 @@ It logs no rule name, subject, body, address or `about`.
 - Input is near 3000 to 4000 tokens: about 1000 for the state, and about 300 for each question.
 - The vendor states 70 to 500 ms. The old rule call is one chat completion with up to 800 or 1500 output tokens.
 - The client bound is 10 seconds (`console_resolve.py:2503`). In `on`, a timeout leaves the email undecided.
-- The EM-T4b cap wraps `decide_features.ask` (B8).
+- The EM-T4b cap wraps the `decide` await in `_ask_all` (`decide_features.py:512-518`), with one permit for each call (B8).
 
 ##### EM-T5b-1 — the questions, rebuilt, in shadow
 
