@@ -1028,7 +1028,7 @@ reason codes.
   2026-10-02 and 2026-10-03, the projects-assistant of a customer org used
   `code_task` to read an uploaded `.docx` (production logs, PR #598 review).
   ✅ Since 2026-10-04, `read_attachment` reads the text of a `.docx`, PDF,
-  `.txt`, `.md` or `.csv` file attached in that chat, and no code runs on the
+  `.txt`, `.md` or `.csv` file attached in that chat. No code runs on the
   host (`projects_ai_chat.md` §22). It is not a `SHELL_TOOLS` member, so this
   block does not withhold it. A test turns red if it ever joins that set.
   The tool opens each file through `acb_skills.safe_open` (§7.5 rule B). In
@@ -3291,8 +3291,8 @@ projects-assistant declares no integration, so §7.7 condition 3 holds.
   because its old name said that no data leaves the platform.
 - **A covered run keeps `read_attachment` (H-229).** It opens the thread's
   own upload folder, `inputs/<thread slug>/`, through the safe opener, and
-  it holds `host_dir()` during the read. The tool itself starts no process
-  and sends nothing out. The fence is
+  it holds `host_dir()` during the read. The tool starts no process and
+  opens no network connection. The fence is
   `test_a_covered_run_reads_its_own_attachment_and_no_other`
   (`tests/unit/test_read_attachment.py`).
 

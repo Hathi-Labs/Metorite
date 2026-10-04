@@ -1439,9 +1439,12 @@ async def upload_files(
     The folder is ``acb_skills.agent_paths.upload_dir_rel`` (H-229). A shared
     agent's tenant dir is one folder for every member of the organization, so
     there a file lands in ``inputs/<thread slug>/``, the folder of this
-    session's thread, and only a run of that thread reads it
-    (``read_attachment``, D12). Any other workspace keeps ``inputs/``. The
-    browser tells the agent the names and the paths in the next message.
+    session's thread. ``read_attachment`` reads it only in a run of that
+    thread (D12). ⚠️ The session file routes (the tree, ``GET .../file``,
+    history, delete) still list and serve the ``inputs/`` folder of another
+    thread to a member of the same organization: HANDOFF H-227 owns that
+    rule. Any other workspace keeps ``inputs/``. The browser tells the agent
+    the names and the paths in the next message.
     """
     from acb_skills.agent_paths import upload_dir_rel
 

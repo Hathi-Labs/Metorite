@@ -4383,7 +4383,8 @@ it in its `tool_scope`.
    measured cases. A Word part checks it between 64 KB chunks and every
    1,024 elements. The tool waits 2 seconds past the deadline, and then it
    frees the parse slot, also when the worker still runs. So a slow file
-   never holds a slot past its deadline.
+   never holds a slot past its deadline. The proof is a real slow page, the
+   reviewer's one-page PDF (`test_a_slow_single_page_pdf_stops_at_the_deadline`).
 3a. **Why not a child process.** A child process with a hard kill was the
    other choice. The in-thread hook bounds the time, so the parse stays in
    the process, and the "no process" rule and its trap test hold as they are.
@@ -4392,8 +4393,13 @@ it in its `tool_scope`.
    Now the tool refuses a part with another encoding before the parse. The
    parser (`pyexpat`) decodes the part as UTF-8, and it refuses a DTD and an
    entity declaration at the first event. `_rels/.rels` goes through the
-   same parser. Each element costs O(1), and a deep nesting does not change
-   that.
+   same parser. The parse keeps no tree, and each element costs O(1).
+3c. **A Word part has a depth cap and an element cap** (fix round 1). expat
+   keeps one entry for each open element. So 2.4 million nested empty
+   elements, 17 MB of XML under the part cap, once peaked at 343 MB. Now the
+   parser refuses a part with more than 256 open elements, or with more
+   than 1,000,000 elements. That part now peaks at about two copies of its
+   XML.
 4. **A zip bomb costs no more than the cap.** A part that declares more
    than 20 MB is refused before it is opened. A part that hides its size
    unpacks no more than the read asks for, which is the cap plus one byte.
@@ -4454,8 +4460,13 @@ Each item has a test in `tests/unit/test_read_attachment.py`.
     on loses its slot at the deadline. The tool refuses entity bombs in
     UTF-8, UTF-16 with and without a BOM, and UTF-32 in under 1 second,
     under 8 MB. It refuses a part that is not UTF-8, and a DTD in
-    `_rels/.rels`. 30,000 nested paragraphs parse in under 2 seconds. A clip
-    in the last PDF page, or in a Word paragraph, sets `stopped`.
+    `_rels/.rels`. It refuses 30,000 nested paragraphs in under 1 second. A
+    clip in the last PDF page, or in a Word paragraph, sets `stopped`.
+11. The verifier's shapes. A part of 2.4 million nested empty elements, and
+    a flat part of 4.5 million empty elements, are refused under 48 MB of
+    peak memory. The UTF-16 internal entity "INJECTED BY DTD" never reaches
+    the text, also through the tool. With the UTF-8 check taken away, the
+    parser still refuses it.
 
 ### 22.6 Mutations
 
@@ -4492,15 +4503,23 @@ Each mutation below turns at least one test red.
 | fix round 1: no UTF-8 check | 3 |
 | fix round 1: any encoding, a DTD and no UTF-8 check | 4 |
 | fix round 1: the package relationships skip the safe parser | 1 |
-| fix round 1: each close sums every open paragraph | 1 |
+| fix round 1: no depth cap | 2 |
+| fix round 1: no element cap | 1 |
+| fix round 1: the parser takes a DTD and the declared encoding | 1 |
+| fix round 1: all three Word guards gone | 6 |
 | fix round 1: no deadline inside a chunk | 1 |
 | fix round 1: a PDF cut in its last page reads as whole | 1 |
 | fix round 1: a cut Word paragraph reads as whole | 1 |
 | fix round 1: the instructions say there is no file tool | 1 |
 
-The deadline check between two PDF pages is now a second layer, because
-the visitor checks first. So a mutation that drops it alone stays green,
-and the visitor mutation stands for it.
+Two mutations stay green, each because a newer guard covers the same
+case:
+
+- The deadline check between two PDF pages is a second layer, because the
+  visitor checks first. The visitor mutation stands for it.
+- The quadratic close of a paragraph is harmless now. The depth cap and
+  the paragraph cap bound the open paragraphs, so the depth-cap mutation
+  stands for it. The close stays O(1).
 
 ### 22.7 What H-229 does not do
 

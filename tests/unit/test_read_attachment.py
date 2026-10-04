@@ -217,8 +217,9 @@ def test_a_part_that_hides_its_size_unpacks_no_more_than_the_cap(zip_bomb, monke
     assert peak < 8 * 1024 * 1024, peak
 
 
-def test_a_dtd_in_a_word_part_is_refused_before_any_parse() -> None:
-    """An entity would put text into the answer that no member wrote."""
+def test_a_dtd_in_a_word_part_is_refused_at_its_first_parse_event() -> None:
+    """An entity would put text into the answer that no member wrote. The
+    parser refuses the DTD at its first event, before any entity exists."""
     prolog = '<!DOCTYPE d [<!ENTITY x "INJECTED TEXT">]>'
     data = _zip({"word/document.xml": _word_part("<w:p><w:r><w:t>&x;</w:t></w:r></w:p>", prolog)})
     with pytest.raises(at.AttachmentRefused, match="Word document"):
@@ -1100,15 +1101,16 @@ def test_a_dtd_in_the_package_relationships_is_refused() -> None:
         at.extract_text(_zip({"_rels/.rels": rels, "word/document.xml": body}), ".docx")
 
 
-def test_deep_nesting_parses_in_linear_time() -> None:
-    """30,000 nested paragraphs. Each close once summed every open one."""
+def test_deep_paragraph_nesting_is_refused_fast() -> None:
+    """30,000 nested paragraphs once took 313 s: each close summed every open
+    one. The close is O(1) now, and the depth cap refuses this part at once."""
     depth = 30_000
     xml = (f"<w:document {_W}><w:body>" + "<w:p>" * depth + "<w:r><w:t>hi</w:t></w:r>"
            + "</w:p>" * depth + "</w:body></w:document>").encode()
     started = time.monotonic()
-    got = at.extract_text(_zip({"word/document.xml": xml}), ".docx", seconds=20.0)
-    assert time.monotonic() - started < 2.0
-    assert got.text.startswith("hi")
+    with pytest.raises(at.AttachmentRefused, match="nests them too deeply"):
+        at.extract_text(_zip({"word/document.xml": xml}), ".docx", seconds=20.0)
+    assert time.monotonic() - started < 1.0
 
 
 def test_the_deadline_stops_a_slow_handler_inside_one_chunk(monkeypatch) -> None:
@@ -1179,3 +1181,93 @@ def test_a_content_stream_over_the_stream_cap_is_not_parsed() -> None:
     got = at.extract_text(data, ".pdf")
     assert "Hello world text" not in got.text
     assert "could not be read" in got.text
+
+
+# ── 12. Fix round 1 addendum: the verifier's shapes ─────────────────────────
+
+
+def _measure(fn: Any) -> tuple[Any, int, float]:
+    """``(result or exception, tracemalloc peak, seconds)`` of one call."""
+    tracemalloc.start()
+    started = time.monotonic()
+    try:
+        out: Any = fn()
+    except at.AttachmentRefused as exc:
+        out = exc
+    finally:
+        _now, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+    return out, peak, time.monotonic() - started
+
+
+def _nested_under_cap(depth: int = 2_400_000) -> bytes:
+    """docx_nested_under_cap: millions of nested empty elements, 17 MB of XML
+    in a .docx of about 17 KB, under the part cap. expat once kept an entry
+    for each open element, and the parse peaked at 343 MB."""
+    xml = (f"<w:document {_W}><w:body>".encode() + b"<a>" * depth + b"</a>" * depth
+           + b"</w:body></w:document>")
+    assert len(xml) < at.MAX_DOCX_XML_BYTES
+    return _zip({"word/document.xml": xml})
+
+
+def _flat_wide(count: int = 4_500_000) -> bytes:
+    """docx_flat_wide: millions of empty sibling elements, 18 MB of XML."""
+    xml = (f"<w:document {_W}><w:body>".encode() + b"<a/>" * count
+           + b"</w:body></w:document>")
+    assert len(xml) < at.MAX_DOCX_XML_BYTES
+    return _zip({"word/document.xml": xml})
+
+
+def test_a_deeply_nested_part_under_the_byte_cap_is_refused_small() -> None:
+    data = _nested_under_cap()
+    out, peak, took = _measure(lambda: at.extract_text(data, ".docx", seconds=20.0))
+    assert isinstance(out, at.AttachmentRefused) and "nests them too deeply" in str(out)
+    # The XML itself is 17 MB and sits in memory once or twice. The open
+    # elements add nothing past the depth cap.
+    assert peak < 48 * 1024 * 1024, peak
+    assert took < 2.0
+
+
+def test_a_flat_wide_part_is_refused_at_the_element_cap() -> None:
+    data = _flat_wide()
+    out, peak, took = _measure(lambda: at.extract_text(data, ".docx", seconds=20.0))
+    assert isinstance(out, at.AttachmentRefused) and "holds too many parts" in str(out)
+    assert peak < 48 * 1024 * 1024, peak
+    assert took < 8.0
+
+
+def test_a_normal_nesting_depth_still_reads() -> None:
+    """Tables in tables, 20 deep, are far under the depth cap."""
+    inner = "<w:p><w:r><w:t>deep cell</w:t></w:r></w:p>"
+    for _ in range(20):
+        inner = f"<w:tbl><w:tr><w:tc>{inner}</w:tc></w:tr></w:tbl>"
+    got = at.extract_text(_zip({"word/document.xml": _word_part(inner)}), ".docx")
+    assert "deep cell" in got.text
+
+
+_UTF16_ENTITY = (
+    '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE d [<!ENTITY x "INJECTED BY DTD">]>'
+    f"<w:document {_W}><w:body><w:p><w:r><w:t>&x;</w:t></w:r></w:p></w:body></w:document>"
+)
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le"])
+def test_a_utf16_internal_entity_never_reaches_the_text(ws, encoding: str) -> None:
+    """The verifier's case: this text once came back in the tool's output."""
+    data = _zip({"word/document.xml": _UTF16_ENTITY.encode(encoding)})
+    with pytest.raises(at.AttachmentRefused):
+        at.extract_text(data, ".docx")
+    _attach(ws, SID_A, "entity.docx", data)
+    out = _read(ws, SID_A, "entity.docx")
+    assert "INJECTED BY DTD" not in out
+    assert out.startswith("I could not read entity.docx.")
+
+
+def test_the_parser_refuses_an_entity_even_past_the_utf8_check(monkeypatch) -> None:
+    """The in-parser refusal stands alone: with the UTF-8 check removed, the
+    parser still refuses the UTF-16 DTD, because it decodes as UTF-8 and has
+    its DTD handlers."""
+    monkeypatch.setattr(at, "_require_utf8", lambda _xml: None)
+    data = _zip({"word/document.xml": _UTF16_ENTITY.encode("utf-16")})
+    with pytest.raises(at.AttachmentRefused):
+        at.extract_text(data, ".docx")

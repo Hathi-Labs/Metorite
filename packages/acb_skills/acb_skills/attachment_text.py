@@ -26,7 +26,9 @@ The rules, each with a test in ``tests/unit/test_read_attachment.py``:
   inside a chunk.
 * **A Word part is UTF-8 and has no DTD.** Another encoding is refused before
   the parse, and the parser refuses a DTD and an entity declaration at its
-  first event, so no entity is ever expanded. Each element costs O(1).
+  first event, so no entity is ever expanded. The parse keeps no tree, each
+  element costs O(1), and the depth and the element count have caps
+  (:data:`MAX_DOCX_DEPTH`, :data:`MAX_DOCX_ELEMENTS`).
 * **A clean refusal.** Every failure raises :class:`AttachmentRefused`, with
   a sentence for the member. No parser exception reaches the caller.
 
@@ -89,6 +91,13 @@ SUPPORTED_SUFFIXES = frozenset({".docx", ".pdf"}) | _TEXT_SUFFIXES
 _CHUNK = 64 * 1024
 #: The elements of a Word part between two deadline checks inside a handler.
 _CHECK_EVERY = 1024
+#: The nesting depth of a Word part. expat keeps one entry for each open
+#: element, so depth costs memory: 2.4 M nested empty elements (17 MB of XML,
+#: under the part cap) once peaked at 343 MB. Word nests far less than this.
+MAX_DOCX_DEPTH = 256
+#: The elements of a Word part. A flat part of 4.5 M empty elements once took
+#: 10.8 s. The paragraph cap ends a real document long before this.
+MAX_DOCX_ELEMENTS = 1_000_000
 
 
 class AttachmentRefused(ValueError):
@@ -183,6 +192,10 @@ _NOT_UTF8 = (
     "This Word document is not stored as UTF-8, so I did not read it. Ask the "
     "member to save it again from Word, or to attach a PDF."
 )
+_TOO_COMPLEX = (
+    "This Word document holds too many parts, or nests them too deeply, so I "
+    "did not read it. Ask the member for a PDF or a text copy."
+)
 _OFFICE_DOCUMENT = "/officeDocument"
 _ENCODING_RE = re.compile(rb"""encoding\s*=\s*["']([^"']*)["']""")
 #: The run marks that stand for a character in the text.
@@ -244,16 +257,48 @@ def _no_dtd(*_args: object) -> None:
     raise AttachmentRefused(_NOT_WORD)
 
 
+class _Guard:
+    """The caps of every Word part, in front of the part's own handler.
+
+    Each element counts toward :data:`MAX_DOCX_ELEMENTS`, and each open one
+    toward :data:`MAX_DOCX_DEPTH`. Past either cap the parse refuses, so expat
+    never holds more than that many open elements. The deadline is checked
+    every :data:`_CHECK_EVERY` elements, inside one chunk too.
+    """
+
+    def __init__(self, handler: Any, deadline: _Deadline) -> None:
+        self._handler = handler
+        self._deadline = deadline
+        self._depth = 0
+        self._count = 0
+        self.text = handler.text
+
+    def start(self, name: str, attrs: dict[str, str]) -> None:
+        self._depth += 1
+        self._count += 1
+        if self._depth > MAX_DOCX_DEPTH or self._count > MAX_DOCX_ELEMENTS:
+            raise AttachmentRefused(_TOO_COMPLEX)
+        if self._count % _CHECK_EVERY == 0:
+            self._deadline.check()
+        self._handler.start(name, attrs)
+
+    def end(self, name: str) -> None:
+        self._depth -= 1
+        self._handler.end(name)
+
+
 def _parse_xml(xml: bytes, handler: Any, deadline: _Deadline) -> None:
     """Feed one Word part to *handler*: ``start``, ``end`` and ``text``.
 
     The part must be UTF-8 (:func:`_require_utf8`), and the parser decodes it
     as UTF-8 whatever it declares. The parser refuses a DTD and an entity
     declaration at the first event, so no entity is ever expanded, in any
-    encoding. The bytes go in chunks, with a deadline check between two. A
-    handler ends the parse early with :class:`_Stop`.
+    encoding. :class:`_Guard` caps the depth and the element count. The bytes
+    go in chunks, with a deadline check between two. A handler ends the
+    parse early with :class:`_Stop`.
     """
     _require_utf8(xml)
+    handler = _Guard(handler, deadline)
     parser = expat.ParserCreate(encoding="UTF-8", namespace_separator="}")
     parser.StartDoctypeDeclHandler = _no_dtd
     parser.EntityDeclHandler = _no_dtd
@@ -313,19 +358,17 @@ class _Body:
     it comes first. A tab stop of a paragraph's properties (``w:tabs``) is
     no text.
 
-    Every event costs O(1), however deep the nesting: a part of 100,000
+    Every event costs O(1), and depth does not change that: a part of 100,000
     nested paragraphs once took 313 s, because each close summed every open
-    paragraph (PR #609 fix round 1). The deadline is also checked every
-    :data:`_CHECK_EVERY` elements, inside one chunk of the parse.
+    paragraph (PR #609 fix round 1). It keeps no tree. :class:`_Guard` caps
+    the depth, the element count and the time.
     """
 
-    def __init__(self, deadline: _Deadline) -> None:
+    def __init__(self) -> None:
         self.lines: list[str] = []
         self.chars = 0
         self.paragraphs = 0
         self.clipped = False
-        self._deadline = deadline
-        self._events = 0
         self._rows: list[list[str]] = []
         self._cells: list[list[str]] = []
         self._paras: list[list[str]] = []
@@ -344,9 +387,6 @@ class _Body:
             self.chars += len(line) + 1
 
     def start(self, name: str, _attrs: dict[str, str]) -> None:
-        self._events += 1
-        if self._events % _CHECK_EVERY == 0:
-            self._deadline.check()
         local = _local(name)
         if local == "p":
             self._paras.append([])
@@ -423,7 +463,7 @@ def _docx_text(data: bytes, deadline: _Deadline) -> Extracted:
             if len(zf.infolist()) > MAX_ZIP_ENTRIES:
                 raise AttachmentRefused(_NOT_WORD)
             xml = _read_part(zf, _main_part(zf, deadline), MAX_DOCX_XML_BYTES)
-        body = _Body(deadline)
+        body = _Body()
         _parse_xml(xml, body, deadline)
         if body.clipped:
             body.flush()
