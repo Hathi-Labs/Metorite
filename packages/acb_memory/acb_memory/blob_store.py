@@ -275,8 +275,8 @@ _IN_KEPT_TREE = "(left(path, 7) = 'inputs/' OR left(path, 8) = 'outputs/')"
 def _sync_session_paths(
     session_id: str, instance: str, organization_id: str | None,
 ) -> list[tuple[str, str]]:
-    from acb_graph import tenant_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
+    from acb_graph import tenant_session
+    from sqlalchemy import text
 
     with tenant_session(organization_id) as s:
         rows = s.execute(
@@ -295,8 +295,8 @@ def _sync_purge(
     prefixes: tuple[str, ...], paths: tuple[tuple[str, str], ...],
     session_id: str | None,
 ) -> int:
-    from acb_graph import tenant_session  # noqa: PLC0415
-    from sqlalchemy import text  # noqa: PLC0415
+    from acb_graph import tenant_session
+    from sqlalchemy import text
 
     gone = 0
     with tenant_session(organization_id) as s:
@@ -306,7 +306,7 @@ def _sync_purge(
             for table in ("agent_blob", "agent_file_history"):
                 gone += s.execute(
                     text(
-                        f"DELETE FROM {table} WHERE instance IN (:i, '') "  # noqa: S608
+                        f"DELETE FROM {table} WHERE instance IN (:i, '') "
                         "AND left(path, length(:p)) = :p"
                     ),
                     {"i": instance, "p": prefix},
@@ -315,7 +315,7 @@ def _sync_purge(
             for table in ("agent_blob", "agent_file_history"):
                 gone += s.execute(
                     text(
-                        f"DELETE FROM {table} WHERE agent_name = :a "  # noqa: S608
+                        f"DELETE FROM {table} WHERE agent_name = :a "
                         "AND instance IN (:i, '') AND path = :p"
                     ),
                     {"a": agent, "i": instance, "p": path},
@@ -468,7 +468,7 @@ async def session_paths(
         return await asyncio.to_thread(
             _sync_session_paths, session_id, instance, _caller_tenant(organization_id),
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log.warning("blob_store.session_paths_failed", error=str(exc)[:200])
         return []
 
