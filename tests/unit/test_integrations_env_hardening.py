@@ -103,10 +103,11 @@ REAL_VALUES = [
 
 OVER_CAP = "a" * (env_guard.MAX_VALUE_BYTES + 1)
 
-#: Pinned: the only keys that reach ``os.environ`` and the env file.
+#: Pinned: the only keys that reach ``os.environ`` and the env file (13 since
+#: round 2, when GMAIL_DEFAULT_USER became operator-only).
 BUILTIN_KEYS_PINNED = frozenset({
     "ANYMAILFINDER_API_KEY", "APIFY_API_TOKEN", "APOLLO_API_KEY",
-    "GITHUB_CLIENT_ID", "GITHUB_TOKEN", "GMAIL_DEFAULT_USER",
+    "GITHUB_CLIENT_ID", "GITHUB_TOKEN",
     "GOOGLE_MAPS_API_KEY", "INSTANTLY_API_KEY", "SERPAPI_API_KEY",
     "SMTP_PASSWORD", "SMTP_USERNAME", "ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET",
     "ZOHO_REFRESH_TOKEN",
@@ -115,7 +116,14 @@ BUILTIN_KEYS_PINNED = frozenset({
 #: Pinned: the guide keys that the operator sets on the box (decision 2).
 OPERATOR_ONLY_PINNED = frozenset({
     "GMAIL_SA_JSON_PATH", "GOOGLE_SHEETS_SA_JSON_PATH", "SMTP_HOST", "SMTP_PORT",
-    "ZOHO_ACCOUNTS_URL", "ZOHO_API_DOMAIN", "ZOHO_REGION",
+    "ZOHO_ACCOUNTS_URL", "ZOHO_API_DOMAIN", "ZOHO_REGION", "GMAIL_DEFAULT_USER",
+})
+
+#: Pinned: the service ids that a custom integration may not take (round 2).
+RESERVED_IDS_PINNED = frozenset({
+    "anymailfinder", "apify", "apollo", "github", "gmail", "gmail-oauth",
+    "gmail-send", "google-maps", "google-sheets", "instantly",
+    "microsoft-oauth", "serpapi", "smtp", "whatsapp", "zoho-crm",
 })
 
 #: The mail-app keys that a setup guide declares and layer B refuses.
@@ -132,7 +140,7 @@ MAIL_APP_GUIDE_KEYS = frozenset({
 #: until somebody puts it in one place.
 INTEGRATION_SETTINGS_FIELDS = frozenset({
     "anymailfinder_api_key", "apify_api_token", "apollo_api_key",
-    "github_client_id", "github_token", "gmail_default_user",
+    "github_client_id", "github_token",
     "google_access_token", "google_maps_api_key", "google_refresh_token",
     "google_token_expiry", "instantly_api_key", "serpapi_api_key",
     "smtp_password", "smtp_username", "zoho_access_token", "zoho_client_id",
@@ -170,19 +178,23 @@ class FakeStore:
 
     def __init__(self, *, fail: bool = False) -> None:
         self.puts: list[tuple[str, str]] = []
+        self.types: dict[str, str] = {}
         self.deletes: list[str] = []
         self.fail = fail
 
-    async def put(self, provider: str, api_key: str, **_: Any) -> None:
+    async def put(
+        self, provider: str, api_key: str, credential_type: str = "llm", **_: Any,
+    ) -> None:
         if self.fail:
             raise RuntimeError("store down")
         self.puts.append((provider, api_key))
+        self.types[provider] = credential_type
 
     async def delete(self, provider: str, **_: Any) -> None:
         self.deletes.append(provider)
 
-    async def get_by_type(self, *_: Any, **__: Any) -> dict[str, str]:
-        return dict(self.puts)
+    async def get_by_type(self, credential_type: str, **_: Any) -> dict[str, str]:
+        return {p: v for p, v in self.puts if self.types.get(p) == credential_type}
 
 
 class FakeCustomTable:
@@ -358,23 +370,34 @@ def _fake_gh_cli(monkeypatch: pytest.MonkeyPatch, token: str) -> None:
     monkeypatch.setattr(integrations.subprocess, "run", _run)
 
 
-def _key_store(monkeypatch: pytest.MonkeyPatch, stored: dict[str, str]):
-    """A real ProviderKeyStore whose reads come from ``stored``."""
+def _key_store(monkeypatch: pytest.MonkeyPatch, stored: dict[str, Any]):
+    """A real ProviderKeyStore whose reads come from ``stored``.
+
+    A value is the stored key, or ``(key, credential_type)``. A bare key is
+    an ``integration`` row.
+    """
     from acb_llm.key_store import ProviderKeyStore
 
+    rows = {p: (v if isinstance(v, tuple) else (v, "integration")) for p, v in stored.items()}
     ks = ProviderKeyStore()
     migrated: list[str] = []
 
     async def _get(provider: str, organization_id: str | None = None) -> str:
-        return stored.get(provider, "")
+        return rows.get(provider, ("", ""))[0]
+
+    async def _get_by_type(
+        credential_type: str, organization_id: str | None = None,
+    ) -> dict[str, str]:
+        return {p: v for p, (v, t) in rows.items() if t == credential_type}
 
     async def _put(provider: str, *_: Any, **__: Any) -> None:
         migrated.append(provider)
 
     async def _get_all(organization_id: str | None = None) -> dict[str, str]:
-        return dict(stored)
+        return {p: v for p, (v, _t) in rows.items()}
 
     monkeypatch.setattr(ks, "get", _get)
+    monkeypatch.setattr(ks, "get_by_type", _get_by_type)
     monkeypatch.setattr(ks, "put", _put)
     monkeypatch.setattr(ks, "get_all", _get_all)
     return ks, migrated
@@ -573,6 +596,7 @@ class TestTheKeyStoreStartup:
         ("zoho-crm:region", "ZOHO_REGION"),
         ("smtp:host", "SMTP_HOST"),
         ("gmail:sa_json_path", "GMAIL_SA_JSON_PATH"),
+        ("gmail:default_user", "GMAIL_DEFAULT_USER"),
     ])
     async def test_a_platform_row_never_overrides_the_box(self, provider, env_var, monkeypatch):
         # Layer B at startup. A row that an older route wrote must not
@@ -838,7 +862,7 @@ class TestLayerCTheBuiltInAllowlist:
         suffixes = ("_URL", "_HOST", "_DOMAIN", "_PATH", "_ENDPOINT", "_DIR", "_PORT")
         by_rule = {k for k in integrations.GUIDE_ENV_KEYS if k.endswith(suffixes)}
         assert by_rule <= integrations.OPERATOR_ONLY_ENV_KEYS
-        assert integrations.OPERATOR_ONLY_ENV_KEYS - by_rule == {"ZOHO_REGION"}
+        assert integrations.OPERATOR_ONLY_ENV_KEYS - by_rule == {"ZOHO_REGION", "GMAIL_DEFAULT_USER"}
 
     def test_the_allowlist_is_built_from_the_guides(self):
         guides = integrations.GUIDE_ENV_KEYS
@@ -884,7 +908,7 @@ class TestLayerCTheBuiltInAllowlist:
         _assert_untouched(env_file, before)
         assert out["written"] == []
         assert out["store_only"] == ["NOTION_API_TOKEN"]
-        assert store.puts == [("notion:notion_api_token", "secret_abc123")]
+        assert store.puts == [("custom:notion:notion_api_token", "secret_abc123")]
         assert custom.statements == ["SELECT * FROM custom_api_definitions ORDER BY created_at"]
 
     async def test_a_store_failure_for_a_custom_key_is_an_error(
@@ -912,6 +936,9 @@ class TestLayerCTheBuiltInAllowlist:
         smtp = by_service["smtp"]
         assert [v["key"] for v in smtp["env_vars"]] == ["SMTP_USERNAME", "SMTP_PASSWORD"]
         assert [v["key"] for v in smtp["operator_env_vars"]] == ["SMTP_HOST", "SMTP_PORT"]
+        gmail = by_service["gmail"]
+        assert gmail["env_vars"] == []
+        assert [v["key"] for v in gmail["operator_env_vars"]] == ["GMAIL_SA_JSON_PATH", "GMAIL_DEFAULT_USER"]
 
     async def test_the_status_reads_a_custom_key_from_the_store(self, env_file, store, custom):
         custom.declare("notion", "NOTION_API_TOKEN")
@@ -1108,7 +1135,7 @@ class TestEveryCallerStillWorks:
         before = _snapshot(env_file)
         out = await _configure(("NOTION_API_TOKEN", "secret_abc123"))
         assert out["store_only"] == ["NOTION_API_TOKEN"]
-        assert store.puts == [("notion:notion_api_token", "secret_abc123")]
+        assert store.puts == [("custom:notion:notion_api_token", "secret_abc123")]
         _assert_untouched(env_file, before)
 
     async def test_agent_wizard_and_setup_card_save_the_zoho_keys(self, env_file, store, custom):
@@ -1331,3 +1358,208 @@ class TestTheModelsRoutesUseTheSameGuard:
         assert models_env_file.read_bytes() == (
             b"A=1\nCOPILOT_CHAT_MODEL=o3-mini\n\n# note\nOPENAI_API_KEY=sk-1\n"
         )
+
+
+# ── Round 2: a custom service id may not be a built-in one ──────────────────
+#
+# A custom `github` with the key `TOKEN` was stored as `github:token`, the
+# slot of the built-in GitHub token, and the next start copied it into
+# `os.environ["GITHUB_TOKEN"]`, past the BYOK gate. Three guards now stand in
+# the way: registration refuses the id, configure skips such a row, and the
+# start loads only rows of credential_type 'integration'.
+
+
+class TestACustomServiceIdIsNeverABuiltInOne:
+    def test_the_reserved_ids_are_pinned(self):
+        assert integrations.RESERVED_SERVICE_IDS == RESERVED_IDS_PINNED
+
+    def test_every_guide_and_every_startup_service_is_reserved(self):
+        from acb_llm.key_store import INTEGRATION_ENV_MAP
+
+        assert set(integrations._SETUP_GUIDES) <= integrations.RESERVED_SERVICE_IDS
+        assert set(INTEGRATION_ENV_MAP) <= integrations.RESERVED_SERVICE_IDS
+
+    @pytest.mark.parametrize("service_id", [
+        "github", "smtp", "zoho-crm", "gmail-oauth", "microsoft-oauth", "whatsapp",
+    ])
+    async def test_registration_refuses_a_builtin_id(self, service_id, custom):
+        req = integrations.CustomApiDef(
+            service_id=service_id, label="Evil",
+            env_vars=[{"key": "TOKEN", "label": "Token"}],
+        )
+        await _expect(400, integrations.create_custom_api(req, user=USER))
+        assert custom.inserts == []
+
+    async def test_registration_refuses_a_service_id_with_a_trailing_newline(self, custom):
+        # `re.match` with `$` accepts "notion\n".
+        req = integrations.CustomApiDef(service_id="github\n", label="Evil", env_vars=[])
+        await _expect(400, integrations.create_custom_api(req, user=USER))
+        assert custom.inserts == []
+
+    @pytest.mark.parametrize("service_id", ["github", "smtp", "zoho-crm"])
+    async def test_configure_ignores_a_pre_existing_colliding_row(
+        self, service_id, env_file, store, custom, byok_on,
+    ):
+        # The row was written straight into the table, or before the fix.
+        custom.declare(service_id, "TOKEN")
+        before = _snapshot(env_file)
+        await _expect(422, _configure(("TOKEN", "ghp_custom123")))
+        _assert_untouched(env_file, before)
+        assert store.puts == []
+
+    async def test_the_status_hides_a_colliding_row(self, store, custom, monkeypatch):
+        # An agent view lists only that agent's services, so the built-in
+        # `smtp` row is not there to hide the custom one. The reserved-id
+        # guard must.
+        from gateway.routes import agent as agent_routes
+
+        monkeypatch.setattr(agent_routes, "_AGENT_REGISTRY", [
+            {"name": "probe-agent", "integrations": ["apollo"]},
+        ])
+        custom.declare("smtp", "X_SMTP_KEY")
+        rows = await integrations.integration_status(agent="probe-agent", user=USER)
+        assert [r["service"] for r in rows] == ["github", "apollo"]
+
+    async def test_a_custom_key_has_its_own_name_and_type(self, env_file, store, custom):
+        custom.declare("notion", "NOTION_API_TOKEN")
+        await _configure(("NOTION_API_TOKEN", "secret_abc123"))
+        assert store.types == {"custom:notion:notion_api_token": "custom"}
+
+    async def test_a_custom_row_never_reaches_the_env_at_startup(self, monkeypatch):
+        # A colliding row of a custom service, and an ordinary custom row.
+        ks, _ = _key_store(monkeypatch, {
+            "github:token": ("ghp_custom123", "custom"),
+            "custom:notion:notion_api_token": ("secret_abc123", "custom"),
+            "apollo:api_key": "real_apollo_1",
+        })
+        monkeypatch.setenv("GITHUB_TOKEN", "the-operator-token")
+        monkeypatch.delenv("NOTION_API_TOKEN", raising=False)
+        await ks.configure_integrations()
+        assert os.environ["GITHUB_TOKEN"] == "the-operator-token"
+        assert "NOTION_API_TOKEN" not in os.environ
+        assert os.environ["APOLLO_API_KEY"] == "real_apollo_1"
+
+
+# ── Round 2: GMAIL_DEFAULT_USER is operator-only ────────────────────────────
+#
+# It picks the mailbox that the operator's domain-wide Gmail service account
+# impersonates (`ingestion/sources/gmail/client.py`), and `credential()` lets
+# `os.environ` win. A tenant value would read another member's mail.
+
+
+class TestGmailDefaultUserIsOperatorOnly:
+    def test_it_is_operator_only_and_deny_listed(self):
+        assert "GMAIL_DEFAULT_USER" in integrations.OPERATOR_ONLY_ENV_KEYS
+        assert "GMAIL_DEFAULT_USER" not in integrations.BUILTIN_ENV_KEYS
+        assert env_guard.is_platform_env("GMAIL_DEFAULT_USER")
+
+    async def test_configure_refuses_it(self, env_file, store, custom):
+        before = _snapshot(env_file)
+        await _expect(403, _configure(("GMAIL_DEFAULT_USER", "ceo@example.com")))
+        _assert_untouched(env_file, before)
+        assert store.puts == []
+
+    async def test_put_keys_refuses_it(self, env_file, store):
+        before = _snapshot(env_file)
+        await _expect(403, _put("gmail", "default_user", "ceo@example.com"))
+        _assert_untouched(env_file, before)
+        assert store.puts == []
+
+    @pytest.mark.parametrize("pattern", _setup_patterns())
+    async def test_a_setup_token_cannot_set_it(self, pattern, env_file, store, custom):
+        pairs = _setup_vars(pattern, "Done. <<<SETUP:gmail:GMAIL_DEFAULT_USER=ceo@example.com>>>")
+        assert pairs == [("GMAIL_DEFAULT_USER", "ceo@example.com")]
+        before = _snapshot(env_file)
+        await _expect(403, _configure(*pairs))
+        _assert_untouched(env_file, before)
+        assert store.puts == []
+
+
+# ── Round 2, R8: the startup filter on a real database ──────────────────────
+#
+# The type filter is SQL (`get_by_type` stacks `credential_type` on top of the
+# organization). A fake agrees with whatever SQL it is handed, so this case
+# runs the production statements on the replayed tenant ladder.
+
+_R8_URL = (
+    os.environ.get("_ACB_TENANT_LADDER_URL_AT_LAUNCH")
+    or os.environ.get("TENANT_LADDER_DATABASE_URL", "")
+).strip()
+_R8_GATE = pytest.mark.skipif(
+    not _R8_URL,
+    reason=(
+        "TENANT_LADDER_DATABASE_URL unset. R8 needs a REAL Postgres with "
+        "pgvector. A skip here is not a pass, and CI must set it."
+    ),
+)
+
+
+@pytest.fixture(scope="module")
+def _r8_engine():
+    from sqlalchemy import create_engine
+
+    from tests.unit._tenant_ladder import apply_ladder
+
+    engine = create_engine(_R8_URL, future=True)
+    with engine.begin() as connection:
+        apply_ladder(connection)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def _r8_conn(_r8_engine):
+    """One rolled-back transaction per test, so no write outlives it."""
+    with _r8_engine.connect() as connection:
+        trans = connection.begin()
+        try:
+            yield connection
+        finally:
+            trans.rollback()
+
+
+@_R8_GATE
+class TestTheStartupFilterOnARealDatabase:
+    def test_a_custom_row_in_a_builtin_slot_never_reaches_the_env(self, _r8_conn, monkeypatch):
+        from acb_llm.key_store import ProviderKeyStore
+        from sqlalchemy import text
+
+        monkeypatch.setenv("ACB_MASTER_KEY", "test-master-key-for-round-2")
+        get_settings.cache_clear()
+        org = str(_r8_conn.execute(
+            text("SELECT id FROM organization WHERE slug = 'default'"),
+        ).scalar_one())
+
+        store = ProviderKeyStore()
+
+        async def _execute(sql: str, **params: Any) -> list[dict[str, Any]]:
+            result = _r8_conn.execute(text(sql), params)
+            return [dict(r) for r in result.mappings()] if result.returns_rows else []
+
+        async def _resolve_org(organization_id: str | None) -> str:
+            return organization_id or org
+
+        store._execute = _execute  # type: ignore[method-assign]
+        store._resolve_org = _resolve_org  # type: ignore[method-assign]
+
+        async def _drive() -> dict[str, str]:
+            # A custom row that took the slot of the built-in GitHub token,
+            # an ordinary custom row, and a real built-in row.
+            await store.put("github:token", "ghp_custom123", credential_type="custom",
+                            service="github", organization_id=org)
+            await store.put("custom:notion:notion_api_token", "secret_abc123",
+                            credential_type="custom", service="notion", organization_id=org)
+            await store.put("apollo:api_key", "real_apollo_1", credential_type="integration",
+                            service="apollo", organization_id=org)
+            store._cache.clear()
+            await store.configure_integrations()
+            return await store.get_by_type("integration", organization_id=org)
+
+        monkeypatch.setenv("GITHUB_TOKEN", "the-operator-token")
+        monkeypatch.delenv("NOTION_API_TOKEN", raising=False)
+        integration_rows = asyncio.run(_drive())
+
+        assert os.environ["GITHUB_TOKEN"] == "the-operator-token"
+        assert "NOTION_API_TOKEN" not in os.environ
+        assert os.environ["APOLLO_API_KEY"] == "real_apollo_1"
+        assert "custom:notion:notion_api_token" not in integration_rows

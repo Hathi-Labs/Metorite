@@ -27,6 +27,7 @@ from typing import Any
 import httpx
 from acb_auth import UserContext, UserRole, get_current_user, require_feature_router, require_role
 from acb_common import env_guard, get_logger, get_settings
+from acb_llm.key_store import CUSTOM_INTEGRATION_TYPE, INTEGRATION_ENV_MAP
 from fastapi import APIRouter, Depends, HTTPException, status
 from gateway.db import current_tenant
 from pydantic import BaseModel
@@ -459,13 +460,22 @@ def _is_configured(service_name: str, settings: Any) -> bool:
 #   domain, a port, a file path or an endpoint. A tenant route refuses it
 #   with 403, and the operator sets it in the env file of the box. A
 #   redirected Zoho accounts URL or SMTP host receives the deployment's
-#   secrets on the next refresh. ZOHO_REGION is named, because its value
-#   picks the Zoho data-centre domain.
+#   secrets on the next refresh. Two keys are named, not matched by a
+#   suffix. ZOHO_REGION picks the Zoho data-centre domain.
+#   GMAIL_DEFAULT_USER picks the mailbox that the operator's domain-wide
+#   service account impersonates (round 2), and `credential()` lets
+#   `os.environ` win, so a tenant value would read another member's mail.
 # * `BUILTIN_ENV_KEYS`: the allowlist. The guide keys minus the operator-only
 #   keys minus the platform names (the mail-app keys). Configure and
 #   `PUT /integrations/keys` write `os.environ` and the env file for these
 #   keys only. A key that a CUSTOM integration declares goes to the
 #   per-organization store and never to the env.
+#   SMTP_USERNAME stays here on purpose. It is half of a credential pair with
+#   SMTP_PASSWORD, and it names an account on the host that the operator
+#   chose. It routes no request to a new host, and it selects no mailbox.
+# * `RESERVED_SERVICE_IDS`: no custom integration may take one of these ids
+#   (round 2). Configure stores a custom key under `custom:<service_id>:<key>`
+#   with credential_type 'custom', and startup loads only 'integration' rows.
 #
 # The LLM provider keys left this path. Their writer is the BYOK-gated
 # `POST /settings/llm/key` (`routes/settings.py`).
@@ -475,7 +485,7 @@ GUIDE_ENV_KEYS: frozenset[str] = frozenset(
     for var in guide["env_vars"]
 )
 _OPERATOR_SUFFIXES = ("_URL", "_HOST", "_DOMAIN", "_PATH", "_ENDPOINT", "_DIR", "_PORT")
-_OPERATOR_NAMED = frozenset({"ZOHO_REGION"})
+_OPERATOR_NAMED = frozenset({"ZOHO_REGION", "GMAIL_DEFAULT_USER"})
 OPERATOR_ONLY_ENV_KEYS: frozenset[str] = frozenset(
     k for k in GUIDE_ENV_KEYS if k.endswith(_OPERATOR_SUFFIXES) or k in _OPERATOR_NAMED
 )
@@ -483,6 +493,9 @@ BUILTIN_ENV_KEYS: frozenset[str] = frozenset(
     k for k in GUIDE_ENV_KEYS
     if k not in OPERATOR_ONLY_ENV_KEYS and not env_guard.is_platform_env(k)
 )
+#: The ids of the built-in integrations: the setup guides and the services
+#: that the key store loads at startup. A custom integration may not take one.
+RESERVED_SERVICE_IDS: frozenset[str] = frozenset(_SETUP_GUIDES) | frozenset(INTEGRATION_ENV_MAP)
 
 
 def _find_env_file() -> Path:
@@ -628,11 +641,16 @@ async def _custom_key_services() -> dict[str, str]:
     """Each key that a registered custom integration declares, and its service.
 
     Layer C. A custom key goes to the per-organization store under
-    ``<service_id>:<key in lower case>``, and NEVER to ``os.environ`` or the env
-    file. When two definitions declare one key, the oldest one names it. It
-    runs the SAME query as ``integration_status`` and ``list_custom_apis``. A
-    failed read answers an empty map, so a custom key is refused and never
-    accepted on a guess.
+    ``custom:<service_id>:<key in lower case>`` with credential_type
+    ``custom``, and NEVER to ``os.environ`` or the env file. When two
+    definitions declare one key, the oldest one names it. It runs the SAME
+    query as ``integration_status`` and ``list_custom_apis``. A failed read
+    answers an empty map, so a custom key is refused and never accepted on a
+    guess.
+
+    🔒 A row whose ``service_id`` is a built-in id (``RESERVED_SERVICE_IDS``)
+    is skipped (round 2). Registration refuses such an id, so only a row
+    written straight into the table, or before the fix, can hold one.
     """
     try:
         rows = await _db_query(
@@ -643,6 +661,11 @@ async def _custom_key_services() -> dict[str, str]:
         return {}
     services: dict[str, str] = {}
     for row in rows:
+        if str(row.get("service_id", "")) in RESERVED_SERVICE_IDS:
+            _log.warning(
+                "integrations.custom_row_reserved_id", service_id=row.get("service_id"),
+            )
+            continue
         for var in row.get("env_vars") or []:
             if isinstance(var, dict) and isinstance(var.get("key"), str):
                 services.setdefault(var["key"], str(row.get("service_id", "")))
@@ -726,8 +749,10 @@ async def integration_status(
             if ":" in provider:
                 svc, suffix = provider.split(":", 1)
                 db_keys_by_service.setdefault(svc, []).append(suffix)
+        custom_keys_by_service = await _stored_custom_keys(store)
     except Exception:
         db_keys_by_service = {}
+        custom_keys_by_service = {}
 
     result = []
     for svc in services:
@@ -805,29 +830,44 @@ async def integration_status(
         custom_rows = await _db_query(
             "SELECT * FROM custom_api_definitions ORDER BY created_at"
         )
-        known = {r["service"] for r in result}
+        known = {r["service"] for r in result} | RESERVED_SERVICE_IDS
         for row in custom_rows:
             if row["service_id"] in known:
                 continue  # skip if service_id conflicts with built-in
-            result.append(_custom_status_row(row, db_keys_by_service))
+            result.append(_custom_status_row(row, custom_keys_by_service))
     except Exception:
         pass  # graceful degradation if table doesn't exist yet
 
     return result
 
 
+async def _stored_custom_keys(store: Any) -> dict[str, list[str]]:
+    """The custom keys that this organization holds, by service id.
+
+    They are the rows of credential_type ``custom``, named
+    ``custom:<service_id>:<key in lower case>`` (round 2).
+    """
+    keys: dict[str, list[str]] = {}
+    rows = await store.get_by_type(CUSTOM_INTEGRATION_TYPE, organization_id=current_tenant())
+    for provider in rows:
+        parts = provider.split(":", 2)
+        if len(parts) == 3 and parts[0] == "custom":
+            keys.setdefault(parts[1], []).append(parts[2])
+    return keys
+
+
 def _custom_status_row(
-    row: dict[str, Any], db_keys_by_service: dict[str, list[str]],
+    row: dict[str, Any], custom_keys_by_service: dict[str, list[str]],
 ) -> dict[str, Any]:
     """The status of one custom integration.
 
     🔒 A custom key lives in the store of the organization
-    (``<service_id>:<key in lower case>``), and never in the env since
+    (``custom:<service_id>:<key in lower case>``), and never in the env since
     2026-10-05. A value that an older env write left still counts.
     """
     svc = row["service_id"]
     env_vars = row.get("env_vars") or []
-    custom_db = db_keys_by_service.get(svc, [])
+    custom_db = custom_keys_by_service.get(svc, [])
 
     def _held(key: str) -> bool:
         return key.lower() in custom_db or bool(os.getenv(key, ""))
@@ -963,15 +1003,17 @@ async def configure_integrations(
 
         # 0. A custom key: the store of this organization, and nothing else.
         #    No `os.environ`, no env file. A failed put is an error, because
-        #    the store is the only place the value goes.
+        #    the store is the only place the value goes. The `custom:` name and
+        #    the 'custom' type keep it out of every built-in slot, and the
+        #    startup load reads only 'integration' rows (round 2).
         if var.key not in BUILTIN_ENV_KEYS:
             custom_svc = custom_services[var.key]
-            provider = f"{custom_svc}:{var.key.lower()}"
+            provider = f"custom:{custom_svc}:{var.key.lower()}"
             try:
                 await store.put(
                     provider,
                     value,
-                    credential_type="integration",
+                    credential_type=CUSTOM_INTEGRATION_TYPE,
                     service=custom_svc,
                     organization_id=current_tenant(),
                 )
@@ -1472,13 +1514,25 @@ async def create_custom_api(
     🔒 A definition declares the keys that layer C lets configure write. So a
     key with a control character is 400, and a platform name is 403, before
     the row is saved (2026-10-05).
+
+    🔒 A ``service_id`` that is a built-in id (``RESERVED_SERVICE_IDS``) is 400
+    (round 2). A custom ``github`` with the key ``TOKEN`` used to take the
+    slot ``github:token`` of the built-in GitHub token.
     """
     import json as _json  # noqa: PLC0415
 
-    if not re.match(r"^[a-z][a-z0-9-]{0,60}$", req.service_id):
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,60}", req.service_id):
         raise HTTPException(
             400,
             "service_id must be lowercase letters, numbers, and hyphens.",
+        )
+    if req.service_id in RESERVED_SERVICE_IDS:
+        _log.warning(
+            "integrations.custom_reserved_id", service_id=req.service_id, actor=user.email,
+        )
+        raise HTTPException(
+            400,
+            f"{req.service_id!r} is a built-in integration. Choose another service_id.",
         )
     _refuse_unsafe_env_writes(
         ((str(v["key"]), "") for v in req.env_vars if v.get("key") is not None),

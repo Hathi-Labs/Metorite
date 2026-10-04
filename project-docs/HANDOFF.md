@@ -105,7 +105,7 @@ line — never reclaim a number by deleting the other entry.
   round 1 narrow that write (`acb_common/env_guard.py`, fence
   `tests/unit/test_integrations_env_hardening.py`). Only a key that a
   built-in guide declares reaches the env file now. So a prompt injection can
-  write only one of 14 integration keys, with a clean value. It can still
+  write only one of 13 integration keys, with a clean value. It can still
   replace `GITHUB_TOKEN` (when BYOK is on) or a Zoho secret for every
   organization.
 - **Do.** Decide one of three: keep the path, limit it to a key that is not
@@ -115,6 +115,10 @@ line — never reclaim a number by deleting the other entry.
   such a key, but agent code that called `os.getenv` for it no longer finds a
   value that the page set. The key store no longer loads an operator-only or
   platform row at startup, so the env file of the box wins for those names.
+  Round 2 adds two more. `GMAIL_DEFAULT_USER` is operator-only, so the
+  operator sets the mailbox of the Gmail service account on the box. A
+  custom integration may not take a built-in service id, and the start
+  loads only rows of credential_type `integration`.
 - **Done on 2026-10-05.** The orchestrator ran read-only checks on the box,
   after the fix. None found anything that an earlier write left.
   1. A hidden line break in `/opt/acb/app/.env`. A count with `wc -l` does not

@@ -21,6 +21,7 @@ import { deleteEmailAccount } from "@/app/email/lib/api";
 import { disconnectFailureText } from "@/app/email/lib/connect";
 import Tabs from "@/components/Tabs";
 import type { TabDef } from "@/components/Tabs";
+import OperatorEnvVars from "./OperatorEnvVars";
 
 // ---------------------------------------------------------------------------
 // Tab navigation
@@ -248,16 +249,7 @@ function CredentialForm({ api, onSaved }: {
           <div className="text-[9px] text-muted mt-0.5 font-mono">{v.key}</div>
         </div>
       ))}
-      {(api.operator_env_vars?.length ?? 0) > 0 && (
-        <div data-testid="operator-env-vars" className="rounded-lg border border-border bg-secondary px-3 py-2 text-xs text-muted-foreground">
-          <p className="mb-1">The operator sets these on the server. You cannot change them here:</p>
-          <ul className="space-y-0.5">
-            {api.operator_env_vars?.map((v) => (
-              <li key={v.key}>{v.label} <span className="font-mono text-[9px]">{v.key}</span></li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <OperatorEnvVars api={api} />
       {err && <p className="text-xs text-destructive bg-destructive/10 rounded-lg px-3 py-2">{err}</p>}
       <Button size="none" layout="flex items-center justify-center" onClick={() => void save()} disabled={saving} className="w-full py-2.5 text-sm gap-2">
         {saving ? <Icon name="Loader2" className="w-3.5 h-3.5 animate-spin" /> : done ? <Icon name="Check" className="w-3.5 h-3.5" /> : null}

@@ -118,7 +118,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "GOOGLE_APPLICATION_CREDENTIALS",
     # Operator-only keys of the built-in guides. ZOHO_REGION picks the Zoho
     # data-centre domain. SMTP_USE_TLS sets the transport of the SMTP host.
-    "ZOHO_REGION", "SMTP_USE_TLS",
+    # GMAIL_DEFAULT_USER picks the mailbox that the operator's domain-wide
+    # Gmail service account impersonates (round 2).
+    "ZOHO_REGION", "SMTP_USE_TLS", "GMAIL_DEFAULT_USER",
     # LLM and speech provider keys. Only the BYOK-gated Models routes and the
     # key store write them, and each passes them as ``owned``.
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY",
