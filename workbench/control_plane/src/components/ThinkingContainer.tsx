@@ -110,6 +110,8 @@ const PROSE_MD_COMPONENTS = {
   h1: ({ children }: { children?: React.ReactNode }) => <h1 className="text-[13px] font-bold text-foreground mt-2 mb-1">{children}</h1>,
   h2: ({ children }: { children?: React.ReactNode }) => <h2 className="text-[12px] font-semibold text-foreground mt-1.5 mb-1">{children}</h2>,
   // Reasoning is agent text too: a remote image loads only on a click.
+  // The container has no session, so a workspace-relative path stays as it
+  // is and does not resolve through the file proxy (as before the gate).
   img: ({ src, alt, title }: { src?: unknown; alt?: unknown; title?: unknown }) => (
     <MarkdownImage src={src} alt={alt} title={title} className="my-1 max-h-48 max-w-full rounded border border-border/50 object-contain" />
   ),

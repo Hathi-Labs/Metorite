@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   markdownUrlTransform,
+  rehypeGateRemoteMedia,
   remoteHost,
   resolveMediaSrc,
   UNKNOWN_HOST,
@@ -104,5 +105,41 @@ describe("markdownUrlTransform", () => {
   it("leaves an https URL to the gate", () => {
     const url = "https://attacker.example/p.png";
     expect(markdownUrlTransform(url, "src", { tagName: "img" })).toBe(url);
+  });
+});
+
+describe("rehypeGateRemoteMedia on a tree", () => {
+  // Run on a tree directly: React omits some attributes from static markup
+  // by itself, so a render alone could not prove the gate removed them.
+  type Node = { type: string; tagName?: string; properties?: Record<string, unknown>; children?: Node[] };
+  const el = (tagName: string, properties: Record<string, unknown>, children: Node[] = []): Node => ({
+    type: "element",
+    tagName,
+    properties,
+    children,
+  });
+
+  it("strips action, formAction, ping and autoFocus from every element", () => {
+    const link = el("a", { href: "https://example.com", ping: ["https://attacker.example/b"], autoFocus: true });
+    const div = el("div", { action: "https://attacker.example/f", formAction: "https://attacker.example/g" });
+    const tree: Node = { type: "root", children: [link, div] };
+    rehypeGateRemoteMedia()(tree);
+    expect(link.properties).toEqual({ href: "https://example.com" });
+    expect(div.properties).toEqual({});
+  });
+
+  it("drops form controls and keeps a disabled task-list checkbox, bare", () => {
+    const box = el("input", { type: "checkbox", checked: true, disabled: true, autoFocus: true, name: "x" });
+    const tree: Node = {
+      type: "root",
+      children: [
+        el("form", { action: "https://attacker.example/f" }, [el("input", { type: "password" })]),
+        el("input", { type: "checkbox" }),
+        el("li", {}, [box]),
+      ],
+    };
+    rehypeGateRemoteMedia()(tree);
+    expect(tree.children?.map((c) => c.tagName)).toEqual(["li"]);
+    expect(box.properties).toEqual({ type: "checkbox", checked: true, disabled: true });
   });
 });

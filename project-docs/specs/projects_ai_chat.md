@@ -2101,6 +2101,13 @@ That covers `style`, the SVG presentation attributes such as `mask` and `fill`,
 and the SMIL values. A CSS fetch is a `url()` that is not a fragment, an
 `image-set()`, or a CSS escape.
 
+**No forms.** A form inside the app's origin is a credential phish that needs
+no script. So the gate removes `form`, `input`, `button`, `select`,
+`textarea`, `option`, `fieldset`, `legend` and `label`, with their content. It
+keeps one shape: the disabled checkbox that remark-gfm draws for a task list.
+It strips `action`, `formAction`, `ping` and `autoFocus` from every element.
+The email sanitizer forbids `form` and `ping` for the same reason.
+
 Before this fix, an agent `.md` file with `<script async src>` ran that script
 in the app's origin, because React 19 hoists an async script and loads it. An
 email attachment opens in the same viewer. The raw-HTML gate is a block list,

