@@ -332,6 +332,27 @@ class EmailFolder:
 
 
 @dataclass
+class DeltaShadowReport:
+    """The record of one poll of the Graph delta in shadow (WS-17 EM-T4d).
+
+    It holds counts and statuses only: no subject, no address and no link.
+    ``both``, ``sweep_only`` and ``delta_only`` count the ids of NEW mail: a
+    message received after the end of the last round of its folder. A
+    folder in its first round adds to ``seeding`` and to no other count. An
+    ``@removed`` item adds to ``removed`` only. ``failed`` counts the folders
+    whose delta failed, and ``statuses`` names each failure: the HTTP status,
+    or the class of the error."""
+    folders: int = 0
+    both: int = 0
+    sweep_only: int = 0
+    delta_only: int = 0
+    seeding: int = 0
+    removed: int = 0
+    failed: int = 0
+    statuses: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SyncResult:
     """Result of a sync operation."""
     messages_synced: int = 0
@@ -351,6 +372,9 @@ class SyncResult:
     # ``catch_up_folders`` names those folders.
     catch_up_incomplete: bool = False
     catch_up_folders: list[str] = field(default_factory=list)
+    # The record of the Graph delta in shadow (WS-17 EM-T4d), or None when no
+    # delta ran. The scheduler logs it. It never changes the fields above.
+    delta_report: DeltaShadowReport | None = None
 
 
 #: The callback that an import calls once, before its first batch, with the
@@ -736,6 +760,8 @@ class BaseEmailProvider(ABC):
         deep: bool = False,
         since: datetime | None = None,
         catch_up: datetime | None = None,
+        *,
+        delta_shadow: bool = False,
     ) -> SyncResult:
         """Incremental sync — fetch new/updated messages since history_id.
 
@@ -749,6 +775,10 @@ class BaseEmailProvider(ABC):
         (WS-17 EM-T6b item 9, D-EM-13). A provider that pages newest first
         reads more pages while its last page holds only mail newer than it.
         A provider with an incremental cursor ignores it.
+
+        ``delta_shadow`` runs the Graph delta of Outlook in shadow after the
+        sweep (WS-17 EM-T4d). The sweep stays the one writer. Gmail and IMAP
+        ignore it.
         """
         ...
 

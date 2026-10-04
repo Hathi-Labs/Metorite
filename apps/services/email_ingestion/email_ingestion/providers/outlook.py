@@ -9,6 +9,7 @@ API reference: https://learn.microsoft.com/en-us/graph/api/resources/mail-api-ov
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import deque
 from collections.abc import AsyncIterator
@@ -22,6 +23,7 @@ from .app_credentials import MICROSOFT_OAUTH_BASE, OAuthApp, token_fields
 from .base import (
     Attachment,
     BaseEmailProvider,
+    DeltaShadowReport,
     EmailAddress,
     EmailFolder,
     EmailMessage,
@@ -70,6 +72,14 @@ _OUTLOOK_HIDDEN_FOLDER_NAMES = frozenset({
 #: The system folders of a full sweep, in the order of the sweep. The user
 #: folders follow them. The import reads the same set (EM-T6b item 2).
 SWEEP_SYSTEM_FOLDERS = ("inbox", "sent", "drafts", "archive", "junk", "trash")
+
+#: The ``$select`` of a message read. The sweep and the delta send the same
+#: one, so the ids of the two reads compare (EM-T4d item 4).
+_MESSAGE_SELECT = ("id,internetMessageId,subject,from,toRecipients,"
+                   "ccRecipients,bccRecipients,receivedDateTime,isRead,"
+                   "hasAttachments,flag,bodyPreview,categories,"
+                   "parentFolderId,conversationId,importance,"
+                   "internetMessageHeaders")
 
 #: The Graph path of each folder key that is not a folder id.
 _WELL_KNOWN_PATHS: dict[str, str] = {
@@ -216,6 +226,96 @@ class _FolderStream:
     seen: set[str] = field(default_factory=set)
     more: bool = True
     pages: int = 0
+
+
+# ── The Graph delta, in shadow (WS-17 EM-T4d) ───────────────────────────────
+#
+# Delta stopped new mail once (2026-06-23), and nobody found the cause. So the
+# full sweep stays the one writer of each poll. In ``shadow`` the poll ALSO
+# reads the delta of each swept folder, compares the NEW mail of the two
+# reads, and stores the links. Spec: email_app_master_plan.md §10.4.6.
+
+#: The version of the delta cursor in ``last_history_id`` (EM-T4d item 5).
+DELTA_CURSOR_VERSION = 1
+
+#: The page size of each delta request. A delta request sends no ``$top``.
+_DELTA_PREFER = "odata.maxpagesize=100"
+
+#: The status of a link that Graph no longer knows. It drops the link of the
+#: folder, so the next poll seeds it again (EM-T4d item 11).
+_DELTA_GONE = 410
+
+
+def parse_delta_cursor(raw: str | None) -> dict[str, dict[str, str | None]]:
+    """The entries of a stored delta cursor, by folder key (EM-T4d items 5, 6).
+
+    The shape is ``{"v": 1, "folders": {<key>: {"link": <url>, "at": <UTC
+    time>}}}``. NULL, a bare token, text that is not JSON, and JSON with
+    another version or shape are no cursor, so each folder seeds. An entry
+    with no link is dropped. An ``at`` that is not text is None, which means
+    the round of that folder has not ended."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    version = data.get("v")
+    if type(version) is not int or version != DELTA_CURSOR_VERSION:
+        return {}
+    folders = data.get("folders")
+    if not isinstance(folders, dict):
+        return {}
+    out: dict[str, dict[str, str | None]] = {}
+    for key, entry in folders.items():
+        if not isinstance(entry, dict):
+            continue
+        link, at = entry.get("link"), entry.get("at")
+        if isinstance(link, str) and link:
+            out[str(key)] = {"link": link, "at": at if isinstance(at, str) else None}
+    return out
+
+
+def dump_delta_cursor(folders: dict[str, dict[str, str | None]]) -> str:
+    """The text of a delta cursor for ``last_history_id`` (EM-T4d item 5)."""
+    return json.dumps({"v": DELTA_CURSOR_VERSION, "folders": folders},
+                      sort_keys=True, separators=(",", ":"))
+
+
+def _cursor_time(value: str | None) -> datetime | None:
+    """The ``at`` of a cursor entry as an aware time, or None."""
+    if not value:
+        return None
+    try:
+        at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo is not None else at.replace(tzinfo=UTC)
+
+
+def _new_since(received: datetime | None, at: datetime) -> bool:
+    """True when a message received at *received* is NEW: after *at*."""
+    if received is None:
+        return False
+    if received.tzinfo is None:
+        received = received.replace(tzinfo=UTC)
+    return received > at
+
+
+@dataclass
+class _DeltaRound:
+    """The delta of one folder in one poll (EM-T4d).
+
+    ``entry`` is the cursor entry to store. ``ended`` is True when the round
+    reached an ``@odata.deltaLink``. ``new_ids`` holds the ids of the items
+    received after the ``at`` of the last round, and ``removed`` counts the
+    ``@removed`` items."""
+    entry: dict[str, str | None]
+    ended: bool = False
+    new_ids: set[str] = field(default_factory=set)
+    removed: int = 0
 
 
 def _classify_folder_type(folder: dict[str, Any]) -> str:
@@ -554,11 +654,7 @@ class OutlookProvider(BaseEmailProvider):
             params: dict[str, Any] = {
                 "$top": min(max_results, page_cap),
                 "$orderby": "receivedDateTime desc",
-                "$select": "id,internetMessageId,subject,from,toRecipients,"
-                           "ccRecipients,bccRecipients,receivedDateTime,isRead,"
-                           "hasAttachments,flag,bodyPreview,categories,"
-                           "parentFolderId,conversationId,importance,"
-                           "internetMessageHeaders",
+                "$select": _MESSAGE_SELECT,
             }
             if query:
                 params["$search"] = f'"{query}"'
@@ -1182,6 +1278,11 @@ class OutlookProvider(BaseEmailProvider):
     #: holds one page for each folder, so memory does not bound it. The cap
     #: only guards against a server that never ends a folder.
     IMPORT_MAX_PAGES = 5000
+    #: The delta pages of one folder that one poll reads (EM-T4d item 13). A
+    #: seed round for a mailbox of 6 months can need more than 100 Graph
+    #: calls, and the poll holds the mailbox lock. A folder at the cap stores
+    #: its ``@odata.nextLink`` and goes on at the next poll.
+    DELTA_MAX_PAGES = 20
     #: The import of Outlook reads every swept folder, so the deep sync of a
     #: member act may reconcile deletions from it (EM-T6b fix round 1).
     import_full_snapshot = True
@@ -1255,19 +1356,22 @@ class OutlookProvider(BaseEmailProvider):
                 break
         return out
 
-    async def _user_sweep_folders(self) -> list[tuple[str, str]]:
-        """The user folders of a full sweep: (folder id, canonical name).
+    async def _user_sweep_folder_list(self) -> tuple[list[tuple[str, str]], bool]:
+        """The user folders of a full sweep, and True when the folder list
+        answered.
 
-        Each Outlook message lives in exactly one folder, so storing
-        folder=canonical(displayName) is unambiguous and makes the user's own
-        folders openable in the UI. A folder whose canonical name is a system
-        folder is skipped, because the sweep reads it by its well-known name.
-        A failed folder list gives no user folder.
+        Each item is (folder id, canonical name). Each Outlook message lives
+        in exactly one folder, so storing folder=canonical(displayName) is
+        unambiguous and makes the user's own folders openable in the UI. A
+        folder whose canonical name is a system folder is skipped, because
+        the sweep reads it by its well-known name. A failed folder list
+        gives no user folder and False, so the delta keeps the link of each
+        user folder (EM-T4d item 9).
         """
         try:
             folders = await self.list_folders()
         except Exception:
-            return []
+            return [], False
         out: list[tuple[str, str]] = []
         for f in folders:
             if f.type == "system":
@@ -1276,7 +1380,12 @@ class OutlookProvider(BaseEmailProvider):
             if canon in _CORE_CANONICAL:
                 continue
             out.append((f.provider_folder_id, canon))
-        return out
+        return out, True
+
+    async def _user_sweep_folders(self) -> list[tuple[str, str]]:
+        """The user folders of a full sweep: (folder id, canonical name). A
+        failed folder list gives no user folder."""
+        return (await self._user_sweep_folder_list())[0]
 
     async def sync_messages(
         self,
@@ -1285,123 +1394,220 @@ class OutlookProvider(BaseEmailProvider):
         deep: bool = False,
         since: datetime | None = None,
         catch_up: datetime | None = None,
+        *,
+        delta_shadow: bool = False,
     ) -> SyncResult:
+        """The full multi-folder sweep, the one writer of each poll.
+
+        Each poll sweeps the 6 system folders and each user folder, so
+        messages land in the right folder in the UI. A deep sync pages each
+        folder back to the floor. A recurring poll reads only the newest
+        pages, and ``catch_up`` reads past them after a pause (EM-T6b item
+        9). The floor ``since`` binds both (EM-T6a item 5).
+
+        The sweep never reads ``history_id``. Delta stopped new mail once,
+        and nobody found the cause (commits ``55bec57f`` and ``a350b578``,
+        2026-06-23). So with no ``delta_shadow`` the poll makes no delta
+        request and returns ``new_history_id=None``. Phase (d) writes the
+        cursor through ``COALESCE``, so a stored cursor STAYS as it is.
+
+        With ``delta_shadow`` (WS-17 EM-T4d), a shallow poll then runs the
+        Graph delta of each swept folder (``_delta_shadow``). It returns the
+        next cursor as ``new_history_id`` and the record as
+        ``delta_report``. The delta never changes ``messages``,
+        ``full_snapshot``, ``catch_up_incomplete`` or ``catch_up_folders``,
+        and no ``@removed`` item becomes a ``[DELETED]`` marker.
+        """
+        await self._get_client()
+        max_pages = self.DEEP_SYNC_MAX_PAGES if deep else self.RECURRING_SYNC_MAX_PAGES
+        messages: list[EmailMessage] = []
+        incomplete: list[str] = []
+        # The messages of each swept folder, by the key of the sweep. The
+        # delta compares its new mail against them (EM-T4d item 8).
+        swept: dict[str, list[EmailMessage]] = {}
+
+        async def _sweep(folder_key: str, canon: str | None) -> None:
+            try:
+                got = await self._sweep_folder(
+                    folder_key, max_results, canonical_override=canon,
+                    max_pages=max_pages, since=since, catch_up=catch_up,
+                )
+            except CatchUpIncomplete as exc:
+                # Keep what the folder read, and keep the watermark: new
+                # mail still lands this cycle (owner answer Q2, EM-T6b).
+                got = exc.messages
+                incomplete.append(canon or folder_key)
+                logger.warning("sync.catch_up_incomplete folder=%s error=%s",
+                               folder_key, str(exc.__cause__)[:160])
+            except Exception as exc:
+                # One rule with the import (fix round 4): a 403 or a 404
+                # skips only Archive or a user folder. On a folder that
+                # each mailbox has, it fails the cycle, and the error
+                # path writes ``sync_status = 'error'``. Any other failure
+                # leaves the folder unread, so the cycle keeps its
+                # watermark (fix round 3).
+                if _skips_folder(folder_key, canon, exc):
+                    return
+                if _status(exc) in _ABSENT_STATUSES:
+                    raise
+                incomplete.append(canon or folder_key)
+                logger.warning("sync.sweep_folder_failed folder=%s status=%s",
+                               folder_key, _status(exc))
+                return
+            messages.extend(got)
+            swept[folder_key] = got
+
+        for folder_key in SWEEP_SYSTEM_FOLDERS:
+            await _sweep(folder_key, None)
+        user_folders, listed = await self._user_sweep_folder_list()
+        for folder_id, canon in user_folders:
+            await _sweep(folder_id, canon)
+
+        new_history_id: str | None = None
+        report: DeltaShadowReport | None = None
+        if delta_shadow and not deep:
+            keys = [*SWEEP_SYSTEM_FOLDERS, *(f for f, _ in user_folders)]
+            try:
+                new_history_id, report = await self._delta_shadow(
+                    history_id, keys, listed=listed, since=since, swept=swept)
+            except Exception as exc:
+                # A delta failure never changes the sync (EM-T4d item 11).
+                # No new cursor, so phase (d) keeps the stored one.
+                new_history_id = None
+                report = DeltaShadowReport(folders=len(keys), failed=len(keys),
+                                           statuses=[type(exc).__name__])
+
+        return SyncResult(
+            messages_synced=len(messages),
+            messages=messages,
+            new_history_id=new_history_id,
+            # A full multi-folder snapshot → the gateway can reconcile
+            # provider-side deletions (messages gone from every folder).
+            full_snapshot=True,
+            catch_up_incomplete=bool(incomplete),
+            catch_up_folders=incomplete,
+            delta_report=report,
+        )
+
+    async def _delta_shadow(
+        self,
+        raw_cursor: str | None,
+        keys: list[str],
+        *,
+        listed: bool,
+        since: datetime | None,
+        swept: dict[str, list[EmailMessage]],
+    ) -> tuple[str, DeltaShadowReport]:
+        """The Graph delta of each swept folder, after the sweep (EM-T4d).
+
+        It runs AFTER the sweep on purpose. A message that the sweep read
+        arrived before the delta started, so a delta that works returns it.
+        A message that arrives between the two reads can only add to
+        ``delta_only``, never to ``sweep_only``.
+
+        It returns the next cursor and the record. The folder set follows
+        the sweep (item 9): a new user folder seeds, and a folder that the
+        list no longer returns loses its link. A failed folder list
+        (``listed`` False) keeps the link of each stored user folder.
+
+        A failed folder never raises (item 11). A 410 drops its link, and
+        any other failure keeps the stored entry. The record counts each
+        failure and names its status. A 403 or a 404 on Archive or a user
+        folder skips the folder with no count and no link, by the one rule
+        of the sweep (``_skips_folder``). A mailbox with no Archive then
+        logs no failure on each poll."""
+        stored = parse_delta_cursor(raw_cursor)
+        report = DeltaShadowReport()
+        out: dict[str, dict[str, str | None]] = {}
+        if not listed:
+            out.update({k: v for k, v in stored.items()
+                        if k not in SWEEP_SYSTEM_FOLDERS})
+        user = set(keys) - set(SWEEP_SYSTEM_FOLDERS)
+        for key in keys:
+            entry = stored.get(key)
+            after = _cursor_time(entry.get("at")) if entry else None
+            try:
+                got = await self._delta_folder(key, entry, since=since, after=after)
+            except Exception as exc:
+                if _skips_folder(key, key if key in user else None, exc):
+                    continue
+                status = _status(exc)
+                report.folders += 1
+                report.failed += 1
+                report.statuses.append(
+                    str(status) if status is not None else type(exc).__name__)
+                if entry is not None and status != _DELTA_GONE:
+                    out[key] = entry
+                continue
+            report.folders += 1
+            out[key] = got.entry
+            report.removed += got.removed
+            if after is None or not got.ended:
+                # The first round of a folder, or a round that the page cap
+                # cut: it seeds, and adds no count (item 8).
+                report.seeding += 1
+                continue
+            sweep_new = {m.provider_message_id for m in swept.get(key, [])
+                         if _new_since(m.received_at, after)}
+            report.both += len(sweep_new & got.new_ids)
+            report.sweep_only += len(sweep_new - got.new_ids)
+            report.delta_only += len(got.new_ids - sweep_new)
+        return dump_delta_cursor(out), report
+
+    async def _delta_folder(
+        self,
+        key: str,
+        entry: dict[str, str | None] | None,
+        *,
+        since: datetime | None,
+        after: datetime | None,
+    ) -> _DeltaRound:
+        """One round of the Graph delta of the folder *key* (EM-T4d items 3,
+        4 and 13).
+
+        With a stored entry it calls the stored link as it is. With none it
+        starts a seed round at ``/me/mailFolders/{key}/messages/delta``, with
+        the ``$select`` of the sweep and the floor ``since``. Each request
+        sends ``Prefer: odata.maxpagesize=100``, no ``$top`` and no
+        ``IdType`` preference. It follows each ``@odata.nextLink`` to the
+        ``@odata.deltaLink``, for at most ``DELTA_MAX_PAGES`` pages.
+
+        A round that ends stores the delta link and the time it ended as
+        ``at``. A round at the page cap stores its next link and no ``at``,
+        so the next poll goes on, and the folder seeds until a round ends.
+        A failed request raises, and the caller decides."""
         client = await self._get_client()
-
-        # Delta sync is DISABLED: in production the inbox delta token returned 0
-        # changes every cycle even as new mail arrived, silently halting sync.
-        # Force the reliable multi-folder full sweep and return
-        # new_history_id=None — which also auto-clears any stuck token already
-        # persisted on the account (the scheduler writes it back), so a
-        # previously-broken account self-heals on its next cycle. Re-enable delta
-        # only behind a verified implementation.
-        history_id = None
-
-        if history_id:
-            # We persist Graph's @odata.deltaLink (a full URL) as history_id, but
-            # the delta endpoint wants only the bare $deltatoken value — extract
-            # it (handles both a stored deltaLink URL and an already-bare token).
-            token = history_id
-            if "://" in history_id:
-                from urllib.parse import parse_qs, urlparse  # noqa: PLC0415
-                token = parse_qs(urlparse(history_id).query).get(
-                    "$deltatoken", [history_id]
-                )[0]
-            # Delta query for incremental sync
-            resp = await client.get(
-                "/me/mailFolders/inbox/messages/delta",
-                params={"$deltatoken": token, "$top": max_results},
-            )
+        headers = {"Prefer": _DELTA_PREFER}
+        params: dict[str, Any] | None = None
+        if entry is not None:
+            url: str | None = entry["link"]
+        else:
+            url = f"/me/mailFolders/{_folder_path(key)}/messages/delta"
+            params = {"$select": _MESSAGE_SELECT}
+            if since is not None:
+                params["$filter"] = f"receivedDateTime ge {_graph_time(since)}"
+        out = _DeltaRound(entry={})
+        for _ in range(self.DELTA_MAX_PAGES):
+            resp = await client.get(url, params=params, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-
-            messages: list[EmailMessage] = []
-            removed_count = 0
-            for item in data.get("value", []):
-                if item.get("@removed"):
-                    removed_count += 1
-                    messages.append(EmailMessage(
-                        provider_message_id=item["id"],
-                        folder="TRASH",
-                        labels=["TRASH"],
-                        subject="[DELETED]",
-                    ))
-                else:
-                    msg = self._parse_graph_message(item)
-                    # The delta query runs against the inbox folder.
-                    msg.folder = "inbox"
-                    messages.append(msg)
-
-            return SyncResult(
-                messages_synced=len(data.get("value", [])),
-                messages_skipped=removed_count,
-                messages=messages,
-                new_history_id=data.get("@odata.deltaLink"),
-            )
-        else:
-            # Full multi-folder sweep so messages land in the right folder in the
-            # UI (not just inbox/sent). DEEP sync (first connect / forced) pages
-            # each folder back to the floor via the since-filter. RECURRING
-            # polls read only the newest pages (cheap). The floor binds BOTH
-            # (EM-T6a item 5): without it, the first poll of a quiet user
-            # folder added mail that was years old (D-EM-10). ``catch_up``
-            # reads past the newest pages after a pause (EM-T6b item 9).
-            max_pages = self.DEEP_SYNC_MAX_PAGES if deep else self.RECURRING_SYNC_MAX_PAGES
-            messages = []
-            incomplete: list[str] = []
-
-            async def _sweep(folder_key: str, canon: str | None) -> None:
-                try:
-                    messages.extend(await self._sweep_folder(
-                        folder_key, max_results, canonical_override=canon,
-                        max_pages=max_pages, since=since, catch_up=catch_up,
-                    ))
-                except CatchUpIncomplete as exc:
-                    # Keep what the folder read, and keep the watermark: new
-                    # mail still lands this cycle (owner answer Q2, EM-T6b).
-                    messages.extend(exc.messages)
-                    incomplete.append(canon or folder_key)
-                    logger.warning("sync.catch_up_incomplete folder=%s error=%s",
-                                   folder_key, str(exc.__cause__)[:160])
-                except Exception as exc:
-                    # One rule with the import (fix round 4): a 403 or a 404
-                    # skips only Archive or a user folder. On a folder that
-                    # each mailbox has, it fails the cycle, and the error
-                    # path writes ``sync_status = 'error'``. Any other failure
-                    # leaves the folder unread, so the cycle keeps its
-                    # watermark (fix round 3).
-                    if _skips_folder(folder_key, canon, exc):
-                        return
-                    if _status(exc) in _ABSENT_STATUSES:
-                        raise
-                    incomplete.append(canon or folder_key)
-                    logger.warning("sync.sweep_folder_failed folder=%s status=%s",
-                                   folder_key, _status(exc))
-
-            for folder_key in SWEEP_SYSTEM_FOLDERS:
-                await _sweep(folder_key, None)
-            for folder_id, canon in await self._user_sweep_folders():
-                await _sweep(folder_id, canon)
-
-            # IMPORTANT: keep the account in full-sync mode (new_history_id=None).
-            #
-            # We previously seeded an inbox delta token here (via
-            # _bootstrap_inbox_delta) to detect upstream deletions. In production
-            # that delta token returned 0 changes every cycle even when new mail
-            # had arrived — i.e. it SILENTLY STOPPED syncing new email. The
-            # multi-folder full sweep above is the reliable path (it reliably
-            # picks up new mail), so we stay on it. Deletion-detection needs a
-            # different, verified approach before delta is re-enabled.
-            return SyncResult(
-                messages_synced=len(messages),
-                messages=messages,
-                new_history_id=None,
-                # A full multi-folder snapshot → the gateway can reconcile
-                # provider-side deletions (messages gone from every folder).
-                full_snapshot=True,
-                catch_up_incomplete=bool(incomplete),
-                catch_up_folders=incomplete,
-            )
+            for item in data.get("value") or []:
+                if "@removed" in item:
+                    out.removed += 1
+                    continue
+                received = self._parse_received_datetime(item.get("receivedDateTime"))
+                if after is not None and item.get("id") and _new_since(received, after):
+                    out.new_ids.add(str(item["id"]))
+            ended = data.get("@odata.deltaLink")
+            if ended:
+                out.entry = {"link": ended, "at": datetime.now(UTC).isoformat()}
+                out.ended = True
+                return out
+            url, params = data.get("@odata.nextLink"), None
+            if not url:
+                raise RuntimeError("a delta page with no next link and no delta link")
+        out.entry = {"link": url, "at": None}
+        return out
 
     async def import_batches(
         self,
