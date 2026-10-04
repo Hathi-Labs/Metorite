@@ -598,7 +598,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #566 (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
-| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** 📝 **EM-T4b NARROWED (2026-10-04), not built.** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
+| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** 🔨 **EM-T4b BUILT, not merged (2026-10-04), branch `email-llm-budget`, dark** (cap 0, budget `log`). **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
@@ -1532,7 +1532,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 **Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). ✅ EM-T4f MERGED (#578, 2026-10-02). ✅ EM-T4e MERGED (#586, migration 226, 2026-10-03).
 
-✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). EM-T4a-2, EM-T4a-3, EM-T4a-4 and EM-T4b (narrowed 2026-10-04) are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). 🔨 EM-T4b BUILT, not merged (2026-10-04), branch `email-llm-budget`, dark. EM-T4a-2, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box. The dev-phase window of CLAUDE.md §3a does NOT open `EMAIL_LLM_BUDGET_MODE=enforce`. `enforce` holds back triage and drafts from a paying mailbox. So it is a product limit, and the owner decides it.
 
@@ -1824,7 +1824,7 @@ API, and EM-T4b adds the shared cap and the budget.
 
 ##### EM-T4b — one cap and one daily budget for the model calls
 
-**Status.** 📝 Narrowed 2026-10-04, verified at 012483a43. GO-NARROWED: build at the defaults (budget `log`, cap 0), no box change.
+**Status.** 🔨 BUILT, not merged (2026-10-04), branch `email-llm-budget`, dark. The audit narrowed it on 2026-10-04 and verified it at 012483a43. The build keeps the defaults (budget `log`, cap 0) and makes no box change. The as-built notes follow the Verify block.
 
 **Order.** EM-T5 merged (#569), so item 2 of the EM-T4 order no longer holds this part. EM-T4a-2 splits functions in `engine.py` and `replyzero.py`, and items 12 and 13 below touch the same files. So EM-T4a-2 must not run in parallel with EM-T4b.
 
@@ -1922,6 +1922,80 @@ uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway pa
 ```
 
 With the database exported, the run must show 0 skips. The baseline at `012483a43` with no database was 480 passed and 31 skipped, over the 14 files that exist today. `test_email_llm_cap.py` is new.
+
+**As built (2026-10-04).** Branch `email-llm-budget`. It ships dark, with the cap at 0 and the budget mode at `log`. It takes no migration.
+
+1. `email_ingestion/llm_cap.py` holds the scope, the cap and the budget. It imports no `gateway` module.
+2. `automation_job` is a decorator. It opens the scope for a job whose first argument is the account id. The signature of the job does not change.
+3. The eight jobs of item 5 carry `automation_job`. `as_mailbox_owner` opens the scope beside `job_member_scope`.
+4. `llm_slot(requests=1, wait=True)` takes the permit first, then counts, then runs the call. A call that finds no free permit counts nothing.
+5. The re-entrant guard covers this task and each task that a held slot starts. Such a slot takes no second permit and counts nothing. So the guard cannot deadlock.
+6. The budget bounds its two Redis commands at 2 seconds. Past that the call runs, and `email.llm_budget_unavailable` logs `TimeoutError` as the reason.
+7. A limit under 1 means no limit. An unknown mode reads as `log`, and `email.llm_budget_mode_refused` logs once.
+8. `_ask_all` holds one slot around the gather of its requests. In `shadow` the slot does not wait. `NoFreeSlot` then logs `decide.shadow_skipped` with `reason=cap`.
+9. Item 12 needed no change in `engine.py`. Each `_old` handler already turns each failure into `LLMUnavailable`.
+10. Item 13: `recompute_thread_status` passes `LLMBudgetExhausted` up. So `_mark_thread_replied` logs its failure and writes nothing.
+11. The build deletes `_draft_via_maf_agent` and `_strip_draft_markers`, its one helper. Nothing else called either of them.
+12. `tests/conftest.py` sets `EMAIL_LLM_BUDGET_MODE=off` for the test run. With the `log` default, the unit suites wrote real keys into the Redis of a dev machine. The new suite sets each mode itself, over a fake client under the real `TenantRedis`.
+
+**Anchors that differed from this section.**
+
+- The section says that `test_email_layering.py` forbids a `gateway` import in `llm_cap.py`. That test reads `scheduler.py` only. The fence is `test_the_cap_module_does_not_import_the_gateway` in the new suite.
+- The Files line names `engine.py` for item 12. The build needed no change there (point 9).
+
+**Known behaviour, recorded.**
+
+- In `off` and `shadow`, the thread-status resolver treats a spent budget as each other failure. It keeps the match for each message, and the runner stamps the row. Only the rule match leaves a row undecided at the budget.
+- In `log`, each model call in the scope sends two Redis commands, `incr` and `expire`.
+
+**Fences.** Each line of "Done when" has a test in `tests/unit/test_email_llm_cap.py`.
+
+| Line | Test |
+|---|---|
+| Done when 1 | `test_a_cap_of_two_never_runs_more_than_two_calls_at_once` |
+| Done when 2 | `test_a_nested_slot_completes_with_a_cap_of_one` |
+| Done when 3 | `test_a_call_outside_the_scope_takes_no_slot_and_counts_nothing` |
+| Done when 4 | `test_enforce_refuses_call_2001_before_the_model` |
+| Done when 5, F1, F2 | `TestTheRunnerAtTheBudget` (R8, three cases) |
+| Done when 6 | `test_log_runs_call_2001_and_logs_exceeded_once` |
+| Done when 7 | `test_the_key_of_one_mailbox_id_differs_between_two_orgs` |
+| Done when 8 | `test_with_redis_down_the_call_runs_and_the_cap_still_binds` |
+| Done when 9 | `test_a_full_cap_skips_the_shadow_with_no_extra_wait` |
+| Done when 10, F8 | `test_each_model_await_sits_inside_llm_slot`, and the four companion tests |
+| Done when 11 | `test_tenant_redis.py`, with no new allowlist entry |
+| F3 | `test_two_children_at_a_cap_of_one_never_overlap_and_never_deadlock` |
+| F4 | `test_with_the_shipped_defaults_no_call_takes_a_permit` |
+| F5 | `test_one_ask_all_takes_one_permit_and_counts_each_request` |
+| F6 | the four tests that end in `takes_no_permit_and_counts_nothing` |
+| F7 | `test_log_counts_at_fifty_and_a_hundred_percent_once_a_day` |
+
+**Mutations (R7).** Each row changed one place in the code. The named tests went red, and the file went back to its exact SHA-256 before the next row. 21 rows, 21 red.
+
+| Fence | Mutation | Red |
+|---|---|---|
+| Done when 1 | `llm_slot` takes no permit | 1 test |
+| Done when 2 | no re-entrant guard | 1 test, a deadlock past its bound |
+| Done when 3 | the scope is always open | 1 test |
+| Done when 4 | `enforce` never refuses | 1 test |
+| Done when 5, F2 | the `_old` rule path returns None for a failure | 2 tests, one R8 |
+| Done when 5, F1 | `_ask_all` lets `LLMBudgetExhausted` escape | 2 tests, one R8 |
+| Done when 6 | `email.llm_budget_exceeded` logs on each call past the limit | 1 test |
+| Done when 7 | the key drops the account id | 1 test |
+| Done when 8 | a Redis error fails the call | 1 test |
+| Done when 9 | the shadow waits for a slot | 1 test |
+| Done when 10, F8 | `_llm_json` loses its slot | 1 test |
+| F8 | the fence sees no slot | 2 tests |
+| Done when 11 | `llm_cap.py` imports `redis` | `test_no_direct_redis_client_outside_the_wrapper` |
+| F3 | the scope holds one permit for all of its calls | 1 test |
+| F4 | the shipped cap is 4 | 2 tests |
+| F5 | `_ask_all` counts one request | 1 test |
+| F6 | a draft reply opens the scope | 1 test |
+| F7 | the 50% and 100% lines fire on each call | 1 test |
+| Item 13 | the status call writes its `· auto` fallback | 1 test |
+| Item 5 | `_run_rules_job` opens no scope | 3 tests, one R8 |
+| Item 5 | `as_mailbox_owner` opens no scope | 1 test |
+
+**Verified (2026-10-04, a private database).** The Verify block gave 565 passed and 0 skipped. All the `test_email_*.py` suites, with the seam and tenancy fences, gave 2603 passed. The 2 skips there are the two `test_tenant_coverage.py` tests that need `DATABASE_URL`, which `scripts/dev_db.sh` does not set on purpose.
 
 ##### EM-T4c — refresh on a 401 during a sync, and try once more
 

@@ -27,6 +27,7 @@ inbound.py         — aiosmtpd inbound SMTP receiver (persists to email_message
 scheduler.py       — Background sync scheduler (per-account asyncio tasks)
 import_window.py   — the import floor: the ceiling, the range and the floor (EM-T6a)
 storage.py         — the storage meter, the limit, and the removal of older mail (EM-T6c)
+llm_cap.py         — the cap and the daily budget of the email model calls (EM-T4b)
 ```
 
 ## Providers
@@ -91,6 +92,28 @@ All providers implement the `BaseEmailProvider` abstract interface:
    - `authenticate` does not refresh a token that a refresh on the same instance
      made. A sync calls `authenticate` two times, so without this rule a mailbox
      that refuses each request costs three token posts in one tick.
+
+7. **One cap and one daily budget for the email model calls (WS-17 EM-T4b).**
+   `llm_cap.py` owns both. It imports no `gateway` module, and it reads the
+   tenant from `acb_common.db.current_tenant`. Fence:
+   `tests/unit/test_email_llm_cap.py`.
+   - A job that acts on a mailbox opens the automation scope with
+     `automation_job` or `automation_scope`. A call that a member drives never
+     opens it. Outside the scope, `llm_slot` takes no permit and counts nothing.
+   - `llm_slot` wraps the leaf model await only. Do not wrap an enclosing
+     function. A parent that holds a permit while its children wait for one
+     deadlocks at a cap of 1. The AST fence of the test finds a model await
+     outside `llm_slot`, and a `decide` facade call inside one.
+   - The cap is one `asyncio.Semaphore` for the process, because the gateway
+     runs as one process. `EMAIL_LLM_CONCURRENCY=0` means no cap, and 0 is
+     the default.
+   - The budget counts model requests for each mailbox for each UTC day under
+     `tenant_redis.key("email-llm", account_id, date)`. `log` is the default,
+     and it never refuses a call. `enforce` raises `LLMBudgetExhausted` past
+     `EMAIL_LLM_DAILY_CALLS`, before the model call. 🔴 `enforce` on a box is
+     OWNER-GATE.
+   - A Redis failure, or a Redis that hangs for 2 seconds, logs
+     `email.llm_budget_unavailable`, and the call runs. The cap still binds.
 
 ## Inbound SMTP Server
 
