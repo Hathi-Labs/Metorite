@@ -275,7 +275,7 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
               Live preview
             </div>
             {kind === "markdown" ? (
-              <DocumentMarkdown content={draft} />
+              <DocumentMarkdown content={draft} sessionId={sessionId} mdFilePath={path} />
             ) : kind === "react" ? (
               <SandboxedReact code={draft} iconNames={draftIcons} />
             ) : (
@@ -288,7 +288,7 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
   } else if (kind === "markdown") {
     body = (
       <div className="flex-1 overflow-auto p-4">
-        <DocumentMarkdown content={content} />
+        <DocumentMarkdown content={content} sessionId={sessionId} mdFilePath={path} />
       </div>
     );
   } else if (kind === "html") {
@@ -336,10 +336,19 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
 }
 
 /** Themed markdown body — same prose styling the app uses elsewhere.
- *  Raw HTML is allowed, so `rehypeGateRemoteMedia` strips every remote fetch
- *  and `MarkdownImage` draws a remote image as a click-to-load placeholder
- *  (`lib/markdownMedia.ts`). */
-export function DocumentMarkdown({ content }: { content: string }) {
+ *  Raw HTML is allowed, so `rehypeGateRemoteMedia` strips the remote fetches
+ *  raw HTML can make, and `MarkdownImage` draws a remote image as a
+ *  click-to-load placeholder (`lib/markdownMedia.ts`). A relative image
+ *  resolves against the file, through the workspace file proxy. */
+export function DocumentMarkdown({
+  content,
+  sessionId,
+  mdFilePath,
+}: {
+  content: string;
+  sessionId?: string;
+  mdFilePath?: string;
+}) {
   return (
     <div className="cc-prose prose prose-sm max-w-none prose-headings:font-semibold prose-a:text-primary">
       <ReactMarkdown
@@ -348,7 +357,14 @@ export function DocumentMarkdown({ content }: { content: string }) {
         urlTransform={markdownUrlTransform}
         components={{
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          img: ({ node: _node, ...props }) => <MarkdownImage {...props} className="max-w-full rounded" />,
+          img: ({ node: _node, ...props }) => (
+            <MarkdownImage
+              {...props}
+              sessionId={sessionId}
+              mdFilePath={mdFilePath}
+              className="max-w-full rounded"
+            />
+          ),
         }}
       >
         {content}

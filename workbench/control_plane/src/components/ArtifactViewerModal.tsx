@@ -152,8 +152,8 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
  * both draw through this, so the two cannot disagree about what loads.
  *
  * Raw HTML is allowed (`rehype-raw`), so an attacker who steers the file can
- * write any tag. `rehypeGateRemoteMedia` runs after it and strips every remote
- * fetch a browser would make on render. `MarkdownImage` draws a remote image
+ * write any tag. `rehypeGateRemoteMedia` runs after it and strips the remote
+ * fetches raw HTML can make on render. `MarkdownImage` draws a remote image
  * as a click-to-load placeholder. `lib/markdownMedia.ts` holds the threat.
  * Fence: `src/components/markdownImage.test.ts`.
  */

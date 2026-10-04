@@ -45,6 +45,22 @@ describe("remoteHost", () => {
     );
   });
 
+  it("treats an escaped ? in the path of a same-origin URL as remote", () => {
+    // A catch-all proxy decodes the segment and joins it into the gateway URL,
+    // so `%3F` becomes a real query there (the PR's review, finding 1).
+    const hidden = "/api/email/image-proxy%3Furl=https%253A%252F%252Fattacker.example%252Fp.png%253Fd%253D1";
+    expect(remoteHost(hidden, APP)).toBe("attacker.example");
+    expect(remoteHost(`${APP}${hidden}`, APP)).toBe("attacker.example");
+    expect(remoteHost("/%61pi/email/image-proxy%3Furl=x", APP)).toBe("app.metorite.com");
+    expect(remoteHost("/brand/logo.png%3Fx", APP)).toBe("app.metorite.com");
+  });
+
+  it("gates every API path but the workspace file proxy", () => {
+    expect(remoteHost("/api/projects/attachments/a1/download", APP)).toBe("app.metorite.com");
+    expect(remoteHost("/api/agent/workspace/s%3Fx/file?path=a.png", APP)).toBe("app.metorite.com");
+    expect(remoteHost("/api/agent/workspace/0b8c-41/file?path=outputs%2Fa.png", APP)).toBeNull();
+  });
+
   it("gates a scheme the browser would not load, at the cost of one click", () => {
     expect(remoteHost("ftp://attacker.example/p.png", APP)).toBe("attacker.example");
     expect(remoteHost("http://[::1", APP)).toBe(UNKNOWN_HOST);

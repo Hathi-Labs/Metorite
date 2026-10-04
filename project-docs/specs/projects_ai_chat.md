@@ -2080,20 +2080,37 @@ same-origin or workspace path load at once.
 **One gate.** `src/lib/markdownMedia.ts` decides, and
 `src/components/MarkdownImage.tsx` draws. Every renderer of agent Markdown
 uses them: `MarkdownBody`, `ThinkingContainer`, `ArtifactViewerModal` and
-`DocumentPane`. A same-origin URL that names another URL in its query is
-remote, because `/api/email/image-proxy?url=` fetches that URL on the server.
+`DocumentPane`.
+
+**A same-origin URL can still send the data out.** `/api/email/image-proxy?url=`
+fetches any public URL on the server. A proxy route with a catch-all path
+decodes each segment, so `/api/email/image-proxy%3Furl=…` reaches the gateway with a real
+query. So the gate treats these same-origin URLs as remote:
+
+- a URL whose query names another URL
+- a URL whose decoded path holds a `?`, a `#`, a backslash or another URL
+- every `/api/` path except the workspace file proxy that `resolveMediaSrc`
+  builds
 
 **Raw HTML.** `ArtifactViewerModal` and `DocumentPane` run `rehype-raw`, and
 `rehypeGateRemoteMedia` runs after it. It removes `script`, `style`, `link`,
 `meta`, `base`, `title`, `template`, `iframe`, `object` and `embed`. It strips
-each remote `src`, `srcset`, `poster`, `background` and CSS `url()` from the
-rest. Before this fix, an agent `.md` file with `<script async src>` ran that
-script in the app's origin, because React 19 hoists an async script and loads
-it. An email attachment opens in the same viewer.
+each URL attribute that the gate treats as remote, for example `src`, `srcset`,
+`poster` and `background`. It also strips each attribute that holds a CSS fetch.
+That covers `style`, the SVG presentation attributes such as `mask` and `fill`,
+and the SMIL values. A CSS fetch is a `url()` that is not a fragment, an
+`image-set()`, or a CSS escape.
+
+Before this fix, an agent `.md` file with `<script async src>` ran that script
+in the app's origin, because React 19 hoists an async script and loads it. An
+email attachment opens in the same viewer. The raw-HTML gate is a block list,
+so a new vector is a new case in the plugin and in its test.
 
 **Fences.** `src/components/markdownImage.test.ts` and
-`src/lib/markdownMedia.test.ts`. The app sends no CSP that limits `img-src`.
-H-238 holds that follow-up.
+`src/lib/markdownMedia.test.ts`. A source scan in the first file also fails when
+a new `react-markdown` renderer skips `MarkdownImage`, `markdownUrlTransform` or
+the raw-HTML gate. The app sends no CSP that limits `img-src`. H-238 holds that
+follow-up.
 
 ---
 

