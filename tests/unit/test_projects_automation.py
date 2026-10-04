@@ -349,6 +349,13 @@ def test_a_ref_that_resolves_to_nothing_fails_the_node_rather_than_patching_noth
 # is broken".
 
 
+@pytest.fixture(autouse=True)
+def _dispatch_on(monkeypatch):
+    """The run is dark by default (`PROJECTS_AGENT_DISPATCH`). The tests of
+    the run need it ON. The OFF tests below take it away again."""
+    monkeypatch.setenv(agent_dispatch.DISPATCH_FLAG, "1")
+
+
 def _assigned(task_id, assignees, org: str | None = DEFAULT_ORGANIZATION):
     payload = {"task_id": str(task_id), "assignees": assignees}
     if org is not None:
@@ -702,6 +709,78 @@ def test_the_sink_returns_while_the_run_is_still_running(monkeypatch, db, projec
         "started", "finished",
     ]
     assert not agent_dispatch._RUNS, "a finished run stayed in the set"
+
+
+# ── Dark by default: `PROJECTS_AGENT_DISPATCH` ──────────────────────────────
+#
+# A dispatched run spends the org's AI credits, and §9.12.10 keeps "Assign to
+# AI" parked. OFF: no run, nothing spent, one row a member reads.
+
+
+class _InfoLog(_Log):
+    def __init__(self) -> None:
+        super().__init__()
+        self.infos: list[tuple[str, dict]] = []
+
+    def info(self, event: str, **fields) -> None:
+        self.infos.append((event, fields))
+
+
+def test_the_flag_is_off_when_unset(monkeypatch):
+    monkeypatch.delenv(agent_dispatch.DISPATCH_FLAG, raising=False)
+    assert agent_dispatch.dispatch_enabled() is False
+
+
+@pytest.mark.parametrize("raw, on", [
+    ("1", True), ("on", True), (" TRUE ", True), ("yes", True),
+    ("0", False), ("off", False), ("", False), ("maybe", False),
+])
+def test_only_the_usual_spellings_turn_the_flag_on(monkeypatch, raw, on):
+    monkeypatch.setenv(agent_dispatch.DISPATCH_FLAG, raw)
+    assert agent_dispatch.dispatch_enabled() is on
+
+
+@pytest.mark.parametrize("raw", [None, "0", "maybe"])
+def test_off_starts_no_run_and_tells_the_member_once(monkeypatch, db, project, raw):
+    """The REAL sink with the flag OFF: no `run_agent` call, no "started" row,
+    one row the member reads, and an INFO line. Two agents, still one row."""
+    if raw is None:
+        monkeypatch.delenv(agent_dispatch.DISPATCH_FLAG, raising=False)
+    else:
+        monkeypatch.setenv(agent_dispatch.DISPATCH_FLAG, raw)
+    bind_db(monkeypatch, db, (agent_dispatch,))
+    log = _InfoLog()
+    monkeypatch.setattr(agent_dispatch, "_log", log)
+    calls: list = []
+
+    async def run_agent(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"result": "spent"}
+
+    _executor(monkeypatch, run_agent)
+    run(_dispatch(_assigned(project.task.id, ["agent:a", "agent:b"])))
+    assert calls == [], "a run started with the flag OFF"
+    rows = db.activities("agent_run")
+    assert [(r["body"], r["meta"]["state"]) for r in rows] == [
+        (agent_dispatch.DISABLED_BODY, "disabled"),
+    ]
+    assert rows[0]["meta"]["agents"] == ["a", "b"]
+    assert [e for e, _ in log.infos] == ["projects.agent_dispatch_disabled"]
+    assert log.warnings == []
+
+
+def test_off_in_a_paused_project_stays_silent(monkeypatch, db, project):
+    """The run-state guard comes first, as it did: a paused project gets no
+    row at all, ON or OFF."""
+    monkeypatch.delenv(agent_dispatch.DISPATCH_FLAG, raising=False)
+    bind_db(monkeypatch, db, (agent_dispatch,))
+
+    async def paused(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(agent_dispatch, "is_runnable_with_ancestors", paused)
+    run(_dispatch(_assigned(project.task.id, ["agent:a"])))
+    assert db.activities("agent_run") == []
 
 
 async def _noop() -> None:

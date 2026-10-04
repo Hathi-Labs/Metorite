@@ -44,6 +44,8 @@ import os
 import pathlib
 import sys
 
+# The dispatch checks are of the run, which ships dark (2026-10-04).
+os.environ["PROJECTS_AGENT_DISPATCH"] = "1"
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+asyncpg://postgres@/ws27bg?host=/tmp&port=5439",

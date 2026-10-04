@@ -45,6 +45,12 @@ test replaced the run with a fake that accepted any message.
 `tests/unit/test_projects_agent_dispatch_run.py` runs the real sink through
 the real executor on a real Postgres.
 
+**Dark by default: `PROJECTS_AGENT_DISPATCH`.** A dispatched run spends the
+org's AI credits, and §9.12.10 keeps "Assign to AI" parked. With the flag OFF
+the sink starts no run. It writes one `agent_run` row that says the feature
+is not switched on, and logs `projects.agent_dispatch_disabled` at INFO. The
+flip is the owner's (`work_plan.md` §6). Fenced by both suites named above.
+
 **The run is started, never awaited.** `PUT /tasks/{id}/assignees` awaits
 `emit`, which awaits every sink. A sink that awaited the run held the
 member's request open for the whole run. `on_event` therefore writes the
@@ -69,6 +75,7 @@ from acb_common import get_logger
 # module that opens a session without one.
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.projects.core import (
+    _TRUTHY,
     is_runnable_with_ancestors,
     record_activity,
 )
@@ -87,6 +94,17 @@ AGENT_RUN_TIMEOUT_SECONDS = 600.0
 #: What `payload.source` says for a run this sink starts. The executor binds it
 #: into the run's context, so the usage and the logs name where a run came from.
 RUN_SOURCE = "projects.agent_dispatch"
+
+#: Ship dark (2026-10-04). A dispatched run spends the org's AI credits, and
+#: `project_management_app.md` §9.12.10 keeps "Assign to AI" parked. The flip
+#: is the owner's (`work_plan.md` §6). Read at call time, like
+#: `PROJECTS_ORG_VOCABULARIES`, so the flip is a restart and not a release.
+DISPATCH_FLAG = "PROJECTS_AGENT_DISPATCH"
+
+#: The one row a member sees when the flag is OFF.
+DISABLED_BODY = (
+    "Assigning work to an AI agent is not switched on for this workspace."
+)
 
 #: The longest reply the closing timeline row keeps.
 REPLY_LIMIT = 2000
@@ -133,6 +151,18 @@ def build_message(task: Any) -> str:
         parts.append(description)
     parts.append(f"The task id is {task.id}.")
     return "\n\n".join(parts)
+
+
+def dispatch_enabled() -> bool:
+    """Is a dispatched run released? Default **OFF**, and fail closed.
+
+    Any value outside `_TRUTHY` reads as OFF. OFF means no run starts and
+    nothing is spent. The sink writes one timeline row so that the member
+    knows the assignment did not reach an agent.
+    """
+    import os
+
+    return (os.environ.get(DISPATCH_FLAG) or "").strip().lower() in _TRUTHY
 
 
 def run_payload(message: str) -> dict[str, Any]:
@@ -258,6 +288,23 @@ async def on_event(source: str, event_type: str, payload: dict[str, Any]) -> Non
                 agents=agents,
                 reason="the task's project (or one above it) is not running "
                        "(WS-27bg)",
+            )
+            return
+
+        # Ship dark. OFF: one row the member reads, an INFO line, no run.
+        # Checked after the task and the run state, so a paused project stays
+        # as quiet as it was, and before any `agent_run` "started" row.
+        if not dispatch_enabled():
+            await record_activity(
+                db, activity_type="agent_run",
+                created_by=f"{AGENT_PREFIX}{agents[0]}",
+                task_id=task_id, body=DISABLED_BODY,
+                meta={"agent": agents[0], "agents": agents,
+                      "state": "disabled"},
+            )
+            _log.info(
+                "projects.agent_dispatch_disabled", task_id=task_id,
+                agents=agents, flag=DISPATCH_FLAG,
             )
             return
 

@@ -28,7 +28,12 @@ Mutations this suite catches (R7):
 * the sink awaits the run inline again: the assignment waits for the agent,
   and the closing row exists before ``on_event`` returns;
 * the run is started without the event's tenant: the run is refused
-  (``RunWorkspaceRefused``) and the closing row says so.
+  (``RunWorkspaceRefused``) and the closing row says so;
+* the ``PROJECTS_AGENT_DISPATCH`` check removed: with the flag OFF the run
+  starts anyway, and the OFF test sees a model call and a "started" row.
+
+The run is dark by default. The run fixture turns the flag ON, and the OFF
+test turns it off on the same real sink and the same real executor.
 
 Run::
 
@@ -127,6 +132,8 @@ def model(monkeypatch, short_tmp) -> _Model:  # noqa: F811
     monkeypatch.setattr(settings, "custom_apps_root", str(short_tmp / "apps"))
     # No organization is covered. A dev .env must not make this a covered run.
     monkeypatch.setattr(settings, "maf_coding_scope", "")
+    # The run ships dark. These tests are of the run, so they turn it ON.
+    monkeypatch.setenv("PROJECTS_AGENT_DISPATCH", "1")
     agent_dir = clone / "repos" / AGENT
     agent_dir.mkdir(parents=True)
     shutil.copy(AGENT_DIR / "config.json", agent_dir / "config.json")
@@ -278,3 +285,31 @@ def test_the_assignment_does_not_wait_for_the_agent(
     _assign(board, before_settle=seen)
     assert [r.meta.get("state") for r in seen] == ["started"], [r.body for r in seen]
     assert [r.meta.get("state") for r in _timeline(board)] == ["started", "finished"]
+
+
+def test_with_the_flag_off_no_run_starts_and_the_member_is_told(
+    board, model, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """``PROJECTS_AGENT_DISPATCH`` OFF, through the same real sink and the
+    same real executor: the model is never called, nothing is spent, and the
+    task carries one row in its own tenant that says why."""
+    from gateway.routes.projects import agent_dispatch
+    from orchestrator import executor
+
+    monkeypatch.delenv("PROJECTS_AGENT_DISPATCH", raising=False)
+    started: list[str] = []
+    real = executor.run_agent
+
+    async def counted(agent: str, *args: Any, **kwargs: Any) -> Any:
+        started.append(agent)
+        return await real(agent, *args, **kwargs)
+
+    monkeypatch.setattr(executor, "run_agent", counted)
+    _assign(board)
+    assert started == [], "run_agent was called with the flag OFF"
+    assert model.bodies == [], "the model was called with the flag OFF"
+    rows = _timeline(board)
+    assert [(r.body, r.meta.get("state")) for r in rows] == [
+        (agent_dispatch.DISABLED_BODY, "disabled"),
+    ]
+    assert {str(r.organization_id) for r in rows} == {board.org}
