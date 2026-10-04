@@ -238,7 +238,7 @@ def _sync_delete(
 
 def _sync_history(
     agent_name: str, path: str | None, limit: int, instance: str = "",
-    organization_id: str | None = None,
+    organization_id: str | None = None, session_id: str | None = None,
 ) -> list[dict]:
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -252,6 +252,9 @@ def _sync_history(
     if path:
         sql += " AND path = :p"
         params["p"] = path
+    if session_id:
+        sql += " AND session_id = :sid"
+        params["sid"] = session_id
     sql += " ORDER BY created_at DESC LIMIT :lim"
     params["lim"] = max(1, min(limit, 1000))
     with tenant_session(organization_id) as s:
@@ -367,14 +370,20 @@ async def delete_file(
 async def file_history(
     agent_name: str, path: str | None = None, limit: int = 200,
     *, instance: str = "", organization_id: str | None = None,
+    session_id: str | None = None,
 ) -> list[dict]:
-    """Version history for one agent instance, newest first."""
+    """Version history for one agent instance, newest first.
+
+    *session_id* keeps only the rows that one chat session wrote. The
+    gateway's session routes ask for them, to tell which loose file of a
+    shared agent's tenant dir a session wrote (H-227).
+    """
     if not agent_name:
         return []
     try:
         return await asyncio.to_thread(
             _sync_history, agent_name, path, limit, instance,
-            _caller_tenant(organization_id),
+            _caller_tenant(organization_id), session_id,
         )
     except Exception as exc:  # noqa: BLE001
         _log.debug("blob_store.history_failed", agent=agent_name, error=str(exc)[:120])

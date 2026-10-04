@@ -162,12 +162,13 @@ def _run_write(disk: _Disk, org: str, sid: str, rel: str, body: str) -> tuple[di
     return asyncio.run(_go()), ws, key
 
 
-def _put(org: str, instance: str, path: str, body: str, agent: str = _S) -> None:
+def _put(org: str, instance: str, path: str, body: str, agent: str = _S,
+         session_id: str | None = None) -> None:
     from acb_memory import put_file
 
     meta = asyncio.run(put_file(
         agent, path, body.encode("utf-8"), mime_type="text/markdown",
-        action="create", run_id=None, session_id=None, actor="test",
+        action="create", run_id=None, session_id=session_id, actor="test",
         instance=instance, organization_id=org))
     assert meta is not None, (org, instance, path)
 
@@ -618,19 +619,25 @@ def test_the_projects_dispatch_passes_the_tenant(monkeypatch) -> None:
 
 @_DB_GATE
 def test_two_orgs_write_to_separate_dirs_and_separate_rows(graph_as_app, disk) -> None:  # noqa: F811
+    from acb_skills.agent_paths import thread_scoped_rel
+
     a, b = graph_as_app.org_a, graph_as_app.org_b
     rel = f"outputs/report-{uuid.uuid4().hex[:6]}.md"
+    # One thread id in both orgs, so both runs write ONE path. H-227 puts it
+    # in the thread's own folder.
+    sid = f"sid-{uuid.uuid4().hex[:6]}"
+    path = thread_scoped_rel(rel, sid)
     before = disk.snapshot()
-    res_a, ws_a, _key_a = _run_write(disk, a, "sid-a", rel, "FROM A")
-    res_b, ws_b, _key_b = _run_write(disk, b, "sid-b", rel, "FROM B")
+    res_a, ws_a, _key_a = _run_write(disk, a, sid, rel, "FROM A")
+    res_b, ws_b, _key_b = _run_write(disk, b, sid, rel, "FROM B")
 
-    assert res_a["path"] == res_b["path"] == rel
-    assert (Path(ws_a) / rel).read_text(encoding="utf-8") == "FROM A"
-    assert (Path(ws_b) / rel).read_text(encoding="utf-8") == "FROM B"
+    assert res_a["path"] == res_b["path"] == path
+    assert (Path(ws_a) / path).read_text(encoding="utf-8") == "FROM A"
+    assert (Path(ws_b) / path).read_text(encoding="utf-8") == "FROM B"
     assert disk.snapshot() == before
     # One row per tenant. With the old key ('' for both) the second write hit
     # the first row's primary key, and RLS refused it.
-    assert _rows(graph_as_app, rel) == sorted([
+    assert _rows(graph_as_app, path) == sorted([
         (a, f"o:{a}", "FROM A"), (b, f"o:{b}", "FROM B")])
 
 
@@ -673,32 +680,34 @@ def test_the_rehydrate_restores_only_the_runs_tenant(graph_as_app, disk) -> None
 def test_each_org_reads_only_its_own_output(graph_as_app, disk) -> None:  # noqa: F811
     a, b = graph_as_app.org_a, graph_as_app.org_b
     rel = f"outputs/r-{uuid.uuid4().hex[:6]}.md"
-    _run_write(disk, a, "sid-a", rel, "ORG A OUTPUT")
-    _run_write(disk, b, "sid-b", rel, "ORG B OUTPUT")
     sa = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
     sb = _seed_session(graph_as_app, b, _CAROL, None, agent=_S)
+    # H-227: each run writes into its own thread's folder.
+    pa = _run_write(disk, a, sa, rel, "ORG A OUTPUT")[0]["path"]
+    pb = _run_write(disk, b, sb, rel, "ORG B OUTPUT")[0]["path"]
     alice, carol = _client(_user(_ALICE, a)), _client(_user(_CAROL, b))
 
     tree_a = alice.get(f"/agent/workspace/{sa}")
     assert tree_a.status_code == 200 and tree_a.json()["root"] == str(_tenant_dir(a))
-    assert rel in {f["path"] for f in tree_a.json()["files"]}
+    assert pa in {f["path"] for f in tree_a.json()["files"]}
     assert "outputs/old-doc.md" not in {f["path"] for f in tree_a.json()["files"]}
-    assert alice.get(f"/agent/workspace/{sa}/file", params={"path": rel}).text == "ORG A OUTPUT"
-    assert carol.get(f"/agent/workspace/{sb}/file", params={"path": rel}).text == "ORG B OUTPUT"
+    assert alice.get(f"/agent/workspace/{sa}/file", params={"path": pa}).text == "ORG A OUTPUT"
+    assert carol.get(f"/agent/workspace/{sb}/file", params={"path": pb}).text == "ORG B OUTPUT"
 
     # Carol cannot reach org A's output through any route.
     assert carol.get(f"/agent/workspace/{sa}").json()["files"] == []
-    assert carol.get(f"/agent/workspace/{sa}/file", params={"path": rel}).status_code == 404
+    assert carol.get(f"/agent/workspace/{sa}/file", params={"path": pa}).status_code == 404
     assert carol.get(f"/agent/workspace/{sa}/history").json() == {"history": []}
-    hist_b = carol.get(f"/agent/workspace/{sb}/history", params={"path": rel}).json()["history"]
-    assert hist_b and all(h["session_id"] != "sid-a" for h in hist_b)
+    hist_b = carol.get(f"/agent/workspace/{sb}/history", params={"path": pb}).json()["history"]
+    assert hist_b and all(h["session_id"] != sa for h in hist_b)
     assert carol.get("/agent/artifacts", params={"agent": _S}).json()["artifacts"] == []
     # A row of org B that stores org A's tenant dir, or the clone, reads as
     # absent. Step 2 then gives Carol her own folder.
     for stored in (_tenant_dir(a), disk.shared):
         sid = _seed_session(graph_as_app, b, _CAROL, str(stored), agent=_S)
-        got = carol.get(f"/agent/workspace/{sid}/file", params={"path": rel})
-        assert got.text == "ORG B OUTPUT", stored
+        assert carol.get(f"/agent/workspace/{sid}").json()["root"] == str(_tenant_dir(b))
+        got = carol.get(f"/agent/workspace/{sid}/file", params={"path": pa})
+        assert got.status_code == 404 and "ORG A OUTPUT" not in got.text, stored
         old = carol.get(f"/agent/workspace/{sid}/file", params={"path": "outputs/old-doc.md"})
         assert old.status_code == 404 and _MIXED not in old.text
 
@@ -778,13 +787,17 @@ def test_an_old_document_opens_for_its_own_tenant_only(graph_as_app, disk) -> No
     """A document the Projects chat linked before the tenant dir existed.
     Its session stores the clone, and the clone copy is commingled. Its blob
     row carries ``instance=''`` and the tenant of the run that wrote it (S15).
-    The link opens for that tenant, from the row, and for nobody else."""
+    The link opens for that tenant, from the row, and for nobody else.
+
+    H-227: the row also names the session of the run that wrote it, and the
+    link opens for that session only. ``test_h227_thread_scope.py`` holds a
+    member of the same tenant with another session."""
     a, b = graph_as_app.org_a, graph_as_app.org_b
     rel = f"outputs/old-{uuid.uuid4().hex[:6]}.md"
     (disk.shared / rel).write_text(_MIXED, encoding="utf-8")
-    _put(a, "", rel, "A OLD DOC")
     sa = _seed_session(graph_as_app, a, _ALICE, str(disk.shared), agent=_S)
     sb = _seed_session(graph_as_app, b, _CAROL, str(disk.shared), agent=_S)
+    _put(a, "", rel, "A OLD DOC", session_id=sa)
 
     got = _client(_user(_ALICE, a)).get(f"/agent/workspace/{sa}/file", params={"path": rel})
     assert got.status_code == 200 and got.text == "A OLD DOC"
@@ -823,10 +836,11 @@ def test_a_delete_in_a_tenant_dir_also_drops_the_older_row(graph_as_app, disk) -
     from orchestrator.executor import _rehydrate_target
 
     a = graph_as_app.org_a
-    rel = f"outputs/del-{uuid.uuid4().hex[:6]}.md"
-    _put(a, "", rel, "OLD")
-    _run_write(disk, a, "sid-del", rel, "NEW")
     sid = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
+    # H-227: the run writes into its thread's folder, and the session of that
+    # thread deletes the file.
+    rel = _run_write(disk, a, sid, f"del-{uuid.uuid4().hex[:6]}.md", "NEW")[0]["path"]
+    _put(a, "", rel, "OLD")
     r = _client(_user(_ALICE, a)).delete(f"/agent/workspace/{sid}/file", params={"path": rel})
     assert r.status_code == 200, r.text
     assert _rows(graph_as_app, rel) == []

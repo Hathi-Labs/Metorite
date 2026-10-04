@@ -74,9 +74,10 @@ LABEL_START = "metorite.start"
 
 WORKSPACE_TARGET = "/workspace"
 GIT_COVER_TARGET = "/workspace/.git"
-#: The two nested mounts of the ``projects`` target (§16.3, D86). They lie
+#: The nested mounts of the ``projects`` target (§16.3, D86, H-227). They lie
 #: inside ``/workspace``, and no other target gets them.
 OUTPUTS_TARGET = "/workspace/outputs"
+INPUTS_TARGET = "/workspace/inputs"
 RUN_DATA_TARGET = "/workspace/.run"
 #: The placeholder dir in the working dir that ``/workspace/.run`` mounts on.
 #: The host makes it, so Docker never makes it as root.
@@ -240,6 +241,13 @@ class RunBinding:
     def outputs_rel(self) -> str:
         """``outputs/<thread slug>``, relative to the working dir."""
         return f"outputs/{self.thread_slug}"
+
+    @property
+    def inputs_rel(self) -> str:
+        """``inputs/<thread slug>``, the thread's own uploads (H-227). Raises ``ValueError``."""
+        from acb_skills.agent_paths import thread_inputs_rel
+
+        return thread_inputs_rel(self.thread)
 
     @property
     def run_data_rel(self) -> str:
@@ -448,7 +456,8 @@ def _git_cover_mount(ws: Path, cover: GitCover) -> Mount | None:
 
 
 def prepare_projects_dirs(binding: RunBinding) -> None:
-    """Make the thread's output folder, the ``.run`` placeholder and the run-data dir.
+    """Make the thread's output and upload folders, the ``.run`` placeholder
+    and the run-data dir.
 
     The ``projects`` target only (§16.3). Each dir is made with the safe
     opener, so no part of its path can be a link, just before the start. A
@@ -458,6 +467,7 @@ def prepare_projects_dirs(binding: RunBinding) -> None:
 
     try:
         safe_open.ensure_dir(binding.workspace, binding.outputs_rel)
+        safe_open.ensure_dir(binding.workspace, binding.inputs_rel)
         safe_open.ensure_dir(binding.workspace, RUN_DATA_MOUNTPOINT)
         safe_open.ensure_dir(_real_state_root(), binding.run_data_rel)
         marker = binding.instance.encode("utf-8")
@@ -480,12 +490,16 @@ def _real_dir(path: Path) -> Path:
 
 
 def projects_mounts(binding: RunBinding) -> list[Mount]:
-    """The two nested read-write mounts of the ``projects`` target (§16.3).
+    """The nested mounts of the ``projects`` target (§16.3, H-227).
 
-    - ``outputs/<thread slug>/`` at ``/workspace/outputs``, over the shared
-      ``outputs/``. So a container sees only its own thread's outputs, and
-      never the parent folder or another thread's folder. It is the one
-      nested mount that the broker allows within its own workspace.
+    - ``outputs/<thread slug>/`` at ``/workspace/outputs``, read-write, over
+      the shared ``outputs/``. So a container sees only its own thread's
+      outputs, and never the parent folder or another thread's folder.
+    - ``inputs/<thread slug>/`` at ``/workspace/inputs``, READ-ONLY, over the
+      shared ``inputs/`` (H-227). So a container sees only the files that
+      were attached in its own thread. It never sees another member's upload
+      or a file in the flat ``inputs/``. These two covers are the only nested
+      mounts that the broker allows within its own workspace.
     - The run-data dir at ``/workspace/.run``, in this thread's container
       only. It lies under ``state_root()/.run-data``, outside every kept
       folder, so the blob store never holds it.
@@ -498,6 +512,7 @@ def projects_mounts(binding: RunBinding) -> list[Mount]:
     ws = binding.workspace
     try:
         outputs = _real_dir(ws / binding.outputs_rel)
+        inputs = _real_dir(ws / binding.inputs_rel)
         _real_dir(ws / RUN_DATA_MOUNTPOINT)
         run_data = _real_dir(binding.run_data)
     except ValueError as exc:
@@ -510,6 +525,7 @@ def projects_mounts(binding: RunBinding) -> list[Mount]:
         raise SandboxRefused("The partition marker of the working dir is not a real file.")
     return [
         Mount(outputs, OUTPUTS_TARGET, readonly=False),
+        Mount(inputs, INPUTS_TARGET, readonly=True),
         Mount(run_data, RUN_DATA_TARGET, readonly=False),
         Mount(marker, INSTANCE_MARKER_TARGET, readonly=True),
     ]
@@ -524,19 +540,19 @@ def mount_list(
 
     Every start and every restart calls it, and so will a grant and a revoke
     (WS-43g). So no recreate can miss the cover on ``/workspace/.git``, or
-    the cover of a thread's output folder.
+    the covers of a thread's output and upload folders.
 
     - The run's working dir at ``/workspace``, read-write. For the
       ``projects`` target it is READ-ONLY (review P1, fix round 1): every
       thread of one organization mounts the same dir, so a thread that could
       write it could plant code that another member's thread runs beside that
       member's run data. Its only writable paths are its own output folder
-      and its run data, the two nested mounts below.
+      and its run data, two of the nested mounts below.
     - A ``.git`` at the root of the working dir is covered by an empty
       read-only bind mount, so the container can neither read nor write it.
     - A ``.git`` deeper in the working dir is refused, and so is a root
       ``.git`` that is a link.
-    - The ``projects`` target adds its two nested mounts
+    - The ``projects`` target adds its nested mounts
       (:func:`projects_mounts`). No other target gets them.
     - *readonly_mounts* come from code, never from a caller. WS-43h adds the
       app-builder list. A source with ``.git`` at any depth is refused.
@@ -1566,9 +1582,9 @@ class SandboxBroker:
             yield binding
 
     async def ensure_thread_dirs(self, binding: RunBinding) -> None:
-        """Make the thread's output folder and run-data dir before any start.
+        """Make the thread's output and upload folders and run-data dir before any start.
 
-        The file tools call it, so a write to ``outputs/`` or ``.run/`` lands
+        The file tools call it, so a write to ``outputs/``, ``inputs/`` or ``.run/`` lands
         where the container will see it. The caller holds :meth:`host_dir`.
         """
         _require_thread_slug(binding)

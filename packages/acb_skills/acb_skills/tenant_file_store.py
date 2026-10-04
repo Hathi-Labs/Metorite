@@ -13,7 +13,7 @@ that ``run_command`` runs and a file that a file tool writes always agree:
 Tool path              Host path                                    Kept
 =====================  ===========================================  =========
 ``agent-data/…``       ``<working dir>/agent-data/…``               yes
-``inputs/…``           ``<working dir>/inputs/…``                   yes
+``inputs/…``           ``<working dir>/inputs/<thread slug>/…``     yes
 ``outputs/…``          ``<working dir>/outputs/<thread slug>/…``    yes
 ``.run/…``             ``<state root>/.run-data/<org>/<thread>/…``  NO
 =====================  ===========================================  =========
@@ -21,6 +21,9 @@ Tool path              Host path                                    Kept
 * **``outputs/`` is the thread's own folder.** No tool path reaches the
   shared ``outputs/`` or the folder of another thread: ``outputs/x`` always
   maps below ``outputs/<thread slug>/``.
+* **``inputs/`` is the thread's own upload folder** (H-227). The same rule
+  holds: ``inputs/x`` always maps below ``inputs/<thread slug>/``, so no tool
+  path reaches another member's upload or a file in the flat ``inputs/``.
 * **``.run/`` is the run data.** It lies outside every kept folder, so the
   blob store never holds it, and the broker deletes it when the run ends.
 * **Only four heads exist**: ``agent-data/``, ``inputs/``, ``outputs/`` and
@@ -69,6 +72,7 @@ from acb_skills import safe_open
 _log = get_logger("acb_skills.tenant_file_store")
 
 __all__ = [
+    "INPUTS",
     "KEPT_HEADS",
     "OUTPUTS",
     "RUN_DATA",
@@ -79,10 +83,12 @@ __all__ = [
 
 #: The tool path of the thread's own output folder.
 OUTPUTS = "outputs"
+#: The tool path of the thread's own upload folder (H-227).
+INPUTS = "inputs"
 #: The tool path of the run data (``/workspace/.run`` in the container).
 RUN_DATA = ".run"
-#: The kept folders a tool path may start with, besides ``outputs`` and ``.run``.
-KEPT_HEADS = ("agent-data", "inputs")
+#: The kept folders a tool path may start with, besides the three above.
+KEPT_HEADS = ("agent-data",)
 
 
 #: The last content shown as a card, per (working dir, path), so an output
@@ -114,7 +120,7 @@ class HostFileGuard(Protocol):
         """An async context manager that holds the dir lock of the working dir."""
 
     async def prepare(self) -> None:
-        """Make the thread's output folder and run-data dir, under the lock."""
+        """Make the thread's output and upload folders and run-data dir, under the lock."""
 
     def writes_refused(self) -> bool:
         """True while the working dir is over its quota."""
@@ -128,6 +134,7 @@ class _Place:
     store_rel: str | None
     outputs: bool = False
     run_data: bool = False
+    inputs: bool = False
 
 
 class TenantFileStore(FileSystemAgentFileStore):
@@ -145,6 +152,7 @@ class TenantFileStore(FileSystemAgentFileStore):
         run_data: Path,
         guard: HostFileGuard,
         member: str = "",
+        inputs_rel: str | None = None,
     ) -> None:
         super().__init__(workspace)
         self._workspace = Path(workspace)
@@ -156,6 +164,10 @@ class TenantFileStore(FileSystemAgentFileStore):
         self._member = str(member or "").strip().lower()
         #: This thread's own output folder name: the one ``outputs/`` maps to.
         self._own_slug = self._outputs_rel.rsplit("/", 1)[-1]
+        #: This thread's own upload folder, the one ``inputs/`` maps to
+        #: (H-227). The broker passes ``RunBinding.inputs_rel``. With none,
+        #: it is ``inputs/<the same slug>``, so the two folders never differ.
+        self._inputs_rel = (inputs_rel or f"{INPUTS}/{self._own_slug}").strip("/")
 
     # ── the map ─────────────────────────────────────────────────────────────
 
@@ -169,6 +181,9 @@ class TenantFileStore(FileSystemAgentFileStore):
         if head == OUTPUTS:
             rel = "/".join([self._outputs_rel, *rest])
             return _Place(self._workspace, rel, rel, outputs=True)
+        if head == INPUTS:
+            rel = "/".join([self._inputs_rel, *rest])
+            return _Place(self._workspace, rel, rel, inputs=True)
         if head == RUN_DATA:
             return _Place(self._run_data, "/".join(rest), None, run_data=True)
         if head not in KEPT_HEADS:
@@ -224,7 +239,7 @@ class TenantFileStore(FileSystemAgentFileStore):
             )
 
     async def _prepare(self, place: _Place) -> None:
-        if place.outputs or place.run_data:
+        if place.outputs or place.inputs or place.run_data:
             await self._guard.prepare()
 
     def _decide(self, tool_name: str, place: _Place, *, data: bytes | None) -> None:
@@ -338,7 +353,7 @@ class TenantFileStore(FileSystemAgentFileStore):
             entries = [(n, k) for n, k in (listed or []) if not n.startswith(".")]
             if place.root == self._workspace and not place.rel:
                 # The root shows the four tool heads, and nothing else.
-                heads = (*KEPT_HEADS, OUTPUTS)
+                heads = (*KEPT_HEADS, INPUTS, OUTPUTS)
                 entries = [(n, k) for n, k in entries if k == "dir" and n in heads]
                 entries.insert(0, (RUN_DATA, "dir"))
             elif place.store_rel == "agent-data/skills":

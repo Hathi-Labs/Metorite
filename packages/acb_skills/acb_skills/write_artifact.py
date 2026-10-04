@@ -12,6 +12,12 @@ The tool:
 5. PATCHes the gateway to register the workspace root on the session.
 6. Returns a ``download_url`` the agent SHOULD embed in its text response.
 
+In a shared agent's tenant dir (store key ``o:<org>``), every member of the
+organization opens the same dir. So a document of one chat goes to that
+chat's own folder, ``outputs/<thread slug>/``, and an ``inputs/`` path to
+``inputs/<thread slug>/``. The card links there, and the session routes
+serve it only to a session of that thread (H-227, D12).
+
 Usage by agents:
     result = await write_artifact("summary.md", "# Sales Summary\\n...")
     # File lands in outputs/summary.md (auto-prefixed)
@@ -23,7 +29,7 @@ import contextlib
 import contextvars
 import hashlib
 import mimetypes
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -287,6 +293,27 @@ def _normalise_path(path: str) -> str:
     return f"outputs/{clean}"
 
 
+def _thread_scoped(rel: str, ctx: Mapping[str, Any]) -> str | None:
+    """*rel* in the thread's own folder, for a run in a shared agent's tenant dir.
+
+    H-227 (D12). The run's store key ``o:<org>`` marks the tenant dir, and
+    the run's session id names the thread. Both come from the run's
+    artifact context, never from the model. ``inputs/x`` and ``outputs/x`` go
+    to ``inputs/<thread slug>/x`` and ``outputs/<thread slug>/x``
+    (``agent_paths.thread_scoped_rel``, over the one slug rule). Any other
+    workspace and any other folder keep *rel*. ``None`` means a tenant dir
+    with no thread folder, and the caller writes and shows nothing.
+    """
+    from acb_skills.agent_paths import is_tenant_instance, thread_scoped_rel
+
+    if not is_tenant_instance(ctx.get("instance")):
+        return rel
+    try:
+        return thread_scoped_rel(rel, ctx.get("session_id"))
+    except ValueError:
+        return None
+
+
 def resolve_in_workspace(root: str | Path, rel: str) -> Path | None:
     """Resolve *rel* under *root*, returning it ONLY if it stays inside the root.
 
@@ -323,6 +350,8 @@ async def write_artifact(
 
     Files are automatically placed in ``outputs/`` unless you specify
     ``inputs/`` (user-provided files) or ``agent-data/`` (reference data).
+    In a chat of a shared agent, ``outputs/`` and ``inputs/`` are that chat's
+    own folders, so the returned ``path`` shows where the file went.
 
     After calling this, **embed the returned ``download_url`` in your text
     response** so the operator can click to download.
@@ -374,6 +403,17 @@ async def write_artifact(
     if target is None:
         return {"error": f"Path '{path}' escapes the workspace and was refused."}
     clean_path = target.relative_to(root_r).as_posix()
+    # H-227 (D12): a shared agent's tenant dir is one folder for every member
+    # of the organization. So a document of this chat goes to the chat's own
+    # folder, outputs/<thread slug>/ (inputs/<thread slug>/ for inputs/), and
+    # its card links there. Only a session of this thread reads it.
+    scoped = _thread_scoped(clean_path, ctx)
+    if scoped is None:
+        return {"error": "This chat has no thread folder, so nothing was written."}
+    if scoped != clean_path:
+        if len(scoped.split("/")) < 3:  # the thread folder itself
+            return {"error": f"Path '{path}' names no file, so nothing was written."}
+        clean_path, target = scoped, root_r / scoped
     # WS-43d (review P1, fix round 1): never another chat's output folder,
     # another member's skill folder, or the skill author marker.
     from acb_skills.agent_paths import refused_write
@@ -480,6 +520,55 @@ async def write_artifact(
     return result
 
 
+def _share_target(path: str, root: Path, ctx: Mapping[str, Any]) -> Path | str:
+    """The existing file or dir that *path* names in *root*, or why there is none.
+
+    The target must stay inside the workspace root. H-227 (D12): in a shared
+    agent's tenant dir, ``inputs/`` and ``outputs/`` name this chat's own
+    folders, as they do for :func:`write_artifact`.
+    """
+    raw = (path or "").replace("\\", "/").strip().lstrip("/")
+    if not raw:
+        return "A file or directory path is required."
+    candidate = Path(raw)
+    target = (candidate if candidate.is_absolute() else root / raw).resolve()
+    if not target.is_relative_to(root):
+        return f"Path '{path}' is outside the workspace."
+    scoped = _thread_scoped(target.relative_to(root).as_posix(), ctx)
+    if scoped is None:
+        return "This chat has no thread folder, so nothing was shared."
+    target = (root / scoped).resolve()
+    if not target.is_relative_to(root):
+        return f"Path '{path}' is outside the workspace."
+    if not target.exists():
+        return f"File not found: {path}"
+    return target
+
+
+def _not_this_chats(ctx: Mapping[str, Any]) -> Callable[[str], bool]:
+    """A check: True for a working-dir path that this run may not show.
+
+    WS-43d (review P1, fix round 1): another chat's folder. H-227: in a
+    shared agent's tenant dir, also a loose file, one that lies in
+    ``inputs/`` or ``outputs/`` but in no thread folder.
+    """
+    from acb_skills.agent_paths import (
+        instance_slug,
+        is_loose_rel,
+        is_other_thread_rel,
+        is_tenant_instance,
+    )
+
+    session_id = ctx.get("session_id")
+    own = instance_slug(str(session_id)) if session_id else None
+    tenant_dir = is_tenant_instance(ctx.get("instance"))
+
+    def check(rel: str) -> bool:
+        return is_other_thread_rel(rel, own) or (tenant_dir and is_loose_rel(rel))
+
+    return check
+
+
 async def share_artifact(path: str) -> dict:
     """Surface a file you ALREADY created as a downloadable, previewable card in
     the chat — and get back a download link.
@@ -516,32 +605,18 @@ async def share_artifact(path: str) -> dict:
         return {"error": "No workspace is configured for this run.", "artifacts": []}
 
     root = Path(workspace_root).resolve()
-    raw = (path or "").replace("\\", "/").strip().lstrip("/")
-    if not raw:
-        return {"error": "A file or directory path is required.", "artifacts": []}
-    candidate = Path(raw)
-    target = (candidate if candidate.is_absolute() else root / raw).resolve()
-
-    # Path-traversal guard — the target must stay inside the workspace root.
-    try:
-        target.relative_to(root)
-    except ValueError:
-        return {"error": f"Path '{path}' is outside the workspace.", "artifacts": []}
-    if not target.exists():
-        return {"error": f"File not found: {path}", "artifacts": []}
-    # WS-43d (review P1, fix round 1): another chat's output folder is not
-    # this run's to show.
-    from acb_skills.agent_paths import instance_slug, is_other_thread_rel
-
-    own = instance_slug(str(session_id)) if session_id else None
-    if is_other_thread_rel(target.relative_to(root).as_posix(), own):
+    target = _share_target(path, root, ctx)
+    if isinstance(target, str):
+        return {"error": target, "artifacts": []}
+    not_this_chats = _not_this_chats(ctx)
+    if not_this_chats(target.relative_to(root).as_posix()):
         return {"error": f"Path '{path}' belongs to another chat.", "artifacts": []}
 
     # Collect the file(s) to share (a directory shares everything within it).
     files: list[Path] = []
     if target.is_dir():
         for p in sorted(target.rglob("*")):
-            if p.is_file() and not is_other_thread_rel(p.relative_to(root).as_posix(), own):
+            if p.is_file() and not not_this_chats(p.relative_to(root).as_posix()):
                 files.append(p)
                 if len(files) >= 50:
                     break

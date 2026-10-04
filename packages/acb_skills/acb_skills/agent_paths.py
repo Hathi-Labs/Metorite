@@ -68,6 +68,7 @@ __all__ = [
     "SKILLS_REL",
     "SKILL_AUTHOR_MARKER",
     "TENANT_INSTANCE_PREFIX",
+    "THREAD_HEADS",
     "InvalidAgentName",
     "agent_code_dir",
     "agent_state_dir",
@@ -75,6 +76,7 @@ __all__ = [
     "clone_root",
     "ensure_state_dir",
     "instance_slug",
+    "is_loose_rel",
     "is_other_thread_rel",
     "is_tenant_instance",
     "is_thread_slug",
@@ -86,7 +88,9 @@ __all__ = [
     "skill_top_rel",
     "state_root",
     "tenant_instance",
+    "thread_inputs_rel",
     "thread_outputs_rel",
+    "thread_scoped_rel",
     "thread_slug",
     "upload_dir_rel",
     "workspace_blob_key",
@@ -206,7 +210,7 @@ def is_tenant_instance(instance: object) -> bool:
     )
 
 
-# ── The thread's own output folder and run data (D86, maf_coding_engine §16.3) ──
+# ── The thread's own folders and run data (D86, maf_coding_engine §16.3, H-227) ──
 
 #: A thread slug: the readable part and the 8 hex digits of :func:`instance_slug`.
 _THREAD_SLUG_RE = re.compile(
@@ -250,9 +254,27 @@ def thread_slug(thread_id: object) -> str:
     return slug
 
 
+#: The kept folders that hold one folder per thread in a shared agent's
+#: tenant dir (§16.3 and H-227): the uploads and the outputs of each chat.
+THREAD_HEADS = ("inputs", "outputs")
+
+
+def _rel_parts(rel: object) -> list[str]:
+    return [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+
+
 def thread_outputs_rel(thread_id: object) -> str:
     """``outputs/<thread slug>``, relative to the working dir."""
     return f"outputs/{thread_slug(thread_id)}"
+
+
+def thread_inputs_rel(thread_id: object) -> str:
+    """``inputs/<thread slug>``, relative to the working dir (H-227).
+
+    The uploads of one chat in a shared agent's tenant dir. The broker mounts
+    it at ``/workspace/inputs``, and ``TenantFileStore`` maps ``inputs/`` to it.
+    """
+    return f"inputs/{thread_slug(thread_id)}"
 
 
 def upload_dir_rel(instance: object, thread_id: object) -> str:
@@ -273,8 +295,30 @@ def upload_dir_rel(instance: object, thread_id: object) -> str:
     ``ValueError``, so the caller fails closed.
     """
     if is_tenant_instance(instance):
-        return f"inputs/{thread_slug(thread_id)}"
+        return thread_inputs_rel(thread_id)
     return "inputs"
+
+
+def thread_scoped_rel(rel: str, thread_id: object) -> str:
+    """*rel* moved into the thread's own folder, for a shared agent's tenant dir (H-227).
+
+    ``outputs/report.md`` gives ``outputs/<thread slug>/report.md``, and
+    ``inputs/x`` gives ``inputs/<thread slug>/x``. A bare ``outputs`` gives
+    the thread's folder itself. A path that is already in a thread folder
+    stays as it is, so the caller still refuses the folder of another thread
+    (:func:`refused_write`, :func:`is_other_thread_rel`). Any other path
+    stays as it is.
+
+    The caller checks containment first, so *rel* holds no ``..``. Raises
+    ``ValueError`` for a thread id that names no folder, so the caller fails
+    closed.
+    """
+    parts = _rel_parts(rel)
+    if not parts or parts[0] not in THREAD_HEADS:
+        return "/".join(parts)
+    if len(parts) >= 2 and is_thread_slug(parts[1]):
+        return "/".join(parts)
+    return "/".join([parts[0], thread_slug(thread_id), *parts[1:]])
 
 
 def run_data_rel(organization_id: object, thread_id: object) -> str:
@@ -286,16 +330,29 @@ def run_data_rel(organization_id: object, thread_id: object) -> str:
 
 
 def is_other_thread_rel(rel: str, own_slug: str | None) -> bool:
-    """True when *rel* lies in the output folder of a thread that is not *own_slug*.
+    """True when *rel* lies in the folder of a thread that is not *own_slug*.
 
-    The ONE rule for "another chat's output folder" (§16.3). The session
-    routes, ``write_artifact`` and ``save_note`` all ask it.
+    The ONE rule for "another chat's folder": its output folder (§16.3) and,
+    since H-227, its upload folder, ``inputs/<thread slug>/``. The session
+    routes, ``write_artifact``, ``share_artifact`` and ``save_note`` all ask it.
     """
-    parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    parts = _rel_parts(rel)
     return (
-        len(parts) >= 2 and parts[0] == "outputs"
+        len(parts) >= 2 and parts[0] in THREAD_HEADS
         and is_thread_slug(parts[1]) and parts[1] != own_slug
     )
+
+
+def is_loose_rel(rel: str) -> bool:
+    """True when *rel* lies in ``inputs/`` or ``outputs/`` but in no thread folder (H-227).
+
+    In a shared agent's tenant dir, such a file comes from before the thread
+    folders: an S8 document in the flat ``outputs/``, or an upload in the
+    flat ``inputs/``. The session routes serve it only to a session that the
+    blob history shows wrote those bytes.
+    """
+    parts = _rel_parts(rel)
+    return len(parts) >= 2 and parts[0] in THREAD_HEADS and not is_thread_slug(parts[1])
 
 
 # ── The author of a skill (review P1, fix round 1) ───────────────────────────
@@ -338,8 +395,8 @@ def refused_write(
     """Why a host writer may not write *rel* in a working dir, or ``None``.
 
     1. The author marker itself is reserved.
-    2. The output folder of another thread is not this run's (§16.3). The own
-       folder is *own_slug*, else the slug of *thread_id*.
+    2. The output or upload folder of another thread is not this run's (§16.3,
+       H-227). The own folder is *own_slug*, else the slug of *thread_id*.
     3. A skill folder that another member made is theirs alone.
     """
     parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]

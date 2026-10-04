@@ -151,12 +151,18 @@ async def _mirror_gateway_write(
 
 async def _faultin_from_store(
     workspace: Path, rel_path: str, organization_id: str | None = None,
+    *, accept: Any = None,
 ) -> bool:
     """Restore a file missing from the disk cache from the authoritative store.
 
     Returns True and writes the file to disk if the store had it, else False.
     Only applies to the three backed folders; a no-op otherwise.
     *organization_id* is the caller's tenant (see :func:`_mirror_gateway_write`).
+
+    *accept* is an async check on the stored bytes, made BEFORE anything is
+    written (H-227). A loose file of a shared agent's tenant dir restores
+    only for a session that the blob history shows wrote those bytes
+    (:func:`_session_owns_loose`). A refused file is never written to disk.
 
     H-201 part 3 (``projects_ai_chat.md`` §21.15):
 
@@ -189,6 +195,8 @@ async def _faultin_from_store(
     if data is None and tenant_dir:
         data = await get_file(agent, rel, instance="", organization_id=organization_id)
     if data is None:
+        return False
+    if accept is not None and not await accept(data):
         return False
     from acb_skills import safe_open
 
@@ -847,14 +855,20 @@ def _safe_upload(root: Path, folder: str, name: str, data: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The thread's own output folder (WS-43d, maf_coding_engine.md §16.3, D86)
+# The thread's own folders (WS-43d and H-227, maf_coding_engine.md §16.3, D12)
 # ---------------------------------------------------------------------------
 # Every session of a shared agent in one organization opens the same tenant
-# dir. A sandbox run writes its outputs to its thread's own folder,
-# ``outputs/<thread slug>/``. So for a session of a shared agent, the routes
-# list and serve, under ``outputs/``, only the folder of THAT session's thread.
+# dir. A run writes its outputs to its thread's own folder,
+# ``outputs/<thread slug>/``, and an upload lands in ``inputs/<thread slug>/``.
+# So for a session of a shared agent, the routes list and serve, under
+# ``outputs/`` and ``inputs/``, only the folders of THAT session's thread.
 # The folder of another thread is hidden and answers 404. The room check stays.
-# A file of ``outputs/`` that is not in a thread folder is served as before.
+#
+# H-227: a LOOSE file, one in ``inputs/`` or ``outputs/`` but in no thread
+# folder, comes from before the thread folders: an S8 document or an upload.
+# It is listed and served only to a session that the blob history shows
+# wrote those exact bytes (:func:`_session_owns_loose`). For any other
+# session it is absent.
 
 
 def _own_thread_slug(
@@ -884,7 +898,8 @@ def _own_thread_slug(
 
 
 def _is_other_thread_path(rel: str, own_slug: str | None) -> bool:
-    """True when *rel* lies in the output folder of a thread that is not *own_slug*.
+    """True when *rel* lies in the output or upload folder of a thread that is
+    not *own_slug*.
 
     ``None`` (no tenant dir) never matches. The rule is
     ``agent_paths.is_other_thread_rel``, the one rule of every writer.
@@ -894,6 +909,135 @@ def _is_other_thread_path(rel: str, own_slug: str | None) -> bool:
     from acb_skills.agent_paths import is_other_thread_rel
 
     return is_other_thread_rel(rel, own_slug)
+
+
+def _is_loose_path(rel: str, own_slug: str | None) -> bool:
+    """True when *rel* is a loose file of a shared agent's tenant dir (H-227).
+
+    ``None`` (no tenant dir) never matches: a personal agent's own dir holds
+    only its member's files, so its flat ``inputs/`` and ``outputs/`` stay.
+    """
+    if own_slug is None:
+        return False
+    from acb_skills.agent_paths import is_loose_rel
+
+    return is_loose_rel(rel)
+
+
+def _session_wrote(rows: list[dict], session_id: str, sha256: str) -> bool:
+    """THE history rule of a loose file (H-227): this session wrote these bytes.
+
+    A row must name this session and this sha256, and it must write bytes,
+    so a ``delete`` row proves nothing. An upload (``user``), an edit in the
+    file manager (``user``) and a document of the run (``agent``) all
+    count, because each one is the session's own write. ``read_attachment``
+    keeps its narrower form of the rule, an upload only (H-229).
+    """
+    return any(
+        r.get("session_id") == session_id and r.get("sha256") == sha256
+        and r.get("action") != "delete"
+        for r in rows
+    )
+
+
+async def _session_history(
+    workspace: Path, organization_id: str | None, session_id: str,
+    path: str | None = None,
+) -> list[dict]:
+    """The rows of a tenant dir's blob history that *session_id* wrote.
+
+    Call it only when :func:`_own_thread_slug` is not ``None``, so the
+    workspace IS the caller's tenant dir. So the store key comes from the
+    path and the caller's tenant, never from the ``.cc-instance`` marker.
+    It reads the tenant key ``o:<org>`` and this tenant's older rows
+    (``instance=''``), from before the tenant dir existed (§21.15). The read
+    is in the caller's tenant. A missing store or an error gives ``[]``, so
+    the rule fails closed.
+    """
+    try:
+        from acb_memory import file_history
+    except ImportError:
+        return []
+    from acb_skills.agent_paths import tenant_instance
+
+    if not session_id or not organization_id:
+        return []
+    agent = workspace.resolve().parent.name
+    rows: list[dict] = []
+    for key in (tenant_instance(organization_id), ""):
+        rows += await file_history(
+            agent, path, 1000, instance=key,
+            organization_id=organization_id, session_id=session_id,
+        )
+    return rows
+
+
+async def _session_owns_loose(
+    workspace: Path, rel: str, data: bytes, session_id: str,
+    organization_id: str | None,
+) -> bool:
+    """True when the history shows that *session_id* wrote *data* at *rel*."""
+    import hashlib
+
+    rows = await _session_history(workspace, organization_id, session_id, rel)
+    return _session_wrote(rows, session_id, hashlib.sha256(data).hexdigest())
+
+
+def _safe_sha256(root: Path, rel: str) -> str | None:
+    """The sha256 of the regular file ``root/rel``, read with the safe opener."""
+    import hashlib
+
+    from acb_skills import safe_open
+
+    try:
+        fh = safe_open.open_read(root, rel)
+    except (safe_open.UnsafePath, OSError):
+        return None
+    if fh is None:
+        return None
+    digest = hashlib.sha256()
+    with fh:
+        while chunk := fh.read(65536):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+async def _session_owns_disk_file(
+    workspace: Path, rel: str, session_id: str, organization_id: str | None,
+) -> bool:
+    """:func:`_session_owns_loose` for the file on disk. An absent file is not owned."""
+    sha = await asyncio.to_thread(_safe_sha256, workspace, rel)
+    if sha is None:
+        return False
+    rows = await _session_history(workspace, organization_id, session_id, rel)
+    return _session_wrote(rows, session_id, sha)
+
+
+async def _keep_owned_loose(
+    workspace: Path, files: list[FileEntry], session_id: str,
+    organization_id: str | None,
+) -> list[FileEntry]:
+    """*files* without the loose files that this session did not write (H-227).
+
+    One history read per store key, for this session's rows only. A loose
+    file stays when its bytes on disk match a row of this session.
+    """
+    from acb_skills.agent_paths import is_loose_rel
+
+    loose = [f for f in files if is_loose_rel(f.path)]
+    if not loose:
+        return files
+    by_path: dict[str, list[dict]] = defaultdict(list)
+    for r in await _session_history(workspace, organization_id, session_id):
+        by_path[str(r.get("path") or "")].append(r)
+    kept: set[str] = set()
+    for f in loose:
+        if f.path not in by_path:
+            continue  # this session wrote nothing at that path, so no read
+        sha = await asyncio.to_thread(_safe_sha256, workspace, f.path)
+        if sha is not None and _session_wrote(by_path[f.path], session_id, sha):
+            kept.add(f.path)
+    return [f for f in files if not is_loose_rel(f.path) or f.path in kept]
 
 
 async def _apply_write_rules(
@@ -1142,9 +1286,12 @@ async def get_workspace_tree(
         return WorkspaceTree(session_id=session_id, root="", files=[])
 
     files = await loop.run_in_executor(None, _walk_tree, workspace)
-    # WS-43d (§16.3): another thread's output folder is not listed.
+    # WS-43d (§16.3) and H-227: another thread's output and upload folders
+    # are not listed, and a loose file only for the session that wrote it.
     own = _own_thread_slug(workspace, session_id, _user.organization_id)
     files = [f for f in files if not _is_other_thread_path(f.path, own)]
+    if own is not None:
+        files = await _keep_owned_loose(workspace, files, session_id, _user.organization_id)
     return WorkspaceTree(session_id=session_id, root=str(workspace), files=files)
 
 
@@ -1179,19 +1326,30 @@ async def get_workspace_file(
     rel = _open_rel(workspace, path)
     # WS-43d (§16.3): another thread's output folder answers as absent, and
     # BEFORE the fault-in, so the store cannot restore it either.
-    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id, _user.organization_id)):
+    org = _user.organization_id
+    own = _own_thread_slug(workspace, session_id, org)
+    if _is_other_thread_path(rel, own):
         raise HTTPException(status_code=404, detail="File not found")
+    # H-227: a loose file (an S8 document or an upload from before the thread
+    # folders) opens only for the session that wrote it. That keeps its old
+    # link working for that thread, and for no other session.
+    loose = _is_loose_path(rel, own)
     st = await asyncio.to_thread(_safe_stat, workspace, rel)
     if st is None:
         # Fault-in: the store is authoritative, so a file missing from the disk
         # cache may still live in the blob store (e.g. after a volume wipe before
         # the agent has re-run). Restore it on demand, then serve.
+        async def _owned(data: bytes) -> bool:
+            return await _session_owns_loose(workspace, rel, data, session_id, org)
+
         restored = await _faultin_from_store(
-            workspace, path, organization_id=_user.organization_id,
+            workspace, path, organization_id=org, accept=_owned if loose else None,
         )
         st = await asyncio.to_thread(_safe_stat, workspace, rel) if restored else None
         if st is None:
             raise HTTPException(status_code=404, detail="File not found")
+    elif loose and not await _session_owns_disk_file(workspace, rel, session_id, org):
+        raise HTTPException(status_code=404, detail="File not found")
 
     file_size = st.st_size
     name = rel.rsplit("/", 1)[-1]
@@ -1651,8 +1809,14 @@ async def delete_workspace_file(
     from acb_skills import safe_open
 
     rel = _open_rel(workspace, path)
-    # WS-43d (§16.3): another thread's output folder answers as absent.
-    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id, _user.organization_id)):
+    # WS-43d (§16.3) and H-227: another thread's folders answer as absent,
+    # and so does a loose file that this session did not write.
+    own = _own_thread_slug(workspace, session_id, _user.organization_id)
+    if _is_other_thread_path(rel, own):
+        raise HTTPException(status_code=404, detail="File not found")
+    if _is_loose_path(rel, own) and not await _session_owns_disk_file(
+        workspace, rel, session_id, _user.organization_id,
+    ):
         raise HTTPException(status_code=404, detail="File not found")
     # Only allow deletion of files within the visible workspace dirs.
     if not _is_visible_workspace_path(rel):
@@ -1721,11 +1885,21 @@ async def promote_input_to_agent_data(
     # WS-43d (§7.5 rule B): the read, the write and the unlink all go
     # through the safe opener. A link reads as absent.
     src_rel = _open_rel(workspace, src_rel)
+    # H-227: another thread's upload, and a loose file that this session did
+    # not write, are absent here too. Else a member could move a colleague's
+    # upload into the shared agent-data/.
+    own = _own_thread_slug(workspace, session_id, _user.organization_id)
+    if _is_other_thread_path(src_rel, own):
+        raise HTTPException(status_code=404, detail="source file not found")
     try:
         data = await asyncio.to_thread(safe_open.read_bytes, workspace, src_rel)
     except (safe_open.UnsafePath, OSError):
         data = None
-    if data is None:
+    if data is None or (
+        _is_loose_path(src_rel, own) and not await _session_owns_loose(
+            workspace, src_rel, data, session_id, _user.organization_id,
+        )
+    ):
         raise HTTPException(status_code=404, detail="source file not found")
     src_name = src_rel.rsplit("/", 1)[-1]
 
@@ -1802,9 +1976,17 @@ async def get_workspace_history(
         agent, path, limit, instance=instance,
         organization_id=_user.organization_id,
     )
-    # WS-43d (§16.3): the files of another thread's output folder are not
-    # listed, not even by name.
-    rows = [r for r in rows if not _is_other_thread_path(str(r.get("path") or ""), own)]
+    # WS-43d (§16.3) and H-227: the files of another thread's folders are not
+    # listed, not even by name. A row of a loose file shows only when this
+    # session wrote that row, so another session's versions stay hidden.
+    rows = [
+        r for r in rows
+        if not _is_other_thread_path(str(r.get("path") or ""), own)
+        and (
+            not _is_loose_path(str(r.get("path") or ""), own)
+            or r.get("session_id") == session_id
+        )
+    ]
     return {"history": rows}
 
 
@@ -1856,8 +2038,16 @@ async def write_workspace_file(
             status_code=400,
             detail="Writes are restricted to inputs/, outputs/, and agent-data/.",
         )
-    # WS-43d (§16.3): another thread's output folder answers as absent.
-    if _is_other_thread_path(rel, _own_thread_slug(workspace, session_id, _user.organization_id)):
+    # WS-43d (§16.3) and H-227: another thread's folders answer as absent.
+    # A loose file can change only from the session that wrote it. A new
+    # loose path gets the same answer, so the answer tells no one which loose
+    # file exists. A new file goes in the thread's own folder.
+    own = _own_thread_slug(workspace, session_id, _user.organization_id)
+    if _is_other_thread_path(rel, own):
+        raise HTTPException(status_code=404, detail="File not found")
+    if _is_loose_path(rel, own) and not await _session_owns_disk_file(
+        workspace, rel, session_id, _user.organization_id,
+    ):
         raise HTTPException(status_code=404, detail="File not found")
     await _apply_write_rules(workspace, rel, _user, session_id, claim=True)
 
