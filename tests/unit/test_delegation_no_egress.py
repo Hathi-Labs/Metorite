@@ -697,7 +697,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "move_task", "my_contexts", "my_led_projects", "my_task", "my_work",
     "notifications", "open_in_app", "people_for", "project_access",
     "project_summary", "project_views", "projects_tree", "propose_plan",
-    "rebalance", "recall_timeline", "recurrence", "remember", "render_board",
+    "read_attachment", "rebalance", "recall_timeline", "recurrence", "remember", "render_board",
     "render_report", "render_tasks", "render_timeline", "report_delete",
     "report_list", "report_render", "report_save", "revert_activity", "run_command",
     "save_view", "set_my_overlay", "set_recurrence", "set_status_set",
@@ -1440,7 +1440,8 @@ TASK_MANAGER_RISK_BLOCK = (
     "### Tool risk annotations\n"
     "- Read-only (call freely): ask_questions, ask_user, decide, fetch_page, get_errors, "
     "github_repo_search, github_search, list_integrations, load_design_system, query_history, "
-    "recall_notes, recall_timeline, remember, request_confirmation, run_diagnostics, "
+    "read_attachment, recall_notes, recall_timeline, remember, request_confirmation, "
+    "run_diagnostics, "
     "share_artifact, web_search\n"
     "- State-writing (reversible): call_agent, call_agent_background, call_agents_parallel, "
     "code_task, manage_todo_list, run_script, save_episode, save_memory, save_note, "

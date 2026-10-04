@@ -73,7 +73,7 @@ clone cache.
    covered run holds no web tool and its container has no network (§16.3).
    Do not write that no data leaves the platform: the owner kept delegation
    on 2026-10-03, and an agent that the run calls runs outside the sandbox.
-   H-236 (5f) binds the covered run and every run under it. The store takes only the
+   H-236 (5g) binds the covered run and every run under it. The store takes only the
    heads agent-data/, inputs/, outputs/ and .run/, and a skill folder is its
    author's alone (`agent_paths.claim_skill`, `refused_write`).
    `decide()` runs too, with the whole command and with the real host path.
@@ -89,7 +89,30 @@ clone cache.
    tests/unit/test_projects_sandbox_tools.py (WS43-F21), and for the rules
    for code tests/unit/test_generated_addendum.py and
    tests/unit/test_projects_agent.py.
-5f. egress.py -- the network control on a covered run and every run under it
+5f. attachment_text.py + attachment_tools.py -- `read_attachment` (H-229,
+   spec: project-docs/specs/projects_ai_chat.md §22). It returns the text of a
+   `.docx`, `.pdf`, `.txt`, `.md` or `.csv` file attached in the caller's own
+   chat. `attachment_text` parses bytes only: no subprocess, no code, and
+   pypdf's `jbig2dec` is off. Every cap is a module constant there. The PDF
+   deadline stops a page in the middle (pypdf's `visitor_operand_before`). A
+   Word part must be UTF-8, and `pyexpat` refuses a DTD at its first event.
+   Before each PDF page it caps the font setup that pypdf runs before the
+   first operator: 64 font entries and 2 MB of font program bytes for each
+   resource dictionary, the page's and every reachable form's. The parses
+   run on a pool of `MAX_PARSES` threads of their own, and the reads on
+   another small pool, never on the default executor. A slot is held until
+   its worker really ends.
+   `attachment_tools` takes the workspace, the thread and the store key from
+   `artifact_context()`, never from the `.cc-instance` marker, and only a
+   file name from the model. It opens through `safe_open` (5d). In a run that
+   `sandbox_broker.covers()`, it holds `broker.host_dir()` during the read,
+   so `WITHHELD_HOST_TOOLS` (5e) does not name it.
+   `agent_paths.upload_dir_rel` is the ONE rule for where an upload lands:
+   `inputs/<thread slug>/` in a shared agent's tenant dir, else `inputs/`.
+   It builds on `thread_slug`, the one slug of `outputs/<thread slug>/` too.
+   The gateway upload route and this tool both call it. Do not add a second
+   reader of an attachment. Fence: tests/unit/test_read_attachment.py.
+5g. egress.py -- the network control on a covered run and every run under it
    (H-236, spec `maf_coding_engine.md` §16.3). It FAILS CLOSED. Such a run
    binds `no_egress=True` in its artifact context and holds only the four
    `DELEGATION_TOOLS`, the sandbox tools and tools whose annotation says
@@ -110,7 +133,7 @@ clone cache.
    (`is_egress_request`). The orchestrator decides the flag
    (`_tool_injection._run_no_egress`), because this package cannot import it.
    Fence: tests/unit/test_delegation_no_egress.py (WS43-F24).
-5g. tool_annotations.py -- `annotate()` has NO default for `open_world`
+5h. tool_annotations.py -- `annotate()` has NO default for `open_world`
    (H-236). Every tool of every in-repo agent states it, and the WS43-F24
    fence reads the real registry to check. The risk block of the addendum is
    PER AGENT and deterministic: `risk_summary_block(own=)` lists the
@@ -118,7 +141,7 @@ clone cache.
    that agent's own destructive or `open_world=True` tools, which the caller
    takes from the agent's own tool list (`_tool_injection._own_risk`). An
    agent's read tools stay out. The fence pins task-manager's block.
-5h. tool_guard.py -- the ONE per-run middleware pair (`WithholdTools`,
+5i. tool_guard.py -- the ONE per-run middleware pair (`WithholdTools`,
    `RefuseTools`) that takes a rule. The host-tool control of
    `sandbox_tools` and the egress control of `egress` both use it. Do not
    write a third copy of the pair.

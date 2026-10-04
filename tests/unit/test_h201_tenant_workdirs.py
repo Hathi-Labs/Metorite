@@ -705,6 +705,8 @@ def test_each_org_reads_only_its_own_output(graph_as_app, disk) -> None:  # noqa
 
 @_DB_GATE
 def test_the_upload_to_a_shared_agent_works_again(graph_as_app, disk) -> None:  # noqa: F811
+    from acb_skills.agent_paths import thread_slug
+
     a, b = graph_as_app.org_a, graph_as_app.org_b
     name = f"spec-{uuid.uuid4().hex[:6]}.txt"
     before = disk.snapshot()
@@ -713,15 +715,18 @@ def test_the_upload_to_a_shared_agent_works_again(graph_as_app, disk) -> None:  
         c = _client(_user(email, org))
         up = c.post(f"/agent/workspace/{sid}/upload", files={"files": (name, body)})
         assert up.status_code == 200, up.text
-        assert up.json()[0]["path"] == f"inputs/{name}"
-        assert (_tenant_dir(org) / "inputs" / name).read_bytes() == body
+        # H-229: a shared agent's upload lands in its thread's own folder.
+        rel = f"inputs/{thread_slug(sid)}/{name}"
+        assert up.json()[0]["path"] == rel
+        assert (_tenant_dir(org) / rel).read_bytes() == body
+        assert not (_tenant_dir(org) / "inputs" / name).exists()
         # The write-through lands in the caller's tenant, under o:<org>.
-        assert (org, f"o:{org}", body.decode()) in _rows(graph_as_app, f"inputs/{name}")
+        assert (org, f"o:{org}", body.decode()) in _rows(graph_as_app, rel)
         # The other change routes work in the tenant dir too.
         base = f"/agent/workspace/{sid}"
         assert c.put(f"{base}/file", params={"path": "agent-data/NOTES.md"},
                      json={"content": email}).status_code == 200
-        assert c.post(f"{base}/promote", json={"path": f"inputs/{name}"}).status_code == 200
+        assert c.post(f"{base}/promote", json={"path": rel}).status_code == 200
     assert disk.snapshot() == before
     assert _rows(graph_as_app, f"agent-data/{name}") == sorted([
         (a, f"o:{a}", "alice spec"), (b, f"o:{b}", "carol spec")])

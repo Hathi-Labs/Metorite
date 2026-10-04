@@ -39,6 +39,8 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # Artifacts
     "write_artifact":        {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     "share_artifact":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # H-229: the text of a file attached in this chat. Pure parsing, no code.
+    "read_attachment":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # Memory
     "remember":              {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "recall_timeline":       {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},

@@ -138,8 +138,13 @@ line — never reclaim a number by deleting the other entry.
      folder under `outputs/`. Keep the room check of today.
   3. Link the artifact card to the new path. Keep the old link working for a
      member of that thread, through the fault-in of §21.15.
-  4. Check the uploads too. The session upload of §21.15 rule 11 writes to
-     the shared `inputs/`, so it may have the same gap.
+  4. Give the uploads the same rule. Since H-229 an upload of a shared agent
+     lands in `inputs/<thread slug>/`, and `read_attachment` reads only that
+     folder. The workspace tree, the file, history and delete routes, the
+     sandbox file store and the container mount still reach the `inputs/`
+     folder of another thread. Extend `agent_paths.is_other_thread_rel` to
+     `inputs/`, map `inputs/` in `TenantFileStore` as `outputs/` is mapped,
+     and mount the thread's `inputs/` folder over `/workspace/inputs/`.
   5. Add an R8 test: a member with another session of the same agent cannot
      list or read the document.
 - **Authority:** `specs/maf_coding_engine.md` §16.3 · `specs/projects_ai_chat.md`
@@ -3994,25 +3999,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` D85 · `specs/maf_coding_engine.md` §7.9
 - **Added:** 2026-10-03 · the D85 interim block
 
-### H-229 · Give chat attachments platform-side text extraction, because D85 removed a live Projects flow · [AGENT]
-- **Check:** `grep -rn "docx" apps/services/gateway/gateway/routes/ packages/acb_skills/acb_skills/ | grep -i "extract"`
-  → no hit means a member's uploaded `.docx` still has no reader that a shared agent holds.
-- **What happens.** The PR #598 reviewer read the production logs. On
-  2026-10-02 and 2026-10-03, the projects-assistant of a customer org used
-  `code_task` to read an uploaded `.docx`. D85 takes `code_task` from that
-  shared agent, so that flow now stops. The agent has no other tool that
-  reads a Word file.
-- **Do.** Extract the text of a chat attachment on the platform side, before
-  the agent sees it. Start with `.docx`, `.pdf` and `.xlsx`. The agent then
-  reads plain text through a tool that it already holds, and no code runs on
-  the host. The supervisor starts this slice next.
-- **Test plan.** Upload a `.docx` in the Projects chat of a customer org, and
-  ask for its contents. The agent must answer from the text. Add a fence that
-  the extractor needs no shell tool.
-- **Authority:** `work_plan.md` D85 · `specs/maf_coding_engine.md` §7.9 ·
-  PR #598 review, P2
-- **Added:** 2026-10-04 · fix round 2 of PR #598
-
 ### H-230 · Put the first-party check in front of `spawn_copilot_agent`'s mutation sandbox · [AGENT]
 - **Check:** `grep -n "_self_mutation_permitted\|_read_first_party" apps/services/orchestrator/orchestrator/agents.py`
   → no hit means `spawn_copilot_agent` still starts the sandbox for any organization.
@@ -4091,6 +4077,25 @@ line — never reclaim a number by deleting the other entry.
   state files, allow its state dir by name in `decide()`, and add a test.
 - **Authority:** `specs/maf_coding_engine.md` §7.9 · the PR #598 verifier
 - **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-235 · Finish chat attachments: `.xlsx`, and one live read · [AGENT]
+- **Check:** `grep -c '".xlsx"' packages/acb_skills/acb_skills/attachment_text.py`
+  → `0` means `.xlsx` is still unread. Step 2 stays open until a live read is on record.
+- **What happens.** H-229 built `read_attachment` for `.docx`, PDF, `.txt`,
+  `.md` and `.csv` (`projects_ai_chat.md` §22). It opens through the safe
+  opener, and under the dir lock in a covered run. Two items stay open.
+  1. H-229 asked for `.xlsx` too. The supervisor narrowed the slice, so the
+     tool refuses a `.xlsx` with one sentence.
+  2. No live read is on record. The test plan of H-229 needs production.
+- **Do.**
+  1. Read `.xlsx` in `acb_skills/attachment_text.py`: the zip, the shared
+     strings and each sheet, with the same caps and a test for each cap.
+  2. After the deploy, upload a `.docx` in the Projects chat of the
+     smoke-chat org, and ask for its contents. The answer must quote the
+     file, and the gateway log must show `attachment.read`.
+- **Authority:** `specs/projects_ai_chat.md` §22.7 ·
+  `specs/maf_coding_engine.md` §7.9 · the H-229 slice
+- **Added:** 2026-10-04 · the H-229 slice
 
 # DONE — deleted, not archived
 

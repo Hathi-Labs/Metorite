@@ -695,6 +695,30 @@ class Settings(BaseSettings):
     email_embedding_model: str = "text-embedding-3-small"
     email_embedding_dim: int = 1536
 
+    # ── The Graph delta of Outlook, in shadow (WS-17 EM-T4d) ────────────────
+    #
+    # `email_outlook_delta` is `off`, `shadow` or `on`. The default is `off`,
+    # and an unknown value resolves to `off`. EM-T4d refuses `on`: it resolves
+    # to `shadow` and logs `email.delta_mode_refused`. In `shadow` a poll runs
+    # the full sweep AND the delta, and writes from the sweep only, so the
+    # mode ADDS Graph calls. `email_outlook_delta_accounts` lists the account
+    # ids that run the mode, with a comma between ids. An empty list runs no
+    # delta. The one reader is `email_ingestion.scheduler.outlook_delta_mode`.
+    #
+    # 🔴 OWNER-GATE on a box (`enforcement-flip`, work_plan.md §6 row D4): any
+    # value other than `off`, and any id in the list. Spec:
+    # email_app_master_plan.md §10.4.6 EM-T4d. Fence:
+    # tests/unit/test_outlook_delta_shadow.py.
+    email_outlook_delta: str = "off"
+    email_outlook_delta_accounts: str = ""
+
+    # The storage limit of ONE mailbox, in MB (WS-17 EM-T6c, D-EM-14, owner
+    # answer Q1). The meter counts the copy that Metorite keeps, never the
+    # mailbox in Outlook. ``email_ingestion.storage`` reads it, and the limit
+    # in bytes is this value times 1,048,576. A change on a box is gate
+    # ``env-write``. Fence: tests/unit/test_email_storage_limit.py.
+    email_mailbox_storage_limit_mb: int = 500
+
     # Task-manager semantic capability matching (spec §5, Phase 2) — embed each
     # person's capability text (role · skills · résumé) into people
     # .capability_embedding and blend cosine similarity with the keyword match

@@ -11,12 +11,13 @@
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
-> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume.
+> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume. ✅ **EM-T6c MERGED (#615, 2026-10-04, no migration): a port of `8b4cb4dfc` that closes the gaps G1 to G5 and the findings of review round 1.**
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
 > ✅ **EM-T6d, part 2 (rules step, drafting step and Done) MERGED (#581, 2026-10-03).** UI only (§10.4.7).
 > ✅ **EM-T4f parts 1 and 2 MERGED (#578, 2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
 > ✅ **EM-T4e MERGED (#586, 2026-10-03, migration 226).** The rules and the account reads make one read for their child rows. One new index serves the thread reads (§10.4.6).
+> ✅ **EM-T4d MERGED (#614, 2026-10-04, no migration).** The Graph delta of Outlook runs in shadow beside the full sweep, behind `EMAIL_OUTLOOK_DELTA`, which is `off` by default. The sweep stays the one writer (§10.4.6). Review round 1 fixed seven findings, and the first is a host check on each delta link.
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
@@ -600,7 +601,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
-| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577.** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
+| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -1529,7 +1530,9 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 #### 10.4.6 EM-T4 in full
 
-**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). ✅ EM-T4f MERGED (#578, 2026-10-02). ✅ EM-T4e MERGED (#586, migration 226, 2026-10-03). EM-T4a-2, EM-T4a-3, EM-T4a-4, EM-T4b and EM-T4d are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). ✅ EM-T4f MERGED (#578, 2026-10-02). ✅ EM-T4e MERGED (#586, migration 226, 2026-10-03).
+
+✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). EM-T4a-2, EM-T4a-3, EM-T4a-4 and EM-T4b are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
 
@@ -1546,7 +1549,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 **Measured state: sessions across external I/O on the sync path.**
 
 - Phase (e) of `_sync_account` holds one `tenant_session(org)` across up to 25 `provider.get_message` calls (`scheduler.py:412-418`, `body_backfill.py:97-99`).
-- Phase (f) holds one session across `litellm.aembedding` (`scheduler.py:423-429`, `email_embeddings.py:73`). It does nothing while `email_semantic_search_enabled` is false, which is its default (`settings.py:630`).
+- Phase (f) holds one session across `litellm.aembedding` (`scheduler.py:423-429`, `email_embeddings.py:73`). It does nothing while `email_semantic_search_enabled` is false, which is its default (`settings.py:690`).
 - `_run_rules_job` opens one block for each row (`runner.py:1648`). The block covers the rule pick, the thread status call, the provider actions, the template call and the draft agent.
 - `_maybe_classify_threads` opens one block for each gap thread (`replyzero.py:1277`). `_mark_thread_replied` holds its first block across the status call (`replyzero.py:918-937`).
 - `_maybe_send_follow_up_reminders` holds one block for up to 50 threads (`followups.py:92-258`). The block covers `authenticate`, `set_labels`, the body fetch, the draft agent and `create_draft`.
@@ -1578,9 +1581,9 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 **Measured state: delta.**
 
-- `sync_messages` sets `history_id = None` (`outlook.py:1061`). So each poll sweeps 6 system folders and each user folder (`outlook.py:1104-1160`).
+- `sync_messages` sets `history_id = None` (`outlook.py:1298`). So each poll sweeps 6 system folders and each user folder (`outlook.py:1341-1404`).
 - Commits `55bec57f` and `a350b578` turned delta off on 2026-06-23. A seeded inbox token returned 0 changes in each cycle while new mail arrived. Nobody found the cause.
-- The dead branch (`outlook.py:1063-1103`) has four defects. It keeps only the bare `$deltatoken`, and it sends `$top`. It reads one page with no `@odata.nextLink`, and it moves each `@removed` item to TRASH.
+- The dead branch (`outlook.py:1300-1340`) has four defects. It keeps only the bare `$deltatoken`, and it sends `$top`. It reads one page with no `@odata.nextLink`, and it moves each `@removed` item to TRASH.
 - The cursor column is `last_history_id TEXT` (`17_email_accounts.sql:25`). It can hold a JSON map of links, so delta needs no migration.
 
 **Measured state: §7 item 4.** The row said "items 2 to 5" but named delta in place of item 4. Item 4 is still real:
@@ -1597,7 +1600,7 @@ Option (B), a listener on the seam, stays rejected.
 
 **One fence for every part (R7).**
 
-Add `tests/unit/_io_watch.py`. It counts the open `_tenant_session` blocks, and it gives a watched fake model and a watched fake provider. Each fake fails the test when a block is open during its call. Each part adds its functions to `tests/unit/test_email_no_session_across_io.py`. A companion test proves that the fence fails on a function that holds a block across a fake call.
+The fence is `test_no_session_is_open_during_the_provider_calls` in `tests/unit/test_email_scheduler_tenancy.py:665`. It counts the open `tenant_session` blocks. Its watched fake provider and its watched model call fail the test when a block is open during a call. A part that adds a provider call or a model call to the sync path adds that call to the watched fake. This paragraph named `tests/unit/_io_watch.py` and `tests/unit/test_email_no_session_across_io.py` until 2026-10-04. Neither file exists, so do not cite them.
 
 ##### EM-T4a-0 — the request jobs bind a tenant (first, 2026-10-02)
 
@@ -1944,15 +1947,38 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_4
 
 ##### EM-T4d — Graph delta, in shadow first
 
+**Status (2026-10-04).** ✅ MERGED #614. Review round 1 fixed seven findings. There is no migration. The code ships with `email_outlook_delta=off`, so it changes nothing on a box.
+
+To set `shadow` on a box is a later, separate act (gate `enforcement-flip`). Settle EM-T4d-f3 before that act. The fence is `tests/unit/test_outlook_delta_shadow.py`, with R8 in `test_email_scheduler_tenancy.py` on a private database. The As-built notes, the review round 1 note and the mutation table follow the Verify block.
+
 1. Add `email_outlook_delta` to settings: `off`, `shadow` or `on`. The default is `off`.
 2. A value of `on` resolves to `shadow` and logs `email.delta_mode_refused`. Only an edit of this section can lift that.
 3. Delta runs for each swept folder through `/me/mailFolders/{id}/messages/delta`. It follows each `@odata.nextLink` to the `@odata.deltaLink`.
 4. It stores each link whole, and it calls a stored link as it is. It sends `Prefer: odata.maxpagesize=100` and no `$top`.
-5. The cursor in `last_history_id` is a JSON object with a version key and one link for each folder.
+   The delta sends the same `$select` as the sweep and no `IdType` preference, so the ids of the two reads compare.
+5. The cursor in `last_history_id` is `{"v": 1, "folders": {<folder key>: {"link": <url>, "at": <UTC time>}}}`.
+   The folder key is the key of the sweep: a well-known name or a folder id.
 6. A cursor value that does not parse means "no cursor", and the poll does a full sweep.
 7. In `shadow`, each poll runs the full sweep and the delta. It writes from the full sweep only.
-8. It logs `email.delta_shadow` with three counts: in both, only in the sweep, and only in the delta.
+8. It logs `email.delta_shadow`. The record compares NEW mail only.
+   - For each folder, a message is new when its `receivedDateTime` is after `at`, the end of the last round of that folder.
+   - `both`, `sweep_only` and `delta_only` count the ids of the new mail.
+   - A folder in its first round counts as `seeding` and adds no count.
+   - An `@removed` item adds to `removed` only.
 9. A new user folder gets a cursor on its next poll. A folder that is gone loses its cursor.
+   A failed folder list (`_user_sweep_folders` returns `[]` at `outlook.py:1267-1270`) keeps each link.
+10. `email_outlook_delta_accounts` lists the account ids that run the mode, with a comma between ids. An empty list runs no delta.
+11. A delta failure never changes the sync.
+    - A raise, a timeout, a 4xx or a 5xx leaves the four sweep fields unchanged: `messages`, `full_snapshot`, `catch_up_incomplete` and `catch_up_folders`.
+    - A 410 or a 400 of Graph drops that link, and the folder seeds again at the next poll.
+      The reason for the 400 (review round 1, F3): a stored link is a fixed request, so Graph sends the same 400 at each poll.
+    - A 400 of the token endpoint is a refused refresh (EM-T4c), not a bad link, so it keeps the link.
+    - Any other failure keeps the link: a 401, a 429, a 5xx, a timeout or a raise.
+    - A 403 or a 404 on a system folder that each mailbox has also keeps it.
+    - The poll logs `email.delta_shadow_failed` with the folder count and the status.
+12. In `shadow`, no `@removed` item becomes a `[DELETED]` marker. The reconcile reads the sweep alone.
+13. Read at most 20 delta pages per folder in one poll. A folder at that limit stores its `@odata.nextLink` and continues at the next poll.
+    The reason: a seed round for a 6-month mailbox can add more than 100 Graph calls under the mailbox lock.
 
 **Non-goals.** No `on` mode. No delete rule for a tombstone. No change to Gmail, IMAP or the deep first sync. No new column and no migration. Delta keeps the floor of EM-T6a, and a reconnect keeps the cursor (D-EM-13).
 
@@ -1964,23 +1990,189 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_4
 - In `shadow`, the rows written equal the rows of the full sweep alone.
 - The `email.delta_shadow` record holds the three counts and the folder count. It holds no subject and no address.
 - A value of `on` resolves to `shadow` and logs `email.delta_mode_refused`.
+- With `off`, the poll sends zero delta requests, and `new_history_id` is `None`.
+- Item 9: a new user folder seeds on its first poll. A folder that the list no longer returns loses its link. A failed folder list keeps each link.
+- Item 10: with `shadow` and an empty account list, no mailbox sends a delta request. Only a listed account sends one.
+- Item 11: a raise, a 410 or a 500 leaves the sweep result unchanged, and the cycle succeeds. A 410 or a 400 drops that link, and a 500 or a 429 keeps it.
+- Item 12: an `@removed` item writes no TRASH row.
+- Item 13: a folder at 20 pages stores its `@odata.nextLink`, and the next poll continues from it.
 
 **Live check before any `on` (gate `enforcement-flip`).** Set `shadow` for one test mailbox. After 7 days, each `email.delta_shadow` line must show 0 "only in the sweep" for new mail. A later part, EM-T4d-2, then proposes `on` and a delete rule.
 
 **Files.** `apps/services/email_ingestion/email_ingestion/providers/outlook.py`, `scheduler.py` and `acb_common/settings.py`. The test is a new `tests/unit/test_outlook_delta_shadow.py`.
 
+**Fences (R7).** `tests/unit/test_outlook_delta_shadow.py` uses the real `OutlookProvider` and a fake Graph on `httpx.MockTransport`.
+
+| Fence | The rule |
+|---|---|
+| `email-delta-off-no-call` | With `off`, no `/messages/delta` request, and `new_history_id=None`. An unknown value resolves to `off`. |
+| `email-delta-on-refused` | `on` resolves to `shadow` and logs `email.delta_mode_refused`. |
+| `email-delta-account-scope` | With `shadow` and an empty account list, no mailbox sends a delta. Only a listed account sends one. |
+| `email-delta-links-whole` | A round of three pages stores the last `@odata.deltaLink` of each folder, byte for byte. The next poll calls it as it is, with `Prefer: odata.maxpagesize=100` and no `$top`. |
+| `email-delta-bad-cursor` | A bare token, text that is not JSON, JSON with another version, and NULL each give a full sweep, a seed round and no error. |
+| `email-delta-sweep-only` | `off` and `shadow` give equal `messages`, `full_snapshot`, `catch_up_incomplete` and `catch_up_folders`. An `@removed` item writes no TRASH row. |
+| `email-delta-failure-isolated` | A raise, a 410 or a 500 leaves the sweep result unchanged, and the cycle succeeds. A 410 or a 400 drops that link, and a 500 or a 429 keeps it. |
+| `email-delta-new-mail-counts` | A new message that the fake delta leaves out gives `sweep_only=1`. A message older than `at` adds no count. The record holds no subject, no address and no link. |
+| `email-delta-folder-set` | A new user folder seeds on its first poll. A folder that the list no longer returns loses its link. A failed or short folder list keeps each link that the poll does not read. |
+| `email-delta-floor` | The first request of a seed round filters `receivedDateTime ge <floor>`. |
+| `email-delta-page-cap` | A folder at 20 pages stores its nextLink and continues at the next poll. |
+| `email-delta-link-host` | Review round 1. A link that does not start with the Graph base URL gets no request and no store. The link drops, and the log names no URL. |
+| `email-delta-sync-log` | Review round 1. A shadow cycle writes NULL into the sync log row. `off` writes what it wrote before. |
+| `email-delta-normal-cycle` | Review round 1. A first import and a deep sync send no delta request. |
+| `email-catch-up-folder-name` | Review round 1. A short user folder goes into `catch_up_folders` by its canonical name. It pins the behaviour of the sweep before EM-T4d. |
+
+Three more checks bind this part.
+
+- Keep `test_email_scheduler_tenancy.py::test_no_session_is_open_during_the_provider_calls` green. If a part adds a provider call outside `sync_messages`, the watched fake must watch it.
+- Keep `test_email_manual_sync_parity.py:73-75` green. Phase (d) keeps `COALESCE`, so `off` keeps a stored cursor.
+- R8 in `test_email_scheduler_tenancy.py`, as the app role for two organizations: a JSON cursor from `shadow` lands in the row of org B only. A later `off` cycle keeps it.
+
 **Verify with.**
 
 ```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_outlook_delta_shadow.py tests/unit/test_email_deep_sync.py \
   tests/unit/test_email_manual_sync_parity.py tests/unit/test_email_scheduler_tenancy.py \
-  tests/unit/test_email_provider_401_retry.py -q -rs
-uv run ruff check apps/services/email_ingestion tests/unit/test_outlook_delta_shadow.py
+  tests/unit/test_email_provider_401_retry.py tests/unit/test_email_import_batches.py \
+  tests/unit/test_email_import_floor.py tests/unit/test_email_sync_one_at_a_time.py \
+  tests/unit/test_email_sync_backoff.py tests/unit/test_outlook_labels_cache_and_429.py \
+  tests/unit/test_outlook_folders_move.py tests/unit/test_db_engine_seam.py -v -rs
+uv run ruff check tests/unit/test_outlook_delta_shadow.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
+
+- The R8 cases must show PASSED, not SKIPPED.
+- A diff of `ruff check` on `outlook.py`, `scheduler.py` and `settings.py` must show no new finding against the 26 that exist on 2026-10-04.
+
+**As built (2026-10-04).**
+
+1. `scheduler.outlook_delta_mode(account_id)` is the one reader of `email_outlook_delta` and `email_outlook_delta_accounts`. It caches the parse of each value, so a refusal logs once for each process. The list compares ids in lower case.
+2. `_sync_cycle` passes `delta_shadow` to `sync_messages` for a `microsoft` row only. It then logs `email.delta_shadow` from `SyncResult.delta_report`, with the account id and counts only.
+3. `delta_shadow` is a keyword-only boolean, so `on` cannot reach the provider. The abstract method in `providers/base.py` declares it. Gmail and IMAP take it and ignore it, as they ignore `catch_up`. That is one signature line in each file, and no change of behaviour.
+4. The delta runs AFTER the full sweep, inside the one `sync_messages` call, so no session is open (R5). A message that arrives between the two reads adds to `delta_only`, never to `sweep_only`.
+5. A round that the page cap cuts stores its next link with `"at": null`. The folder counts as `seeding` until a round ends, because a cut round cannot compare its new mail. Item 13 did not say what `at` holds in that state.
+6. `_user_sweep_folder_list` returns the user folders and whether the folder list answered in full. `_user_sweep_folders` keeps its old answer for the import.
+7. `_MESSAGE_SELECT` holds the `$select` that the sweep and the delta share. The dead branch of `outlook.py:1300-1340` is gone, and so is the false comment at `:1291-1297`.
+8. `email_sync_log.provider_history_id` gets NULL in a shadow poll, as in `off` for Outlook (review round 1, F5). Only `email_accounts.last_history_id` holds the cursor. Nothing reads the column of the log.
+
+**Two rules beyond the items, and two known limits.**
+
+- ⚠️ A 403 or a 404 on Archive or a user folder skips that folder in the delta. It adds no count, no link and no failure. This is the one rule of the sweep, `_skips_folder`. Without it, a mailbox with no Archive logs `email.delta_shadow_failed` on each poll.
+- ⚠️ A failure outside one folder, for example a defect in the compare, gives no new cursor. Phase (d) then keeps the stored cursor, and the record counts each folder as failed.
+- `at` is the clock of the box when the round ends. A box clock that runs behind Exchange by more than one round trip can show a false `sweep_only`.
+- A new message that moves or goes away between the sweep and the delta of its folder can show a false `sweep_only`. Examples are a draft that the member sends, and a rule of the Outlook client. The delta then reports the message as `@removed`, or not at all. So read each `sweep_only` with the `removed` count beside it.
+
+**Review round 1 (2026-10-04).** An independent verifier passed the slice with seven findings. The orchestrator recorded a decision for each, and this round built the fixes. Each item names the finding, the fix and the fence.
+
+- **F1, the host of a link (security).** The delta called a stored link with no host check, so the bearer went to any host in the cursor.
+  - `_graph_link` in `outlook.py` refuses a link that does not start with `GRAPH_API_BASE` and a slash.
+  - It checks the stored link, each `@odata.nextLink` and the `@odata.deltaLink`, before a request or a store.
+  - A refused link drops, and the folder seeds again at the next poll.
+  - The log says `email.delta_link_refused` with the folder and the source, and never the URL.
+  - The seed path is relative to the base URL of the client, so it cannot leave Graph. Fence: `email-delta-link-host`.
+- **F2, a short folder list.** `list_folders` skips a failed `childFolders` read, so the delta dropped the link of a nested folder.
+  - `list_folders` now sets `_folder_list_partial`, and `_user_sweep_folder_list` then returns False.
+  - The delta keeps each stored link that the poll does not read. A folder that the list gives follows the normal rules.
+  - The list is the same as before, so the sweep and `off` do not change. Fence: `email-delta-folder-set`.
+- **F3, a 400 on a stored link.** A 400 kept the link for ever. Now a 400 of Graph drops it as a 410 does (item 11). A 400 of the token endpoint keeps it, because that is a refused refresh. Fence: `email-delta-failure-isolated`.
+- **F4, three gaps of R7.** The mutants MV6, MV7 and MV8 of the verifier survived. New tests fence three rules. Fence: `email-delta-failure-isolated`.
+  - A defect in the compare leaves the sweep result unchanged, and the cycle logs one failure line.
+  - A 403 or a 404 on a user folder skips it, and that is not a failure.
+  - Any failure other than a refused link, a 410 or a 400 keeps the link.
+- **F5, the cursor in the sync log.** Each shadow poll wrote 3 to 17 KB into a new `email_sync_log` row, and nothing read it. Now a shadow cycle writes NULL there, as `off` does for Outlook. A provider with a cursor of its own still writes it. Fence: `email-delta-sync-log`.
+- **F6, a long cycle.** The scheduler ran the delta after a first import and after a deep sync. That can push a manual sync past the 30 seconds of the Control Plane proxy.
+  - `_runs_delta_shadow` in `scheduler.py` now runs it on a normal incremental cycle only.
+  - `deep=True` runs no delta, and no cycle runs it before `initial_sync_done`. Fence: `email-delta-normal-cycle`.
+- **F7, an old gap.** No test pinned how `catch_up_folders` names a user folder. A new test pins the canonical name in both branches of the sweep. It changes no behaviour. Fence: `email-catch-up-folder-name` in `tests/unit/test_email_import_batches.py`.
+- **The R8 case changed with F5.** `test_a_shadow_cursor_lands_in_org_b_and_off_keeps_it` now expects NULL in the log row. It still proves that org A cannot read the cursor or the log row of org B.
+
+**The fences, as built.** `tests/unit/test_outlook_delta_shadow.py` holds 60 tests after review round 1, and it held 34 before. The R8 case is `test_a_shadow_cursor_lands_in_org_b_and_off_keeps_it`.
+
+| Fence | Tests |
+|---|---|
+| `email-delta-off-no-call` | `test_off_sends_no_delta_request_and_returns_no_cursor`, `test_the_scheduler_with_off_sends_no_delta_and_keeps_the_cursor`, `test_an_unknown_value_resolves_to_off` (5 values) |
+| `email-delta-on-refused` | `test_on_resolves_to_shadow_and_logs_the_refusal` (3 spellings) |
+| `email-delta-account-scope` | `test_shadow_resolves_to_shadow_for_a_listed_account_only`, `test_an_empty_account_list_sends_no_delta_from_any_mailbox` |
+| `email-delta-links-whole` | `test_a_round_of_three_pages_stores_each_delta_link_whole`, `test_the_delta_sends_the_select_of_the_sweep` |
+| `email-delta-bad-cursor` | `test_a_bad_cursor_gives_a_full_sweep_and_a_seed_round` (5 cursors), `test_the_cursor_round_trips_and_refuses_every_other_shape` |
+| `email-delta-sweep-only` | `test_shadow_writes_exactly_what_off_writes`, `test_a_removed_item_writes_no_trash_row` |
+| `email-delta-failure-isolated` | `test_a_failed_delta_leaves_the_sweep_unchanged` (raise, 500, 503, 429, 403 and 404 on the inbox, 410, 400), `test_a_failed_delta_keeps_the_cycle_a_success`, `test_a_mailbox_with_no_archive_logs_no_failure`, `test_a_refused_refresh_on_a_stored_link_keeps_the_link`, `test_a_403_or_404_on_a_user_folder_skips_it` (2), `test_a_defect_in_the_compare_leaves_the_sweep_unchanged` (2 helpers), `test_a_defect_in_the_compare_keeps_the_cycle_a_success_and_logs_once` |
+| `email-delta-new-mail-counts` | `test_the_record_counts_new_mail_only`, `test_the_record_holds_no_subject_no_address_and_no_link` |
+| `email-delta-folder-set` | `test_the_folder_set_follows_the_sweep`, `test_a_failed_child_folder_read_keeps_the_link_of_the_nested_folder` |
+| `email-delta-link-host` | `test_a_stored_link_that_is_not_a_graph_link_sends_no_request` (5 links), `test_a_link_in_a_graph_answer_that_is_not_a_graph_link_is_refused` (next, delta) |
+| `email-delta-sync-log` | `test_a_shadow_cycle_writes_no_cursor_into_the_sync_log`, `test_off_still_writes_the_cursor_of_a_provider_into_the_sync_log`, and the R8 case |
+| `email-delta-normal-cycle` | `test_only_a_normal_cycle_sends_a_delta_request` (5 cycles) |
+| `email-catch-up-folder-name` | `test_email_import_batches.py::test_a_short_user_folder_is_named_by_its_canonical_name` (2 branches) |
+| `email-delta-floor` | `test_a_seed_round_filters_on_the_floor` |
+| `email-delta-page-cap` | `test_a_folder_at_the_page_cap_goes_on_at_the_next_poll` |
+| R5, no session across the delta | `test_the_delta_runs_with_no_session_open`, and `test_no_session_is_open_during_the_provider_calls` stays green |
+| R8 | `test_email_scheduler_tenancy.py::TestTheSyncCoreWritesItsOwnTenant::test_a_shadow_cursor_lands_in_org_b_and_off_keeps_it` |
+
+**Mutations (2026-10-04).** Each mutation changed `outlook.py` or `scheduler.py`, ran the named tests, and put the file back. A SHA-256 check confirmed each file byte for byte. 23 of 23 mutations turned a test red. The control M15p is the mutation of M15 against the static parity fence alone. It stays green, so the R8 case is the fence that catches it.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| M1 | The delta runs with no `delta_shadow` | `email-delta-off-no-call` | red, 2 failed |
+| M2 | An unknown value passes as its own mode | `email-delta-off-no-call` | red, 3 failed |
+| M3 | `on` resolves to `on` | `email-delta-on-refused` | red, 3 failed |
+| M3b | `on` logs no refusal | `email-delta-on-refused` | red, 3 failed |
+| M4 | The account list is not read | `email-delta-account-scope` | red, 2 failed |
+| M4b | The scheduler passes `delta_shadow` for each mailbox | `email-delta-account-scope` | red, 1 failed |
+| M5 | The provider decodes the stored link (`%3D` to `=`) | `email-delta-links-whole` | red, 1 failed |
+| M5b | No `Prefer` header | `email-delta-links-whole` | red, 1 failed |
+| M5c | Each delta request sends `$top` | `email-delta-links-whole` | red, 1 failed |
+| M6 | The version check is gone | `email-delta-bad-cursor` | red, 2 failed |
+| M7 | An `@removed` item becomes a `[DELETED]` marker | `email-delta-sweep-only` | red, 2 failed |
+| M8 | A 410 keeps the link | `email-delta-failure-isolated` | red, 1 failed |
+| M8b | A failed folder raises, and no guard catches it | `email-delta-failure-isolated` | red, 4 failed |
+| M9 | The compare counts all mail, not new mail | `email-delta-new-mail-counts` | red, 2 failed |
+| M9b | The delta runs before the sweep | `email-delta-new-mail-counts` | red, 1 failed |
+| M10 | A failed folder list drops the user links | `email-delta-folder-set` | red, 1 failed |
+| M10b | A folder that is gone keeps its link | `email-delta-folder-set` | red, 1 failed |
+| M11 | A seed round sends no floor | `email-delta-floor` | red, 1 failed |
+| M12 | A cut round stores an `at` | `email-delta-page-cap` | red, 1 failed |
+| M12b | The page cap is 30 | `email-delta-page-cap` | red, 1 failed |
+| M13 | A 404 on Archive is a failure | `email-delta-failure-isolated` | red, 1 failed |
+| M14 | A session is open across `sync_messages` | R5 | red, 2 failed |
+| M15 | Phase (d) writes `COALESCE(:history_id, NULL)` | R8 | red, the R8 case failed |
+| M15p | M15, against `test_email_manual_sync_parity.py` alone | control | green, as expected |
+
+**Mutations of review round 1 (2026-10-04).** The same method, with a SHA-256 check of `outlook.py` and `scheduler.py` after each run. 19 of 19 mutations turned a test red. MV6, MV7 and MV8 are the three mutants of the verifier that survived before this round. This round rebuilt them from the text of the finding.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| F1a | The stored link goes out with no host check | `email-delta-link-host` | red, 5 failed |
+| F1b | A next link goes out with no host check | `email-delta-link-host` | red, 1 failed |
+| F1c | A delta link goes into the cursor with no host check | `email-delta-link-host` | red, 1 failed |
+| F1d | A refused link stays in the cursor | `email-delta-link-host` | red, 5 failed |
+| F2a | A short folder list reads as a full list | `email-delta-folder-set` | red, 1 failed |
+| F2b | `list_folders` sets no mark on a failed `childFolders` read | `email-delta-folder-set` | red, 1 failed |
+| F2c | A short list keeps the link of a folder that it reads | `email-delta-folder-set` | red, 1 failed |
+| F3a | A 400 keeps the link | `email-delta-failure-isolated` | red, 1 failed |
+| F3b | A 400 of the token endpoint drops the link | `email-delta-failure-isolated` | red, 1 failed |
+| MV6 | The outer guard of `sync_messages` catches nothing | `email-delta-failure-isolated` | red, 3 failed |
+| MV7 | A 403 or a 404 on a user folder is a failure | `email-delta-failure-isolated` | red, 2 failed |
+| MV8 | Each 4xx drops the link | `email-delta-failure-isolated` | red, 4 failed |
+| F5a | The sync log gets the shadow cursor | `email-delta-sync-log` | red, 1 failed |
+| F5a-R8 | F5a, against the R8 case | R8 | red, 1 failed |
+| F5b | The sync log gets NULL for each provider | `email-delta-sync-log` | red, 1 failed |
+| F6a | A deep sync runs the delta | `email-delta-normal-cycle` | red, 2 failed |
+| F6b | A cycle before `initial_sync_done` runs the delta | `email-delta-normal-cycle` | red, 2 failed |
+| F7a | A catch-up page names a user folder by its id | `email-catch-up-folder-name` | red, 1 failed |
+| F7b | A failed first page names a user folder by its id | `email-catch-up-folder-name` | red, 1 failed |
+
+**Follow-ups (named, not built).**
+
+- **EM-T4d-2**, as above: `on` and a delete rule, after the live check.
+- **EM-T4d-f1.** Count an id that the sweep saw and that the delta reports as `@removed` in the same round apart from `sweep_only`. It would remove the false `sweep_only` of a draft that the member sends. Item 8 says that an `@removed` item adds to `removed` only, so this needs an edit of item 8.
+- **EM-T4d-f2 (review round 1).** The `httpx` logger at INFO can print the URL of each request. A delta URL holds its `$deltatoken`, and a sweep URL is in the log the same way. Decide the level of that logger for the whole service. This round changed no logging.
+- **EM-T4d-f3 (re-verify of round 1). Settle this before anyone sets `shadow` on a box.** A plain "Sync now" by a member sends `deep=None`, so it runs the delta like a loop cycle (`sync.py:264-266`). The webhook, the rerun and the agent tool `sync_account` do the same. A folder with no stored link then seeds, with up to 20 pages, inside the 30-second budget of the proxy. That happens on the first shadow poll, after a Resync, after a dropped link and for a new user folder. The fix is to run the delta only from the loop (`from_loop`), or to accept the cost for the few listed mailboxes.
+- **EM-T4d-f4 (re-verify of round 1).** When the `childFolders` read fails on every poll, the delta keeps the link of a deleted top-level user folder. The growth stops at the count of deleted folders.
 
 ##### EM-T4e — §7 item 4, the N+1 reads and the indexes
 
-**Status (2026-10-03).** 🔨 BUILT, not merged. The branch is `email-t4e`, and the migration is 226. The fence is `tests/unit/test_email_n_plus_one.py`, with R8 on a private database.
+**Status (2026-10-03).** ✅ MERGED (#586). The migration is 226. The fence is `tests/unit/test_email_n_plus_one.py`, with R8 on a private database.
 
 1. `_load_rules` reads the actions of all rules of the account in one query. It groups them in Python.
 2. `list_accounts` reads the counts of all accounts in one grouped query, at both sites.
@@ -2148,7 +2340,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** SPECIFIED (2026-10-02). EM-T6a is MERGED (#577, 2026-10-02). EM-T6b is MERGED (#580, 2026-10-03). EM-T6c to EM-T6e are not built. The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
+**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e not built. Anchors re-verified at `5e268c766` on 2026-10-04.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
@@ -2356,6 +2548,101 @@ The R8 tests must show PASSED, not SKIPPED.
 
 **Waits for** EM-T6b. The owner answered Q1, Q2 and Q3 on 2026-10-02 (§10.2). The items marked (Q2) and (Q3) carry those answers.
 
+**Narrowed (2026-10-04).** Port `8b4cb4dfc` onto `main`. Do not build it again.
+
+- A dry-run apply onto `main` gives five conflicts: `email_ingestion/scheduler.py`, `transport/accounts.py`, `email_ingestion/AGENTS.md`, this spec and `work_plan.md`. Seven files apply clean.
+- On `main`, `_reconcile_import` takes `provider`. The old commit calls it without `provider`, so the port adds it.
+- The port takes no migration. Migration 225 holds `stored_bytes` and `stored_bytes_at`. A later change that needs a column takes the next free number at build time (R1).
+
+**The gaps G1 to G5 (2026-10-04).** The old commit leaves five gaps. The port closes each one, and these rules bind it.
+
+- **G1. The removal keeps drafts.** The preview and the removal skip the folder `drafts`, so an unsent draft stays. This is an orchestrator decision, and the owner can reverse it.
+- **G2. At the limit, `core.hydrate_message_body` writes no body** (`core.py:365-418`). It returns the body that it loads. The reply drafter and the follow-up path call it.
+- **G3. The removal holds the mailbox lock.** A new public helper in `scheduler.py` takes the lock that each sync takes (`scheduler.py:769-860`). The removal waits 5 seconds for it, then answers 409. Its first block under the lock moves `import_since`, before any delete.
+- **G4. A removal can end the `limit` phase.** The last block writes `import_phase = 'done'` when the phase was `limit` and the new meter is under the limit. Review round 1 adds a third test: no gap is left below `import_reached_at`.
+- **G5. The last block deletes the orphan drafts of the AI.** It deletes the `email_ai_drafts` row of each thread that this removal emptied (review round 1).
+
+**Status.** ✅ MERGED #615 (2026-10-04). Four commits on `5e268c766`: the narrowing, the port of `8b4cb4dfc`, the gaps G1 to G5, and review round 1. It adds no migration. The fence is `tests/unit/test_email_storage_limit.py`: 72 tests, 28 of them R8, and 0 skip.
+
+**As built.**
+
+- `email_ingestion/storage.py` owns the limit, the meter, the preview and the steps of the removal. Each step takes a session, opens none and never commits.
+- The meter is one statement. It sums `pg_column_size` of 16 message columns, 5 attachment columns and 3 embedding columns. An R8 test compares the three lists with `pg_attribute`, so a new column of variable length fails until the meter names it.
+- The meter runs in the block of each import batch and in the block of phase (d). A first import at the limit writes `import_phase = 'limit'`. `_cycle_result` takes a keyword `limit`, and each import at the limit returns `limit: true`.
+- A deep sync that stops at the limit runs no import reconcile, and it logs `sync.import_reconcile_skipped reason=limit`. A page that the import did not read can hold mail of the same second as its last message.
+- Phases (e) and (f) moved into `_backfill_and_embed`. At the limit, neither phase runs, and the cycle logs `sync.storage_limit`. The write of refreshed credentials still runs between the two phases.
+- The two routes live in `transport/storage.py`. The preview answers `before`, `messages` and `bytes`. The removal answers `before`, `removed`, `stored_bytes` and `storage_limit_bytes`. `EmailAccountModel` carries `stored_bytes` and `storage_limit_bytes` for EM-T6e.
+- A `before` that is not an ISO date answers 400. A value with no zone is UTC. The removal keeps a message with no `received_at`.
+- (Q4) At the limit, the open skips its body UPDATE. The attachment rows of the open still land, because the download route needs the stored row id.
+- (G1) `KEPT_FOLDERS_SQL` is the one draft filter. It copies the folder test of `body_backfill.py`, so `drafts`, `Drafts` and `draft` stay, and a NULL folder is not a draft.
+- (G2) `hydrate_message_body` reads the meter in its first SELECT, through a `LEFT JOIN` on `email_accounts`, so the check costs no query.
+- (G3) `scheduler.hold_mailbox` is the new public helper, and `MailboxBusy` is its refusal. The ownership read runs before the lock, so a stranger gets 404 and never learns that a sync runs. The wait is `REMOVAL_LOCK_WAIT_S`, 5 seconds.
+- (G4) `end_limit_phase` writes `done` only under the limit, and its `WHERE` also names `import_phase = 'limit'` and the gap test of review round 1.
+- (G5) `delete_orphan_ai_drafts` runs in the last block. No step calls Mem0.
+- The port changed two tests of `main`. The fake account row of `test_email_n_plus_one.py` gains `stored_bytes`, because each account read now returns it. The `email_ingestion/` entry of `test_email_owner_scope_fence.py` gets a new reason (B6), and it stays the one entry.
+
+**Review round 1 (2026-10-04).** An independent verifier and an adversarial reviewer read the branch. Each finding, its fix and its fence:
+
+- **(P1) The limit binds "Load older".** `transport/folders.py::backfill_folder` reads `stored_bytes` in its owner read. At the limit, it writes no row, builds no provider, and answers `exhausted`. Fence `email-storage-rr1-load-older`: `test_load_older_at_the_limit_writes_nothing_and_calls_no_provider`.
+- **(P1, the UI)** The store writes `backfillExhausted` from that answer, so the list hides the button and shows no error. The reviewer wrote that a scroll calls the route. The scroll observer pages the database only (`handleAutoLoad`), and a click on the button calls the route (`EmailList.tsx:300-303`).
+- **(P2) A removal closes the guided setup of a mailbox from before EM-T6.** `_ADVANCE_IMPORT_SINCE` writes `onboarding_done_at` when the old `import_since` is NULL. A mailbox in its guided setup keeps NULL. Fence `email-storage-rr1-onboarding`: `test_a_removal_closes_the_setup_of_a_mailbox_from_before_em_t6`.
+- **(P2) The `limit` phase ends only with no gap.** `_END_LIMIT_PHASE` also needs `import_reached_at IS NULL OR import_since >= import_reached_at`. Fence `email-storage-rr1-gap`: `test_the_limit_phase_ends_only_when_no_gap_is_left`.
+- **(Noted) The lock key is the canonical UUID.** `scheduler._lock_key` returns `str(uuid.UUID(id))`. An id that is not a UUID keeps its text in lower case, and the key never raises. Both storage routes answer 404 for such an id before a block opens.
+- **(Noted) The fence of the lock key.** Fence `email-storage-rr1-lock-key`: `test_the_lock_key_is_the_canonical_uuid`, `test_an_id_that_is_not_a_uuid_answers_404_before_any_block`, and `test_a_removal_answers_409_while_a_sync_holds_the_mailbox`. In the third test, the sync names the mailbox in upper case with no hyphens.
+- **(Noted, and verifier P2) The orphan deletes take only the threads of this removal.** `remove_older_chunk` returns `RemovedChunk`, with the threads of the deleted mail (`RETURNING thread_id`). The route collects them for the last block. Fence `email-storage-rr1-orphans`: `test_the_orphan_deletes_touch_only_the_threads_of_this_removal`.
+- **(Verifier P2) A draft in a non-English Outlook mailbox.** No code change. The open points below record it.
+- **(Verifier P3)** The base of this section now reads `5e268c766`, the merge of EM-T4d (#614). This round removed the STE errors on the added lines of `email_ingestion/AGENTS.md`, `work_plan.md` and this section.
+
+**Agent decisions of review round 1.** The owner can reverse each one.
+
+- **"Load older" can load again mail that a removal took out.** Its floor stays the ceiling of 180 days, as EM-T6a chose (fix round 1 of EM-T6a). It is an explicit act of the member, and the limit still binds it. The reason: a floor that only a removal sets needs a new column, and so a migration. That column is the path to reverse this decision.
+- **The orphan deletes take only the threads that the removal emptied.** A thread status or a draft of the AI from any other cause stays. A reply from mailbox B to mail of mailbox A stores the pair (B, the thread of A) (`automation/drafting.py:1943-1945`). Before this round, each removal in B deleted that draft.
+- **The fence of the orphan deletes seeds three rows that must stay.** (a) A row of A for a thread that the removal did not touch. (b) A row of mailbox B of the same member for the emptied thread. (c) A row of a colleague's mailbox in the same organization for the emptied thread.
+
+**Open points.**
+
+- During a removal, a loop cycle or a webhook sync skips, and its new mail waits for the next loop cycle. A holder sync whose rerun came while the removal waited loses that rerun, because `_rerun_once` reads a waiter as a sync.
+- R-4 still holds: measure the time of the meter on the box after the deploy.
+- Before merge, the orchestrator reads the meter of each production mailbox (R-8). The read is the SELECT form only.
+- EM-T6e draws the notice and the dialog.
+- **(Review round 1, item 3) Nothing closes the gap of a `limit` phase.** A loop cycle runs no import, because `initial_sync_done` is true. A Resync (`deep=True`) imports from now down to `import_since`, so it can fill the gap up to the limit. It writes no progress column, so the phase stays `limit` and `import_reached_at` does not move. Only a removal with `before` at or after `import_reached_at` ends the phase. EM-T6e must decide a resume path, for example a deep import that ends the phase when it reaches the floor under the limit.
+- **(Review round 1, item 6) A draft in a non-English Outlook mailbox is not kept.** `email_messages` has no draft flag, and the Outlook provider does not read `isDraft`. `providers/outlook.py:419-422` does not request `wellKnownName`, because a consumer account answers 400 to it. So a Drafts folder with a local name (`Entwürfe`, `Brouillons`) is a user folder, and its rows get `folder = 'entwürfe'`. G1 does not keep them, and `body_backfill.py:120` has the same rule.
+- **(Item 6, the provider follow-up)** Classify the Drafts folder by the alias `/me/mailFolders/drafts`, or store `isDraft` for each message. Then `KEPT_FOLDERS_SQL` reads it. The branch `email-delta-shadow` changes `outlook.py` now, so this round did not.
+- **(Review round 1, item 9) A large removal can take longer than 30 seconds.** The chunk loop runs inside the request, and the Control Plane proxy gives a POST 30 seconds. EM-T6e must plan for a long removal. For example, the dialog reads the meter again after a timeout of the proxy.
+- **"Load older" takes no mailbox lock.** A "Load older" that runs during a removal can write a few rows older than `before`.
+- **"Load older" reads the meter of the last sync.** Under the limit, each call writes up to 300 messages, and the meter runs again at the next sync. So a member can go past the limit by the pages of one sync interval.
+- **A removal that fails part way keeps some orphan rows.** Its last block does not run, so the rows of the threads that its chunks emptied stay. A later removal does not see those threads. A disconnect deletes them, because both tables cascade from `email_accounts`.
+
+**Mutation checks (2026-10-04).** For each mutation, the script changed the code, ran the named tests on a private database, and put the file back. A SHA-256 check proved each restore.
+
+| Mutation | What it changes | Tests that went red |
+|---|---|---|
+| G1, chunk | Drop the draft filter from `_CHUNK_IDS` | `test_the_removal_keeps_each_draft`, `test_the_preview_and_the_removal_skip_the_drafts[chunk]` |
+| G1, preview | Drop the draft filter from `_PREVIEW` | `test_the_removal_keeps_each_draft`, `test_the_preview_and_the_removal_skip_the_drafts[preview]` |
+| G2 | Write the body in `hydrate_message_body` at any meter | `test_hydrate_at_the_limit_returns_the_body_and_writes_none[at_limit]` |
+| G3, no lock | `hold_mailbox` acquires nothing | `test_a_removal_answers_409_while_a_sync_holds_the_mailbox`, `test_a_removal_runs_when_the_sync_ends_inside_the_wait` |
+| G3, floor last | Move `advance_import_since` from the first block to the last block | `test_the_first_block_under_the_lock_moves_the_floor`, `test_a_removal_deletes_the_older_mail_of_one_mailbox` |
+| G3, wait in a block | Open a `_tenant_session` in the same `async with` as the lock | `test_the_removal_waits_for_the_lock_with_no_block_open` |
+| G4, no end | Drop the call of `end_limit_phase` | `test_a_removal_under_the_limit_ends_the_limit_phase[under]`, `test_a_removal_in_one_mailbox_leaves_the_other_unchanged` |
+| G4, end at the limit | `end_limit_phase` ends the phase at any meter | `test_a_removal_under_the_limit_ends_the_limit_phase[still_full]` |
+| G5, no delete | Drop the call of `delete_orphan_ai_drafts` | `test_the_removal_deletes_the_orphan_ai_drafts_and_no_memory`, `test_a_removal_in_one_mailbox_leaves_the_other_unchanged` |
+| G5, Mem0 | Call `get_memory_client` at the end of the removal | `test_the_removal_deletes_the_orphan_ai_drafts_and_no_memory` |
+| Multi-inbox | Move `import_since` of each mailbox of the member | `test_a_removal_in_one_mailbox_leaves_the_other_unchanged` |
+| No provider reach | Name `build_provider` inside `hold_mailbox` | `test_no_provider_method_is_reachable_from_a_route` |
+| RR1 item 1 | Replace the limit check of `backfill_folder` with `if False:` | `test_load_older_at_the_limit_writes_nothing_and_calls_no_provider[at_limit]` |
+| RR1 item 2, no CASE | Drop the `onboarding_done_at` line of `_ADVANCE_IMPORT_SINCE` | `test_a_removal_closes_the_setup_of_a_mailbox_from_before_em_t6[before_em_t6]` |
+| RR1 item 2, every row | `WHEN import_since IS NULL` becomes `WHEN true` | `test_a_removal_closes_the_setup_of_a_mailbox_from_before_em_t6[in_setup]` |
+| RR1 item 3 | Drop the gap test from `_END_LIMIT_PHASE` | `test_the_limit_phase_ends_only_when_no_gap_is_left[gap_left]` |
+| RR1 item 4, key | `_lock_key` goes back to the id in lower case | `test_the_lock_key_is_the_canonical_uuid`, `test_a_removal_answers_409_while_a_sync_holds_the_mailbox` |
+| RR1 item 4, route | Drop the `_account_uuid` call of the removal | `test_an_id_that_is_not_a_uuid_answers_404_before_any_block`, all four ids |
+| RR1 item 5, status mailbox | `ts.account_id = :aid` becomes `(ts.account_id = :aid OR true)` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, draft mailbox | `d.account_id = :aid` becomes `(d.account_id = :aid OR true)` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, status threads | Add `OR true` to the thread filter of `_DELETE_EMPTY_THREAD_STATUS` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, draft threads | Add `OR true` to the thread filter of `_DELETE_ORPHAN_AI_DRAFTS` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, route | The route stops the collection of the threads | `test_the_first_block_under_the_lock_moves_the_floor`, `test_the_removal_deletes_the_orphan_ai_drafts_and_no_memory` |
+
+Item 6 of review round 1 changed no code, so it has no mutation.
+
 **Scope.**
 
 1. **The setting.** Add `email_mailbox_storage_limit_mb: int = 500` to `acb_common/settings.py`. The limit in bytes is that value times 1,048,576.
@@ -2366,10 +2653,10 @@ The R8 tests must show PASSED, not SKIPPED.
 6. **(Q3) Phases (e) and (f) stop at the limit.** At or over the limit, the body backfill makes no provider call, and the embeddings make no model call. A message that the member opens still loads its body live.
 7. **(Q2) New mail still syncs at the limit.** The recurring sweep writes new mail at any meter value. Only the import of older mail stops.
 8. **The preview route.** `GET /email/accounts/{id}/storage/older?before=<date>` returns the count of messages and the bytes that a removal would free. It writes nothing.
-9. **The removal route.** `POST /email/accounts/{id}/storage/remove-older` with `{"before": "<date>"}` removes the mail of that mailbox received before that date. Both routes carry the owner predicate on `user_id`. A `before` that is not in the past answers 400.
-10. **What the removal deletes.** It works in chunks of 1,000 messages, and each chunk is one `_tenant_session()` block with no `commit()`. It first deletes the `email_executed_rules` rows of those messages, and then the messages. The attachment rows and the embeddings cascade. Last, it deletes each `email_thread_status` row of the mailbox whose thread has no message left.
-11. **What the removal keeps.** The rules, the learned patterns, the rule guidance, the senders and the contacts.
-12. **After the removal.** `import_since` becomes the later of `import_since` and `before`, so a Resync does not import that mail again. The meter runs again. The answer holds the count removed and the new `stored_bytes`.
+9. **The removal route.** `POST /email/accounts/{id}/storage/remove-older` with `{"before": "<date>"}` removes the mail of that mailbox received before that date. Both routes carry the owner predicate on `user_id`. A `before` that is not in the past answers 400. Both routes go in a new module, `transport/storage.py`.
+10. **What the removal deletes.** It works in chunks of 1,000 messages, and each chunk is one `_tenant_session()` block with no `commit()`. It skips the folder `drafts` (G1). It first deletes the `email_executed_rules` rows of those messages, and then the messages. The attachment rows and the embeddings cascade. Last, it deletes the thread status and the AI draft of each emptied thread (G5, review round 1).
+11. **What the removal keeps.** The rules, the learned patterns, the rule guidance, the senders, the contacts and the unsent drafts (G1). The Mem0 memories of the mailbox stay, because no Mem0 key names one mail.
+12. **The import floor and the meter.** The first block under the lock moves `import_since` to the later of `import_since` and `before`, before any delete (G3). So a Resync does not import that mail again, also after a removal that fails part way. The last block runs the meter again, and it ends the `limit` phase under the limit (G4). The answer holds the count removed and the new `stored_bytes`.
 13. **The removal never reaches the provider.** `storage.py` imports nothing from `email_ingestion.providers`. Neither the routes nor `storage.py` calls `provider_session` or `build_provider`.
 14. **The account API.** `EmailAccountModel` gains `stored_bytes` and `storage_limit_bytes`.
 
@@ -2383,8 +2670,7 @@ The R8 tests must show PASSED, not SKIPPED.
 - A Resync at the limit stops in the same way, and its result holds `limit: true`.
 - (Q3) At the limit, phases (e) and (f) make no provider call and no model call.
 - (Q3) At the limit, a member who opens a message with no stored body gets the body.
-- (Q4) At the limit, that open writes no body to the row (`transport/messages.py:624-654`), so the meter
-  does not change. Under the limit, the open stores the body as it does today.
+- (Q4) At the limit, that open writes no body (`transport/messages.py:674-687`). Attachment rows may still land, because the download route needs the row id. Under the limit, the open stores the body as it does today.
 - (Q2) At the limit, the next poll still writes a new message.
 - The preview returns the count and the bytes, and the count of `email_messages` rows does not change.
 - R8: a removal with `before` 30 days back deletes each message of the mailbox older than that date, and no message of another mailbox. It deletes their `email_executed_rules` rows, and it moves `import_since` to `before`.
@@ -2393,23 +2679,37 @@ The R8 tests must show PASSED, not SKIPPED.
 - An AST fence finds no import of `email_ingestion.providers`, `build_provider` or `provider_session` in `storage.py` or in the two handlers. A companion test proves that the fence can fail.
 - An AST fence finds no `.commit()` in `storage.py`.
 - R8, for two organizations: a member who does not own the mailbox gets 404 from both routes.
-- `test_email_owner_scope_fence.py` passes with no new entry.
+- `test_email_owner_scope_fence.py` passes with no new entry. Its `email_ingestion/` entry gets a new reason text only.
+- (G1) The removal keeps each message in the folder `drafts`, and the preview does not count it.
+- (G2) At the limit, `hydrate_message_body` returns the body and writes none.
+- (G3) While a sync holds the mailbox, the removal answers 409. The removal moves `import_since` before its first delete.
+- (G4) R8: a removal that takes the meter under the limit writes `import_phase = 'done'` when no gap is left below `import_reached_at`.
+- (G5) R8: the removal deletes the `email_ai_drafts` row of each thread that it emptied, and no other row. A patched Mem0 client gets no call.
+- R8, multi-inbox: a removal in mailbox A of member M leaves mailbox B of M unchanged.
 
-**Files.** `packages/acb_common/acb_common/settings.py`. Under `apps/services/email_ingestion/email_ingestion/`: a new `storage.py` and `scheduler.py`. Under `routes/email/`: `transport/accounts.py`. The test is a new `tests/unit/test_email_storage_limit.py`.
+**Files.** `packages/acb_common/acb_common/settings.py`. Under `apps/services/email_ingestion/email_ingestion/`: a new `storage.py` and `scheduler.py`. Under `routes/email/`: `core.py`, `transport/accounts.py`, `transport/messages.py`, `transport/__init__.py` and a new `transport/storage.py`. The DOX files `apps/services/email_ingestion/AGENTS.md` and `apps/services/gateway/AGENTS.md`. The test is a new `tests/unit/test_email_storage_limit.py`.
 
 **Verify with.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_storage_limit.py tests/unit/test_email_import_batches.py \
-  tests/unit/test_email_import_floor.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_import_floor.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_sync_one_at_a_time.py \
+  tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_process_past_progress.py \
   tests/unit/test_email_embeddings_hash.py tests/unit/test_email_owner_scope_fence.py \
-  tests/unit/test_email_accounts_initial_sync_rls.py tests/unit/test_org_purge_tenant.py -q -rs
-uv run ruff check apps/services/email_ingestion packages/acb_common \
-  apps/services/gateway/gateway/routes/email/transport tests/unit/test_email_storage_limit.py
+  tests/unit/test_email_accounts_initial_sync_rls.py tests/unit/test_email_keep_separate.py \
+  tests/unit/test_org_purge_tenant.py tests/unit/test_db_engine_seam.py \
+  tests/unit/test_outlook_delta_shadow.py -q -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/storage.py \
+  apps/services/gateway/gateway/routes/email/transport/storage.py \
+  tests/unit/test_email_storage_limit.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
 
 The R8 tests must show PASSED, not SKIPPED.
+
+Before merge, read the meter (the SELECT form only) for each production mailbox. A mailbox from before EM-T6 can already be over 500 MB (R-8).
 
 ##### EM-T6d — the guided setup: range, progress, AI rules and done (UI)
 
@@ -2417,8 +2717,8 @@ The R8 tests must show PASSED, not SKIPPED.
 
 **Narrowed (orchestrator, 2026-10-02).** The owner wants an Email demo with the import timeline. The owner deferred the rules step and the storage UI. So EM-T6d has two parts.
 
-- **Part 1** builds items 1 to 7, 12 and 13. It is BUILT, not merged. `onboardingStage` returns `importing` or `null` only. Part 2 adds `rules`.
-- **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". It is BUILT, not merged (2026-10-03). `onboardingStage` returns `rules` after the import. `components/OnboardingRulesStep.tsx` draws it, and its decisions are in `lib/onboarding.ts`.
+- **Part 1** builds items 1 to 7, 12 and 13. ✅ MERGED (#579). `onboardingStage` returns `importing` or `null` only. Part 2 adds `rules`.
+- **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". ✅ MERGED (#581, 2026-10-03). `onboardingStage` returns `rules` after the import. `components/OnboardingRulesStep.tsx` draws it, and its decisions are in `lib/onboarding.ts`.
 - **Part 2 offers "Process past emails" (owner decision (d), #576).** The automatic rule run touches only mail that arrived after the first enabled rule. So, once a rule exists, the step offers "Sort my imported mail". It opens AI Settings with "Process past emails" from the date of `import_since`, and the dialog counts the mail before it spends a model call.
 - **Part 2, the ways out.** "Done", "Skip for now" and the "Skip setup" button send `onboarding_done: true`. The page writes the returned account into the store, so a failed re-read cannot bring the step back (fix round 1).
 - **Part 2, the drafting switch (fix round 1).** It shows the stored `draft_replies`, read on each mount, and stays disabled until the read returns or when it fails. It shows only with an enabled reply rule, the rule of `_is_reply_rule` in `rules.py`. Without one, a line names the "Needs Reply" rule. The client match mirrors the two tuples of `rules.py`, and a test parses them.
@@ -2522,7 +2822,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 - **R-7. A member act can import removed mail again.** Process past emails with an explicit date is bound by the ceiling only. The member asked for that mail, and the limit still binds.
 - **R-8. A mailbox from before EM-T6 keeps its old mail.** It can hold mail older than 180 days. EM-T6 imports no new mail older than the ceiling, and it deletes nothing by age.
 - **R-9. Disconnect deletes the data.** A later connect of that mailbox is a first connect, with the range step again.
-- **R-10. An open at the limit (answered, Q4).** The open path stores the body that it loads (`transport/messages.py:624-654`). The owner decided on 2026-10-02 that at the limit an open shows the body and stores nothing. EM-T6c adds that check to the open path. A reopen at the limit loads the body live again.
+- **R-10. An open at the limit (answered, Q4).** The open path stores the body that it loads (`transport/messages.py:674-687`). The owner decided on 2026-10-02 that at the limit an open shows the body and stores nothing. EM-T6c adds that check to the open path. A reopen at the limit loads the body live again.
 
 #### 10.4.8 EM-T5b in full
 

@@ -25,7 +25,9 @@ D85 reverses O1 of S7e on 2026-10-03: code over member data runs only in
 the sandbox, and until then projects-assistant holds no `run_script` and no
 `code_task` (§13.7). WS-43u (D86) built the instructions for code on
 2026-10-04, dark: a run that holds `run_command` reads the sandbox rules,
-and a run without it keeps the ban (§13.7).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+and a run without it keeps the ban (§13.7). H-229 (chat attachments, read
+on the platform, §22) was built 2026-10-04: projects-assistant reads an
+attached `.docx`, PDF or text file again, and no code runs.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -740,6 +742,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S13 · Message integrity** — ✅ **BUILT 2026-09-28** | Only the run changes an agent reply, and the fold seals it · no client updates a system row · a declined write names its ids in unchanged · one migration, run_member_email and run_final_at (§19) | AGENT-SAFE |
 | **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · a creator owns only a room with no rows, and migration 221 backfills every creator's owner row (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
 | **S15 · Chat is saved on production** — ✅ **BUILT 2026-09-29** | A JSON body to the gateway names its content type, so a save gets no 422 · each chat, room, fold, mint, run-trace and blob write binds the tenant · `_load_room` binds it too, so no member owns a room that they cannot see · an empty server answer keeps the browser cache · an R8 suite, a smoke check and an alarm (§21) | AGENT-SAFE. A live defect, audited by the diagnosis of 2026-09-29 |
+| **H-229 · Chat attachments** — ✅ **BUILT 2026-10-04** | `read_attachment` reads the text of a `.docx`, PDF, `.txt`, `.md` or `.csv` file attached in this chat, by pure parsing · an upload to a shared agent lands in its thread's own folder · an older flat upload reads only in the thread that the blob history names (§22) | AGENT-SAFE. Restores the flow that D85 stopped |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -4310,3 +4313,288 @@ uv run pytest tests/unit/test_h201_run_context.py \
 ```
 
 The `-rs` output must show no skip.
+
+## 22. Chat attachments, read on the platform (H-229)
+
+**Status: BUILT 2026-10-04.** HANDOFF H-229. D85 (`maf_coding_engine.md`
+§7.9). The audit read the code at `main` `0711c8b3`.
+
+### 22.1 The answer
+
+D85 took `code_task` from every shared agent on 2026-10-03. On 2026-10-02
+and 2026-10-03, the projects-assistant of a customer org used `code_task` on
+the production host to read a member's `.docx`. D85 stopped that flow.
+
+`read_attachment` gives the flow back, and no code runs. The tool parses the
+file in the gateway process and returns its text. projects-assistant holds
+it in its `tool_scope`.
+
+### 22.2 What was already there
+
+- The rail draws the shared `AgentChat`. Its paperclip is
+  `FileUploadButton`, which posts to `POST /api/agent/workspace/{sid}/upload`.
+  The Next route sends the files to the gateway route of the same name.
+- The gateway route wrote each file to `inputs/` of the session's workspace.
+  For projects-assistant, that workspace is the tenant dir of §21.15. Every
+  member of the org shares that dir. So one member's upload lay in a folder
+  that each session of the agent could read. That is a gap in D12.
+- The browser tells the agent about a file in the next message: "📎 Uploaded
+  … You can read them with the read_file tool". No `read_file` tool exists.
+  So the agent read the file through `code_task`.
+
+### 22.3 What H-229 builds
+
+1. **One path rule.** `acb_skills.agent_paths.upload_dir_rel(instance,
+   thread_id)` gives `inputs/<thread slug>/` in a tenant dir. Every other
+   workspace keeps `inputs/`. The thread slug is `thread_slug(thread_id)`,
+   the ONE slug function. WS-43d builds `outputs/<thread slug>/` on it
+   (`thread_outputs_rel`, `maf_coding_engine.md` §16.3). The upload route
+   writes there, and the tool reads there.
+2. **One tool.** `acb_skills.attachment_tools.read_attachment(name,
+   offset=0)`. The run's artifact context gives the workspace and the
+   thread. The model gives a file name only.
+3. **One parser module.** `acb_skills.attachment_text` reads `.docx`,
+   `.pdf`, `.txt`, `.md` and `.csv`. The standard library reads a `.docx`
+   as a zip of XML. `pypdf` reads a PDF.
+4. **The agent.** The `tool_scope` of projects-assistant names
+   `read_attachment`. The Files section of `instructions.md` tells the
+   model to use it. The new skill family `attachments` holds the tool, and
+   `tool_annotations` marks it read-only.
+5. **One dependency.** `acb-skills` adds `pypdf>=6.19`, which is pure
+   Python. `uv.lock` adds `pypdf` and no other package. A `.docx` needs no
+   new package.
+
+### 22.4 Rules
+
+1. **No code runs.** The tool parses bytes, and it starts no process. The
+   one subprocess in `pypdf` runs `jbig2dec` for a JBIG2 stream. Each parse
+   sets `jbig2dec_binary=None`, so that path is off.
+2. **The caps.** A file has at most 25 MB, the upload cap. A `.docx` reads
+   one part, the main document, and at most 20 MB of it once unpacked. A
+   PDF reads at most 100 pages. One PDF stream unpacks to at most 1 MB, and
+   one page enters a form XObject at most 100 times. A text file keeps
+   5,000 lines. One call returns 40,000 characters, and a longer file gives
+   the offset of the next page.
+3. **A deadline that stops a parse in the middle** (fix round 1). A parse
+   stops itself after 20 seconds. A PDF checks it before each operator,
+   through pypdf's `visitor_operand_before`, also inside a page. pypdf parses
+   a whole stream before the hook runs, so a stop comes at most one stream
+   parse late: about 0.6 s at the 1 MB cap, and 0.81 s at most in the
+   measured cases. Rule 3d bounds the font setup that runs before the first
+   operator. A Word part checks the deadline between 64 KB chunks and every
+   1,024 elements. The proof is a real slow page, the reviewer's one-page PDF
+   (`test_a_slow_single_page_pdf_stops_at_the_deadline`).
+3a. **Why not a child process.** A child process with a hard kill was the
+   other choice. The in-thread hook bounds the time, so the parse stays in
+   the process, and the "no process" rule and its trap test hold as they are.
+3b. **A Word part is UTF-8, and has no DTD** (fix round 1). A UTF-16 part
+   once hid its DTD from a byte search, and its entities grew to about 2 GB.
+   Now the tool refuses a part with another encoding before the parse. The
+   parser (`pyexpat`) decodes the part as UTF-8, and it refuses a DTD and an
+   entity declaration at the first event. `_rels/.rels` goes through the
+   same parser. The parse keeps no tree, and each element costs O(1).
+3c. **A Word part has a depth cap and an element cap** (fix round 1). expat
+   keeps one entry for each open element. So 2.4 million nested empty
+   elements, 17 MB of XML under the part cap, once peaked at 343 MB. Now the
+   parser refuses a part with more than 256 open elements, or with more
+   than 1,000,000 elements. That part now peaks at about two copies of its
+   XML.
+3d. **The font setup of a PDF page has caps** (fix round 2). pypdf builds
+   every font entry of a page, and of each form it enters, before the first
+   operator. The deadline hook does not run there, and pypdf parses each
+   entry's ToUnicode CMap again, with no cache. So 1,000 entries that share
+   one 285 KB CMap once ran 92 s past a 3 s deadline. Before each page the
+   tool walks the page's resources and those of every form it can reach,
+   and refuses the file when one dictionary has more than 64 font entries,
+   or more than 2 MB of font program bytes. A shared CMap counts once for
+   each entry, as pypdf parses it.
+   - Why 64: real pages hold 2 to 40 fonts (LaTeX math about 25, office
+     documents about 10). 64 entries that share one font with 65,000
+     widths take 0.95 s, inside pypdf's own cap of 100,000 widths.
+   - Why 2 MB: pypdf parses a CMap at about 3 MB/s (285 KB in 0.094 s), so
+     the font setup of one dictionary takes under 1 s.
+3e. **A stop inside a form on the last page** (fix round 2). pypdf drops the
+   error that the deadline raises inside a form. With no page operator after
+   the form, the page ends with no error. So the deadline keeps a flag, and
+   the loop reads it after every page, the last one too. With fewer than 200
+   characters read, the tool refuses the file. With more, the text comes back
+   marked `stopped`.
+3f. **The parses never use the shared thread pool** (fix round 2). A parse
+   past its deadline keeps its thread. So the parses run on a pool of two
+   threads of their own, and the file reads on another small pool, never on
+   the gateway's default pool, which every `asyncio.to_thread` of every org
+   uses. A parse holds its slot until its worker really ends. The tool waits
+   2 seconds past the deadline and then answers, but the slot stays held. So
+   at most two parse threads ever live, and a third call gets "Another file
+   is being read now" at once.
+4. **A zip bomb costs no more than the cap.** A part that declares more
+   than 20 MB is refused before it is opened. A part that hides its size
+   unpacks no more than the read asks for, which is the cap plus one byte.
+5. **A clean refusal.** Each failure gives one sentence for the member. No
+   parser exception reaches the model.
+6. **This chat only (D12).** The tool keeps only the last part of the
+   name. So a path into another thread's folder, or a `..` climb, reads
+   this thread's folder.
+7. **The safe opener.** The tool opens each file and lists each folder
+   through `acb_skills.safe_open`, the one opener of a dir that a sandbox
+   may mount (`maf_coding_engine.md` §7.5 rule B). A link at any depth, also
+   one that appears during the call, reads as absent. So does a file that
+   is not a regular file. The upload route writes through the same opener.
+8. **A covered run** (WS-43d). When `covers()` is true for the run, the
+   read holds the broker's dir lock, `host_dir()`, as the sandbox file tools
+   do. So no exec of a container runs during the read. The parse runs after
+   the tool releases the lock. The tool is not in `WITHHELD_HOST_TOOLS`, so
+   a covered run keeps it.
+9. **No marker.** A container can rewrite the `.cc-instance` marker of the
+   dir that it mounts. So the tool takes the store key from the run's
+   artifact context. The upload route tells a tenant dir from its path and
+   the caller's tenant, as `_own_thread_slug` does. The route refuses a
+   thread id that names no folder with 400, and it writes no file.
+10. **An older upload.** A file in the flat `inputs/` reads only when the
+    blob history shows that this session uploaded those bytes. The row must
+    say `create`, `user`, this `session_id` and the same sha256.
+11. **The text is data.** The tool output says so, and the instructions
+    say so.
+12. **A bounded load.** At most two parses run at a time in the process,
+    each on the tool's own pool (rule 3f). A third call gets "Another file is
+    being read now".
+
+### 22.5 Acceptance
+
+Each item has a test in `tests/unit/test_read_attachment.py`.
+
+1. A real `.docx`, a real PDF, `.txt`, `.md` and `.csv` give their text.
+2. A file over the cap, a zip bomb, a DTD in a Word part, a password PDF
+   and a malformed PDF each get a clean refusal.
+3. A trap on every process call stays empty for every kind. A JBIG2 page
+   reaches `jbig2dec` in plain `pypdf`, and never through the tool.
+4. A colleague's upload in the same org is refused, also through a path or
+   a `..` climb. The R8 test uploads through the real route as one member,
+   and reads as another member of the same org.
+5. An older flat upload reads only in its own thread, on the real store
+   as the NOBYPASSRLS app role.
+6. The real request body of projects-assistant carries `read_attachment`
+   and no shell tool. The tool result in the next request carries the text.
+7. The golden trajectory `evals/trajectories/test_attachment_scope_trajectory.py`
+   locks the thread rule offline.
+8. A covered run, through the real executor with `covers()` true, reads its
+   own attachment while it holds the dir lock. A path into a colleague's
+   thread folder reads nothing. `WithholdHostTools` and `RefuseHostTools`
+   keep the tool.
+9. A rewritten marker moves no upload out of its thread, and opens no flat
+   file for the tool. A thread id that names no folder gets 400 (R8).
+10. Fix round 1. The reviewer's one-page PDF stops within 2 seconds of a
+    1-second deadline, and its slot is free afterwards. A parse that runs
+    on loses its slot at the deadline. The tool refuses entity bombs in
+    UTF-8, UTF-16 with and without a BOM, and UTF-32 in under 1 second,
+    under 8 MB. It refuses a part that is not UTF-8, and a DTD in
+    `_rels/.rels`. It refuses 30,000 nested paragraphs in under 1 second. A
+    clip in the last PDF page, or in a Word paragraph, sets `stopped`.
+11. The verifier's shapes. A part of 2.4 million nested empty elements, and
+    a flat part of 4.5 million empty elements, are refused under 48 MB of
+    peak memory. The UTF-16 internal entity "INJECTED BY DTD" never reaches
+    the text, also through the tool. With the UTF-8 check taken away, the
+    parser still refuses it.
+12. Fix round 2. The tool refuses a page with 100 font entries, and the
+    reviewer's file of 40 entries that share one 285 KB CMap, within half a
+    second of a 1-second deadline. The tool refuses the same entries inside
+    a form. A stop that pypdf drops inside the last form is refused, and
+    after real text it comes back marked `stopped`. Two runaway parses hold
+    both slots, a third call is refused at once, and the default pool runs
+    no job of the tool.
+
+### 22.6 Mutations
+
+Each mutation below turns at least one test red.
+
+| Mutation | Tests that fail |
+|---|---|
+| a table row is dropped | 1 |
+| no size cap in `extract_text` | 1 |
+| no size check before the tool reads | 1 |
+| no declared-size check in a `.docx` | 1 |
+| an unbounded read of the main part | 1 |
+| a pypdf error escapes | 3 |
+| the parser takes a DTD | 1 |
+| no thread folder in a tenant dir | 3 |
+| the name keeps its path | 1 |
+| the history ignores the session | 2 |
+| `jbig2dec` stays on | 1 |
+| a parse starts a process | 3 |
+| the scope loses the tool | 2 |
+| D85 counts it as a shell tool | 2 |
+| no parse slot | 1 |
+| a covered run takes no dir lock | 1 |
+| a plain open in place of the safe opener | 1 |
+| WS-43d withholds `read_attachment` | 2 |
+| the tool reads the marker | 1 |
+| the upload route reads the marker | 1 |
+| the upload route writes the flat `inputs/` | 2 |
+| an odd thread id falls back to `inputs/` | 1 |
+| fix round 1: the PDF page has no deadline visitor | 1 |
+| fix round 1: pypdf's own cap of 5,000 form entries | 1 |
+| fix round 1: the old 8 MB stream cap | 1 |
+| fix round 1: no UTF-8 check | 3 |
+| fix round 1: any encoding, a DTD and no UTF-8 check | 4 |
+| fix round 1: the package relationships skip the safe parser | 1 |
+| fix round 1: no depth cap | 2 |
+| fix round 1: no element cap | 1 |
+| fix round 1: the parser takes a DTD and the declared encoding | 1 |
+| fix round 1: all three Word guards gone | 6 |
+| fix round 1: no deadline inside a chunk | 1 |
+| fix round 1: a PDF cut in its last page reads as whole | 1 |
+| fix round 1: a cut Word paragraph reads as whole | 1 |
+| fix round 1: the instructions say there is no file tool | 1 |
+| fix round 2: the parse runs on the default pool | 2 |
+| fix round 2: the reads run on the default pool | 1 |
+| fix round 2: the slot frees at the timeout | 1 |
+| fix round 2: no font entry cap | 1 |
+| fix round 2: no font byte budget | 1 |
+| fix round 2: the font walk skips forms | 1 |
+| fix round 2: no font walk at all | 2 |
+| fix round 2: no check of the deadline flag after a page | 1 |
+| fix round 2: a page that the deadline cut reads as whole | 1 |
+
+Two mutations stay green, each because a newer guard covers the same
+case:
+
+- The deadline check between two PDF pages is a second layer, because the
+  visitor checks first. The visitor mutation stands for it.
+- The quadratic close of a paragraph is harmless now. The depth cap and
+  the paragraph cap bound the open paragraphs, so the depth-cap mutation
+  stands for it. The close stays O(1).
+
+Fix round 2 changed one rule, so one fix-round-1 mutation is gone: "the
+slot frees only when the worker ends" is now the rule, and "the slot frees
+at the timeout" is the mutation that turns red.
+
+`_docx_text` reads the whole zip central directory before it checks
+`MAX_ZIP_ENTRIES`. The 25 MB file cap bounds that read, so it stays.
+
+### 22.7 What H-229 does not do
+
+- It reads no `.xlsx`. HANDOFF H-235 carries it.
+- A `.docx` read covers the main body, its tables included. It does not read
+  the headers, the footers, the footnotes or the comments.
+- A scanned PDF has no text layer, so it reads as pages with no text. The
+  tool runs no OCR.
+- Only this tool keeps to the thread folder of `inputs/`. The workspace
+  tree, the file, history and delete routes, the sandbox file store and the
+  container mount still reach the `inputs/` folder of another thread.
+  WS-43d gave `outputs/` that rule. H-227 carries `inputs/`.
+- The browser message still names `read_file`. The instructions name the
+  right tool.
+- A team agent keeps the flat `inputs/`.
+
+### 22.8 Verification
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_read_attachment.py \
+  tests/unit/test_h201_tenant_workdirs.py \
+  tests/unit/test_projects_sandbox_tools.py \
+  evals/trajectories/test_attachment_scope_trajectory.py -q -rs
+```
+
+The `-rs` output must show no skip, except the Windows-only skips of the
+sandbox suite.

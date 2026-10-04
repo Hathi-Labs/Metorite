@@ -17,6 +17,7 @@ from typing import Any
 from uuid import UUID
 
 from acb_common import get_logger
+from email_ingestion import storage as ingest_storage
 from fastapi import APIRouter, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
@@ -377,15 +378,26 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
     text body, e.g. a pure-HTML or attachment-only message).  Best-effort: a
     provider/auth failure logs and returns whatever is already stored — never
     raises, so it can't break a draft/classify call.
+
+    At the storage limit of the mailbox it returns the body and writes none
+    (WS-17 EM-T6c gap G2, owner answer Q4). The reply drafter and the
+    follow-up path then load the body live again at each call. The same read
+    returns the meter, so the check costs no query.
     """
     row = (await db.execute(
-        text("SELECT body_text, body_html, snippet FROM email_messages WHERE id = :id"),
+        text(
+            """SELECT em.body_text, em.body_html, em.snippet, ea.stored_bytes
+                 FROM email_messages em
+                 LEFT JOIN email_accounts ea ON ea.id = em.account_id
+                WHERE em.id = :id"""
+        ),
         {"id": message_id},
     )).fetchone()
     if row is None:
         return ""
     if (row.body_text or "").strip():
         return row.body_text  # already hydrated
+    store_body = not ingest_storage.at_limit(getattr(row, "stored_bytes", None))
     # Header-only row: fetch the full body from the provider and persist it.
     try:
         # The savepoint covers the UPDATE and the creds persist on exit, so a
@@ -401,14 +413,18 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
                 _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
                 if full.body_html else None
             )
-            await db.execute(
-                text(
-                    """UPDATE email_messages
-                       SET body_text = :bt, body_html = :bh, updated_at = now()
-                       WHERE id = :id"""
-                ),
-                {"id": message_id, "bt": body_text, "bh": body_html},
-            )
+            if store_body:
+                await db.execute(
+                    text(
+                        """UPDATE email_messages
+                           SET body_text = :bt, body_html = :bh, updated_at = now()
+                           WHERE id = :id"""
+                    ),
+                    {"id": message_id, "bt": body_text, "bh": body_html},
+                )
+            else:
+                _log.info("hydrate_message_body.not_stored_at_limit",
+                          message_id=message_id)
         # No commit here: the CALLER owns the transaction boundary. Converted
         # request handlers pass a `_tenant_session` session, and a mid-block
         # commit would end that transaction and silently drop the tenant GUC
