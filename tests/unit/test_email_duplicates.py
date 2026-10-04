@@ -10,18 +10,28 @@ R7 fences named here:
   give each row ``also_in``: the paired mailboxes that hold a copy with the
   same non-empty ``internet_message_id``. A copy in junk, drafts or trash does
   not count. A mailbox of another member, of a second organization, or a
-  separate mailbox never counts. A mail with an empty id pairs with nothing.
-  The pair set binds the organization also where row level security does not.
+  separate mailbox never counts, also when it holds the ONLY copy. A mail with
+  an empty id pairs with nothing. The pair set binds the organization also
+  where row level security does not. Since review round 1: a copy from
+  another sender address does not pair, and a row in junk, drafts or trash
+  names no copy.
 * ``email-also-in-one-read`` (R8): one page makes ONE read for ``also_in``,
   never one for each row, and an empty page makes none.
 * ``email-draft-dedupe`` (R8): the automatic draft of B does not start when A
-  holds a draft, or a sent mail newer than the copy, in the thread of its
+  holds a draft or a sent mail, newer than the copy, in the thread of its
   copy. B drafts when A holds neither, and when either mailbox is separate.
+  Since review round 1: an OLDER draft does not stop B, a copy from another
+  sender does not stop B, and the thread read stays in the mailbox of the
+  copy.
 * ``email-draft-dedupe-race`` (R8): two overlapping runs for one mail make one
   draft. The second run meets the try-lock of the first and makes none. A run
   forced into the gap between the two statements of the guard proves that the
   lock comes before the check. After the commit the lock is free, and a
-  separate mailbox is never held off.
+  separate mailbox is never held off. Since review round 1: a run that meets
+  the lock trashes no draft of its thread check (the verifier's probe). The
+  lock key holds the organization, the member, the sender and the
+  Message-ID, so a run that differs in one of them is never held off. A mail
+  with an empty Message-ID takes no lock.
 
 The UI half, ``email-also-in-row``, is in
 ``workbench/control_plane/src/app/email/lib/alsoIn.test.ts``.
@@ -74,6 +84,8 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 )
 
 RAVI = "ravi@contoso-t8g3.test"
+# An outsider who knows a Message-ID (it is in References of each reply).
+MALLORY = "mallory@forged-t8g3.test"
 
 # A bare AsyncMock session answers ``fetchone()`` with a coroutine that the
 # code never awaits, and Python warns. That shape is the point of two tests.
@@ -120,10 +132,19 @@ class TestThePairSet:
     def test_a_column_anchors_it_for_a_page_and_nothing_else_does(self):
         assert "WHERE a.id = m.account_id AND" in identity.paired_mailbox_ids_sql(
             "m.account_id")
+        assert "WHERE a.id = box.id AND" in identity.paired_mailbox_ids_sql("box.id")
         for bad in ("1; DROP TABLE email_accounts", "m.account_id OR true",
                     "'x'", ":aid)"):
             with pytest.raises(ValueError):
                 identity.paired_mailbox_ids_sql(bad)
+
+    @pytest.mark.parametrize("alias", ["a.id", "o.id", "a.organization_id",
+                                       "o.user_id"])
+    def test_the_aliases_of_the_clause_are_no_anchor(self, alias):
+        """Review round 1, F4: ``a.id = a.id`` binds no mailbox, so the set
+        would hold the mailboxes of each member."""
+        with pytest.raises(ValueError):
+            identity.paired_mailbox_ids_sql(alias)
 
     def test_the_folders_that_hold_no_copy(self):
         assert core.NOT_A_COPY_FOLDERS == ("drafts", "junk", "trash")
@@ -209,11 +230,13 @@ class TestTheDraftGuard:
         """The shape of ``test_email_ai_context.py``'s rule-draft tests."""
         assert await identity.draft_skip_in_pair(AsyncMock(), "acc-b", "m1") is None
 
-    def test_the_rule_path_asks_after_the_thread_check_and_before_the_model(self):
+    def test_the_rule_path_asks_before_the_thread_check_and_the_model(self):
+        """Review round 1, F1: before the thread check, so a skip trashes no
+        draft of that check."""
         src = inspect.getsource(actions._apply_rule_actions)
         thread = src.index("_resolve_existing_thread_draft(")
         pair = src.index("_skip_for_paired_mailbox(")
-        assert thread < pair < src.index("_build_reply_context(")
+        assert pair < thread < src.index("_build_reply_context(")
         assert pair < src.index("_agent_draft_reply(")
         assert pair < src.index("provider.create_draft(")
         helper = inspect.getsource(actions._skip_for_paired_mailbox)
@@ -263,20 +286,38 @@ def _account(admin, *, org: str, owner: str, pooled: bool = True) -> str:
 
 def _mail(admin, *, org: str, account_id: str, imid: str | None,
           folder: str = "inbox", thread: str | None = None,
-          minutes_ago: int = 10) -> str:
+          minutes_ago: int = 10, sender: str = RAVI,
+          body: str = "Please send it.") -> str:
     with admin.begin() as c:
         return str(c.execute(text(
             "INSERT INTO email_messages (account_id, provider_message_id, "
             "thread_id, folder, from_address, to_addresses, subject, body_text, "
             "received_at, is_read, internet_message_id, organization_id) "
             "VALUES (CAST(:a AS uuid), :p, :t, :f, CAST(:frm AS jsonb), "
-            "'[]'::jsonb, 'Quote', 'Please send it.', :r, false, :imid, "
+            "'[]'::jsonb, 'Quote', :b, :r, false, :imid, "
             "CAST(:o AS uuid)) RETURNING id"),
             {"a": account_id, "p": f"pm-{uuid.uuid4().hex[:10]}",
              "t": thread or f"t-{uuid.uuid4().hex[:8]}", "f": folder,
-             "frm": json.dumps({"name": "Ravi", "email": RAVI}),
+             "frm": json.dumps({"name": "Sender", "email": sender}), "b": body,
              "r": datetime.now(UTC) - timedelta(minutes=minutes_ago),
              "imid": imid, "o": org}).scalar_one())
+
+
+def _ai_draft(admin, *, org: str, account_id: str, thread: str, body: str) -> None:
+    """The record of an AI draft, so the thread check reads the draft in the
+    thread as unchanged and trashes it ("replace")."""
+    with admin.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_ai_drafts (account_id, thread_id, draft_text, "
+            "organization_id) VALUES (CAST(:a AS uuid), :t, :d, CAST(:o AS uuid))"),
+            {"a": account_id, "t": thread, "d": body, "o": org})
+
+
+def _exists(admin, mail_id: str) -> bool:
+    with admin.connect() as c:
+        return c.execute(text(
+            "SELECT 1 FROM email_messages WHERE id = CAST(:m AS uuid)"),
+            {"m": mail_id}).first() is not None
 
 
 def _purge(admin, owner_pattern: str) -> None:
@@ -428,6 +469,69 @@ class TestAlsoIn:
         assert of_e == []
         assert theirs == []
 
+    @pytest.mark.parametrize("where", ["another member", "another organization",
+                                       "a separate mailbox"])
+    async def test_a_copy_only_in_a_mailbox_that_does_not_pair_names_nothing(
+        self, family, where,
+    ):
+        """Review round 1, F4 (``v_also_copy_anywhere``): the copy must be IN
+        the paired mailbox. Here B, the paired mailbox, holds no copy."""
+        f = family
+        mid = _imid(f, f"only-{where[:7]}")
+        m_a = _mail(f.admin, org=f.org, account_id=f.a, imid=mid)
+        box, org = {"another member": (f.d, f.org),
+                    "another organization": (f.c, f.p.org_a),
+                    "a separate mailbox": (f.e, f.org)}[where]
+        _mail(f.admin, org=org, account_id=box, imid=mid)
+        async with _as_member(f.p, f.org):
+            listed = await messages_mod.list_messages(
+                user=f.me, **{**_LIST_OFF, "account_id": f.a})
+        # The owner role sees every organization, so only the SQL keeps the
+        # copy out there.
+        with f.admin.connect() as c:
+            rows = c.execute(text(identity.ALSO_IN_SQL), {
+                "ids": [m_a], "uid": f.member,
+                "not_a_copy": list(core.NOT_A_COPY_FOLDERS)}).fetchall()
+        assert _also_in(listed)[m_a] == []
+        assert rows == []
+
+    async def test_a_copy_from_another_sender_does_not_pair(self, family):
+        """Review round 1, F3: an outsider sends a DIFFERENT mail with the same
+        Message-ID to B. Neither row names the other mailbox."""
+        f = family
+        mid = _imid(f, "forged")
+        real = _mail(f.admin, org=f.org, account_id=f.a, imid=mid)
+        forged = _mail(f.admin, org=f.org, account_id=f.b, imid=mid, sender=MALLORY)
+        async with _as_member(f.p, f.org):
+            listed = await messages_mod.list_messages(user=f.me, **_LIST_OFF)
+            found = await search_mod.search_messages(user=f.me, **_SEARCH_OFF)
+        for out in (listed, found):
+            assert _also_in(out)[real] == [] and _also_in(out)[forged] == []
+
+    async def test_a_row_in_junk_drafts_or_trash_names_no_copy(self, family):
+        """Review round 1, F3: a forged row in junk never says "Also in".
+        Each folder holds one row, and B holds a real copy in its Inbox."""
+        f = family
+        rows: dict[str, str] = {}
+        copies: list[str] = []
+        for folder in ("junk", "drafts", "trash"):
+            mid = _imid(f, f"row-{folder}")
+            rows[folder] = _mail(f.admin, org=f.org, account_id=f.a, imid=mid,
+                                 folder=folder)
+            copies.append(_mail(f.admin, org=f.org, account_id=f.b, imid=mid))
+        async with _as_member(f.p, f.org):
+            found = await search_mod.search_messages(user=f.me, **_SEARCH_OFF)
+            in_folder = {
+                folder: await messages_mod.list_messages(
+                    user=f.me, **{**_LIST_OFF, "account_id": f.a, "folder": folder})
+                for folder in rows}
+        searched = _also_in(found)
+        for folder, row in rows.items():
+            assert searched[row] == [], folder
+            assert _also_in(in_folder[folder])[row] == [], folder
+        for copy in copies:
+            assert searched[copy] == []
+
 
 @_DB_GATE
 class TestAlsoInOneRead:
@@ -469,18 +573,33 @@ def _provider(pid: str) -> SimpleNamespace:
 
 
 async def _draft_run(f, account_id: str, mail_id: str, thread: str,
-                     provider: Any = None) -> tuple[list[str], Any]:
+                     provider: Any = None, *, org: str | None = None,
+                     member: str | None = None) -> tuple[list[str], Any]:
     """One automatic run of a rule with a DRAFT_EMAIL action, in its own
-    block, as the auto-run gives each row."""
+    block, as the auto-run gives each row. ``org`` binds another tenant for
+    this block, as the sync loop of a mailbox in that organization does."""
     provider = provider or _provider(f"pd-{uuid.uuid4().hex[:8]}")
-    async with core._tenant_session() as db:
+    async with core._tenant_session(org) as db:
         done = await actions._apply_rule_actions(
             db, provider, mail_id, f"pm-{mail_id[:8]}",
             [{"type": "DRAFT_EMAIL", "content": "Thanks, we are on it."}],
             {"from": RAVI, "subject": "Quote", "body": "Please send it.",
              "thread_id": thread},
-            "", "", f.member, account_id=account_id)
+            "", "", member or f.member, account_id=account_id)
     return done, provider
+
+
+async def _while_holding(f, account_id: str, mail_id: str, thread: str,
+                         inner: Any) -> tuple[list[str], Any]:
+    """Run the draft of ``mail_id``, and run ``inner`` while that run holds
+    its block open: after its lock and before its local draft copy."""
+    async def _create_draft(**_kw: Any) -> str:
+        await inner()
+        return f"pd-{uuid.uuid4().hex[:8]}"
+
+    provider = SimpleNamespace(create_draft=AsyncMock(side_effect=_create_draft),
+                               trash_message=AsyncMock())
+    return await _draft_run(f, account_id, mail_id, thread, provider)
 
 
 class _AfterFirstGuardStatement:
@@ -513,7 +632,8 @@ class TestTheDraftDedupe:
 
     def _pair(self, f, name: str, *, other: str | None = None,
               this: str | None = None, other_org: str | None = None,
-              other_folder: str = "inbox", imid: str | None = "auto"):
+              other_folder: str = "inbox", imid: str | None = "auto",
+              other_sender: str = RAVI):
         """A copy of one mail in ``other`` (A by default) and in ``this`` (B
         by default). Returns the ids and the thread of each copy."""
         other, this = other or f.a, this or f.b
@@ -522,7 +642,8 @@ class TestTheDraftDedupe:
                             other_thread=f"{name}-o-{f.tag}",
                             this_thread=f"{name}-t-{f.tag}")
         s.copy = _mail(f.admin, org=other_org or f.org, account_id=other, imid=mid,
-                       folder=other_folder, thread=s.other_thread, minutes_ago=30)
+                       folder=other_folder, thread=s.other_thread, minutes_ago=30,
+                       sender=other_sender)
         s.mail = _mail(f.admin, org=f.org, account_id=this, imid=mid,
                        thread=s.this_thread, minutes_ago=30)
         return s
@@ -554,6 +675,45 @@ class TestTheDraftDedupe:
             done, prov = await _draft_run(f, f.b, s.mail, s.this_thread)
         assert done == []
         prov.create_draft.assert_not_awaited()
+
+    async def test_a_draft_older_than_the_copy_does_not_stop_it(self, family):
+        """Review round 1, P1: the member sent an old draft from Outlook
+        desktop, and its local row stays. It is older than the copy, so it is
+        no answer to this mail."""
+        f = family
+        s = self._pair(f, "old-draft")
+        _mail(f.admin, org=f.org, account_id=f.a, imid=None, folder="drafts",
+              thread=s.other_thread, minutes_ago=90)
+        async with _as_member(f.p, f.org):
+            with structlog.testing.capture_logs() as caps:
+                done, prov = await _draft_run(f, f.b, s.mail, s.this_thread)
+        assert done == ["DRAFT_EMAIL"]
+        prov.create_draft.assert_awaited_once()
+        assert _skips(caps) == []
+
+    async def test_a_copy_from_another_sender_does_not_stop_it(self, family):
+        """Review round 1, F3: a forged mail with the same Message-ID, and a
+        newer draft in its thread, holds off no real draft."""
+        f = family
+        s = self._pair(f, "forged", other_sender=MALLORY)
+        _mail(f.admin, org=f.org, account_id=f.a, imid=None, folder="drafts",
+              thread=s.other_thread, minutes_ago=5)
+        async with _as_member(f.p, f.org):
+            done, prov = await _draft_run(f, f.b, s.mail, s.this_thread)
+        assert done == ["DRAFT_EMAIL"]
+        prov.create_draft.assert_awaited_once()
+
+    async def test_the_thread_read_stays_in_the_mailbox_of_the_copy(self, family):
+        """Review round 1, F4 (``v_thread_any_mailbox``): a draft with the same
+        thread id in the mailbox of another member is no answer."""
+        f = family
+        s = self._pair(f, "thread")
+        _mail(f.admin, org=f.org, account_id=f.d, imid=None, folder="drafts",
+              thread=s.other_thread, minutes_ago=5)
+        async with _as_member(f.p, f.org):
+            done, prov = await _draft_run(f, f.b, s.mail, s.this_thread)
+        assert done == ["DRAFT_EMAIL"]
+        prov.create_draft.assert_awaited_once()
 
     async def test_an_older_sent_mail_does_not_stop_it(self, family):
         f = family
@@ -737,4 +897,114 @@ class TestTheDraftDedupeRace:
         assert done_a == ["DRAFT_EMAIL"]
         assert inner["done"] == ["DRAFT_EMAIL"]
         prov_e.create_draft.assert_awaited_once()
+        assert _skips(caps) == []
+
+    async def test_a_run_that_meets_the_lock_trashes_nothing(self, family):
+        """Review round 1, F1, the verifier's probe. A holds an AI draft that
+        nobody changed, OLDER than its copy of the new mail. B takes the lock
+        and drafts, because an older draft is no answer (P1). A runs in that
+        gap and meets the lock. Before the fix, A's thread check trashed the
+        old draft first and then skipped, and the pair held no draft."""
+        f = family
+        mid = _imid(f, "probe")
+        thread_a, thread_b = f"probe-a-{f.tag}", f"probe-b-{f.tag}"
+        old_text = f"Old AI draft {f.tag}."
+        old = _mail(f.admin, org=f.org, account_id=f.a, imid=None, folder="drafts",
+                    thread=thread_a, minutes_ago=90, body=old_text)
+        _ai_draft(f.admin, org=f.org, account_id=f.a, thread=thread_a, body=old_text)
+        in_a = _mail(f.admin, org=f.org, account_id=f.a, imid=mid, thread=thread_a,
+                     minutes_ago=30)
+        in_b = _mail(f.admin, org=f.org, account_id=f.b, imid=mid, thread=thread_b,
+                     minutes_ago=30)
+        inner: dict[str, Any] = {}
+        prov_a = _provider("pd-a")
+
+        async def _a_runs_in_the_gap() -> None:
+            inner["done"], _ = await _draft_run(f, f.a, in_a, thread_a, prov_a)
+
+        async with _as_member(f.p, f.org):
+            with structlog.testing.capture_logs() as caps:
+                done_b, _ = await _while_holding(f, f.b, in_b, thread_b,
+                                                 _a_runs_in_the_gap)
+        assert done_b == ["DRAFT_EMAIL"]
+        assert inner.get("done") == []
+        assert [c["reason"] for c in _skips(caps)] == ["busy"]
+        # The skip changed nothing: no trash at the provider, no deleted row.
+        prov_a.trash_message.assert_not_awaited()
+        prov_a.create_draft.assert_not_awaited()
+        assert _exists(f.admin, old)
+        assert _drafts(f.admin, f.a) == 1 and _drafts(f.admin, f.b) == 1
+
+    @pytest.mark.parametrize("part", ["organization", "member", "message_id",
+                                      "sender"])
+    async def test_the_lock_key_holds_each_part(self, family, part):
+        """Review round 1, F4 (``v_lock_no_org``, ``v_lock_no_member``,
+        ``v_lock_no_msgid``) and F3 (the sender). A run holds the lock for one
+        mail. A run for a mail that differs in ONE part of the key is never
+        held off: it drafts."""
+        f = family
+        mid = _imid(f, "key")
+        thread_a = f"key-a-{f.tag}"
+        in_a = _mail(f.admin, org=f.org, account_id=f.a, imid=mid, thread=thread_a)
+        inner_org, inner_member = None, f.member
+        thread_x = f"key-x-{f.tag}"
+        if part == "organization":
+            # The same member, sender and Message-ID, in a pair in org A.
+            _account(f.admin, org=f.p.org_a, owner=f.member)
+            box, inner_org = f.c, f.p.org_a
+            in_x = _mail(f.admin, org=f.p.org_a, account_id=box, imid=mid,
+                         thread=thread_x)
+        elif part == "member":
+            # Another member of org B, with a pair, gets the same mail.
+            stranger = f"stranger-{f.tag}@t8g3.test"
+            _account(f.admin, org=f.org, owner=stranger)
+            box, inner_member = f.d, stranger
+            in_x = _mail(f.admin, org=f.org, account_id=box, imid=mid,
+                         thread=thread_x)
+        elif part == "message_id":
+            box = f.b
+            in_x = _mail(f.admin, org=f.org, account_id=box,
+                         imid=_imid(f, "key-other"), thread=thread_x)
+        else:
+            box = f.b
+            in_x = _mail(f.admin, org=f.org, account_id=box, imid=mid,
+                         thread=thread_x, sender=MALLORY)
+        inner: dict[str, Any] = {}
+
+        async def _other_runs_in_the_gap() -> None:
+            inner["done"], inner["prov"] = await _draft_run(
+                f, box, in_x, thread_x, org=inner_org, member=inner_member)
+
+        async with _as_member(f.p, f.org):
+            with structlog.testing.capture_logs() as caps:
+                done_a, _ = await _while_holding(f, f.a, in_a, thread_a,
+                                                 _other_runs_in_the_gap)
+        assert done_a == ["DRAFT_EMAIL"]
+        assert inner["done"] == ["DRAFT_EMAIL"], part
+        inner["prov"].create_draft.assert_awaited_once()
+        assert _skips(caps) == []
+
+    @pytest.mark.parametrize("empty", [None, ""])
+    async def test_an_empty_message_id_takes_no_lock(self, family, empty):
+        """Review round 1, F4 (``v_lock_empty_id``), on a real database. The
+        lock statement gives no row. Two DIFFERENT mails of one member with an
+        empty Message-ID never hold each other off."""
+        f = family
+        thread_a, thread_b = f"empty-a-{f.tag}", f"empty-b-{f.tag}"
+        in_a = _mail(f.admin, org=f.org, account_id=f.a, imid=empty, thread=thread_a)
+        in_b = _mail(f.admin, org=f.org, account_id=f.b, imid=empty, thread=thread_b)
+        inner: dict[str, Any] = {}
+
+        async def _b_runs_in_the_gap() -> None:
+            inner["done"], _ = await _draft_run(f, f.b, in_b, thread_b)
+
+        async with _as_member(f.p, f.org):
+            async with core._tenant_session() as db:
+                lock = (await db.execute(text(identity._DRAFT_LOCK_SQL),
+                                         {"aid": f.a, "mid": in_a})).fetchone()
+            with structlog.testing.capture_logs() as caps:
+                done_a, _ = await _while_holding(f, f.a, in_a, thread_a,
+                                                 _b_runs_in_the_gap)
+        assert lock is None
+        assert done_a == ["DRAFT_EMAIL"] and inner["done"] == ["DRAFT_EMAIL"]
         assert _skips(caps) == []

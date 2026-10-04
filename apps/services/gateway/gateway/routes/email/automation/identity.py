@@ -80,8 +80,10 @@ async def resolve_org_domains(db: Any, account_id: str) -> frozenset[str]:
 
 
 #: A bind name such as ``:aid``, or a column of the caller's query such as
-#: ``m.account_id``. Nothing else may anchor the FROM clause below.
-_ANCHOR = re.compile(r":[a-z_]+|[a-z_]+\.[a-z_]+")
+#: ``m.account_id``. Nothing else may anchor the FROM clause below. ``a.`` and
+#: ``o.`` are the aliases of that clause itself: ``a.id = a.id`` binds no
+#: mailbox and gives the set of each member (EM-T8g-3 review round 1, F4).
+_ANCHOR = re.compile(r":[a-z_]+|(?![ao]\.)[a-z_]+\.[a-z_]+")
 
 
 def _member_mailboxes_from(anchor: str) -> str:
@@ -141,15 +143,31 @@ def _not_a_copy_sql(alias: str) -> str:
     return f"LOWER(COALESCE({alias}.folder, '')) <> ALL(:not_a_copy)"
 
 
+def _same_sender_sql(copy: str, mail: str) -> str:
+    """The mail ``copy`` has the sender address of the mail ``mail``.
+
+    The sender sets the Message-ID, and every reply names it in
+    ``References``. So an outsider can send a DIFFERENT mail with the same
+    Message-ID to another mailbox of the member. A copy must also come from
+    the same address (EM-T8g-3 review round 1, F3). A NULL address pairs with
+    nothing. ⚠️ A forged mail from the SAME address still pairs. That is the
+    accepted risk of §11.6 edge case 26."""
+    return (f"LOWER({copy}.from_address->>'email') "
+            f"= LOWER({mail}.from_address->>'email')")
+
+
 #: "Also in" for a page of mail (EM-T8g-3 item 1, §11.6 edge case 10). One
 #: row for each mail of ``:ids`` and each paired mailbox that holds a copy of
-#: it: a mail with the same ``internet_message_id``, not empty, outside drafts,
-#: junk and trash. A mail with an empty id pairs with nothing. ``:uid`` keeps
-#: the read to the mailboxes of the caller. The LATERAL pair set takes the
-#: mailbox of each mail, and ``idx_email_messages_internet_message_id``
-#: (migration 89, ``(account_id, internet_message_id)``) serves each lookup of
-#: a copy as an index condition (measured on 40,000 rows after ANALYZE), so
-#: the read needs no new index.
+#: it. A copy has the same ``internet_message_id``, not empty, and the same
+#: sender address, and it is outside drafts, junk and trash. A row in those
+#: three folders names no copy either (review round 1, F3). A mail with an
+#: empty id pairs with nothing. ``:uid`` keeps the read to the mailboxes of
+#: the caller. The LATERAL pair set takes the mailbox of each mail.
+#: ``idx_email_messages_internet_message_id`` (migration 89, partial: ``WHERE
+#: internet_message_id IS NOT NULL``, on ``(account_id, internet_message_id)``)
+#: serves each lookup of a copy as an index condition, because the equality
+#: implies the NOT NULL. Measured on 40,000 rows after ANALYZE, so the read
+#: needs no new index.
 #: ⚠️ Only the Outlook provider stores ``internet_message_id`` today, so only
 #: two Outlook mailboxes pair (the Known limit of EM-T8g-3).
 ALSO_IN_SQL = f"""
@@ -159,10 +177,12 @@ ALSO_IN_SQL = f"""
      WHERE m.id = ANY(CAST(:ids AS uuid[]))
        AND m.account_id IN (SELECT id FROM email_accounts WHERE user_id = :uid)
        AND COALESCE(m.internet_message_id, '') <> ''
+       AND {_not_a_copy_sql("m")}
        AND EXISTS (
              SELECT 1 FROM email_messages c
               WHERE c.account_id = p.id
                 AND c.internet_message_id = m.internet_message_id
+                AND {_same_sender_sql("c", "m")}
                 AND {_not_a_copy_sql("c")})
      ORDER BY 1, 2"""
 
@@ -191,17 +211,24 @@ async def also_in_by_message(
     return out
 
 
-#: The try-lock of an automatic draft (EM-T8g-3 item 5). The key is the
-#: organization, the member and the Message-ID, so the two runs for the copies
-#: of one mail in two paired mailboxes ask for ONE lock. The lock is
-#: transaction-scoped: it holds until the block of the run commits, after the
-#: provider draft and its local copy. No row means no pair: the Message-ID is
-#: empty, the member has no paired mailbox, or ``:aid`` is separate. Then the
-#: run takes no lock.
+#: The try-lock of an automatic draft (EM-T8g-3 item 5). The key holds four
+#: parts: the organization, the member, the sender address and the
+#: Message-ID. So the two runs for the two copies of one mail ask for ONE
+#: lock, and nothing else shares it. A JSON array keeps the parts apart, so no
+#: two keys run together. The sender is in the key since review round 1 (F3),
+#: so a forged mail with the same Message-ID from another address never holds
+#: off the real draft. The lock is transaction-scoped: it holds until the block
+#: of the run commits, after the provider draft and its local copy. No row
+#: means no pair: the Message-ID is empty, the member has no paired mailbox,
+#: or ``:aid`` is separate. Then the run takes no lock.
 _DRAFT_LOCK_SQL = f"""
     SELECT pg_try_advisory_xact_lock(hashtextextended(
-             'email-draft:' || COALESCE(CAST(box.organization_id AS text), '')
-             || ':' || LOWER(box.user_id) || ':' || m.internet_message_id, 0)
+             jsonb_build_array(
+               'email-draft',
+               CAST(box.organization_id AS text),
+               LOWER(box.user_id),
+               LOWER(m.from_address->>'email'),
+               m.internet_message_id)::text, 0)
            ) AS got
       FROM email_messages m
       JOIN email_accounts box ON box.id = m.account_id
@@ -210,11 +237,13 @@ _DRAFT_LOCK_SQL = f"""
        AND EXISTS ({PAIRED_MAILBOX_IDS_SQL})"""
 
 #: The question of the draft dedupe (EM-T8g-3 item 3, §11.6 edge case 11).
-#: Does a paired mailbox hold a copy of ``:mid`` whose thread already holds a
-#: draft, or a sent mail newer than the copy? A copy with no thread id has no
-#: thread to read. Measured on 40,000 rows after ANALYZE: migration 89's index
-#: serves the copy and ``idx_email_messages_thread`` (migration 17) serves
-#: the thread read.
+#: Does a paired mailbox hold a copy of ``:mid`` whose thread holds a draft or
+#: a sent mail NEWER than the copy? A copy has the same sender address too
+#: (review round 1, F3). An older draft does not count (review round 1, P1):
+#: the member can send a draft from Outlook desktop, and its local row stays.
+#: A copy with no thread id has no thread to read. Measured on 40,000 rows
+#: after ANALYZE: migration 89's partial index serves the copy and
+#: ``idx_email_messages_thread`` (migration 17) serves the thread read.
 _ANSWERED_IN_PAIR_SQL = f"""
     SELECT EXISTS (
       SELECT 1
@@ -223,14 +252,14 @@ _ANSWERED_IN_PAIR_SQL = f"""
        WHERE m.id = :mid AND m.account_id = :aid
          AND COALESCE(m.internet_message_id, '') <> ''
          AND c.account_id IN ({PAIRED_MAILBOX_IDS_SQL})
+         AND {_same_sender_sql("c", "m")}
          AND {_not_a_copy_sql("c")}
          AND EXISTS (
                SELECT 1 FROM email_messages t
                 WHERE t.account_id = c.account_id
                   AND t.thread_id = c.thread_id
-                  AND (LOWER(COALESCE(t.folder, '')) = 'drafts'
-                       OR (LOWER(COALESCE(t.folder, '')) = 'sent'
-                           AND t.received_at > c.received_at)))
+                  AND LOWER(COALESCE(t.folder, '')) IN ('drafts', 'sent')
+                  AND t.received_at > c.received_at)
     ) AS answered"""
 
 
@@ -243,7 +272,10 @@ async def draft_skip_in_pair(
     - ``"busy"``: another run holds the try-lock on the member and the
       Message-ID. Two overlapping runs for one mail make one draft at most.
     - ``"answered"``: a paired mailbox holds a copy, and the thread of that
-      copy holds a draft or a sent mail newer than the copy.
+      copy holds a draft or a sent mail, newer than the copy.
+
+    The rule path calls this BEFORE its thread check (review round 1, F1), so
+    a run that skips trashes no draft and writes nothing.
 
     Two statements, on purpose. READ COMMITTED takes a new snapshot for each
     statement, so the check after the lock sees each draft that a run

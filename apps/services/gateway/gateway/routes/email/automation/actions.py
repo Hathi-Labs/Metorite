@@ -341,10 +341,11 @@ async def _skip_for_paired_mailbox(
     a paired mailbox (WS-17 EM-T8g-3 items 3 and 5, §11.6 edge case 11).
 
     A paired mailbox holds a copy of this mail whose thread already holds a
-    draft or a newer sent mail. Or another run for the same mail holds the
-    try-lock, so two overlapping runs make one draft at most. The read is
-    best-effort in a savepoint, like the thread check: a failure drafts as
-    before. The log names no address."""
+    draft or a sent mail, newer than the copy. Or another run for the same
+    mail holds the try-lock, so two overlapping runs make one draft at most.
+    The caller asks this before its thread check, so a skip trashes nothing.
+    The read is best-effort in a savepoint, like the thread check: a failure
+    drafts as before. The log names no address."""
     if not account_id:
         return False
     skip: str | None = None
@@ -463,6 +464,12 @@ async def _apply_rule_actions(
                 if not tmpl and skip_ai_drafts:
                     _log.info("email.draft_skipped_sensitive", account_id=account_id)
                     continue
+                # The draft dedupe across mailboxes (WS-17 EM-T8g-3 items 3
+                # and 5) runs FIRST. A run that skips changes nothing, so it
+                # never trashes the draft of the thread check below and then
+                # leaves the thread with no draft (review round 1, F1).
+                if await _skip_for_paired_mailbox(db, account_id, message_id):
+                    continue
                 # Dedup (inbox-zero handlePreviousDraftDeletion parity): at most
                 # one AI draft per thread — replace an unmodified prior draft,
                 # preserve one the user edited. Checked BEFORE generating so we
@@ -474,10 +481,6 @@ async def _apply_rule_actions(
                         _log.info("email.draft_skipped_existing",
                                   account_id=account_id)
                         continue
-                # The draft dedupe across mailboxes (WS-17 EM-T8g-3 items 3
-                # and 5): after the thread check, before the model call.
-                if await _skip_for_paired_mailbox(db, account_id, message_id):
-                    continue
                 # Static template wins; otherwise the orchestrating drafter
                 # (memory + sales/task-manager + thread history) writes a
                 # context-aware reply. Only the AI path needs the thread.
