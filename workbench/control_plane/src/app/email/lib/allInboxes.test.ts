@@ -55,6 +55,7 @@ import { isKnownIcon } from "@/lib/icons";
 import { AccountSidebar, accountMenuItems } from "../components/AccountSidebar";
 import { FirstSyncBanner } from "../components/FirstSyncBanner";
 import { OnboardingPanel } from "../components/OnboardingPanel";
+import { RemoveOlderMailDialog } from "../components/RemoveOlderMailDialog";
 import {
   ALL_INBOXES,
   SUMMED_FOLDERS,
@@ -72,6 +73,7 @@ import {
   mailboxToOpen,
   poolHome,
   pooledMailboxes,
+  removalMailbox,
   separateMark,
   separateToggle,
   storageMailbox,
@@ -826,15 +828,52 @@ describe("email-storage-mailbox (A5, A6, D3)", () => {
     );
     expect(page).toContain("onRemove={() => setRemovingId(storageAccount.id)}");
     expect(page).toContain("onRemove={() => setRemovingId(selectedAccount.id)}");
-    expect(page.match(/setRemovingId\(/g)).toHaveLength(3);
-    expect(page).toContain("const removingAccount = accounts.find((a) => a.id === removingId) ?? null;");
+    // The notice, the step, the close, and the clear of review round 1.
+    expect(page.match(/setRemovingId\(/g)).toHaveLength(4);
+    expect(page).toContain("const removingAccount = removalMailbox(accounts, removingId);");
     expect(page).toMatch(/<RemoveOlderMailDialog\s+account=\{removingAccount\}/);
     // The notice sits below the reconnect banner, and above the import panels.
     const notice = page.indexOf("<StorageNotice");
     expect(notice).toBeGreaterThan(page.indexOf("Reconnect Outlook"));
     expect(notice).toBeLessThan(page.indexOf("{importPanels.map("));
     // An open dialog stops the page shortcuts, so "#" cannot delete the mail behind it.
-    expect(page).toContain("editingMailbox || removingId || paletteOpen) return;");
+    expect(page).toContain("editingMailbox || removingAccount || paletteOpen) return;");
+  });
+});
+
+describe("email-storage-dialog-leaves (review round 1)", () => {
+  const dialog = (account: EmailAccount | null, onClose: () => void) =>
+    renderToStaticMarkup(createElement(RemoveOlderMailDialog, {
+      account,
+      named: true,
+      onClose,
+      onRemoved: () => {},
+      onRefresh: async () => null,
+    }));
+
+  it("the named mailbox leaves the list while the dialog is open: the dialog closes, and the shortcuts work again", () => {
+    // Open: the dialog names b, and the shortcut guard reads b.
+    expect(removalMailbox([pa, pb], "b")).toBe(pb);
+    // Another tab disconnects b, or a re-read drops it.
+    const left = removalMailbox([pa], "b");
+    expect(left).toBeNull();
+    // The dialog draws nothing, so its onClose never runs. The page must clear the id itself.
+    const onClose = vi.fn();
+    expect(dialog(left, onClose)).toBe("");
+    expect(onClose).not.toHaveBeenCalled();
+    // After the clear, a re-read that brings b back opens nothing.
+    expect(removalMailbox([pa, pb], null)).toBeNull();
+  });
+
+  it("the page guards the shortcuts on the looked-up mailbox, and clears an id that names none", () => {
+    const page = codeOnly(read("page.tsx"));
+    expect(page).toContain("if (removingId !== null && removingAccount === null) setRemovingId(null);");
+    // The keydown effect reads the mailbox, never the raw id, in its guard and in its deps.
+    const keys = page.slice(page.indexOf("const onKey = (e: KeyboardEvent)"), page.indexOf("const commands = useMemo<Command[]>("));
+    expect(keys.length).toBeGreaterThan(500);
+    expect(keys).toMatch(/\|\| removingAccount \|\|/);
+    expect(keys).toMatch(/disconnecting, editingMailbox, removingAccount, paletteOpen/);
+    expect(keys).not.toMatch(/\bremovingId\b/);
   });
 });
 

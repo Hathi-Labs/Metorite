@@ -599,6 +599,21 @@ export function setMailboxPooled(id: string, pooled: boolean): Promise<EmailAcco
 // ── Remove older mail from Metorite (EM-T6e, spec §10.4.7) ───────────────
 
 /**
+ * A count that the answer must carry: a finite number of 0 or more. Any
+ * other value throws (EM-T6e review round 1). The proxy sends `{}` for a 200
+ * body that it cannot read, and a missing count must never read as 0.
+ * A thrown preview is a failed count. A thrown removal has no `status`, so
+ * the dialog starts the D1 follow-up, and that finds the true count.
+ */
+function requiredCount(raw: Record<string, unknown> | undefined, field: string): number {
+  const v = raw?.[field];
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+    throw new Error(`The answer has no count in "${field}".`);
+  }
+  return v;
+}
+
+/**
  * The count and the bytes of the mail of one mailbox received before
  * `before` (EM-T6c). It writes nothing. `before` is an ISO instant.
  *
@@ -612,8 +627,8 @@ export async function previewOlderMail(accountId: string, before: string): Promi
   );
   return {
     before: String(raw?.before ?? before),
-    messages: Number(raw?.messages ?? 0),
-    bytes: Number(raw?.bytes ?? 0),
+    messages: requiredCount(raw, "messages"),
+    bytes: requiredCount(raw, "bytes"),
   };
 }
 
@@ -630,9 +645,9 @@ export async function removeOlderMail(accountId: string, before: string): Promis
   );
   return {
     before: String(raw?.before ?? before),
-    removed: Number(raw?.removed ?? 0),
+    removed: requiredCount(raw, "removed"),
     storedBytes: optionalCount(raw?.stored_bytes) ?? null,
-    storageLimitBytes: Number(raw?.storage_limit_bytes ?? 0),
+    storageLimitBytes: requiredCount(raw, "storage_limit_bytes"),
   };
 }
 

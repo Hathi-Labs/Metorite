@@ -174,9 +174,20 @@ export function storageNotice(
   return null;
 }
 
+/**
+ * True only for a count of exactly 0 (review round 1). NaN, a negative count
+ * and no count are not 0. Do not write `!(messages > 0)` for this test. It
+ * reads NaN as 0, so a broken answer would end the follow-up as "done".
+ */
+export function noMessagesLeft(messages: number): boolean {
+  return messages === 0;
+}
+
 /** The preview in words: "12,400 messages, about 380 MB" (D4). */
 export function previewLine(preview: Pick<OlderMailPreview, "messages" | "bytes">, locale?: string): string {
-  if (!(preview.messages > 0)) return STORAGE_COPY.previewNone;
+  if (noMessagesLeft(preview.messages)) return STORAGE_COPY.previewNone;
+  // A count that is not a number is a failed count, never "no mail".
+  if (!(preview.messages > 0)) return STORAGE_COPY.previewFailed;
   const count = new Intl.NumberFormat(locale).format(preview.messages);
   const noun = preview.messages === 1 ? "message" : "messages";
   const size = preview.bytes < BYTES_PER_MB ? formatMb(preview.bytes, locale) : `about ${formatMb(preview.bytes, locale)}`;
@@ -386,7 +397,7 @@ export function removalReducer(s: RemovalState, e: RemovalEvent): RemovalState {
     }
     case "followAnswered": {
       if (s.phase !== "following") return s;
-      if (e.answer && !(e.answer.messages > 0)) return { ...s, phase: "done", removed: null, meter: null };
+      if (e.answer && noMessagesLeft(e.answer.messages)) return { ...s, phase: "done", removed: null, meter: null };
       if (s.followStartedAt !== null && e.now - s.followStartedAt >= FOLLOW_UP_LIMIT_MS) {
         return { ...s, phase: "unconfirmed" };
       }
@@ -397,6 +408,21 @@ export function removalReducer(s: RemovalState, e: RemovalEvent): RemovalState {
       return { ...s, meter: meterOf(e.account?.storedBytes, e.account?.storageLimitBytes) ?? s.meter };
     }
   }
+}
+
+/**
+ * The `before` of a confirm that `removalReducer` takes, or null when the
+ * reducer refuses it (review round 1). The dialog sends the POST only for a
+ * value, so the reducer is the one guard of the removal. A second guard in
+ * the dialog could drift from it and send a POST for a refused confirm.
+ */
+export function acceptedConfirm(s: RemovalState): string | null {
+  const before = confirmBefore(s.preview, s.choice?.before ?? null);
+  if (before === null) return null;
+  // A refusal gives back the same state. In the phase `removing` that state
+  // reads `removing` too, so the test is "a new state", not only the phase.
+  const next = removalReducer(s, { type: "confirm", before });
+  return next !== s && next.phase === "removing" ? before : null;
 }
 
 // ── After a removal (A14) ───────────────────────────────────────────────────

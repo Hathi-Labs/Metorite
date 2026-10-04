@@ -601,7 +601,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** ✅ **EM-T4b MERGED (#617, 2026-10-04), dark** (cap 0, budget `log`). **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
-| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** 🔨 **EM-T6e BUILT, not merged (2026-10-04), branch `email-storage-ui`.** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
+| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** 🔨 **EM-T6e BUILT, not merged (2026-10-04), branch `email-storage-ui`, review round 1 closed.** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -2548,7 +2548,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e 🔨 BUILT, not merged (2026-10-04), branch `email-storage-ui`. Anchors re-verified at `3d11922c2` on 2026-10-04.
+**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e 🔨 BUILT, not merged (2026-10-04), branch `email-storage-ui`, with review round 1 closed. Anchors re-verified at `3d11922c2` on 2026-10-04.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
@@ -2998,7 +2998,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 **Waits for** EM-T6c and EM-T6d.
 
-**Status.** 🔨 BUILT, not merged (2026-10-04), branch `email-storage-ui`. Two commits on `3d11922c2`: the narrowing, then the build. The gateway does not change.
+**Status.** 🔨 BUILT, not merged (2026-10-04), branch `email-storage-ui`. Four commits on `04a64ba4d`: the narrowing, the build, the status with the visual review, and review round 1. The gateway does not change.
 
 **As built.**
 
@@ -3022,8 +3022,38 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 - `lib/removeOlderMailDialog.test.ts`: `email-storage-dialog-name` (A4), `email-storage-dialog-copy` (A10), `email-storage-dialog-busy` (A11) and `email-storage-dialog-ui` (D5).
 - `lib/onboarding.test.ts`: `email-storage-stage` (A7). `lib/allInboxes.test.ts`: `email-storage-mailbox` (A5, A6) and `email-storage-switcher` (UC-12).
 - `src/app/api/email/[...path]/postTimeout.test.ts`: `email-storage-proxy-budget` (A12). It also runs the real POST handler and reads the budget of the gateway call.
+- Review round 1 adds `email-storage-no-zero` and `email-storage-one-guard` in `lib/storage.test.ts`. It adds `email-storage-dialog-leaves` in `lib/allInboxes.test.ts`.
+- Review round 1 also adds four fences in `lib/removeOlderMailDialog.test.ts`: `email-storage-unconfirmed-view`, `email-storage-follow-up-stops`, `email-storage-one-confirm` and `email-storage-no-zero-flow`. It widens `email-storage-dialog-copy`.
 
-**Mutation checks (2026-10-04).** For each mutation, a script changed the code, ran the named tests and put the file back. A SHA-256 check proved each restore. All 27 mutations went red.
+**Review round 1 (2026-10-04).** An independent verifier and an adversarial reviewer read the build. Neither found a path to the wrong mailbox, to the wrong date, or to a second POST. This round closes their findings, item by item.
+
+1. **A stale id stopped the page shortcuts.** The guard read `removingId`, and that id stayed set when the mailbox left the list. The dialog then drew nothing, so its `onClose` never ran.
+   - Fix: `removalMailbox` in `lib/mailbox.ts` looks up the mailbox, and the guard reads that value. The page clears an id that names no mailbox.
+   - The clear runs during render, as React documents. An effect would add a new error of the lint rule `set-state-in-effect`.
+   - Fence: `email-storage-dialog-leaves`.
+2. **A missing number read as 0.** The proxy sends `{}` for a 200 body that it cannot read. The mappers read that as 0, so the follow-up said "done", and the result said "removed 0".
+   - Fix: `requiredCount` in `lib/api.ts` throws for a count that is not a finite number of 0 or more. A thrown preview is a failed count.
+   - A thrown removal has no status, so the dialog follows it (D1). `noMessagesLeft` in `lib/storage.ts` is true only for an exact 0, so NaN cannot end the follow-up.
+   - Fences: `email-storage-no-zero` and `email-storage-no-zero-flow`.
+3. **No fence held A13 on the view.** A mutation that drew `STORAGE_COPY.failed` after 3 minutes stayed green. Copy that said "could not finish" stayed green too.
+   - Fix: a render test draws the phase `unconfirmed` and pins its words. It refuses each failure string, and any word like "fail", "error" or "could not".
+   - Fence: `email-storage-unconfirmed-view`.
+4. **The copy scan was too narrow.** It matched `delet*` near "outlook" only. The product verb is "remove", and the copy names Gmail too.
+   - Fix: the scan reads each value of `STORAGE_COPY`, each drawn text, and each `aria-label` and `title`. It matches "remove" or "delete" with Outlook, Gmail, the provider or the mail server, in either order.
+   - `[^.]*` stops at a period, so "This removes mail from Metorite only." and "Your Outlook mailbox does not change." pass. A case proves that the scan can fail.
+   - The test pins `confirm`, `action` and `dialogTitle` as literals. Fence: `email-storage-dialog-copy`.
+5. **No fence held the cleanup of the poll timer.** The body of the effect is now `followUp` in `components/RemoveOlderMailDialog.tsx`, which takes its calls as an argument.
+   - Fix: the cleanup of `followUp` clears the timer. An answer that comes after the cleanup changes nothing.
+   - A test with fake timers stops it, then goes past 5 seconds and 180 seconds. No preview runs, and no state changes. Fence: `email-storage-follow-up-stops`.
+6. **Two guards decided the POST.** The dialog checked the phase and the preview before the POST, and the reducer did the same check again. The two agreed, but nothing bound them.
+   - Fix: `acceptedConfirm` in `lib/storage.ts` asks the reducer. `sendRemoval` sends the POST only for its value, and the confirm button reads the same function.
+   - The first version of `acceptedConfirm` read only the phase after the reducer. A refused confirm in the phase `removing` keeps that phase, so the fence found the error.
+   - Fences: `email-storage-one-guard` and `email-storage-one-confirm`.
+7. **A15.** The visual review below now says where the captures are, and that the PR carries a selection of them.
+8. **The spec text.** The status commit cut the first sentence of the paragraph "Narrowed", and this round puts it back. The status line names the real commits and their base. The six new lint errors of this section are gone.
+9. **The command palette.** The open points record it as a follow-up.
+
+**Mutation checks (2026-10-04).** For each mutation, a script changed the code, ran the named tests and put the file back. A SHA-256 check proved each restore. All 27 mutations of the build went red. All 16 mutations of review round 1, the rows "R1", went red too.
 
 | Mutation | What it changes | Tests that went red |
 |---|---|---|
@@ -3054,13 +3084,39 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 | UC-12 | The switcher draws no mark | `allInboxes.test.ts`, 2 |
 | Shortcuts | The page shortcuts run under the dialog | `allInboxes.test.ts`, 1 |
 | Key | The notice keys on the bare id again | `storage.test.ts`, 1 |
+| R1, 1a | The shortcut guard reads `removingId` again | `allInboxes.test.ts`, 2 |
+| R1, 1b | The page keeps an id that names no mailbox | `allInboxes.test.ts`, 2 |
+| R1, 2a | The preview reads a missing count as 0 | `storage.test.ts`, 1 |
+| R1, 2b | The removal reads a missing count as 0 | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 2 |
+| R1, 2c | The reducer reads NaN as 0 | `storage.test.ts`, 1 |
+| R1, 2d | `noMessagesLeft` reads NaN as 0 | `storage.test.ts`, 3 |
+| R1, 3a | The view after 3 minutes draws the failure words | `removeOlderMailDialog.test.ts`, 1 |
+| R1, 3b | The words after 3 minutes claim a failure | `removeOlderMailDialog.test.ts`, 2 |
+| R1, 4a | The copy says that Metorite also removes the mail in Outlook | `removeOlderMailDialog.test.ts`, 1 |
+| R1, 4b | The confirm reads "Remove from Outlook" | `removeOlderMailDialog.test.ts`, 2 |
+| R1, 5a | The cleanup keeps the timer | `removeOlderMailDialog.test.ts`, 1 |
+| R1, 5b | The effect drops the cleanup of `followUp` | `storage.test.ts`, 1 |
+| R1, 5c | An answer after the cleanup still changes the state | `removeOlderMailDialog.test.ts`, 1 |
+| R1, 6a | The POST goes on the preview alone | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 3 |
+| R1, 6b | The dialog checks the phase and the preview itself again | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 2 |
+| R1, 6c | `acceptedConfirm` skips the reducer | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 3 |
 
-**Verification (2026-10-04).** `npx tsc --noEmit` exits 0. The command below with `src/app/email src/app/api/email src/components src/lib/theme src/lib/nav.test.ts` passes 53 files and 1097 tests. The full `npx vitest run` passes 298 of 300 files and 5741 of 5745 tests. The 4 failures are in `layoutBoundary.test.ts` and `reportsLiveOverview.test.ts`. They read `ReportsView.tsx`, which this branch does not change, and they pass when that file has LF line ends. So the CRLF checkout on Windows causes them.
+**Verification (2026-10-04, after review round 1).**
 
-**Visual review (A15, 2026-10-04).** The rig of the `visual-review` skill ran on the local Next dev server, with each `/api` call stubbed. No gateway, no database and no mailbox took part, so no call reached the removal route. The captures show the notice in All inboxes, the switcher marks, each state of the dialog, the storage step, the state after "Keep it as it is" and the gap line. They use dark, light, compact density, a changed accent and mobile width. The captures stay in a private scratch folder, not in the repo.
+- `npx tsc --noEmit` exits 0.
+- The command below with `src/app/email src/app/api/email src/components src/lib/theme src/lib/nav.test.ts` passes 53 files and 1122 tests.
+- The full `npx vitest run` passes 298 of 300 files and 5766 of 5770 tests. The 4 failures are in `layoutBoundary.test.ts` and `reportsLiveOverview.test.ts`.
+- Those two files read `ReportsView.tsx`, which this branch does not change. They pass when that file has LF line ends, so the CRLF checkout on Windows causes them.
 
+**Visual review (A15, 2026-10-04).** The rig of the `visual-review` skill ran on the local Next dev server, with each `/api` call stubbed. No gateway, no database and no mailbox took part, so no call reached the removal route. The captures use dark, light, compact density, a changed accent and mobile width.
+
+- The captures show the notice in All inboxes, the switcher marks and each state of the dialog. They also show the storage step, the state after "Keep it as it is" and the gap line.
+- The captures exist at review time in a private scratch folder, and not in the repo. The PR carries a selection of them.
 - The review found a duplicate React key. After "Keep it as it is", the notice and the rules step drew for one mailbox with one key. The keys now carry a prefix, and `storage.test.ts` fences it.
-- At mobile width, the action of the notice squeezed the words into a narrow column. The row now wraps, and the action drops below the words. The orchestrator accepts the design decisions D1 to D7 below. EM-T6e changes the UI and the BFF proxy only, and the gateway does not change. The gate stays AGENT-SAFE (Gate, above). An agent must not run the removal route on a production mailbox, and the visual review uses the local stack only.
+- At mobile width, the action of the notice squeezed the words into a narrow column. The row now wraps, and the action drops below the words.
+- Review round 1 changes no drawn state, so the captures stay current.
+
+**Narrowed (orchestrator, 2026-10-04).** The spec-auditor cleared this slice as GO-NARROWED at `3d11922c2`. The orchestrator accepts the design decisions D1 to D7 below. EM-T6e changes the UI and the BFF proxy only, and the gateway does not change. The gate stays AGENT-SAFE (Gate, above). An agent must not run the removal route on a production mailbox, and the visual review uses the local stack only.
 
 **The two routes (EM-T6c, `transport/storage.py`).**
 
@@ -3089,7 +3145,10 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 1. **The fields.** `EmailAccount` in `lib/types.ts` gains `storedBytes?: number | null` and `storageLimitBytes?: number`. `mapAccount` in `lib/api.ts` maps them with `optionalCount`. When the gateway sends no `storage_limit_bytes`, Email draws no storage UI. The comment of `importPhase` names `limit`.
 2. **The calls.** `lib/api.ts` gains `previewOlderMail(accountId, before)` and `removeOlderMail(accountId, before)`.
 3. **The decisions.** A new pure `lib/storage.ts` holds `atStorageLimit`, the copy, the MB format, `keepNewestBefore(months, now)` and the state of the D1 follow-up. `storageMailbox` goes in `lib/mailbox.ts`.
-4. **The stage (D6).** `onboardingStage(account, { storageKept })` returns `storage` only when four things are true. The phase is `limit`, the meter is at the limit, `onboardingDone` is false, and the member did not choose "Keep it as it is". "Keep it as it is" stores the id of the mailbox in `localStorage`, with ids only and a `try` around each read and write. The stage then moves to `rules`, and the notice stays. After a removal that goes under the limit, the stage moves to `rules`, also with a gap. `page.tsx` draws the storage step between the import panels and the rules step, with the dialog and "Keep it as it is".
+4. **The stage (D6).** `onboardingStage(account, { storageKept })` returns `storage` only when four things are true. The phase is `limit`, and the meter is at the limit. `onboardingDone` is false, and the member did not choose "Keep it as it is".
+   - "Keep it as it is" stores the id of the mailbox in `localStorage`. It stores ids only, with a `try` around each read and write. The stage then moves to `rules`, and the notice stays.
+   - After a removal that goes under the limit, the stage moves to `rules`, also with a gap.
+   - `page.tsx` draws the storage step between the import panels and the rules step. The step offers the dialog and "Keep it as it is".
 5. **The notice (D3, D2).** `components/StorageNotice.tsx` draws below the reconnect banner in `page.tsx`.
 6. **The dialog.** `components/RemoveOlderMailDialog.tsx` is built on `Modal`. The member keeps the newest 1, 2, 3 or 6 months, or picks a date. The dialog calls the preview, then the removal, and it shows the 409 detail and the D1 follow-up. On success, it writes the new meter into the store and reads the accounts again.
 7. **The proxy budget (D1).** `src/app/api/email/[...path]/route.ts` reads the budget of a POST from the new module.
@@ -3119,7 +3178,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 - A4. With two mailboxes, the notice and the dialog draw the chip and the address, and the copy names the label. With one mailbox, the copy says "This mailbox".
 - A5. In All inboxes, `storageMailbox` is the first pooled mailbox at the limit, and never a separate one. The dialog calls both routes with the id of that mailbox, not the id of `poolHome`.
 - A6. No notice draws for the mailbox that `attentionMailbox` names, or for a mailbox in the stage `storage`.
-- A7. The stage table of D6: `storage` in the phase `limit` at the limit, `rules` under the limit and after "Keep it as it is", and `null` with `onboardingDone`.
+- A7. The stage table of D6: `storage` in the phase `limit` at the limit. The stage is `rules` under the limit and after "Keep it as it is". It is `null` with `onboardingDone`.
 - A8. The confirm stays disabled until the preview of the current choice answers, and at 0 messages. A late answer for an earlier choice does not enable it.
 - A9. The confirm sends the `before` of the preview that answered.
 - A10. The dialog holds the Metorite-only copy. No text in the notice or the dialog says that Metorite deletes mail in Outlook.
@@ -3147,6 +3206,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 - **(Visual review) The app shell remounts the page at the mobile width.** A change of the window across that width closes an open dialog. Every dialog of the page does the same, so this belongs to the shell, not to EM-T6e.
 - **(Visual review) The compact switcher cuts a label short.** At compact density, a separate mailbox at the limit shows "Cl…" beside the "Separate" badge and the mark.
 - **(Visual review) No capture beside Calendar.** The done-when of EM-T6d named a view beside Calendar. This review did not capture one.
+- **(Review round 1) Cmd+K opens over a dialog.** The command palette opens above any dialog of the page, and it offers "Delete" for the open mail. This is older than EM-T6e. A follow-up for the page shortcuts owns it.
 - **EM-T6f, a resume path (backend, recorded).** Nothing resumes the import of a mailbox in the phase `limit` under the limit (EM-T6c, review round 1, item 3). The candidate of the auditor: a route sets `initial_sync_done = false` and `import_phase = 'importing'` for such a mailbox, so `_run_import` resumes at `import_reached_at`. It needs R8 and its own audit.
 
 ##### Recorded risks (EM-T6)

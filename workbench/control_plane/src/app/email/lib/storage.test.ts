@@ -19,6 +19,12 @@
 //   * `email-storage-kept` (D6): "Keep it as it is" stores ids only, and a
 //     refused store never throws.
 //
+// Review round 1 adds two fences here:
+//   * `email-storage-no-zero` (A13): a missing or broken count never reads
+//     as 0. The mappers throw, and NaN never ends the follow-up as "done".
+//   * `email-storage-one-guard` (A8, A9): `acceptedConfirm` asks the
+//     reducer, so a confirm that the reducer refuses has no `before`.
+//
 // vitest here runs in the node environment and reads `*.test.ts` only, so a
 // component is drawn with `createElement` and `renderToStaticMarkup`.
 import { readFileSync } from "node:fs";
@@ -36,6 +42,7 @@ import {
   FOLLOW_UP_POLL_MS,
   STORAGE_COPY,
   STORAGE_KEPT_KEY,
+  acceptedConfirm,
   atStorageLimit,
   beforeOfDate,
   confirmBefore,
@@ -44,6 +51,7 @@ import {
   initialRemovalState,
   keepNewestBefore,
   keepStorage,
+  noMessagesLeft,
   previewLine,
   readStorageKept,
   removalFailure,
@@ -269,11 +277,10 @@ describe("email-storage-confirm (A8, A9)", () => {
 
   it("the dialog sends exactly that value, for the id of the mailbox it names", () => {
     const src = codeOnly(read("components/RemoveOlderMailDialog.tsx"));
-    expect(src).toMatch(
-      /const before = confirmBefore\(state\.preview, state\.choice\?\.before \?\? null\);[\s\S]*?removeOlderMail\(id, before\)/,
-    );
+    expect(src).toMatch(/const before = acceptedConfirm\(state\);[\s\S]*?calls\.remove\(before\)/);
     expect(src).toContain("const id = account.id;");
-    expect(src).toContain("previewOlderMail(id, before)");
+    expect(src).toContain("remove: (before) => removeOlderMail(id, before),");
+    expect(src).toContain("preview: (before) => previewOlderMail(id, before),");
     expect(src).not.toMatch(/selectedAccountId|poolHome/);
   });
 });
@@ -367,8 +374,10 @@ describe("email-storage-follow-up (A11, A13, D1)", () => {
   it("the dialog polls the preview with the same before every 5 seconds", () => {
     const src = codeOnly(read("components/RemoveOlderMailDialog.tsx"));
     expect(src).toContain('const followBefore = state.phase === "following" ? state.before : null;');
-    expect(src).toMatch(/setTimeout\(\(\) => \{\s*previewOlderMail\(id, followBefore\)/);
+    expect(src).toMatch(/setTimeout\(\(\) => \{\s*calls\.preview\(before\)/);
     expect(src).toContain("}, FOLLOW_UP_POLL_MS);");
+    // The effect returns the cleanup of `followUp`, for the same before.
+    expect(src).toMatch(/useEffect\(\(\) => \{\s*if \(!followBefore\) return;\s*return followUp\(followBefore, \{/);
     expect(src).toContain("[id, followBefore, state.polls]");
     // The meter alone is never the proof (D1).
     expect(src).not.toMatch(/listEmailAccounts|storedBytes\s*[<>]/);
@@ -377,10 +386,119 @@ describe("email-storage-follow-up (A11, A13, D1)", () => {
   it("a removal runs from the click, never from an effect that React can run twice", () => {
     const src = codeOnly(read("components/RemoveOlderMailDialog.tsx"));
     expect(src.match(/removeOlderMail\(/g)).toHaveLength(1);
+    expect(src.match(/calls\.remove\(/g)).toHaveLength(1);
+    expect(src.match(/sendRemoval\(/g)).toHaveLength(2);
     const confirmFn = src.slice(src.indexOf("const confirm = () => {"), src.indexOf("const followBefore"));
-    expect(confirmFn.length).toBeGreaterThan(100);
-    expect(confirmFn).toContain("removeOlderMail(id, before)");
-    expect(confirmFn).toContain("sending.current = true;");
+    expect(confirmFn).toContain("sendRemoval(state, sending, calls);");
+    const sendFn = src.slice(src.indexOf("export function sendRemoval("), src.indexOf("export function followUp("));
+    expect(sendFn).toContain("sending.current = true;");
+    expect(sendFn).toContain("calls.remove(before)");
+    // No effect body names the removal.
+    for (const effect of src.split("useEffect(").slice(1)) {
+      expect(effect.slice(0, effect.indexOf("}, ["))).not.toMatch(/sendRemoval|removeOlderMail|calls\.remove/);
+    }
+  });
+});
+
+describe("email-storage-one-guard (A8, A9, review round 1)", () => {
+  const readyThree = () =>
+    run(
+      initialRemovalState(),
+      { type: "pick", choice: THREE },
+      { type: "previewAnswered", key: KEY_3, answer: { before: ECHO_3, messages: 12, bytes: MB } },
+    );
+
+  it("gives the before of the preview when the reducer takes the confirm", () => {
+    const s = readyThree();
+    expect(acceptedConfirm(s)).toBe(ECHO_3);
+    expect(run(s, { type: "confirm", before: ECHO_3 }).phase).toBe("removing");
+  });
+
+  it("gives null for each confirm that the reducer refuses", () => {
+    const zero = run(
+      initialRemovalState(),
+      { type: "pick", choice: THREE },
+      { type: "previewAnswered", key: KEY_3, answer: { before: ECHO_3, messages: 0, bytes: 0 } },
+    );
+    const failed = run(initialRemovalState(), { type: "pick", choice: THREE }, { type: "previewAnswered", key: KEY_3, answer: null });
+    const following = run(removingState(), { type: "removeFailed", failure: { kind: "follow" }, now: 0 });
+    const refused: Array<[string, RemovalState]> = [
+      ["no choice", initialRemovalState()],
+      ["the preview runs", run(initialRemovalState(), { type: "pick", choice: THREE })],
+      ["0 messages", zero],
+      ["a failed count", failed],
+      ["an earlier choice", run(readyThree(), { type: "pick", choice: ONE })],
+      ["removing", removingState()],
+      ["following", following],
+      ["unconfirmed", run(following, { type: "followAnswered", answer: null, now: FOLLOW_UP_LIMIT_MS })],
+      ["done", run(following, { type: "followAnswered", answer: { messages: 0 }, now: 1 })],
+    ];
+    for (const [name, s] of refused) {
+      expect(acceptedConfirm(s), name).toBeNull();
+      const before = confirmBefore(s.preview, s.choice?.before ?? null);
+      if (before !== null) expect(run(s, { type: "confirm", before }), name).toBe(s);
+    }
+  });
+
+  it("asks the reducer, not only the preview: a removal in progress keeps a ready preview", () => {
+    // The preview alone would send a second POST here. Only the reducer refuses it.
+    const s = removingState();
+    expect(confirmBefore(s.preview, s.choice?.before ?? null)).toBe(ECHO_3);
+    expect(acceptedConfirm(s)).toBeNull();
+  });
+
+  it("a 409 gives the confirm back", () => {
+    const busy = { kind: "busy" as const, detail: "busy" };
+    expect(acceptedConfirm(run(removingState(), { type: "removeFailed", failure: busy, now: 0 }))).toBe(ECHO_3);
+  });
+});
+
+describe("email-storage-no-zero (A13, review round 1)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stub(body: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })),
+    );
+  }
+
+  it("only an exact 0 is no mail: NaN, a negative count and Infinity are not", () => {
+    expect(noMessagesLeft(0)).toBe(true);
+    for (const n of [Number.NaN, -1, 1, Number.POSITIVE_INFINITY]) expect(noMessagesLeft(n), String(n)).toBe(false);
+  });
+
+  it("a NaN answer never ends the follow-up as done", () => {
+    let s = run(removingState(), { type: "removeFailed", failure: { kind: "follow" }, now: 0 });
+    s = run(s, { type: "followAnswered", answer: { messages: Number.NaN }, now: 5_000 });
+    expect([s.phase, s.polls]).toEqual(["following", 1]);
+    s = run(s, { type: "followAnswered", answer: { messages: Number("x") }, now: FOLLOW_UP_LIMIT_MS });
+    expect(s.phase).toBe("unconfirmed");
+  });
+
+  it("a NaN preview reads as a failed count, never as no mail", () => {
+    expect(previewLine({ messages: Number.NaN, bytes: 0 })).toBe(STORAGE_COPY.previewFailed);
+    expect(previewLine({ messages: 0, bytes: 0 })).toBe(STORAGE_COPY.previewNone);
+  });
+
+  it("the preview of {} or of a count that is not a number throws", async () => {
+    const api = await import("./api");
+    for (const body of [{}, { before: ECHO_3, messages: "x", bytes: 4 }, { before: ECHO_3, messages: 4 }, null]) {
+      stub(body);
+      await expect(api.previewOlderMail("a1", ECHO_3), JSON.stringify(body)).rejects.toThrow(/count/);
+    }
+  });
+
+  it("the removal of {} throws with no status, so the dialog follows it (D1)", async () => {
+    const api = await import("./api");
+    for (const body of [{}, { before: ECHO_3, removed: "x", storage_limit_bytes: LIMIT }, { before: ECHO_3, removed: 3 }]) {
+      stub(body);
+      const err = await api.removeOlderMail("a1", ECHO_3).catch((e: unknown) => e);
+      expect(err, JSON.stringify(body)).toBeInstanceOf(Error);
+      expect(removalFailure(err), JSON.stringify(body)).toEqual({ kind: "follow" });
+    }
   });
 });
 

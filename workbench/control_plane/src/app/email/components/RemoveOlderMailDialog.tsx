@@ -35,6 +35,9 @@
  * ⚠️ The calls run from the click, never from an effect. React runs an effect
  * twice in development, and a removal is not a call to send twice. Only the
  * follow-up uses an effect, for its timer, and a preview is safe to repeat.
+ *
+ * `sendRemoval` and `followUp` make the calls, with the calls passed in
+ * (review round 1). A test passes spies and drives both with no DOM.
  */
 
 import { useEffect, useId, useReducer, useRef, useState } from "react";
@@ -48,22 +51,24 @@ import {
   FOLLOW_UP_POLL_MS,
   KEEP_NEWEST_MONTHS,
   STORAGE_COPY,
+  acceptedConfirm,
   beforeOfDate,
-  confirmBefore,
   dateInputValue,
   initialRemovalState,
   keepNewestBefore,
   meterSentence,
   monthsLabel,
+  noMessagesLeft,
   previewLine,
   providerUnchanged,
   removalFailure,
   removalReducer,
   removedLine,
   type RemovalChoice,
+  type RemovalEvent,
   type RemovalState,
 } from "../lib/storage";
-import type { EmailAccount, RemoveOlderResult } from "../lib/types";
+import type { EmailAccount, OlderMailPreview, RemoveOlderResult } from "../lib/types";
 import { MailboxChip } from "./MailboxChip";
 
 export type RemovalAccount = Pick<
@@ -104,7 +109,8 @@ export function RemoveOlderMailView(p: RemoveOlderMailViewProps) {
   const name = p.named ? mailboxLabel(p.account) : null;
   const choosing = state.phase === "choose" || state.phase === "removing";
   const locked = state.phase !== "choose";
-  const sendable = confirmBefore(state.preview, state.choice?.before ?? null) !== null;
+  // The button and `sendRemoval` ask the reducer the same question.
+  const sendable = acceptedConfirm(state) !== null;
   return (
     <div className="space-y-3 p-4">
       {p.named && (
@@ -247,6 +253,95 @@ export function RemoveOlderMailView(p: RemoveOlderMailViewProps) {
 
 type MeterRead = Pick<EmailAccount, "storedBytes" | "storageLimitBytes"> | null;
 
+/**
+ * The calls of the dialog, for the id of the mailbox that it names (D3). The
+ * form passes the real calls. A test passes spies.
+ */
+export interface RemovalCalls {
+  dispatch: (event: RemovalEvent) => void;
+  preview: (before: string) => Promise<OlderMailPreview>;
+  remove: (before: string) => Promise<RemoveOlderResult>;
+  /** The page writes the meter of the answer, then reads the accounts again (A14). */
+  removed: (result: RemoveOlderResult) => void;
+  /** Reads the accounts again, and gives back this mailbox, or null. */
+  refresh: () => Promise<MeterRead>;
+}
+
+/** Runs the preview of `before`, and gives its answer to the reducer. */
+export function readPreview(before: string, calls: Pick<RemovalCalls, "dispatch" | "preview">): void {
+  calls.preview(before).then(
+    (answer) => calls.dispatch({ type: "previewAnswered", key: before, answer }),
+    () => calls.dispatch({ type: "previewAnswered", key: before, answer: null }),
+  );
+}
+
+/**
+ * The confirm (A9). It sends the POST only for a confirm that the reducer
+ * takes, through `acceptedConfirm`, so the reducer is the one guard (review
+ * round 1). `sending` stops a second POST before the next render. Returns
+ * true when it sent the POST.
+ */
+export function sendRemoval(state: RemovalState, sending: { current: boolean }, calls: RemovalCalls): boolean {
+  if (sending.current) return false;
+  const before = acceptedConfirm(state);
+  if (before === null) return false;
+  sending.current = true;
+  const choiceBefore = state.choice?.before ?? null;
+  calls.dispatch({ type: "confirm", before });
+  calls.remove(before).then(
+    (result) => {
+      sending.current = false;
+      calls.removed(result);
+      calls.dispatch({ type: "removed", result });
+    },
+    (error: unknown) => {
+      sending.current = false;
+      const failure = removalFailure(error);
+      calls.dispatch({ type: "removeFailed", failure, now: Date.now() });
+      if (failure.kind === "failed") {
+        // A failure surfaces, and the list is read again: some mail can be
+        // gone, so the meter and the count can have changed.
+        void calls.refresh();
+        if (choiceBefore) readPreview(choiceBefore, calls);
+      }
+    },
+  );
+  return true;
+}
+
+/**
+ * One read of the D1 follow-up: the preview of the same `before`, 5 seconds
+ * from now. Each answer bumps `polls`, and the effect then arms the next
+ * read. The return value is the cleanup of the effect. It clears the timer,
+ * and an answer that comes after it changes nothing (review round 1).
+ */
+export function followUp(
+  before: string,
+  calls: Pick<RemovalCalls, "dispatch" | "preview" | "refresh">,
+): () => void {
+  let live = true;
+  const timer = setTimeout(() => {
+    calls.preview(before).then(
+      (answer) => {
+        if (!live) return;
+        calls.dispatch({ type: "followAnswered", answer, now: Date.now() });
+        if (noMessagesLeft(answer.messages)) {
+          // The answer moves the dialog to "done", and that runs this
+          // cleanup. The re-read started here, so its meter still lands.
+          void calls.refresh().then((account) => calls.dispatch({ type: "meterRead", account }));
+        }
+      },
+      () => {
+        if (live) calls.dispatch({ type: "followAnswered", answer: null, now: Date.now() });
+      },
+    );
+  }, FOLLOW_UP_POLL_MS);
+  return () => {
+    live = false;
+    clearTimeout(timer);
+  };
+}
+
 interface DialogProps {
   /** The mailbox that the notice or the step names. `null` closes the dialog. */
   account: RemovalAccount | null;
@@ -279,62 +374,36 @@ function RemoveOlderMailForm({ account, named, onClose, onRemoved, onRefresh }: 
   }, [onRefresh]);
   const id = account.id;
 
-  const runPreview = (before: string) => {
-    previewOlderMail(id, before).then(
-      (answer) => dispatch({ type: "previewAnswered", key: before, answer }),
-      () => dispatch({ type: "previewAnswered", key: before, answer: null }),
-    );
+  // The calls of the dialog, each for the id of the mailbox that it names.
+  const calls: RemovalCalls = {
+    dispatch,
+    preview: (before) => previewOlderMail(id, before),
+    remove: (before) => removeOlderMail(id, before),
+    removed: (result) => onRemoved(id, result),
+    refresh: () => refresh.current(id),
   };
 
   const pick = (choice: RemovalChoice) => {
     if (state.phase !== "choose") return;
     dispatch({ type: "pick", choice });
-    if (choice.before) runPreview(choice.before);
+    if (choice.before) readPreview(choice.before, calls);
   };
 
   const confirm = () => {
-    const before = confirmBefore(state.preview, state.choice?.before ?? null);
-    if (!before || state.phase !== "choose" || sending.current) return;
-    sending.current = true;
-    const choiceBefore = state.choice?.before ?? null;
-    dispatch({ type: "confirm", before });
-    removeOlderMail(id, before).then(
-      (result) => {
-        sending.current = false;
-        onRemoved(id, result);
-        dispatch({ type: "removed", result });
-      },
-      (error: unknown) => {
-        sending.current = false;
-        const failure = removalFailure(error);
-        dispatch({ type: "removeFailed", failure, now: Date.now() });
-        if (failure.kind === "failed") {
-          // A failure surfaces, and the list is read again: some mail can be
-          // gone, so the meter and the count can have changed.
-          void refresh.current(id);
-          if (choiceBefore) runPreview(choiceBefore);
-        }
-      },
-    );
+    sendRemoval(state, sending, calls);
   };
 
   // D1: follow a removal that outlived the proxy, through the preview of the
-  // same `before`. Each answer bumps `polls`, which arms the next read.
+  // same `before`. Each answer bumps `polls`, which arms the next read. A
+  // close unmounts the form, and the cleanup of `followUp` stops the timer.
   const followBefore = state.phase === "following" ? state.before : null;
   useEffect(() => {
     if (!followBefore) return;
-    const timer = setTimeout(() => {
-      previewOlderMail(id, followBefore).then(
-        (answer) => {
-          dispatch({ type: "followAnswered", answer, now: Date.now() });
-          if (!(answer.messages > 0)) {
-            void refresh.current(id).then((acct) => dispatch({ type: "meterRead", account: acct }));
-          }
-        },
-        () => dispatch({ type: "followAnswered", answer: null, now: Date.now() }),
-      );
-    }, FOLLOW_UP_POLL_MS);
-    return () => clearTimeout(timer);
+    return followUp(followBefore, {
+      dispatch,
+      preview: (before) => previewOlderMail(id, before),
+      refresh: () => refresh.current(id),
+    });
   }, [id, followBefore, state.polls]);
 
   const close = () => {

@@ -49,7 +49,14 @@ import {
 import { firstSyncPanels, importProgress, onboardingStage } from "./lib/onboarding";
 import { pickSettingsMailbox } from "./lib/mailboxSettings";
 import { folderLabel } from "./lib/utils";
-import { attentionMailbox, ownAddresses, pooledMailboxes, replyRecipients, storageMailbox } from "./lib/mailbox";
+import {
+  attentionMailbox,
+  ownAddresses,
+  pooledMailboxes,
+  removalMailbox,
+  replyRecipients,
+  storageMailbox,
+} from "./lib/mailbox";
 import { keepStorage, readStorageKept, withRemovalMeter } from "./lib/storage";
 import { isSearchActive } from "./lib/searchFilters";
 
@@ -259,8 +266,15 @@ export default function EmailPage() {
     storageStepId: setupStage === "storage" ? selectedAccountId : null,
   });
   // The live store copy of the mailbox of the removal dialog. A disconnect
-  // that takes the mailbox away closes the dialog.
-  const removingAccount = accounts.find((a) => a.id === removingId) ?? null;
+  // that takes the mailbox away closes the dialog. The page shortcuts read
+  // this value, never `removingId` (review round 1).
+  const removingAccount = removalMailbox(accounts, removingId);
+  // The dialog of a mailbox that left the list draws nothing, so its
+  // `onClose` never runs. Clear the id here, or a re-read that brings the
+  // mailbox back would open the dialog again. This is the adjustment of
+  // state during render that React documents. An effect would draw one
+  // stale frame first, and the lint rule `set-state-in-effect` refuses it.
+  if (removingId !== null && removingAccount === null) setRemovingId(null);
   // Prefer the loaded-list message; fall back to an out-of-list message opened
   // by id from a chat card (so "Open in inbox" works from any folder/view).
   const selectedEmail =
@@ -678,7 +692,7 @@ export default function EmailPage() {
           t.tagName === "TEXTAREA" ||
           t.isContentEditable);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || removingId || paletteOpen) return;
+      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || removingAccount || paletteOpen) return;
       // An automation scene (Assistant / Chat / Email Cleaner / …) replaces the
       // inbox panes and owns its own shortcuts — don't act on the background
       // selectedEmail while one is open.
@@ -727,7 +741,7 @@ export default function EmailPage() {
   }, [
     selectedEmail, navigateList, openCompose, handleToolbarAction,
     updateEmail, deleteEmail, composeOpen, showAddModal, noAccounts,
-    disconnecting, editingMailbox, removingId, paletteOpen, automationFeature,
+    disconnecting, editingMailbox, removingAccount, paletteOpen, automationFeature,
   ]);
 
   // Command palette entries (Cmd/Ctrl+K).

@@ -331,6 +331,22 @@ export function storageMailbox<
   return pooledMailboxes(state.accounts).find((a) => free(a) && atStorageLimit(a)) ?? null;
 }
 
+/**
+ * The mailbox of the open removal dialog (EM-T6e), looked up in the list, or
+ * null. A mailbox can leave the list while the dialog is open: another tab
+ * disconnects it, or a re-read drops it. The dialog then draws nothing, and
+ * its `onClose` never runs. So the page shortcuts read this value, never the
+ * raw id, and the page clears an id that names no mailbox (review round 1).
+ * Fence: `email-storage-dialog-leaves` in `allInboxes.test.ts`.
+ */
+export function removalMailbox<T extends { id: string }>(
+  accounts: ReadonlyArray<T>,
+  removingId: string | null,
+): T | null {
+  if (removingId === null) return null;
+  return accounts.find((a) => a.id === removingId) ?? null;
+}
+
 /** The item of the mailbox menu that moves a mailbox in or out of All
  *  inboxes. `nextPooled` is the value that the `PATCH` sends. */
 export interface SeparateToggle {
