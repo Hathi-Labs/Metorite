@@ -3342,7 +3342,8 @@ decision on WS43-Q6, and H-227, D12).**
   `write_artifact` puts `outputs/x` in `outputs/<thread hash>/x` and
   `inputs/x` in `inputs/<thread hash>/x` (`agent_paths.thread_scoped_rel`).
   The store key and the thread come from the run, never from the model. A
-  thread id that names no folder writes nothing. `share_artifact` reads a
+  thread id that names no folder writes nothing. One example is
+  `<agent>:<run id>`, the thread of a batch run with no chat. `share_artifact` reads a
   path the same way, and it shows no loose file (below). A personal agent
   keeps its flat folders.
 - **The container.** The broker mounts `outputs/<thread hash>/` at

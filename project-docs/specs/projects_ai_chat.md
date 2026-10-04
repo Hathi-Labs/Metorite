@@ -4669,6 +4669,12 @@ the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
    wrote that row.
 7. **A personal agent keeps its flat folders.** Its dir holds only the files
    of its member.
+8. **No thread folder, no document.** In a tenant dir, a run writes nothing
+   when its thread id names no folder. The upload route and the broker have
+   the same rule (§22.4 rule 9). One example is a batch run with no chat. A
+   member who assigns a task to an agent starts such a run. The executor
+   names its thread `<agent>:<run id>`. Before H-227, its document
+   went to the shared `outputs/`, where every member could list it.
 
 **Acceptance.** Each item has a test in `tests/unit/test_h227_thread_scope.py`.
 

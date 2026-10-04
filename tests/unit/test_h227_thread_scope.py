@@ -181,9 +181,13 @@ async def test_an_s8_document_of_a_shared_agent_lands_in_the_thread_folder(runs)
 async def test_a_document_with_no_thread_folder_writes_nothing(runs) -> None:
     with bound_run(ORG_A, agent=PA, thread="Thread With Spaces!") as ws:
         out = await _write("report.md")
+    # A batch run with no chat: the executor names its thread "<agent>:<run id>".
+    with bound_run(ORG_A, agent=PA, thread=f"{PA}:{uuid.uuid4()}"):
+        batch = await _write("report.md")
     with bound_run(ORG_A, agent=PA, thread=new_thread()):
         bare = await _write("outputs")
     assert "no thread folder" in out.get("error", ""), out
+    assert "no thread folder" in batch.get("error", ""), batch
     assert "names no file" in bare.get("error", ""), bare
     assert not [p for p in ws.rglob("*") if p.is_file() and p.name != ".cc-instance"]
     assert runs["cards"] == [] and runs["mirrored"] == []
