@@ -2615,6 +2615,26 @@ uv run pytest tests/unit/test_coding_eval_scripts_docker.py -m sandbox_docker -r
 
 The last line needs Docker, and `sandbox-docker.yml` runs it.
 
+**The first try at the sweep (2026-10-05, on `main` at `10ef419d`).**
+
+- **Scripted, no model.** It passed 7 tasks in 8, in WSL on Linux. First the
+  harness needed three fixes, and the README of `evals/coding_engine/` names
+  them. None of them was a product fault.
+- **WS43-E17 fails one rule.** `agent-data/skills/<name>/.metorite-author`
+  holds the email of the skill's author, by the design of PR #603. The
+  hygiene rule of WS43-E16 reads it as member data. The owner must decide
+  which rule changes.
+- **The model sweep is NO-GO at step 3** of "The stack that serves the
+  Router". The local stack holds no provider key. These six names of
+  `.env.example` are unset:
+  - `DEEPSEEK_API_KEY` and `GEMINI_API_KEY`
+  - `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
+  - `OPENROUTER_API_KEY` and `GROQ_API_KEY`
+- **The local model is too slow.** Ollama `qwen3.6:27b` reads about 65
+  tokens a second. The first request of a session is about 34K tokens, so
+  one call takes about 520 seconds. The Console gives a provider call 120
+  seconds, so this model cannot serve the sweep.
+
 ### WS-43w — Projects track step 4: the owner flip for Fracktal 🔲 ▶ **Active (D86)**
 
 **Scope.** Three owner acts on the box, under the gate id `ws43-sandbox-flip`:
