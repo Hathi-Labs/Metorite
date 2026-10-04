@@ -287,7 +287,8 @@ def upload_dir_rel(instance: object, thread_id: object) -> str:
     * A shared agent's tenant dir (``o:<org>``) is one folder for every member
       of the organization. So an upload lands in ``inputs/<thread slug>/``,
       and ``read_attachment`` reads it only in a run of that thread (D12).
-      The session file routes still serve another thread's folder (H-227).
+      Since H-227 the session routes, the file store and the container keep
+      to that folder too.
     * Any other workspace keeps ``inputs/``. A personal agent's dir holds only
       its member's files.
 
