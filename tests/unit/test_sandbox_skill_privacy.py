@@ -22,12 +22,16 @@ Mutations this suite catches (R7), each run red once by hand on 2026-10-05:
   own: the mount test and the Docker test;
 * ``_same_mounts`` ignores the skill set: the reuse test;
 * ``mount_list`` starts a ``projects`` container with no skill cover: the
-  cover test.
+  cover test;
+* ``skill_cover`` lets an ``OSError`` through: the file-system error test;
+* ``_build_skill_cover`` raises when another start renamed its cover first:
+  the two-starts test.
 """
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from orchestrator import sandbox_broker as sb
@@ -151,6 +155,56 @@ def test_a_projects_container_never_starts_with_no_skill_cover(sandbox) -> None:
         sb.prepare_projects_dirs(b)
     with pytest.raises(sb.SandboxRefused, match="cover of the skills"):
         sb.mount_list(b, sandbox.broker.git_cover())
+
+
+def _cover_binding(broker: sb.SandboxBroker) -> sb.RunBinding:
+    with bound_run(ORG_A, agent=PA, thread=new_thread(), member=_X):
+        b = sb.read_run_binding()
+    from dataclasses import replace
+
+    return replace(b, skills=("xs", "ys"))
+
+
+def test_two_starts_that_build_one_cover_at_once_both_get_it(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """The other start renames its cover into place first. This start's
+    rename then fails, and it takes the cover that is there."""
+    broker = sandbox.broker
+    b = _cover_binding(broker)
+    real_rename = os.rename
+    raced = {"done": False}
+
+    def rename_after_the_other(src: Any, dst: Any) -> None:
+        if not raced["done"]:
+            raced["done"] = True
+            monkeypatch.setattr(os, "rename", real_rename)
+            broker._build_skill_cover(b)  # the other start, all the way
+            monkeypatch.setattr(os, "rename", rename_after_the_other)
+            if Path(dst).exists():
+                raise FileExistsError(17, "File exists", str(dst))
+        real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", rename_after_the_other)
+    cover = broker.skill_cover(b)
+    assert raced["done"]
+    assert sorted(os.listdir(cover)) == ["xs", "ys"]
+    assert not [p for p in cover.parent.iterdir() if p.name.startswith(".tmp-")]
+
+
+def test_a_file_system_error_in_the_cover_is_sandbox_unavailable(
+    sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """A FileNotFoundError must not escape as a crash of the tool."""
+    broker = sandbox.broker
+    b = _cover_binding(broker)
+
+    def vanished(*_a: Any, **_k: Any) -> None:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(os, "rename", vanished)
+    with pytest.raises(sb.SandboxUnavailable):
+        broker.skill_cover(b)
 
 
 # ═════════════════════════ the sandbox_docker half ══════════════════════════

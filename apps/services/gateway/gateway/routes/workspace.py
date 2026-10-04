@@ -805,6 +805,13 @@ def _odd_name_form(rel: str) -> bool:
     parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
     if parts and parts[0] not in THREAD_HEADS and parts[0].lower() in THREAD_HEADS:
         return True
+    # The skill rule reads ``agent-data/skills/`` in lower case too (WS-43v).
+    if parts and parts[0].lower() == "agent-data" and (
+        parts[0] != "agent-data" or (
+            len(parts) > 1 and parts[1].lower() == "skills" and parts[1] != "skills"
+        )
+    ):
+        return True
     return any(p.endswith((".", " ")) for p in parts)
 
 
@@ -952,6 +959,62 @@ def _is_loose_path(rel: str, own_slug: str | None) -> bool:
     from acb_skills.agent_paths import is_loose_rel
 
     return is_loose_rel(rel)
+
+
+def _skill_top(rel: str, own_slug: str | None) -> str | None:
+    """The skill folder of *rel* in a shared agent's tenant dir, else ``None``.
+
+    ``None`` (no tenant dir) never matches: a personal agent's own dir holds
+    only its member's skills, and they carry no author marker.
+    """
+    if own_slug is None:
+        return None
+    from acb_skills.agent_paths import skill_top_rel
+
+    return skill_top_rel(rel)
+
+
+def _not_my_skill(workspace: Path, top: str, member: str | None) -> bool:
+    """True unless the skill folder *top* is *member*'s own (WS-43v).
+
+    Another member's folder, an unreadable marker, and a folder with no
+    marker are all not the member's, so the rule fails closed.
+    """
+    from acb_skills.agent_paths import SKILL_MINE, skill_owner
+
+    return skill_owner(workspace, top, member) != SKILL_MINE
+
+
+async def _hide_skill(
+    workspace: Path, top: str, user: UserContext, *, faultin: bool = False,
+) -> bool:
+    """True when a route must answer as if *top* did not exist (WS-43v).
+
+    With *faultin*, a folder with no marker on the disk first gets its marker
+    back from the store, so the author still reads a folder that the disk
+    cache lost. Only the marker comes back, never a file of the folder.
+    """
+    from acb_skills.agent_paths import (
+        SKILL_AUTHOR_MARKER,
+        SKILL_MINE,
+        SKILL_UNCLAIMED,
+        skill_owner,
+    )
+
+    owner = await asyncio.to_thread(skill_owner, workspace, top, user.email)
+    if owner == SKILL_UNCLAIMED and faultin and await _faultin_from_store(
+        workspace, f"{top}/{SKILL_AUTHOR_MARKER}", organization_id=user.organization_id,
+    ):
+        owner = await asyncio.to_thread(skill_owner, workspace, top, user.email)
+    return owner != SKILL_MINE
+
+
+def _hidden_skills(
+    workspace: Path, paths: list[str], own_slug: str | None, member: str | None,
+) -> set[str]:
+    """The skill folders among *paths* that are not *member*'s own. One read per folder."""
+    tops = {t for p in paths if (t := _skill_top(p, own_slug)) is not None}
+    return {t for t in tops if _not_my_skill(workspace, t, member)}
 
 
 def _history_time(row: dict) -> Any:
@@ -1354,13 +1417,20 @@ async def _apply_write_rules(
     address (WS-43v). A sandboxed run loads, and runs the scripts of, only its
     own member's skills.
     """
-    from acb_skills.agent_paths import SKILL_AUTHOR_MARKER, claim_skill, refused_write
+    from acb_skills.agent_paths import (
+        SKILL_AUTHOR_MARKER,
+        SKILL_NAME_RULE,
+        claim_skill,
+        refused_write,
+    )
 
     if rel.rsplit("/", 1)[-1] == SKILL_AUTHOR_MARKER:
         raise HTTPException(status_code=400, detail="That file name is reserved.")
     reason = await asyncio.to_thread(
         refused_write, workspace.resolve(), rel, member=user.email, thread_id=session_id,
     )
+    if reason == SKILL_NAME_RULE:
+        raise HTTPException(status_code=400, detail=f"Refused: {reason}.")
     if reason and "member" in reason:
         raise HTTPException(status_code=403, detail="That skill belongs to another member.")
     if reason:
@@ -1607,6 +1677,12 @@ async def get_workspace_tree(
     files = [f for f in files if not _is_other_thread_path(f.path, own)]
     if own is not None:
         files = await _keep_owned_loose(workspace, files, session_id, _user.organization_id)
+        # WS-43v: a skill folder that is not this member's is not listed, not
+        # even by name.
+        hidden = await asyncio.to_thread(
+            _hidden_skills, workspace, [f.path for f in files], own, _user.email,
+        )
+        files = [f for f in files if _skill_top(f.path, own) not in hidden]
     return WorkspaceTree(session_id=session_id, root=str(workspace), files=files)
 
 
@@ -1644,6 +1720,11 @@ async def get_workspace_file(
     org = _user.organization_id
     own = _own_thread_slug(workspace, session_id, org)
     if _is_other_thread_path(rel, own):
+        raise HTTPException(status_code=404, detail="File not found")
+    # WS-43v: a skill folder that is not this member's answers as absent, and
+    # BEFORE the fault-in, so the store cannot restore it either.
+    top = _skill_top(rel, own)
+    if top is not None and await _hide_skill(workspace, top, _user, faultin=True):
         raise HTTPException(status_code=404, detail="File not found")
     # H-227: a loose file (an S8 document or an upload from before the thread
     # folders) opens only for the session that wrote it. That keeps its old
@@ -2132,6 +2213,10 @@ async def delete_workspace_file(
         workspace, rel, session_id, _user.organization_id,
     ):
         raise HTTPException(status_code=404, detail="File not found")
+    # WS-43v: a skill folder that is not this member's answers as absent.
+    top = _skill_top(rel, own)
+    if top is not None and await _hide_skill(workspace, top, _user):
+        raise HTTPException(status_code=404, detail="File not found")
     # Only allow deletion of files within the visible workspace dirs.
     if not _is_visible_workspace_path(rel):
         raise HTTPException(
@@ -2286,6 +2371,11 @@ async def get_workspace_history(
     own = _own_thread_slug(workspace, session_id, _user.organization_id)
     if path and (_is_other_thread_path(path, own) or _odd_name_form(path)):
         return {"history": []}
+    # WS-43v: no row of a skill folder that is not this member's, not even its
+    # name. The rule reads the folder's marker on the disk.
+    skill = _skill_top(path, own) if path else None
+    if skill is not None and await _hide_skill(workspace, skill, _user):
+        return {"history": []}
     rows = await file_history(
         agent, path, limit, instance=instance,
         organization_id=_user.organization_id,
@@ -2296,6 +2386,11 @@ async def get_workspace_history(
     # another session's versions stay hidden, and a later write of this
     # session on a colleague's file shows nothing either.
     rows = [r for r in rows if not _is_other_thread_path(str(r.get("path") or ""), own)]
+    hidden = await asyncio.to_thread(
+        _hidden_skills, workspace, [str(r.get("path") or "") for r in rows], own,
+        _user.email,
+    )
+    rows = [r for r in rows if _skill_top(str(r.get("path") or ""), own) not in hidden]
     firsts: dict[str, dict | None] = {}
     kept = []
     for r in rows:

@@ -49,6 +49,8 @@ WS-43v (each run red once by hand on 2026-10-05):
 
 * the route lets a write through when ``claim_skill`` finds no member id: the
   route skill test.
+* ``_hide_skill`` answers ``False``, or the tree or the history keeps every
+  row: the Files-routes skill test.
 """
 from __future__ import annotations
 
@@ -451,8 +453,9 @@ def test_a_member_cannot_change_another_members_skill_through_the_routes(
     graph_as_app, disk, monkeypatch,  # noqa: F811
 ) -> None:
     """Review P1 (fix round 1). The first member who writes into a skill
-    folder becomes its author. Another member of the org gets 403 for a PUT,
-    a DELETE or a promote into it, and the author marker is reserved.
+    folder becomes its author. Another member of the org gets 403 for a PUT
+    or a promote into it, and 404 for a DELETE, and the author marker is
+    reserved.
 
     WS-43v: the marker holds the member id, never the address. With no usable
     session secret no member id exists, and the route refuses the write."""
@@ -475,7 +478,8 @@ def test_a_member_cannot_change_another_members_skill_through_the_routes(
     assert "@" not in alice_id
     assert bob.put(f"/agent/workspace/{s2}/file", params={"path": script},
                    json={"content": "import exfil"}).status_code == 403
-    assert bob.delete(f"/agent/workspace/{s2}/file", params={"path": script}).status_code == 403
+    # WS-43v: a DELETE answers as for a missing file, so it shows nothing.
+    assert bob.delete(f"/agent/workspace/{s2}/file", params={"path": script}).status_code == 404
     up = bob.post(f"/agent/workspace/{s2}/upload", files={"files": ("e.py", b"import exfil")})
     assert up.status_code == 200, up.text
     assert bob.post(f"/agent/workspace/{s2}/promote", json={
@@ -491,6 +495,85 @@ def test_a_member_cannot_change_another_members_skill_through_the_routes(
     assert alice.put(f"/agent/workspace/{s1}/file", params={"path": fresh},
                      json={"content": "x"}).status_code == 403
     assert not (_tenant_dir(a) / fresh).exists()
+
+
+@_DB_GATE
+def test_the_files_routes_hide_another_members_skill(
+    graph_as_app, disk, monkeypatch,  # noqa: F811
+) -> None:
+    """WS-43v. Bob, in his own session on the shared agent, gets nothing of
+    Alice's skill: no name in the tree or the history, and a 404 with the
+    body of a missing file from GET, history and DELETE. Alice still gets
+    her own. A folder with no author is hidden from both, and a disk cache
+    that lost Alice's folder never restores it for Bob."""
+    import shutil
+
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "gateway_session_secret", "ws43v-route-secret")
+    a = graph_as_app.org_a
+    s1 = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
+    s2 = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
+    alice, bob = _client(_user(_ALICE, a)), _client(_user(_BOB, a))
+    name = f"chart{uuid.uuid4().hex[:6]}"
+    top = f"agent-data/skills/{name}"
+    for rel, body in ((f"{top}/SKILL.md", "ALICE SKILL TEXT"),
+                      (f"{top}/scripts/plot.py", "print('ALICE CODE')")):
+        made = alice.put(f"/agent/workspace/{s1}/file", params={"path": rel},
+                         json={"content": body})
+        assert made.status_code == 200, made.text
+    missing = f"agent-data/skills/nope{uuid.uuid4().hex[:6]}/SKILL.md"
+
+    def tree(client, sid) -> list[str]:
+        return [f["path"] for f in client.get(f"/agent/workspace/{sid}").json()["files"]]
+
+    def history(client, sid, path=None) -> list[str]:
+        params = {"path": path} if path else {}
+        got = client.get(f"/agent/workspace/{sid}/history", params=params)
+        return [str(r.get("path")) for r in got.json()["history"]]
+
+    # Bob: no name, no bytes, and the answer of a missing file.
+    assert not any(name in p for p in tree(bob, s2))
+    assert not any(name in p for p in history(bob, s2))
+    twin = bob.get(f"/agent/workspace/{s2}/file", params={"path": missing})
+    for rel in (f"{top}/SKILL.md", f"{top}/scripts/plot.py", f"{top}/.metorite-author"):
+        got = bob.get(f"/agent/workspace/{s2}/file", params={"path": rel})
+        assert (got.status_code, got.json()) == (twin.status_code, twin.json()) == (
+            404, {"detail": "File not found"}), rel
+        assert history(bob, s2, rel) == history(bob, s2, missing) == []
+        gone = bob.delete(f"/agent/workspace/{s2}/file", params={"path": rel})
+        gone_twin = bob.delete(f"/agent/workspace/{s2}/file", params={"path": missing})
+        assert (gone.status_code, gone.json()) == (gone_twin.status_code, gone_twin.json())
+    assert (_tenant_dir(a) / top / "SKILL.md").read_text() == "ALICE SKILL TEXT"
+
+    # Alice: her own skill, through every read route.
+    assert {f"{top}/SKILL.md", f"{top}/scripts/plot.py"} <= set(tree(alice, s1))
+    assert alice.get(f"/agent/workspace/{s1}/file",
+                     params={"path": f"{top}/SKILL.md"}).text == "ALICE SKILL TEXT"
+    assert f"{top}/SKILL.md" in history(alice, s1, f"{top}/SKILL.md")
+
+    # A folder with files and no author: hidden from both, and no one takes it.
+    bare = f"agent-data/skills/bare{uuid.uuid4().hex[:6]}"
+    (_tenant_dir(a) / bare).mkdir(parents=True)
+    (_tenant_dir(a) / bare / "SKILL.md").write_text("NO AUTHOR", encoding="utf-8")
+    for client, sid in ((alice, s1), (bob, s2)):
+        assert not any(bare in p for p in tree(client, sid))
+        assert client.get(f"/agent/workspace/{sid}/file",
+                          params={"path": f"{bare}/SKILL.md"}).status_code == 404
+        assert client.put(f"/agent/workspace/{sid}/file", params={"path": f"{bare}/x.md"},
+                          json={"content": "mine now"}).status_code == 403
+    assert not (_tenant_dir(a) / bare / ".metorite-author").exists()
+
+    # The disk cache lost Alice's folder. Bob's GET restores nothing of it.
+    shutil.rmtree(_tenant_dir(a) / top)
+    got = bob.get(f"/agent/workspace/{s2}/file", params={"path": f"{top}/SKILL.md"})
+    assert got.status_code == 404
+    assert not (_tenant_dir(a) / top / "SKILL.md").exists()
+    # Alice's GET brings back her marker and then her file.
+    got = alice.get(f"/agent/workspace/{s1}/file", params={"path": f"{top}/SKILL.md"})
+    assert got.status_code == 200 and got.text == "ALICE SKILL TEXT"
+    assert bob.get(f"/agent/workspace/{s2}/file",
+                   params={"path": f"{top}/SKILL.md"}).status_code == 404
 
 
 @_DB_GATE
