@@ -28,7 +28,7 @@ Mutations this suite catches (R7):
 * the sink awaits the run inline again: the assignment waits for the agent,
   and the closing row exists before ``on_event`` returns;
 * the run is started without the event's tenant: the run is refused
-  (``RunWorkspaceRefused``) and the closing row says so;
+  (``RunWorkspaceRefused``) and the closing row is a failure;
 * the ``PROJECTS_AGENT_DISPATCH`` check removed: with the flag OFF the run
   starts anyway, and the OFF test sees a model call and a "started" row.
 

@@ -652,15 +652,18 @@ def test_a_long_reply_is_cut_at_the_limit(monkeypatch, db, project):
 
 
 @pytest.mark.parametrize("error, detail", [
-    (RuntimeError("the model is down"), "the model is down"),
-    # An exception with no message still says what failed.
+    (RuntimeError("SELECT * FROM pm_tasks failed at http://127.0.0.1:4000/v1"),
+     "SELECT * FROM pm_tasks failed at http://127.0.0.1:4000/v1"),
+    # An exception with no message still says what failed, in the log.
     (RuntimeError(), "RuntimeError"),
 ])
 def test_a_failed_run_closes_the_handoff_and_logs_a_warning(
     monkeypatch, db, project, error, detail,
 ):
     """The 'keys' failure was a timeline row on a task nobody opened, and no
-    log line. A failure now writes both."""
+    log line. A failure now writes both. The member reads the exception's type
+    and a fixed sentence. The text, which can carry SQL or an internal URL,
+    goes to the WARNING log only."""
     bind_db(monkeypatch, db, (agent_dispatch,))
     log = _Log()
     monkeypatch.setattr(agent_dispatch, "_log", log)
@@ -672,7 +675,10 @@ def test_a_failed_run_closes_the_handoff_and_logs_a_warning(
     run(_dispatch(_assigned(project.task.id, ["agent:researcher"])))
     last = db.activities("agent_run")[-1]
     assert last["meta"]["state"] == "failed"
-    assert last["body"] == f"Agent run failed: {detail}"
+    assert last["body"] == (
+        f"Agent run failed (RuntimeError). {agent_dispatch.FAILED_HINT}"
+    )
+    assert "SELECT" not in last["body"] and "127.0.0.1" not in last["body"]
     [(event, fields)] = log.warnings
     assert event == "projects.agent_dispatch_failed"
     assert fields["error"] == detail and fields["task_id"] == str(project.task.id)
@@ -781,6 +787,50 @@ def test_off_in_a_paused_project_stays_silent(monkeypatch, db, project):
     monkeypatch.setattr(agent_dispatch, "is_runnable_with_ancestors", paused)
     run(_dispatch(_assigned(project.task.id, ["agent:a"])))
     assert db.activities("agent_run") == []
+
+
+# ── A restart during a run ──────────────────────────────────────────────────
+
+
+def test_a_cancelled_run_closes_its_row_and_stays_cancelled(monkeypatch, db, project):
+    """A restart cancels the run. CancelledError is not an Exception, so
+    without its own clause the "started" row stayed open for ever. The run
+    writes "interrupted by a restart", and the task still ends cancelled."""
+    bind_db(monkeypatch, db, (agent_dispatch,))
+    entered = asyncio.Event()
+
+    async def run_agent(agent, payload, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()  # a run that never ends by itself
+
+    _executor(monkeypatch, run_agent)
+
+    async def go() -> bool:
+        await agent_dispatch.on_event(
+            "projects", "pm.task.assigned",
+            _assigned(project.task.id, ["agent:researcher"]),
+        )
+        [task] = list(agent_dispatch._RUNS)
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        await asyncio.wait_for(agent_dispatch.stop_runs(), timeout=10)
+        return task.cancelled()
+
+    assert run(go()) is True, "the cancellation was swallowed"
+    rows = [(a["meta"]["state"], a["body"]) for a in db.activities("agent_run")]
+    assert rows[-1] == (
+        "failed", f"Agent run failed: {agent_dispatch.INTERRUPTED_DETAIL}",
+    ), rows
+    assert not agent_dispatch._RUNS
+
+
+def test_the_gateway_stops_the_runs_on_shutdown():
+    """The lifespan's shutdown half calls `stop_runs`, before the audit drain."""
+    from pathlib import Path
+
+    main = Path(agent_dispatch.__file__).resolve().parents[2] / "main.py"
+    src = main.read_text(encoding="utf-8")
+    assert "agent_dispatch import stop_runs" in src
+    assert src.index("await stop_runs()") < src.index("await drain_audit()")
 
 
 async def _noop() -> None:

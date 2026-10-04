@@ -60,6 +60,7 @@ handoff row, starts one task per agent, and returns.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Coroutine
 from typing import Any
 
@@ -105,6 +106,19 @@ DISPATCH_FLAG = "PROJECTS_AGENT_DISPATCH"
 DISABLED_BODY = (
     "Assigning work to an AI agent is not switched on for this workspace."
 )
+
+#: The fixed half of a failed row. The exception's text can carry SQL or an
+#: internal URL, so it goes to the WARNING log, and the member reads only the
+#: exception's type and this sentence.
+FAILED_HINT = (
+    "The details are in the gateway log. Assign the task again to retry."
+)
+
+#: The closing row of a run that a restart cancelled.
+INTERRUPTED_DETAIL = "interrupted by a restart"
+
+#: How long a cancelled run may take to write its closing row.
+INTERRUPTED_WRITE_SECONDS = 5.0
 
 #: The longest reply the closing timeline row keeps.
 REPLY_LIMIT = 2000
@@ -198,6 +212,21 @@ def _start(run: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
     _RUNS.add(task)
     task.add_done_callback(_RUNS.discard)
     return task
+
+
+async def stop_runs(timeout: float = INTERRUPTED_WRITE_SECONDS + 1.0) -> None:
+    """Cancel every run this sink started, and wait briefly for each to close.
+
+    The gateway lifespan calls this on shutdown. Each cancelled run writes its
+    "interrupted by a restart" row before it ends, so no task keeps a
+    "started" row that nothing closes. Bounded, so a wedged database cannot
+    hold the shutdown open.
+    """
+    runs = list(_RUNS)
+    for task in runs:
+        task.cancel()
+    if runs:
+        await asyncio.wait(runs, timeout=timeout)
 
 
 async def wait_for_runs() -> None:
@@ -363,6 +392,23 @@ async def _run_and_record(
             ),
             timeout=AGENT_RUN_TIMEOUT_SECONDS,
         )
+    except asyncio.CancelledError:
+        # A restart, or `stop_runs`. CancelledError is not an Exception, so
+        # without this clause the "started" row stays open for ever. The write
+        # is shielded and bounded, and the cancellation is re-raised.
+        _log.warning(
+            "projects.agent_dispatch_failed", task_id=task_id, agent=agent,
+            error=INTERRUPTED_DETAIL,
+        )
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.wait_for(
+                asyncio.shield(_record_outcome(
+                    task_id, agent, organization_id,
+                    ok=False, detail=INTERRUPTED_DETAIL,
+                )),
+                timeout=INTERRUPTED_WRITE_SECONDS,
+            )
+        raise
     except TimeoutError:
         _log.warning(
             "projects.agent_dispatch_failed", task_id=task_id, agent=agent,
@@ -373,13 +419,15 @@ async def _run_and_record(
         )
         return
     except Exception as exc:
-        detail = (str(exc) or type(exc).__name__)[:300]
+        kind = type(exc).__name__
+        # The detail is for the operator. The member reads the type only.
         _log.warning(
             "projects.agent_dispatch_failed", task_id=task_id, agent=agent,
-            error=detail, error_type=type(exc).__name__,
+            error=(str(exc) or kind)[:300], error_type=kind,
         )
         await _record_outcome(
-            task_id, agent, organization_id, ok=False, detail=detail,
+            task_id, agent, organization_id, ok=False, detail="",
+            body=f"Agent run failed ({kind}). {FAILED_HINT}",
         )
         return
     reply = reply_text(result).strip()
@@ -391,14 +439,18 @@ async def _run_and_record(
 
 async def _record_outcome(
     task_id: str, agent: str, organization_id: str, *, ok: bool, detail: str,
+    body: str | None = None,
 ) -> None:
+    """Write the closing row. ``body`` replaces the text built from ``detail``."""
+    if body is None:
+        body = detail if ok else f"Agent run failed: {detail}"
     try:
         async with _tenant_session(organization_id) as db:
             await record_activity(
                 db, activity_type="agent_run",
                 created_by=f"{AGENT_PREFIX}{agent}",
                 task_id=task_id,
-                body=detail if ok else f"Agent run failed: {detail}",
+                body=body,
                 meta={"agent": agent, "state": "finished" if ok else "failed"},
             )
     except Exception as exc:  # pragma: no cover — the outcome write is best-effort
