@@ -132,6 +132,38 @@ All providers implement the `BaseEmailProvider` abstract interface:
      once. While it is open, the budget counts nothing and the call runs,
      also in `enforce`. The cap still binds.
 
+8. **The Gmail parse (WS-17 EM-G2, D-EM-33).** `GmailProvider.get_message` is
+   the one caller of `_parse_gmail_message`. The sweep, the deep sync, the body
+   backfill and the gateway reads all reach the parse through it. Fence:
+   `tests/unit/test_gmail_parse.py`, with the fixtures in
+   `tests/unit/fixtures/gmail/`.
+   - `_iter_gmail_parts` is the one walk of the MIME tree. The attachment list
+     and the body walk use it. Do not add a second walk.
+   - The body walk reads the tree at any depth. It takes the first
+     `text/plain` part and the first `text/html` part, and it skips each file.
+     A single-part HTML mail fills `body_html` only, as Outlook does.
+   - Each part decodes with the charset of its `Content-Type`, else UTF-8. A
+     sender picks the charset, so a codec that raises falls back to UTF-8 too.
+     A raise fails the parse, and `list_messages` then skips the mail.
+   - A part with a file name, a part with the disposition `attachment` and a
+     `message/*` part are files. The body walk skips them.
+   - `_parse_headers` keys each header by its lower-case name. Read a header
+     by that name.
+   - `internet_message_id` is the `Message-ID` value, trimmed. It keeps its
+     angle brackets and its case, the form of Graph, because
+     `automation/identity.py` compares the column with `=`.
+   - `_split_addresses` runs `getaddresses` with `strict=False` on the raw
+     text of each address header. The strict parser drops a whole list for
+     one stray comma. The encoded words of each name decode after the split.
+   - A list leaves out each entry with no `@`. When the first entry of
+     `From` has no `@`, the address is the text inside the angle brackets.
+   - The system labels set the folder: `TRASH`, `SPAM`, `DRAFT`, `SENT`,
+     `INBOX`, else `archive`. A user label never sets it (O-GM-1). The user
+     labels go to `categories`.
+   - `list_messages` keeps the folder of the parse, and `canonical_override`
+     never sets it. The folder key `archive` pages with `GMAIL_ARCHIVE_QUERY`
+     and sends no `labelIds`.
+
 ## Inbound SMTP Server
 
 `inbound.py` runs an aiosmtpd SMTP server that accepts inbound emails and persists

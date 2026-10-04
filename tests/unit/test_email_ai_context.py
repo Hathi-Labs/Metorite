@@ -148,8 +148,8 @@ def _mail(admin, *, org: str, account: str, frm: str, to: tuple = (),
 
 
 def _message_id() -> str:
-    """A Message-ID. The seed writes it by hand. In production only the
-    Outlook provider stores one (§11.6 edge case 26)."""
+    """A Message-ID. The seed writes it by hand. In production Outlook stores
+    one, and Gmail does too since WS-17 EM-G2 (§11.6 edge case 26)."""
     return f"<{uuid.uuid4().hex}@outlook.test>"
 
 
@@ -158,9 +158,10 @@ def _sent_by_b(f, *, to: tuple, subject: str = "From B",
     """A mail that the member really sent from mailbox B to mailbox A.
 
     B's Sent copy and A's inbox copy share one ``internet_message_id``, which
-    is the proof ``identity.proven_own_send`` reads. Only the Outlook provider
-    stores that column, so in production the proof exists only between two
-    Outlook mailboxes. Returns the id of the copy in A, and the Message-ID."""
+    is the proof ``identity.proven_own_send`` reads. Outlook stores that
+    column, and Gmail does too since WS-17 EM-G2. IMAP stores none. EM-G9
+    proves the Gmail and Outlook pair. Returns the id of the copy in A, and
+    the Message-ID."""
     imid = _message_id()
     _mail(f.admin, org=f.org, account=f.b, frm=f.b_addr, to=to, folder="sent",
           subject=subject, thread=thread, imid=imid)

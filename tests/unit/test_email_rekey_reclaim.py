@@ -33,6 +33,12 @@ R7 fences named here:
   ``reclaim=True``, and the moved mail keeps one row. It fails when a later
   edit wraps the provider, or branches the deep path to ``False``.
 
+* ``gmail-parse-reclaim`` (R8, WS-17 EM-G2): the real Gmail parse of a
+  fixture fills ``internet_message_id``, so the gate now meets real values.
+  Two copies of one mail, each with its own Gmail id, go through
+  ``scheduler._write_messages`` with the attribute of Gmail, and they keep
+  two rows over two syncs.
+
 ⚠️ Known limit EM-G1-f1, recorded in §12.3.1 and NOT proved correct here: the
 Outlook reclaim folds a mail that a member sends to their own address. The
 Sent Items copy and the Inbox copy have two Graph ids and one Message-ID, so
@@ -52,6 +58,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -401,6 +408,81 @@ class TestTheReclaimGate:
             assert sorted(rows.values()) == [
                 (f"d-1-{tag}", "inbox"), (f"d-2-{tag}", "archive")], (
                 "an upsert with no keyword moved a row")
+        finally:
+            _wipe(p.admin_engine, [x])
+
+
+# ── R8: the real Gmail parse meets the gate (WS-17 EM-G2) ───────────────────
+
+_GMAIL_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "gmail"
+
+
+def _parsed_gmail(name: str, *, pmid: str, labels: list[str]) -> EmailMessage:
+    """The real parse of one EM-G2 fixture, under a Gmail id of its own."""
+    raw = json.loads((_GMAIL_FIXTURES / name).read_text(encoding="utf-8"))
+    raw["id"] = raw["threadId"] = pmid
+    raw["labelIds"] = labels
+    return GmailProvider({"access_token": "x"})._parse_gmail_message(raw)
+
+
+def _message_ids(admin, account_id: str) -> dict[str, str | None]:
+    """The stored Message-ID of each row, by provider id."""
+    with admin.connect() as c:
+        got = c.execute(text(
+            "SELECT provider_message_id, internet_message_id "
+            "FROM email_messages WHERE account_id = CAST(:a AS uuid)"),
+            {"a": account_id}).fetchall()
+    return {r.provider_message_id: r.internet_message_id for r in got}
+
+
+@_DB_GATE
+class TestTheGmailParseMeetsTheGate:
+    """``gmail-parse-reclaim`` (§12.3.2 fences, R8)."""
+
+    async def test_two_parsed_gmail_fixtures_with_one_message_id_write_two_rows(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """One mail reaches a Gmail mailbox twice: once direct and once
+        through a list. Gmail gives each copy its own id, and both carry one
+        Message-ID. Before EM-G2 the parse set no Message-ID, so the gate of
+        EM-G1 never met a Gmail value. Now the real parse of fixture (a)
+        fills it, and ``_write_messages`` with the attribute of Gmail keeps
+        two rows, with no swap of ids on the second sync."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        tag = uuid.uuid4().hex[:8]
+        x = _account(p.admin_engine, org=p.org_b, provider="gmail",
+                     owner=f"gp-{tag}@em-g2.test")
+        direct = _parsed_gmail("a_mixed_alternative_pdf.json",
+                               pmid=f"gp-direct-{tag}", labels=["INBOX"])
+        via_list = _parsed_gmail("a_mixed_alternative_pdf.json",
+                                 pmid=f"gp-list-{tag}",
+                                 labels=["CATEGORY_FORUMS", "INBOX"])
+        imid = direct.internet_message_id
+        assert imid == "<CAKx7Qm1+A9zBq=Ef4@mail.example.org>"
+        assert via_list.internet_message_id == imid
+        floor = datetime(2000, 1, 1, tzinfo=UTC)
+
+        async def _one_sync() -> None:
+            """Phase (c) of one sync: one block, the one write of the sweep."""
+            async with core._tenant_session(p.org_b) as db:
+                await sched._write_messages(
+                    db, x, [direct, via_list], floor,
+                    reclaim=GmailProvider.REKEYS_MESSAGE_IDS)
+
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                await _one_sync()
+                first = _rows(p.admin_engine, x)
+                await _one_sync()
+                second = _rows(p.admin_engine, x)
+            assert len(first) == 2, (
+                "two Gmail copies with one Message-ID folded into one row")
+            assert sorted(first.values()) == [
+                (f"gp-direct-{tag}", "inbox"), (f"gp-list-{tag}", "inbox")]
+            assert second == first, "a row swapped its provider id on a sync"
+            assert _message_ids(p.admin_engine, x) == {
+                f"gp-direct-{tag}": imid, f"gp-list-{tag}": imid}
         finally:
             _wipe(p.admin_engine, [x])
 

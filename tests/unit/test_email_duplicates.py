@@ -36,8 +36,9 @@ R7 fences named here:
 The UI half, ``email-also-in-row``, is in
 ``workbench/control_plane/src/app/email/lib/alsoIn.test.ts``.
 
-⚠️ Known limit: only the Outlook provider stores ``internet_message_id``, so
-the seeds write the column by hand, as an Outlook sync does.
+⚠️ The seeds write ``internet_message_id`` by hand, as an Outlook sync does.
+Since WS-17 EM-G2 the Gmail parse stores it too. EM-G9 adds Gmail rows from
+the real parse of an EM-G2 fixture (spec §12.3.11). IMAP stores none.
 
 **R8.** The real SQL against the phase-4-promoted two-org catalog of
 ``test_h3_rls_promotion_rehearsal``, as the role ``acb_app_h3rls``

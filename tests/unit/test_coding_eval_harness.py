@@ -347,3 +347,64 @@ def test_the_eval_declines_every_card(
     [call] = record["sessions"][0]["tool_calls"]
     assert call["name"] == "create_personal_task" and "Cancelled" in call["result"]
     assert [q for q in harness.stub.stub.requests if q.method != "GET"] == []
+
+
+# ── 5. the harness meets the broker as the product does (2026-10-05) ────────
+
+
+def test_the_preflight_waits_for_the_first_docker_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``covers()`` fails closed until the probe answers, so the runner must await it.
+
+    Without the wait, the scripted sweep skipped every task on a healthy box.
+    """
+    from orchestrator import sandbox_broker
+
+    calls: list[str] = []
+
+    class _Broker:
+        async def probe_docker(self) -> bool:
+            calls.append("probe")
+            return True
+
+    monkeypatch.setattr(sandbox_broker, "get_broker", lambda: _Broker())
+    asyncio.run(P.warm_broker())
+    assert calls == ["probe"]
+
+
+def test_a_failed_probe_does_not_stop_the_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    from orchestrator import sandbox_broker
+
+    class _Broker:
+        async def probe_docker(self) -> bool:
+            raise OSError("no docker")
+
+    monkeypatch.setattr(sandbox_broker, "get_broker", lambda: _Broker())
+    asyncio.run(P.warm_broker())  # the gate after it reports the broker state
+
+
+def test_the_agent_dir_carries_the_agent_name(harness: R.Harness) -> None:
+    """The executor names the tenant dir after ``agent_dir.name``.
+
+    The broker refuses a working dir that is not ``state/<agent name>/<key>``,
+    so a run from ``apps/agents/agent-projects`` got no sandbox tools.
+    """
+    ctx = R._LoadedCtx(harness)
+    assert ctx.agent_dir.name == R.AGENT
+    assert (ctx.agent_dir / "config.json").is_file()
+    assert ctx.agent_dir.parent == harness.state_root / "repos"
+
+
+def test_upload_per_thread(harness: R.Harness) -> None:
+    """H-227: a tenant dir keeps an upload in ``inputs/<thread slug>/``."""
+    from acb_skills.agent_paths import thread_slug
+
+    threads = ["1b0c3a52-2f43-4d1e-9a51-0c6f3f6d8e01", "2c1d4b63-3054-4e2f-8b62-1d7f4f7e9f12"]
+    targets = R.input_targets(harness, "inputs/parts_upload.csv", threads)
+    assert targets == [f"inputs/{thread_slug(t)}/parts_upload.csv" for t in threads]
+    assert R.input_targets(harness, "agent-data/notes.md", threads) == ["agent-data/notes.md"]
+
+    workspace = asyncio.run(R.reset_workspace(harness, T.by_id("WS43-E13"), threads[:1]))
+    assert (workspace / targets[0]).is_file()
+    assert not (workspace / "inputs" / "parts_upload.csv").exists()

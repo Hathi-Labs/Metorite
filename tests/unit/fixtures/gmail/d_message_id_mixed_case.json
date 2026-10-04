@@ -1,0 +1,62 @@
+{
+  "id": "1925a0b1c2d3e4f5",
+  "threadId": "1925a0b1c2d3e4f5",
+  "labelIds": [
+    "SENT"
+  ],
+  "snippet": "Confirmed for Friday at ten. Asha",
+  "payload": {
+    "partId": "",
+    "mimeType": "text/plain",
+    "filename": "",
+    "headers": [
+      {
+        "name": "Delivered-To",
+        "value": "asha@example.com"
+      },
+      {
+        "name": "Received",
+        "value": "by 2002:a05:7300:5b1a:b0:12a:3c4d:5e6f with SMTP id x9csp1234567; Thu, 03 Oct 2024 08:41:09 +0100"
+      },
+      {
+        "name": "MIME-Version",
+        "value": "1.0"
+      },
+      {
+        "name": "From",
+        "value": "Asha Rao <asha@example.com>"
+      },
+      {
+        "name": "Date",
+        "value": "Thu, 03 Oct 2024 08:41:09 +0100"
+      },
+      {
+        "name": "Message-Id",
+        "value": "<5F2C9A1B-77D3-4E0A-9C1B-AbCdEf012345@example.com>"
+      },
+      {
+        "name": "Subject",
+        "value": "Re: Site visit"
+      },
+      {
+        "name": "To",
+        "value": "Ravi Kumar <ravi@example.org>"
+      },
+      {
+        "name": "Content-Type",
+        "value": "text/plain; charset=us-ascii"
+      },
+      {
+        "name": "Content-Transfer-Encoding",
+        "value": "7bit"
+      }
+    ],
+    "body": {
+      "size": 36,
+      "data": "Q29uZmlybWVkIGZvciBGcmlkYXkgYXQgdGVuLg0KQXNoYQ0K"
+    }
+  },
+  "sizeEstimate": 4096,
+  "historyId": "2817501",
+  "internalDate": "1727941269000"
+}

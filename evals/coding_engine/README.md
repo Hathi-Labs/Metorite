@@ -4,9 +4,35 @@ This folder holds the eval of WS-43v. It runs eight Projects coding tasks
 against projects-assistant and checks each result. The owning spec is
 `project-docs/specs/maf_coding_engine.md`, the WS-43v slice and §16 (D86).
 
-**Status.** The harness and the checkers are built. The full sweep waits on
-WS-43d (PR #603, the sandbox tools) and WS-43u (the instructions). Until both
-merge, the runner reports each task as SKIPPED. A skip is never a pass.
+**Status.** The harness and the checkers are built, and `main` holds WS-43d
+and WS-43u. On 2026-10-05 the scripted run passed 7 tasks in 8 on Linux.
+WS43-E17 fails one hygiene rule (see "The author marker" below). The model
+sweep is NO-GO at step 3 of WS-43a: the local stack has no provider key.
+
+## Three harness fixes (2026-10-05)
+
+The first scripted run on a box with Docker skipped every task. Three faults
+in the harness caused it. None of them was a product fault.
+
+1. **The broker probe.** `covers()` stays false until the first Docker probe
+   answers, and the broker only starts that probe. The runner asked before it
+   waited for anything. Now `preflight.warm_broker()` waits for the probe.
+2. **The agent dir name.** The executor names the tenant dir after the name
+   of the agent dir. The loader clones the agent as `projects-assistant`, but
+   the harness gave the repo dir `agent-projects`. The broker then refused
+   the working dir. Now `run.clone_agent()` copies the agent dir to
+   `<clone root>/repos/projects-assistant`.
+3. **The upload folder (H-227).** A tenant dir keeps an upload in
+   `inputs/<thread slug>/`. The harness put the CSV of WS43-E13 in
+   `inputs/`. Now `run.input_targets()` puts it in the folder of each thread.
+
+## The author marker
+
+Since PR #603, the file `agent-data/skills/<name>/.metorite-author` holds the
+email of the member who made the skill. The design needs it: a run loads only
+the skills of its own member. The hygiene rule of WS43-E16 reads that email as
+member data, so WS43-E17 fails on every run. The owner must decide which rule
+changes. The harness does not decide it.
 
 ## The files
 
@@ -124,9 +150,22 @@ for NO-GO, and 3 when the runner skipped a task and no task failed.
 | Test | What it proves | Where it runs |
 |---|---|---|
 | `tests/unit/test_coding_eval_checkers.py` | WS43-F11. Each checker passes a right output and fails a wrong one | The unit job |
-| `tests/unit/test_coding_eval_harness.py` | The stub keeps the HR gate. The preflight never passes a run that it cannot judge. Scripted runs through the real executor skip, pass or fail as they must. The eval declines every card | The unit job |
+| `tests/unit/test_coding_eval_harness.py` | The stub keeps the HR gate. The preflight never passes a run that it cannot judge. Scripted runs through the real executor skip, pass or fail as they must. The eval declines every card. The three harness fixes of 2026-10-05 hold | The unit job |
 | `tests/unit/test_coding_eval_scripts_docker.py` | Each known-good sequence runs in the coding image with no network, and its checker passes | `sandbox-docker.yml` |
 
 ⚠️ **Docker Desktop on Windows.** A bind mount of a host dir can fail with
 "input/output error". Then the Docker test fails on the dev box, and passes
 on the Linux runner. PR #603 met the same limit.
+
+⚠️ **Two more Windows limits (2026-10-05).**
+
+1. **The path length.** A run makes `outputs/<thread slug>/<thread slug>`
+   below the state root. Below the default `results/` dir, a path passes 260
+   characters. Then a write fails with "The filename or extension is too
+   long". Give `--out` a short dir, for example `--out C:/e43/run1`.
+2. **The broken drive share.** On the box of 2026-10-05, each bind mount of a
+   dir on drive C failed with "input/output error". `/mnt/c` failed in WSL
+   too. A dir in the Linux file system of a WSL distro mounts correctly.
+   So run the eval in WSL, on a copy of the tree in that file system. A
+   restart of Docker Desktop can repair the share, but it stops each
+   container on the box.
