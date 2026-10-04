@@ -4072,6 +4072,14 @@ fault-in reads the blob row. The rules that follow come from that path.
 
 `test_an_old_document_opens_for_its_own_tenant_only` proves the first two.
 
+✅ **H-227 narrows the first rule to the thread (2026-10-04, §22.9).** A
+document of the Projects chat now goes to its thread's own folder,
+`outputs/<thread slug>/`, and only a session of that thread lists or opens
+it. A document from before H-227 lies in the flat `outputs/`. Its old link
+opens only for the session that the blob history shows wrote those bytes.
+The row can be the tenant row or the older `''` row. Any other member of
+the tenant gets 404, and the fault-in writes nothing for them.
+
 **The email follow-ups of the part 2 review.**
 
 1. (P1) `load_artifact_attachments` fails closed. One refused ref fails the
@@ -4578,10 +4586,10 @@ at the timeout" is the mutation that turns red.
   the headers, the footers, the footnotes or the comments.
 - A scanned PDF has no text layer, so it reads as pages with no text. The
   tool runs no OCR.
-- Only this tool keeps to the thread folder of `inputs/`. The workspace
-  tree, the file, history and delete routes, the sandbox file store and the
-  container mount still reach the `inputs/` folder of another thread.
-  WS-43d gave `outputs/` that rule. H-227 carries `inputs/`.
+- ✅ H-227 closed this gap on 2026-10-04 (§22.9). Before it, only this tool
+  kept to the thread folder of `inputs/`. The workspace routes, the sandbox
+  file store and the container mount reached the `inputs/` folder of another
+  thread.
 - The browser message still names `read_file`. The instructions name the
   right tool.
 - A team agent keeps the flat `inputs/`.
@@ -4598,3 +4606,138 @@ uv run pytest tests/unit/test_read_attachment.py \
 
 The `-rs` output must show no skip, except the Windows-only skips of the
 sandbox suite.
+
+### 22.9 H-227 — the uploads and the documents of one thread
+
+**Status: BUILT 2026-10-04, in review.** HANDOFF H-227. It is a
+prerequisite of the owner flip WS-43w (`maf_coding_engine.md` §16.3).
+
+**The gap.** Every session of projects-assistant in one organization opens
+the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
+
+1. `write_artifact` put an S8 document in the shared `outputs/`. So any
+   member of the organization could list and open it from a session of
+   their own.
+2. An upload went to `inputs/<thread slug>/` (§22.3). But the workspace
+   routes, `TenantFileStore` and the container still reached the upload
+   folder of another thread.
+
+**What H-227 builds.**
+
+1. **One slug rule, one folder rule.** `agent_paths.thread_slug` names both
+   folders of a thread, through `thread_outputs_rel` and the new
+   `thread_inputs_rel`. `upload_dir_rel` builds on it. `is_other_thread_rel`
+   now covers `inputs/` and `outputs/`. So each reader and writer that asks
+   it refuses the upload folder of another thread too. `is_loose_rel` names
+   a file in `inputs/` or `outputs/` but in no thread folder.
+2. **The S8 documents.** In a tenant dir, `write_artifact` puts `outputs/x`
+   in `outputs/<thread slug>/x` and `inputs/x` in `inputs/<thread slug>/x`
+   (`thread_scoped_rel`). The card and the link name that path. A thread id
+   that names no folder writes nothing. `share_artifact` reads a path the
+   same way, and it shows no loose file.
+3. **The routes.** The tree, file, history, PUT, DELETE and promote routes
+   apply the rule to a session of a shared agent. They serve it only the two
+   folders of its thread. The room check of today stays.
+4. **The old links.** A loose file opens only for the session that wrote
+   it (rule 2).
+5. **The file store.** `TenantFileStore` maps `inputs/` to
+   `inputs/<thread slug>/`, as it maps `outputs/`.
+6. **The container.** The broker mounts `inputs/<thread slug>/` at
+   `/workspace/inputs/`, read-only, over the shared `inputs/`.
+7. **One filter.** `acb_memory.file_history` takes a `session_id`, so the
+   routes read only the rows of the session.
+
+**Rules.**
+
+1. **The run or the path names the tenant dir.** `write_artifact` takes the
+   store key `o:<org>` and the thread from the run. The routes tell a tenant
+   dir from its path and the caller's tenant. Nothing reads the
+   `.cc-instance` marker.
+2. **The history rule of a loose file.** A row must name this session and
+   the sha256 of the bytes on disk, and its action must write
+   (`workspace._session_wrote`). An upload, an edit in the file manager and
+   a document of the run all count. `read_attachment` keeps its narrower
+   form of the rule, an upload only (§22.4 rule 10).
+3. **Both store keys.** The routes read the tenant key `o:<org>` and the
+   older `''` rows of the tenant (§21.15), in the caller's tenant.
+4. **The fault-in checks first.** For a loose file, it checks the stored
+   bytes before it writes them. A refused file never reaches the disk.
+5. **One answer.** A loose file of another session, a new loose path and a
+   folder of another thread all answer 404. So no answer tells a member
+   which loose file exists.
+6. **The history route** shows a row of a loose file only when this session
+   wrote that row.
+7. **A personal agent keeps its flat folders.** Its dir holds only the files
+   of its member.
+
+**Acceptance.** Each item has a test in `tests/unit/test_h227_thread_scope.py`.
+
+1. Alice uploads through the real route, and her run writes a document
+   through the real `write_artifact`. Bob is in the same organization, with
+   his own session of the same agent. He cannot list, open, change, delete or
+   promote either file, and he cannot read its history (R8). The fault-in
+   restores nothing for him.
+2. An old flat document opens for the session of Alice that wrote it. That
+   is true for the tenant row and for the older `''` row. It opens for nobody
+   else (R8). Other bytes at that path open for nobody.
+3. An old flat upload opens and promotes only in its own thread (R8).
+4. A rewritten `.cc-instance` marker does not switch the rule off (R8).
+5. `write_artifact` writes into the thread folder, and the card and the link
+   name that path. A thread id that names no folder writes nothing.
+6. `share_artifact` shows only the folders of the chat.
+7. `TenantFileStore` reads and lists only the uploads of its own thread.
+8. The fake Docker mounts only the uploads of the thread, read-only. On the
+   coding image, Bob's container sees none of Alice's uploads and no loose
+   file (`sandbox_docker`).
+9. A personal agent keeps its flat folders.
+
+**Mutations.** Each mutation below turned at least one test red, on
+2026-10-04.
+
+| Mutation | Tests that fail |
+|---|---|
+| `is_other_thread_rel` checks `outputs/` only | 3 |
+| `write_artifact` writes the flat `outputs/` again | 9 |
+| `share_artifact` takes a path as it is again | 1 |
+| `share_artifact` shows a loose file | 1 |
+| `TenantFileStore` maps `inputs/` to the shared `inputs/` | 2 |
+| the broker drops the upload cover | 2 |
+| the upload cover is writable | 2 |
+| the tree route drops the loose rule | 4 |
+| the file route drops the loose rule | 4 |
+| the fault-in writes before the history check | 2 |
+| the history route drops the loose rule | 2 |
+| the DELETE route drops the loose rule | 3 |
+| the PUT route drops the loose rule | 3 |
+| the promote route takes the upload of another thread | 1 |
+| the promote route drops the loose rule | 1 |
+| `_session_wrote` ignores the session | 1 |
+| `_session_wrote` ignores the sha256 | 3 |
+| `_session_history` reads the marker for the store key | 6 |
+| `_session_history` drops the older `''` rows | 1 |
+| the session filter of `file_history` names the wrong column | 4 |
+
+**What H-227 does not do.**
+
+- `save_note` and `recall_notes` keep plain paths. HANDOFF H-237 carries
+  them.
+- The files in the flat folders stay on disk. Nothing moves them into a
+  thread folder, because a history row does not always name a thread.
+- A document from before S15 has no row (§21.15). So its link answers 404
+  for every session, as before.
+- The history route reads the tenant key only, as before. So it does not
+  show a row of the older `''` key.
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_h227_thread_scope.py \
+  tests/unit/test_run_data_hygiene.py tests/unit/test_h201_tenant_workdirs.py \
+  tests/unit/test_h201_run_context.py tests/unit/test_h201_readers_under_rls.py \
+  tests/unit/test_read_attachment.py -q -rs
+uv run pytest tests/unit/test_h227_thread_scope.py \
+  tests/unit/test_run_data_hygiene.py -m sandbox_docker -rs
+```
+
+The `-rs` output must show no skip, except the Windows-only skips.

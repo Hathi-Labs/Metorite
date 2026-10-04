@@ -113,43 +113,34 @@ line — never reclaim a number by deleting the other entry.
   2. Read each file with `acb_skills.safe_open`, so a link fails too.
   3. Add a fence: an escape and a link give "No Python files to check".
 
-### H-227 · Scope the Projects chat documents to their thread · [AGENT]
-- **Check:** `rg -n 'outputs/<thread|thread_output' packages/acb_skills/acb_skills/write_artifact.py apps/services/gateway/gateway/routes/workspace.py`.
-  No hit means no thread-scoped folder exists yet, and this is open. To
-  confirm, open a Projects chat document from the session of another member
-  of the same organization. If it opens, this is open.
-- **What happens today.** A shared agent's run works in its tenant dir,
-  `state/<agent>/<slug of o:<org>>/` (H-201 part 3). `write_artifact` puts a
-  document under `outputs/` there (`write_artifact.py:213-214`). Every session
-  of that agent in the organization gets the same tenant dir
-  (`_tenant_agent_workspace`, `gateway/routes/workspace.py:699`). So an S8
-  document of the Projects chat, such as a report on one member's visible
-  tasks or on a private project, is readable from any other member's session
-  of projects-assistant.
-- **Why it matters.** It is a gap in D12, the visibility rule inside a
-  tenant, and it dates from H-201 part 3. The supervisor's decision on
-  WS43-Q6 scopes the sandbox outputs per thread
-  (`specs/maf_coding_engine.md` §16.3). The documents of today need the same
-  rule.
+### H-237 · Give `save_note` and `recall_notes` the thread rule of H-227 · [AGENT]
+- **Check:** `rg -n "_thread_scoped|is_loose_rel" packages/acb_skills/acb_skills/note_tools.py`.
+  No hit means the two tools still ignore the thread folders, and this is
+  open.
+- **What happens.** H-227 gave a shared agent's tenant dir one folder for
+  each thread under `inputs/` and `outputs/`. `write_artifact`,
+  `share_artifact`, the session routes, `TenantFileStore` and the container
+  keep to it. Two core floor tools do not. `recall_notes` reads a path of
+  the tenant dir with a plain path call. So it reads the folder of another
+  thread when the model knows its slug. It also reads a loose file by name.
+  `save_note` writes `outputs/x` as a loose file, which no session then
+  lists.
+- **Why it matters.** It is a gap in D12 at the tool level, and it is
+  smaller than H-227. The model needs the name of a loose file, or the slug
+  of another thread. Every agent holds the two tools. A run that the broker
+  covers does not hold them (`sandbox_tools.WITHHELD_HOST_TOOLS`).
 - **Do.**
-  1. For a shared agent, write a document to `outputs/<thread hash>/`, with
-     the same thread hash as §16.3.
-  2. For a session of a shared agent, list and serve only that thread's
-     folder under `outputs/`. Keep the room check of today.
-  3. Link the artifact card to the new path. Keep the old link working for a
-     member of that thread, through the fault-in of §21.15.
-  4. Give the uploads the same rule. Since H-229 an upload of a shared agent
-     lands in `inputs/<thread slug>/`, and `read_attachment` reads only that
-     folder. The workspace tree, the file, history and delete routes, the
-     sandbox file store and the container mount still reach the `inputs/`
-     folder of another thread. Extend `agent_paths.is_other_thread_rel` to
-     `inputs/`, map `inputs/` in `TenantFileStore` as `outputs/` is mapped,
-     and mount the thread's `inputs/` folder over `/workspace/inputs/`.
-  5. Add an R8 test: a member with another session of the same agent cannot
-     list or read the document.
+  1. In a tenant dir, send each `inputs/` and `outputs/` path of both tools
+     through `write_artifact._thread_scoped`, as `share_artifact` does.
+  2. Make `recall_notes` refuse the folder of another thread and a loose
+     file.
+  3. Add a test and a mutation for each rule.
+  4. After the deploy of the H-227 PR, open a Projects chat document and an
+     attachment from the session of another member of the same
+     organization. Each must answer 404.
 - **Authority:** `specs/maf_coding_engine.md` §16.3 · `specs/projects_ai_chat.md`
-  §14 and §21.15 · D12
-- **Added:** 2026-10-03 · the D86 Projects-first PR
+  §22.9 · D12
+- **Added:** 2026-10-04 · the H-227 PR
 
 ### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
 - **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.

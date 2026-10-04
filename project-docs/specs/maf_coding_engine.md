@@ -2685,7 +2685,7 @@ An agent refuses each of these by name:
 | WS43-Q3 | Do egress logs need a tenant-scoped table and a UI? | No. Log lines only |
 | WS43-Q4 | Which tier does `code_task` use? | `tier-balanced`, unless WS-43a shows another tier is better |
 | WS43-Q5 | Does self-mutation later move its loop to the host, with its commands in the broker? Then the mutation container needs no key and no network | No. The loop stays in the container (owner direction, §15.3) |
-| WS43-Q6 | Should `outputs/` of a shared agent be per member? | **Resolved 2026-10-03 by the supervisor, on D12 grounds.** A sandbox run's outputs are thread-scoped (§16.3). H-227 does the same for the S8 documents of today |
+| WS43-Q6 | Should `outputs/` of a shared agent be per member? | **Resolved 2026-10-03 by the supervisor, on D12 grounds.** A sandbox run's outputs are thread-scoped (§16.3). H-227 does the same for the S8 documents and the uploads (built 2026-10-04) |
 
 ## 14. Side findings
 
@@ -3318,33 +3318,64 @@ not.
 
 **Broker rule 5, for this target.** The run-data dir is a second read-write
 mount, at `/workspace/.run/`. The thread's output folder (below) is a third,
-at `/workspace/outputs/`. No other target gets them.
+at `/workspace/outputs/`. The thread's upload folder is a fourth, READ-ONLY,
+at `/workspace/inputs/` (H-227). No other target gets them.
 
-**Outputs are thread-scoped (the supervisor's decision on WS43-Q6, D12).**
+**Outputs, uploads and S8 documents are thread-scoped (the supervisor's
+decision on WS43-Q6, and H-227, D12).**
 
 - **The gap it closes.** Every session of projects-assistant in one
   organization mounts the same tenant dir, `state/<agent>/<slug of o:<org>>/`.
   The session workspace routes serve that whole dir. Take a chart of one
   member's visible tasks, or of a private project. In the shared `outputs/`,
   any other member of the organization could read it from a session.
-- **The folder.** A sandbox run writes its outputs to the thread's own
-  folder, `outputs/<thread hash>/` in the tenant dir. The thread hash is the
-  `instance_slug` form of the thread id. The mirror keeps the folder under the
-  same path.
+- **The same gap, twice more (H-227).** An S8 document that `write_artifact`
+  wrote went to the shared `outputs/`. An upload went to
+  `inputs/<thread hash>/` (H-229), but the routes, the file store and the
+  container still reached the upload folder of another thread.
+- **The folders.** A run writes its outputs to the thread's own folder,
+  `outputs/<thread hash>/` in the tenant dir. An upload goes to
+  `inputs/<thread hash>/`. The thread hash is the `instance_slug` form of the
+  thread id, and `agent_paths.thread_slug` is the one rule for both folders.
+  The mirror keeps each folder under the same path.
+- **The S8 documents (H-227).** In a tenant dir (store key `o:<org>`),
+  `write_artifact` puts `outputs/x` in `outputs/<thread hash>/x` and
+  `inputs/x` in `inputs/<thread hash>/x` (`agent_paths.thread_scoped_rel`).
+  The store key and the thread come from the run, never from the model. A
+  thread id that names no folder writes nothing. `share_artifact` reads a
+  path the same way, and it shows no loose file (below). A personal agent
+  keeps its flat folders.
 - **The container.** The broker mounts `outputs/<thread hash>/` at
-  `/workspace/outputs/`, over the shared `outputs/`. So a container sees only
-  its own thread's outputs, and never the parent folder. Every container on a
-  projects-assistant tenant dir gets that cover, so no container can reach
-  the folder of another thread. This is the one nested mount that the broker
-  allows within its own workspace. It creates the folder on the host with the
-  safe opener just before the start.
+  `/workspace/outputs/`, read-write, and `inputs/<thread hash>/` at
+  `/workspace/inputs/`, read-only (H-227). Each one lies over the shared
+  folder. So a container sees only its own thread's outputs and uploads, and
+  never the parent folder, a loose file or the folder of another thread.
+  Every container on a projects-assistant tenant dir gets both covers. They
+  are the only nested mounts that the broker allows within its own
+  workspace. It creates both folders on the host with the safe opener just
+  before the start.
 - **The host file tools.** For this target, `TenantFileStore` maps
-  `outputs/` to `outputs/<thread hash>/`, and it refuses the folder of
-  another thread.
-- **The session routes.** For a session of a shared agent, the workspace
-  routes list and serve only `outputs/<thread hash>/` of that session's
-  thread, under `outputs/`. They keep the room check of today.
-- **The artifact cards** link to `outputs/<thread hash>/<name>`.
+  `outputs/` to `outputs/<thread hash>/` and `inputs/` to
+  `inputs/<thread hash>/` (H-227). It refuses the folder of another thread.
+- **The session routes.** The tree, file, history, PUT, DELETE and promote
+  routes apply the rule to a session of a shared agent. Under `outputs/` and
+  `inputs/`, they list and serve only the two folders of that session's
+  thread. A folder of another thread answers 404, before the fault-in. They
+  keep the room check of today.
+- **A loose file (H-227).** A file in `outputs/` or `inputs/` but in no
+  thread folder comes from before the thread folders: an S8 document or an
+  upload. The routes list and serve it only to a session that the blob
+  history shows wrote those exact bytes. The row must name that session and
+  that sha256, and its action must write (`workspace._session_wrote`). The
+  history read takes the store key from the path and the caller's tenant,
+  never from the `.cc-instance` marker. It reads `o:<org>` and the older
+  `''` rows of the tenant. The fault-in checks the stored bytes before it
+  writes them to disk. A PUT of a new loose path answers 404, so a new file
+  goes in the thread's folder.
+- **The artifact cards** link to `outputs/<thread hash>/<name>`, for a
+  sandbox run and for `write_artifact`.
+- **The fences.** `tests/unit/test_h227_thread_scope.py` (R8, the fake Docker
+  and `sandbox_docker`) and WS43-F22 (`tests/unit/test_run_data_hygiene.py`).
 
 **The instructions (WS-43u), built 2026-10-04.** The rules are a per-run
 section keyed on `run_command`: `RUN_SECTIONS` in `acb_skills/addendum.py`.
