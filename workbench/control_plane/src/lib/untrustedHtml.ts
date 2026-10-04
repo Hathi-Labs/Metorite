@@ -29,13 +29,17 @@
 import DOMPurify from "dompurify";
 import { remoteHost } from "@/lib/markdownMedia";
 
-/** Tags no untrusted HTML keeps, in any viewer. */
-export const UNTRUSTED_FORBID_TAGS = [
+/** Tags no untrusted HTML keeps, in any viewer. Frozen, so no importer can
+ *  change the email policy by pushing onto the shared array. */
+export const UNTRUSTED_FORBID_TAGS: readonly string[] = Object.freeze([
   "script", "iframe", "object", "embed", "form", "base", "meta", "link",
-];
+]);
 
-/** Attributes no untrusted HTML keeps, in any viewer. */
-export const UNTRUSTED_FORBID_ATTR = ["ping"];
+/** Attributes no untrusted HTML keeps, in any viewer. Frozen, as above. */
+export const UNTRUSTED_FORBID_ATTR: readonly string[] = Object.freeze(["ping"]);
+
+/** DOMPurify's prefix for an `id` or `name` under `SANITIZE_NAMED_PROPS`. */
+const NAMED_PROPS_PREFIX = "user-content-";
 
 /** More, for HTML drawn inline in the app's own document. A `style` element
  *  or attribute can restyle the app or fetch with `url()`. Form controls draw
@@ -59,15 +63,33 @@ export interface SanitizedDocx {
   blockedImages: number;
 }
 
-/** Sanitise mammoth's HTML for the inline `.docx` viewer. Browser only. */
+/**
+ * Sanitise mammoth's HTML for the inline `.docx` viewer. Browser only.
+ *
+ * ⚠️ It FAILS CLOSED. Where DOMPurify has no DOM (`isSupported` is false),
+ * `sanitize` hands its input back unchanged. So this returns no HTML at all
+ * there, and the viewer draws an empty document rather than a raw one.
+ *
+ * `SANITIZE_NAMED_PROPS` prefixes each `id` and `name` with `user-content-`,
+ * so a bookmark called `location` cannot become a bare id that shadows a
+ * global. The hook rewrites a fragment link (`#footnote-1`) to match, so a
+ * footnote still jumps to its note. A fragment link stays in this tab. Only
+ * an absolute link (`https:`, `http:`, `mailto:`) opens a new one.
+ */
 export function sanitizeDocxHtml(raw: string): SanitizedDocx {
+  if (!DOMPurify.isSupported) return { html: "", blockedImages: 0 };
   let blockedImages = 0;
   const hook = "afterSanitizeAttributes";
   DOMPurify.addHook(hook, (node) => {
     const el = node as Element;
     if (el.tagName === "A") {
-      el.setAttribute("target", "_blank");
-      el.setAttribute("rel", "noopener noreferrer nofollow");
+      const href = el.getAttribute("href") ?? "";
+      if (/^\s*(https?:|mailto:)/i.test(href)) {
+        el.setAttribute("target", "_blank");
+        el.setAttribute("rel", "noopener noreferrer nofollow");
+      } else if (href.startsWith("#") && !href.startsWith(`#${NAMED_PROPS_PREFIX}`) && href.length > 1) {
+        el.setAttribute("href", `#${NAMED_PROPS_PREFIX}${href.slice(1)}`);
+      }
     }
     if (el.tagName === "IMG") {
       const src = el.getAttribute("src") ?? "";
@@ -88,6 +110,7 @@ export function sanitizeDocxHtml(raw: string): SanitizedDocx {
       FORBID_TAGS: INLINE_FORBID_TAGS,
       FORBID_ATTR: INLINE_FORBID_ATTR,
       ADD_ATTR: ["target"],
+      SANITIZE_NAMED_PROPS: true,
       ALLOW_DATA_ATTR: false,
       WHOLE_DOCUMENT: false,
     });

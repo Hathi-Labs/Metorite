@@ -118,6 +118,26 @@ async function recordAttacker(page: Page): Promise<string[]> {
   return hits;
 }
 
+/** Bundle the real `src/lib/untrustedHtml.ts` and load it into a blank page
+ *  on the app's origin, as `window.UntrustedHtml`. */
+async function loadSanitizer(page: Page): Promise<void> {
+  const bundle = await build({
+    entryPoints: [path.join(ROOT, "src/lib/untrustedHtml.ts")],
+    bundle: true,
+    write: false,
+    format: "iife",
+    globalName: "UntrustedHtml",
+    platform: "browser",
+    alias: { "@": path.join(ROOT, "src") },
+    logLevel: "silent",
+  });
+  await page.route("**/__untrusted-html-probe", (r) =>
+    r.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><html><body></body></html>" }),
+  );
+  await page.goto("/__untrusted-html-probe");
+  await page.addScriptTag({ content: bundle.outputFiles[0].text });
+}
+
 test("the .docx viewer drops a javascript: link and fetches nothing remote", async ({ page }) => {
   test.setTimeout(180_000);
   const json = (body: unknown) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
@@ -174,22 +194,8 @@ test("the .docx viewer drops a javascript: link and fetches nothing remote", asy
 
 test("sanitizeDocxHtml strips forms, remote fetches and javascript: in Chromium", async ({ page }) => {
   test.setTimeout(120_000);
-  const bundle = await build({
-    entryPoints: [path.join(ROOT, "src/lib/untrustedHtml.ts")],
-    bundle: true,
-    write: false,
-    format: "iife",
-    globalName: "UntrustedHtml",
-    platform: "browser",
-    alias: { "@": path.join(ROOT, "src") },
-    logLevel: "silent",
-  });
   const hits = await recordAttacker(page);
-  await page.route("**/__untrusted-html-probe", (r) =>
-    r.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><html><body></body></html>" }),
-  );
-  await page.goto("/__untrusted-html-probe");
-  await page.addScriptTag({ content: bundle.outputFiles[0].text });
+  await loadSanitizer(page);
 
   const DATA_URI =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -233,4 +239,45 @@ test("sanitizeDocxHtml strips forms, remote fetches and javascript: in Chromium"
   expect(out.blockedImages).toBe(4);
   await expect(page.getByRole("link", { name: "ok" })).toHaveAttribute("target", "_blank");
   expect(await page.evaluate(() => (window as unknown as { __p?: number }).__p ?? null)).toBeNull();
+});
+
+test("a footnote link stays in the tab and still jumps; ids carry the prefix", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loadSanitizer(page);
+  // mammoth's own footnote shape, plus a bookmark that names a global.
+  const payload =
+    '<p>Text<sup><a href="#footnote-1" id="footnote-ref-1">[1]</a></sup></p>' +
+    '<p><a id="location"></a>Bookmarked</p>' +
+    '<p><a href="https://example.com/far">Far</a> <a href="mailto:a@example.com">Mail</a></p>' +
+    '<div style="height:3000px"></div>' +
+    '<ol><li id="footnote-1"><p>The note. <a href="#footnote-ref-1">↑</a></p></li></ol>';
+  const out = await page.evaluate((raw) => {
+    const w = window as unknown as {
+      UntrustedHtml: { sanitizeDocxHtml: (s: string) => { html: string } };
+    };
+    const { html } = w.UntrustedHtml.sanitizeDocxHtml(raw);
+    document.body.innerHTML = html;
+    return html;
+  }, payload);
+
+  const ref = page.getByRole("link", { name: "[1]" });
+  await expect(ref).toHaveAttribute("href", "#user-content-footnote-1");
+  expect(await ref.getAttribute("target")).toBeNull();
+  expect(out).toContain('id="user-content-footnote-1"');
+  expect(out).toContain('id="user-content-location"');
+  // The bookmark did not shadow the global.
+  expect(await page.evaluate(() => typeof window.location.href)).toBe("string");
+
+  // The click jumps in this tab, to the note.
+  const tabs = page.context().pages().length;
+  await ref.click();
+  await expect(page).toHaveURL(/#user-content-footnote-1$/);
+  expect(page.context().pages().length).toBe(tabs);
+  await expect(page.locator("#user-content-footnote-1")).toBeInViewport();
+
+  // An absolute link still opens a new tab, with no opener.
+  for (const name of ["Far", "Mail"]) {
+    await expect(page.getByRole("link", { name })).toHaveAttribute("target", "_blank");
+    await expect(page.getByRole("link", { name })).toHaveAttribute("rel", /noopener/);
+  }
 });
