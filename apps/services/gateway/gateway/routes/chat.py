@@ -194,6 +194,65 @@ def _refuse_if_elsewhere(s: Any, session_id: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# A NEW chat never inherits files (H-227, fix round 3 of PR #616)
+# ---------------------------------------------------------------------------
+# A client chooses the id of a chat. Two ids reach files that are not the
+# new chat's:
+#
+# 1. The id of a chat that a member deleted before the delete route purged
+#    its files. Its thread folders, its loose files and their rows stay.
+# 2. ``<agent>:<run id>``, the thread that the executor mints for a run with
+#    no chat. The run id is in the card of its document, and before H-227
+#    such a document was a row of the actor ``agent`` with that session.
+#
+# So every door that makes a chat session refuses an id with a colon, and
+# purges the files of the id before the first row exists. Every client mints
+# a chat id with ``crypto.randomUUID()`` (``lib/sessions.ts``), so no real id
+# holds a colon. The server mints ``<agent>:<run id>`` and ``email-chat:...``
+# itself, through none of these doors, and an existing row keeps its id.
+
+
+def refuse_run_shaped_id(session_id: str) -> None:
+    """Refuse a NEW chat id with a colon (400). No chat can take a run's id."""
+    if ":" in (session_id or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="A chat id cannot contain ':'. Start a new chat.",
+        )
+
+
+async def prepare_new_session(session_id: str, organization_id: str | None) -> None:
+    """Make *session_id* safe to create as a NEW chat. Call it before the row.
+
+    It refuses a run's id (:func:`refuse_run_shaped_id`), then removes every
+    file and row that the id left in the caller's organization
+    (``workspace.purge_thread_files``). When that fails, it answers 503 and
+    no row may be made, so the new chat never sees an old chat's files.
+    """
+    from gateway.routes.workspace import ThreadPurgeFailed, purge_thread_files
+
+    refuse_run_shaped_id(session_id)
+    try:
+        await purge_thread_files(session_id, organization_id)
+    except ThreadPurgeFailed:
+        raise HTTPException(
+            status_code=503,
+            detail="This chat could not be started. Try again.",
+        ) from None
+
+
+def _session_is_new(session_id: str, *, organization_id: str | None) -> bool:
+    """True when the caller's tenant has no row for *session_id*.
+
+    Raises ``SessionOfAnotherTenant`` when the id is a row of another tenant.
+    """
+    from acb_graph import tenant_session  # noqa: PLC0415
+
+    with tenant_session(organization_id) as s:
+        return not _refuse_if_elsewhere(s, session_id)
+
+
 def _upsert_session(
     user_id: str, req: SessionUpsertRequest, *, organization_id: str | None,
 ) -> None:
@@ -843,10 +902,14 @@ async def upsert_session(
     req: SessionUpsertRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
+    org = user.organization_id
     try:
+        # H-227 fix round 3: before a NEW row, refuse a run's id and purge
+        # what the id left. An update of an existing row skips both.
+        if await asyncio.to_thread(_session_is_new, req.id, organization_id=org):
+            await prepare_new_session(req.id, org)
         await asyncio.to_thread(
-            _upsert_session, user.email or "default", req,
-            organization_id=user.organization_id,
+            _upsert_session, user.email or "default", req, organization_id=org,
         )
     except SessionOfAnotherTenant:
         # The same answer as a session that does not exist for this caller.

@@ -813,13 +813,17 @@ def _open_rel(root: Path, rel: str) -> str:
 
     A path form that a case-insensitive file system would fold onto a thread
     folder answers as absent (:func:`_odd_name_form`), in every route.
+
+    That check runs BEFORE the containment check (fix round 3 of PR #616).
+    Windows resolves a missing ``a /x`` or ``a../x`` outside the root, so the
+    containment check answered 400 for a missing file and 404 for a real one.
     """
     from acb_skills import safe_open
 
-    _safe_resolve(root, rel)
     clean = rel.replace("\\", "/").lstrip("/.")
     if _odd_name_form(clean):
         raise HTTPException(status_code=404, detail="File not found")
+    _safe_resolve(root, rel)
     try:
         return "/".join(safe_open.split_rel(clean))
     except safe_open.UnsafePath as exc:
@@ -996,6 +1000,12 @@ def _first_write(rows: list[dict]) -> dict | None:
     return min(writes, key=_history_time) if writes else None
 
 
+def _last_write(rows: list[dict]) -> dict | None:
+    """The newest row that writes bytes at a path, or ``None``."""
+    writes = [r for r in rows if r.get("action") != "delete"]
+    return max(writes, key=_history_time) if writes else None
+
+
 def _is_batch_row(row: dict) -> bool:
     """True for a row that a batch run wrote (the H-227 decision, PR #616).
 
@@ -1003,9 +1013,21 @@ def _is_batch_row(row: dict) -> bool:
     only ``write_artifact`` sets, and only when the executor minted the
     thread of a run with no chat and no parent. The session is that minted
     thread, ``<agent>:<run id>``, so it ends with the row's own run id.
+
+    An OLDER row (fix round 3 of PR #616): before H-227 the executor wrote a
+    batch document with the actor ``agent``. Its session is exactly
+    ``<agent>:<run id>``, with the row's own agent and run id. No new chat can
+    take an id with a colon (``chat.refuse_run_shaped_id``), so no chat can
+    forge that form. ``acb_memory.blob_store._RUN_ROW`` is the same rule in
+    SQL, and the purge never deletes such a row.
     """
     session, run = str(row.get("session_id") or ""), str(row.get("run_id") or "")
-    return row.get("actor") == "batch" and bool(run) and session.endswith(f":{run}")
+    if not run:
+        return False
+    if row.get("actor") == "batch":
+        return session.endswith(f":{run}")
+    agent = str(row.get("agent") or "")
+    return row.get("actor") == "agent" and bool(agent) and session == f"{agent}:{run}"
 
 
 def _first_writer(rows: list[dict]) -> str | None:
@@ -1047,10 +1069,10 @@ def _may_read_loose(rows: list[dict], session_id: str, sha256: str) -> bool:
 async def _tenant_history(
     workspace: Path, organization_id: str | None, *,
     path: str | None = None, session_id: str | None = None,
-    actor: str | None = None,
+    run_rows: bool = False,
 ) -> list[dict]:
-    """Rows of a tenant dir's blob history: of one *path*, one *session_id* or
-    one *actor*.
+    """Rows of a tenant dir's blob history: of one *path*, one *session_id*,
+    or of the runs with no chat (*run_rows*, ``blob_store._RUN_ROW``).
 
     Call it only when :func:`_own_thread_slug` is not ``None``, so the
     workspace IS the caller's tenant dir. So the store key comes from the
@@ -1066,14 +1088,14 @@ async def _tenant_history(
         return []
     from acb_skills.agent_paths import tenant_instance
 
-    if not organization_id or not (path or session_id or actor):
+    if not organization_id or not (path or session_id or run_rows):
         return []
     agent = workspace.resolve().parent.name
     rows: list[dict] = []
     for key in (tenant_instance(organization_id), ""):
         rows += await file_history(
             agent, path, 1000, instance=key,
-            organization_id=organization_id, session_id=session_id, actor=actor,
+            organization_id=organization_id, session_id=session_id, run_rows=run_rows,
         )
     return rows
 
@@ -1119,14 +1141,20 @@ async def purge_thread_files(
     this BEFORE it deletes the row (fix round 2): a failure raises
     :class:`ThreadPurgeFailed`, the chat stays, and the member can try again.
     After the row is gone the route calls it once more with *best_effort*,
-    for a file that a run wrote in between. It removes, in every tenant dir
-    of the caller's organization:
+    for a file that a run wrote in between. Every door that makes a NEW chat
+    calls it too, before the first row (fix round 3,
+    ``chat.prepare_new_session``). So a chat that a member deleted before
+    this purge existed hands its files to nobody. It removes, in every tenant
+    dir of the caller's organization:
 
     * ``inputs/<thread slug>/`` and ``outputs/<thread slug>/`` on disk, with
       the safe opener, and their rows in the blob store and its history;
     * each loose file that this chat began (:func:`_first_writer`), on disk
-      and in the store, so its ownership cannot move to another session;
+      and in the store, so its ownership cannot move to another session.
+      ⚠️ Not when another session wrote its newest bytes (fix round 3). That
+      file and its other rows stay, and only this chat's rows go;
     * every other history row of this chat under ``inputs/`` and ``outputs/``.
+      A row of a run with no chat stays (``blob_store._RUN_ROW``).
 
     The organization is the caller's, from the authenticated identity. A
     failure is logged as ``workspace.thread_purge_failed``.
@@ -1202,8 +1230,15 @@ async def _purge_thread_files(session_id: str, organization_id: str) -> None:
             # The chat wrote at this path, so its history cannot be empty: the
             # read failed. Stop before anything goes.
             raise ThreadPurgeFailed(f"no history read for {path[:120]}")
-        if _first_writer(rows) == session_id:
-            began.append((agent, path))
+        if _first_writer(rows) != session_id:
+            continue
+        newest = _last_write(rows)
+        if newest is not None and newest.get("session_id") != session_id:
+            # Fix round 3: another session wrote the bytes that lie there now
+            # (main let any session change a loose file). They are not this
+            # chat's to delete. Only this chat's rows go, in step 3.
+            continue
+        began.append((agent, path))
     dirs = {ws.parent.name: ws for ws in await asyncio.to_thread(_tenant_dirs, organization_id)}
     # 2. The disk.
     if slug:
@@ -1290,7 +1325,7 @@ async def _keep_owned_loose(
     loose = [f for f in files if is_loose_rel(f.path)]
     if not loose:
         return files
-    rows = await _tenant_history(workspace, organization_id, actor="batch")
+    rows = await _tenant_history(workspace, organization_id, run_rows=True)
     if session_id:
         rows += await _tenant_history(workspace, organization_id, session_id=session_id)
     candidates = {str(r.get("path") or "") for r in rows}

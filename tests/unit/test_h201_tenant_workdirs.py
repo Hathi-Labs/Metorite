@@ -445,6 +445,9 @@ def run_routes(monkeypatch):
 
     monkeypatch.setattr(agent_routes, "_resolve_agent_for_run", lambda *_a, **_k: _S)
     monkeypatch.setattr(agent_routes, "assert_can_run_agent_in_session", _allowed)
+    # H-227 fix round 3: the room check and the new-chat step of these doors
+    # (`test_h227_thread_scope.py` tests them on the R8 database).
+    monkeypatch.setattr(agent_routes, "_guard_run_thread", _allowed)
     monkeypatch.setattr(relay, "is_active", _inactive)
     return agent_routes
 

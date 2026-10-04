@@ -239,7 +239,7 @@ def _sync_delete(
 def _sync_history(
     agent_name: str, path: str | None, limit: int, instance: str = "",
     organization_id: str | None = None, session_id: str | None = None,
-    actor: str | None = None,
+    run_rows: bool = False,
 ) -> list[dict]:
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -256,9 +256,8 @@ def _sync_history(
     if session_id:
         sql += " AND session_id = :sid"
         params["sid"] = session_id
-    if actor:
-        sql += " AND actor = :actor"
-        params["actor"] = actor
+    if run_rows:
+        sql += f" AND {_RUN_ROW}"
     sql += " ORDER BY created_at DESC LIMIT :lim"
     params["lim"] = max(1, min(limit, 1000))
     with tenant_session(organization_id) as s:
@@ -268,12 +267,26 @@ def _sync_history(
             "path": r[0], "folder": r[1], "sha256": r[2], "size": int(r[3]),
             "mime_type": r[4], "action": r[5], "run_id": r[6],
             "session_id": r[7], "actor": r[8], "created_at": str(r[9]),
+            # H-227 fix round 3: the gateway tells an older batch row by its
+            # session, `<agent>:<run id>` (`_RUN_ROW` below).
+            "agent": agent_name,
         }
         for r in rows
     ]
 
 
 _IN_KEPT_TREE = "(left(path, 7) = 'inputs/' OR left(path, 8) = 'outputs/')"
+
+#: A row that a run with no chat wrote, which no chat may claim or purge
+#: (H-227, PR #616). Two forms. Since H-227 the actor is ``batch``. Before
+#: H-227 the executor wrote ``agent`` with the minted thread
+#: ``<agent>:<run id>`` as the session (fix round 3). The match is exact, and
+#: no new chat can take that id (``gateway.routes.chat``). The gateway's
+#: ``workspace._is_batch_row`` is the same rule in Python.
+_RUN_ROW = (
+    "(actor = 'batch' OR (actor = 'agent' AND coalesce(run_id, '') <> '' "
+    "AND session_id = agent_name || ':' || run_id))"
+)
 
 
 def _sync_session_paths(
@@ -287,7 +300,7 @@ def _sync_session_paths(
             text(
                 "SELECT DISTINCT agent_name, path FROM agent_file_history "
                 "WHERE session_id = :sid AND instance IN (:i, '') "
-                f"AND action <> 'delete' AND actor <> 'batch' AND {_IN_KEPT_TREE}"
+                f"AND action <> 'delete' AND NOT {_RUN_ROW} AND {_IN_KEPT_TREE}"
             ),
             {"sid": session_id, "i": instance},
         ).fetchall()
@@ -328,7 +341,7 @@ def _sync_purge(
             gone += s.execute(
                 text(
                     "DELETE FROM agent_file_history WHERE session_id = :sid "
-                    f"AND actor <> 'batch' AND instance IN (:i, '') AND {_IN_KEPT_TREE}"
+                    f"AND NOT {_RUN_ROW} AND instance IN (:i, '') AND {_IN_KEPT_TREE}"
                 ),
                 {"sid": session_id, "i": instance},
             ).rowcount or 0
@@ -437,21 +450,21 @@ async def delete_file(
 async def file_history(
     agent_name: str, path: str | None = None, limit: int = 200,
     *, instance: str = "", organization_id: str | None = None,
-    session_id: str | None = None, actor: str | None = None,
+    session_id: str | None = None, run_rows: bool = False,
 ) -> list[dict]:
     """Version history for one agent instance, newest first.
 
-    *session_id* keeps only the rows that one chat session wrote, and *actor*
-    only the rows of one actor. The gateway's session routes ask for them, to
-    tell which loose file of a shared agent's tenant dir a session wrote, or
-    a batch run wrote (H-227).
+    *session_id* keeps only the rows that one chat session wrote, and
+    *run_rows* only the rows of a run with no chat (``_RUN_ROW``). The
+    gateway's session routes ask for them, to tell which loose file of a
+    shared agent's tenant dir a session wrote, or a batch run wrote (H-227).
     """
     if not agent_name:
         return []
     try:
         return await asyncio.to_thread(
             _sync_history, agent_name, path, limit, instance,
-            _caller_tenant(organization_id), session_id, actor,
+            _caller_tenant(organization_id), session_id, run_rows,
         )
     except Exception as exc:  # noqa: BLE001
         _log.debug("blob_store.history_failed", agent=agent_name, error=str(exc)[:120])
@@ -489,7 +502,7 @@ async def purge_files(
     * every row at each ``(agent, path)`` of *paths* (the loose files the chat
       began);
     * every history row of *session_id* under ``inputs/`` or ``outputs/``,
-      except a row of a batch run (actor ``batch``), which no chat wrote.
+      except a row of a run with no chat (``_RUN_ROW``), which no chat wrote.
 
     Unlike :func:`delete_file` it keeps no delete row: a chat id can come back
     from a client, and a row that names it would hand the next owner of the
