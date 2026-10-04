@@ -12,8 +12,13 @@ import asyncio
 import base64
 import json
 import logging
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
+from email.errors import HeaderParseError
+from email.header import decode_header, make_header
+from email.message import Message
 from email.mime.text import MIMEText
+from email.utils import getaddresses
 from typing import Any
 
 import httpx
@@ -33,8 +38,10 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
-# Gmail label IDs → canonical folder keys.  A message can carry several labels;
-# the first match (in this priority order) wins.
+# Gmail system label IDs → canonical folder keys (D-EM-33). A message can carry
+# several labels, and the first match in this order wins. A message with none of
+# them is archived mail, so it files as ``archive`` (GM-5, WS-17 EM-G2 item 7).
+# A user label never sets the folder (O-GM-1). It lands in ``categories`` only.
 _GMAIL_LABEL_TO_FOLDER = [
     ("TRASH", "trash"),
     ("SPAM", "junk"),
@@ -43,13 +50,25 @@ _GMAIL_LABEL_TO_FOLDER = [
     ("INBOX", "inbox"),
 ]
 
+#: Gmail has no ``archive`` label. The Archive folder is the mail outside the
+#: Inbox, Sent and Drafts (D-EM-33, GM-6). ``messages.list`` leaves out spam
+#: and trash by default, so the query needs no ``-in:spam`` or ``-in:trash``.
+GMAIL_ARCHIVE_QUERY = "-in:inbox -in:sent -in:drafts"
+
 
 def _gmail_folder_from_labels(label_ids: list[str]) -> str:
     labels = set(label_ids or [])
     for label, folder in _GMAIL_LABEL_TO_FOLDER:
         if label in labels:
             return folder
-    return "inbox"
+    # ⚠️ Not ``inbox``. The old fallback showed archived mail in the Inbox,
+    # and ``tests/unit/test_email_folders.py`` pins ``archive`` on purpose.
+    return "archive"
+
+
+def _is_archive_key(name: str | None) -> bool:
+    """True when a folder name or a folder key means the Archive folder."""
+    return bool(name) and canonical_folder(name) == "archive"
 
 
 def _gmail_part_header(part: dict, name: str) -> str:
@@ -79,6 +98,22 @@ def _gmail_part_is_inline(part: dict) -> bool:
     return False
 
 
+def _iter_gmail_parts(
+    part: dict, *, descend: Callable[[dict], bool] | None = None,
+) -> Iterator[dict]:
+    """Each part of a Gmail payload tree, at any depth, the root first.
+
+    The ONE walk of the MIME tree. The attachment list and the body walk both
+    use it. ``descend`` returns false for a part whose child parts the walk
+    skips. With no ``descend``, the walk reads each part.
+    """
+    yield part
+    if descend is not None and not descend(part):
+        return
+    for sub in part.get("parts", []) or []:
+        yield from _iter_gmail_parts(sub, descend=descend)
+
+
 def _collect_gmail_attachments(part: dict, msg_id: str) -> list[Attachment]:
     """Walk a Gmail payload tree and collect real (non-inline) attachments.
 
@@ -89,8 +124,7 @@ def _collect_gmail_attachments(part: dict, msg_id: str) -> list[Attachment]:
     ``attachmentId`` (the handle used to download its bytes).
     """
     out: list[Attachment] = []
-
-    def _walk(p: dict) -> None:
+    for p in _iter_gmail_parts(part):
         body = p.get("body", {}) or {}
         att_id = body.get("attachmentId")
         filename = p.get("filename")
@@ -102,11 +136,96 @@ def _collect_gmail_attachments(part: dict, msg_id: str) -> list[Attachment]:
                 size_bytes=int(body.get("size", 0) or 0),
                 provider_attachment_id=att_id,
             ))
-        for sub in p.get("parts", []) or []:
-            _walk(sub)
-
-    _walk(part)
     return out
+
+
+def _gmail_part_is_file(part: dict) -> bool:
+    """True when a part is a file and not the body of the mail.
+
+    A file has a name, or its disposition is ``attachment``. An attached mail
+    (``message/rfc822``) is a file too, so its body never becomes the body of
+    the mail that carries it.
+    """
+    if part.get("filename"):
+        return True
+    if str(part.get("mimeType", "")).lower().startswith("message/"):
+        return True
+    disposition = _gmail_part_header(part, "Content-Disposition")
+    return disposition.strip().lower().startswith("attachment")
+
+
+def _gmail_part_charset(part: dict) -> str:
+    """The ``charset`` of the ``Content-Type`` of a part, else UTF-8."""
+    content_type = _gmail_part_header(part, "Content-Type")
+    if content_type:
+        holder = Message()
+        holder["Content-Type"] = content_type
+        charset = holder.get_content_charset()
+        if charset:
+            return charset
+    return "utf-8"
+
+
+def _decode_gmail_part(part: dict, data: str) -> str:
+    """The text of one body part (WS-17 EM-G2 item 3).
+
+    Gmail sends the bytes as base64url. The charset of the part decodes them,
+    and UTF-8 decodes them when the part names no charset or an unknown one.
+    The padding is added, because base64url can come without it.
+    """
+    raw = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+    try:
+        return raw.decode(_gmail_part_charset(part), errors="replace")
+    except LookupError:
+        return raw.decode("utf-8", errors="replace")
+
+
+def _gmail_bodies(payload: dict) -> tuple[str, str | None]:
+    """The text body and the HTML body of a Gmail payload (EM-G2 items 1-3).
+
+    The walk reads the tree at any depth, so it finds the
+    ``multipart/alternative`` inside a ``multipart/mixed`` (GM-3). It takes the
+    first ``text/plain`` part and the first ``text/html`` part that hold data.
+    It skips each file and each part below a file. A single-part HTML mail
+    fills only the HTML body, as Outlook does, and ``body_backfill`` derives
+    the text later.
+    """
+    found: dict[str, str] = {}
+    for part in _iter_gmail_parts(
+            payload, descend=lambda p: not _gmail_part_is_file(p)):
+        if _gmail_part_is_file(part):
+            continue
+        mime = str(part.get("mimeType", "")).lower()
+        if mime not in ("text/plain", "text/html") or mime in found:
+            continue
+        data = (part.get("body") or {}).get("data")
+        if data:
+            found[mime] = _decode_gmail_part(part, data)
+    return found.get("text/plain", ""), found.get("text/html")
+
+
+def _gmail_message_id(headers: dict[str, str]) -> str | None:
+    """The Message-ID in the form in which Graph gives ``internetMessageId``.
+
+    The value is trimmed, and it keeps its angle brackets and its case
+    (EM-G2 item 5). ``automation/identity.py`` compares the column with
+    ``=``, so one mail in a Gmail and an Outlook mailbox must have one value.
+    ``headers`` has lower-case keys (``_parse_headers``).
+    """
+    return headers.get("message-id", "").strip() or None
+
+
+def _decode_display_name(name: str) -> str:
+    """Decode the RFC 2047 encoded words of one display name.
+
+    A name that does not decode stays as it came.
+    """
+    if "=?" not in name:
+        return name
+    try:
+        return str(make_header(decode_header(name)))
+    except (LookupError, ValueError, HeaderParseError):
+        return name
 
 
 def _parse_list_unsubscribe(header: str) -> str | None:
@@ -273,18 +392,28 @@ class GmailProvider(BaseEmailProvider):
         page_token: str | None = None,
         canonical_override: str | None = None,
     ) -> tuple[list[EmailMessage], str | None]:
-        """List messages carrying ``folder`` (a Gmail label ID).
+        """List the messages that carry ``folder`` (a Gmail label ID).
 
-        ``canonical_override`` forces the stored folder key (used when syncing a
-        user label whose *name* — not its opaque ID — is the UI folder key).
+        Each message keeps the folder of its parse, from its system labels
+        (WS-17 EM-G2 item 8, D-EM-33). ``canonical_override`` never sets the
+        folder. So a page of a user label files its Inbox mail as ``inbox``
+        and its other mail as ``archive`` (GM-7, O-GM-1).
+
+        Gmail has no ``archive`` label. The folder key ``archive`` sends
+        ``GMAIL_ARCHIVE_QUERY`` and the query of the caller, and no
+        ``labelIds`` (item 9, GM-6). A ``canonical_override`` of ``archive``
+        does the same, so a user label named Archive never takes the place of
+        the folder (item 10).
         """
         client = await self._get_client()
-        params: dict[str, Any] = {
-            "maxResults": min(max_results, 500),
-            "labelIds": [folder],
-        }
-        if query:
-            params["q"] = query
+        params: dict[str, Any] = {"maxResults": min(max_results, 500)}
+        if _is_archive_key(folder) or _is_archive_key(canonical_override):
+            params["q"] = (f"{GMAIL_ARCHIVE_QUERY} {query}" if query
+                           else GMAIL_ARCHIVE_QUERY)
+        else:
+            params["labelIds"] = [folder]
+            if query:
+                params["q"] = query
         if page_token:
             params["pageToken"] = page_token
 
@@ -292,14 +421,11 @@ class GmailProvider(BaseEmailProvider):
         resp.raise_for_status()
         data = resp.json()
 
-        canon = canonical_override or canonical_folder(folder)
         messages: list[EmailMessage] = []
         for msg_ref in data.get("messages", []):
             # Fetch full message
             try:
-                msg = await self.get_message(msg_ref["id"])
-                msg.folder = canon
-                messages.append(msg)
+                messages.append(await self.get_message(msg_ref["id"]))
             except Exception:
                 continue
 
@@ -902,7 +1028,8 @@ class GmailProvider(BaseEmailProvider):
 
         if deep:
             # One-time deep backfill: page every label back to ``since`` (incl.
-            # SENT/DRAFT). User labels first so system labels win the upsert.
+            # SENT/DRAFT). The order of the labels does not set the folder:
+            # each message keeps the folder of its parse (WS-17 EM-G2 item 8).
             deep_messages: list[EmailMessage] = []
             try:
                 folders = await self.list_folders()
@@ -978,14 +1105,16 @@ class GmailProvider(BaseEmailProvider):
             result.messages_synced += len(message_ids_deleted)
             return result
         else:
-            # Initial full sync. User labels are fetched FIRST and the system
-            # labels LAST: the persistence layer upserts in list order, so when a
-            # message carries both INBOX and a user label the system folder wins
-            # and the message still shows in the inbox (Gmail labels are
-            # many-to-many, our ``folder`` column is single-valued).
+            # Initial full sync. The user labels, then five system labels.
+            # The order does not set the folder: ``list_messages`` keeps the
+            # folder of the parse, from the system labels only (WS-17 EM-G2
+            # item 8, D-EM-33). A message that two labels carry comes twice,
+            # and both copies have one folder.
             messages: list[EmailMessage] = []
 
-            # User labels — so the user's own folders aren't empty in the UI.
+            # User labels — so archived mail with a user label syncs. Such a
+            # message files as ``archive``, and its labels go to
+            # ``categories`` (O-GM-1). ``canonical_override`` sets no folder.
             try:
                 folders = await self.list_folders()
             except Exception:
@@ -1007,7 +1136,8 @@ class GmailProvider(BaseEmailProvider):
                 except Exception:
                     continue
 
-            # System labels last (so they win the upsert on shared messages).
+            # System labels. EM-G5 owns the archived mail with no user label
+            # (GM-8), which no label of this sweep reaches.
             for label in ("INBOX", "SENT", "DRAFT", "SPAM", "TRASH"):
                 try:
                     label_msgs, _ = await self.list_messages(
@@ -1037,28 +1167,18 @@ class GmailProvider(BaseEmailProvider):
     # ── Helpers ──────────────────────────────────────────────────────────
 
     def _parse_gmail_message(self, raw: dict[str, Any]) -> EmailMessage:
-        """Parse a Gmail API message into our normalized EmailMessage."""
-        headers = self._parse_headers(raw.get("payload", {}).get("headers", []))
+        """Parse a Gmail API message into our normalized EmailMessage.
 
-        # Extract body
-        body_text = ""
-        body_html = None
-        payload = raw.get("payload", {})
-        if "parts" in payload:
-            for part in payload["parts"]:
-                mime = part.get("mimeType", "")
-                data = part.get("body", {}).get("data", "")
-                if data:
-                    decoded = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-                    if mime == "text/plain":
-                        body_text = decoded
-                    elif mime == "text/html":
-                        body_html = decoded
-        else:
-            data = payload.get("body", {}).get("data", "")
-            if data:
-                decoded = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-                body_text = decoded
+        WS-17 EM-G2 (``email_app_master_plan.md`` §12.3.2). The body walk
+        reads the MIME tree at any depth. Each header name reads in any case.
+        The Message-ID keeps the form of Graph. The address headers split on
+        the raw text. The folder comes from the system labels only.
+        """
+        payload = raw.get("payload", {}) or {}
+        headers = self._parse_headers(payload.get("headers", []))
+
+        # Extract body — the whole tree, each part in its own charset.
+        body_text, body_html = _gmail_bodies(payload)
 
         # Snippet
         snippet = raw.get("snippet", "")
@@ -1087,22 +1207,20 @@ class GmailProvider(BaseEmailProvider):
         ]
 
         unsubscribe_link = _parse_list_unsubscribe(
-            headers.get("List-Unsubscribe", "")
+            headers.get("list-unsubscribe", "")
         ) or find_unsubscribe_link_in_html(body_html)
 
         return EmailMessage(
             provider_message_id=raw["id"],
             thread_id=raw.get("threadId"),
             folder=_gmail_folder_from_labels(label_ids),
+            internet_message_id=_gmail_message_id(headers),
             labels=label_ids,
-            from_address=EmailAddress(
-                name=headers.get("From", "").split("<")[0].strip(),
-                email=self._extract_email(headers.get("From", "")),
-            ),
-            to_addresses=self._parse_address_list(headers.get("To", "")),
-            cc_addresses=self._parse_address_list(headers.get("Cc", "")),
-            bcc_addresses=self._parse_address_list(headers.get("Bcc", "")),
-            subject=headers.get("Subject", "(no subject)"),
+            from_address=self._parse_from(headers.get("from", "")),
+            to_addresses=self._parse_address_list(headers.get("to", "")),
+            cc_addresses=self._parse_address_list(headers.get("cc", "")),
+            bcc_addresses=self._parse_address_list(headers.get("bcc", "")),
+            subject=headers.get("subject", "(no subject)"),
             body_text=body_text,
             body_html=body_html,
             snippet=snippet[:200] if snippet else body_text[:200],
@@ -1134,12 +1252,17 @@ class GmailProvider(BaseEmailProvider):
 
     @staticmethod
     def _parse_headers(headers: list[dict]) -> dict[str, str]:
+        """The headers of a message, keyed by the LOWER-CASE name.
+
+        A header name has no case (RFC 5322). Senders write ``Message-ID``,
+        ``Message-Id`` and ``message-id``, so each read uses the lower-case
+        name (WS-17 EM-G2 item 4, GM-1). The first value of a name wins.
+        """
         result: dict[str, str] = {}
-        for h in headers:
-            name = h.get("name", "")
-            value = h.get("value", "")
-            if name not in result:
-                result[name] = value
+        for h in headers or []:
+            name = str(h.get("name", "")).lower()
+            if name and name not in result:
+                result[name] = str(h.get("value", ""))
         return result
 
     @staticmethod
@@ -1151,19 +1274,31 @@ class GmailProvider(BaseEmailProvider):
 
     @staticmethod
     def _parse_address_list(header: str) -> list[EmailAddress]:
-        """Parse a comma-separated list of addresses."""
+        """Each address of one address header (WS-17 EM-G2 item 6, GM-4).
+
+        ``getaddresses`` splits the RAW header, so a quoted comma, as in
+        ``"Doe, John" <j@x.com>``, stays inside its name. The encoded words of
+        each name decode AFTER the split, because a decoded name can hold a
+        comma with no quotes. An entry with no address is left out.
+        """
         if not header:
             return []
         addresses: list[EmailAddress] = []
-        for part in header.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if "<" in part:
-                name = part.split("<")[0].strip()
-                email = part.split("<")[1].split(">")[0].strip()
-            else:
-                name = ""
-                email = part
-            addresses.append(EmailAddress(name=name, email=email))
+        for name, email in getaddresses([header]):
+            email = email.strip()
+            if email:
+                addresses.append(EmailAddress(
+                    name=_decode_display_name(name.strip()), email=email))
         return addresses
+
+    @classmethod
+    def _parse_from(cls, header: str) -> EmailAddress:
+        """The sender: the first address of ``From``.
+
+        A ``From`` that ``getaddresses`` cannot read keeps the old reading,
+        the text between the angle brackets, so the sender never goes blank.
+        """
+        found = cls._parse_address_list(header)
+        if found:
+            return found[0]
+        return EmailAddress(name="", email=cls._extract_email(header))
