@@ -39,6 +39,10 @@ clone cache.
    `agent_paths.is_other_thread_rel` is the ONE rule for another chat's
    folder, and it covers both folders. Fence:
    tests/unit/test_h227_thread_scope.py.
+   A batch run (no chat, `batch_thread` from the executor) writes the flat
+   `outputs/`, never replaces a file, and records the actor `batch`
+   (`_is_batch_run`, `BATCH_ACTOR`). Its document is the organization's to
+   read (`projects_ai_chat.md` §22.9 rule 8).
 5a. skill_families.py -- WS-23 skill-family registry (spec: project-docs/specs/skills_registry.md).
    `SKILL_FAMILIES` maps family slug -> {label, description, tool names} and must
    cover EVERY tool `orchestrator._tool_injection` injects, each in exactly ONE
@@ -91,7 +95,10 @@ clone cache.
    author's alone (`agent_paths.claim_skill`, `refused_write`).
    `decide()` runs too, with the whole command and with the real host path.
    The store maps `outputs/` and `inputs/` to the thread's own folders, and
-   `.run/` to the run data. It maps the upload folder since H-227. It
+   `.run/` to the run data. It maps the upload folder since H-227. The
+   thread's own slug may lead a path (`inputs/<slug>/x` is `inputs/x`),
+   because the upload message and the cards name a file so. The slug of
+   another thread is refused (`_own_folder_rest`). It
    mirrors each kept write and delete. WS-43u: the provider
    adds the rules for code to the instructions of the turn, from
    `addendum.render_run_sections` over the tools that the turn holds. Put

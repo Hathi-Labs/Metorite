@@ -4672,12 +4672,20 @@ the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
    when that session began the path.
 7. **A personal agent keeps its flat folders.** Its dir holds only the files
    of its member.
-8. **No thread folder, no document.** In a tenant dir, a run writes nothing
-   when its thread id names no folder. The upload route and the broker have
-   the same rule (§22.4 rule 9). One example is a batch run with no chat. A
-   member who assigns a task to an agent starts such a run. The executor
-   names its thread `<agent>:<run id>`. Before H-227, its document
-   went to the shared `outputs/`, where every member could list it.
+8. **A batch document belongs to the organization** (the supervisor's
+   decision of 2026-10-04, which the owner may reverse). A batch run has no
+   chat. Examples are a workflow node, a run with no thread, and a task that
+   a member assigns to an agent. `write_artifact` in such a run writes the
+   flat `outputs/`, as before H-227. Its history row has the actor `batch`.
+   Only the executor marks a batch run (`batch_thread`). It does so when it
+   mints the thread `<agent>:<run id>` itself, with no parent run bound. A
+   thread id from a client never marks a batch run. Every member lists,
+   opens and reads the history of such a file. Nobody changes, deletes or
+   promotes it. A batch run never replaces an existing file. The purge of a
+   deleted chat never touches a batch row.
+9. **No thread folder in a chat, no document.** A chat run whose thread id
+   names no folder writes nothing. The upload route and the broker have the
+   same rule (§22.4 rule 9).
 
 **Acceptance.** Each item has a test in `tests/unit/test_h227_thread_scope.py`.
 
@@ -4751,8 +4759,13 @@ mutation of one layer alone stays green. The table shows those too.
 
 - The files in the flat folders stay on disk. Nothing moves them into a
   thread folder, because a history row does not always name a thread.
-- A document from before S15 has no row (§21.15). So its link answers 404
-  for every session, as before.
+- **A loose file with no history row opens for nobody.** Before H-227 the
+  routes served such a file to every member of the organization. Now nobody
+  lists or opens it. Who loses what: a document from before S15 had no row
+  (§21.15), so its link answered 404 already. A file that a run wrote while
+  the store was down, or a file that a member copied onto the disk, now
+  shows to nobody. HANDOFF H-239 counts such files on production. Then the
+  supervisor decides on an admin view.
 - The history route reads the tenant key only, as before. So it does not
   show a row of the older `''` key.
 
@@ -4787,8 +4800,19 @@ mutation of one layer alone stays green. The table shows those too.
    `inputs/` and `outputs/` too. So `read_attachment` reads none of its
    older uploads. A loose file that another session began stays, and its
    ownership does not move. The server still takes the id from the client.
-5. **An assigned task's run keeps no document (P2).** Rule 8. HANDOFF H-239
-   gives that document a home.
+5. **An assigned task's run keeps its document (P2).** The batch decision,
+   rule 8, gives it a home: the flat `outputs/`, where each member reads it.
+6. **The path of the upload message works in a covered run** (the
+   verifier). The message and the cards name `inputs/<thread slug>/x`, and
+   the model copies that path. `TenantFileStore` reads the own slug as the
+   folder itself, and it refuses the slug of another thread. The broker
+   mounts each folder a second time at its own slug. So a command reaches
+   the file by that path too. The alias of the upload folder is read-only.
+7. **An odd name form answers as absent** (the verifier). A case-insensitive
+   file system read `INPUTS/<thread slug>/x` as the upload folder of that
+   thread. Every session route now refuses a head `inputs` or `outputs` in
+   any case but lower. It also refuses a name that ends in a dot or a space
+   (`workspace._odd_name_form`).
 
 **The mutations of fix round 1.** Each one turned at least one test of
 `tests/unit/test_h227_thread_scope.py` red, on 2026-10-04.
@@ -4805,6 +4829,22 @@ mutation of one layer alone stays green. The table shows those too.
 | the purge leaves the thread folders on disk | 1 |
 | the purge leaves the store rows of the thread folders | 1 |
 | the purge leaves the other history rows of the chat | 1 |
+| the store takes no own slug off a path | 2 |
+| the store takes the slug of another thread off too | 2 |
+| the broker drops the alias mounts | 2 |
+| the alias of the upload folder is writable | 2 |
+| a batch run writes the thread folder | 2 |
+| a batch run may replace a file | 1 |
+| the batch mark read from the shape of the thread id | 1 |
+| a thread id from a client makes a batch run | 1 |
+| a delegated run is a batch run | 1 |
+| the routes drop the batch read rule | 1 |
+| a batch document has an owner, so a member may change it | 1 |
+| a batch row told by its actor alone | 1 |
+| the history route hides the rows of a batch document | 1 |
+| the purge reaches a batch row | 1 |
+| no refusal of an odd name form | 1 |
+| a trailing dot allowed | 1 |
 
 **Residuals, named.**
 

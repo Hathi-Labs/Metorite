@@ -145,30 +145,31 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-04 · the H-227 PR. Fix round 1 of PR #616 closed its
   first scope, `save_note` and `recall_notes`. These three items replaced it.
 
-### H-239 · Give the document of an assigned task's run a home · [AGENT]
-- **Check:** `rg -n "thread_id=" apps/services/gateway/gateway/routes/projects/agent_dispatch.py`.
-  No hit means the run of an assigned task has no thread, and this is open.
-  Done means this: a shared agent's run for an assigned task calls
-  `write_artifact`, and the members of the task can open the document.
-- **What happens.** A member assigns a task to an agent, and
-  `agent_dispatch.py:237` calls `run_agent` with no thread. The executor
-  names the thread `<agent>:<run id>`, and that id names no folder. So in a
-  shared agent's tenant dir, `write_artifact` answers that nothing was
-  written (`specs/projects_ai_chat.md` §22.9 rule 8). The timeline keeps
-  only the first 2,000 characters of the answer (`agent_dispatch.py:252`).
-- **Why it matters.** Before H-227 the document went to the shared
-  `outputs/`, where each member of the organization could list it. That
-  was a gap in D12. Now the document is lost, which is safe but not useful.
+### H-239 · Count the loose files with no history row, and decide on an admin view · [AGENT]
+- **Check:** count the loose files of the tenant dirs on production that
+  have no row in `agent_file_history`. A loose file lies in `inputs/` or
+  `outputs/`, in no thread folder. Read `agent_blob` for the store side, and
+  walk `state/*/o_*` for the disk side. Until a count and a decision are on
+  record, this is open.
+- **What happens.** Since H-227 (PR #616), a loose file opens only for the
+  session that began it. A file that a batch run wrote opens for every
+  member (`specs/projects_ai_chat.md` §22.9 rules 2 and 8). A loose file with no
+  history row opens for nobody. Before H-227 every member of the
+  organization could open it.
+- **Who loses what.** A document from before S15 had no row, so its link
+  answered 404 already. A file that a run wrote while the store was down,
+  or a file that a member copied onto the disk, now shows to nobody.
 - **Do.**
-  1. Give the document a home that the members of the task can open. One
-     way is the attachments of the task. Another is a thread for each task
-     run, with its id on the timeline row.
-  2. Keep the visibility of the task: a member who cannot see the task
-     cannot open the document.
-  3. Add an R8 test of the Done line above, and a mutation.
-- **Authority:** `specs/projects_ai_chat.md` §22.9 rule 8 ·
-  `specs/project_management_app.md` §6.4 · D12
-- **Added:** 2026-10-04 · fix round 1 of PR #616 (review P2)
+  1. Count those files for each organization, on disk and in the store,
+     with no member data in the output.
+  2. With the count, the supervisor decides: no view, or an admin view that
+     lists them for the admins of their organization.
+  3. Record the count and the decision in `specs/projects_ai_chat.md` §22.9.
+- **Authority:** `specs/projects_ai_chat.md` §22.9 · D12 · the supervisor's
+  batch decision of 2026-10-04
+- **Added:** 2026-10-04 · fix round 1 of PR #616. The batch decision gave the
+  document of an assigned task's run a home (rule 8). So this id now holds
+  the count.
 
 ### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
 - **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.
