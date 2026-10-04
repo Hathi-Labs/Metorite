@@ -3576,6 +3576,11 @@ decision on WS43-Q6, and H-227, D12).**
   loose files that it began and their stored rows
   (`workspace.purge_thread_files`). A new session with the old id then finds
   none of them.
+- **A new chat (H-227 fix round 3).** Each door that makes a new chat row
+  purges the id first, and refuses an id with a colon. So a chat that main
+  deleted with its files left behind hands them to nobody. No chat can take
+  the id `<agent>:<run id>` of a run with no chat
+  (`projects_ai_chat.md` §22.9).
 - **A link (H-227 fix round 1).** A directory share of `share_artifact`
   checks the resolved path and skips a link.
 - **The own slug may lead a path (H-227 fix round 1).** The upload message

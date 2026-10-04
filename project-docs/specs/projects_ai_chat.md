@@ -4744,6 +4744,10 @@ the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
    free only when the disk and the history hold nothing there. One
    exclusive create takes it (fix round 2). The purge of a
    deleted chat never touches a batch row.
+   A batch document from before H-227 has a row with the actor `agent` and
+   the session `<agent>:<run id>`. That exact form is a batch row too (fix
+   round 3). No new chat can take an id with a colon, so no chat can forge
+   it.
 9. **No thread folder in a chat, no document.** A chat run whose thread id
    names no folder writes nothing. The upload route and the broker have the
    same rule (§22.4 rule 9).
@@ -4829,6 +4833,13 @@ mutation of one layer alone stays green. The table shows those too.
   supervisor decides on an admin view.
 - The history route reads the tenant key only, as before. So it does not
   show a row of the older `''` key.
+- **Who loses what, a batch document** (corrected in fix round 3). On main,
+  every member read a batch document in the flat `outputs/`. Fix rounds 1
+  and 2 read its row, actor `agent` and session `<agent>:<run id>`, as the
+  row of a chat. No chat had that id, so the document showed to nobody. The
+  verifier found it. Now that exact form is a batch row (rule 8). So every
+  member reads such a document again, and nobody changes it. A chat run's
+  document from before H-227 opens only for its own chat, as before.
 
 **Fix round 1 (the PR #616 review, 2026-10-04).**
 
@@ -4937,6 +4948,62 @@ mutation of one layer alone stays green. The table shows those too.
 | a failed purge only logs | 1 |
 | the row goes before the purge | 3 |
 
+**Fix round 3 (the third review, 2026-10-05).**
+
+1. **A new chat never inherits files** (the supervisor's decision). On
+   main, the delete route removed the chat row and nothing else. So the
+   files and rows of such a chat stayed, and a member who made a chat with
+   the old id read them. Now every door that makes a new chat purges the id
+   first (`chat.prepare_new_session`). A purge that fails answers 503, and
+   no row is made. The doors are `POST /chat/sessions` when it inserts a row
+   (not when it updates one), and the three run doors when the room lookup
+   finds no row. So the step closes every leftover, old or future.
+2. **No new chat can take a run's id.** The executor mints `<agent>:<run
+   id>` for a run with no chat, and the card of its document shows the run
+   id. Each door above refuses a new id with a colon (400,
+   `chat.refuse_run_shaped_id`). Every client mints a chat id with
+   `crypto.randomUUID()` (`lib/sessions.ts`), so no real id has a colon.
+   The server mints `<agent>:<run id>` and `email-chat:...` itself, through
+   none of these doors. An existing row keeps its id.
+3. **An older batch document is the organization's again.** Rule 8 and the
+   who-loses-what line above. `workspace._is_batch_row` and
+   `blob_store._RUN_ROW` are the one rule in Python and in SQL. The tree,
+   the purge and `session_paths` use it.
+4. **The run doors with no stream check the room.** `POST /agent/run` and
+   `/agent/run/async` took a client thread id with no room check. So a
+   member who knew the id of another member's chat ran a shared agent in it
+   and read its folders. They now refuse a caller who may not send in the
+   room, as the stream door does (`agent._guard_run_thread`).
+5. **The purge keeps a file that another session rewrote.** Main let any
+   session change a loose file. When the newest write of a loose file that
+   the chat began is another session's, the purge keeps the file and its
+   other rows. It deletes only the rows of the chat. Then the oldest
+   remaining write is the first writer. When that session also wrote the
+   bytes on disk, that session owns the file. It owns only bytes that it
+   wrote, because the chat's bytes are not on disk and its rows are gone.
+   Otherwise nobody owns the file, and it shows to nobody.
+6. **One 404 for an odd name form.** `_open_rel` checks the name form
+   before the containment check. Windows resolved a missing `a /x` or
+   `a../x` outside the root, so a missing file answered 400 and a real one
+   answered 404. Now both answer 404.
+
+| Mutation | Tests that fail |
+|---|---|
+| the chat door skips the new-chat step | 3 |
+| the run door skips the new-chat step | 3 |
+| every upsert purges, not only a new row | 2 |
+| a failed purge still makes the chat | 1 |
+| a chat id with a colon is taken | 3 |
+| no older batch row in Python | 2 |
+| the older match is a suffix, not exact | 2 |
+| the SQL rule knows only the actor `batch` | 1 |
+| the purge deletes an older batch row | 1 |
+| the tree finds a batch file by the actor alone | 1 |
+| the purge deletes a file that another session rewrote | 1 |
+| the containment check runs first (Windows only) | 1 |
+| the run doors with no stream drop the room check | 1 |
+| the run doors with no stream skip the guard | 2 |
+
 **Residuals, named.**
 
 1. **`agent-data/` of a shared agent is one folder for the whole
@@ -4953,12 +5020,20 @@ mutation of one layer alone stays green. The table shows those too.
    those ids. HANDOFF H-237 carries it.
 4. **Other state keyed by a chat id** is outside H-227: the room memory
    `room:<id>` and the room stream. A new session with an old id can reach
-   it.
+   it. Its files and file rows are purged (fix round 3).
 5. **The Windows dev box only.** NTFS does not tell `OUTPUTS/` from
    `outputs/`. The rules compare the head of a path as the caller wrote it.
    So on a Windows dev box, `OUTPUTS/<thread slug>/x` names the folder of
    that thread, and it passes the rules. Production runs on Linux. There
    that path names another folder, and no route lists it.
+6. **A slow mint and a late create.** A run door purges a new id, and then
+   the run's mint makes the row. When the mint times out, the run goes on
+   with no row. A `POST /chat/sessions` that arrives then sees no row, and
+   its purge can remove the first files of that run.
+7. **The stream door with no thread id** mints the thread `<agent>:<run
+   id>` from a run id that the client may choose. It makes no batch run.
+   Its documents go in its own thread folder, never in a loose file, so it
+   cannot forge an older batch row. The purge never deletes one.
 
 **Verification.**
 
