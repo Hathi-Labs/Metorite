@@ -35,6 +35,15 @@
 //   * `email-separate-menu`: the menu offers "Keep separate", or "Show in All
 //     inboxes" for a separate mailbox. A pick sends the `PATCH`, and the
 //     switcher row of a separate mailbox shows the word "Separate".
+//
+// WS-17 EM-T6e (§10.4.7, D3) adds two fences here:
+//   * `email-storage-mailbox` (A5, A6): the storage notice names the mailbox
+//     in view, or in All inboxes the first POOLED mailbox at the limit. It
+//     never names a separate mailbox there. The reconnect banner and the
+//     storage step win over it, and the dialog takes the id of the mailbox
+//     that the notice names, never `poolHome`.
+//   * `email-storage-switcher` (UC-12): the switcher marks each mailbox at
+//     the limit, a separate one too.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
@@ -65,6 +74,7 @@ import {
   pooledMailboxes,
   separateMark,
   separateToggle,
+  storageMailbox,
 } from "./mailbox";
 import { firstSyncPanels, importProgress } from "./onboarding";
 import type { EmailAccount, EmailFolder } from "./types";
@@ -743,5 +753,118 @@ describe("email-separate-leaves-at-once, the pure half", () => {
     // One mailbox in view keeps the rule of MB-3.
     expect(mailboxToOpen({ ...all, viewAll: false }, "c")).toBe("c");
     expect(mailboxToOpen({ ...all, viewAll: false, selectedAccountId: "c" }, "c")).toBeNull();
+  });
+});
+
+// ── WS-17 EM-T6e: the storage notice and the switcher mark (D3) ────────────
+
+const STORAGE_MB = 1_048_576;
+const atLimit = (acct: EmailAccount): EmailAccount => ({
+  ...acct,
+  storedBytes: 600 * STORAGE_MB,
+  storageLimitBytes: 500 * STORAGE_MB,
+  importPhase: "limit",
+});
+const underLimit = (acct: EmailAccount): EmailAccount => ({
+  ...acct,
+  storedBytes: 10 * STORAGE_MB,
+  storageLimitBytes: 500 * STORAGE_MB,
+});
+
+describe("email-storage-mailbox (A5, A6, D3)", () => {
+  it("in All inboxes names the first pooled mailbox at the limit, in the order of the list (A5)", () => {
+    const d = atLimit(box("d", "Desk", 0));
+    const accounts = [underLimit(pa), atLimit(pb), d];
+    expect(storageMailbox({ viewAll: true, selectedAccountId: "a", accounts })?.id).toBe("b");
+    expect(storageMailbox({ viewAll: true, selectedAccountId: "a", accounts: [underLimit(pa), d, atLimit(pb)] })?.id).toBe("d");
+  });
+
+  it("names the mailbox at the limit, never poolHome (A5)", () => {
+    const accounts = [underLimit(pa), atLimit(pb), sc];
+    expect(poolHome(accounts)?.id).toBe("a");
+    expect(storageMailbox({ viewAll: true, selectedAccountId: "a", accounts })?.id).toBe("b");
+  });
+
+  it("never names a separate mailbox in All inboxes, and names it in its own view (A5)", () => {
+    const accounts = [underLimit(pa), underLimit(pb), atLimit(sc)];
+    expect(storageMailbox({ viewAll: true, selectedAccountId: "a", accounts })).toBeNull();
+    expect(storageMailbox({ viewAll: false, selectedAccountId: "c", accounts })?.id).toBe("c");
+  });
+
+  it("one mailbox in view shows its own notice only (D3)", () => {
+    const accounts = [underLimit(pa), atLimit(pb), sc];
+    expect(storageMailbox({ viewAll: false, selectedAccountId: "a", accounts })).toBeNull();
+    expect(storageMailbox({ viewAll: false, selectedAccountId: "b", accounts })?.id).toBe("b");
+  });
+
+  it("shows the gap line in the own view of its mailbox, and not in All inboxes (D2)", () => {
+    const gap: EmailAccount = { ...atLimit(pb), storedBytes: 300 * STORAGE_MB };
+    const accounts = [underLimit(pa), gap, sc];
+    expect(storageMailbox({ viewAll: false, selectedAccountId: "b", accounts })?.id).toBe("b");
+    expect(storageMailbox({ viewAll: true, selectedAccountId: "a", accounts })).toBeNull();
+  });
+
+  it("the reconnect banner wins: no notice for the mailbox that attentionMailbox names (A6)", () => {
+    const failing: EmailAccount = { ...atLimit(pa), syncStatus: "error" };
+    const accounts = [failing, atLimit(pb), sc];
+    const attention = attentionMailbox({ viewAll: true, selectedAccountId: "a", accounts, authErrors: {} });
+    expect(attention?.id).toBe("a");
+    expect(storageMailbox({ viewAll: true, selectedAccountId: "a", accounts, attentionId: attention?.id })?.id).toBe("b");
+    expect(storageMailbox({ viewAll: false, selectedAccountId: "a", accounts, attentionId: "a" })).toBeNull();
+  });
+
+  it("no notice for a mailbox in the storage stage, because the step names it (A6)", () => {
+    const accounts = [atLimit(pa), atLimit(pb), sc];
+    expect(storageMailbox({ viewAll: false, selectedAccountId: "a", accounts, storageStepId: "a" })).toBeNull();
+    expect(storageMailbox({ viewAll: true, selectedAccountId: "a", accounts, storageStepId: "a" })?.id).toBe("b");
+  });
+
+  it("the page wires the rule, and the dialog takes the id that the notice or the step names", () => {
+    const page = codeOnly(read("page.tsx"));
+    expect(page).toMatch(
+      /const storageAccount = storageMailbox\(\{\s*viewAll,\s*selectedAccountId,\s*accounts,\s*attentionId: attentionAccount\?\.id \?\? null,\s*storageStepId: setupStage === "storage" \? selectedAccountId : null,\s*\}\);/,
+    );
+    expect(page).toContain("onRemove={() => setRemovingId(storageAccount.id)}");
+    expect(page).toContain("onRemove={() => setRemovingId(selectedAccount.id)}");
+    expect(page.match(/setRemovingId\(/g)).toHaveLength(3);
+    expect(page).toContain("const removingAccount = accounts.find((a) => a.id === removingId) ?? null;");
+    expect(page).toMatch(/<RemoveOlderMailDialog\s+account=\{removingAccount\}/);
+    // The notice sits below the reconnect banner, and above the import panels.
+    const notice = page.indexOf("<StorageNotice");
+    expect(notice).toBeGreaterThan(page.indexOf("Reconnect Outlook"));
+    expect(notice).toBeLessThan(page.indexOf("{importPanels.map("));
+    // An open dialog stops the page shortcuts, so "#" cannot delete the mail behind it.
+    expect(page).toContain("editingMailbox || removingId || paletteOpen) return;");
+  });
+});
+
+describe("email-storage-switcher (UC-12, D3)", () => {
+  const render = (accounts: EmailAccount[]) =>
+    renderToStaticMarkup(createElement(AccountSidebar, {
+      accounts,
+      selectedAccountId: "a",
+      onAccountSelect: () => {},
+      folders,
+      selectedFolder: "inbox",
+      onFolderSelect: () => {},
+      viewAll: true,
+      onSelectAll: () => {},
+      showAutomation: false,
+    }));
+
+  it("marks each mailbox at the limit, a separate one too", () => {
+    const html = render([atLimit(pa), underLimit(pb), atLimit(sc)]);
+    expect(html.match(/aria-label="At the storage limit"/g)).toHaveLength(2);
+  });
+
+  it("marks one mailbox at the limit, and none under it", () => {
+    expect(render([atLimit(pa)]).match(/aria-label="At the storage limit"/g)).toHaveLength(1);
+    expect(render([underLimit(pa), underLimit(pb)])).not.toContain("At the storage limit");
+  });
+
+  it("draws the mark in the warning tone, with a known icon", () => {
+    const src = codeOnly(read("components/AccountSidebar.tsx"));
+    expect(src).toMatch(/<AppIcon name="HardDrive"\s+size=\{10\}\s+className="text-warning"\s+role="img"/);
+    expect(isKnownIcon("HardDrive")).toBe(true);
   });
 });
