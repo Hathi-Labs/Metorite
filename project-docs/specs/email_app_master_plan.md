@@ -3391,7 +3391,7 @@ wrong-sender defects first.
 | **EM-T8d** | 🟢 AGENT-SAFE · R8 | ✅ **MERGED #596 (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
 | **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. Three pull requests. T8e-1 is self, the drafter and the server checks. T8e-2 is the chat tools. T8e-3 is the chat scope. | §11.7.5 |
 | **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
-| **EM-T8g** | 🟢 AGENT-SAFE · R8 · security review | ✅ **T8g-1 MERGED #608 (2026-10-04, migration 229). T8g-2 MERGED #610 (2026-10-04).** 🔨 **T8g-3 BUILT, not merged (2026-10-04), with review fix round 1.** **Duplicates and separation.** Three pull requests: T8g-1 "Keep separate" on the server (migration), T8g-2 "Keep separate" in the UI, T8g-3 "Also in" and the draft dedupe. The forward loop guard waits for a later slice. | §11.7.7 |
+| **EM-T8g** | 🟢 AGENT-SAFE · R8 · security review | ✅ **T8g-1 MERGED #608 (2026-10-04, migration 229). T8g-2 MERGED #610 (2026-10-04).** ✅ **T8g-3 MERGED #611 (2026-10-04), with review fix round 1.** **Duplicates and separation.** Three pull requests: T8g-1 "Keep separate" on the server (migration), T8g-2 "Keep separate" in the UI, T8g-3 "Also in" and the draft dedupe. The forward loop guard waits for a later slice. | §11.7.7 |
 
 #### 11.7.1 EM-T8a — send from the right mailbox
 
@@ -4549,7 +4549,7 @@ compact density and under a changed accent (CLAUDE.md §4).
 **Status.** 📝 Narrowed 2026-10-03, verified against the code at 30eebe6c. Three pull requests,
 T8g-1 to T8g-3. T8g-1 adds one migration. Item 3, the forward loop guard, is deferred.
 ✅ T8g-1 MERGED #608 (2026-10-04, migration 229). ✅ T8g-2 MERGED #610 (2026-10-04), with review fix rounds 1 and 2.
-🔨 T8g-3 BUILT, not merged (2026-10-04), with review fix round 1. It adds no migration.
+✅ T8g-3 MERGED #611 (2026-10-04), with review fix round 1. It adds no migration.
 
 **Order.** T8g-1 merges first. T8g-3 follows it, because both edit `transport/messages.py`,
 `transport/search.py` and `core.py`. T8g-2 follows T8g-1 and EM-T8f-2, because it edits the same
@@ -5041,8 +5041,8 @@ changed accent.
 
 ##### EM-T8g-3 — "Also in" and the draft dedupe (after T8g-1, R8)
 
-**Status.** 🔨 BUILT, not merged (2026-10-04), on the branch `email-also-in`, with review fix
-round 1. It adds no migration and no index. The notes of round 1 are below the mutation table of
+**Status.** ✅ MERGED #611 (2026-10-04), with review fix round 1. It adds no migration and no
+index. The notes of round 1 are below the mutation table of
 the build, and the notes below say what round 1 changed.
 
 **As-built notes.**
