@@ -24,6 +24,10 @@ Tool path              Host path                                    Kept
 * **``inputs/`` is the thread's own upload folder** (H-227). The same rule
   holds: ``inputs/x`` always maps below ``inputs/<thread slug>/``, so no tool
   path reaches another member's upload or a file in the flat ``inputs/``.
+* **The own slug may lead a path** (the PR #616 verifier). The upload message
+  and the cards name ``inputs/<thread slug>/x`` and ``outputs/<thread slug>/x``,
+  and the model copies them. Both name the same file as ``inputs/x`` and
+  ``outputs/x``. The slug of another thread is refused.
 * **``.run/`` is the run data.** It lies outside every kept folder, so the
   blob store never holds it, and the broker deletes it when the run ends.
 * **Only four heads exist**: ``agent-data/``, ``inputs/``, ``outputs/`` and
@@ -178,6 +182,8 @@ class TenantFileStore(FileSystemAgentFileStore):
         head, rest = parts[0], parts[1:]
         if any(part.startswith(".") for part in rest):
             raise safe_open.UnsafePath("A name that starts with a dot is not a workspace file.")
+        if head in (OUTPUTS, INPUTS):
+            rest = self._own_folder_rest(rest)
         if head == OUTPUTS:
             rel = "/".join([self._outputs_rel, *rest])
             return _Place(self._workspace, rel, rel, outputs=True)
@@ -193,6 +199,23 @@ class TenantFileStore(FileSystemAgentFileStore):
             )
         rel = "/".join(parts)
         return _Place(self._workspace, rel, rel)
+
+    def _own_folder_rest(self, rest: list[str]) -> list[str]:
+        """*rest* of an ``inputs/`` or ``outputs/`` path, with this thread's own
+        slug taken off its front (the PR #616 verifier).
+
+        The upload message and the artifact cards name a file as
+        ``inputs/<thread slug>/x`` or ``outputs/<thread slug>/x``, and the
+        model copies that path. So the own slug names the same file as
+        ``inputs/x``. The slug of another thread is refused.
+        """
+        from acb_skills.agent_paths import is_thread_slug
+
+        if not rest or not is_thread_slug(rest[0]):
+            return rest
+        if rest[0] != self._own_slug:
+            raise safe_open.UnsafePath("That folder belongs to another chat.")
+        return rest[1:]
 
     def _foreign_skill(self, place: _Place) -> bool:
         """True when *place* lies in a skill folder that another member made."""
@@ -356,6 +379,10 @@ class TenantFileStore(FileSystemAgentFileStore):
                 heads = (*KEPT_HEADS, INPUTS, OUTPUTS)
                 entries = [(n, k) for n, k in entries if k == "dir" and n in heads]
                 entries.insert(0, (RUN_DATA, "dir"))
+            elif place.store_rel in (self._outputs_rel, self._inputs_rel):
+                # The empty dir that the container's alias mount stands on
+                # (``sandbox_broker.projects_mounts``) is not a file of the chat.
+                entries = [(n, k) for n, k in entries if n != self._own_slug]
             elif place.store_rel == "agent-data/skills":
                 entries = [
                     (n, k) for n, k in entries

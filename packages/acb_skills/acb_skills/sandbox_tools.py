@@ -296,7 +296,8 @@ async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -
     * ``/workspace/outputs/`` is this chat's own output folder. A file a
       command writes here is kept, and shows in the chat as a card.
     * ``/workspace/inputs/`` holds the files that the member attached in
-      this chat. It is read-only.
+      this chat. It is read-only. The path that the upload message names,
+      ``inputs/<thread slug>/x``, reaches the same file.
     * The rest of ``/workspace`` (``agent-data/``) is read-only. Write it with
       the file tools.
 
@@ -431,7 +432,9 @@ def _file_instructions() -> str:
         "\n- These are the files that `run_command` sees under `/workspace`: "
         "`agent-data/`, `inputs/`, `outputs/` and `.run/`. `outputs/` is this "
         "chat's own output folder. `inputs/` holds the files that the member "
-        "attached in this chat. `.run/` holds the data files of this run, "
+        "attached in this chat. A path that the upload message or a card names, "
+        "with the chat's folder name after `inputs/` or `outputs/`, reaches the "
+        "same file. `.run/` holds the data files of this run, "
         "and it is deleted when the run ends. A command can write only "
         "`outputs/` and `.run/`."
         "\n- This chat has no web access: `web_search` and `fetch_page` are off."

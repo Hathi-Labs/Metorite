@@ -293,6 +293,28 @@ def _normalise_path(path: str) -> str:
     return f"outputs/{clean}"
 
 
+#: The history actor of a document that a batch run wrote (H-227). The
+#: gateway lets every member of the organization read such a loose file, and
+#: nobody change it (``workspace._batch_readable``). No request can set it.
+BATCH_ACTOR = "batch"
+
+
+def _is_batch_run(ctx: Mapping[str, Any]) -> bool:
+    """True for a batch run in a shared agent's tenant dir (the H-227 decision).
+
+    A run with no chat: a workflow node, ``/agent/run`` or ``/agent/run/async``
+    with no thread, or a task that a member assigns to an agent. Its document
+    belongs to the organization, as it did before H-227, so it goes to the
+    flat folder and every member may read it. ``batch_thread`` comes only
+    from the executor, which sets it when it mints the thread itself and no
+    parent run is bound. A thread id that a client sends never sets it, also
+    one shaped ``<agent>:<run id>``.
+    """
+    from acb_skills.agent_paths import is_tenant_instance
+
+    return ctx.get("batch_thread") is True and is_tenant_instance(ctx.get("instance"))
+
+
 def _thread_scoped(rel: str, ctx: Mapping[str, Any]) -> str | None:
     """*rel* in the thread's own folder, for a run in a shared agent's tenant dir.
 
@@ -406,14 +428,18 @@ async def write_artifact(
     # H-227 (D12): a shared agent's tenant dir is one folder for every member
     # of the organization. So a document of this chat goes to the chat's own
     # folder, outputs/<thread slug>/ (inputs/<thread slug>/ for inputs/), and
-    # its card links there. Only a session of this thread reads it.
-    scoped = _thread_scoped(clean_path, ctx)
-    if scoped is None:
-        return {"error": "This chat has no thread folder, so nothing was written."}
-    if scoped != clean_path:
-        if len(scoped.split("/")) < 3:  # the thread folder itself
-            return {"error": f"Path '{path}' names no file, so nothing was written."}
-        clean_path, target = scoped, root_r / scoped
+    # its card links there. Only a session of this thread reads it. A batch
+    # run (no chat) writes the flat folder, and its document belongs to the
+    # organization (`_is_batch_run`).
+    batch = _is_batch_run(ctx)
+    if not batch:
+        scoped = _thread_scoped(clean_path, ctx)
+        if scoped is None:
+            return {"error": "This chat has no thread folder, so nothing was written."}
+        if scoped != clean_path:
+            if len(scoped.split("/")) < 3:  # the thread folder itself
+                return {"error": f"Path '{path}' names no file, so nothing was written."}
+            clean_path, target = scoped, root_r / scoped
     # WS-43d (review P1, fix round 1): never another chat's output folder,
     # another member's skill folder, or the skill author marker.
     from acb_skills.agent_paths import refused_write
@@ -430,8 +456,9 @@ async def write_artifact(
     # Non-destructive by default: never clobber an existing file (a user upload
     # in inputs/, or a previously generated artifact). Uniquify to "name (1).ext"
     # — the same collision policy the upload endpoint uses. Pass overwrite=True to
-    # deliberately replace the file in place.
-    if target.exists() and not overwrite:
+    # deliberately replace the file in place. A batch run never replaces a file
+    # in a tenant dir: that file may belong to a member's chat (H-227).
+    if target.exists() and (not overwrite or batch):
         stem, ext = target.stem, target.suffix
         counter = 1
         while target.exists():
@@ -460,6 +487,9 @@ async def write_artifact(
     _asyncio.ensure_future(mirror_to_blob_store(
         clean_path, data, mime_type=mime,
         action="modify" if (_existed and overwrite) else "create",
+        # H-227: "batch" marks a document of a run with no chat. Only the
+        # server sets it, and the session routes let every member read it.
+        actor=BATCH_ACTOR if batch else "agent",
     ))
 
     # Build download URL (relative path — works from the frontend chat UI).

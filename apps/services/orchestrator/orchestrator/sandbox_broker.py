@@ -468,6 +468,9 @@ def prepare_projects_dirs(binding: RunBinding) -> None:
     try:
         safe_open.ensure_dir(binding.workspace, binding.outputs_rel)
         safe_open.ensure_dir(binding.workspace, binding.inputs_rel)
+        # The empty dirs that the alias mounts stand on (projects_mounts).
+        safe_open.ensure_dir(binding.workspace, f"{binding.outputs_rel}/{binding.thread_slug}")
+        safe_open.ensure_dir(binding.workspace, f"{binding.inputs_rel}/{binding.thread_slug}")
         safe_open.ensure_dir(binding.workspace, RUN_DATA_MOUNTPOINT)
         safe_open.ensure_dir(_real_state_root(), binding.run_data_rel)
         marker = binding.instance.encode("utf-8")
@@ -500,6 +503,14 @@ def projects_mounts(binding: RunBinding) -> list[Mount]:
       were attached in its own thread. It never sees another member's upload
       or a file in the flat ``inputs/``. These two covers are the only nested
       mounts that the broker allows within its own workspace.
+    - Each cover again, at ``/workspace/outputs/<thread slug>`` and
+      ``/workspace/inputs/<thread slug>`` (the PR #616 verifier). The upload
+      message and the cards name a file as ``inputs/<thread slug>/x``, and
+      the model copies that path into a command. So that path reaches the
+      same file. The alias of the upload folder is READ-ONLY too. Each alias
+      stands on an empty dir of the same name in the thread's folder, which
+      :func:`prepare_projects_dirs` makes. No file is ever written there,
+      because a write through the alias lands in the folder itself.
     - The run-data dir at ``/workspace/.run``, in this thread's container
       only. It lies under ``state_root()/.run-data``, outside every kept
       folder, so the blob store never holds it.
@@ -513,6 +524,9 @@ def projects_mounts(binding: RunBinding) -> list[Mount]:
     try:
         outputs = _real_dir(ws / binding.outputs_rel)
         inputs = _real_dir(ws / binding.inputs_rel)
+        slug = binding.thread_slug
+        _real_dir(outputs / slug)
+        _real_dir(inputs / slug)
         _real_dir(ws / RUN_DATA_MOUNTPOINT)
         run_data = _real_dir(binding.run_data)
     except ValueError as exc:
@@ -526,6 +540,8 @@ def projects_mounts(binding: RunBinding) -> list[Mount]:
     return [
         Mount(outputs, OUTPUTS_TARGET, readonly=False),
         Mount(inputs, INPUTS_TARGET, readonly=True),
+        Mount(outputs, f"{OUTPUTS_TARGET}/{slug}", readonly=False),
+        Mount(inputs, f"{INPUTS_TARGET}/{slug}", readonly=True),
         Mount(run_data, RUN_DATA_TARGET, readonly=False),
         Mount(marker, INSTANCE_MARKER_TARGET, readonly=True),
     ]

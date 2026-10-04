@@ -162,8 +162,9 @@ def runs(monkeypatch: pytest.MonkeyPatch, short_tmp: Path) -> dict[str, list]:  
     configure_env(monkeypatch, short_tmp)
     seen: dict[str, list] = {"mirrored": [], "cards": []}
 
-    async def mirror(rel: str, data: bytes, **_kw: Any) -> None:
+    async def mirror(rel: str, data: bytes, **kw: Any) -> None:
         seen["mirrored"].append(rel)
+        seen.setdefault("actors", []).append(kw.get("actor", "agent"))
 
     async def notify(*, artifact: dict, **_kw: Any) -> None:
         seen["cards"].append(artifact["path"])
@@ -201,7 +202,8 @@ async def test_an_s8_document_of_a_shared_agent_lands_in_the_thread_folder(runs)
 async def test_a_document_with_no_thread_folder_writes_nothing(runs) -> None:
     with bound_run(ORG_A, agent=PA, thread="Thread With Spaces!") as ws:
         out = await _write("report.md")
-    # A batch run with no chat: the executor names its thread "<agent>:<run id>".
+    # A client sends a thread id shaped like a batch thread, "<agent>:<run id>".
+    # Only the executor's own flag makes a batch run, so this run writes nothing.
     with bound_run(ORG_A, agent=PA, thread=f"{PA}:{uuid.uuid4()}"):
         batch = await _write("report.md")
     with bound_run(ORG_A, agent=PA, thread=new_thread()):
@@ -324,6 +326,79 @@ async def test_a_planted_link_never_shows_another_chats_file(runs) -> None:
     assert all(a["size"] != 4321 and "salaries" not in a["name"] for a in shown)
 
 
+# ═════════════════════════ batch documents (the H-227 decision) ════════════
+
+
+def test_only_the_executor_makes_a_batch_run(disk, wiring) -> None:  # noqa: F811
+    """A run with no chat and no parent run is a batch run, and only the
+    executor knows that: it minted the thread. A thread id that a client
+    sends never makes one, also one shaped ``<agent>:<run id>``. A run under
+    a parent run (a delegation) is no batch run either."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+    from orchestrator import executor
+
+    def batch_flag(**kw: Any) -> Any:
+        asyncio.run(executor.run_agent(_S, {"message": "hi"}, organization_id="org-b", **kw))
+        return wiring["context"].get("batch_thread")
+
+    assert batch_flag(run_id="r-1") is True
+    assert batch_flag(run_id="r-2", thread_id=str(uuid.uuid4())) is False
+    assert batch_flag(run_id="r-3", thread_id=f"{_S}:r-3") is False, "a forged batch id"
+
+    async def _nested() -> Any:
+        with artifact_context_scope():
+            bind_artifact_context(session_id="parent-chat", agent_name="other")
+            await executor.run_agent(_S, {"message": "hi"}, run_id="r-4", organization_id="org-b")
+        return wiring["context"].get("batch_thread")
+
+    assert asyncio.run(_nested()) is False, "a delegated run of a chat"
+
+
+async def test_a_batch_run_writes_the_flat_folder_and_replaces_nothing(runs) -> None:
+    from acb_skills.write_artifact import derive_artifact_context
+
+    run = f"r-{uuid.uuid4().hex[:6]}"
+    with bound_run(ORG_A, agent=PA, thread=f"{PA}:{run}") as ws:
+        derive_artifact_context(batch_thread=True, run_id=run)
+        (ws / "outputs").mkdir(exist_ok=True)
+        (ws / "outputs" / "q3.md").write_text("A MEMBER'S LOOSE FILE", encoding="utf-8")
+        doc = await _write("weekly.md", "THE WEEK")
+        again = await _write("q3.md", "BATCH", overwrite=True)
+    assert doc["path"] == "outputs/weekly.md", doc
+    assert again["path"] == "outputs/q3 (1).md", again
+    assert (ws / "outputs" / "q3.md").read_text(encoding="utf-8") == "A MEMBER'S LOOSE FILE"
+    assert runs["mirrored"] == ["outputs/weekly.md", "outputs/q3 (1).md"]
+    assert runs["actors"] == ["batch", "batch"]
+
+
+def test_a_batch_row_needs_both_marks() -> None:
+    """A batch row needs the actor ``batch`` AND a session that ends with its
+    own run id, the thread that the executor mints. Either mark alone is no
+    batch row, so neither a forged actor nor a chat id shaped like a batch
+    thread opens a file to the organization."""
+    from gateway.routes.workspace import _batch_readable, _is_batch_row
+
+    row = {"path": "outputs/w.md", "session_id": "projects-assistant:r-9", "run_id": "r-9",
+           "actor": "batch", "action": "create", "sha256": "a" * 64,
+           "created_at": "2026-10-04 09:00:00+00:00"}
+    assert _is_batch_row(row) and _batch_readable([row], "a" * 64)
+    assert not _batch_readable([row], "b" * 64), "other bytes at the path"
+    for change in ({"session_id": "chat-123"}, {"run_id": "r-8"}, {"run_id": None},
+                   {"actor": "agent"}, {"actor": "user"}):
+        assert not _is_batch_row({**row, **change}), change
+        assert not _batch_readable([{**row, **change}], "a" * 64), change
+
+
+def test_a_path_form_that_folds_onto_another_name_is_refused() -> None:
+    from gateway.routes.workspace import _odd_name_form
+
+    for rel in ("INPUTS/t-1a2b3c4d/x.docx", "Outputs/x.md", "outputs/t-1a2b3c4d./x",
+                "inputs/t-1a2b3c4d /x", "agent-data/notes.md.", "outputs/x.md "):
+        assert _odd_name_form(rel), rel
+    for rel in ("inputs/t-1a2b3c4d/x.docx", "outputs/x.md", "agent-data/NOTES.md", "Docs/x.md"):
+        assert not _odd_name_form(rel), rel
+
+
 # ═════════════════════════ the file store and the mounts ═══════════════════
 
 
@@ -340,6 +415,7 @@ def _store(box: Any, b: sb.RunBinding, *, inputs: bool = True) -> Any:
 
 @pytest.mark.parametrize("inputs", [True, False], ids=["from-binding", "derived"])
 async def test_the_file_tools_see_only_this_threads_uploads(sandbox, inputs) -> None:  # noqa: F811
+    from acb_skills import safe_open
     from acb_skills.agent_paths import thread_slug
 
     t, other = new_thread(), thread_slug(new_thread())
@@ -352,14 +428,29 @@ async def test_the_file_tools_see_only_this_threads_uploads(sandbox, inputs) -> 
             (ws / rel).write_text(body, encoding="utf-8")
         store = _store(sandbox, b, inputs=inputs)
         assert await store.read("inputs/mine.txt") == "MINE"
-        assert await store.read(f"inputs/{other}/alice.txt") is None
+        with pytest.raises(safe_open.UnsafePath):
+            await store.read(f"inputs/{other}/alice.txt")
         assert await store.read("inputs/flat.txt") is None
         assert [e.name for e in await store.list_children("inputs")] == ["mine.txt"]
         await store.write("inputs/new.txt", "NEW")
+        # The upload message names inputs/<thread slug>/x, and the model copies
+        # it (the PR #616 verifier). The own slug names the same file.
+        mine = thread_slug(t)
+        assert await store.read(f"inputs/{mine}/mine.txt") == "MINE"
+        assert sorted(e.name for e in await store.list_children(f"inputs/{mine}")) == [
+            "mine.txt", "new.txt",
+        ]
+        assert sorted(e.name for e in await store.list_children("inputs")) == [
+            "mine.txt", "new.txt",
+        ], "the alias mountpoint shows as a folder"
+        await store.write(f"outputs/{mine}/chart.svg", "<svg/>")
+        assert await store.read("outputs/chart.svg") == "<svg/>"
     assert (ws / b.inputs_rel / "new.txt").read_text(encoding="utf-8") == "NEW"
+    assert (ws / b.outputs_rel / "chart.svg").is_file()
+    assert not (ws / b.outputs_rel / mine / "chart.svg").exists()
     assert not (ws / "inputs" / "new.txt").exists()
     assert (f"{b.inputs_rel}/new.txt", b"NEW") in sandbox.mirrored
-    assert sandbox.cards == [], "an upload folder write is no card"
+    assert sandbox.cards == [f"{b.outputs_rel}/chart.svg"], "only the output is a card"
 
 
 async def test_a_projects_container_mounts_only_its_own_uploads_read_only(sandbox) -> None:  # noqa: F811
@@ -379,6 +470,13 @@ async def test_a_projects_container_mounts_only_its_own_uploads_read_only(sandbo
         "the shared inputs/ is never a mount source"
     )
     assert (b1.workspace / b1.inputs_rel).is_dir(), "the host made no folder, so Docker would"
+    # The alias of each folder at its own slug (the PR #616 verifier): the
+    # message path inputs/<thread slug>/x reaches the file in a command too.
+    s1 = b1.thread_slug
+    assert f"type=bind,source={b1.workspace / b1.inputs_rel},target=/workspace/inputs/{s1},readonly" in run1
+    assert f"type=bind,source={b1.workspace / b1.outputs_rel},target=/workspace/outputs/{s1}" in run1
+    assert (b1.workspace / b1.inputs_rel / s1).is_dir() and (b1.workspace / b1.outputs_rel / s1).is_dir()
+    assert not any(f"/workspace/inputs/{b2.thread_slug}" in m for m in run1)
 
 
 async def test_another_target_gets_no_upload_cover(sandbox, monkeypatch) -> None:  # noqa: F811
@@ -412,6 +510,7 @@ from tests.unit.test_h201_tenant_workdirs import (  # noqa: E402,F401 — fixtur
     _run_write,
     _tenant_dir,
     disk,
+    wiring,
 )
 
 
@@ -580,9 +679,13 @@ def test_a_rewritten_marker_does_not_switch_the_loose_rule_off(graph_as_app, dis
     assert alice.get(f"/agent/workspace/{sa}/file", params={"path": old}).text == "ALICE OLD PLAN"
 
 
-def _in_run(disk_: Any, org: str, sid: str, member: str, call: Any) -> Any:
+def _in_run(disk_: Any, org: str, sid: str, member: str, call: Any,
+            batch_run: str | None = None) -> Any:
     """Await *call()* in a run of the shared agent, bound as the executor binds
-    it: the tenant dir, the run's tenant and the real blob write-through."""
+    it: the tenant dir, the run's tenant and the real blob write-through.
+
+    *batch_run* binds a batch run as the executor binds one when it mints the
+    thread: the session ``<agent>:<run id>`` and ``batch_thread=True``."""
     from acb_common.db import bind_tenant, release_tenant
     from acb_skills.write_artifact import bind_artifact_context
     from orchestrator.executor import _resolve_run_workspace
@@ -593,10 +696,12 @@ def _in_run(disk_: Any, org: str, sid: str, member: str, call: Any) -> Any:
 
     async def _go() -> Any:
         token = bind_tenant(org)
+        extra = {"batch_thread": True} if batch_run else {}
         bind_artifact_context(
-            session_id=sid, agent_name=_S, run_id=f"r-{uuid.uuid4().hex[:6]}",
+            session_id=f"{_S}:{batch_run}" if batch_run else sid, agent_name=_S,
+            run_id=batch_run or f"r-{uuid.uuid4().hex[:6]}",
             workspace_root=ws, instance=key, member=member,
-            gateway_url="http://127.0.0.1:9", gateway_token="x",
+            gateway_url="http://127.0.0.1:9", gateway_token="x", **extra,
         )
         try:
             out = await call()
@@ -756,6 +861,75 @@ def test_a_deleted_chat_leaves_nothing_for_a_new_session_with_its_id(graph_as_ap
 
 
 @_DB_GATE
+def test_a_batch_document_is_the_orgs_to_read_and_nobodys_to_change(graph_as_app, disk) -> None:  # noqa: F811
+    """The H-227 decision: a document of a run with no chat belongs to the
+    organization, as on main. Alice and Bob both list it, open it and read
+    its history. Neither can change or delete it. A chat run's document stays
+    private. A chat that a client names with the batch session id gets no
+    owner's rights, and its delete purges nothing of the batch run."""
+    a = graph_as_app.org_a
+    sa = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
+    sbob = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
+    alice, bob = _chat_and_files(_user(_ALICE, a)), _chat_and_files(_user(_BOB, a))
+    run = f"r-{uuid.uuid4().hex[:8]}"
+    doc = _in_run(disk, a, "", _ALICE, lambda: wa.write_artifact(
+        f"weekly-{run}.md", "THE WEEK"), batch_run=run)["path"]
+    private = _in_run(disk, a, sa, _ALICE, lambda: wa.write_artifact("mine.md", "ALICE ONLY"))["path"]
+    assert doc == f"outputs/weekly-{run}.md", doc
+
+    for client, sid in ((alice, sa), (bob, sbob)):
+        assert doc in _files(client, sid)
+        got = client.get(f"/agent/workspace/{sid}/file", params={"path": doc})
+        assert got.status_code == 200 and got.text == "THE WEEK"
+        assert [h["path"] for h in _history(client, sid, doc)] == [doc]
+        assert client.put(f"/agent/workspace/{sid}/file", params={"path": doc},
+                          json={"content": "CHANGED"}).status_code == 404
+        assert client.delete(f"/agent/workspace/{sid}/file", params={"path": doc}).status_code == 404
+    assert (_tenant_dir(a) / doc).read_text(encoding="utf-8") == "THE WEEK"
+    assert bob.get(f"/agent/workspace/{sbob}/file", params={"path": private}).status_code == 404
+
+    # Bob names a chat with the batch session id. He gets no owner's rights,
+    # and his delete of that chat purges nothing of the batch run.
+    forged = f"{_S}:{run}"
+    made = bob.post("/chat/sessions", json={
+        "id": forged, "agent_name": _S, "title": "x", "last_preview": None,
+        "message_count": 0,
+    })
+    assert made.status_code == 200, made.text
+    assert bob.delete(f"/agent/workspace/{forged}/file", params={"path": doc}).status_code == 404
+    assert bob.delete(f"/chat/sessions/{forged}").status_code == 204
+    assert (_tenant_dir(a) / doc).read_text(encoding="utf-8") == "THE WEEK"
+    assert alice.get(f"/agent/workspace/{sa}/file", params={"path": doc}).text == "THE WEEK"
+
+
+@_DB_GATE
+def test_a_case_variant_path_reaches_nothing(graph_as_app, disk) -> None:  # noqa: F811
+    """The PR #616 verifier, on a case-insensitive file system: Bob's GET of
+    ``INPUTS/<thread slug of Alice>/x`` read Alice's file, and a trailing dot
+    told him that a file existed. Every route now refuses such a form."""
+    from acb_skills.agent_paths import thread_slug
+
+    a = graph_as_app.org_a
+    sa = _seed_session(graph_as_app, a, _ALICE, None, agent=_S)
+    sbob = _seed_session(graph_as_app, a, _BOB, None, agent=_S)
+    bob = _client(_user(_BOB, a))
+    assert bob.get(f"/agent/workspace/{sbob}").status_code == 200
+    slug = thread_slug(sa)
+    # On Windows this is Alice's own folder. On Linux it is another folder,
+    # which only the refusal keeps from a member who knows its name.
+    planted = _tenant_dir(a) / "INPUTS" / slug / "salaries.docx"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_bytes(b"SALARIES")
+    for rel in (f"INPUTS/{slug}/salaries.docx", f"inputs/{slug}./salaries.docx",
+                f"Outputs/{slug}/x.md"):
+        got = bob.get(f"/agent/workspace/{sbob}/file", params={"path": rel})
+        assert got.status_code == 404 and b"SALARIES" not in got.content, rel
+        assert _history(bob, sbob, rel) == [], rel
+        assert bob.delete(f"/agent/workspace/{sbob}/file", params={"path": rel}).status_code == 404, rel
+    assert planted.read_bytes() == b"SALARIES"
+
+
+@_DB_GATE
 def test_a_personal_agent_keeps_its_flat_folders(graph_as_app, disk) -> None:  # noqa: F811
     """A personal agent's dir holds only its member's files, so no loose rule
     applies: a flat ``outputs/`` file is listed and served with no history."""
@@ -804,11 +978,21 @@ async def test_docker_a_thread_sees_only_its_own_uploads(real_projects) -> None:
     assert own.exit_code == 0 and "ALICE UPLOAD" in own.output, own.output
     wrote = await broker.exec(h1, "echo x > /workspace/inputs/planted.txt", 30)
     assert wrote.exit_code != 0, "the upload folder is writable in the container"
+    # The path that the upload message names, copied into a command (the PR
+    # #616 verifier): it reads, and the alias of the upload folder is
+    # read-only too. The alias of the output folder writes the folder itself.
+    s1 = thread_slug(t1)
+    alias = await broker.exec(h1, f"cd /workspace && cat inputs/{s1}/alice.txt", 30)
+    assert alias.exit_code == 0 and "ALICE UPLOAD" in alias.output, alias.output
+    assert (await broker.exec(h1, f"echo x > /workspace/inputs/{s1}/z.txt", 30)).exit_code != 0
+    made = await broker.exec(h1, f"echo CHART > /workspace/outputs/{s1}/chart.txt && cat /workspace/outputs/chart.txt", 30)
+    assert made.exit_code == 0 and "CHART" in made.output, made.output
 
     with bound_run(DOCKER_ORG, agent=PA, thread=t2):
         h2 = await broker.acquire()
-    listed = await broker.exec(h2, "ls -A /workspace/inputs | wc -l", 30)
-    assert listed.output.strip().splitlines()[-1] == "0", listed.output
+    # Bob's upload folder holds only the empty dir of his own alias mount.
+    listed = await broker.exec(h2, "ls -A /workspace/inputs", 30)
+    assert listed.output.split() == [thread_slug(t2)], listed.output
     for path in (f"/workspace/inputs/{thread_slug(t1)}/alice.txt", "/workspace/inputs/old-upload.txt",
                  "/workspace/outputs/old-plan.md"):
         read = await broker.exec(h2, f"cat {path}", 30)

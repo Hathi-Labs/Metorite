@@ -788,12 +788,38 @@ def _safe_resolve(root: Path, rel: str) -> Path:
 # and the opener then refuses a link at any depth, which reads as absent.
 
 
+def _odd_name_form(rel: str) -> bool:
+    """True for a path form that a case-insensitive file system folds onto
+    another name (H-227, the PR #616 verifier).
+
+    NTFS and the default file system of macOS read ``INPUTS/`` as ``inputs/``,
+    and Windows drops a dot or a space at the end of a name. So on such a dev
+    box, ``INPUTS/<thread slug>/x`` or ``outputs/<thread slug>./x`` reaches the
+    folder of a thread while the thread rule reads another name. A head that
+    is ``inputs`` or ``outputs`` in any case but lower, and any name that ends
+    in a dot or a space, is refused. Production runs on Linux, where such a
+    path names another file, and the refusal costs nothing there.
+    """
+    from acb_skills.agent_paths import THREAD_HEADS
+
+    parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    if parts and parts[0] not in THREAD_HEADS and parts[0].lower() in THREAD_HEADS:
+        return True
+    return any(p.endswith((".", " ")) for p in parts)
+
+
 def _open_rel(root: Path, rel: str) -> str:
-    """*rel* as the safe opener takes it, after the containment check."""
+    """*rel* as the safe opener takes it, after the containment check.
+
+    A path form that a case-insensitive file system would fold onto a thread
+    folder answers as absent (:func:`_odd_name_form`), in every route.
+    """
     from acb_skills import safe_open
 
     _safe_resolve(root, rel)
     clean = rel.replace("\\", "/").lstrip("/.")
+    if _odd_name_form(clean):
+        raise HTTPException(status_code=404, detail="File not found")
     try:
         return "/".join(safe_open.split_rel(clean))
     except safe_open.UnsafePath as exc:
@@ -951,6 +977,7 @@ def _session_wrote(rows: list[dict], session_id: str, sha256: str) -> bool:
 
     A ``delete`` row proves nothing. An upload (``user``), an edit in the
     file manager (``user``) and a document of the run (``agent``) all count.
+    A path that a batch run began has no owner (:func:`_batch_readable`).
     ``read_attachment`` keeps its narrower form of the rule, an upload only
     (H-229).
     """
@@ -963,20 +990,67 @@ def _session_wrote(rows: list[dict], session_id: str, sha256: str) -> bool:
     )
 
 
-def _first_writer(rows: list[dict]) -> str | None:
-    """The session of the oldest row that writes bytes: the session that began
-    the path. ``None`` when no row writes."""
+def _first_write(rows: list[dict]) -> dict | None:
+    """The oldest row that writes bytes at a path, or ``None``."""
     writes = [r for r in rows if r.get("action") != "delete"]
-    if not writes:
+    return min(writes, key=_history_time) if writes else None
+
+
+def _is_batch_row(row: dict) -> bool:
+    """True for a row that a batch run wrote (the H-227 decision, PR #616).
+
+    Two marks, and a request can make neither. The actor is ``batch``, which
+    only ``write_artifact`` sets, and only when the executor minted the
+    thread of a run with no chat and no parent. The session is that minted
+    thread, ``<agent>:<run id>``, so it ends with the row's own run id.
+    """
+    session, run = str(row.get("session_id") or ""), str(row.get("run_id") or "")
+    return row.get("actor") == "batch" and bool(run) and session.endswith(f":{run}")
+
+
+def _first_writer(rows: list[dict]) -> str | None:
+    """The session that began the path: the session of its oldest row that
+    writes bytes. ``None`` when no row writes, or when a batch run began the
+    path, because a batch document has no owner."""
+    first = _first_write(rows)
+    if first is None or _is_batch_row(first):
         return None
-    return min(writes, key=_history_time).get("session_id")
+    return first.get("session_id")
+
+
+def _batch_readable(rows: list[dict], sha256: str) -> bool:
+    """True when a batch run began the path and wrote these exact bytes.
+
+    The H-227 decision (PR #616): a document of a run with no chat belongs
+    to the organization, as it did before H-227. So every member may list,
+    open and read the history of such a loose file. Nobody may change,
+    delete or promote it, because :func:`_first_writer` names no owner.
+    """
+    first = _first_write(rows)
+    if first is None or not _is_batch_row(first):
+        return False
+    return any(
+        _is_batch_row(r) and r.get("session_id") == first.get("session_id")
+        and r.get("sha256") == sha256
+        for r in rows
+    )
+
+
+def _may_read_loose(rows: list[dict], session_id: str, sha256: str) -> bool:
+    """True when this session may read a loose file with these bytes: it owns
+    the file, or a batch run wrote it."""
+    if _batch_readable(rows, sha256):
+        return True
+    return bool(session_id) and _session_wrote(rows, session_id, sha256)
 
 
 async def _tenant_history(
     workspace: Path, organization_id: str | None, *,
     path: str | None = None, session_id: str | None = None,
+    actor: str | None = None,
 ) -> list[dict]:
-    """Rows of a tenant dir's blob history: of one *path*, or of one *session_id*.
+    """Rows of a tenant dir's blob history: of one *path*, one *session_id* or
+    one *actor*.
 
     Call it only when :func:`_own_thread_slug` is not ``None``, so the
     workspace IS the caller's tenant dir. So the store key comes from the
@@ -992,14 +1066,14 @@ async def _tenant_history(
         return []
     from acb_skills.agent_paths import tenant_instance
 
-    if not organization_id or not (path or session_id):
+    if not organization_id or not (path or session_id or actor):
         return []
     agent = workspace.resolve().parent.name
     rows: list[dict] = []
     for key in (tenant_instance(organization_id), ""):
         rows += await file_history(
             agent, path, 1000, instance=key,
-            organization_id=organization_id, session_id=session_id,
+            organization_id=organization_id, session_id=session_id, actor=actor,
         )
     return rows
 
@@ -1015,6 +1089,18 @@ async def _session_owns_loose(
         return False
     rows = await _tenant_history(workspace, organization_id, path=rel)
     return _session_wrote(rows, session_id, hashlib.sha256(data).hexdigest())
+
+
+async def _session_may_read_loose(
+    workspace: Path, rel: str, data: bytes, session_id: str,
+    organization_id: str | None,
+) -> bool:
+    """True when *session_id* may read *data* at *rel*: it owns the bytes, or a
+    batch run wrote them (:func:`_may_read_loose`)."""
+    import hashlib
+
+    rows = await _tenant_history(workspace, organization_id, path=rel)
+    return _may_read_loose(rows, session_id, hashlib.sha256(data).hexdigest())
 
 
 async def purge_thread_files(session_id: str, organization_id: str | None) -> None:
@@ -1157,30 +1243,45 @@ async def _session_owns_disk_file(
     return _session_wrote(rows, session_id, sha)
 
 
+async def _session_may_read_disk_file(
+    workspace: Path, rel: str, session_id: str, organization_id: str | None,
+) -> bool:
+    """:func:`_session_may_read_loose` for the file on disk. An absent file reads as absent."""
+    sha = await asyncio.to_thread(_safe_sha256, workspace, rel)
+    if sha is None:
+        return False
+    rows = await _tenant_history(workspace, organization_id, path=rel)
+    return _may_read_loose(rows, session_id, sha)
+
+
 async def _keep_owned_loose(
     workspace: Path, files: list[FileEntry], session_id: str,
     organization_id: str | None,
 ) -> list[FileEntry]:
-    """*files* without the loose files that this session does not own (H-227).
+    """*files* without the loose files that this session may not read (H-227).
 
-    One history read per store key finds the paths this session wrote at
-    all. Only those paths cost a read of their whole history, which
-    :func:`_session_wrote` needs to find the session that began the path.
+    One history read per store key finds the paths that this session wrote,
+    and one more finds the paths that a batch run wrote. Only those paths
+    cost a read of their whole history, which the rule needs to find the
+    session that began the path.
     """
     from acb_skills.agent_paths import is_loose_rel
 
     loose = [f for f in files if is_loose_rel(f.path)]
-    if not loose or not session_id:
-        return [f for f in files if not is_loose_rel(f.path)]
-    mine = {
-        str(r.get("path") or "")
-        for r in await _tenant_history(workspace, organization_id, session_id=session_id)
-    }
+    if not loose:
+        return files
+    rows = await _tenant_history(workspace, organization_id, actor="batch")
+    if session_id:
+        rows += await _tenant_history(workspace, organization_id, session_id=session_id)
+    candidates = {str(r.get("path") or "") for r in rows}
     kept: set[str] = set()
     for f in loose:
-        if f.path not in mine:
-            continue  # this session wrote nothing at that path, so no read
-        if await _session_owns_disk_file(workspace, f.path, session_id, organization_id):
+        if f.path not in candidates:
+            continue  # neither this session nor a batch run wrote it, so no read
+        sha = await asyncio.to_thread(_safe_sha256, workspace, f.path)
+        if sha is not None and _may_read_loose(
+            await _tenant_history(workspace, organization_id, path=f.path), session_id, sha,
+        ):
             kept.add(f.path)
     return [f for f in files if not is_loose_rel(f.path) or f.path in kept]
 
@@ -1485,7 +1586,7 @@ async def get_workspace_file(
         # cache may still live in the blob store (e.g. after a volume wipe before
         # the agent has re-run). Restore it on demand, then serve.
         async def _owned(data: bytes) -> bool:
-            return await _session_owns_loose(workspace, rel, data, session_id, org)
+            return await _session_may_read_loose(workspace, rel, data, session_id, org)
 
         restored = await _faultin_from_store(
             workspace, path, organization_id=org, accept=_owned if loose else None,
@@ -1493,7 +1594,7 @@ async def get_workspace_file(
         st = await asyncio.to_thread(_safe_stat, workspace, rel) if restored else None
         if st is None:
             raise HTTPException(status_code=404, detail="File not found")
-    elif loose and not await _session_owns_disk_file(workspace, rel, session_id, org):
+    elif loose and not await _session_may_read_disk_file(workspace, rel, session_id, org):
         raise HTTPException(status_code=404, detail="File not found")
 
     file_size = st.st_size
@@ -2114,7 +2215,7 @@ async def get_workspace_history(
         return {"history": []}
     agent, instance = _blob_key_for_workspace(workspace)
     own = _own_thread_slug(workspace, session_id, _user.organization_id)
-    if path and _is_other_thread_path(path, own):
+    if path and (_is_other_thread_path(path, own) or _odd_name_form(path)):
         return {"history": []}
     rows = await file_history(
         agent, path, limit, instance=instance,
@@ -2126,18 +2227,23 @@ async def get_workspace_history(
     # another session's versions stay hidden, and a later write of this
     # session on a colleague's file shows nothing either.
     rows = [r for r in rows if not _is_other_thread_path(str(r.get("path") or ""), own)]
-    owned: dict[str, bool] = {}
+    firsts: dict[str, dict | None] = {}
     kept = []
     for r in rows:
         rel = str(r.get("path") or "")
         if _is_loose_path(rel, own):
-            if r.get("session_id") != session_id:
-                continue
-            if rel not in owned:
-                owned[rel] = _first_writer(await _tenant_history(
+            if rel not in firsts:
+                firsts[rel] = _first_write(await _tenant_history(
                     workspace, _user.organization_id, path=rel,
-                )) == session_id
-            if not owned[rel]:
+                ))
+            first = firsts[rel]
+            if first is None:
+                continue
+            if _is_batch_row(first):
+                # A batch document: every member reads the rows of its run.
+                if not (_is_batch_row(r) and r.get("session_id") == first.get("session_id")):
+                    continue
+            elif not (first.get("session_id") == session_id == r.get("session_id")):
                 continue
         kept.append(r)
     return {"history": kept}

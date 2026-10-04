@@ -239,6 +239,7 @@ def _sync_delete(
 def _sync_history(
     agent_name: str, path: str | None, limit: int, instance: str = "",
     organization_id: str | None = None, session_id: str | None = None,
+    actor: str | None = None,
 ) -> list[dict]:
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -255,6 +256,9 @@ def _sync_history(
     if session_id:
         sql += " AND session_id = :sid"
         params["sid"] = session_id
+    if actor:
+        sql += " AND actor = :actor"
+        params["actor"] = actor
     sql += " ORDER BY created_at DESC LIMIT :lim"
     params["lim"] = max(1, min(limit, 1000))
     with tenant_session(organization_id) as s:
@@ -283,7 +287,7 @@ def _sync_session_paths(
             text(
                 "SELECT DISTINCT agent_name, path FROM agent_file_history "
                 "WHERE session_id = :sid AND instance IN (:i, '') "
-                f"AND action <> 'delete' AND {_IN_KEPT_TREE}"
+                f"AND action <> 'delete' AND actor <> 'batch' AND {_IN_KEPT_TREE}"
             ),
             {"sid": session_id, "i": instance},
         ).fetchall()
@@ -324,7 +328,7 @@ def _sync_purge(
             gone += s.execute(
                 text(
                     "DELETE FROM agent_file_history WHERE session_id = :sid "
-                    f"AND instance IN (:i, '') AND {_IN_KEPT_TREE}"
+                    f"AND actor <> 'batch' AND instance IN (:i, '') AND {_IN_KEPT_TREE}"
                 ),
                 {"sid": session_id, "i": instance},
             ).rowcount or 0
@@ -433,20 +437,21 @@ async def delete_file(
 async def file_history(
     agent_name: str, path: str | None = None, limit: int = 200,
     *, instance: str = "", organization_id: str | None = None,
-    session_id: str | None = None,
+    session_id: str | None = None, actor: str | None = None,
 ) -> list[dict]:
     """Version history for one agent instance, newest first.
 
-    *session_id* keeps only the rows that one chat session wrote. The
-    gateway's session routes ask for them, to tell which loose file of a
-    shared agent's tenant dir a session wrote (H-227).
+    *session_id* keeps only the rows that one chat session wrote, and *actor*
+    only the rows of one actor. The gateway's session routes ask for them, to
+    tell which loose file of a shared agent's tenant dir a session wrote, or
+    a batch run wrote (H-227).
     """
     if not agent_name:
         return []
     try:
         return await asyncio.to_thread(
             _sync_history, agent_name, path, limit, instance,
-            _caller_tenant(organization_id), session_id,
+            _caller_tenant(organization_id), session_id, actor,
         )
     except Exception as exc:  # noqa: BLE001
         _log.debug("blob_store.history_failed", agent=agent_name, error=str(exc)[:120])
@@ -485,7 +490,8 @@ async def purge_files(
     * every row under each of *prefixes* (a thread's own folders), of any agent;
     * every row at each ``(agent, path)`` of *paths* (the loose files the chat
       began);
-    * every history row of *session_id* under ``inputs/`` or ``outputs/``.
+    * every history row of *session_id* under ``inputs/`` or ``outputs/``,
+      except a row of a batch run (actor ``batch``), which no chat wrote.
 
     Unlike :func:`delete_file` it keeps no delete row: a chat id can come back
     from a client, and a row that names it would hand the next owner of the
