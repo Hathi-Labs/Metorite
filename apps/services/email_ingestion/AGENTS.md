@@ -245,19 +245,23 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   meter sums `pg_column_size` of each column of variable length. Do not use
   `octet_length` or the size of a whole row. It runs in the block of each
   import batch and in phase (d). At the limit, the import fetches no next
-  batch, a first import ends at `import_phase = 'limit'`, and phases (e)
-  and (f) do not run (owner answer Q3). New mail still syncs (Q2). The
-  removal deletes Metorite's copy only, and `storage.py` imports nothing
-  from `providers`. R7: `tests/unit/test_email_storage_limit.py`.
+  batch, and a first import ends at `import_phase = 'limit'`. Phases (e)
+  and (f) do not run at the limit (owner answer Q3). New mail still syncs
+  (Q2). The removal deletes Metorite's copy only, and `storage.py` imports
+  nothing from `providers`. R7: `tests/unit/test_email_storage_limit.py`.
   - **The steps of the removal (the gaps G1 to G5, 2026-10-04).** Each step
     takes a session, opens none and never commits. `advance_import_since`
     runs first, before any delete. The preview and `remove_older_chunk` skip
     the folder `drafts` through `KEPT_FOLDERS_SQL`, so an unsent draft
-    stays. `delete_orphan_ai_drafts` deletes each `email_ai_drafts` row
-    whose thread has no message left. `end_limit_phase` writes
-    `import_phase = 'done'` only when the phase is `limit` and the new meter
-    is under the limit. No step touches Mem0, because no Mem0 key names one
-    mail.
+    stays. No step touches Mem0, because no Mem0 key names one mail.
+  - **Review round 1 (2026-10-04).** `remove_older_chunk` returns
+    `RemovedChunk`, with the threads of the mail that it deleted.
+    `delete_empty_thread_status` and `delete_orphan_ai_drafts` take those
+    threads, and they keep a row of any other thread. `end_limit_phase`
+    writes `import_phase = 'done'` only under the limit, and only when no
+    gap is left below `import_reached_at`. `advance_import_since` writes
+    `onboarding_done_at` for a mailbox with no `import_since`, so the guided
+    setup does not open for it.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - Account lifecycle: `refresh_account_sync(account_id, organization_id)` /
   `remove_account_sync()` called from CRUD routes. The organization comes from
@@ -271,7 +275,9 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
   `_sync_account` takes an `asyncio.Lock` for the mailbox, then runs
   `_sync_cycle`. Call `_sync_account` and never `_sync_cycle`, or two syncs
   of one mailbox upsert the same keys and one waits on the uncommitted rows
-  of the other. The lock key is the id in lower case. The loop, the webhook,
+  of the other. The lock key is the canonical UUID, `str(uuid.UUID(id))`, so
+  each form of one id takes one lock (EM-T6c review round 1). An id that is
+  not a UUID keeps its text in lower case. The loop, the webhook,
   the manual sync and the resync pass `if_busy="skip"` and get
   `SYNC_SKIPPED_BUSY`. A skip marks the mailbox, and the holder then runs ONE
   more shallow cycle under the lock (`_rerun_once`). The deep downloads wait

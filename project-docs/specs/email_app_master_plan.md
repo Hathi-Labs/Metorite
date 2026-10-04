@@ -11,7 +11,7 @@
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
-> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume. 🔨 **EM-T6c BUILT, not merged (2026-10-04): branch `email-storage-limit`, a port of `8b4cb4dfc` that closes the gaps G1 to G5. No PR.**
+> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume. 🔨 **EM-T6c BUILT, not merged (2026-10-04): branch `email-storage-limit`, a port of `8b4cb4dfc` that closes the gaps G1 to G5 and the findings of review round 1. No PR.**
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
 > ✅ **EM-T6d, part 2 (rules step, drafting step and Done) MERGED (#581, 2026-10-03).** UI only (§10.4.7).
@@ -2340,7 +2340,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** EM-T6a MERGED (#577). EM-T6b MERGED (#580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c BUILT, not merged: branch `email-storage-limit` (2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 closed, no PR. EM-T6e not built. Anchors re-verified at `ba8857617` on 2026-10-04.
+**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c BUILT, not merged: branch `email-storage-limit` (2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed, no PR. EM-T6e not built. Anchors re-verified at `012483a43` on 2026-10-04.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
@@ -2559,10 +2559,10 @@ The R8 tests must show PASSED, not SKIPPED.
 - **G1. The removal keeps drafts.** The preview and the removal skip the folder `drafts`, so an unsent draft stays. This is an orchestrator decision, and the owner can reverse it.
 - **G2. At the limit, `core.hydrate_message_body` writes no body** (`core.py:365-418`). It returns the body that it loads. The reply drafter and the follow-up path call it.
 - **G3. The removal holds the mailbox lock.** A new public helper in `scheduler.py` takes the lock that each sync takes (`scheduler.py:769-860`). The removal waits 5 seconds for it, then answers 409. Its first block under the lock moves `import_since`, before any delete.
-- **G4. A removal can end the `limit` phase.** The last block writes `import_phase = 'done'` when the phase was `limit` and the new meter is under the limit.
-- **G5. The last block deletes the orphan drafts of the AI.** It deletes each `email_ai_drafts` row of the mailbox whose thread has no message left.
+- **G4. A removal can end the `limit` phase.** The last block writes `import_phase = 'done'` when the phase was `limit` and the new meter is under the limit. Review round 1 adds a third test: no gap is left below `import_reached_at`.
+- **G5. The last block deletes the orphan drafts of the AI.** It deletes the `email_ai_drafts` row of each thread that this removal emptied (review round 1).
 
-**Status.** 🔨 BUILT, not merged (2026-10-04). Branch `email-storage-limit`, three commits on `ba8857617`: the narrowing, the port of `8b4cb4dfc`, and the gaps G1 to G5. It adds no migration. The fence is `tests/unit/test_email_storage_limit.py`: 60 tests, 21 of them R8, and 0 skip.
+**Status.** 🔨 BUILT, not merged (2026-10-04). Branch `email-storage-limit`, four commits on `012483a43`: the narrowing, the port of `8b4cb4dfc`, the gaps G1 to G5, and review round 1. It adds no migration. The fence is `tests/unit/test_email_storage_limit.py`: 72 tests, 28 of them R8, and 0 skip.
 
 **As built.**
 
@@ -2577,9 +2577,27 @@ The R8 tests must show PASSED, not SKIPPED.
 - (G1) `KEPT_FOLDERS_SQL` is the one draft filter. It copies the folder test of `body_backfill.py`, so `drafts`, `Drafts` and `draft` stay, and a NULL folder is not a draft.
 - (G2) `hydrate_message_body` reads the meter in its first SELECT, through a `LEFT JOIN` on `email_accounts`, so the check costs no query.
 - (G3) `scheduler.hold_mailbox` is the new public helper, and `MailboxBusy` is its refusal. The ownership read runs before the lock, so a stranger gets 404 and never learns that a sync runs. The wait is `REMOVAL_LOCK_WAIT_S`, 5 seconds.
-- (G4) `end_limit_phase` writes `done` only under the limit, and its `WHERE` also names `import_phase = 'limit'`.
+- (G4) `end_limit_phase` writes `done` only under the limit, and its `WHERE` also names `import_phase = 'limit'` and the gap test of review round 1.
 - (G5) `delete_orphan_ai_drafts` runs in the last block. No step calls Mem0.
 - The port changed two tests of `main`. The fake account row of `test_email_n_plus_one.py` gains `stored_bytes`, because each account read now returns it. The `email_ingestion/` entry of `test_email_owner_scope_fence.py` gets a new reason (B6), and it stays the one entry.
+
+**Review round 1 (2026-10-04).** An independent verifier and an adversarial reviewer read the branch. Each finding, its fix and its fence:
+
+- **(P1) The limit binds "Load older".** `transport/folders.py::backfill_folder` reads `stored_bytes` in its owner read. At the limit, it writes no row, builds no provider, and answers `exhausted`. Fence `email-storage-rr1-load-older`: `test_load_older_at_the_limit_writes_nothing_and_calls_no_provider`.
+- **(P1, the UI)** The store writes `backfillExhausted` from that answer, so the list hides the button and shows no error. The reviewer wrote that a scroll calls the route. The scroll observer pages the database only (`handleAutoLoad`), and a click on the button calls the route (`EmailList.tsx:300-303`).
+- **(P2) A removal closes the guided setup of a mailbox from before EM-T6.** `_ADVANCE_IMPORT_SINCE` writes `onboarding_done_at` when the old `import_since` is NULL. A mailbox in its guided setup keeps NULL. Fence `email-storage-rr1-onboarding`: `test_a_removal_closes_the_setup_of_a_mailbox_from_before_em_t6`.
+- **(P2) The `limit` phase ends only with no gap.** `_END_LIMIT_PHASE` also needs `import_reached_at IS NULL OR import_since >= import_reached_at`. Fence `email-storage-rr1-gap`: `test_the_limit_phase_ends_only_when_no_gap_is_left`.
+- **(Noted) The lock key is the canonical UUID.** `scheduler._lock_key` returns `str(uuid.UUID(id))`. An id that is not a UUID keeps its text in lower case, and the key never raises. Both storage routes answer 404 for such an id before a block opens.
+- **(Noted) The fence of the lock key.** Fence `email-storage-rr1-lock-key`: `test_the_lock_key_is_the_canonical_uuid`, `test_an_id_that_is_not_a_uuid_answers_404_before_any_block`, and `test_a_removal_answers_409_while_a_sync_holds_the_mailbox`. In the third test, the sync names the mailbox in upper case with no hyphens.
+- **(Noted, and verifier P2) The orphan deletes take only the threads of this removal.** `remove_older_chunk` returns `RemovedChunk`, with the threads of the deleted mail (`RETURNING thread_id`). The route collects them for the last block. Fence `email-storage-rr1-orphans`: `test_the_orphan_deletes_touch_only_the_threads_of_this_removal`.
+- **(Verifier P2) A draft in a non-English Outlook mailbox.** No code change. The open points below record it.
+- **(Verifier P3)** The base of this section now reads `012483a43`. This round removed the STE errors on the added lines of `email_ingestion/AGENTS.md`, `work_plan.md` and this section.
+
+**Agent decisions of review round 1.** The owner can reverse each one.
+
+- **"Load older" can load again mail that a removal took out.** Its floor stays the ceiling of 180 days, as EM-T6a chose (fix round 1 of EM-T6a). It is an explicit act of the member, and the limit still binds it. The reason: a floor that only a removal sets needs a new column, and so a migration. That column is the path to reverse this decision.
+- **The orphan deletes take only the threads that the removal emptied.** A thread status or a draft of the AI from any other cause stays. A reply from mailbox B to mail of mailbox A stores the pair (B, the thread of A) (`automation/drafting.py:1943-1945`). Before this round, each removal in B deleted that draft.
+- **The fence of the orphan deletes seeds three rows that must stay.** (a) A row of A for a thread that the removal did not touch. (b) A row of mailbox B of the same member for the emptied thread. (c) A row of a colleague's mailbox in the same organization for the emptied thread.
 
 **Open points.**
 
@@ -2587,6 +2605,13 @@ The R8 tests must show PASSED, not SKIPPED.
 - R-4 still holds: measure the time of the meter on the box after the deploy.
 - Before merge, the orchestrator reads the meter of each production mailbox (R-8). The read is the SELECT form only.
 - EM-T6e draws the notice and the dialog.
+- **(Review round 1, item 3) Nothing closes the gap of a `limit` phase.** A loop cycle runs no import, because `initial_sync_done` is true. A Resync (`deep=True`) imports from now down to `import_since`, so it can fill the gap up to the limit. It writes no progress column, so the phase stays `limit` and `import_reached_at` does not move. Only a removal with `before` at or after `import_reached_at` ends the phase. EM-T6e must decide a resume path, for example a deep import that ends the phase when it reaches the floor under the limit.
+- **(Review round 1, item 6) A draft in a non-English Outlook mailbox is not kept.** `email_messages` has no draft flag, and the Outlook provider does not read `isDraft`. `providers/outlook.py:419-422` does not request `wellKnownName`, because a consumer account answers 400 to it. So a Drafts folder with a local name (`Entwürfe`, `Brouillons`) is a user folder, and its rows get `folder = 'entwürfe'`. G1 does not keep them, and `body_backfill.py:120` has the same rule.
+- **(Item 6, the provider follow-up)** Classify the Drafts folder by the alias `/me/mailFolders/drafts`, or store `isDraft` for each message. Then `KEPT_FOLDERS_SQL` reads it. The branch `email-delta-shadow` changes `outlook.py` now, so this round did not.
+- **(Review round 1, item 9) A large removal can take longer than 30 seconds.** The chunk loop runs inside the request, and the Control Plane proxy gives a POST 30 seconds. EM-T6e must plan for a long removal. For example, the dialog reads the meter again after a timeout of the proxy.
+- **"Load older" takes no mailbox lock.** A "Load older" that runs during a removal can write a few rows older than `before`.
+- **"Load older" reads the meter of the last sync.** Under the limit, each call writes up to 300 messages, and the meter runs again at the next sync. So a member can go past the limit by the pages of one sync interval.
+- **A removal that fails part way keeps some orphan rows.** Its last block does not run, so the rows of the threads that its chunks emptied stay. A later removal does not see those threads. A disconnect deletes them, because both tables cascade from `email_accounts`.
 
 **Mutation checks (2026-10-04).** For each mutation, the script changed the code, ran the named tests on a private database, and put the file back. A SHA-256 check proved each restore.
 
@@ -2604,6 +2629,19 @@ The R8 tests must show PASSED, not SKIPPED.
 | G5, Mem0 | Call `get_memory_client` at the end of the removal | `test_the_removal_deletes_the_orphan_ai_drafts_and_no_memory` |
 | Multi-inbox | Move `import_since` of each mailbox of the member | `test_a_removal_in_one_mailbox_leaves_the_other_unchanged` |
 | No provider reach | Name `build_provider` inside `hold_mailbox` | `test_no_provider_method_is_reachable_from_a_route` |
+| RR1 item 1 | Replace the limit check of `backfill_folder` with `if False:` | `test_load_older_at_the_limit_writes_nothing_and_calls_no_provider[at_limit]` |
+| RR1 item 2, no CASE | Drop the `onboarding_done_at` line of `_ADVANCE_IMPORT_SINCE` | `test_a_removal_closes_the_setup_of_a_mailbox_from_before_em_t6[before_em_t6]` |
+| RR1 item 2, every row | `WHEN import_since IS NULL` becomes `WHEN true` | `test_a_removal_closes_the_setup_of_a_mailbox_from_before_em_t6[in_setup]` |
+| RR1 item 3 | Drop the gap test from `_END_LIMIT_PHASE` | `test_the_limit_phase_ends_only_when_no_gap_is_left[gap_left]` |
+| RR1 item 4, key | `_lock_key` goes back to the id in lower case | `test_the_lock_key_is_the_canonical_uuid`, `test_a_removal_answers_409_while_a_sync_holds_the_mailbox` |
+| RR1 item 4, route | Drop the `_account_uuid` call of the removal | `test_an_id_that_is_not_a_uuid_answers_404_before_any_block`, all four ids |
+| RR1 item 5, status mailbox | `ts.account_id = :aid` becomes `(ts.account_id = :aid OR true)` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, draft mailbox | `d.account_id = :aid` becomes `(d.account_id = :aid OR true)` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, status threads | Add `OR true` to the thread filter of `_DELETE_EMPTY_THREAD_STATUS` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, draft threads | Add `OR true` to the thread filter of `_DELETE_ORPHAN_AI_DRAFTS` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, route | The route stops the collection of the threads | `test_the_first_block_under_the_lock_moves_the_floor`, `test_the_removal_deletes_the_orphan_ai_drafts_and_no_memory` |
+
+Item 6 of review round 1 changed no code, so it has no mutation.
 
 **Scope.**
 
@@ -2616,7 +2654,7 @@ The R8 tests must show PASSED, not SKIPPED.
 7. **(Q2) New mail still syncs at the limit.** The recurring sweep writes new mail at any meter value. Only the import of older mail stops.
 8. **The preview route.** `GET /email/accounts/{id}/storage/older?before=<date>` returns the count of messages and the bytes that a removal would free. It writes nothing.
 9. **The removal route.** `POST /email/accounts/{id}/storage/remove-older` with `{"before": "<date>"}` removes the mail of that mailbox received before that date. Both routes carry the owner predicate on `user_id`. A `before` that is not in the past answers 400. Both routes go in a new module, `transport/storage.py`.
-10. **What the removal deletes.** It works in chunks of 1,000 messages, and each chunk is one `_tenant_session()` block with no `commit()`. It skips the folder `drafts` (G1). It first deletes the `email_executed_rules` rows of those messages, and then the messages. The attachment rows and the embeddings cascade. Last, it deletes each `email_thread_status` row and each `email_ai_drafts` row of the mailbox whose thread has no message left (G5).
+10. **What the removal deletes.** It works in chunks of 1,000 messages, and each chunk is one `_tenant_session()` block with no `commit()`. It skips the folder `drafts` (G1). It first deletes the `email_executed_rules` rows of those messages, and then the messages. The attachment rows and the embeddings cascade. Last, it deletes the thread status and the AI draft of each emptied thread (G5, review round 1).
 11. **What the removal keeps.** The rules, the learned patterns, the rule guidance, the senders, the contacts and the unsent drafts (G1). The Mem0 memories of the mailbox stay, because no Mem0 key names one mail.
 12. **The import floor and the meter.** The first block under the lock moves `import_since` to the later of `import_since` and `before`, before any delete (G3). So a Resync does not import that mail again, also after a removal that fails part way. The last block runs the meter again, and it ends the `limit` phase under the limit (G4). The answer holds the count removed and the new `stored_bytes`.
 13. **The removal never reaches the provider.** `storage.py` imports nothing from `email_ingestion.providers`. Neither the routes nor `storage.py` calls `provider_session` or `build_provider`.
@@ -2645,8 +2683,8 @@ The R8 tests must show PASSED, not SKIPPED.
 - (G1) The removal keeps each message in the folder `drafts`, and the preview does not count it.
 - (G2) At the limit, `hydrate_message_body` returns the body and writes none.
 - (G3) While a sync holds the mailbox, the removal answers 409. The removal moves `import_since` before its first delete.
-- (G4) R8: a removal that takes the meter under the limit writes `import_phase = 'done'`.
-- (G5) R8: the removal deletes each `email_ai_drafts` row of the mailbox whose thread has no message left. A patched Mem0 client gets no call.
+- (G4) R8: a removal that takes the meter under the limit writes `import_phase = 'done'` when no gap is left below `import_reached_at`.
+- (G5) R8: the removal deletes the `email_ai_drafts` row of each thread that it emptied, and no other row. A patched Mem0 client gets no call.
 - R8, multi-inbox: a removal in mailbox A of member M leaves mailbox B of M unchanged.
 
 **Files.** `packages/acb_common/acb_common/settings.py`. Under `apps/services/email_ingestion/email_ingestion/`: a new `storage.py` and `scheduler.py`. Under `routes/email/`: `core.py`, `transport/accounts.py`, `transport/messages.py`, `transport/__init__.py` and a new `transport/storage.py`. The DOX files `apps/services/email_ingestion/AGENTS.md` and `apps/services/gateway/AGENTS.md`. The test is a new `tests/unit/test_email_storage_limit.py`.

@@ -17,9 +17,13 @@ who does not own the mailbox gets 404 (D-EM-4):
   block moves ``import_since``, before any delete. Then it works in chunks of
   1,000 messages, and it keeps each draft (G1). Each block is one
   ``_tenant_session(org)`` with no ``commit()``, and the organization comes
-  from the account row. The last block deletes the empty thread statuses and
-  the orphan drafts of the AI (G5), runs the meter, and ends the ``limit``
-  phase under the limit (G4).
+  from the account row. The last block deletes the thread statuses and the
+  drafts of the AI of the threads that the chunks emptied (G5), runs the
+  meter, and ends the ``limit`` phase under the limit when no gap is left
+  (G4).
+
+An id that is not a UUID answers 404 before any block opens (review round
+1), so a bad id never reaches the database as a 500.
 
 ⚠️ **Metorite's copy ONLY (D-EM-14).** No code in this module builds a
 provider or calls one. Metorite never deletes or changes mail in the Outlook
@@ -34,6 +38,7 @@ production one-off (§10.4.7, Gate).
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
 from acb_auth import UserContext, get_current_user
@@ -104,6 +109,18 @@ def _cutoff(value: str | None) -> datetime:
     return cutoff
 
 
+def _account_uuid(account_id: str) -> str:
+    """The id of the path in its canonical form, ``str(UUID(id))``.
+
+    An id that is not a UUID names no mailbox, so it answers 404 before any
+    block opens (review round 1). Without this check, Postgres refuses the
+    text as a ``uuid`` and the route answers 500."""
+    try:
+        return str(uuid.UUID(str(account_id).strip()))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Account not found") from None
+
+
 @router.get("/accounts/{account_id}/storage/older",
             response_model=OlderMailPreview)
 async def preview_older_mail(
@@ -117,6 +134,7 @@ async def preview_older_mail(
     ``_assert_account_owner`` answers 404 for a mailbox that the member does
     not own."""
     cutoff = _cutoff(before)
+    account_id = _account_uuid(account_id)
     async with _tenant_session() as db:
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         older = await ingest_storage.preview_older(db, account_id, cutoff)
@@ -135,9 +153,10 @@ async def remove_older_mail(
     Metorite only (EM-T6c items 9 to 13, gaps G1 to G5).
 
     1. One block reads the row with the owner predicate. A row that is
-       absent, or that another member owns, gives 404. The organization of
-       the row binds each later block. The read comes before the lock, so a
-       stranger gets 404 and never learns that a sync runs.
+       absent, or that another member owns, gives 404. An id that is not a
+       UUID gives 404 before the block opens. The organization of the row
+       binds each later block. The read comes before the lock, so a stranger
+       gets 404 and never learns that a sync runs.
     2. With NO block open, the route takes the mailbox lock of the sync
        (``hold_mailbox``, G3). It waits ``REMOVAL_LOCK_WAIT_S``, then 409.
     3. Under the lock, the first block moves ``import_since`` to the later of
@@ -146,12 +165,14 @@ async def remove_older_mail(
        Each chunk is one block: the ``email_executed_rules`` rows of the
        chunk, then its messages. The attachment rows and the embeddings
        cascade.
-    5. One last block deletes each thread status and each draft of the AI
-       whose thread has no message left (G5), runs the meter, and ends the
-       ``limit`` phase when the meter is under the limit (G4).
+    5. One last block deletes the thread status and the draft of the AI of
+       each thread that the chunks emptied (G5, review round 1). It runs the
+       meter, and it ends the ``limit`` phase when the meter is under the
+       limit and no gap is left (G4).
 
     No block calls ``commit()``, and no block calls the provider or Mem0."""
     cutoff = _cutoff(req.before)
+    account_id = _account_uuid(account_id)
     owner = user.email or "anonymous"
 
     # ── 1. the ownership read ───────────────────────────────────────────────
@@ -195,19 +216,22 @@ async def _remove_under_lock(
 
     # ── 4. the chunks, one block each ───────────────────────────────────────
     removed = 0
+    emptied: set[str] = set()
     chunk = ingest_storage.REMOVE_CHUNK
     while True:
         async with _tenant_session(org) as db:
             gone = await ingest_storage.remove_older_chunk(
                 db, account_id, cutoff, chunk=chunk)
-        removed += gone
-        if gone < chunk:
+        removed += gone.removed
+        emptied |= gone.thread_ids
+        if gone.removed < chunk:
             break
 
     # ── 5. the orphan rows, the meter and the limit phase (G4, G5) ──────────
+    # The two deletes take only the threads of this removal (review round 1).
     async with _tenant_session(org) as db:
-        await ingest_storage.delete_empty_thread_status(db, account_id)
-        await ingest_storage.delete_orphan_ai_drafts(db, account_id)
+        await ingest_storage.delete_empty_thread_status(db, account_id, emptied)
+        await ingest_storage.delete_orphan_ai_drafts(db, account_id, emptied)
         stored = await ingest_storage.measure_stored_bytes(db, account_id)
         await ingest_storage.end_limit_phase(db, account_id, stored)
     return removed, stored

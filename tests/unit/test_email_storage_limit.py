@@ -50,6 +50,21 @@ The fences of the port (2026-10-04, the gaps G1 to G5 of §10.4.7):
   reaches no provider method and no provider builder. A companion test
   proves that the walk can fail.
 
+The fences of review round 1 (2026-10-04, §10.4.7 EM-T6c):
+
+* ``email-storage-rr1-load-older``: at the limit, "Load older" writes no
+  row, builds no provider and answers ``exhausted``. Under it, it writes as
+  before (R8).
+* ``email-storage-rr1-onboarding``: a removal on a mailbox from before EM-T6
+  writes ``onboarding_done_at``. A mailbox in its guided setup keeps it NULL
+  (R8).
+* ``email-storage-rr1-gap``: a removal ends the ``limit`` phase only when no
+  gap is left below ``import_reached_at`` (R8).
+* ``email-storage-rr1-lock-key``: each form of one UUID takes one mailbox
+  lock, and a route answers 404 for an id that is not a UUID.
+* ``email-storage-rr1-orphans``: the two orphan deletes take only the
+  threads that the removal emptied, in the mailbox of the removal (R8).
+
 The R8 tests run as the non-privileged role ``acb_app_h3rls`` (NOSUPERUSER,
 NOBYPASSRLS) on the phase-4-promoted two-org catalog of
 ``test_h3_rls_promotion_rehearsal``.
@@ -1247,9 +1262,11 @@ def _route_sessions(blocks: list, log: list):
 
 
 def _record_steps(monkeypatch, calls: list, *, gone=(0,), stored: int = 10,
-                  fail_chunk: bool = False) -> None:
+                  fail_chunk: bool = False, tids: list | None = None) -> None:
     """Replace each step of ``email_ingestion/storage.py`` with a recorder.
-    Each entry is ``(block, step, the mailbox lock is held)``."""
+    Each entry is ``(block, step, the mailbox lock is held)``. A chunk that
+    removes mail returns the thread ``t-<block>``. ``tids`` gets the threads
+    that the last block hands to each orphan delete."""
     left = list(gone)
 
     def _note(db, step: str, aid: str) -> None:
@@ -1262,14 +1279,20 @@ def _record_steps(monkeypatch, calls: list, *, gone=(0,), stored: int = 10,
         _note(db, "remove_older_chunk", aid)
         if fail_chunk:
             raise RuntimeError("the chunk failed")
-        return left.pop(0) if left else 0
+        n = left.pop(0) if left else 0
+        return storage.RemovedChunk(
+            removed=n, thread_ids=frozenset({f"t-{db.block}"} if n else ()))
 
-    async def thread_status(db, aid):
+    async def thread_status(db, aid, thread_ids):
         _note(db, "delete_empty_thread_status", aid)
+        if tids is not None:
+            tids.append(("status", sorted(thread_ids)))
         return 0
 
-    async def ai_drafts(db, aid):
+    async def ai_drafts(db, aid, thread_ids):
         _note(db, "delete_orphan_ai_drafts", aid)
+        if tids is not None:
+            tids.append(("ai_drafts", sorted(thread_ids)))
         return 0
 
     async def measure(db, aid):
@@ -1293,19 +1316,27 @@ def _no_lock_left() -> bool:
     return sched._sync_locks == {} and sched._sync_lock_users == {}
 
 
+#: The id of a mailbox in the hermetic route tests. A route answers 404 for
+#: an id that is not a UUID (review round 1), so the tests use a real one.
+_AID = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"
+
+
 async def test_the_first_block_under_the_lock_moves_the_floor(monkeypatch) -> None:
     """R7 fence ``email-storage-g3-lock`` (G3). The ownership read runs with
     no lock. Then every step runs under the mailbox lock, and the first block
-    moves ``import_since`` and does nothing else, before the first delete."""
+    moves ``import_since`` and does nothing else, before the first delete.
+    The last block hands the threads of every chunk to both orphan deletes
+    (review round 1, ``email-storage-rr1-orphans``)."""
     calls: list = []
     blocks: list = []
     log: list = []
+    tids: list = []
     monkeypatch.setattr(storage_routes, "_tenant_session",
                         _route_sessions(blocks, log))
     monkeypatch.setattr(storage, "REMOVE_CHUNK", 2)
-    _record_steps(monkeypatch, calls, gone=[2, 2, 1])
+    _record_steps(monkeypatch, calls, gone=[2, 2, 1], tids=tids)
     done = await storage_routes.remove_older_mail(
-        "ACC-1", storage_routes.RemoveOlderRequest(before="2026-01-01"),
+        _AID.upper(), storage_routes.RemoveOlderRequest(before="2026-01-01"),
         user=_me())
     assert done.removed == 5
     assert [(b, s) for b, s, _ in calls] == [
@@ -1319,15 +1350,22 @@ async def test_the_first_block_under_the_lock_moves_the_floor(monkeypatch) -> No
     assert blocks == [None] + [_ORG] * 5
     assert [b for b, _ in log] == [0], "the ownership read is not block 0"
     assert "user_id = :uid" in log[0][1]
+    assert tids == [("status", ["t-2", "t-3", "t-4"]),
+                    ("ai_drafts", ["t-2", "t-3", "t-4"])], (
+        "the last block did not get the threads of each chunk")
     assert _no_lock_left(), "the removal kept the mailbox lock"
 
 
 async def test_a_removal_answers_409_while_a_sync_holds_the_mailbox(
     monkeypatch,
 ) -> None:
-    """R7 fence ``email-storage-g3-lock`` (G3). A sync holds the mailbox for
-    longer than the wait, so the removal answers 409 and writes nothing. It
-    opens no block after the ownership read."""
+    """R7 fences ``email-storage-g3-lock`` (G3) and
+    ``email-storage-rr1-lock-key`` (review round 1). A sync holds the
+    mailbox for longer than the wait, so the removal answers 409 and writes
+    nothing. It opens no block after the ownership read. The manual sync
+    takes the id from the request, so here the sync names the mailbox in
+    upper case with no hyphens, and the removal names it in canonical form.
+    Both take one lock."""
     started, release = asyncio.Event(), asyncio.Event()
 
     async def _cycle(account_id, **_kw):
@@ -1337,19 +1375,20 @@ async def test_a_removal_answers_409_while_a_sync_holds_the_mailbox(
 
     calls: list = []
     blocks: list = []
+    bare = _AID.replace("-", "").upper()
     monkeypatch.setattr(sched, "_sync_cycle", _cycle)
     monkeypatch.setattr(storage_routes, "REMOVAL_LOCK_WAIT_S", 0.05)
     monkeypatch.setattr(storage_routes, "_tenant_session",
                         _route_sessions(blocks, []))
     _record_steps(monkeypatch, calls)
-    sync = asyncio.create_task(sched._sync_account("acc-1", organization_id=_ORG))
+    sync = asyncio.create_task(sched._sync_account(bare, organization_id=_ORG))
     await started.wait()
     try:
         with pytest.raises(HTTPException) as err:
             await storage_routes.remove_older_mail(
-                "ACC-1", storage_routes.RemoveOlderRequest(before="2026-01-01"),
+                _AID, storage_routes.RemoveOlderRequest(before="2026-01-01"),
                 user=_me())
-        assert sched.sync_busy("acc-1"), "the sync lost its lock"
+        assert sched.sync_busy(bare), "the sync lost its lock"
     finally:
         release.set()
         await sync
@@ -1357,6 +1396,42 @@ async def test_a_removal_answers_409_while_a_sync_holds_the_mailbox(
     assert err.value.detail == storage_routes.REMOVAL_BUSY_DETAIL
     assert calls == [], "the removal wrote while a sync held the mailbox"
     assert blocks == [None], "the removal opened a block after the read"
+    assert _no_lock_left()
+
+
+def test_the_lock_key_is_the_canonical_uuid() -> None:
+    """R7 fence ``email-storage-rr1-lock-key`` (review round 1). Each form
+    of one UUID gives one key. An id that is not a UUID keeps its text in
+    lower case, and the key never raises."""
+    forms = (_AID, _AID.upper(), _AID.replace("-", ""),
+             _AID.replace("-", "").upper(), "{" + _AID + "}", f"  {_AID}  ")
+    assert {sched._lock_key(f) for f in forms} == {_AID}
+    assert sched._lock_key(" ACC-1 ") == "acc-1"
+    assert sched._lock_key("") == ""
+    assert sched._lock_key("not a uuid at all") == "not a uuid at all"
+
+
+@pytest.mark.parametrize("bad", ["acc-1", "not-a-uuid", "1234", _AID + "0"])
+async def test_an_id_that_is_not_a_uuid_answers_404_before_any_block(
+    monkeypatch, bad,
+) -> None:
+    """R7 fence ``email-storage-rr1-lock-key`` (review round 1). Both
+    routes answer 404 for an id that is not a UUID, and open no block, so a
+    bad id never reaches Postgres as a 500. The removal takes no lock."""
+    calls: list = []
+    blocks: list = []
+    monkeypatch.setattr(storage_routes, "_tenant_session",
+                        _route_sessions(blocks, []))
+    _record_steps(monkeypatch, calls)
+    with pytest.raises(HTTPException) as gone:
+        await storage_routes.remove_older_mail(
+            bad, storage_routes.RemoveOlderRequest(before="2026-01-01"),
+            user=_me())
+    with pytest.raises(HTTPException) as seen:
+        await storage_routes.preview_older_mail(bad, before="2026-01-01",
+                                                user=_me())
+    assert gone.value.status_code == seen.value.status_code == 404
+    assert blocks == [] and calls == []
     assert _no_lock_left()
 
 
@@ -1383,13 +1458,13 @@ async def test_a_removal_runs_when_the_sync_ends_inside_the_wait(
     async def advance(db, aid, before):
         calls.append((db.block, "advance_import_since", sched.sync_busy(aid)))
         skipped.append(await sched._sync_account(
-            "acc-1", organization_id=_ORG, if_busy="skip"))
+            _AID.upper(), organization_id=_ORG, if_busy="skip"))
 
     monkeypatch.setattr(storage, "advance_import_since", advance)
-    sync = asyncio.create_task(sched._sync_account("acc-1", organization_id=_ORG))
+    sync = asyncio.create_task(sched._sync_account(_AID, organization_id=_ORG))
     await started.wait()
     removal = asyncio.create_task(storage_routes.remove_older_mail(
-        "acc-1", storage_routes.RemoveOlderRequest(before="2026-01-01"),
+        _AID, storage_routes.RemoveOlderRequest(before="2026-01-01"),
         user=_me()))
     await asyncio.sleep(0.05)
     assert calls == [], "the removal ran while the sync held the mailbox"
@@ -1411,7 +1486,7 @@ async def test_a_failed_removal_releases_the_lock(monkeypatch) -> None:
     _record_steps(monkeypatch, calls, fail_chunk=True)
     with pytest.raises(RuntimeError):
         await storage_routes.remove_older_mail(
-            "acc-1", storage_routes.RemoveOlderRequest(before="2026-01-01"),
+            _AID, storage_routes.RemoveOlderRequest(before="2026-01-01"),
             user=_me())
     assert [s for _, s, _ in calls] == ["advance_import_since",
                                         "remove_older_chunk"]
@@ -1846,3 +1921,239 @@ class TestTheGapsOnARealDatabase:
         finally:
             release_tenant(token)
             _wipe(p.admin_engine, [a, b])
+
+
+# ── 11. Review round 1, on a real database ──────────────────────────────────
+
+
+class _OlderPages:
+    """A provider for "Load older". It records each call, and it offers one
+    page of mail that is newer than the ceiling."""
+
+    def __init__(self, mail) -> None:
+        self.mail = list(mail)
+        self.calls: list[str] = []
+
+    async def authenticate(self) -> bool:
+        self.calls.append("authenticate")
+        return True
+
+    async def list_folders(self):
+        self.calls.append("list_folders")
+        return []
+
+    async def list_messages(self, *, folder, max_results, page_token,
+                            canonical_override):
+        self.calls.append("list_messages")
+        return list(self.mail), None
+
+    def credentials_dirty(self) -> bool:
+        return False
+
+
+def _orphans(admin, account_id: str) -> dict:
+    """The thread statuses and the drafts of the AI of one mailbox."""
+    state = _mailbox_state(admin, account_id)
+    return {"threads": state["threads"], "ai_drafts": state["ai_drafts"]}
+
+
+@_DB_GATE
+class TestReviewRoundOneOnARealDatabase:
+
+    @pytest.mark.parametrize("full", [True, False], ids=["at_limit", "under"])
+    async def test_load_older_at_the_limit_writes_nothing_and_calls_no_provider(
+        self, promoted, app_engine, monkeypatch, full,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-rr1-load-older`` (review round 1, P1).
+        ``POST /email/accounts/{id}/backfill`` reads the meter with the owner
+        predicate. At the limit it writes no row, builds no provider and
+        answers ``exhausted``, so the list stops its paging and shows no
+        error. Under the limit it writes the page as before."""
+        from acb_llm import key_store
+        from gateway.routes.email.transport import folders
+
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"lo-{uuid.uuid4().hex[:6]}@em-t6c.test"
+        x = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        _set(p.admin_engine, x, stored_bytes=5000)
+        now = _now()
+        tag = uuid.uuid4().hex[:6]
+        pager = _OlderPages([_msg(f"lo-{tag}-{d}", now - timedelta(days=d))
+                             for d in (20, 30)])
+        built: list[str] = []
+
+        def _build(name, creds):
+            built.append(name)
+            return pager
+
+        monkeypatch.setattr(storage, "storage_limit_bytes",
+                            lambda: 5000 if full else 5001)
+        monkeypatch.setattr(folders, "_instantiate_provider", _build)
+        monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+        me = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                         organization_id=p.org_b)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                res = await folders.backfill_folder(
+                    x, folders.BackfillRequest(folder="inbox"), user=me)
+            rows = _scalar(p.admin_engine, "SELECT count(*) FROM email_messages "
+                           "WHERE account_id = CAST(:a AS uuid)", a=x)
+            if full:
+                assert res == {"synced": 0, "next_page_token": None,
+                               "exhausted": True}
+                assert rows == 0, "Load older wrote mail at the limit"
+                assert built == [] and pager.calls == [], (
+                    "Load older reached the provider at the limit")
+            else:
+                assert res == {"synced": 2, "next_page_token": None,
+                               "exhausted": True}
+                assert rows == 2, "Load older under the limit wrote no mail"
+                assert built == ["microsoft"]
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+    @pytest.mark.parametrize("kind", ["before_em_t6", "in_setup"])
+    async def test_a_removal_closes_the_setup_of_a_mailbox_from_before_em_t6(
+        self, promoted, app_engine, kind,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-rr1-onboarding`` (review round 1, P2). A
+        mailbox from before EM-T6 has no ``import_since`` and no
+        ``onboarding_done_at``. The removal gives it its first
+        ``import_since``, and ``onboarding.ts`` would then open the rules
+        step. So the same UPDATE writes ``onboarding_done_at``. A mailbox in
+        its guided setup already has ``import_since``, and it keeps
+        ``onboarding_done_at`` NULL."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"ob-{uuid.uuid4().hex[:6]}@em-t6c.test"
+        x = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        now = _now()
+        before = now - timedelta(days=30)
+        cols: dict = {"initial_sync_done": True}
+        if kind == "in_setup":
+            cols["import_since"] = now - timedelta(days=90)
+        _set(p.admin_engine, x, **cols)
+        _seed_msg(p.admin_engine, account_id=x, org=p.org_b,
+                  received_at=now - timedelta(days=40), body="old")
+        me = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                         organization_id=p.org_b)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                done = await storage_routes.remove_older_mail(
+                    x, storage_routes.RemoveOlderRequest(before=before.isoformat()),
+                    user=me)
+            since, closed = _one(p.admin_engine, "SELECT import_since, "
+                                 "onboarding_done_at FROM email_accounts "
+                                 "WHERE id = CAST(:a AS uuid)", a=x)
+            assert done.removed == 1 and since == before
+            if kind == "before_em_t6":
+                assert closed is not None, (
+                    "the removal opened the guided setup of an old mailbox")
+            else:
+                assert closed is None, "the removal closed a running setup"
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+    @pytest.mark.parametrize("gap", [True, False], ids=["gap_left", "no_gap"])
+    async def test_the_limit_phase_ends_only_when_no_gap_is_left(
+        self, promoted, app_engine, monkeypatch, gap,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-rr1-gap`` (review round 1, P2). The
+        import stopped at ``import_reached_at``. A removal with ``before``
+        older than that point leaves a gap between the new floor and the
+        point, so the phase stays ``limit``. A ``before`` newer than the
+        point leaves no gap, and the phase ends. The meter is under the
+        limit in both cases."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        owner = f"gp-{uuid.uuid4().hex[:6]}@em-t6c.test"
+        x = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        now = _now()
+        _set(p.admin_engine, x, import_phase="limit", initial_sync_done=True,
+             import_since=now - timedelta(days=90),
+             import_reached_at=now - timedelta(days=45))
+        for days in (40, 44, 70):
+            _seed_msg(p.admin_engine, account_id=x, org=p.org_b,
+                      received_at=now - timedelta(days=days), body="mail")
+        before = now - timedelta(days=60 if gap else 30)
+        monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 10**9)
+        me = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                         organization_id=p.org_b)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                done = await storage_routes.remove_older_mail(
+                    x, storage_routes.RemoveOlderRequest(before=before.isoformat()),
+                    user=me)
+            phase = _scalar(p.admin_engine, "SELECT import_phase FROM "
+                            "email_accounts WHERE id = CAST(:a AS uuid)", a=x)
+            assert done.stored_bytes is not None and done.stored_bytes < 10**9
+            if gap:
+                assert done.removed == 1
+                assert phase == "limit", "the phase ended with a gap left"
+            else:
+                assert done.removed == 3
+                assert phase == "done", "the phase stayed with no gap left"
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+    async def test_the_orphan_deletes_touch_only_the_threads_of_this_removal(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-rr1-orphans`` (review round 1). The
+        removal in mailbox A of member M empties the thread ``t-gone``, and
+        its status and draft of the AI go. Three orphan rows of other causes
+        stay: (a) a row of A for a thread that the removal did not touch,
+        like the draft of a reply from A to mail of another mailbox, (b) a
+        row of mailbox B of M for ``t-gone``, and (c) a row of a colleague's
+        mailbox in the same organization for ``t-gone``. Without the
+        binding to the mailbox, (b) and (c) go. Without the binding to the
+        threads of the removal, (a) goes."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        tag = uuid.uuid4().hex[:6]
+        owner = f"or-{tag}@em-t6c.test"
+        a = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        b = _seed_account(p.admin_engine, org=p.org_b, owner=owner)
+        c = _seed_account(p.admin_engine, org=p.org_b,
+                          owner=f"colleague-{tag}@em-t6c.test")
+        now = _now()
+        _seed_msg(p.admin_engine, account_id=a, org=p.org_b,
+                  received_at=now - timedelta(days=40), body="old",
+                  thread_id="t-gone")
+        _seed_msg(p.admin_engine, account_id=a, org=p.org_b,
+                  received_at=now - timedelta(days=1), body="new",
+                  thread_id="t-new")
+        rows = ((a, "t-gone"), (a, "t-untouched"), (b, "t-gone"),
+                (c, "t-gone"))
+        for box, thread in rows:
+            _thread_status(p.admin_engine, account_id=box, org=p.org_b,
+                           thread_id=thread)
+            _ai_draft(p.admin_engine, account_id=box, org=p.org_b,
+                      thread_id=thread)
+        me = UserContext(email=owner, role=UserRole.EMPLOYEE,
+                         organization_id=p.org_b)
+        token = bind_tenant(p.org_b)
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                done = await storage_routes.remove_older_mail(
+                    a, storage_routes.RemoveOlderRequest(
+                        before=(now - timedelta(days=30)).isoformat()), user=me)
+            assert done.removed == 1
+            assert _orphans(p.admin_engine, a) == {
+                "threads": ["t-untouched"], "ai_drafts": ["t-untouched"]}, (
+                "(a) a row of a thread that the removal did not touch went")
+            for box, who in ((b, "(b) mailbox B of the member"),
+                             (c, "(c) a colleague's mailbox")):
+                assert _orphans(p.admin_engine, box) == {
+                    "threads": ["t-gone"], "ai_drafts": ["t-gone"]}, (
+                    f"{who} lost an orphan row")
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [a, b, c])

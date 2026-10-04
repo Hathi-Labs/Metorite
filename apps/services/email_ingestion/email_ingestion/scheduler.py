@@ -36,6 +36,7 @@ import functools
 import json
 import logging
 import os
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -937,8 +938,18 @@ async def _backfill_and_embed(
 
 
 def _lock_key(account_id: str) -> str:
-    """The key of a mailbox lock. A UUID in upper case is the same mailbox."""
-    return str(account_id).strip().lower()
+    """The key of a mailbox lock: the canonical form of the UUID.
+
+    A UUID in upper case, with no hyphens or in braces is the same mailbox,
+    because Postgres reads each form as the same ``uuid`` (WS-17 EM-T6c
+    review round 1). The manual sync takes the id from the request, so two
+    forms can meet here. An id that is not a UUID keeps its text in lower
+    case, and the key never raises."""
+    raw = str(account_id).strip()
+    try:
+        return str(uuid.UUID(raw))
+    except ValueError:
+        return raw.lower()
 
 
 def sync_busy(account_id: str) -> bool:
