@@ -44,6 +44,10 @@ from tests.unit._projects_agent_fakes import (  # noqa: E402
     load_agent_module,
     writes,
 )
+from tests.unit._sandbox_tools_fakes import (  # noqa: E402,F401 — fixtures by name (WS-43u)
+    sandbox,
+    short_tmp,
+)
 
 _M = load_agent_module()
 AGENT = "projects-assistant"
@@ -1861,7 +1865,10 @@ def _numbers_section() -> str:
 def test_the_numbers_section_carries_the_s7e_rules() -> None:
     """§10.7 items 1, 7 and 8. Each phrase is one rule the section carries.
     The ban on a file or code over the rows is ADVISORY (O1): no test can
-    stop the model from calling a floor tool, so this pins the words only."""
+    stop the model from calling a floor tool, so this pins the words only.
+    WS-43u (D85, D86) narrowed the ban to a run without ``run_command``. The
+    sandbox section of ``acb_skills.addendum`` comes before it in a run that
+    holds the tool."""
     section = _numbers_section()
     for phrase in (
         "pass `group_by` and `measure`",
@@ -1870,7 +1877,8 @@ def test_the_numbers_section_carries_the_s7e_rules() -> None:
         '"computed by the assistant from N of M tasks, not an Analytics\n  figure"',
         'A `statDashboard` tile title begins "Computed from N tasks".',
         "`truncated=yes`, compute no total, share or median from the rows.",
-        "Never write the rows with\n  `write_artifact`. Never run `run_script` or `code_task` over them.",
+        "If you do not hold `run_command`,\n  this rule binds. Never write the rows with `write_artifact`, and never put\n  them in a script.",
+        'If you hold `run_command`, the\n  section "Code in the sandbox" comes before this rule.',
         "admin can see them. Do not compute them from the rows either.",
         # The owner accepted the lead-time proxy (2026-09-24). This sentence
         # is its only fence, and it is advisory.
@@ -1892,6 +1900,81 @@ def test_the_three_old_number_rules_are_gone() -> None:
     assert "- **Numbers come from the server, or carry a label.**" in text
     assert "Draw a number that a tool printed, or a figure that you computed\nfrom `task_dataset` rows." in text
     assert "- **`task_dataset`** — a table of tasks, or the server's exact groups" in text
+
+
+# ── WS-43u: the instructions for code (maf_coding_engine.md §16.3) ───────────
+#
+# Mutations this block catches (R7), each run red once by hand on 2026-10-04:
+#
+# * ``_add_tools`` drops the ``extend_instructions`` call, or the gate of the
+#   section becomes empty: the covered case;
+# * the ban leaves ``instructions.md``: the uncovered case and the pin above;
+# * the sandbox section goes into the static ``instructions.md``: the
+#   uncovered case;
+# * the old ban text that names ``run_script`` and ``code_task`` comes back:
+#   the H-226 test.
+#
+# ``test_generated_addendum.py`` catches the rest: a gate that reads an empty
+# set as "every tool" or names a floor tool, the section in FULL_SECTIONS,
+# and the text that loses the HR gate, ``/workspace/.run/`` or
+# ``/workspace/outputs/``, or claims that no data leaves the platform.
+
+
+def test_h226_the_instructions_name_no_withheld_shell_tool() -> None:
+    """H-226's Check. D85 withholds ``run_script`` and ``code_task`` from this
+    agent, so the ban names neither one. It forbids any script over the rows
+    in a run without ``run_command``."""
+    text = _instructions()
+    assert "Never run `run_script` or `code_task` over them" not in text
+    assert "member data never goes into a script" not in text
+
+
+async def test_the_sandbox_rules_reach_only_a_run_that_holds_run_command(sandbox) -> None:  # noqa: F811
+    """Done-when 1, 2 and 5 of WS-43u, both cases through the real provider.
+
+    Covered (``projects:<org A>``): the turn holds ``run_command``, and its
+    instructions carry the sandbox section once. Not covered (org B, outside
+    the scope): the factory attaches no provider, so no turn can add the
+    section, and the agent's own instructions keep the ban.
+    """
+    from acb_skills import addendum as ad
+    from acb_skills import sandbox_tools as st
+    from agent_framework import AgentSession, SessionContext
+
+    from tests.unit._sandbox_broker_fakes import bound_run
+    from tests.unit._sandbox_tools_fakes import ORG_A, ORG_B, PA, new_thread
+
+    async def turn(org: str) -> tuple[Any, Any]:
+        thread = new_thread()
+        with bound_run(org, agent=PA, thread=thread):
+            agent = _M.build_agents()[0]
+            context = SessionContext(input_messages=[])
+            for p in agent.context_providers:
+                if isinstance(p, st.ProjectsSandboxProvider):
+                    await p.before_run(
+                        agent=agent, session=AgentSession(), context=context, state={},
+                    )
+        return agent, context
+
+    def names(context: Any) -> set[str]:
+        return {getattr(t, "name", "") for t in context.tools}
+
+    covered_agent, covered = await turn(ORG_A)
+    assert "run_command" in names(covered)
+    joined = "\n".join(covered.instructions)
+    assert joined.count(ad.SANDBOX_CODE_HEADING) == 1, covered.instructions
+    assert "/workspace/.run/" in joined and "/workspace/outputs/" in joined
+
+    plain_agent, plain = await turn(ORG_B)
+    assert "run_command" not in names(plain)
+    assert not any(isinstance(p, st.ProjectsSandboxProvider) for p in plain_agent.context_providers)
+    assert not any(ad.SANDBOX_CODE_HEADING in i for i in plain.instructions)
+    own = plain_agent.default_options["instructions"]
+    assert ad.SANDBOX_CODE_HEADING not in own
+    assert "If you do not hold `run_command`,\n  this rule binds." in own
+    # The covered view keeps the same own instructions, ban included: the
+    # section comes before the ban by its own words, never by a second file.
+    assert covered_agent.default_options["instructions"] == own
 
 
 async def test_task_dataset_says_which_columns_the_server_hid(monkeypatch) -> None:

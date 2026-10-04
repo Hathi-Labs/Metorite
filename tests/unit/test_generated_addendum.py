@@ -241,6 +241,81 @@ def test_fail_closed_still_intersects_admin_disables(monkeypatch) -> None:
     assert ti._CORE_STANDARD_TOOL_NAMES <= resolved
 
 
+# ── 4. WS-43u: the per-run sandbox section (maf_coding_engine.md §16.3) ────
+#
+# Mutations this block catches (R7), each run red once by hand on 2026-10-04:
+# the gate of the section emptied or widened to ``web_search``,
+# ``render_run_sections`` reading an empty set as "every tool", the section
+# moved into FULL_SECTIONS, the HR gate, ``/workspace/.run/`` or
+# ``/workspace/outputs/`` dropped from the text, and a "no data leaves the
+# platform" claim put in it.
+
+def test_the_sandbox_section_renders_only_with_run_command() -> None:
+    from acb_skills.tool_annotations import SANDBOX_TOOL_NAMES
+
+    text = ad.render_run_sections({"run_command", "file_access_write"})
+    assert text.startswith(ad.SANDBOX_CODE_HEADING)
+    assert text.count(ad.SANDBOX_CODE_HEADING) == 1
+    for held in (set(), {"file_access_write", "task_dataset"}, {"web_search"},
+                 set(ti._CORE_STANDARD_TOOL_NAMES)):
+        assert ad.render_run_sections(held) == "", held
+    # Every per-run gate is a sandbox tool, which the injection never adds.
+    for section in ad.RUN_SECTIONS:
+        assert section.gate and set(section.gate) <= SANDBOX_TOOL_NAMES
+
+
+def test_no_injected_addendum_names_the_sandbox_section() -> None:
+    """An unscoped agent (``None``) renders every injected section, so the
+    sandbox prose must live outside those registries. No full or compact
+    addendum, for any scope, names it, and no injected section is gated on a
+    sandbox tool."""
+    from acb_skills.tool_annotations import SANDBOX_TOOL_NAMES
+
+    for registry in (ad.FULL_SECTIONS, ad.COMPACT_SECTIONS, ad.MANDATORY_LINES):
+        for entry in registry:
+            assert not set(entry.gate) & SANDBOX_TOOL_NAMES, entry
+    for is_sub in (False, True):
+        for scope in (None, frozenset(ti._CORE_STANDARD_TOOL_NAMES),
+                      frozenset({"run_command"})):
+            text = ad.render_injected_tools_addendum(
+                is_sub_agent=is_sub, effective_scope=scope, registry_block="R",
+                risk_block="",
+            )
+            assert ad.SANDBOX_CODE_HEADING not in text, (is_sub, scope)
+
+
+def test_the_sandbox_section_names_the_rules_of_16_3() -> None:
+    """The six rules of the brief: code when needed, data through the
+    viewer-scoped tools into ``.run/``, the HR gate, the result in the
+    thread's own outputs, no network, and private skills. And no claim that
+    no data leaves the platform: the owner kept delegation on 2026-10-03, and
+    an agent that the run calls runs outside the sandbox."""
+    import re
+
+    text = ad.render_run_sections({"run_command"})
+    for phrase in (
+        "a custom chart, a calculation that the analytics tools do not give, "
+        "and a file conversion",
+        "already answers the question, use that tool and write no code",
+        "`task_dataset` and the other reads give only what this member can see",
+        "`/workspace/.run/rows.json`",
+        "Never write member data to `agent-data/`, `inputs/` or a `skills/` folder.",
+        "Never route around the HR gate.",
+        "not from `created_at` and `completed_at`",
+        "**Put the result in `/workspace/outputs/`.**",
+        "shows in the chat as an artifact card",
+        "Make only the result that the member asked for",
+        "**The sandbox has no network.** Do not install a package, and do not "
+        "fetch a URL from a script.",
+        "`agent-data/skills/<name>/`",
+        "A skill is private to the member who made it",
+    ):
+        assert phrase in text, phrase
+    assert not re.search(
+        r"leaves?\s+the\s+platform|off\s+the\s+platform|no\s+data", text, re.IGNORECASE,
+    )
+
+
 def test_fail_closed_on_injection_narrows_unscoped_agent(
     monkeypatch, _injection_env
 ) -> None:
