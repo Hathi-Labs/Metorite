@@ -1803,8 +1803,9 @@ These facts change or add to the text above:
   own path (`sandbox_broker.projects_mounts`, `agent_paths.own_skill_names`).
   A folder that is a link, or whose marker is not the member's, is left out.
   A container is reused only for the same skill set, so a new skill shows on
-  the next command in a fresh container. A member of the same thread who is
-  not the run member gets a fresh container too. No skill is shared by
+  the next command in a fresh container. A member of the same thread with
+  another skill set gets a fresh container too. Two members with no skill
+  can share one, because their mounts are the same. No skill is shared by
   design: a prebuilt skill of the agent lives in its code dir, and the tenant
   dir holds none. Fence: `tests/unit/test_sandbox_skill_privacy.py`, with a
   `sandbox_docker` test.
@@ -1824,9 +1825,10 @@ These facts change or add to the text above:
 - **Rotate the session secret.** A new `GATEWAY_SESSION_SECRET` changes
   every member id, so each skill folder then belongs to no member. Its name
   stays taken and no member can load it. As part of the rotation, delete
-  `agent-data/skills/*` in each covered tenant dir, and delete the
-  `agent_blob` and `agent_file_history` rows of those paths, or the next
-  rehydrate brings them back.
+  `agent-data/skills/*` in every tenant dir of every shared agent, not only
+  the covered ones, because the gateway write route records an author in
+  each. Delete the `agent_blob` and `agent_file_history` rows of the same
+  paths (`instance LIKE 'o:%'`), or the next rehydrate brings them back.
   `deploy/hostinger/README.md` holds the steps.
 - **The residual risk that stays.** `agent-data/` and `inputs/` stay shared
   by the organization, as H-201 built them. A member's model can still read
