@@ -19,8 +19,8 @@ import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { RecipientInput } from "./RecipientInput";
 import { ComposerQuote, AiButton } from "./ComposerAI";
 import {
-  FILES_TOO_LARGE, autosaveWait, createAutosave, failedSaveStatus, pickProblem,
-  saveFailureText, sendFailureText, type DraftStatus,
+  FILES_TOO_LARGE, autosaveWait, createAutosave, draftToUpdate, failedSaveStatus,
+  pickProblem, saveFailureText, sendFailureText, type DraftStatus, type SavedDraft,
 } from "../lib/draftAutosave";
 
 interface ComposePanelProps {
@@ -50,6 +50,9 @@ interface ComposePanelProps {
   defaultCc?: string;
   /** Seeds the editable body (e.g. text carried over from a popped-out reply). */
   replyToBody?: string;
+  /** A pop-out hands over an edit that the inline reply did not save. The
+   *  composer opens dirty, so its own save keeps it (EM-G3c-2 review round 1). */
+  unsavedEdit?: boolean;
   /** The quoted trailing chain — shown collapsed below the box, reattached on
    *  send, and kept OUT of the editable body so AI/edits never touch it. */
   quote?: string;
@@ -73,6 +76,7 @@ export function ComposePanel({
   defaultSubject = "",
   defaultCc = "",
   replyToBody,
+  unsavedEdit,
   quote,
   replyToMessageId,
   messageId,
@@ -110,11 +114,12 @@ export function ComposePanel({
     liveFromRef.current = fromId;
   }, [fromId]);
   /** Delete each draft of an old mailbox. Call it only once the new mailbox
-   *  holds the message, or the member could lose it. */
-  const dropStaleDrafts = () => {
-    for (const id of staleDraftsRef.current) void deleteEmail(id);
-    staleDraftsRef.current = [];
+   *  holds the message, or the member could lose it. The list empties in
+   *  place, so a save that holds the same list cannot delete a draft twice. */
+  const dropDrafts = (list: string[]) => {
+    for (const id of list.splice(0)) void deleteEmail(id);
   };
+  const dropStaleDrafts = () => dropDrafts(staleDraftsRef.current);
   // For each recipient, the mailbox that wrote to them last.
   const [usualSender, setUsualSender] = useState<Record<string, string>>({});
   // Gmail-style auto-save: the composed message persists as a Drafts row as you
@@ -127,6 +132,9 @@ export function ComposePanel({
   // after the window opened again leaves the new session alone.
   const [autosave] = useState(() => createAutosave());
   const sessionRef = useRef(0);
+  // The draft that the last autosave saved. A save of a session that ended
+  // reads its draft here, never in `draftIdRef` (EM-G3c-2 review round 1).
+  const lastSaveRef = useRef<SavedDraft | null>(null);
   // `hasAttachments` of the row that the last save returned (EM-G3c-2 item 12).
   const draftHasFileRef = useRef(false);
   // Uploaded files (base64) + picked AI artifacts (resolved server-side).
@@ -173,7 +181,9 @@ export function ComposePanel({
     // A pop-out keeps the From that the inline reply chose (EM-T8c review).
     setFromPick(defaultFromId && defaultFromId !== accountId
       ? { base: accountId, id: defaultFromId } : null);
-    dirty.current = false;
+    // The pop-out drops the pending save of the inline reply, so the edit
+    // that it held is saved here. A close flushes that save.
+    dirty.current = Boolean(unsavedEdit);
     setDraftStatus("idle");
     // Restore any carried attachments/artifacts (undo-send reopen); a fresh
     // compose passes none, so this stays empty as before.
@@ -249,20 +259,36 @@ export function ComposePanel({
     }
     const savingFrom = fromId;
     const session = sessionRef.current;
+    // The drafts that this session left in another mailbox (EM-G3c-2 review
+    // round 1). A save that ends after the session ended still deletes them.
+    const stale = staleDraftsRef.current;
     autosave.schedule(async () => {
+      // The save runs after the save before it settled, so it reads the
+      // draft id now. A first save that made the draft gave it the id.
+      const draftId = draftToUpdate(
+        { session, from: savingFrom },
+        { session: sessionRef.current, draftId: draftIdRef.current },
+        lastSaveRef.current,
+      );
       try {
-        setDraftStatus("saving");
+        if (sessionRef.current === session) setDraftStatus("saving");
         const saved = await saveDraft({
           accountId: savingFrom,
-          draftId: draftIdRef.current ?? undefined,
-          replyToMessageId: draftIdRef.current ? undefined : (replyTarget || undefined),
+          draftId: draftId ?? undefined,
+          replyToMessageId: draftId ? undefined : (replyTarget || undefined),
           to: toArr,
           cc: cc ? cc.split(",").map((s) => s.trim()).filter(Boolean) : [],
           subject,
           body: combinedBody(),
         });
-        // The window closed and opened again while this save ran.
-        if (sessionRef.current !== session) return;
+        // The window closed and opened again while this save ran. The save
+        // holds the message, so the drafts that its session left can go,
+        // unless the save wrote one of them. It sets nothing of the new session.
+        if (sessionRef.current !== session) {
+          lastSaveRef.current = { session, from: savingFrom, id: saved.id };
+          if (!stale.includes(saved.id)) dropDrafts(stale);
+          return;
+        }
         if (liveFromRef.current !== savingFrom) {
           // The From changed while this save ran. Its draft belongs to the
           // old mailbox, so it is stale, and the next save starts a new one
@@ -273,6 +299,7 @@ export function ComposePanel({
         }
         draftIdRef.current = saved.id;
         draftHasFileRef.current = saved.hasAttachments;
+        lastSaveRef.current = { session, from: savingFrom, id: saved.id };
         // A provider draft cannot move between mailboxes: the new mailbox
         // saved its own, so the drafts of the old one go (§11.6 case 7).
         dropStaleDrafts();

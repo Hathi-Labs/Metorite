@@ -32,8 +32,8 @@ import { LabelChip } from "./LabelChip";
 import { MessageTimelineModal } from "./MessageTimelineModal";
 import { useViewMode } from "@/components/ViewModeProvider";
 import {
-  FILES_TOO_LARGE, autosaveWait, createAutosave, failedSaveStatus, pickProblem,
-  saveFailureText, sendFailureText, type DraftStatus,
+  FILES_TOO_LARGE, autosaveWait, createAutosave, draftToUpdate, failedSaveStatus,
+  pickProblem, saveFailureText, sendFailureText, type DraftStatus, type SavedDraft,
 } from "../lib/draftAutosave";
 
 interface EmailDetailProps {
@@ -67,11 +67,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
     liveFromRef.current = fromId;
   }, [fromId]);
   /** Delete each draft of an old mailbox. Call it only once the new mailbox
-   *  holds the message, or the member could lose it. */
-  const dropStaleDrafts = () => {
-    for (const id of staleDraftsRef.current) void deleteEmail(id);
-    staleDraftsRef.current = [];
+   *  holds the message, or the member could lose it. The list empties in
+   *  place, so a save that holds the same list cannot delete a draft twice. */
+  const dropDrafts = (list: string[]) => {
+    for (const id of list.splice(0)) void deleteEmail(id);
   };
+  const dropStaleDrafts = () => dropDrafts(staleDraftsRef.current);
   const [usualSender, setUsualSender] = useState<Record<string, string>>({});
   const { isMobile } = useViewMode();
   const [starred, setStarred] = useState(email?.isStarred ?? false);
@@ -144,6 +145,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // a save that ends after the reply changed leaves the new reply alone.
   const [autosave] = useState(() => createAutosave());
   const replySessionRef = useRef(0);
+  // The draft that the last autosave saved. A save of a reply that ended
+  // reads its draft here, never in `draftIdRef` (EM-G3c-2 review round 1).
+  const lastSaveRef = useRef<SavedDraft | null>(null);
   // `hasAttachments` of the row that the last save returned (EM-G3c-2 item 12).
   const replyHasFileRef = useRef(false);
   const [loadingFullBody, setLoadingFullBody] = useState(false);
@@ -349,12 +353,22 @@ export function EmailDetail({ email }: EmailDetailProps) {
       : replyBody;
     const savingFrom = fromId;
     const session = replySessionRef.current;
+    // The drafts that this reply left in another mailbox (EM-G3c-2 review
+    // round 1). A save that ends after the reply ended still deletes them.
+    const stale = staleDraftsRef.current;
     autosave.schedule(async () => {
+      // The save runs after the save before it settled, so it reads the
+      // draft id now. A first save that made the draft gave it the id.
+      const draftId = draftToUpdate(
+        { session, from: savingFrom },
+        { session: replySessionRef.current, draftId: draftIdRef.current },
+        lastSaveRef.current,
+      );
       try {
-        setDraftStatus("saving");
+        if (replySessionRef.current === session) setDraftStatus("saving");
         const saved = await saveDraft({
           accountId: savingFrom,
-          draftId: draftIdRef.current ?? undefined,
+          draftId: draftId ?? undefined,
           // Reply/Reply-All thread onto the target message; Forward is
           // standalone, and so is a reply from another mailbox (EM-T8c).
           replyToMessageId: isForward || !sameConversation ? undefined : target.id,
@@ -362,8 +376,14 @@ export function EmailDetail({ email }: EmailDetailProps) {
           subject,
           body,
         });
-        // The reply or the mail changed while this save ran.
-        if (replySessionRef.current !== session) return;
+        // The reply or the mail changed while this save ran. The save holds
+        // the message, so the drafts that its reply left can go, unless the
+        // save wrote one of them. It sets nothing of the new reply.
+        if (replySessionRef.current !== session) {
+          lastSaveRef.current = { session, from: savingFrom, id: saved.id };
+          if (!stale.includes(saved.id)) dropDrafts(stale);
+          return;
+        }
         if (liveFromRef.current !== savingFrom) {
           // The From changed while this save ran: its draft belongs to the
           // old mailbox (EM-T8c review).
@@ -373,6 +393,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
         }
         draftIdRef.current = saved.id;
         replyHasFileRef.current = saved.hasAttachments;
+        lastSaveRef.current = { session, from: savingFrom, id: saved.id };
         // A provider draft cannot move between mailboxes (§11.6 case 7).
         dropStaleDrafts();
         setDraftStatus("saved");
@@ -664,6 +685,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
    *  natively (Drafts → Sent, no duplicate); otherwise we send a fresh message. */
   const handleInlineSend = async () => {
     if (!email) return;
+    // An old send error must not hide a later "Not saved" (review round 1).
+    setSendErr(null);
     if (!fromId) {
       setSendErr("This mail has no mailbox to send from");
       return;
@@ -800,6 +823,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
       to: replyTo,
       subject: replySubject(),
       replyToBody: replyBody,   // the typed new text
+      // The pop-out closes the reply, which drops its pending save. So the
+      // full composer opens dirty and saves that edit. A flush here as well
+      // would make two drafts (EM-G3c-2 review round 1).
+      unsavedEdit: autosave.pending,
       quote: replyQuote,        // the collapsed trailing chain
       replyToMessageId:
         replyMode === "forward" ? undefined : replyTarget.providerMessageId,

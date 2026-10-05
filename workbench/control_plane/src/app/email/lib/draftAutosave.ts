@@ -145,32 +145,62 @@ const BROWSER_TIMERS: AutosaveTimers = {
  * a close, a switch to another mail and an unmount each lost the last edit.
  * The cleanup now calls `hold`, which stops the timer and keeps the save.
  * A close, a switch and an unmount call `flush`, which runs it at once.
+ *
+ * One save runs at a time (review round 1). A save that the timer or a flush
+ * starts while the save before it runs waits until that save settles. So a
+ * flush during the first save of a draft cannot make a second draft, and the
+ * newer text lands last.
  */
 export interface Autosave {
   /** Start the wait again for `run`. The pending save of before is dropped. */
   schedule(run: () => unknown, waitMs: number): void;
   /** Stop the timer, and keep the pending save for a flush. */
   hold(): void;
-  /** Run the pending save at once. With no pending save, do nothing. */
+  /**
+   * Start the pending save: at once when no save runs, else when the save
+   * that runs settles. With no pending save, do nothing.
+   */
   flush(): void;
-  /** Drop the pending save: a discard, a send, or nothing to save. */
+  /**
+   * Drop the pending save: a discard, a send, or nothing to save. A save that
+   * started, or that waits for the save before it, still runs.
+   */
   cancel(): void;
   /** True while a save waits for its timer or for a flush. */
   readonly pending: boolean;
 }
 
+const ignore = () => undefined;
+
 export function createAutosave(timers: AutosaveTimers = BROWSER_TIMERS): Autosave {
   let run: (() => unknown) | null = null;
   let handle: unknown = null;
+  // The last save that started or waits to start, until it settles.
+  let last: Promise<void> | null = null;
   const stop = () => {
     if (handle !== null) timers.clear(handle);
     handle = null;
+  };
+  /** Run one save. The save shows its own failure, so the chain ignores it. */
+  const start = (next: () => unknown): Promise<void> => {
+    try {
+      return Promise.resolve(next()).then(ignore, ignore);
+    } catch {
+      return Promise.resolve();
+    }
   };
   const fire = () => {
     const next = run;
     run = null;
     stop();
-    if (next) void next();
+    if (!next) return;
+    // With no save that runs, the save starts now and reads the state of now:
+    // a switch flushes before it clears the draft id. Else it waits.
+    const mine = last ? last.then(() => start(next)) : start(next);
+    last = mine;
+    void mine.then(() => {
+      if (last === mine) last = null;
+    });
   };
   return {
     schedule(next, waitMs) {
@@ -188,4 +218,29 @@ export function createAutosave(timers: AutosaveTimers = BROWSER_TIMERS): Autosav
       return run !== null;
     },
   };
+}
+
+/** The draft that the last autosave of a composer saved, and its session. */
+export interface SavedDraft {
+  session: number;
+  from: string;
+  id: string;
+}
+
+/**
+ * The draft that an autosave updates, or null to create one. A composer asks
+ * it when the save runs, after the save before it settled (review round 1).
+ *
+ * A save of the live session updates the draft of the composer. A switch or
+ * a new reply can end the session before a flushed save runs. That save
+ * updates the draft that its own session saved last, in the same mailbox.
+ * It never reads the draft of the new session.
+ */
+export function draftToUpdate(
+  save: { session: number; from: string },
+  live: { session: number; draftId: string | null },
+  last: SavedDraft | null,
+): string | null {
+  if (save.session === live.session) return live.draftId;
+  return last && last.session === save.session && last.from === save.from ? last.id : null;
 }

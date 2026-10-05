@@ -341,6 +341,9 @@ interface EmailState {
     to: string;
     subject: string;
     replyToBody?: string;
+    /** A pop-out hands over an edit that the inline reply did not save yet.
+     *  The composer opens dirty, so it saves that edit (EM-G3c-2). */
+    unsavedEdit?: boolean;
     quote?: string;
     replyToMessageId?: string;
     // The LOCAL message id being replied to, so the popped-out composer's
@@ -438,7 +441,7 @@ interface EmailState {
   setSearchFilters: (filters: SearchFilter[]) => void;
   /** Drop the text AND the pills, returning to the plain folder list. */
   clearSearch: () => void;
-  openCompose: (defaults?: { accountId?: string; fromAccountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
+  openCompose: (defaults?: { accountId?: string; fromAccountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; unsavedEdit?: boolean; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
   closeCompose: () => void;
   hydrateEmail: (email: Email) => void;
   /** "Captured to Tasks" toast state (email → My Tasks inbox). */
