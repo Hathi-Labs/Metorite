@@ -10,6 +10,7 @@ DB + engine mocked.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,6 +27,19 @@ def _result(*, fetchone=None, fetchall=None):
     res.fetchone.return_value = fetchone
     res.fetchall.return_value = fetchall if fetchall is not None else []
     return res
+
+
+@contextmanager
+def _asked(ask: AsyncMock):
+    """The rule match of the backfill, in two steps (EM-T4a-2 PR-B1).
+
+    The gap loop reads the match in Block R and asks it with no block open.
+    The read finds no rule, so it touches no row of the fake database, and
+    the ask step is ``ask``. An ask that answers ``[]`` is the old composed
+    match that answered None."""
+    with patch.object(_eng, "_load_rules", AsyncMock(return_value=[])), \
+            patch.object(_eng, "ask_rule_match", ask):
+        yield ask
 
 
 def test_settings_has_follow_up_days_default_off() -> None:
@@ -336,8 +350,7 @@ async def test_backfill_handles_outbound_reply_and_engine_for_inbound() -> None:
                                    **_kw: ms)), \
             patch.object(_rz, "_upsert_thread_status",
                          AsyncMock(side_effect=rec)), \
-            patch.object(_eng, "_match_email_to_rule",
-                         AsyncMock(return_value=to_reply_match)), \
+            _asked(AsyncMock(return_value=[to_reply_match])), \
             patch.object(_rz, "_reconcile_thread_labels", AsyncMock()):
         await m._maybe_classify_threads("acc-1")
 
@@ -361,7 +374,7 @@ async def test_backfill_leaves_overflow_unwritten_for_retry() -> None:
             patch.object(_rz, "_upsert_thread_status",
                          AsyncMock(side_effect=lambda _d, _a, tid, st, *x, **k:
                                    writes.append((tid, st)))), \
-            patch.object(_eng, "_match_email_to_rule", AsyncMock(return_value=None)):
+            _asked(AsyncMock(return_value=[])):
         await m._maybe_classify_threads("acc-1")
 
     # Newest _REPLY_DETERMINE_CAP sent threads get the full AI determination; the
@@ -385,7 +398,7 @@ async def test_backfill_reprocesses_provisional_auto_thread() -> None:
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_mark_thread_replied", mark), \
             patch.object(_rz, "_upsert_thread_status", AsyncMock()), \
-            patch.object(_eng, "_match_email_to_rule", AsyncMock(return_value=None)):
+            _asked(AsyncMock(return_value=[])):
         await m._maybe_classify_threads("acc-1")
     mark.assert_awaited_once_with("acc-1", "t5")
 
@@ -465,8 +478,7 @@ async def test_backfill_marks_fyi_when_no_conversation_rule_matches() -> None:
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_upsert_thread_status",
                          AsyncMock(side_effect=rec)), \
-            patch.object(_eng, "_match_email_to_rule",
-                         AsyncMock(return_value=None)), \
+            _asked(AsyncMock(return_value=[])), \
             patch.object(_rz, "_thread_is_conversation",
                          AsyncMock(return_value=False)), \
             patch.object(_rz, "_reconcile_thread_labels", AsyncMock()):
@@ -487,7 +499,7 @@ async def test_backfill_skips_unchanged_threads() -> None:
             patch.object(_rz, "_load_assistant_about",
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_upsert_thread_status", AsyncMock()), \
-            patch.object(_eng, "_match_email_to_rule", match):
+            _asked(match):
         await m._maybe_classify_threads("acc-1")
     match.assert_not_awaited()  # latest message unchanged → no engine cost
 

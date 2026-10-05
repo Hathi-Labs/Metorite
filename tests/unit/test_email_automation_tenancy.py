@@ -538,7 +538,9 @@ class TestTheAutomationJobsWriteTheirOwnTenant:
                            received_at=datetime.now(UTC) - timedelta(hours=1))
         provider = _FakeProvider()
         _patch_providers(monkeypatch, provider)
-        monkeypatch.setattr(runner_mod, "classify_matches",
+        # EM-T4a-2 PR-B1: the ask step answers no match. The read and the
+        # resolver run their real SQL in B.
+        monkeypatch.setattr(runner_mod, "ask_rule_match",
                             AsyncMock(return_value=[]))
         app_dsn = p.app_url.render_as_string(hide_password=False)
         async with tenant_engine_scope(app_dsn):
@@ -689,7 +691,8 @@ class TestTheAutomationJobsWriteTheirOwnTenant:
                                 thread_id=gap_tid, categories=["Reply"])
         provider = _FakeProvider()
         _patch_providers(monkeypatch, provider)
-        monkeypatch.setattr(engine_mod, "classify_matches",
+        # EM-T4a-2 PR-B1: the ask step answers no match.
+        monkeypatch.setattr(engine_mod, "ask_rule_match",
                             AsyncMock(return_value=[]))
         app_dsn = p.app_url.render_as_string(hide_password=False)
         async with tenant_engine_scope(app_dsn):
@@ -1023,7 +1026,8 @@ class TestFixRoundOne:
             await db.execute(text("SELECT 1/0"))
 
         _patch_providers(monkeypatch, _FakeProvider())
-        monkeypatch.setattr(runner_mod, "classify_matches",
+        # EM-T4a-2 PR-B1: the ask step answers no match.
+        monkeypatch.setattr(runner_mod, "ask_rule_match",
                             AsyncMock(return_value=[]))
         monkeypatch.setattr(replyzero_mod, "project_reply_status_from_matches",
                             _projection_fails)

@@ -18,8 +18,11 @@ from gateway.routes.email.automation.engine import (
     _is_conversation_status_rule,
     _match_email_to_rule,
     _match_email_to_rules_multi,
+    ask_rule_match,
     classify_matches,
     email_dict_from_row,
+    read_classification,
+    resolve_classification,
 )
 # Re-exported action machinery (2.3 split): the lazy importers (cleaner sweep,
 # senders, rules) and the tests address these through the runner seam, and the
@@ -1652,6 +1655,17 @@ async def _process_past_emails_job(
                              account_id=account_id, error=type(exc).__name__)
 
 
+def _classify_unavailable(account_id: str, r: Any, exc: Exception) -> None:
+    """Log a row of the rules job that the classifier could not decide.
+
+    The classifier was down — this is NOT "no rule matched". The row gets no
+    apply and no stamp, so the next cycle retries it, instead of burning it
+    as processed forever (D-EM-8)."""
+    _log.warning("email.classify_unavailable_skip",
+                 account_id=account_id, message_id=str(r.id),
+                 error=str(exc)[:160])
+
+
 #: The caller name of the automatic run (`scheduler_hooks.auto_run_rules_for_account`).
 _SCHEDULER = "scheduler"
 
@@ -1762,70 +1776,74 @@ async def _run_rules_job(
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=org_domains,
                 attachments=attach.get(str(r.id), ""), self_addresses=selves)
-            # One block per row. It lands where the per-row commit used to
-            # land. EM-T4 owns the model and provider I/O that stays inside.
-            async with _tenant_session() as db:
-                # Match + conversation-resolve, through the ONE shared
-                # enforcement point (engine.classify_matches). Multi-rule
-                # applies every match; otherwise the single best. resolve is
-                # live-runs-only — the dry-run preview stays per-message and
-                # spends no thread-status model call. The resolver re-evaluates
-                # the whole thread so a conversation keeps its ONE status
-                # (#110), even when the message matched no rule.
-                try:
-                    matches = await classify_matches(
+            # Match + conversation-resolve, through the ONE shared split form
+            # of engine.classify_matches (EM-T4a-2 PR-B1, §10.4.6). Block R
+            # reads, the rule-match ask runs with NO block open, and Block W
+            # writes. resolve is live-runs-only — the dry-run preview stays
+            # per-message and spends no thread-status model call.
+            try:
+                async with _tenant_session() as db:
+                    plan = await read_classification(
                         db, account_id, r, email,
-                        multi_rule=multi_rule, resolve=not dry_run,
-                        provider=provider)
-                except LLMUnavailable as exc:
-                    # The classifier was down — this is NOT "no rule matched".
-                    # Leave the message unstamped (skip the watermark below)
-                    # so the next cycle retries it, instead of burning it as
-                    # processed forever.
-                    _log.warning("email.classify_unavailable_skip",
-                                 account_id=account_id, message_id=str(r.id),
-                                 error=str(exc)[:160])
-                    continue
-                apply = (not dry_run) and provider is not None
-                await _apply_matches(
-                    db, provider, r, frm, email, matches,
-                    apply=apply, dry_run=dry_run, about=about,
-                    signature=signature, account_user=account_user,
-                    account_id=account_id, cold_blocker=cold_blocker,
-                )
-                # Reply Zero: project this thread's status from the matched
-                # rule (latest message per thread only). Read-only of the
-                # mailbox — runs even when the provider failed to authenticate.
-                if not dry_run and r.thread_id \
-                        and r.thread_id not in projected_threads:
-                    projected_threads.add(r.thread_id)
-                    # The savepoint keeps a failed projection from aborting the
-                    # row block, so the watermark stamp below still lands.
-                    try:
-                        from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
-                            _reconcile_thread_labels,
-                            project_reply_status_from_matches,
-                        )
-                        async with _savepoint(db):
-                            keep_label = await project_reply_status_from_matches(
-                                db, account_id, r, matches)
-                            # Collapse the thread to that one conversation
-                            # label, clearing any stale Reply / Awaiting / FYI /
-                            # Follow-up left on earlier messages (inbox-zero
-                            # mutually-exclusive labels).
-                            if keep_label and provider is not None:
-                                await _reconcile_thread_labels(
-                                    db, provider, account_id, r.thread_id,
-                                    keep_label)
-                    except Exception as exc:  # noqa: BLE001
-                        _log.warning("email.project_reply_status_failed",
-                                     account_id=account_id,
-                                     error=str(exc)[:160])
-                # Stamp the watermark LAST — after Reply Zero projection — and
-                # only when the run could actually act (guarded inside the
-                # helper).
-                await _stamp_processed_watermark(
-                    db, r.id, provider=provider, dry_run=dry_run)
+                        multi_rule=multi_rule, resolve=not dry_run)
+                # Multi-rule applies every match; otherwise the single best.
+                asked = await ask_rule_match(plan.match)
+                # Block W: ONE block, where the per-row commit used to land.
+                # The apply, the projection and the stamp commit together.
+                # EM-T4 owns the model and provider I/O that stays inside.
+                async with _tenant_session() as db:
+                    # The resolver re-evaluates the whole thread so a
+                    # conversation keeps its ONE status (#110), even when the
+                    # message matched no rule.
+                    matches = await resolve_classification(
+                        db, account_id, r, plan, asked, provider=provider)
+                    apply = (not dry_run) and provider is not None
+                    await _apply_matches(
+                        db, provider, r, frm, email, matches,
+                        apply=apply, dry_run=dry_run, about=about,
+                        signature=signature, account_user=account_user,
+                        account_id=account_id, cold_blocker=cold_blocker,
+                    )
+                    # Reply Zero: project this thread's status from the matched
+                    # rule (latest message per thread only). Read-only of the
+                    # mailbox — runs even when the provider failed to
+                    # authenticate.
+                    if not dry_run and r.thread_id \
+                            and r.thread_id not in projected_threads:
+                        projected_threads.add(r.thread_id)
+                        # The savepoint keeps a failed projection from aborting
+                        # the row block, so the watermark stamp below still
+                        # lands.
+                        try:
+                            from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
+                                _reconcile_thread_labels,
+                                project_reply_status_from_matches,
+                            )
+                            async with _savepoint(db):
+                                keep_label = await project_reply_status_from_matches(
+                                    db, account_id, r, matches)
+                                # Collapse the thread to that one conversation
+                                # label, clearing any stale Reply / Awaiting /
+                                # FYI / Follow-up left on earlier messages
+                                # (inbox-zero mutually-exclusive labels).
+                                if keep_label and provider is not None:
+                                    await _reconcile_thread_labels(
+                                        db, provider, account_id, r.thread_id,
+                                        keep_label)
+                        except Exception as exc:  # noqa: BLE001
+                            _log.warning("email.project_reply_status_failed",
+                                         account_id=account_id,
+                                         error=str(exc)[:160])
+                    # Stamp the watermark LAST — after Reply Zero projection —
+                    # and only when the run could actually act (guarded inside
+                    # the helper).
+                    await _stamp_processed_watermark(
+                        db, r.id, provider=provider, dry_run=dry_run)
+            except LLMUnavailable as exc:
+                # From Block R, from the ask, or from the resolver at the head
+                # of Block W, before any write. The block rolls back, so the
+                # row is neither applied nor stamped (D-EM-8).
+                _classify_unavailable(account_id, r, exc)
 
         if not dry_run and provider is None:
             _log.warning("email.run_rules_no_provider", account_id=account_id,
