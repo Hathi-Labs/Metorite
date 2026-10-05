@@ -1060,10 +1060,14 @@ async def _restore_conversation_messages(
     ), {"aid": account_id, "tid": thread_id})).fetchall()
     if not rows:
         return
-    from email_ingestion.providers.base import canonical_folder
+    # The folder that each rule move left, as the provider decides it
+    # (WS-17 EM-G3b item 10, E-M10). A Gmail rule move files a user label
+    # as ``archive``, so ``canonical_folder`` of the label would never match.
+    from email_ingestion.providers.base import local_folder_after_move
     for r in rows:
-        dests = {canonical_folder((lbl or "").strip())
+        dests = {local_folder_after_move(provider, (lbl or "").strip())
                  for lbl in (r.move_labels or []) if (lbl or "").strip()}
+        dests.discard(None)
         if r.folder not in dests:
             continue  # not our doing (or the user re-filed it) — leave it
         try:

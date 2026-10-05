@@ -564,16 +564,30 @@ class BaseEmailProvider(ABC):
     async def move_to_folder(
         self, provider_message_id: str, folder: str
     ) -> str | None:
-        """Move a message to the given canonical folder on the provider.
+        """Move a message to the given folder on the provider.
 
-        ``folder`` is a canonical key (inbox/archive/trash/junk/...).  Default
-        implementation is a no-op; providers override with their semantics
-        (Gmail = label changes, Outlook = /move, IMAP = COPY+EXPUNGE).
+        ``folder`` is a canonical key (inbox/archive/trash/junk/...) or the
+        name of a user folder, in its own case. The default is a no-op, and
+        IMAP keeps it. Gmail changes labels, and Outlook calls ``/move``
+        (WS-17 EM-G3b item 11).
 
         Returns the message's new provider id if the move re-keys it (Outlook
         /move returns a fresh id), otherwise ``None`` (id unchanged).
         """
         return None
+
+    def folder_after_move(self, name: str) -> str | None:
+        """The folder key that a move to ``name`` leaves the message in.
+
+        WS-17 EM-G3b item 4 (``email_app_master_plan.md`` §12.3.4). A caller
+        stores this key in the local row, so the row matches the next parse.
+        It makes no network call. ``None`` means that the provider refuses
+        the move. The base returns ``canonical_folder(name)``. Gmail files a
+        user label as ``archive`` (O-GM-1). Call it through
+        :func:`local_folder_after_move`, because some test fakes do not
+        subclass this class.
+        """
+        return canonical_folder(name)
 
     # Canonical bulk actions, shared by every provider so callers name them once.
     BULK_ACTIONS = ("archive", "trash", "read", "unread", "star", "unstar")
@@ -878,3 +892,18 @@ class BaseEmailProvider(ABC):
     ) -> bytes:
         """Download an attachment's raw bytes."""
         ...
+
+
+def local_folder_after_move(provider: Any, name: str) -> str | None:
+    """The folder key that the local row stores after a move to ``name``.
+
+    WS-17 EM-G3b item 6 (``email_app_master_plan.md`` §12.3.4). The one
+    reader of :meth:`BaseEmailProvider.folder_after_move`. A provider that is
+    no ``BaseEmailProvider`` gets ``canonical_folder(name)``: an ``AsyncMock``
+    fake would return a coroutine, and a plain fake has no such method.
+    ``None`` means that the provider refuses the move, so the caller writes
+    nothing.
+    """
+    if isinstance(provider, BaseEmailProvider):
+        return provider.folder_after_move(name)
+    return canonical_folder(name)

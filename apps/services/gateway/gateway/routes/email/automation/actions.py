@@ -73,14 +73,12 @@ async def apply_label(
     await mirror_label(db, message_id, lbl)
 
 
-async def push_label(
-    provider: Any, message_id: str, provider_msg_id: str, label: str,
-) -> str | None:
-    """The provider half of ``apply_label``. Touches no database.
+def _writable_label(message_id: str, label: str | None) -> str | None:
+    """The cleaned label that a caller may write, or ``None``.
 
-    Returns the cleaned label that the caller must mirror, or ``None`` when
-    the label is empty or reserved (then nothing is written anywhere). A
-    provider failure raises, so the caller writes no mirror for it.
+    The ONE check of an empty or reserved label. ``push_label`` and the
+    mirror of a rule move both call it (EM-G3b review round 1), so neither
+    writes a label that the other refuses.
     """
     lbl = (label or "").strip()
     if not lbl:
@@ -91,6 +89,21 @@ async def push_label(
         # and writing it (provider or mirror) would make the state permanent.
         _log.warning("email.apply_label_reserved_indicator",
                      message_id=message_id, label=lbl)
+        return None
+    return lbl
+
+
+async def push_label(
+    provider: Any, message_id: str, provider_msg_id: str, label: str,
+) -> str | None:
+    """The provider half of ``apply_label``. Touches no database.
+
+    Returns the cleaned label that the caller must mirror, or ``None`` when
+    the label is empty or reserved (then nothing is written anywhere). A
+    provider failure raises, so the caller writes no mirror for it.
+    """
+    lbl = _writable_label(message_id, label)
+    if lbl is None:
         return None
     if provider is not None and provider_msg_id:
         await provider.set_labels(provider_msg_id, add=[lbl], remove=[])
@@ -363,6 +376,73 @@ async def _skip_for_paired_mailbox(
     return bool(skip)
 
 
+#: The canonical keys of the system folders. A move to one is never a user
+#: folder that the provider could not find.
+_SYSTEM_FOLDER_KEYS = frozenset(
+    {"inbox", "sent", "drafts", "trash", "junk", "archive"})
+
+
+def _move_can_be_a_noop(provider: Any) -> bool:
+    """True when a move that returns no new id may have moved nothing.
+
+    WS-17 EM-G3b item 11 (E-M11). That is a provider that re-keys its ids
+    (``REKEYS_MESSAGE_IDS``), where a move with no new id found no folder.
+    It is also a provider that keeps the no-op move of the base class. IMAP
+    keeps it, so IMAP still logs. Gmail keeps its ids by design, so a Gmail
+    label move logs nothing."""
+    from email_ingestion.providers.base import BaseEmailProvider
+    if getattr(provider, "REKEYS_MESSAGE_IDS", False) is True:
+        return True
+    move = getattr(type(provider), "move_to_folder", None)
+    return move is BaseEmailProvider.move_to_folder
+
+
+async def _move_folder_action(
+    db: Any, provider: Any, message_id: str, provider_msg_id: str,
+    label: str, account_id: str,
+) -> str:
+    """The MOVE_FOLDER rule action. Returns the provider id of the message
+    after the move, which is a new one when the provider re-keys it.
+
+    WS-17 EM-G3b item 7 (``email_app_master_plan.md`` §12.3.4, E-M12). The
+    provider gets the ORIGINAL-CASE name, so a created folder reads "Cold
+    Email", not "cold email". The row stores the folder that the provider
+    says the move leaves (``local_folder_after_move``). Gmail files a user
+    label as ``archive``, so after a Gmail label move ``mirror_label`` also
+    puts the label into ``categories``. The row then matches the next
+    parse."""
+    from email_ingestion.providers.base import (
+        canonical_folder,
+        local_folder_after_move,
+    )
+    dest = label.strip()
+    canon = canonical_folder(dest)
+    folder = local_folder_after_move(provider, dest)
+    if folder is None:
+        # The provider refuses this move (Gmail: sent, drafts or a system
+        # label), so no provider call and no local write.
+        raise ValueError(f"this mailbox cannot move a message to {dest!r}")
+    # Provider first: if the move raises, the local folder is NOT
+    # rewritten to a destination the message never reached.
+    new_pid = await provider.move_to_folder(provider_msg_id, dest)
+    await db.execute(text("UPDATE email_messages SET folder=:f, updated_at=now() WHERE id=:id"), {"id": message_id, "f": folder})
+    if folder != canon:
+        # The provider filed the name as no folder of that name. A Gmail
+        # user label is a label and never a folder (O-GM-1). The mirror
+        # takes the check of ``push_label``, so a reserved name such as
+        # "Uncategorized" writes no mirror (review round 1).
+        await mirror_label(db, message_id, _writable_label(message_id, dest))
+    if new_pid:
+        # Outlook /move re-keys the message — keep follow-up actions valid.
+        await db.execute(text("UPDATE email_messages SET provider_message_id=:pid WHERE id=:id"), {"id": message_id, "pid": new_pid})
+        return new_pid
+    if canon not in _SYSTEM_FOLDER_KEYS and _move_can_be_a_noop(provider):
+        # A user folder that produced no move id usually means the
+        # provider couldn't resolve/create it — surface it.
+        _log.info("email.move_folder_noop", account_id=account_id, folder=canon)
+    return provider_msg_id
+
+
 async def _apply_rule_actions(
     db: Any, provider: Any, message_id: str, provider_msg_id: str,
     actions: list[dict[str, Any]], email: dict[str, str] | None = None,
@@ -428,24 +508,9 @@ async def _apply_rule_actions(
                 await provider.apply_flags(provider_msg_id, is_starred=True)
                 await db.execute(text("UPDATE email_messages SET is_starred=true, updated_at=now() WHERE id=:id"), {"id": message_id})
             elif t == "MOVE_FOLDER" and a.get("label"):
-                # Store the canonical (lowercased) key locally, but hand the
-                # ORIGINAL-CASE name to the provider so a created folder reads
-                # "Cold Email", not "cold email".
-                from email_ingestion.providers.base import canonical_folder
-                dest = a["label"].strip()
-                canon = canonical_folder(dest)
-                # Provider first: if the move raises, the local folder is NOT
-                # rewritten to a destination the message never reached.
-                new_pid = await provider.move_to_folder(provider_msg_id, dest)
-                await db.execute(text("UPDATE email_messages SET folder=:f, updated_at=now() WHERE id=:id"), {"id": message_id, "f": canon})
-                if new_pid:
-                    # Outlook /move re-keys the message — keep follow-up actions valid.
-                    await db.execute(text("UPDATE email_messages SET provider_message_id=:pid WHERE id=:id"), {"id": message_id, "pid": new_pid})
-                    provider_msg_id = new_pid
-                elif canon not in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
-                    # A user folder that produced no move id usually means the
-                    # provider couldn't resolve/create it — surface it.
-                    _log.info("email.move_folder_noop", account_id=account_id, folder=canon)
+                provider_msg_id = await _move_folder_action(
+                    db, provider, message_id, provider_msg_id, a["label"],
+                    account_id)
             elif t == "LABEL" and a.get("label"):
                 # label_ai: the label is an AI prompt ({{...}}) resolved per-email.
                 lbl = a["label"]
