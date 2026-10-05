@@ -43,6 +43,17 @@ fences live here, because the scheduler fence cannot see a block in
   ``sent`` or ``drafts``, a row with no date, a tie, and a row of org A with
   the same account and thread do not void it.
 
+**EM-T4a-2, PR-B1.** Two more fences, with the same watched leaves:
+
+* ``email-decision-core-no-session-across-the-match-ask``. The rule-match
+  ask of ``_run_rules_job`` and of the gap loop of ``_maybe_classify_threads``
+  sees zero open blocks, in ``off``, ``shadow`` and ``on`` of
+  ``email.rule_match``. Block W is the next block after Block R, and it holds
+  every write. A companion plants the composed ``classify_matches`` in a
+  block. R8: the split jobs write their rows in org B only.
+* ``email-decision-core-steps``. Each new step takes ``db`` (the ask step
+  takes none), opens no block and calls no ``commit()``.
+
 Run (real Postgres)::
 
     bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
@@ -1684,10 +1695,10 @@ async def test_the_match_ask_runs_with_no_session_open(
     assert read[1] == 1 and block_w[1] == 1
     assert block_w[0] == read[0] + 1, (
         "the resolver ran in the read block, or a block opened between "
-        f"Block R and Block W (inside the read or across the ask): {calls}")
+        f"Block R and Block W (inside the read or across the ask): {blocks}")
     writes = _B1_WRITES["backfill" if job == "backfill" else "runner"]
     assert {name: blocks.get(name) for name in writes} == dict.fromkeys(
-        writes, block_w), f"Block W is not ONE block: {calls}"
+        writes, block_w), f"Block W is not ONE block: {blocks}"
     assert state["open"] == 0
 
 
