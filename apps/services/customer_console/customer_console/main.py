@@ -1087,12 +1087,42 @@ _FORWARDABLE = frozenset(
 _MAX_OUTPUT_TOKENS = 32_000
 
 
+class StreamOptions(BaseModel):
+    """`stream_options`, in the shape the OpenAI client sends it.
+
+    🔴 **Accepted, and never forwarded as sent.** The stream path always asks
+    the provider for `include_usage: true` (see `_stream_kwargs_for`), because
+    the usage frame is what the meter reads. A caller that sends `false` cannot
+    switch the meter off, and it gets the usage frame anyway, exactly as a
+    caller that sends nothing does.
+
+    ⚠️ `extra="forbid"` here too. The OpenAI SDK knows these two keys. A third
+    one is a new client feature, and it has to be decided, not passed through.
+    """
+
+    include_usage: bool | None = None
+    #: OpenAI-only padding on stream frames. Accepted and ignored: no other
+    #: vendor in a chain knows it, and it changes nothing we bill.
+    include_obfuscation: bool | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class CompletionRequest(BaseModel):
     """An OpenAI-shaped chat completion, addressed to a TIER.
 
     ⚠️ `extra="forbid"`. Everything the caller may forward is named in
     :data:`_FORWARDABLE`; anything else is rejected rather than passed through.
     See that constant for the hole this closes.
+
+    🔴 **The agent framework is a caller, and its request shape is fenced.**
+    On 2026-10-05 every native agent run failed its first model call with a
+    422, because MAF's ``OpenAIChatCompletionClient`` sends `stream_options` on
+    every stream and spells `max_tokens` as `max_completion_tokens`. The run
+    then fell back to Tier 2 and showed the member no tool steps.
+    ``tests/unit/test_router_accepts_agent_framework.py`` builds the bodies the
+    REAL client sends and validates them here, and it lists each key the client
+    can send that this model refuses, with the reason.
     """
 
     model: str = "tier-balanced"
@@ -1112,6 +1142,10 @@ class CompletionRequest(BaseModel):
     #: suppress their own meter by reusing one value forever (verification F2).
     client_ref: str | None = None
     stream: bool = False
+    #: Accepted so the agent framework's streams are not refused. Never
+    #: forwarded: the stream path sets its own value. :class:`StreamOptions`
+    #: says why, and a buffered call ignores it.
+    stream_options: StreamOptions | None = None
 
     temperature: float | None = None
     top_p: float | None = None
@@ -1122,6 +1156,11 @@ class CompletionRequest(BaseModel):
     n: int | None = Field(default=None, ge=1, le=4)
     stop: Any | None = None
     max_tokens: int | None = Field(default=None, ge=1)
+    #: The OpenAI spelling of `max_tokens`, and the one the agent framework
+    #: sends. Folded into `max_tokens` by :meth:`_one_output_ceiling`, so ONE
+    #: field carries the ceiling and `_kwargs_for` clamps it as before. litellm
+    #: then names it the way each vendor wants.
+    max_completion_tokens: int | None = Field(default=None, ge=1)
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
     logit_bias: dict | None = None
@@ -1135,6 +1174,24 @@ class CompletionRequest(BaseModel):
     thinking: dict | None = None
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _one_output_ceiling(self) -> CompletionRequest:
+        """Fold `max_completion_tokens` into `max_tokens`. Refuse two values.
+
+        A request that names two different ceilings is ambiguous, and picking
+        one silently would bill a length the caller did not ask for. The same
+        value twice is not ambiguous, so it passes.
+        """
+        if self.max_completion_tokens is None:
+            return self
+        if self.max_tokens is not None and self.max_tokens != self.max_completion_tokens:
+            raise ValueError(
+                "max_tokens and max_completion_tokens disagree "
+                f"({self.max_tokens} != {self.max_completion_tokens}); send one"
+            )
+        self.max_tokens = self.max_completion_tokens
+        return self
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
