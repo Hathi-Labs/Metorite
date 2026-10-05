@@ -439,8 +439,9 @@ describe("no raw Tailwind palette colours", () => {
     "app/email/components/automation/ai-settings/actionFormat.tsx": 50,
     "app/email/components/automation/ai-settings/common.tsx": 6,
     "app/email/components/automation/ai-settings/fixDialog.tsx": 6,
-    // 78 since WS-17 EM-G7: the Gmail OAuth chip left the banner (O-GM-5).
-    "app/integrations/page.tsx": 78,
+    // 73 since WS-17 EM-G7: both OAuth chips left the banner (O-GM-5, and
+    // review round 1: the banner gives no setup link).
+    "app/integrations/page.tsx": 73,
     "app/notes/components/BotIdentitySection.tsx": 4,
     "app/notes/components/LiveDock.tsx": 2,
     "app/observability/page.tsx": 26,

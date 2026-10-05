@@ -439,7 +439,16 @@ class Settings(BaseSettings):
     # leg and `GET /email/oauth/gmail/app` all refuse. Microsoft ignores it.
     # The one reader is
     # `gateway.routes.email.transport.oauth.gmail_connect_enabled`.
-    # `get_settings()` is cached, so a change needs a restart.
+    #
+    # ⚠️ Only the env file of the box sets it (`/opt/acb/app/.env`).
+    # `acb_common.env_guard` (layer B) refuses every `EMAIL_*` name on each
+    # Integrations write, so no tenant route can flip it. systemd loads that
+    # file into the environment at start, and `get_settings()` keeps one
+    # value. A route that clears the settings cache makes the process read
+    # the file again. That read can pick up a name that was absent at start,
+    # but it never replaces a value that the environment loaded at start. So
+    # restart the gateway after each change: the restart is the one moment at
+    # which the flip surely applies (EM-G7 review round 1).
     #
     # 🔴 A flip on a box is gate `enforcement-flip`. It waits for EM-G10,
     # after EM-G2 to EM-G5 and EM-G9 merge (email_app_master_plan.md

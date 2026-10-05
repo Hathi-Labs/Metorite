@@ -123,7 +123,9 @@ def gmail_connect_enabled() -> bool:
     holds a Google client, so the app alone cannot keep Gmail dark. While
     this is false, the capability read answers ``gmail: false``, and the
     authorize leg, the callback leg and the app facts refuse Gmail. A flip on
-    a box is gate ``enforcement-flip``, and it waits for EM-G10.
+    a box is gate ``enforcement-flip``, and it waits for EM-G10. Only the env
+    file of the box sets the flag, and a change needs a restart of the
+    gateway. The comment on the field in ``acb_common/settings.py`` says why.
 
     This is the one reader of the setting.
     """

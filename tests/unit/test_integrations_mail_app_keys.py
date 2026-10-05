@@ -30,12 +30,17 @@ R7 fences named here:
   for an unknown service, and it writes nothing. The id stays reserved.
 * ``test_another_key_still_works_on_each_route``: the write of a tenant key
   does not change.
+* ``test_the_microsoft_tile_offers_no_field_and_no_setup_step`` and
+  ``test_the_banner_gives_no_setup_step_and_no_link`` (review round 1).
+* ``test_the_startup_map_names_no_mail_app_key`` and
+  ``test_an_old_mail_app_row_never_reaches_the_environment`` (round 1).
 
 All of it is hermetic: the key store is a fake, and the env file lives in a
 temporary folder.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -261,3 +266,98 @@ async def test_another_key_still_works_on_each_route(box) -> None:
     # The mail apps of the box are unchanged through all three writes.
     for name in MAIL_KEYS:
         assert os.environ.get(name) == f"operator-{name.lower()}", name
+
+
+# ── The Microsoft tile and the banner give no setup step (round 1) ─────────
+
+REPO = Path(__file__).resolve().parents[2]
+PAGE = REPO / "workbench/control_plane/src/app/integrations/page.tsx"
+
+
+async def test_the_microsoft_tile_offers_no_field_and_no_setup_step(monkeypatch) -> None:
+    """The status row of ``microsoft-oauth`` holds no form field, no link and
+    no setup step. Its keys show read-only, because the operator sets them on
+    the server. ``gmail-oauth`` has no row at all."""
+    from acb_llm import key_store
+
+    monkeypatch.setattr(key_store, "get_key_store", lambda: object())
+    rows = await integrations.integration_status(agent=None, user=_executive())
+    by_service = {r["service"]: r for r in rows}
+
+    assert "gmail-oauth" not in by_service
+    ms = by_service["microsoft-oauth"]
+    assert ms["env_vars"] == [], "the form offers no mail key"
+    assert [v["key"] for v in ms["operator_env_vars"]] == [
+        "MSFT_OAUTH_CLIENT_ID", "MSFT_OAUTH_CLIENT_SECRET", "MICROSOFT_TENANT_ID",
+    ]
+    assert ms["setup_url"] == "" and ms["docs_url"] == "" and ms["instructions"] == ""
+    text = " ".join(
+        [ms["description"], *(v["label"] for v in ms["operator_env_vars"])]
+    ).lower()
+    for step in ("azure", "portal", "app registration", "redirect", "copy", "falls back"):
+        assert step not in text, step
+
+
+def test_the_banner_gives_no_setup_step_and_no_link() -> None:
+    """The banner of the Integrations page states a fact. It links nowhere
+    and tells the reader to register no app (review round 1, P2)."""
+    page = PAGE.read_text(encoding="utf-8")
+    start = page.index('data-testid="mail-app-banner"')
+    banner = page[start:page.index(")}", start)]
+    assert "<a " not in banner and "href" not in banner
+    assert "Outlook connect is not available yet" in banner
+    for step in ("register", "one-time setup", "set up", "OAuth"):
+        assert step not in banner, step
+    # No other part of the page sends a reader to a mail-app tile.
+    for link in ("search=Microsoft+OAuth", "search=Gmail+OAuth"):
+        assert link not in page, link
+
+
+# ── The startup load names no mail-app key (round 1, P3) ───────────────────
+
+
+def test_the_startup_map_names_no_mail_app_key() -> None:
+    from acb_llm.key_store import INTEGRATION_ENV_MAP
+
+    assert "gmail-oauth" not in INTEGRATION_ENV_MAP
+    assert "microsoft-oauth" not in INTEGRATION_ENV_MAP
+    names = {name for key_map in INTEGRATION_ENV_MAP.values() for name in key_map.values()}
+    mail = sorted(n for n in names if n.startswith(("GMAIL_OAUTH_", "MSFT_OAUTH_", "AUTH_")))
+    assert mail == [], mail
+    # Both ids stay reserved, so a custom integration cannot take one.
+    assert integrations.MAIL_APP_SERVICE_IDS <= integrations.RESERVED_SERVICE_IDS
+
+
+async def test_an_old_mail_app_row_never_reaches_the_environment(monkeypatch) -> None:
+    """A row that an older route stored, under either old id, stays in the
+    store and never reaches ``os.environ`` at startup. The env value of the
+    box is never copied into the store either."""
+    import os
+
+    from acb_llm.key_store import BUILTIN_INTEGRATION_TYPE, ProviderKeyStore
+
+    rows = {
+        "gmail-oauth:gmail_oauth_client_id": "attacker-client",
+        "gmail-oauth:gmail_oauth_client_secret": "attacker-secret",
+        "microsoft-oauth:msft_oauth_client_id": "attacker-client",
+        "microsoft-oauth:msft_oauth_client_secret": "attacker-secret",
+    }
+    ks = ProviderKeyStore()
+    copied: list[str] = []
+
+    async def _get_by_type(credential_type: str, organization_id: str | None = None):
+        return dict(rows) if credential_type == BUILTIN_INTEGRATION_TYPE else {}
+
+    async def _put(provider: str, *_a, **_kw) -> None:
+        copied.append(provider)
+
+    monkeypatch.setattr(ks, "get_by_type", _get_by_type)
+    monkeypatch.setattr(ks, "put", _put)
+    for name in MAIL_KEYS:
+        monkeypatch.setenv(name, f"operator-{name.lower()}")
+
+    await ks.configure_integrations()
+
+    for name in MAIL_KEYS:
+        assert os.environ[name] == f"operator-{name.lower()}", name
+    assert not [p for p in copied if p.startswith(("gmail-oauth:", "microsoft-oauth:"))]

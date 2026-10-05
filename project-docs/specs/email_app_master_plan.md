@@ -7726,8 +7726,10 @@ sees no change.
 7. **No operator text for a member (GM-25, D-EM-35).** Both entries of `_NOT_CONFIGURED` say only
    that the provider is not available yet. Neither names Integrations or a client ID.
 8. **The capability read (D-EM-35).** A new gated route `GET /email/oauth/providers` answers one
-   entry for each provider: `id` and `available`. `available` is `oauth_app(provider).configured`.
-   The answer holds booleans and ids only, never a client ID or a secret.
+   boolean for each provider, keyed by its id: `{"microsoft": bool, "gmail": bool}`. A value is
+   true when that app is configured (`oauth_app(provider).configured`). Gmail also needs the flag
+   of D-EM-36. The answer holds booleans only, never a client ID, a secret or a URL. EM-G8 reads
+   this shape (review round 1).
 9. **The app facts for a Workspace admin.** `GET /email/oauth/gmail/app` returns the client ID and
    the redirect URI, as it does for Microsoft (`transport/oauth.py:238-270`). An admin needs the
    client ID to trust the app. Google shows both values in each authorize URL.
@@ -7765,10 +7767,16 @@ and the bounce test fails. M3 adds the client ID to the providers route, and its
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_gmail_connect.py tests/unit/test_email_connect_backend.py \
   tests/unit/test_email_oauth_authorize_wiring.py tests/unit/test_email_oauth_app_info.py \
-  tests/unit/test_email_oauth_state.py tests/unit/test_email_owner_scope_fence.py -v -rs
-uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_gmail_connect.py
+  tests/unit/test_email_oauth_state.py tests/unit/test_email_owner_scope_fence.py \
+  tests/unit/test_integrations_mail_app_keys.py tests/unit/test_integrations_env_hardening.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email/transport/oauth.py \
+  apps/services/gateway/gateway/routes/email/transport/accounts.py \
+  tests/unit/test_email_gmail_connect.py tests/unit/test_integrations_mail_app_keys.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/api/email
 ```
+
+The ruff line names the files of this slice, and it exits clean. A ruff check of the whole package
+`routes/email` finds 278 errors that are older than this slice (review round 1, P3-2).
 
 **As built (2026-10-05, branch `email-gmail-g7`).** The build covers items 1 to 4 and 6 to 9, the
 BFF bounces (E-C1), the capability read (E-C2), O-GM-5 and D-EM-36. Item 5 is copy for EM-G8.
@@ -7803,22 +7811,33 @@ The slice adds no migration and changes no SQL.
   default, and `gmail_connect_enabled()` is its one reader. While it is off, the authorize leg
   refuses Gmail before it signs a state or reads a mailbox. The callback bounces each Gmail return
   with `provider_unavailable` before the token exchange, so it writes no row. It also refuses a
-  reconnect of a Gmail mailbox, and production holds none. A flip needs a restart, because
-  `get_settings()` keeps one value for the process.
-- **The Integrations refusal (O-GM-5).** `_refuse_mail_app_keys` is the first statement of
-  `POST /integrations/configure`, `PUT /integrations/keys` and `DELETE /integrations/keys`. It
-  answers 403 for each key that `is_mail_app_env` matches, and it writes no store row, no env var
-  and no file line. `is_mail_app_env` (`app_credentials.py`) matches `GMAIL_OAUTH_*`,
-  `MSFT_OAUTH_*` and `AUTH_MICROSOFT_ENTRA_ID_*` in any case. A mixed request fails whole. The
-  write of every other key does not change.
-- **The tile.** The `gmail-oauth` entry left `_SETUP_GUIDES` and `_GUIDE_CATEGORIES`.
-  `microsoft-oauth` stays, because the banner of the Integrations page reads its status. Its two
-  mail keys are refused by name. The banner names Microsoft only, and the palette debt of
-  `integrations/page.tsx` drops from 83 to 78.
+  reconnect of a Gmail mailbox, and production holds none. Only the env file of the box sets the
+  flag, because layer B of `env_guard` refuses each `EMAIL_*` name on each Integrations write.
+  Restart the gateway after each change. A cache clear can read the file again, but it never
+  replaces a value that the process loaded at start (review round 1).
+- **The Integrations refusal (O-GM-5).** Since the rebase on #633, layer B of
+  `acb_common.env_guard` is the one refusal. It answers 403 for each `GMAIL_OAUTH_*`,
+  `MSFT_OAUTH_*` and `AUTH_MICROSOFT_ENTRA_ID_*` key on configure, put and delete, in any case. It
+  writes no store row, no env var and no file line, and a mixed request fails whole. The helper
+  `_refuse_mail_app_keys` and its second list `is_mail_app_env` are gone (review round 1). The
+  write of each other key does not change.
+- **The tiles.** The `gmail-oauth` entry left `_SETUP_GUIDES` and `_GUIDE_CATEGORIES`, and
+  `MAIL_APP_SERVICE_IDS` keeps the id reserved. The `microsoft-oauth` tile stays for its status.
+  Since round 1 it has no setup step, no link and no form field. The status lists its three keys
+  read-only. The banner names Outlook only, as plain text with no link. The palette debt of
+  `integrations/page.tsx` drops from 83 to 73.
+- **The manual route (review round 1).** `POST /email/accounts` answers 403 for `gmail` and
+  `microsoft` before it encrypts, writes or starts a sync. It took tokens from the body, so it
+  could write a Gmail row while the connect was dark. No caller sends either provider, so the route
+  now adds an IMAP mailbox only.
+- **The startup load (review round 1).** The `INTEGRATION_ENV_MAP` of `key_store` has no
+  `gmail-oauth` and no `microsoft-oauth` entry. Layer B already skipped each of their rows, so the
+  two entries were dead. A stored row under either id never reaches `os.environ`.
 
-**The fences, as built.** `tests/unit/test_email_gmail_connect.py` holds 53 cases: the eight of
-the spec, the dark flag, the one reader of the flag and the one list of mail-app names.
-`tests/unit/test_integrations_mail_app_keys.py` holds 21 cases for O-GM-5. `bounce.test.ts` and
+**The fences, as built.** `tests/unit/test_email_gmail_connect.py` holds 60 cases. They cover
+the eight of the spec, the dark flag, its one reader, the mail-app names of `env_guard` and the
+manual route. `tests/unit/test_integrations_mail_app_keys.py` holds 20 cases for O-GM-5, the tiles,
+the banner and the startup load. `bounce.test.ts` and
 the two `route.test.ts` files beside the BFF routes run each bounce for both providers. These
 older suites changed:
 
@@ -7830,7 +7849,7 @@ older suites changed:
   `oauth_app_info` names Gmail.
 - `test_email_oauth_state.py` and `test_email_oauth_authorize_wiring.py` did not change. They read
   `error` only, or a source shape that stays.
-- `conformance.test.ts`: the palette debt of the Integrations page, 83 to 78.
+- `conformance.test.ts`: the palette debt of the Integrations page, 83 to 73.
 
 **Mutations, as run (2026-10-05).** Each mutation ran against its named test and turned it red.
 Each file then went back to its exact SHA-256.
@@ -7844,23 +7863,42 @@ Each file then went back to its exact SHA-256.
 | M5 | `admin_policy_enforced` maps to `provider_error` | `test_google_errors_map_to_their_reasons`, 2 of 7 |
 | M6 | `bounceQuery` drops `provider` (`bounce.ts`) | 20 of the 58 vitest cases in `src/app/api/email/oauth` |
 | M7 | `bounceQuery` echoes each provider value | 5 of the 58 vitest cases |
-| M8 | `PUT /integrations/keys` accepts `GMAIL_OAUTH_CLIENT_ID` (both refusals out) | `test_put_refuses_a_mail_app_key`, 5 of 5 |
-| M9 | `POST /integrations/configure` accepts `AUTH_MICROSOFT_ENTRA_ID_SECRET` | `test_configure_refuses_each_mail_app_key[AUTH_MICROSOFT_ENTRA_ID_SECRET]` |
+| M8 | Round 1: `PUT /integrations/keys` skips layer B for a mail-app key | `test_put_refuses_a_mail_app_key`, 2 of 2 |
+| M9 | Round 1: `POST /integrations/configure` skips layer B for `AUTH_MICROSOFT_ENTRA_ID_SECRET` | `test_configure_refuses_each_mail_app_key[AUTH_MICROSOFT_ENTRA_ID_SECRET]` |
 | M10 | The capability read returns the client IDs in a dict | `test_the_providers_route_answers_booleans_only` |
 | M11 | The capability read ignores the flag | `test_flag_off_the_capability_says_gmail_false` |
 | M12 | The authorize leg ignores the flag | `test_flag_off_the_authorize_leg_refuses_and_signs_nothing`, 2 of 2 |
 | M13 | The callback ignores the flag | `test_flag_off_the_callback_refuses_and_writes_nothing`, 2 of 2 |
+| M14 | Round 1: `POST /email/accounts` takes `gmail` and `microsoft` again | `test_the_manual_route_refuses_each_oauth_provider`, 4 of 6 |
+| M14b | Round 1: `POST /email/accounts` drops only its 403 | `test_the_manual_route_refuses_each_oauth_provider`, 4 of 6 |
+| M15 | Round 1: the startup map maps `gmail-oauth` again | `test_the_startup_map_names_no_mail_app_key` |
+
+Round 1 ran M8, M9 and M11 to M15 again on the rebased code, and each one was red. Under M9,
+layer C still answers 422, so the test reads the 403 of layer B alone.
 
 **Known limits of EM-G7 (follow-ups, not fixed here).**
 
-- `acb_llm.key_store.configure_integrations` still maps the store rows `gmail-oauth:*` and
-  `microsoft-oauth:*` to `GMAIL_OAUTH_*` and `MSFT_OAUTH_*` at each start. It also copies a set
-  env value into the store of the sole organization. No route can write such a row now. A row from
-  before this slice still reaches `os.environ` at the next start, and its fix is owner gate §6 (f).
-- The `microsoft-oauth` tile still shows its two mail keys, and a save of either one answers 403.
-  EM-G8 or a follow-up can make the tile read-only.
+- Round 1 closed the two limits that stood here: the startup map and the Microsoft tile.
 - The read-only probe `GET /integrations/test?service=gmail-oauth` stays. It returns a status, not
   a key.
+
+**Review round 1 (2026-10-05).** The review failed EM-G7 on two P1s. The security fix #633 closed
+both on main: a newline in a value, and a configure write of `EMAIL_GMAIL_CONNECT`. The branch is
+rebased on #633, and these findings are closed:
+
+- **One source for the refused names.** Layer B of `env_guard` refuses the mail-app keys. The
+  second list in `app_credentials.py` and the helper in `integrations.py` are gone.
+  `test_every_name_that_oauth_app_reads_is_a_platform_name` holds the two together.
+- **P2, the tiles and the banner.** No setup step, no link and no form field for a mail app.
+  Fences: `test_the_microsoft_tile_offers_no_field_and_no_setup_step` and
+  `test_the_banner_gives_no_setup_step_and_no_link`.
+- **P2 and P3-1, the manual route.** `POST /email/accounts` refuses both OAuth providers (M14).
+- **P3, the startup map.** The two dead entries are gone (M15).
+- **P3-2, the verify command.** It names the files of the slice.
+- **The restart.** The settings comment, the as-built notes and §12.4 give the reason.
+- **The M8 cases.** Each case reaches layer B. `test_the_gmail_oauth_service_is_gone` holds the
+  400 of the removed service on its own.
+- **The docstring of `oauth_app`.** It names the env file of the box, not Integrations.
 
 #### 12.3.10 EM-G8 — the connect UI
 
@@ -7876,7 +7914,7 @@ provider that is half built.
 
 1. **Availability (D-EM-35, GM-26).** `CONNECT_PROVIDERS` no longer fixes `available`. The page
    reads `GET /email/oauth/providers` through `gatewayFetch`, as `lib/api.ts:524` reads the app
-   facts.
+   facts. The answer is `{"microsoft": bool, "gmail": bool}` (EM-G7 item 8).
 2. **A failed read** keeps Microsoft live and Gmail "Coming soon". `retryTarget` and
    `rangeStepProviderFrom` (`lib/connect.ts:248-286`) take the live set from the read.
 3. **The copy (GM-27).** The empty state, the decline text, the generic failure and the callback
@@ -8033,8 +8071,11 @@ each one needs a Google account that Metorite owns (`work_plan.md` §6.0 B).
 
 **The dark flag (D-EM-36).** The box holds a Google client today, and nobody in this plan set it
 (Q-GM-6). So `EMAIL_GMAIL_CONNECT` keeps the Gmail connect dark until EM-G10. Set it to `true`
-only at EM-G10, after EM-G2 to EM-G5 and EM-G9 merge. The flip is gate `enforcement-flip`. Restart
-the gateway after the flip, because it reads the flag once.
+only at EM-G10, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`.
+
+**How to flip it.** Set it in the env file of the box, because no Integrations write can set an
+`EMAIL_*` name. Then restart the gateway. A later read of the file never replaces a value that
+the process loaded at start.
 
 **The limits of Testing.** Read these before EM-G10.
 

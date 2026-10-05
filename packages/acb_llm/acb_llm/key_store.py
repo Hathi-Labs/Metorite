@@ -104,15 +104,12 @@ INTEGRATION_ENV_MAP: dict[str, dict[str, str]] = {
     "google-sheets": {
         "sa_json_path": "GOOGLE_SHEETS_SA_JSON_PATH",
     },
-    "gmail-oauth": {
-        "gmail_oauth_client_id": "GMAIL_OAUTH_CLIENT_ID",
-        "gmail_oauth_client_secret": "GMAIL_OAUTH_CLIENT_SECRET",
-    },
-    "microsoft-oauth": {
-        "msft_oauth_client_id": "MSFT_OAUTH_CLIENT_ID",
-        "msft_oauth_client_secret": "MSFT_OAUTH_CLIENT_SECRET",
-        "microsoft_tenant_id": "MICROSOFT_TENANT_ID",
-    },
+    # ⚠️ No `gmail-oauth` and no `microsoft-oauth` entry (WS-17 EM-G7 review
+    # round 1, O-GM-5). Each name they mapped is a platform name, so layer B
+    # skipped every row and never copied the env value into the store. The
+    # mail apps are the deployment's (D-EM-1): an operator sets them in the
+    # env file of the box. `integrations.MAIL_APP_SERVICE_IDS` keeps both ids
+    # reserved. Fence: `tests/unit/test_integrations_mail_app_keys.py`.
 }
 
 #: The ``credential_type`` of a built-in integration key. Startup loads

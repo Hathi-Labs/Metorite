@@ -619,3 +619,90 @@ def test_every_name_that_oauth_app_reads_is_a_platform_name() -> None:
     src = path.read_text(encoding="utf-8")
     for second in ("MAIL_APP_ENV_PREFIXES", "is_mail_app_env", "GMAIL_OAUTH_\"", "startswith("):
         assert second not in src, second
+
+
+# ── The manual route connects IMAP only (review round 1) ───────────────────
+
+
+class _NoWrite:
+    """Stands in for each edge of ``POST /email/accounts`` that a write needs."""
+
+    def __init__(self) -> None:
+        self.blocks = 0
+        self.encrypted = 0
+        self.synced: list[str] = []
+
+    def tenant_session(self, org):
+        self.blocks += 1
+        raise _ReachedTheDatabase
+
+    def encrypt(self, raw: str) -> str:
+        self.encrypted += 1
+        return "enc:" + raw
+
+    async def sync(self, account_id, organization_id=None):
+        self.synced.append(account_id)
+
+
+class _ReachedTheDatabase(Exception):
+    """The route reached its first database block."""
+
+
+@pytest.fixture()
+def no_write(monkeypatch) -> _NoWrite:
+    import email_ingestion.scheduler as sched
+    from acb_llm import key_store
+    from gateway.routes.email.transport import accounts
+
+    s = _NoWrite()
+    monkeypatch.setattr(accounts, "_tenant_session", s.tenant_session)
+    monkeypatch.setattr(key_store, "get_key_store", lambda: s)
+    monkeypatch.setattr(sched, "refresh_account_sync", s.sync)
+    return s
+
+
+@pytest.mark.parametrize("flag", [False, True], ids=["dark", "flag-on"])
+@pytest.mark.parametrize("provider", ["gmail", "microsoft", "Gmail"])
+async def test_the_manual_route_refuses_each_oauth_provider(
+    no_write, monkeypatch, provider, flag,
+) -> None:
+    """``POST /email/accounts`` took tokens from the body and wrote a Gmail
+    row while the connect was dark (review round 1, P2 and P3-1). Gmail and
+    Microsoft connect through the OAuth flow only, so the route refuses both
+    before it encrypts, opens a database block or starts a sync."""
+    from gateway.routes.email.transport import accounts
+
+    monkeypatch.setattr(get_settings(), "email_gmail_connect", flag, raising=False)
+    req = accounts.CreateAccountRequest(
+        provider=provider, email_address="dana@gmail.example",
+        credentials={"access_token": "at", "refresh_token": "rt"},
+    )
+    with pytest.raises(HTTPException) as exc:
+        await accounts.create_account(req, user=_member())
+
+    if provider == "Gmail":
+        assert exc.value.status_code == 400, "an unknown provider stays a 400"
+    else:
+        assert exc.value.status_code == 403
+        assert "sign-in flow" in exc.value.detail
+    assert no_write.blocks == 0, "no row: the route opened no database block"
+    assert no_write.encrypted == 0
+    assert no_write.synced == [], "no sync started"
+
+
+async def test_the_manual_route_still_takes_imap(no_write) -> None:
+    """The refusal is for the OAuth providers only. An IMAP request reaches
+    its first database block, as before."""
+    from gateway.routes.email.transport import accounts
+
+    req = accounts.CreateAccountRequest(
+        provider="imap", email_address="m@contoso.test",
+        credentials={
+            "imap_host": "imap.contoso.test", "imap_port": 993,
+            "imap_username": "m", "imap_password": "p",
+            "smtp_host": "smtp.contoso.test", "smtp_port": 587,
+        },
+    )
+    with pytest.raises(_ReachedTheDatabase):
+        await accounts.create_account(req, user=_member())
+    assert no_write.blocks == 1
