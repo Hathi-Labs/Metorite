@@ -79,6 +79,9 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     # The Gmail connect is dark by default since EM-G7. The Gmail picker case
     # below tests the connect itself, so the flag is on here.
     monkeypatch.setattr(s, "email_gmail_connect", True, raising=False)
+    # An empty member list lets each member through (EM-G7b), so a list in
+    # the developer's own environment cannot change this case.
+    monkeypatch.setattr(s, "email_gmail_connect_members", "", raising=False)
     monkeypatch.setenv("WORKBENCH_PUBLIC_URL", "https://app.example.test")
 
 
