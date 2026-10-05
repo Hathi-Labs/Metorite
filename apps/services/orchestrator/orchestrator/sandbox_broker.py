@@ -1215,26 +1215,57 @@ class SandboxBroker:
         dirs. The dir is named by the container and the skill set, so a start
         never changes a cover that a running container mounts. The startup
         sweep removes every cover.
+
+        Two first starts of one thread can build the same cover at once. Each
+        builds a temp dir and renames it into place, so neither sees the
+        other's half-made dir. Any file-system error is
+        :class:`SandboxUnavailable`, which ``run_command`` reports as a failed
+        sandbox and never as a crash.
         """
+        try:
+            return self._build_skill_cover(binding)
+        except OSError as exc:
+            _log.warning("sandbox_broker.skill_cover_failed", error=str(exc)[:200])
+            raise SandboxUnavailable(
+                "The cover of the skills folder could not be made. Try again."
+            ) from exc
+
+    def _build_skill_cover(self, binding: RunBinding) -> Path:
         base = self._skill_covers_dir()
         base.mkdir(parents=True, exist_ok=True)
         if _is_link(base):
             raise SandboxUnavailable("The skill cover dir is not a real dir.")
         path = base / _digest(binding.name, *binding.skills, length=24)
         want = set(binding.skills)
-        if _is_link(path) or (path.exists() and not path.is_dir()):
-            raise SandboxUnavailable("A skill cover is not a real dir.")
-        if path.is_dir():
+
+        def clean() -> bool:
+            if _is_link(path) or (path.exists() and not path.is_dir()):
+                raise SandboxUnavailable("A skill cover is not a real dir.")
+            if not path.is_dir():
+                return False
             have = {e.name: e for e in os.scandir(path)}
-            clean = set(have) == want and all(
+            return set(have) == want and all(
                 e.is_dir(follow_symlinks=False) and not any(os.scandir(e.path))
                 for e in have.values()
             )
-            if not clean:
-                shutil.rmtree(path)
-        path.mkdir(exist_ok=True)
-        for name in binding.skills:
-            (path / name).mkdir(exist_ok=True)
+
+        if clean():
+            return path.resolve()
+        tmp = base / f".tmp-{uuid.uuid4().hex}"
+        tmp.mkdir()
+        try:
+            for name in binding.skills:
+                (tmp / name).mkdir()
+            if path.is_dir() and not clean():
+                shutil.rmtree(path, ignore_errors=True)
+            try:
+                os.rename(tmp, path)
+            except OSError:
+                # Another start renamed its cover into place first.
+                if not clean():
+                    raise
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
         return path.resolve()
 
     def _lock_for(self, source: Path) -> asyncio.Lock:

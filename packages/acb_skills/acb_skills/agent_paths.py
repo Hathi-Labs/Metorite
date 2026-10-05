@@ -72,10 +72,12 @@ __all__ = [
     "SKILL_AUTHOR_PURPOSE",
     "SKILL_FOREIGN",
     "SKILL_MINE",
+    "SKILL_NAME_RULE",
     "SKILL_UNCLAIMED",
     "TENANT_INSTANCE_PREFIX",
     "THREAD_HEADS",
     "InvalidAgentName",
+    "SkillNameRefused",
     "SkillOwnedElsewhere",
     "agent_code_dir",
     "agent_state_dir",
@@ -500,6 +502,11 @@ def skill_owner(
 #: A skill folder name that can be a mount target as it is: no dot first, no
 #: separator, and no character that a ``--mount`` spec cannot hold.
 _SKILL_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
+#: Why a skill folder name is refused. The model reads it, so it says the rule.
+SKILL_NAME_RULE = (
+    "a skill folder name may hold only ASCII letters, digits, '.', '_' and '-', "
+    "must not start with '.' or '-', and must be at most 128 characters"
+)
 
 
 def own_skill_names(workspace: Path, member: str | None) -> tuple[str, ...]:
@@ -531,6 +538,16 @@ class SkillOwnedElsewhere(PermissionError):
     """Another member made this skill folder, or claimed it first (a race)."""
 
 
+class SkillNameRefused(ValueError):
+    """A new skill folder has a name that the sandbox cannot mount.
+
+    Its text is the refusal that the model reads: ``Refused: <the rule>.``
+    """
+
+    def __init__(self) -> None:
+        super().__init__(f"Refused: {SKILL_NAME_RULE}.")
+
+
 def refused_write(
     workspace: Path, rel: str, *, member: str | None, thread_id: str | None = None,
     own_slug: str | None = None,
@@ -542,6 +559,9 @@ def refused_write(
        H-227). The own folder is *own_slug*, else the slug of *thread_id*.
     3. A skill folder that is not this member's is refused: another member's,
        and one with a marker that cannot be read (:func:`skill_owner`).
+
+    The name rule of a NEW skill folder is :func:`claim_skill`'s, so a folder
+    made before the rule still changes and deletes.
     """
     parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
     if parts and parts[-1] == SKILL_AUTHOR_MARKER:
@@ -577,11 +597,25 @@ def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, byt
         raise SkillOwnedElsewhere("that skill belongs to another member")
     if owner == SKILL_MINE:
         return upgraded[0] if upgraded else None
+    # A new skill folder must have a name that the sandbox can mount, so no
+    # skill lists in the prompt that cannot run (:data:`SKILL_NAME_RULE`).
+    if not _SKILL_NAME_RE.fullmatch(top.rsplit("/", 1)[-1]):
+        raise SkillNameRefused
     who = skill_author_id(member)
     if who is None:
         raise ValueError("a skill needs a member who makes it")
     from acb_skills import safe_open
 
+    # A folder that already holds files and no marker came from a writer that
+    # records no author, or from before PR #603. The routes hide it from every
+    # member, so no member may take it and read what is in it.
+    try:
+        held = safe_open.list_dir(Path(workspace), top)
+    except (safe_open.UnsafePath, OSError):
+        raise SkillOwnedElsewhere("that skill folder cannot be read") from None
+    names = {name for name, _kind in held or ()}
+    if names and SKILL_AUTHOR_MARKER not in names:
+        raise SkillOwnedElsewhere("that skill folder has no author, so no member can take it")
     marker = f"{top}/{SKILL_AUTHOR_MARKER}"
     data = who.encode("ascii")
     try:

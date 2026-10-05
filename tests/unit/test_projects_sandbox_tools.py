@@ -938,6 +938,99 @@ def test_a_failed_rename_leaves_the_old_file_and_no_temp(short_tmp, monkeypatch)
     assert sorted(p.name for p in (short_tmp / "d").iterdir()) == ["f"]
 
 
+# ── the skill name rule and the folder with no author (WS-43v) ─────────────
+#
+# Mutations, each run red once by hand on 2026-10-05:
+#
+# * ``claim_skill`` drops the name rule: the name test and the route name
+#   test;
+# * the rule refuses an old folder that the member already owns: the old-name
+#   test;
+# * ``_odd_name_form`` lets a Windows short name or stream through: the
+#   Windows test;
+# * ``claim_skill`` takes a folder that holds files and no marker: the
+#   no-author test.
+
+
+@pytest.mark.parametrize("bad", ["my skill", "-x", "a,b", "x" * 129, "caf\u00e9"])
+async def test_a_skill_name_the_sandbox_cannot_mount_is_refused(sandbox, bad) -> None:  # noqa: F811
+    from acb_skills.agent_paths import SkillNameRefused, claim_skill
+
+    x_store, ws, _ = _store(sandbox, member=_X)
+    rel = f"agent-data/skills/{bad}/SKILL.md"
+    with pytest.raises(SkillNameRefused):
+        claim_skill(ws, rel, _X)
+    with pytest.raises(ValueError, match="letters, digits"):
+        await x_store.write(rel, _SKILL.format(name="bad"))
+    assert not (ws / "agent-data" / "skills" / bad).exists()
+    await x_store.write("agent-data/skills/ok_name-1.2/SKILL.md", _SKILL.format(name="ok"))
+
+
+async def test_an_owned_folder_with_an_old_name_still_changes(sandbox) -> None:  # noqa: F811
+    """The rule binds a NEW folder. A folder that the member made before it
+    still takes writes and deletes."""
+    from acb_skills.agent_paths import claim_skill
+
+    x_store, ws, _ = _store(sandbox, member=_X)
+    old = ws / "agent-data" / "skills" / "my notes"
+    old.mkdir(parents=True)
+    _marker(ws, "my notes").write_text(skill_author_id(_X))
+    assert claim_skill(ws, "agent-data/skills/my notes/a.md", _X) is None
+    await x_store.write("agent-data/skills/my notes/a.md", "still mine")
+    await x_store.delete("agent-data/skills/my notes/a.md")
+    assert not (old / "a.md").exists()
+
+
+@pytest.mark.parametrize("path", [
+    "AGENT-~1/skills/chart/SKILL.md", "agent-data/SKILLS~1/chart/SKILL.md",
+    "agent-data/skills::$INDEX_ALLOCATION/chart/SKILL.md",
+])
+def test_a_windows_short_name_or_stream_never_dodges_the_skill_rule(path, monkeypatch) -> None:
+    """A Windows dev box reads these as ``agent-data/skills``. Linux reads
+    other names, so the refusal binds Windows only."""
+    import types
+
+    from gateway.routes import workspace as wsr
+
+    monkeypatch.setattr(wsr, "os", types.SimpleNamespace(name="nt"))
+    assert wsr._odd_name_form(path) is True
+    monkeypatch.setattr(wsr, "os", types.SimpleNamespace(name="posix"))
+    assert wsr._odd_name_form("agent-data/notes~1.md") is False
+
+
+async def test_the_route_answers_400_with_the_name_rule(sandbox, monkeypatch) -> None:  # noqa: F811
+    import types
+
+    from fastapi import HTTPException
+    from gateway.routes import workspace as wsr
+
+    _x_store, ws, _ = _store(sandbox, member=_X)
+    monkeypatch.setattr(wsr, "_own_thread_slug", lambda *a, **k: "slug")
+    user = types.SimpleNamespace(email=_X, organization_id=ORG_A)
+    with pytest.raises(HTTPException) as caught:
+        await wsr._apply_write_rules(ws, "agent-data/skills/my skill/x.md", user, "s", claim=True)
+    assert caught.value.status_code == 400
+    assert "letters, digits" in caught.value.detail
+
+
+async def test_no_member_takes_a_folder_with_files_and_no_author(sandbox) -> None:  # noqa: F811
+    from acb_skills.agent_paths import SkillOwnedElsewhere, claim_skill
+
+    x_store, ws, _ = _store(sandbox, member=_X)
+    bare = ws / "agent-data" / "skills" / "bare"
+    bare.mkdir(parents=True)
+    (bare / "SKILL.md").write_text("written by a writer that records no author")
+    with pytest.raises(SkillOwnedElsewhere):
+        claim_skill(ws, "agent-data/skills/bare/x.md", _X)
+    with pytest.raises(ValueError, match="another member"):
+        await x_store.write("agent-data/skills/bare/x.md", "mine now")
+    assert not (bare / ".metorite-author").exists()
+    # An empty folder has nothing to give, so a member may take it.
+    (ws / "agent-data" / "skills" / "empty").mkdir()
+    await x_store.write("agent-data/skills/empty/SKILL.md", _SKILL.format(name="empty"))
+    assert _marker(ws, "empty").read_text() == skill_author_id(_X)
+
+
 def test_the_withheld_names_are_the_host_floor_tools_that_open_the_dir() -> None:
     from orchestrator import _tool_injection as ti
 
