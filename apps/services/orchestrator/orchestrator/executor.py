@@ -3092,6 +3092,38 @@ _sse_seq: int = 0
 _thread_emit_seq: dict[str, int] = {}
 
 
+#: How much of a Tier 1 failure the fallback log keeps. The old cut was 200
+#: characters, and a Router 422 names the refused field just AFTER that point,
+#: so the line said "extra_forbidden" and hid which field (2026-10-05).
+_FALLBACK_ERROR_CHARS = 2000
+
+
+def _rejected_request_fields(exc: BaseException) -> list[str]:
+    """The request fields a 422 refused, read from the exception chain.
+
+    The model client wraps the HTTP error (``ChatClientException`` around an
+    ``openai.UnprocessableEntityError``), and the parsed body sits on the
+    inner one. Each ``detail`` entry carries ``loc = ["body", <field>, ...]``.
+    Returns ``[]`` for any other failure. It never raises, because it runs
+    inside an error path.
+    """
+    fields: list[str] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        body = getattr(cur, "body", None)
+        detail = body.get("detail") if isinstance(body, dict) else None
+        for item in detail if isinstance(detail, list) else []:
+            loc = item.get("loc") if isinstance(item, dict) else None
+            if isinstance(loc, list | tuple) and len(loc) >= 2 and loc[0] == "body":
+                name = ".".join(str(part) for part in loc[1:])
+                if name not in fields:
+                    fields.append(name)
+        cur = getattr(cur, "inner_exception", None) or cur.__cause__
+    return fields
+
+
 def _sse(payload: dict[str, Any]) -> str:
     """Return a single SSE frame as a string.
 
@@ -4058,9 +4090,13 @@ async def run_agent_stream(
                         })
                         return
                     # Nothing emitted yet — fall through to Tier 2 batch.
+                    # `rejected_fields` names what a 422 refused, so the
+                    # field is never lost to the cut on `error`.
                     _log.warning(
                         "executor.native_maf_stream_fallback",
-                        agent=agent_name, error=str(_nexc)[:200],
+                        agent=agent_name,
+                        error=str(_nexc)[:_FALLBACK_ERROR_CHARS],
+                        rejected_fields=_rejected_request_fields(_nexc),
                     )
 
             # ── Tier 1.5: GitHubCopilotAgent native streaming ───────────────
