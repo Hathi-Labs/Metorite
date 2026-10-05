@@ -1543,7 +1543,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 ✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). ✅ EM-T4b MERGED (#617, 2026-10-04, dark: cap 0, budget `log`). ✅ EM-T4a-2 PR-A MERGED (#621, 2026-10-04).
 
-🔨 EM-T4a-2 PR-B1 BUILT, not merged (2026-10-05), branch `email-t4a2-prb1`. EM-T4a-2 PR-B2 and PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+🔨 EM-T4a-2 PR-B1 BUILT, not merged (2026-10-05), branch `email-t4a2-prb1`, with review round 1 applied (2026-10-06). EM-T4a-2 PR-B2 and PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box. The dev-phase window of CLAUDE.md §3a does NOT open `EMAIL_LLM_BUDGET_MODE=enforce`. `enforce` holds back triage and drafts from a paying mailbox. So it is a product limit, and the owner decides it.
 
@@ -1761,7 +1761,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 ##### EM-T4a-2 — the decision core
 
-**Status (2026-10-05).** ✅ PR-A MERGED #621 (2026-10-04). 🔨 PR-B1 BUILT, not merged (2026-10-05), branch `email-t4a2-prb1`. PR-B2 and PR-B3 are not built. The PR-B1 notes follow the PR-A notes.
+**Status (2026-10-06).** ✅ PR-A MERGED #621 (2026-10-04). 🔨 PR-B1 BUILT, not merged (2026-10-05), branch `email-t4a2-prb1`, with review round 1 applied (2026-10-06). PR-B2 and PR-B3 are not built. The PR-B1 notes follow the PR-A notes.
 
 The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The audit of 2026-10-05 read them again at `c26b67549`, and it split PR-B in three. The part adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
 
@@ -1930,6 +1930,15 @@ Two fakes of `_upsert_thread_status` in `test_email_reply_zero.py` now return Tr
 
 So an `LLMUnavailable` from the resolver now rolls Block W back, where before the job committed the block. Block W writes nothing before the resolver returns, so the result is the same. If a call in the apply raised `LLMUnavailable`, the row would now roll back and the job would go on. Before, the job stopped there. No call in the apply raises it (measured 2026-10-05).
 
+**A precondition for EM-T4a-3 (review round 1).** The one handler of each job also covers the apply in Block W. Four functions raise `LLMUnavailable` today. Each one is an ask, and it runs before Block W writes:
+
+- `_decide_rule_match` (`engine.py:768`), `_llm_pick_rule` (`:881`) and `_llm_pick_rules` (`:973`).
+- `_decide_thread_status` (`replyzero.py:615`).
+
+The model calls of the apply catch every error. They are `_render_template` (`actions.py:329`), the cold check `_llm_is_cold` (`senders.py:1343` and `:1362`) and the sender pin `_ai_confirms_sender_pattern` (`learning.py:166` and `:203`). EM-T4a-3 must keep this so. A raise after a provider action rolls Block W back and leaves the row unstamped, so the next cycle runs the action again. So EM-T4a-3 catches `LLMUnavailable` before the apply, or it changes the handler first. The fence `email-decision-core-apply-raises-no-unavailable` fails on a raise in the apply.
+
+**A known limit (review round 1).** Between Block R and Block W, a member can move or delete the email. In the same window, a second runner cycle can take the same unstamped row. Either one can cause an apply that is stale. The base had the same race over the same window, because READ COMMITTED took no snapshot and no lock. PR-B adds no guard ("No guard in PR-B" above), and a later ticket owns one if the owner wants it.
+
 **Fences (R7).** All are in `tests/unit/test_email_automation_tenancy.py`.
 
 - `email-decision-core-no-session-across-the-match-ask`: `test_the_match_ask_runs_with_no_session_open`. It runs the runner, the runner in the multi-rule mode and the backfill, in `off`, `shadow` and `on` of `email.rule_match`. Each watched call carries a tag. Block W must be the next block after Block R, and it must hold each write. The companion is `test_the_match_fence_can_fail`.
@@ -1957,6 +1966,35 @@ So an `LLMUnavailable` from the resolver now rolls Block W back, where before th
 
 The diff holds 559 lines that are not in a test or a document (362 added and 197 removed). The 134 files `tests/unit/test_email_*.py` in one run gave 2655 passed and 66 errors at setup. Each error is in an R8 file that PR-B1 does not change, where the fixture of one file met the database of another. Run alone, three of those four files passed. `test_email_otp_token.py` still fails at setup when it runs alone, because a table of the scratch database is at the limit of 1600 columns.
 
+**Review round 1 (2026-10-06).** The verifier passed PR-B1, and the reviewer approved it. Both found P2 items only. This round applies five of them, and it rebases the branch onto `093769bef`.
+
+- **An aborted Block R fails closed (reviewer P2-1).** A best-effort reader catches a failed statement with no savepoint, so the transaction stays aborted. The readers after it then fail and return empty values. The seam commits the aborted block with no error, and a probe through asyncpg showed it. So the ask ran on that empty context, and Block W applied and stamped the result. Each job body now ends Block R with `SELECT 1`, which raises on an aborted transaction.
+- **What the member sees.** The error is not `LLMUnavailable`, so the outer handler of the job catches it. The runner logs `email.run_rules_failed`, and the backfill logs `email.classify_threads_failed`. The job stops for this cycle, and the rows after it wait for the next cycle. Nothing stamped the row, so the next cycle selects it again. On the base, the next statement of the same block raised and stopped the job in the same way.
+- **Two fences read the split steps (reviewer P2-2).** `test_the_engine_reads_no_account_models` reads `read_rule_match` and `ask_rule_match` too. `test_a_retry_reclassifies_nothing` also refuses `read_rule_match`, `ask_rule_match` and `read_classification`.
+- **The precondition for EM-T4a-3 (verifier P2-2) and the known limit (verifier P2-3)** are above, after the agent decision.
+- **The rebase.** `work_plan.md` met #658 (EM-T10) on the WS-17 row. The row keeps the line of `main` and adds the PR-B1 phrase. #658 changed `actions.py` and `drafting.py` (`exact_to`). PR-B1 does not touch them, so the code merged with no conflict.
+- `test_email_reply_zero.py`: the backfill fake answers the new `SELECT 1`. No expected value changed.
+
+**Fences (R7) of review round 1.** Both are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-read-fails-closed`: `test_an_aborted_read_block_stops_the_row`, for each job and each of the four readers. A fake transaction refuses each statement after the failed one, until the next block. The R8 case `test_an_aborted_read_block_stops_the_row_in_b` fails one statement in Block R of the runner on a real Postgres.
+- `email-decision-core-apply-raises-no-unavailable`: `test_the_apply_raises_no_llm_unavailable`. It walks the calls of `routes/email` from the four roots of the apply. The walk must see the four raise sites and the three model calls of the apply. The companion is `test_the_apply_fence_can_fail`.
+
+**Mutations of review round 1.** After each one, the file came back to the blob of HEAD.
+
+| Mutation | Red |
+|---|---|
+| No `SELECT 1` in Block R of the runner | `test_an_aborted_read_block_stops_the_row` [8 runner cases], and the R8 case, where the ask ran on the real database |
+| No `SELECT 1` in Block R of the backfill | `test_an_aborted_read_block_stops_the_row` [4 backfill cases] |
+| `read_rule_match` reads `_account_models` | `test_the_engine_reads_no_account_models`. The fence of the base stayed green. |
+| `retry_failed_executions` names `read_rule_match`, `ask_rule_match` or `read_classification` | `test_a_retry_reclassifies_nothing`, for each of the three |
+| `_render_template` raises `LLMUnavailable` in its handler | `test_the_apply_raises_no_llm_unavailable` |
+| `_reconcile_thread_labels` calls `_decide_thread_status` | `test_the_apply_raises_no_llm_unavailable` |
+
+**Verified after review round 1 (2026-10-06).** A private database got the ladder once, and each R8 file ran in a run of its own. The 14 files with no R8 case gave 330 passed, because #658 added two cases. The two fence files of P2-2 gave 20 passed. The six R8 files gave 102, 147, 73, 10, 76 and 34 passed, with 0 skipped. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0.
+
+The diff now holds 563 lines that are not in a test or a document (366 added and 197 removed). The nine other test files that reach the two jobs passed, each in a run of its own.
+
 ##### EM-T4a-3 — the action tail on the sync path
 
 1. `_apply_rule_actions` (`actions.py:446`) plans, then pushes, then records. The provider calls, the template call and the draft run with no session.
@@ -1969,6 +2007,8 @@ The diff holds 559 lines that are not in a test or a document (362 added and 197
 8. `_ai_confirms_sender_pattern` (`learning.py:121`) reads in one block and asks with no session (moved from EM-T4a-2, 2026-10-04).
 9. `_maybe_block_cold` (`senders.py:1400`) asks and blocks the sender at the provider with no session (moved from EM-T4a-2).
 10. `_restore_conversation_messages` (`replyzero.py:1031`) moves mail with no session and writes the new ids in a block (moved from EM-T4a-2).
+
+**A precondition from PR-B1 (review round 1).** The one `except LLMUnavailable` of each PR-B1 job also covers the apply in Block W. No call of the apply raises it today. Keep it so: catch `LLMUnavailable` before the apply, or change the handler first. A raise after a provider action rolls Block W back, and the next cycle runs the action again. The fence `email-decision-core-apply-raises-no-unavailable` fails on such a raise, and EM-T4a-2 lists the four raise sites.
 
 **Non-goals.** No change to which actions run. Automation writes stay provider-first (§2).
 
