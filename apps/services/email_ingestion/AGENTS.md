@@ -281,29 +281,7 @@ All providers implement the `BaseEmailProvider` abstract interface:
       logs `gmail.import_capped`.
     - The import never calls `sync_messages(deep=True)`. `_deep_sweep`
       stays for a direct call. `import_full_snapshot` is True, so the
-      deep sync of a member act reconciles the deletions (contract 13).
-
-13. **The Gmail reconcile (WS-17 EM-G5b).** A Resync, "Clean older mail"
-    and "Process past emails" trash a row that the member deleted in Gmail.
-    Fence: `tests/unit/test_gmail_import.py`, and the R8 cases in
-    `TestTheImportOnARealDatabase` of `test_email_import_batches.py`.
-    - The confirm asks Gmail by the provider id, through `message_gone`.
-      Never ask by the Message-ID, because one Message-ID can be on two
-      Gmail messages. Do not give Gmail a `message_exists`.
-    - Only a 404 whose body gives the reason `notFound` is a delete. A 200
-      keeps the row, also in `TRASH` or `SPAM`. A bare 404 and each other
-      answer raise, and the row stays.
-    - `message_gone` refuses an id that is not letters, digits, `-` and
-      `_`, before any request. So a stored id cannot send the read to
-      another resource.
-    - Rows in drafts stay out (`import_reconcile_skips_drafts`). Gmail gives
-      a draft a new id at each update, so a missing draft id proves no
-      delete. The history removes an old draft row (contract 2).
-    - At `IMPORT_MAX_PAGES` the import sets `import_capped`. The Resync then
-      runs no reconcile and logs `sync.import_reconcile_skipped
-      reason=capped`.
-    - No Gmail sync result sets `full_snapshot`, so the recurring reconcile
-      stays for Outlook only.
+      deep sync of a member act reconciles the deletions (contract 15).
 
 13. **A file on an Outlook draft (WS-17 EM-T9).** `_attach_files` in
     `outlook.py` adds each file, or it raises `ProviderAttachmentFailed`
@@ -338,6 +316,28 @@ All providers implement the `BaseEmailProvider` abstract interface:
       base.
     - `list_filters` reads the key `filter` of `users.settings.filters.list`.
       A plain 403 gives `[]`, and `GmailRateLimited` passes up.
+
+15. **The Gmail reconcile (WS-17 EM-G5b).** A Resync, "Clean older mail"
+    and "Process past emails" trash a row that the member deleted in Gmail.
+    Fence: `tests/unit/test_gmail_import.py`, and the R8 cases in
+    `TestTheImportOnARealDatabase` of `test_email_import_batches.py`.
+    - The confirm asks Gmail by the provider id, through `message_gone`.
+      Never ask by the Message-ID, because one Message-ID can be on two
+      Gmail messages. Do not give Gmail a `message_exists`.
+    - Only a 404 whose body gives the reason `notFound` is a delete. A 200
+      keeps the row, also in `TRASH` or `SPAM`. A bare 404 and each other
+      answer raise, and the row stays.
+    - `message_gone` refuses an id that is not letters, digits, `-` and
+      `_`, before any request. So a stored id cannot send the read to
+      another resource.
+    - Rows in drafts stay out (`import_reconcile_skips_drafts`). Gmail gives
+      a draft a new id at each update, so a missing draft id proves no
+      delete. The history removes an old draft row (contract 2).
+    - At `IMPORT_MAX_PAGES` the import sets `import_capped`. The Resync then
+      runs no reconcile and logs `sync.import_reconcile_skipped
+      reason=capped`.
+    - No Gmail sync result sets `full_snapshot`, so the recurring reconcile
+      stays for Outlook only.
 
 ## Inbound SMTP Server
 
@@ -488,7 +488,7 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
     provider decides the key. Outlook asks `message_exists` by the
     Message-ID, so a message that the member moved in the Outlook client
     keeps its row. Gmail asks `message_gone` by the provider id
-    (contract 13).
+    (contract 15).
   - A failed lookup, or a row with no key, keeps its row. A spent rate
     limit (`ProviderRateLimited`) stops the lookups, and each row that was
     not looked up keeps its folder. A provider that sets
