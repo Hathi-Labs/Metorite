@@ -448,12 +448,21 @@ class RunSection(NamedTuple):
 #: ``instructions.md`` name it.
 SANDBOX_CODE_HEADING = "## Code in the sandbox"
 
+#: The libraries that the sandbox section names, by the name a member knows.
+#: Each one must be in the coding sandbox image: fence WS43-F25
+#: (``tests/unit/test_coding_sandbox_packages.py``). The image holds more than
+#: these, and ``maf_coding_engine.md`` §7.2 lists all of them.
+SANDBOX_LIBRARIES: tuple[str, ...] = (
+    "pandas", "numpy", "scipy", "matplotlib", "seaborn", "openpyxl",
+    "python-docx", "python-pptx",
+)
+
 #: The rules for code in the sandbox (``maf_coding_engine.md`` §16.3, D85,
 #: D86). The Projects ``instructions.md`` keeps its ban on code over the rows
 #: for a run that does not hold ``run_command``, and points here.
 _SANDBOX_CODE_SECTION = SANDBOX_CODE_HEADING + """
 
-You hold `run_command` in this chat. It runs a command in a sandbox: a Linux container with Python 3.12, pandas, numpy, matplotlib, openpyxl and the other data libraries. These rules come before the rule "No file and no code over the rows" in your instructions.
+You hold `run_command` in this chat. It runs a command in a sandbox: a Linux container with Python 3.12 and its data and document libraries, for example """ + ", ".join(SANDBOX_LIBRARIES[:-1]) + " and " + SANDBOX_LIBRARIES[-1] + """. These rules come before the rule "No file and no code over the rows" in your instructions.
 
 1. **Write and run code when a request needs it.** Examples are a custom chart, a calculation that the analytics tools do not give, and a file conversion. When an analytics read, `task_dataset` with `group_by`, a report or a render tool already answers the question, use that tool and write no code.
 2. **Get project data only through your Projects tools.** `task_dataset` and the other reads give only what this member can see. Write their rows to a file in the data folder of this run with `file_access_write`, for example `.run/rows.json`. A script reads that file as `/workspace/.run/rows.json`. Run the script on it with `run_command`. The data folder is deleted when the run ends. Never write member data to `agent-data/`, `inputs/` or a `skills/` folder.
