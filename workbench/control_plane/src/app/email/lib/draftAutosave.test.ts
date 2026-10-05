@@ -60,6 +60,15 @@ const between = (src: string, start: string, end: string) => {
   return src.slice(from, to);
 };
 
+/** `first` and `then` both occur in `src`, and `first` comes before `then`. */
+const comesBefore = (src: string, first: string, then: string) => {
+  const a = src.indexOf(first);
+  const b = src.indexOf(then);
+  expect(a, `missing: ${first}`).toBeGreaterThanOrEqual(0);
+  expect(b, `missing: ${then}`).toBeGreaterThanOrEqual(0);
+  expect(a, `${first} must come before ${then}`).toBeLessThan(b);
+};
+
 /** An error in the shape that `gatewayFetch` throws. */
 const gatewayError = (status: number, detail: string) =>
   Object.assign(new Error(detail), { status });
@@ -106,11 +115,9 @@ describe("email-pick-limit: the files of one mail stay under the cut of the prox
 
   it("is asked by both composers that pick a file, before they read it", () => {
     const pick = between(compose, "const addFiles = async", "useEffect(");
-    expect(pick).toContain("const problem = pickProblem(attachments, picked);");
-    expect(pick.indexOf("pickProblem(")).toBeLessThan(pick.indexOf("fileToSendAttachment"));
+    comesBefore(pick, "const problem = pickProblem(attachments, picked);", "fileToSendAttachment");
     const reply = between(detail, "const addReplyFiles = async", "const changeFrom");
-    expect(reply).toContain("const problem = pickProblem(replyAttachments, picked);");
-    expect(reply.indexOf("pickProblem(")).toBeLessThan(reply.indexOf("fileToSendAttachment"));
+    comesBefore(reply, "const problem = pickProblem(replyAttachments, picked);", "fileToSendAttachment");
   });
 });
 
@@ -137,9 +144,18 @@ describe("email-autosave-wait: a Gmail draft with a file waits 10 seconds", () =
     expect(conversation).toMatch(/autosaveWait\(\s*accounts\.find\(\(a\) => a\.id === accountId\)\?\.provider,\s*draft\.hasAttachments,/);
   });
 
-  it("reads hasAttachments of the row that the last save returned", () => {
-    expect(compose).toContain("draftHasFileRef.current = saved.hasAttachments;");
-    expect(detail).toContain("replyHasFileRef.current = saved.hasAttachments;");
+  it("reads hasAttachments of the row that the last autosave returned", () => {
+    expect(compose).toMatch(/draftIdRef\.current = saved\.id;\s*draftHasFileRef\.current = saved\.hasAttachments;/);
+    expect(detail).toMatch(/draftIdRef\.current = saved\.id;\s*replyHasFileRef\.current = saved\.hasAttachments;/);
+  });
+
+  it("reads it from the save before a send too, when the composer keeps that draft", () => {
+    expect(compose).toContain(
+      "if (saved.id === draftIdRef.current) draftHasFileRef.current = saved.hasAttachments;",
+    );
+    expect(detail).toContain(
+      "if (saved.id === draftIdRef.current) replyHasFileRef.current = saved.hasAttachments;",
+    );
   });
 
   it("keeps no wait of its own in a composer", () => {
@@ -255,8 +271,7 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
   it("flushes on the close of the inline reply, and on a new reply", () => {
     expect(detail).toMatch(/onClick=\{\(\) => \{\s*autosave\.flush\(\);\s*setReplyMode\(null\);\s*\}\}/);
     const start = between(detail, "const startReply = (", "const switchReplyMode");
-    expect(start).toContain("autosave.flush();");
-    expect(start.indexOf("autosave.flush();")).toBeLessThan(start.indexOf("draftIdRef.current = null;"));
+    comesBefore(start, "autosave.flush();", "draftIdRef.current = null;");
   });
 
   it("flushes on a switch to another mail, while the draft id still names its draft", () => {
@@ -264,7 +279,7 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
       /useEffect\(\(\) => \{\s*autosave\.flush\(\);\s*replySessionRef\.current \+= 1;\s*replyHasFileRef\.current = false;\s*if \(!email\) \{\s*setDetail\(null\);/,
     );
     const effect = between(detail, "autosave.flush();\n    replySessionRef.current += 1;", "}, [email?.id]);");
-    expect(effect.indexOf("autosave.flush();")).toBeLessThan(effect.indexOf("draftIdRef.current = null;"));
+    comesBefore(effect, "autosave.flush();", "draftIdRef.current = null;");
   });
 
   it("drops the pending save on a discard and on a send", () => {
@@ -274,7 +289,7 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
     expect(between(detail, "const handleInlineSend = async", "const addReplyFiles")).toContain("autosave.cancel();");
     expect(between(conversation, "const send = async", "const discard")).toContain("autosave.cancel();");
     const discard = between(conversation, "const discard = async", "const runAi");
-    expect(discard.indexOf("autosave.cancel();")).toBeLessThan(discard.indexOf("onDismiss?.()"));
+    comesBefore(discard, "autosave.cancel();", "onDismiss?.()");
   });
 
   it("guards a save that ends after its session ended", () => {
