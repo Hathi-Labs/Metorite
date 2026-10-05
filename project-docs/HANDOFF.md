@@ -95,6 +95,50 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-245 · Close the four P3 edges of skill privacy that the PR #635 review left · [AGENT]
+- **Check:** run these four checks. Each one stays open until its step closes.
+  1. `rg -n "SKILL_UNCLAIMED" packages/acb_skills/acb_skills/tenant_file_store.py`.
+     No hit means step 1 is open.
+  2. `rg -n "acb_memory" packages/acb_skills/acb_skills/agent_paths.py`.
+     No import of the store in `claim_skill` means step 2 is open.
+  3. `rg -n "skill_owner" packages/acb_skills/acb_skills/note_tools.py`.
+     No hit means step 3 is open.
+  4. `rg -n "_odd_name_form" apps/services/gateway/gateway/routes/workspace.py`.
+     Step 4 is open while no hit lies inside `get_workspace_tree`.
+- **What happens.** The review of PR #635 found no live leak, and these four
+  P3 edges.
+  1. **The covered file store hides only FOREIGN.** `TenantFileStore._foreign_skill`
+     refuses another member's folder, but a folder with files and no marker
+     stays readable to the covered model. A store error during the
+     best-effort rehydrate (`acb_memory.blob_store.rehydrate_workspace`) can
+     restore A's files without A's marker. Then a covered run of B reads them.
+  2. **The claim reads the disk only.** `claim_skill` refuses a folder that
+     holds files and no marker. After a disk loss, those files sit only in
+     the store, so B can claim the name. The gateway write rules restore a
+     lost marker first, but a folder whose marker row is gone too has no
+     such guard.
+  3. **The notes tools ignore skill ownership.** `recall_notes` has no
+     owner check, so it reads another member's skill files.
+     `save_note` refuses only FOREIGN (through `refused_write`). A covered
+     run does not hold either tool, so skill privacy holds only while
+     `MAF_CODING_SCOPE` covers the org.
+  4. **The tree and the case rule disagree.** `_odd_name_form` refuses an
+     `agent-data/Skills/` head in every dir, personal dirs too. The tree
+     does not apply it, so the tree lists a path that GET then refuses.
+- **Do.**
+  1. In `_foreign_skill`, hide an UNCLAIMED folder that holds files, the
+     same rule as `claim_skill`. Or log `rehydrate_failed` at warning level,
+     and refuse skill reads for that run.
+  2. Before the claim, look in the store for any row under `<top>/`, and
+     refuse the claim when one exists.
+  3. In `_notes_target`, refuse a path in a skill folder whose
+     `skill_owner` is not MINE, for both tools.
+  4. Make the tree apply `_odd_name_form`, so the tree and GET agree.
+  5. Add a test and a mutation for each step (R7).
+- **Authority:** `specs/maf_coding_engine.md` §16.3 (the skill rule and the
+  residual risk) · the review of PR #635
+- **Added:** 2026-10-05 · the approval review of PR #635 (four P3s).
+
 ### H-244 · Decide whether an agent may set an env var through a SETUP token · [OWNER]
 - **Check:** `rg -n "<<<SETUP" apps/services/orchestrator/orchestrator/executor.py workbench/control_plane/src/app/api/agent/chat/route.ts`.
   A hit means the model-output path to configure still exists, and the
