@@ -6505,7 +6505,7 @@ reverse it.
 |---|---|
 | **D-EM-31** | **The Google scopes are `gmail.modify` and `gmail.settings.basic`.** They replace `https://mail.google.com/`. The pair is the narrowest set that covers read, send, drafts, labels and filters. Both are restricted scopes, but a narrower request makes the review of Google easier. `gmail.modify` covers the profile, the history, the watch, the messages, the drafts and the labels. `gmail.settings.basic` covers the filters. No code path deletes a message for good, so `gmail.modify` loses nothing. The callback reads the granted scope. A grant that lacks either scope saves no mailbox, and the member sees a clear message. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-32** | **Polling first, push later.** EM-G4 makes a poll cheap with the history cursor, so an idle mailbox costs one call. Push (EM-G6a, EM-G6b) ships dark behind `EMAIL_GMAIL_PUSH`, which is `off` by default. Push needs a design for how a push finds its tenant, and that design gets its own audit (O-GM-4). *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
-| **D-EM-33** | **The folder model of Gmail.** The system labels decide the folder, in this order: `TRASH`, `SPAM`, `DRAFT`, `SENT`, `INBOX`. A Gmail message with no system label is in `archive`. A move to a user label adds that label and removes `INBOX`. The Archive folder pages with a query, never with `labelIds=["archive"]`. The orchestrator decided O-GM-1 on 2026-10-04: a user label is a label and never a folder. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-33** | **The folder model of Gmail.** The system labels decide the folder, in this order: `TRASH`, `SPAM`, `DRAFT`, `SENT`, `INBOX`. A Gmail message with no system label is in `archive`. A move to a user label adds that label and removes `INBOX`, `TRASH` and `SPAM`. The audit of EM-G3b added `TRASH` and `SPAM` on 2026-10-05 (E-M5), so a move out of Trash or Spam leaves `archive`. The Archive folder pages with a query, never with `labelIds=["archive"]`. The orchestrator decided O-GM-1 on 2026-10-04: a user label is a label and never a folder. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-34** | **The re-key reclaim runs only for a provider that re-keys its ids.** That is Outlook, whose ids change on a move. Gmail never re-keys an id, so Gmail never folds two rows on one Message-ID. The provider attribute is false by default. IMAP stores no Message-ID today, so IMAP sees no change. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-35** | **Gmail shows only when the Google app is installed.** The UI reads a capability from the gateway: for each provider, whether its app credentials are set. Gmail is a live choice only when the answer is true. No member ever sees "configure Integrations". *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-36** | **The Gmail connect ships dark behind `EMAIL_GMAIL_CONNECT`, which is off by default.** The box in production holds a Google client today (§12.1), so the app alone cannot keep Gmail hidden. While the flag is off, the capability read answers `gmail: false`, and each Gmail leg of EM-G7 refuses. ~~The flag flips at EM-G10 only, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`.~~ **Amended (orchestrator, 2026-10-05): the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge, under gate `enforcement-flip`.** The flip for the test of the owner also sets `EMAIL_GMAIL_CONNECT_MEMBERS` to the member address of the owner (EM-G7b, §12.3.9b). With the flag on and the list empty, every member sees Gmail, and that state is for the time after Google verifies the app. The text below this table holds the reason. *Agent decision (orchestrator, 2026-10-05). The owner can reverse it.* |
@@ -6561,7 +6561,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G1** | 🟢 AGENT-SAFE · R8 | The reclaim gate (D-EM-34, GM-2) | First | S | §12.3.1 |
 | **EM-G2** | 🟢 AGENT-SAFE | The body, the headers, the Message-ID, the addresses and the folder model (GM-1, GM-3 to GM-7) | After EM-G1 and O-GM-1 | M | §12.3.2 |
 | **EM-G3a** | 🟢 AGENT-SAFE · R8 | Send and drafts: the MIME body, threading, attachment types, the draft ids (GM-10 to GM-13) | After EM-G4a and O-GM-2 | M | §12.3.3 |
-| **EM-G3b** | 🟢 AGENT-SAFE | A move to a user label, and the filter list (GM-14, GM-15) | After EM-G2 and O-GM-1 | S | §12.3.4 |
+| **EM-G3b** | 🟢 AGENT-SAFE | A move to a user label, and the filter list (GM-14, GM-15) | After EM-G2 and O-GM-1 | M | §12.3.4 |
 | **EM-G4a** | 🟢 AGENT-SAFE | The rate-limit helper at the client seam, and the record of a failed fetch (GM-9, items 8 to 10) | After EM-G2 | S | §12.3.5.1 |
 | **EM-G4b** | 🟢 AGENT-SAFE · R8 | The history cursor, the label events, the stale cursor and its recovery (GM-16 to GM-18, items 1 to 7 and 11) | After EM-G4a | L | §12.3.5.2 |
 | **EM-G5a** | 🟢 AGENT-SAFE · R8 | The import, the estimate and the resume (GM-8, GM-19, items 1 to 5) | After EM-G4a and EM-G4b | L | §12.3.6.1 |
@@ -7301,31 +7301,83 @@ also decide how often an autosave of a draft with files may run (§12.3.12).
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
-**Gate.** 🟢 AGENT-SAFE. No migration.
+**Status.** 🔨 IN BUILD (2026-10-05), branch `email-gmail-g3b`. The audit of 2026-10-05 gave
+GO-NARROWED. Its corrections are E-M1 to E-M13, E-F1 to E-F5 and E-V1 to E-V3, and the scope below
+holds each one. The audit checked each anchor against the code on 2026-10-05.
 
-**Order.** After EM-G2, and after the orchestrator answers O-GM-1.
+**Gate.** 🟢 AGENT-SAFE. No migration, no flag and no change to SQL text.
 
-**Size.** S. About 120 lines with tests.
+**Order.** After EM-G2 (#626). The orchestrator decided O-GM-1 on 2026-10-04 (§12.2).
 
-**Scope.**
+**Size.** M. About 300 lines with tests. The audit changed it from S.
 
-1. **A move to a user label (GM-14, D-EM-33).** For a name that is not a well-known folder,
-   `move_to_folder` finds or creates the label (`_ensure_label_id`). It adds the label and removes
-   `INBOX` in one `modify` call. It returns `None`, because Gmail keeps the id.
-2. **The folder after a move.** `BaseEmailProvider.folder_after_move(name)` returns the folder key
-   that a move to `name` leaves. The base returns `canonical_folder(name)`. Gmail returns `archive`
-   for a user label (O-GM-1).
-3. **The local writes.** Two writes store that key: the rule move (`automation/actions.py:439-440`)
-   and the PATCH of a message (`transport/messages.py:795-797`). The row then matches the next parse.
-4. **The no-op log.** `email.move_folder_noop` (`automation/actions.py:445-448`) fires only for a
-   provider whose `REKEYS_MESSAGE_IDS` is true. Gmail returns no new id by design.
-5. **The filter list (GM-15).** Gmail `list_filters` reads `users.settings.filters.list`. It maps
-   each filter to `{id, name, enabled, from_addresses, summary}`, as `outlook.py:1173` does.
-6. **The filter summary.** The name comes from the criteria. A Gmail filter is always enabled. The
-   summary names each criterion beyond `from`, and each action. The actions are a label, skip the
-   Inbox, mark as read, star, forward and trash. A 403 gives an empty list, not an error.
+**Scope — the move.**
 
-**Non-goals.** No edit of a Gmail filter. No change to `create_filter`.
+1. **The name of the target (E-M1, E-M2, E-M3).** `GmailProvider.move_to_folder`
+   (`gmail.py:1506-1521`) resolves the name with `canonical_folder()`. So "Bin", "Deleted Items"
+   and "Junk Email" reach the system branch. The move refuses `sent` and `drafts` with a
+   `ValueError`. It also refuses a name that resolves to a reserved system label or a
+   `CATEGORY_*` label. Without that rule, "Starred" stars the message and archives it.
+2. **A move to a user label (GM-14, D-EM-33, E-M5).** For any other name, the move finds or
+   creates the user label (`_ensure_label_id`, `gmail.py:1583-1621`). One `modify` call adds the
+   label and removes `INBOX`, `TRASH` and `SPAM`. The move returns `None`, because Gmail keeps the
+   id. The name goes to Google unchanged, also with a "/" in it.
+3. **A failed label (E-M4).** When `_ensure_label_id` returns `None`, the move raises. A quiet
+   return lets the caller store `archive` for a move that did not occur. Outlook raises in the
+   same case (`outlook.py:687`).
+4. **The folder after a move (E-M6, E-M7).** `BaseEmailProvider.folder_after_move(name)` returns
+   the folder key that a move to `name` leaves. The base returns `canonical_folder(name)`.
+5. **The Gmail folder after a move.** Gmail returns the key for inbox, archive, trash and junk. It
+   returns `None` for sent and drafts, and `archive` for a user label.
+6. **The helper (E-M6).** A module helper calls `folder_after_move`. It falls back to
+   `canonical_folder(name)` when the provider is no `BaseEmailProvider`, because some fakes do not
+   subclass the base (`base.py:439-440`).
+7. **The rule move (`actions.py:439-440`, E-M12).** It stores the folder from the helper. After a
+   Gmail label move it calls `mirror_label` (`actions.py:100-111`). So `categories` also matches
+   the next parse.
+8. **The PATCH of a message (`messages.py:795-797`, E-M8, E-M9).** The route builds the provider
+   before it writes the folder. `_provider_for_message` makes no network call
+   (`core.py:164-186`). The route stores the folder from the helper. When the helper gives
+   `None`, the route answers 400 and writes nothing. The push stays best-effort.
+9. **The case of a new name (E-M9).** The PATCH sends the name with `.strip()`, not `.lower()`
+   (`messages.py:852`). So a new label or Outlook folder keeps its case, as a rule move does.
+10. **The restore of Reply Zero (`replyzero.py:1063-1067`, E-M10).** It compares the folder of the
+    row with the helper, not with `canonical_folder` of the rule label. So the restore finds a
+    Gmail rule move.
+11. **The no-op log (`actions.py:445-448`, E-M11).** `email.move_folder_noop` fires only for a
+    provider that rekeys its ids (`REKEYS_MESSAGE_IDS`), or that keeps the move of the base. IMAP
+    has the one real no-op left, so it still logs. The docstring at `base.py:557` says that IMAP
+    does COPY and EXPUNGE. That is false, and the slice corrects it.
+
+**Scope — the filter list.**
+
+12. **The read (GM-15, E-F1).** Gmail `list_filters` reads `users.settings.filters.list`. Google
+    answers with the key `filter`, which is singular. It answers `{}` for a mailbox with no filter.
+    Each filter maps to `{id, name, enabled, from_addresses, summary}`, as `outlook.py:1177-1221`
+    does.
+13. **The name and the senders (E-F4).** A Gmail filter is always enabled. The name is
+    `From <from>`, else the query, else the subject. `from_addresses` holds `criteria.from` as
+    one whole string, because it is a Gmail query such as "a OR b".
+14. **The summary (E-F2, E-F3).** The summary is a list of tokens in this order:
+    `subject contains “x”`, `to contains “x”`, `matches “q”`, `has attachment`, `label: <name>`,
+    `skip inbox`, `mark read`, `star`, `forward` and `trash`. A label id maps to its name through
+    `_label_name_id_map()` (`gmail.py:1551-1581`). An unknown id shows as it is. The map ignores
+    each other action.
+15. **The errors (E-F5).** A plain 403 gives `[]`. `GmailRateLimited` passes up, because
+    `rules.py:724-732` already answers `provider_rules_supported: false` for it.
+
+**Non-goals.** No edit of a Gmail filter. No change to `create_filter`. No parent label for a name
+with a "/".
+
+**Known limit EM-G3b-f1.** After a label move, a message in `SENT` or `DRAFT` keeps that folder at
+Gmail, because `SENT` ranks before `INBOX` (`gmail.py:55-61`). The row reads `archive` until the
+next sync files it again.
+
+**Known limit EM-G3b-f2 (E-M13).** The undo of a rule move (`runner.py:611-619`) adds `INBOX`
+again. The user label stays on the Gmail message.
+
+**Known limit EM-G3b-f3 (E-M10).** On Gmail, the restore of Reply Zero cannot tell a rule move
+from a later archive by the member. Both leave the row in `archive`.
 
 **Fences (R7).** A new `tests/unit/test_gmail_move_and_filters.py`.
 
@@ -7335,22 +7387,35 @@ also decide how often an autosave of a draft with files may run (§12.3.12).
 - `test_a_rule_move_stores_the_folder_of_the_provider`
 - `test_list_filters_maps_criteria_and_actions`
 - `test_list_filters_answers_empty_on_a_403`
+- `test_a_gmail_move_to_an_alias_hits_the_system_branch`
+- `test_a_gmail_move_to_sent_or_drafts_is_refused`
+- `test_a_move_to_a_system_label_name_is_refused`
+- `test_a_failed_label_create_raises`
+- `test_a_move_from_trash_to_a_label_removes_trash`
+- `test_a_label_create_409_resolves_by_reread`
+- `test_a_patch_move_stores_the_folder_of_the_provider`
+- `test_a_patch_move_keeps_the_case_of_the_name`
+- `test_the_restore_finds_a_gmail_label_move`
+- `test_the_noop_log_still_fires_for_imap`
 
 **Mutations.** M1 drops `removeLabelIds`, and the move test fails. M2 makes Gmail return the label
 name from `folder_after_move`, and the folder test fails. M3 makes `list_filters` return `[]`, and
-the map test fails.
+the map test fails. The as-built notes name one mutation for each new fence.
 
-**Verify with.**
+**R8 (E-V1).** The slice changes no SQL text, so R8 does not bind it. An implementer that changes
+SQL text adds a test on a real database.
+
+**Verify with (E-V2).**
 
 ```bash
-bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_gmail_move_and_filters.py tests/unit/test_email_unsubscribe.py \
-  tests/unit/test_email_provider_rules_listing.py tests/unit/test_email_labels_upstream.py -v -rs
+  tests/unit/test_email_provider_rules_listing.py tests/unit/test_email_labels_upstream.py \
+  tests/unit/test_email_two_way_sync.py tests/unit/test_email_thread_single_classification.py \
+  tests/unit/test_email_rule_action_failures.py tests/unit/test_email_rules_engine.py \
+  tests/unit/test_email_rekey_reclaim.py tests/unit/test_gmail_send_and_drafts.py -v -rs
 uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
   tests/unit/test_gmail_move_and_filters.py
 ```
-
-An R8 test in the named files must show PASSED, with 0 skips.
 
 #### 12.3.5 EM-G4 — the history cursor, in two slices
 
