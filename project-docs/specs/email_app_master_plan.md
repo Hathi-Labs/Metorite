@@ -7310,8 +7310,8 @@ also decide how often an autosave of a draft with files may run (§12.3.12).
 
 #### 12.3.3b EM-G3c — the size of a Gmail mail, and the autosave of a draft with files
 
-**Status.** EM-G3c-1 is ✅ MERGED (#649, 2026-10-05). EM-G3c-2 is 🔨 BUILT, not merged
-(2026-10-05), branch `email-g3c2-composer`, and review round 2 fixed the P1 of the re-verify. The
+**Status.** EM-G3c-1 is ✅ MERGED (#649, 2026-10-05). EM-G3c-2 is ✅ MERGED (#651,
+2026-10-05), and review round 2 fixed the P1 of the re-verify. The
 audit of 2026-10-05 gave GO-NARROWED (C1 to C21),
 and it checked each anchor against the code. It split the slice into EM-G3c-1 (the backend) and
 EM-G3c-2 (the UI). The as-built notes, the review rounds and the mutation tables of both halves are
@@ -9760,8 +9760,8 @@ customer connects Gmail, and no item has an owner yet.
 2. **EM-G3b**, a move to a user label, and the filter list (§12.3.4).
 3. **EM-G3c**, the size of a Gmail mail with files, and the autosave of a draft with files
    (§12.3.3b). It owns EM-G3a-f8 (§12.3.3). ✅ EM-G3c-1 merged as #649 (2026-10-05). A Gmail
-   write with a file goes to the upload URI, and a mail over the limit answers 413. 🔨 EM-G3c-2 is
-   built, not merged (2026-10-05). The composers flush a pending save, and a Gmail draft with a
+   write with a file goes to the upload URI, and a mail over the limit answers 413. ✅ EM-G3c-2 is
+   merged as #651 (2026-10-05). The composers flush a pending save, and a Gmail draft with a
    file waits 10 seconds. A failed save or send shows its reason.
 4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
    the old cursor (§12.3.5.2).
