@@ -709,9 +709,10 @@ async def test_off_still_writes_the_cursor_of_a_provider_into_the_sync_log(
     (None, None, False, True, True, False),
     (True, "floor", True, False, True, False),
     (True, None, True, False, True, False),
+    (True, None, True, True, True, False),
     (False, None, False, False, False, False),
 ], ids=["normal-cycle", "member-sync-now", "first-import", "member-deep-sync",
-        "manual-full-sync", "rerun-during-import"])
+        "manual-full-sync", "deep-cycle-of-the-loop", "rerun-during-import"])
 async def test_only_a_normal_cycle_sends_a_delta_request(
     monkeypatch, deep, since, done, loop, imports, runs,
 ) -> None:

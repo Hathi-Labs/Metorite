@@ -220,11 +220,12 @@ def _runs_delta_shadow(
     Only a normal incremental cycle of the background loop runs it, for a
     listed Outlook mailbox (review round 1 F6, EM-T4d-f3). A first import,
     the deep sync of a member act (``deep=True``) and each cycle before
-    ``initial_sync_done`` run none. A member's "Sync now", the webhook, the
-    rerun and the agent tool ``sync_account`` run none either: they send
-    ``deep=None`` like the loop, but they are not the loop. A seed round of a
-    folder can read up to 20 pages, and those callers wait on the 30 seconds
-    of the Control Plane proxy."""
+    ``initial_sync_done`` run none. Each caller that is not the loop runs
+    none either: a member's "Sync now" and the agent tool ``sync_account``
+    send ``deep=None`` like the loop and wait on the 30 seconds of the
+    Control Plane proxy, and the webhook and the rerun are not the loop. A
+    seed round of a folder can read up to 20 pages. The ``deep`` clause
+    keeps a deep cycle of the loop itself out (EM-T4d-f3)."""
     if provider_name != "microsoft" or deep or not from_loop:
         return False
     if not getattr(row, "initial_sync_done", False):
