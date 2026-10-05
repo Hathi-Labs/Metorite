@@ -1857,6 +1857,11 @@ These facts change or add to the text above:
   another member runs it. And the container cannot write a shared folder,
   so a script has no place to put another member's data where its author
   can read it.
+- **Skill privacy holds while the org is covered** (a named residual for the
+  switch-on). A covered run does not hold `recall_notes` or `save_note`, and
+  those tools check no skill owner. So if `MAF_CODING_SCOPE` stops covering
+  an org, a run of that org can read another member's skill with
+  `recall_notes`. This stays open until HANDOFF H-245 step 3 closes.
 - **The partition marker is read-only in the container.** The `projects`
   target covers `.cc-instance` with a read-only mount of itself, because the
   gateway's write-through and fault-in read it. The route rule never reads
