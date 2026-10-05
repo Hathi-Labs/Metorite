@@ -150,6 +150,10 @@ const BROWSER_TIMERS: AutosaveTimers = {
  * starts while the save before it runs waits until that save settles. So a
  * flush during the first save of a draft cannot make a second draft, and the
  * newer text lands last.
+ *
+ * A send, a discard and a pop-out end the draft of the composer, so they call
+ * `drain` (review round 2). A close and a switch keep the draft, so they call
+ * `flush`, and a save that waits still runs there.
  */
 export interface Autosave {
   /** Start the wait again for `run`. The pending save of before is dropped. */
@@ -162,10 +166,20 @@ export interface Autosave {
    */
   flush(): void;
   /**
-   * Drop the pending save: a discard, a send, or nothing to save. A save that
-   * started, or that waits for the save before it, still runs.
+   * Drop the pending save: nothing to save, or a switch after its flush. A
+   * save that started, or that waits for the save before it, still runs.
    */
   cancel(): void;
+  /**
+   * Drop each save that did not start: the pending save, and each save that
+   * waits for the save that runs. The promise settles when the save that runs
+   * settles, and it gives true when the drain dropped a save.
+   *
+   * A send, a discard and a pop-out await it before they read the draft id.
+   * So a save that runs gives its draft id first, and no older text lands
+   * after the send (review round 2). A save scheduled after the drain runs.
+   */
+  drain(): Promise<boolean>;
   /** True while a save waits for its timer or for a flush. */
   readonly pending: boolean;
 }
@@ -177,6 +191,9 @@ export function createAutosave(timers: AutosaveTimers = BROWSER_TIMERS): Autosav
   let handle: unknown = null;
   // The last save that started or waits to start, until it settles.
   let last: Promise<void> | null = null;
+  // One token for each save that waits for the save before it. A drain
+  // empties the set, and a save whose token is gone does not start.
+  const waiting = new Set<object>();
   const stop = () => {
     if (handle !== null) timers.clear(handle);
     handle = null;
@@ -196,7 +213,14 @@ export function createAutosave(timers: AutosaveTimers = BROWSER_TIMERS): Autosav
     if (!next) return;
     // With no save that runs, the save starts now and reads the state of now:
     // a switch flushes before it clears the draft id. Else it waits.
-    const mine = last ? last.then(() => start(next)) : start(next);
+    let mine: Promise<void>;
+    if (last) {
+      const token = {};
+      waiting.add(token);
+      mine = last.then(() => (waiting.delete(token) ? start(next) : undefined));
+    } else {
+      mine = start(next);
+    }
     last = mine;
     void mine.then(() => {
       if (last === mine) last = null;
@@ -213,6 +237,15 @@ export function createAutosave(timers: AutosaveTimers = BROWSER_TIMERS): Autosav
     cancel() {
       stop();
       run = null;
+    },
+    drain() {
+      const dropped = run !== null || waiting.size > 0;
+      stop();
+      run = null;
+      waiting.clear();
+      // Each save of the chain after the one that runs is dropped now, so
+      // the end of the chain settles when the save that runs settles.
+      return (last ?? Promise.resolve()).then(() => dropped);
     },
     get pending() {
       return run !== null;

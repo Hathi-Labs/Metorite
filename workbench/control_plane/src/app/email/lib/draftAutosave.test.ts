@@ -8,11 +8,14 @@
 //     ComposePanel and EmailDetail ask `pickProblem` before they read a file.
 //   * `email-autosave-flush` (item 11): the cleanup of each autosave effect
 //     holds the save, and a close, a switch to another mail and an unmount
-//     run it at once. A discard and a send drop it. Review round 1: one save
-//     runs at a time, and a save that waits reads the draft id when it runs.
-//     A save of a session that ended writes nothing of the new session, and
-//     it still deletes the stale drafts of its own session. The standalone
-//     DraftCard has a key, and a pop-out opens the full composer dirty.
+//     run it at once. Review round 1: one save runs at a time, and a save
+//     that waits reads the draft id when it runs. A save of a session that
+//     ended writes nothing of the new session, and it still deletes the stale
+//     drafts of its own session. The standalone DraftCard has a key.
+//     Review round 2: a send, a discard and a pop-out drain the chain. They
+//     drop each save that did not start, and they await the save that runs
+//     before they read the draft id. The inline autosave carries the Cc and
+//     the Bcc. A pop-out hands its draft and its Cc to the full composer.
 //   * `email-autosave-wait` (item 12): a Gmail draft that holds a file waits
 //     10 seconds, and each other draft waits 1.2 seconds. Each composer asks
 //     `autosaveWait`.
@@ -407,6 +410,141 @@ describe("email-autosave-flush: one save runs at a time (review round 1)", () =>
   });
 });
 
+describe("email-autosave-flush: a send, a discard and a pop-out drain the chain (review round 2)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("drops a save that waits, settles with the save that runs, and starts no save after", async () => {
+    const first = deferred();
+    const waiting = vi.fn();
+    const pending = vi.fn();
+    const a = createAutosave();
+    a.schedule(() => first.promise, 1200);
+    a.flush();
+    a.schedule(waiting, 1200);
+    a.flush();
+    a.schedule(pending, 1200);
+    let drained: boolean | null = null;
+    void a.drain().then((dropped) => {
+      drained = dropped;
+    });
+    await settle();
+    // The drain waits for the save that runs.
+    expect(drained).toBeNull();
+    first.resolve();
+    await settle();
+    expect(drained).toBe(true);
+    vi.advanceTimersByTime(60_000);
+    a.flush();
+    await settle();
+    expect(waiting).not.toHaveBeenCalled();
+    expect(pending).not.toHaveBeenCalled();
+    expect(a.pending).toBe(false);
+  });
+
+  it("settles after a save that runs and fails", async () => {
+    const first = deferred();
+    const a = createAutosave();
+    a.schedule(() => first.promise, 1200);
+    a.flush();
+    let done = false;
+    void a.drain().then(() => {
+      done = true;
+    });
+    first.reject(new Error("502"));
+    await settle();
+    expect(done).toBe(true);
+  });
+
+  it("drops the pending save, and gives true", async () => {
+    const run = vi.fn();
+    const a = createAutosave();
+    a.schedule(run, 1200);
+    await expect(a.drain()).resolves.toBe(true);
+    vi.advanceTimersByTime(60_000);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("gives false at once when no save runs or waits", async () => {
+    const a = createAutosave();
+    await expect(a.drain()).resolves.toBe(false);
+    // A save that ran and settled before the drain is not a dropped save.
+    const first = deferred();
+    a.schedule(() => first.promise, 1200);
+    a.flush();
+    first.resolve();
+    await settle();
+    await expect(a.drain()).resolves.toBe(false);
+  });
+
+  it("runs a save that an edit schedules after the drain", async () => {
+    // A send that fails keeps the composer open, and the next edit saves.
+    const a = createAutosave();
+    await a.drain();
+    const run = vi.fn();
+    a.schedule(run, 1200);
+    vi.advanceTimersByTime(1200);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a send the draft id of a first save that ran (no orphan draft)", async () => {
+    let draftId: string | null = null;
+    const created = deferred<string>();
+    const a = createAutosave();
+    a.schedule(async () => {
+      draftId = await created.promise;
+    }, 1200);
+    vi.advanceTimersByTime(1200);
+    const sendReads: (string | null)[] = [];
+    const send = (async () => {
+      await a.drain();
+      sendReads.push(draftId);
+    })();
+    created.resolve("d1");
+    await send;
+    expect(sendReads).toEqual(["d1"]);
+  });
+
+  it("runs the probe of the re-verify: the order is S1 then SEND, and S2 never starts", async () => {
+    // The inline reply on Outlook. S1 updates the draft with T1 and is slow.
+    // The member types T2 and pauses, so S2 fires and waits. The member types
+    // T3 and clicks Send while S3 waits for its timer. The issue order at
+    // 519489183 was [S1, S2, SEND], and round 1 gave [S1, SEND, S2].
+    const issued: string[] = [];
+    const s1 = deferred();
+    const a = createAutosave();
+    a.schedule(() => {
+      issued.push("S1");
+      return s1.promise;
+    }, 1200);
+    vi.advanceTimersByTime(1200);
+    a.schedule(() => {
+      issued.push("S2");
+    }, 1200);
+    vi.advanceTimersByTime(1200);
+    a.schedule(() => {
+      issued.push("S3");
+    }, 1200);
+    // Send, as each composer does it: drain, then the save before the send.
+    const send = (async () => {
+      await a.drain();
+      issued.push("SEND");
+    })();
+    await settle();
+    expect(issued).toEqual(["S1"]);
+    s1.resolve();
+    await send;
+    await settle();
+    vi.advanceTimersByTime(60_000);
+    await settle();
+    expect(issued).toEqual(["S1", "SEND"]);
+  });
+});
+
 describe("email-autosave-flush: the draft that a save updates (review round 1)", () => {
   const last = { session: 3, from: "acct-a", id: "d1" };
 
@@ -465,14 +603,58 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
     comesBefore(effect, "autosave.flush();", "draftIdRef.current = null;");
   });
 
-  it("drops the pending save on a discard and on a send", () => {
-    expect(compose).toMatch(/autosave\.cancel\(\);\s*if \(draftIdRef\.current\) void deleteEmail\(draftIdRef\.current\);\s*onClose\(\);/);
-    expect(between(compose, "const handleSend = async", "const saveFailure")).toContain("autosave.cancel();");
-    expect(between(detail, "const resetReplySession = () => {", "const composedReply")).toContain("autosave.cancel();");
-    expect(between(detail, "const handleInlineSend = async", "const addReplyFiles")).toContain("autosave.cancel();");
-    expect(between(conversation, "const send = async", "const discard")).toContain("autosave.cancel();");
-    const discard = between(conversation, "const discard = async", "const runAi");
-    comesBefore(discard, "autosave.cancel();", "onDismiss?.()");
+  /** The send of each composer, up to the code after it. */
+  const SENDS = [
+    ["compose", between(compose, "const handleSend = async", "const saveFailure")],
+    ["detail", between(detail, "const handleInlineSend = async", "const addReplyFiles")],
+    ["conversation", between(conversation, "const send = async", "const discard")],
+  ] as const;
+
+  it("awaits the drain in each send, before the save before the send (review round 2)", () => {
+    for (const [name, send] of SENDS) {
+      expect(send, name).toContain("await autosave.drain();");
+      comesBefore(send, "await autosave.drain();", "await saveDraft(");
+      // A cancel keeps a save that waits, and that save lands after the send.
+      expect(send, name).not.toContain("autosave.cancel()");
+    }
+  });
+
+  it("reads the draft id of a send only after the drain (review round 2)", () => {
+    for (const [name, send] of SENDS.slice(0, 2)) {
+      const before = between(send, "async", "await autosave.drain();");
+      expect(before, name).not.toContain("draftIdRef.current");
+      comesBefore(send, "await autosave.drain();", "if (draftIdRef.current ||");
+    }
+  });
+
+  it("awaits the drain in each discard, before the delete (review round 2)", () => {
+    const composeDiscard = between(compose, "const discardDraft = async", "const handleSend");
+    const detailDiscard = between(detail, "const discardReply = async", "const composedReply");
+    const cardDiscard = between(conversation, "const discard = async", "const runAi");
+    for (const [name, discard] of [
+      ["compose", composeDiscard],
+      ["detail", detailDiscard],
+      ["conversation", cardDiscard],
+    ] as const) {
+      comesBefore(discard, "const drained = autosave.drain();", "await drained;");
+      comesBefore(discard, "await drained;", "deleteEmail(");
+      expect(discard, name).not.toContain("autosave.cancel()");
+    }
+    // The composer and the reply ask draftToUpdate after the drain, so a
+    // first save that ran, or a session that the reset ended, names its draft.
+    for (const [name, discard] of [["compose", composeDiscard], ["detail", detailDiscard]] as const) {
+      comesBefore(discard, "await drained;", "const id = draftToUpdate(");
+      expect(discard, name).toContain("if (id) void deleteEmail(id);");
+      expect(between(discard, "async", "await drained;"), name).not.toContain("deleteEmail(");
+    }
+    comesBefore(cardDiscard, "const drained = autosave.drain();", "onDismiss?.()");
+    // Each Discard button calls the discard that drains.
+    expect(compose).toContain("onClick={() => void discardDraft()}");
+    expect(detail).toContain("onClick={() => void discardReply()}");
+  });
+
+  it("keeps the cancel of the reset of the reply, after the drain of a send or a discard", () => {
+    expect(between(detail, "const resetReplySession = () => {", "const discardReply")).toContain("autosave.cancel();");
   });
 
   /** The guard of each composer, on a save that ends after its session ended. */
@@ -530,15 +712,88 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
     }
   });
 
-  it("opens the full composer dirty when a pop-out hands over an unsaved edit", () => {
-    const pop = between(detail, "const popOutToComposer = () => {", "setReplyMode(null);");
-    expect(pop).toContain("unsavedEdit: autosave.pending,");
+  /** The pop-out of the inline reply, from its start to the command bridge. */
+  const popOut = () => between(detail, "const popOutToComposer = async () => {", "cmdRef.current =");
+  /** The defaults that the pop-out hands to the full composer. */
+  const popOutDefaults = () => between(popOut(), "openCompose({", "});");
+
+  it("opens the full composer dirty when the drain of a pop-out dropped an edit", () => {
+    const pop = popOut();
+    // The drain gives true when it dropped an edit (review round 2).
+    comesBefore(pop, "const drained = autosave.drain();", "const unsavedEdit = await drained;");
+    expect(popOutDefaults()).toMatch(/^\s*unsavedEdit,$/m);
+    expect(pop).not.toContain("autosave.pending");
     // A flush here as well would make two drafts.
     expect(pop).not.toContain("autosave.flush()");
     expect(codeOnly(read("page.tsx"))).toContain("unsavedEdit={composeDefaults?.unsavedEdit}");
     const open = between(compose, "if (!open) return;", "}, [open]);");
     expect(open).toContain("dirty.current = Boolean(unsavedEdit);");
     expect(open).not.toContain("dirty.current = false;");
+  });
+
+  it("hands the draft of the reply to the full composer, after the drain (F2, review round 2)", () => {
+    const pop = popOut();
+    // The save that runs settles first, so a first save gives its draft id.
+    comesBefore(pop, "const unsavedEdit = await drained;", "const draftId = draftToUpdate(");
+    comesBefore(pop, "const draftId = draftToUpdate(", "openCompose({");
+    expect(pop).toMatch(
+      /\{ session: replySessionRef\.current, draftId: draftIdRef\.current \},\s*lastSaveRef\.current,/,
+    );
+    const defaults = popOutDefaults();
+    expect(defaults).toContain("draftId: handOver,");
+    expect(defaults).toContain("draftHasFile: handOver ? replyHasFileRef.current : undefined,");
+    // The reply closes at once, before the wait.
+    comesBefore(pop, "setReplyMode(null);", "await drained;");
+    const page = codeOnly(read("page.tsx"));
+    expect(page).toContain("draftId={composeDefaults?.draftId}");
+    expect(page).toContain("draftHasFile={composeDefaults?.draftHasFile}");
+  });
+
+  it("hands over no draft of a reply with a Bcc, because the full composer has no Bcc row", () => {
+    expect(popOut()).toContain("const handOver = draftId && !replyBcc.trim() ? draftId : undefined;");
+    // The day the composer gets a Bcc row, this rule can go.
+    expect(compose).not.toMatch(/\bsetBcc\b|\bbcc:/);
+  });
+
+  it("carries the Cc of the reply to the full composer, which saves the draft with it", () => {
+    expect(popOutDefaults()).toContain("cc: replyCc,");
+    expect(codeOnly(read("page.tsx"))).toContain("defaultCc={composeDefaults?.cc}");
+    const open = between(compose, "if (!open) return;", "}, [open]);");
+    expect(open).toContain("setCc(defaultCc);");
+    expect(scheduledRun(compose)).toContain('cc: cc ? cc.split(",").map((s) => s.trim()).filter(Boolean) : [],');
+  });
+
+  it("updates the draft that a pop-out hands over, in the full composer", () => {
+    const open = between(compose, "if (!open) return;", "}, [open]);");
+    expect(open).toContain("draftIdRef.current = draftId ?? null;");
+    expect(open).toContain("draftHasFileRef.current = Boolean(draftId && draftHasFile);");
+    expect(open).not.toMatch(/draftIdRef\.current = null;/);
+    // The seeded draft counts as the last save of the new session.
+    comesBefore(open, "sessionRef.current += 1;", "draftIdRef.current = draftId ?? null;");
+    expect(open).toMatch(
+      /if \(draftId\) \{\s*lastSaveRef\.current = \{\s*session: sessionRef\.current, from: defaultFromId \|\| accountId, id: draftId,\s*\};/,
+    );
+  });
+
+  it("carries the Cc and the Bcc in each autosave of the inline reply (review round 2)", () => {
+    // The gateway writes the lists that it gets, and `api.ts` sends [] for a
+    // missing list. So a save without them cleared the Cc and the Bcc.
+    const effect = between(detail, "const savingFrom = fromId;", "}, autosaveWait(");
+    const run = scheduledRun(detail);
+    expect(run).toContain("cc: ccArr,");
+    expect(run).toContain("bcc: bccArr,");
+    const prep = between(detail, "if (!replyBody.trim() && toArr.length === 0) {", "const savingFrom = fromId;");
+    expect(prep).toContain('const ccArr = replyCc.split(",").map((s) => s.trim()).filter(Boolean);');
+    expect(prep).toContain('const bccArr = replyBcc.split(",").map((s) => s.trim()).filter(Boolean);');
+    expect(effect).toContain("autosave.schedule(async () => {");
+    // An edit of the Cc or of the Bcc starts a save too.
+    expect(detail).toContain("}, [replyBody, replyQuote, replyTo, replyCc, replyBcc, replyMode, fromId, email?.id]);");
+  });
+
+  it("carries each recipient that its composer holds, in each autosave", () => {
+    expect(scheduledRun(compose)).toMatch(/\bcc: cc \?/);
+    expect(scheduledRun(conversation)).toContain("cc: ccList(),");
+    expect(scheduledRun(conversation)).toContain("bcc: bccList(),");
   });
 
   it("gives the standalone DraftCard the key of its draft (EM-G3c-2-f1)", () => {
@@ -640,7 +895,7 @@ describe("email-send-failed-shows: a failed send shows its text", () => {
     // a later "Not saved" (review round 1). ComposePanel does the same.
     const send = between(detail, "const handleInlineSend = async", "const fromAccount = ");
     comesBefore(send, "if (!email) return;", "setSendErr(null);");
-    expect(between(compose, "const handleSend = async", "autosave.cancel();")).toContain("setSendError(null);");
+    expect(between(compose, "const handleSend = async", "await autosave.drain();")).toContain("setSendError(null);");
   });
 
   it("keeps the error of the inline reply out of the footer that truncates", () => {

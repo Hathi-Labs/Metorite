@@ -53,6 +53,11 @@ interface ComposePanelProps {
   /** A pop-out hands over an edit that the inline reply did not save. The
    *  composer opens dirty, so its own save keeps it (EM-G3c-2 review round 1). */
   unsavedEdit?: boolean;
+  /** The draft that the inline reply saved, in the mailbox of `defaultFromId`
+   *  or `accountId`. The composer updates it, and makes no second draft
+   *  (EM-G3c-2 review round 2). `draftHasFile` is its `hasAttachments`. */
+  draftId?: string;
+  draftHasFile?: boolean;
   /** The quoted trailing chain — shown collapsed below the box, reattached on
    *  send, and kept OUT of the editable body so AI/edits never touch it. */
   quote?: string;
@@ -77,6 +82,8 @@ export function ComposePanel({
   defaultCc = "",
   replyToBody,
   unsavedEdit,
+  draftId,
+  draftHasFile,
   quote,
   replyToMessageId,
   messageId,
@@ -174,9 +181,17 @@ export function ComposePanel({
     void getSignatureText(defaultFromId || accountId).then((sig) => {
       if (sig) setBody((prev) => appendSignature(prev, sig));
     });
-    draftIdRef.current = null;
-    draftHasFileRef.current = false;
     sessionRef.current += 1;
+    // A pop-out hands over the draft of the inline reply, so the composer
+    // updates it. It counts as the last save of this session, so a save or a
+    // discard after the session ended finds it too (EM-G3c-2 review round 2).
+    draftIdRef.current = draftId ?? null;
+    draftHasFileRef.current = Boolean(draftId && draftHasFile);
+    if (draftId) {
+      lastSaveRef.current = {
+        session: sessionRef.current, from: defaultFromId || accountId, id: draftId,
+      };
+    }
     staleDraftsRef.current = [];
     // A pop-out keeps the From that the inline reply chose (EM-T8c review).
     setFromPick(defaultFromId && defaultFromId !== accountId
@@ -375,6 +390,24 @@ export function ComposePanel({
     onClose();
   };
 
+  /** Discard the auto-saved draft. The X keeps it instead. The window closes
+   *  at once. The chain drains first, so no save that waited writes the draft
+   *  again, and a first save that runs gives its id to the delete (EM-G3c-2
+   *  review round 2). */
+  const discardDraft = async () => {
+    const session = sessionRef.current;
+    const from = fromId;
+    const drained = autosave.drain();
+    onClose();
+    await drained;
+    const id = draftToUpdate(
+      { session, from },
+      { session: sessionRef.current, draftId: draftIdRef.current },
+      lastSaveRef.current,
+    );
+    if (id) void deleteEmail(id);
+  };
+
   const handleSend = async () => {
     if (!to.trim() || sending) return;
     if (fromBlocked) {
@@ -383,8 +416,10 @@ export function ComposePanel({
     }
     setSending(true);
     setSendError(null);
-    // The send carries the last edit, so the pending autosave goes.
-    autosave.cancel();
+    // The send carries the last edit, so each queued autosave goes. A save
+    // that runs settles first: a first save gives its draft id, and no older
+    // text lands after this save (EM-G3c-2 review round 2).
+    await autosave.drain();
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
     const ccArr = cc ? cc.split(",").map((s) => s.trim()).filter(Boolean) : [];
     const hasAttachments = attachments.length > 0 || artifacts.length > 0;
@@ -617,13 +652,7 @@ export function ComposePanel({
               onPick={(ref) => setArtifacts((prev) =>
                 prev.some((a) => a.path === ref.path) ? prev : [...prev, ref])}
             />
-            <Button variant="ghost" size="none" radius="keep" layout="" onClick={() => {
-                // Discard removes the auto-saved draft (closing via X keeps it).
-                // The pending save goes first, so it cannot write the draft again.
-                autosave.cancel();
-                if (draftIdRef.current) void deleteEmail(draftIdRef.current);
-                onClose();
-              }} disabled={sending} className="px-3 py-1.5 text-xs rounded-md">
+            <Button variant="ghost" size="none" radius="keep" layout="" onClick={() => void discardDraft()} disabled={sending} className="px-3 py-1.5 text-xs rounded-md">
               Discard
             </Button>
             <Button size="none" radius="keep" layout="flex items-center" onClick={handleSend} disabled={sending || !to.trim()} className="px-4 py-1.5 text-xs rounded-md gap-1.5">

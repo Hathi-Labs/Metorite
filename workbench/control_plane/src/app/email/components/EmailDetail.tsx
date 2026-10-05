@@ -341,6 +341,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
       autosave.cancel();
       return;
     }
+    // Each save carries the Cc and the Bcc of the reply. The gateway writes
+    // the lists that it gets, so a save without them cleared both on Outlook,
+    // and the send read the cleared row (EM-G3c-2 review round 2).
+    const ccArr = replyCc.split(",").map((s) => s.trim()).filter(Boolean);
+    const bccArr = replyBcc.split(",").map((s) => s.trim()).filter(Boolean);
     const isForward = replyMode === "forward";
     const target = replyTargetRef.current ?? email;
     const subj0 = target.subject || "";
@@ -373,6 +378,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
           // standalone, and so is a reply from another mailbox (EM-T8c).
           replyToMessageId: isForward || !sameConversation ? undefined : target.id,
           to: toArr,
+          cc: ccArr,
+          bcc: bccArr,
           subject,
           body,
         });
@@ -408,7 +415,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // Stop the timer and keep the save, so a close or a switch can flush it.
     return () => autosave.hold();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replyBody, replyQuote, replyTo, replyCc, replyMode, fromId, email?.id]);
+  }, [replyBody, replyQuote, replyTo, replyCc, replyBcc, replyMode, fromId, email?.id]);
 
   // An unmount runs the pending save at once (EM-G3c-2 item 11).
   useEffect(() => () => autosave.flush(), [autosave]);
@@ -624,8 +631,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
   };
 
   const resetReplySession = () => {
-    // A discard and a send end the reply. The pending save goes, so it cannot
-    // write the draft again.
+    // A discard and a send end the reply. Each drained the chain before, and
+    // the cancel drops a save that an edit scheduled since then.
     autosave.cancel();
     replySessionRef.current += 1;
     replyHasFileRef.current = false;
@@ -644,6 +651,26 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setAiOpen(false);
     setAiInstruction("");
     ai.reset(); // a new reply starts a fresh drafting session
+  };
+
+  /** Discard the reply and its auto-saved draft. The X keeps the draft
+   *  instead. The reply closes at once. The chain drains first, so no save
+   *  that waited writes the draft again, and a first save that runs gives its
+   *  id to the delete (EM-G3c-2 review round 2). */
+  const discardReply = async () => {
+    const session = replySessionRef.current;
+    const from = fromId ?? "";
+    const drained = autosave.drain();
+    setSendErr(null);
+    resetReplySession();
+    await drained;
+    // The reset ended the session, so this reads the last save of the reply.
+    const id = draftToUpdate(
+      { session, from },
+      { session: replySessionRef.current, draftId: draftIdRef.current },
+      lastSaveRef.current,
+    );
+    if (id) void deleteEmail(id);
   };
 
   /** The full outgoing body: the user's new text plus the quoted trailing chain. */
@@ -705,8 +732,10 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const bccArr = replyBcc.split(",").map((s) => s.trim()).filter(Boolean);
     const isForward = replyMode === "forward";
     const target = replyTargetRef.current ?? email;
-    // The send carries the last edit, so the pending autosave goes.
-    autosave.cancel();
+    // The send carries the last edit, so each queued autosave goes. A save
+    // that runs settles first: a first save gives its draft id, and no older
+    // text without Cc lands after this save (EM-G3c-2 review round 2).
+    await autosave.drain();
     try {
       // Native draft-send now carries Cc/Bcc AND attachments (all stored on the
       // provider draft), so whenever there's a draft OR attachments we save the
@@ -810,10 +839,30 @@ export function EmailDetail({ email }: EmailDetailProps) {
   };
 
   /** Hand the current draft off to the full composer (Cc/Bcc, attachments). */
-  const popOutToComposer = () => {
+  const popOutToComposer = async () => {
+    const session = replySessionRef.current;
+    const from = fromId ?? "";
+    const stale = staleDraftsRef.current;
+    // The full composer takes over the draft, so the chain of the reply
+    // drains: no save of the reply writes the draft after the hand-over. A
+    // save that runs settles first, so a first save gives its draft id. A
+    // flush here would make two drafts (EM-G3c-2 review rounds 1 and 2).
+    const drained = autosave.drain();
+    setReplyMode(null);
+    // True when the drain dropped an edit. The full composer opens dirty
+    // then, and its own save keeps that edit.
+    const unsavedEdit = await drained;
+    const draftId = draftToUpdate(
+      { session, from },
+      { session: replySessionRef.current, draftId: draftIdRef.current },
+      lastSaveRef.current,
+    );
     // The new mailbox holds the reply once its own draft exists, so the
     // drafts of an old mailbox can go. Without one they stay, as a copy.
-    if (draftIdRef.current) dropStaleDrafts();
+    if (draftId) dropDrafts(stale);
+    // The full composer has no Bcc row, so its saves would clear a Bcc. A
+    // reply with a Bcc keeps its draft, and the composer makes its own.
+    const handOver = draftId && !replyBcc.trim() ? draftId : undefined;
     openCompose({
       // The pop-out opens on the mailbox of the mail (EM-T8a, MB-2), and it
       // keeps the From that the member chose (EM-T8c review). The composer
@@ -821,12 +870,15 @@ export function EmailDetail({ email }: EmailDetailProps) {
       accountId: mailboxId ?? undefined,
       fromAccountId: fromId && fromId !== mailboxId ? fromId : undefined,
       to: replyTo,
+      // The composer saves the draft that it updates with this Cc.
+      cc: replyCc,
       subject: replySubject(),
       replyToBody: replyBody,   // the typed new text
-      // The pop-out closes the reply, which drops its pending save. So the
-      // full composer opens dirty and saves that edit. A flush here as well
-      // would make two drafts (EM-G3c-2 review round 1).
-      unsavedEdit: autosave.pending,
+      unsavedEdit,
+      // The composer updates the draft of the reply, in the mailbox of the
+      // From above, and makes no second draft (EM-G3c-2 review round 2).
+      draftId: handOver,
+      draftHasFile: handOver ? replyHasFileRef.current : undefined,
       quote: replyQuote,        // the collapsed trailing chain
       replyToMessageId:
         replyMode === "forward" ? undefined : replyTarget.providerMessageId,
@@ -834,7 +886,6 @@ export function EmailDetail({ email }: EmailDetailProps) {
       // (a forward isn't a reply, so no context to carry).
       messageId: replyMode === "forward" ? undefined : replyTarget.id,
     });
-    setReplyMode(null);
   };
 
   // Keep the command bridge pointed at the live handlers (runs each render).
@@ -1464,16 +1515,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
                       prev.some((a) => a.path === ref.path) ? prev : [...prev, ref]);
                   }}
                 />
-                <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={popOutToComposer} title="Open in the full composer (Bcc, attachments)" aria-label="Pop out to full composer" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
+                <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => void popOutToComposer()} title="Open in the full composer (Bcc, attachments)" aria-label="Pop out to full composer" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
                   <AppIcon name="ExternalLink" size={13} />
                   <span className="hidden sm:inline">Pop out</span>
                 </Button>
-                <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => {
-                    // Discard the auto-saved draft too (the X keeps it instead).
-                    if (draftIdRef.current) void deleteEmail(draftIdRef.current);
-                    setSendErr(null);
-                    resetReplySession();
-                  }} title="Discard this draft" aria-label="Discard this draft" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
+                <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => void discardReply()} title="Discard this draft" aria-label="Discard this draft" className="px-2 sm:px-3 py-1 text-xs rounded-md gap-1">
                   <AppIcon name="Trash2" size={13} />
                   <span className="hidden sm:inline">Discard</span>
                 </Button>

@@ -515,8 +515,10 @@ export function DraftCard({
     if (!accountId || recipients().length === 0) return;
     setSending(true);
     setSendError(null);
-    // The send carries the last edit, so the pending autosave goes.
-    autosave.cancel();
+    // The send carries the last edit, so each queued autosave goes. A save
+    // that runs settles first, so no older text lands after this save
+    // (EM-G3c-2 review round 2).
+    await autosave.drain();
     try {
       // Persist the latest edits — Cc/Bcc included, now carried on the provider
       // draft — then send THIS draft natively (Drafts → Sent, no duplicate).
@@ -568,9 +570,11 @@ export function DraftCard({
 
   const discard = async () => {
     if (!confirm("Discard this draft?")) return;
-    // The pending save goes first, so it cannot write the draft again.
-    autosave.cancel();
+    // The chain drains first, so no save that waited writes the draft again.
+    // The delete waits for the save that runs (EM-G3c-2 review round 2).
+    const drained = autosave.drain();
     onDismiss?.(); // hide instantly; the provider delete is async
+    await drained;
     try {
       await deleteEmail(draft.id);
     } catch {
