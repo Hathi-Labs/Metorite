@@ -95,6 +95,26 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-246 · Approve the Caddy "updating" page, or say no · [OWNER]
+- **Check:** `rg -n "CADDY-AUTH-APPROVED 3c8217ff" .claude/OWNER_GRANTS.md`.
+  No hit means this is open.
+- **Why:** NS-10b shows "Metorite is updating" when the workbench has not
+  answered for the 30 s hold, in place of Caddy's bare 502. It adds a
+  `header` line and a `rewrite` line to the `app.metorite.com` block, inside
+  `handle_errors` only. `test_caddy_auth_gate.py` reads every such line as a
+  sign-in line, so the merge needs the owner (gate (a)).
+- **What the lines do:** serve one fixed page as a 503 when the proxy itself
+  fails. They do not change any header that names a user, and no path reaches
+  a new route.
+- **Do:** to approve, add this line to `.claude/OWNER_GRANTS.md`:
+
+      CADDY-AUTH-APPROVED 3c8217ffb4fa3fc9d049ee170ec057c7f65fee739ba9a167573a96aaba5dce21
+
+  Then an agent merges branch `update-notice-caddy` with `main`, opens the
+  PR, and watches the deploy. To refuse, delete this entry and the branch.
+- **Authority:** `specs/navigation_shell.md` NS-10b · `work_plan.md` §6 gate (a).
+- **Added:** 2026-10-05 · the NS-10 session.
+
 ### H-245 · Close the four P3 edges of skill privacy that the PR #635 review left · [AGENT]
 - **Check:** run these four checks. Each one stays open until its step closes.
   1. `rg -n "SKILL_UNCLAIMED" packages/acb_skills/acb_skills/tenant_file_store.py`.
