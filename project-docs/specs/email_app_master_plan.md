@@ -8292,10 +8292,10 @@ most 50 lookups (`reconcile.py:40-47`, `:78-103`).
     `_get_client()`, so the rules of EM-G4a apply. It sends `format=minimal` only.
 11. **A rate limit stops the confirm (C4).** `_confirm_gone` stops at the first
     `ProviderRateLimited`. Each row that it did not confirm keeps its folder
-    (`scheduler.py:778-783`). Outlook raises no `ProviderRateLimited`, so no live path changes.
+    (`scheduler.py:797-801`). Outlook raises no `ProviderRateLimited`, so no live path changes.
 12. **A capped import runs no reconcile (C5).** Gmail records when its import reaches
-    `IMPORT_MAX_PAGES` (`gmail.py:2129-2130`). `_run_import` then skips the reconcile, as it does
-    at the storage limit (`scheduler.py:924-926`). It logs `sync.import_reconcile_skipped` with
+    `IMPORT_MAX_PAGES` (`gmail.py:2167`). `_run_import` then skips the reconcile, as it does
+    at the storage limit (`scheduler.py:956-961`). It logs `sync.import_reconcile_skipped` with
     `reason=capped`, the event of the storage-limit skip. The audit text named
     `email.import.reconcile_skipped`, and no code logs that name.
 
