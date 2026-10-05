@@ -43,7 +43,8 @@ fences live here, because the scheduler fence cannot see a block in
   ``sent`` or ``drafts``, a row with no date, a tie, and a row of org A with
   the same account and thread do not void it.
 
-**EM-T4a-2, PR-B1.** Three more fences, with the same watched leaves:
+**EM-T4a-2, PR-B1.** Four more fences. The first three watch the same
+leaves:
 
 * ``email-decision-core-no-session-across-the-match-ask``. The rule-match
   ask of ``_run_rules_job`` and of the gap loop of ``_maybe_classify_threads``
@@ -58,6 +59,11 @@ fences live here, because the scheduler fence cannot see a block in
   The ``SELECT 1`` at the end of Block R then raises, so the row gets no
   ask, no Block W, no stamp and no provider call. Hermetic for each job and
   each reader, and R8 for the runner.
+* ``email-decision-core-apply-raises-no-unavailable`` (review round 1). An
+  AST walk of ``routes/email``: no function that the apply of Block W
+  reaches raises ``LLMUnavailable``, so the one handler of each job never
+  rolls back an action that the job already took. A companion plants a
+  raise and shows that the fence fails.
 
 Run (real Postgres)::
 
@@ -1987,6 +1993,120 @@ def test_both_jobs_call_the_split_form(rel, name):
             "resolve_classification"} <= called, called
     assert not called & {"classify_matches", "_match_email_to_rule",
                          "_match_email_to_rules_multi"}, called
+
+
+#: What Block W of each job runs after ``resolve_classification``: the apply,
+#: the projection, the label reconcile and the stamp. The single
+#: ``except LLMUnavailable`` of each job (PR-B1, agent decision D16) covers
+#: them too. A raise there after a provider action would roll Block W back,
+#: leave the row unstamped and run the action again next cycle.
+_B1_APPLY_ROOTS = ("_apply_matches", "_stamp_processed_watermark",
+                   "project_reply_status_from_matches", "_reconcile_thread_labels")
+
+#: The four functions that raise ``LLMUnavailable`` today (measured
+#: 2026-10-05). Each one is an ask, before Block W writes.
+_B1_RAISE_SITES = {"_decide_rule_match", "_llm_pick_rule", "_llm_pick_rules",
+                   "_decide_thread_status"}
+
+#: The model calls of the apply. Each one catches every error today.
+_B1_APPLY_MODEL_CALLS = {"_render_template", "_llm_is_cold",
+                         "_ai_confirms_sender_pattern"}
+
+_UNAVAILABLE = {"LLMUnavailable", "DecisionUnavailable"}
+
+
+def _function_index(sources: dict[str, str]) -> dict[str, list[tuple[str, ast.AST]]]:
+    """Each module-level function of ``sources`` (path to text), by name."""
+    index: dict[str, list[tuple[str, ast.AST]]] = {}
+    for rel, source in sources.items():
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                index.setdefault(node.name, []).append((rel, node))
+    return index
+
+
+def _reach(index, roots) -> dict[str, list[ast.AST]]:
+    """Each function that ``roots`` reach through calls, by name. A call
+    resolves by its last name to each function of that name, so for a
+    direct call the walk can see too much, and never too little."""
+    seen: dict[str, list[ast.AST]] = {}
+    todo = list(roots)
+    while todo:
+        name = todo.pop()
+        if name in seen or name not in index:
+            continue
+        seen[name] = [fn for _rel, fn in index[name]]
+        todo.extend(_call_name(n) for fn in seen[name] for n in ast.walk(fn)
+                    if isinstance(n, ast.Call))
+    return seen
+
+
+def _unavailable_raises(fn: ast.AST) -> list[int]:
+    """Each line of ``fn`` that raises ``LLMUnavailable`` or its subclass:
+    a ``raise`` of one by name, and a bare ``raise`` in a handler of one."""
+    def _names(node) -> set[str]:
+        nodes = node.elts if isinstance(node, ast.Tuple) else [node]
+        return {n.id if isinstance(n, ast.Name) else getattr(n, "attr", "")
+                for n in nodes}
+
+    lines = []
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Raise) and node.exc is not None:
+            exc = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
+            if _names(exc) & _UNAVAILABLE:
+                lines.append(node.lineno)
+        elif isinstance(node, ast.ExceptHandler) and node.type is not None \
+                and _names(node.type) & _UNAVAILABLE:
+            lines.extend(r.lineno for r in ast.walk(node)
+                         if isinstance(r, ast.Raise) and r.exc is None)
+    return sorted(lines)
+
+
+def _raises_by_name(functions: dict[str, list[ast.AST]]) -> dict[str, list[int]]:
+    """The raise lines of each function that has one, by name."""
+    found = {name: sorted(line for fn in fns for line in _unavailable_raises(fn))
+             for name, fns in functions.items()}
+    return {name: lines for name, lines in found.items() if lines}
+
+
+def test_the_apply_raises_no_llm_unavailable():
+    """R7 fence ``email-decision-core-apply-raises-no-unavailable`` (review
+    round 1). No function that the apply of Block W reaches in
+    ``routes/email`` raises ``LLMUnavailable``, and none of the four raise
+    sites is among them. EM-T4a-3 must keep it so: catch it before the
+    apply, or the job rolls back an action that it already took."""
+    sources = {p.relative_to(_EMAIL).as_posix(): p.read_text(encoding="utf-8")
+               for p in sorted(_EMAIL.rglob("*.py"))}
+    index = _function_index(sources)
+    every = _raises_by_name({name: [fn for _r, fn in fns]
+                             for name, fns in index.items()})
+    assert set(every) >= _B1_RAISE_SITES, f"the walk lost a raise site: {every}"
+    reached = _reach(index, _B1_APPLY_ROOTS)
+    assert set(reached) >= _B1_APPLY_MODEL_CALLS, (
+        f"the walk lost a model call of the apply: {sorted(reached)}")
+    assert not _B1_RAISE_SITES & set(reached), sorted(_B1_RAISE_SITES & set(reached))
+    assert _raises_by_name(reached) == {}
+
+
+def test_the_apply_fence_can_fail():
+    planted = (
+        "async def _apply_matches(db, provider):\n"
+        "    await _helper(db)\n"
+        "    await _llm_pick_rule({}, [])\n"
+        "\n"
+        "async def _helper(db):\n"
+        "    try:\n"
+        "        await db.execute('x')\n"
+        "    except DecisionUnavailable:\n"
+        "        raise\n"
+        "    raise LLMUnavailable('down')\n"
+        "\n"
+        "async def _llm_pick_rule(email, rules):\n"
+        "    raise engine.LLMUnavailable('down')\n"
+    )
+    reached = _reach(_function_index({"automation/planted.py": planted}),
+                     _B1_APPLY_ROOTS)
+    assert _raises_by_name(reached) == {"_helper": [9, 10], "_llm_pick_rule": [13]}
 
 
 # ── EM-T4a-2 PR-B1: R8, the writes of the split jobs ───────────────────────
