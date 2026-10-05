@@ -1513,6 +1513,23 @@ def test_the_files_section_tells_the_model_how_a_member_gets_a_file() -> None:
         assert phrase in section, phrase
 
 
+def test_the_pdf_rule_binds_only_without_run_command() -> None:
+    """In a covered run the image holds fpdf2 and reportlab, so "You cannot
+    make a PDF yourself" is false there. The rule binds a run without
+    ``run_command``, and the sandbox section owns the other half (rule 8)."""
+    from acb_skills import addendum as ad
+
+    section = _files_section()
+    start = section.index("- **A PDF.**")
+    rule = " ".join(section[start : section.index("\n- **", start + 1)].split())
+    assert "If you do not hold `run_command`, this rule binds." in rule, rule
+    assert "You cannot make a PDF yourself" in rule, rule
+    assert 'If you hold `run_command`, the section "Code in the sandbox" comes before this rule.' in rule, rule
+    sandbox_text = ad.render_run_sections({"run_command"})
+    assert '"A PDF"' in sandbox_text
+    assert "**You may make a document file.**" in sandbox_text
+
+
 def test_the_agent_may_still_write_an_artifact() -> None:
     """The Files section names a tool the agent must hold."""
     config = json.loads((AGENT_DIR / "config.json").read_text(encoding="utf-8"))

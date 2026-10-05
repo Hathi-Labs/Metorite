@@ -3786,6 +3786,19 @@ says:
    image has the data libraries.
 7. Make a skill under `agent-data/skills/` for a job that will come again.
    A skill is private to the member who made it.
+8. When the member asks for a PDF, a `.docx`, a `.pptx` or a `.xlsx`, make
+   it with a script and save it in `/workspace/outputs/`. Say that you made
+   the file only when the command succeeded and the file is there. Added
+   2026-10-05 with the second package set (§7.2).
+
+**The rule "A PDF" of the Projects instructions has two halves.** Without
+`run_command`, the agent cannot make a PDF, and the card's Download PDF
+button makes one. With `run_command`, rule 8 comes first, because the image
+holds `fpdf2` and `reportlab`. The sandbox section owns what a sandbox run
+can make. Fences: `test_the_pdf_rule_binds_only_without_run_command` in
+`tests/unit/test_projects_agent.py`, and
+`test_the_sandbox_section_owns_the_document_files` in
+`tests/unit/test_generated_addendum.py`.
 
 The first text of rule 4 was "Never send data off the platform". The owner
 decision above made that claim untrue, so the section says only that the
