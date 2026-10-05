@@ -227,6 +227,19 @@ verification commands.)
   is run against a real Postgres before it is believed. **Verified-red-first**
   applies to every fence and every bug fix; **mutation testing** applies to money,
   auth, tenancy and outward writes.
+- **R9 — an app spec declares its shell manifest** *(D89, 2026-10-05. Owning
+  spec: `specs/navigation_shell.md` §5.)* Every app joins the one shell, and no
+  app builds a shell of its own. So the spec of an app carries a section named
+  **"Shell manifest"**. It names the app's team, a one-line purpose and its jobs,
+  each with a verb, its fields and its form route. It also names the app's search
+  provider, its "needs you" items, its Home cards with their altitudes, and its
+  agent. It names no palette, bell, assistant rail or ⌘K listener of the app's
+  own. R9 binds a NEW app spec, and the spec of an app the owner promotes. An
+  older app spec gains the section when its app is next worked on.
+  **Fences.** The code half is a test: `src/lib/shell/seams.test.ts` fails on a
+  new palette, bell, assistant rail or ⌘K listener in any app. The spec half is
+  advisory: the spec-auditor refuses an app spec with no "Shell manifest"
+  section, and nothing in CI reads specs for it.
 
 ---
 
@@ -4689,7 +4702,8 @@ every UI change.
 
 **Fences:** `src/lib/nav.test.ts` (every live pane has a team and a purpose)
 and a new `src/lib/shell/seams.test.ts`, whose baseline only goes down (NS-1,
-NS-2).
+NS-2). *Pointer, 2026-10-05: `seams.test.ts` landed ahead of NS-1, keyed by
+app. R9 in §1 carries the spec half.*
 
 ---
 

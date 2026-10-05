@@ -47,6 +47,13 @@ From `work_plan.md`:
   with a reason); no new DB-connection or Redis sites outside the seam/wrapper
   (allow-list additions need a cited reason); acquire sessions only through the
   current seam idiom; never take a tenant or identity from request input.
+- **R9 — an app plugs into the shell, and never builds one** (D89). Do not
+  mount a ⌘K listener, a palette, a `NotificationBell` or an `<AgentChat>`
+  rail in an app. Do not import one from another app either. Declare jobs, a
+  search provider, a needs provider and an agent instead.
+  `src/lib/shell/seams.test.ts` fails if you do. Never add a key to its
+  `SEAM_DEBT`, and never raise a number. Stop and report. A move inside one
+  app keeps the same key, so it needs no change there.
 
 ## Branch discipline
 

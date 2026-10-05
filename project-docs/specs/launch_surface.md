@@ -569,4 +569,7 @@ cd workbench/operator_console && npx tsc --noEmit && npx vitest run
    act (CLAUDE.md §4).
 4. **Promoting a `preview` app to `live`** — it is the decision "this is finished
    enough to sell", which is the owner's, and the registry edit is trivial once
-   it is taken.
+   it is taken. ⚠️ **Two things hold before an agent proposes a promotion
+   (D89).** The app's spec carries its "Shell manifest" section (R9).
+   `src/lib/shell/seams.test.ts` names no debt for the app. An app that still
+   mounts its own palette, bell, rail or ⌘K listener is not ready to sell.
