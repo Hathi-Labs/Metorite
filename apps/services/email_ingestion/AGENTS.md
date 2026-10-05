@@ -227,11 +227,12 @@ All providers implement the `BaseEmailProvider` abstract interface:
 
 11. **Gmail send and drafts (WS-17 EM-G3a, O-GM-2).** Fence:
     `tests/unit/test_gmail_send_and_drafts.py`.
-    - `_build_gmail_raw` is the one MIME builder of `send_message`,
-      `create_draft` and `update_draft`. Do not add a second one. A body
-      with HTML is `multipart/alternative`, with the text part first. Each
-      attachment takes the type that the caller gives, else the type of its
-      name.
+    - `_build_gmail_mail` is the one MIME builder of `send_message`,
+      `create_draft` and `update_draft`. Do not add a second one. It gives
+      bytes, and `_gmail_raw` wraps them for the plain URI (contract 16). A
+      body with HTML is `multipart/alternative`, with the text part first.
+      Each attachment takes the type that the caller gives, else the type of
+      its name.
     - A reply reads its parent from Gmail (`format=metadata`), never from
       the local row, and sets `In-Reply-To` and `References`. A parent read
       that fails never fails the send.
@@ -338,6 +339,29 @@ All providers implement the `BaseEmailProvider` abstract interface:
       reason=capped`.
     - No Gmail sync result sets `full_snapshot`, so the recurring reconcile
       stays for Outlook only.
+
+16. **The size of a Gmail mail (WS-17 EM-G3c-1).** `GmailProvider._write_mail`
+    is the one write of `send_message`, `create_draft` and `update_draft`. Do
+    not send a write around it. Fence: `tests/unit/test_gmail_mail_size.py`.
+    - A mail with a file, or a built mail over `GMAIL_PLAIN_MAX_BYTES`
+      (1 MiB), goes to the upload URI `GMAIL_UPLOAD_BASE` with
+      `uploadType=multipart`. Each other mail keeps the plain URI and `raw`.
+    - `update_draft` decides on the files after the read-back of the draft,
+      never on `attachments`. An autosave adds no file, and the draft can
+      still hold one.
+    - The upload goes through `_get_client()`, so contract 9 holds for it.
+      Its body is `multipart/related`: the metadata in JSON, then the raw
+      mail as `message/rfc822`. Never use `files=`, because it builds
+      `multipart/form-data`.
+    - The metadata omits `threadId` where the plain JSON body omits it.
+      A draft write nests it in `message`.
+    - A built mail over `GMAIL_MAIL_MAX_BYTES` (36,700,160 bytes, the
+      `maxSize` of the discovery document) raises `GmailMailTooLarge` before
+      the write. A 413 raises it too, read from the status code only. It is
+      a `ProviderMailTooLarge`, its text holds no URL, and the routes answer
+      413. Outlook and IMAP never raise it.
+    - The upload POST of `messages.send` and `drafts.create` gets one try,
+      and the PUT of `drafts.update` keeps its retry on a 429.
 
 ## Inbound SMTP Server
 
