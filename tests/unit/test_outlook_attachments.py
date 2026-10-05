@@ -250,7 +250,12 @@ async def test_a_file_of_zero_bytes_goes_in_one_post() -> None:
     (BIG, ["bytes 0-2097151/5000000", "bytes 2097152-4194303/5000000",
            "bytes 4194304-4999999/5000000"]),
     (3_000_000, ["bytes 0-2097151/3000000", "bytes 2097152-2999999/3000000"]),
-], ids=["5000000", "3000000"])
+    # The edges of the range arithmetic (verifier P2-1): an exact multiple of
+    # 2 MiB sends no empty third PUT, and a remainder of one byte sends one.
+    (4_194_304, ["bytes 0-2097151/4194304", "bytes 2097152-4194303/4194304"]),
+    (4_194_305, ["bytes 0-2097151/4194305", "bytes 2097152-4194303/4194305",
+                 "bytes 4194304-4194304/4194305"]),
+], ids=["5000000", "3000000", "4MiB", "4MiB+1"])
 @pytest.mark.parametrize("ranges_key", ["NextExpectedRanges",
                                         "nextExpectedRanges"])
 async def test_a_large_file_goes_through_an_upload_session_in_ranges(

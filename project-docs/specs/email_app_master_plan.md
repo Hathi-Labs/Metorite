@@ -3990,7 +3990,8 @@ to the cut of 10 MiB in the Next proxy, which EM-G3c owns (§12.3.12 item 3). No
 
 **Files (N5).** `providers/outlook.py`, `providers/base.py`, `routes/email/automation/drafting.py`,
 `apps/services/gateway/AGENTS.md:63` (the rules of the draft path get the new 502), and the new
-test file.
+test file. The build also added contract 13 to `apps/services/email_ingestion/AGENTS.md`, because
+the root DOX rule asks for it.
 
 **Known limit EM-T9-f1.** A retry after a failed file adds again each file that the first try
 added. The composer sends the files again at each send (`ComposePanel.tsx:332`,
@@ -4084,6 +4085,8 @@ change to SQL text.
   `upsert_draft` puts the mapper on the update, the reply and the new branch.
 - `actions.py` has no change. Its `except` records the text of the error, and that text holds the
   file name only.
+- Two new log lines name no URL and no file. `outlook.attachment_failed` gives the stage, the
+  reason and the size. `outlook.new_draft_delete_failed` gives the reason.
 
 **Four readings of the spec.** The spec did not decide these, so the build took the safe side.
 
@@ -4117,6 +4120,12 @@ mutations turned the named fence red. The count in brackets is the count of both
 | M6 | No log filter at load | `test_the_upload_token_never_reaches_a_log_or_a_traceback` | red, 3 failed (4) |
 | M7 | The delete moves into `_attach_files` | `test_a_failed_file_on_an_existing_draft_keeps_the_draft` | red, 1 failed (4) |
 | M8 | Only a 200 counts as a success | `test_a_small_file_goes_in_one_post_and_201_passes` | red, 2 failed (18) |
+| M9 | The end of a range loses its `- 1` | `test_a_large_file_goes_through_an_upload_session_in_ranges` | red, 8 failed (verifier P2-1) |
+
+**The verification (2026-10-05).** The verifier passed the slice, with no P0 and no P1. It recorded
+each Graph call of `create_draft` and `update_draft` on main and on the branch. It used 18 cases
+with no file or with small files, and all 18 were the same. It also ran the 13 R8 cases on the scratch
+database, and 184 passed. Its P2-1 added the edges of 4 MiB and 4 MiB + 1 byte to the range fence.
 
 **Verified (2026-10-05).** The pytest command of B7 ran 171 passed and 13 skipped. The 13 skips
 are R8 cases of `test_email_provider_401_retry.py` and `test_gmail_send_and_drafts.py`, and R8
