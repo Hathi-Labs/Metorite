@@ -6569,7 +6569,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G4a** | 🟢 AGENT-SAFE | The rate-limit helper at the client seam, and the record of a failed fetch (GM-9, items 8 to 10) | After EM-G2 | S | §12.3.5.1 |
 | **EM-G4b** | 🟢 AGENT-SAFE · R8 | The history cursor, the label events, the stale cursor and its recovery (GM-16 to GM-18, items 1 to 7 and 11) | After EM-G4a | L | §12.3.5.2 |
 | **EM-G5a** | 🟢 AGENT-SAFE · R8 | The import, the estimate and the resume (GM-8, GM-19, items 1 to 5) | After EM-G4a and EM-G4b | L | §12.3.6.1 |
-| **EM-G5b** | 🟢 AGENT-SAFE · R8 · ⛔ NO-GO until a new audit | The reconcile (GM-20, items 6 to 8, E-G5-9) | After EM-G5a | M | §12.3.6.2 |
+| **EM-G5b** | 🟢 AGENT-SAFE · R8 · GO-NARROWED (the second audit) | The reconcile (GM-20, items 6 to 12, E-G5-9) | After EM-G5a | M | §12.3.6.2 |
 | **EM-G6a** | 🟢 AGENT-SAFE build · security review · R8 · 🔴 flip (`enforcement-flip`) | The push route and its tenant, dark (GM-21) | After EM-G4b and O-GM-4 | M | §12.3.7 |
 | **EM-G6b** | 🟢 AGENT-SAFE build · 🔴 flip (`enforcement-flip`) | The watch, its renewal and its stop, dark (GM-21) | After EM-G6a | M | §12.3.8 |
 | **EM-G7** | 🟢 AGENT-SAFE · security review | The connect backend: scopes, granted scope, errors, bounces, the capability read (GM-22 to GM-25) | Any time. Merges dark | M | §12.3.9 |
@@ -7257,8 +7257,11 @@ fence `test_an_outlook_draft_to_two_people_and_a_cc_sends_to_all_three`.
 
 **Known limit EM-G3a-f1.** A member edits a draft in Gmail web, then in Metorite before the next
 sync. Gmail gave the draft a new message id, so the local row holds an old id. `update_draft` then
-raises `GmailDraftNotFound`, and the route answers 409 since review round 1. The sync writes the
-new id as a second row, and the old row stays until a reconcile removes it (EM-G4b, EM-G5).
+raises `GmailDraftNotFound`, and the route answers 409 since review round 1.
+
+The sync writes the new id as a second row. The old row stays until the history of EM-G4b reports the delete of
+the old id, and E-B2 deletes the row. No reconcile removes it, because EM-G5b leaves drafts
+out (item 9, the second audit of 2026-10-05).
 
 **Known limit EM-G3a-f2.** A sync can hold its copy of the new id in an open transaction while the
 save moves its row. The move then waits for that transaction, and it fails on the unique key. The
@@ -8043,7 +8046,7 @@ again, with M23 to M30 added.
 
 **The split (the audit of 2026-10-05).** The audit of EM-G5 cleared the import and stopped the
 reconcile. The confirm of the old item 6 can trash a live row, so the reconcile waits for a new
-confirm. EM-G5a is the import, items 1 to 5. EM-G5b is the reconcile, items 6 to 8, with the rule
+confirm. EM-G5a is the import, items 1 to 5. EM-G5b is the reconcile, items 6 to 12, with the rule
 E-G5-9. Each item keeps its number, so "EM-G5 item 4" still names one item.
 
 **The rules of the audit (E-G5-1 to E-G5-10).** E-G5-3 to E-G5-8 bind the build of EM-G5a, and
@@ -8240,38 +8243,107 @@ of EM-G4b reads each later change.
 
 ##### 12.3.6.2 EM-G5b — the reconcile
 
-**Status.** ⛔ NO-GO (the audit of 2026-10-05). The confirm of the old item 6 can trash a live row,
-so E-G5-9 replaces it. A new audit clears EM-G5b before its build. Not built.
+**Status.** 📝 GO-NARROWED (the second audit, 2026-10-05). Not built. The first audit stopped the
+confirm of the old item 6, and E-G5-9 replaced it. The second audit found three more paths that
+can trash a row: the key of the confirm, a stale draft row and a bare 404. C1 to C9 close them,
+and the scope below holds each one.
 
-**Gate.** 🟢 AGENT-SAFE · R8, because the reconcile trashes rows. No migration.
+**Gate.** 🟢 AGENT-SAFE · R8, because the reconcile trashes rows. No migration and no flag. The
+slice changes shared code of the live Outlook reconcile. So it takes the full review loop for data
+(C9).
 
-**Order.** After EM-G5a, because the reconcile reads the snapshot of the import.
+**Order.** After EM-G5a (#641), because the reconcile reads the snapshot of the import.
 
 **Size.** M.
 
+**The candidates today (the second audit).** A candidate is a row of the account in a folder that
+the snapshot holds. The row is not in `trash`, and its `received_at` is at or after the oldest
+written message of that folder. Its id is not in the snapshot. Its `updated_at` is set and older
+than `db_now`. A folder with more than max(50, 2%) candidates is skipped, and a folder sends at
+most 50 lookups (`reconcile.py:40-47`, `:78-103`).
+
 **Scope.**
 
-6. **The confirm (GM-20, E-G5-9).** Gmail confirms each candidate by its id, with
-   `GET messages/{id}?format=minimal`. A 404 means that Gmail deleted the message. A 200 keeps the
-   row. Any other answer raises, and the row stays. Gmail never changes an id (D-EM-34), so the
-   confirm keys on the id and not on the Message-ID. The old item 6 listed with
-   `q=rfc822msgid:<id>`, and the audit stopped it.
+6. **The confirm (GM-20, E-G5-9, C1).** Gmail confirms each candidate by its provider id, with
+   `GET messages/{id}?format=minimal`. A new method of the provider holds that read, with its own
+   name. Outlook keeps `message_exists(internet_message_id)`, and its behaviour does not change.
+   - `import_reconcile_candidates` returns `(row id, provider_message_id, internet_message_id)`
+     (`reconcile.py:101-102`).
+   - `_confirm_gone` (`scheduler.py:761-786`) picks the key for each provider.
+   - A Gmail message keeps its id. A draft does not (O-GM-2), and item 9 covers drafts.
 7. **`import_full_snapshot = True`.** The import reads all mail back to the floor. So a deep sync
-   that a member starts reconciles the deletions (`scheduler.py:924-929`).
-8. **The recurring reconcile** of `reconcile_full_snapshot` stays for Outlook only. The Gmail
-   history reports each delete (EM-G4b item 4).
+   that a member starts reconciles the deletions (`scheduler.py:924-929`). Three member acts start
+   it: Resync (`sync.py:323-324`), "Clean older mail" (`cleanup.py:923-924`) and "Process past
+   emails" (`runner.py:1431`). The first import collects no snapshot (`scheduler.py:881-883`).
+8. **The recurring reconcile** of `reconcile_full_snapshot` stays for Outlook only. It has no
+   confirm (`reconcile.py:115-160`). The Gmail history reports each delete (EM-G4b item 4). No
+   Gmail sync result sets `full_snapshot`, and a fence now pins that.
+9. **Drafts stay out (C3).** The Gmail reconcile leaves out each row in drafts. It uses the filter
+   of `storage.py:88`: `LOWER(COALESCE(folder,'')) NOT IN ('drafts','draft')`. Gmail gives a draft
+   a new message id at each update, so a missing draft id proves no delete. The history of EM-G4b
+   removes an old draft row through E-B2 (`scheduler.py:343-347`).
+10. **The 404 rule (C2).** "Gone" means a 404 whose body gives the reason `notFound`. Each other
+    answer raises, and that includes a bare 404. A raise keeps the row. A 200 keeps the row, also
+    for a message in `TRASH` or `SPAM`, because the import read both. The confirm goes through
+    `_get_client()`, so the rules of EM-G4a apply. It sends `format=minimal` only.
+11. **A rate limit stops the confirm (C4).** `_confirm_gone` stops at the first
+    `ProviderRateLimited`. Each row that it did not confirm keeps its folder
+    (`scheduler.py:778-783`). Outlook raises no `ProviderRateLimited`, so no live path changes.
+12. **A capped import runs no reconcile (C5).** Gmail records when its import reaches
+    `IMPORT_MAX_PAGES` (`gmail.py:2129-2130`). `_run_import` then skips the reconcile, as it does
+    at the storage limit (`scheduler.py:924-926`). It logs `email.import.reconcile_skipped` with
+    `reason=capped`.
 
-**Fences (R7).**
+**Non-goals (C8).** No recurring reconcile for Gmail. No delete path for a draft row. No change to
+rows in `trash` (E-G5-10). No change to the `[DELETED]` rule of `scheduler.py:539-549`. No flag.
 
-- R8, in `tests/unit/test_email_import_batches.py`:
-  `test_a_gmail_resync_trashes_a_row_that_gmail_deleted`
-- R8, the negative fence of E-G5-9:
-  `test_a_row_that_the_import_missed_and_gmail_holds_keeps_its_row`
-- A fence of the confirm by id. It takes the place of `test_message_exists_reads_rfc822msgid`.
+**Fences (R7, C6).**
 
-**Mutations.** M3 sets `import_full_snapshot = False`, and the resync test fails. M4 makes the
+- R8, in `tests/unit/test_email_import_batches.py`, with a real `GmailProvider` on the fake of
+  `tests/unit/test_gmail_import.py`:
+  - `test_a_gmail_resync_trashes_a_row_that_gmail_deleted`
+  - `test_a_row_that_the_import_missed_and_gmail_holds_keeps_its_row`. Its row has a Message-ID
+    that differs from its id, and the fake answers 404 to each id that it does not hold.
+  - `test_a_stale_gmail_draft_row_stays_in_drafts_with_no_lookup`
+  - `test_a_capped_gmail_import_runs_no_reconcile`
+- Hermetic, in `tests/unit/test_gmail_import.py`:
+  - `test_the_gmail_confirm_reads_by_the_provider_id`. A 404 with `notFound` gives gone. A 200 for
+    `INBOX`, `TRASH` and `SPAM` keeps the row. A bare 404, a 400, a 403, a spent 429, a 500 and a
+    transport error each raise. The path holds the provider id.
+  - `test_a_spent_rate_limit_stops_the_confirm`
+  - `test_no_gmail_sync_result_sets_full_snapshot` (item 8)
+- The four Outlook R8 fences of `test_email_import_batches.py` and its hermetic fence of the
+  Outlook confirm stay green.
+
+**Mutations (C7).** M3 sets `import_full_snapshot = False`, and the resync test fails. M4 makes the
 confirm keep each row, and the resync test fails. M9 trashes each candidate with no confirm, and
 the negative fence fails.
+
+**The mutations of the second audit.** M10 sends the Message-ID to the confirm, and the negative
+fence fails. M11 counts a bare 404 as gone, and the confirm fence fails. M12 keeps drafts in the
+candidates, and the draft fence fails. M13 lets the confirm go on after a rate limit, and the rate-limit fence fails.
+M14 runs the reconcile after a capped import, and the cap fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_import.py tests/unit/test_email_import_batches.py \
+  tests/unit/test_email_storage_limit.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_gmail_history_cursor.py tests/unit/test_gmail_rate_limits.py \
+  tests/unit/test_email_rekey_reclaim.py tests/unit/test_email_scheduler_tenancy.py -v -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/providers/gmail.py \
+  apps/services/email_ingestion/email_ingestion/reconcile.py \
+  apps/services/email_ingestion/email_ingestion/scheduler.py tests/unit/test_gmail_import.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 tests must show PASSED, with 0 skips. The ruff count of each file must stay at or below its
+count on `main`.
+
+**In the build PR (R4, C10).** Correct GM-20 (§12.1) and the status of this section. Correct
+`AGENTS.md:283-284` and `:421-432`, and the docstrings at `scheduler.py:764-770`, `:873-880` and
+`reconcile.py:61-77`.
 
 #### 12.3.7 EM-G6a — the push route and its tenant (dark)
 
