@@ -290,6 +290,18 @@ export function applyStreamEvent(
         ),
       };
     }
+    case "tool_args": {
+      // The running step's arguments, once whole (route.ts). The trail then
+      // names the command or the path while the step still runs.
+      const args = evt.args;
+      if (!args || typeof args !== "object") return m;
+      return {
+        ...m,
+        toolEvents: (m.toolEvents ?? []).map((t) =>
+          t.id === String(evt.id) ? { ...t, args: args as Record<string, unknown> } : t,
+        ),
+      };
+    }
     case "tool_partial":
       // Streaming partial output (terminal stdout, tool progress) — accumulate
       // without marking the tool as complete.

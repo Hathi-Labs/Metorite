@@ -472,7 +472,6 @@ describe("no raw Tailwind palette colours", () => {
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
     "components/MarkdownMessage.tsx": 8, // S9: the link lost its palette blue
-    "components/ThinkingContainer.tsx": 31,
     "components/TodoPanel.tsx": 1,
     "lib/providers.ts": 30,
   };

@@ -32,6 +32,7 @@ import ContextRing from "@/components/ContextRing";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
+import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { PresenceRail } from "@/components/room/PresenceRail";
 import { useRoom } from "@/hooks/useRoom";
@@ -592,13 +593,15 @@ export default function AgentChat({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRunActive]);
 
-  // Current running tool name — shown in the live indicator when a tool is in flight.
+  // The step in flight, in words ("Running a script in the sandbox"), for the
+  // live indicator while a tool runs. `lib/toolSteps.ts` is the one
+  // vocabulary, so this line and the trail above it never disagree.
   const liveToolName = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.role !== "assistant" || !m.streaming) break;
       const running = m.toolEvents?.find((t) => t.status === "running");
-      if (running) return running.name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      if (running) return describeToolStep(running).label;
     }
     return null;
   }, [messages]);
@@ -1784,7 +1787,7 @@ export default function AgentChat({
           <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-[11px] text-muted-foreground chat-fade-in">
             <Icon name="LoaderCircle" className="text-sky-400 animate-spin shrink-0" size={12} strokeWidth={1.5} />
             <span className="italic truncate">
-              {liveToolName ? `Running ${liveToolName}…` : `${liveWorkingMsg}…`}
+              {liveToolName ? `${liveToolName}…` : `${liveWorkingMsg}…`}
             </span>
             <span className="flex items-center gap-0.5 shrink-0" aria-hidden="true">
               <span className="chat-typing-dot" />

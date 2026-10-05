@@ -45,6 +45,7 @@ import {
 } from "@/lib/chatStream";
 import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 import { isDefaultAgent } from "@/lib/chatMemorySave";
+import { wholeToolArgs } from "@/lib/toolArgs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -330,6 +331,11 @@ async function translateAndPersistStream(
         } else if (t === "TOOL_CALL_ARGS") {
           const id = String(ev.toolCallId ?? "");
           toolArgs[id] = (toolArgs[id] ?? "") + String(ev.delta ?? "");
+          // Once the arguments are whole, the running row learns them: the
+          // trail then shows the command or the path while the step RUNS,
+          // not only after it ends. The same arguments `tool_end` carries.
+          const whole = wholeToolArgs(toolArgs[id]);
+          if (whole) out = { type: "tool_args", id: ev.toolCallId, args: whole };
         } else if (t === "TOOL_CALL_PARTIAL") {
           // Live terminal/tool output for a running tool — forward to the
           // client so output streams into the tool row (VS Code style).
