@@ -30,6 +30,20 @@ class ProviderRateLimited(Exception):
     rate limit is never degraded (EM-G4b review round 1, F2)."""
 
 
+class ProviderAttachmentFailed(Exception):
+    """A file did not reach a draft at the provider (WS-17 EM-T9).
+
+    It holds the name of the file and nothing else. The upload URL of an
+    Outlook session carries a token in its query, so this class never takes
+    a URL, a response or a status, and it never subclasses
+    ``httpx.HTTPStatusError``, whose text holds the URL. The draft route
+    answers 502 with the name (``email_app_master_plan.md`` §10.4.10)."""
+
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
+        super().__init__(f"The file {filename} could not be attached.")
+
+
 class _RefreshableProvider(Protocol):
     """What :class:`RefreshingBearer` reads from an OAuth provider."""
 

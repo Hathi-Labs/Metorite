@@ -9,8 +9,10 @@ API reference: https://learn.microsoft.com/en-us/graph/api/resources/mail-api-ov
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import re
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -28,6 +30,7 @@ from .base import (
     EmailFolder,
     EmailMessage,
     EstimateCallback,
+    ProviderAttachmentFailed,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
@@ -391,6 +394,254 @@ def _classify_folder_type(folder: dict[str, Any]) -> str:
     if name in _OUTLOOK_SYSTEM_FOLDER_NAMES:
         return "system"
     return "system" if canonical_folder(name) in _CORE_CANONICAL else "user"
+
+
+# ── A file on a draft (WS-17 EM-T9, email_app_master_plan.md §10.4.10) ──────
+
+#: A file of this size or more goes through an upload session. Graph takes a
+#: file in one POST only under 3 MB (item 2).
+_UPLOAD_SESSION_MIN_BYTES = 3_000_000
+
+#: The size of one PUT of an upload session. Each range must stay under 4 MB,
+#: and the ranges go in order (item 2).
+_UPLOAD_RANGE_BYTES = 2 * 1024 * 1024
+
+#: The code of Graph when a session is refused for a file under its minimum.
+#: "3 MB" can mean 3,000,000 or 3,145,728 bytes, so the code falls back to
+#: one POST on this code (item 3).
+_MIN_SIZE_REFUSAL = "ErrorAttachmentSizeShouldNotBeLessThanMinimumSize"
+
+#: Each absolute URL in a log text. A quote is legal in the path of an
+#: upload URL (``Messages('AAMk…')``), so the class keeps it.
+_URL_IN_TEXT = re.compile(r"https?://[^\s\"<>]+", re.IGNORECASE)
+
+
+def _strip_upload_query(url: str) -> str:
+    """*url* with no query, when the URL is an upload URL (B2).
+
+    An upload URL has ``authtoken`` in its query, or ``AttachmentSessions``
+    in its path. Each other URL comes back the same."""
+    base, sep, query = url.partition("?")
+    if sep and ("authtoken" in query.lower()
+                or "attachmentsessions" in base.lower()):
+        return f"{base}?<redacted>"
+    return url
+
+
+def _redact_upload_urls(value: Any) -> Any:
+    """*value* with the query of each upload URL in it removed."""
+    if isinstance(value, httpx.URL):
+        text = str(value)
+        clean = _URL_IN_TEXT.sub(lambda m: _strip_upload_query(m[0]), text)
+        return value if clean == text else clean
+    if isinstance(value, str):
+        return _URL_IN_TEXT.sub(lambda m: _strip_upload_query(m[0]), value)
+    return value
+
+
+class _UploadUrlFilter(logging.Filter):
+    """Keeps the token of an upload URL out of each ``httpx`` record (B2).
+
+    httpx logs each request at INFO with its full URL, and the gateway logs at
+    INFO. The ``uploadUrl`` of a session is pre-authenticated, with a token in
+    its query, and a holder of that token can write to the draft. So this
+    filter removes the query of an upload URL from the message and from each
+    argument of a record. It never drops a record."""
+
+    #: The mark that :func:`_install_upload_log_filter` looks for. A class
+    #: check would add a second filter after a reload of this module.
+    upload_url_filter = True
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_redact_upload_urls(a) for a in record.args)
+        if isinstance(record.msg, str):
+            record.msg = _redact_upload_urls(record.msg)
+        return True
+
+
+def _install_upload_log_filter() -> None:
+    """Add :class:`_UploadUrlFilter` to the ``httpx`` logger, once."""
+    target = logging.getLogger("httpx")
+    if not any(getattr(f, "upload_url_filter", False) for f in target.filters):
+        target.addFilter(_UploadUrlFilter())
+
+
+_install_upload_log_filter()
+
+
+def _answer_status(resp: Any) -> int | None:
+    """The HTTP status of an answer, or None when it has no int status."""
+    status = getattr(resp, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _is_2xx(status: int | None) -> bool:
+    """True for each 2xx. Graph answers 201 to a POST, so ``== 200`` is wrong."""
+    return status is not None and 200 <= status < 300
+
+
+def _json_or_none(resp: Any) -> Any:
+    """The JSON body of an answer, or None when it has none."""
+    try:
+        return resp.json()
+    except Exception:  # an empty or HTML body has no JSON
+        return None
+
+
+def _error_code(body: Any) -> str | None:
+    """``error.code`` of a Graph error body, or None."""
+    error = body.get("error") if isinstance(body, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
+
+
+def _next_range_start(body: Any) -> int | None:
+    """The first offset of ``nextExpectedRanges`` in a PUT answer, or None.
+
+    The ``uploadUrl`` is an Outlook REST URL, and its answers can spell the
+    key ``NextExpectedRanges``. So the key is read in any case. A range is
+    ``"2097152"`` or ``"2097152-"``."""
+    if not isinstance(body, dict):
+        return None
+    for key, value in body.items():
+        if not (isinstance(key, str) and key.lower() == "nextexpectedranges"):
+            continue
+        if not (isinstance(value, list) and value and isinstance(value[0], str)):
+            return None
+        head = value[0].split("-", 1)[0].strip()
+        return int(head) if head.isdigit() else None
+    return None
+
+
+def _log_attachment_failure(stage: str, reason: str, size: int) -> None:
+    """One log line for a failed file. It names no URL and no file name."""
+    logger.warning("outlook.attachment_failed stage=%s reason=%s size=%d",
+                   stage, reason, size)
+
+
+def _file_name(att: dict[str, Any]) -> str:
+    """The name of a file for an error text."""
+    return att.get("filename") or "attachment"
+
+
+async def _post_file(
+    client: httpx.AsyncClient, draft_id: str, att: dict[str, Any],
+    content: bytes,
+) -> None:
+    """Add one file to a draft in one POST of a ``fileAttachment``.
+
+    The request is the one that ``_attach_files`` sent before EM-T9, byte for
+    byte. Each answer that is not 2xx raises, and so does a transport error
+    (item 1). The raise is outside the ``except`` block, so it chains no
+    error of httpx."""
+    reason: str | None = None
+    try:
+        resp = await client.post(
+            f"/me/messages/{draft_id}/attachments",
+            json={
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": att.get("filename", "attachment"),
+                "contentType": att.get(
+                    "mime_type", "application/octet-stream"),
+                "contentBytes": base64.b64encode(content).decode(),
+            },
+        )
+    except Exception as exc:  # each failure is a failed file
+        reason = type(exc).__name__
+    else:
+        status = _answer_status(resp)
+        if not _is_2xx(status):
+            reason = str(status)
+    if reason is not None:
+        _log_attachment_failure("post", reason, len(content))
+        raise ProviderAttachmentFailed(_file_name(att))
+
+
+async def _put_ranges(upload_url: str, content: bytes) -> str | None:
+    """PUT *content* to an upload URL in ranges of 2 MiB, in order.
+
+    It returns None when the last PUT answers 201, else the reason of the
+    failure (items 4 and 5). The client is made here, with no auth and no
+    ``Authorization`` header, because the URL is pre-authenticated. The Graph
+    client puts the bearer on each request, so it must not send these PUTs.
+
+    * A 200 must name the next offset in ``nextExpectedRanges``.
+    * A 201 before the last range fails, and so does a 200 after it.
+    * A 429, a 5xx or a transport error fails with no retry.
+
+    The reason never holds the URL. The function never calls
+    ``raise_for_status()``, because the text of that error holds the URL."""
+    total = len(content)
+    start = 0
+    async with httpx.AsyncClient(timeout=30.0) as uploader:
+        while start < total:
+            end = min(start + _UPLOAD_RANGE_BYTES, total) - 1
+            chunk = content[start:end + 1]
+            try:
+                resp = await uploader.put(upload_url, content=chunk, headers={
+                    "Content-Range": f"bytes {start}-{end}/{total}",
+                    "Content-Length": str(len(chunk)),
+                    "Content-Type": "application/octet-stream",
+                })
+            except Exception as exc:  # its text can hold the URL
+                return type(exc).__name__
+            status = _answer_status(resp)
+            if end + 1 == total:
+                return None if status == 201 else f"last_{status}"
+            if status != 200:
+                return str(status)
+            if _next_range_start(_json_or_none(resp)) != end + 1:
+                return "range"
+            start = end + 1
+    return None
+
+
+async def _upload_file(
+    client: httpx.AsyncClient, draft_id: str, att: dict[str, Any],
+    content: bytes,
+) -> bool:
+    """Add one file of 3 MB or more to a draft through an upload session.
+
+    It returns True when the file went up, and False when Graph refused the
+    session for the minimum size. The caller then sends one POST (item 3).
+    Each other failure raises :class:`ProviderAttachmentFailed`.
+
+    The POST that opens the session goes through the Graph client with no
+    retry. It never goes through ``_graph_send``, because that wait can reach
+    30 seconds (item 5). The PUTs go through :func:`_put_ranges`."""
+    total = len(content)
+    reason: str | None = None
+    session: Any = None
+    try:
+        resp = await client.post(
+            f"/me/messages/{draft_id}/attachments/createUploadSession",
+            json={"AttachmentItem": {
+                "attachmentType": "file",
+                "name": att.get("filename", "attachment"),
+                "size": total,
+                "contentType": att.get(
+                    "mime_type", "application/octet-stream"),
+            }},
+        )
+    except Exception as exc:  # each failure is a failed file
+        reason = type(exc).__name__
+    else:
+        status = _answer_status(resp)
+        session = _json_or_none(resp)
+        if not _is_2xx(status):
+            if _error_code(session) == _MIN_SIZE_REFUSAL:
+                return False
+            reason = str(status)
+    upload_url = session.get("uploadUrl") if isinstance(session, dict) else None
+    if reason is None and not (isinstance(upload_url, str) and upload_url):
+        reason = "no_upload_url"
+    if reason is None:
+        reason = await _put_ranges(upload_url, content)
+    if reason is not None:
+        _log_attachment_failure("session", reason, total)
+        raise ProviderAttachmentFailed(_file_name(att))
+    return True
 
 
 GRAPH_SCOPES = [
@@ -866,11 +1117,12 @@ class OutlookProvider(BaseEmailProvider):
             )
             resp.raise_for_status()
             draft_id = resp.json().get("id", "")
+            self._require_new_draft_id(draft_id, attachments)
             patch = await client.patch(
                 f"/me/messages/{draft_id}", json={"body": body_block, **recipients}
             )
             patch.raise_for_status()
-            await self._attach_files(client, draft_id, attachments)
+            await self._attach_to_new_draft(client, draft_id, attachments)
             return draft_id
         message: dict[str, Any] = {
             "subject": subject,
@@ -881,8 +1133,48 @@ class OutlookProvider(BaseEmailProvider):
         resp = await client.post("/me/messages", json=message)
         resp.raise_for_status()
         draft_id = resp.json().get("id", "")
-        await self._attach_files(client, draft_id, attachments)
+        self._require_new_draft_id(draft_id, attachments)
+        await self._attach_to_new_draft(client, draft_id, attachments)
         return draft_id
+
+    @staticmethod
+    def _require_new_draft_id(
+        draft_id: str, attachments: list[dict[str, Any]] | None,
+    ) -> None:
+        """Raise before any file when Graph gave a new draft no id (EM-T9 item 10).
+
+        With no id, a file has no draft to go to, and no draft to delete. A
+        draft with no file keeps the old behaviour, byte for byte."""
+        if attachments and not draft_id:
+            raise ProviderAttachmentFailed(_file_name(attachments[0]))
+
+    @staticmethod
+    async def _attach_to_new_draft(
+        client: httpx.AsyncClient, draft_id: str,
+        attachments: list[dict[str, Any]] | None,
+    ) -> None:
+        """Add the files to a draft that ``create_draft`` made, or delete it.
+
+        WS-17 EM-T9 item 9 (B3). A failed file deletes the NEW draft before the
+        error raises, so Outlook keeps no draft without the file of the member.
+        Only ``create_draft`` calls this. ``update_draft`` holds a draft that
+        the member already has, so it keeps that draft, and the delete never
+        goes into ``_attach_files``. A failed DELETE is dropped, and the first
+        error raises. The DELETE moves the draft to Deleted Items (known limit
+        EM-T9-f7)."""
+        try:
+            await OutlookProvider._attach_files(client, draft_id, attachments)
+        except ProviderAttachmentFailed:
+            try:
+                gone = await client.delete(f"/me/messages/{draft_id}")
+                status = _answer_status(gone)
+                if not _is_2xx(status):
+                    logger.warning("outlook.new_draft_delete_failed reason=%s",
+                                   status)
+            except Exception as exc:  # the first error raises
+                logger.warning("outlook.new_draft_delete_failed reason=%s",
+                               type(exc).__name__)
+            raise
 
     async def update_draft(
         self,
@@ -946,23 +1238,30 @@ class OutlookProvider(BaseEmailProvider):
         client: httpx.AsyncClient, draft_id: str,
         attachments: list[dict[str, Any]] | None,
     ) -> None:
-        """Attach files to a Graph draft via POST /messages/{id}/attachments."""
-        import base64 as _b64  # noqa: PLC0415
+        """Add each file to a Graph draft, or raise (WS-17 EM-T9).
+
+        A file under 3,000,000 bytes goes in one POST to the ``attachments``
+        collection, as before (item 1). A larger file goes through an upload
+        session (item 2). A session that Graph refuses for the minimum size
+        falls back to one POST (item 3). A file of 0 bytes goes in one POST,
+        and a file with no bytes raises (item 12).
+
+        Each failure raises :class:`ProviderAttachmentFailed` with the name of
+        the file, so a mail never goes out without a file of the member. Before
+        EM-T9 this dropped each failure with ``continue``, and a file of 3 MB
+        or more was lost with no error.
+
+        This never deletes the draft. ``update_draft`` shares it with a draft
+        that the member already has (B3)."""
         for att in attachments or []:
-            try:
-                content = att.get("content") or b""
-                await client.post(
-                    f"/me/messages/{draft_id}/attachments",
-                    json={
-                        "@odata.type": "#microsoft.graph.fileAttachment",
-                        "name": att.get("filename", "attachment"),
-                        "contentType": att.get(
-                            "mime_type", "application/octet-stream"),
-                        "contentBytes": _b64.b64encode(content).decode(),
-                    },
-                )
-            except Exception:  # noqa: BLE001 — one bad attachment shouldn't fail the draft
+            content = att.get("content")
+            if not isinstance(content, (bytes, bytearray)):
+                raise ProviderAttachmentFailed(_file_name(att))
+            content = bytes(content)
+            if (len(content) >= _UPLOAD_SESSION_MIN_BYTES
+                    and await _upload_file(client, draft_id, att, content)):
                 continue
+            await _post_file(client, draft_id, att, content)
 
     # ── Change-notification subscriptions (push) ─────────────────────────────
 
