@@ -6228,8 +6228,8 @@ EM-G10.
 | **GM-5** | **Archived mail files as `inbox`.** The parse files a message with no system label as `inbox`. Each path that keeps the folder of the parse then shows archived mail in the Inbox, and the history branch is one of them. | `gmail.py:38-52` | EM-G2 (D-EM-33) |
 | **GM-6** | **The Archive folder cannot page.** Gmail has no `archive` label. "Load older" in Archive sends `labelIds=["archive"]`, and Gmail refuses it. | `transport/folders.py:375-398`, `gmail.py:282-285` | EM-G2 (D-EM-33) |
 | **GM-7** | **"Load older" in a user-label view moves Inbox mail out of the Inbox.** The page sets the folder of each message to the label name through `canonical_override`, also when the message has `INBOX`. | `transport/folders.py:391-397`, `gmail.py:295-302` | EM-G2 |
-| **GM-8** | **The import misses archived mail with no user label.** The deep sync and the sweep list the user labels and five system labels only. The sweep fetches a message with two user labels twice. | `gmail.py:903-933`, `:986-1018` | EM-G5 |
-| **GM-9** | **The provider fetches each message alone, and a failed fetch leaves no record.** No call handles a 429 or a rate-limit 403. | `gmail.py:296-304`, `:358-366` | EM-G4a (rate limits and the fetch record), EM-G5 (fetch in parallel) |
+| **GM-8** | **The import misses archived mail with no user label.** The deep sync and the sweep list the user labels and five system labels only. The sweep fetches a message with two user labels twice. | `gmail.py:1884-1923`, `:1925-1984`, `:1967` (moved from `:903-933` and `:986-1018`, checked at `a9a08deb9`) | EM-G5a (the import). EM-G5-f1 records the sweep half |
+| **GM-9** | **The provider fetches each message alone, and a failed fetch leaves no record.** No call handles a 429 or a rate-limit 403. | `gmail.py:296-304`, `:358-366` | EM-G4a (rate limits and the fetch record), EM-G5a (fetch in parallel) |
 | **GM-10** | **The send loses the HTML body.** `MIMEText(body_text, "html" if body_html)` sends the text with an HTML label and drops `body_html`. The HTML signature and the line breaks go. `create_draft` has the same defect. `update_draft` is correct. | `gmail.py:387`, `:398`, `:444`, `:455`, `:491-492` | EM-G3a |
 | **GM-11** | **A reply does not thread at the recipient.** The send sets `threadId` only. It sets no `In-Reply-To` and no `References`. | `gmail.py:399-415`, `:456-466` | EM-G3a |
 | **GM-12** | **Each attachment goes as `application/octet-stream`.** | `gmail.py:389`, `:446`, `:500` | EM-G3a |
@@ -6239,8 +6239,8 @@ EM-G10.
 | **GM-16** | **No history cursor is ever stored.** The first sync and the deep sync return `new_history_id=None`, and nothing calls `getProfile`. The scheduler keeps the NULL. So each poll runs the branch for no cursor: the first page of each user label and of five system labels, with each message fetched alone. | `gmail.py:930-933`, `:1020-1024`, `scheduler.py:1418-1419` (moved from `:1413-1414`, checked at `ba723e0f1`) | EM-G4b |
 | **GM-17** | **The history branch has four defects, and it never runs today.** It reads one page and ignores `nextPageToken`. It asks for the label events and drops them, so an archive, a read mark, a star or a label made in Gmail never syncs. It stores the current id of the mailbox after that one page, so the changes on the later pages are lost. A stale cursor answers 404, and `raise_for_status` fails each cycle until a Resync. | `gmail.py:935-979`, `:940`, `:943`, `:946`, `transport/sync.py:283-325` | EM-G4b |
 | **GM-18** | **A pause loses mail.** The provider ignores `catch_up`, so it never reads the mail past the first page of a label after a pause (against D-EM-13). `email_ingestion/AGENTS.md:40` said that the Gmail cursor reads each change. EM-G0 corrects that line. | `gmail.py:898-900` | EM-G4b |
-| **GM-19** | **The import has no stream, no estimate and no resume point.** Gmail uses the default of the base class, which fetches all, then sorts and cuts. The progress shows a count with no estimate (against D-EM-16). | `base.py:785-813` | EM-G5 |
-| **GM-20** | **No reconcile.** `import_full_snapshot` is False, and `message_exists` is absent. So Resync and Process past emails trash no row that Gmail deleted. | `base.py:407`, `scheduler.py:669`, `:780`, `outlook.py:1357`, `:1846` | EM-G5 |
+| **GM-19** | **The import has no stream, no estimate and no resume point.** Gmail uses the default of the base class, which fetches all, then sorts and cuts. The progress shows a count with no estimate (against D-EM-16). | `base.py:830-858` (moved from `:785-813`, checked at `a9a08deb9`) | EM-G5a |
+| **GM-20** | **No reconcile.** `import_full_snapshot` is False, and `message_exists` is absent. So Resync and Process past emails trash no row that Gmail deleted. | `base.py:432`, `scheduler.py:771`, `:881-883`, `:924-929`, `outlook.py:1361`, `:1850-1864` (moved from `base.py:407`, `scheduler.py:669`, `:780`, `outlook.py:1357` and `:1846`, checked at `a9a08deb9`) | EM-G5b |
 | **GM-21** | **No push.** Gmail has no watch and no stop. `_ensure_subscription` returns early for a provider that is not Microsoft. `/webhooks/gmail` is the Phase-1 receiver. It never finds an `email_accounts` row and never calls `_webhook_sync`. Gmail polls only. | `transport/sync.py:438-508`, `:469`, `apps/services/ingestion/ingestion/sources/gmail/webhook.py:41-149`, `gateway/main.py:597`, `:1200-1205` | EM-G6a, EM-G6b |
 | **GM-22** | **The scope is the widest restricted scope.** The authorize leg asks `https://mail.google.com/`. The callback never reads the granted scope, and Google lets a member clear a scope on the consent page. | `gmail.py:138`, `transport/oauth.py:201-207`, `:273-385` | EM-G7 (D-EM-31) |
 | **GM-23** | **Google errors map to a generic code.** Only `access_denied` maps, to `consent_declined`. | `transport/oauth.py:388-415` | EM-G7 |
@@ -6319,7 +6319,8 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G3b** | 🟢 AGENT-SAFE | A move to a user label, and the filter list (GM-14, GM-15) | After EM-G2 and O-GM-1 | S | §12.3.4 |
 | **EM-G4a** | 🟢 AGENT-SAFE | The rate-limit helper at the client seam, and the record of a failed fetch (GM-9, items 8 to 10) | After EM-G2 | S | §12.3.5.1 |
 | **EM-G4b** | 🟢 AGENT-SAFE · R8 | The history cursor, the label events, the stale cursor and its recovery (GM-16 to GM-18, items 1 to 7 and 11) | After EM-G4a | L | §12.3.5.2 |
-| **EM-G5** | 🟢 AGENT-SAFE · R8 | The import, the estimate, the resume and the reconcile (GM-8, GM-19, GM-20) | After EM-G4a and EM-G4b | L | §12.3.6 |
+| **EM-G5a** | 🟢 AGENT-SAFE · R8 | The import, the estimate and the resume (GM-8, GM-19, items 1 to 5) | After EM-G4a and EM-G4b | L | §12.3.6.1 |
+| **EM-G5b** | 🟢 AGENT-SAFE · R8 · ⛔ NO-GO until a new audit | The reconcile (GM-20, items 6 to 8, E-G5-9) | After EM-G5a | M | §12.3.6.2 |
 | **EM-G6a** | 🟢 AGENT-SAFE build · security review · R8 · 🔴 flip (`enforcement-flip`) | The push route and its tenant, dark (GM-21) | After EM-G4b and O-GM-4 | M | §12.3.7 |
 | **EM-G6b** | 🟢 AGENT-SAFE build · 🔴 flip (`enforcement-flip`) | The watch, its renewal and its stop, dark (GM-21) | After EM-G6a | M | §12.3.8 |
 | **EM-G7** | 🟢 AGENT-SAFE · security review | The connect backend: scopes, granted scope, errors, bounces, the capability read (GM-22 to GM-25) | Any time. Merges dark | M | §12.3.9 |
@@ -6329,8 +6330,8 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
-order, and EM-G3b can go at any time after EM-G2. EM-G5 follows, and EM-G7 can go at any time.
-EM-G8 and EM-G9 follow, then EM-G10. EM-G6a and EM-G6b wait for O-GM-4, and EM-G10 does not need
+order, and EM-G3b can go at any time after EM-G2. EM-G5a follows, then EM-G5b after its new
+audit, and EM-G7 can go at any time. EM-G8 and EM-G9 follow, then EM-G10. EM-G6a and EM-G6b wait for O-GM-4, and EM-G10 does not need
 them (D-EM-32).
 
 **Sizes.** S is under 150 changed lines with tests. M is 150 to 500. L is more than 500. Each
@@ -7016,8 +7017,13 @@ draft then meets EM-G3a-f1. The window is the time between the answer of Gmail a
 
 **Known limit EM-G3a-f3.** Three paths keep the local row of a discarded Gmail draft in the folder
 `trash`. They are the PATCH of a message to `trash`, the rule action `TRASH` and a bulk trash by
-sender. Gmail holds no such draft, so the row stays until a reconcile (EM-G5). The Discard button
-uses the delete route, which deletes the row.
+sender. Gmail holds no such draft, so the row stays in `trash`. The Discard button uses the delete
+route, which deletes the row.
+
+⚠️ **Corrected by the audit of EM-G5 (E-G5-10, 2026-10-05).** This text said that the row stays
+"until a reconcile (EM-G5)". That is false. No reconcile reads a row in `trash`: both reads of
+`reconcile.py` filter on `LOWER(folder) <> 'trash'` (`reconcile.py:45`, `:144`). So no reconcile
+removes this row, and no slice owns it yet.
 
 **Finding EM-G3a-f4 (on main before EM-G3a).** IMAP `create_draft` returns `draft-<folder>`, so
 each IMAP draft that Metorite makes writes onto one shared row. Before EM-G3a, an IMAP save wrote
@@ -7295,7 +7301,8 @@ went red on the missing typed error, not on a hang.
 **Known limit EM-G4a-f1.** When a `batchModify` stops on a rate limit, `bulk_apply` falls back to
 one `modify` for each message, as it did before EM-G4a. With the budget spent, each `modify` stops
 at its first refusal. So a large bulk act can send many quick requests to a mailbox that Gmail
-limits. EM-G5 or a later slice owns a fix, with its own audit.
+limits. EM-G5 does not own the fix (E-G5-8, 2026-10-05). A later slice owns it, with its own
+audit, and §12.4 lists it before customers.
 
 **Known limit EM-G4a-f2.** On the history path, a fetch that fails with a 5xx leaves a record, and
 the cursor still moves past that message. Only a rate limit holds the cursor. EM-G4b decides
@@ -7575,12 +7582,32 @@ again, with M23 to M30 added.
 | M29 | F4: `KeyError` leaves the `except` of `_parse_cursor` | 2 cases of `test_text_that_is_no_cursor_seeds_again` |
 | M30 | F5: a history id takes any digit | 2 cases of `test_text_that_is_no_cursor_seeds_again` |
 
-#### 12.3.6 EM-G5 — the import and the reconcile
+#### 12.3.6 EM-G5 — the import and the reconcile, in two slices
 
-**Gate.** 🟢 AGENT-SAFE · R8, because the reconcile trashes rows. No migration.
+**The split (the audit of 2026-10-05).** The audit of EM-G5 cleared the import and stopped the
+reconcile. The confirm of the old item 6 can trash a live row, so the reconcile waits for a new
+confirm. EM-G5a is the import, items 1 to 5. EM-G5b is the reconcile, items 6 to 8, with the rule
+E-G5-9. Each item keeps its number, so "EM-G5 item 4" still names one item.
 
-**Order.** After EM-G4a and EM-G4b. The import uses the rate-limit helper of EM-G4a, and the
-cursor of EM-G4b.
+**The rules of the audit (E-G5-1 to E-G5-10).** E-G5-3 to E-G5-8 bind the build of EM-G5a, and
+§12.3.6.1 holds them. E-G5-9 binds EM-G5b, and §12.3.6.2 holds it. The other three rules correct
+this document.
+
+- **E-G5-1, the anchors.** GM-8, GM-19, GM-20 and item 7 name the lines at `a9a08deb9` (§12.1).
+- **E-G5-2, the verify block.** The ruff line names files only. The pytest line adds the four
+  files that the import touches (§12.3.6.1).
+- **E-G5-10, EM-G3a-f3.** No reconcile reads a row in `trash` (`reconcile.py:45`). So the text of
+  EM-G3a-f3 was false, and §12.3.3 corrects it. No slice owns that row yet.
+
+##### 12.3.6.1 EM-G5a — the import
+
+**Status.** 📝 CLEARED by the audit of 2026-10-05, after E-G5-1 to E-G5-8 landed. Not built.
+
+**Gate.** 🟢 AGENT-SAFE · R8. No migration, no column and no flag. Gmail stays dark (D-EM-36).
+
+**Order.** After EM-G4a and EM-G4b. The import uses the rate-limit helper of EM-G4a. The seed
+before the import (EM-G4b E-B3) stays as it is: `_sync_cycle` seeds at `scheduler.py:1421`,
+before `_import_in_batches` at `:1426`.
 
 **Size.** L. About 250 lines in `gmail.py`, with tests of about 300 lines.
 
@@ -7596,15 +7623,33 @@ cursor of EM-G4b.
    through the rate-limit helper. It fetches a message with several labels once.
 5. **The estimate (D-EM-16).** The import awaits `on_estimate` once, with the
    `resultSizeEstimate` of the first answer.
-6. **`message_exists` (GM-20).** It lists with `q=rfc822msgid:<id>` and `includeSpamTrash=true`.
-   It answers true when the list holds a message.
-7. **`import_full_snapshot = True`.** The import reads all mail back to the floor. So a deep sync
-   that a member starts reconciles the deletions (`scheduler.py:780`).
-8. **The recurring reconcile** of `reconcile_full_snapshot` stays for Outlook only. The Gmail
-   history reports each delete (EM-G4b item 4).
 
-**Non-goals.** No change to the default of the base class, so IMAP keeps it. No change to the
-progress UI. No change to the storage limit.
+**The rules of the build (E-G5-3 to E-G5-8).**
+
+- **E-G5-3, the resume bound.** `before:` is the whole second of `until`, plus 1 second, as in
+  `outlook.py:118-133`. So a resume reads the second that it reached again. The upsert makes the
+  overlap harmless. Fence: `test_a_resume_reads_the_second_it_reached_again`.
+- **E-G5-4, a failed fetch.** A failure that a later cycle can fix, a 5xx or a transport error,
+  fails the import. The resume then reads that message again. A failure that stays, a 404 or a
+  parse error, keeps its record (EM-G4a item 10), and the batch goes on. Fence:
+  `test_a_transient_fetch_failure_fails_the_import`.
+- **E-G5-5, no fetch in flight at a yield.** Each page gathers all of its fetches before it
+  yields. A rate limit cancels the other fetches of the page and raises. The import stops after
+  the batch that reaches the storage limit (`scheduler.py:919-923`), and `aclosing` closes it.
+  Fence: the storage limit stops the import with no fetch in flight.
+- **E-G5-6, the page cap.** The import reads a set number of pages at most, far above the 50
+  pages of the deep sweep. At the cap it ends and logs `gmail.import_capped`. The model is
+  `IMPORT_MAX_PAGES` of Outlook (`outlook.py:1353`).
+- **E-G5-7, the sweep half of GM-8.** EM-G5a fixes the import only. Known limit EM-G5-f1 below
+  records the sweep, and the comment at `gmail.py:1967` must say so.
+- **E-G5-8, the deep sweep stays.** `_deep_sweep` keeps its fences: M14 of
+  `test_gmail_rate_limits.py`, and `test_email_deep_sync.py`. A new fence proves that
+  `import_batches` never calls `sync_messages(deep=True)`. EM-G4a-f1 is not part of EM-G5, and
+  §12.4 lists it before customers.
+
+**Non-goals.** No `message_exists`, no change to `import_full_snapshot`, no change to
+`reconcile.py` and no change to `_confirm_gone` (EM-G5b). No change to the default of the base
+class, so IMAP keeps it. No change to the progress UI. No change to the storage limit.
 
 **Fences (R7).** A new `tests/unit/test_gmail_import.py`.
 
@@ -7614,24 +7659,77 @@ progress UI. No change to the storage limit.
 - `test_the_estimate_comes_from_result_size_estimate`
 - `test_a_resume_passes_before`
 - `test_no_message_older_than_the_floor`
-- `test_message_exists_reads_rfc822msgid`
-- R8, in `tests/unit/test_email_import_batches.py`:
-  `test_a_gmail_resync_trashes_a_row_that_gmail_deleted`
+- The fences of E-G5-3 to E-G5-6 and E-G5-8.
+- R8, in `TestTheImportOnARealDatabase` of `tests/unit/test_email_import_batches.py`: a Gmail
+  first import through `_sync_cycle` writes the estimate, then resumes below
+  `import_reached_at`.
 
-**Mutations.** M1 puts back `labelIds`, and the archived-mail test fails. M2 drops the estimate,
-and the estimate test fails. M3 sets `import_full_snapshot = False`, and the R8 test fails. M4 makes
-`message_exists` always true, and the R8 test fails.
+**Mutations.** Each one must turn a named test red. M3 and M4 move to EM-G5b.
 
-**Verify with.**
+| Id | Mutation | The test that fails |
+|---|---|---|
+| M1 | Put back `labelIds` | the archived-mail test |
+| M2 | Drop the estimate | the estimate test |
+| M5 | Drop the 1 second of E-G5-3 | `test_a_resume_reads_the_second_it_reached_again` |
+| M6 | Skip a fetch failure that a later cycle can fix | `test_a_transient_fetch_failure_fails_the_import` |
+| M7 | Yield with a fetch task open | the storage-limit fence of E-G5-5 |
+| M8 | Remove `includeSpamTrash` | the all-mail test |
+
+**Verify with (E-G5-2).**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_gmail_import.py tests/unit/test_email_import_batches.py \
-  tests/unit/test_email_storage_limit.py tests/unit/test_email_deep_sync.py -v -rs
-uv run ruff check apps/services/email_ingestion tests/unit/test_gmail_import.py
+  tests/unit/test_email_storage_limit.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_gmail_history_cursor.py tests/unit/test_gmail_rate_limits.py \
+  tests/unit/test_email_rekey_reclaim.py tests/unit/test_email_scheduler_tenancy.py -v -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/providers/gmail.py \
+  tests/unit/test_gmail_import.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
 
-The R8 tests must show PASSED, with 0 skips.
+The R8 tests must show PASSED, with 0 skips. The count of `gmail.py` must stay at or below the
+count on main.
+
+**Known limit EM-G5-f1 (E-G5-7).** `_first_sweep` still misses archived mail with no user label.
+It reads the user labels and five system labels, and no label reaches that mail. It runs only when
+no cursor exists after a failed seed. The import of EM-G5a reads that mail, and the history cursor
+of EM-G4b reads each later change.
+
+##### 12.3.6.2 EM-G5b — the reconcile
+
+**Status.** ⛔ NO-GO (the audit of 2026-10-05). The confirm of the old item 6 can trash a live row,
+so E-G5-9 replaces it. A new audit clears EM-G5b before its build. Not built.
+
+**Gate.** 🟢 AGENT-SAFE · R8, because the reconcile trashes rows. No migration.
+
+**Order.** After EM-G5a, because the reconcile reads the snapshot of the import.
+
+**Size.** M.
+
+**Scope.**
+
+6. **The confirm (GM-20, E-G5-9).** Gmail confirms each candidate by its id, with
+   `GET messages/{id}?format=minimal`. A 404 means that Gmail deleted the message. A 200 keeps the
+   row. Any other answer raises, and the row stays. Gmail never changes an id (D-EM-34), so the
+   confirm keys on the id and not on the Message-ID. The old item 6 listed with
+   `q=rfc822msgid:<id>`, and the audit stopped it.
+7. **`import_full_snapshot = True`.** The import reads all mail back to the floor. So a deep sync
+   that a member starts reconciles the deletions (`scheduler.py:924-929`).
+8. **The recurring reconcile** of `reconcile_full_snapshot` stays for Outlook only. The Gmail
+   history reports each delete (EM-G4b item 4).
+
+**Fences (R7).**
+
+- R8, in `tests/unit/test_email_import_batches.py`:
+  `test_a_gmail_resync_trashes_a_row_that_gmail_deleted`
+- R8, the negative fence of E-G5-9:
+  `test_a_row_that_the_import_missed_and_gmail_holds_keeps_its_row`
+- A fence of the confirm by id. It takes the place of `test_message_exists_reads_rfc822msgid`.
+
+**Mutations.** M3 sets `import_full_snapshot = False`, and the resync test fails. M4 makes the
+confirm keep each row, and the resync test fails. M9 trashes each candidate with no confirm, and
+the negative fence fails.
 
 #### 12.3.7 EM-G6a — the push route and its tenant (dark)
 
@@ -8501,6 +8599,13 @@ the process loaded at start.
     a fee and takes weeks. 🔴 Money and a third party: an owner act only (CLAUDE.md §3a rule 3).
 15. Publish the app (**Audience → Publish app**) only when verification passes. An app that Google
     did not verify shows the warning, and Google caps it at 100 new users.
+
+**Engineering before customers.** These are not owner acts. An agent slice closes each one before
+the app moves to Production.
+
+- **Known limit EM-G4a-f1** (§12.3.5.1). A bulk act that falls back to one `modify` for each
+  message can send many quick requests to a mailbox that Gmail limits. EM-G5 does not own it
+  (E-G5-8). A later slice fixes it, with its own audit.
 
 **For push (EM-G6a and EM-G6b), when push is next.**
 
