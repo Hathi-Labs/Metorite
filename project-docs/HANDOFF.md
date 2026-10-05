@@ -557,6 +557,27 @@ line — never reclaim a number by deleting the other entry.
   D-EM-31
 - **Added:** 2026-10-04 · the EM-G0 spec session
 
+### H-247 · Send three test mails from Outlook, to prove the fix of a lost file (EM-T9) · [OWNER]
+- **Check:** `rg -n "EM-T9 live check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result of the three mails. An agent
+  then writes that line, with the date, under §10.4.10. Then it deletes this entry.
+- **Why.** EM-T9 (#643, live since 2026-10-05) fixed a LIVE defect. Before it, the
+  code lost a file of 3 MB or more on an Outlook draft, with no error. So a
+  mail went out without its file. Fakes test the fix, and nobody has sent a real
+  mail through it yet. An agent must not send real mail (CLAUDE.md §3a rule 3).
+- **Do.** From a connected Outlook mailbox in Metorite, send three mails to your
+  own address.
+  1. Attach a file of about 5 MB to the first mail.
+  2. Attach a file of about 1 MB to the second mail.
+  3. Attach no file to the third mail.
+
+  Each mail must arrive, with its file. Tell an agent the result.
+- **If a mail fails.** The composer shows "The file <name> could not be
+  attached. The mail was not sent." An agent then reads the gateway journal for
+  `outlook.attachment_failed` (it names the stage and the reason, never a URL).
+- **Authority:** `specs/email_app_master_plan.md` §10.4.10 (N9)
+- **Added:** 2026-10-05 · the EM-T9 session
+
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.

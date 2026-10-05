@@ -44,6 +44,28 @@ class ProviderAttachmentFailed(Exception):
         super().__init__(f"The file {filename} could not be attached.")
 
 
+class ProviderMailTooLarge(Exception):
+    """A mail is too large for the provider (WS-17 EM-G3c-1).
+
+    It holds the size of the built mail and the limit, in bytes, and nothing
+    else. It never takes a URL, a request or a response, and it never
+    subclasses ``httpx.HTTPStatusError``, whose text holds the URL. A typed
+    error of a provider adds this class, as ``GmailMailTooLarge`` does. The
+    send and the draft routes answer 413 (``email_app_master_plan.md``
+    §12.3.3b items 6 and 7). Outlook and IMAP never raise it.
+
+    ``limit`` is ``None`` when the provider refused the mail (a 413) under
+    the local limit, so the text never names a limit that did not apply."""
+
+    def __init__(self, size: int, limit: int | None) -> None:
+        self.size = size
+        self.limit = limit
+        super().__init__(
+            f"The mail has {size} bytes, and the limit is {limit} bytes."
+            if limit is not None else
+            f"The provider refused a mail of {size} bytes as too large.")
+
+
 class _RefreshableProvider(Protocol):
     """What :class:`RefreshingBearer` reads from an OAuth provider."""
 

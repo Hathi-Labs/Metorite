@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/email_app_master_plan.md`` §12.3.3, items 1 to 9,
 the dispatch points E-A1 to E-A5, and O-GM-2 in §12.2.
 
-* Items 1 to 3: ONE builder (``gmail._build_gmail_raw``) serves
+* Items 1 to 3: ONE builder (``gmail._build_gmail_mail``) serves
   ``send_message``, ``create_draft`` and ``update_draft``. A body with HTML
   is ``multipart/alternative``, the text part first. Attachments sit in
   ``multipart/mixed``, each with the type that the caller gives, else the type
@@ -27,6 +27,12 @@ The hermetic tests drive the REAL ``GmailProvider`` through the real
 ``_get_client`` against a fake Gmail on ``httpx.MockTransport``, as
 ``test_gmail_rate_limits.py`` does. The fake keeps state: an update gives the
 draft a new message id, so a send of the old id finds no draft.
+
+Since EM-G3c-1 a mail with a file goes to the upload URI. The fake parses
+that upload (``parse_upload``) into the JSON body that it stands for, so
+``sent`` and ``saved`` keep one shape, and these fences read ``raw`` as
+before. ``uploads`` records each upload. ``test_gmail_mail_size.py`` holds
+the fences of the URI.
 
 **R8.** The class ``TestTheLocalDraftRow`` runs the real routes and the real
 upsert against the phase-4-promoted two-org catalog of
@@ -88,6 +94,8 @@ from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "/gmail/v1/users/me"
+#: The upload URI of the three writes (EM-G3c-1 item 3).
+UPLOAD = "/upload" + API
 LOGGER = "email_ingestion.providers.gmail"
 RAVI = "ravi@contoso-em-g3a.test"
 
@@ -105,6 +113,43 @@ def _decode(raw: str) -> Message:
 
 def _not_found() -> httpx.Response:
     return httpx.Response(404, json={"error": {"code": 404}})
+
+
+def parse_upload(request: httpx.Request) -> tuple[dict[str, Any], bytes]:
+    """The metadata and the mail of one upload write (EM-G3c-1 item 9).
+
+    The request must be ``multipart/related`` with ``uploadType=multipart``.
+    Part 1 is the metadata in JSON, and part 2 is the raw mail as
+    ``message/rfc822``. Any other shape raises ``ValueError``, so the fake
+    answers 400 for it, as Gmail does."""
+    content_type = request.headers.get("content-type", "")
+    prefix = "multipart/related; boundary="
+    if (not content_type.startswith(prefix)
+            or request.url.params.get("uploadType") != "multipart"):
+        raise ValueError(f"not an upload: {content_type!r}")
+    delimiter = b"--" + content_type.removeprefix(prefix).encode()
+    body = request.content
+    head, end = delimiter + b"\r\n", b"\r\n" + delimiter + b"--\r\n"
+    if not (body.startswith(head) and body.endswith(end)):
+        raise ValueError("the body does not open and close with the boundary")
+    first, second = body[len(head):-len(end)].split(
+        b"\r\n" + delimiter + b"\r\n")
+    meta_head, meta = first.split(b"\r\n\r\n", 1)
+    mail_head, mail = second.split(b"\r\n\r\n", 1)
+    if (meta_head != b"Content-Type: application/json; charset=UTF-8"
+            or mail_head != b"Content-Type: message/rfc822"):
+        raise ValueError("the parts have the wrong types")
+    return json.loads(meta), mail
+
+
+def _upload_as_json(meta: dict[str, Any], mail: bytes) -> dict[str, Any]:
+    """The JSON body that one upload stands for. The mail goes into ``raw``
+    where the metadata keeps it, so ``sent`` and ``saved`` hold one shape
+    for both URIs, and the fences of EM-G3a read them unchanged."""
+    raw = base64.urlsafe_b64encode(mail).decode()
+    if "message" in meta:
+        return {"message": {"raw": raw, **meta["message"]}}
+    return {"raw": raw, **meta}
 
 
 class _Gmail:
@@ -126,6 +171,10 @@ class _Gmail:
         self.files: dict[str, bytes] = {}         # attachment id → bytes
         self.raws: dict[str, str] = {}            # message id → raw mail
         self.seen: list[tuple[str, str, httpx.QueryParams]] = []
+        #: Each write on the upload URI: the method, the path under
+        #: ``/users/me``, the URL, the metadata, the raw mail and the
+        #: ``Authorization`` header (EM-G3c-1).
+        self.uploads: list[SimpleNamespace] = []
         self.page_size = 500
         self.fail: dict[tuple[str, str], int] = {}
         #: Runs after drafts.update, with the new message id (E-A2).
@@ -216,7 +265,10 @@ class _Gmail:
     async def handle(self, request: httpx.Request) -> httpx.Response:
         if str(request.url) == TOKEN_URL:
             return httpx.Response(200, json={"access_token": "at-2"})
-        path = request.url.path.removeprefix(API)
+        # An upload write has the same path under ``/upload`` (EM-G3c-1), so
+        # ``seen`` and ``fail`` key both URIs alike.
+        upload = request.url.path.startswith(UPLOAD)
+        path = request.url.path.removeprefix(UPLOAD if upload else API)
         if path == "/profile":
             return httpx.Response(200, json={"historyId": "1"})
         method = request.method
@@ -224,7 +276,17 @@ class _Gmail:
         status = self.fail.get((method, path))
         if status:
             return httpx.Response(status, json={"error": {"code": status}})
-        body = json.loads(request.content) if request.content else {}
+        if upload:
+            try:
+                meta, mail = parse_upload(request)
+            except ValueError as exc:
+                return httpx.Response(400, json={"error": {"message": str(exc)}})
+            self.uploads.append(SimpleNamespace(
+                method=method, path=path, url=request.url, meta=meta,
+                mail=mail, bearer=request.headers.get("authorization")))
+            body = _upload_as_json(meta, mail)
+        else:
+            body = json.loads(request.content) if request.content else {}
         parts = path.strip("/").split("/")
         if parts[0] == "drafts":
             return await self._drafts(method, parts, body, request.url.params)
