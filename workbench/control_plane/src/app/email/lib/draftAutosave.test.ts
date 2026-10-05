@@ -336,8 +336,11 @@ describe("email-save-failed-shows: a failed save shows", () => {
 
   it("draws the failure in text-destructive", () => {
     expect(compose).toContain('<span className="text-[10px] text-destructive">{saveFailure}</span>');
-    expect(detail).toContain('<span className="text-destructive">{saveFailure}</span>');
     expect(conversation).toContain('<span className="text-[10px] text-destructive ml-auto">{saveFailure}</span>');
+    // The footer of the inline reply truncates, so its failure takes a line.
+    expect(detail).toMatch(
+      /\{\(sendErr \|\| saveFailure\) && \(\s*<p role="alert" className="px-4 py-1\.5 text-\[10px\] text-destructive">\s*\{sendErr \?\? saveFailure\}/,
+    );
   });
 });
 
@@ -371,10 +374,16 @@ describe("email-send-failed-shows: a failed send shows its text", () => {
 
   it("draws each send error in text-destructive, never text-red-500", () => {
     expect(compose).toContain('<span className="text-[10px] text-destructive">{sendError}</span>');
-    expect(detail).toContain('<span className="text-destructive">{sendErr}</span>');
+    expect(detail).toContain("{sendErr ?? saveFailure}");
     for (const [name, src] of Object.entries(COMPOSERS)) {
-      expect(src, name).not.toMatch(/text-red-500">\{send/);
+      expect(src, name).not.toMatch(/text-red-500">\s*\{send/);
     }
+  });
+
+  it("keeps the error of the inline reply out of the footer that truncates", () => {
+    const footer = between(detail, '<span className="text-[10px] truncate min-w-0">', "</span>\n              <div");
+    expect(footer).not.toContain("sendErr");
+    expect(footer).not.toContain("saveFailure");
   });
 });
 

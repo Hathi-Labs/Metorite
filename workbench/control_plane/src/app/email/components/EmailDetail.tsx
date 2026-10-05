@@ -1392,18 +1392,22 @@ export function EmailDetail({ email }: EmailDetailProps) {
                 onClose={() => setAiOpen(false)}
               />
             )}
+            {/* A failed send, a refused pick or a failed save (EM-G3c-2 items
+                10, 13 and 14). It takes its own line: the footer holds six
+                controls, and its status text truncates at 1440 px. */}
+            {(sendErr || saveFailure) && (
+              <p role="alert" className="px-4 py-1.5 text-[10px] text-destructive">
+                {sendErr ?? saveFailure}
+              </p>
+            )}
             {/* Footer — on phones the labels compress to icons so the full
                 action row (incl. Send) always fits inside the card. */}
             <div className="px-3 sm:px-4 py-2 bg-secondary/50 border-t border-border flex items-center justify-between gap-2">
               <span className="text-[10px] truncate min-w-0">
-                {sendErr ? (
-                  <span className="text-destructive">{sendErr}</span>
-                ) : draftStatus === "saving" ? (
+                {draftStatus === "saving" ? (
                   <span className="text-muted-foreground">Saving draft…</span>
                 ) : draftStatus === "saved" ? (
                   <span className="text-muted-foreground">Draft saved · Ctrl+Enter to send</span>
-                ) : saveFailure ? (
-                  <span className="text-destructive">{saveFailure}</span>
                 ) : (
                   <span className="text-muted-foreground">Ctrl+Enter to send</span>
                 )}
