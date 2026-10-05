@@ -305,6 +305,10 @@ All providers implement the `BaseEmailProvider` abstract interface:
     - Each other name is a user label. One `modify` adds it and removes
       `INBOX`, `TRASH` and `SPAM`. A label that Gmail could not make raises.
       The name goes to Google with its case.
+    - A move to Archive removes `INBOX`, `TRASH` and `SPAM` too. A move to
+      Junk adds `SPAM` and removes `INBOX` and `TRASH`. Gmail ranks `TRASH`
+      first, so a move that keeps it leaves the message in Trash (review
+      round 1).
     - `folder_after_move(name)` gives the folder key that a move leaves. The
       base gives `canonical_folder(name)`. Gmail gives `archive` for a user
       label, and `None` for a move that it refuses. Read it only through

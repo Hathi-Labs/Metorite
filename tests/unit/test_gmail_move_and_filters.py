@@ -19,6 +19,9 @@ with the audit corrections E-M1 to E-M13 and E-F1 to E-F5.
 * Items 12 to 15 (E-F1 to E-F5): ``list_filters`` reads the key ``filter``,
   maps each criterion and action, answers ``[]`` for a plain 403, and lets a
   rate limit pass up.
+* Review round 1: the PATCH strips the name once and answers 400 for a blank
+  name. A Gmail move to Archive or Junk removes ``TRASH``. The mirror of a
+  rule move skips a reserved name, as ``push_label`` does.
 
 Each test drives the REAL ``GmailProvider`` through the real ``_get_client``
 against a fake Gmail on ``httpx.MockTransport``, as ``test_gmail_send_and_drafts``
@@ -42,9 +45,11 @@ from email_ingestion.providers.app_credentials import OAuthApp
 from email_ingestion.providers.base import canonical_folder, local_folder_after_move
 from email_ingestion.providers.gmail import GmailProvider, GmailRateLimited
 from email_ingestion.providers.imap import IMAPProvider
+from email_ingestion.providers.outlook import OutlookProvider
 from fastapi import HTTPException
 from gateway.routes.email.automation import actions
 from gateway.routes.email.automation import replyzero as rz
+from gateway.routes.email.core import RESERVED_INDICATORS
 from gateway.routes.email.transport import messages as messages_mod
 
 from tests.unit._email_fakes import bind_db
@@ -53,6 +58,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "/gmail/v1/users/me"
 USER = SimpleNamespace(email="u@em-g3b.test")
 LABEL_MOVE_REMOVES = ["INBOX", "TRASH", "SPAM"]
+JUNK_MOVE_REMOVES = ["INBOX", "TRASH"]
 
 #: The system labels that ``labels.list`` gives for each mailbox. Gmail names
 #: a system label by its id.
@@ -295,10 +301,11 @@ def test_the_folder_after_a_gmail_label_move_is_archive(
     ("Bin", ("POST", "/messages/m-1/trash", {})),
     ("Deleted Items", ("POST", "/messages/m-1/trash", {})),
     ("Junk Email", ("POST", "/messages/m-1/modify",
-                    {"addLabelIds": ["SPAM"], "removeLabelIds": ["INBOX"]})),
+                    {"addLabelIds": ["SPAM"], "removeLabelIds": JUNK_MOVE_REMOVES})),
     ("Spam", ("POST", "/messages/m-1/modify",
-              {"addLabelIds": ["SPAM"], "removeLabelIds": ["INBOX"]})),
-    ("Archive", ("POST", "/messages/m-1/modify", {"removeLabelIds": ["INBOX"]})),
+              {"addLabelIds": ["SPAM"], "removeLabelIds": JUNK_MOVE_REMOVES})),
+    ("Archive", ("POST", "/messages/m-1/modify",
+                 {"removeLabelIds": LABEL_MOVE_REMOVES})),
     ("INBOX", ("POST", "/messages/m-1/modify",
                {"addLabelIds": ["INBOX"], "removeLabelIds": ["TRASH", "SPAM"]})),
 ])
@@ -383,6 +390,56 @@ async def test_a_move_from_trash_to_a_label_removes_trash(fake: _Gmail) -> None:
         assert gmail_mod._gmail_folder_from_labels(fake.messages[mid]) == "archive"
 
 
+async def test_a_gmail_move_from_trash_to_archive_removes_trash(
+        fake: _Gmail) -> None:
+    """Review round 1 (reviewer P2-3). Archive removes ``INBOX``, ``TRASH``
+    and ``SPAM``. Gmail ranks ``TRASH`` first, so a move that kept it left
+    the message in Trash while the row read ``archive``."""
+    fake.messages["t-1"] = ["TRASH"]
+    fake.messages["s-1"] = ["SPAM", "UNREAD"]
+    p = _provider()
+
+    await p.move_to_folder("t-1", "Archive")
+    await p.move_to_folder("s-1", "archive")
+
+    assert fake.modifies() == [
+        ("t-1", {"removeLabelIds": LABEL_MOVE_REMOVES}),
+        ("s-1", {"removeLabelIds": LABEL_MOVE_REMOVES})]
+    assert fake.messages["t-1"] == []
+    assert fake.messages["s-1"] == ["UNREAD"]
+    for mid in ("t-1", "s-1"):
+        assert gmail_mod._gmail_folder_from_labels(fake.messages[mid]) == "archive"
+    # The row stores what the parse now gives.
+    assert p.folder_after_move("Archive") == "archive"
+
+
+async def test_a_gmail_move_from_trash_to_junk_removes_trash(
+        fake: _Gmail) -> None:
+    """Review round 1 (reviewer P2-3). Junk adds ``SPAM`` and removes
+    ``INBOX`` and ``TRASH``, so the message reaches Junk from Trash too. The
+    move to the Inbox keeps its request."""
+    fake.messages["t-1"] = ["TRASH", "UNREAD"]
+    fake.messages["i-1"] = ["INBOX"]
+    p = _provider()
+
+    await p.move_to_folder("t-1", "Junk Email")
+    await p.move_to_folder("i-1", "junk")
+
+    assert fake.modifies() == [
+        ("t-1", {"addLabelIds": ["SPAM"], "removeLabelIds": JUNK_MOVE_REMOVES}),
+        ("i-1", {"addLabelIds": ["SPAM"], "removeLabelIds": JUNK_MOVE_REMOVES})]
+    assert fake.messages["t-1"] == ["UNREAD", "SPAM"]
+    assert fake.messages["i-1"] == ["SPAM"]
+    for mid in ("t-1", "i-1"):
+        assert gmail_mod._gmail_folder_from_labels(fake.messages[mid]) == "junk"
+
+    fake.seen = []
+    await p.move_to_folder("t-1", "Inbox")
+    assert fake.modifies() == [("t-1", {"addLabelIds": ["INBOX"],
+                                        "removeLabelIds": ["TRASH", "SPAM"]})]
+    assert gmail_mod._gmail_folder_from_labels(fake.messages["t-1"]) == "inbox"
+
+
 async def test_a_label_create_409_resolves_by_reread(fake: _Gmail) -> None:
     """Item 2. Another client made the label after our read, so the create
     answers 409. The move reads the list again and uses that label."""
@@ -434,6 +491,27 @@ async def test_a_rule_move_stores_the_folder_of_the_provider(fake: _Gmail) -> No
     assert [e["type"] for e in errors] == ["MOVE_FOLDER"]
     assert db.statements == []
     assert fake.seen == []
+
+
+@pytest.mark.parametrize("name", ["Uncategorized", "  UNCATEGORIZED "])
+async def test_a_gmail_rule_move_to_a_reserved_name_writes_no_mirror(
+        fake: _Gmail, name: str) -> None:
+    """Review round 1 (verifier P2-2). The mirror of a rule move takes the
+    check of ``push_label``. ``RESERVED_INDICATORS`` holds
+    ``"uncategorized"``, which is the absence of a label. So the move files
+    the row as ``archive`` and writes no mirror. ``persist`` also drops the
+    name from the next parse, so the row matches it."""
+    assert name.strip().lower() in RESERVED_INDICATORS
+    fake.messages["m-1"] = ["INBOX"]
+    db, errors = _Db(), []
+
+    done = await actions._apply_rule_actions(
+        db, _provider(), "row-1", "m-1", _move(name), {},
+        account_id="acc-1", errors_out=errors)
+
+    assert (done, errors) == (["MOVE_FOLDER"], [])
+    assert db.params_of("SET folder=:f") == [{"id": "row-1", "f": "archive"}]
+    assert db.params_of("array_append") == []
 
 
 async def test_a_patch_move_stores_the_folder_of_the_provider(
@@ -496,6 +574,64 @@ async def test_a_patch_move_keeps_the_case_of_the_name(
         "row-1", messages_mod.MessageUpdateModel(folder="Cold Email"), user=USER)
     created = [b for m, p, b in fake.seen if (m, p) == ("POST", "/labels")]
     assert [b["name"] for b in created] == ["Cold Email"]
+
+
+def _outlook_like() -> OutlookProvider:
+    """A real ``OutlookProvider``, so the helper takes the base rule, with
+    each provider call replaced by a mock that records it."""
+    p = OutlookProvider({"access_token": "t", "refresh_token": "r"})
+    p.authenticate = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    p.move_to_folder = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    p.apply_flags = AsyncMock()  # type: ignore[method-assign]
+    return p
+
+
+@pytest.mark.parametrize("name", ["", "   "])
+@pytest.mark.parametrize("kind", ["outlook", "gmail"])
+async def test_a_patch_move_to_a_blank_name_is_refused(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch,
+        kind: str, name: str) -> None:
+    """Review round 1 (reviewer P2-2, verifier P2-1). The route strips the
+    name ONCE. A blank name answers 400 for every provider, with no read,
+    no UPDATE and no provider call. Before the fix, ``canonical_folder``
+    read ``""`` as ``inbox``, and Gmail stored ``archive`` for ``"   "``
+    while its push went to the Inbox."""
+    provider: Any = _outlook_like() if kind == "outlook" else _provider()
+    fake.messages["m-1"] = ["INBOX"]
+    db, built_at = _Db(), []
+    _patch_route(monkeypatch, db, provider, built_at)
+
+    with pytest.raises(HTTPException) as refused:
+        await messages_mod.update_message(
+            "row-1", messages_mod.MessageUpdateModel(folder=name, is_read=True),
+            user=USER)
+
+    assert refused.value.status_code == 400
+    assert db.params_of("UPDATE") == []
+    assert db.statements == [] and built_at == []
+    assert fake.seen == []
+    if kind == "outlook":
+        provider.move_to_folder.assert_not_awaited()
+        provider.apply_flags.assert_not_awaited()
+
+
+async def test_a_patch_with_no_folder_is_no_move(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review round 1. A PATCH with no ``folder`` key is no move. It writes
+    the flag, never the folder, and calls no move."""
+    provider = _outlook_like()
+    db = _Db()
+    _patch_route(monkeypatch, db, provider)
+
+    await messages_mod.update_message(
+        "row-1", messages_mod.MessageUpdateModel(is_read=True), user=USER)
+
+    assert db.params_of("is_read = :is_read") == [
+        {"id": "row-1", "is_read": True}]
+    assert db.params_of("folder = :folder") == []
+    provider.move_to_folder.assert_not_awaited()
+    provider.apply_flags.assert_awaited_once_with(
+        "m-1", is_read=True, is_starred=None, is_flagged=None)
 
 
 async def test_the_restore_finds_a_gmail_label_move(fake: _Gmail) -> None:

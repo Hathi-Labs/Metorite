@@ -1513,9 +1513,12 @@ class GmailProvider(BaseEmailProvider):
     #: The folder keys that a move never reaches. Gmail sets ``SENT`` and
     #: ``DRAFT`` itself, on a send and on a draft save (E-M2).
     _MOVE_REFUSED_KEYS = frozenset({"sent", "drafts"})
-    #: A move to a user label removes these, so a move out of Trash or Spam
-    #: leaves ``archive`` (D-EM-33, E-M5).
+    #: A move to a user label or to Archive removes these, so a move out of
+    #: Trash or Spam leaves ``archive`` (D-EM-33, E-M5, review round 1).
     _LABEL_MOVE_REMOVES = ("INBOX", "TRASH", "SPAM")
+    #: A move to Junk removes these, so a move out of Trash leaves ``junk``
+    #: (review round 1). Gmail ranks ``TRASH`` before ``SPAM``.
+    _JUNK_MOVE_REMOVES = ("INBOX", "TRASH")
 
     def _is_system_label_name(self, name: str) -> bool:
         """True when ``name`` names a reserved system label or a ``CATEGORY_*``
@@ -1559,7 +1562,12 @@ class GmailProvider(BaseEmailProvider):
         "Junk Email" reach the system branch (E-M1). Sent and drafts raise
         ``ValueError`` (E-M2). Each other name is a user label: one
         ``modify`` adds it and removes ``INBOX``, ``TRASH`` and ``SPAM``. Gmail
-        keeps the id, so the move returns ``None``."""
+        keeps the id, so the move returns ``None``.
+
+        Archive removes ``INBOX``, ``TRASH`` and ``SPAM`` too, and Junk adds
+        ``SPAM`` and removes ``INBOX`` and ``TRASH``. Gmail ranks ``TRASH``
+        first, so a move out of Trash that kept it left the message in Trash
+        (review round 1)."""
         name = (folder or "").strip()
         key = canonical_folder(name)
         if key in self._MOVE_REFUSED_KEYS:
@@ -1567,15 +1575,18 @@ class GmailProvider(BaseEmailProvider):
         if key == "trash":
             await self.trash_message(provider_message_id)
         elif key == "archive":
-            # Archiving in Gmail = removing the INBOX label.
-            await self.modify_message(provider_message_id, remove_labels=["INBOX"])
+            # Archiving in Gmail = no INBOX, and out of Trash and Spam too.
+            await self.modify_message(
+                provider_message_id, remove_labels=list(self._LABEL_MOVE_REMOVES)
+            )
         elif key == "inbox":
             await self.modify_message(
                 provider_message_id, add_labels=["INBOX"], remove_labels=["TRASH", "SPAM"]
             )
         elif key == "junk":
             await self.modify_message(
-                provider_message_id, add_labels=["SPAM"], remove_labels=["INBOX"]
+                provider_message_id, add_labels=["SPAM"],
+                remove_labels=list(self._JUNK_MOVE_REMOVES),
             )
         else:
             label_id = await self._user_label_id_for_move(name)

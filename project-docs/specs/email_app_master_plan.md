@@ -7308,7 +7308,7 @@ also decide how often an autosave of a draft with files may run (§12.3.12).
 **Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g3b`. The audit of 2026-10-05
 gave GO-NARROWED. Its corrections are E-M1 to E-M13, E-F1 to E-F5 and E-V1 to E-V3, and the scope
 below holds each one. The audit checked each anchor against the code on 2026-10-05. The as-built
-notes and the mutation table are at the end of this section.
+notes, review round 1 and the mutation table are at the end of this section.
 
 **Gate.** 🟢 AGENT-SAFE. No migration, no flag and no change to SQL text.
 
@@ -7456,9 +7456,28 @@ holds no Gmail mailbox, so no live mailbox changes.
 - **The SQL (E-V1).** No statement changes its text. Only the values of `:f` and `:folder`
   change.
 
-**The fences, as built.** `tests/unit/test_gmail_move_and_filters.py` holds 16 fences and 42
-cases, and all are hermetic. A fake Gmail on `httpx.MockTransport` keeps the labels of the mailbox
-and of each message.
+**Review round 1 (2026-10-05).** The verifier passed the slice, and the reviewer approved it. Both
+found P2 items, and this round closes five of them. No SQL text changes.
+
+1. **A blank name (reviewer P2-2, verifier P2-1).** `_move_target` in `messages.py` strips the
+   name once. A name that is empty after the strip answers 400 before any read or write, for each
+   provider. The helper and the provider get the same stripped string.
+2. **Archive and Junk from Trash (reviewer P2-3).** A Gmail move to Archive removes `INBOX`,
+   `TRASH` and `SPAM` (`_LABEL_MOVE_REMOVES`). A move to Junk adds `SPAM` and removes `INBOX` and
+   `TRASH` (`_JUNK_MOVE_REMOVES`). Gmail ranks `TRASH` first, so the old request left the message
+   in Trash. The Inbox and Trash moves do not change. The `ARCHIVE` and `MARK_SPAM` rule actions
+   and the cold sender archive now match their rows at Gmail. The batch archive of `bulk_apply`
+   (`_BULK_LABEL_OPS`) still removes `INBOX` only, and this round does not change it.
+3. **The reserved guard of the mirror (verifier P2-2).** `_writable_label` in `actions.py` is the
+   one check of an empty or reserved label. `push_label` and the mirror of a rule move both call
+   it. So a rule move to "Uncategorized" writes no mirror.
+4. **Known limit EM-G3b-f7 (reviewer P2-1)** is new, below. §12.3.12 lists it.
+5. **The mutation table (verifier P2-3).** The commit of the build said 24 mutations, and the
+   table held 23 rows. The table now states its count, with the rows of this round.
+
+**The fences, as built.** `tests/unit/test_gmail_move_and_filters.py` holds 21 fences and 51
+cases, and all are hermetic. Review round 1 added five fences and nine cases. A fake Gmail on
+`httpx.MockTransport` keeps the labels of the mailbox and of each message.
 
 | Test | What it proves |
 |---|---|
@@ -7478,10 +7497,16 @@ and of each message.
 | `test_a_patch_move_keeps_the_case_of_the_name` | The provider gets "Cold Email", and a new Gmail label keeps that case. |
 | `test_the_restore_finds_a_gmail_label_move` | The restore moves the `archive` row of a rule label back to the Inbox. A refused rule label matches no row. |
 | `test_the_noop_log_still_fires_for_imap` | IMAP and a provider that re-keys log the no-op. A Gmail label move logs nothing. |
+| `test_a_patch_move_to_a_blank_name_is_refused` (4 cases) | Round 1. For an Outlook provider and for Gmail, `""` and `"   "` answer 400. No statement runs, and the provider gets no call. |
+| `test_a_patch_with_no_folder_is_no_move` | Round 1. A PATCH with `is_read` only writes the flag and no folder, and calls no move. |
+| `test_a_gmail_move_from_trash_to_archive_removes_trash` | Round 1. Archive removes `INBOX`, `TRASH` and `SPAM`, and a message from Trash or Spam reaches `archive`. |
+| `test_a_gmail_move_from_trash_to_junk_removes_trash` | Round 1. Junk removes `INBOX` and `TRASH`, and a message from Trash reaches `junk`. The Inbox move keeps its request. |
+| `test_a_gmail_rule_move_to_a_reserved_name_writes_no_mirror` (2 cases) | Round 1. A Gmail rule move to "Uncategorized" stores `archive` and writes no mirror. |
 
 **Mutations, as run (2026-10-05).** A script replaced one anchor for each mutation and ran the
 fence file. Then it restored the file with `git checkout`. Each time `git diff` was clean and the
-SHA-256 matched. Each mutation turned its fence red.
+SHA-256 matched. Each mutation turned its fence red. The table holds 29 mutations: 23 of the build
+(M1 to M17) and 6 of review round 1 (M18 to M21).
 
 | Id | Mutation | Red tests |
 |---|---|---|
@@ -7508,6 +7533,12 @@ SHA-256 matched. Each mutation turned its fence red.
 | M16 | The no-op log fires only for a provider that re-keys | the IMAP test |
 | M16b | The no-op log fires for each provider, Gmail too | the IMAP test |
 | M17 | The helper calls `folder_after_move` on any provider | 17 cases, with the folder test |
+| M18 | `_move_target` lets a blank name through | the 4 cases of the blank name test |
+| M18b | `_move_target` reads no `folder` as a blank name | the test of a PATCH with no folder |
+| M18c | The push sends the name of the request, not the stripped name | the case test |
+| M19 | The Archive move removes `INBOX` only | the Archive test, and the Archive case of the alias test |
+| M20 | The Junk move removes `INBOX` only | the Junk test, and 2 cases of the alias test |
+| M21 | The mirror of a rule move skips `_writable_label` | the 2 cases of the reserved name test |
 
 **Known limit EM-G3b-f4 (found in the build).** A PATCH move to a Gmail user label puts the label
 on the message in Gmail, and the row stores `archive`. The PATCH writes no mirror into
@@ -7517,7 +7548,21 @@ on the message in Gmail, and the row stores `archive`. The PATCH writes no mirro
 that label in another case, the next parse writes the name that Gmail holds.
 
 **Known limit EM-G3b-f6.** `canonical_folder` reads an empty name as `inbox`, so a Gmail move with
-an empty name now goes to the Inbox. Before the slice, Gmail did nothing for it.
+an empty name now goes to the Inbox. Before the slice, Gmail did nothing for it. Since review round
+1, the PATCH refuses a blank name with a 400. A rule action with a label of spaces still reads it
+as `inbox`, because `_apply_rule_actions` checks only that the label is not empty.
+
+**Known limit EM-G3b-f7 (review round 1, reviewer P2-1).** `DAMAGED_CONVERSATION_THREADS_SQL`
+(`replyzero.py:211-212`) still compares `LOWER(TRIM(ea.label))` with the folder of the row. The
+live restore now asks the helper (`replyzero.py:1068`). A Gmail rule move to a custom label leaves
+the row in `archive`, so the SQL finds no match for it. So for a Gmail mailbox with a custom
+`MOVE_FOLDER` rule on a `NEEDS_REPLY` thread, the health metric counts 0. And
+`scripts/repair_conversation_threads.py` skips the thread.
+
+Only a custom Gmail rule hits it, because each Gmail preset uses `LABEL`
+(`rules.py::_actions_for_preset`). The repair changes SQL text, so it needs an R8 test on a real
+database. A later slice owns it, before Gmail goes live. §12.3.12 lists it under "Before
+customers".
 
 #### 12.3.5 EM-G4 — the history cursor, in two slices
 
@@ -9025,6 +9070,9 @@ customer connects Gmail, and no item has an owner yet.
 8. **The known limits of EM-G8** (§12.3.10). The rule editor suggests no Gmail user label. The
    reconnect banner does not read the capability read. `provider_unavailable` shows the generic
    failure.
+9. **EM-G3b-f7.** The health metric and the repair script miss a Gmail thread that a custom
+   `MOVE_FOLDER` rule moved. `DAMAGED_CONVERSATION_THREADS_SQL` compares the rule label with the
+   folder. The fix changes SQL text and needs an R8 test (§12.3.4).
 
 ### 12.4 Owner runbook — register the Metorite Google mail app (D-EM-5 amended, D-EM-31)
 

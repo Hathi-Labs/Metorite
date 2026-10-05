@@ -73,14 +73,12 @@ async def apply_label(
     await mirror_label(db, message_id, lbl)
 
 
-async def push_label(
-    provider: Any, message_id: str, provider_msg_id: str, label: str,
-) -> str | None:
-    """The provider half of ``apply_label``. Touches no database.
+def _writable_label(message_id: str, label: str | None) -> str | None:
+    """The cleaned label that a caller may write, or ``None``.
 
-    Returns the cleaned label that the caller must mirror, or ``None`` when
-    the label is empty or reserved (then nothing is written anywhere). A
-    provider failure raises, so the caller writes no mirror for it.
+    The ONE check of an empty or reserved label. ``push_label`` and the
+    mirror of a rule move both call it (EM-G3b review round 1), so neither
+    writes a label that the other refuses.
     """
     lbl = (label or "").strip()
     if not lbl:
@@ -91,6 +89,21 @@ async def push_label(
         # and writing it (provider or mirror) would make the state permanent.
         _log.warning("email.apply_label_reserved_indicator",
                      message_id=message_id, label=lbl)
+        return None
+    return lbl
+
+
+async def push_label(
+    provider: Any, message_id: str, provider_msg_id: str, label: str,
+) -> str | None:
+    """The provider half of ``apply_label``. Touches no database.
+
+    Returns the cleaned label that the caller must mirror, or ``None`` when
+    the label is empty or reserved (then nothing is written anywhere). A
+    provider failure raises, so the caller writes no mirror for it.
+    """
+    lbl = _writable_label(message_id, label)
+    if lbl is None:
         return None
     if provider is not None and provider_msg_id:
         await provider.set_labels(provider_msg_id, add=[lbl], remove=[])
@@ -415,8 +428,10 @@ async def _move_folder_action(
     await db.execute(text("UPDATE email_messages SET folder=:f, updated_at=now() WHERE id=:id"), {"id": message_id, "f": folder})
     if folder != canon:
         # The provider filed the name as no folder of that name. A Gmail
-        # user label is a label and never a folder (O-GM-1).
-        await mirror_label(db, message_id, dest)
+        # user label is a label and never a folder (O-GM-1). The mirror
+        # takes the check of ``push_label``, so a reserved name such as
+        # "Uncategorized" writes no mirror (review round 1).
+        await mirror_label(db, message_id, _writable_label(message_id, dest))
     if new_pid:
         # Outlook /move re-keys the message — keep follow-up actions valid.
         await db.execute(text("UPDATE email_messages SET provider_message_id=:pid WHERE id=:id"), {"id": message_id, "pid": new_pid})
