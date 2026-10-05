@@ -7310,7 +7310,7 @@ also decide how often an autosave of a draft with files may run (§12.3.12).
 
 #### 12.3.3b EM-G3c — the size of a Gmail mail, and the autosave of a draft with files
 
-**Status.** EM-G3c-1 is 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g3c`. EM-G3c-2 is
+**Status.** EM-G3c-1 is ✅ MERGED (#649, 2026-10-05). EM-G3c-2 is
 not built. The audit of 2026-10-05 gave GO-NARROWED (C1 to C21), and it checked each anchor against
 the code. It split the slice into EM-G3c-1 (the backend) and EM-G3c-2 (the UI). The as-built notes
 and the mutation table of EM-G3c-1 are at the end of this section.
@@ -9487,7 +9487,7 @@ customer connects Gmail, and no item has an owner yet.
    🔨 Built, not merged (2026-10-05): the confirm asks Gmail by the provider id (§12.3.6.2).
 2. **EM-G3b**, a move to a user label, and the filter list (§12.3.4).
 3. **EM-G3c**, the size of a Gmail mail with files, and the autosave of a draft with files
-   (§12.3.3b). It owns EM-G3a-f8 (§12.3.3). 🔨 EM-G3c-1 built, not merged (2026-10-05). A Gmail
+   (§12.3.3b). It owns EM-G3a-f8 (§12.3.3). ✅ EM-G3c-1 merged as #649 (2026-10-05). A Gmail
    write with a file goes to the upload URI, and a mail over the limit answers 413. EM-G3c-2 is not
    built.
 4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
