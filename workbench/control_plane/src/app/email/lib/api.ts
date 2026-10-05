@@ -493,7 +493,9 @@ export async function listEmailAccounts(): Promise<EmailAccount[]> {
 }
 
 export interface CreateEmailAccountParams {
-  provider: "imap" | "gmail" | "microsoft";
+  // IMAP only: the gateway refuses gmail and microsoft here with a 403, and
+  // an OAuth mailbox connects through /email/oauth (EM-G7 review round 1).
+  provider: "imap";
   emailAddress: string;
   label?: string;
   credentials: Record<string, unknown>;
