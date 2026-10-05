@@ -7511,9 +7511,11 @@ the three writes map no 413: `digest.py`, `followups.py`, `senders.py`, `actions
 limit from one of them raises `GmailMailTooLarge`, and the caller sees an error that it does not
 map. `actions.py` belongs to EM-G3b, and its `except Exception` records the error.
 
-**Known limit EM-G3c-f4 (found in the build).** An upload holds two copies of the mail in memory:
-the built mail and the upload body. At the limit, the two copies use about 70 MiB in the gateway
-for one write, beside the files of the request.
+**Known limit EM-G3c-f4 (found in the build, measured in review).** An upload holds two copies of
+the mail in memory: the built mail and the upload body. At the limit, they use about 70 MiB in the
+gateway for one write. The builder of the mail peaks at about five times the mail, as on `main`.
+The plain path of `main` peaked higher for the same mail, at about 140 MiB for 30 MiB, so this
+slice lowers the peak.
 
 **The fences, as built.** `tests/unit/test_gmail_mail_size.py` holds the 11 fences of item 9 and 37
 cases, and all are hermetic. One case builds a mail over the real limit, and it takes about one
@@ -7538,6 +7540,17 @@ mutation turned its fence red. The table holds 12 mutations: the five of the spe
 | X5 | `POST /email/send` loses the mapper | 1 | the route fence |
 | X6 | The upload uses a client with no bearer | 9 | the first fence, the send fence, the 413 fence and the one-try fence |
 | X7 | Each mail goes to the upload URI | 14 | the plain-URI fence, and the large-mail, metadata and 413 fences |
+| V1 | The boundary is never drawn again | 1 | `test_a_boundary_that_occurs_in_the_mail_is_drawn_again` (review round 1) |
+
+**Review round 1 (2026-10-05).** The verifier passed EM-G3c-1, and the reviewer approved it. Neither
+found a P0 or a P1. This round closes the four items below.
+
+1. The rule that draws the boundary again had no fence (verifier P2-1). The new fence pins
+   `secrets.token_hex`, and V1 turns it red.
+2. `_upload_body` joins the three parts once, so it makes no temporary copy (review note 2).
+3. A 413 from Google raises `GmailMailTooLarge(size, None)`. Its text says that the provider
+   refused the size. It names no limit that did not apply (review note 3).
+4. Three facts need a live mailbox, so EM-G10 checks 17 to 19 hold them (review note 1).
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
@@ -9453,6 +9466,12 @@ EM-G6a and EM-G6b are not needed (D-EM-32). The list "Before customers" below ho
     so the body shows with no U+FFFD.
 16. Save a reply draft with a file of 6 MB, then edit it in Metorite. Record that Gmail keeps
     the draft in its thread, and keeps the file (EM-G3c C2, C18).
+17. Send a NEW mail with a file of 1 MB, which is not a reply. Its upload sends the empty
+    metadata `{}`. Record that Gmail takes it (EM-G3c-1 review note 1).
+18. Save a new draft with a file. Its upload sends `{"message": {}}`. Record that Gmail shows one
+    draft with the file.
+19. Send a mail with a file of about 20 MB. Record the time of the save and of the send. The proxy
+    stops a request after 30 seconds (EM-G3c-f1).
 
 **Evidence.** The log lines of each step, the row counts and the screenshots. Report each
 production act in the same message (CLAUDE.md §3a rule 2).

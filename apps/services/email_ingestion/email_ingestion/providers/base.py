@@ -52,13 +52,18 @@ class ProviderMailTooLarge(Exception):
     subclasses ``httpx.HTTPStatusError``, whose text holds the URL. A typed
     error of a provider adds this class, as ``GmailMailTooLarge`` does. The
     send and the draft routes answer 413 (``email_app_master_plan.md``
-    §12.3.3b items 6 and 7). Outlook and IMAP never raise it."""
+    §12.3.3b items 6 and 7). Outlook and IMAP never raise it.
 
-    def __init__(self, size: int, limit: int) -> None:
+    ``limit`` is ``None`` when the provider refused the mail (a 413) under
+    the local limit, so the text never names a limit that did not apply."""
+
+    def __init__(self, size: int, limit: int | None) -> None:
         self.size = size
         self.limit = limit
         super().__init__(
-            f"The mail has {size} bytes, and the limit is {limit} bytes.")
+            f"The mail has {size} bytes, and the limit is {limit} bytes."
+            if limit is not None else
+            f"The provider refused a mail of {size} bytes as too large.")
 
 
 class _RefreshableProvider(Protocol):

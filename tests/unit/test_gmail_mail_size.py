@@ -61,6 +61,7 @@ from email_ingestion.providers.gmail import (
     GmailRateLimited,
     _build_gmail_mail,
     _repeatable,
+    _upload_body,
 )
 from fastapi import BackgroundTasks, HTTPException
 from gateway.routes.email.automation import drafting
@@ -428,8 +429,30 @@ async def test_a_413_from_google_raises_mail_too_large(
     assert not isinstance(caught.value, httpx.HTTPError)
     assert "googleapis" not in str(caught.value)
     assert "upload" not in str(caught.value)
+    # Google refused it under the local limit, so the error names no limit
+    # (review note 3).
+    assert caught.value.limit is None
+    assert "refused" in str(caught.value)
     assert limited.calls(method, path) == 1
     assert bool(limited.uploads) is upload
+
+
+def test_a_boundary_that_occurs_in_the_mail_is_drawn_again(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Items 3 and 4 (verifier P2-1). The boundary is random, and a candidate
+    that occurs in the mail bytes is drawn again. The first candidate here is
+    in the mail, so the body must use the second one."""
+    candidates = iter(["a" * 32, "b" * 32])
+    monkeypatch.setattr(gmail_mod.secrets, "token_hex",
+                        lambda _n: next(candidates))
+    mail = b"Subject: x\r\n\r\nsee --metorite-" + b"a" * 32 + b" here\r\n"
+
+    body, content_type = _upload_body({}, mail)
+
+    assert content_type == "multipart/related; boundary=metorite-" + "b" * 32
+    assert body.startswith(b"--metorite-" + b"b" * 32 + b"\r\n")
+    assert body.endswith(b"\r\n--metorite-" + b"b" * 32 + b"--\r\n")
+    assert mail in body
 
 
 # ── item 8: one try for a send ──────────────────────────────────────────────

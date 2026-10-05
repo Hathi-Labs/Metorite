@@ -906,7 +906,8 @@ def _upload_body(meta: dict[str, Any], mail: bytes) -> tuple[bytes, str]:
             f"--{boundary}\r\n"
             "Content-Type: message/rfc822\r\n\r\n").encode()
     tail = f"\r\n--{boundary}--\r\n".encode()
-    return head + mail + tail, f"multipart/related; boundary={boundary}"
+    # One join, so no temporary ``head + mail`` copy (review note 2).
+    return b"".join((head, mail, tail)), f"multipart/related; boundary={boundary}"
 
 
 class GmailProvider(BaseEmailProvider):
@@ -1376,7 +1377,8 @@ class GmailProvider(BaseEmailProvider):
             resp = await write(f"/users/me{path}",
                                json={"message": message} if draft else message)
         if resp.status_code == 413:
-            raise GmailMailTooLarge(size, GMAIL_MAIL_MAX_BYTES)
+            # Google refused it under the local limit, so name no limit.
+            raise GmailMailTooLarge(size, None)
         resp.raise_for_status()
         return resp.json()
 
