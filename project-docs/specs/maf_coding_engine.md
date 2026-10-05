@@ -1769,17 +1769,20 @@ These facts change or add to the text above:
     agent's tenant dir, the tree, GET, history and DELETE treat a skill
     folder that is not the caller's own as absent. The tree and the history
     leave out its paths. GET, history and DELETE answer as for a missing
-    file, with the same body. The check runs before the fault-in, which
-    restores only the marker, so the store never restores another member's
-    file. A folder with no marker is hidden from every member, and
+    file, with the same body, and so does a DELETE of the folder itself. The
+    check runs before the fault-in, which restores only the marker, so the
+    store never restores another member's file. The write routes restore a
+    lost marker first too, so no member can take a folder that the disk
+    cache lost. A folder with no marker is hidden from every member, and
     `claim_skill` refuses it when it holds files, so no member can take what
     a writer with no author left there. Fence:
     `test_the_files_routes_hide_another_members_skill`.
-  - **A skill folder name must fit a mount.** Letters, digits, `.`, `_` and
-    `-`, no `.` or `-` first, at most 128 characters
-    (`agent_paths.SKILL_NAME_RULE`). Each writer refuses another name, and
-    the route answers 400 with the rule. So no skill lists in the prompt
-    that the sandbox cannot run.
+  - **A new skill folder name must fit a mount.** ASCII letters, digits,
+    `.`, `_` and `-`, no `.` or `-` first, at most 128 characters
+    (`agent_paths.SKILL_NAME_RULE`). `claim_skill` refuses a new folder with
+    another name, and the route answers 400 with the rule. So no new skill
+    lists in the prompt that the sandbox cannot run. A folder made before the
+    rule still changes and deletes.
   - **How a check reads the skill rule** (for the P3 eval, E17). The
     marker `agent-data/skills/<name>/.metorite-author` holds an opaque
     member id and never the email (WS-43v). The id is `m1.` and an HMAC of

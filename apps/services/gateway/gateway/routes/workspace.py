@@ -805,6 +805,11 @@ def _odd_name_form(rel: str) -> bool:
     parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
     if parts and parts[0] not in THREAD_HEADS and parts[0].lower() in THREAD_HEADS:
         return True
+    # A Windows dev box reads ``AGENT-~1`` (an 8.3 short name) and
+    # ``skills::$INDEX_ALLOCATION`` (an NTFS stream) as real folders, which no
+    # rule here names (WS-43v review). Linux names other files with them.
+    if os.name == "nt" and any(":" in p or "~" in p for p in parts):
+        return True
     # The skill rule reads ``agent-data/skills/`` in lower case too (WS-43v).
     if parts and parts[0].lower() == "agent-data" and (
         parts[0] != "agent-data" or (
@@ -1007,6 +1012,22 @@ async def _hide_skill(
     ):
         owner = await asyncio.to_thread(skill_owner, workspace, top, user.email)
     return owner != SKILL_MINE
+
+
+async def _restore_skill_marker(workspace: Path, top: str, user: UserContext) -> None:
+    """Bring a skill folder's marker back from the store when the disk lost it.
+
+    The write rules call it first. Else a member could write into a folder
+    whose marker only the store still holds, take it, and read its files
+    through the fault-in (WS-43v review). Only the marker comes back.
+    """
+    from acb_skills.agent_paths import SKILL_AUTHOR_MARKER, SKILL_UNCLAIMED, skill_owner
+
+    owner = await asyncio.to_thread(skill_owner, workspace, top, user.email)
+    if owner == SKILL_UNCLAIMED:
+        await _faultin_from_store(
+            workspace, f"{top}/{SKILL_AUTHOR_MARKER}", organization_id=user.organization_id,
+        )
 
 
 def _hidden_skills(
@@ -1419,28 +1440,32 @@ async def _apply_write_rules(
     """
     from acb_skills.agent_paths import (
         SKILL_AUTHOR_MARKER,
-        SKILL_NAME_RULE,
+        SkillNameRefused,
         claim_skill,
         refused_write,
     )
 
     if rel.rsplit("/", 1)[-1] == SKILL_AUTHOR_MARKER:
         raise HTTPException(status_code=400, detail="That file name is reserved.")
+    own = _own_thread_slug(workspace, session_id, user.organization_id)
+    top = _skill_top(rel, own)
+    if top is not None:
+        await _restore_skill_marker(workspace.resolve(), top, user)
     reason = await asyncio.to_thread(
         refused_write, workspace.resolve(), rel, member=user.email, thread_id=session_id,
     )
-    if reason == SKILL_NAME_RULE:
-        raise HTTPException(status_code=400, detail=f"Refused: {reason}.")
     if reason and "member" in reason:
         raise HTTPException(status_code=403, detail="That skill belongs to another member.")
     if reason:
         raise HTTPException(status_code=404, detail="File not found")
-    if not claim or _own_thread_slug(workspace, session_id, user.organization_id) is None:
+    if not claim or own is None:
         return
     from acb_skills.agent_paths import SkillOwnedElsewhere
 
     try:
         claimed = await asyncio.to_thread(claim_skill, workspace.resolve(), rel, user.email)
+    except SkillNameRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except SkillOwnedElsewhere:
         # Another member claimed the folder between the check and the claim.
         raise HTTPException(
@@ -2228,6 +2253,10 @@ async def delete_workspace_file(
         # WS-43d (§7.5 rule B): no part of the path is followed as a link.
         deleted = await asyncio.to_thread(safe_open.unlink, workspace, rel)
     except IsADirectoryError as exc:
+        if rel.startswith("agent-data/skills/"):
+            # A skill folder answers as a missing file, so a DELETE never tells
+            # whether a skill name exists (WS-43v review).
+            raise HTTPException(status_code=404, detail="File not found") from exc
         raise HTTPException(status_code=400, detail="Cannot delete directories") from exc
     except safe_open.UnsafePath as exc:
         raise HTTPException(status_code=404, detail="File not found") from exc

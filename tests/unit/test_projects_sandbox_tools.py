@@ -942,23 +942,60 @@ def test_a_failed_rename_leaves_the_old_file_and_no_temp(short_tmp, monkeypatch)
 #
 # Mutations, each run red once by hand on 2026-10-05:
 #
-# * ``refused_write`` drops the name rule: the name test and the route name
+# * ``claim_skill`` drops the name rule: the name test and the route name
 #   test;
+# * the rule refuses an old folder that the member already owns: the old-name
+#   test;
+# * ``_odd_name_form`` lets a Windows short name or stream through: the
+#   Windows test;
 # * ``claim_skill`` takes a folder that holds files and no marker: the
 #   no-author test.
 
 
 @pytest.mark.parametrize("bad", ["my skill", "-x", "a,b", "x" * 129, "caf\u00e9"])
 async def test_a_skill_name_the_sandbox_cannot_mount_is_refused(sandbox, bad) -> None:  # noqa: F811
-    from acb_skills.agent_paths import SKILL_NAME_RULE, refused_write
+    from acb_skills.agent_paths import SkillNameRefused, claim_skill
 
     x_store, ws, _ = _store(sandbox, member=_X)
     rel = f"agent-data/skills/{bad}/SKILL.md"
-    assert refused_write(ws, rel, member=_X) == SKILL_NAME_RULE
+    with pytest.raises(SkillNameRefused):
+        claim_skill(ws, rel, _X)
     with pytest.raises(ValueError, match="letters, digits"):
         await x_store.write(rel, _SKILL.format(name="bad"))
     assert not (ws / "agent-data" / "skills" / bad).exists()
     await x_store.write("agent-data/skills/ok_name-1.2/SKILL.md", _SKILL.format(name="ok"))
+
+
+async def test_an_owned_folder_with_an_old_name_still_changes(sandbox) -> None:  # noqa: F811
+    """The rule binds a NEW folder. A folder that the member made before it
+    still takes writes and deletes."""
+    from acb_skills.agent_paths import claim_skill
+
+    x_store, ws, _ = _store(sandbox, member=_X)
+    old = ws / "agent-data" / "skills" / "my notes"
+    old.mkdir(parents=True)
+    _marker(ws, "my notes").write_text(skill_author_id(_X))
+    assert claim_skill(ws, "agent-data/skills/my notes/a.md", _X) is None
+    await x_store.write("agent-data/skills/my notes/a.md", "still mine")
+    await x_store.delete("agent-data/skills/my notes/a.md")
+    assert not (old / "a.md").exists()
+
+
+@pytest.mark.parametrize("path", [
+    "AGENT-~1/skills/chart/SKILL.md", "agent-data/SKILLS~1/chart/SKILL.md",
+    "agent-data/skills::$INDEX_ALLOCATION/chart/SKILL.md",
+])
+def test_a_windows_short_name_or_stream_never_dodges_the_skill_rule(path, monkeypatch) -> None:
+    """A Windows dev box reads these as ``agent-data/skills``. Linux reads
+    other names, so the refusal binds Windows only."""
+    import types
+
+    from gateway.routes import workspace as wsr
+
+    monkeypatch.setattr(wsr, "os", types.SimpleNamespace(name="nt"))
+    assert wsr._odd_name_form(path) is True
+    monkeypatch.setattr(wsr, "os", types.SimpleNamespace(name="posix"))
+    assert wsr._odd_name_form("agent-data/notes~1.md") is False
 
 
 async def test_the_route_answers_400_with_the_name_rule(sandbox, monkeypatch) -> None:  # noqa: F811

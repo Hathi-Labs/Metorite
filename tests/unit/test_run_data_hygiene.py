@@ -50,7 +50,9 @@ WS-43v (each run red once by hand on 2026-10-05):
 * the route lets a write through when ``claim_skill`` finds no member id: the
   route skill test.
 * ``_hide_skill`` answers ``False``, or the tree or the history keeps every
-  row: the Files-routes skill test.
+  row: the Files-routes skill test;
+* the write rules do not bring a lost marker back from the store, or a
+  DELETE of a skill folder answers 400: the Files-routes skill test.
 """
 from __future__ import annotations
 
@@ -544,6 +546,11 @@ def test_the_files_routes_hide_another_members_skill(
         gone = bob.delete(f"/agent/workspace/{s2}/file", params={"path": rel})
         gone_twin = bob.delete(f"/agent/workspace/{s2}/file", params={"path": missing})
         assert (gone.status_code, gone.json()) == (gone_twin.status_code, gone_twin.json())
+    # A DELETE of the folder itself does not tell whether the name exists.
+    folder = bob.delete(f"/agent/workspace/{s2}/file", params={"path": top})
+    folder_twin = bob.delete(f"/agent/workspace/{s2}/file",
+                             params={"path": missing.rsplit("/", 1)[0]})
+    assert (folder.status_code, folder.json()) == (folder_twin.status_code, folder_twin.json())
     assert (_tenant_dir(a) / top / "SKILL.md").read_text() == "ALICE SKILL TEXT"
 
     # Alice: her own skill, through every read route.
@@ -564,8 +571,17 @@ def test_the_files_routes_hide_another_members_skill(
                           json={"content": "mine now"}).status_code == 403
     assert not (_tenant_dir(a) / bare / ".metorite-author").exists()
 
-    # The disk cache lost Alice's folder. Bob's GET restores nothing of it.
+    # The disk cache lost Alice's folder. Bob's write cannot take it: the
+    # route brings Alice's marker back from the store first.
     shutil.rmtree(_tenant_dir(a) / top)
+    taken = bob.put(f"/agent/workspace/{s2}/file", params={"path": f"{top}/x.md"},
+                    json={"content": "mine now"})
+    assert taken.status_code == 403
+    from acb_skills.agent_paths import skill_author_id
+
+    assert (_tenant_dir(a) / top / ".metorite-author").read_text() == skill_author_id(_ALICE)
+    shutil.rmtree(_tenant_dir(a) / top)
+    # Bob's GET restores nothing of it.
     got = bob.get(f"/agent/workspace/{s2}/file", params={"path": f"{top}/SKILL.md"})
     assert got.status_code == 404
     assert not (_tenant_dir(a) / top / "SKILL.md").exists()
