@@ -8,9 +8,11 @@ every sub-app, and the overall architecture. *(The owner's suggested name
 was avoided because the Projects app's own spec lives inside and the collision
 would confuse exactly the agents this cleanup serves.)*
 
+**R9 (D89) binds every app spec to the one shell.**
+
 **How an agent navigates:** the repo root **`CLAUDE.md`** is loaded into every
 session (D30) and routes you here; then start at **`work_plan.md` §1** (the spec contract and
-the standing rules **R1–R8** — R6/R7/R8 are the engineering-practice rules from
+the standing rules **R1–R9** — R6/R7/R8 are the engineering-practice rules from
 D28 and bind every PR), then **§2** (the dispatch board — ordering, states,
 gates). ⚠️ **Start at §2.0 if you want the shape of the work rather than a ticket** — it is the product roadmap (M0…M4) over the same rows, added 2026-08-26. The board row names the **owning spec**; build
 only from owning specs listed **ACTIVE** here. Anything in DEFERRED or

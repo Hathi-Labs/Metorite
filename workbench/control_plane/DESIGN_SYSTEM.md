@@ -514,4 +514,5 @@ pair it with an icon or a label.
      between two apps is what no test in this repo measures.
 4. **The app plugs into the shell** (`AGENTS.md` rule 10). It mounts no ⌘K
    handler, palette, bell or assistant rail of its own. Its `NavPane` carries
-   its team, its one-line purpose and its jobs.
+   its team, its one-line purpose and its jobs. Run
+   `npx vitest run src/lib/shell/` to check.
