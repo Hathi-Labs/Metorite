@@ -44,7 +44,7 @@ open a pull request that only lowers the count.
 | # | File | What it owns |
 |---|---|---|
 | 1 | **`project-docs/INDEX.md`** | Which specs are **ACTIVE** (you may build from these), which are deferred/historical (you may not). A spec missing from INDEX is a defect — say so. |
-| 2 | **`project-docs/work_plan.md` §1** | The agent-ready spec contract + standing rules **R1–R8**. Binding on every PR. |
+| 2 | **`project-docs/work_plan.md` §1** | The agent-ready spec contract + standing rules **R1–R9**. Binding on every PR. |
 | 3 | **`project-docs/work_plan.md` §2** | The dispatch board: every workstream, its state, its gates. **This is the only current-state authority.** ⚠️ Start at **§2.0** — the product roadmap (M0 customer zero · **M1 a second org can exist safely** · M2 self-serve and money · M3 operations · M4 the apps we sell) reads the same rows as a product instead of as a build tree. It adds no authority: where §2.0 and a row disagree, **the row wins**. |
 | 4 | **`project-docs/work_plan.md` §6** | The owner-gate registry. Actions you must **refuse by name**. |
 | 5 | **`project-docs/work_plan.md` §3** | Decisions **D1–D39**. Recorded once, never re-litigated. Cite them; do not reopen them. |

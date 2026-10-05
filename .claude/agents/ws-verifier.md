@@ -39,6 +39,9 @@ implementer's report as a set of *claims to be checked*, not as findings.
    - Files landed in their architecturally-correct home per the applicable
      `AGENTS.md` chain — check the nearest AGENTS.md for each touched directory.
    - Scope: does the diff contain anything outside the cleared slice?
+   - The shell (R9, D89): if `workbench/control_plane` changed, run
+     `npx vitest run src/lib/shell/`. Report a FAIL if the diff adds a file
+     or raises a number in `SEAM_DEBT`.
 6. **Frontend changes**: pr-check is Python-only, so TypeScript never gets CI.
    If `workbench/control_plane` changed, build or typecheck it locally and report
    the result — nothing downstream will catch it for you.

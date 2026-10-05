@@ -271,12 +271,16 @@ Seven rules on top of the three above. Each one exists because it was broken:
    and a person saves it. The AI tier may fill the form, and it never saves.
    `project-docs/specs/navigation_shell.md` §5 is the contract, and §5.3 maps
    every live app onto it.
-   Fences: from NS-2, `src/lib/nav.test.ts` will fail on a live pane with no
-   team or purpose. `src/lib/shell/seams.test.ts` arrives with NS-1, and
-   its baseline only goes down.
-   ⚠️ **Until NS-1 and NS-2 ship, this rule is advisory.** Projects, My Tasks
-   and Email still carry their own palette, bell and rail. A NEW app adds
-   none of them.
+   **Fence: `src/lib/shell/seams.test.ts`.** It fails on a ⌘K listener, a
+   `NotificationBell` import, an `<AgentChat>` rail or a palette mount. It
+   reads every file outside `src/lib/shell/` and `src/components/shell/`. Today's
+   sites sit in `SEAM_DEBT`, and each number only goes down.
+   ⚠️ **Do not add a file to `SEAM_DEBT` to make a new app pass.** If the app
+   needs a missing shell part, build it once in `src/lib/shell/` (NS-1),
+   for every app.
+   From NS-2, `src/lib/nav.test.ts` will also fail on a live pane with no
+   team or purpose. Until then, the manifest half is advisory. R9 in
+   `work_plan.md` §1 binds the app's spec to declare it.
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that

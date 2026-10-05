@@ -314,17 +314,22 @@ sides, so no mirror can drift.
 8. **A `preview` app may carry a manifest.** Nothing renders it until the
    owner promotes the app (**H-21**).
 
-**Fence (NS-1, NS-2).** `src/lib/nav.test.ts` fails on a live pane with no
-`team` or `blurb`, and on a job whose `href` is no route in the tree. A new
-`src/lib/shell/seams.test.ts` sweeps `src/` and fails on these four:
+**Fences.** From NS-2, `src/lib/nav.test.ts` will fail on a live pane with no
+`team` or `blurb`. It will also fail on a job whose `href` is no route.
+`src/lib/shell/seams.test.ts` exists since 2026-10-05, ahead of NS-1. It
+sweeps `src/` and fails on these four:
 
 - a `metaKey` or `ctrlKey` handler for `k` outside `src/lib/shell/`
 - an import of `NotificationBell` outside the shell
 - a mount of `AgentChat` as a rail outside the dock and `/chat`
 - a `SearchPalette` or `CommandPalette` mount outside the shell
 
-The sweep starts with a baseline of today's sites. The baseline only goes down,
-the same ratchet as `conformance.test.ts`.
+The sweep starts with a baseline of today's sites, 14 in 8 files. The baseline
+only goes down, the same ratchet as `conformance.test.ts`. `src/lib/shell/` and
+`src/components/shell/` are exempt, because NS-1 builds the shell there.
+
+**The spec half is R9** (`work_plan.md` §1). An app spec carries a "Shell
+manifest" section, and the spec-auditor refuses one without it.
 
 ### 5.3 How each app that exists today conforms
 
@@ -597,7 +602,8 @@ Done when:
    draw no bar of their own.
 3. The command bar answers tier 0 from the registry and from
    `app/projects/lib/commands.ts`.
-4. `src/lib/shell/seams.test.ts` exists, with a baseline of today's sites.
+4. `src/lib/shell/seams.test.ts` already exists (2026-10-05). NS-1 puts the
+   shell's parts in `src/lib/shell/`, and adds no budget to `SEAM_DEBT`.
    With the flag on, only the shell's ⌘K listener fires. With the flag off,
    the three listeners at `app/projects/page.tsx:2635`, `app/tasks/page.tsx:180`
    and `app/email/page.tsx:678` run as today. NS-9 deletes them.
