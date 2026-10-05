@@ -290,6 +290,51 @@ export function clearSignedOutAccount(): void {
  * gateway), so it never clears a namespace. Dev with auth off names a member
  * in its access answer, so it never clears either.
  */
+/** How long the sign-out confirm waits before it gives up (and clears nothing). */
+export const SIGN_OUT_CONFIRM_MS = 5_000;
+
+/**
+ * Ask NextAuth once more, with no cache, whether anybody is signed in
+ * (PR #652 round 3). True ONLY when the answer is a 2xx whose session names
+ * no user. A network failure, a non-2xx, a body that does not parse or a
+ * timeout is "not confirmed", and a caller then clears nothing.
+ *
+ * Why: NextAuth's client turns a FAILED session fetch into "unauthenticated"
+ * and keeps it for the life of the page, and `/api/auth/me` answers 200 with
+ * nobody while the gateway restarts. A deploy that restarts both close
+ * together looks exactly like a sign-out. Clearing on that would wipe a
+ * member who is still signed in.
+ */
+export async function confirmSignedOut(
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = SIGN_OUT_CONFIRM_MS,
+): Promise<boolean> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A race as well as the abort: a timeout answers "not confirmed" even when
+  // the request never settles.
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(false);
+    }, timeoutMs);
+  });
+  const asked = (async (): Promise<boolean> => {
+    const res = await fetchImpl("/api/auth/session", {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { user?: unknown } | null;
+    return !body || !body.user;
+  })().catch(() => false);
+  try {
+    return await Promise.race([asked, timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export function isSignedOut(a: {
   sessionStatus: "loading" | "authenticated" | "unauthenticated";
   accessLoading: boolean;

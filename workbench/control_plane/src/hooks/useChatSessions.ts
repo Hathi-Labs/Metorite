@@ -26,6 +26,7 @@ import { useAccess } from "@/components/AccessProvider";
 import {
   bindChatScope,
   clearSignedOutAccount,
+  confirmSignedOut,
   deleteSession,
   enrichSession,
   fetchAndMergeSessionsFromDb,
@@ -95,7 +96,14 @@ export function useChatSignOutClear(): void {
     email: access.email,
   });
   useEffect(() => {
-    if (signedOut) clearSignedOutAccount();
+    if (!signedOut) return;
+    // Confirm with NextAuth before deleting anything (round 3): a failed
+    // session fetch during a deploy also reads as "unauthenticated".
+    let cancelled = false;
+    void confirmSignedOut().then((confirmed) => {
+      if (confirmed && !cancelled) clearSignedOutAccount();
+    });
+    return () => { cancelled = true; };
   }, [signedOut]);
 }
 

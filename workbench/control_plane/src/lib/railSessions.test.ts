@@ -38,6 +38,7 @@ import {
   chatKey,
   chatScope,
   clearSignedOutAccount,
+  confirmSignedOut,
   createSession,
   forgetChatSessions,
   forgetSession,
@@ -347,6 +348,51 @@ describe("a deploy blip keeps the member's place (fix round 2)", () => {
   });
 });
 
+describe("a sign-out is confirmed before anything is cleared (round 3)", () => {
+  const answer = (status: number, body: string) =>
+    vi.fn(async () => new Response(body, { status })) as unknown as typeof fetch;
+
+  /** The hook's step, with the fetch handed in: confirm, then clear. */
+  async function signOutStep(fetchImpl: typeof fetch): Promise<void> {
+    if (await confirmSignedOut(fetchImpl, 50)) clearSignedOutAccount();
+  }
+
+  /** A live member A, and a second account B on the same browser. */
+  function twoAccounts(): void {
+    bindChatScope(MEMBER);
+    tidyChatStorage(MEMBER);
+    upsertSession(createSession(AGENT));
+    bindChatScope(OWNER);
+    tidyChatStorage(OWNER);
+    upsertSession(createSession(AGENT));
+  }
+
+  it("a failed confirm clears nothing: network error, 5xx, bad body, timeout", async () => {
+    twoAccounts();
+    const before = storage.keys().sort();
+    const down = vi.fn(async () => { throw new TypeError("Failed to fetch"); }) as unknown as typeof fetch;
+    const slow = vi.fn(() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+    for (const f of [down, answer(502, "{}"), answer(200, "not json"), slow]) {
+      await signOutStep(f);
+      expect(storage.keys().sort()).toEqual(before);
+    }
+    // A live session says somebody is signed in: nothing either.
+    await signOutStep(answer(200, JSON.stringify({ user: { email: "vjvarada@fracktal.in" } })));
+    expect(storage.keys().sort()).toEqual(before);
+  });
+
+  it("a confirmed empty session clears the signed-out account only", async () => {
+    twoAccounts();
+    await signOutStep(answer(200, "{}"));
+    expect(hasNamespace(OWNER)).toBe(false);
+    expect(hasNamespace(MEMBER)).toBe(true);
+  });
+
+  it("NextAuth's null body also counts as no session", async () => {
+    expect(await confirmSignedOut(answer(200, "null"), 50)).toBe(true);
+  });
+});
+
 describe("a first visit waits for the server's list (fix round 1)", () => {
   const remote = (id: string): ChatSession => ({
     id, name: "x", agentName: AGENT, createdAt: "2026-10-01", updatedAt: "2026-10-01", messageCount: 3,
@@ -599,7 +645,9 @@ describe("the wiring (source fence)", () => {
   it("the tidy runs in an effect, and AppShell binds the scope and the sign-out clear", () => {
     const hook = read("../hooks/useChatSessions.ts");
     expect(hook).toMatch(/useEffect\(\(\) => \{\s*tidyChatStorage\(scope\);\s*\}, \[scope\]\);/);
-    expect(hook).toMatch(/if \(signedOut\) clearSignedOutAccount\(\);/);
+    // The clear runs ONLY after NextAuth confirms the sign-out (round 3).
+    expect(hook).toMatch(/confirmSignedOut\(\)\.then\(\(confirmed\) => \{\s*if \(confirmed && !cancelled\) clearSignedOutAccount\(\);/);
+    expect(hook.match(/clearSignedOutAccount\(\)/g) ?? []).toHaveLength(1);
     const shell = read("../components/AppShell.tsx");
     expect(shell).toMatch(/^\s*useChatScope\(\);\r?$/m);
     expect(shell).toMatch(/^\s*useChatSignOutClear\(\);\r?$/m);
