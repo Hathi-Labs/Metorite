@@ -118,6 +118,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const [replyAttachments, setReplyAttachments] = useState<SendAttachment[]>([]);
   const [replyArtifacts, setReplyArtifacts] = useState<ArtifactAttachmentRef[]>([]);
   const [sendErr, setSendErr] = useState<string | null>(null);
+  // One inline send at a time (EM-T10 item 7, EM-G3c-2-f10). The ref is the
+  // guard, because a second click or Ctrl+Enter can come before a render.
+  // The state draws the Send button as loading.
+  const sendingRef = useRef(false);
+  const [sending, setSending] = useState(false);
   // ── Auto-save (Gmail-style): the reply persists as a Drafts message as you
   //    type, so closing the composer never loses it. draftIdRef holds the local
   //    id of the saved draft so repeated saves update it in place (no dupes). ──
@@ -515,7 +520,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   }
 
   // Render the fullest copy we have (the lazily-fetched detail, or the list row).
-  const view: Email = detail ?? email;
+  // `detail` resets only after the first render of a new mail, so it can still
+  // hold the last mail. Read it only when it is this mail (EM-T10 item 5, C2).
+  const view: Email = detail?.id === email.id ? detail : email;
 
   // The message the composer replies to. Defaults to the open message; a
   // conversation card can target any message in the thread (Outlook parity).
@@ -711,6 +718,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
   /** Send the reply/forward. If it was auto-saved as a draft we send that draft
    *  natively (Drafts → Sent, no duplicate); otherwise we send a fresh message. */
   const handleInlineSend = async () => {
+    // A send runs already: the click or the Ctrl+Enter does nothing (f10).
+    if (sendingRef.current) return;
     if (!email) return;
     // An old send error must not hide a later "Not saved" (review round 1).
     setSendErr(null);
@@ -732,11 +741,15 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const bccArr = replyBcc.split(",").map((s) => s.trim()).filter(Boolean);
     const isForward = replyMode === "forward";
     const target = replyTargetRef.current ?? email;
-    // The send carries the last edit, so each queued autosave goes. A save
-    // that runs settles first: a first save gives its draft id, and no older
-    // text without Cc lands after this save (EM-G3c-2 review round 2).
-    await autosave.drain();
+    // The send starts here, after the early returns and before the drain, so
+    // the Send button shows it while the drain waits (EM-T10 item 7).
+    sendingRef.current = true;
+    setSending(true);
     try {
+      // The send carries the last edit, so each queued autosave goes. A save
+      // that runs settles first: a first save gives its draft id, and no older
+      // text without Cc lands after this save (EM-G3c-2 review round 2).
+      await autosave.drain();
       // Native draft-send now carries Cc/Bcc AND attachments (all stored on the
       // provider draft), so whenever there's a draft OR attachments we save the
       // draft with everything and send it natively (Drafts → Sent, no duplicate,
@@ -779,6 +792,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
       // A 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
       setSendErr(sendFailureText(e));
       return;
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
     }
     // Show the reply in the conversation at once, then pull the real synced copy.
     // A reply from another mailbox starts a conversation THERE, so it does not
@@ -1147,12 +1163,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
             onSent={refreshThreadAfterSend}
           />
         ) : isDraftEmail(email) ? (
-          /* Standalone draft — editable composer. Pass the reply target so the
-             Reply / Reply All toggle can appear when it's a reply to a message.
-             The key mounts a fresh card for each draft. Without it, opening
-             draft B after draft A kept A's text, and an edit saved it into B
-             (EM-G3c-2-f1). */
-          <DraftCard key={email.id} draft={email} replyTo={replyTarget} />
+          /* Standalone draft — editable composer. The key mounts a fresh card
+             for each draft. Without it, opening draft B after draft A kept A's
+             text, and an edit saved it into B (EM-G3c-2-f1). The card gets
+             `view`, never the last mail, so it starts with the recipients of
+             its own draft (EM-T10 item 5, C2). */
+          <DraftCard key={email.id} draft={email} replyTo={view} />
         ) : (
         <>
         {/* Sender info — the avatar, name and every recipient open a contact card */}
@@ -1523,8 +1539,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   <AppIcon name="Trash2" size={13} />
                   <span className="hidden sm:inline">Discard</span>
                 </Button>
-                <Button size="none" radius="keep" layout="flex items-center" disabled={!replyTo.trim() || !replyBody.trim()} onClick={handleInlineSend} className="px-4 py-1 text-xs rounded-md gap-1.5">
-                  <AppIcon name="Send" size={12} />
+                <Button size="none" radius="keep" layout="flex items-center" icon="Send" loading={sending} disabled={!replyTo.trim() || !replyBody.trim()} onClick={() => void handleInlineSend()} className="px-4 py-1 text-xs rounded-md gap-1.5">
                   Send
                 </Button>
               </div>
