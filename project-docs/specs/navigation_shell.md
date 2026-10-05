@@ -823,8 +823,10 @@ Done when:
 
 ### NS-10 · Updating, not broken (§7.3) — AGENT-SAFE · BUILT 2026-10-05
 
-No flag. The owner asked for this behaviour on 2026-10-05. A merge is its
-release, so it is live from that merge.
+No release flag. The owner asked for this behaviour on 2026-10-05, so the
+merge is its release. It has a kill switch, because it wraps `window.fetch`:
+set `NEXT_PUBLIC_UPDATE_NOTICE=off` and rebuild. Caddy's page does not depend
+on it.
 
 Done when, all met:
 

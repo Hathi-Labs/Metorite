@@ -68,6 +68,12 @@ export default function RootLayout({
             without the provider every `useToast()` call site degrades to a
             silent no-op and no other test in the tree would go red. */}
         <ToastProvider>
+          {/* "Metorite is updating", instead of a 502 (navigation_shell.md
+              §7.3, owner directive 2026-10-05). Inside the toast provider,
+              because it speaks through the toast. OUTSIDE `Providers` for the
+              toast's own reason: it must speak while session and access are
+              failing to resolve, which is exactly what an update looks like. */}
+          <UpdateNotice />
           {/* Undo/redo, mounted once for the whole product (owner directive,
               2026-08-31). Inside the toast provider because a failed undo
               reports through it, and OUTSIDE `Providers` for the same reason
@@ -75,12 +81,6 @@ export default function RootLayout({
               or access context is re-resolving. A surface opts in by calling
               `useUndoScope()`; one that never does simply has an empty stack
               and disabled buttons. */}
-          {/* "Metorite is updating", instead of a 502 (navigation_shell.md
-              §7.3, owner directive 2026-10-05). Inside the toast provider,
-              because it speaks through the toast. OUTSIDE `Providers` for the
-              toast's own reason: it must speak while session and access are
-              failing to resolve, which is exactly what an update looks like. */}
-          <UpdateNotice />
           <UndoProvider>
             <Providers>
               <AppShell>{children}</AppShell>

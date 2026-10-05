@@ -45,6 +45,10 @@ export const COPY = {
     title: "Metorite is back",
     description: "If something did not save while it was updating, try it again.",
   },
+  online: {
+    title: "You are back online",
+    description: "If something did not save while you were offline, try it again.",
+  },
   updated: {
     title: "Metorite was updated",
     description: "Reload to get the new version. Save what you are typing first.",
@@ -57,6 +61,10 @@ export default function UpdateNotice() {
   toastRef.current = toast;
 
   useEffect(() => {
+    // The kill switch. The notice wraps `window.fetch`, so an operator can
+    // turn it off without a revert: set NEXT_PUBLIC_UPDATE_NOTICE=off and
+    // rebuild. Caddy's updating page does not depend on it.
+    if (process.env.NEXT_PUBLIC_UPDATE_NOTICE === "off") return;
     const reload = () => window.location.reload();
 
     const show = (state: Health, info: ChangeInfo) => {
@@ -81,7 +89,7 @@ export default function UpdateNotice() {
         t.show({
           key: KEY,
           variant: "success",
-          ...COPY.back,
+          ...(info.from === "offline" ? COPY.online : COPY.back),
           action: { label: "Refresh page", onClick: reload },
           timeout: 8_000,
         });

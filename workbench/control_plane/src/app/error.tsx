@@ -12,9 +12,12 @@ import ErrorScreen from "@/lib/shell/ErrorScreen";
 export default function RouteError({
   error,
   reset,
+  unstable_retry,
 }: {
   error: Error & { digest?: string };
   reset: () => void;
+  /** Next 16: refresh the server data, then reset. Absent on older Next. */
+  unstable_retry?: () => void;
 }) {
-  return <ErrorScreen error={error} reset={reset} />;
+  return <ErrorScreen error={error} reset={reset} retry={unstable_retry} />;
 }

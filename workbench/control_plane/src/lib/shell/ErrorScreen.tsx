@@ -40,10 +40,18 @@ export const ERROR_COPY = {
 export default function ErrorScreen({
   error,
   reset,
+  retry,
 }: {
   error: Error & { digest?: string };
   reset?: () => void;
+  /**
+   * Next 16's `unstable_retry`: it refreshes the server data, then resets.
+   * A page whose SERVER part threw needs it, or "Try again" re-renders the
+   * same cached error. Preferred over `reset` when Next gives it.
+   */
+  retry?: () => void;
 }) {
+  const again = retry ?? reset;
   const stale = isChunkLoadError(error);
   const [reloading, setReloading] = useState(false);
 
@@ -85,8 +93,8 @@ export default function ErrorScreen({
         </p>
         {!reloading && (
           <div className="mt-6 flex justify-center gap-2">
-            {!stale && reset && (
-              <Button variant="primary" size="sm" onClick={reset}>
+            {!stale && again && (
+              <Button variant="primary" size="sm" onClick={again}>
                 Try again
               </Button>
             )}

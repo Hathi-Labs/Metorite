@@ -49,6 +49,8 @@ export interface ProbeResult {
 export interface ChangeInfo {
   /** True when the workbench now serves a different build than at page load. */
   buildChanged: boolean;
+  /** The state before this one, so "back" can name what it is back from. */
+  from: Health;
 }
 
 export interface MonitorDeps {
@@ -82,10 +84,11 @@ export function createMonitor(deps: MonitorDeps): Monitor {
     cancel = null;
   };
 
-  const set = (next: Health, info: ChangeInfo = { buildChanged: false }) => {
+  const set = (next: Health, buildChanged = false) => {
     if (disposed) return;
+    const from = state;
     state = next;
-    deps.onChange(next, info);
+    deps.onChange(next, { buildChanged, from });
   };
 
   const safeProbe = async (): Promise<ProbeResult> => {
@@ -98,14 +101,21 @@ export function createMonitor(deps: MonitorDeps): Monitor {
 
   const down = () => {
     if (state !== "updating" && state !== "offline") downSince = deps.now();
-    set(deps.online() ? "updating" : "offline");
+    const next: Health = deps.online() ? "updating" : "offline";
+    // Speak only on a CHANGE. A poll that finds the gateway still down must
+    // not show the toast again: the member may have dismissed it, and the
+    // toast re-raises a dismissed key.
+    if (next !== state) set(next);
     schedulePoll();
   };
 
   const up = (build: string | null) => {
     clear();
     const buildChanged = baseline !== null && build !== null && build !== baseline;
-    set("recovered", { buildChanged });
+    // A tab that opened during an outage learns its build here, or it could
+    // never report a later new version.
+    if (baseline === null) baseline = build;
+    set("recovered", buildChanged);
     // A changed build keeps its message until the member acts on it. The
     // monitor itself goes back to watching.
     cancel = deps.setTimer(() => {

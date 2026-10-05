@@ -116,7 +116,7 @@ describe("the monitor", () => {
     r.monitor.suspect();
     await r.flush();
     await r.advance(POLL_FAST_MS);
-    expect(r.seen.at(-1)).toEqual(["recovered", { buildChanged: true }]);
+    expect(r.seen.at(-1)).toEqual(["recovered", { buildChanged: true, from: "updating" }]);
   });
 
   it("does not claim a new build when it never knew the old one", async () => {
@@ -129,7 +129,50 @@ describe("the monitor", () => {
     r.monitor.suspect();
     await r.flush();
     await r.advance(POLL_FAST_MS);
-    expect(r.seen.at(-1)).toEqual(["recovered", { buildChanged: false }]);
+    expect(r.seen.at(-1)).toEqual(["recovered", { buildChanged: false, from: "updating" }]);
+  });
+
+  it("learns the build at recovery, so a LATER deploy is reported", async () => {
+    // A tab opened inside a restart window: start() saw the gateway down.
+    const r = rig([
+      { up: false, build: null }, // start
+      { up: false, build: null }, // suspicion
+      { up: true, build: "A" }, // recovery: learns A
+      { up: false, build: null }, // the next deploy
+      { up: true, build: "B" }, // back as B
+    ]);
+    await r.monitor.start();
+    r.monitor.suspect();
+    await r.flush();
+    await r.advance(POLL_FAST_MS);
+    expect(r.seen.at(-1)?.[1].buildChanged).toBe(false);
+    await r.advance(RECOVERED_MS);
+    r.monitor.suspect();
+    await r.flush();
+    await r.advance(POLL_FAST_MS);
+    expect(r.seen.at(-1)?.[1].buildChanged).toBe(true);
+  });
+
+  it("does not speak again while the outage goes on", async () => {
+    // The member may dismiss "updating". A poll that finds the gateway still
+    // down must not raise it again.
+    const r = rig([{ up: true, build: "b1" }, ...Array(6).fill({ up: false, build: null })]);
+    await r.monitor.start();
+    r.monitor.suspect();
+    await r.flush();
+    await r.advance(POLL_FAST_MS * 5);
+    expect(r.states().filter((s) => s === "updating")).toHaveLength(1);
+  });
+
+  it("names offline as what it came back from", async () => {
+    const r = rig([{ up: true, build: "b1" }, { up: true, build: "b1" }]);
+    await r.monitor.start();
+    r.net.online = false;
+    r.monitor.setOnline(false);
+    r.net.online = true;
+    r.monitor.setOnline(true);
+    await r.flush();
+    expect(r.seen.at(-1)).toEqual(["recovered", { buildChanged: false, from: "offline" }]);
   });
 
   it("says offline, not updating, when the browser has no network", async () => {

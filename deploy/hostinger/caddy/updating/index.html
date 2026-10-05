@@ -109,7 +109,9 @@
       .then(function (r) {
         if (r.ok) {
           statusEl.textContent = "Metorite is back. Loading…";
-          window.location.reload();
+          // A plain GET of this address, never reload(): a reload of a page
+          // reached by a form POST asks the member to send the form again.
+          window.location.replace(window.location.href);
           return;
         }
         statusEl.textContent = tries < 20
