@@ -1682,7 +1682,9 @@ async def test_the_match_ask_runs_with_no_session_open(
     blocks = _blocks(calls)
     read, block_w = blocks["read_classification"], blocks["resolve_classification"]
     assert read[1] == 1 and block_w[1] == 1
-    assert block_w[0] > read[0], "the resolver ran in the read block"
+    assert block_w[0] == read[0] + 1, (
+        "the resolver ran in the read block, or a block opened between "
+        f"Block R and Block W (inside the read or across the ask): {calls}")
     writes = _B1_WRITES["backfill" if job == "backfill" else "runner"]
     assert {name: blocks.get(name) for name in writes} == dict.fromkeys(
         writes, block_w), f"Block W is not ONE block: {calls}"
@@ -1799,19 +1801,30 @@ _B1_JOB_BODIES = {"automation/runner.py": "_run_rules_job",
                   "automation/replyzero.py": "_maybe_classify_threads"}
 
 
+_SESSION_OPENERS = ("tenant_session", "get_db", "get_session_factory")
+
+
 def _step_violations(source: str, name: str, *, takes_db: bool) -> list[str]:
+    """What breaks the step rule in one function: the ``db`` parameter, each
+    ``async with`` (a step opens no context at all, so an alias of the seam
+    cannot hide one), each import or call of a session opener, and each
+    ``.commit()``."""
     fn = _function(source, name)
     params = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
     found = [] if ("db" in params) == takes_db else ["db"]
     for inner in ast.walk(fn):
-        if not isinstance(inner, ast.Call):
-            continue
-        called = _call_name(inner)
-        if called.endswith(("tenant_session", "get_db", "get_session_factory")):
-            found.append(f"{inner.lineno}:{called}")
-        elif isinstance(inner.func, ast.Attribute) and called == "commit":
-            found.append(f"{inner.lineno}:commit")
-    return found
+        if isinstance(inner, ast.AsyncWith):
+            found.append(f"{inner.lineno}:async with")
+        elif isinstance(inner, ast.ImportFrom):
+            found.extend(f"{inner.lineno}:import {a.name}" for a in inner.names
+                         if a.name.endswith(_SESSION_OPENERS))
+        elif isinstance(inner, ast.Call):
+            called = _call_name(inner)
+            if called.endswith(_SESSION_OPENERS):
+                found.append(f"{inner.lineno}:{called}")
+            elif isinstance(inner.func, ast.Attribute) and called == "commit":
+                found.append(f"{inner.lineno}:commit")
+    return sorted(found)
 
 
 @pytest.mark.parametrize("name", sorted(_B1_STEPS))
@@ -1829,11 +1842,18 @@ def test_the_step_fence_can_fail():
         "    async with _tenant_session() as db:\n"
         "        await db.commit()\n"
         "\n"
+        "async def read_y(db):\n"
+        "    from gateway.routes.email.core import _tenant_session as _ts\n"
+        "    async with _ts() as own:\n"
+        "        return own\n"
+        "\n"
         "async def ask_x(db, read):\n"
         "    return read\n"
     )
     assert _step_violations(planted, "read_x", takes_db=True) == [
-        "db", "2:_tenant_session", "3:commit"]
+        "2:_tenant_session", "2:async with", "3:commit", "db"]
+    assert _step_violations(planted, "read_y", takes_db=True) == [
+        "6:import _tenant_session", "7:async with"]
     assert _step_violations(planted, "ask_x", takes_db=False) == ["db"]
 
 
