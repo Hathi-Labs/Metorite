@@ -23,10 +23,16 @@ carries no refresh token. Each bounce names its provider. The Gmail connect
 is dark behind ``EMAIL_GMAIL_CONNECT`` (:func:`gmail_connect_enabled`).
 ``GET /email/oauth/providers`` tells the UI which provider can connect
 (D-EM-35).
+
+**The member list (WS-17 EM-G7b, §12.3.9b).** ``EMAIL_GMAIL_CONNECT_MEMBERS``
+narrows the flag to listed member addresses, for the live test while the
+Google app is in Testing. Each Gmail gate asks :func:`gmail_connect_allowed`
+with the member of the session, and never with a request input.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -127,21 +133,69 @@ def gmail_connect_enabled() -> bool:
     file of the box sets the flag, and a change needs a restart of the
     gateway. The comment on the field in ``acb_common/settings.py`` says why.
 
-    This is the one reader of the setting.
+    This is the one reader of the setting. Its one caller is
+    :func:`gmail_connect_allowed`, which every Gmail gate asks (EM-G7b).
     """
     return get_settings().email_gmail_connect is True
 
 
-def provider_available(provider: str) -> bool:
-    """True when a member can connect a mailbox of ``provider`` (D-EM-35).
+@functools.lru_cache(maxsize=16)
+def _connect_members(raw: str) -> frozenset[str] | None:
+    """The addresses in *raw*, trimmed and in lower case.
+
+    ``None`` when *raw* is empty or blank: no list, so the flag alone
+    decides. A value that holds only commas and spaces is an empty set, and
+    names no member, so nobody passes (EM-G7b item 5). Cached on the raw
+    value, as ``scheduler._delta_accounts`` is.
+    """
+    if not raw.strip():
+        return None
+    return frozenset(p.strip().lower() for p in raw.split(",") if p.strip())
+
+
+def gmail_connect_members() -> frozenset[str] | None:
+    """The member list of the Gmail connect (WS-17 EM-G7b, §12.3.9b).
+
+    ``EMAIL_GMAIL_CONNECT_MEMBERS`` holds member sign-in addresses, with a
+    comma between addresses. ``None`` means that no list is set. This is the
+    one reader of the setting. Only the env file of the box sets it, because
+    ``env_guard`` refuses each ``EMAIL_*`` name on each Integrations write.
+    """
+    return _connect_members(str(get_settings().email_gmail_connect_members or ""))
+
+
+def gmail_connect_allowed(user: UserContext) -> bool:
+    """True when the member of the session may connect Gmail (EM-G7b).
+
+    The flag is the master switch. With ``EMAIL_GMAIL_CONNECT`` off, nobody
+    may. With the flag on and no list, every member may, and that state is
+    for the time after Google verifies the app. With the flag on and a list,
+    only a member whose address is on it may. The match ignores case and the
+    space around each address, and it compares whole addresses.
+
+    ``user`` is the ``UserContext`` of ``get_current_user``, so the address
+    comes from the session (R11). No query, body, header or state names the
+    member here. Every Gmail gate of this module calls this function, and
+    Microsoft never does.
+    """
+    if not gmail_connect_enabled():
+        return False
+    members = gmail_connect_members()
+    if members is None:
+        return True
+    return (user.email or "").strip().lower() in members
+
+
+def provider_available(provider: str, user: UserContext) -> bool:
+    """True when the member of ``user`` can connect ``provider`` (D-EM-35).
 
     The app of the provider must hold a client ID and a secret
     (``oauth_app(provider).configured``). Gmail also needs
-    :func:`gmail_connect_enabled`.
+    :func:`gmail_connect_allowed` for the member of the session.
     """
     if provider not in CONNECT_PROVIDERS or not oauth_app(provider).configured:
         return False
-    return provider != "gmail" or gmail_connect_enabled()
+    return provider != "gmail" or gmail_connect_allowed(user)
 
 
 @router.get("/oauth/{provider}/authorize")
@@ -192,11 +246,12 @@ async def oauth_authorize(
     redirect_uri = _build_redirect_uri(provider)
     if provider not in CONNECT_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
-    if provider == "gmail" and not gmail_connect_enabled():
+    if provider == "gmail" and not gmail_connect_allowed(user):
         # Dark (EM-G7): the answer of a box with no Google app. It refuses
         # before it signs a state or reads a mailbox, and it names no flag.
         # A reconnect of a Gmail mailbox is refused too, and production
-        # holds none (§12.3.9 as-built).
+        # holds none (§12.3.9 as-built). A member off the list of EM-G7b
+        # gets the same answer. A `login_hint` never widens the list.
         _log.info("email.oauth_gmail_dark", leg="authorize")
         raise HTTPException(status_code=400, detail=_NOT_CONFIGURED["gmail"])
     if len(redirect_after) > _MAX_REDIRECT_AFTER:
@@ -304,7 +359,8 @@ async def oauth_providers(
     """The capability read of the connect flow (EM-G7 item 8, D-EM-35).
 
     A provider is ``true`` when its app holds a client ID and a secret, and
-    Gmail also needs ``EMAIL_GMAIL_CONNECT``. The UI shows Gmail as a live
+    Gmail also needs ``EMAIL_GMAIL_CONNECT`` and, when the list of EM-G7b is
+    set, the member of the session on it. The UI shows Gmail as a live
     choice only when it reads ``true`` (EM-G8). The route reads no mailbox.
     """
     if not user.organization_id or not user.email:
@@ -313,7 +369,7 @@ async def oauth_providers(
             detail="This needs a signed-in member of an organization.",
         )
     return OAuthProviders(
-        **{p: provider_available(p) for p in CONNECT_PROVIDERS},
+        **{p: provider_available(p, user) for p in CONNECT_PROVIDERS},
     )
 
 
@@ -339,7 +395,8 @@ async def oauth_app_info(
     authorize URL. The client secret never leaves settings.
 
     Another provider is a 404. With no client ID in settings, the route
-    answers 503, and so does Gmail while ``EMAIL_GMAIL_CONNECT`` is off.
+    answers 503, and so does Gmail while ``EMAIL_GMAIL_CONNECT`` is off, or
+    for a member off the list of EM-G7b. The dark state is one state.
     """
     if not user.organization_id or not user.email:
         raise HTTPException(
@@ -352,7 +409,7 @@ async def oauth_app_info(
             detail="Mail app facts exist for Microsoft and Gmail only.",
         )
     app = oauth_app(provider)
-    if not app.client_id or (provider == "gmail" and not gmail_connect_enabled()):
+    if not app.client_id or (provider == "gmail" and not gmail_connect_allowed(user)):
         raise HTTPException(status_code=503, detail=_APP_NOT_SET_UP[provider])
     return OAuthAppInfo(
         provider=provider,
@@ -391,8 +448,10 @@ async def oauth_callback(
 
     Gmail (EM-G7): while ``EMAIL_GMAIL_CONNECT`` is off, each Gmail callback
     bounces ``provider_unavailable`` before any check, so a state signed
-    before a flip-off cannot complete. A Google grant must hold both scopes
-    of D-EM-31 and a refresh token, or it saves nothing.
+    before a flip-off cannot complete. So does the callback of a session
+    member off the list of EM-G7b, whatever member the state names. A
+    Google grant must hold both scopes of D-EM-31 and a refresh token, or it
+    saves nothing.
     """
     callback_page = f"{_workbench_public_url()}/email/oauth/callback"
 
@@ -406,7 +465,7 @@ async def oauth_callback(
             f"{callback_page}?{urlencode(query)}", status_code=302,
         )
 
-    if provider == "gmail" and not gmail_connect_enabled():
+    if provider == "gmail" and not gmail_connect_allowed(user):
         _log.info("email.oauth_gmail_dark", leg="callback")
         return _bounce("provider_unavailable")
 

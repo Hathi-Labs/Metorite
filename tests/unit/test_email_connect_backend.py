@@ -65,6 +65,9 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     # the connect itself, so the flag is on. test_email_gmail_connect.py
     # fences the dark state.
     monkeypatch.setattr(s, "email_gmail_connect", True, raising=False)
+    # An empty member list lets each member through (EM-G7b), so a list in
+    # the developer's own environment cannot change these cases.
+    monkeypatch.setattr(s, "email_gmail_connect_members", "", raising=False)
     for name in ("msft_oauth_client_id", "gmail_oauth_client_id"):
         monkeypatch.setattr(s, name, SETTINGS_ID, raising=False)
     for name in ("msft_oauth_client_secret", "gmail_oauth_client_secret"):

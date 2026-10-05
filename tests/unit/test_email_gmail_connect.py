@@ -27,6 +27,14 @@ off, the capability says ``gmail: false``, the authorize leg refuses before it
 signs a state, and the callback refuses before the token exchange, so no
 ``email_accounts`` row is written. With the flag on, Gmail connects as before.
 
+The member list (EM-G7b, §12.3.9b): ``EMAIL_GMAIL_CONNECT_MEMBERS`` narrows the
+flag to listed member addresses. A listed member connects. Each other member
+gets the dark answer above at each gate. The match ignores case and space and
+compares whole addresses. An empty list lets every member through, and the
+flag off overrides the list. ``gmail_connect_allowed`` takes the member from
+the session ``UserContext`` only, so a ``login_hint`` or a state that names a
+listed member widens nothing. The list is a platform name of ``env_guard``.
+
 Every case here is hermetic. The callback writes through ``_save_account``
 only, and the R8 suites ``test_email_tenant_bind_rls.py`` and
 ``test_email_import_floor.py`` prove its SQL. This slice changes no SQL.
@@ -34,6 +42,7 @@ only, and the R8 suites ``test_email_tenant_bind_rls.py`` and
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import re
 from pathlib import Path
@@ -73,7 +82,8 @@ _REAL_SAVE_ACCOUNT = oauth._save_account
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Both apps configured, and the Gmail flag ON. A dark case turns it off."""
+    """Both apps configured, the Gmail flag ON and no member list. A dark case
+    turns the flag off, and a case of EM-G7b sets the list."""
     s = get_settings()
     monkeypatch.setattr(s, "gateway_session_secret", SECRET, raising=False)
     monkeypatch.setattr(s, "gmail_oauth_client_id", GMAIL_ID, raising=False)
@@ -81,6 +91,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(s, "msft_oauth_client_id", MSFT_ID, raising=False)
     monkeypatch.setattr(s, "msft_oauth_client_secret", MSFT_SECRET, raising=False)
     monkeypatch.setattr(s, "email_gmail_connect", True, raising=False)
+    monkeypatch.setattr(s, "email_gmail_connect_members", "", raising=False)
     for name in _APP_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("WORKBENCH_PUBLIC_URL", "https://app.example.test")
@@ -191,12 +202,14 @@ def spy(monkeypatch) -> _Spy:
 async def _callback(
     provider: str = "gmail", *, code: str | None = "c0de",
     state: str | None = None, error: str | None = None,
-    error_description: str | None = None,
+    error_description: str | None = None, member: str = MEMBER,
 ):
+    """The callback for the session of ``member``, with a state signed for
+    that member unless the case passes its own."""
     if state is None and code is not None:
-        state = signing.sign_oauth_state(org=ORG, member=MEMBER, provider=provider)
+        state = signing.sign_oauth_state(org=ORG, member=member, provider=provider)
     return await oauth.oauth_callback(
-        provider, user=_member(), code=code, state=state, error=error,
+        provider, user=_member(member), code=code, state=state, error=error,
         error_description=error_description,
     )
 
@@ -579,6 +592,366 @@ def test_gmail_connect_enabled_is_the_one_reader_of_the_flag() -> None:
         "apps/services/gateway/gateway/routes/email/transport/oauth.py",
         "packages/acb_common/acb_common/settings.py",
     ]
+
+
+# ── The member list, EMAIL_GMAIL_CONNECT_MEMBERS (EM-G7b, §12.3.9b) ────────
+
+OWNER = "owner@example.com"
+GOOGLE_AUTHORIZE = "https://accounts.google.com/o/oauth2/v2/auth"
+OAUTH_PY = REPO / "apps/services/gateway/gateway/routes/email/transport/oauth.py"
+
+
+def _members(monkeypatch: pytest.MonkeyPatch, raw: str | None) -> None:
+    monkeypatch.setattr(
+        get_settings(), "email_gmail_connect_members", raw, raising=False,
+    )
+
+
+def _record_signing(monkeypatch: pytest.MonkeyPatch) -> tuple[list, list]:
+    """Record each state that the authorize leg signs, and each mailbox read."""
+    signed: list[dict] = []
+    asked: list[tuple] = []
+
+    def _sign(**kw):
+        signed.append(kw)
+        return "never"
+
+    async def _ask(*args):
+        asked.append(args)
+        return False
+
+    monkeypatch.setattr(oauth, "sign_oauth_state", _sign)
+    monkeypatch.setattr(oauth, "_member_has_mailbox", _ask)
+    return signed, asked
+
+
+def test_the_member_list_defaults_empty() -> None:
+    field = Settings.model_fields["email_gmail_connect_members"]
+    assert field.default == ""
+    assert field.annotation is str
+
+
+@pytest.mark.parametrize("session", [MEMBER, "Dana@Example.COM", " dana@example.com "])
+async def test_a_listed_member_connects_gmail(spy, monkeypatch, session) -> None:
+    """The capability read says yes, the authorize leg sends the member to
+    Google, and the callback saves the mailbox."""
+    _members(monkeypatch, f"{OWNER}, {MEMBER}")
+    user = _member(session)
+
+    body = _body(await oauth.oauth_providers(user=user))
+    assert body == {"microsoft": True, "gmail": True}
+
+    resp = await oauth.oauth_authorize("gmail", user=user, redirect_after="/email")
+    assert resp.status_code == 302
+    url = urlparse(resp.headers["location"])
+    assert f"{url.scheme}://{url.netloc}{url.path}" == GOOGLE_AUTHORIZE
+    state = parse_qs(url.query)["state"][0]
+
+    query = _query(await _callback("gmail", state=state, member=session))
+    assert query["provider"] == "gmail" and query["account_id"] == "acc-1"
+    assert spy.exchanged == 1 and len(spy.saved) == 1
+    assert spy.saved[0]["provider"] == "gmail" and spy.saved[0]["org"] == ORG
+
+    info = await oauth.oauth_app_info("gmail", user=user)
+    assert info.client_id == GMAIL_ID
+
+
+@pytest.mark.parametrize("raw", [OWNER, f"{OWNER}, ops@example.com"])
+async def test_an_unlisted_member_reads_gmail_false(monkeypatch, raw) -> None:
+    _members(monkeypatch, raw)
+    body = _body(await oauth.oauth_providers(user=_member()))
+    assert body == {"microsoft": True, "gmail": False}
+    # On the same box, the listed member reads true.
+    body = _body(await oauth.oauth_providers(user=_member(OWNER)))
+    assert body == {"microsoft": True, "gmail": True}
+
+
+@pytest.mark.parametrize("login_hint", [None, "dana@gmail.example"])
+async def test_an_unlisted_member_is_refused_at_authorize(monkeypatch, login_hint) -> None:
+    """The dark answer of today: 400, the words of a box with no Google app,
+    no state signed and no mailbox read."""
+    _members(monkeypatch, OWNER)
+    signed, asked = _record_signing(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize(
+            "gmail", user=_member(), redirect_after="", login_hint=login_hint,
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == oauth._NOT_CONFIGURED["gmail"]
+    for leak in ("EMAIL_GMAIL_CONNECT", "member", "list", OWNER):
+        assert leak not in exc.value.detail, leak
+    assert signed == [] and asked == []
+
+
+@pytest.mark.parametrize(
+    "returned",
+    [
+        pytest.param({"code": "c0de"}, id="a-code"),
+        pytest.param({"code": None, "error": "access_denied"}, id="an-error"),
+    ],
+)
+async def test_an_unlisted_member_is_refused_at_the_callback(
+    spy, monkeypatch, returned,
+) -> None:
+    """The REAL ``_save_account`` runs, and the spy stands in for
+    ``_tenant_session``. So the count of blocks proves that no
+    ``email_accounts`` row is written."""
+    monkeypatch.setattr(oauth, "_save_account", _REAL_SAVE_ACCOUNT)
+    _members(monkeypatch, OWNER)
+
+    query = _query(await _callback("gmail", **returned))
+
+    assert query == {"error": "provider_unavailable", "provider": "gmail"}
+    assert spy.exchanged == 0, "an unlisted callback must not spend the code"
+    assert spy.profiled == 0
+    assert spy.blocks == 0, "an unlisted callback must open no database block"
+
+
+async def test_an_unlisted_member_gets_no_app_facts(monkeypatch) -> None:
+    _members(monkeypatch, OWNER)
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_app_info("gmail", user=_member())
+    assert exc.value.status_code == 503
+    assert GMAIL_ID not in str(exc.value.detail)
+    info = await oauth.oauth_app_info("gmail", user=_member(OWNER))
+    assert info.client_id == GMAIL_ID
+
+
+@pytest.mark.parametrize(
+    ("raw", "session"),
+    [
+        pytest.param("DANA@EXAMPLE.COM", MEMBER, id="upper-list"),
+        pytest.param(MEMBER, "Dana@Example.Com", id="mixed-session"),
+        pytest.param(f"  {MEMBER}  ", MEMBER, id="space-around-one"),
+        pytest.param(f"{OWNER} ,  {MEMBER} , ", MEMBER, id="space-and-a-last-comma"),
+        pytest.param(f"{OWNER},{MEMBER}", "  DANA@example.com ", id="space-in-session"),
+    ],
+)
+async def test_the_list_ignores_case_and_space(monkeypatch, raw, session) -> None:
+    _members(monkeypatch, raw)
+    user = _member(session)
+    assert oauth.gmail_connect_allowed(user) is True
+    assert _body(await oauth.oauth_providers(user=user))["gmail"] is True
+
+
+@pytest.mark.parametrize(
+    "session",
+    [
+        "ana@example.com",              # a part of a listed address
+        "dana@example.co",              # a listed address is longer
+        "dana@example.com.evil.test",   # a listed address is a prefix
+        "dana",
+        "example.com",
+        "",
+    ],
+)
+async def test_the_list_matches_whole_addresses_only(monkeypatch, session) -> None:
+    _members(monkeypatch, f"{MEMBER},{OWNER}")
+    user = UserContext(email=session, role=UserRole.EMPLOYEE, organization_id=ORG)
+    assert oauth.gmail_connect_allowed(user) is False
+
+
+@pytest.mark.parametrize("raw", ["", "   ", None])
+async def test_an_empty_list_lets_every_member_through(monkeypatch, raw) -> None:
+    """With the flag on and no list, every member may connect. That state is
+    for the time after Google verifies the app (§12.4 step 15)."""
+    _members(monkeypatch, raw)
+    for email in (MEMBER, OWNER, "anyone@other.test"):
+        user = _member(email)
+        assert oauth.gmail_connect_allowed(user) is True, email
+        assert _body(await oauth.oauth_providers(user=user))["gmail"] is True
+        resp = await oauth.oauth_authorize("gmail", user=user, redirect_after="")
+        assert resp.status_code == 302
+
+
+@pytest.mark.parametrize("raw", [",", " , , ", ",,,"])
+async def test_a_list_of_only_commas_lets_nobody_through(monkeypatch, raw) -> None:
+    """A value that an operator wrote, with no address in it, fails closed
+    (§12.3.9b item 5). Only an empty or blank value lifts the limit."""
+    _members(monkeypatch, raw)
+    for email in (MEMBER, OWNER):
+        user = _member(email)
+        assert oauth.gmail_connect_allowed(user) is False, email
+        assert _body(await oauth.oauth_providers(user=user))["gmail"] is False
+        with pytest.raises(HTTPException) as exc:
+            await oauth.oauth_authorize("gmail", user=user, redirect_after="")
+        assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize("raw", [MEMBER, f"{OWNER},{MEMBER}", ""])
+async def test_the_flag_off_overrides_the_list(spy, monkeypatch, raw) -> None:
+    """The flag is the master switch. Off, even a listed member is dark."""
+    monkeypatch.setattr(oauth, "_save_account", _REAL_SAVE_ACCOUNT)
+    state = signing.sign_oauth_state(org=ORG, member=MEMBER, provider="gmail")
+    _members(monkeypatch, raw)
+    _dark(monkeypatch)
+    user = _member()
+
+    assert oauth.gmail_connect_allowed(user) is False
+    assert _body(await oauth.oauth_providers(user=user))["gmail"] is False
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize("gmail", user=user, redirect_after="")
+    assert exc.value.status_code == 400
+    query = _query(await _callback("gmail", state=state))
+    assert query == {"error": "provider_unavailable", "provider": "gmail"}
+    assert spy.exchanged == 0 and spy.blocks == 0
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_app_info("gmail", user=user)
+    assert exc.value.status_code == 503
+
+
+async def test_a_request_input_cannot_widen_the_list(spy, monkeypatch) -> None:
+    """The session is Dana, and only the owner is listed. A ``login_hint``
+    that names the owner, a state signed for the owner, and a ``user_id``
+    that holds the owner's address all leave Dana dark. The check reads the
+    address of the session and nothing else."""
+    _members(monkeypatch, OWNER)
+    signed, asked = _record_signing(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize(
+            "gmail", user=_member(), redirect_after="", login_hint=OWNER,
+        )
+    assert exc.value.status_code == 400
+    assert signed == [] and asked == []
+
+    owners_state = signing.sign_oauth_state(org=ORG, member=OWNER, provider="gmail")
+    query = _query(await _callback("gmail", state=owners_state, member=MEMBER))
+    assert query == {"error": "provider_unavailable", "provider": "gmail"}
+    assert spy.exchanged == 0 and spy.saved == []
+
+    odd = UserContext(
+        email=MEMBER, role=UserRole.EMPLOYEE, organization_id=ORG, user_id=OWNER,
+    )
+    assert oauth.gmail_connect_allowed(odd) is False
+    assert _body(await oauth.oauth_providers(user=odd))["gmail"] is False
+
+    # The check takes one argument, the UserContext of the session.
+    assert list(inspect.signature(oauth.gmail_connect_allowed).parameters) == ["user"]
+
+
+def _functions(tree: ast.AST) -> dict[str, ast.AST]:
+    return {
+        n.name: n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _calls(fn: ast.AST, name: str) -> list[ast.Call]:
+    return [
+        c for c in ast.walk(fn)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", None) == name
+    ]
+
+
+def _session_params(fn: ast.AST) -> set[str]:
+    """The parameters whose default is ``Depends(get_current_user)``."""
+    args = fn.args
+    with_default = args.args[len(args.args) - len(args.defaults):]
+    pairs = list(zip(with_default, args.defaults, strict=True))
+    pairs += [
+        (a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True)
+        if d is not None
+    ]
+    return {
+        a.arg for a, d in pairs
+        if isinstance(d, ast.Call) and getattr(d.func, "id", "") == "Depends"
+        and d.args and getattr(d.args[0], "id", "") == "get_current_user"
+    }
+
+
+def test_every_gmail_gate_asks_the_member_of_the_session() -> None:
+    """Each call of ``gmail_connect_allowed`` passes ``user``, and that
+    ``user`` is the ``Depends(get_current_user)`` parameter of a route.
+    ``provider_available`` is the one helper between, and only the capability
+    read calls it. Only the check reads the flag, so no gate can skip the
+    list by asking the flag alone."""
+    funcs = _functions(ast.parse(OAUTH_PY.read_text(encoding="utf-8")))
+
+    callers = {name for name, fn in funcs.items() if _calls(fn, "gmail_connect_allowed")}
+    assert callers == {
+        "oauth_authorize", "oauth_app_info", "oauth_callback", "provider_available",
+    }
+    for name in callers:
+        for call in _calls(funcs[name], "gmail_connect_allowed"):
+            assert not call.keywords and len(call.args) == 1, name
+            arg = call.args[0]
+            assert isinstance(arg, ast.Name) and arg.id == "user", name
+    for name in callers - {"provider_available"}:
+        assert "user" in _session_params(funcs[name]), name
+
+    helpers = {name for name, fn in funcs.items() if _calls(fn, "provider_available")}
+    assert helpers == {"oauth_providers"}
+    assert "user" in _session_params(funcs["oauth_providers"])
+    for call in _calls(funcs["oauth_providers"], "provider_available"):
+        arg = call.args[1]
+        assert isinstance(arg, ast.Name) and arg.id == "user"
+
+    flag = {name for name, fn in funcs.items() if _calls(fn, "gmail_connect_enabled")}
+    assert flag == {"gmail_connect_allowed"}
+
+
+def test_gmail_connect_members_is_the_one_reader_of_the_list() -> None:
+    """The field and one reader, as for the flag. Inside ``oauth.py`` only
+    ``gmail_connect_members`` reads the field, and only the check calls it.
+    No module outside ``oauth.py`` asks the flag or the list."""
+    use = re.compile(r"(?<!\w)email_gmail_connect_members\b")
+    ask = re.compile(r"(?<!\w)gmail_connect_(enabled|members)\(")
+    hits, askers = [], []
+    for root in ("apps", "packages"):
+        for path in (REPO / root).rglob("*.py"):
+            src = path.read_text(encoding="utf-8")
+            rel = path.relative_to(REPO).as_posix()
+            if use.search(src):
+                hits.append(rel)
+            if ask.search(src):
+                askers.append(rel)
+    assert sorted(hits) == [
+        "apps/services/gateway/gateway/routes/email/transport/oauth.py",
+        "packages/acb_common/acb_common/settings.py",
+    ]
+    assert askers == ["apps/services/gateway/gateway/routes/email/transport/oauth.py"]
+
+    funcs = _functions(ast.parse(OAUTH_PY.read_text(encoding="utf-8")))
+    readers = {
+        name for name, fn in funcs.items()
+        if any(
+            isinstance(n, ast.Attribute) and n.attr == "email_gmail_connect_members"
+            for n in ast.walk(fn)
+        )
+    }
+    assert readers == {"gmail_connect_members"}
+    callers = {name for name, fn in funcs.items() if _calls(fn, "gmail_connect_members")}
+    assert callers == {"gmail_connect_allowed"}
+
+
+def test_the_member_list_is_a_platform_name() -> None:
+    """No tenant route may write the list (layer B of ``env_guard``)."""
+    for name in (
+        "EMAIL_GMAIL_CONNECT_MEMBERS", "email_gmail_connect_members",
+        " Email_Gmail_Connect_Members ",
+    ):
+        assert env_guard.is_platform_env(name), name
+    assert "email_gmail_connect_members" in Settings.model_fields
+    with pytest.raises(env_guard.EnvWriteRefused) as exc:
+        env_guard.check_env_write("EMAIL_GMAIL_CONNECT_MEMBERS", "dana@example.com")
+    assert exc.value.platform is True
+
+
+async def test_the_member_list_does_not_touch_microsoft(spy, monkeypatch) -> None:
+    """An unlisted member still connects Outlook as before."""
+    _members(monkeypatch, OWNER)
+    user = _member()
+    body = _body(await oauth.oauth_providers(user=user))
+    assert body == {"microsoft": True, "gmail": False}
+    resp = await oauth.oauth_authorize("microsoft", user=user, redirect_after="")
+    assert resp.status_code == 302
+    query = _query(await _callback("microsoft"))
+    assert "error" not in query and query["provider"] == "microsoft"
+    info = await oauth.oauth_app_info("microsoft", user=user)
+    assert info.client_id == MSFT_ID
 
 
 # ── The one list of mail-app names (O-GM-5) ────────────────────────────────
