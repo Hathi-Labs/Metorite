@@ -35,7 +35,97 @@ export interface ChatSession {
   participantCount?: number;
 }
 
-const STORAGE_KEY = "cc-chat-sessions";
+// ---------------------------------------------------------------------------
+// Whose list this is (production bug, 2026-10-05)
+// ---------------------------------------------------------------------------
+// The list used to live under one key for the whole browser. A rail restores
+// the newest session of its agent from that list. So when one browser signed
+// in as a second member, the rail reopened the FIRST member's chat, from a
+// different org. The gateway refused every send ("You are not a participant of
+// this conversation."), which is correct, and the member saw only an error.
+//
+// Now the list is keyed by the signed-in member AND the organization. A list
+// written for member A or org X is never read for member B or org Y. The key is
+// bound by `useChatScope` (hooks/useChatSessions.ts), which reads the one
+// identity source the client has, `useAccess()`. While no scope is bound, the
+// list reads empty and a local write is skipped. The server copy still syncs.
+
+/** The list key of the old, browser-wide store. Never read. Removed on bind. */
+export const LEGACY_SESSIONS_KEY = "cc-chat-sessions";
+const SESSIONS_KEY_PREFIX = "cc-chat-sessions::";
+
+/** The app builder remembers its session per app under this prefix. */
+export const BUILDER_SESSION_KEY_PREFIX = "cc-app-builder-session-";
+
+let boundScope: string | null = null;
+
+/**
+ * The scope of one member in one organization, or null when there is no
+ * member to name. The email is case-folded, because the server folds it too.
+ */
+export function chatScope(
+  email: string | null | undefined,
+  organizationId: string | null | undefined,
+): string | null {
+  const who = (email ?? "").trim().toLowerCase();
+  if (!who) return null;
+  return `${who}|${(organizationId ?? "").trim()}`;
+}
+
+/**
+ * Bind the scope the list reads and writes. Idempotent, so a caller may run it
+ * on every render. Returns true when the scope changed.
+ */
+export function bindChatScope(scope: string | null): boolean {
+  if (scope === boundScope) return false;
+  boundScope = scope;
+  if (scope && typeof window !== "undefined") {
+    // The old key holds somebody's list with no owner on it. Nobody may read
+    // it, so it goes.
+    try { localStorage.removeItem(LEGACY_SESSIONS_KEY); } catch { /* storage off */ }
+  }
+  return true;
+}
+
+/** The scope that is bound now, or null. */
+export function boundChatScope(): string | null {
+  return boundScope;
+}
+
+function sessionsKey(scope: string | null = boundScope): string | null {
+  return scope ? SESSIONS_KEY_PREFIX + scope : null;
+}
+
+/** The app builder's per-app key, in the bound scope. Null while unbound. */
+export function builderSessionKey(slug: string): string | null {
+  return boundScope ? `${BUILDER_SESSION_KEY_PREFIX}${boundScope}::${slug}` : null;
+}
+
+/**
+ * Sign-out: forget every stored chat id in this browser, for every member.
+ * The server keeps the conversations, and the next sign-in merges them back.
+ */
+export function forgetChatSessions(): void {
+  boundScope = null;
+  if (typeof window === "undefined") return;
+  try {
+    const doomed: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (
+        k &&
+        (k === LEGACY_SESSIONS_KEY ||
+          k.startsWith(SESSIONS_KEY_PREFIX) ||
+          k.startsWith(BUILDER_SESSION_KEY_PREFIX))
+      ) {
+        doomed.push(k);
+      }
+    }
+    for (const k of doomed) localStorage.removeItem(k);
+  } catch {
+    /* storage unavailable: there is nothing stored to forget */
+  }
+}
 
 /**
  * Sentinels a session's agentName can carry when its real agent hasn't been
@@ -62,13 +152,25 @@ function safeSetItem(key: string, value: string): void {
   }
 }
 
-export function getSessions(): ChatSession[] {
-  if (typeof window === "undefined") return [];
+function readList(key: string | null): ChatSession[] {
+  if (typeof window === "undefined" || !key) return [];
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as ChatSession[];
+    const parsed = JSON.parse(localStorage.getItem(key) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? (parsed as ChatSession[]) : [];
   } catch (_e) {
     return [];
   }
+}
+
+/** Write the bound member's list. No scope bound, no local write. */
+function writeList(sessions: ChatSession[], key: string | null = sessionsKey()): void {
+  if (!key) return;
+  safeSetItem(key, JSON.stringify(sessions));
+}
+
+/** The signed-in member's list in this org. Empty while no scope is bound. */
+export function getSessions(): ChatSession[] {
+  return readList(sessionsKey());
 }
 
 export function upsertSession(session: ChatSession): void {
@@ -79,18 +181,69 @@ export function upsertSession(session: ChatSession): void {
   } else {
     sessions.unshift(session);
   }
-  safeSetItem(STORAGE_KEY, JSON.stringify(sessions));
+  writeList(sessions);
   // Background sync to Postgres — never blocks the UI.
   _syncSessionToDb(session).catch(() => {});
 }
 
 export function deleteSession(id: string): void {
   const sessions = getSessions().filter((s) => s.id !== id);
-  safeSetItem(STORAGE_KEY, JSON.stringify(sessions));
+  writeList(sessions);
   // Also remove the persisted messages for this session.
   deleteMessages(id);
   // Background delete from Postgres.
   fetch(`/api/chat/sessions/${id}`, { method: "DELETE" }).catch(() => {});
+}
+
+/**
+ * Drop a session from THIS browser only. For an id the server refused: it is
+ * not this member's to delete, so no DELETE goes to the server.
+ */
+export function forgetSession(id: string): void {
+  writeList(getSessions().filter((s) => s.id !== id));
+  deleteMessages(id);
+  saveQueue(id, []);
+}
+
+/**
+ * True when the server refused a session, not a turn. A 404 means "no such
+ * conversation for you". A 403 counts only with the room rule's own words,
+ * because a viewer's 403 ("cannot send") is a real answer about a real room.
+ */
+export function isSessionRefusal(status: number, body: string): boolean {
+  if (status === 404) return true;
+  return status === 403 && isSessionRefusalText(body);
+}
+
+/** The words of the refusal, for a stream that carries it as an error frame. */
+export function isSessionRefusalText(text: string): boolean {
+  return /not a participant of this conversation/i.test(text);
+}
+
+/**
+ * Ask the server whether this member may read a session. GET /room answers
+ * 404 for a room the caller cannot read (another org, or private and not in
+ * it), and 200 for a room the caller is in or for an id with no row yet. Any
+ * other answer, or no answer, is "unknown", and a caller must not act on it.
+ */
+export async function probeSession(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<"ok" | "refused" | "unknown"> {
+  try {
+    const res = await fetchImpl(`/api/chat/sessions/${encodeURIComponent(id)}/room`, {
+      cache: "no-store",
+    });
+    if (res.ok) return "ok";
+    if (res.status === 404) return "refused";
+    if (res.status === 403) {
+      const body = await res.text().catch(() => "");
+      return isSessionRefusal(403, body) ? "refused" : "unknown";
+    }
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 export function createSession(agentName = "orchestrator"): ChatSession {
@@ -127,7 +280,7 @@ export function touchSession(id: string, messageCount?: number): void {
   if (!s) return;
   s.updatedAt = new Date().toISOString();
   if (messageCount !== undefined) s.messageCount = messageCount;
-  safeSetItem(STORAGE_KEY, JSON.stringify(sessions));
+  writeList(sessions);
 }
 
 /** Truncate text at a word boundary, appending an ellipsis when cut. */
@@ -159,7 +312,7 @@ export function enrichSession(
   }
   if (info.messageCount !== undefined) s.messageCount = info.messageCount;
   s.updatedAt = new Date().toISOString();
-  safeSetItem(STORAGE_KEY, JSON.stringify(sessions));
+  writeList(sessions);
   // Sync enriched metadata to Postgres in background.
   _patchSessionInDb(id, {
     title: s.title,
@@ -209,9 +362,14 @@ async function _patchSessionInDb(
  * localStorage wins for ordering (user-local reordering), Postgres wins for content.
  */
 export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
+  // The key is taken BEFORE the await. If the member changes while the request
+  // is out, the answer lands in the list of the member who asked, never in the
+  // list of the member who is bound when it returns.
+  const key = sessionsKey();
+  if (!key) return [];
   try {
     const res = await fetch("/api/chat/sessions", { signal: AbortSignal.timeout(5_000) });
-    if (!res.ok) return getSessions();
+    if (!res.ok) return readList(key);
     const remote = (await res.json()) as Array<{
       id: string;
       agentName: string;
@@ -225,7 +383,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       participantCount?: number;
     }>;
 
-    const local = getSessions();
+    const local = readList(key);
     const localIds = new Set(local.map((s) => s.id));
     // Membership is the server's answer, so it is refreshed on every merge
     // rather than only for sessions the browser has never seen. A room you
@@ -272,10 +430,10 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
 
     // Sort by updatedAt descending.
     local.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    safeSetItem(STORAGE_KEY, JSON.stringify(local));
+    writeList(local, key);
     return local;
   } catch (_e) {
-    return getSessions();
+    return readList(key);
   }
 }
 

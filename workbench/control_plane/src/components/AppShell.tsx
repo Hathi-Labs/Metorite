@@ -27,6 +27,7 @@ import {
   type ReactNode,
 } from "react";
 import { useSession, signOut } from "next-auth/react";
+import { forgetChatSessions } from "@/lib/sessions";
 import Sidebar from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
@@ -337,7 +338,7 @@ function MobileBottomNavInner({
           Desktop view
         </Button>
         {session?.user && (
-          <Button variant="ghost" size="none" layout="flex items-center" onClick={() => signOut({ callbackUrl: "/signin" })} className="w-full gap-3 px-3 py-2.5 text-sm">
+          <Button variant="ghost" size="none" layout="flex items-center" onClick={() => { forgetChatSessions(); void signOut({ callbackUrl: "/signin" }); }} className="w-full gap-3 px-3 py-2.5 text-sm">
             <AppIcon name="LogOut" size={16} className="shrink-0" />
             Sign out
           </Button>

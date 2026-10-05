@@ -237,6 +237,14 @@ interface AgentChatProps {
    */
   pendingInput?: string;
   onPendingInputConsumed?: () => void;
+  /**
+   * The server refused this SESSION on send (another org, or a room the member
+   * is not in). Return true to take the turn: no error card is drawn, and the
+   * parent opens a new chat. Pass it ONLY for a session restored from storage
+   * (`useAgentSessions` in hooks/useChatSessions.ts). A chat the member opened
+   * on purpose omits it, and its refusal shows as an error.
+   */
+  onSessionRefused?: (pendingText: string) => boolean;
 }
 
 export default function AgentChat({
@@ -261,6 +269,7 @@ export default function AgentChat({
   compact,
   pendingInput,
   onPendingInputConsumed,
+  onSessionRefused,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
   const [currentAgentName, setCurrentAgentName] = useState(agentName);
@@ -414,6 +423,7 @@ export default function AgentChat({
     systemContext,
     thinkMode,
     onArtifact,
+    onSessionRefused,
     // Load the FULL persisted history into memory so the context sent to the
     // model and the context-usage estimate are both accurate.  We only window
     // the RENDERING (below) for performance — not the data.

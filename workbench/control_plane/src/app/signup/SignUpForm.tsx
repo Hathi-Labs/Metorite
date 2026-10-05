@@ -1,6 +1,7 @@
 "use client";
 
 import { signIn, signOut, useSession } from "next-auth/react";
+import { forgetChatSessions } from "@/lib/sessions";
 import { useState } from "react";
 
 import type { ConfiguredProvider } from "@/authPosture";
@@ -287,7 +288,7 @@ export default function SignUpForm({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => signOut({ callbackUrl: "/signup" })}
+              onClick={() => { forgetChatSessions(); void signOut({ callbackUrl: "/signup" }); }}
             >
               Use a different email
             </Button>
