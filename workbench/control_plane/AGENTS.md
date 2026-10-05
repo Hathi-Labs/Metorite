@@ -259,6 +259,12 @@ Seven rules on top of the three above. Each one exists because it was broken:
    Fences: `dataCache.test.ts` (including a source grep for the storage APIs)
    and `useCachedResource.test.ts`. **Advisory:** nothing tests that a NEW
    surface adopts the cache instead of a cold fetch.
+   **The chat caches in `localStorage` live in one namespace per account**
+   (PR #652). Build every chat key with `chatKey` in `lib/sessions.ts`. A
+   switch of accounts deletes nothing, and a sign-out clears that account
+   only. The design note is `project-docs/specs/projects_ai_chat.md` §23,
+   "Chat cache namespaces and multi-account". Fence:
+   `src/lib/railSessions.test.ts`, which greps for a raw chat key.
 10. **An app plugs into the shell. It never builds one.** *(D89, owner
    directive 2026-10-05.)* The owner said: "Future applications … should also
    follow the same UI/UX rules." The shell owns the top bar, the command bar,

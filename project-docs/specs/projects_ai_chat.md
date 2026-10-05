@@ -5055,3 +5055,50 @@ uv run pytest tests/unit/test_h227_thread_scope.py \
 ```
 
 The `-rs` output must show no skip, except the Windows-only skips.
+
+
+---
+
+## 23. Chat cache namespaces and multi-account (PR #652)
+
+**Every per-member chat cache in the browser lives in one namespace per account.** The scope `<email>|<orgId>` names the namespace. A switch of accounts deletes nothing. A sign-out of an account clears that account only.
+
+### 23.1 The bug that made this necessary
+
+On 2026-10-05 a DEWiN member opened the Projects AI chat on a shared browser. The rail restored the last chat of the owner, from the Fracktal org. The gateway refused every send with "You are not a participant of this conversation". The refusal was correct, and the member saw only an error.
+
+The cause was one browser-wide key, `cc-chat-sessions`. Each rail restored the newest session of its agent from that key, for every member of the browser.
+
+### 23.2 The rule
+
+1. `lib/sessions.ts` builds every chat key with one helper, `chatKey(kind, id?)`. The key is `cc-chat::<scope>::<kind>[::<id>]`. There are four kinds:
+   - `sessions`: the session list.
+   - `msgs`: the transcript. It also holds compaction summaries and the replies kept only in the browser.
+   - `queue`: the unsent messages.
+   - `builder`: the per-app session id of the app builder.
+2. The scope comes from `useAccess()`, the one identity source of the client. `scopeFromAccess` holds the rules. `useChatScope` binds the scope.
+3. While no scope is bound, every read is empty and no local write occurs. The server copy still syncs.
+4. **A switch deletes nothing.** When the bound scope changes to another email, or to the same email in another org, the old namespace stays. A switch back finds it as it was.
+5. **A sign-out clears that account only.** `useChatSignOutClear` in `AppShell` binds the clear to the identity, the pattern of `bindIdentity` in `lib/dataCache.ts`. It covers a sign-out button, an expired session, the middleware redirect and the NextAuth sign-out page. The client cannot always tell which account ended. So it clears every namespace of the last bound email, which `cc-chat-last-scope` records.
+6. A sign-out needs two answers that agree: NextAuth says nobody is signed in, and an authoritative access answer names nobody. A deploy restart answers `GET /api/auth/me` with a 200 that names nobody, while NextAuth still holds the session. So a deploy restart clears nothing.
+7. During that restart, a member already seen in the page keeps their scope (`lastMemberScope`). The rails do not move to a new chat.
+8. **The caches from before #652 have no owner.** `purgeLegacyChatCaches` deletes them on the first bind. Nothing moves them into a namespace, because nobody can know whose they are.
+9. A recovery from a refused chat (`lib/railSessions.ts`) carries only the queue of the current namespace into the composer.
+
+### 23.3 The future account switcher
+
+The owner plans one browser signed in to several accounts at once. **The switcher only changes the bound scope** (`bindChatScope`). It deletes nothing, and each account keeps its chats. **The clear point is the sign-out of one account.** When the switcher can name the account that signed out, it clears that account's namespaces. Until then, the client clears the last bound scope.
+
+### 23.4 Fences
+
+`src/lib/railSessions.test.ts`:
+
+- A switch from A to B and back keeps both namespaces exactly.
+- B never reads the transcript or the queue of A, even with A's session id.
+- A sign-out of A clears every namespace of A, and the namespace of B stays.
+- An expiry on a fresh page clears the namespace of the last bound scope.
+- The caches from before #652 go on the first bind.
+- A deploy restart deletes nothing.
+- A grep fails on a raw `cc-msgs`, `cc-queue`, `cc-chat` or `cc-app-builder-session` key anywhere outside `lib/sessions.ts`. Inside that file, every storage call takes a built key.
+
+A new chat cache uses `chatKey`. The grep fence makes a raw key fail.
