@@ -7311,7 +7311,8 @@ also decide how often an autosave of a draft with files may run (§12.3.12).
 #### 12.3.3b EM-G3c — the size of a Gmail mail, and the autosave of a draft with files
 
 **Status.** EM-G3c-1 is ✅ MERGED (#649, 2026-10-05). EM-G3c-2 is 🔨 BUILT, not merged
-(2026-10-05), branch `email-g3c2-composer`. The audit of 2026-10-05 gave GO-NARROWED (C1 to C21),
+(2026-10-05), branch `email-g3c2-composer`, and review round 2 fixed the P1 of the re-verify. The
+audit of 2026-10-05 gave GO-NARROWED (C1 to C21),
 and it checked each anchor against the code. It split the slice into EM-G3c-1 (the backend) and
 EM-G3c-2 (the UI). The as-built notes, the review rounds and the mutation tables of both halves are
 at the end of this section.
@@ -7564,7 +7565,8 @@ each anchor again in the code, a few lines below the lines of the audit.
   most.". ComposePanel and EmailDetail ask it before they read a file. The DraftCard has no picker.
 - **The flush (item 11).** `createAutosave` holds one pending save. The cleanup of each autosave
   effect calls `hold`, which stops the timer and keeps the save. A close, a switch to another mail
-  and an unmount call `flush`, which runs the save at once. A discard and a send call `cancel`.
+  and an unmount call `flush`, which runs the save at once. Since review round 2, a send, a
+  discard and a pop-out call `drain`.
 - **Where each composer flushes.** ComposePanel flushes on the X, the backdrop and an unmount.
   EmailDetail flushes on the X, a new reply, a switch to another mail and an unmount. The DraftCard
   flushes on an unmount and on a change of `draft.id`.
@@ -7615,17 +7617,32 @@ meets the cut of the proxy, and the composer shows the text of that error.
 then no "Not saved" shows. The member closed the composer, or the composer shows another reply, so
 the text has no place. `main` never tried that save, so this is no worse than `main`.
 
-**The fences, as built.** `src/app/email/lib/draftAutosave.test.ts` holds 55 cases in five named
+**Known limit EM-G3c-2-f5 (re-verify F3, on `519489183` too).** The member changes the From while
+the first save of a draft runs, and then switches to another mail. That save ends in the old
+mailbox after its session ended, so no list holds its draft as stale. The old mailbox keeps that
+draft beside the draft of the new mailbox. Without the switch, the save puts its draft on the stale
+list, and the next save deletes it.
+
+**Known limit EM-G3c-2-f6 (found in review round 2, on `main` before it).** The DraftCard does not
+read the Cc and the Bcc of its draft. It starts with the Cc of a reply-all to the mail that it
+answers, or with no Cc, and with no Bcc. Its next save and its send write those lists over the
+lists of the draft. So a reply that the inline reply saved with a Bcc loses the Bcc in the
+DraftCard.
+
+**The fences, as built.** `src/app/email/lib/draftAutosave.test.ts` holds 71 cases in five named
 fences: `email-pick-limit`, `email-autosave-wait`, `email-autosave-flush`,
 `email-save-failed-shows` and `email-send-failed-shows`. The build added 39 cases, and review round
-1 added 16. Two cases drive `saveDraft` over a stub of `fetch`, so the contract between
-`gatewayFetch` and the module has a fence too.
+1 added 16. Review round 2 removed one case and added 17. Two cases drive `saveDraft` over a stub
+of `fetch`, so the contract between `gatewayFetch` and the module has a fence too.
 
 **Mutations, as run (2026-10-05).** A script replaced one anchor for each mutation, ran the fence
 file, and restored the file with `git checkout`. After each run, `git status` was clean. Each of the
 24 mutations turned a fence red. The first run found two fences that let a mutation pass (W3 and
 C1), and the build made both fences stricter. Review round 1 ran 15 more (R1 to R12, and G1 again),
 and each turned its fence red.
+
+Review round 2 ran 19 more (D1 to F2f) from a script. Each turned its fence red, and `git diff` was
+empty after each row.
 
 | Id | Mutation | Red cases | Red fence |
 |---|---|---|---|
@@ -7667,6 +7684,25 @@ and each turned its fence red.
 | R10 | An ended save of EmailDetail keeps no record of its draft | 1 | `email-autosave-flush` |
 | R11 | EmailDetail reads `draftIdRef` in the save | 1 | `email-autosave-flush` |
 | R12 | A DraftCard of ConversationView has no `key` | 1 | `email-autosave-flush` |
+| D1 | The drain keeps each save that waits (round 2, item 1) | 2 | `email-autosave-flush`, with the probe |
+| D1b | The drain does not wait for the save that runs | 3 | `email-autosave-flush`, with the probe |
+| D2a | ComposePanel sends with no await of the drain | 3 | `email-autosave-flush`, `email-send-failed-shows` |
+| D2b | EmailDetail sends with no await of the drain | 2 | `email-autosave-flush` |
+| D2c | The DraftCard sends with no await of the drain | 1 | `email-autosave-flush` |
+| D2d | ComposePanel sends after a cancel, as in round 1 | 3 | `email-autosave-flush`, `email-send-failed-shows` |
+| D3a | ComposePanel deletes before the drain settles | 1 | `email-autosave-flush` |
+| D3b | EmailDetail deletes before the drain settles | 1 | `email-autosave-flush` |
+| D3c | The DraftCard deletes before the drain settles | 1 | `email-autosave-flush` |
+| D4 | The discard of ComposePanel reads `draftIdRef`, not `draftToUpdate` | 1 | `email-autosave-flush` |
+| B1 | The inline autosave drops the Bcc (round 2, item 2) | 1 | `email-autosave-flush` |
+| B2 | An edit of the Bcc starts no inline autosave | 1 | `email-autosave-flush` |
+| B3 | The inline autosave drops the Cc | 1 | `email-autosave-flush` |
+| F2a | ComposePanel ignores the draft of a pop-out (round 2, item 3) | 1 | `email-autosave-flush` |
+| F2b | The pop-out hands over a draft with a Bcc | 1 | `email-autosave-flush` |
+| F2c | The pop-out drops the Cc | 1 | `email-autosave-flush` |
+| F2d | The pop-out opens before the drain settles | 2 | `email-autosave-flush` |
+| F2e | `page.tsx` does not pass the draft id | 1 | `email-autosave-flush` |
+| F2f | The draft of a pop-out is not the last save of its session | 1 | `email-autosave-flush` |
 
 **Visual review (2026-10-05).** A Playwright rig stubbed the API and drew each new state in dark,
 light, compact and a violet accent. It drew "Not saved", "Too large to save" and the pick refusal
@@ -7707,10 +7743,53 @@ items below, and it records EM-G3c-2-f4.
 3. `unsavedEdit` is true only while a save of the reply waits, not for each pop-out with text. So
    a pop-out with no new edit makes no second draft. A draft that the reply saved before the pop-out
    stays in Drafts, as on `main`. An undo-send reopen also carries `replyToBody`, and it stays clean,
-   as on `main`.
+   as on `main`. Review round 2 replaced this rule (its item 3).
 4. A cancel drops only the pending save. A save that started, or that waits for the save before it,
    still runs. A switch flushes and then cancels in the same render. A cancel that dropped a waiting
    save would lose that edit.
+
+**Review round 2 (2026-10-05).** An independent re-verify failed round 1 on a P1 that round 1 made.
+The inline reply on Outlook has draft X, and its save S1 of X is slow. The member types and pauses,
+so save S2 fires and waits for S1. The member types again and clicks Send. The cancel dropped only
+the pending save, so S2 ran after the save of the send.
+
+The inline autosave sent no Cc and no Bcc, so S2 wrote older text and empty lists into the draft.
+The send read the row of X, and the mail went out with no Cc and no Bcc. A probe measured the order of the
+calls. It was `[S1, S2, SEND]` at `519489183`, and `[S1, SEND, S2]` with round 1. ComposePanel and
+the DraftCard had the same order. This round closes the P1 and the findings below.
+
+1. **The drain (the P1 and F4).** `createAutosave` has `drain`. It drops the pending save and each
+   save that waits, and its promise settles when the save that runs settles. Each send awaits it
+   before the save of the send, and each discard awaits it before the delete. A close and a switch
+   still call `flush`, so departure 4 of round 1 holds for them. The probe is a case now, and its
+   order is `[S1, SEND]`.
+2. **The Cc and the Bcc of the inline reply.** Each autosave of the inline reply carries the Cc
+   and the Bcc. Before, `api.ts` sent empty lists, and each autosave cleared both on Outlook. That
+   fault was on `main` before this slice. An edit of the Bcc starts a save too.
+3. **The pop-out (F2).** The pop-out drains, and it waits for the save that runs. Then it gives the
+   full composer the draft id, the file flag and the Cc of the reply. The composer updates that
+   draft and makes no second draft. `unsavedEdit` is true when the drain dropped an edit.
+4. **The orphan draft.** A first save that runs at a send, a discard or a pop-out now gives its
+   draft id first. The send then sends that draft, and the discard deletes it. Before, each of the
+   three left an orphan draft, on `519489183` too.
+5. **F3.** This round records it as EM-G3c-2-f5, with no code.
+
+**Departures of review round 2.**
+
+1. The pop-out drains too, and the brief named only the send and the discard. Else a save of the
+   reply could write older text after the pop-out.
+2. The pop-out carries the Cc. The full composer saves the draft with its own Cc. An empty Cc there
+   would clear the Cc of the draft. On `main`, the full composer opened with no Cc.
+3. The full composer has no Bcc row, so its saves send an empty Bcc. So the pop-out of a reply with
+   a Bcc gives no draft id. The full composer then makes its own draft, as in round 1. That case
+   still makes a second draft.
+4. A discard closes the composer at once, and it deletes the draft after the drain settles. The
+   delete asks `draftToUpdate`, so it finds the draft after the discard ended the session.
+5. The pop-out closes the reply at once, and the full composer opens when the save that runs
+   settles. On Outlook, that wait is one draft save.
+6. A drain does not stop a save that an edit schedules after it. So an edit during a send can save
+   newer text into the draft while the send runs. That save carries the Cc and the Bcc now, and
+   `main` had the same race.
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
