@@ -66,6 +66,7 @@ pytest.importorskip("sqlalchemy")
 
 import acb_llm
 import acb_llm.context as llm_context
+import structlog
 from acb_common import db as common_db
 from acb_common import get_settings
 from acb_common.db import bind_tenant, clear_tenant, current_tenant, release_tenant
@@ -78,6 +79,7 @@ from gateway.routes.email.automation import cleanup as cleanup_mod
 from gateway.routes.email.automation import engine as engine_mod
 from gateway.routes.email.automation import followups as followups_mod
 from gateway.routes.email.automation import replyzero as replyzero_mod
+from gateway.routes.email.automation import rules as rules_mod
 from gateway.routes.email.automation import runner as runner_mod
 from gateway.routes.email.automation import senders as senders_mod
 from sqlalchemy import text
@@ -1146,26 +1148,39 @@ def _watch_sessions(monkeypatch, state: dict, db) -> list[str]:
 
 
 def _watch_model(monkeypatch, state: dict, seen: list[tuple[str, int]], *,
-                 on_ask=None) -> None:
+                 on_ask=None, tagged: list[tuple[str, str, int]] | None = None,
+                 match: bool = False) -> None:
     """Watch the model at its two leaves, and patch each leaf once.
 
     ``acb_llm.decide``: ``decide_features._ask_all`` imports it at call
     time. ``acb_llm.context.acompletion_with_fallback``: ``core._llm_json``
     imports it at call time. Each call records the blocks open right now.
-    The old call answers DONE, and ``decide`` chooses DONE."""
-    fake = FakeDecide(choices={"status": "DONE"})
+    The old call answers DONE, and ``decide`` chooses DONE.
+
+    EM-T4a-2 PR-B1: ``tagged`` also records the TAG of each call: the
+    question ids of a ``decide`` call, or the tier of an old call. With
+    ``match``, the rule match matches its first rule in every mode: the old
+    call answers index 0, and each ``decide`` boolean answers 0.92."""
+    fake = FakeDecide(choices={"status": "DONE"}, p=0.92 if match else 0.0)
+    reply = ('{"status": "DONE", "index": 0, "reason": "fits", "matches": '
+             '[{"index": 0, "reason": "fits", "primary": true}]}'
+             if match else '{"status": "DONE"}')
 
     async def _decide(state_, questions, **kw):
         seen.append(("decide", state["open"]))
+        if tagged is not None:
+            tagged.append(("decide", ",".join(sorted(questions)), state["open"]))
         if on_ask is not None:
             on_ask()
         return await fake(state_, questions, **kw)
 
     async def _completion(model=None, messages=None, **kw):
         seen.append(("completion", state["open"]))
+        if tagged is not None:
+            tagged.append(("completion", str(model), state["open"]))
         if on_ask is not None:
             on_ask()
-        msg = SimpleNamespace(content='{"status": "DONE"}')
+        msg = SimpleNamespace(content=reply)
         return SimpleNamespace(choices=[SimpleNamespace(message=msg)]), model
 
     monkeypatch.setattr(acb_llm, "decide", _decide)
@@ -1495,3 +1510,427 @@ class TestTheStatusWriteGuard:
             assert "Reply" not in cats, f"{case}: the labels were not reconciled"
             assert "set_labels" in provider.calls
         _isolated(p, "email_thread_status", acc, expect_b=1)
+
+
+# ── EM-T4a-2 PR-B1: no session open across the rule-match ask ──────────────
+#
+# Spec: ``email_app_master_plan.md`` §10.4.6, "EM-T4a-2 — the decision core",
+# PR-B1. Each job reads the rule match in Block R, asks it with NO block
+# open, and writes in ONE Block W: the resolver, the apply, the projection,
+# the label reconcile and (in the runner) the stamp.
+
+#: The rule of the PR-B1 cases. It only labels, with no ``{{``, so
+#: ``_render_template`` asks no model. The cold blocker is ``OFF`` and the
+#: sender has no history, so the cold check and the sender pin ask nothing.
+#: Until EM-T4a-3 those three reach the same leaves inside Block W.
+_B1_RULE = {"id": "r-receipt", "name": "Receipt", "enabled": True,
+            "instructions": "receipts and invoices", "system_type": None,
+            "actions": [{"type": "LABEL", "label": "Receipt"}]}
+_B1_DONE_RULE = {"id": "r-done", "name": "Done", "enabled": True,
+                 "instructions": "a finished conversation",
+                 "system_type": "DONE",
+                 "actions": [{"type": "LABEL", "label": "Done"}]}
+
+#: The two jobs, and the runner in its multi-rule mode.
+_B1_JOBS = {
+    "runner": lambda: runner_mod._run_rules_job(_DC_ACC, 50, False, "scheduler"),
+    "runner-multi": lambda: runner_mod._run_rules_job(
+        _DC_ACC, 50, False, "scheduler"),
+    "backfill": lambda: replyzero_mod._maybe_classify_threads(_DC_ACC),
+}
+
+#: The writes of Block W, in each job. The backfill writes no stamp.
+_B1_WRITES = {
+    "runner": ("resolve_classification", "_apply_matches",
+               "project_reply_status_from_matches", "_reconcile_thread_labels",
+               "_stamp_processed_watermark"),
+    "backfill": ("resolve_classification", "project_reply_status_from_matches",
+                 "_reconcile_thread_labels"),
+}
+
+
+def _rm_mode(monkeypatch, clear, mode: str) -> None:
+    monkeypatch.setenv("DECIDE_FEATURE_MODES",
+                       "" if mode == "off" else f"email.rule_match={mode}")
+    clear()
+
+
+def _b1_row() -> SimpleNamespace:
+    return SimpleNamespace(
+        id="m-b1", provider_message_id="pm-b1", thread_id="t-b1",
+        subject="Invoice 42", body_text="Your invoice is attached.", snippet="",
+        from_address={"email": "billing@vendor-b1.test", "name": "Billing"},
+        to_addresses=[{"email": "box@t4a2.test"}], cc_addresses=[],
+        received_at=_DC_SEEN, folder="inbox")
+
+
+def _b1_db(*, multi: bool) -> AsyncMock:
+    """One database for both jobs. The SELECT of phase 0 answers one row,
+    each other read answers no rows, and each ``fetchone`` answers one row
+    with every column that a job reads (the cold blocker is ``OFF``)."""
+    one = SimpleNamespace(
+        user_id=_DC_OWNER, email_address="box@t4a2.test", provider="microsoft",
+        credentials_encrypted="x", cold_email_blocker="OFF",
+        multi_rule_execution=multi, org_domains=None)
+
+    async def execute(stmt, params=None):
+        sql = str(stmt)
+        phase0 = "rules_processed_at IS NULL" in sql or "LIMIT 200" in sql
+        return MagicMock(
+            fetchall=MagicMock(return_value=[_b1_row()] if phase0 else []),
+            fetchone=MagicMock(return_value=one))
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=execute)
+    return db
+
+
+def _b1_env(monkeypatch, clear, mode: str, *, job: str = "runner",
+            conversation: bool = False, match: bool = False):
+    """Run a job with each read patched, the model watched at its two leaves
+    and each write a spy. Returns the block state, the tagged model calls
+    and the spy calls, each spy call as (name, block ordinal, open blocks,
+    args). The read and the resolver steps are spies that call through."""
+    _rm_mode(monkeypatch, clear, mode)
+    state = {"open": 0, "opens": 0}
+    tagged: list[tuple[str, str, int]] = []
+    _watch_sessions(monkeypatch, state, _b1_db(multi=job == "runner-multi"))
+    _watch_model(monkeypatch, state, [], tagged=tagged, match=match)
+    for mod in (runner_mod, replyzero_mod):
+        monkeypatch.setattr(mod, "_load_assistant_about",
+                            AsyncMock(return_value=("", "")))
+        monkeypatch.setattr(mod, "_attachment_summaries",
+                            AsyncMock(return_value={}))
+        monkeypatch.setattr(mod, "resolve_org_domains",
+                            AsyncMock(return_value=set()))
+        monkeypatch.setattr(mod, "_persist_rotated_creds", AsyncMock())
+    selves = frozenset({"box@t4a2.test"})
+    monkeypatch.setattr(runner_mod, "resolve_self_addresses",
+                        AsyncMock(return_value=selves))
+    monkeypatch.setattr(replyzero_mod, "resolve_self", AsyncMock(
+        return_value=SimpleNamespace(address="box@t4a2.test",
+                                     self_addresses=selves)))
+    for name, value in (("_load_rules", [_B1_RULE]),
+                        ("_is_reply_candidate", (True, "")),
+                        ("_load_rule_patterns", {}),
+                        ("_load_rule_guidance", {}),
+                        ("_fetch_sender_history", [])):
+        monkeypatch.setattr(engine_mod, name, AsyncMock(return_value=value))
+    monkeypatch.setattr(rules_mod, "_load_rules",
+                        AsyncMock(return_value=[_B1_RULE, _B1_DONE_RULE]))
+    monkeypatch.setattr(replyzero_mod, "_thread_is_conversation",
+                        AsyncMock(return_value=conversation))
+    calls: list[tuple[str, int, int, tuple]] = []
+
+    def _spy(mod, name, *, result=None, through=False) -> None:
+        real = getattr(mod, name)
+
+        async def _call(*a, **kw):
+            calls.append((name, state["opens"], state["open"], a))
+            return await real(*a, **kw) if through else result
+        monkeypatch.setattr(mod, name, _call)
+
+    for mod in (runner_mod, engine_mod):
+        _spy(mod, "read_classification", through=True)
+        _spy(mod, "resolve_classification", through=True)
+    _spy(runner_mod, "_apply_matches")
+    _spy(runner_mod, "_stamp_processed_watermark")
+    _spy(replyzero_mod, "project_reply_status_from_matches", result="Receipt")
+    _spy(replyzero_mod, "_reconcile_thread_labels")
+    _dc_provider(monkeypatch)
+    return state, tagged, calls
+
+
+def _is_match_ask(leaf: str, tag: str) -> bool:
+    """A rule-match ask: the old call on ``tier-fast``, or a ``decide`` call
+    whose questions are the booleans ``r<i>``, ``conv`` and ``best``."""
+    if leaf == "completion":
+        return tag == "tier-fast"
+    return all(q in ("conv", "best") or (q[:1] == "r" and q[1:].isdigit())
+               for q in tag.split(","))
+
+
+def _match_asks(tagged: list[tuple[str, str, int]]) -> list[tuple[str, str, int]]:
+    return [t for t in tagged if _is_match_ask(t[0], t[1])]
+
+
+def _blocks(calls) -> dict[str, tuple[int, int]]:
+    """(block ordinal, open blocks) of each spy, by name."""
+    return {name: (n, open_) for name, n, open_, _a in calls}
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow", "on"])
+@pytest.mark.parametrize("job", sorted(_B1_JOBS))
+async def test_the_match_ask_runs_with_no_session_open(
+    job, mode, monkeypatch, decide_env,
+):
+    """R7 fence ``email-decision-core-no-session-across-the-match-ask``.
+
+    The rule-match ask of each job reaches a watched leaf with ZERO open
+    blocks, in each mode of ``email.rule_match``. Block R reads before it.
+    ONE Block W after it holds each write, so the apply and the stamp
+    commit together."""
+    state, tagged, calls = _b1_env(monkeypatch, decide_env, mode, job=job)
+
+    await _B1_JOBS[job]()
+
+    asks = _match_asks(tagged)
+    assert {leaf for leaf, _t, _n in asks} == _LEAVES[mode], tagged
+    assert [n for _l, _t, n in asks] == [0] * len(asks), (
+        f"a session was open during the rule-match ask: {tagged}")
+    assert asks == tagged, f"a model call that is not the rule match: {tagged}"
+    blocks = _blocks(calls)
+    read, block_w = blocks["read_classification"], blocks["resolve_classification"]
+    assert read[1] == 1 and block_w[1] == 1
+    assert block_w[0] > read[0], "the resolver ran in the read block"
+    writes = _B1_WRITES["backfill" if job == "backfill" else "runner"]
+    assert {name: blocks.get(name) for name in writes} == dict.fromkeys(
+        writes, block_w), f"Block W is not ONE block: {calls}"
+    assert state["open"] == 0
+
+
+async def test_the_match_fence_can_fail(monkeypatch, decide_env):
+    """The companion of ``email-decision-core-no-session-across-the-match-ask``.
+
+    The plant is the shape before PR-B1: one block open across the composed
+    ``classify_matches``. The fence must see the rule-match ask inside it."""
+    _state, tagged, _calls = _b1_env(monkeypatch, decide_env, "off")
+    email = {"from": "billing@vendor-b1.test", "subject": "Invoice 42",
+             "body": "x", "to": "box@t4a2.test"}
+
+    async def _planted() -> None:
+        async with runner_mod._tenant_session() as db:
+            await engine_mod.classify_matches(
+                db, _DC_ACC, _b1_row(), email, resolve=False)
+
+    await _planted()
+    assert _match_asks(tagged) == [("completion", "tier-fast", 1)]
+
+
+@pytest.mark.parametrize("mode", ["off", "on"])
+@pytest.mark.parametrize("job", sorted(_B1_JOBS))
+async def test_a_failed_match_ask_writes_nothing_and_stamps_nothing(
+    job, mode, monkeypatch, decide_env,
+):
+    """A model that is down (``off``) or a ``decide`` with no answer
+    (``on``) leaves the email undecided (D-EM-8). The job opens no Block W
+    for it: no resolver, no apply, no projection and no stamp. The runner
+    logs the skip once."""
+    _state, tagged, calls = _b1_env(monkeypatch, decide_env, mode, job=job)
+
+    async def _down(*_a, **_kw):
+        tagged.append(("down", "", 0))
+        raise acb_llm.DecideUnavailable("HTTP 503") if mode == "on" \
+            else RuntimeError("the model is down")
+
+    monkeypatch.setattr(acb_llm, "decide", _down)
+    monkeypatch.setattr(llm_context, "acompletion_with_fallback", _down)
+
+    with structlog.testing.capture_logs() as caps:
+        await _B1_JOBS[job]()
+
+    assert tagged, "the ask reached no leaf — the case went blind"
+    names = [name for name, *_rest in calls]
+    assert names == ["read_classification"], (
+        f"an undecided email reached Block W: {names}")
+    skipped = [c for c in caps
+               if c.get("event") == "email.classify_unavailable_skip"]
+    assert len(skipped) == (0 if job == "backfill" else 1)
+
+
+@pytest.mark.parametrize("job", sorted(_B1_JOBS))
+async def test_an_undecided_resolver_writes_nothing_and_stamps_nothing(
+    job, monkeypatch, decide_env,
+):
+    """The resolver raises ``DecisionUnavailable`` at the head of Block W
+    (``on`` of ``email.thread_status``, D-EM-8). Block W writes nothing,
+    and the runner stamps nothing."""
+    _state, _tagged, calls = _b1_env(monkeypatch, decide_env, "off", job=job)
+
+    async def _undecided(*_a, **_kw):
+        calls.append(("resolve_classification", 0, 0, ()))
+        raise engine_mod.DecisionUnavailable("no status")
+
+    for mod in (runner_mod, engine_mod):
+        monkeypatch.setattr(mod, "resolve_classification", _undecided)
+
+    await _B1_JOBS[job]()
+
+    names = [name for name, *_rest in calls]
+    assert names == ["read_classification", "resolve_classification"], names
+
+
+@pytest.mark.parametrize("job", sorted(_B1_JOBS))
+async def test_a_suppressed_match_stays_suppressed(
+    job, monkeypatch, decide_env,
+):
+    """The rule match picks Receipt. The thread is a conversation, and its
+    status is DONE. Block W gets the Done rule as the ONE live match and
+    Receipt flagged ``suppressed``, so its actions never run (#110)."""
+    _state, tagged, calls = _b1_env(
+        monkeypatch, decide_env, "off", job=job, conversation=True, match=True)
+    monkeypatch.setattr(replyzero_mod, "_thread_is_self_only",
+                        AsyncMock(return_value=False))
+    monkeypatch.setattr(replyzero_mod, "build_thread_context",
+                        AsyncMock(return_value=_dc_context()))
+    monkeypatch.setattr(replyzero_mod, "_status_corrections_block",
+                        AsyncMock(return_value=""))
+
+    await _B1_JOBS[job]()
+
+    assert _match_asks(tagged) == [("completion", "tier-fast", 0)], tagged
+    spy = "project_reply_status_from_matches" if job == "backfill" \
+        else "_apply_matches"
+    (matches,) = [a[5 if spy == "_apply_matches" else 3]
+                  for name, _n, _o, a in calls if name == spy]
+    assert [(m["rule"]["id"], m.get("suppressed")) for m in matches] == [
+        ("r-done", None), ("r-receipt", "conversation")], matches
+
+
+# ── EM-T4a-2 PR-B1: the source fences ──────────────────────────────────────
+
+#: Each new step of PR-B1, and whether it takes ``db``. None opens a block
+#: or calls ``commit()``: the blocks stay in the two job bodies.
+_B1_STEPS = {"read_rule_match": True, "read_classification": True,
+             "resolve_classification": True, "ask_rule_match": False}
+
+#: The two job bodies that run the split form.
+_B1_JOB_BODIES = {"automation/runner.py": "_run_rules_job",
+                  "automation/replyzero.py": "_maybe_classify_threads"}
+
+
+def _step_violations(source: str, name: str, *, takes_db: bool) -> list[str]:
+    fn = _function(source, name)
+    params = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
+    found = [] if ("db" in params) == takes_db else ["db"]
+    for inner in ast.walk(fn):
+        if not isinstance(inner, ast.Call):
+            continue
+        called = _call_name(inner)
+        if called.endswith(("tenant_session", "get_db", "get_session_factory")):
+            found.append(f"{inner.lineno}:{called}")
+        elif isinstance(inner.func, ast.Attribute) and called == "commit":
+            found.append(f"{inner.lineno}:commit")
+    return found
+
+
+@pytest.mark.parametrize("name", sorted(_B1_STEPS))
+def test_each_new_step_takes_db_and_opens_no_block(name):
+    """R7 fence ``email-decision-core-steps``. A read or resolver step takes
+    the session of its job and opens none, and the ask step takes no ``db``.
+    A step that opens a block escapes the count of the fence above."""
+    source = (_EMAIL / "automation/engine.py").read_text(encoding="utf-8")
+    assert _step_violations(source, name, takes_db=_B1_STEPS[name]) == []
+
+
+def test_the_step_fence_can_fail():
+    planted = (
+        "async def read_x(account_id):\n"
+        "    async with _tenant_session() as db:\n"
+        "        await db.commit()\n"
+        "\n"
+        "async def ask_x(db, read):\n"
+        "    return read\n"
+    )
+    assert _step_violations(planted, "read_x", takes_db=True) == [
+        "db", "2:_tenant_session", "3:commit"]
+    assert _step_violations(planted, "ask_x", takes_db=False) == ["db"]
+
+
+@pytest.mark.parametrize(("rel", "name"), sorted(_B1_JOB_BODIES.items()))
+def test_both_jobs_call_the_split_form(rel, name):
+    """Each job calls the three steps of the split form, and not a composed
+    form, which would hold its block across the ask."""
+    fn = _function((_EMAIL / rel).read_text(encoding="utf-8"), name)
+    called = {_call_name(n) for n in ast.walk(fn) if isinstance(n, ast.Call)}
+    assert {"read_classification", "ask_rule_match",
+            "resolve_classification"} <= called, called
+    assert not called & {"classify_matches", "_match_email_to_rule",
+                         "_match_email_to_rules_multi"}, called
+
+
+# ── EM-T4a-2 PR-B1: R8, the writes of the split jobs ───────────────────────
+
+
+def _seed_label_rule(admin, *, org: str, account_id: str) -> None:
+    """An enabled rule that only labels, created a day before any message."""
+    with admin.begin() as c:
+        rid = str(c.execute(text(
+            "INSERT INTO email_rules (account_id, name, instructions, enabled, "
+            "created_at, organization_id) VALUES (CAST(:a AS uuid), 'Receipt', "
+            "'receipts and invoices', true, :c, CAST(:o AS uuid)) RETURNING id"),
+            {"a": account_id, "c": datetime.now(UTC) - timedelta(days=1),
+             "o": org}).scalar_one())
+        c.execute(text(
+            "INSERT INTO email_actions (rule_id, type, label, organization_id) "
+            "VALUES (CAST(:r AS uuid), 'LABEL', 'Receipt', CAST(:o AS uuid))"),
+            {"r": rid, "o": org})
+
+
+@_DB_GATE
+class TestTheSplitJobsWriteTheirOwnTenant:
+    """The R8 done-when of PR-B1, on a real Postgres as the non-owner role
+    ``acb_app_h3rls`` under FORCE RLS. Only the two model LEAVES are fakes,
+    so the read SQL of the split steps runs as that role."""
+
+    @pytest.mark.parametrize("mode", ["off", "shadow", "on"])
+    async def test_the_runner_writes_its_rows_and_stamps_in_b(
+        self, mode, promoted, app_engine, monkeypatch, decide_env,  # noqa: F811
+    ):
+        _rm_mode(monkeypatch, decide_env, mode)
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@t4a2b1.test")
+        _seed_label_rule(p.admin_engine, org=p.org_b, account_id=acc)
+        mid = _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
+                            thread_id=f"t-b1-{acc}")
+        seen: list[tuple[str, int]] = []
+        _watch_model(monkeypatch, {"open": 0}, seen, match=True)
+        provider = _FakeProvider()
+        _patch_providers(monkeypatch, provider)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(app_dsn):
+            with _bound(p.org_b):
+                await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+
+        assert {leaf for leaf, _n in seen} == _LEAVES[mode], seen
+        logs = _rows(p.admin_engine,
+                     "SELECT message_id::text AS mid, status, rule_name, "
+                     "match_source, organization_id::text AS org FROM "
+                     f"email_executed_rules {_BY_ACCOUNT}", {"a": acc})
+        assert logs == [{"mid": mid, "status": "APPLIED", "rule_name": "Receipt",
+                         "match_source": "ai", "org": p.org_b}], logs
+        assert "set_labels" in provider.calls
+        stamped = ("SELECT count(*) FROM email_messages "
+                   f"{_BY_ACCOUNT} AND rules_processed_at IS NOT NULL")
+        assert _count_as(p.app_url, p.org_b, stamped, {"a": acc}) == 1
+        assert _count_as(p.app_url, p.org_a, stamped, {"a": acc}) == 0
+        _isolated(p, "email_executed_rules", acc, expect_b=1)
+        _isolated(p, "email_thread_status", acc, expect_b=1)
+
+    @pytest.mark.parametrize("mode", ["off", "shadow", "on"])
+    async def test_the_backfill_writes_its_status_in_b(
+        self, mode, promoted, app_engine, monkeypatch, decide_env,  # noqa: F811
+    ):
+        _rm_mode(monkeypatch, decide_env, mode)
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@t4a2b1.test")
+        _seed_label_rule(p.admin_engine, org=p.org_b, account_id=acc)
+        tid = f"t-b1-gap-{acc}"
+        _seed_message(p.admin_engine, org=p.org_b, account_id=acc, thread_id=tid)
+        seen: list[tuple[str, int]] = []
+        _watch_model(monkeypatch, {"open": 0}, seen, match=True)
+        _patch_providers(monkeypatch, _FakeProvider())
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(app_dsn):
+            with _bound(p.org_b):
+                await replyzero_mod._maybe_classify_threads(acc)
+
+        assert {leaf for leaf, _n in seen} == _LEAVES[mode], seen
+        rows = _rows(p.admin_engine,
+                     "SELECT thread_id, status, organization_id::text AS org "
+                     f"FROM email_thread_status {_BY_ACCOUNT}", {"a": acc})
+        assert rows == [{"thread_id": tid, "status": "FYI", "org": p.org_b}], rows
+        _isolated(p, "email_thread_status", acc, expect_b=1)
+        _isolated(p, "email_executed_rules", acc, expect_b=0)
