@@ -5081,6 +5081,9 @@ The cause was one browser-wide key, `cc-chat-sessions`. Each rail restored the n
 4. **A switch deletes nothing.** When the bound scope changes to another email, or to the same email in another org, the old namespace stays. A switch back finds it as it was.
 5. **A sign-out clears that account only.** `useChatSignOutClear` in `AppShell` binds the clear to the identity, the pattern of `bindIdentity` in `lib/dataCache.ts`. It covers a sign-out button, an expired session, the middleware redirect and the NextAuth sign-out page. The client cannot always tell which account ended. So it clears every namespace of the last bound email, which `cc-chat-last-scope` records.
 6. A sign-out needs two answers that agree: NextAuth says nobody is signed in, and an authoritative access answer names nobody. A deploy restart answers `GET /api/auth/me` with a 200 that names nobody, while NextAuth still holds the session. So a deploy restart clears nothing.
+   - **Then the client confirms** (round 3). NextAuth's client turns a FAILED session fetch into "unauthenticated" for the life of the page. A deploy that restarts Next and the gateway close together can so satisfy both answers.
+   - So before it clears, `confirmSignedOut` asks `/api/auth/session` again, with no cache and a 5 s limit.
+   - It clears only on a 2xx whose session names no user. A network error, a non-2xx, a body that does not parse, a timeout or a live session clears nothing.
 7. During that restart, a member already seen in the page keeps their scope (`lastMemberScope`). The rails do not move to a new chat.
 8. **The caches from before #652 have no owner.** `purgeLegacyChatCaches` deletes them on the first bind. Nothing moves them into a namespace, because nobody can know whose they are.
 9. A recovery from a refused chat (`lib/railSessions.ts`) carries only the queue of the current namespace into the composer.
@@ -5088,6 +5091,10 @@ The cause was one browser-wide key, `cc-chat-sessions`. Each rail restored the n
 ### 23.3 The future account switcher
 
 The owner plans one browser signed in to several accounts at once. **The switcher only changes the bound scope** (`bindChatScope`). It deletes nothing, and each account keeps its chats. **The clear point is the sign-out of one account.** When the switcher can name the account that signed out, it clears that account's namespaces. Until then, the client clears the last bound scope.
+
+⚠️ **`cc-chat-last-scope` is ONE pointer per browser.** It is enough for one signed-in account. The switcher needs one pointer per signed-in session, so that the sign-out of one account can name that account. Replace the pointer when the switcher lands.
+
+**Not built: moving the caches from before #652.** The first bind deletes them, so a queue of unsent text from before #652 is lost once. A softer path is possible. After the server list merges, it moves a legacy entry into the namespace of a member whose own server list holds that session id. It needs a second step after the merge, so it was left out of PR #652.
 
 ### 23.4 Fences
 
@@ -5099,6 +5106,7 @@ The owner plans one browser signed in to several accounts at once. **The switche
 - An expiry on a fresh page clears the namespace of the last bound scope.
 - The caches from before #652 go on the first bind.
 - A deploy restart deletes nothing.
+- A sign-out clears nothing until `/api/auth/session` confirms it. A failed or slow confirm clears nothing.
 - A grep fails on a raw `cc-msgs`, `cc-queue`, `cc-chat` or `cc-app-builder-session` key anywhere outside `lib/sessions.ts`. Inside that file, every storage call takes a built key.
 
 A new chat cache uses `chatKey`. The grep fence makes a raw key fail.
