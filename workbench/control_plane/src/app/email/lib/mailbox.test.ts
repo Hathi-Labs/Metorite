@@ -216,6 +216,15 @@ describe("email-draftcard-start: a draft card starts with the recipients of its 
     });
   });
 
+  it("marks neither button for a reply to the sender that also has a Cc", () => {
+    // Reply needs an empty Cc (§10.4.11 item 2). A Cc that the member added to
+    // a narrowed reply is no Reply and no Reply All (EM-T10 review round 1).
+    const draft = { to: [party("ravi@acme.com")], cc: [party("kiran@acme.com")], bcc: [] };
+    expect(draftRecipients(draft, ...group)).toEqual({
+      to: ["ravi@acme.com"], cc: ["kiran@acme.com"], bcc: [], replyAll: null, showCc: true,
+    });
+  });
+
   it("keeps a draft with only a Bcc, and marks neither button", () => {
     const draft = { to: [], cc: [], bcc: [party("boss@fracktal.in")] };
     expect(draftRecipients(draft, ...group)).toEqual({

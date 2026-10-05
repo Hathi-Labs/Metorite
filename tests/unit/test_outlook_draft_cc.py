@@ -180,11 +180,19 @@ def test_only_the_composer_save_passes_exact_to() -> None:
     reply = [c for c in drafting["upsert_draft"]
              if any(kw.arg == "reply_to_message_id" for kw in c.keywords)]
     assert len(reply) == 1
+    # The rule REPLY passes exact_to only for a To that the member typed into
+    # the rule (EM-T10 review round 1). Its FORWARD makes a new draft.
+    actions = _create_draft_calls(_GATEWAY / "email" / "automation" / "actions.py")
+    rule_calls = actions.pop("_apply_rule_actions")
+    rule_reply = [c for c in rule_calls
+                  if any(kw.arg == "reply_to_message_id" for kw in c.keywords)]
+    assert len(rule_calls) == 2 and len(rule_reply) == 1
+    assert ast.unparse(_exact_to(rule_reply[0])) == "bool(a.get('to_address'))"
+    assert [_exact_to(c) for c in rule_calls if c is not rule_reply[0]] == [None]
     # Each other caller keeps the To of createReply, so a Reply-To stays.
     others = {
         "drafting.py": {k: v for k, v in drafting.items() if k != "upsert_draft"},
-        "actions.py": _create_draft_calls(
-            _GATEWAY / "email" / "automation" / "actions.py"),
+        "actions.py": actions,
         "followups.py": _create_draft_calls(
             _GATEWAY / "email" / "automation" / "followups.py"),
         "dispatch.py": _create_draft_calls(_GATEWAY / "notes" / "dispatch.py"),
@@ -195,5 +203,5 @@ def test_only_the_composer_save_passes_exact_to() -> None:
             for call in calls:
                 seen += 1
                 assert _exact_to(call) is None, f"{name}:{fn}"
-    # The AI draft, the chat card, two rule actions, the nudge and Notes.
-    assert seen == 6
+    # The AI draft, the chat card, the nudge and Notes.
+    assert seen == 4
