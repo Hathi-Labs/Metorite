@@ -27,7 +27,7 @@ import {
   type ReactNode,
 } from "react";
 import { useSession, signOut } from "next-auth/react";
-import { forgetChatSessions } from "@/lib/sessions";
+import { useChatScope } from "@/hooks/useChatSessions";
 import Sidebar from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
@@ -100,6 +100,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     bindIdentity(signedInAs);
   }, [signedInAs]);
+  // The stored chat ids follow the same rule, keyed to the identity rather than
+  // to a sign-out button (PR #652 fix round 1). The hook binds the member's
+  // scope, and its effect drops every other member's stored chat ids when the
+  // member of this browser changes, however the last sign-in ended.
+  useChatScope();
 
   const openDrawer = useCallback((content: ReactNode) => {
     setDrawerContent(content);
@@ -338,7 +343,7 @@ function MobileBottomNavInner({
           Desktop view
         </Button>
         {session?.user && (
-          <Button variant="ghost" size="none" layout="flex items-center" onClick={() => { forgetChatSessions(); void signOut({ callbackUrl: "/signin" }); }} className="w-full gap-3 px-3 py-2.5 text-sm">
+          <Button variant="ghost" size="none" layout="flex items-center" onClick={() => signOut({ callbackUrl: "/signin" })} className="w-full gap-3 px-3 py-2.5 text-sm">
             <AppIcon name="LogOut" size={16} className="shrink-0" />
             Sign out
           </Button>

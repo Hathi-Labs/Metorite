@@ -21,23 +21,34 @@ import { getSessionState, setSessionState } from "./chatStore";
 import { settleFailedTurn } from "./chatTurnFailure";
 import {
   NO_PICK,
+  RECOVERED_NOTICE,
+  carriedText,
   openDeliberately,
   recoverRefused,
+  recoveredNotice,
   refusalHandler,
   restoreOrStart,
+  restoreOrStartAfterMerge,
   type RailPick,
 } from "./railSessions";
 import {
   BUILDER_SESSION_KEY_PREFIX,
+  CHAT_OWNER_KEY,
   LEGACY_SESSIONS_KEY,
   bindChatScope,
   chatScope,
   createSession,
   forgetChatSessions,
+  forgetSession,
+  getQueue,
   getSessions,
   isSessionRefusal,
   probeSession,
+  saveQueue,
+  scopeFromAccess,
+  tidyChatStorage,
   upsertSession,
+  type ChatSession,
 } from "./sessions";
 
 class MemoryStorage {
@@ -67,6 +78,8 @@ const OWNER = chatScope("vjvarada@fracktal.in", "org-fracktal") as string;
 const MEMBER = chatScope("sharat@dewin.in", "org-dewin") as string;
 /** The same person, in a second organization. */
 const OWNER_ELSEWHERE = chatScope("vjvarada@fracktal.in", "org-dewin") as string;
+/** A second member of the owner's org: the same org id, another email. */
+const COLLEAGUE = chatScope("ops@fracktal.in", "org-fracktal") as string;
 
 const REFUSED_BODY = JSON.stringify({ detail: "You are not a participant of this conversation." });
 
@@ -81,7 +94,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  bindChatScope(null);
+  forgetChatSessions();
   vi.unstubAllGlobals();
 });
 
@@ -118,11 +131,20 @@ describe("rule 1: a stored chat id is the member's and the org's", () => {
     expect(restoreOrStart(AGENT).activeId).not.toBe(ownersId);
   });
 
-  it("never reads the old browser-wide list, and removes it on bind", () => {
+  it("does NOT restore member A's chat for member B in the SAME org", () => {
+    // Fix round 1: a key of the org alone passes both cases above.
+    const ownersId = ownerChat();
+    bindChatScope(COLLEAGUE);
+    expect(getSessions()).toEqual([]);
+    expect(restoreOrStart(AGENT).activeId).not.toBe(ownersId);
+  });
+
+  it("never reads the old browser-wide list, and the tidy removes it", () => {
     const leaked = createSession(AGENT);
     storage.setItem(LEGACY_SESSIONS_KEY, JSON.stringify([leaked]));
     bindChatScope(MEMBER);
     expect(getSessions()).toEqual([]);
+    tidyChatStorage(MEMBER);
     expect(storage.getItem(LEGACY_SESSIONS_KEY)).toBeNull();
   });
 
@@ -149,6 +171,119 @@ describe("rule 1: a stored chat id is the member's and the org's", () => {
     expect(storage.keys()).toEqual([`cc-msgs-${id}`]);
     bindChatScope(OWNER);
     expect(getSessions()).toEqual([]);
+  });
+});
+
+describe("the scope of one access answer (fix round 1)", () => {
+  const answer = (over: Partial<Parameters<typeof scopeFromAccess>[0]>) =>
+    scopeFromAccess({ loading: false, stale: false, email: "", organizationId: null, ...over });
+
+  it("is null while access loads", () => {
+    expect(answer({ loading: true, email: "sharat@dewin.in", organizationId: "org-dewin" })).toBeNull();
+  });
+
+  it("is null when the first resolve failed and named nobody", () => {
+    // A gateway restart in a deploy: loading ends, the answer is stale, and
+    // there is no email. A shared `anonymous` list here was a P2 finding.
+    expect(answer({ stale: true })).toBeNull();
+  });
+
+  it("is the no-email scope only for an authoritative answer with no email", () => {
+    expect(answer({})).toBe("anonymous|");
+  });
+
+  it("keeps the last org id while the org lookup fails for the same member", () => {
+    expect(answer({ email: "sharat@dewin.in", organizationId: "org-dewin" })).toBe(MEMBER);
+    expect(answer({ email: "sharat@dewin.in", organizationId: undefined })).toBe(MEMBER);
+  });
+
+  it("never lends one member's org id to another member", () => {
+    expect(answer({ email: "sharat@dewin.in", organizationId: "org-dewin" })).toBe(MEMBER);
+    expect(answer({ email: "ops@fracktal.in", organizationId: undefined })).toBe("ops@fracktal.in|");
+  });
+});
+
+describe("the tidy, bound to the identity (fix round 1)", () => {
+  it("drops other members' ids when the member of the browser changes", () => {
+    const ownersId = ownerChat();
+    tidyChatStorage(OWNER);
+    storage.setItem(`${BUILDER_SESSION_KEY_PREFIX}${OWNER}::crm`, ownersId);
+    bindChatScope(MEMBER);
+    upsertSession(createSession(AGENT));
+    tidyChatStorage(MEMBER);
+    const left = storage.keys();
+    expect(left.some((k) => k.includes("vjvarada@fracktal.in"))).toBe(false);
+    expect(left).toContain(`cc-chat-sessions::${MEMBER}`);
+    expect(storage.getItem(CHAT_OWNER_KEY)).toBe("sharat@dewin.in");
+  });
+
+  it("keeps the lists while the same member stays, in either org", () => {
+    ownerChat();
+    tidyChatStorage(OWNER);
+    bindChatScope(OWNER_ELSEWHERE);
+    upsertSession(createSession(AGENT));
+    tidyChatStorage(OWNER_ELSEWHERE);
+    expect(storage.keys()).toContain(`cc-chat-sessions::${OWNER}`);
+    expect(storage.keys()).toContain(`cc-chat-sessions::${OWNER_ELSEWHERE}`);
+  });
+
+  it("drops the member's ids when the browser signs out by any path", () => {
+    // An expired session or the middleware redirect ends at /signin, where
+    // the access answer names nobody and the scope is `anonymous|`.
+    ownerChat();
+    tidyChatStorage(OWNER);
+    tidyChatStorage(scopeFromAccess({ loading: false, stale: false, email: "", organizationId: null }));
+    expect(storage.keys().some((k) => k.startsWith("cc-chat-sessions::vjvarada"))).toBe(false);
+  });
+});
+
+describe("a first visit waits for the server's list (fix round 1)", () => {
+  const remote = (id: string): ChatSession => ({
+    id, name: "x", agentName: AGENT, createdAt: "2026-10-01", updatedAt: "2026-10-01", messageCount: 3,
+  });
+
+  it("restores the server's chat instead of starting an empty one", async () => {
+    bindChatScope(MEMBER);
+    const merge = vi.fn(async () => { upsertSession(remote("server-chat")); return getSessions(); });
+    const pick = await restoreOrStartAfterMerge(AGENT, merge, 1_000);
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(pick).toEqual({ activeId: "server-chat", restoredId: "server-chat" });
+    expect(getSessions().map((s) => s.id)).toEqual(["server-chat"]);
+  });
+
+  it("does not wait when this browser already holds a chat", async () => {
+    const id = ownerChat();
+    const merge = vi.fn(async () => getSessions());
+    expect(await restoreOrStartAfterMerge(AGENT, merge, 1_000)).toEqual({ activeId: id, restoredId: id });
+    expect(merge).not.toHaveBeenCalled();
+  });
+
+  it("starts a chat after the wait when the server is slow", async () => {
+    bindChatScope(MEMBER);
+    const merge = () => new Promise<ChatSession[]>(() => {});
+    const pick = await restoreOrStartAfterMerge(AGENT, merge, 20);
+    expect(pick.restoredId).toBeNull();
+    expect(getSessions()).toHaveLength(1);
+  });
+});
+
+describe("unsent work survives a refused chat (fix round 1)", () => {
+  it("keeps the queue of a forgotten chat, and carries it to the composer", () => {
+    bindChatScope(MEMBER);
+    const s = createSession(AGENT);
+    upsertSession(s);
+    saveQueue(s.id, ["and the second thing"]);
+    forgetSession(s.id);
+    expect(getQueue(s.id)).toEqual(["and the second thing"]);
+    expect(carriedText(s.id, "What is stuck here?")).toBe("What is stuck here?\n\nand the second thing");
+    expect(carriedText(s.id)).toBe("and the second thing");
+    expect(carriedText("nothing-here")).toBeUndefined();
+  });
+
+  it("explains the new chat on load, and names the box only when it holds words", () => {
+    expect(recoveredNotice(undefined)).toBe(RECOVERED_NOTICE);
+    expect(recoveredNotice("hi")).toMatch(/Your message is in the box/);
+    expect(RECOVERED_NOTICE).not.toMatch(/Your message/);
   });
 });
 
@@ -347,6 +482,22 @@ describe("the wiring (source fence)", () => {
     const hook = read("../hooks/useChatSessions.ts");
     expect(hook).toContain('import { useAccess } from "@/components/AccessProvider";');
     expect(hook).toMatch(/bindChatScope\(scope\);/);
+    // The scope rules live in scopeFromAccess, with the stale flag passed on.
+    expect(hook).toMatch(/scopeFromAccess\(\{\s*loading,\s*stale,/);
+  });
+
+  it("the tidy runs in an effect, from AppShell on every page", () => {
+    const hook = read("../hooks/useChatSessions.ts");
+    expect(hook).toMatch(/useEffect\(\(\) => \{\s*tidyChatStorage\(scope\);\s*\}, \[scope\]\);/);
+    expect(read("../components/AppShell.tsx")).toMatch(/^\s*useChatScope\(\);\r?$/m);
+  });
+
+  it("a recovery on load explains itself, as a recovery on send does", () => {
+    const hook = read("../hooks/useChatSessions.ts");
+    // A whole line each: the note is set on EVERY recovery, with no condition.
+    expect(hook).toMatch(/^\s*setNoticeText\(recoveredNotice\(carried\)\);\r?$/m);
+    expect(hook).toContain("const carried = carriedText(refusedId, pendingText);");
+    expect(read("../app/chat/page.tsx")).toMatch(/^\s*setRecoveryNotice\(recoveredNotice\(carried\)\);\r?$/m);
   });
 
   it("only lib/sessions.ts names the session-list key", () => {

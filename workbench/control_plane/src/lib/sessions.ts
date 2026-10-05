@@ -50,14 +50,22 @@ export interface ChatSession {
 // identity source the client has, `useAccess()`. While no scope is bound, the
 // list reads empty and a local write is skipped. The server copy still syncs.
 
-/** The list key of the old, browser-wide store. Never read. Removed on bind. */
+/** The list key of the old, browser-wide store. Never read. Removed by tidy. */
 export const LEGACY_SESSIONS_KEY = "cc-chat-sessions";
 const SESSIONS_KEY_PREFIX = "cc-chat-sessions::";
 
 /** The app builder remembers its session per app under this prefix. */
 export const BUILDER_SESSION_KEY_PREFIX = "cc-app-builder-session-";
 
+/** Who last used the chat lists in this browser: an email, or the no-email scope. */
+export const CHAT_OWNER_KEY = "cc-chat-owner";
+
+/** The member part of a scope for a browser with no email (dev with auth off). */
+export const NO_EMAIL = "anonymous";
+
 let boundScope: string | null = null;
+/** The last org id seen for an email, so a failed org lookup keeps the scope. */
+let lastIdentity: { email: string; orgId: string } | null = null;
 
 /**
  * The scope of one member in one organization, or null when there is no
@@ -73,17 +81,42 @@ export function chatScope(
 }
 
 /**
- * Bind the scope the list reads and writes. Idempotent, so a caller may run it
- * on every render. Returns true when the scope changed.
+ * The scope for one answer of `useAccess()` (PR #652 fix round 1).
+ *
+ * - Loading: null. Nothing restores until the member is known.
+ * - No email on a STALE answer (the first resolve failed, for example while
+ *   the gateway restarts in a deploy): null. Before, this became a shared
+ *   `anonymous` list that every member of the browser then used.
+ * - No email on an authoritative answer: the `anonymous` scope (dev with auth
+ *   off, or signed out).
+ * - An email with no org id, after an answer that had one for the SAME email:
+ *   the last org id. `GET /auth/me` answers `organization: {}` when its org
+ *   query fails, and a scope that flipped would move every open rail to a new
+ *   chat.
+ */
+export function scopeFromAccess(a: {
+  loading: boolean;
+  stale: boolean;
+  email: string | null | undefined;
+  organizationId: string | null | undefined;
+}): string | null {
+  if (a.loading) return null;
+  const email = (a.email ?? "").trim().toLowerCase();
+  if (!email) return a.stale ? null : chatScope(NO_EMAIL, null);
+  let org = (a.organizationId ?? "").trim();
+  if (!org && lastIdentity?.email === email) org = lastIdentity.orgId;
+  if (org) lastIdentity = { email, orgId: org };
+  return chatScope(email, org);
+}
+
+/**
+ * Bind the scope the list reads and writes. Idempotent, and it touches no
+ * storage, so a caller may run it during render. Returns true when the scope
+ * changed. `tidyChatStorage` does the storage work, from an effect.
  */
 export function bindChatScope(scope: string | null): boolean {
   if (scope === boundScope) return false;
   boundScope = scope;
-  if (scope && typeof window !== "undefined") {
-    // The old key holds somebody's list with no owner on it. Nobody may read
-    // it, so it goes.
-    try { localStorage.removeItem(LEGACY_SESSIONS_KEY); } catch { /* storage off */ }
-  }
   return true;
 }
 
@@ -101,30 +134,70 @@ export function builderSessionKey(slug: string): string | null {
   return boundScope ? `${BUILDER_SESSION_KEY_PREFIX}${boundScope}::${slug}` : null;
 }
 
-/**
- * Sign-out: forget every stored chat id in this browser, for every member.
- * The server keeps the conversations, and the next sign-in merges them back.
- */
-export function forgetChatSessions(): void {
-  boundScope = null;
+/** The member part of a stored key, or null for a key with no owner. */
+function keyOwner(key: string): string | null {
+  let rest: string;
+  if (key.startsWith(SESSIONS_KEY_PREFIX)) rest = key.slice(SESSIONS_KEY_PREFIX.length);
+  else if (key.startsWith(BUILDER_SESSION_KEY_PREFIX)) {
+    rest = key.slice(BUILDER_SESSION_KEY_PREFIX.length);
+    if (!rest.includes("::")) return null; // the old per-app key: no owner
+  } else return null;
+  const bar = rest.indexOf("|");
+  return bar > 0 ? rest.slice(0, bar) : null;
+}
+
+function isChatIdKey(key: string): boolean {
+  return (
+    key === LEGACY_SESSIONS_KEY ||
+    key.startsWith(SESSIONS_KEY_PREFIX) ||
+    key.startsWith(BUILDER_SESSION_KEY_PREFIX)
+  );
+}
+
+/** Remove every stored chat-id key for which `doomed(owner)` is true. */
+function removeChatIdKeys(doomed: (owner: string | null) => boolean): void {
   if (typeof window === "undefined") return;
   try {
-    const doomed: string[] = [];
+    const keys: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (
-        k &&
-        (k === LEGACY_SESSIONS_KEY ||
-          k.startsWith(SESSIONS_KEY_PREFIX) ||
-          k.startsWith(BUILDER_SESSION_KEY_PREFIX))
-      ) {
-        doomed.push(k);
-      }
+      if (k && isChatIdKey(k) && doomed(keyOwner(k))) keys.push(k);
     }
-    for (const k of doomed) localStorage.removeItem(k);
+    for (const k of keys) localStorage.removeItem(k);
   } catch {
     /* storage unavailable: there is nothing stored to forget */
   }
+}
+
+/**
+ * Keep the stored chat ids to the member who uses this browser now
+ * (PR #652 fix round 1). Run it from an effect when the bound scope changes.
+ *
+ * It removes the old keys that have no owner. When the member is not the one
+ * this browser last recorded, it removes every list and builder id of other
+ * members. That covers EVERY way out of a sign-in: a sign-out button, an
+ * expired session, the middleware redirect, the NextAuth sign-out page. The
+ * next member's first answer from `useAccess()` does the clearing, whichever
+ * path ended the last one. The lists of the same member in another org stay.
+ */
+export function tidyChatStorage(scope: string | null): void {
+  if (!scope || typeof window === "undefined") return;
+  const owner = scope.slice(0, scope.indexOf("|"));
+  let recorded: string | null = null;
+  try { recorded = localStorage.getItem(CHAT_OWNER_KEY); } catch { /* storage off */ }
+  removeChatIdKeys((o) => o === null || (recorded !== owner && o !== owner));
+  try { localStorage.setItem(CHAT_OWNER_KEY, owner); } catch { /* storage off */ }
+}
+
+/**
+ * Forget every stored chat id in this browser, for every member. The server
+ * keeps the conversations, and the next sign-in merges them back.
+ */
+export function forgetChatSessions(): void {
+  boundScope = null;
+  lastIdentity = null;
+  removeChatIdKeys(() => true);
+  try { localStorage.removeItem(CHAT_OWNER_KEY); } catch { /* storage off */ }
 }
 
 /**
@@ -198,11 +271,14 @@ export function deleteSession(id: string): void {
 /**
  * Drop a session from THIS browser only. For an id the server refused: it is
  * not this member's to delete, so no DELETE goes to the server.
+ *
+ * ⚠️ The send queue (`cc-queue-<id>`) STAYS. It holds words the member typed
+ * and has not sent, and a refused chat is no reason to lose them. The rail
+ * carries them into the composer of the new chat (`carriedText`).
  */
 export function forgetSession(id: string): void {
   writeList(getSessions().filter((s) => s.id !== id));
   deleteMessages(id);
-  saveQueue(id, []);
 }
 
 /**

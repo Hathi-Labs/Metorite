@@ -24,41 +24,50 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAccess } from "@/components/AccessProvider";
 import {
   bindChatScope,
-  chatScope,
   deleteSession,
   enrichSession,
   fetchAndMergeSessionsFromDb,
   getSessions,
   probeSession,
+  scopeFromAccess,
+  tidyChatStorage,
   type ChatSession,
 } from "@/lib/sessions";
 import {
   NO_PICK,
-  RECOVERED_NOTICE,
+  carriedText,
   isRestored,
   openDeliberately,
   recoverRefused,
+  recoveredNotice,
   refusalHandler,
   restoreOrStart,
+  restoreOrStartAfterMerge,
   startFresh,
   type RailPick,
 } from "@/lib/railSessions";
 import type { SessionRefusedHandler } from "@/lib/chatTurnFailure";
 
-/** The scope of a browser with no signed-in email (local dev, a failed resolve). */
-const NO_EMAIL = "anonymous";
-
 /**
  * The signed-in member's chat scope, from `useAccess()` (the one identity
- * source of the client), or null until it resolves. It binds the session store
- * during render, so a child's effect never reads the list unbound.
+ * source of the client), or null until it resolves (`scopeFromAccess` has
+ * the rules). It binds the session store during render, so a child's effect
+ * never reads the list unbound. The storage work (`tidyChatStorage`) runs in
+ * an effect. `AppShell` calls this hook on every page, so the tidy runs after
+ * every way out of a sign-in, not only after a sign-out button.
  */
 export function useChatScope(): string | null {
-  const { access, loading } = useAccess();
-  const scope = loading
-    ? null
-    : chatScope(access.email || NO_EMAIL, access.organization?.id ?? null);
+  const { access, loading, stale } = useAccess();
+  const scope = scopeFromAccess({
+    loading,
+    stale,
+    email: access.email,
+    organizationId: access.organization?.id,
+  });
   bindChatScope(scope);
+  useEffect(() => {
+    tidyChatStorage(scope);
+  }, [scope]);
   return scope;
 }
 
@@ -106,7 +115,7 @@ export interface AgentSessions {
   /** The refused message, for the composer of the new chat. */
   recoveredInput: string | undefined;
   consumeRecoveredInput: () => void;
-  /** For `AgentChat`'s `notice`, after a refused send moved to a new chat. */
+  /** For `AgentChat`'s `notice`, after a refused chat gave way to a new one. */
   notice: { text: string; onDismiss: () => void } | null;
 }
 
@@ -134,8 +143,16 @@ export function useAgentSessions(agent: string): AgentSessions {
       choose(NO_PICK);
       return;
     }
-    choose(restoreOrStart(agent));
-    setSessions(getSessions());
+    // An empty local list waits (bounded) for the server's list first, so a
+    // first visit does not start an empty chat row while the server holds the
+    // member's chats.
+    let cancelled = false;
+    void restoreOrStartAfterMerge(agent).then((next) => {
+      if (cancelled) return;
+      choose(next);
+      setSessions(getSessions());
+    });
+    return () => { cancelled = true; };
   }, [scope, agent, choose]);
 
   // Merge the sessions that live only in Postgres (cache clear, other device,
@@ -154,12 +171,13 @@ export function useAgentSessions(agent: string): AgentSessions {
     (refusedId: string, pendingText?: string): boolean => {
       const next = recoverRefused(pickRef.current, refusedId, agent);
       if (!next) return false;
+      // The refused message and the refused chat's queue go to the composer.
+      const carried = carriedText(refusedId, pendingText);
       choose(next);
       setSessions(getSessions());
-      if (pendingText && pendingText.trim()) {
-        setRecoveredInput(pendingText);
-        setNoticeText(RECOVERED_NOTICE);
-      }
+      setRecoveredInput(carried);
+      // On load and on send alike: a chat that disappears is explained.
+      setNoticeText(recoveredNotice(carried));
       return true;
     },
     [agent, choose],

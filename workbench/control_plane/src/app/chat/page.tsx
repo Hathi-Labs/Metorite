@@ -23,7 +23,7 @@ import {
 import { getAssistantSettings } from "@/app/email/lib/api";
 import AgentChat from "@/components/AgentChat";
 import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
-import { RECOVERED_NOTICE, recoverRefused, type RailPick } from "@/lib/railSessions";
+import { carriedText, recoverRefused, recoveredNotice, type RailPick } from "@/lib/railSessions";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
@@ -792,13 +792,14 @@ function ChatPageInner() {
     const next = recoverRefused(pickRef.current, refusedId, agent);
     if (!next) return false;
     pickRef.current = next;
+    // The refused message and the refused chat's queue go to the composer,
+    // and the note explains the new chat on load and on send alike.
+    const carried = carriedText(refusedId, pendingText);
     setSessions(getSessions());
     setActiveSessionId(next.activeId);
     setRestoredId(null);
-    if (pendingText && pendingText.trim()) {
-      setRecoveredInput(pendingText);
-      setRecoveryNotice(RECOVERED_NOTICE);
-    }
+    setRecoveredInput(carried);
+    setRecoveryNotice(recoveredNotice(carried));
     return true;
   }, []);
   const onSessionRefused = useRestoredSessionGuard(activeSessionId, restoredId, recoverChat);

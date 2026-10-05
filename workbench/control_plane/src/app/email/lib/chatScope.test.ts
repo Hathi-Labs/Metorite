@@ -315,8 +315,10 @@ describe("email-chat-picker-dot", () => {
     expect(options).not.toMatch(/\baccent\b/);
     // /chat sends no mailbox note. Its one note is the recovery note after a
     // refused chat moved to a new one (2026-10-05, lib/railSessions.ts).
-    expect(chatPage).not.toMatch(/\bnotice=\{(?!\s*recoveryNotice\b)/);
-    expect(chatPage).not.toMatch(/\bscopeNotice\b/);
+    // Exactly one `notice=`, and it is the recovery note.
+    expect(chatPage.match(/\bnotice=/g) ?? []).toHaveLength(1);
+    expect(chatPage).toMatch(/\bnotice=\{\s*recoveryNotice\b/);
+    expect(chatPage).not.toMatch(/\bscopeNotice\b|rememberChatScope/);
   });
 
   it("passes the options with their dots to the picker", () => {

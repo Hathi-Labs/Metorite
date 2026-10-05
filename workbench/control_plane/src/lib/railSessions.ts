@@ -19,9 +19,12 @@
 import type { SessionRefusedHandler } from "@/lib/chatTurnFailure";
 import {
   createSession,
+  fetchAndMergeSessionsFromDb,
   forgetSession,
+  getQueue,
   getSessions,
   upsertSession,
+  type ChatSession,
 } from "@/lib/sessions";
 
 /** The open chat, and the id it was restored as (null: opened on purpose). */
@@ -33,12 +36,55 @@ export interface RailPick {
 export const NO_PICK: RailPick = { activeId: "", restoredId: null };
 
 /**
- * The note a rail shows after a send was refused and a new chat took its
- * place. A status, not an error: nothing failed that the member can fix.
+ * The note a surface shows after a refused chat gave way to a new one, on
+ * load or on send (PR #652 fix round 1: a chat that disappears is explained).
+ * A status, not an error: nothing failed that the member can fix.
  */
 export const RECOVERED_NOTICE =
-  "This browser held a chat from another sign-in, so a new chat is open. " +
-  "Your message is in the box. Press Send to send it.";
+  "The chat this browser remembered is not open to you, so a new chat is open.";
+/** The second sentence, when the member's words went into the composer. */
+export const RECOVERED_TEXT_NOTICE = " Your message is in the box. Press Send to send it.";
+
+export function recoveredNotice(carried: string | undefined): string {
+  return carried ? RECOVERED_NOTICE + RECOVERED_TEXT_NOTICE : RECOVERED_NOTICE;
+}
+
+/**
+ * The words to put in the composer of the new chat: the refused message, then
+ * every queued message of the refused chat. Unsent work is never dropped.
+ * Undefined when there is nothing.
+ */
+export function carriedText(refusedId: string, pendingText?: string): string | undefined {
+  const parts = [pendingText ?? "", ...getQueue(refusedId)]
+    .map((t) => t.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+/** How long a first visit waits for the server's list before it chooses. */
+export const MERGE_WAIT_MS = 3_000;
+
+/**
+ * Like `restoreOrStart`, but when this browser holds no session of `agent`
+ * it first waits (at most `waitMs`) for the server's list. A member's first
+ * visit after the list moved to its per-member key would otherwise start an
+ * empty chat row in every rail, while the server holds their chats.
+ */
+export async function restoreOrStartAfterMerge(
+  agent: string,
+  merge: () => Promise<ChatSession[]> = fetchAndMergeSessionsFromDb,
+  waitMs: number = MERGE_WAIT_MS,
+): Promise<RailPick> {
+  if (!getSessions().some((s) => s.agentName === agent)) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      merge().catch(() => []),
+      new Promise((resolve) => { timer = setTimeout(resolve, waitMs); }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+  return restoreOrStart(agent);
+}
 
 /** Open the newest session of `agent` for the bound member, or start one. */
 export function restoreOrStart(agent: string): RailPick {

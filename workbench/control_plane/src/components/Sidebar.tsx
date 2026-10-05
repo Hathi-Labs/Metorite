@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useSession, signOut } from "next-auth/react";
-import { forgetChatSessions } from "@/lib/sessions";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
@@ -221,7 +220,7 @@ export default function Sidebar() {
                 </div>
               </div>
               <button
-                onClick={() => { forgetChatSessions(); void signOut({ callbackUrl: "/signin" }); }}
+                onClick={() => signOut({ callbackUrl: "/signin" })}
                 className="ml-2 shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition"
                 title="Sign out"
               >
