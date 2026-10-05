@@ -1,0 +1,47 @@
+# The packages of the coding sandbox image, by name. maf_coding_engine.md §7.2.
+#
+# This file is the list. requirements.txt is the lock: every pin and every hash
+# of these names and of their dependencies. pip installs only the lock, with
+# --require-hashes. To change the list, edit this file and run this command
+# from the repo root:
+#
+#   uv pip compile apps/services/orchestrator/sandbox/requirements.in \
+#       --generate-hashes --python-version 3.12 \
+#       --python-platform x86_64-manylinux_2_28 --no-config \
+#       -o apps/services/orchestrator/sandbox/requirements.txt
+#
+# The rule for a new package is in §7.2: a reviewed pull request, a wheel that
+# needs no network, no GPU and no browser at run time, and an entry in
+# _SANDBOX_MODULES of tests/unit/test_coding_sandbox_packages.py (WS43-F25).
+# Nothing installs a package at run time.
+
+# The first set of §7.2: data, spreadsheets, charts and simple PDFs.
+pandas
+numpy
+openpyxl
+matplotlib
+pypdf
+fpdf2
+markdown
+tabulate
+pyyaml
+python-dateutil
+requests
+
+# The second set (2026-10-05): business documents.
+python-docx
+python-pptx
+xlsxwriter
+reportlab
+pdfplumber
+pillow
+
+# The second set: analysis and charts.
+scipy
+seaborn
+networkx
+
+# The second set: HTML, XML and templates.
+beautifulsoup4
+lxml
+jinja2

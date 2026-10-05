@@ -598,13 +598,84 @@ mount that could hold one (§7.1 rule 5).
 - Node.js 22 LTS for `linux-x64`. app-builder needs Node (§4.3). The
   Dockerfile pins one exact `22.x` version and its SHA-256 from that
   release's `SHASUMS256.txt`. The build checks the tarball against it.
-- Python packages from
-  `apps/services/orchestrator/sandbox/requirements.txt`, installed with
-  `--require-hashes`. The first set: `pandas`, `numpy`, `openpyxl`,
-  `matplotlib`, `pypdf`, `fpdf2`, `markdown`, `tabulate`, `pyyaml`,
-  `python-dateutil` and `requests`.
+- Python packages. `apps/services/orchestrator/sandbox/requirements.in`
+  lists them by name. `requirements.txt` beside it is the lock, with a pin
+  and a hash for each name and each dependency. pip installs the lock with
+  `--require-hashes` and `--only-binary=:all:`. The table below gives the
+  list.
 - The image must run as any non-root uid. It holds nothing that only one uid
   can read.
+
+**The packages (2026-10-05).** The container has no network at run time. So
+a script can use a package only when the image holds it. The first set came
+with WS-43b. The second set comes from a survey of the agents, the skills,
+the coding evals and an owner list for business documents and analysis.
+
+| Package | Import | Set | Who uses it, or why it is here |
+|---|---|---|---|
+| `pandas` | `pandas` | first | Tables and analysis. The sandbox section names it (`acb_skills/addendum.py`, `SANDBOX_LIBRARIES`) |
+| `numpy` | `numpy` | first | Numbers. The sandbox section names it |
+| `openpyxl` | `openpyxl` | first | Read and write `.xlsx`. Eval WS43-E12 (`evals/coding_engine/scripted.py`, `EXPORT_PY`) |
+| `matplotlib` | `matplotlib` | first | PNG charts. Evals WS43-E10 and WS43-E17 (`CHART_PY`, `BURNDOWN_PY`) |
+| `pypdf` | `pypdf` | first | Read, merge and split PDFs |
+| `fpdf2` | `fpdf` | first | Simple PDFs |
+| `markdown` | `markdown` | first | Markdown to HTML |
+| `tabulate` | `tabulate` | first | Text and Markdown tables |
+| `pyyaml` | `yaml` | first | YAML files |
+| `python-dateutil` | `dateutil` | first | Date parsing |
+| `requests` | `requests` | first | HTTP through the egress proxy, after an approval (§7.3) |
+| `python-docx` | `docx` | second | Word reports. The sandbox section names it |
+| `python-pptx` | `pptx` | second | Slide decks. The sandbox section names it |
+| `xlsxwriter` | `xlsxwriter` | second | `.xlsx` with formats and native charts. `python-pptx` needs it too |
+| `reportlab` | `reportlab` | second | PDFs with tables and layout. The mirrored `pdf` skill uses it |
+| `pdfplumber` | `pdfplumber` | second | Text and tables from a PDF. The mirrored `pdf` skill uses it. It brings `pypdfium2`, which renders a page to an image |
+| `pillow` | `PIL` | second | Images. matplotlib and fpdf2 needed it already. It is now a listed name, so the fence holds it |
+| `scipy` | `scipy` | second | Statistics, fits and optimisation. A model reaches for `scipy.stats` first |
+| `seaborn` | `seaborn` | second | Statistical charts over matplotlib |
+| `networkx` | `networkx` | second | Graphs, for example the critical path of task dependencies |
+| `beautifulsoup4` | `bs4` | second | Parse an HTML file |
+| `lxml` | `lxml` | second | XML and HTML. `python-docx` and `python-pptx` need it |
+| `jinja2` | `jinja2` | second | Templates for HTML and Markdown reports |
+
+**Left out, and why.**
+
+| Package | Why |
+|---|---|
+| `plotly` | 69 MB, the largest item of the owner list after `scipy`. Its only offline output is an HTML file with its own look and about 4.6 MB of inline JavaScript. The chat has its own chart kit for an interactive chart. matplotlib and seaborn make the PNG |
+| `kaleido` | plotly's static export. Version 1 drives a Chrome that it downloads, and version 0.2 bundles a Chromium. Both are a browser engine |
+| `playwright`, `selenium` | A browser engine. No agent needs one in the sandbox |
+| `markitdown` | It brings `magika`, and `magika` brings `onnxruntime`, an ML runtime. `pdfplumber`, `python-docx` and `openpyxl` read the same files |
+| `pdf2image`, `pytesseract` | They need the Poppler and Tesseract binaries. `pypdfium2` renders a page, and OCR is not a need today |
+| `torch`, `tensorflow`, `scikit-learn` | GPU or ML scale. No agent uses one |
+| LibreOffice, Pandoc, npm `docx` and `pptxgenjs` | The mirrored `docx`, `pptx` and `xlsx` skills ask for them. Nothing loads that mirror (`skills/upstream/README.md`), and LibreOffice alone is about 400 MB |
+
+`pip-audit` found no known vulnerability in the lock on 2026-10-05, against
+the PyPI and OSV databases.
+
+**Size.** The build deletes the `tests` folders that the wheels ship, about
+100 MB that no import reads. The base image deletes the CPython test suite
+in the same way. Measured locally on 2026-10-05:
+
+| | Before | After |
+|---|---|---|
+| Image on disk | 860 MB | 1.05 GB |
+| Image content (compressed) | 205 MB | 257 MB |
+| `site-packages` | 266 MB | 394 MB |
+
+**To add a package.** Open a reviewed pull request. Do not install a package
+at run time, because the container has no network.
+
+1. Make sure that the package installs from a wheel and works with no
+   network, no GPU and no browser.
+2. Add its name to `requirements.in`.
+3. Run the `uv pip compile` command in the header of `requirements.in`.
+4. Add the name and its import name to `_SANDBOX_MODULES` in
+   `tests/unit/test_coding_sandbox_packages.py`.
+5. Add a row to the table above.
+6. Run `pip-audit` on the lock, and give the image size before and after.
+
+Fence WS43-F25 fails when a list, the lock and the test disagree. It also
+fails when sandbox code imports a package that the image does not hold.
 
 **Pinning.** The broker runs the image only by an immutable reference: a
 registry digest (`name@sha256:…`) or a local image ID (`sha256:…`). It refuses
@@ -1245,6 +1316,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F8 | `tests/unit/test_maf_harness_contract.py` | An `agent-framework-core` upgrade renames a file tool or a `create_harness_agent` parameter that WS-43 uses, or the session drops `disable_file_memory=True` or `allow_concurrent_invocation=False` |
 | WS43-F9 | `tests/unit/test_sandbox_network_grant.py` | A run with no chat opens the network, a refusal opens it, an approval does not move the container to its own organization's network, the run's end leaves a grant, or a sandbox reaches the bridge gateway address on port 8080. Or the empty read-only cover on `/workspace/.git` is missing after a grant or after a revoke |
 | WS43-F10 | `tests/unit/test_coding_sandbox_image.py` | The base image loses its digest, a requirement loses its hash, Node loses its version pin or SHA-256, or the broker accepts a mutable tag |
+| WS43-F25 | `tests/unit/test_coding_sandbox_packages.py` | §7.2, the packages. `requirements.in`, the lock and `_SANDBOX_MODULES` name different packages. The lock pins a browser engine, a GPU or ML-scale library, or a package that needs a binary the image does not hold. The sandbox section names a library that is not in the list. An eval script, or a script or `python` block of a prebuilt agent skill, imports a package that the image does not hold. Its `sandbox_docker` half fails when a listed module does not import, or the image cannot make a PNG, `.docx`, `.pptx`, `.xlsx` and PDF as uid 1000 with no network |
 | WS43-F11 | `tests/unit/test_coding_eval_checkers.py` | An eval checker passes a wrong output or fails a right one |
 | WS43-F12 | `tests/unit/test_app_builder_engine.py` | app-builder ignores the scope, asks for a mount outside the broker's list, mounts a source with `.git`, takes the Copilot path because of the label, or leaves the token or the LLM key findable in its container |
 | WS43-F13 | `tests/unit/test_no_host_git_on_sandbox_dir.py` | A host `git` process starts on a sandbox dir. The test covers `_commit_repo_changes`, the push guard, the HEAD capture, the commit scan, the self-anneal and the self-mutation, and plants a hostile `.git/config` and hook. For a Custom Apps workspace, a container write to `/workspace/.git` succeeds, or a checkpoint runs a planted hook. The test also plants, at run time, a `subdir/.git` as a directory, a `subdir/.git` as a gitfile (`gitdir: …`) and a root `.gitattributes`, and a checkpoint runs something from one of them. Or `_git` in `apps/durability.py` drops `GIT_CONFIG_NOSYSTEM=1`, `core.fsmonitor=false` or the empty `core.hooksPath` |
@@ -1261,7 +1333,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F24 | `tests/unit/test_delegation_no_egress.py` | §16.3, H-236. A run that a covered run delegates to, at any depth, gets an egress tool in its request or runs one, on the MAF path or the Copilot path. A child, its payload or a bad value clears `no_egress`. A health probe clears it. The delegation of an uncovered parent changes at all. A real egress tool loses `open_world`, or a new one joins with no review. A run site binds no `no_egress`, or a run boundary passes no answer to the injection. The follow-up: a tool of another repo that borrows a delegation name stays or runs, the control trusts a foreign wrapper of a platform tool, or a chain tool loses its trust. A module outside `acb_skills` and `orchestrator` registers a platform callable. The unmount save has its own fence, `workbench/control_plane/src/lib/chatMemorySave.test.ts` |
 
 **Where the Docker tests run.** WS43-F4, WS43-F9, WS43-F12 and parts of
-WS43-F5 and WS43-F10 need a real Docker daemon. They carry a new
+WS43-F5, WS43-F10 and WS43-F25 need a real Docker daemon. They carry a new
 `sandbox_docker` pytest marker.
 
 - WS-43b adds `not sandbox_docker` to the default `-m` filter in
@@ -3714,6 +3786,19 @@ says:
    image has the data libraries.
 7. Make a skill under `agent-data/skills/` for a job that will come again.
    A skill is private to the member who made it.
+8. When the member asks for a PDF, a `.docx`, a `.pptx` or a `.xlsx`, make
+   it with a script and save it in `/workspace/outputs/`. Say that you made
+   the file only when the command succeeded and the file is there. Added
+   2026-10-05 with the second package set (§7.2).
+
+**The rule "A PDF" of the Projects instructions has two halves.** Without
+`run_command`, the agent cannot make a PDF, and the card's Download PDF
+button makes one. With `run_command`, rule 8 comes first, because the image
+holds `fpdf2` and `reportlab`. The sandbox section owns what a sandbox run
+can make. Fences: `test_the_pdf_rule_binds_only_without_run_command` in
+`tests/unit/test_projects_agent.py`, and
+`test_the_sandbox_section_owns_the_document_files` in
+`tests/unit/test_generated_addendum.py`.
 
 The first text of rule 4 was "Never send data off the platform". The owner
 decision above made that claim untrue, so the section says only that the
