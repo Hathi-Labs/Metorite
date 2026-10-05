@@ -43,7 +43,7 @@ fences live here, because the scheduler fence cannot see a block in
   ``sent`` or ``drafts``, a row with no date, a tie, and a row of org A with
   the same account and thread do not void it.
 
-**EM-T4a-2, PR-B1.** Two more fences, with the same watched leaves:
+**EM-T4a-2, PR-B1.** Three more fences, with the same watched leaves:
 
 * ``email-decision-core-no-session-across-the-match-ask``. The rule-match
   ask of ``_run_rules_job`` and of the gap loop of ``_maybe_classify_threads``
@@ -53,6 +53,11 @@ fences live here, because the scheduler fence cannot see a block in
   block. R8: the split jobs write their rows in org B only.
 * ``email-decision-core-steps``. Each new step takes ``db`` (the ask step
   takes none), opens no block and calls no ``commit()``.
+* ``email-decision-core-read-fails-closed`` (review round 1). A reader of
+  Block R that swallows a failed statement leaves the transaction aborted.
+  The ``SELECT 1`` at the end of Block R then raises, so the row gets no
+  ask, no Block W, no stamp and no provider call. Hermetic for each job and
+  each reader, and R8 for the runner.
 
 Run (real Postgres)::
 
@@ -65,7 +70,7 @@ import ast
 import json
 import sys
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -1141,14 +1146,15 @@ def _dc_mode(monkeypatch, clear, mode: str) -> None:
     clear()
 
 
-def _watch_sessions(monkeypatch, state: dict, db) -> list[str]:
+def _watch_sessions(monkeypatch, state: dict, db, *, double=None) -> list[str]:
     """Give each loaded module of ``routes/email`` that binds
-    ``_tenant_session`` the double of :func:`_open_count_session`.
+    ``_tenant_session`` the double of :func:`_open_count_session`, or
+    ``double`` when the case gives one.
 
     Each module imports the seam under its own name, so one patch of
     ``core`` would leave a block of ``replyzero`` unseen. Returns the names
     of the patched modules."""
-    double = _open_count_session(state, db)
+    double = double or _open_count_session(state, db)
     patched = []
     for name, module in sorted(sys.modules.items()):
         if name.startswith("gateway.routes.email") and module is not None \
@@ -1800,6 +1806,109 @@ async def test_a_suppressed_match_stays_suppressed(
         ("r-done", None), ("r-receipt", "conversation")], matches
 
 
+# ── EM-T4a-2 PR-B1 review round 1: an aborted Block R fails closed ─────────
+
+#: Each best-effort reader of Block R: a fragment of its SQL, and the line it
+#: logs when it swallows its own failure and returns an empty value.
+_B1_READERS = {
+    "_is_reply_candidate": ("unsubscribe_link", "email.reply_candidate_gate_failed"),
+    "_load_rule_patterns": ("email_rule_patterns", "email.rule_patterns_load_failed"),
+    "_load_rule_guidance": ("email_rule_guidance", "email.rule_guidance_load_failed"),
+    "_fetch_sender_history": ("email_executed_rules",
+                              "email.classification_hints_failed"),
+}
+
+#: The line that the outer handler of each job logs.
+_B1_JOB_FAILED = {"runner": "email.run_rules_failed",
+                  "runner-multi": "email.run_rules_failed",
+                  "backfill": "email.classify_threads_failed"}
+
+
+def _aborting_db(*, multi: bool, fail_on: str) -> AsyncMock:
+    """The database of :func:`_b1_db`, with the abort of a real transaction.
+
+    The first statement whose SQL holds ``fail_on`` fails. Each statement
+    after it in the same block fails too, because Postgres refuses each
+    statement of an aborted transaction (measured through asyncpg: both are
+    ``DBAPIError``, and the COMMIT after them raises nothing). A new block
+    is a new transaction (``db.tx``)."""
+    from sqlalchemy.exc import DBAPIError
+
+    db = _b1_db(multi=multi)
+    answer = db.execute.side_effect
+    db.tx = {"aborted": False}
+
+    async def execute(stmt, params=None):
+        sql = str(stmt)
+        if db.tx["aborted"]:
+            raise DBAPIError(sql, params, Exception(
+                "current transaction is aborted, commands ignored until end "
+                "of transaction block"))
+        if fail_on in sql:
+            db.tx["aborted"] = True
+            raise DBAPIError(sql, params, Exception(
+                "canceling statement due to statement timeout"))
+        return await answer(stmt, params)
+
+    db.execute = AsyncMock(side_effect=execute)
+    return db
+
+
+def _transaction_per_block(state: dict, db):
+    """:func:`_open_count_session`, and each block begins a new transaction."""
+    from contextlib import asynccontextmanager
+
+    counted = _open_count_session(state, db)
+
+    @asynccontextmanager
+    async def _ts():
+        db.tx["aborted"] = False
+        async with counted() as session:
+            yield session
+    return _ts
+
+
+@pytest.mark.parametrize("reader", sorted(_B1_READERS))
+@pytest.mark.parametrize("job", sorted(_B1_JOBS))
+async def test_an_aborted_read_block_stops_the_row(
+    job, reader, monkeypatch, decide_env,
+):
+    """R7 fence ``email-decision-core-read-fails-closed`` (review round 1).
+
+    A best-effort reader of Block R swallows a failed statement, and the
+    transaction stays aborted. Each reader after it fails and returns an
+    empty value, and the seam commits the aborted block with no error. The
+    ``SELECT 1`` at the end of Block R raises instead. So the row gets no
+    ask, no Block W, no stamp and no provider call. The outer handler of
+    the job logs the failure, and the next cycle selects the row again,
+    because nothing stamped it. Remove the ``SELECT 1`` and the ask runs on
+    the empty context, and Block W applies and stamps the result."""
+    real = {name: getattr(engine_mod, name) for name in _B1_READERS}
+    state, tagged, calls = _b1_env(monkeypatch, decide_env, "off", job=job)
+    for name, fn in real.items():
+        monkeypatch.setattr(engine_mod, name, fn)
+    fail_on, swallowed = _B1_READERS[reader]
+    db = _aborting_db(multi=job == "runner-multi", fail_on=fail_on)
+    _watch_sessions(monkeypatch, state, db,
+                    double=_transaction_per_block(state, db))
+    provider = _dc_provider(monkeypatch)
+
+    with structlog.testing.capture_logs() as caps:
+        await _B1_JOBS[job]()
+
+    events = [c.get("event") for c in caps]
+    assert swallowed in events, f"{reader} did not swallow a failure: {events}"
+    assert tagged == [], f"the ask ran on an aborted read: {tagged}"
+    names = [name for name, *_rest in calls]
+    assert names == ["read_classification"], (
+        f"an aborted read reached Block W: {names}")
+    assert provider.calls == ["authenticate"], provider.calls
+    assert [e for e in events if e in _B1_JOB_FAILED.values()] == [
+        _B1_JOB_FAILED[job]], events
+    assert "email.classify_unavailable_skip" not in events
+    assert state["open"] == 0
+
+
 # ── EM-T4a-2 PR-B1: the source fences ──────────────────────────────────────
 
 #: Each new step of PR-B1, and whether it takes ``db``. None opens a block
@@ -1965,3 +2074,55 @@ class TestTheSplitJobsWriteTheirOwnTenant:
         assert rows == [{"thread_id": tid, "status": "FYI", "org": p.org_b}], rows
         _isolated(p, "email_thread_status", acc, expect_b=1)
         _isolated(p, "email_executed_rules", acc, expect_b=0)
+
+    async def test_an_aborted_read_block_stops_the_row_in_b(
+        self, promoted, app_engine, monkeypatch, decide_env,  # noqa: F811
+    ):
+        """R8 of ``email-decision-core-read-fails-closed`` (review round 1).
+
+        On a real Postgres, a statement that fails in Block R aborts the
+        transaction, and each reader after it fails and returns an empty
+        value. The ``SELECT 1`` raises, so the runner asks nothing, logs no
+        rule, stamps nothing and calls no provider. Without it, the seam
+        commits the aborted block with no error, and Block W applies and
+        stamps the row on the empty context."""
+        _rm_mode(monkeypatch, decide_env, "off")
+        _assert_non_priv(app_engine)
+        p = promoted
+        acc = _seed_account(p.admin_engine, org=p.org_b, owner="b@t4a2b1.test")
+        _seed_label_rule(p.admin_engine, org=p.org_b, account_id=acc)
+        _seed_message(p.admin_engine, org=p.org_b, account_id=acc,
+                      thread_id=f"t-b1-abort-{acc}")
+        seen: list[tuple[str, int]] = []
+        _watch_model(monkeypatch, {"open": 0}, seen, match=True)
+        provider = _FakeProvider()
+        _patch_providers(monkeypatch, provider)
+        gate = engine_mod._is_reply_candidate
+
+        async def _gate_after_a_failed_statement(db, account_id, email):
+            # One statement fails and the caller swallows it, as a reader
+            # does with a statement timeout. The real gate then runs.
+            with suppress(Exception):
+                await db.execute(text("SELECT 1 / 0"))
+            return await gate(db, account_id, email)
+
+        monkeypatch.setattr(engine_mod, "_is_reply_candidate",
+                            _gate_after_a_failed_statement)
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        with structlog.testing.capture_logs() as caps:
+            async with tenant_engine_scope(app_dsn):
+                with _bound(p.org_b):
+                    await runner_mod._run_rules_job(acc, 50, False, "scheduler")
+
+        events = [c.get("event") for c in caps]
+        assert "email.rule_patterns_load_failed" in events, (
+            f"the readers after the failure did not fail: {events}")
+        assert seen == [], f"the ask ran on an aborted read: {seen}"
+        assert "email.run_rules_failed" in events, events
+        logs = _rows(p.admin_engine, "SELECT status FROM email_executed_rules "
+                     f"{_BY_ACCOUNT}", {"a": acc})
+        assert logs == [], f"an aborted read applied a rule: {logs}"
+        stamped = ("SELECT count(*) FROM email_messages "
+                   f"{_BY_ACCOUNT} AND rules_processed_at IS NOT NULL")
+        assert _count_as(p.app_url, p.org_b, stamped, {"a": acc}) == 0
+        assert provider.calls == ["authenticate"], provider.calls

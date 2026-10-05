@@ -1786,6 +1786,8 @@ async def _run_rules_job(
                     plan = await read_classification(
                         db, account_id, r, email,
                         multi_rule=multi_rule, resolve=not dry_run)
+                    # Fail closed: this raises when a reader swallowed a failed statement.
+                    await db.execute(text("SELECT 1"))
                 # Multi-rule applies every match; otherwise the single best.
                 asked = await ask_rule_match(plan.match)
                 # Block W: ONE block, where the per-row commit used to land.

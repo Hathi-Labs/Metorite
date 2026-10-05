@@ -2201,6 +2201,8 @@ async def _maybe_classify_threads(account_id: str) -> None:
                 async with _tenant_session() as db:
                     plan = await read_classification(
                         db, account_id, r, email, multi_rule=False, resolve=True)
+                    # Fail closed: this raises when a reader swallowed a failed statement.
+                    await db.execute(text("SELECT 1"))
                 asked = await ask_rule_match(plan.match)
                 # Block W: one block per gap thread. It lands where the
                 # per-thread commit used to land. EM-T4 owns the model and

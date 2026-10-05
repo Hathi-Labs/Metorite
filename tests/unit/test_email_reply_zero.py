@@ -313,6 +313,9 @@ def _backfill_db(latest, existing):
         # STATUS gets recorded; the label collapse has its own coverage in
         # test_email_thread_status_parity.py.
         _result(fetchone=None),
+        # The `SELECT 1` at the end of Block R of the gap row (EM-T4a-2 PR-B1
+        # review round 1). It raises when a reader left the block aborted.
+        _result(),
         # The projection of an open status asks whether the thread has a
         # participant outside the member's mailboxes (EM-T8e-1 round 1).
         _has_outsider(),
