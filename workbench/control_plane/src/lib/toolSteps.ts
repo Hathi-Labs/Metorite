@@ -180,6 +180,8 @@ const VERB_FIRST: Record<string, { kind: StepKind; verb: Verb }> = {
   list: { kind: "read", verb: V.list },
   find: { kind: "search", verb: V.search },
   get: { kind: "read", verb: V.read },
+  read: { kind: "read", verb: V.read },
+  search: { kind: "search", verb: V.search },
 };
 
 /** "a task", "an intake item", "tasks" — the article a plain noun needs. */
@@ -194,8 +196,11 @@ function fromVerbFirstName(bare: string): { kind: StepKind; verb: Verb; object: 
   const known = VERB_FIRST[first];
   if (!known || rest.length === 0) return null;
   const noun = rest.join(" ");
-  // `render_*` draws a thing; `find_*` searches a set, so no article there.
-  const object = first === "find" || first === "list" ? noun : withArticle(noun);
+  // `render_*` draws a thing. `find_*`, `list_*` and `search_*` act on a set,
+  // so the noun takes no article there.
+  const object = first === "find" || first === "list" || first === "search"
+    ? noun
+    : withArticle(noun);
   return { ...known, object };
 }
 

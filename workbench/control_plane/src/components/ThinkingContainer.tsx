@@ -429,8 +429,10 @@ export function ToolStepRow({
           aria-expanded={open}
           className="w-full flex items-baseline gap-1.5 text-left group/tool min-w-0"
         >
+          {/* The words keep their width and the target gives way: in a
+              narrow rail "Ran a script in …" said less than the command. */}
           <span
-            className={`text-[11.5px] min-w-0 truncate ${
+            className={`text-[11.5px] truncate ${step.target ? "flex-none max-w-[75%]" : "min-w-0"} ${
               running ? "chat-shimmer-text" : failed ? "text-destructive" : "text-foreground"
             }`}
           >
@@ -633,7 +635,7 @@ export default function ThinkingContainer({
             <AppIcon name="Check" className="text-success" size={14} strokeWidth={2} />
           )}
         </span>
-        <span className={`text-xs font-medium min-w-0 truncate ${isActive ? "chat-shimmer-text" : "text-muted-foreground"}`}>
+        <span title={title} className={`text-xs font-medium min-w-0 truncate ${isActive ? "chat-shimmer-text" : "text-muted-foreground"}`}>
           {title}
         </span>
         {!isActive && failedCount > 0 && (

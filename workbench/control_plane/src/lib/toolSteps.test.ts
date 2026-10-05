@@ -79,6 +79,7 @@ describe("describeToolStep — a step in words", () => {
     expect(step("render_board").label).toBe("Drew a board");
     expect(step("report_save").label).toBe("Saved a report");
     expect(step("archive_project", {}, "running").label).toBe("Archiving a project");
+    expect(step("search_emails").label).toBe("Searched emails");
   });
 
   it("keys on the bare name when a runtime prefixes it", () => {
@@ -201,7 +202,7 @@ describe("a script step shows its command and output when open", () => {
     const asked = replay(RECORDED).toolEvents!.find((t) => t.id === "t1")!;
     const open = renderToStaticMarkup(createElement(ToolStepRow, { event: asked, open: true }));
     expect(open).toContain("email-assistant");
-    expect(open).toContain("Used read email");
+    expect(open).toContain("Read an email");
   });
 
   it("cuts a long output, and says how much it left out", () => {
