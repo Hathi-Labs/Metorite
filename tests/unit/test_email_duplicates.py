@@ -32,13 +32,19 @@ R7 fences named here:
   lock key holds the organization, the member, the sender and the
   Message-ID, so a run that differs in one of them is never held off. A mail
   with an empty Message-ID takes no lock.
+* ``email-pair-gmail-outlook`` (R8, WS-17 EM-G9, spec §12.3.11): one member
+  has a Gmail mailbox and an Outlook mailbox. "Also in" names the other
+  mailbox on each row. When one mailbox holds a draft, the second mailbox
+  makes none, and the try-lock holds across the two providers.
 
 The UI half, ``email-also-in-row``, is in
 ``workbench/control_plane/src/app/email/lib/alsoIn.test.ts``.
 
-⚠️ The seeds write ``internet_message_id`` by hand, as an Outlook sync does.
-Since WS-17 EM-G2 the Gmail parse stores it too. EM-G9 adds Gmail rows from
-the real parse of an EM-G2 fixture (spec §12.3.11). IMAP stores none.
+⚠️ Most seeds write ``internet_message_id`` by hand, as an Outlook sync does.
+Since WS-17 EM-G2 the Gmail parse stores it too. The EM-G9 cases take no row
+by hand: each Gmail row is the real read of an EM-G2 fixture, and each Outlook
+row is the real read of a Graph message (``tests/unit/_email_pair_rows.py``).
+IMAP stores none.
 
 **R8.** The real SQL against the phase-4-promoted two-org catalog of
 ``test_h3_rls_promotion_rehearsal``, as the role ``acb_app_h3rls``
@@ -68,12 +74,15 @@ pytest.importorskip("sqlalchemy")
 import structlog
 from acb_auth.roles import UserContext, UserRole
 from acb_common.db import bind_tenant, release_tenant
+from email_ingestion.providers.gmail import GmailProvider
+from email_ingestion.providers.outlook import OutlookProvider
 from gateway.routes.email import core
 from gateway.routes.email.automation import actions, identity
 from gateway.routes.email.transport import messages as messages_mod
 from gateway.routes.email.transport import search as search_mod
 from sqlalchemy import event, text
 
+from tests.unit import _email_pair_rows as pair_rows
 from tests.unit._tenant_ladder import tenant_engine_scope
 
 # ``promoted`` and ``app_engine`` are fixtures, used by name, so the import is
@@ -274,14 +283,16 @@ def _assert_non_priv(app_eng) -> None:
     )
 
 
-def _account(admin, *, org: str, owner: str, pooled: bool = True) -> str:
+def _account(admin, *, org: str, owner: str, pooled: bool = True,
+             provider: str = "microsoft") -> str:
     with admin.begin() as c:
         return str(c.execute(text(
             "INSERT INTO email_accounts (user_id, provider, email_address, "
             "credentials_encrypted, organization_id, in_all_inboxes) "
-            "VALUES (:u, 'microsoft', :m, 'x', CAST(:o AS uuid), :p) "
+            "VALUES (:u, :prov, :m, 'x', CAST(:o AS uuid), :p) "
             "RETURNING id"),
-            {"u": owner, "m": f"box-{uuid.uuid4().hex[:8]}@t8g3.test",
+            {"u": owner, "prov": provider,
+             "m": f"box-{uuid.uuid4().hex[:8]}@t8g3.test",
              "o": org, "p": pooled}).scalar_one())
 
 
@@ -1009,3 +1020,143 @@ class TestTheDraftDedupeRace:
         assert lock is None
         assert done_a == ["DRAFT_EMAIL"] and inner["done"] == ["DRAFT_EMAIL"]
         assert _skips(caps) == []
+
+
+# ── R8: a Gmail and Outlook pair (WS-17 EM-G9) ───────────────────────────────
+
+
+@pytest.fixture()
+def gmail_and_outlook(promoted, app_engine):  # noqa: F811
+    """One member with a Gmail mailbox G and an Outlook mailbox O in org B.
+    Both are pooled, so the two pair (D-EM-30)."""
+    _assert_non_priv(app_engine)
+    p = promoted
+    tag = uuid.uuid4().hex[:8]
+    f = SimpleNamespace(p=p, admin=p.admin_engine, org=p.org_b, tag=tag,
+                        member=f"member-{tag}@t8g3.test")
+    f.g = _account(f.admin, org=f.org, owner=f.member, provider="gmail")
+    f.o = _account(f.admin, org=f.org, owner=f.member)
+    f.me = UserContext(email=f.member, role=UserRole.EMPLOYEE, organization_id=f.org)
+    try:
+        yield f
+    finally:
+        _purge(f.admin, f"%-{tag}@t8g3.test")
+
+
+async def _both_copies(f, name: str) -> SimpleNamespace:
+    """The Inbox copy of the mail of fixture ``name`` in G and in O.
+
+    Each row is the real read of its provider, stored through the one ingest
+    write. The caller binds the tenant. Returns the id and the thread of each
+    copy."""
+    sender, recipient = pair_rows.PARTIES[name]
+    s = SimpleNamespace(g_pmid=f"g-{f.tag}", o_pmid=f"o-{f.tag}",
+                        g_thread=f"gt-{f.tag}", o_thread=f"ot-{f.tag}")
+    gmail = await pair_rows.gmail_read(name, pmid=s.g_pmid, labels=["INBOX"],
+                                       thread=s.g_thread)
+    outlook = await pair_rows.outlook_read(pair_rows.graph_message(
+        s.o_pmid, imid=pair_rows.GRAPH_MESSAGE_ID[name], sender=sender,
+        to=(recipient,), thread=s.o_thread,
+        received=pair_rows.GRAPH_RECEIVED[name]), folder="inbox")
+    assert (gmail.folder, outlook.folder) == ("inbox", "inbox")
+    await pair_rows.write(f.g, gmail, GmailProvider)
+    await pair_rows.write(f.o, outlook, OutlookProvider)
+    s.in_g = pair_rows.row_id(f.admin, f.g, s.g_pmid)
+    s.in_o = pair_rows.row_id(f.admin, f.o, s.o_pmid)
+    return s
+
+
+def _stored_message_ids(admin, *row_ids: str) -> list[str | None]:
+    with admin.connect() as c:
+        return [c.execute(text(
+            "SELECT internet_message_id FROM email_messages "
+            "WHERE id = CAST(:m AS uuid)"), {"m": m}).scalar_one() for m in row_ids]
+
+
+@_DB_GATE
+class TestAGmailAndOutlookPair:
+    """``email-pair-gmail-outlook`` (EM-G9 items 1 and 2)."""
+
+    @pytest.mark.parametrize("name", [pair_rows.INBOUND, pair_rows.MIXED_CASE],
+                             ids=["inbound", "mixed-case"])
+    async def test_also_in_pairs_a_gmail_and_an_outlook_copy(
+        self, gmail_and_outlook, name,
+    ):
+        """Item 1, §11.6 edge case 10. One mail reaches both mailboxes, and
+        each row names the other mailbox, in the list and in search. Fixture
+        (d) holds a Message-ID in mixed case, so a parse that changes the case
+        breaks the pair."""
+        f = gmail_and_outlook
+        async with _as_member(f.p, f.org):
+            s = await _both_copies(f, name)
+            listed = await messages_mod.list_messages(user=f.me, **_LIST_OFF)
+            in_g = await messages_mod.list_messages(
+                user=f.me, **{**_LIST_OFF, "account_id": f.g})
+            found = await search_mod.search_messages(user=f.me, **_SEARCH_OFF)
+        assert _also_in(listed) == {s.in_g: [f.o], s.in_o: [f.g]}
+        assert _also_in(in_g) == {s.in_g: [f.o]}
+        assert _also_in(found) == {s.in_g: [f.o], s.in_o: [f.g]}
+        # Both rows hold the form of Graph: the brackets and the case stay.
+        want = pair_rows.GRAPH_MESSAGE_ID[name]
+        assert _stored_message_ids(f.admin, s.in_g, s.in_o) == [want, want]
+
+    @pytest.mark.parametrize("first", ["gmail", "outlook", "made-in-gmail"])
+    async def test_draft_dedupe_spans_gmail_and_outlook(
+        self, gmail_and_outlook, first,
+    ):
+        """Item 2, §11.6 edge case 11. One mailbox of the pair holds a draft
+        in the thread of its copy, so the other mailbox makes none.
+
+        ``gmail`` and ``outlook``: the automatic run of that mailbox drafts
+        first, and the run of the other mailbox skips. ``made-in-gmail``: the
+        member wrote the draft in Gmail web, and the Gmail sync stored it. The
+        label ``DRAFT`` gives the folder ``drafts``, which the dedupe reads."""
+        f = gmail_and_outlook
+        async with _as_member(f.p, f.org):
+            s = await _both_copies(f, pair_rows.INBOUND)
+            g_run = (f.g, s.in_g, s.g_thread)
+            o_run = (f.o, s.in_o, s.o_thread)
+            drafted: tuple[str, str, str] | None
+            if first == "made-in-gmail":
+                later = int(pair_rows.gmail_raw(pair_rows.INBOUND)["internalDate"])
+                draft = await pair_rows.gmail_read(
+                    pair_rows.MIXED_CASE, pmid=f"gd-{f.tag}", labels=["DRAFT"],
+                    thread=s.g_thread, internal_date=later + 60_000)
+                assert draft.folder == "drafts"
+                await pair_rows.write(f.g, draft, GmailProvider)
+                drafted, skipped = None, o_run
+            else:
+                drafted, skipped = (g_run, o_run) if first == "gmail" else (o_run, g_run)
+            with structlog.testing.capture_logs() as caps:
+                if drafted is not None:
+                    done_first, prov_first = await _draft_run(f, *drafted)
+                done_second, prov_second = await _draft_run(f, *skipped)
+        if drafted is not None:
+            assert done_first == ["DRAFT_EMAIL"]
+            prov_first.create_draft.assert_awaited_once()
+        assert done_second == []
+        prov_second.create_draft.assert_not_awaited()
+        assert [c["reason"] for c in _skips(caps)] == ["answered"]
+        assert _drafts(f.admin, f.g, f.o) == 1
+
+    async def test_the_try_lock_spans_gmail_and_outlook(self, gmail_and_outlook):
+        """Item 2, the race (EM-T8g-3 item 5). The run of G holds its block
+        open, after its lock and before its local draft. The run of O starts
+        and ends in that gap. It meets the lock and makes no draft."""
+        f = gmail_and_outlook
+        inner: dict[str, Any] = {}
+        async with _as_member(f.p, f.org):
+            s = await _both_copies(f, pair_rows.INBOUND)
+
+            async def _o_runs_in_the_gap() -> None:
+                inner["done"], inner["prov"] = await _draft_run(
+                    f, f.o, s.in_o, s.o_thread)
+
+            with structlog.testing.capture_logs() as caps:
+                done_g, _ = await _while_holding(f, f.g, s.in_g, s.g_thread,
+                                                 _o_runs_in_the_gap)
+        assert done_g == ["DRAFT_EMAIL"]
+        assert inner["done"] == []
+        inner["prov"].create_draft.assert_not_awaited()
+        assert [c["reason"] for c in _skips(caps)] == ["busy"]
+        assert _drafts(f.admin, f.g, f.o) == 1

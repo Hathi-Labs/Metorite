@@ -51,9 +51,10 @@ export interface Email {
   /**
    * "Also in" (WS-17 EM-T8g-3, D-EM-22): the id of each other mailbox of the
    * member that holds a copy of this mail. The list and search send it. The
-   * gateway pairs two mailboxes only when neither one is separate (D-EM-30),
-   * and only two Outlook mailboxes, because only Outlook stores the
-   * Message-ID. Empty when no copy is known.
+   * gateway pairs two mailboxes only when neither one is separate (D-EM-30).
+   * The match is the Message-ID. Outlook and Gmail store it (Gmail since
+   * EM-G2), so a Gmail and an Outlook mailbox pair too (EM-G9). IMAP stores
+   * none, so an IMAP mailbox pairs with nothing. Empty when no copy is known.
    */
   alsoIn?: string[];
 }
