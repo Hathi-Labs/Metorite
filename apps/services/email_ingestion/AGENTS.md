@@ -494,9 +494,10 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
     round 1). `_graph_link` checks the stored link, each next link and the
     delta link before a request or a store. Else the bearer goes to the host
     that the cursor names. A refused link drops, and the log names no URL.
-  - Only a normal incremental cycle runs the delta. A first import, a deep
-    sync and a cycle before `initial_sync_done` run none
-    (`scheduler._runs_delta_shadow`).
+  - Only a normal incremental cycle of the background loop runs the delta.
+    A first import, a deep sync, a cycle before `initial_sync_done` and each
+    caller that is not the loop (Sync now, the webhook, the rerun, the agent
+    tool) run none (`scheduler._runs_delta_shadow`, EM-T4d-f3).
   - A shadow cycle writes NULL into `email_sync_log.provider_history_id`.
     Only `last_history_id` keeps the cursor.
   - No `@removed` item becomes a `[DELETED]` marker, so the reconcile reads

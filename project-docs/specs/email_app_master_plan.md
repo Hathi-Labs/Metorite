@@ -2247,7 +2247,7 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_4
 
 **Status (2026-10-04).** ✅ MERGED #614. Review round 1 fixed seven findings. There is no migration. The code ships with `email_outlook_delta=off`, so it changes nothing on a box.
 
-To set `shadow` on a box is a later, separate act (gate `enforcement-flip`). Settle EM-T4d-f3 before that act. The fence is `tests/unit/test_outlook_delta_shadow.py`, with R8 in `test_email_scheduler_tenancy.py` on a private database. The As-built notes, the review round 1 note and the mutation table follow the Verify block.
+To set `shadow` on a box is a later, separate act (gate `enforcement-flip`). EM-T4d-f3 is settled (#660), so only the loop runs the delta. The fence is `tests/unit/test_outlook_delta_shadow.py`, with R8 in `test_email_scheduler_tenancy.py` on a private database. The As-built notes, the review round 1 note and the mutation table follow the Verify block.
 
 1. Add `email_outlook_delta` to settings: `off`, `shadow` or `on`. The default is `off`.
 2. A value of `on` resolves to `shadow` and logs `email.delta_mode_refused`. Only an edit of this section can lift that.
@@ -2381,7 +2381,7 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 - **F5, the cursor in the sync log.** Each shadow poll wrote 3 to 17 KB into a new `email_sync_log` row, and nothing read it. Now a shadow cycle writes NULL there, as `off` does for Outlook. A provider with a cursor of its own still writes it. Fence: `email-delta-sync-log`.
 - **F6, a long cycle.** The scheduler ran the delta after a first import and after a deep sync. That can push a manual sync past the 30 seconds of the Control Plane proxy.
   - `_runs_delta_shadow` in `scheduler.py` now runs it on a normal incremental cycle only.
-  - `deep=True` runs no delta, and no cycle runs it before `initial_sync_done`. Fence: `email-delta-normal-cycle`.
+  - `deep=True` runs no delta, and no cycle runs it before `initial_sync_done`. Only a cycle of the background loop runs it (EM-T4d-f3). Fence: `email-delta-normal-cycle`.
 - **F7, an old gap.** No test pinned how `catch_up_folders` names a user folder. A new test pins the canonical name in both branches of the sweep. It changes no behaviour. Fence: `email-catch-up-folder-name` in `tests/unit/test_email_import_batches.py`.
 - **The R8 case changed with F5.** `test_a_shadow_cursor_lands_in_org_b_and_off_keeps_it` now expects NULL in the log row. It still proves that org A cannot read the cursor or the log row of org B.
 
@@ -2400,7 +2400,7 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 | `email-delta-folder-set` | `test_the_folder_set_follows_the_sweep`, `test_a_failed_child_folder_read_keeps_the_link_of_the_nested_folder` |
 | `email-delta-link-host` | `test_a_stored_link_that_is_not_a_graph_link_sends_no_request` (5 links), `test_a_link_in_a_graph_answer_that_is_not_a_graph_link_is_refused` (next, delta) |
 | `email-delta-sync-log` | `test_a_shadow_cycle_writes_no_cursor_into_the_sync_log`, `test_off_still_writes_the_cursor_of_a_provider_into_the_sync_log`, and the R8 case |
-| `email-delta-normal-cycle` | `test_only_a_normal_cycle_sends_a_delta_request` (5 cycles) |
+| `email-delta-normal-cycle` | `test_only_a_normal_cycle_sends_a_delta_request` (7 cycles) |
 | `email-catch-up-folder-name` | `test_email_import_batches.py::test_a_short_user_folder_is_named_by_its_canonical_name` (2 branches) |
 | `email-delta-floor` | `test_a_seed_round_filters_on_the_floor` |
 | `email-delta-page-cap` | `test_a_folder_at_the_page_cap_goes_on_at_the_next_poll` |
@@ -2455,8 +2455,8 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 | F5a | The sync log gets the shadow cursor | `email-delta-sync-log` | red, 1 failed |
 | F5a-R8 | F5a, against the R8 case | R8 | red, 1 failed |
 | F5b | The sync log gets NULL for each provider | `email-delta-sync-log` | red, 1 failed |
-| F6a | A deep sync runs the delta | `email-delta-normal-cycle` | red, 2 failed |
-| F6b | A cycle before `initial_sync_done` runs the delta | `email-delta-normal-cycle` | red, 2 failed |
+| F6a | A deep sync runs the delta | `email-delta-normal-cycle` | red, 1 failed (the deep cycle of the loop, since EM-T4d-f3) |
+| F6b | A cycle before `initial_sync_done` runs the delta | `email-delta-normal-cycle` | red, 1 failed (`first-import`, since EM-T4d-f3) |
 | F7a | A catch-up page names a user folder by its id | `email-catch-up-folder-name` | red, 1 failed |
 | F7b | A failed first page names a user folder by its id | `email-catch-up-folder-name` | red, 1 failed |
 
@@ -2465,7 +2465,7 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 - **EM-T4d-2**, as above: `on` and a delete rule, after the live check.
 - **EM-T4d-f1.** Count an id that the sweep saw and that the delta reports as `@removed` in the same round apart from `sweep_only`. It would remove the false `sweep_only` of a draft that the member sends. Item 8 says that an `@removed` item adds to `removed` only, so this needs an edit of item 8.
 - **EM-T4d-f2 (review round 1).** The `httpx` logger at INFO can print the URL of each request. A delta URL holds its `$deltatoken`, and a sweep URL is in the log the same way. Decide the level of that logger for the whole service. This round changed no logging.
-- **EM-T4d-f3 (re-verify of round 1). Settle this before anyone sets `shadow` on a box.** A plain "Sync now" by a member sends `deep=None`, so it runs the delta like a loop cycle (`sync.py:264-266`). The webhook, the rerun and the agent tool `sync_account` do the same. A folder with no stored link then seeds, with up to 20 pages, inside the 30-second budget of the proxy. That happens on the first shadow poll, after a Resync, after a dropped link and for a new user folder. The fix is to run the delta only from the loop (`from_loop`), or to accept the cost for the few listed mailboxes.
+- **EM-T4d-f3 (re-verify of round 1). Settle this before anyone sets `shadow` on a box.** A plain "Sync now" by a member sends `deep=None`, so it runs the delta like a loop cycle (`sync.py:264-266`). The webhook, the rerun and the agent tool `sync_account` do the same. A folder with no stored link then seeds, with up to 20 pages, inside the 30-second budget of the proxy. That happens on the first shadow poll, after a Resync, after a dropped link and for a new user folder. The fix is to run the delta only from the loop (`from_loop`), or to accept the cost for the few listed mailboxes. ✅ **Settled (#660, 2026-10-05).** `_runs_delta_shadow` takes `from_loop`, so only a cycle of the background loop runs the delta. The fence `email-delta-normal-cycle` (`test_outlook_delta_shadow.py`) has a case `member-sync-now`, and a gate with no `from_loop` turns it red.
 - **EM-T4d-f4 (re-verify of round 1).** When the `childFolders` read fails on every poll, the delta keeps the link of a deleted top-level user folder. The growth stops at the count of deleted folders.
 
 ##### EM-T4e — §7 item 4, the N+1 reads and the indexes
