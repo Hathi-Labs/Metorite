@@ -610,7 +610,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** ✅ **EM-T6e MERGED #619 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
-| **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | 📝 **GO-NARROWED (the audit of 2026-10-05).** **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. See §10.4.11. | See §10.4.11. |
+| **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | 🔨 **BUILT, not merged (2026-10-05), branch `email-draftcard-recipients`.** **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -4138,9 +4138,10 @@ finding on an added line. `fromRow.test.ts` ran 32 passed. The run of `test_emai
 
 #### 10.4.11 EM-T10 — a draft card keeps the recipients of its draft (a LIVE defect)
 
-**Status.** 📝 GO-NARROWED after the audit of 2026-10-05 (C1 to C11). The audit checked each anchor
-against the code at `c26b67549`. Not built. The reviews of EM-G3c-2 found the first defects (its
-known limits f6, f2 and f10). The audit found two more, C2 and C8.
+**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-draftcard-recipients`. The audit of
+2026-10-05 found it GO-NARROWED after C1 to C11, and it checked each anchor against the code at
+`c26b67549`. The reviews of EM-G3c-2 found the first defects (its known limits f6, f2 and f10). The
+audit found two more, C2 and C8. The "As built" notes below record the build.
 
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. It changes a live composer and the live Outlook
 reply create, so it takes the full review loop and a visual review. The live check is 🔴
@@ -4251,6 +4252,81 @@ uv run pytest tests/unit/test_outlook_draft_cc.py tests/unit/test_outlook_drafts
 ```
 
 Restore `package-lock.json` from `origin/main` before each commit.
+
+**As built (2026-10-05).** Three code commits on `email-draftcard-recipients`: `d1d430f0a` (item 6),
+`c2240a8d2` (items 1 to 5 and 7) and `ca384508c` (the `dirty` ref, departure 1).
+
+- **Item 6.** `create_draft` takes a keyword-only `exact_to: bool = False` on `BaseEmailProvider`
+  and on the Outlook, Gmail and IMAP providers. On Outlook, the reply path adds `toRecipients` to
+  its one PATCH when `exact_to` is true. `upsert_draft` passes `exact_to=True` on each of its three
+  creates.
+- **The other callers of `create_draft` keep the default.** They are the AI draft (`drafting.py`
+  ~:1774), the chat card (`save_draft`, ~:2505) and the two rule actions (`actions.py` ~:610,
+  ~:654). The follow-up nudge (`followups.py` ~:250) and the Notes dispatch (`notes/dispatch.py`
+  ~:339) keep it too. Each test fake takes `**_kw` or is an `AsyncMock`, so each fake takes the
+  keyword.
+- **Items 1 to 3.** `draftRecipients` in `lib/mailbox.ts` gives the start. The card calls it once,
+  in a lazy `useState`, so a later render does not move the start. The card computes the reply
+  lists only when it has a reply target. Before, it computed them from the draft itself when
+  `replyTo` was the draft.
+- **Item 4.** The Cc and the Bcc `onChange` set `dirty`, and the autosave depends on
+  `[body, quote, to, cc, bcc]`.
+- **Item 5.** `view` is `detail?.id === email.id ? detail : email`, and the standalone card gets
+  `replyTo={view}`. The key stays `key={email.id}`.
+- **Item 7.** `sendingRef` is the guard, and the `sending` state draws the button. The guard is the
+  first statement of `handleInlineSend`, and `if (!email) return` stays as it was. The state starts
+  after the last early return. The drain moved inside the `try`, and its `finally` clears the ref
+  and the state. The Send button is `Button` with `icon="Send"` and `loading={sending}`, with the
+  label "Send". Its icon is 14 px now, the size that `Button` draws. It was 12 px.
+
+**Departures from the spec (EM-T10).**
+
+1. The DraftCard declares its `dirty` ref above `applyReplyAll` now. That function read it above
+   its `useRef` line. So the React lint did not see a `useRef` value in `dirty`. Each `onChange`
+   that set it was an error of `react-hooks/immutability`, and item 4 added two of them. After the
+   move, `ConversationView.tsx` has 0 eslint errors, and `origin/main` has 2.
+2. `upsert_draft` passes `exact_to=True` on all three creates, not only on the reply. The update
+   fallback and the new draft set the To already, so the keyword changes no request there. One rule
+   for the whole route is easier to fence.
+3. The Send button calls `() => void handleInlineSend()`, so React gets no promise from the click.
+4. The build added fences that the spec did not name. `test_outlook_draft_cc.py` checks that each
+   provider takes the keyword, and that only `upsert_draft` passes it.
+
+**Known limit EM-T10-f2 (on `main` before it).** The standalone card shows no Reply or Reply All
+toggle. Its reply target is `view`, the draft itself, so the card has no reply target. It still
+starts with the recipients of its own draft. Before the fix of C2, the stale first render was the
+one case that showed a toggle there.
+
+**The fences, as built.** `mailbox.test.ts` holds 10 cases in the fence `email-draftcard-start`.
+`draftAutosave.test.ts` holds 7 cases in the fence `email-draftcard-recipients`.
+`test_outlook_draft_cc.py` holds 8 new cases.
+
+**Mutations, as run (2026-10-05).** For each row, a script put one change into the code, ran the
+fence file, and restored the file with `git checkout`. Each fix was in a commit first. After each row, `git status` was
+clean and the fix was in the file again. Each of the 14 mutations turned its fence red.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | `draftRecipients` ignores the To of the draft | `mailbox.test.ts`, the narrowed reply (7 cases red) |
+| M2 | `draftRecipients` ignores the Bcc of the draft | `mailbox.test.ts`, the reply with a Bcc (2 cases red) |
+| M3 | The autosave deps drop `cc` | `draftAutosave.test.ts`, a Cc or Bcc edit saves |
+| M4 | The guard of `handleInlineSend` goes | `draftAutosave.test.ts`, one inline send at a time |
+| M5 | The Cc `onChange` sets no `dirty` | `draftAutosave.test.ts`, a Cc or Bcc edit saves |
+| M6 | `view` is `detail ?? email` again | `draftAutosave.test.ts`, the standalone card gets `view` |
+| M7 | Outlook PATCHes the To with the default keyword | `test_outlook_draft_cc.py`, the default case |
+| X1 | Outlook never PATCHes the To | `test_outlook_draft_cc.py`, the `exact_to` case |
+| X2 | The composer reply drops `exact_to=True` | `test_outlook_draft_cc.py`, only the composer save |
+| X3 | The Reply button marks on `!replyAll` again | `draftAutosave.test.ts`, null marks neither |
+| X4 | The standalone card gets `replyTarget` again | `draftAutosave.test.ts`, the standalone card gets `view` |
+| X5 | The Bcc `onChange` sets no `dirty` | `draftAutosave.test.ts`, a Cc or Bcc edit saves |
+| X6 | The toggle forgets that reply-all can equal reply | `mailbox.test.ts`, a thread of two people |
+| X7 | The inline Send loses `loading` | `draftAutosave.test.ts`, the Send button loads |
+
+**The visual review (2026-10-05).** A page that the build never committed drew four DraftCards and
+the inline Send, idle and loading. Playwright took each one in dark, light, light compact, and
+light compact with the Rose accent. Reply, Reply All and neither drew as the spec says. A human
+must still look at the card in a real thread, at the neighbouring inline reply, and at the toggle
+on a phone.
 
 **The live check (🔴 OWNER-GATE).** In Outlook, the owner saves a reply narrowed to the sender, opens
 it again, and checks that To still holds only the sender. The owner also saves a reply-all draft,
@@ -7728,7 +7804,7 @@ own card. The unmount of the old card flushes its pending edit to its own draft.
 
 **Known limit EM-G3c-2-f2 (on `main` before it).** The DraftCard autosaves after an edit of the To
 field or the body. An edit of Cc or Bcc does not start a save, so the next edit or the send carries
-it.
+it. ✅ EM-T10 item 4 fixes it (§10.4.11, built 2026-10-05, branch `email-draftcard-recipients`).
 
 **Known limit EM-G3c-2-f3.** The composer checks a pick against the files that it holds when the
 pick starts. Two picks in quick order can each fit and pass the limit together. The send then
@@ -7748,7 +7824,8 @@ list, and the next save deletes it.
 read the Cc and the Bcc of its draft. It starts with the Cc of a reply-all to the mail that it
 answers, or with no Cc, and with no Bcc. Its next save and its send write those lists over the
 lists of the draft. So a reply that the inline reply saved with a Bcc loses the Bcc in the
-DraftCard.
+DraftCard. ✅ Fixed: EM-T10 item 1 starts the card with the To, Cc and Bcc of its draft (§10.4.11,
+built 2026-10-05, branch `email-draftcard-recipients`).
 
 **The re-verify of review round 2 (2026-10-05).** It passed the slice, with no P0 and no P1. The
 orchestrator stopped the fix rounds there: two rounds on a live surface, and each P2 below is
@@ -7773,7 +7850,9 @@ each pending edit at a pop-out.
 **Known limit EM-G3c-2-f10 (re-verify F4).** The inline Send shows no state while it drains. A
 second click waits on the same drain and then sends again. The gateway answers 404 for a sent
 draft, so the likely result is an error, not a second mail. ComposePanel and the DraftCard set
-their "Sending" state before the drain.
+their "Sending" state before the drain. ✅ EM-T10 item 7 fixes it with one guard at the top of
+`handleInlineSend` and a Send button that loads (§10.4.11, built 2026-10-05, branch
+`email-draftcard-recipients`).
 
 **Known limit EM-G3c-2-f11 (re-verify F6).** No client timeout bounds the drain. The proxy stops a
 save after 30 seconds, so a drain waits 30 seconds at most. On a Gmail draft with a file, a Send
