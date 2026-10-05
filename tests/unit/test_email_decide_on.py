@@ -621,18 +621,19 @@ class TestProcessPastOnJev:
 @_DB_GATE
 class TestTheNewMailFloorSql:
     """Item 7, the phase-0 SELECT of the REAL job, as the non-owner role
-    under FORCE RLS. A dry run with `classify_matches` recording each row it
-    gets shows which rows the SELECT returned, newest first."""
+    under FORCE RLS. A dry run with the ask step of the rule match recording
+    each row it gets shows which rows the SELECT returned, newest first
+    (EM-T4a-2 PR-B1: the job asks once for each row)."""
 
     async def _select(self, p, acc: str, *, scheduler: bool) -> list[str]:
         seen: list[str] = []
 
-        async def record(db, account_id, row, email, **kw):
-            seen.append(str(row.id))
+        async def record(read):
+            seen.append(str(read.message_id))
             return []
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(runner_mod, "classify_matches", record)
+            mp.setattr(runner_mod, "ask_rule_match", record)
             async with _as_app(p, p.org_b):
                 await runner_mod._run_rules_job(
                     acc, 50, True, "scheduler" if scheduler else "member@decide-on.test")
