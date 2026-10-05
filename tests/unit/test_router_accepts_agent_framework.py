@@ -505,9 +505,9 @@ class TestTheFallbackLog:
 
         assert _rejected_request_fields(_maf_failure(_down, {})) == []
 
-    def test_the_fallback_line_carries_the_fields_and_the_long_error(self) -> None:
-        """The log site, read from the AST: the fallback call passes
-        ``rejected_fields`` and no longer cuts ``error`` at 200."""
+    def test_the_fallback_line_is_built_by_the_redactor(self) -> None:
+        """The log site, read from the AST: ``error`` comes from the redactor,
+        never from a raw ``str(_nexc)``."""
         import ast
         import inspect
 
@@ -523,6 +523,111 @@ class TestTheFallbackLog:
         ]
         assert len(calls) == 1, "the fallback log line moved or doubled"
         keywords = {kw.arg: kw.value for kw in calls[0].keywords}
-        assert "rejected_fields" in keywords
-        assert ast.unparse(keywords["error"]) == "str(_nexc)[:_FALLBACK_ERROR_CHARS]"
-        assert executor._FALLBACK_ERROR_CHARS >= 1000
+        assert "rejected_fields" in keywords and "error_type" in keywords
+        assert ast.unparse(keywords["error"]) == "_redacted_fallback_error(_nexc)"
+        assert executor._FALLBACK_ERROR_CHARS <= 200
+
+
+# ── 4. The fallback log never carries member content ─────────────────────────
+
+#: A member message. It must reach the model request and never the log.
+_MEMBER_TEXT = "my salary is 98765 and my PIN is 4321"
+
+
+def _body_level_422(request: httpx.Request) -> httpx.Response:
+    """A 422 shaped the way FastAPI writes one. The first entry refuses a
+    field. The second is a BODY-level error, and FastAPI puts the whole
+    request, the member's messages included, into its ``input``."""
+    body = json.loads(request.content)
+    return httpx.Response(422, json={"detail": [
+        {"type": "extra_forbidden", "loc": ["body", "stream_options"],
+         "msg": "Extra inputs are not permitted", "input": {"include_usage": True}},
+        {"type": "value_error", "loc": ["body"], "msg": "Value error, x",
+         "input": body, "ctx": {"error": str(body)}},
+    ]})
+
+
+class TestTheFallbackLogIsRedacted:
+    @pytest.mark.usefixtures("_a_tenant")
+    def test_a_real_run_logs_the_field_and_not_the_message(self, monkeypatch) -> None:
+        """Through the REAL executor: the 422 carries the member message,
+        the fallback line names the field, and no executor log line holds
+        the text.
+
+        ⚠️ The executor's logger is REPLACED, not captured. structlog caches
+        a logger on first use, so ``capture_logs`` sees nothing once another
+        test in the session has logged through it. Measured in CI on #659.
+        """
+        from orchestrator import executor
+
+        from tests.unit._native_maf_harness import drive_native
+
+        class _Model:
+            def __init__(self) -> None:
+                self.bodies: list[dict[str, Any]] = []
+
+            def __call__(self, request: httpx.Request) -> httpx.Response:
+                self.bodies.append(json.loads(request.content))
+                return _body_level_422(request)
+
+        class _Recorder:
+            def __init__(self) -> None:
+                self.lines: list[dict[str, Any]] = []
+
+            def __getattr__(self, level: str):
+                def _record(event: Any = None, *args: Any, **kw: Any) -> _Recorder:
+                    self.lines.append({"level": level, "event": event, "args": args, **kw})
+                    return self
+                return _record
+
+        logs = _Recorder()
+        monkeypatch.setattr(executor, "_log", logs)
+        model = _Model()
+        drive_native(
+            "projects-assistant", "apps/agents/agent-projects", monkeypatch,
+            model, message=_MEMBER_TEXT,
+        )
+
+        # Precondition: the member text really was in the refused request.
+        assert _MEMBER_TEXT in json.dumps(model.bodies[0])
+        fallback = [e for e in logs.lines if e["event"] == "executor.native_maf_stream_fallback"]
+        assert len(fallback) == 1, [e["event"] for e in logs.lines]
+        assert fallback[0]["rejected_fields"] == ["stream_options"]
+        assert fallback[0]["error_type"] == "ChatClientException"
+        assert len(fallback[0]["error"]) <= 200
+        for entry in logs.lines:
+            assert _MEMBER_TEXT not in json.dumps(entry, default=str), entry["event"]
+
+    def test_a_parsed_422_keeps_type_loc_and_msg_only(self) -> None:
+        from orchestrator.executor import _redacted_fallback_error
+
+        exc = _maf_failure(_body_level_422, {})
+        text = _redacted_fallback_error(exc)
+        assert "422" in text and "extra_forbidden" in text
+        assert '"input"' not in text and '"ctx"' not in text
+        # The refused request lives only in `input`, so none of it remains.
+        assert "messages" not in text and "tier-balanced" not in text
+        # Removed by the ALLOWLIST, not by the text cut: the second entry's
+        # message survives, which a cut at the first `input` would lose.
+        assert "Value error, x" in text
+        assert not text.endswith("[input removed]")
+
+    def test_a_text_error_is_cut_where_input_starts(self) -> None:
+        """No parsed body, so the redactor sees only text. It cuts at the
+        ``input`` key, because the end of a value is not safe to find."""
+        from orchestrator.executor import _redacted_fallback_error
+
+        raw = RuntimeError(
+            "Error code: 422 - {'detail': [{'type': 'value_error', 'loc': "
+            f"['body'], 'input': {{'messages': [{{'content': '{_MEMBER_TEXT}'}}]}}}}]}}"
+        )
+        text = _redacted_fallback_error(raw)
+        assert _MEMBER_TEXT not in text
+        assert text.endswith("[input removed]")
+        assert "value_error" in text
+
+    def test_an_ordinary_error_is_kept_and_cut_to_200(self) -> None:
+        from orchestrator.executor import _redacted_fallback_error
+
+        assert _redacted_fallback_error(RuntimeError("timeout")) == "timeout"
+        assert len(_redacted_fallback_error(RuntimeError("x" * 5000))) == 200

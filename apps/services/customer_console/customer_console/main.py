@@ -6818,7 +6818,12 @@ def _place_call_hold(
         # ⚠️ No `max_tokens` means the provider's own ceiling, which we cannot
         # see from here. `MAX_OUTPUT_FOR_HOLD` stands in for it — a number
         # chosen to be larger than any real completion rather than accurate.
-        max_output_tokens=max_tokens or MAX_OUTPUT_FOR_HOLD,
+        #
+        # 🔴 **Clamped to `_MAX_OUTPUT_TOKENS` FIRST**, the ceiling
+        # `_kwargs_for` sends the provider. Unclamped, `max_tokens=10_000_000`
+        # reserved for ten million output tokens that can never be produced,
+        # and a funded caller got a 402.
+        max_output_tokens=min(max_tokens or MAX_OUTPUT_FOR_HOLD, _MAX_OUTPUT_TOKENS),
     )
     if estimate.credits <= 0:
         return None

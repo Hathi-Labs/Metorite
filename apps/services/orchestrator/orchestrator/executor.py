@@ -3151,10 +3151,41 @@ _sse_seq: int = 0
 _thread_emit_seq: dict[str, int] = {}
 
 
-#: How much of a Tier 1 failure the fallback log keeps. The old cut was 200
-#: characters, and a Router 422 names the refused field just AFTER that point,
-#: so the line said "extra_forbidden" and hid which field (2026-10-05).
-_FALLBACK_ERROR_CHARS = 2000
+#: How much of a Tier 1 failure the fallback log keeps, AFTER redaction.
+#:
+#: 🔴 **Short on purpose, and redacted first.** For a body-level 422, FastAPI
+#: puts the refused value into ``detail[].input``, and for a body the value can
+#: be the whole request, the member's messages included. A 2000-character cut
+#: (#657) could therefore carry member content into the gateway log. The field
+#: names travel in ``rejected_fields`` instead, so the text needs no length.
+_FALLBACK_ERROR_CHARS = 200
+
+#: The ONLY keys of a 422 ``detail`` entry the log may carry. An allowlist,
+#: because ``input`` is the leak and ``ctx`` can echo a value too.
+_DETAIL_KEYS_LOGGED = ("type", "loc", "msg")
+
+#: Where an ``input`` value starts in an error that arrived as TEXT. The text
+#: is cut there, because a value's end cannot be found safely in a repr.
+_INPUT_KEY = re.compile(r"""['"]input['"]\s*:""")
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    """*exc* and each exception it wraps, once each, outermost first."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        chain.append(cur)
+        cur = getattr(cur, "inner_exception", None) or cur.__cause__
+    return chain
+
+
+def _detail_of(exc: BaseException) -> list[Any] | None:
+    """The parsed 422 ``detail`` list on *exc*, or None."""
+    body = getattr(exc, "body", None)
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return detail if isinstance(detail, list) else None
 
 
 def _rejected_request_fields(exc: BaseException) -> list[str]:
@@ -3167,20 +3198,41 @@ def _rejected_request_fields(exc: BaseException) -> list[str]:
     inside an error path.
     """
     fields: list[str] = []
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        body = getattr(cur, "body", None)
-        detail = body.get("detail") if isinstance(body, dict) else None
-        for item in detail if isinstance(detail, list) else []:
+    for cur in _exception_chain(exc):
+        for item in _detail_of(cur) or []:
             loc = item.get("loc") if isinstance(item, dict) else None
             if isinstance(loc, list | tuple) and len(loc) >= 2 and loc[0] == "body":
                 name = ".".join(str(part) for part in loc[1:])
                 if name not in fields:
                     fields.append(name)
-        cur = getattr(cur, "inner_exception", None) or cur.__cause__
     return fields
+
+
+def _redacted_fallback_error(exc: BaseException) -> str:
+    """The Tier 1 failure as log text, with every ``input`` value removed.
+
+    A parsed 422 is rebuilt from :data:`_DETAIL_KEYS_LOGGED` alone. Any other
+    failure is its own text, cut where an ``input`` key starts. Then the
+    result is cut to :data:`_FALLBACK_ERROR_CHARS`. It never raises.
+    """
+    text: str | None = None
+    for cur in _exception_chain(exc):
+        detail = _detail_of(cur)
+        if detail is None:
+            continue
+        kept = [
+            {k: item[k] for k in _DETAIL_KEYS_LOGGED if k in item}
+            for item in detail if isinstance(item, dict)
+        ]
+        status = getattr(cur, "status_code", None)
+        text = f"{type(cur).__name__} {status}: {json.dumps(kept, default=str)}"
+        break
+    if text is None:
+        text = str(exc)
+    found = _INPUT_KEY.search(text)
+    if found is not None:
+        text = text[: found.start()] + "[input removed]"
+    return text[:_FALLBACK_ERROR_CHARS]
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -4149,12 +4201,13 @@ async def run_agent_stream(
                         })
                         return
                     # Nothing emitted yet — fall through to Tier 2 batch.
-                    # `rejected_fields` names what a 422 refused, so the
-                    # field is never lost to the cut on `error`.
+                    # `rejected_fields` names what a 422 refused. `error` is
+                    # redacted: a 422's `input` can hold member messages.
                     _log.warning(
                         "executor.native_maf_stream_fallback",
                         agent=agent_name,
-                        error=str(_nexc)[:_FALLBACK_ERROR_CHARS],
+                        error_type=type(_nexc).__name__,
+                        error=_redacted_fallback_error(_nexc),
                         rejected_fields=_rejected_request_fields(_nexc),
                     )
 
