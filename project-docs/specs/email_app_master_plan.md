@@ -609,6 +609,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** ✅ **EM-T6e MERGED #619 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
+| **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -3893,6 +3894,246 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
 ```
 
 The R8 tests must show PASSED, not SKIPPED.
+
+#### 10.4.10 EM-T9 — a file on an Outlook draft (a LIVE defect)
+
+**Status.** ✅ MERGED (#643, 2026-10-05). The live check of the owner is still open. The audit of
+2026-10-05 gave GO-NARROWED (B1 to B7, N1 to N9), and it checked each anchor against the code on
+that day. "As built" below records the build.
+
+**Why it went first.** The audit of EM-G3c found the defect (its C21). Outlook is the live
+provider, so this slice went before the Gmail work that waits for customers.
+
+**Gate.** 🟢 AGENT-SAFE build. No migration, no flag and no change to SQL text, so R8 does not bind
+it. The fix changes the live Outlook path, so it takes the full review loop for data. The live check
+after the merge sends real mail, so it is 🔴 OWNER-GATE (CLAUDE.md §3a rule 3).
+
+**Size.** M.
+
+**The defect (LIVE on Outlook).** `_attach_files` (`outlook.py:944-965`) adds each file in one
+POST of a `fileAttachment`. It never reads the answer, and it drops each error with `continue`.
+Graph takes a file under 3 MB in one POST only. So a larger file fails at Graph, and the draft
+keeps no copy of it.
+
+**Why the member sees nothing.** The composer sends a mail with files through a draft. The save
+before the send adds the files (`drafting.py:2167-2171`), then `drafts/send` sends the draft. So
+a member can send a mail with no file, and nothing tells the member. The three tests of
+`test_email_draft_attachments.py:43-84` reach `_attach_files` with fakes that answer 200, so none
+of them sees a failed file.
+
+**What Microsoft documents (`learn.microsoft.com/graph/outlook-large-attachments`).**
+
+- A file under 3 MB goes in one POST to the `attachments` collection, and Graph answers 201. A file
+  of 3 MB to 150 MB needs an upload session.
+- An upload session refuses a file under 3 MB, with the code
+  `ErrorAttachmentSizeShouldNotBeLessThanMinimumSize`.
+- The `uploadUrl` is pre-authenticated, with a token in its query. Each PUT to it must carry no
+  `Authorization` header.
+- Each PUT carries `Content-Range: bytes {start}-{end}/{total}`, `Content-Length` and
+  `Content-Type: application/octet-stream`. Each range stays under 4 MB, in order.
+- An earlier PUT answers 200 with `nextExpectedRanges`. The last PUT answers 201.
+
+**The callers (B4).** Each caller passes `{filename, content: bytes, mime_type}`, so `len(content)`
+is the true size.
+
+- `PUT /email/drafts` (`upsert_draft`, `drafting.py:2174-2285`): the update branch at
+  `:2216-2240`, and the reply and new branches at `:2265-2275`.
+- The rule actions REPLY and DRAFT_EMAIL (`actions.py:545`) and FORWARD (`actions.py:589`). Their
+  `except Exception` at `actions.py:609-612` records `str(exc)` in `errors_out`.
+- `drafts/send` adds no file (`drafting.py:2361-2369`). The composer awaits the save before the
+  send in one `try` (`ComposePanel.tsx:323-335`, `EmailDetail.tsx:648-660`), and `gatewayFetch`
+  throws on a status that is not 2xx (`api.ts:41-48`). So a failed save stops the send in the
+  composer. `fromRow.test.ts:196-198` already pins that order.
+
+**Scope.**
+
+1. **A small file (B5).** A file under 3,000,000 bytes goes in one POST, as today. The code then
+   reads `status_code`, and each status that is not 2xx raises. Graph answers 201, so a check for
+   `== 200` is wrong.
+2. **A large file.** A file of 3,000,000 bytes or more goes through
+   `POST /me/messages/{id}/attachments/createUploadSession`. The body is
+   `{"AttachmentItem": {"attachmentType": "file", "name", "size", "contentType"}}`. Then PUTs of
+   2 MiB ranges go to the `uploadUrl`, in order, until the last PUT answers 201.
+3. **The minimum size (B6).** "3 MB" can mean 3,000,000 or 3,145,728 bytes. So a session that
+   Graph refuses with `ErrorAttachmentSizeShouldNotBeLessThanMinimumSize` falls back to one POST.
+   The code reads that refusal from `error.code` in the JSON body.
+4. **The upload loop (B6).** The PUTs go through `httpx.AsyncClient(timeout=30.0)`. The code makes
+   that client at the time of the call, inside `async with`. It has no auth and no
+   `Authorization` header. The client of
+   Graph applies its auth to each host (`outlook.py:466`), so it must not send the PUTs.
+5. **The checks of the loop (B6).** A 200 whose `nextExpectedRanges` does not start at the next
+   offset raises. A 201 before the last range raises, and a 200 after it raises. A 429 or a 5xx on
+   a PUT raises, with no retry. The two POSTs of Graph keep `client.post` with no retry. They do
+   not go through `_graph_send`, because its wait can reach 30 seconds.
+6. **The token stays out of each log and error (B2).** httpx logs each request at INFO, with its
+   full URL. The gateway logs at INFO. So a filter on the `httpx` logger
+   removes the query of an upload URL from each record. The code never calls `raise_for_status()`
+   on an upload answer, and it raises `from None`.
+7. **The error.** A failed file raises `ProviderAttachmentFailed`, a new class in `base.py` beside
+   `ProviderRateLimited` (`base.py:24`). It subclasses `Exception` only, never
+   `httpx.HTTPStatusError`, and it carries the name of the file and no URL.
+8. **The route (B1).** `upsert_draft` answers 502 with a string detail, as `assistant.py:671-672`
+   does, through a mapper of the shape of `drafting.py:2129-2139`. The text is "The file <name>
+   could not be attached. The mail was not sent." The route writes no local row.
+9. **A new draft with a failed file (B3).** `create_draft` deletes the new draft before it raises,
+   at the two sites of `outlook.py:873` and `:884` only. The delete never goes in `_attach_files`
+   or `update_draft`, which share the helper with a draft that the member already has. A failed
+   delete is dropped, and the first error raises.
+10. **An empty draft id (B3).** `create_draft` raises before any file when Graph returns no id
+    (`.get("id", "")` at `outlook.py:868` and `:883`).
+11. **A rule action (B4).** A rule draft with a failed file is deleted, and the action records the
+    error in `errors_out`. Before the fix, the rule made a draft with no file.
+12. **A file of 0 bytes (N7).** It goes in one POST, and a refusal raises with its name. A file with
+    `content=None` raises, in place of the `or b""` at `outlook.py:953`.
+
+**Non-goals.** No change to Gmail or IMAP. No change to the composer or to `drafts/send`. No change
+to the cut of 10 MiB in the Next proxy, which EM-G3c owns (§12.3.12 item 3). No change to
+`send_message`.
+
+**Files (N5).** `providers/outlook.py`, `providers/base.py`, `routes/email/automation/drafting.py`,
+`apps/services/gateway/AGENTS.md:63` (the rules of the draft path get the new 502), and the new
+test file. The build also added contract 13 to `apps/services/email_ingestion/AGENTS.md`, because
+the root DOX rule asks for it.
+
+**Known limit EM-T9-f1.** A retry after a failed file adds again each file that the first try
+added. The composer sends the files again at each send (`ComposePanel.tsx:332`,
+`EmailDetail.tsx:657`). A later slice owns the dedupe, with EM-G3c-f2.
+
+**Known limit EM-T9-f2.** A direct send (`POST /email/send`, `send_message` at
+`outlook.py:804-817`) puts its files inline in `sendMail`. Graph limits that request to 4 MB. So
+a direct send with 3 MB of files or more fails, and the error reaches the caller. It is not silent.
+The chat tool `send_email` takes this path (`agents.py:1784`).
+
+**Known limit EM-T9-f3.** The Next proxy cuts a body over 10 MiB. So a file over about 7.4 MiB
+never reaches the gateway, for each provider. EM-G3c-2 adds a pick limit for it.
+
+**Known limit EM-T9-f4.** The proxy stops a draft save after 30 seconds (`route.ts:156`). A slow
+upload of large files can pass that limit. Then the composer sends nothing, and the gateway still
+finishes the save. On the create path, a retry then makes a second draft.
+
+**Known limit EM-T9-f5 (N6).** A failed save of a draft that exists leaves the new text and each
+file added before the failure on the Outlook draft. ConversationView, or the chat tool
+`send_draft` (`agents.py:1815-1834`), can send that draft later.
+
+**Known limit EM-T9-f6 (N6).** One POST of a file near 3 MB can get a 413, because base64 makes
+it about 4 MB. The code raises, so the failure is not silent.
+
+**Known limit EM-T9-f7 (B3).** A deleted new draft goes to Deleted Items, as `trash_message` does
+(`outlook.py:1062`). So the sync shows it in Trash. The slice keeps the normal DELETE, because it
+can be undone.
+
+**Advisory EM-T9-a1 (N8).** A raise inside `provider_session` skips `_persist_rotated_creds`
+(`core.py:332-340`). A token refresh during a failed save then loses the new token. The risk is
+low, because Microsoft keeps the old refresh token valid.
+
+**Fences (R7).** A new `tests/unit/test_outlook_attachments.py`. The auth and log fences reuse
+`wire` (`test_email_provider_401_retry.py:236-255`). The body fences reuse the pattern of
+`test_email_draft_attachments.py:23-40`, and the route fence reuses `_route_patches`
+(`test_gmail_send_and_drafts.py:691-705`).
+
+- `test_a_small_file_goes_in_one_post_and_201_passes`
+- `test_a_large_file_goes_through_an_upload_session_in_ranges`
+- `test_the_upload_puts_carry_no_authorization_header`
+- `test_a_session_refused_for_the_minimum_size_falls_back_to_one_post`
+- `test_a_range_that_graph_did_not_expect_raises`
+- `test_a_failed_file_raises_with_its_name`
+- `test_a_failed_file_on_a_new_draft_deletes_the_draft`
+- `test_a_failed_file_on_an_existing_draft_keeps_the_draft`
+- `test_the_upload_token_never_reaches_a_log_or_a_traceback`. It runs caplog at DEBUG on each
+  logger, and it reads `traceback.format_exception(exc)`.
+- `test_a_failed_save_answers_502_and_writes_no_local_row`
+- `test_the_signed_send_adds_no_file`
+- In `test_email_rule_action_failures.py`: `test_a_rule_draft_with_a_failed_file_is_deleted`
+
+**Mutations.** M1 restores `continue`, and the failed-file test fails. M2 sends each file in one
+POST, and the session test fails. M3 sends the PUTs through the Graph client, and the auth test
+fails. M4 drops the fallback, and the minimum-size test fails.
+
+**More mutations.** M5 puts the URL into the error text, and the token test fails. M6 removes the
+log filter, and the token test fails. M7 moves the delete into `_attach_files`, and the test of
+the existing draft fails. M8 checks `== 200`, and the small-file test fails.
+
+**Verify with (B7).**
+
+```bash
+uv run pytest tests/unit/test_outlook_attachments.py tests/unit/test_email_draft_attachments.py \
+  tests/unit/test_outlook_drafts.py tests/unit/test_outlook_draft_cc.py \
+  tests/unit/test_email_provider_401_retry.py tests/unit/test_email_rule_action_failures.py \
+  tests/unit/test_gmail_send_and_drafts.py -v -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/providers/outlook.py \
+  apps/services/email_ingestion/email_ingestion/providers/base.py \
+  apps/services/gateway/gateway/routes/email/automation/drafting.py \
+  tests/unit/test_outlook_attachments.py
+cd workbench/control_plane && npx vitest run src/app/email/lib/fromRow.test.ts
+```
+
+**The live check after the merge (🔴 OWNER-GATE, N9).** From a connected Outlook mailbox, the owner
+sends three mails to the owner's own address. One has a file of 5 MB, one has a file of 1 MB, and
+one has no file. Each mail must arrive, with its file. An agent must not send real mail
+(CLAUDE.md §3a rule 3).
+
+**As built (2026-10-05).** Branch `email-outlook-t9`. The slice takes no migration, no flag and no
+change to SQL text.
+
+- `base.py` holds `ProviderAttachmentFailed(filename)`. Its text is "The file <name> could not be
+  attached." It subclasses `Exception` only.
+- `outlook.py` holds the path of a file in three module functions: `_post_file`, `_upload_file`
+  and `_put_ranges`. `_attach_files` calls them, and it never deletes a draft.
+- `create_draft` calls `_require_new_draft_id` after each `.get("id", "")`. It calls
+  `_attach_to_new_draft` at its two sites, and only that helper deletes a draft.
+- A draft with no file sends the same requests as before. The POST of a small file keeps its body,
+  byte for byte. The fakes of `test_email_draft_attachments.py` pass with no change.
+- `drafting.py` holds the mapper `_file_not_attached` and the text `file_not_attached_detail`.
+  `upsert_draft` puts the mapper on the update, the reply and the new branch.
+- `actions.py` has no change. Its `except` records the text of the error, and that text holds the
+  file name only.
+- Two new log lines name no URL and no file. `outlook.attachment_failed` gives the stage, the
+  reason and the size. `outlook.new_draft_delete_failed` gives the reason.
+
+**Four readings of the spec.** The spec did not decide these, so the build took the safe side.
+
+1. The PUT answers come from an Outlook REST URL. The page of Microsoft spells their key
+   `NextExpectedRanges`, and Graph spells it `nextExpectedRanges`. The code reads the key in any
+   case. A 200 with no ranges raises.
+2. An empty draft id raises only when the draft has a file. A draft with no file keeps the
+   behaviour of before.
+3. A transport error on any request of a file raises `ProviderAttachmentFailed` too. The code
+   raises it outside the `except` block, so no error of httpx chains to it.
+4. A `content` that is not bytes raises, for `None` and for text. Before, the code sent `None` as
+   an empty file and dropped text with no error.
+
+**A finding outside the plan (B2).** litellm loads in the gateway through `acb_llm`. At load, it
+sets the `httpx` logger to WARNING and adds a filter that writes `?REDACTED` over each query. So
+litellm hides the leak of B2 today. The filter of `outlook.py` does not depend on that, because an
+upgrade of litellm or `LITELLM_DISABLE_REDACT_SECRETS=true` removes it. The token fence keeps
+only the filter of `outlook.py` on the logger, because the filter of litellm first hid M6.
+
+**Mutations (2026-10-05).** A script changed `outlook.py` and ran the named fence and both test
+files. Then it put the file back with `git checkout --`, and `git diff` was empty each time. All 8
+mutations turned the named fence red. The count in brackets is the count of both files.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| M1 | `_attach_files` drops each failure with `continue` | `test_a_failed_file_raises_with_its_name` | red, 9 failed (29) |
+| M2 | Each file goes in one POST, with no session | `test_a_large_file_goes_through_an_upload_session_in_ranges` | red, 4 failed (19) |
+| M3 | The PUTs go through the Graph client | `test_the_upload_puts_carry_no_authorization_header` | red, 1 failed (1) |
+| M4 | No fallback for the minimum size | `test_a_session_refused_for_the_minimum_size_falls_back_to_one_post` | red, 1 failed (1) |
+| M5 | The upload URL goes into the text of the error | `test_the_upload_token_never_reaches_a_log_or_a_traceback` | red, 3 failed (13) |
+| M6 | No log filter at load | `test_the_upload_token_never_reaches_a_log_or_a_traceback` | red, 3 failed (4) |
+| M7 | The delete moves into `_attach_files` | `test_a_failed_file_on_an_existing_draft_keeps_the_draft` | red, 1 failed (4) |
+| M8 | Only a 200 counts as a success | `test_a_small_file_goes_in_one_post_and_201_passes` | red, 2 failed (18) |
+| M9 | The end of a range loses its `- 1` | `test_a_large_file_goes_through_an_upload_session_in_ranges` | red, 8 failed (verifier P2-1) |
+
+**The verification (2026-10-05).** The verifier passed the slice, with no P0 and no P1. It recorded
+each Graph call of `create_draft` and `update_draft` on main and on the branch. It used 18 cases
+with no file or with small files, and all 18 were the same. It also ran the 13 R8 cases on the scratch
+database, and 184 passed. Its P2-1 added the edges of 4 MiB and 4 MiB + 1 byte to the range fence.
+
+**Verified (2026-10-05).** The pytest command of B7 ran 171 passed and 13 skipped. The 13 skips
+are R8 cases of `test_email_provider_401_retry.py` and `test_gmail_send_and_drafts.py`, and R8
+does not bind this slice. The ruff count of the four files of B7 fell from 69 to 67, with no
+finding on an added line. `fromRow.test.ts` ran 32 passed. The run of `test_email_*`,
+`test_outlook_*` and `test_gmail_*` ran 2606 passed and 390 skipped, each skip an R8 case.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

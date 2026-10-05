@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion.llm_cap import automation_job, llm_slot
+from email_ingestion.providers.base import ProviderAttachmentFailed
 from email_ingestion.providers.gmail import GmailDraftNotFound
 from fastapi import BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -2139,6 +2140,29 @@ def _draft_changed_upstream() -> Iterator[None]:
         raise HTTPException(status_code=409, detail=DRAFT_CHANGED_DETAIL) from exc
 
 
+def file_not_attached_detail(filename: str) -> str:
+    """The answer when a file did not reach the provider draft (EM-T9)."""
+    return f"The file {filename} could not be attached. The mail was not sent."
+
+
+@contextmanager
+def _file_not_attached() -> Iterator[None]:
+    """Answer 502 when a file did not reach the provider draft.
+
+    WS-17 EM-T9 item 8 (``email_app_master_plan.md`` §10.4.10). The composer
+    saves the draft before the send, and a failed save stops the send. So a
+    member never sends a mail without a file that they attached. The detail is
+    a string, as in each 502 of this package. The raise comes before
+    ``_upsert_local_draft``, so the route writes no local row. The error
+    carries the file name only, never the upload URL."""
+    try:
+        yield
+    except ProviderAttachmentFailed as exc:
+        raise HTTPException(
+            status_code=502, detail=file_not_attached_detail(exc.filename),
+        ) from exc
+
+
 async def _fetch_message_dict(db: Any, message_id: str) -> dict[str, Any]:
     """Return one stored message in the API (snake_case) shape, or {}."""
     row = (await db.execute(text(
@@ -2214,7 +2238,7 @@ async def upsert_draft(
                 thread_id = drow.thread_id
                 subject = subject or (drow.subject or "")
                 try:
-                    with _draft_changed_upstream():
+                    with _draft_changed_upstream(), _file_not_attached():
                         provider_id = await provider.update_draft(
                             drow.provider_message_id, to=to or None,
                             subject=subject or None, body_text=body,
@@ -2262,17 +2286,19 @@ async def upsert_draft(
                         else json.loads(rrow.from_address or "{}")
                     if frm.get("email"):
                         to = [frm["email"]]
-                provider_id = await provider.create_draft(
-                    to=to, subject=subject, body_text=body,
-                    reply_to_message_id=rrow.provider_message_id,
-                    thread_id=thread_id or None, cc=cc, bcc=bcc,
-                    attachments=atts or None,
-                )
+                with _file_not_attached():
+                    provider_id = await provider.create_draft(
+                        to=to, subject=subject, body_text=body,
+                        reply_to_message_id=rrow.provider_message_id,
+                        thread_id=thread_id or None, cc=cc, bcc=bcc,
+                        attachments=atts or None,
+                    )
             else:
-                provider_id = await provider.create_draft(
-                    to=to, subject=subject, body_text=body, cc=cc, bcc=bcc,
-                    attachments=atts or None,
-                )
+                with _file_not_attached():
+                    provider_id = await provider.create_draft(
+                        to=to, subject=subject, body_text=body, cc=cc, bcc=bcc,
+                        attachments=atts or None,
+                    )
 
             # Each To address goes into the row, because the signed send reads
             # them back (EM-G3a review round 1, F2).

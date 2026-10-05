@@ -283,6 +283,20 @@ All providers implement the `BaseEmailProvider` abstract interface:
       stays for a direct call. `import_full_snapshot` stays False, so no
       Gmail import reconciles (EM-G5b, not built).
 
+13. **A file on an Outlook draft (WS-17 EM-T9).** `_attach_files` in
+    `outlook.py` adds each file, or it raises `ProviderAttachmentFailed`
+    with the file name. Fence: `tests/unit/test_outlook_attachments.py`.
+    - A file under 3,000,000 bytes goes in one POST. Each 2xx passes,
+      because Graph answers 201.
+    - A larger file goes through an upload session, in PUTs of 2 MiB. A
+      session that Graph refuses for the minimum size falls back to one POST.
+    - The PUTs go through a client with no auth. Do not send them through
+      the Graph client, because it puts the bearer on each request.
+    - The upload URL holds a token. `_UploadUrlFilter` on the `httpx` logger
+      removes its query. No error text, traceback or log line holds the URL.
+    - `_attach_files` never deletes a draft. Only `create_draft` deletes a
+      new draft whose file failed, and `update_draft` keeps the draft.
+
 ## Inbound SMTP Server
 
 `inbound.py` runs an aiosmtpd SMTP server that accepts inbound emails and persists
