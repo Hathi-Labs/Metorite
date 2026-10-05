@@ -48,6 +48,10 @@ export const TARGET_CAP = 120;
  *  2,000 characters, but streamed partial output accumulates without a cap. */
 export const OUTPUT_CAP = 4000;
 
+/** The most of a command a script step's detail draws. A running row opens
+ *  by itself, and a model can pass a whole script as the command. */
+export const COMMAND_CAP = 2000;
+
 type Verb = readonly [running: string, done: string];
 
 /** One verb, two tenses. The trail shows the first while the step runs. */

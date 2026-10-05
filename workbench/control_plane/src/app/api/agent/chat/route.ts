@@ -45,6 +45,7 @@ import {
 } from "@/lib/chatStream";
 import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 import { isDefaultAgent } from "@/lib/chatMemorySave";
+import { wholeToolArgs } from "@/lib/toolArgs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -531,21 +532,6 @@ function sseEvent(payload: Record<string, unknown>): Uint8Array {
 }
 
 /** Parse an accumulated AG-UI tool-args JSON string into an object for the UI. */
-/** The arguments once they are a whole, non-empty JSON object, else null.
- *  A fragment is not forwarded: the row keeps what it had. */
-function wholeToolArgs(raw: string | undefined): Record<string, unknown> | null {
-  if (!raw || !raw.trim()) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
-      Object.keys(parsed).length > 0
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 function parseToolArgs(raw: string | undefined): Record<string, unknown> {
   if (!raw || !raw.trim()) return {};
   try {

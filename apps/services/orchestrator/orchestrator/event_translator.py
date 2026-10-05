@@ -115,7 +115,9 @@ class TranslatorHooks:
 
 def _complete_args(text: str) -> bool:
     """True when *text* is a whole JSON object — the call's arguments are in."""
-    if not text.strip():
+    # A whole object ends in "}". Most fragments do not, so they cost no
+    # parse, and a long argument stream stays linear rather than quadratic.
+    if not text.rstrip().endswith("}"):
         return False
     try:
         return isinstance(json.loads(text), dict)

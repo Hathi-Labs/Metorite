@@ -13,6 +13,9 @@
 //     shared `AgentChat`) as one row per step, with its status.
 //   * `trail-run-output`: a script step shows its command and its output when
 //     it is open, and not when it is closed. A long output is cut, and says so.
+//   * `trail-args-cap`: a running row learns its arguments only once they
+//     are a whole object, and a long value is cut to 8 KB with a marker. A
+//     long command is cut in the detail too.
 //   * `trail-one-component`: the Projects, Tasks and email rails mount the
 //     shared `AgentChat`, so none of them can draw a second, thinner trail.
 
@@ -21,7 +24,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { TOOL_ARGS_CAP, capToolArgs, wholeToolArgs } from "@/lib/toolArgs";
 import {
+  COMMAND_CAP,
   OUTPUT_CAP,
   bareToolName,
   capOutput,
@@ -211,6 +216,36 @@ describe("a script step shows its command and output when open", () => {
     expect(open).not.toContain("x".repeat(OUTPUT_CAP + 1));
     expect(open).toContain("250 more characters not shown");
     expect(capOutput("abc", 2)).toEqual({ text: "ab", cut: 1 });
+  });
+});
+
+// ─── trail-args-cap ─────────────────────────────────────────────────────────
+
+describe("the arguments a running row learns", () => {
+  it("are forwarded only once they are a whole object", () => {
+    expect(wholeToolArgs('{"command": "ls')).toBeNull();
+    expect(wholeToolArgs('{"command": "ls"} ')).toEqual({ command: "ls" });
+    expect(wholeToolArgs("{}")).toBeNull();
+    expect(wholeToolArgs("[1]")).toBeNull();
+  });
+
+  it("are cut to the cap, and say so", () => {
+    const body = "y".repeat(TOOL_ARGS_CAP + 500);
+    const out = wholeToolArgs(JSON.stringify({ path: "a.md", content: body }))!;
+    expect(out.path).toBe("a.md");
+    expect(String(out.content).length).toBeLessThan(TOOL_ARGS_CAP + 100);
+    expect(String(out.content)).toMatch(/\[cut: \d+ more characters\]$/);
+    expect(capToolArgs({ rows: Array(5000).fill("z") }).rows).toMatch(/^\[cut: \d+ characters\]$/);
+  });
+
+  it("a long command is cut in the detail, and says so", () => {
+    const long: ToolEvent = {
+      id: "x", name: "run_command", status: "running",
+      args: { command: "echo " + "q".repeat(COMMAND_CAP + 40) },
+    };
+    const open = renderToStaticMarkup(createElement(ToolStepRow, { event: long, open: true }));
+    expect(open).not.toContain("q".repeat(COMMAND_CAP));
+    expect(open).toContain("45 more characters not shown");
   });
 });
 

@@ -31,6 +31,7 @@ import type { ToolEvent } from "@/components/MarkdownMessage";
 import MarkdownImage from "@/components/MarkdownImage";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
 import {
+  COMMAND_CAP,
   capOutput,
   commandOf,
   describeToolStep,
@@ -267,14 +268,20 @@ function CutNote({ cut }: { cut: number }) {
 /** The terminal a script step expands into: the command, then its output. */
 function RunDetail({ event, running, dur }: { event: ToolEvent; running: boolean; dur?: number }) {
   const out = event.result ? capOutput(String(event.result)) : null;
+  // A running row opens by itself, so a long script body must not draw whole.
+  const cmd = capOutput(commandOf(event.args, event.name), COMMAND_CAP);
   return (
     <div className="rounded-md bg-term-bg border border-term-fg/10 overflow-hidden">
       <div className="px-2.5 pt-1.5 pb-2.5 font-mono text-[11px] leading-relaxed">
         <div className="flex items-baseline gap-2 mb-1.5">
           <span className="text-term-prompt shrink-0 select-none font-medium">$</span>
-          <span className="flex-1 min-w-0 text-term-fg break-all font-mono text-[11px] leading-relaxed">
-            {highlightCommand(commandOf(event.args, event.name))}
-          </span>
+          <div
+            data-step-command=""
+            className="flex-1 min-w-0 text-term-fg break-all font-mono text-[11px] leading-relaxed max-h-40 overflow-y-auto"
+          >
+            {highlightCommand(cmd.text)}
+            <CutNote cut={cmd.cut} />
+          </div>
           {running && (
             <span className="text-[10px] text-term-running animate-pulse font-mono shrink-0">running</span>
           )}
