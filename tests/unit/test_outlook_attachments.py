@@ -497,15 +497,23 @@ async def test_the_upload_token_never_reaches_a_log_or_a_traceback(
     assert exc.__cause__ is None and exc.__context__ is None
 
 
-def test_the_log_filter_is_installed_once() -> None:
+def _marked(target: logging.Logger) -> list[logging.Filter]:
+    return [f for f in target.filters if getattr(f, "upload_url_filter", False)]
+
+
+def test_the_log_filter_is_installed_once(
+        monkeypatch: pytest.MonkeyPatch) -> None:
     """The filter goes on the ``httpx`` logger when the module loads, and a
-    second install adds no second filter."""
+    second install adds no second filter. The test works on a copy of the
+    list, so it never installs the filter for a later test (M6)."""
+    target = logging.getLogger("httpx")
+    assert len(_marked(target)) == 1, "the module did not install the filter"
+    monkeypatch.setattr(target, "filters", list(target.filters))
+
     outlook_mod._install_upload_log_filter()
     outlook_mod._install_upload_log_filter()
 
-    marked = [f for f in logging.getLogger("httpx").filters
-              if getattr(f, "upload_url_filter", False)]
-    assert len(marked) == 1
+    assert len(_marked(target)) == 1
 
 
 # ── item 8: the route ──────────────────────────────────────────────────────
