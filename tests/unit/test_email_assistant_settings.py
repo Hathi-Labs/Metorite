@@ -142,11 +142,15 @@ def test_the_email_agent_tool_takes_no_rules_model() -> None:
 
 
 def test_the_engine_reads_no_account_models() -> None:
+    """EM-T4a-2 PR-B1 moved the logic of the two composed forms into the
+    read step and the ask step, so the fence reads all four."""
     from gateway.routes.email.automation import engine
 
-    for fn in (engine._match_email_to_rule, engine._match_email_to_rules_multi):
+    for fn in (engine.read_rule_match, engine.ask_rule_match,
+               engine._match_email_to_rule, engine._match_email_to_rules_multi):
         src = inspect.getsource(fn)
-        assert "_account_models" not in src and 'models["rule"]' not in src
+        assert "_account_models" not in src and 'models["rule"]' not in src, (
+            fn.__name__)
 
 
 # ── R8: the stored rule_model stays, and nothing reads it ──────────────────
