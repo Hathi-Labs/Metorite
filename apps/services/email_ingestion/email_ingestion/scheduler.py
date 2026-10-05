@@ -213,16 +213,19 @@ def outlook_delta_mode(account_id: str) -> str:
 
 def _runs_delta_shadow(
     provider_name: str, account_id: str, row: Any, *, deep: bool | None,
+    from_loop: bool,
 ) -> bool:
     """True when this cycle runs the Graph delta in shadow (WS-17 EM-T4d).
 
-    Only a normal incremental cycle of a listed Outlook mailbox runs it
-    (review round 1 F6). A first import, the deep sync of a member act
-    (``deep=True``) and each cycle before ``initial_sync_done`` run none.
-    Those cycles already hold the mailbox lock for a long sweep. The delta
-    adds its Graph calls, so a manual sync could pass the 30 seconds of the
-    Control Plane proxy."""
-    if provider_name != "microsoft" or deep:
+    Only a normal incremental cycle of the background loop runs it, for a
+    listed Outlook mailbox (review round 1 F6, EM-T4d-f3). A first import,
+    the deep sync of a member act (``deep=True``) and each cycle before
+    ``initial_sync_done`` run none. A member's "Sync now", the webhook, the
+    rerun and the agent tool ``sync_account`` run none either: they send
+    ``deep=None`` like the loop, but they are not the loop. A seed round of a
+    folder can read up to 20 pages, and those callers wait on the 30 seconds
+    of the Control Plane proxy."""
+    if provider_name != "microsoft" or deep or not from_loop:
         return False
     if not getattr(row, "initial_sync_done", False):
         return False
@@ -1471,10 +1474,11 @@ async def _sync_cycle(
         # ``last_synced_at``, so the next cycle reads the pause again.
         # ``delta_shadow`` adds the Graph delta of a listed Outlook mailbox
         # after the sweep (EM-T4d). The sweep stays the one writer, and the
-        # delta runs inside this one call, with no session open. A first
-        # import or a deep sync runs no delta (review round 1 F6).
+        # delta runs inside this one call, with no session open. Only a loop
+        # cycle runs it: a first import, a deep sync and a member's "Sync
+        # now" run none (review round 1 F6, EM-T4d-f3).
         delta_shadow = _runs_delta_shadow(provider_name, account_id, row,
-                                          deep=deep)
+                                          deep=deep, from_loop=from_loop)
         sync_result = await provider.sync_messages(
             history_id=history_id,
             max_results=100,
