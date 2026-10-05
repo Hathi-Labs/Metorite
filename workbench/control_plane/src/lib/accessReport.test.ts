@@ -64,9 +64,9 @@ describe("paneReport", () => {
   });
 
   it("treats an ungated pane as open to everyone", () => {
-    // `/access` itself — it must never report as denied, or the diagnosis page
-    // would be telling you that you cannot read the diagnosis page.
-    expect(find(signedIn({ features: [] }), "/access").status).toBe("granted");
+    // My Profile, an ungated pane. (My Access is a People tab since
+    // 2026-10-05 and not a pane, so the report no longer lists it.)
+    expect(find(signedIn({ features: [] }), "/people/me").status).toBe("granted");
   });
 
   it("says signed-out rather than denied when nothing is resolved", () => {

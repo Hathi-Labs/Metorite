@@ -42,9 +42,11 @@ const LIVE_SET: ReadonlyArray<[string, string]> = [
   // somebody deliberately changing this line AND `launch_surface.md` §2.
   ["personal", "/calendar"],
   ["personal", "/people/me"],
-  ["personal", "/access"],
+  // `["personal", "/access"]` was here until 2026-10-05. The owner moved My
+  // Access out of the sidebar and into the People app as a tab, which took
+  // the live set from ELEVEN back to TEN.
   // Added 2026-10-02 by owner decision of 2026-10-01 (H-21, WS-17 EM-T3b),
-  // taking the live set from TEN to ELEVEN. Email sits after `/access`
+  // taking the live set from TEN to ELEVEN. Email sits after `/people/me`
   // because `/dashboard` between them is still `preview`.
   ["personal", "/email"],
   ["apps", "/projects"],
@@ -102,7 +104,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the eleven panes launch_surface.md §2 names", () => {
+  it("ships exactly the ten panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);
@@ -208,11 +210,12 @@ describe("an unresolved viewer sees nothing, never everything (LS-4 · §8.1)", 
   });
 
   it("returns no sections for a resolved member who holds nothing", () => {
-    // The ungated live panes are the floor: My Profile, My Access, Appearance.
+    // The ungated live panes are the floor: My Profile and Appearance. My
+    // Access is a People tab since 2026-10-05, and not a pane.
     const shown = visibleSections([], false).flatMap((s) =>
       s.items.map((p) => p.href),
     );
-    expect(shown).toEqual(["/people/me", "/access", "/settings/appearance"]);
+    expect(shown).toEqual(["/people/me", "/settings/appearance"]);
   });
 
   it("hides the admin-only Organisation pane from a non-admin", () => {

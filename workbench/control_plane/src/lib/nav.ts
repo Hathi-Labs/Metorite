@@ -181,19 +181,13 @@ export const NAV_SECTIONS: NavSection[] = [
         note: "Your skills, CV, working hours — what the assignment AI reads",
         launch: "live",
       },
-      // Deliberately UNGATED — one of two panes in the sidebar that are. This
-      // is the page that explains why a pane is missing, so gating it would
-      // hide it from exactly the person who needs it, and "I don't have access
-      // to this" would stay an unanswerable sentence. In Personal Center
-      // rather than Admin because it is a fact about YOU, and because a plain
-      // member must be able to reach it without an Admin heading appearing.
-      {
-        href: "/access",
-        label: "My Access",
-        icon: "ShieldCheck",
-        note: "What you can reach, and why anything else is hidden",
-        launch: "live",
-      },
+      // ⚠️ "My Access" is NOT a pane any more (owner directive, 2026-10-05:
+      // "remove my access from the sidebar and fold it into the People's
+      // app"). It is the "My access" tab of the People app, at
+      // `/people/access`, beside My profile, and it is still UNGATED
+      // (`lib/access.ts` ALWAYS_ALLOWED). Do not put it back here. The People
+      // layout shows the two personal tabs even to a member without
+      // `feature:people`, so that member still has a door to it.
       {
         href: "/dashboard",
         label: "Dashboard",
