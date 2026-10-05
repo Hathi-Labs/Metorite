@@ -609,6 +609,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** ✅ **EM-T6e MERGED #619 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
+| **EM-T9** | 🟢 AGENT-SAFE · full review (data) | 📝 **SPECIFIED (2026-10-05).** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -3893,6 +3894,110 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
 ```
 
 The R8 tests must show PASSED, not SKIPPED.
+
+#### 10.4.10 EM-T9 — a file on an Outlook draft (a LIVE defect)
+
+**Status.** 📝 SPECIFIED (2026-10-05). Not audited. The audit of EM-G3c found the defect (its C21).
+Outlook is the live provider, so this slice goes before the Gmail work that waits for customers.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. The fix changes the live Outlook path, so it
+takes the full review loop for data.
+
+**Size.** M.
+
+**The defect (LIVE on Outlook).** `_attach_files` (`outlook.py:945-965`) adds each file in one
+POST of a `fileAttachment`. It never reads the answer, and it drops each error with `continue`.
+Graph takes a file under 3 MB in one POST only. So a larger file fails at Graph, and the draft
+keeps no copy of it.
+
+**Why the member sees nothing.** The composer sends a mail with files through a draft. The save
+before the send adds the files (`drafting.py:2167-2169`), then `drafts/send` sends the draft. So
+a member can send a mail with no file, and nothing tells the member. No test covers
+`_attach_files` today.
+
+**What Microsoft documents (`learn.microsoft.com/graph/outlook-large-attachments`).**
+
+- A file under 3 MB goes in one POST to the `attachments` collection. A file of 3 MB to 150 MB
+  needs an upload session.
+- An upload session refuses a file under 3 MB, with
+  `ErrorAttachmentSizeShouldNotBeLessThanMinimumSize`.
+- The `uploadUrl` is pre-authenticated. Each PUT to it must carry no `Authorization` header.
+- Each PUT carries `Content-Range: bytes {start}-{end}/{total}`, `Content-Length` and
+  `Content-Type: application/octet-stream`. Each range stays under 4 MB, in order.
+- An earlier PUT answers 200. The last PUT answers 201.
+
+**Scope.**
+
+1. **A small file.** A file under 3,000,000 bytes goes in one POST, as today. `_attach_files`
+   now reads the answer, and each status that is not 2xx raises.
+2. **A large file.** A file of 3,000,000 bytes or more goes through
+   `POST /me/messages/{id}/attachments/createUploadSession`. The body is
+   `{"AttachmentItem": {"attachmentType": "file", "name", "size", "contentType"}}`. Then PUTs of
+   2 MiB ranges go to the `uploadUrl`, in order, until the last PUT answers 201.
+3. **The minimum size.** "3 MB" can mean 3,000,000 or 3,145,728 bytes. So a session that Graph
+   refuses with `ErrorAttachmentSizeShouldNotBeLessThanMinimumSize` falls back to one POST.
+4. **No auth on the upload URL.** The PUTs go through a separate `httpx.AsyncClient`, with no
+   `Authorization` header and no auth of the Graph client. The `uploadUrl` holds a token in its
+   query. So no log line, error text or exception message may hold the URL.
+5. **A failed file stops the save.** A failed file raises `ProviderAttachmentFailed`, a new class
+   in `base.py` beside `ProviderRateLimited`. It carries the name of the file, and no URL.
+6. **The routes.** The draft save (`PUT /email/drafts`) and the signed send (`drafts/send`) answer
+   502 with a string detail, as `drafting.py:2126` does. The text is "The file <name> could not be
+   attached. The mail was not sent." A signed send never sends a draft whose save failed.
+7. **A new draft with a failed file.** `create_draft` deletes the new draft before it raises
+   (`DELETE /me/messages/{id}`, best-effort). So a retry makes no second draft in Outlook.
+
+**Non-goals.** No change to Gmail or IMAP. No change to the composer. No change to the cut of
+10 MiB in the Next proxy, which EM-G3c owns (§12.3.3b). No change to `send_message`.
+
+**Known limit EM-T9-f1.** A retry after a failed file adds again each file that the first try
+added. The composer sends the files again at each send (`ComposePanel.tsx:332`,
+`EmailDetail.tsx:657`). A later slice owns the dedupe.
+
+**Known limit EM-T9-f2.** A direct send (`POST /email/send`, `send_message` at
+`outlook.py:803-815`) puts its files inline in `sendMail`. Graph limits that request to 4 MB. So
+a direct send with 3 MB of files or more fails, and the error reaches the caller. It is not silent.
+
+**Known limit EM-T9-f3.** The Next proxy cuts a body over 10 MiB. So a file over about 7.4 MiB
+never reaches the gateway, for each provider (EM-G3c, §12.3.3b).
+
+**Known limit EM-T9-f4.** The proxy stops a draft save and a signed send after 30 seconds. A slow
+upload of large files can pass that limit. Then the member sees a 502, and the gateway still
+finishes the save or the send.
+
+**Fences (R7).** A new `tests/unit/test_outlook_attachments.py`.
+
+- `test_a_small_file_goes_in_one_post`
+- `test_a_large_file_goes_through_an_upload_session_in_ranges`
+- `test_the_upload_puts_carry_no_authorization_header`
+- `test_a_session_refused_for_the_minimum_size_falls_back_to_one_post`
+- `test_a_failed_file_raises_with_its_name`
+- `test_a_failed_file_on_a_new_draft_deletes_the_draft`
+- `test_the_upload_url_never_reaches_a_log_or_an_error`
+- `test_the_draft_save_answers_502_on_a_failed_file`
+- `test_a_signed_send_never_sends_a_draft_whose_file_failed`
+
+**Mutations.** M1 restores `continue`, and the failed-file test fails. M2 sends each file in one
+POST, and the session test fails. M3 sends the PUTs through the Graph client, and the auth test
+fails. M4 drops the fallback, and the minimum-size test fails. M5 puts the URL into the error
+text, and the URL test fails.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_outlook_attachments.py tests/unit/test_email_multi_inbox.py \
+  tests/unit/test_gmail_send_and_drafts.py -v -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/providers/outlook.py \
+  apps/services/email_ingestion/email_ingestion/providers/base.py \
+  apps/services/gateway/gateway/routes/email/automation/drafting.py \
+  tests/unit/test_outlook_attachments.py
+```
+
+The slice changes no SQL text, so R8 does not bind it.
+
+**The live check after the merge.** The owner sends one mail with a file of 5 MB from a
+connected Outlook mailbox to the owner's own address. The mail must arrive with the file. An
+agent must not send real mail (CLAUDE.md §3a rule 3).
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
