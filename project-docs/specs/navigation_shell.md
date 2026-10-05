@@ -521,7 +521,7 @@ that crash the first time it loaded code that the new build had renamed.
 
 | Layer | When | What the member sees | Where |
 |---|---|---|---|
-| Caddy | The workbench has not answered for the whole 30 s hold | A full page, "Metorite is updating". It checks `/api/health` every 3 s and reloads by itself | `deploy/hostinger/caddy/updating/index.html`, the `handle_errors` block of `app.metorite.com` |
+| Caddy (NS-10b, waits for the owner: gate (a)) | The workbench has not answered for the whole 30 s hold | A full page, "Metorite is updating". It checks `/api/health` every 3 s and reloads by itself | `deploy/hostinger/caddy/updating/index.html`, the `handle_errors` block of `app.metorite.com` |
 | The shell | A request to `/api/*` gets a 502, 503 or 504, or no answer, AND `/api/health` then says the gateway is down | The shared toast: "Metorite is updating", then "Metorite is back" with a Refresh button. "Metorite was updated" with a Reload button when the build changed. "You are offline" when the browser has no network | `lib/shell/UpdateNotice.tsx`, `lib/shell/serviceHealth.ts`, `app/api/health/route.ts` |
 | The error page | A page throws | "This page did not load" with Try again and Reload. A tab out of date after a deploy reloads itself once | `app/error.tsx`, `app/global-error.tsx`, `lib/shell/ErrorScreen.tsx`, `lib/shell/chunkReload.ts` |
 
@@ -821,27 +821,46 @@ Done when:
 2. Every row of the `seams.test.ts` baseline is zero.
 3. The flags of NS-1 and NS-6 are deleted from the code.
 
-### NS-10 · Updating, not broken (§7.3) — AGENT-SAFE · BUILT 2026-10-05
+### NS-10 · Updating, not broken: the app (§7.3) — AGENT-SAFE · BUILT 2026-10-05
 
 No release flag. The owner asked for this behaviour on 2026-10-05, so the
 merge is its release. It has a kill switch, because it wraps `window.fetch`:
-set `NEXT_PUBLIC_UPDATE_NOTICE=off` and rebuild. Caddy's page does not depend
-on it.
+set `NEXT_PUBLIC_UPDATE_NOTICE=off` and rebuild.
+
+Done when, all met:
+
+1. A 502, 503 or 504 from `/api/*`, with the gateway down, shows "Metorite is
+   updating". The gateway's return shows "Metorite is back". A new build
+   shows "Metorite was updated". One failed route with a healthy gateway
+   shows nothing. A visual rig drove all four.
+2. A page that throws shows `ErrorScreen`, not React's raw error.
+3. Fences: `lib/shell/serviceHealth.test.ts` and `proxy.test.ts` (the public
+   probe). Each was seen to fail first. `e2e/toast.spec.ts` stubs the probe
+   as healthy, because CI runs no gateway.
+
+### NS-10b · Updating, not broken: the Caddy page (§7.3) — OWNER-GATE (gate (a))
+
+**Built on branch `update-notice-caddy`, and NOT merged.** The page needs a
+`header` line and a `rewrite` line in the `app.metorite.com` block. The fence
+`tests/unit/test_caddy_auth_gate.py` treats every such line as a sign-in line,
+so the change needs the owner's approval (`work_plan.md` §6, gate (a)). The
+owner adds this line to `.claude/OWNER_GRANTS.md`:
+
+    CADDY-AUTH-APPROVED 3c8217ffb4fa3fc9d049ee170ec057c7f65fee739ba9a167573a96aaba5dce21
+
+HANDOFF **H-246** carries it. ⚠️ An agent must not edit `_BASELINE`, and must
+not swap in a directive the fence does not list, such as `try_files` for
+`rewrite`. Either one passes the test and defeats the gate.
 
 Done when, all met:
 
 1. If the workbench has not answered for the 30 s hold, each path answers 503
-   with the updating page. It also sends
-   `Cache-Control: no-store` and `Retry-After: 10`. Measured on the box with
-   a throwaway Caddy in front of a closed port.
-2. A 502, 503 or 504 from `/api/*`, with the gateway down, shows "Metorite is
-   updating". The gateway's return shows "Metorite is back". A new build
-   shows "Metorite was updated". One failed route with a healthy gateway
-   shows nothing. A visual rig drove all four.
-3. A page that throws shows `ErrorScreen`, not React's raw error.
-4. Fences: `lib/shell/serviceHealth.test.ts`, `proxy.test.ts` (the public
-   probe), and `tests/unit/test_deploy_serialize.py::TestCaddyShowsTheUpdatingPage`.
-   Each was seen to fail first.
+   with the updating page. It also sends `Cache-Control: no-store` and
+   `Retry-After: 10`. Measured on the box on 2026-10-05, with a throwaway
+   Caddy in front of a closed port.
+2. The page reloads with a plain GET, so a form is never sent again.
+3. Fence: `tests/unit/test_deploy_serialize.py::TestCaddyShowsTheUpdatingPage`,
+   seen to fail first.
 
 ### NS-8 · Desk mode — BLOCKED (AGENT-SAFE when unblocked)
 
