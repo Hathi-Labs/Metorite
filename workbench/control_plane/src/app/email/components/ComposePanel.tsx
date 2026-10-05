@@ -18,6 +18,10 @@ import { appendSignature, getSignatureText, stripSignature } from "../lib/signat
 import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { RecipientInput } from "./RecipientInput";
 import { ComposerQuote, AiButton } from "./ComposerAI";
+import {
+  FILES_TOO_LARGE, autosaveWait, createAutosave, failedSaveStatus, pickProblem,
+  saveFailureText, sendFailureText, type DraftStatus,
+} from "../lib/draftAutosave";
 
 interface ComposePanelProps {
   open: boolean;
@@ -117,7 +121,14 @@ export function ComposePanel({
   // type (draftIdRef holds the local id so repeated saves update it in place).
   const draftIdRef = useRef<string | null>(null);
   const dirty = useRef(false);
-  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
+  // The pending autosave. A close and an unmount run it at once (EM-G3c-2
+  // item 11). Each open of the window is a new session, so a save that ends
+  // after the window opened again leaves the new session alone.
+  const [autosave] = useState(() => createAutosave());
+  const sessionRef = useRef(0);
+  // `hasAttachments` of the row that the last save returned (EM-G3c-2 item 12).
+  const draftHasFileRef = useRef(false);
   // Uploaded files (base64) + picked AI artifacts (resolved server-side).
   const [attachments, setAttachments] = useState<SendAttachment[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactAttachmentRef[]>([]);
@@ -156,6 +167,8 @@ export function ComposePanel({
       if (sig) setBody((prev) => appendSignature(prev, sig));
     });
     draftIdRef.current = null;
+    draftHasFileRef.current = false;
+    sessionRef.current += 1;
     staleDraftsRef.current = [];
     // A pop-out keeps the From that the inline reply chose (EM-T8c review).
     setFromPick(defaultFromId && defaultFromId !== accountId
@@ -204,12 +217,20 @@ export function ComposePanel({
     if (draft) setAiInstruction("");
   };
 
-  /** Read picked files into base64 and append them to the attachments. */
+  /** Read picked files into base64 and append them to the attachments. A
+   *  pick that makes the files pass 7.5 MB is refused whole (EM-G3c-2 item 10). */
   const addFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    const picked = Array.from(files);
+    const problem = pickProblem(attachments, picked);
+    if (problem) {
+      setSendError(problem);
+      return;
+    }
     try {
-      const added = await Promise.all(Array.from(files).map(fileToSendAttachment));
+      const added = await Promise.all(picked.map(fileToSendAttachment));
       setAttachments((prev) => [...prev, ...added]);
+      setSendError((prev) => (prev === FILES_TOO_LARGE ? null : prev));
     } catch {
       setSendError("Couldn't read one of the attachments");
     }
@@ -217,11 +238,18 @@ export function ComposePanel({
 
   // Debounced auto-save once the user edits the draft.
   useEffect(() => {
-    if (!open || !fromId || !dirty.current) return;
+    if (!open || !fromId || !dirty.current) {
+      autosave.cancel();
+      return;
+    }
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
-    if (!body.trim() && toArr.length === 0 && !subject.trim()) return;
+    if (!body.trim() && toArr.length === 0 && !subject.trim()) {
+      autosave.cancel();
+      return;
+    }
     const savingFrom = fromId;
-    const handle = setTimeout(async () => {
+    const session = sessionRef.current;
+    autosave.schedule(async () => {
       try {
         setDraftStatus("saving");
         const saved = await saveDraft({
@@ -233,6 +261,8 @@ export function ComposePanel({
           subject,
           body: combinedBody(),
         });
+        // The window closed and opened again while this save ran.
+        if (sessionRef.current !== session) return;
         if (liveFromRef.current !== savingFrom) {
           // The From changed while this save ran. Its draft belongs to the
           // old mailbox, so it is stale, and the next save starts a new one
@@ -242,17 +272,26 @@ export function ComposePanel({
           return;
         }
         draftIdRef.current = saved.id;
+        draftHasFileRef.current = saved.hasAttachments;
         // A provider draft cannot move between mailboxes: the new mailbox
         // saved its own, so the drafts of the old one go (§11.6 case 7).
         dropStaleDrafts();
         setDraftStatus("saved");
-      } catch {
-        setDraftStatus("idle");
+      } catch (err) {
+        // The next edit tries again (EM-G3c-2 item 13).
+        if (sessionRef.current === session) setDraftStatus(failedSaveStatus(err));
       }
-    }, 1200);
-    return () => clearTimeout(handle);
+    }, autosaveWait(
+      accounts.find((a) => a.id === savingFrom)?.provider,
+      draftHasFileRef.current,
+    ));
+    // Stop the timer and keep the save, so a close can still flush it.
+    return () => autosave.hold();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [to, cc, subject, body, open, fromId]);
+
+  // An unmount runs the pending save at once (EM-G3c-2 item 11).
+  useEffect(() => () => autosave.flush(), [autosave]);
 
   // Which mailbox last wrote to each recipient, for the From warning. It
   // runs only for a member with two or more mailboxes, after a short pause.
@@ -295,9 +334,18 @@ export function ComposePanel({
       staleDraftsRef.current.push(draftIdRef.current);
       draftIdRef.current = null;
     }
+    // The next save makes a new draft in the new mailbox, with no file.
+    draftHasFileRef.current = false;
     dirty.current = true;
     setBody((prev) => swapSignature(prev, oldSig, newSig));
     setFromPick({ base: accountId, id: next });
+  };
+
+  /** Close the window. The X and the backdrop keep the draft, so the
+   *  pending save runs at once first (EM-G3c-2 item 11). */
+  const closeComposer = () => {
+    autosave.flush();
+    onClose();
   };
 
   const handleSend = async () => {
@@ -308,6 +356,8 @@ export function ComposePanel({
     }
     setSending(true);
     setSendError(null);
+    // The send carries the last edit, so the pending autosave goes.
+    autosave.cancel();
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
     const ccArr = cc ? cc.split(",").map((s) => s.trim()).filter(Boolean) : [];
     const hasAttachments = attachments.length > 0 || artifacts.length > 0;
@@ -332,6 +382,9 @@ export function ComposePanel({
           attachments: attachments.length ? attachments : undefined,
           artifacts: artifacts.length ? artifacts : undefined,
         });
+        // When the send fails, the next autosave updates this draft, and it
+        // holds the files now (EM-G3c-2 item 12).
+        if (saved.id === draftIdRef.current) draftHasFileRef.current = saved.hasAttachments;
         await sendDraft(fromId, saved.id);
         dropStaleDrafts();
         onClose();
@@ -349,16 +402,19 @@ export function ComposePanel({
         if (draftIdRef.current) void deleteEmail(draftIdRef.current);
         // onClose is called by the store after successful send
       }
-    } catch (err: any) {
-      setSendError(err.message || "Failed to send");
+    } catch (err) {
+      // A 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
+      setSendError(sendFailureText(err));
       setSending(false);
     }
   };
 
+  const saveFailure = saveFailureText(draftStatus);
+
   return (
     <div className="fixed inset-0 z-[60] flex items-start justify-center pt-12 sm:pt-20 px-4">
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/40" onClick={closeComposer} />
 
       {/* Compose window — height-capped (viewport minus the pt-12 offset and
           the safe-area inset) with the fields scrolling inside, so the footer
@@ -367,7 +423,7 @@ export function ComposePanel({
         {/* Header */}
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border bg-secondary/50">
           <span className="text-sm font-medium text-foreground">New Message</span>
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={onClose} className="rounded">
+          <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={closeComposer} className="rounded">
             <Icon name="X" size={16} />
           </Button>
         </div>
@@ -500,11 +556,13 @@ export function ComposePanel({
         <div className="shrink-0 px-4 py-3 border-t border-border flex items-center justify-between">
           <div className="flex-1">
             {sendError ? (
-              <span className="text-[10px] text-red-500">{sendError}</span>
+              <span className="text-[10px] text-destructive">{sendError}</span>
             ) : draftStatus === "saving" ? (
               <span className="text-[10px] text-muted-foreground">Saving draft…</span>
             ) : draftStatus === "saved" ? (
               <span className="text-[10px] text-muted-foreground">Draft saved to Drafts</span>
+            ) : saveFailure ? (
+              <span className="text-[10px] text-destructive">{saveFailure}</span>
             ) : (
               <span className="text-[10px] text-muted-foreground">
                 {fromAccount
@@ -534,6 +592,8 @@ export function ComposePanel({
             />
             <Button variant="ghost" size="none" radius="keep" layout="" onClick={() => {
                 // Discard removes the auto-saved draft (closing via X keeps it).
+                // The pending save goes first, so it cannot write the draft again.
+                autosave.cancel();
                 if (draftIdRef.current) void deleteEmail(draftIdRef.current);
                 onClose();
               }} disabled={sending} className="px-3 py-1.5 text-xs rounded-md">

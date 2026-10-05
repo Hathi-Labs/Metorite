@@ -424,9 +424,10 @@ describe("no raw Tailwind palette colours", () => {
     "app/agents/page.tsx": 6,
     "app/artifacts/page.tsx": 13,
     "app/chat/page.tsx": 5,
-    "app/email/components/ComposePanel.tsx": 1,
+    // ComposePanel left, and EmailDetail went from 3 to 2, in WS-17 EM-G3c-2:
+    // the error of a send is `text-destructive`.
     "app/email/components/EmailAssistantChat.tsx": 1,
-    "app/email/components/EmailDetail.tsx": 3,
+    "app/email/components/EmailDetail.tsx": 2,
     "app/email/components/EmailList.tsx": 3,
     "app/email/components/MessageTimelineModal.tsx": 1,
     "app/email/components/automation/AISettingsView.tsx": 1,

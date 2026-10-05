@@ -18,6 +18,10 @@ import { RecipientInput } from "./RecipientInput";
 import { ownAddresses, replyRecipients } from "../lib/mailbox";
 import { TaskCaptureModal, type CommitmentContext } from "./TaskCaptureModal";
 import { ContactTrigger, RecipientList } from "./ContactCard";
+import {
+  autosaveWait, createAutosave, failedSaveStatus, saveFailureText, sendFailureText,
+  type DraftStatus,
+} from "../lib/draftAutosave";
 
 const isDraft = (m: Email) =>
   (m.folder || "").toLowerCase() === "drafts" ||
@@ -393,8 +397,13 @@ export function DraftCard({
     }
   };
   const [sending, setSending] = useState(false);
+  // The text of a failed send. Before EM-G3c-2 the card dropped it (item 14).
+  const [sendError, setSendError] = useState<string | null>(null);
   const dirty = useRef(false);
-  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
+  // The pending autosave. An unmount and a change of draft run it at once
+  // (EM-G3c-2 item 11).
+  const [autosave] = useState(() => createAutosave());
   // AI draft/refine panel — the session owns live backend steps + revisions.
   const [aiOpen, setAiOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
@@ -467,8 +476,11 @@ export function DraftCard({
   // provider Drafts and survive a refresh — keyed on the draft's own id.
   useEffect(() => {
     const accountId = draft.accountId || selectedAccountId;
-    if (!accountId || !dirty.current) return;
-    const handle = setTimeout(async () => {
+    if (!accountId || !dirty.current) {
+      autosave.cancel();
+      return;
+    }
+    autosave.schedule(async () => {
       try {
         setDraftStatus("saving");
         await saveDraft({
@@ -481,18 +493,30 @@ export function DraftCard({
           body: combinedBody(),
         });
         setDraftStatus("saved");
-      } catch {
-        setDraftStatus("idle");
+      } catch (err) {
+        // The next edit tries again (EM-G3c-2 item 13).
+        setDraftStatus(failedSaveStatus(err));
       }
-    }, 1200);
-    return () => clearTimeout(handle);
+    }, autosaveWait(
+      accounts.find((a) => a.id === accountId)?.provider,
+      draft.hasAttachments,
+    ));
+    // Stop the timer and keep the save, so an unmount can still flush it.
+    return () => autosave.hold();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [body, quote, to]);
+
+  // An unmount, and a switch of the card to another draft, run the pending
+  // save at once (EM-G3c-2 item 11). The save names the draft of before.
+  useEffect(() => () => autosave.flush(), [autosave, draft.id]);
 
   const send = async () => {
     const accountId = draft.accountId || selectedAccountId;
     if (!accountId || recipients().length === 0) return;
     setSending(true);
+    setSendError(null);
+    // The send carries the last edit, so the pending autosave goes.
+    autosave.cancel();
     try {
       // Persist the latest edits — Cc/Bcc included, now carried on the provider
       // draft — then send THIS draft natively (Drafts → Sent, no duplicate).
@@ -533,8 +557,10 @@ export function DraftCard({
           replyToMessageId: replyTo?.providerMessageId || null,
         });
       }
-    } catch {
-      /* send failure — the draft stays in Drafts so the user can retry */
+    } catch (err) {
+      // The draft stays in Drafts so the user can retry. The card shows why,
+      // and a 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
+      setSendError(sendFailureText(err));
     } finally {
       setSending(false);
     }
@@ -542,6 +568,8 @@ export function DraftCard({
 
   const discard = async () => {
     if (!confirm("Discard this draft?")) return;
+    // The pending save goes first, so it cannot write the draft again.
+    autosave.cancel();
     onDismiss?.(); // hide instantly; the provider delete is async
     try {
       await deleteEmail(draft.id);
@@ -572,6 +600,9 @@ export function DraftCard({
     );
     if (result) setAiInstruction("");
   };
+
+  // "Not saved" or "Too large to save" after a failed save (EM-G3c-2 item 13).
+  const saveFailure = saveFailureText(draftStatus);
 
   return (
     <div className="border border-primary/40 rounded-lg bg-primary/5 px-3 py-3">
@@ -691,14 +722,24 @@ export function DraftCard({
           <AppIcon name="Trash2" size={13} /> Discard
         </button>
         <AiButton active={aiOpen} onClick={() => setAiOpen((v) => !v)} />
-        <span className="text-[10px] text-muted-foreground ml-auto">
-          {draftStatus === "saving"
-            ? "Saving draft…"
-            : draftStatus === "saved"
-              ? "Draft saved · sends into this conversation"
-              : "Sends into this conversation"}
-        </span>
+        {saveFailure ? (
+          <span className="text-[10px] text-destructive ml-auto">{saveFailure}</span>
+        ) : (
+          <span className="text-[10px] text-muted-foreground ml-auto">
+            {draftStatus === "saving"
+              ? "Saving draft…"
+              : draftStatus === "saved"
+                ? "Draft saved · sends into this conversation"
+                : "Sends into this conversation"}
+          </span>
+        )}
       </div>
+      {/* The slot of a failed send (EM-G3c-2 item 14) */}
+      {sendError && (
+        <p role="alert" className="mt-1.5 text-[10px] text-destructive">
+          {sendError}
+        </p>
+      )}
     </div>
   );
 }

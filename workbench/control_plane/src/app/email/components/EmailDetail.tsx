@@ -31,6 +31,10 @@ import { LabelMenu } from "./LabelMenu";
 import { LabelChip } from "./LabelChip";
 import { MessageTimelineModal } from "./MessageTimelineModal";
 import { useViewMode } from "@/components/ViewModeProvider";
+import {
+  FILES_TOO_LARGE, autosaveWait, createAutosave, failedSaveStatus, pickProblem,
+  saveFailureText, sendFailureText, type DraftStatus,
+} from "../lib/draftAutosave";
 
 interface EmailDetailProps {
   email: Email | null;
@@ -134,7 +138,14 @@ export function EmailDetail({ email }: EmailDetailProps) {
     },
     onError: setSendErr,
   });
-  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
+  // The pending autosave of the reply. A close, a switch to another mail and
+  // an unmount run it at once (EM-G3c-2 item 11). Each reply is a session, so
+  // a save that ends after the reply changed leaves the new reply alone.
+  const [autosave] = useState(() => createAutosave());
+  const replySessionRef = useRef(0);
+  // `hasAttachments` of the row that the last save returned (EM-G3c-2 item 12).
+  const replyHasFileRef = useRef(false);
   const [loadingFullBody, setLoadingFullBody] = useState(false);
   const [fullBodyText, setFullBodyText] = useState<string | null>(null);
   // Full message detail (body + attachments) fetched lazily on selection. The
@@ -254,6 +265,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
 
   // Fetch full content whenever the selected email changes.
   useEffect(() => {
+    // A switch to another mail runs the pending save of the reply at once,
+    // while `draftIdRef` still names its draft (EM-G3c-2 item 11). The
+    // cleanup of the autosave effect ran first and held it.
+    autosave.flush();
+    replySessionRef.current += 1;
+    replyHasFileRef.current = false;
     if (!email) {
       setDetail(null);
       setThread(null);
@@ -310,10 +327,16 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // NOTE: must stay ABOVE the `if (!email) return` early-return so the hook is
   // called on every render (moving it below crashes with a hooks-order error).
   useEffect(() => {
-    if (!replyMode || !fromId || !email) return;
-    if (!replyDirty.current) return; // ignore the prefilled quote — wait for edits
+    // ignore the prefilled quote — wait for edits
+    if (!replyMode || !fromId || !email || !replyDirty.current) {
+      autosave.cancel();
+      return;
+    }
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
-    if (!replyBody.trim() && toArr.length === 0) return;
+    if (!replyBody.trim() && toArr.length === 0) {
+      autosave.cancel();
+      return;
+    }
     const isForward = replyMode === "forward";
     const target = replyTargetRef.current ?? email;
     const subj0 = target.subject || "";
@@ -325,7 +348,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
       ? `${replyBody.replace(/\s+$/, "")}\n\n${replyQuote}`
       : replyBody;
     const savingFrom = fromId;
-    const handle = setTimeout(async () => {
+    const session = replySessionRef.current;
+    autosave.schedule(async () => {
       try {
         setDraftStatus("saving");
         const saved = await saveDraft({
@@ -338,6 +362,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
           subject,
           body,
         });
+        // The reply or the mail changed while this save ran.
+        if (replySessionRef.current !== session) return;
         if (liveFromRef.current !== savingFrom) {
           // The From changed while this save ran: its draft belongs to the
           // old mailbox (EM-T8c review).
@@ -346,16 +372,25 @@ export function EmailDetail({ email }: EmailDetailProps) {
           return;
         }
         draftIdRef.current = saved.id;
+        replyHasFileRef.current = saved.hasAttachments;
         // A provider draft cannot move between mailboxes (§11.6 case 7).
         dropStaleDrafts();
         setDraftStatus("saved");
-      } catch {
-        setDraftStatus("idle");
+      } catch (err) {
+        // The next edit tries again (EM-G3c-2 item 13).
+        if (replySessionRef.current === session) setDraftStatus(failedSaveStatus(err));
       }
-    }, 1200);
-    return () => clearTimeout(handle);
+    }, autosaveWait(
+      accounts.find((a) => a.id === savingFrom)?.provider,
+      replyHasFileRef.current,
+    ));
+    // Stop the timer and keep the save, so a close or a switch can flush it.
+    return () => autosave.hold();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replyBody, replyQuote, replyTo, replyCc, replyMode, fromId, email?.id]);
+
+  // An unmount runs the pending save at once (EM-G3c-2 item 11).
+  useEffect(() => () => autosave.flush(), [autosave]);
 
   // Which mailbox last wrote to each recipient, for the From warning. Only
   // for a member with two or more mailboxes, after a short pause.
@@ -461,6 +496,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
     view;
   replyTargetRef.current = replyTarget;
 
+  // "Not saved" or "Too large to save" after a failed save (EM-G3c-2 item 13).
+  const saveFailure = saveFailureText(draftStatus);
+
   const replyLabel =
     replyMode === "forward"
       ? "Forward"
@@ -483,6 +521,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
     target?: Email
   ) => {
     const src = target ?? view;
+    // A new reply closes the one before, so its pending save runs at once
+    // (EM-G3c-2 item 11).
+    autosave.flush();
+    replySessionRef.current += 1;
+    replyHasFileRef.current = false;
     setReplyTargetId(src.id);
     setFromPick(null);
     staleDraftsRef.current = [];
@@ -560,6 +603,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
   };
 
   const resetReplySession = () => {
+    // A discard and a send end the reply. The pending save goes, so it cannot
+    // write the draft again.
+    autosave.cancel();
+    replySessionRef.current += 1;
+    replyHasFileRef.current = false;
     draftIdRef.current = null;
     replyDirty.current = false;
     setDraftStatus("idle");
@@ -634,6 +682,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const bccArr = replyBcc.split(",").map((s) => s.trim()).filter(Boolean);
     const isForward = replyMode === "forward";
     const target = replyTargetRef.current ?? email;
+    // The send carries the last edit, so the pending autosave goes.
+    autosave.cancel();
     try {
       // Native draft-send now carries Cc/Bcc AND attachments (all stored on the
       // provider draft), so whenever there's a draft OR attachments we save the
@@ -657,6 +707,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
           attachments: replyAttachments.length ? replyAttachments : undefined,
           artifacts: replyArtifacts.length ? replyArtifacts : undefined,
         });
+        // When the send fails, the next autosave updates this draft, and it
+        // holds the files now (EM-G3c-2 item 12).
+        if (saved.id === draftIdRef.current) replyHasFileRef.current = saved.hasAttachments;
         await sendDraft(fromId, saved.id);
         dropStaleDrafts();
       } else {
@@ -670,8 +723,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
           replyToMessageId: isForward || !sameConversation ? undefined : target.providerMessageId,
         });
       }
-    } catch (e: any) {
-      setSendErr(e?.message || "Failed to send");
+    } catch (e) {
+      // A 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
+      setSendErr(sendFailureText(e));
       return;
     }
     // Show the reply in the conversation at once, then pull the real synced copy.
@@ -694,13 +748,21 @@ export function EmailDetail({ email }: EmailDetailProps) {
     refreshThreadAfterSend(sent);
   };
 
-  /** Read picked files into base64 and append them to the reply's attachments. */
+  /** Read picked files into base64 and append them to the reply's attachments.
+   *  A pick that makes the files pass 7.5 MB is refused whole (EM-G3c-2 item 10). */
   const addReplyFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+    const picked = Array.from(files);
+    const problem = pickProblem(replyAttachments, picked);
+    if (problem) {
+      setSendErr(problem);
+      return;
+    }
     replyDirty.current = true;
     try {
-      const added = await Promise.all(Array.from(files).map(fileToSendAttachment));
+      const added = await Promise.all(picked.map(fileToSendAttachment));
       setReplyAttachments((prev) => [...prev, ...added]);
+      setSendErr((prev) => (prev === FILES_TOO_LARGE ? null : prev));
     } catch {
       setSendErr("Couldn't read one of the attachments");
     }
@@ -717,6 +779,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
       staleDraftsRef.current.push(draftIdRef.current);
       draftIdRef.current = null;
     }
+    // The next save makes a new draft in the new mailbox, with no file.
+    replyHasFileRef.current = false;
     replyDirty.current = true;
     setReplyBody((prev) => swapSignature(prev, oldSig, newSig));
     setFromPick({ mail: email.id, id: next });
@@ -1174,7 +1238,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
               </div>
               <button
                 className="text-muted-foreground hover:text-foreground transition-colors"
-                onClick={() => setReplyMode(null)}
+                onClick={() => {
+                  // The X keeps the draft, so the pending save runs at once
+                  // (EM-G3c-2 item 11).
+                  autosave.flush();
+                  setReplyMode(null);
+                }}
               >
                 <AppIcon name="X" size={14} />
               </button>
@@ -1328,11 +1397,13 @@ export function EmailDetail({ email }: EmailDetailProps) {
             <div className="px-3 sm:px-4 py-2 bg-secondary/50 border-t border-border flex items-center justify-between gap-2">
               <span className="text-[10px] truncate min-w-0">
                 {sendErr ? (
-                  <span className="text-red-500">{sendErr}</span>
+                  <span className="text-destructive">{sendErr}</span>
                 ) : draftStatus === "saving" ? (
                   <span className="text-muted-foreground">Saving draft…</span>
                 ) : draftStatus === "saved" ? (
                   <span className="text-muted-foreground">Draft saved · Ctrl+Enter to send</span>
+                ) : saveFailure ? (
+                  <span className="text-destructive">{saveFailure}</span>
                 ) : (
                   <span className="text-muted-foreground">Ctrl+Enter to send</span>
                 )}
