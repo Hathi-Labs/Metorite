@@ -284,7 +284,11 @@ def _parse_list_unsubscribe(header: str) -> str | None:
 
 
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
-GMAIL_SCOPES = ["https://mail.google.com/"]
+#: D-EM-31 (WS-17 EM-G7). The callback refuses a grant that lacks either one.
+GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+]
 
 # ── Rate limits (WS-17 EM-G4a, GM-9) ─────────────────────────────────────
 # ``email_app_master_plan.md`` §12.3.5.1. Fence: test_gmail_rate_limits.py.

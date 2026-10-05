@@ -171,9 +171,19 @@ def _iso_us(value: Any) -> str | None:
     return value.isoformat(timespec="microseconds") if value else None
 
 
+#: The providers that connect through the OAuth flow only (WS-17 EM-G7 review
+#: round 1). ``POST /email/accounts`` refuses each one with 403. Fence:
+#: ``tests/unit/test_email_gmail_connect.py``.
+_OAUTH_ONLY_PROVIDERS: frozenset[str] = frozenset({"gmail", "microsoft"})
+_OAUTH_ONLY_DETAIL = (
+    "Gmail and Microsoft 365 mailboxes connect through the sign-in flow only. "
+    "This route adds an IMAP mailbox."
+)
+
+
 class CreateAccountRequest(BaseModel):
-    """Manual account creation (IMAP/SMTP or other manual config)."""
-    provider: str  # 'imap' | 'gmail' | 'microsoft'
+    """Manual account creation (IMAP/SMTP). Gmail and Microsoft are refused."""
+    provider: str  # 'imap' only. 'gmail' and 'microsoft' answer 403.
     email_address: str
     label: str = ""
     credentials: dict[str, Any]  # Provider-specific credential dict
@@ -380,10 +390,14 @@ async def create_account(
     req: CreateAccountRequest,
     user: UserContext = Depends(get_current_user),
 ):
-    """Add a new email account manually (IMAP/SMTP or pre-configured OAuth creds).
+    """Add a new IMAP/SMTP account manually.
 
-    For OAuth-based providers (gmail, microsoft), use the /oauth/{provider}/authorize
-    flow instead — it handles token exchange automatically.
+    Gmail and Microsoft connect through the OAuth flow only
+    (``/oauth/{provider}/authorize``). This route answers 403 for either one,
+    before it reads, encrypts or writes anything (WS-17 EM-G7 review round 1).
+    A body with tokens would skip each check of the flow: the signed state,
+    the member of the session, the scopes of D-EM-31, the refresh token and
+    ``EMAIL_GMAIL_CONNECT``. No caller sends either provider here.
 
     The organization and the member come from the session and from nowhere
     else (``user_management_contract.md`` R11). With either one missing, the
@@ -396,11 +410,15 @@ async def create_account(
         )
     org = str(user.organization_id)
 
+    if req.provider in _OAUTH_ONLY_PROVIDERS:
+        _log.info("email.manual_oauth_account_refused", provider=req.provider)
+        raise HTTPException(status_code=403, detail=_OAUTH_ONLY_DETAIL)
+
     # Validate provider
-    if req.provider not in ("gmail", "microsoft", "imap"):
+    if req.provider != "imap":
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown provider: {req.provider}. Supported: gmail, microsoft, imap",
+            detail=f"Unknown provider: {req.provider}. Supported: imap",
         )
 
     # For IMAP, validate required credential fields

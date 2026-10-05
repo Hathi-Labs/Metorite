@@ -83,6 +83,8 @@ router = APIRouter(
 #      key (`OPERATOR_ONLY_ENV_KEYS`: a URL, host, domain, port or path) is
 #      403, on configure, put, delete, custom registration and the GitHub
 #      writers.
+#      The keys of the mail apps are platform names, so no tenant can aim
+#      the mail connect at a client of their own (WS-17 EM-G7, O-GM-5).
 #   C. THE GATE. Only a key in `BUILTIN_ENV_KEYS`, which a built-in guide
 #      declares, reaches `os.environ` and the env file. A key that a custom
 #      integration declares goes to the store of the organization only. Any
@@ -303,57 +305,32 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
             {"key": "ANYMAILFINDER_API_KEY", "label": "API Key", "sensitive": True},
         ],
     },
-    "gmail-oauth": {
-        "label": "Gmail OAuth (user sign-in)",
-        "description": "Let users connect their personal Gmail accounts via Google sign-in. Required for the Email app.",
-        "setup_url": "https://console.cloud.google.com/apis/credentials",
-        "docs_url": "https://developers.google.com/gmail/api/guides/oauth-installed-app",
-        "instructions": (
-            "1. Go to Google Cloud Console → APIs & Services → Credentials.\n"
-            "2. Click 'Create Credentials' → 'OAuth client ID'.\n"
-            "3. Choose 'Web application'.\n"
-            "4. Add Authorized redirect URI:\n"
-            "   https://app.metorite.com/api/email/oauth/gmail/callback\n"
-            "   (or your workbench's public URL).\n"
-            "5. Copy the Client ID and Client Secret below.\n"
-            "6. Also enable the Gmail API under 'Enabled APIs & Services'."
-        ),
-        "env_vars": [
-            {"key": "GMAIL_OAUTH_CLIENT_ID", "label": "Client ID", "sensitive": False},
-            {"key": "GMAIL_OAUTH_CLIENT_SECRET", "label": "Client Secret", "sensitive": True},
-        ],
-    },
+    # ⚠️ NO `gmail-oauth` ENTRY (WS-17 EM-G7, O-GM-5). Metorite owns ONE
+    # Google mail app for every organization (D-EM-1, D-EM-5 amended), and an
+    # operator sets it in the env file of the box (`email_app_master_plan.md`
+    # §12.4). Layer B (`env_guard.is_platform_env`) refuses each
+    # `GMAIL_OAUTH_*`, `MSFT_OAUTH_*` and `AUTH_MICROSOFT_ENTRA_ID_*` key on
+    # every route here. The id stays reserved (`RESERVED_SERVICE_IDS`).
+    # `microsoft-oauth` stays for its status, which the banner of the
+    # Integrations page reads. It gives no setup step and no link.
     "microsoft-oauth": {
         "label": "Microsoft OAuth (Email)",
+        # WS-17 EM-G7 review round 1: no setup step and no link. Metorite owns
+        # this app (D-EM-1), and an operator sets it in the env file of the box
+        # (`email_app_master_plan.md` §10.5). The status route lists the three
+        # keys read-only under `operator_env_vars`, because layer B refuses
+        # each one. Fence: `tests/unit/test_integrations_mail_app_keys.py`.
         "description": (
-            "Let users connect their Outlook / Microsoft 365 accounts. "
-            "Reuses your existing sign-in Azure app registration (AUTH_MICROSOFT_ENTRA_ID_*) "
-            "— just add the Email redirect URI and Mail.ReadWrite permission to it."
+            "Outlook and Microsoft 365 mail. Metorite owns this app, and the "
+            "operator sets it on the server."
         ),
-        "setup_url": "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
-        "docs_url": "https://learn.microsoft.com/en-us/graph/auth-v2-user",
-        "instructions": (
-            "If you already have a sign-in app registration (AUTH_MICROSOFT_ENTRA_ID_*), "
-            "you can reuse it — no separate registration needed. Just add these to it:\n\n"
-            "1. Go to Azure Portal → App registrations → your existing Metorite app.\n"
-            "2. Under 'Authentication', add Redirect URI (Web):\n"
-            "   https://app.metorite.com/api/email/oauth/microsoft/callback\n"
-            "3. Under 'API Permissions', add Microsoft Graph → Delegated:\n"
-            "   Mail.ReadWrite, User.Read\n"
-            "4. Click 'Grant admin consent' if tenant-restricted.\n\n"
-            "If you are NOT using the same app registration, create a new one:\n"
-            "1. App registrations → New registration.\n"
-            "2. Name: 'Metorite Email'. Supported account types: 'Any organizational directory and personal Microsoft accounts'.\n"
-            "3. Add Redirect URI (Web) as above.\n"
-            "4. Copy the Application (client) ID below.\n"
-            "5. Go to 'Certificates & secrets' → New client secret, copy it below.\n"
-            "6. Under 'API Permissions', add Microsoft Graph → Delegated:\n"
-            "   Mail.ReadWrite, User.Read"
-        ),
+        "setup_url": "",
+        "docs_url": "",
+        "instructions": "",
         "env_vars": [
-            {"key": "MSFT_OAUTH_CLIENT_ID", "label": "Application (client) ID (optional — falls back to AUTH_MICROSOFT_ENTRA_ID_ID)", "sensitive": False},
-            {"key": "MSFT_OAUTH_CLIENT_SECRET", "label": "Client Secret (optional — falls back to AUTH_MICROSOFT_ENTRA_ID_SECRET)", "sensitive": True},
-            {"key": "MICROSOFT_TENANT_ID", "label": "Directory (tenant) ID — required for single-tenant apps. Copy from Azure Overview tab. Leave blank for multi-tenant.", "sensitive": False},
+            {"key": "MSFT_OAUTH_CLIENT_ID", "label": "Application (client) ID", "sensitive": False},
+            {"key": "MSFT_OAUTH_CLIENT_SECRET", "label": "Client secret", "sensitive": True},
+            {"key": "MICROSOFT_TENANT_ID", "label": "Directory (tenant) ID", "sensitive": False},
         ],
     },
     "google-sheets": {
@@ -381,7 +358,6 @@ _SETUP_GUIDES: dict[str, dict[str, Any]] = {
 
 _GUIDE_CATEGORIES: dict[str, str] = {
     "github":           "core",
-    "gmail-oauth":      "communication",
     "microsoft-oauth":  "communication",
     "zoho-crm":         "crm",
     "apollo":         "prospecting",
@@ -493,9 +469,16 @@ BUILTIN_ENV_KEYS: frozenset[str] = frozenset(
     k for k in GUIDE_ENV_KEYS
     if k not in OPERATOR_ONLY_ENV_KEYS and not env_guard.is_platform_env(k)
 )
-#: The ids of the built-in integrations: the setup guides and the services
-#: that the key store loads at startup. A custom integration may not take one.
-RESERVED_SERVICE_IDS: frozenset[str] = frozenset(_SETUP_GUIDES) | frozenset(INTEGRATION_ENV_MAP)
+#: The ids of the mail apps (WS-17 EM-G7, O-GM-5). No tile offers a key of
+#: either one, and the key store loads neither at startup. They stay
+#: reserved, so a custom integration cannot take the name of a mail app.
+MAIL_APP_SERVICE_IDS: frozenset[str] = frozenset({"gmail-oauth", "microsoft-oauth"})
+#: The ids of the built-in integrations: the setup guides, the services
+#: that the key store loads at startup and the mail apps. A custom
+#: integration may not take one.
+RESERVED_SERVICE_IDS: frozenset[str] = (
+    frozenset(_SETUP_GUIDES) | frozenset(INTEGRATION_ENV_MAP) | MAIL_APP_SERVICE_IDS
+)
 
 
 def _find_env_file() -> Path:

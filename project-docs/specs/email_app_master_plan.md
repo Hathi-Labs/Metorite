@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3).
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -6126,9 +6126,9 @@ change.
 > D-EM-4 say for Microsoft. The flow is Connect, then consent, then done. A member never
 > configures an OAuth client, never pastes a key and never opens Integrations.
 
-> **Status (2026-10-05).** 📝 SPECIFIED by EM-G0. EM-G1 (#625, §12.3.1) and EM-G2 (#626,
-> §12.3.2) are ✅ MERGED, and EM-G4b is ✅ MERGED (#632,
-> §12.3.5.2). Each anchor below is
+> **Status (2026-10-05).** 📝 SPECIFIED by EM-G0. EM-G1 (#625, §12.3.1), EM-G2 (#626,
+> §12.3.2) and EM-G4b (#632, §12.3.5.2) are ✅ MERGED, and EM-G7 is ✅ MERGED
+> (#637, §12.3.9). Each anchor below is
 > verified against the code at `d0627789a` on 2026-10-04. Re-verify each anchor at dispatch,
 > because the code is the fact. This section wins over §1 and §11 where they say that Outlook is
 > the only provider.
@@ -6182,6 +6182,12 @@ leg of Integrations (§11.7.3). No deploy template sets `GMAIL_OAUTH_CLIENT_ID` 
 `GMAIL_OAUTH_CLIENT_SECRET`, and `.env.example:98-99` leaves both empty. So this plan assumes no
 Gmail mailbox in production, and EM-G10 checks it first.
 
+⚠️ **Measured again on 2026-10-05, by name only.** The orchestrator found `GMAIL_OAUTH_CLIENT_ID`
+and `GMAIL_OAUTH_CLIENT_SECRET` in the box `.env`. Nobody in this plan set them (Q-GM-6). So
+`oauth_app("gmail")` is configured in production, and a call to the authorize route by URL could
+connect Gmail. Production holds 0 Gmail mailboxes. D-EM-36 keeps the Gmail connect dark until
+EM-G10.
+
 **The provider exists, and much of it works.** `gmail.py` has 1169 lines. These parts work today:
 
 - Sign-in and refresh, with one refresh on a 401 (`gmail.py:198-249`, `RefreshingBearer` at
@@ -6231,7 +6237,8 @@ Gmail mailbox in production, and EM-G10 checks it first.
 ### 12.2 Decisions (2026-10-04)
 
 D-EM-5 changed by owner decision, and §10.2 holds the amended row. The orchestrator took D-EM-31 to
-D-EM-35 for this plan. Each one is an agent decision, and the owner can reverse it.
+D-EM-35 for this plan, and D-EM-36 on 2026-10-05. Each one is an agent decision, and the owner can
+reverse it.
 
 | Id | Decision |
 |---|---|
@@ -6240,6 +6247,7 @@ D-EM-35 for this plan. Each one is an agent decision, and the owner can reverse 
 | **D-EM-33** | **The folder model of Gmail.** The system labels decide the folder, in this order: `TRASH`, `SPAM`, `DRAFT`, `SENT`, `INBOX`. A Gmail message with no system label is in `archive`. A move to a user label adds that label and removes `INBOX`. The Archive folder pages with a query, never with `labelIds=["archive"]`. The orchestrator decided O-GM-1 on 2026-10-04: a user label is a label and never a folder. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-34** | **The re-key reclaim runs only for a provider that re-keys its ids.** That is Outlook, whose ids change on a move. Gmail never re-keys an id, so Gmail never folds two rows on one Message-ID. The provider attribute is false by default. IMAP stores no Message-ID today, so IMAP sees no change. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-35** | **Gmail shows only when the Google app is installed.** The UI reads a capability from the gateway: for each provider, whether its app credentials are set. Gmail is a live choice only when the answer is true. No member ever sees "configure Integrations". *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-36** | **The Gmail connect ships dark behind `EMAIL_GMAIL_CONNECT`, which is off by default.** The box in production holds a Google client today (§12.1), so the app alone cannot keep Gmail hidden. While the flag is off, the capability read answers `gmail: false`, and each Gmail leg of EM-G7 refuses. The flag flips at EM-G10 only, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`. *Agent decision (orchestrator, 2026-10-05). The owner can reverse it.* |
 
 **Open questions for the orchestrator.** Each one blocks the slice in its last column. Each has a
 recommendation, and the slice scope below follows the recommendation. If the orchestrator decides
@@ -6253,6 +6261,12 @@ otherwise, the scope of that slice changes before dispatch.
 | **O-GM-4** | **How does a Gmail push find its tenant?** A push carries the address and a history id only. One address can be a mailbox in two organizations, and of two members (D-EM-17). | **Candidate (a).** (a) One unbound discovery read, in a `SECURITY DEFINER` function, maps an address to its pairs of organization and mailbox id, and returns nothing else. The route then queues one sync for each pair, inside its own tenant. (b) One Pub/Sub topic for each organization, each with a push subscription whose URL carries a signed `org`, as the Graph webhook does (EM-T1a item 5). (a) adds no cloud resource and no secret, and a push only starts a sync that each mailbox runs with its own token. (b) keeps the signed-org seam, but the box then needs a Pub/Sub admin credential to make a topic for each organization. The audit of EM-G6a decides, with a security review. | EM-G6a, EM-G6b |
 
 **Decided (orchestrator, 2026-10-04).** O-GM-1, O-GM-2 and O-GM-3 follow the recommendation, so the slice scopes stand as written. The EM-G6a audit decides O-GM-4. Candidate (a) is the lean, and the audit checks its cross-tenant read before any build.
+
+| Id | Question | Decision | Slice |
+|---|---|---|---|
+| **O-GM-5** | **May an Integrations write set the key of a mail app?** `PUT /integrations/keys` and `POST /integrations/configure` write `os.environ` and the box `.env`. `oauth_app` reads that environment. So a member of one organization could aim the mail connect of every organization at an OAuth client of their own. | **No.** The configure, put and delete writes refuse each `GMAIL_OAUTH_*`, `MSFT_OAUTH_*` and `AUTH_MICROSOFT_ENTRA_ID_*` key with a 403, and write nothing. The `gmail-oauth` tile leaves Integrations. Metorite owns the mail apps (D-EM-1), and an operator sets them on the box under gate `env-write`. | EM-G7 |
+
+**Decided (orchestrator, 2026-10-05).** O-GM-5 takes the answer in the table, and EM-G7 builds it. The reason is the reach of one write. One member of one organization changes the mail app of every organization on the box, and no connect log shows the change. This answer reverses the EM-G7 non-goal that kept the `gmail-oauth` tile. The wider fix, for every key that is not a mail key, stays owner gate §6 (f).
 
 ### 12.3 Slices
 
@@ -7684,6 +7698,9 @@ The R8 tests must show PASSED, with 0 skips.
 
 #### 12.3.9 EM-G7 — the connect backend
 
+**Status.** ✅ MERGED #637 (2026-10-05). The as-built notes and
+the mutation table are at the end of this section.
+
 **Gate.** 🟢 AGENT-SAFE · security review. It merges dark. With no Google app on the box, a member
 sees no change.
 
@@ -7709,8 +7726,10 @@ sees no change.
 7. **No operator text for a member (GM-25, D-EM-35).** Both entries of `_NOT_CONFIGURED` say only
    that the provider is not available yet. Neither names Integrations or a client ID.
 8. **The capability read (D-EM-35).** A new gated route `GET /email/oauth/providers` answers one
-   entry for each provider: `id` and `available`. `available` is `oauth_app(provider).configured`.
-   The answer holds booleans and ids only, never a client ID or a secret.
+   boolean for each provider, keyed by its id: `{"microsoft": bool, "gmail": bool}`. A value is
+   true when that app is configured (`oauth_app(provider).configured`). Gmail also needs the flag
+   of D-EM-36. The answer holds booleans only, never a client ID, a secret or a URL. EM-G8 reads
+   this shape (review round 1).
 9. **The app facts for a Workspace admin.** `GET /email/oauth/gmail/app` returns the client ID and
    the redirect URI, as it does for Microsoft (`transport/oauth.py:238-270`). An admin needs the
    client ID to trust the app. Google shows both values in each authorize URL.
@@ -7720,8 +7739,9 @@ sees no change.
 - No PKCE. EM-T1a signs the state, and the Microsoft leg has none.
 - No `include_granted_scopes`. No `openid` scope, because `users/me/profile` gives the address.
 - No revoke on disconnect (O-GM-3).
-- The Integrations entry `gmail-oauth` (`routes/integrations.py:276-295`) stays, as
-  `microsoft-oauth` does.
+- ~~The Integrations entry `gmail-oauth` (`routes/integrations.py:276-295`) stays, as
+  `microsoft-oauth` does.~~ O-GM-5 reversed this (orchestrator, 2026-10-05). The entry is gone,
+  and the Integrations writes refuse the keys of the mail apps.
 - No UI (EM-G8).
 - A mailbox connected with `https://mail.google.com/` works until its next reconnect.
 
@@ -7747,10 +7767,138 @@ and the bounce test fails. M3 adds the client ID to the providers route, and its
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_gmail_connect.py tests/unit/test_email_connect_backend.py \
   tests/unit/test_email_oauth_authorize_wiring.py tests/unit/test_email_oauth_app_info.py \
-  tests/unit/test_email_oauth_state.py tests/unit/test_email_owner_scope_fence.py -v -rs
-uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_gmail_connect.py
+  tests/unit/test_email_oauth_state.py tests/unit/test_email_owner_scope_fence.py \
+  tests/unit/test_integrations_mail_app_keys.py tests/unit/test_integrations_env_hardening.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email/transport/oauth.py \
+  apps/services/gateway/gateway/routes/email/transport/accounts.py \
+  tests/unit/test_email_gmail_connect.py tests/unit/test_integrations_mail_app_keys.py
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/api/email
 ```
+
+The ruff line names the files of this slice, and it exits clean. A ruff check of the whole package
+`routes/email` finds 278 errors that are older than this slice (review round 1, P3-2).
+
+**As built (2026-10-05, branch `email-gmail-g7`).** The build covers items 1 to 4 and 6 to 9, the
+BFF bounces (E-C1), the capability read (E-C2), O-GM-5 and D-EM-36. Item 5 is copy for EM-G8.
+The slice adds no migration and changes no SQL.
+
+- **The scopes and the grant (items 1 to 3).** `GMAIL_SCOPES` holds the two scopes of D-EM-31.
+  The callback checks the token answer of Google before the profile read. `_gmail_grant_refusal`
+  answers `scope_missing` when a scope is absent, and `token_exchange_failed` with no refresh
+  token. A `scope` that is absent, or that is not a string, is a missing scope. The Microsoft leg
+  does not read these rules.
+- **The Google errors (item 4).** `_refusal_reason` sends a Gmail error through
+  `_google_error_reason`, which never reads `error_description`. A Microsoft error still goes
+  through `_consent_error_reason`. So `admin_policy_enforced` on Microsoft stays a plain code.
+- **The provider on each bounce (item 6, E-C1).** The gateway `_bounce` adds `provider` only for
+  `gmail` or `microsoft` (`CONNECT_PROVIDERS`). The two BFF routes build each failure with
+  `bounceQuery` in `src/app/api/email/oauth/bounce.ts`. Each `failed()` call passes the path
+  segment, and the one allowlist decides. No route echoes another segment.
+- **No operator text (item 7).** `_NOT_CONFIGURED` says "Gmail is not available yet." and
+  "Microsoft 365 / Outlook is not available yet." The BFF still hands that `detail` to the
+  callback page as the error.
+- **The capability read (item 8, E-C2).** `GET /email/oauth/providers` answers
+  `{"microsoft": bool, "gmail": bool}`: one entry for each provider, keyed by its id, as the
+  dispatch asked. The model `OAuthProviders` sets `extra="forbid"`. A provider is true when its app
+  holds a client ID and a secret, and Gmail also needs the flag. A caller with no organization or
+  no member gets 403.
+- **The capability read, its fences.** The route has an `OWNER_SCOPE_EXEMPT` entry, because it
+  reads no mailbox. The email catch-all of the BFF proxies it, so it needs no new BFF route.
+- **The app facts (item 9).** `GET /email/oauth/gmail/app` returns the client ID and the redirect
+  URI. Another provider is still a 404. While the flag is off, Gmail answers 503, as a box with no
+  Google app does. That rule is an agent call on D-EM-36, so the dark state is one state.
+- **The dark flag (D-EM-36).** `email_gmail_connect` in `acb_common/settings.py` is false by
+  default, and `gmail_connect_enabled()` is its one reader. While it is off, the authorize leg
+  refuses Gmail before it signs a state or reads a mailbox. The callback bounces each Gmail return
+  with `provider_unavailable` before the token exchange, so it writes no row. It also refuses a
+  reconnect of a Gmail mailbox, and production holds none. Only the env file of the box sets the
+  flag, because layer B of `env_guard` refuses each `EMAIL_*` name on each Integrations write.
+  Restart the gateway after each change. A cache clear can read the file again, but it never
+  replaces a value that the process loaded at start (review round 1).
+- **The Integrations refusal (O-GM-5).** Since the rebase on #633, layer B of
+  `acb_common.env_guard` is the one refusal. It answers 403 for each `GMAIL_OAUTH_*`,
+  `MSFT_OAUTH_*` and `AUTH_MICROSOFT_ENTRA_ID_*` key on configure, put and delete, in any case. It
+  writes no store row, no env var and no file line, and a mixed request fails whole. The helper
+  `_refuse_mail_app_keys` and its second list `is_mail_app_env` are gone (review round 1). The
+  write of each other key does not change.
+- **The tiles.** The `gmail-oauth` entry left `_SETUP_GUIDES` and `_GUIDE_CATEGORIES`, and
+  `MAIL_APP_SERVICE_IDS` keeps the id reserved. The `microsoft-oauth` tile stays for its status.
+  Since round 1 it has no setup step, no link and no form field. The status lists its three keys
+  read-only. The banner names Outlook only, as plain text with no link. The palette debt of
+  `integrations/page.tsx` drops from 83 to 73.
+- **The manual route (review round 1).** `POST /email/accounts` answers 403 for `gmail` and
+  `microsoft` before it encrypts, writes or starts a sync. It took tokens from the body, so it
+  could write a Gmail row while the connect was dark. No caller sends either provider, so the route
+  now adds an IMAP mailbox only.
+- **The startup load (review round 1).** The `INTEGRATION_ENV_MAP` of `key_store` has no
+  `gmail-oauth` and no `microsoft-oauth` entry. Layer B already skipped each of their rows, so the
+  two entries were dead. A stored row under either id never reaches `os.environ`.
+
+**The fences, as built.** `tests/unit/test_email_gmail_connect.py` holds 60 cases. They cover
+the eight of the spec, the dark flag, its one reader, the mail-app names of `env_guard` and the
+manual route. `tests/unit/test_integrations_mail_app_keys.py` holds 20 cases for O-GM-5, the tiles,
+the banner and the startup load. `bounce.test.ts` and
+the two `route.test.ts` files beside the BFF routes run each bounce for both providers. These
+older suites changed:
+
+- `test_email_oauth_app_info.py`: Gmail left the list of the 404 (item 9).
+- `test_email_connect_backend.py`: the two consent-error cases expect `provider=microsoft` (item
+  6), and its fixture turns the flag on.
+- `test_email_multi_inbox.py`: its fixture turns the flag on, for the Gmail picker case.
+- `test_email_owner_scope_fence.py`: one entry for `oauth_providers`, and the reason of
+  `oauth_app_info` names Gmail.
+- `test_email_oauth_state.py` and `test_email_oauth_authorize_wiring.py` did not change. They read
+  `error` only, or a source shape that stays.
+- `conformance.test.ts`: the palette debt of the Integrations page, 83 to 73.
+
+**Mutations, as run (2026-10-05).** Each mutation ran against its named test and turned it red.
+Each file then went back to its exact SHA-256.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M1 | The callback accepts a partial grant (`oauth.py`) | `test_a_grant_without_settings_basic_saves_nothing`, 6 of 6 |
+| M2 | The gateway `_bounce` drops `provider` | `test_each_bounce_names_the_provider`, 12 of 12 |
+| M3 | `OAuthProviders` gets a `client_id` field | `test_the_providers_route_answers_booleans_only` |
+| M4 | The callback accepts a token with no `refresh_token` | `test_a_token_without_refresh_token_saves_nothing`, 3 of 3 |
+| M5 | `admin_policy_enforced` maps to `provider_error` | `test_google_errors_map_to_their_reasons`, 2 of 7 |
+| M6 | `bounceQuery` drops `provider` (`bounce.ts`) | 20 of the 58 vitest cases in `src/app/api/email/oauth` |
+| M7 | `bounceQuery` echoes each provider value | 5 of the 58 vitest cases |
+| M8 | Round 1: `PUT /integrations/keys` skips layer B for a mail-app key | `test_put_refuses_a_mail_app_key`, 2 of 2 |
+| M9 | Round 1: `POST /integrations/configure` skips layer B for `AUTH_MICROSOFT_ENTRA_ID_SECRET` | `test_configure_refuses_each_mail_app_key[AUTH_MICROSOFT_ENTRA_ID_SECRET]` |
+| M10 | The capability read returns the client IDs in a dict | `test_the_providers_route_answers_booleans_only` |
+| M11 | The capability read ignores the flag | `test_flag_off_the_capability_says_gmail_false` |
+| M12 | The authorize leg ignores the flag | `test_flag_off_the_authorize_leg_refuses_and_signs_nothing`, 2 of 2 |
+| M13 | The callback ignores the flag | `test_flag_off_the_callback_refuses_and_writes_nothing`, 2 of 2 |
+| M14 | Round 1: `POST /email/accounts` takes `gmail` and `microsoft` again | `test_the_manual_route_refuses_each_oauth_provider`, 4 of 6 |
+| M14b | Round 1: `POST /email/accounts` drops only its 403 | `test_the_manual_route_refuses_each_oauth_provider`, 4 of 6 |
+| M15 | Round 1: the startup map maps `gmail-oauth` again | `test_the_startup_map_names_no_mail_app_key` |
+
+Round 1 ran M8, M9 and M11 to M15 again on the rebased code, and each one was red. Under M9,
+layer C still answers 422, so the test reads the 403 of layer B alone.
+
+**Known limits of EM-G7 (follow-ups, not fixed here).**
+
+- Round 1 closed the two limits that stood here: the startup map and the Microsoft tile.
+- The read-only probe `GET /integrations/test?service=gmail-oauth` stays. It returns a status, not
+  a key.
+
+**Review round 1 (2026-10-05).** The review failed EM-G7 on two P1s. The security fix #633 closed
+both on main: a newline in a value, and a configure write of `EMAIL_GMAIL_CONNECT`. The branch is
+rebased on #633, and these findings are closed:
+
+- **One source for the refused names.** Layer B of `env_guard` refuses the mail-app keys. The
+  second list in `app_credentials.py` and the helper in `integrations.py` are gone.
+  `test_every_name_that_oauth_app_reads_is_a_platform_name` holds the two together.
+- **P2, the tiles and the banner.** No setup step, no link and no form field for a mail app.
+  Fences: `test_the_microsoft_tile_offers_no_field_and_no_setup_step` and
+  `test_the_banner_gives_no_setup_step_and_no_link`.
+- **P2 and P3-1, the manual route.** `POST /email/accounts` refuses both OAuth providers (M14).
+- **P3, the startup map.** The two dead entries are gone (M15).
+- **P3-2, the verify command.** It names the files of the slice.
+- **The restart.** The settings comment, the as-built notes and §12.4 give the reason.
+- **The M8 cases.** Each case reaches layer B. `test_the_gmail_oauth_service_is_gone` holds the
+  400 of the removed service on its own.
+- **The docstring of `oauth_app`.** It names the env file of the box, not Integrations.
 
 #### 12.3.10 EM-G8 — the connect UI
 
@@ -7766,7 +7914,7 @@ provider that is half built.
 
 1. **Availability (D-EM-35, GM-26).** `CONNECT_PROVIDERS` no longer fixes `available`. The page
    reads `GET /email/oauth/providers` through `gatewayFetch`, as `lib/api.ts:524` reads the app
-   facts.
+   facts. The answer is `{"microsoft": bool, "gmail": bool}` (EM-G7 item 8).
 2. **A failed read** keeps Microsoft live and Gmail "Coming soon". `retryTarget` and
    `rangeStepProviderFrom` (`lib/connect.ts:248-286`) take the live set from the read.
 3. **The copy (GM-27).** The empty state, the decline text, the generic failure and the callback
@@ -7921,6 +8069,14 @@ each one needs a Google account that Metorite owns (`work_plan.md` §6.0 B).
    `env-write`. It confirms `WORKBENCH_PUBLIC_URL`, `GATEWAY_PUBLIC_URL` and
    `GATEWAY_SESSION_SECRET`, which Outlook uses already.
 
+**The dark flag (D-EM-36).** The box holds a Google client today, and nobody in this plan set it
+(Q-GM-6). So `EMAIL_GMAIL_CONNECT` keeps the Gmail connect dark until EM-G10. Set it to `true`
+only at EM-G10, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`.
+
+**How to flip it.** Set it in the env file of the box, because no Integrations write can set an
+`EMAIL_*` name. Then restart the gateway. A later read of the file never replaces a value that
+the process loaded at start.
+
 **The limits of Testing.** Read these before EM-G10.
 
 - Google issues a refresh token that ends after 7 days for an External app in Testing. So each
@@ -7978,3 +8134,7 @@ refresh token from Testing still ends after 7 days.
   Gmail data, also to TypeSafe and AI/ML API, and the privacy text must name them. The proposal is
   yes, on the same terms as Outlook, with the text of §12.4 steps 12 and 13. This is a legal and
   third-party call, so the agent does not make it.
+- **Q-GM-6. Whose Google client does the box hold today?** The box `.env` holds
+  `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` (measured by name, 2026-10-05). Nobody in
+  this plan set them. Name its Google Cloud project, its redirect URIs and the scopes it allows. If
+  it is not the mail app of §12.4, replace it at step 9 before EM-G10 (D-EM-36).

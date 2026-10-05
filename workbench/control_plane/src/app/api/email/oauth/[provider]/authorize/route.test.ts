@@ -118,3 +118,70 @@ describe("the authorize BFF and import_months", () => {
     expect(new URL(upstream[0]).searchParams.getAll("import_months")).toEqual(["2"]);
   });
 });
+
+// WS-17 EM-G7 E-C1: each failure of this hop names its provider, so the
+// callback page never takes Microsoft for a Gmail try. Only `gmail` and
+// `microsoft` ride on the bounce. Any other path segment is dropped.
+describe("the authorize BFF names the provider on each bounce (EM-G7)", () => {
+  async function authorizeAs(provider: string, answer: () => Promise<Response>) {
+    upstream = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        upstream.push(String(url));
+        return answer();
+      }),
+    );
+    const { GET } = await import("./route");
+    const req = new NextRequest(`http://localhost:3001/api/email/oauth/${provider}/authorize`);
+    return GET(req, { params: Promise.resolve({ provider }) });
+  }
+
+  function bounce(res: NextResponse): Record<string, string> {
+    const raw = res.headers.get("location") ?? "";
+    expect(raw.startsWith("/email/oauth/callback?"), raw).toBe(true);
+    return Object.fromEntries(new URL(raw, "https://resolved.invalid").searchParams);
+  }
+
+  const failures: Array<[string, () => Promise<Response>, string]> = [
+    [
+      "a gateway refusal",
+      async () => new Response(JSON.stringify({ detail: "Gmail is not available yet." }), { status: 400 }),
+      "Gmail is not available yet.",
+    ],
+    ["an unreachable gateway", async () => { throw new Error("ECONNREFUSED"); }, "gateway_unreachable"],
+    ["a 302 with no Location", async () => new Response(null, { status: 302 }), "authorize_no_location"],
+    [
+      "a Location that is not a URL",
+      async () => new Response(null, { status: 302, headers: { location: "::not a url" } }),
+      "authorize_bad_location",
+    ],
+  ];
+
+  for (const provider of ["gmail", "microsoft"]) {
+    for (const [label, answer, reason] of failures) {
+      it(`${provider}: ${label}`, async () => {
+        const res = await authorizeAs(provider, answer);
+        expect(res.status).toBe(303);
+        expect(bounce(res)).toEqual({ error: reason, provider });
+      });
+    }
+  }
+
+  it("drops a provider segment that fails the containment rule", async () => {
+    const res = await authorizeAs("..%2Fsettings", async () => new Response(null, { status: 500 }));
+    expect(upstream).toHaveLength(0);
+    expect(bounce(res)).toEqual({ error: "unknown_provider" });
+  });
+
+  it("never echoes a well-formed segment that is not a provider", async () => {
+    const res = await authorizeAs(
+      "zoho",
+      async () => new Response(JSON.stringify({ detail: "Unknown provider: zoho" }), { status: 400 }),
+    );
+    expect(upstream).toHaveLength(1);
+    const query = bounce(res);
+    expect(query).toEqual({ error: "Unknown provider: zoho" });
+    expect("provider" in query).toBe(false);
+  });
+});

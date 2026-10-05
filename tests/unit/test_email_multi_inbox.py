@@ -76,6 +76,9 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(s, "gateway_session_secret", SECRET, raising=False)
     monkeypatch.setattr(s, "msft_oauth_client_id", "test-msft-id", raising=False)
     monkeypatch.setattr(s, "gmail_oauth_client_id", "test-gmail-id", raising=False)
+    # The Gmail connect is dark by default since EM-G7. The Gmail picker case
+    # below tests the connect itself, so the flag is on here.
+    monkeypatch.setattr(s, "email_gmail_connect", True, raising=False)
     monkeypatch.setenv("WORKBENCH_PUBLIC_URL", "https://app.example.test")
 
 
