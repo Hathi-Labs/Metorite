@@ -784,6 +784,8 @@ class BaseEmailProvider(ABC):
         attachments: list[dict[str, Any]] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        *,
+        exact_to: bool = False,
     ) -> str:
         """Create a DRAFT message (not sent) on the provider; return its id.
 
@@ -793,6 +795,13 @@ class BaseEmailProvider(ABC):
 
         ``attachments`` (optional): a list of ``{"filename": str, "content":
         bytes, "mime_type": str}`` to attach to the draft.
+
+        ``exact_to`` (keyword only, WS-17 EM-T10 item 6): the To of a reply
+        draft is ``to`` exactly. Only the composers pass it, through
+        ``PUT /email/drafts``, because the member typed that To. Outlook then
+        writes ``toRecipients`` over the To that ``createReply`` set. With the
+        default, a reply keeps the To of the provider, so a Reply-To address
+        stays. Gmail and IMAP build ``to`` into the mail, so they ignore it.
 
         Used by Assistant reply/forward/draft rule actions. Raises
         NotImplementedError if the provider doesn't support drafts so the caller

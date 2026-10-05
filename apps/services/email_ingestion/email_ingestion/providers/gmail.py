@@ -1226,6 +1226,8 @@ class GmailProvider(BaseEmailProvider):
         attachments: list[dict[str, Any]] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        *,
+        exact_to: bool = False,
     ) -> str:
         """Create a Gmail draft (``drafts.create``) and return the MESSAGE id
         of the draft (EM-G3a item 6, O-GM-2).
@@ -1233,6 +1235,9 @@ class GmailProvider(BaseEmailProvider):
         The local row holds that id, which is the id that the sync finds. So
         one draft keeps one row (GM-13). A reply keeps ``threadId`` and gets
         ``In-Reply-To`` and ``References`` (item 4).
+
+        ``exact_to`` changes nothing here. The builder puts ``to`` into the
+        mail, so the To of a Gmail draft is always ``to`` (EM-T10 item 6).
         """
         mail = _build_gmail_mail(
             to=to, subject=subject, body_text=body_text, body_html=body_html,

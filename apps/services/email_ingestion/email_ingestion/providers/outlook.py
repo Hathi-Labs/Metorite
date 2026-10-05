@@ -1094,10 +1094,17 @@ class OutlookProvider(BaseEmailProvider):
         attachments: list[dict[str, Any]] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        *,
+        exact_to: bool = False,
     ) -> str:
         """Create an Outlook draft. For replies, use createReply (keeps threading)
         then set the body; otherwise create a standalone draft message. File
-        attachments are added to the draft via the Graph attachments endpoint."""
+        attachments are added to the draft via the Graph attachments endpoint.
+
+        ``createReply`` sets the To of a reply to the sender (or the Reply-To)
+        only. With ``exact_to``, the PATCH of the reply also writes ``to``, so
+        a reply-all draft keeps each address that the member gave (WS-17
+        EM-T10 item 6, C8). The default keeps the To of ``createReply``."""
         client = await self._get_client()
         body_block = {
             "contentType": "html" if body_html else "text",
@@ -1118,8 +1125,12 @@ class OutlookProvider(BaseEmailProvider):
             resp.raise_for_status()
             draft_id = resp.json().get("id", "")
             self._require_new_draft_id(draft_id, attachments)
+            reply_to: dict[str, Any] = (
+                {"toRecipients": self._recipient_list(to)} if exact_to else {}
+            )
             patch = await client.patch(
-                f"/me/messages/{draft_id}", json={"body": body_block, **recipients}
+                f"/me/messages/{draft_id}",
+                json={"body": body_block, **reply_to, **recipients},
             )
             patch.raise_for_status()
             await self._attach_to_new_draft(client, draft_id, attachments)
