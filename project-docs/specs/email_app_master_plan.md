@@ -610,7 +610,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** ✅ **EM-T6e MERGED #619 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
-| **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | 📝 **SPECIFIED (2026-10-05).** **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. See §10.4.11. | See §10.4.11. |
+| **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | 📝 **GO-NARROWED (the audit of 2026-10-05).** **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. See §10.4.11. | See §10.4.11. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -4138,70 +4138,123 @@ finding on an added line. `fromRow.test.ts` ran 32 passed. The run of `test_emai
 
 #### 10.4.11 EM-T10 — a draft card keeps the recipients of its draft (a LIVE defect)
 
-**Status.** 📝 SPECIFIED (2026-10-05). Not audited. The reviews of EM-G3c-2 found the defects
-(its known limits f6, f2 and f10). Outlook is the live provider.
+**Status.** 📝 GO-NARROWED after the audit of 2026-10-05 (C1 to C11). The audit checked each anchor
+against the code at `c26b67549`. Not built. The reviews of EM-G3c-2 found the first defects (its
+known limits f6, f2 and f10). The audit found two more, C2 and C8.
 
-**Gate.** 🟢 AGENT-SAFE. UI only. No migration, no flag and no gateway change. It changes a live
-composer, so it takes the full review loop and a visual review.
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. It changes a live composer and the live Outlook
+reply create, so it takes the full review loop and a visual review. The live check is 🔴
+OWNER-GATE.
 
-**Size.** S.
+**Size.** M.
 
-**The defect (LIVE on Outlook).** The `DraftCard` (`ConversationView.tsx`) reads no recipient of
-its draft. It starts To with the reply-all list of the mail that it answers, Cc with the reply-all
-Cc, and Bcc empty (`ConversationView.tsx` ~:357-362). The draft row holds its own To, Cc and Bcc
-(`_upsert_local_draft`, `drafting.py` ~:2012-2040, and the sync of each provider). Its docstring
-says that a reopened draft shows its Cc and Bcc, and the card does not.
+**The defects (LIVE on Outlook).**
 
-**What the member sees.**
-
-- A member narrows a reply to the sender with Reply, and the draft saves. Then the member opens
-  the draft again. The card shows the reply-all To and Cc. The next save or a send writes them
-  over the draft, so the reply goes to everyone.
-- A reply with a Bcc loses the Bcc in the card, and the next save writes an empty Bcc.
-- A member who edits only Cc or Bcc starts no autosave, because the effect depends on
-  `[body, quote, to]` (~:507). Known limit f2 of EM-G3c-2.
-- The inline Send of `EmailDetail` shows no state while it drains (~:713-738). A second click, or
-  Ctrl+Enter (~:1400), sends again. Known limit f10 of EM-G3c-2.
+- **The card ignores the recipients of its draft.** The `DraftCard`
+  (`workbench/control_plane/src/app/email/components/ConversationView.tsx` ~:355-380) starts To
+  and Cc from the reply-all lists of its reply target, and Bcc empty. In a thread, the reply target
+  is the newest mail that is not a draft (~:80). The draft row holds its own To, Cc and Bcc
+  (`apps/services/gateway/gateway/routes/email/automation/drafting.py` ~:2012-2040, and the sync
+  of each provider, `persist.py` ~:102-105).
+- **So a narrowed reply widens.** A member narrows a reply to the sender with Reply, and it saves.
+  In the thread, the card shows Reply All with the reply-all To and Cc. The first edit or a send
+  writes them over the draft, so the reply goes to everyone. A Bcc is lost the same way.
+- **The standalone card can start with the last mail (C2).** `EmailDetail` stays mounted
+  across a selection, and it resets `detail` only after the first render. In that render the card
+  for draft B mounts with the last mail as its reply target (`EmailDetail.tsx` ~:518-524,
+  ~:1155). So B starts with the recipients of that mail. The `key` of #650 fixed half of this.
+- **A Cc or Bcc edit saves nothing (f2, C1).** The autosave depends on `[body, quote, to]` (~:507),
+  and the Cc and Bcc inputs never set `dirty` (~:664, ~:673).
+- **The inline Send can send twice (f10).** `handleInlineSend` (`EmailDetail.tsx` ~:713) has no
+  sending state. A second click, or Ctrl+Enter (~:1400), sends again.
+- **Outlook drops the To of a reply on create (C8).** The reply path of `create_draft`
+  (`apps/services/email_ingestion/email_ingestion/providers/outlook.py` ~:1114-1126) calls
+  `createReply`, then PATCHes only the body, Cc and Bcc. So a reply-all draft saved once holds only
+  the sender in To at Graph, and the next sync writes that To over the row. Today the card hides
+  this, because it ignores the To of the row. Once the card reads the row (item 1), a reply-all
+  draft would narrow to the sender after a sync. So item 6 ships in the same PR as item 1.
 
 **Scope.**
 
-1. **The recipients of the draft.** A draft that holds a To starts the card with its own To, Cc
-   and Bcc. A draft with no To keeps the reply-all defaults of today.
-2. **The toggle.** The Reply / Reply All toggle can start on Reply. That is when the To of the
-   draft is the reply-only list and its Cc is empty. Else it starts on Reply All. A click still computes To and
-   Cc again from the mail that the draft answers.
-3. **The Cc row.** The Cc and Bcc row shows at the start when the draft holds a Cc or a Bcc.
-4. **A Cc or Bcc edit saves (f2).** The autosave effect also depends on `cc` and `bcc`.
-5. **One send at a time (f10).** The inline Send sets a sending state before the drain. A second
-   click and Ctrl+Enter do nothing while it is set. The Send button shows that state, as
-   ComposePanel and the DraftCard do.
+1. **The start state (C3).** A draft can hold a recipient in To, Cc or Bcc. Then the card starts
+   with the lists of the draft, exactly as the row holds them. A draft with no recipient and a reply target
+   starts with the reply-all lists. A draft with no recipient and no reply target starts empty.
+2. **The toggle (C4).** Compare sets of trimmed, lower-case addresses, and ignore display names.
+   - Start on Reply when the To set of the draft equals the reply-only To set, the Cc of the draft
+     is empty, and the reply-all lists differ from the reply-only To.
+   - Start on Reply All when the To and Cc sets of the draft equal the reply-all sets. A thread of
+     two people matches both, so it starts on Reply All, as today.
+   - Otherwise start with neither button marked (`replyAll: null`). That covers a forward, a To
+     that the member edited, a changed reply target and a Reply-To address.
+   - A click still computes To and Cc again from the reply target of the card.
+3. **The Cc row (C5).** It shows at the start in two cases. One case is a Cc or a Bcc that is not
+   empty. The other is a card with a reply target that does not start on Reply.
+4. **A Cc or Bcc edit saves (f2, C1).** The Cc and Bcc `onChange` set `dirty`, as To does
+   (~:648). The autosave depends on `[body, quote, to, cc, bcc]`.
+5. **The standalone reply target (C2).** `EmailDetail` uses
+   `const view: Email = detail?.id === email.id ? detail : email` (~:518), and the standalone card
+   gets `replyTo={view}` (~:1155). So the first render never uses the last mail.
+6. **The Outlook To of a reply (C8).** `create_draft` takes a keyword `exact_to: bool = False` on
+   the base class and on each provider. On Outlook, the reply path also PATCHes `toRecipients`
+   when `exact_to` is true. `upsert_draft` (the composers) passes `exact_to=True`. The AI drafts
+   (`drafting.py` ~:1774) and the rule actions (`actions.py` ~:610, ~:654) keep the default. So
+   `createReply` keeps a Reply-To address. Gmail and IMAP build the To into the mail already, so
+   they ignore the keyword.
+7. **One send at a time (f10, C7).** One guard at the top of `handleInlineSend` returns while a
+   send runs, so it covers Ctrl+Enter too. The state is set after the early returns and before the
+   drain, and it clears in `finally`. The Send button uses `Button` with `icon="Send"` and
+   `loading={sending}`, and keeps the label "Send". `if (!email) return` stays as it is.
 
-**Non-goals.** No change to the gateway. No Bcc row in ComposePanel. No change to the undo-send
-reopen.
+**The helper (C6).** `draftRecipients` goes in `workbench/control_plane/src/app/email/lib/mailbox.ts`,
+beside `replyRecipients` (~:54-91). It takes the draft, the reply-all lists and the reply-only To.
+It returns To, Cc, Bcc, the toggle and the Cc row. Its tests go in `mailbox.test.ts`.
 
-**Fences (R7).** Vitest runs with no DOM, so the fences are pure helpers and source fences, as in
-`draftAutosave.test.ts`.
+**AI drafts (C9).** An AI draft addresses the sender only (`drafting.py` ~:1774-1790, `actions.py`
+~:620-626). Today the card widens it to reply-all. After the fix it opens on Reply, to the sender,
+as the draft holds it.
 
-- A pure helper `draftRecipients(draft, replyAll defaults)` in `src/app/email/lib/` returns the
-  start state: To, Cc, Bcc, the toggle and the Cc row. Its test covers a reply narrowed to the
-  sender, a reply with a Bcc, a draft with no To, and a new mail with Cc.
-- A source fence that the DraftCard uses the helper, and that its autosave effect depends on `cc`
-  and `bcc`.
-- A source fence that the inline Send sets and checks its sending state before the drain, and that
-  Ctrl+Enter checks it too.
+**Non-goals.** No Bcc row in ComposePanel. No change to the undo-send reopen. No change to the
+stale thread frame. No change to Discard while a send runs.
 
-**Mutations.** M1 makes the helper ignore the To of the draft, and the narrowed-reply case fails.
-M2 makes it ignore the Bcc, and the Bcc case fails. M3 drops `cc` from the effect, and the source
-fence fails. M4 drops the sending check of Ctrl+Enter, and its fence fails.
+**Known limit EM-T10-f1.** An older build saved some drafts with no To at Graph. For such a draft,
+the sync can write a To that differs from the To of the member. The next save of the member writes
+the To again (item 6).
+
+**Fences (R7).**
+
+- `mailbox.test.ts`: the cases of `draftRecipients`.
+  - A reply narrowed to the sender, a reply with a Bcc, and a draft with only a Bcc.
+  - A draft with no recipient, a new mail with a Cc, and an AI draft.
+  - A thread of two people, a changed reply target and a difference of case.
+- `draftAutosave.test.ts`: source fences. The card uses the helper. Its autosave depends on `cc`
+  and `bcc`, and both `onChange` handlers set `dirty`. The standalone card uses `view`. The inline
+  Send guard is at the top of `handleInlineSend`. Two existing class tests (~:623, ~:633) read
+  `=== false` and `=== true`.
+- `tests/unit/test_outlook_draft_cc.py`: with `exact_to=True`, the reply create PATCHes the To.
+  With the default, it does not.
+
+**Mutations.** M1 makes the helper ignore the To of the draft, and the narrowed-reply case fails. M2
+makes it ignore the Bcc, and the Bcc case fails. M3 drops `cc` from the deps, and the deps fence
+fails. M4 removes the guard of `handleInlineSend`, and its fence fails.
+
+**More mutations.** M5 removes `dirty` from the Cc `onChange`, and its fence fails. M6 puts back
+`detail ?? email`, and the standalone fence fails. M7 makes Outlook PATCH the To with the default
+keyword, and the Outlook test fails.
 
 **Verify with.**
 
 ```bash
-cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/lib/theme/
+cd workbench/control_plane && npm install && npx tsc --noEmit && npx vitest run src/app/email src/lib/theme/
+uv run pytest tests/unit/test_outlook_draft_cc.py tests/unit/test_outlook_drafts.py \
+  tests/unit/test_email_draft_attachments.py tests/unit/test_outlook_attachments.py \
+  tests/unit/test_gmail_send_and_drafts.py tests/unit/test_email_rule_action_failures.py -q -rs
 ```
 
-**The live check (🔴 OWNER-GATE).** In Outlook, the owner saves a reply narrowed to the sender,
-opens it again, and checks that To still holds only the sender.
+Restore `package-lock.json` from `origin/main` before each commit.
+
+**The live check (🔴 OWNER-GATE).** In Outlook, the owner saves a reply narrowed to the sender, opens
+it again, and checks that To still holds only the sender. The owner also saves a reply-all draft,
+waits for one sync, opens it again, and checks that To still holds everyone.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
