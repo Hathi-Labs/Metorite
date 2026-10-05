@@ -93,6 +93,58 @@ from orchestrator._tool_injection import (
     _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
 )
+def _tier2_tool_view(agent: Any, make_shim: Callable[[Any, str], Any]) -> Any:
+    """*agent*, or a per-run copy whose ``default_options`` tools are shimmed.
+
+    The Tier 2 batch path shows a tool row only for a tool it wrapped in
+    ``make_shim``. MAF 1.19 holds a native ``Agent``'s tools in
+    ``default_options["tools"]`` as ``FunctionTool`` objects, which the older
+    ``agent.tools`` and ``@tool`` lookups never reach. Each one is cloned with
+    its ``func`` replaced by the shim, so the name, description, schema and
+    approval mode stay the tool's own. Neither the agent nor a tool object is
+    changed, because another run may hold them. No such tools: *agent* itself.
+    """
+    import copy as _copy
+
+    opts = getattr(agent, "default_options", None)
+    if not isinstance(opts, dict):
+        return agent
+    tools = opts.get("tools")
+    if not isinstance(tools, (list, tuple)) or not tools:
+        return agent
+    shimmed: list[Any] = []
+    changed = False
+    for item in tools:
+        func = getattr(item, "func", None)
+        name = getattr(item, "name", None) or getattr(func, "__name__", None)
+        if (
+            callable(func)
+            and isinstance(name, str)
+            and name
+            and not getattr(func, "__cc_tier2_shim__", False)
+        ):
+            shim = make_shim(func, name)
+            try:
+                shim.__cc_tier2_shim__ = True
+            except (AttributeError, TypeError):
+                pass
+            clone = _copy.copy(item)
+            try:
+                clone.func = shim
+            except (AttributeError, TypeError):
+                shimmed.append(item)
+                continue
+            shimmed.append(clone)
+            changed = True
+        else:
+            shimmed.append(item)
+    if not changed:
+        return agent
+    view = _copy.copy(agent)
+    view.default_options = {**opts, "tools": shimmed}
+    return view
+
+
 def _missing_module_name(exc: BaseException) -> str | None:
     """Best-effort top-level module name from an ImportError/ModuleNotFoundError.
 
@@ -4979,6 +5031,17 @@ async def run_agent_stream(
                         except (AttributeError, TypeError):
                             pass
 
+            # MAF 1.19 keeps a native Agent's tools in `default_options["tools"]`,
+            # and the agent has no `.tools` at all, so both loops above shim
+            # nothing for it. A native agent that fell back here from Tier 1 then
+            # streamed no tool row: the trail showed "Thinking…", the todo list
+            # and the artifact cards, and none of its steps (owner report,
+            # 2026-10-05). Shim them on a PER-RUN view, so the agent object that
+            # another run holds never changes. The restore below still reads the
+            # shared object, which the view never wrote.
+            _t2_shared_agent = agent
+            agent = _tier2_tool_view(agent, _make_tool_shim)
+
             # Run the agent in a background task.
             message = _build_event_message(agent_name, run_id, event_payload, integrations)
 
@@ -5101,15 +5164,15 @@ async def run_agent_stream(
             # Restore patched tools (attribute-based)
             for attr, _, original in patched:
                 try:
-                    object.__setattr__(agent, attr, original)
+                    object.__setattr__(_t2_shared_agent, attr, original)
                 except Exception:
                     pass
 
             # Restore shimmed list entries
-            if hasattr(agent, "tools") and isinstance(agent.tools, (list, tuple)):
+            if hasattr(_t2_shared_agent, "tools") and isinstance(_t2_shared_agent.tools, (list, tuple)):
                 for _idx, _orig in _shimmed_list_indices:
                     try:
-                        agent.tools[_idx] = _orig
+                        _t2_shared_agent.tools[_idx] = _orig
                     except Exception:
                         pass
 

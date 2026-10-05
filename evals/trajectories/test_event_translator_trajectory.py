@@ -305,3 +305,57 @@ def test_tier2_text_stream_speaks_message_id_protocol():
                for e in body)
     # Chunked deltas reassemble to the original text exactly.
     assert "".join(e["delta"] for e in body).strip() == text
+
+
+# ── MAF 1.19: the provider id rides on EVERY argument chunk ─────────────────
+
+def test_maf_119_streamed_args_reach_the_trail():
+    """MAF 1.19 repeats the provider call id on every streamed chunk. A known
+    id is then the next argument fragment, not a re-send. Dropping it sent no
+    arguments at all, so the trail drew a script step with no command."""
+    events, _ = _drive([
+        _update(_content("function_call", call_id="c1", name="run_command",
+                         arguments="")),
+        _update(_content("function_call", call_id="c1", name="",
+                         arguments='{"command": "python ')),
+        _update(_content("function_call", call_id="c1", name="",
+                         arguments='make.py"}')),
+        _update(_content("function_result", call_id="c1", result="ok",
+                         exception=None)),
+    ])
+    assert [e["type"] for e in events] == [
+        "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_ARGS", "TOOL_CALL_RESULT",
+    ]
+    args = "".join(e["delta"] for e in events if e["type"] == "TOOL_CALL_ARGS")
+    assert args == '{"command": "python make.py"}'
+
+
+def test_parallel_calls_keep_their_own_args():
+    """Two calls whose fragments interleave each keep their own arguments."""
+    events, _ = _drive([
+        _update(_content("function_call", call_id="a", name="read_file", arguments="")),
+        _update(_content("function_call", call_id="b", name="read_file", arguments="")),
+        _update(_content("function_call", call_id="a", name="", arguments='{"path": "x.md"')),
+        _update(_content("function_call", call_id="b", name="", arguments='{"path": "y.md"}')),
+        _update(_content("function_call", call_id="a", name="", arguments="}")),
+    ])
+    by_id: dict[str, str] = {}
+    for e in events:
+        if e["type"] == "TOOL_CALL_ARGS":
+            by_id[e["toolCallId"]] = by_id.get(e["toolCallId"], "") + e["delta"]
+    assert by_id == {"a": '{"path": "x.md"}', "b": '{"path": "y.md"}'}
+    assert [e["type"] for e in events].count("TOOL_CALL_START") == 2
+
+
+def test_complete_call_sent_again_after_its_fragments_adds_nothing():
+    """Once the arguments are a whole object, the same id adds no row and no
+    second copy of the arguments."""
+    events, state = _drive([
+        _update(_content("function_call", call_id="c1", name="create_task", arguments="")),
+        _update(_content("function_call", call_id="c1", name="", arguments='{"title": "T"}')),
+    ])
+    again, _ = _drive([
+        _update(_content("function_call", call_id="c1", name="create_task",
+                         arguments='{"title": "T"}')),
+    ], state=state)
+    assert again == []
