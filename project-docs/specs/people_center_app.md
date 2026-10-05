@@ -548,10 +548,19 @@ rows in §7 all said "not built" for work the board had marked ✅ weeks earlier
 A spec that under-reports is the more dangerous direction, because it invites
 somebody to build a thing twice. **5.6 is the one surface genuinely not built.**
 
-Route: **`/people`**, gated on its own feature slug `people` (§8) — **except `/people/me`,
-which is ungated per §4.5**. The People Center's landing page (`/centers/people`) links
-here, and it is one app, not one per Center — the same (app + scope) rule the Projects app
-follows. Every sub-app below is a view **inside that one app**, not a second registration.
+Route: **`/people`**, gated on its own feature slug `people` (§8). **Two routes need no
+grant: `/people/me` and `/people/access`.** `/people/me` is ungated per §4.5. The People
+Center's landing page (`/centers/people`) links here, and it is one app, not one per
+Center. That is the same (app + scope) rule the Projects app follows. Every sub-app below is a
+view **inside that one app**, not a second registration.
+
+**My access is a tab of this app since 2026-10-05** (owner directive: "remove my access
+from the sidebar and fold it into the People's app"). It was the sidebar pane `/access`,
+and `/access` now redirects to `/people/access`.
+
+It stays ungated, because it explains a missing pane to the member who lacks the grant.
+So the People layout shows My profile and My access to every member. The fences are
+`app/people/layout.test.ts` and `app/people/lib/registration.test.ts`.
 
 **Two front doors, and they are for two different people.** The People Center's landing
 page is where somebody goes to look at *the organisation*. The **Personal Center** is where

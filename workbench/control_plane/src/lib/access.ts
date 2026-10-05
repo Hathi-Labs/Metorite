@@ -168,9 +168,15 @@ const ALWAYS_ALLOWED = [
   "/signin",
   "/settings",
   "/settings/profile",
-  // "Your access" — the page that explains why a pane is missing. It has to be
+  // "My access" — the page that explains why a pane is missing. It has to be
   // reachable by exactly the person who cannot reach things, so gating it on a
-  // feature would make it useless in the only situation it exists for.
+  // feature would make it useless in the only situation it exists for. A tab
+  // of the People app since 2026-10-05 (owner directive). It is listed by
+  // name for the reason below: as a PREFIX match, `/people/access` would
+  // inherit the directory's `people` slug.
+  "/people/access",
+  // The old address. It only redirects to `/people/access`, and it stays
+  // here so a member with no grants reaches the redirect.
   "/access",
   // "My profile". `featureForPath` matches by PREFIX, so /people/me would
   // otherwise inherit the directory's `people` slug — which is
@@ -207,7 +213,7 @@ export function hasCapability(access: Access, name: string): boolean {
  * A signed-in person who belongs to NO organization (D51 / WS-35).
  *
  * ⚠️ **AccessGate must check this BEFORE `canSeePath`.** The home page and the
- * floor panes (`/`, `/people/me`, `/access`, `/settings/appearance`) are
+ * floor routes (`/`, `/people/me`, `/people/access`, `/settings/appearance`) are
  * visible to every authenticated member, so an org-less sign-in that is only
  * gated on `canSeePath` falls straight through onto a working-looking
  * dashboard — the live defect the owner hit on 2026-08-24 ("nothing to

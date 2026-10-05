@@ -101,7 +101,6 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Personal Center** | My Tasks | `/tasks` | `feature:tasks` | Renamed from "Tasks" on 2026-09-23 (D73). The **personal lens over Projects** since D53 — one store, not a second one (`task_manager_app.md` §13) |
 | **Personal Center** | Calendar | `/calendar` | `feature:tasks` | 🆕 **Added 2026-08-24 by D54**, extracted from a *view* inside `/tasks` (there was never a `/tasks/calendar` route — D54.5, measured). ⚠️ The gate is **`feature:tasks`, not a new `feature:calendar`** (D54.1): the calendar lived inside Tasks, so every `feature:tasks` holder already had it, and minting a new slug would ship the app dark to all of them until an admin granted it. Code + fence agree — `nav.ts:142`, `access.ts:94` (`["/calendar", "tasks"]`), `nav.test.ts:43`. `live` and not `preview` deliberately: it is reachable inside a live app today, so holding it back would *withdraw* a shipped capability (`calendar_focus_os.md` §10) |
 | **Personal Center** | My Profile | `/people/me` | ungated | Your own record is never the directory (D-PC-15) |
-| **Personal Center** | My Access | `/access` | ungated | Renamed from "Your access". Ungated by construction — it is the page that explains a missing pane |
 | **Personal Center** | Email | `/email` | `feature:email` | 🆕 **Live on 2026-10-02**, by owner decision of 2026-10-01 (H-21). WS-17 EM-T3b gave the app a connect flow with no setup step. A member connects Microsoft 365 from inside Email. Gmail shows as "Coming soon" (`email_app_master_plan.md` §10.4.3) |
 | **Apps** | Projects | `/projects` | `feature:projects` | |
 | **Apps** | People | `/people` | `feature:people` | 🆕 **Live on 2026-09-20**, by owner decision. Held back before because the directory could not load and had no rows. PR #306 repaired the BFF proxy and gave each new member a `people` row. H-124's roster sync seeds the members who predate it. ⚠️ `feature:people` is `is_default false`. A live pane is still dark to a member without the grant |
@@ -110,10 +109,21 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** · **Email** (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
 
-**Eleven** entries, four sections, in that order. The set held eight until 2026-08-24,
-nine until 2026-09-20 and ten until 2026-10-02. D54 added Calendar. The owner then
-promoted People, and then Email. `nav.test.ts`'s count fence moved 8 → 9 → 10 → 11 in
-the same pull request as each pane. That is what the fence is for.
+**Ten** entries, four sections, in that order. The set held eight until 2026-08-24,
+nine until 2026-09-20, ten until 2026-10-02 and eleven until 2026-10-05. D54 added
+Calendar. The owner then promoted People, and then Email. `nav.test.ts`'s count fence
+moved 8 → 9 → 10 → 11 → 10 in the same pull request as each pane. That is what the
+fence is for.
+
+**My Access left the sidebar on 2026-10-05** (owner directive: "remove my access from
+the sidebar and fold it into the People's app"). It is the "My access" tab of the
+People app, at `/people/access`, beside My profile.
+
+It is still ungated, because it is the page that explains a missing pane.
+`lib/access.ts` lists it in `ALWAYS_ALLOWED` by name, and the People layout shows the
+two personal tabs to a member without `feature:people`. `/access` redirects there.
+This is not a promotion and not a withdrawal. The page did not change what it shows,
+only where it lives.
 
 **"Personal Center" survives as a
 section label and nothing else.** It is a category of apps mapped one-to-one to
@@ -144,7 +154,7 @@ answer rather than a diff:
 | Admin | Integrations | `/integrations` | Incomplete |
 | Admin | Live Activity | `/observability` | Operator concern |
 
-**The count is the fence.** `nav.test.ts` asserts that exactly the **eleven** rows
+**The count is the fence.** `nav.test.ts` asserts that exactly the **ten** rows
 above are `live`. A pane added without a launch status fails the suite.
 Promoting one is a deliberate edit that also updates the test.
 
@@ -430,8 +440,8 @@ move Projects and CRM into Apps. Rename "Your access" → "My Access" and the
 
 **Done when:** `nav.test.ts` asserts all four of these.
 
-- (a) The live set is exactly §2's **eleven** `(section, href)` pairs (Email joined
-  on 2026-10-02).
+- (a) The live set is exactly §2's **ten** `(section, href)` pairs (Email joined
+  on 2026-10-02, and My Access left for the People app on 2026-10-05).
 - (b) Every pane carries an explicit `launch`.
 - (c) No section is named "Centers".
 - (d) `visibleSections` drops `preview` panes when the preview flag is off, and

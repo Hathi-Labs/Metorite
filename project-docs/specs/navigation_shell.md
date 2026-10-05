@@ -92,7 +92,7 @@ through one manifest, and no app builds its own copy.
 | Bell | `NotificationBell` belongs to Projects. Projects and My Tasks mount it. Approvals has no badge | `app/projects/components/NotificationBell.tsx` |
 | Assistant | Three rails on the shared `AgentChat`: `task-manager`, `projects-assistant` and `email-assistant` | `app/tasks/components/AssistantRail.tsx` · `app/projects/components/AssistantRail.tsx` · `app/email/components/EmailAssistantChat.tsx` |
 | Personal rollup | None. No spec defined its content before this one | — |
-| Live panes | **Eleven**, in four sections. Personal Center holds My Tasks, Calendar, My Profile, My Access and Email | `launch_surface.md` §2 · `src/lib/nav.ts` · `nav.test.ts` |
+| Live panes | **Ten**, in four sections. Personal Center holds My Tasks, Calendar, My Profile and Email. My Access left the sidebar on 2026-10-05, and it is a tab of the People app | `launch_surface.md` §2 · `src/lib/nav.ts` · `nav.test.ts` |
 | Who may see a team | `/auth/me` returns no groups. `reader_scope` and `subject_choices` already answer which people and teams a member may see, for the Reports app (`projects_reports.md` §7.1) | `routes/admin/me.py:197-228` · `routes/projects/report_scope.py:148`, `:332` |
 | Per-member settings | `user_settings`, read and written by `GET` and `PUT /tasks/settings`. That router requires `feature:tasks` | `infra/postgres/51_gtd_settings.sql` · `routes/tasks/settings.py:355` · `routes/tasks/core.py:41-44` |
 | First run | `WelcomeDialog`, mounted by `AppShell` | `AppShell.tsx:167` |
@@ -150,15 +150,20 @@ Appearance is a personal preference, so it moves to every member's avatar
 menu.
 
 ⚠️ **The live set does not change.** §2 of `launch_surface.md` still lists
-eleven live panes, and `nav.test.ts` still counts eleven. This spec changes
+ten live panes, and `nav.test.ts` still counts ten. This spec changes
 WHERE a live pane renders, not WHETHER it is live. Promotion stays an owner
 decision (**H-21**).
 
 ### 3.3 The avatar menu
 
-My Profile, My Access, Appearance, the colour-mode toggle and sign-out. For
-an admin it adds Organisation and Approvals. My Profile and My Access describe
+My Profile, My access, Appearance, the colour-mode toggle and sign-out. For
+an admin it adds Organisation and Approvals. My Profile and My access describe
 the member. The member does not work in them, so they leave the sidebar.
+
+**My Access moved first, on 2026-10-05.** The owner moved it into the People
+app, as the ungated "My access" tab at `/people/access`, beside My profile. When
+NS-2 builds the avatar menu, the menu links to that tab. It holds no second copy
+of the page.
 
 ---
 
@@ -330,7 +335,8 @@ the same ratchet as `conformance.test.ts`.
 | Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its `text-sm` heading drift (`app/email/page.tsx:963`) closes when it adopts the bar |
 | Projects | across | New task, New project | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
 | People | people | Request leave | the directory | — | Out today | — | None beyond the manifest |
-| My Profile, My Access | personal | — | — | — | — | — | Move to the avatar menu |
+| My Profile | personal | — | — | — | — | — | Move to the avatar menu |
+| My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's avatar menu links to it |
 | Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |
 | Approvals | admin | — | — | `pending_actions` | Waiting for you | — | Its items feed the bell |
 | Organisation | admin | Invite a member | members | seat requests | — | — | Moves to the avatar menu |
@@ -564,7 +570,8 @@ and a Menu tab opens a drawer (`AppShell.tsx:186-236`).
 | Three palettes | One command bar. `app/projects/lib/commands.ts` seeds the job list | NS-1, NS-2 |
 | The Projects `NotificationBell`, and no Approvals badge | The shell's "Needs you" | NS-6 |
 | Three assistant rails | One dock | NS-6 |
-| My Profile, My Access and Appearance in the sidebar | The avatar menu | NS-2 |
+| My Profile and Appearance in the sidebar | The avatar menu | NS-2 |
+| My Access in the sidebar | ✅ The People app's "My access" tab, 2026-10-05 | — |
 | Calendar's own header | The shell bar's title slot | NS-1 |
 | Projects shows "every space you can see" | Grouped by team (D22), driven by the scope chip | NS-5 |
 
@@ -616,7 +623,7 @@ Done when:
    whose `href` is no route.
 3. The launcher renders `visibleSections(features, isAdmin)` and nothing else
    (`launch_surface.md` §8.4).
-4. The live count in `nav.test.ts` is still eleven.
+4. The live count in `nav.test.ts` is still ten.
 5. With the flag on, the sidebar takes the §3.2 shape, and the avatar menu holds
    the §3.3 items.
 
