@@ -278,6 +278,8 @@ it cannot see, and the answer looks correct.
 **Decision D-AI-3.** A tier the CALLER never names stays out of the customer
 picker. An app names the task. The Router resolves the tier.
 
+📌 **D90 (PROPOSED, 2026-10-05) removes the chat's tier picker.** `customer_visible` TRUE then means that the label may show to a customer. Nobody picks it. `ai_tier_routing.md` §3.2 owns the change.
+
 *(This decision named three tiers until 2026-08-30. `015_tier_pricing.sql:46-58`
 seeded ELEVEN, so three was no longer the whole answer. The table below names
 every one of the eleven. Each value is an **agent-proposed answer the owner
@@ -313,6 +315,8 @@ of a hidden one.
 
 **Decision D-AI-4.** Each app declares a default tier for each task it uses.
 An administrator may change it. A member may not.
+
+📌 **D90 (PROPOSED, 2026-10-05) keeps D-AI-4.** The default is the Balanced rung of the tier policy in `ai_tier_routing.md` §4.
 
 This reuses `model_config`, key `agent_aliases`, which already exists.
 
