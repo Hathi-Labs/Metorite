@@ -6251,7 +6251,7 @@ reverse it.
 | **D-EM-33** | **The folder model of Gmail.** The system labels decide the folder, in this order: `TRASH`, `SPAM`, `DRAFT`, `SENT`, `INBOX`. A Gmail message with no system label is in `archive`. A move to a user label adds that label and removes `INBOX`. The Archive folder pages with a query, never with `labelIds=["archive"]`. The orchestrator decided O-GM-1 on 2026-10-04: a user label is a label and never a folder. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-34** | **The re-key reclaim runs only for a provider that re-keys its ids.** That is Outlook, whose ids change on a move. Gmail never re-keys an id, so Gmail never folds two rows on one Message-ID. The provider attribute is false by default. IMAP stores no Message-ID today, so IMAP sees no change. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-35** | **Gmail shows only when the Google app is installed.** The UI reads a capability from the gateway: for each provider, whether its app credentials are set. Gmail is a live choice only when the answer is true. No member ever sees "configure Integrations". *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
-| **D-EM-36** | **The Gmail connect ships dark behind `EMAIL_GMAIL_CONNECT`, which is off by default.** The box in production holds a Google client today (§12.1), so the app alone cannot keep Gmail hidden. While the flag is off, the capability read answers `gmail: false`, and each Gmail leg of EM-G7 refuses. The flag flips at EM-G10 only, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`. *Agent decision (orchestrator, 2026-10-05). The owner can reverse it.* |
+| **D-EM-36** | **The Gmail connect ships dark behind `EMAIL_GMAIL_CONNECT`, which is off by default.** The box in production holds a Google client today (§12.1), so the app alone cannot keep Gmail hidden. While the flag is off, the capability read answers `gmail: false`, and each Gmail leg of EM-G7 refuses. The flag flips at EM-G10 only, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`. The flip for the test of the owner also sets `EMAIL_GMAIL_CONNECT_MEMBERS` to the member address of the owner (EM-G7b, §12.3.9b). With the flag on and the list empty, every member sees Gmail, and that state is for the time after Google verifies the app. *Agent decision (orchestrator, 2026-10-05). The owner can reverse it.* |
 
 **Open questions for the orchestrator.** Each one blocks the slice in its last column. Each has a
 recommendation, and the slice scope below follows the recommendation. If the orchestrator decides
@@ -6291,6 +6291,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G6a** | 🟢 AGENT-SAFE build · security review · R8 · 🔴 flip (`enforcement-flip`) | The push route and its tenant, dark (GM-21) | After EM-G4b and O-GM-4 | M | §12.3.7 |
 | **EM-G6b** | 🟢 AGENT-SAFE build · 🔴 flip (`enforcement-flip`) | The watch, its renewal and its stop, dark (GM-21) | After EM-G6a | M | §12.3.8 |
 | **EM-G7** | 🟢 AGENT-SAFE · security review | The connect backend: scopes, granted scope, errors, bounces, the capability read (GM-22 to GM-25) | Any time. Merges dark | M | §12.3.9 |
+| **EM-G7b** | 🟢 AGENT-SAFE · security review | A member allowlist for the Gmail connect, `EMAIL_GMAIL_CONNECT_MEMBERS` (go-live item A7) | After EM-G7 and EM-G8, before EM-G10. Merges dark | S | §12.3.9b |
 | **EM-G8** | 🟢 AGENT-SAFE · visual review | The connect UI: availability, copy, the Workspace admin help (GM-24, GM-26, GM-27) | After EM-G7 (E-D1). Merges dark | M | §12.3.10 |
 | **EM-G9** | 🟢 AGENT-SAFE · R8 | Parity of a Gmail and Outlook pair, and the known limits | After EM-G2 and EM-G3a | S | §12.3.11 |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
@@ -7906,6 +7907,107 @@ rebased on #633, and these findings are closed:
   400 of the removed service on its own.
 - **The docstring of `oauth_app`.** It names the env file of the box, not Integrations.
 
+#### 12.3.9b EM-G7b — a member allowlist for the Gmail connect
+
+**Status.** 📝 SPECIFIED (2026-10-05).
+
+**Why (go-live item A7, orchestrator decision, 2026-10-05).** `EMAIL_GMAIL_CONNECT` (D-EM-36) is
+one value for the whole box (`transport/oauth.py:119-132`). When it is on, each member of each
+organization sees a live Gmail choice. While the Google app is in Testing, Google refuses each
+user that is not a test user (§12.4 step 5). That member then reads the `consent_declined` copy.
+So the live test of the owner (EM-G10) must reach the listed members only.
+
+**Gate.** 🟢 AGENT-SAFE · security review. It merges dark. While the flag is off, no member sees
+a change.
+
+**Order.** After EM-G7 and EM-G8. Before EM-G10. It needs no other EM-G slice.
+
+**Size.** S. About 40 lines of code, with tests of about 250 lines.
+
+**Scope.**
+
+1. **The setting.** `EMAIL_GMAIL_CONNECT_MEMBERS` (`email_gmail_connect_members` in
+   `acb_common/settings.py`) holds member addresses, with a comma between addresses. The default
+   is empty. It follows the pattern of `EMAIL_OUTLOOK_DELTA_ACCOUNTS` (EM-T4d).
+2. **The list holds addresses, not member ids.** The gateway reads `UserContext.email` from the
+   session, and the signed state of EM-T1a binds the same address. `UserContext.user_id` is an
+   opaque token in two UUID spaces, and it is empty until the platform provisions the member
+   (`acb_auth/roles.py`). Each entry is the sign-in address of a Metorite member. That address
+   is not always the Gmail address that the member connects.
+3. **The flag stays the master switch.** With the flag off, no member may connect Gmail. With the
+   flag on and the list empty, every member may. "Every member" is for the time after Google
+   verifies the app (§12.4 step 15). With the flag on and the list set, only a listed member may.
+4. **The match.** The match ignores case. It removes the space around each entry and around the
+   address of the session. It compares whole addresses, never a part of one.
+5. **A value with no address.** An empty or blank value adds no limit. A value that holds only
+   commas and spaces names no member, so no member passes. *Agent decision (EM-G7b, 2026-10-05):
+   a value that an operator wrote fails closed.*
+6. **One reader for each setting, and one check.** `gmail_connect_enabled()` stays the one reader
+   of the flag. A new `gmail_connect_members()` is the one reader of the list. A new
+   `gmail_connect_allowed(user)` takes the `UserContext` of the session and answers "may this
+   member connect Gmail". It never reads a query, a body, a header or the state.
+7. **Each Gmail gate calls the check.** The capability read, the authorize leg, the callback and
+   the app facts call `gmail_connect_allowed(user)`. A listed member gets `gmail: true`, a 302 to
+   Google and a saved mailbox.
+8. **Each other member gets the dark answer of today.** The capability read says `gmail: false`.
+   The authorize leg answers 400 before it signs a state. The callback bounces
+   `provider_unavailable` before the token exchange. The app facts answer 503, because the dark
+   state is one state (§12.3.9).
+9. **A platform setting.** `env_guard.is_platform_env("EMAIL_GMAIL_CONNECT_MEMBERS")` is true,
+   because of the prefix `EMAIL_`. So no Integrations write can set it. Only the env file of the
+   box sets it. A change needs a restart of the gateway, as for the flag.
+
+**Non-goals.**
+
+- No UI change. EM-G8 reads the capability read already. A listed member sees Gmail, and each
+  other member sees "Coming soon".
+- No Microsoft change. No Microsoft leg reads the list.
+- No list for each organization. The list is one value for the box, as the flag is.
+- No address in a log line. A refusal logs `email.oauth_gmail_dark` with its leg, as today.
+- No migration and no SQL change.
+
+**Fences (R7).** `tests/unit/test_email_gmail_connect.py` gets these cases.
+
+- `test_a_listed_member_connects_gmail`: the capability read says `gmail: true`, the authorize leg
+  answers 302 to Google, and the callback saves the mailbox.
+- `test_an_unlisted_member_reads_gmail_false`: the capability read says `gmail: false`.
+- `test_an_unlisted_member_is_refused_at_authorize`: a 400, and the leg signs no state.
+- `test_an_unlisted_member_is_refused_at_the_callback`: `provider_unavailable` before the token
+  exchange, and no `email_accounts` row.
+- `test_an_unlisted_member_gets_no_app_facts`: a 503.
+- `test_the_list_ignores_case_and_space` and `test_the_list_matches_whole_addresses_only`.
+- `test_an_empty_list_lets_every_member_through` and `test_a_list_of_only_commas_lets_nobody_through`.
+- `test_the_flag_off_overrides_the_list`.
+- `test_a_request_input_cannot_widen_the_list`: a `login_hint` or a signed state that names a
+  listed member does not let an unlisted session through.
+- `test_every_gmail_gate_asks_the_member_of_the_session`: each call of the check passes the
+  `user` of `Depends(get_current_user)`, and only the check reads the flag.
+- `test_gmail_connect_members_is_the_one_reader_of_the_list`.
+- `test_the_member_list_is_a_platform_name`.
+- `test_the_member_list_does_not_touch_microsoft`.
+
+**Mutations.** Each one must turn its test red. Then the file goes back to its exact SHA-256.
+
+- M1: the capability read ignores the list.
+- M2: the authorize leg ignores the list.
+- M3: the callback ignores the list.
+- M4: the match is case-sensitive.
+- M5: the check drops the flag-off override.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_email_gmail_connect.py tests/unit/test_email_connect_backend.py \
+  tests/unit/test_email_oauth_state.py tests/unit/test_email_oauth_app_info.py \
+  tests/unit/test_email_owner_scope_fence.py tests/unit/test_integrations_env_hardening.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email/transport/oauth.py \
+  tests/unit/test_email_gmail_connect.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+`test_integrations_env_hardening.py` holds one R8 case. Run it against a private database, with
+`TENANT_LADDER_DATABASE_URL` set, so that no case skips.
+
 #### 12.3.10 EM-G8 — the connect UI
 
 **Status.** ✅ MERGED #638 (2026-10-05), after EM-G7. The
@@ -8202,8 +8304,14 @@ each one needs a Google account that Metorite owns (`work_plan.md` §6.0 B).
 (Q-GM-6). So `EMAIL_GMAIL_CONNECT` keeps the Gmail connect dark until EM-G10. Set it to `true`
 only at EM-G10, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`.
 
-**How to flip it.** Set it in the env file of the box, because no Integrations write can set an
-`EMAIL_*` name. Then restart the gateway. A later read of the file never replaces a value that
+**The member list (EM-G7b, gate `enforcement-flip`).** While the app is in Testing, set
+`EMAIL_GMAIL_CONNECT_MEMBERS` with the flag. It holds the Metorite sign-in address of each test
+member, with a comma between addresses. Only a listed member then sees Gmail, and each other
+member still sees "Coming soon". Each test member also needs a Gmail address on the test-user
+list of step 5. Leave the list empty only after Google verifies the app (step 15).
+
+**How to flip it.** Set both names in the env file of the box, because no Integrations write can
+set an `EMAIL_*` name. Then restart the gateway. A later read of the file never replaces a value that
 the process loaded at start.
 
 **The limits of Testing.** Read these before EM-G10.
