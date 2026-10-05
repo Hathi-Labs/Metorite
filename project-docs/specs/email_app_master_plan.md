@@ -6271,8 +6271,9 @@ otherwise, the scope of that slice changes before dispatch.
 ### 12.3 Slices
 
 Each slice is one PR. Each slice that changes code ships dark: Gmail stays "Coming soon" until
-EM-G8 merges and the box holds the Google app (D-EM-35). A slice that merges updates the status of
-this section and the WS-17 row in the same PR (R4).
+the capability read answers `gmail: true` (D-EM-35). That needs the Google app on the box and the
+flag `EMAIL_GMAIL_CONNECT` on (D-EM-36, E-D1). A slice that merges updates the status of this
+section and the WS-17 row in the same PR (R4).
 
 | Slice | Gate | Scope | Order | Size | Section |
 |---|---|---|---|---|---|
@@ -6286,7 +6287,7 @@ this section and the WS-17 row in the same PR (R4).
 | **EM-G6a** | 🟢 AGENT-SAFE build · security review · R8 · 🔴 flip (`enforcement-flip`) | The push route and its tenant, dark (GM-21) | After EM-G4b and O-GM-4 | M | §12.3.7 |
 | **EM-G6b** | 🟢 AGENT-SAFE build · 🔴 flip (`enforcement-flip`) | The watch, its renewal and its stop, dark (GM-21) | After EM-G6a | M | §12.3.8 |
 | **EM-G7** | 🟢 AGENT-SAFE · security review | The connect backend: scopes, granted scope, errors, bounces, the capability read (GM-22 to GM-25) | Any time. Merges dark | M | §12.3.9 |
-| **EM-G8** | 🟢 AGENT-SAFE · visual review | The connect UI: availability, copy, the Workspace admin help (GM-24, GM-26, GM-27) | After EM-G1 to EM-G5 and EM-G7. Merges dark | M | §12.3.10 |
+| **EM-G8** | 🟢 AGENT-SAFE · visual review | The connect UI: availability, copy, the Workspace admin help (GM-24, GM-26, GM-27) | After EM-G7 (E-D1). Merges dark | M | §12.3.10 |
 | **EM-G9** | 🟢 AGENT-SAFE · R8 | Parity of a Gmail and Outlook pair, and the known limits | After EM-G2 and EM-G3a | S | §12.3.11 |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
 
@@ -6299,7 +6300,8 @@ them (D-EM-32).
 estimate counts code and tests.
 
 **Live tests.** EM-G7 and EM-G8 need the Google app of the owner (§12.4) for a live test. Each one
-can merge dark before that, because D-EM-35 keeps Gmail hidden on a box with no app.
+can merge dark before that. The box holds a Google client today (§12.1), so the flag of D-EM-36
+keeps Gmail hidden, not the app (E-D1).
 
 #### 12.3.1 EM-G1 — the reclaim gate (D-EM-34)
 
@@ -7902,11 +7904,27 @@ rebased on #633, and these findings are closed:
 
 #### 12.3.10 EM-G8 — the connect UI
 
-**Gate.** 🟢 AGENT-SAFE · visual review. It merges dark. Gmail stays "Coming soon" until the
-capability read says that the app is installed.
+**Gate.** 🟢 AGENT-SAFE · visual review. It merges dark.
 
-**Order.** After EM-G7, and after EM-G1 to EM-G5. A Gmail choice must not go live on a box with a
-provider that is half built.
+**The guard is the flag (E-D1, orchestrator, 2026-10-05).** The guard is `EMAIL_GMAIL_CONNECT`
+(D-EM-36), not a box with no Google app. The box holds `GMAIL_OAUTH_*` today (§12.1, measured on
+2026-10-05, by name only). The UI offers Gmail only when the capability read answers
+`gmail: true`. That answer needs the Google app on the box and the flag on. The flag flips at
+EM-G10 only, under gate `enforcement-flip`, after the slices that D-EM-36 names.
+
+**Order.** EM-G8 merges after EM-G7 (E-D1). EM-G7 adds the capability read, the flag and the
+`provider` of each bounce. While the flag is off, Gmail stays "Coming soon". So EM-G8 can merge
+before EM-G3b and EM-G5, and a provider that is half built never goes live.
+
+**#633 closes O-GM-5 (E-D2).** #633 merged on 2026-10-05. Each Integrations and Settings write now
+refuses a platform name with a 403 (`acb_common/env_guard.py`). `PLATFORM_ENV_PREFIXES` holds
+`GMAIL_OAUTH_`, `MSFT_OAUTH_`, `AUTH_MICROSOFT_ENTRA_ID_` and `EMAIL_`. So no tenant can set the
+key of a mail app, or `EMAIL_GMAIL_CONNECT`. Fence: `tests/unit/test_integrations_env_hardening.py`,
+which names `EMAIL_GMAIL_CONNECT` and the mail-app keys.
+
+**The check before the merge (E-D2).** The orchestrator does this check after EM-G7 deploys. The
+box must answer `GET /email/oauth/providers` with `gmail: false`. If it answers `gmail: true`,
+EM-G8 does not merge.
 
 **Size.** M. About 200 lines of UI, with tests of about 200 lines.
 
@@ -7914,23 +7932,50 @@ provider that is half built.
 
 1. **Availability (D-EM-35, GM-26).** `CONNECT_PROVIDERS` no longer fixes `available`. The page
    reads `GET /email/oauth/providers` through `gatewayFetch`, as `lib/api.ts:524` reads the app
-   facts. The answer is `{"microsoft": bool, "gmail": bool}` (EM-G7 item 8).
-2. **A failed read** keeps Microsoft live and Gmail "Coming soon". `retryTarget` and
+   facts. The answer is `{"microsoft": bool, "gmail": bool}` (EM-G7 item 8), and the store keeps
+   it.
+2. **A failed read** keeps Microsoft live and Gmail "Coming soon". A network error is a failed
+   read. So are a 403, a 404 before EM-G7 deploys and an answer of another shape. `retryTarget` and
    `rangeStepProviderFrom` (`lib/connect.ts:248-286`) take the live set from the read.
-3. **The copy (GM-27).** The empty state, the decline text, the generic failure and the callback
-   page name the provider of the try. The callback page reads `provider` from its URL (EM-G7
-   item 6).
+   - **A provider that the read refuses (E-D4).** When the read answers `microsoft: false`, for
+     example on a dev box with no Microsoft app, Microsoft also shows as not available. Its note
+     is `Not available yet`, the words of `_NOT_CONFIGURED` in EM-G7. The UI never offers a
+     provider whose app is missing.
+3. **The copy (GM-27, E-D3).** The empty state names each provider that the read offers, because
+   no try exists yet. With Microsoft only, it reads as today. The decline text, the generic
+   failure and the callback page name the provider of the try. The callback page reads `provider`
+   from its URL (EM-G7 item 6).
 4. **The new reasons.** `scope_missing` says that Metorite needs both permissions, with a retry.
    `workspace_admin_blocked` shows the help of item 6.
 5. **The folder tree of a Gmail mailbox** shows the well-known folders and Archive. Its user labels
-   show in the label filter (O-GM-1).
+   show in the label filter (O-GM-1). `mergeFolders` (`lib/emailStore.ts:139`) takes the provider
+   of the mailbox.
 6. **The help for a Workspace admin.** Under the Gmail choice, one line says that a company admin
    can trust Metorite once. It opens a short help with the client ID from
    `GET /email/oauth/gmail/app`. The help also gives the Admin console path of §12.4.
-7. **The reconnect banner** already handles Gmail (`page.tsx:1085-1101`). Check its copy.
+7. **The reconnect banner** already handles Gmail (`page.tsx:1085-1101`). Its copy stays, and the
+   table below names the test that holds it (E-D3).
 8. **Visual review.** Use the `visual-review` skill on the connect choices, the range step and the
    callback page for each reason. Look in light mode, at compact density, with a changed accent
    and at 390 px.
+
+**The words, and the test that holds each (E-D3).** `{Name}` is `Microsoft` or `Google`, from the
+provider of the try.
+
+| Item | Where | The words | Test |
+|---|---|---|---|
+| 2 | The note of Gmail, not live | `Coming soon` | `gmail-coming-soon-when-the-read-fails` |
+| 2 | The note of Microsoft, not live | `Not available yet` | `microsoft-unavailable-when-the-read-says-no` |
+| 3 | The empty state, Microsoft only | `You sign in with Microsoft. Metorite never sees your password.` | `empty-state-names-each-live-provider` |
+| 3 | The empty state, both | `You sign in with Microsoft or Google.` and the same second sentence | `empty-state-names-each-live-provider` |
+| 3 | The decline text | `{Name} did not give Metorite access to your mailbox, so nothing was connected.` | `callback-copy-names-google` |
+| 3 | The generic failure | `{Name} or Metorite stopped the connection.` | `callback-copy-names-google` |
+| 3 | A mailbox that the member connected before | `To add a different mailbox, choose another account at {Name}.` | `callback-copy-names-google` |
+| 4 | The title of `scope_missing` | `Metorite needs both permissions` | `scope-missing-copy` |
+| 4 | The title of `workspace_admin_blocked` | `Your Google Workspace admin needs to trust Metorite` | `workspace-admin-help-shows-the-client-id` |
+| 6 | The line under the Gmail choice | `Company Google account? Your admin can trust Metorite once for everyone.` | `workspace-admin-help-shows-the-client-id` |
+| 6 | The Admin console path | `Security → Access and data control → API controls`, then `Manage third-party app access`, `Configure new app` and `Trusted` | `workspace-admin-help-shows-the-client-id` |
+| 7 | The reconnect button | `Reconnect Outlook` and `Reconnect Gmail` | `reconnect-banner-names-the-provider` |
 
 **Non-goals.** No change to the Microsoft paths beyond copy that names the provider. No change to
 Integrations.
@@ -7940,18 +7985,33 @@ and `:722`. New cases carry these names:
 
 - `gmail-available-from-capability`
 - `gmail-coming-soon-when-the-read-fails`
+- `microsoft-unavailable-when-the-read-says-no` (E-D4)
+- `empty-state-names-each-live-provider` (E-D3)
 - `callback-copy-names-google`
 - `scope-missing-copy`
 - `workspace-admin-help-shows-the-client-id`
 - `gmail-folder-tree-shows-well-known-folders`
+- `reconnect-banner-names-the-provider` (E-D3)
+
+**Mutations (E-D4).** Each mutation must turn its named case red. Then the file goes back to its
+exact SHA-256.
+
+| Id | Mutation | The case that fails |
+|---|---|---|
+| M1 | The choices always offer Gmail as available | `gmail-coming-soon-when-the-read-fails` |
+| M2 | `rangeStepProviderFrom` ignores the read | `gmail-available-from-capability` |
+| M3 | The callback page ignores `provider` | `callback-copy-names-google` |
+| M4 | `mergeFolders` keeps the Gmail user labels as folders | `gmail-folder-tree-shows-well-known-folders` |
 
 **Verify with.**
 
 ```bash
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/app/api/email src/lib/theme
+cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 ```
 
 The theme suite holds the design-system fences, so keep it in the run.
+`test_email_oauth_authorize_wiring.py` reads `email/page.tsx` and holds `handleConnect` (E-D4).
 
 #### 12.3.11 EM-G9 — parity of a Gmail and Outlook pair
 
