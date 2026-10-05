@@ -7313,8 +7313,8 @@ also decide how often an autosave of a draft with files may run (§12.3.12).
 **Status.** EM-G3c-1 is ✅ MERGED (#649, 2026-10-05). EM-G3c-2 is 🔨 BUILT, not merged
 (2026-10-05), branch `email-g3c2-composer`. The audit of 2026-10-05 gave GO-NARROWED (C1 to C21),
 and it checked each anchor against the code. It split the slice into EM-G3c-1 (the backend) and
-EM-G3c-2 (the UI). The as-built notes and the mutation tables of both halves are at the end of this
-section.
+EM-G3c-2 (the UI). The as-built notes, the review rounds and the mutation tables of both halves are
+at the end of this section.
 
 **Gate.** 🟢 AGENT-SAFE, both halves. No migration and no new flag. The backend stays dark with
 Gmail (D-EM-36). EM-G3c-2 changes the three composers, so it is LIVE for Outlook members, and it
@@ -7592,13 +7592,16 @@ each anchor again in the code, a few lines below the lines of the audit.
 3. The pick limit counts the files that the member picks, and no workspace artifact. The gateway
    reads the bytes of an artifact, so they never go through the proxy.
 4. EmailDetail also flushes when the member starts a new reply, because that closes the reply of
-   before. The pop-out does not flush. The full composer takes the text and saves its own draft.
+   before. The pop-out does not flush, because that flush and the save of the full composer make two
+   drafts. Review round 1 corrected the rest. The composer of the pop-out opened clean, and it saved
+   nothing until a new edit. Now the pop-out sends `unsavedEdit`, which is true while a save of the reply
+   waits. Then the composer of the pop-out opens dirty, and its own save keeps the edit.
 
-**Known limit EM-G3c-2-f1 (found in the build, on `main` before it).** EmailDetail draws a draft
-with no thread as one `DraftCard`, and that card has no React `key`. A switch from one such draft
-to another keeps the card and its text. A later edit then saves the text of the first draft to the
-second draft. The flush of this slice runs on a change of `draft.id`, so the pending edit goes to the
-first draft. No slice owns the stale text yet.
+**Known limit EM-G3c-2-f1 (found in the build, on `main` before it, ✅ fixed in review round 1).**
+EmailDetail drew a draft with no thread as one `DraftCard`, and that card had no React `key`. A
+switch from one such draft to another kept the card and its text. A later edit then saved the text
+of the first draft to the second draft. The card now has `key={email.id}`, so each draft gets its
+own card. The unmount of the old card flushes its pending edit to its own draft.
 
 **Known limit EM-G3c-2-f2 (on `main` before it).** The DraftCard autosaves after an edit of the To
 field or the body. An edit of Cc or Bcc does not start a save, so the next edit or the send carries
@@ -7608,15 +7611,21 @@ it.
 pick starts. Two picks in quick order can each fit and pass the limit together. The send then
 meets the cut of the proxy, and the composer shows the text of that error.
 
-**The fences, as built.** `src/app/email/lib/draftAutosave.test.ts` holds 39 cases in five named
+**Known limit EM-G3c-2-f4 (verifier P2-3).** A save that a close or a switch flushed can fail, and
+then no "Not saved" shows. The member closed the composer, or the composer shows another reply, so
+the text has no place. `main` never tried that save, so this is no worse than `main`.
+
+**The fences, as built.** `src/app/email/lib/draftAutosave.test.ts` holds 55 cases in five named
 fences: `email-pick-limit`, `email-autosave-wait`, `email-autosave-flush`,
-`email-save-failed-shows` and `email-send-failed-shows`. Two cases drive `saveDraft` over a stub of
-`fetch`, so the contract between `gatewayFetch` and the module has a fence too.
+`email-save-failed-shows` and `email-send-failed-shows`. The build added 39 cases, and review round
+1 added 16. Two cases drive `saveDraft` over a stub of `fetch`, so the contract between
+`gatewayFetch` and the module has a fence too.
 
 **Mutations, as run (2026-10-05).** A script replaced one anchor for each mutation, ran the fence
 file, and restored the file with `git checkout`. After each run, `git status` was clean. Each of the
 24 mutations turned a fence red. The first run found two fences that let a mutation pass (W3 and
-C1), and the build made both fences stricter.
+C1), and the build made both fences stricter. Review round 1 ran 15 more (R1 to R12, and G1 again),
+and each turned its fence red.
 
 | Id | Mutation | Red cases | Red fence |
 |---|---|---|---|
@@ -7641,15 +7650,67 @@ C1), and the build made both fences stricter.
 | E1 | The DraftCard drops the error of a send | 1 | `email-send-failed-shows` |
 | E2 | The send text drops the `detail` of the gateway | 3 | `email-send-failed-shows`, and the `api.ts` contract |
 | C1 | A discard of the DraftCard keeps the pending save | 1 | `email-autosave-flush` |
-| G1 | EmailDetail has no session guard | 1 | `email-autosave-flush` |
+| G1 | EmailDetail has no session guard | 1, and 2 in review round 1 | `email-autosave-flush` |
 | F1 | The send error of the inline reply goes back into the footer | 1 | `email-send-failed-shows` |
 | T1 | The failure text of the DraftCard is `text-red-500` | 2 | `email-save-failed-shows`, and conformance rule 5 |
+| R1 | The standalone DraftCard has no `key` (item 1) | 1 | `email-autosave-flush` |
+| R2 | A flushed save starts at once, while a save runs (item 2) | 4 | `email-autosave-flush` |
+| R3a | ComposePanel deletes the stale drafts after the guard (item 3) | 1 | `email-autosave-flush` |
+| R3b | EmailDetail deletes the stale drafts after the guard (item 3) | 1 | `email-autosave-flush` |
+| R4 | The pop-out opens ComposePanel clean (item 4) | 1 | `email-autosave-flush` |
+| R5a | ComposePanel guards after it writes the draft id (item 5) | 3 | `email-autosave-flush`, `email-autosave-wait` |
+| R5b | EmailDetail guards after it writes the draft id (item 5) | 3 | `email-autosave-flush`, `email-autosave-wait` |
+| R6 | A send of the inline reply keeps an old send error (item 6) | 1 | `email-send-failed-shows` |
+| R7 | `draftToUpdate` gives an ended save the draft of the new session | 2 | `email-autosave-flush` |
+| R8 | ComposePanel shows "Saving" for an ended session | 1 | `email-autosave-flush` |
+| R9 | The stale list does not empty in place | 1 | `email-autosave-flush` |
+| R10 | An ended save of EmailDetail keeps no record of its draft | 1 | `email-autosave-flush` |
+| R11 | EmailDetail reads `draftIdRef` in the save | 1 | `email-autosave-flush` |
+| R12 | A DraftCard of ConversationView has no `key` | 1 | `email-autosave-flush` |
 
 **Visual review (2026-10-05).** A Playwright rig stubbed the API and drew each new state in dark,
 light, compact and a violet accent. It drew "Not saved", "Too large to save" and the pick refusal
 in ComposePanel. It also drew the send error and "Too large to save" of the DraftCard, and the
 failure line of the inline reply. The rig is not committed. In light mode, each failure text
 measured rgb(198, 38, 32), and it stayed red under the violet accent.
+
+**Review round 1 (2026-10-05).** The verifier passed EM-G3c-2. The reviewer asked for one change, a
+P1 that was on `main` before this slice. Both found the same P2 items. This round closes the six
+items below, and it records EM-G3c-2-f4.
+
+1. **The key of the DraftCard (P1, EM-G3c-2-f1).** The standalone `DraftCard` of EmailDetail has
+   `key={email.id}`. The `DraftCard` list of ConversationView had its key already, and no other
+   file draws a `DraftCard`.
+2. **One save at a time (P2).** `createAutosave` starts a save that the timer or a flush fires only
+   after the save before it settles. When no save runs, the save starts at once, so a switch still
+   flushes before it clears the draft id. A save reads its draft id when it runs. So a save that
+   waited for the first save of a draft updates that draft. The newer text lands last.
+3. **The stale drafts of an ended session (P2).** Each composer keeps the stale list of the session
+   when it schedules a save. A save that ends after its session ended deletes that list, unless the
+   save wrote one of its drafts. It writes no draft id, no file flag and no state of the new
+   session.
+4. **The pop-out (P2).** The pop-out sends `unsavedEdit: autosave.pending`, and the full composer
+   opens dirty when it is true. Departure 4 above holds the correction.
+5. **The order of the session guard (P2).** The fence now checks the order in the scheduled save of
+   ComposePanel and of EmailDetail. The guard must come before the write of the draft id.
+6. **An old send error (note).** `handleInlineSend` clears `sendErr` when a send starts, as
+   `handleSend` of ComposePanel does. So an old send error does not hide a later "Not saved".
+
+**Departures of review round 1.**
+
+1. A save that waited can run after a switch or a new reply ended its session. If it read
+   `draftIdRef`, it would read the cleared id of the new session and make a second draft. So
+   `draftToUpdate` gives it the draft that its own session saved last, in the same mailbox.
+   `lastSaveRef` in each composer keeps that draft.
+2. A save of an ended session does not set "Saving". With the order of item 2, that state could
+   land on the new reply and stay there.
+3. `unsavedEdit` is true only while a save of the reply waits, not for each pop-out with text. So
+   a pop-out with no new edit makes no second draft. A draft that the reply saved before the pop-out
+   stays in Drafts, as on `main`. An undo-send reopen also carries `replyToBody`, and it stays clean,
+   as on `main`.
+4. A cancel drops only the pending save. A save that started, or that waits for the save before it,
+   still runs. A switch flushes and then cancels in the same render. A cancel that dropped a waiting
+   save would lose that edit.
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
