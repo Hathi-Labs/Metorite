@@ -390,6 +390,9 @@ export function DraftCard({
   const [replyAll, setReplyAll] = useState<boolean | null>(start.replyAll);
   // The Cc row shows for a Cc or a Bcc, and on a reply that is not Reply.
   const [showCc, setShowCc] = useState(start.showCc);
+  // An edit of the member. Only then does the autosave run. It is declared
+  // before its first reader, so the React lint knows it is a ref.
+  const dirty = useRef(false);
 
   /** Flip Reply ↔ Reply All, recomputing To/Cc from the original message.
    *  Reply All reveals the Cc/Bcc fields; Reply (sender only) hides them and
@@ -411,7 +414,6 @@ export function DraftCard({
   const [sending, setSending] = useState(false);
   // The text of a failed send. Before EM-G3c-2 the card dropped it (item 14).
   const [sendError, setSendError] = useState<string | null>(null);
-  const dirty = useRef(false);
   const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
   // The pending autosave. An unmount and a change of draft run it at once
   // (EM-G3c-2 item 11).
