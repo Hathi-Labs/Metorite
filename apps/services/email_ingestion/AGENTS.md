@@ -363,6 +363,20 @@ All providers implement the `BaseEmailProvider` abstract interface:
     - The upload POST of `messages.send` and `drafts.create` gets one try,
       and the PUT of `drafts.update` keeps its retry on a 429.
 
+17. **The To of a reply draft (WS-17 EM-T10 item 6).** `create_draft` takes a
+    keyword-only `exact_to: bool = False` on the base class and on each
+    provider. Fence: `tests/unit/test_outlook_draft_cc.py`.
+    - Outlook's `createReply` sets the To to the sender, or to the Reply-To.
+      With `exact_to`, the PATCH of the reply writes `to` too, so a reply-all
+      draft keeps each address. Gmail and IMAP put `to` into the mail, so they
+      ignore the keyword.
+    - `PUT /email/drafts` passes `exact_to=True`, because the member typed
+      that To. The rule REPLY passes `exact_to=bool(a.get("to_address"))`,
+      so only a To typed into the rule goes over the To of `createReply`.
+      Each other caller keeps the default, so a Reply-To stays. The fence
+      counts the callers in `drafting.py`, `actions.py`, `followups.py` and
+      `notes/dispatch.py`. A new caller there fails it.
+
 ## Inbound SMTP Server
 
 `inbound.py` runs an aiosmtpd SMTP server that accepts inbound emails and persists

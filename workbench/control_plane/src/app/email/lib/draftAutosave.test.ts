@@ -24,6 +24,11 @@
 //     reads the status code, never the text.
 //   * `email-send-failed-shows` (item 14): each composer shows the text of a
 //     failed send, and the DraftCard has a slot for it.
+//   * `email-draftcard-recipients` (WS-17 EM-T10, §10.4.11): the DraftCard
+//     starts from `draftRecipients`, and a Cc or Bcc edit saves. The toggle
+//     marks a button only for `true` or `false`. The standalone card gets
+//     `view`, and `view` is never the last mail. One guard at the top of
+//     `handleInlineSend` stops a second send, and the Send button loads.
 //
 // Vitest runs with no DOM here (`vitest.config.ts`), so the composer fences
 // read the source, as `fromRow.test.ts` does.
@@ -902,6 +907,70 @@ describe("email-send-failed-shows: a failed send shows its text", () => {
     const footer = between(detail, '<span className="text-[10px] truncate min-w-0">', "</span>\n              <div");
     expect(footer).not.toContain("sendErr");
     expect(footer).not.toContain("saveFailure");
+  });
+});
+
+// ── email-draftcard-recipients (EM-T10) ─────────────────────────────────
+
+describe("email-draftcard-recipients: a draft card keeps the recipients of its draft", () => {
+  const card = between(conversation, "export function DraftCard(", "const applyReplyAll = ");
+
+  it("starts the To, the Cc, the Bcc, the toggle and the Cc row from draftRecipients", () => {
+    expect(card).toMatch(/const \[start\] = useState\(\(\) =>\s*draftRecipients\(\s*draft,/);
+    expect(card).toContain('const [to, setTo] = useState(start.to.join(", "));');
+    expect(card).toContain('const [cc, setCc] = useState(start.cc.join(", "));');
+    expect(card).toContain('const [bcc, setBcc] = useState(start.bcc.join(", "));');
+    expect(card).toContain("const [replyAll, setReplyAll] = useState<boolean | null>(start.replyAll);");
+    expect(card).toContain("const [showCc, setShowCc] = useState(start.showCc);");
+    // The lists of the reply target no longer seed the card.
+    expect(card).not.toContain("useState(replyAllTo.join(");
+    expect(card).not.toContain("useState(hasReplyTarget)");
+  });
+
+  it("computes the lists of a reply target only when the card has one", () => {
+    expect(card).toMatch(/const all = hasReplyTarget && replyTo\s*\?\s*replyRecipients\(replyTo, "reply-all"/);
+    expect(card).toMatch(/const only = hasReplyTarget && replyTo\s*\?\s*replyRecipients\(replyTo, "reply"/);
+  });
+
+  it("saves after an edit of the Cc or the Bcc (item 4, EM-G3c-2-f2)", () => {
+    expect(conversation).toContain("}, [body, quote, to, cc, bcc]);");
+    expect(conversation).toContain("onChange={(v) => { dirty.current = true; setCc(v); }}");
+    expect(conversation).toContain("onChange={(v) => { dirty.current = true; setBcc(v); }}");
+    expect(conversation).not.toContain("onChange={setCc}");
+    expect(conversation).not.toContain("onChange={setBcc}");
+  });
+
+  it("marks a button only for true or false, so null marks neither", () => {
+    expect(conversation).toContain('replyAll === false ? "bg-primary text-primary-foreground"');
+    expect(conversation).toContain('replyAll === true ? "bg-primary text-primary-foreground"');
+    expect(conversation).not.toMatch(/[!(\s]replyAll \?/);
+  });
+
+  it("gives the standalone card view, and view is never the last mail (item 5, C2)", () => {
+    expect(detail).toContain("const view: Email = detail?.id === email.id ? detail : email;");
+    expect(detail).not.toContain("detail ?? email");
+    expect(detail).toContain("<DraftCard key={email.id} draft={email} replyTo={view} />");
+  });
+
+  it("runs one inline send at a time, with one guard at the top (item 7, f10)", () => {
+    const send = between(detail, "const handleInlineSend = async () => {", "const addReplyFiles");
+    // The guard is the first statement, so a click and Ctrl+Enter both meet it.
+    expect(between(send, "async () => {", "if (!email) return;").replace(/\s+/g, " ").trim())
+      .toBe("async () => { if (sendingRef.current) return;");
+    expect(detail.match(/if \(sendingRef\.current\) return;/g)?.length).toBe(1);
+    // The state starts after the last early return and before the drain.
+    comesBefore(send, 'setSendErr("Add at least one recipient");', "sendingRef.current = true;");
+    comesBefore(send, "sendingRef.current = true;", "setSending(true);");
+    comesBefore(send, "setSending(true);", "await autosave.drain();");
+    expect(between(send, "setSending(true);", "await autosave.drain();")).toContain("try {");
+    expect(send).toMatch(/\} finally \{\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}/);
+    expect(detail.match(/sendingRef\.current = true;/g)?.length).toBe(1);
+  });
+
+  it("draws the inline Send as a Button that loads, with the label Send", () => {
+    expect(detail).toMatch(
+      /<Button[^>]*\bicon="Send"[^>]*\bloading=\{sending\}[^>]*onClick=\{\(\) => void handleInlineSend\(\)\}[^>]*>\s*Send\s*<\/Button>/,
+    );
   });
 });
 

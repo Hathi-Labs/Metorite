@@ -557,6 +557,24 @@ line — never reclaim a number by deleting the other entry.
   D-EM-31
 - **Added:** 2026-10-04 · the EM-G0 spec session
 
+### H-248 · Check that a reopened Outlook draft keeps its recipients (EM-T10) · [OWNER]
+- **Check:** `rg -n "EM-T10 live check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result. An agent then writes that
+  line, with the date, under §10.4.11. Then it deletes this entry.
+- **Why.** EM-T10 fixed a LIVE defect. A reply that the member narrowed to the
+  sender went to everyone again after a reopen, and a Bcc was lost. Outlook also
+  dropped the To of a reply on its first save. Fakes test the fix. Nobody has
+  checked it on a real mailbox yet, and an agent must not use a real mailbox.
+- **Do.** In Metorite, with a connected Outlook mailbox:
+  1. Open a mail that went to several people. Click Reply, type a line, and wait
+     two seconds. Close the reply, open the draft again, and check that To holds
+     only the sender.
+  2. Make a second reply with Reply All. Wait five minutes for one sync. Open
+     the draft again, and check that To still holds everyone.
+  3. Do not send either draft. Discard both.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.11
+- **Added:** 2026-10-05 · the EM-T10 session
+
 ### H-247 · Send three test mails from Outlook, to prove the fix of a lost file (EM-T9) · [OWNER]
 - **Check:** `rg -n "EM-T9 live check passed" project-docs/specs/email_app_master_plan.md`
   → no hit means open. The owner reports the result of the three mails. An agent
