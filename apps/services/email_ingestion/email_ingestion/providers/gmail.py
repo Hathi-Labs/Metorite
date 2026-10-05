@@ -14,6 +14,7 @@ import json
 import logging
 import mimetypes
 import random
+import re
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timezone
 from email import encoders, message_from_bytes
@@ -599,6 +600,29 @@ def _fresh_ids(data: dict[str, Any], seen: set[str]) -> list[str]:
     return fresh
 
 
+# ── The reconcile (WS-17 EM-G5b, spec §12.3.6.2) ─────────────────────────────
+# Fence: tests/unit/test_gmail_import.py, and the R8 cases in
+# ``TestTheImportOnARealDatabase`` of tests/unit/test_email_import_batches.py.
+
+#: The form of a Gmail message id that the confirm puts into a path. Gmail
+#: gives hex ids. Other text, such as a ``/``, a ``?`` or a ``#``, can send
+#: the read to another resource, so the confirm refuses it (item 10).
+_GMAIL_MESSAGE_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _says_not_found(response: httpx.Response) -> bool:
+    """True when a Gmail error body gives the reason ``notFound`` (item 10,
+    C2). Google sends ``{"error": {"errors": [{"reason": "notFound"}]}}``
+    for a deleted message. A 404 with any other body, or with no body, is
+    not a proof of a delete, so the confirm raises for it."""
+    try:
+        errors = response.json()["error"]["errors"]
+        return any(isinstance(e, dict) and e.get("reason") == "notFound"
+                   for e in errors)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 class GmailBearer(RefreshingBearer):
     """The bearer of the Gmail client, with the rate limits of Gmail.
 
@@ -867,6 +891,10 @@ class GmailProvider(BaseEmailProvider):
         #: The message id of each draft that ``trash_message`` discarded. The
         #: caller deletes the local row of each one (EM-G3a, E-A5).
         self.discarded_drafts: set[str] = set()
+        #: True when the last ``import_batches`` stopped at
+        #: ``IMPORT_MAX_PAGES``. The scheduler then runs no reconcile, because
+        #: the mail below the cap stays unread (WS-17 EM-G5b item 12, C5).
+        self.import_capped = False
 
     def credentials_dirty(self) -> bool:
         return self._creds_dirty
@@ -1879,6 +1907,14 @@ class GmailProvider(BaseEmailProvider):
     #: list that never ends. At the cap the import ends and logs
     #: ``gmail.import_capped``. The model is ``OutlookProvider.IMPORT_MAX_PAGES``.
     IMPORT_MAX_PAGES = 5000
+    #: The import reads all mail back to the floor, so the deep sync of a
+    #: member act reconciles the deletions from it (WS-17 EM-G5b item 7).
+    #: ``message_gone`` confirms each candidate by its id before a trash.
+    import_full_snapshot = True
+    #: Gmail gives a draft a new message id at each update (O-GM-2), so the
+    #: reconcile leaves out each row in drafts (EM-G5b item 9, C3). The
+    #: history removes an old draft row (EM-G4b E-B2).
+    import_reconcile_skips_drafts = True
 
     async def _sweep_label(
         self,
@@ -2245,12 +2281,14 @@ class GmailProvider(BaseEmailProvider):
           the batch goes on (E-G5-4, ``_import_fetch``).
         * ``on_estimate`` is awaited once, with the ``resultSizeEstimate`` of
           the first answer, before the first fetch (item 5, D-EM-16).
-        * ``IMPORT_MAX_PAGES`` pages at most. At the cap the import ends and
-          logs ``gmail.import_capped`` (E-G5-6).
+        * ``IMPORT_MAX_PAGES`` pages at most. At the cap the import ends,
+          logs ``gmail.import_capped`` (E-G5-6) and sets ``import_capped``,
+          so the scheduler runs no reconcile (EM-G5b item 12).
 
         It never calls ``sync_messages(deep=True)`` (E-G5-8). A failed list
         page and a rate limit whose tries are spent raise, and the next
         cycle resumes from the point that the import reached."""
+        self.import_capped = False
         size = max(size, 1)
         client = await self._get_client()
         await self._ensure_label_names()
@@ -2275,6 +2313,7 @@ class GmailProvider(BaseEmailProvider):
             if not token:
                 return
             params["pageToken"] = token
+        self.import_capped = True
         logger.warning("gmail.import_capped pages=%d messages=%d",
                        self.IMPORT_MAX_PAGES, len(seen))
 
@@ -2315,6 +2354,39 @@ class GmailProvider(BaseEmailProvider):
                 if _transient(exc):
                     raise
                 return None
+
+    async def message_gone(self, provider_message_id: str) -> bool:
+        """True when Gmail deleted the message *provider_message_id* (WS-17
+        EM-G5b items 6 and 10, C1 and C2).
+
+        The reconcile of a member-act import asks this before it trashes a
+        row (``scheduler._confirm_gone``). Gmail never changes the id of a
+        message, so the provider id is the key. ``message_exists`` of Outlook
+        asks by the Message-ID, and Gmail has no such method on purpose: one
+        Message-ID can be on two Gmail messages.
+
+        * A 404 whose body gives the reason ``notFound`` gives True.
+        * A 200 gives False, also for a message in ``TRASH`` or ``SPAM``,
+          because the import read both.
+        * Each other answer raises, and that includes a 404 with no
+          ``notFound`` reason. The caller then keeps the row. A rate limit
+          whose tries are spent raises ``GmailRateLimited``, and the caller
+          stops the confirm (item 11).
+        * An id that is not a plain Gmail id raises ``ValueError``, and no
+          request goes out.
+
+        The read goes through ``_get_client``, so the rules of EM-G4a apply.
+        It sends ``format=minimal`` only, so no body of the mail comes back."""
+        if not _GMAIL_MESSAGE_ID.fullmatch(provider_message_id or ""):
+            raise ValueError("the confirm takes a Gmail message id only")
+        client = await self._get_client()
+        resp = await client.get(f"/users/me/messages/{provider_message_id}",
+                                params={"format": "minimal"})
+        if resp.status_code == 404 and _says_not_found(resp):
+            return True
+        # Each answer that is not a 2xx raises here, a bare 404 too.
+        resp.raise_for_status()
+        return False
 
     async def get_attachment(
         self, provider_message_id: str, provider_attachment_id: str

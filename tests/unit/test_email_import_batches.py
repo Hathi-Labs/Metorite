@@ -29,6 +29,11 @@ R7 fences named here:
 * ``email-absent-folder`` (fix round 4): a 403 or a 404 skips only Archive
   or a user folder, in the import and in the recurring sweep. On a folder
   that each mailbox has, it fails.
+* ``gmail-reconcile`` (WS-17 EM-G5b, spec §12.3.6.2): a Gmail Resync trashes
+  a row only after Gmail answers 404 ``notFound`` to its provider id. A row
+  that Gmail holds stays, a row in drafts gets no lookup, and a capped
+  import runs no reconcile (R8). The Outlook reconcile reads its drafts as
+  before.
 
 The R8 tests run the REAL core as the non-privileged role ``acb_app_h3rls``
 (NOSUPERUSER, NOBYPASSRLS) on the phase-4-promoted two-org catalog of
@@ -958,9 +963,11 @@ async def test_a_resync_reconciles_once_against_its_whole_import(core, monkeypat
     imports: list[tuple[list[str], datetime]] = []
     sweeps: list[int] = []
 
-    async def _import(db, account_id, snapshot, *, started_at):
+    async def _import(db, account_id, snapshot, *, started_at, skip_drafts):
         # Fix round 2, item 7: tuples of (id, folder, received_at).
         assert all(isinstance(e, tuple) and len(e) == 3 for e in snapshot)
+        # WS-17 EM-G5b item 9: only Gmail leaves out its drafts.
+        assert skip_drafts is False, "the Outlook reconcile left out its drafts"
         imports.append((sorted(pid for pid, _, _ in snapshot), started_at))
         return []
 
@@ -2039,6 +2046,215 @@ class TestTheImportOnARealDatabase:
                            "no-imid": "inbox", "gone": "trash"}, folders
         assert sorted(graph.lookups) == sorted(
             [moved_imid, "<flaky@seed.test>", "<gone@seed.test>"])
+
+    # ── WS-17 EM-G5b: the Gmail reconcile (spec §12.3.6.2) ─────────────────
+
+    async def _gmail_resync(self, p, monkeypatch, gmail, rows):  # noqa: F811
+        """Seed *rows* in org B for a Gmail mailbox, then run a Resync
+        (``deep=True``) through ``_sync_account`` with a real
+        ``GmailProvider`` on the fake of ``test_gmail_import.py``. Return
+        the folder of each seeded row by its key, the mailbox id, the count
+        of rows in each folder, and the count of trash rows that org B reads.
+
+        Each row is ``(key, folder, received_at, provider id, Message-ID)``.
+        The fake holds 30 messages in the Inbox, one for each hour, and it
+        answers a 404 with the reason ``notFound`` to each id that it does
+        not hold."""
+        now = _now()
+        for k in range(30):
+            gmail.add(f"g-{k:02d}", now - timedelta(hours=k, minutes=1), "INBOX")
+        account_id = _seed_account(p.admin_engine, org=p.org_b,
+                                   owner="b@em-g5b.test")
+        _set(p.admin_engine, account_id, provider="gmail",
+             import_since=now - timedelta(days=30), initial_sync_done=True)
+        with p.admin_engine.begin() as c:
+            for key, folder, received, pid, imid in rows:
+                c.execute(text(
+                    "INSERT INTO email_messages (account_id, provider_message_id, "
+                    "internet_message_id, folder, from_address, to_addresses, "
+                    "subject, body_text, received_at, updated_at, organization_id) "
+                    "VALUES (CAST(:a AS uuid), :pid, :imid, :f, '{}'::jsonb, "
+                    "'[]'::jsonb, :key, 'seeded', :r, now() - interval '1 day', "
+                    "CAST(:o AS uuid))"),
+                    {"a": account_id, "pid": pid, "imid": imid, "f": folder,
+                     "key": key, "r": received, "o": p.org_b})
+        monkeypatch.setattr(_key_store, "get_key_store", lambda: _Store())
+        monkeypatch.setattr(sched, "build_provider",
+                            lambda name, creds: _gmail_provider())
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(app_dsn):
+                res = await sched._sync_account(account_id,
+                                                organization_id=p.org_b, deep=True)
+            assert "error" not in res, res
+            params = {"a": account_id}
+            with p.admin_engine.connect() as c:
+                folders = dict(c.execute(text(
+                    "SELECT subject, folder FROM email_messages "
+                    "WHERE account_id = CAST(:a AS uuid) AND subject = ANY(:k)"),
+                    {**params, "k": [r[0] for r in rows]}).all())
+                by_folder = dict(c.execute(text(
+                    "SELECT folder, count(*) FROM email_messages "
+                    "WHERE account_id = CAST(:a AS uuid) GROUP BY folder"),
+                    params).all())
+            trashed = ("SELECT count(*) FROM email_messages WHERE account_id = "
+                       "CAST(:a AS uuid) AND folder = 'trash'")
+            assert _count_as(p.app_url, p.org_a, trashed, params) == 0
+            return SimpleNamespace(
+                folders=folders, account_id=account_id, by_folder=by_folder,
+                org_b_trash=_count_as(p.app_url, p.org_b, trashed, params))
+        finally:
+            release_tenant(token)
+            _drop(p.admin_engine, account_id)
+
+    async def test_a_gmail_resync_trashes_a_row_that_gmail_deleted(
+        self, promoted, app_engine, gmail, monkeypatch,  # noqa: F811
+    ):
+        """EM-G5b items 6, 7 and 10, M3 and M4. The member deleted a message
+        in Gmail. Its row lies inside the window of the import, beyond the
+        newest pages of the sweep. The Resync confirms it by its provider id,
+        with ``format=minimal``. Gmail answers 404 with ``notFound``, so the
+        row goes to trash in org B. Each imported row stays."""
+        _assert_non_priv(app_engine)
+        now = _now()
+        gone = f"s-gone-{uuid.uuid4().hex[:8]}"
+        rows = [("gone", "inbox", now - timedelta(hours=10, minutes=30), gone,
+                 "<gone@seed.test>")]
+
+        run = await self._gmail_resync(promoted, monkeypatch, gmail, rows)
+
+        assert run.folders == {"gone": "trash"}, "the resync kept a deleted message"
+        assert gmail.confirms == [(gone, [("format", "minimal")])]
+        assert run.by_folder == {"inbox": 30, "trash": 1}, run.by_folder
+        assert run.org_b_trash == 1
+
+    async def test_a_row_that_the_import_missed_and_gmail_holds_keeps_its_row(
+        self, promoted, app_engine, gmail, monkeypatch,  # noqa: F811
+    ):
+        """EM-G5b items 6 and 10, M9 and M10. The list of the import leaves
+        out one message, and Gmail still holds it. Its row has a Message-ID
+        that differs from its id. The confirm asks Gmail by the provider id,
+        Gmail answers 200, and the row stays. A confirm by the Message-ID
+        would get the 404 of an id that the fake does not hold."""
+        _assert_non_priv(app_engine)
+        now = _now()
+        kept = f"s-kept-{uuid.uuid4().hex[:8]}"
+        gmail.add(kept, now - timedelta(hours=10, minutes=30), "INBOX")
+        gmail.unlisted.add(kept)
+        rows = [("kept", "inbox", now - timedelta(hours=10, minutes=30), kept,
+                 "<kept-message-id@seed.test>")]
+
+        run = await self._gmail_resync(promoted, monkeypatch, gmail, rows)
+
+        assert run.folders == {"kept": "inbox"}, "the reconcile trashed a live row"
+        assert gmail.confirms == [(kept, [("format", "minimal")])], (
+            "the confirm did not ask Gmail by the provider id")
+        assert run.org_b_trash == 0
+
+    async def test_a_stale_gmail_draft_row_stays_in_drafts_with_no_lookup(
+        self, promoted, app_engine, gmail, monkeypatch,  # noqa: F811
+    ):
+        """EM-G5b item 9 (C3), M12. Gmail gave a draft a new message id, so
+        its old row is not in the snapshot. The import read two drafts, so
+        the snapshot holds the folder ``drafts``. The reconcile leaves out
+        each row in drafts: the old draft row gets no lookup, and it stays.
+        A deleted Inbox row in the same Resync still goes to trash."""
+        _assert_non_priv(app_engine)
+        now = _now()
+        gmail.add("g-draft-new", now - timedelta(hours=2), "DRAFT")
+        gmail.add("g-draft-other", now - timedelta(hours=20), "DRAFT")
+        old_draft = f"s-draft-{uuid.uuid4().hex[:8]}"
+        gone = f"s-gone-{uuid.uuid4().hex[:8]}"
+        rows = [("old-draft", "drafts", now - timedelta(hours=5), old_draft,
+                 "<draft@seed.test>"),
+                ("gone", "inbox", now - timedelta(hours=10, minutes=30), gone,
+                 "<gone@seed.test>")]
+
+        run = await self._gmail_resync(promoted, monkeypatch, gmail, rows)
+
+        assert run.folders == {"old-draft": "drafts", "gone": "trash"}, run.folders
+        assert [mid for mid, _ in gmail.confirms] == [gone], (
+            "the reconcile looked up a row in drafts")
+        assert run.by_folder["drafts"] == 3
+
+    async def test_a_capped_gmail_import_runs_no_reconcile(
+        self, promoted, app_engine, gmail, monkeypatch, caplog,  # noqa: F811
+    ):
+        """EM-G5b item 12 (C5), M14. The import reaches ``IMPORT_MAX_PAGES``
+        with more mail to read. So the Resync runs no reconcile: a row that
+        Gmail deleted, inside the pages that the import read, gets no lookup
+        and stays. The log says ``reason=capped``."""
+        from email_ingestion.providers.gmail import GmailProvider
+
+        _assert_non_priv(app_engine)
+        now = _now()
+        monkeypatch.setattr(GmailProvider, "IMPORT_MAX_PAGES", 2)
+        monkeypatch.setattr(sched, "IMPORT_BATCH_SIZE", 5)
+        gone = f"s-gone-{uuid.uuid4().hex[:8]}"
+        rows = [("gone", "inbox", now - timedelta(hours=2, minutes=30), gone,
+                 "<gone@seed.test>")]
+
+        with caplog.at_level("INFO"):
+            run = await self._gmail_resync(promoted, monkeypatch, gmail, rows)
+
+        assert run.folders == {"gone": "inbox"}, "a capped import ran the reconcile"
+        assert gmail.confirms == []
+        assert len(gmail.lists) == 2
+        logged = [r.getMessage() for r in caplog.records]
+        assert "gmail.import_capped pages=2 messages=10" in logged
+        assert (f"sync.import_reconcile_skipped account={run.account_id} "
+                "reason=capped") in logged
+
+    async def test_only_the_gmail_reconcile_leaves_out_drafts(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """EM-G5b items 6 and 9, on real SQL. A candidate is the triple of
+        the row id, the provider id and the Message-ID (C1). With
+        ``skip_drafts``, as for Gmail, a row in drafts is no candidate.
+        Without it, as for Outlook, the same row is a candidate, as it was
+        before EM-G5b."""
+        from email_ingestion import reconcile
+
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        account_id = _seed_account(p.admin_engine, org=p.org_b,
+                                   owner="b@em-g5b.test")
+        with p.admin_engine.begin() as c:
+            for pid, folder in (("kept-draft", "drafts"), ("old-draft", "drafts"),
+                                ("kept-inbox", "inbox"), ("gone-inbox", "inbox")):
+                c.execute(text(
+                    "INSERT INTO email_messages (account_id, provider_message_id, "
+                    "internet_message_id, folder, from_address, to_addresses, "
+                    "subject, received_at, updated_at, organization_id) VALUES "
+                    "(CAST(:a AS uuid), :pid, :imid, :f, '{}'::jsonb, "
+                    "'[]'::jsonb, :pid, :r, now() - interval '1 day', "
+                    "CAST(:o AS uuid))"),
+                    {"a": account_id, "pid": pid, "imid": f"<{pid}@seed.test>",
+                     "f": folder, "r": now - timedelta(hours=2), "o": p.org_b})
+            ids = {pid: str(row_id) for pid, row_id in c.execute(text(
+                "SELECT provider_message_id, id FROM email_messages "
+                "WHERE account_id = CAST(:a AS uuid)"), {"a": account_id}).all()}
+        snapshot = [("kept-draft", "drafts", now - timedelta(hours=3)),
+                    ("kept-inbox", "inbox", now - timedelta(hours=3))]
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        found: dict[bool, list[tuple[str, str, str]]] = {}
+        try:
+            for skip in (False, True):
+                async with (tenant_engine_scope(app_dsn),
+                            sched.tenant_session(p.org_b) as db):
+                    got = await reconcile.import_reconcile_candidates(
+                        db, account_id, snapshot, started_at=datetime.now(UTC),
+                        skip_drafts=skip)
+                found[skip] = sorted((str(r), pid, imid) for r, pid, imid in got)
+        finally:
+            _drop(p.admin_engine, account_id)
+
+        gone = (ids["gone-inbox"], "gone-inbox", "<gone-inbox@seed.test>")
+        old = (ids["old-draft"], "old-draft", "<old-draft@seed.test>")
+        assert found[False] == sorted([gone, old]), "the Outlook reconcile changed"
+        assert found[True] == [gone], "the Gmail reconcile kept a row in drafts"
 
     async def test_a_failed_import_and_a_failed_inbox_keep_last_synced_at_null(
         self, promoted, app_engine, monkeypatch,  # noqa: F811

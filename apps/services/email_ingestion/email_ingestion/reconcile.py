@@ -37,13 +37,23 @@ IMPORT_RECONCILE_SHARE = 0.02
 IMPORT_RECONCILE_MAX_LOOKUPS = 50
 
 #: The stored rows of one folder of an import window.
-_IMPORT_WINDOW_ROWS = text(
+_IMPORT_WINDOW_SQL = (
     """SELECT id, provider_message_id, internet_message_id, updated_at
        FROM email_messages
        WHERE account_id = :aid
          AND LOWER(folder) = :folder
          AND LOWER(folder) <> 'trash'
          AND received_at >= :min_recv"""
+)
+_IMPORT_WINDOW_ROWS = text(_IMPORT_WINDOW_SQL)
+
+#: The same rows less each row in drafts (WS-17 EM-G5b item 9). Gmail gives a
+#: draft a new message id at each update (O-GM-2), so a missing draft id
+#: proves no delete. The filter is the one of ``storage.KEPT_FOLDERS_SQL``.
+#: Outlook keeps the statement above, unchanged.
+_IMPORT_WINDOW_ROWS_NO_DRAFTS = text(
+    _IMPORT_WINDOW_SQL
+    + "\n         AND LOWER(COALESCE(folder, '')) NOT IN ('drafts', 'draft')"
 )
 
 #: The guard of ``updated_at`` holds again here: a row written while the
@@ -57,9 +67,15 @@ _TRASH_ROWS = text(
 async def import_reconcile_candidates(
     db: Any, account_id: str,
     snapshot: list[tuple[str, str, datetime | None]], *, started_at: datetime,
-) -> list[tuple[Any, str | None]]:
+    skip_drafts: bool = False,
+) -> list[tuple[Any, str | None, str | None]]:
     """The stored rows that the full import of a member act did not read,
-    as ``(row id, internet_message_id)``.
+    as ``(row id, provider_message_id, internet_message_id)``.
+
+    The caller picks the key of the confirm from the two ids (WS-17 EM-G5b
+    item 6, C1). Outlook asks by ``internet_message_id``, because Graph gives
+    a moved message a new id. Gmail asks by ``provider_message_id``, because
+    Gmail never changes the id of a message.
 
     ``snapshot`` holds ``(id, folder, received_at)`` for each message that
     the import wrote. Each folder is bounded to its oldest message in the
@@ -74,7 +90,11 @@ async def import_reconcile_candidates(
     ``sync.import_reconcile_skipped``. A folder gives at most
     ``IMPORT_RECONCILE_MAX_LOOKUPS`` candidates. The caller looks each one up
     at the provider with no session open, and then calls
-    ``trash_import_rows`` (fix round 3). It never commits."""
+    ``trash_import_rows`` (fix round 3). It never commits.
+
+    ``skip_drafts`` leaves out each row in drafts (EM-G5b item 9, C3). Gmail
+    sets it, and Outlook reads its drafts as before."""
+    window = _IMPORT_WINDOW_ROWS_NO_DRAFTS if skip_drafts else _IMPORT_WINDOW_ROWS
     seen = {pid for pid, _, _ in snapshot}
     folder_min: dict[str, datetime] = {}
     for _, folder, received in snapshot:
@@ -84,9 +104,9 @@ async def import_reconcile_candidates(
         if key not in folder_min or received < folder_min[key]:
             folder_min[key] = received
 
-    candidates: list[tuple[Any, str | None]] = []
+    candidates: list[tuple[Any, str | None, str | None]] = []
     for folder, min_recv in folder_min.items():
-        rows = (await db.execute(_IMPORT_WINDOW_ROWS, {
+        rows = (await db.execute(window, {
             "aid": account_id, "folder": folder, "min_recv": min_recv})).fetchall()
         gone = [r for r in rows if r.provider_message_id not in seen
                 and r.updated_at is not None and r.updated_at < started_at]
@@ -98,7 +118,7 @@ async def import_reconcile_candidates(
                 "candidates=%d rows=%d cap=%d",
                 account_id, folder, len(gone), len(rows), cap)
             continue
-        candidates.extend((r.id, r.internet_message_id)
+        candidates.extend((r.id, r.provider_message_id, r.internet_message_id)
                           for r in gone[:IMPORT_RECONCILE_MAX_LOOKUPS])
     return candidates
 
