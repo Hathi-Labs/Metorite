@@ -4217,9 +4217,10 @@ as the draft holds it.
 **Non-goals.** No Bcc row in ComposePanel. No change to the undo-send reopen. No change to the
 stale thread frame. No change to Discard while a send runs.
 
-**Known limit EM-T10-f1.** An older build saved some drafts with no To at Graph. For such a draft,
-the sync can write a To that differs from the To of the member. The next save of the member writes
-the To again (item 6).
+**Known limit EM-T10-f1 (corrected by the verifier, P2-3).** An older build saved each Outlook reply
+with the To that `createReply` gives: the sender, or the Reply-To. So a reply-all draft that the old
+code saved only once now opens with that narrowed To, and on Reply when its Cc is empty. The member
+sees the To before a send. The next save writes the To that the card shows.
 
 **Fences (R7).**
 
@@ -4321,6 +4322,30 @@ clean and the fix was in the file again. Each of the 14 mutations turned its fen
 | X5 | The Bcc `onChange` sets no `dirty` | `draftAutosave.test.ts`, a Cc or Bcc edit saves |
 | X6 | The toggle forgets that reply-all can equal reply | `mailbox.test.ts`, a thread of two people |
 | X7 | The inline Send loses `loading` | `draftAutosave.test.ts`, the Send button loads |
+| R1 | The rule REPLY drops `exact_to` | `test_a_rule_reply_writes_a_typed_to_at_outlook` and the caller fence (2 red) |
+| R2 | Reply no longer needs an empty Cc | `mailbox.test.ts`, a reply to the sender with a Cc |
+
+**Review round 1 (2026-10-05).** The verifier passed EM-T10, and the reviewer approved it. Neither
+found a P0 or a P1. This round closes two P2s and records the rest.
+
+1. A rule REPLY with a To that the member typed now reaches Outlook (reviewer P2-1). It passes
+   `exact_to=bool(a.get("to_address"))`, so a rule with no typed To keeps the Reply-To of
+   `createReply`. A runtime test drives the real `OutlookProvider`.
+2. The toggle rule that Reply needs an empty Cc has its own case (verifier P2-1).
+
+**Known limit EM-T10-f3 (reviewer P2-2, older than EM-T10).** The composer reads From and never
+Reply-To, because `Email` and `replyRecipients` carry no Reply-To. Item 6 writes that To over the
+Reply-To of `createReply` on the first save. Each send from Metorite already used it on `main`. So
+only a draft that Metorite saved once and that the member sends from native Outlook changes. A
+later ticket owns a Reply-To in the composer.
+
+**Known limit EM-T10-f4 (verifier P2-2, older than EM-T10).** An AI draft's row holds the From as
+its To. A send from the card before the next sync writes the From over a Reply-To. `main` wrote the
+wider reply-all lists, so EM-T10 makes this case better.
+
+**Known limit EM-T10-f5 (older than EM-T10).** Reply clears the Bcc (`applyReplyAll(false)`), also
+when Reply is already marked. A rule's Cc and Bcc never reach `create_draft`. The `sendingRef` of
+the inline reply is not per mail, so a slow send of mail A can reset the reply of mail B.
 
 **The visual review (2026-10-05).** A page that the build never committed drew four DraftCards and
 the inline Send, idle and loading. Playwright took each one in dark, light, light compact, and

@@ -370,10 +370,12 @@ All providers implement the `BaseEmailProvider` abstract interface:
       With `exact_to`, the PATCH of the reply writes `to` too, so a reply-all
       draft keeps each address. Gmail and IMAP put `to` into the mail, so they
       ignore the keyword.
-    - Only `PUT /email/drafts` passes `exact_to=True`, because the member
-      typed that To. Each other caller keeps the default, so a Reply-To stays.
-      The fence counts the callers in `drafting.py`, `actions.py`,
-      `followups.py` and `notes/dispatch.py`. A new caller there fails it.
+    - `PUT /email/drafts` passes `exact_to=True`, because the member typed
+      that To. The rule REPLY passes `exact_to=bool(a.get("to_address"))`,
+      so only a To typed into the rule goes over the To of `createReply`.
+      Each other caller keeps the default, so a Reply-To stays. The fence
+      counts the callers in `drafting.py`, `actions.py`, `followups.py` and
+      `notes/dispatch.py`. A new caller there fails it.
 
 ## Inbound SMTP Server
 
