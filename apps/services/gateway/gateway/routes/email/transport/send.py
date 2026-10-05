@@ -172,17 +172,23 @@ async def send_email(
             # thread — the "separate email" bug), while Outlook still replies
             # via the message id. Both go to the provider, which uses whichever
             # it needs.
-            msg_id = await sess.provider.send_message(
-                to=req.to,
-                subject=req.subject,
-                body_text=send_text,
-                body_html=send_html,
-                cc=req.cc,
-                bcc=req.bcc,
-                reply_to_message_id=reply_pmid,
-                attachments=attachments,
-                thread_id=reply_thread_id,
+            # A mail that Gmail cannot take answers 413 (EM-G3c-1 item 7).
+            # ``drafting`` imports this module, so the mapper comes in here.
+            from gateway.routes.email.automation.drafting import (
+                _mail_too_large,
             )
+            with _mail_too_large():
+                msg_id = await sess.provider.send_message(
+                    to=req.to,
+                    subject=req.subject,
+                    body_text=send_text,
+                    body_html=send_html,
+                    cc=req.cc,
+                    bcc=req.bcc,
+                    reply_to_message_id=reply_pmid,
+                    attachments=attachments,
+                    thread_id=reply_thread_id,
+                )
 
         # Commit the rotated-cred persist the session wrote on clean exit.
 
