@@ -8,6 +8,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion import storage as ingest_storage
+from email_ingestion.providers.base import local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.core import (
     HUMAN_SENDER_CATEGORIES_LOWER,
@@ -752,6 +753,57 @@ async def get_message(
         return msg
 
 
+def _move_target(name: str | None) -> str | None:
+    """The name of a PATCH move, stripped ONCE (EM-G3b review round 1).
+
+    The route gives this one string to ``_folder_for_move`` and to the
+    provider, so the row and the push read the same name. A name that is
+    empty after the strip answers 400 before any read or write, for every
+    provider. Without it, ``canonical_folder`` read ``""`` as ``inbox``, and
+    Gmail stored ``archive`` for ``"   "`` while its push went to the Inbox.
+    ``None`` means that the update holds no move.
+    """
+    if name is None:
+        return None
+    target = name.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="A move needs a folder name")
+    return target
+
+
+async def _folder_for_move(
+    db: Any, message_id: str, owner: str, name: str | None,
+) -> tuple[str | None, tuple[Any, str, str, Any] | None]:
+    """The folder that a PATCH move stores, and the provider that decides it.
+
+    WS-17 EM-G3b item 8 (``email_app_master_plan.md`` §12.3.4, E-M8). The
+    route builds the provider BEFORE it writes the folder, and
+    ``_provider_for_message`` makes no network call. Gmail files a user
+    label as ``archive``. A provider that refuses the move (Gmail: sent,
+    drafts or a system label) gets a 400, and the route writes nothing.
+    With no folder in the update, there is no move, and the answer is
+    ``(None, None)``. ``name`` is the stripped name of ``_move_target``.
+
+    A provider that fails to build keeps the push best-effort. The row then
+    stores ``canonical_folder(name)``, and the push builds it again and logs
+    the failure.
+    """
+    if name is None:
+        return None, None
+    built: tuple[Any, str, str, Any] | None = None
+    try:
+        built = await _provider_for_message(db, message_id, owner)
+    except Exception:  # the push of the route builds it again and logs it
+        built = None
+    folder = local_folder_after_move(built[0] if built else None, name)
+    if folder is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This mailbox cannot move a message to {name!r}",
+        )
+    return folder, built
+
+
 @router.patch("/messages/{message_id}", response_model=EmailMessageModel)
 async def update_message(
     message_id: str,
@@ -767,6 +819,9 @@ async def update_message(
             name for name in updates.add_labels
             if name.strip().lower() not in RESERVED_INDICATORS
         ]
+    # One stripped name for the row and the push. A blank name is a 400
+    # before any read or write (EM-G3b review round 1).
+    target = _move_target(updates.folder)
     async with _tenant_session() as db:
         # Verify ownership
         result = await db.execute(
@@ -780,6 +835,11 @@ async def update_message(
         if not result.fetchone():
             raise HTTPException(status_code=404, detail="Message not found")
 
+        # A move asks the provider for its folder BEFORE any write, so a
+        # refused move answers 400 and writes nothing (EM-G3b item 8).
+        folder, built = await _folder_for_move(
+            db, message_id, user.email or "anonymous", target)
+
         set_clauses = ["updated_at = now()"]
         params: dict[str, Any] = {"id": message_id}
 
@@ -792,9 +852,9 @@ async def update_message(
         if updates.is_flagged is not None:
             set_clauses.append("is_flagged = :is_flagged")
             params["is_flagged"] = updates.is_flagged
-        if updates.folder is not None:
+        if target is not None:
             set_clauses.append("folder = :folder")
-            params["folder"] = updates.folder
+            params["folder"] = folder
 
         await db.execute(
             text(
@@ -832,8 +892,10 @@ async def update_message(
         # The local DB is already updated; if the provider write fails we keep the
         # local state and log, rather than failing the user's action.
         try:
-            provider, provider_msg_id, account_id, store = await _provider_for_message(
-                db, message_id, user.email or "anonymous"
+            provider, provider_msg_id, account_id, store = (
+                built or await _provider_for_message(
+                    db, message_id, user.email or "anonymous"
+                )
             )
             if await provider.authenticate():
                 if (
@@ -847,9 +909,12 @@ async def update_message(
                         is_starred=updates.is_starred,
                         is_flagged=updates.is_flagged,
                     )
-                if updates.folder is not None:
+                if target is not None:
+                    # The name keeps its case, so a new label or Outlook
+                    # folder reads as the member wrote it (EM-G3b item 9).
+                    # It is the string that the helper read (review round 1).
                     new_pid = await provider.move_to_folder(
-                        provider_msg_id, updates.folder.lower()
+                        provider_msg_id, target
                     )
                     # Outlook /move re-keys the message — persist the new id so
                     # later actions don't hit a stale (404) provider id, and use
