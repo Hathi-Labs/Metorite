@@ -21,13 +21,16 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSession } from "next-auth/react";
 import { useAccess } from "@/components/AccessProvider";
 import {
   bindChatScope,
+  clearSignedOutAccount,
   deleteSession,
   enrichSession,
   fetchAndMergeSessionsFromDb,
   getSessions,
+  isSignedOut,
   probeSession,
   scopeFromAccess,
   tidyChatStorage,
@@ -51,10 +54,10 @@ import type { SessionRefusedHandler } from "@/lib/chatTurnFailure";
 /**
  * The signed-in member's chat scope, from `useAccess()` (the one identity
  * source of the client), or null until it resolves (`scopeFromAccess` has
- * the rules). It binds the session store during render, so a child's effect
- * never reads the list unbound. The storage work (`tidyChatStorage`) runs in
- * an effect. `AppShell` calls this hook on every page, so the tidy runs after
- * every way out of a sign-in, not only after a sign-out button.
+ * the rules). It binds the chat namespace during render, so a child's effect
+ * never reads it unbound. The storage work (`tidyChatStorage`) runs in an
+ * effect, and it deletes nothing of any namespace: a switch is not a
+ * sign-out.
  */
 export function useChatScope(): string | null {
   const { access, loading, stale } = useAccess();
@@ -76,6 +79,26 @@ export function useChatScope(): string | null {
  * Returns the handler for `AgentChat`'s `onSessionRefused`, or undefined when
  * the open chat was opened on purpose.
  */
+/**
+ * Clear the namespace of the account that signed out, however it signed out
+ * (`isSignedOut` has the rule). `AppShell` calls this once, on every page,
+ * the `bindIdentity` pattern of `lib/dataCache.ts`: the clear is bound to the
+ * identity, never to one sign-out button.
+ */
+export function useChatSignOutClear(): void {
+  const { status } = useSession();
+  const { access, loading, stale } = useAccess();
+  const signedOut = isSignedOut({
+    sessionStatus: status,
+    accessLoading: loading,
+    stale,
+    email: access.email,
+  });
+  useEffect(() => {
+    if (signedOut) clearSignedOutAccount();
+  }, [signedOut]);
+}
+
 export function useRestoredSessionGuard(
   activeId: string,
   restoredId: string | null,

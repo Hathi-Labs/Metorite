@@ -13,7 +13,8 @@
  *      error card, and the member's words go back to the composer.
  *   3. A chat the member opened on purpose keeps its error.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -32,17 +33,20 @@ import {
   type RailPick,
 } from "./railSessions";
 import {
-  BUILDER_SESSION_KEY_PREFIX,
-  CHAT_OWNER_KEY,
-  LEGACY_SESSIONS_KEY,
+  __newPageForTests,
   bindChatScope,
+  chatKey,
   chatScope,
+  clearSignedOutAccount,
   createSession,
   forgetChatSessions,
   forgetSession,
   getQueue,
   getSessions,
+  getMessages,
+  hasNamespace,
   isSessionRefusal,
+  isSignedOut,
   probeSession,
   saveQueue,
   scopeFromAccess,
@@ -139,15 +143,6 @@ describe("rule 1: a stored chat id is the member's and the org's", () => {
     expect(restoreOrStart(AGENT).activeId).not.toBe(ownersId);
   });
 
-  it("never reads the old browser-wide list, and the tidy removes it", () => {
-    const leaked = createSession(AGENT);
-    storage.setItem(LEGACY_SESSIONS_KEY, JSON.stringify([leaked]));
-    bindChatScope(MEMBER);
-    expect(getSessions()).toEqual([]);
-    tidyChatStorage(MEMBER);
-    expect(storage.getItem(LEGACY_SESSIONS_KEY)).toBeNull();
-  });
-
   it("reads and writes nothing while no member is bound", () => {
     ownerChat();
     bindChatScope(null);
@@ -162,16 +157,6 @@ describe("rule 1: a stored chat id is the member's and the org's", () => {
     expect(chatScope("", "org-dewin")).toBeNull();
   });
 
-  it("forgets every stored chat id on sign-out, and keeps the transcripts", () => {
-    const id = ownerChat();
-    storage.setItem(`${BUILDER_SESSION_KEY_PREFIX}${OWNER}::crm`, id);
-    storage.setItem(`${BUILDER_SESSION_KEY_PREFIX}crm`, id);
-    storage.setItem(`cc-msgs-${id}`, "[]");
-    forgetChatSessions();
-    expect(storage.keys()).toEqual([`cc-msgs-${id}`]);
-    bindChatScope(OWNER);
-    expect(getSessions()).toEqual([]);
-  });
 });
 
 describe("the scope of one access answer (fix round 1)", () => {
@@ -203,37 +188,162 @@ describe("the scope of one access answer (fix round 1)", () => {
   });
 });
 
-describe("the tidy, bound to the identity (fix round 1)", () => {
-  it("drops other members' ids when the member of the browser changes", () => {
-    const ownersId = ownerChat();
+describe("one namespace per account (round 2: multi-account design)", () => {
+  /** Account A (the owner, Fracktal): a chat, its transcript, its queue. */
+  function accountA(): string {
+    bindChatScope(OWNER);
     tidyChatStorage(OWNER);
-    storage.setItem(`${BUILDER_SESSION_KEY_PREFIX}${OWNER}::crm`, ownersId);
+    const s = createSession(AGENT);
+    upsertSession(s);
+    saveQueue(s.id, ["A's unsent words"]);
+    bindChatScope(OWNER);
+    storage.setItem(chatKey("msgs", s.id) as string, JSON.stringify([
+      { id: "u1", role: "user", content: "A's secret", timestamp: 1 },
+    ]));
+    return s.id;
+  }
+
+  /** Every key of one scope's namespace, with its value. */
+  const snapshot = (scope: string) =>
+    storage.keys().filter((k) => k.startsWith(`cc-chat::${scope}::`)).sort()
+      .map((k) => [k, storage.getItem(k)]);
+
+  it("builds every chat key in the bound namespace, and none while unbound", () => {
     bindChatScope(MEMBER);
-    upsertSession(createSession(AGENT));
+    expect(chatKey("msgs", "s1")).toBe(`cc-chat::${MEMBER}::msgs::s1`);
+    expect(chatKey("sessions")).toBe(`cc-chat::${MEMBER}::sessions`);
+    bindChatScope(null);
+    expect(chatKey("queue", "s1")).toBeNull();
+  });
+
+  it("switching A to B to A keeps both namespaces exactly as they were", () => {
+    const aId = accountA();
+    const aBefore = snapshot(OWNER);
+    // Switch to B (another email), work there, and switch back.
+    bindChatScope(MEMBER);
     tidyChatStorage(MEMBER);
-    const left = storage.keys();
-    expect(left.some((k) => k.includes("vjvarada@fracktal.in"))).toBe(false);
-    expect(left).toContain(`cc-chat-sessions::${MEMBER}`);
-    expect(storage.getItem(CHAT_OWNER_KEY)).toBe("sharat@dewin.in");
+    const b = createSession(AGENT);
+    upsertSession(b);
+    saveQueue(b.id, ["B's words"]);
+    const bBefore = snapshot(MEMBER);
+    bindChatScope(OWNER);
+    tidyChatStorage(OWNER);
+    expect(snapshot(OWNER)).toEqual(aBefore);
+    expect(snapshot(MEMBER)).toEqual(bBefore);
+    expect(restoreOrStart(AGENT)).toEqual({ activeId: aId, restoredId: aId });
+    expect(getQueue(aId)).toEqual(["A's unsent words"]);
   });
 
-  it("keeps the lists while the same member stays, in either org", () => {
-    ownerChat();
-    tidyChatStorage(OWNER);
+  it("the same email in another org is its own namespace, and a switch keeps both", () => {
+    accountA();
+    const aBefore = snapshot(OWNER);
     bindChatScope(OWNER_ELSEWHERE);
-    upsertSession(createSession(AGENT));
     tidyChatStorage(OWNER_ELSEWHERE);
-    expect(storage.keys()).toContain(`cc-chat-sessions::${OWNER}`);
-    expect(storage.keys()).toContain(`cc-chat-sessions::${OWNER_ELSEWHERE}`);
+    expect(getSessions()).toEqual([]);
+    upsertSession(createSession(AGENT));
+    bindChatScope(OWNER);
+    expect(snapshot(OWNER)).toEqual(aBefore);
   });
 
-  it("drops the member's ids when the browser signs out by any path", () => {
-    // An expired session or the middleware redirect ends at /signin, where
-    // the access answer names nobody and the scope is `anonymous|`.
-    ownerChat();
-    tidyChatStorage(OWNER);
-    tidyChatStorage(scopeFromAccess({ loading: false, stale: false, email: "", organizationId: null }));
-    expect(storage.keys().some((k) => k.startsWith("cc-chat-sessions::vjvarada"))).toBe(false);
+  it("B never reads A's transcript or queue, even with A's session id", () => {
+    const aId = accountA();
+    bindChatScope(MEMBER);
+    expect(getMessages(aId)).toEqual([]);
+    expect(getQueue(aId)).toEqual([]);
+    expect(carriedText(aId)).toBeUndefined();
+    expect(carriedText(aId, "mine")).toBe("mine");
+  });
+
+  it("sign-out of A clears every namespace of A, and B's stays", () => {
+    accountA();
+    bindChatScope(MEMBER);
+    tidyChatStorage(MEMBER);
+    upsertSession(createSession(AGENT));
+    const bBefore = snapshot(MEMBER);
+    // A signs in again in a second org, then signs out: the last scope is A.
+    bindChatScope(OWNER_ELSEWHERE);
+    tidyChatStorage(OWNER_ELSEWHERE);
+    upsertSession(createSession(AGENT));
+    clearSignedOutAccount();
+    expect(hasNamespace(OWNER)).toBe(false);
+    expect(hasNamespace(OWNER_ELSEWHERE)).toBe(false);
+    expect(snapshot(MEMBER)).toEqual(bBefore);
+  });
+
+  it("an expiry clears the namespace of the last bound scope", () => {
+    accountA();
+    // The tab is closed, the session expires, and the next page lands on
+    // /signin: a fresh page that bound nobody.
+    __newPageForTests();
+    clearSignedOutAccount();
+    expect(hasNamespace(OWNER)).toBe(false);
+    expect(storage.keys()).toEqual([]);
+  });
+
+  it("removes the caches written before #652 on the first bind, and moves none", () => {
+    const leaked = createSession(AGENT);
+    storage.setItem("cc-chat-sessions", JSON.stringify([leaked]));
+    storage.setItem(`cc-msgs-${leaked.id}`, "[]");
+    storage.setItem(`cc-queue-${leaked.id}`, JSON.stringify(["whose words?"]));
+    storage.setItem("cc-app-builder-session-crm", leaked.id);
+    storage.setItem("cc-theme", "dark"); // not a chat cache: it stays
+    bindChatScope(MEMBER);
+    expect(getSessions()).toEqual([]);
+    tidyChatStorage(MEMBER);
+    expect(storage.keys().sort()).toEqual(["cc-chat-last-scope", "cc-theme"]);
+    expect(getMessages(leaked.id)).toEqual([]);
+  });
+});
+
+describe("a deploy blip keeps the member's place (fix round 2)", () => {
+  /** A 200 from /api/auth/me that names nobody: the deploy-restart answer. */
+  const blip = () => scopeFromAccess({ loading: false, stale: false, email: "", organizationId: null });
+  const member = () =>
+    scopeFromAccess({ loading: false, stale: false, email: "sharat@dewin.in", organizationId: "org-dewin" });
+
+  function memberWithChat(): string {
+    const scope = member() as string;
+    bindChatScope(scope);
+    tidyChatStorage(scope);
+    const s = createSession(AGENT);
+    upsertSession(s);
+    storage.setItem(chatKey("msgs", s.id) as string, "[]");
+    return s.id;
+  }
+
+  it("keeps the member's scope on a 200 NO_ACCESS after a member was seen", () => {
+    memberWithChat();
+    expect(blip()).toBe(MEMBER);
+  });
+
+  it("deletes nothing on that blip", () => {
+    const id = memberWithChat();
+    const before = storage.keys().sort();
+    tidyChatStorage(blip());
+    // Even handed the no-email scope directly, the tidy does nothing.
+    tidyChatStorage("anonymous|");
+    expect(storage.keys().sort()).toEqual(before);
+    bindChatScope(MEMBER);
+    expect(getMessages(id)).toEqual([]);
+    expect(storage.getItem(chatKey("msgs", id) as string)).toBe("[]");
+  });
+
+  it("a fresh page with no member still binds the no-email scope", () => {
+    memberWithChat();
+    __newPageForTests();
+    expect(blip()).toBe("anonymous|");
+  });
+
+  it("only a signed-out NextAuth session AND an empty access answer is a sign-out", () => {
+    const base = { sessionStatus: "unauthenticated" as const, accessLoading: false, stale: false, email: "" };
+    expect(isSignedOut(base)).toBe(true);
+    // The deploy blip: NextAuth still holds the session.
+    expect(isSignedOut({ ...base, sessionStatus: "authenticated" })).toBe(false);
+    // Dev with auth off names a member in the access answer.
+    expect(isSignedOut({ ...base, email: "dev@fracktal.in" })).toBe(false);
+    expect(isSignedOut({ ...base, stale: true })).toBe(false);
+    expect(isSignedOut({ ...base, accessLoading: true })).toBe(false);
+    expect(isSignedOut({ ...base, sessionStatus: "loading" })).toBe(false);
   });
 });
 
@@ -486,10 +596,13 @@ describe("the wiring (source fence)", () => {
     expect(hook).toMatch(/scopeFromAccess\(\{\s*loading,\s*stale,/);
   });
 
-  it("the tidy runs in an effect, from AppShell on every page", () => {
+  it("the tidy runs in an effect, and AppShell binds the scope and the sign-out clear", () => {
     const hook = read("../hooks/useChatSessions.ts");
     expect(hook).toMatch(/useEffect\(\(\) => \{\s*tidyChatStorage\(scope\);\s*\}, \[scope\]\);/);
-    expect(read("../components/AppShell.tsx")).toMatch(/^\s*useChatScope\(\);\r?$/m);
+    expect(hook).toMatch(/if \(signedOut\) clearSignedOutAccount\(\);/);
+    const shell = read("../components/AppShell.tsx");
+    expect(shell).toMatch(/^\s*useChatScope\(\);\r?$/m);
+    expect(shell).toMatch(/^\s*useChatSignOutClear\(\);\r?$/m);
   });
 
   it("a recovery on load explains itself, as a recovery on send does", () => {
@@ -500,17 +613,31 @@ describe("the wiring (source fence)", () => {
     expect(read("../app/chat/page.tsx")).toMatch(/^\s*setRecoveryNotice\(recoveredNotice\(carried\)\);\r?$/m);
   });
 
-  it("only lib/sessions.ts names the session-list key", () => {
-    for (const rel of [
-      "../app/projects/components/AssistantRail.tsx",
-      "../app/tasks/components/AssistantRail.tsx",
-      "../app/email/components/EmailAssistantChat.tsx",
-      "../app/chat/page.tsx",
-      "../app/build/apps/[slug]/edit/page.tsx",
-    ]) {
-      const src = read(rel);
-      expect(src, rel).not.toContain("cc-chat-sessions");
-      expect(src, rel).not.toContain("cc-app-builder-session-");
-    }
+  it("no chat cache key is built without chatKey (the grep fence)", () => {
+    // A raw chat key anywhere outside lib/sessions.ts is a cache with no
+    // namespace: it leaks across accounts.
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    const RAW = /["'`]cc-(msgs|queue|chat|app-builder-session)/;
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, e.name);
+        if (e.isDirectory()) walk(full);
+        else if (/\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
+          const rel = relative(root, full).split(sep).join("/");
+          if (rel === "lib/sessions.ts") continue;
+          if (RAW.test(readFileSync(full, "utf-8"))) offenders.push(rel);
+        }
+      }
+    };
+    walk(root);
+    expect(offenders).toEqual([]);
+    // Inside lib/sessions.ts every storage call takes a built key, never a
+    // literal or a template.
+    const lib = read("./sessions.ts");
+    const args = [...lib.matchAll(/localStorage\.(?:getItem|setItem|removeItem)\(\s*([^,)\s]+)/g)].map((m) => m[1]);
+    expect(args.length).toBeGreaterThan(0);
+    for (const a of args) expect(["key", "k", "LAST_SCOPE_KEY"], a).toContain(a);
   });
+
 });

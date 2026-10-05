@@ -36,7 +36,7 @@ import { RoomHeader } from "@/components/room/RoomHeader";
 import { PresenceRail } from "@/components/room/PresenceRail";
 import { useRoom } from "@/hooks/useRoom";
 import { peopleOf } from "@/lib/rooms";
-import { getMessages, saveMessages, fetchMessagesFromDb, getQueue, saveQueue, type PersistedMessage } from "@/lib/sessions";
+import { getMessages, saveMessages, fetchMessagesFromDb, getQueue, saveQueue, cacheMessages, type PersistedMessage } from "@/lib/sessions";
 import { computeContextUsage, activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { serializeReasoning } from "@/lib/chatStream";
 import { useAgentEvents } from "@/lib/agentEvents";
@@ -992,10 +992,8 @@ export default function AgentChat({
           JSON.stringify(payload)
         );
       } catch { /* best-effort */ }
-      // Also save to localStorage synchronously
-      try {
-        localStorage.setItem(`cc-msgs-${sessionId}`, JSON.stringify(toSave));
-      } catch { /* quota exceeded */ }
+      // Also save to the local cache synchronously, in the member's namespace.
+      cacheMessages(sessionId, toSave);
     };
     window.addEventListener("beforeunload", handleUnload);
     window.addEventListener("pagehide", handleUnload);

@@ -31,11 +31,12 @@ import Tabs from "@/components/Tabs";
 import { useMobileDrawer } from "@/components/AppShell";
 import { useViewMode } from "@/components/ViewModeProvider";
 import {
-  BUILDER_SESSION_KEY_PREFIX,
   builderSessionKey,
   createSession,
   fetchAndMergeSessionsFromDb,
+  getBuilderSessionId,
   getSessions,
+  setBuilderSessionId,
   upsertSession,
   type ChatSession,
 } from "@/lib/sessions";
@@ -390,52 +391,32 @@ function describeFailure(result: TestResult): string {
   return result.error ?? "unknown failure";
 }
 
-function readKey(key: string): string | null {
-  try {
-    return typeof window !== "undefined" ? localStorage.getItem(key) : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeKey(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    /* storage off: the next visit finds the session by its name */
-  }
-}
-
 /**
  * Find-or-create the ONE builder chat session for this app, for the signed-in
  * member in this org. Null while no member is bound.
  *
- * The per-app id is keyed by member and org (production bug, 2026-10-05). An
- * app slug is unique inside one org only, so the old browser-wide key could
- * hand one org's builder chat to another org's app. That old key is still
- * read, ONCE, and only an id found in this member's own list is kept.
+ * The per-app id lives in the member's chat namespace (PR #652). An app slug
+ * is unique inside one org only, so the old browser-wide key could hand one
+ * org's builder chat to another org's app. That old key is deleted on bind
+ * and never read.
  */
 async function ensureBuilderSession(slug: string): Promise<ChatSession | null> {
-  const key = builderSessionKey(slug);
-  if (!key) return null;
-  const legacyKey = BUILDER_SESSION_KEY_PREFIX + slug;
+  if (!builderSessionKey(slug)) return null;
   const name = `app:${slug}`;
   const find = (sessions: ChatSession[]): ChatSession | undefined => {
     // 1. The stable id remembered for this app, if the member's list holds it.
-    for (const storedId of [readKey(key), readKey(legacyKey)]) {
-      const existing = storedId ? sessions.find((s) => s.id === storedId) : undefined;
-      if (existing) return existing;
-    }
+    const storedId = getBuilderSessionId(slug);
+    const existing = storedId ? sessions.find((s) => s.id === storedId) : undefined;
+    if (existing) return existing;
     // 2. A session already named for this app (e.g. from another device merge).
     return sessions.find((s) => s.agentName === BUILDER_AGENT && s.name === name);
   };
   // The member's list in this browser can be empty (a new device, or the first
-  // visit after the list moved to its per-member key). Ask the server before
+  // visit after the list moved into its namespace). Ask the server before
   // starting a second builder chat for the same app.
   const found = find(getSessions()) ?? find(await fetchAndMergeSessionsFromDb());
-  try { localStorage.removeItem(legacyKey); } catch { /* storage off */ }
   if (found) {
-    writeKey(key, found.id);
+    setBuilderSessionId(slug, found.id);
     return found;
   }
   // 3. Fresh session, named for the app.
@@ -443,7 +424,7 @@ async function ensureBuilderSession(slug: string): Promise<ChatSession | null> {
   s.name = name;
   s.title = name;
   upsertSession(s);
-  writeKey(key, s.id);
+  setBuilderSessionId(slug, s.id);
   return s;
 }
 

@@ -55,6 +55,8 @@ export function recoveredNotice(carried: string | undefined): string {
  * Undefined when there is nothing.
  */
 export function carriedText(refusedId: string, pendingText?: string): string | undefined {
+  // The queue of the CURRENT namespace only: another account's queue lives
+  // under another key, so it can never come back here.
   const parts = [pendingText ?? "", ...getQueue(refusedId)]
     .map((t) => t.trim())
     .filter(Boolean);

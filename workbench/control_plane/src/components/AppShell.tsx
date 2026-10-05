@@ -27,7 +27,7 @@ import {
   type ReactNode,
 } from "react";
 import { useSession, signOut } from "next-auth/react";
-import { useChatScope } from "@/hooks/useChatSessions";
+import { useChatScope, useChatSignOutClear } from "@/hooks/useChatSessions";
 import Sidebar from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
@@ -100,11 +100,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     bindIdentity(signedInAs);
   }, [signedInAs]);
-  // The stored chat ids follow the same rule, keyed to the identity rather than
-  // to a sign-out button (PR #652 fix round 1). The hook binds the member's
-  // scope, and its effect drops every other member's stored chat ids when the
-  // member of this browser changes, however the last sign-in ended.
+  // The chat caches follow the same rule (PR #652): one namespace per account.
+  // `useChatScope` binds the member's namespace, and a switch deletes nothing.
+  // `useChatSignOutClear` clears the namespace of an account that signed out,
+  // by any path, never on a sign-out button alone.
   useChatScope();
+  useChatSignOutClear();
 
   const openDrawer = useCallback((content: ReactNode) => {
     setDrawerContent(content);
