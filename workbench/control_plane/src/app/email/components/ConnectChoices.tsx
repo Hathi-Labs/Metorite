@@ -4,8 +4,15 @@
  * The provider choices of the connect flow (WS-17 EM-T3b).
  *
  * The empty state and the add-account dialog draw the same list, from
- * `CONNECT_PROVIDERS` in `lib/connect.ts`. One list, so the two places
+ * `connectChoices` in `lib/connect.ts`. One list, so the two places
  * cannot offer different providers.
+ *
+ * WS-17 EM-G8 (D-EM-35): the capability read of the gateway decides which
+ * provider is live. Until the read settles, the list is a skeleton, so a
+ * Gmail choice never draws as "Coming soon" and then turns live under the
+ * member's pointer. A failed read keeps Microsoft live and Gmail "Coming
+ * soon" (`liveProviders`). A live Gmail choice carries one line for a
+ * company admin, which opens `WorkspaceAdminHelp` (EM-G8 item 6).
  *
  * A provider that is not available draws as a disabled row with its note
  * as text beside it. A tooltip alone is unreachable from a keyboard and
@@ -22,38 +29,79 @@
  *   (`rememberImportMonths`). Both functions catch every storage error.
  * - `initialProvider` opens the step at once. The callback page's "Try
  *   again" sends the member to `/email?connect=1&provider=…`, because that
- *   retry is a first connect and must carry the range.
+ *   retry is a first connect and must carry the range. The list mounts only
+ *   after the read settles, so the step sees the live set of the read.
  * - After "Back", focus goes back to the provider that opened the step.
  *   `Button` takes no `ref`, so the list finds it by `data-provider`.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import { Skeleton } from "@/components/ui/Skeleton";
 import {
-  CONNECT_PROVIDERS,
+  connectChoices,
   rememberImportMonths,
   storedImportMonths,
+  WORKSPACE_ADMIN_HELP,
+  type ConnectProvider,
   type ConnectProviderId,
+  type ProviderAvailability,
 } from "../lib/connect";
 import { ImportRangeStep } from "./ImportRangeStep";
+import { WorkspaceAdminHelp } from "./WorkspaceAdminHelp";
 
 type Step = { provider: ConnectProviderId; months: number };
 
 export function ConnectChoices({
   onConnect,
   initialProvider = null,
+  availability,
 }: {
   /** Starts the sign-in. `importMonths` is the range the member chose. */
   onConnect: (provider: ConnectProviderId, importMonths: number) => void;
   /** Opens the range step of this provider at once. A live provider only. */
   initialProvider?: ConnectProviderId | null;
+  /**
+   * The capability read (`connectProviders` in the store). `undefined`
+   * while it runs, `null` when it failed.
+   */
+  availability: ProviderAvailability | null | undefined;
 }) {
-  // This component mounts only on the client, after the account read
-  // settles, so the storage read in the initializer cannot differ from a
-  // server render.
+  if (availability === undefined) {
+    return (
+      <div role="status" aria-busy="true" aria-label="Loading" className="flex flex-col gap-2">
+        <Skeleton className="h-14 w-full" />
+        <Skeleton className="h-14 w-full" />
+      </div>
+    );
+  }
+  return (
+    <ChoiceList
+      onConnect={onConnect}
+      initialProvider={initialProvider}
+      choices={connectChoices(availability)}
+    />
+  );
+}
+
+function ChoiceList({
+  onConnect,
+  initialProvider,
+  choices,
+}: {
+  onConnect: (provider: ConnectProviderId, importMonths: number) => void;
+  initialProvider: ConnectProviderId | null;
+  choices: readonly ConnectProvider[];
+}) {
+  // This component mounts only on the client, after the account read and
+  // the capability read settle, so the storage read in the initializer
+  // cannot differ from a server render. A provider that the read does not
+  // offer never opens a step, whatever the URL asked.
   const [step, setStep] = useState<Step | null>(() =>
-    initialProvider ? { provider: initialProvider, months: storedImportMonths() } : null,
+    initialProvider && choices.some((c) => c.id === initialProvider && c.available)
+      ? { provider: initialProvider, months: storedImportMonths() }
+      : null,
   );
   const listRef = useRef<HTMLUListElement>(null);
   const backFrom = useRef<ConnectProviderId | null>(null);
@@ -87,7 +135,7 @@ export function ConnectChoices({
 
   return (
     <ul ref={listRef} className="flex flex-col gap-2">
-      {CONNECT_PROVIDERS.map((p) => (
+      {choices.map((p) => (
         <li key={p.id}>
           <Button
             variant={p.available ? "secondary" : "ghost"}
@@ -121,8 +169,40 @@ export function ConnectChoices({
               </span>
             )}
           </Button>
+          {p.id === "gmail" && p.available && <WorkspaceAdminLine />}
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * The one line under a live Gmail choice (EM-G8 item 6). It opens the help
+ * for a Google Workspace admin in place. The help reads the client ID only
+ * when it opens.
+ */
+function WorkspaceAdminLine() {
+  const [open, setOpen] = useState(false);
+  const helpId = useId();
+  return (
+    <div className="mt-1.5 px-1">
+      <Button
+        variant="text"
+        size="none"
+        layout="flex items-start text-left"
+        icon="ShieldCheck"
+        aria-expanded={open}
+        aria-controls={helpId}
+        onClick={() => setOpen((o) => !o)}
+        className="gap-1.5 text-xs"
+      >
+        {WORKSPACE_ADMIN_HELP.line}
+      </Button>
+      {open && (
+        <div id={helpId} className="mt-2 rounded-md border border-border bg-card p-3">
+          <WorkspaceAdminHelp />
+        </div>
+      )}
+    </div>
   );
 }

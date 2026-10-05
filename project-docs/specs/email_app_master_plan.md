@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5).
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). 🔨 **EM-G8 is BUILT, not merged (2026-10-05, branch `email-gmail-g8`):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -6138,6 +6138,10 @@ change.
 
 > **EM-G3a (2026-10-05).** ✅ MERGED (#634, §12.3.3).
 
+> **EM-G8 (2026-10-05).** 🔨 BUILT, not merged, branch `email-gmail-g8` (§12.3.10). It merges after
+> EM-G7. The connect UI reads the capability read, and Gmail stays "Coming soon" while the read
+> says `gmail: false`.
+
 > **The slice names.** The slices are EM-G1 to EM-G10. §10.4.7 already uses the bare names G1 to
 > G5 for the gaps of EM-T6c, so the prefix keeps the two sets apart (R2).
 
@@ -7904,6 +7908,9 @@ rebased on #633, and these findings are closed:
 
 #### 12.3.10 EM-G8 — the connect UI
 
+**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g8`. It merges after EM-G7. The
+as-built notes, the fences and the mutation table are at the end of this section.
+
 **Gate.** 🟢 AGENT-SAFE · visual review. It merges dark.
 
 **The guard is the flag (E-D1, orchestrator, 2026-10-05).** The guard is `EMAIL_GMAIL_CONNECT`
@@ -8012,6 +8019,68 @@ cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 
 The theme suite holds the design-system fences, so keep it in the run.
 `test_email_oauth_authorize_wiring.py` reads `email/page.tsx` and holds `handleConnect` (E-D4).
+
+**As built (2026-10-05, branch `email-gmail-g8`).** The build covers items 1 to 8 and E-D1 to
+E-D4. It changes UI files only, and `handleConnect` does not change.
+
+- **The read (items 1 and 2).** `getConnectProviders` in `lib/api.ts` reads
+  `GET /email/oauth/providers` through the email catch-all of the BFF. `mapProviderAvailability`
+  takes an object with a boolean for each provider. Any other answer is a failed read.
+- **The store.** `connectProviders` is `undefined` until the read settles, and `null` for a failed
+  read. A read slower than `PROVIDERS_READ_TIMEOUT_MS` (8 seconds) is a failed read.
+  `liveProviders` and `connectChoices` in `lib/connect.ts` turn the read into the live set and the
+  choices.
+- **No guess before the read.** Until the read settles, `ConnectChoices` draws two `Skeleton` rows
+  and the sign-in line names no provider. The list mounts after the read. So a retry URL for Gmail
+  opens the range step only when the read offers Gmail.
+- **The retry (item 2).** `retryTarget` and `rangeStepProviderFrom` take the live set. The email
+  page reads its query once into `rangeStepQuery`. The callback page reads the capability for its
+  retry target only, and until that read settles, the live set is Microsoft only.
+- **E-D4.** `UNAVAILABLE_NOTE` holds `Not available yet` for Microsoft and `Coming soon` for Gmail.
+- **The copy (items 3 and 4).** `callbackView` now requires `provider`, and `callbackProvider`
+  reads it from the URL. `alreadyConnectedCopy`, `offersTryAgain`, `offersConnectAgain` and
+  `showsWorkspaceAdminHelp` move four decisions of the callback page into `lib/connect.ts`.
+  `scope_missing` and `workspace_admin_blocked` are two new kinds of `callbackView`.
+- **The folder tree (item 5).** `lib/emailStore.ts` now exports `mergeFolders`, and it takes the
+  provider. For Gmail it adds no user label, and only a system label feeds the counts of the
+  well-known folders. `fetchFolders`
+  and `fetchAllFolderCounts` pass the provider of the mailbox.
+- **The Workspace help (item 6).** `components/WorkspaceAdminHelp.tsx` holds
+  `WorkspaceAdminSteps`, which only draws, and `WorkspaceAdminHelp`, which reads
+  `getMailAppInfo("gmail")`. The line under a live Gmail choice opens it in place. The client ID
+  read runs only when the help opens. The callback page shows the help for
+  `workspace_admin_blocked`.
+- **The reconnect banner (item 7).** `RECONNECT_LABEL` holds both labels, and the page reads it.
+  The rest of the banner names no provider.
+- **The visual review (item 8, 2026-10-05).** A rig that the build did not keep stubbed each `/api`
+  call. It captured the empty state with the flag off, with both providers live, with the help
+  open and with no app on the box. It also captured the range step for Gmail, and the callback
+  page for four Gmail reasons. Each capture is in dark, light, compact, a violet accent and
+  390 px. No capture showed a console or page error. At 390 px the mobile shell mounts the page
+  again, so an open help closes, and that is the rig.
+
+**The fences, as built.** `connect.test.ts` holds the nine named cases of the list above, with 31
+new cases in all. The build inverts the cases at `:116-122`, `:561-562` and `:722`. The run of
+`src/app/email`, `src/app/api/email` and `src/lib/theme` gives 850 passed, and main gave 819.
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against its named case. Each file
+then went back to its exact SHA-256.
+
+| Id | Mutation | Red cases |
+|---|---|---|
+| M1 | `connectChoices` offers Gmail as available for each read (`lib/connect.ts`) | `gmail-coming-soon-when-the-read-fails`, 4 of 8 |
+| M2 | `rangeStepProviderFrom` takes `liveProviders(null)` in place of the read | `gmail-available-from-capability`, 1 of 4 |
+| M3 | The callback page sets `provider` to `"microsoft"` (`oauth/callback/page.tsx`) | `callback-copy-names-google`, 1 of 4 |
+| M4 | `mergeFolders` adds the user labels of a Gmail mailbox (`lib/emailStore.ts`) | `gmail-folder-tree-shows-well-known-folders`, 2 of 3 |
+
+**Known limits of EM-G8 (follow-ups, not fixed here).**
+
+- The folder suggestions of the rule editor (`MoveFolderField` in `RulesTab.tsx`) read the folder
+  tree. For a Gmail mailbox they no longer list the user labels. A member can still type a label
+  name. EM-G3b, which makes a move to a user label work, can take the suggestions from the labels.
+- The reconnect banner does not read the capability read. While the flag is off, the reconnect of a
+  Gmail mailbox bounces `provider_unavailable` (EM-G7), and production holds no Gmail mailbox.
+- `provider_unavailable` shows the generic failure, with its code as the reference.
 
 #### 12.3.11 EM-G9 — parity of a Gmail and Outlook pair
 

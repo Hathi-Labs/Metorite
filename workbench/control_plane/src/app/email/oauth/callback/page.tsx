@@ -20,6 +20,13 @@
  *   application without granting consent" on Microsoft's "Need admin
  *   approval" screen also lands here (`adminApprovalHelp`).
  *
+ * WS-17 EM-G8 (§12.3.10): the page reads `provider` from its URL (EM-G7
+ * item 6), and the copy names the provider of the try (GM-27). Two Google
+ * results join: `scope_missing` offers a retry, and `workspace_admin_blocked`
+ * shows the help for a Workspace admin (`WorkspaceAdminHelp`). The retry
+ * target takes the live set of the capability read, so a provider that the
+ * read does not offer goes to the connect choices only.
+ *
  * ⚠️ No link on this page goes to Integrations. A member has nothing to
  * configure there (EM-T3b done-when 1).
  */
@@ -28,17 +35,25 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { useEffect, useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { getMailAppInfo } from "../../lib/api";
+import { getConnectProviders, getMailAppInfo } from "../../lib/api";
+import { WorkspaceAdminHelp } from "../../components/WorkspaceAdminHelp";
 import {
   adminApprovalHelp,
   adminConsentMailto,
   adminConsentUrl,
+  alreadyConnectedCopy,
+  callbackProvider,
   callbackView,
+  liveProviders,
+  offersConnectAgain,
+  offersTryAgain,
   retryTarget,
+  showsWorkspaceAdminHelp,
   wasConnectedBefore,
   withSelectedMailbox,
   type CallbackView,
   type ConnectProviderId,
+  type ProviderAvailability,
 } from "../../lib/connect";
 
 /**
@@ -64,9 +79,10 @@ function safeRedirectTarget(raw: string | null): string {
 /**
  * Start the connect again, through the range step in Email (EM-T6d fix
  * round 1). This is a first connect, so the member's range must go with it.
+ * `live` is the live set of the capability read (EM-G8 item 2).
  */
-function connectAgain(provider: ConnectProviderId): void {
-  window.location.href = retryTarget(provider);
+function connectAgain(provider: ConnectProviderId, live: ReadonlySet<ConnectProviderId>): void {
+  window.location.href = retryTarget(provider, live);
 }
 
 /** The icon and the status tone of each result. Tokens only. */
@@ -77,6 +93,8 @@ const TONE: Record<CallbackView["kind"], { icon: string; className: string }> = 
   consent_declined: { icon: "Undo2", className: "bg-muted text-muted-foreground" },
   duplicate: { icon: "Info", className: "bg-info/10 text-info" },
   retry: { icon: "RefreshCw", className: "bg-warning/10 text-warning" },
+  scope_missing: { icon: "ShieldAlert", className: "bg-warning/10 text-warning" },
+  workspace_admin_blocked: { icon: "ShieldCheck", className: "bg-warning/10 text-warning" },
   unknown: { icon: "AlertCircle", className: "bg-destructive/10 text-destructive" },
 };
 
@@ -188,16 +206,31 @@ function CallbackContent() {
   const error = searchParams.get("error");
   const accountId = searchParams.get("account_id");
   const email = searchParams.get("email");
-  const providerParam = searchParams.get("provider");
   const redirectAfter = searchParams.get("redirect_after");
-  const provider: ConnectProviderId = providerParam === "gmail" ? "gmail" : "microsoft";
+  const provider = callbackProvider(searchParams.get("provider"));
 
-  const view = callbackView({ error, accountId, email });
+  const view = callbackView({ error, accountId, email, provider });
   const tone = TONE[view.kind];
   const approvalHelp = adminApprovalHelp(view.kind, provider);
 
   const [countdown, setCountdown] = useState(3);
   const success = view.kind === "connected";
+
+  // The capability read, for the retry target only (EM-G8 item 2). Until it
+  // settles, and after a failure, the live set is Microsoft only, so a
+  // Gmail retry goes to the connect choices. A success needs no retry.
+  const [providerRead, setProviderRead] = useState<ProviderAvailability | null>(null);
+  useEffect(() => {
+    if (success) return;
+    let current = true;
+    void getConnectProviders().then((read) => {
+      if (current) setProviderRead(read);
+    });
+    return () => {
+      current = false;
+    };
+  }, [success]);
+  const live = liveProviders(providerRead);
 
   // A connect that returned a mailbox the member already had signed it in
   // again (EM-T8c, §11.6 case 2). Read once, on the first render.
@@ -236,8 +269,7 @@ function CallbackContent() {
               <p className="mt-1 text-sm text-muted-foreground">{view.body}</p>
               {alreadyConnected ? (
                 <p className="mt-2 text-xs text-muted-foreground">
-                  {email || "This mailbox"} was already connected. Metorite signed it in
-                  again. To add a different mailbox, choose another account at Microsoft.
+                  {alreadyConnectedCopy(email, provider)}
                 </p>
               ) : null}
             </div>
@@ -252,6 +284,12 @@ function CallbackContent() {
             </div>
           )}
 
+          {showsWorkspaceAdminHelp(view.kind) && (
+            <div className="mt-5 border-t border-border pt-4">
+              <WorkspaceAdminHelp />
+            </div>
+          )}
+
           {view.kind !== "loading" && (
             <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
               {success && (
@@ -259,15 +297,13 @@ function CallbackContent() {
                   Open Email
                 </Button>
               )}
-              {(view.kind === "consent_declined" ||
-                view.kind === "retry" ||
-                view.kind === "unknown") && (
-                <Button variant="primary" icon="RefreshCw" onClick={() => connectAgain(provider)}>
+              {offersTryAgain(view.kind) && (
+                <Button variant="primary" icon="RefreshCw" onClick={() => connectAgain(provider, live)}>
                   Try again
                 </Button>
               )}
-              {view.kind === "admin_consent_required" && (
-                <Button variant="secondary" icon="RefreshCw" onClick={() => connectAgain(provider)}>
+              {offersConnectAgain(view.kind) && (
+                <Button variant="secondary" icon="RefreshCw" onClick={() => connectAgain(provider, live)}>
                   Approved? Connect again
                 </Button>
               )}

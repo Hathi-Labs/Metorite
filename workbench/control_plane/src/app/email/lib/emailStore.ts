@@ -10,7 +10,7 @@ import {
 } from "./searchFilters";
 import { QUICK_ACTIONS, MOCK_ACCOUNTS, MOCK_EMAILS, MOCK_FOLDERS } from "./mockData";
 import { splitQuotedText } from "./quoting";
-import { disconnectFailureText, type DisconnectOutcome } from "./connect";
+import { disconnectFailureText, type DisconnectOutcome, type ProviderAvailability } from "./connect";
 import { nextDefaultAfter } from "./mailboxSettings";
 import {
   hasAllInboxes,
@@ -133,16 +133,27 @@ const GMAIL_SYSTEM_LABELS = new Set([
 
 /**
  * Merge real provider folders with the canonical system folders, and append the
- * provider's *own* user folders/labels so the sidebar mirrors the real mailbox
- * structure (two-way: what you see in Outlook/Gmail, you see here).
+ * provider's *own* user folders so the sidebar mirrors the real mailbox
+ * structure (two-way: what you see in Outlook, you see here).
+ *
+ * ⚠️ A Gmail user label is a LABEL, never a folder (WS-17 EM-G8 item 5,
+ * O-GM-1, D-EM-33). The folder of a Gmail message comes from its system
+ * labels only, and its user labels sit in `categories`, so they show in the
+ * label filter. So for `provider === "gmail"` the tree holds the well-known
+ * folders and Archive only, and only a SYSTEM label feeds their counts: a
+ * user label named "Archive" never takes the place of the folder.
+ * Fence: `gmail-folder-tree-shows-well-known-folders` in `connect.test.ts`.
  */
-function mergeFolders(
+export function mergeFolders(
   providerFolders: EmailFolderRaw[],
   emailCounts: Record<string, number>,
+  provider: EmailAccount["provider"] | undefined,
 ): EmailFolder[] {
+  const gmail = provider === "gmail";
   // Index provider folders by canonical key for system-folder count/labels.
   const canonProvider = new Map<string, EmailFolderRaw>();
   for (const f of providerFolders) {
+    if (gmail && f.type !== "system") continue;
     const key = toCanonical(f.name);
     // Prefer the entry with the most messages if duplicates collapse to one key.
     const existing = canonProvider.get(key);
@@ -160,10 +171,11 @@ function mergeFolders(
     };
   });
 
-  // Append user-created provider folders/labels (anything not a system key).
+  // Append user-created provider folders (anything not a system key). A
+  // Gmail mailbox has none: its user labels are labels (O-GM-1).
   const userFolders: EmailFolder[] = [];
   const seen = new Set<string>();
-  for (const f of providerFolders) {
+  for (const f of gmail ? [] : providerFolders) {
     const key = toCanonical(f.name);
     if (SYSTEM_KEYS.has(key) || key === "starred") continue;
     if (f.type === "system") continue; // skip provider system folders
@@ -246,6 +258,14 @@ interface EmailState {
    * empty state (EM-T3b: no flash of "Connect your email" on a hard load).
    */
   accountsLoaded: boolean;
+  /**
+   * The capability read of the connect flow (WS-17 EM-G8, D-EM-35): which
+   * provider the member can connect. `undefined` until the read settles,
+   * `null` for a failed read. `connectChoices` and `liveProviders` in
+   * `connect.ts` turn it into the choices, and a failed read keeps Microsoft
+   * live and Gmail "Coming soon".
+   */
+  connectProviders: ProviderAvailability | null | undefined;
   emailsLoading: boolean;
   loadingMore: boolean;
   backfilling: boolean;
@@ -361,6 +381,12 @@ interface EmailState {
    * tick. Returns the accounts it read, or null when the read failed.
    */
   refreshAccounts: () => Promise<EmailAccount[] | null>;
+  /**
+   * Read `GET /email/oauth/providers` once into `connectProviders` (EM-G8
+   * item 1). A failed read, or one slower than `PROVIDERS_READ_TIMEOUT_MS`,
+   * stores `null`. It never throws.
+   */
+  fetchConnectProviders: () => Promise<void>;
   fetchFolders: (accountId?: string) => Promise<void>;
   /**
    * All inboxes: read the folders of each mailbox and sum the well-known
@@ -723,6 +749,13 @@ export const FOLDER_SUM_CONCURRENCY = 4;
 export const FOLDER_SUM_TIMEOUT_MS = 15_000;
 
 /**
+ * How long the store waits for the capability read of the connect flow
+ * (EM-G8). Past it, the read counts as failed: Microsoft live, Gmail
+ * "Coming soon".
+ */
+export const PROVIDERS_READ_TIMEOUT_MS = 8_000;
+
+/**
  * How long after the last sync of a Refresh the store reads the sums once.
  * It is the end of the catch-up window of `triggerSync`, so the sums see the
  * mail that the rules moved (EM-T8f-3 review F2).
@@ -873,6 +906,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   authErrors: {},
   viewAll: false,
   allFolderCounts: null,
+  connectProviders: undefined,
 
   // Selection
   selectedAccountId: null,
@@ -981,6 +1015,14 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     }
   },
 
+  fetchConnectProviders: async () => {
+    // `getConnectProviders` already answers null on any failure. The timeout
+    // is for a read that never answers: the connect choices wait on this
+    // read, and a hung gateway must not hold Microsoft back for ever.
+    const read = await withTimeout(api.getConnectProviders(), PROVIDERS_READ_TIMEOUT_MS).catch(() => null);
+    set({ connectProviders: read });
+  },
+
   fetchFolders: async (accountId?: string) => {
     const aid = accountId ?? get().selectedAccountId;
     if (!aid) return;
@@ -993,7 +1035,8 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         const key = e.folder.toLowerCase();
         emailCounts[key] = (emailCounts[key] || 0) + 1;
       }
-      const folders = mergeFolders(rawFolders, emailCounts);
+      const provider = get().accounts.find((a) => a.id === aid)?.provider;
+      const folders = mergeFolders(rawFolders, emailCounts, provider);
       // Live provider call succeeded — clear any prior auth flag for this account.
       const cleared = { ...get().authErrors };
       delete cleared[aid];
@@ -1040,10 +1083,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         // provider `message_count` only, so the merge gets no list counts.
         // A failed read, a read that does not merge, or a read past
         // FOLDER_SUM_TIMEOUT_MS is null and adds 0.
-        const pooled = pooledMailboxes(accounts).map((a) => a.id);
-        const reads = await mapBounded(pooled, FOLDER_SUM_CONCURRENCY, (id) =>
-          withTimeout(api.listEmailFolders(id), FOLDER_SUM_TIMEOUT_MS)
-            .then((raw) => mergeFolders(raw, {}))
+        const pooled = pooledMailboxes(accounts);
+        const reads = await mapBounded(pooled, FOLDER_SUM_CONCURRENCY, (a) =>
+          withTimeout(api.listEmailFolders(a.id), FOLDER_SUM_TIMEOUT_MS)
+            .then((raw) => mergeFolders(raw, {}, a.provider))
             .catch(() => null),
         );
         // A newer request reads again, and a view that left All inboxes

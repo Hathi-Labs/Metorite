@@ -9,7 +9,13 @@ import {
   ContactCard, SenderStatus, RuleCopyResult,
   OlderMailPreview, RemoveOlderResult,
 } from "./types";
-import { mapMailAppInfo, type MailAppInfo } from "./connect";
+import {
+  mapMailAppInfo,
+  mapProviderAvailability,
+  type ConnectProviderId,
+  type MailAppInfo,
+  type ProviderAvailability,
+} from "./connect";
 
 // No NEXT_PUBLIC_GATEWAY_URL here on purpose: every call from this module goes
 // through the Next BFF at /api/**, which is the only path that carries the
@@ -518,13 +524,34 @@ export async function createEmailAccount(
 }
 
 /**
- * The public facts of the Microsoft mail app, for the admin-consent link
- * (EM-T3b). `null` when the deployment has no app or the read fails.
+ * The public facts of a mail app (EM-T3b, EM-G8 item 6). Microsoft builds the
+ * admin-consent link from them, and Google shows the client ID to a
+ * Workspace admin. `null` when the deployment has no app or the read fails.
+ * While `EMAIL_GMAIL_CONNECT` is off, Gmail answers 503, so `null` (D-EM-36).
  */
-export async function getMailAppInfo(): Promise<MailAppInfo | null> {
+export async function getMailAppInfo(
+  provider: ConnectProviderId = "microsoft",
+): Promise<MailAppInfo | null> {
   try {
-    const raw = await gatewayFetch<Record<string, unknown>>("/email/oauth/microsoft/app");
+    const raw = await gatewayFetch<Record<string, unknown>>(`/email/oauth/${provider}/app`);
     return mapMailAppInfo(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The capability read of the connect flow (WS-17 EM-G8, D-EM-35, D-EM-36).
+ *
+ * `GET /email/oauth/providers` answers `{"microsoft": bool, "gmail": bool}`
+ * (EM-G7 item 8). The email catch-all of the BFF proxies it. A failed read
+ * is `null`: a network error, a 404 from a gateway without EM-G7, a 403, or
+ * an answer of another shape. `liveProviders(null)` keeps Microsoft live and
+ * Gmail "Coming soon", so the read fails closed for Gmail.
+ */
+export async function getConnectProviders(): Promise<ProviderAvailability | null> {
+  try {
+    return mapProviderAvailability(await gatewayFetch<unknown>("/email/oauth/providers"));
   } catch {
     return null;
   }
