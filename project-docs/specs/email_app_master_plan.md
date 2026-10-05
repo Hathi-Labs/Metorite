@@ -609,7 +609,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** ✅ **EM-T6e MERGED #619 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
-| **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | 🔨 **BUILT, not merged (2026-10-05), branch `email-outlook-t9`.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
+| **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -3897,7 +3897,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 #### 10.4.10 EM-T9 — a file on an Outlook draft (a LIVE defect)
 
-**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-outlook-t9`. The audit of 2026-10-05
+**Status.** ✅ MERGED (#643, 2026-10-05). The live check of the owner is still open. The audit of 2026-10-05
 gave GO-NARROWED (B1 to B7, N1 to N9), and it checked each anchor against the code on that day.
 The audit of EM-G3c found the defect (its C21). Outlook is the live provider, so this slice goes
 before the Gmail work that waits for customers. "As built" below records the build.
