@@ -7629,6 +7629,39 @@ answers, or with no Cc, and with no Bcc. Its next save and its send write those 
 lists of the draft. So a reply that the inline reply saved with a Bcc loses the Bcc in the
 DraftCard.
 
+**The re-verify of review round 2 (2026-10-05).** It passed the slice, with no P0 and no P1. The
+orchestrator stopped the fix rounds there: two rounds on a live surface, and each P2 below is
+narrow. None of them is worse than `main`. A later slice owns them, with its own review.
+
+**Known limit EM-G3c-2-f7 (re-verify F1).** The drain also drops a waiting save of an ENDED
+session. The member closes reply A while a save of A runs, so the flushed save of A waits. Then
+the member opens a reply and presses Discard, Pop out or Send within that one save. The drain drops
+the save of A, so A's last edit is lost with no signal.
+
+Round 1 kept that save, and `main` lost each close edit. The fix is a drain that drops only the
+saves of its own session.
+
+**Known limit EM-G3c-2-f8 (re-verify F2).** Pop out closes the reply at once and opens the full
+composer after the drain. If the member opens the composer with New inside that gap, the composer
+ignores the hand-over, and an edit that the drain dropped is lost.
+
+**Known limit EM-G3c-2-f9 (re-verify F3).** The last save fails, and the member presses Pop out.
+The drain drops nothing, so the composer opens clean, and a close then saves nothing. `main` lost
+each pending edit at a pop-out.
+
+**Known limit EM-G3c-2-f10 (re-verify F4).** The inline Send shows no state while it drains. A
+second click waits on the same drain and then sends again. The gateway answers 404 for a sent
+draft, so the likely result is an error, not a second mail. ComposePanel and the DraftCard set
+their "Sending" state before the drain.
+
+**Known limit EM-G3c-2-f11 (re-verify F6).** No client timeout bounds the drain. The proxy stops a
+save after 30 seconds, so a drain waits 30 seconds at most. On a Gmail draft with a file, a Send
+now waits for the autosave upload that runs.
+
+**Known limit EM-G3c-2-f12 (re-verify F7).** The member changes the From and presses Discard
+within one create. The Discard reads the new From, so it does not find the draft of the old
+mailbox, and that draft stays. This is close to f5.
+
 **The fences, as built.** `src/app/email/lib/draftAutosave.test.ts` holds 71 cases in five named
 fences: `email-pick-limit`, `email-autosave-wait`, `email-autosave-flush`,
 `email-save-failed-shows` and `email-send-failed-shows`. The build added 39 cases, and review round
