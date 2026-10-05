@@ -14,7 +14,7 @@ import json
 import logging
 import mimetypes
 import random
-from collections.abc import AsyncGenerator, Callable, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timezone
 from email import encoders, message_from_bytes
 from email import policy as mail_policy
@@ -37,11 +37,13 @@ from .base import (
     EmailAddress,
     EmailFolder,
     EmailMessage,
+    EstimateCallback,
     ProviderRateLimited,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
     find_unsubscribe_link_in_html,
+    received_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -524,6 +526,77 @@ def _reset_sweep_after(
     dates = [d if d.tzinfo else d.replace(tzinfo=UTC)
              for d in (catch_up, since) if d is not None]
     return max(dates) if dates else None
+
+
+# ── The import (WS-17 EM-G5a, spec §12.3.6.1) ────────────────────────────────
+# Fence: tests/unit/test_gmail_import.py.
+
+#: The fetches of one import page that run at once (item 4).
+GMAIL_IMPORT_FETCHES = 10
+#: ``messages.list`` gives 500 ids at most on one page.
+_GMAIL_LIST_MAX = 500
+
+
+def _utc(value: datetime) -> datetime:
+    """*value* with a time zone. A naive value is read as UTC."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _import_query(since: datetime | None, until: datetime | None) -> str | None:
+    """The ``q`` of the import list, in epoch seconds (items 1 and 3).
+
+    ``after:`` is the floor. ``before:`` is the whole second of ``until``
+    plus 1 second (E-G5-3), as ``_received_filter`` in ``outlook.py`` does.
+    So a resume reads the second that it reached again, and the upsert makes
+    the overlap harmless. A message of that second that is newer than
+    ``until`` drops in ``_in_import_window``."""
+    terms = []
+    if since is not None:
+        terms.append(f"after:{int(_utc(since).timestamp())}")
+    if until is not None:
+        terms.append(f"before:{int(_utc(until).timestamp()) + 1}")
+    return " ".join(terms) or None
+
+
+def _in_import_window(
+    msg: EmailMessage, since: datetime | None, until: datetime | None,
+) -> bool:
+    """True when *msg* is in the window of the import (item 2).
+
+    A message newer than ``until`` drops, as in the base. A message older
+    than the floor drops too. A message with no date stays, as in the base,
+    and the core decides on it (EM-T6a)."""
+    if msg.received_at is None:
+        return True
+    at = received_key(msg)
+    if until is not None and at > _utc(until):
+        return False
+    return since is None or at >= _utc(since)
+
+
+def _estimate_of(data: dict[str, Any]) -> int | None:
+    """The ``resultSizeEstimate`` of one list answer, or None when it has
+    none (item 5, D-EM-16)."""
+    try:
+        value = int(data["resultSizeEstimate"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _fresh_ids(data: dict[str, Any], seen: set[str]) -> list[str]:
+    """The ids of one list page that the import has not read yet (item 4).
+
+    A list can give one id again at a page edge, for example when new mail
+    arrives during the import. Each id goes into ``seen``, so the import
+    fetches each message once."""
+    fresh: list[str] = []
+    for ref in data.get("messages") or []:
+        mid = ref.get("id")
+        if mid and mid not in seen:
+            seen.add(mid)
+            fresh.append(mid)
+    return fresh
 
 
 class GmailBearer(RefreshingBearer):
@@ -1652,6 +1725,11 @@ class GmailProvider(BaseEmailProvider):
     # exhausts well before this. The sweep after a stale cursor uses the same
     # ceiling (EM-G4b E-B1).
     DEEP_SYNC_MAX_PAGES = 50
+    #: The pages of one import (WS-17 EM-G5a, E-G5-6). One list reads all
+    #: mail, so the cap is far above the deep sweep. It only guards against a
+    #: list that never ends. At the cap the import ends and logs
+    #: ``gmail.import_capped``. The model is ``OutlookProvider.IMPORT_MAX_PAGES``.
+    IMPORT_MAX_PAGES = 5000
 
     async def _sweep_label(
         self,
@@ -1687,8 +1765,9 @@ class GmailProvider(BaseEmailProvider):
     ) -> SyncResult:
         """One sync of a Gmail mailbox (WS-17 EM-G4b, spec §12.3.5.2).
 
-        * ``deep`` pages each label back to ``since``. The import uses it,
-          and it returns no cursor.
+        * ``deep`` pages each label back to ``since``, and it returns no
+          cursor. The import does not use it since EM-G5a (E-G5-8):
+          ``import_batches`` reads one list of all mail.
         * With a cursor, the sync reads ``history.list`` from it, page by
           page (items 2 to 4). The new cursor is the ``historyId`` of the
           last answer. A fetch that a later cycle can fix holds the cursor
@@ -1884,8 +1963,10 @@ class GmailProvider(BaseEmailProvider):
     async def _deep_sweep(
         self, max_results: int, since: datetime | None, first_failure: int,
     ) -> SyncResult:
-        """The deep backfill of the import: page each label back to
-        ``since``. It returns no cursor."""
+        """The deep sync: page each label back to ``since``. It returns no
+        cursor. The import does not call it since EM-G5a (E-G5-8), and a
+        fence in ``test_gmail_import.py`` proves it. It stays for a direct
+        call of ``sync_messages(deep=True)``."""
         # One-time deep backfill: page every label back to ``since`` (incl.
         # SENT/DRAFT). The order of the labels does not set the folder:
         # each message keeps the folder of its parse (WS-17 EM-G2 item 8).
@@ -1964,8 +2045,11 @@ class GmailProvider(BaseEmailProvider):
                 _raise_rate_limit(exc)
                 continue
 
-        # System labels. EM-G5 owns the archived mail with no user label
-        # (GM-8), which no label of this sweep reaches.
+        # System labels. No label of this sweep reaches archived mail with
+        # no user label (GM-8). The import reads that mail since EM-G5a, and
+        # the history cursor reads each later change. This sweep runs only
+        # with no cursor, after a failed seed. Known limit EM-G5-f1 records
+        # it (``email_app_master_plan.md`` §12.3.6.1, E-G5-7).
         for label in ("INBOX", "SENT", "DRAFT", "SPAM", "TRASH"):
             try:
                 label_msgs, _ = await self.list_messages(
@@ -1983,6 +2067,105 @@ class GmailProvider(BaseEmailProvider):
             errors=self.fetch_failures[first_failure:],
         )
 
+    async def import_batches(
+        self,
+        since: datetime | None,
+        until: datetime | None = None,
+        size: int = 100,
+        *,
+        on_estimate: EstimateCallback | None = None,
+    ) -> AsyncIterator[list[EmailMessage]]:
+        """The import of all mail, newest first (WS-17 EM-G5a, spec §12.3.6.1).
+
+        One ``messages.list`` pages all mail, with ``q=after:<since>
+        before:<bound>`` in epoch seconds, ``includeSpamTrash=true`` and no
+        ``labelIds`` (item 1). So archived mail with no label comes too
+        (GM-8), and a message with two labels comes once. Gmail lists the
+        newest mail first, so each page is one batch, sorted again newest
+        first (item 2). A message newer than ``until`` or older than
+        ``since`` drops (``_in_import_window``).
+
+        * A resume passes ``until``, and the bound is its whole second plus
+          1 second (item 3, E-G5-3).
+        * Each page fetches its ids in parallel, ``GMAIL_IMPORT_FETCHES`` at
+          once, through the client seam, and each id once (item 4). The page
+          gathers each fetch before it yields, so the storage limit closes
+          the import with no fetch in flight (E-G5-5, ``_fetch_page``).
+        * A fetch that a later cycle can fix fails the import, so the resume
+          reads it again. A fetch that stays failed leaves its record, and
+          the batch goes on (E-G5-4, ``_import_fetch``).
+        * ``on_estimate`` is awaited once, with the ``resultSizeEstimate`` of
+          the first answer, before the first fetch (item 5, D-EM-16).
+        * ``IMPORT_MAX_PAGES`` pages at most. At the cap the import ends and
+          logs ``gmail.import_capped`` (E-G5-6).
+
+        It never calls ``sync_messages(deep=True)`` (E-G5-8). A failed list
+        page and a rate limit whose tries are spent raise, and the next
+        cycle resumes from the point that the import reached."""
+        size = max(size, 1)
+        client = await self._get_client()
+        await self._ensure_label_names()
+        params: dict[str, Any] = {"maxResults": min(size, _GMAIL_LIST_MAX),
+                                  "includeSpamTrash": "true"}
+        query = _import_query(since, until)
+        if query:
+            params["q"] = query
+        seen: set[str] = set()
+        for page in range(1, self.IMPORT_MAX_PAGES + 1):
+            resp = await client.get("/users/me/messages", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            if page == 1 and on_estimate is not None:
+                await on_estimate(_estimate_of(data))
+            fetched = await self._fetch_page(_fresh_ids(data, seen))
+            batch = [m for m in fetched if _in_import_window(m, since, until)]
+            if batch:
+                batch.sort(key=received_key, reverse=True)
+                yield batch
+            token = data.get("nextPageToken")
+            if not token:
+                return
+            params["pageToken"] = token
+        logger.warning("gmail.import_capped pages=%d messages=%d",
+                       self.IMPORT_MAX_PAGES, len(seen))
+
+    async def _fetch_page(self, ids: list[str]) -> list[EmailMessage]:
+        """Fetch each message of *ids* in full, ``GMAIL_IMPORT_FETCHES`` at
+        once (item 4, E-G5-5).
+
+        The call gathers every fetch before it returns, so the import never
+        yields with a fetch in flight. When one fetch raises, the call
+        cancels the other fetches of the page, waits for them to end, and
+        raises. A fetch that stays failed gives None, and drops here."""
+        gate = asyncio.Semaphore(GMAIL_IMPORT_FETCHES)
+        tasks = [asyncio.create_task(self._import_fetch(mid, gate)) for mid in ids]
+        try:
+            found = await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return [m for m in found if m is not None]
+
+    async def _import_fetch(
+        self, message_id: str, gate: asyncio.Semaphore,
+    ) -> EmailMessage | None:
+        """One fetch of the import, through the client seam (E-G5-4).
+
+        A rate limit whose tries are spent raises (EM-G4a item 9). Each other
+        failure leaves its record (EM-G4a item 10). A failure that a later
+        cycle can fix, a 5xx or a transport error, then raises too, so the
+        import fails and the resume reads the message again. A failure that
+        stays, such as a 404 or a parse error, gives None."""
+        async with gate:
+            try:
+                return await self.get_message(message_id)
+            except Exception as exc:
+                _raise_rate_limit(exc)
+                self._record_fetch_failure(message_id, exc)
+                if _transient(exc):
+                    raise
+                return None
 
     async def get_attachment(
         self, provider_message_id: str, provider_attachment_id: str
