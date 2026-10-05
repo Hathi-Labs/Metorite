@@ -29,7 +29,7 @@ import contextlib
 import contextvars
 import hashlib
 import mimetypes
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -134,6 +134,55 @@ def reset_artifact_context(token: contextvars.Token) -> None:
     except (ValueError, RuntimeError):
         _RUN_ARTIFACT_CONTEXT.set(None)
 
+
+# ── The chat that asked: where a delegated run delivers its documents ───────
+#
+# A sub-agent (call_agent, call_agents_parallel, call_agent_background,
+# delegate_to_agent) works in its OWN working dir: email-assistant is personal,
+# so it works in the u:<member> dir of the member. Its card shows in the chat
+# that called it, and the card links to that chat's session. The session
+# routes serve that link from the CHAT's working dir and thread folder, so a
+# document in the sub-agent's dir answered 404 (2026-10-05, Welmont brief).
+#
+# So the run boundary binds ``deliver_to``: the working dir, the store key,
+# the agent and the session of the chat run. ``write_artifact`` and
+# ``share_artifact`` put a document there, in that chat's own thread folder.
+# The value comes from the parent's bound context only, never from the model
+# or a tool argument (R5). Fence: tests/unit/test_delegated_artifact_card.py.
+
+#: The context key of a delegated run's delivery target.
+DELIVER_TO = "deliver_to"
+_TARGET_KEYS = ("workspace_root", "session_id", "agent_name", "instance")
+
+
+def delegation_target(parent: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Where a run that *parent* delegates to delivers its documents, or ``None``.
+
+    *parent* is the bound artifact context of the run that delegates, read
+    on the frame of the delegation, before the sub-run binds its own. The
+    target of a delegated parent passes on, so a grandchild delivers to the
+    chat at the top. A batch run (no chat) is no target: its sub-run keeps
+    its own working dir, as before. A parent with no working dir, session
+    or agent is no target either.
+    """
+    inherited = parent.get(DELIVER_TO)
+    if isinstance(inherited, Mapping):
+        return inherited
+    if parent.get("batch_thread") is True:
+        return None
+    values = {key: str(parent.get(key) or "") for key in _TARGET_KEYS}
+    if not (values["workspace_root"] and values["session_id"] and values["agent_name"]):
+        return None
+    return MappingProxyType(values)
+
+
+def _destination(ctx: Mapping[str, Any]) -> tuple[Mapping[str, Any], bool]:
+    """The context that names where a document goes, and True for a delegated run."""
+    target = ctx.get(DELIVER_TO)
+    if isinstance(target, Mapping) and target.get("workspace_root") and target.get("session_id"):
+        return target, True
+    return ctx, False
+
 # Visible workspace dirs — files written outside these are hidden in the UI.
 _VISIBLE_DIRS = frozenset({"inputs", "outputs", "agent-data"})
 
@@ -170,6 +219,7 @@ async def mirror_to_blob_store(
     mime_type: str = "application/octet-stream",
     action: str = "modify",
     actor: str = "agent",
+    target: Mapping[str, Any] | None = None,
 ) -> None:
     """Write-through a workspace file into the authoritative blob store.
 
@@ -177,6 +227,10 @@ async def mirror_to_blob_store(
     of truth; the disk workspace is a cache) and a version-history row recorded.
     No-op for other paths, when the store isn't available, or on any error — the
     on-disk file is already written, so this never blocks the agent.
+
+    *target* is a delegated run's delivery target (:func:`delegation_target`).
+    The row then carries the agent, the store key and the session of the chat
+    whose working dir holds the file, so the fault-in of that chat finds it.
     """
     try:
         from acb_memory import is_stored_path, put_file
@@ -184,7 +238,18 @@ async def mirror_to_blob_store(
         return
     if not is_stored_path(rel_path):
         return
-    agent_name = _current_agent_name()
+    ctx = artifact_context()
+    if target is not None:
+        agent_name = str(target.get("agent_name") or "")
+        session_id = target.get("session_id")
+        instance = str(target.get("instance") or "")
+    else:
+        agent_name = _current_agent_name()
+        session_id = ctx.get("session_id")
+        # The run's tenant partition, set by the executor alongside
+        # workspace_root — disk and store must carry the SAME key, or a
+        # personal agent's files rehydrate into the wrong person's run.
+        instance = ctx.get("instance", "")
     if not agent_name:
         return
     await put_file(
@@ -193,13 +258,10 @@ async def mirror_to_blob_store(
         data,
         mime_type=mime_type,
         action=action,
-        run_id=artifact_context().get("run_id"),
-        session_id=artifact_context().get("session_id"),
+        run_id=ctx.get("run_id"),
+        session_id=session_id,
         actor=actor,
-        # The run's tenant partition, set by the executor alongside
-        # workspace_root — disk and store must carry the SAME key, or a
-        # personal agent's files rehydrate into the wrong person's run.
-        instance=artifact_context().get("instance", ""),
+        instance=instance,
     )
 
 
@@ -377,6 +439,190 @@ async def _take_batch_name(
     raise FileExistsError(rel)
 
 
+#: The one folder of the chat that called it where a delegated run may
+#: write. Its uploads (``inputs/``) read as the member's own files, and its
+#: ``agent-data/`` is the memory of the chat's agent (PR #656, fix round 1).
+_DELIVERY_HEAD = "outputs"
+
+
+def _delivery_path(
+    dest: Mapping[str, Any], path: str, *, member: object,
+) -> tuple[Path, str] | dict:
+    """The root and the thread-folder path of a document a delegated run
+    delivers to *dest*, or the error to answer.
+
+    The same rules as a document of the chat itself: containment
+    (:func:`resolve_in_workspace`), the thread folder of the chat
+    (:func:`_chat_document_path`) and :func:`agent_paths.refused_write`.
+
+    A delegated run writes only in ``outputs/`` of the chat. The rule reads
+    the RESOLVED, thread-scoped path, never the input string, so
+    ``outputs/../inputs/x`` cannot reach an upload (fix round 1). A ``..``
+    or ``.`` part, a NUL and a drive are refused before any resolve.
+    """
+    from acb_skills import safe_open
+    from acb_skills.agent_paths import refused_write
+
+    raw = str(path or "").replace("\\", "/")
+    if chr(0) in raw or any(part == ".." for part in raw.split("/")):
+        return {"error": f"Path '{path}' was refused: it may not hold '..'."}
+    clean = _normalise_path(raw)
+    try:
+        safe_open.split_rel(clean)
+    except safe_open.UnsafePath as exc:
+        return {"error": f"Path '{path}' was refused: {exc}"}
+    if any(":" in part for part in clean.split("/")):
+        return {"error": f"Path '{path}' was refused: a name may not hold ':'."}
+    root_r = Path(str(dest["workspace_root"])).resolve()
+    target = resolve_in_workspace(root_r, clean)
+    if target is None:
+        return {"error": f"Path '{path}' escapes the workspace and was refused."}
+    scoped = _chat_document_path(target.relative_to(root_r).as_posix(), path, dest)
+    if isinstance(scoped, dict):
+        return scoped
+    head = scoped.split("/", 1)[0]
+    if head != _DELIVERY_HEAD or "/" not in scoped:
+        what = "that chat's uploads" if head == "inputs" else "outside its outputs/"
+        return {"error": (
+            f"Path '{path}' was refused: an agent that another chat called "
+            f"cannot write {what}. Write to outputs/."
+        )}
+    reason = refused_write(
+        root_r, scoped, member=member, thread_id=dest.get("session_id"),
+    )
+    if reason:
+        return {"error": f"Path '{path}' was refused: {reason}."}
+    return root_r, scoped
+
+
+def _write_delivered(
+    root: Path, rel: str, data: bytes, *, overwrite: bool, reuse_same: bool,
+) -> tuple[str, bool, bool]:
+    """Write *data* at *rel* beneath *root* with the safe opener.
+
+    Returns ``(path taken, existed, changed)``. The working dir of the chat
+    may be mounted in its sandbox container, so every open goes through
+    :mod:`acb_skills.safe_open`, and a link at any depth fails the write.
+    Without *overwrite*, an existing file keeps its bytes, and the document
+    takes ``name (n).ext`` with one exclusive create. With *reuse_same*, a
+    file that already holds these exact bytes is taken as it is.
+    """
+    from pathlib import PurePosixPath
+
+    from acb_skills import safe_open
+
+    if overwrite:
+        existed = safe_open.is_file(root, rel)
+        safe_open.write_bytes(root, rel, data)
+        return rel, existed, True
+    p = PurePosixPath(rel)
+    for counter in range(1000):
+        name = p.name if counter == 0 else f"{p.stem} ({counter}){p.suffix}"
+        candidate = str(p.with_name(name))
+        if reuse_same and _holds_same(root, candidate, data):
+            return candidate, True, False
+        try:
+            safe_open.write_bytes(root, candidate, data, exclusive=True)
+        except FileExistsError:
+            continue
+        return candidate, False, True
+    raise FileExistsError(rel)
+
+
+def _holds_same(root: Path, rel: str, data: bytes) -> bool:
+    """True when ``root/rel`` holds exactly *data*. The size comes first, so a
+    large file of the chat with the same name is never read (fix round 1)."""
+    from acb_skills import safe_open
+
+    st = safe_open.stat_file(root, rel)
+    if st is None or st.st_size != len(data):
+        return False
+    return safe_open.read_bytes(root, rel, limit=len(data)) == data
+
+
+@contextlib.asynccontextmanager
+async def _chat_dir_guard(root: Path) -> AsyncIterator[bool]:
+    """The broker's dir lock of the chat's working dir, while a delegated run
+    writes there (fix round 1). Yields True when a container on the dir is
+    over its quota. With no broker installed, there is no container."""
+    try:
+        from orchestrator.sandbox_broker import delivery_guard
+    except ImportError:
+        yield False
+        return
+    async with delivery_guard(root) as over_quota:
+        yield over_quota
+
+
+async def _deliver(
+    ctx: Mapping[str, Any], dest: Mapping[str, Any], path: str, data: bytes,
+    *, overwrite: bool, reuse_same: bool = False,
+) -> dict:
+    """Write a delegated run's document into the chat that called it.
+
+    Returns ``{"path", "size", "sha256", "download_url"}``, or ``{"error"}``.
+    The blob row, the card and the link all name the chat's working dir and
+    session (*dest*), so the card opens in that chat.
+    """
+    import asyncio
+
+    from acb_skills import safe_open
+
+    placed = _delivery_path(dest, path, member=ctx.get("member"))
+    if isinstance(placed, dict):
+        return placed
+    root, rel = placed
+    try:
+        # The same lock as the chat's own file tools and every container on
+        # its dir, and the same quota rule (TenantFileStore.write).
+        async with _chat_dir_guard(root) as over_quota:
+            if over_quota:
+                return {"error": (
+                    "The working dir of the chat is over its quota, so nothing "
+                    "was written."
+                )}
+            rel, existed, changed = await asyncio.to_thread(
+                _write_delivered, root, rel, data,
+                overwrite=overwrite, reuse_same=reuse_same,
+            )
+    except safe_open.UnsafePath:
+        return {"error": f"Path '{path}' was refused: it has a link in it."}
+    except (FileExistsError, IsADirectoryError, NotADirectoryError):
+        return {"error": f"No free name near '{path}', so nothing was written."}
+    except OSError as exc:
+        return {"error": f"Path '{path}' could not be written: {exc.strerror or exc}."}
+    mime = mimetypes.guess_type(rel)[0] or "application/octet-stream"
+    if changed:
+        asyncio.ensure_future(mirror_to_blob_store(
+            rel, data, mime_type=mime,
+            action="modify" if existed else "create", target=dest,
+        ))
+    session_id = str(dest["session_id"])
+    asyncio.ensure_future(_notify(
+        session_id=session_id,
+        workspace_root=str(dest["workspace_root"]),
+        artifact={
+            "path": rel, "name": rel.rsplit("/", 1)[-1], "size": len(data),
+            "sha256": _sha256(data), "mime_type": mime,
+            "modified_at": datetime.now(tz=UTC).isoformat(), "is_dir": False,
+        },
+        gateway_url=ctx.get("gateway_url", "http://127.0.0.1:8000"),
+        gateway_token=ctx.get("gateway_token", "sk-local-dev-change-me"),
+    ))
+    return {
+        "path": rel, "size": len(data), "sha256": _sha256(data), "mime_type": mime,
+        "download_url": f"/api/agent/workspace/{session_id}/file?path={rel}",
+    }
+
+
+#: Told to a delegated run, so it hands the link on and does not look for
+#: the file in its own working dir.
+_DELIVERED_NOTE = (
+    "This file is in the chat that called you, not in your own workspace. "
+    "Give that chat the download_url."
+)
+
+
 def _thread_scoped(rel: str, ctx: Mapping[str, Any]) -> str | None:
     """*rel* in the thread's own folder, for a run in a shared agent's tenant dir.
 
@@ -477,6 +723,15 @@ async def write_artifact(
         # outside every tenant dir, keyed by a session id it could not know.
         return {"error": "No workspace is configured for this run, so nothing was written."}
 
+    # A delegated run delivers its document to the chat that called it, so
+    # the card opens there (``delegation_target``). ``agent-data/`` is the
+    # sub-agent's own memory: it stays in its own working dir, with no card,
+    # because no chat can open that dir.
+    dest, delegated = _destination(ctx)
+    if delegated and _normalise_path(path).split("/", 1)[0] != "agent-data":
+        return await _write_delegated(ctx, dest, path, content, encoding, overwrite)
+    show = not delegated
+
     root = Path(workspace_root)
     root_r = root.resolve()
     # Normalise path and auto-prefix with outputs/ if needed
@@ -567,7 +822,7 @@ async def write_artifact(
     download_url = (
         f"/api/agent/workspace/{session_id}/file"
         f"?path={clean_path}"
-    ) if session_id else None
+    ) if session_id and show else None
 
     # Build artifact entry
     artifact = {
@@ -583,42 +838,69 @@ async def write_artifact(
     # Fire-and-forget: emit AG-UI CUSTOM event into the active SSE stream
     # (via _active_run_queue context var set by the executor) and also
     # register the workspace path on the session via the gateway.
-    asyncio.ensure_future(_notify(
-        session_id=session_id,
-        workspace_root=workspace_root,
-        artifact=artifact,
-        gateway_url=gateway_url,
-        gateway_token=gateway_token,
-    ))
+    if show:
+        asyncio.ensure_future(_notify(
+            session_id=session_id,
+            workspace_root=workspace_root,
+            artifact=artifact,
+            gateway_url=gateway_url,
+            gateway_token=gateway_token,
+        ))
 
     result: dict = {"path": clean_path, "size": size, "sha256": digest}
     if download_url:
         result["download_url"] = download_url
-    # Advisory lint for HTML documents. The sandbox fails silently (a CDN link is
-    # just blocked, a typo'd cc- class just renders unstyled), so surface those
-    # mistakes here while the agent can still fix them. Never blocks the write.
-    _suffix = target.suffix.lower()
-    if _suffix in {".html", ".htm", ".jsx", ".tsx"} and isinstance(content, str):
-        from acb_skills.artifact_lint import (  # noqa: PLC0415
-            lint_artifact_html,
-            lint_artifact_source,
-        )
-
-        # JSX is not HTML — running the document linter on it yields only noise.
-        # But the CSP failure is shared, and it is silent, so React artifacts get
-        # the narrow remote-asset check.
-        warnings = (
-            lint_artifact_html(content, full_page=True)
-            if _suffix in {".html", ".htm"}
-            else lint_artifact_source(content)
-        )
-        if warnings:
-            result["warnings"] = warnings
-            result["warning_note"] = (
-                "The artifact was saved, but these issues will degrade how it "
-                "renders. Fix them and write the file again with overwrite=True."
-            )
+    result.update(_lint_fields(target.suffix, content))
     return result
+
+
+async def _write_delegated(
+    ctx: Mapping[str, Any], dest: Mapping[str, Any], path: str,
+    content: str | bytes, encoding: str | None, overwrite: bool,
+) -> dict:
+    """:func:`write_artifact` of a delegated run: the document goes to the
+    chat that called it (:func:`_deliver`)."""
+    data = content.encode(encoding or "utf-8") if isinstance(content, str) else bytes(content)
+    out = await _deliver(ctx, dest, path, data, overwrite=overwrite)
+    if "error" not in out:
+        out.pop("mime_type", None)
+        out["note"] = _DELIVERED_NOTE
+        out.update(_lint_fields(Path(out["path"]).suffix, content))
+    return out
+
+
+def _lint_fields(suffix: str, content: str | bytes) -> dict:
+    """Advisory lint for an HTML or React document, as result fields.
+
+    The sandbox fails silently (a CDN link is just blocked, a typo'd cc- class
+    just renders unstyled), so surface those mistakes while the agent can
+    still fix them. Never blocks the write. Empty when there is nothing to say.
+    """
+    suffix = suffix.lower()
+    if suffix not in {".html", ".htm", ".jsx", ".tsx"} or not isinstance(content, str):
+        return {}
+    from acb_skills.artifact_lint import (
+        lint_artifact_html,
+        lint_artifact_source,
+    )
+
+    # JSX is not HTML — running the document linter on it yields only noise.
+    # But the CSP failure is shared, and it is silent, so React artifacts get
+    # the narrow remote-asset check.
+    warnings = (
+        lint_artifact_html(content, full_page=True)
+        if suffix in {".html", ".htm"}
+        else lint_artifact_source(content)
+    )
+    if not warnings:
+        return {}
+    return {
+        "warnings": warnings,
+        "warning_note": (
+            "The artifact was saved, but these issues will degrade how it "
+            "renders. Fix them and write the file again with overwrite=True."
+        ),
+    }
 
 
 def _share_target(path: str, root: Path, ctx: Mapping[str, Any]) -> Path | str:
@@ -747,6 +1029,12 @@ async def share_artifact(path: str) -> dict:
     if not files:
         return {"error": f"No files found at: {path}", "artifacts": []}
 
+    # A delegated run shares a copy in the chat that called it, so the card
+    # opens there (``delegation_target``). The file stays in its own dir too.
+    dest, delegated = _destination(ctx)
+    if delegated:
+        return await _share_delivered(ctx, dest, root, files)
+
     artifacts: list[dict] = []
     for f in files:
         rel = f.resolve().relative_to(root).as_posix()
@@ -781,6 +1069,79 @@ async def share_artifact(path: str) -> dict:
     result: dict = {"artifacts": artifacts}
     if artifacts and artifacts[0].get("download_url"):
         result["download_url"] = artifacts[0]["download_url"]
+    return result
+
+
+def _delivered_rel(rel: str) -> str | None:
+    """The ``outputs/`` path that a delegated share gives a file of its own
+    dir, or ``None`` when the file may not leave that dir.
+
+    Only a file in the sub-agent's own ``outputs/`` may go (fix round 1). Its
+    ``agent-data/`` is its memory, and in a room every member of the chat can
+    read what the chat holds. A name that starts with a dot is refused too. A
+    file keeps its path below ``outputs/``, less the sub-agent's own thread
+    folder.
+    """
+    from acb_skills.agent_paths import is_thread_slug
+
+    parts = [p for p in rel.split("/") if p]
+    if len(parts) < 2 or parts[0] != "outputs" or any(p.startswith(".") for p in parts):
+        return None
+    rest = parts[1:]
+    if len(rest) > 1 and is_thread_slug(rest[0]):
+        rest = rest[1:]
+    return "/".join(["outputs", *rest])
+
+
+async def _share_delivered(
+    ctx: Mapping[str, Any], dest: Mapping[str, Any], root: Path, files: list[Path],
+) -> dict:
+    """Copy each of *files* (in the delegated run's own dir *root*) into the
+    chat that called it, and show each copy as a card there.
+
+    A copy that already holds the same bytes is shown again, never copied
+    twice. A file of the chat with the same name and other bytes keeps them,
+    and the copy takes ``name (n).ext``.
+    """
+    import asyncio
+
+    from acb_skills import safe_open
+
+    artifacts: list[dict] = []
+    errors: list[str] = []
+    for f in files:
+        own = f.resolve().relative_to(root).as_posix()
+        to = _delivered_rel(own)
+        if to is None:
+            errors.append(
+                f"{own}: an agent that another chat called shares only the files "
+                "of its own outputs/"
+            )
+            continue
+        try:
+            data = await asyncio.to_thread(safe_open.read_bytes, root, own)
+        except (safe_open.UnsafePath, OSError):
+            data = None
+        if data is None:
+            errors.append(f"{own}: not a regular file")
+            continue
+        out = await _deliver(
+            ctx, dest, to, data, overwrite=False, reuse_same=True,
+        )
+        if "error" in out:
+            errors.append(f"{own}: {out['error']}")
+            continue
+        artifacts.append({
+            "path": out["path"], "name": out["path"].rsplit("/", 1)[-1],
+            "size": out["size"], "mime_type": out["mime_type"],
+            "download_url": out["download_url"],
+        })
+    result: dict = {"artifacts": artifacts}
+    if artifacts:
+        result["download_url"] = artifacts[0]["download_url"]
+        result["note"] = _DELIVERED_NOTE
+    if errors:
+        result["error"] = "; ".join(errors[:5])
     return result
 
 

@@ -932,6 +932,7 @@ async def _run_sub_agent_streaming(
     # in the finally, so the sub-agent can never change what the parent sees.
     from acb_skills.write_artifact import (
         artifact_context,
+        delegation_target,
         derive_artifact_context,
         enter_artifact_context,
         reset_artifact_context,
@@ -940,6 +941,10 @@ async def _run_sub_agent_streaming(
     # The parent run's acting member, from the parent's bound context and
     # never from the delegated message (H-201 P2-c).
     _parent_member = str(artifact_context().get("member") or "")
+    # The chat that asked: its working dir, store key, agent and session,
+    # from the parent's bound context only (R5). A document this sub-agent
+    # writes goes there, so its card opens in that chat.
+    _deliver_to = delegation_target(artifact_context())
     # H-236: no egress tool for this sub-run when its parent was no_egress,
     # or when its own agent is covered. Decided once, from the parent's
     # binding, and bound at once, so no later path reads the parent's frame.
@@ -1108,6 +1113,9 @@ async def _run_sub_agent_streaming(
                 # H-236: set from the parent's binding, never cleared here.
                 # The batch run of a MAF sub-agent reads it as its parent.
                 no_egress=_sub_no_egress,
+                # The chat that asked. The batch run of a MAF sub-agent
+                # passes it on (``delegation_target``).
+                deliver_to=_deliver_to,
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -2586,9 +2594,14 @@ async def _run_agent_inner(
     from acb_skills.write_artifact import (
         artifact_context,
         bind_artifact_context,
+        delegation_target,
         derive_artifact_context,
     )
     _parent_ctx = artifact_context()
+    # A delegated run delivers its documents to the chat that asked, so the
+    # card opens there. From the parent's bound context only (R5). ``None``
+    # for a run with no parent, and for a sub-run of a batch run.
+    _deliver_to = delegation_target(_parent_ctx)
     # A run with no chat and no parent run is a BATCH run. Its documents
     # belong to the organization (write_artifact). A delegated run is not:
     # its parent's chat may hold a member's data.
@@ -2860,6 +2873,8 @@ async def _run_agent_inner(
                 # H-236: a delegated run of a covered parent sends nothing
                 # off the platform. Its own delegations inherit this.
                 no_egress=_no_egress,
+                # The chat that asked, for a delegated run.
+                **({"deliver_to": _deliver_to} if _deliver_to is not None else {}),
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
