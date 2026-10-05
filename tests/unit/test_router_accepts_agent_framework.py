@@ -551,8 +551,14 @@ class TestTheFallbackLogIsRedacted:
     @pytest.mark.usefixtures("_a_tenant")
     def test_a_real_run_logs_the_field_and_not_the_message(self, monkeypatch) -> None:
         """Through the REAL executor: the 422 carries the member message,
-        the fallback line names the field, and no log line holds the text."""
-        import structlog
+        the fallback line names the field, and no executor log line holds
+        the text.
+
+        ⚠️ The executor's logger is REPLACED, not captured. structlog caches
+        a logger on first use, so ``capture_logs`` sees nothing once another
+        test in the session has logged through it. Measured in CI on #659.
+        """
+        from orchestrator import executor
 
         from tests.unit._native_maf_harness import drive_native
 
@@ -564,21 +570,32 @@ class TestTheFallbackLogIsRedacted:
                 self.bodies.append(json.loads(request.content))
                 return _body_level_422(request)
 
+        class _Recorder:
+            def __init__(self) -> None:
+                self.lines: list[dict[str, Any]] = []
+
+            def __getattr__(self, level: str):
+                def _record(event: Any = None, *args: Any, **kw: Any) -> _Recorder:
+                    self.lines.append({"level": level, "event": event, "args": args, **kw})
+                    return self
+                return _record
+
+        logs = _Recorder()
+        monkeypatch.setattr(executor, "_log", logs)
         model = _Model()
-        with structlog.testing.capture_logs() as logs:
-            drive_native(
-                "projects-assistant", "apps/agents/agent-projects", monkeypatch,
-                model, message=_MEMBER_TEXT,
-            )
+        drive_native(
+            "projects-assistant", "apps/agents/agent-projects", monkeypatch,
+            model, message=_MEMBER_TEXT,
+        )
 
         # Precondition: the member text really was in the refused request.
         assert _MEMBER_TEXT in json.dumps(model.bodies[0])
-        fallback = [e for e in logs if e["event"] == "executor.native_maf_stream_fallback"]
-        assert len(fallback) == 1, [e["event"] for e in logs]
+        fallback = [e for e in logs.lines if e["event"] == "executor.native_maf_stream_fallback"]
+        assert len(fallback) == 1, [e["event"] for e in logs.lines]
         assert fallback[0]["rejected_fields"] == ["stream_options"]
         assert fallback[0]["error_type"] == "ChatClientException"
         assert len(fallback[0]["error"]) <= 200
-        for entry in logs:
+        for entry in logs.lines:
             assert _MEMBER_TEXT not in json.dumps(entry, default=str), entry["event"]
 
     def test_a_parsed_422_keeps_type_loc_and_msg_only(self) -> None:
