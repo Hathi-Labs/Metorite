@@ -7,19 +7,29 @@
  * behind a dialog to go back to, so a dialog only added a "Maybe later" that
  * led to an empty three-pane shell.
  *
- * ⚠️ There is no setup step here. The deployment owns the Microsoft app
- * (§10.5), so a member never configures OAuth, and nothing under `app/email`
- * links to Integrations (EM-T3b done-when 1).
+ * ⚠️ There is no setup step here. The deployment owns the mail apps
+ * (§10.5, §12.4), so a member never configures OAuth, and nothing under
+ * `app/email` links to Integrations (EM-T3b done-when 1).
+ *
+ * WS-17 EM-G8 (E-D3): no try exists yet, so the sign-in line names each
+ * provider that the capability read offers (`signInLine`). With Microsoft
+ * only, it reads as it did before EM-G8.
  */
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
-import type { ConnectProviderId } from "../lib/connect";
+import {
+  liveProviders,
+  signInLine,
+  type ConnectProviderId,
+  type ProviderAvailability,
+} from "../lib/connect";
 import { ConnectChoices } from "./ConnectChoices";
 
 export function ConnectEmptyState({
   onConnect,
   initialProvider = null,
+  availability,
   loadError,
   onRetry,
 }: {
@@ -27,6 +37,8 @@ export function ConnectEmptyState({
   onConnect: (provider: ConnectProviderId, importMonths: number) => void;
   /** Opens the range step of this provider at once (a retry, EM-T6d). */
   initialProvider?: ConnectProviderId | null;
+  /** The capability read of the store (EM-G8). `undefined` while it runs. */
+  availability: ProviderAvailability | null | undefined;
   /** Set when the account list could not load. Then "no mailbox" is not known. */
   loadError?: string | null;
   onRetry?: () => void;
@@ -66,13 +78,16 @@ export function ConnectEmptyState({
           </p>
 
           <div className="mt-5">
-            <ConnectChoices onConnect={onConnect} initialProvider={initialProvider} />
+            <ConnectChoices onConnect={onConnect} initialProvider={initialProvider} availability={availability} />
           </div>
 
           <ul className="mt-5 space-y-1.5 border-t border-border pt-4 text-xs text-muted-foreground">
             <li className="flex items-start gap-2">
               <Icon name="ShieldCheck" size={14} className="mt-0.5 shrink-0 text-success" />
-              <span>You sign in with Microsoft. Metorite never sees your password.</span>
+              {/* While the read runs, the line names no provider: the list
+                  above is a skeleton, and a guess could name one that the
+                  read then refuses. */}
+              <span>{signInLine(availability === undefined ? new Set() : liveProviders(availability))}</span>
             </li>
             <li className="flex items-start gap-2">
               <Icon name="Lock" size={14} className="mt-0.5 shrink-0 text-success" />

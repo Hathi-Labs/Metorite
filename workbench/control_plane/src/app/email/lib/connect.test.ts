@@ -16,11 +16,28 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { isKnownIcon } from "@/lib/icons";
 
 import { ConnectChoices } from "../components/ConnectChoices";
+import { ConnectEmptyState } from "../components/ConnectEmptyState";
 import { ImportRangeStep } from "../components/ImportRangeStep";
+import { WorkspaceAdminSteps } from "../components/WorkspaceAdminHelp";
 import {
   ADMIN_APPROVAL_AFTER_DECLINE,
   CONNECT_PROVIDERS,
   DEFAULT_IMPORT_MONTHS,
+  FAILED_READ_AVAILABILITY,
+  PROVIDER_NAME,
+  RECONNECT_LABEL,
+  UNAVAILABLE_NOTE,
+  WORKSPACE_ADMIN_HELP,
+  alreadyConnectedCopy,
+  callbackProvider,
+  connectChoices,
+  liveProviders,
+  mapProviderAvailability,
+  offersConnectAgain,
+  offersTryAgain,
+  showsWorkspaceAdminHelp,
+  signInLine,
+  type ProviderAvailability,
   adminApprovalHelp,
   IMPORT_MONTHS_STORAGE_KEY,
   IMPORT_RANGE_CHOICES,
@@ -51,6 +68,10 @@ import {
 import { firstSyncPanels } from "./onboarding";
 
 const EMAIL_APP = join(__dirname, "..");
+
+/** The live sets of two answers of the capability read (WS-17 EM-G8). */
+const MS_ONLY = liveProviders({ microsoft: true, gmail: false });
+const BOTH = liveProviders({ microsoft: true, gmail: true });
 
 function read(rel: string): string {
   return readFileSync(join(EMAIL_APP, rel), { encoding: "utf-8" });
@@ -113,14 +134,18 @@ describe("the choices (done-when 3)", () => {
     expect(PAGE).not.toContain('handleConnect("imap")');
   });
 
-  it("offers Microsoft as the one live choice and Gmail disabled as Coming soon", () => {
+  // Inverted by WS-17 EM-G8 (GM-26): the list no longer fixes `available`.
+  // The capability read decides, and the EM-G8 cases below hold each answer.
+  it("lists Microsoft then Gmail, fixes no availability, and offers no IMAP", () => {
     expect(CONNECT_PROVIDERS.map((p) => p.id)).toEqual(["microsoft", "gmail"]);
-    const [ms, gmail] = CONNECT_PROVIDERS;
-    expect(ms.available).toBe(true);
+    const [ms] = CONNECT_PROVIDERS;
     expect(ms.label).toMatch(/Microsoft 365/);
-    expect(gmail.available).toBe(false);
-    expect(gmail.note).toBe("Coming soon");
+    for (const p of CONNECT_PROVIDERS) {
+      expect(Object.keys(p), p.id).not.toContain("available");
+      expect(Object.keys(p), p.id).not.toContain("note");
+    }
     expect(CONNECT_PROVIDERS.some((p) => (p.id as string) === "imap")).toBe(false);
+    expect(connectChoices({ microsoft: true, gmail: true }).map((p) => p.id)).toEqual(["microsoft", "gmail"]);
   });
 
   it("the empty state and the add-account dialog draw the same list", () => {
@@ -129,6 +154,7 @@ describe("the choices (done-when 3)", () => {
     const choices = codeOnly(read("components/ConnectChoices.tsx"));
     expect(choices).toContain("disabled={!p.available}");
     expect(choices).toContain("{p.note}");
+    expect(choices).toContain("choices={connectChoices(availability)}");
   });
 
   it("the empty state replaces the panes when there is no mailbox", () => {
@@ -138,7 +164,7 @@ describe("the choices (done-when 3)", () => {
 });
 
 describe("the callback page gives guided copy (done-when 4)", () => {
-  const base = { accountId: null, email: null };
+  const base = { accountId: null, email: null, provider: "microsoft" as const };
 
   it("admin_consent_required explains IT approval, never 'unexpected error'", () => {
     const v = callbackView({ ...base, error: "admin_consent_required" });
@@ -173,7 +199,7 @@ describe("the callback page gives guided copy (done-when 4)", () => {
   });
 
   it("success reads Connected as <address>", () => {
-    const v = callbackView({ error: null, accountId: "a1", email: "ravi@contoso.test" });
+    const v = callbackView({ error: null, accountId: "a1", email: "ravi@contoso.test", provider: "microsoft" });
     expect(v.kind).toBe("connected");
     expect(v.title).toBe("Connected as ravi@contoso.test");
   });
@@ -558,10 +584,18 @@ describe("the admin email and the retry (fix round 1)", () => {
     expect(body).not.toMatch(/approval still counts/);
   });
 
-  it("Try again for Gmail goes to the connect choices, never its OAuth leg", () => {
-    expect(retryTarget("gmail")).toBe("/email?connect=1");
-    expect(rangeStepProviderFrom("?connect=1")).toBeNull();
-    expect(CALLBACK_PAGE).toContain("retryTarget(provider)");
+  // Inverted by WS-17 EM-G8: the live set of the capability read decides.
+  it("Try again for Gmail opens its range step when the read offers Gmail, else the choices", () => {
+    expect(retryTarget("gmail", liveProviders({ microsoft: true, gmail: true }))).toBe(
+      "/email?connect=1&provider=gmail",
+    );
+    expect(retryTarget("gmail", liveProviders({ microsoft: true, gmail: false }))).toBe("/email?connect=1");
+    expect(retryTarget("gmail", liveProviders(null))).toBe("/email?connect=1");
+    for (const live of [liveProviders(null), liveProviders({ microsoft: true, gmail: true })]) {
+      expect(retryTarget("gmail", live)).not.toContain("/api/email/oauth/");
+    }
+    expect(rangeStepProviderFrom("?connect=1", liveProviders({ microsoft: true, gmail: true }))).toBeNull();
+    expect(CALLBACK_PAGE).toContain("retryTarget(provider, live)");
     expect(wantsConnectChoices("?connect=1")).toBe(true);
     expect(wantsConnectChoices("?connect=0")).toBe(false);
     expect(PAGE).toMatch(/wantsConnectChoices\(window\.location\.search\)[\s\S]*?setShowAddModal\(true\)/);
@@ -710,42 +744,53 @@ describe("a retry is a first connect, so it goes back to the range step (fix rou
     // The callback page shows "Try again" and "Approved? Connect again" before
     // any mailbox row exists. A direct authorize call would carry no range,
     // and the gateway default of 1 month would replace the member's choice.
-    const retry = retryTarget("microsoft");
+    const retry = retryTarget("microsoft", MS_ONLY);
     expect(retry).toBe("/email?connect=1&provider=microsoft");
     expect(retry).not.toContain("/api/email/oauth/");
-    expect(rangeStepProviderFrom(retry.slice(retry.indexOf("?")))).toBe("microsoft");
+    expect(rangeStepProviderFrom(retry.slice(retry.indexOf("?")), MS_ONLY)).toBe("microsoft");
   });
 
   it("the URL opens a step for a live provider only", () => {
-    expect(rangeStepProviderFrom("?connect=1&provider=microsoft")).toBe("microsoft");
-    expect(rangeStepProviderFrom("?provider=microsoft")).toBeNull();
-    expect(rangeStepProviderFrom("?connect=1&provider=gmail")).toBeNull();
-    expect(rangeStepProviderFrom("?connect=1&provider=imap")).toBeNull();
-    expect(rangeStepProviderFrom("?connect=1&provider=%3Cscript%3E")).toBeNull();
+    expect(rangeStepProviderFrom("?connect=1&provider=microsoft", MS_ONLY)).toBe("microsoft");
+    expect(rangeStepProviderFrom("?provider=microsoft", MS_ONLY)).toBeNull();
+    // Inverted by WS-17 EM-G8 (`:722` before): Gmail opens when the read offers it.
+    expect(rangeStepProviderFrom("?connect=1&provider=gmail", MS_ONLY)).toBeNull();
+    expect(rangeStepProviderFrom("?connect=1&provider=gmail", BOTH)).toBe("gmail");
+    expect(rangeStepProviderFrom("?connect=1&provider=imap", BOTH)).toBeNull();
+    expect(rangeStepProviderFrom("?connect=1&provider=%3Cscript%3E", BOTH)).toBeNull();
   });
 
   it("both buttons of the callback page use the retry target, and no other connect path", () => {
     const connectAgain = CALLBACK_PAGE.match(/function connectAgain\([^)]*\): void \{([\s\S]*?)\n\}/)?.[1] ?? "";
-    expect(connectAgain).toContain("window.location.href = retryTarget(provider);");
+    expect(connectAgain).toContain("window.location.href = retryTarget(provider, live);");
     expect(CALLBACK_PAGE).not.toContain("/api/email/oauth/");
-    expect(CALLBACK_PAGE.match(/onClick=\{\(\) => connectAgain\(provider\)\}/g)).toHaveLength(2);
+    expect(CALLBACK_PAGE.match(/onClick=\{\(\) => connectAgain\(provider, live\)\}/g)).toHaveLength(2);
+    // The live set is the read's, never a constant.
+    expect(CALLBACK_PAGE).toContain("const live = liveProviders(providerRead);");
+    expect(CALLBACK_PAGE).toMatch(/getConnectProviders\(\)\.then\(\(read\) => \{\s*if \(current\) setProviderRead\(read\);/);
   });
 
-  it("the page reads the provider once and opens the step in both places", () => {
+  it("the page reads the query once, and the read decides the step in both places", () => {
     expect(PAGE).toMatch(
-      /useState<ConnectProviderId \| null>\(\(\) =>\s*typeof window === "undefined" \? null : rangeStepProviderFrom\(window\.location\.search\)/,
+      /useState<string>\(\(\) =>\s*typeof window === "undefined" \? "" : window\.location\.search\s*\)/,
     );
-    expect(PAGE).toMatch(/<ConnectEmptyState[\s\S]*?initialProvider=\{rangeStepProvider\}/);
+    expect(PAGE).toMatch(
+      /const rangeStepProvider: ConnectProviderId \| null = rangeStepProviderFrom\(\s*rangeStepQuery,\s*liveProviders\(connectProviders\),\s*\);/,
+    );
+    expect(PAGE).toMatch(/<ConnectEmptyState[\s\S]*?initialProvider=\{rangeStepProvider\}\s*availability=\{connectProviders\}/);
     expect(PAGE).toMatch(/<ConnectChoices\s+initialProvider=\{rangeStepProvider\}/);
-    expect(PAGE).toMatch(/onClose=\{\(\) => \{\s*setShowAddModal\(false\);\s*setRangeStepProvider\(null\);/);
+    expect(PAGE).toMatch(/<ConnectChoices[\s\S]*?availability=\{connectProviders\}\s*\/>/);
+    expect(PAGE).toMatch(/onClose=\{\(\) => \{\s*setShowAddModal\(false\);\s*setRangeStepQuery\(""\);/);
     expect(codeOnly(read("components/ConnectEmptyState.tsx"))).toContain(
-      "<ConnectChoices onConnect={onConnect} initialProvider={initialProvider} />",
+      "<ConnectChoices onConnect={onConnect} initialProvider={initialProvider} availability={availability} />",
     );
   });
 
   function choicesWith(stored: Record<string, string>, initialProvider: "microsoft" | null = "microsoft") {
     vi.stubGlobal("window", { sessionStorage: memoryStore(stored) });
-    return radios(renderToStaticMarkup(createElement(ConnectChoices, { onConnect: () => {}, initialProvider })));
+    return radios(
+      renderToStaticMarkup(createElement(ConnectChoices, { onConnect: () => {}, initialProvider, availability: null })),
+    );
   }
 
   it("a stored 6 opens the step with 6 months checked", () => {
@@ -925,8 +970,428 @@ describe("a Microsoft decline also shows the admin-approval help", () => {
   });
 
   it("a decline keeps Try again, which reopens the range step", () => {
+    expect(offersTryAgain("consent_declined")).toBe(true);
     expect(CALLBACK_PAGE).toMatch(
-      /view\.kind === "consent_declined" \|\|[\s\S]*?onClick=\{\(\) => connectAgain\(provider\)\}>\s*Try again/,
+      /\{offersTryAgain\(view\.kind\) && \(\s*<Button[^>]*onClick=\{\(\) => connectAgain\(provider, live\)\}>\s*Try again/,
     );
+  });
+});
+
+// ── WS-17 EM-G8: the connect UI (§12.3.10) ─────────────────────────────────
+// The capability read `GET /email/oauth/providers` (EM-G7 item 8) answers
+// `{"microsoft": bool, "gmail": bool}`. Gmail is true only with the Google
+// app on the box AND `EMAIL_GMAIL_CONNECT` on (D-EM-36), so production reads
+// `gmail: false` and Gmail stays "Coming soon". Each describe name below is a
+// fence name of §12.3.10, and mutations M1 to M4 of the spec turn one red.
+
+/** The SSR markup of the connect choices for one answer of the read. */
+function choicesMarkup(
+  availability: ProviderAvailability | null | undefined,
+  initialProvider: "microsoft" | "gmail" | null = null,
+): string {
+  return renderToStaticMarkup(createElement(ConnectChoices, { onConnect: () => {}, initialProvider, availability }));
+}
+
+/**
+ * Whether the `<button>` that carries `data-provider="<id>"` is disabled.
+ * The class string holds `disabled:` variants, so only the attribute counts.
+ */
+function providerDisabled(markup: string, id: string): boolean {
+  const button = markup.match(new RegExp(`<button\\b[^>]*data-provider="${id}"[^>]*>`))?.[0];
+  expect(button, `no button for ${id}`).toBeDefined();
+  return /\sdisabled=""/.test(button ?? "");
+}
+
+type FetchReply = Response | Error | Promise<never>;
+
+/** Stubs `fetch` with one reply for each path, and records each path asked. */
+function stubFetch(replies: Record<string, () => FetchReply>): string[] {
+  const asked: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      const path = String(url);
+      asked.push(path);
+      const reply = replies[path]?.() ?? new Response("{}", { status: 404 });
+      if (reply instanceof Error) throw reply;
+      return reply;
+    }),
+  );
+  return asked;
+}
+
+const json = (body: unknown, status = 200) => () => new Response(JSON.stringify(body), { status });
+
+describe("gmail-available-from-capability", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("an answer with gmail true makes Gmail a live choice", () => {
+    expect(mapProviderAvailability({ microsoft: true, gmail: true })).toEqual({ microsoft: true, gmail: true });
+    const gmail = connectChoices({ microsoft: true, gmail: true }).find((p) => p.id === "gmail");
+    expect(gmail?.available).toBe(true);
+    expect(gmail?.note).toBeUndefined();
+    const markup = choicesMarkup({ microsoft: true, gmail: true });
+    expect(providerDisabled(markup, "gmail")).toBe(false);
+    expect(providerDisabled(markup, "microsoft")).toBe(false);
+  });
+
+  it("the range step and the retry take Gmail from the live set (M2)", () => {
+    expect(rangeStepProviderFrom("?connect=1&provider=gmail", BOTH)).toBe("gmail");
+    expect(retryTarget("gmail", BOTH)).toBe("/email?connect=1&provider=gmail");
+    const step = choicesMarkup({ microsoft: true, gmail: true }, "gmail");
+    expect(step).toContain("Continue to Google");
+    expect(step).toMatch(/role="radiogroup"/);
+  });
+
+  it("the store reads GET /email/oauth/providers through the BFF and keeps the answer", async () => {
+    const asked = stubFetch({ "/api/email/oauth/providers": json({ microsoft: true, gmail: true }) });
+    const { useEmailStore } = await import("./emailStore");
+    useEmailStore.setState({ connectProviders: undefined });
+    await useEmailStore.getState().fetchConnectProviders();
+    expect(asked).toEqual(["/api/email/oauth/providers"]);
+    expect(useEmailStore.getState().connectProviders).toEqual({ microsoft: true, gmail: true });
+  });
+
+  it("the page reads it on mount and hands it to both places", () => {
+    expect(PAGE).toMatch(/useEffect\(\(\) => \{\s*void fetchConnectProviders\(\);\s*\}, \[fetchConnectProviders\]\);/);
+    expect(PAGE.match(/availability=\{connectProviders\}/g)).toHaveLength(2);
+  });
+});
+
+describe("gmail-coming-soon-when-the-read-fails", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("a failed or unsettled read keeps Microsoft live and Gmail Coming soon (M1)", () => {
+    expect(FAILED_READ_AVAILABILITY).toEqual({ microsoft: true, gmail: false });
+    for (const read of [null, undefined]) {
+      expect([...liveProviders(read)]).toEqual(["microsoft"]);
+      const [ms, gmail] = connectChoices(read);
+      expect(ms.available).toBe(true);
+      expect(gmail.available).toBe(false);
+      expect(gmail.note).toBe("Coming soon");
+    }
+  });
+
+  it("the flag off answers gmail false, and Gmail stays Coming soon", () => {
+    const gmail = connectChoices({ microsoft: true, gmail: false }).find((p) => p.id === "gmail");
+    expect(gmail).toMatchObject({ available: false, note: "Coming soon" });
+    const markup = choicesMarkup({ microsoft: true, gmail: false });
+    expect(providerDisabled(markup, "gmail")).toBe(true);
+    expect(providerDisabled(markup, "microsoft")).toBe(false);
+    expect(markup).toContain("Coming soon");
+    expect(markup).not.toContain(WORKSPACE_ADMIN_HELP.line);
+  });
+
+  it("an answer of another shape is a failed read", () => {
+    for (const raw of [null, undefined, [], "gmail", 1, {}, { microsoft: true }, { gmail: true },
+      { microsoft: "true", gmail: true }, { microsoft: true, gmail: 1 }]) {
+      expect(mapProviderAvailability(raw), JSON.stringify(raw)).toBeNull();
+    }
+  });
+
+  it("a network error, a 404, a 403, a 500 or a bad body reads as null", async () => {
+    const api = await import("./api");
+    const replies: Array<[string, () => FetchReply]> = [
+      ["network", () => new TypeError("Failed to fetch")],
+      ["404", json({ detail: "Not Found" }, 404)],
+      ["403", json({ detail: "Forbidden" }, 403)],
+      ["500", () => new Response("Internal Server Error", { status: 500 })],
+      ["list", json([true, true])],
+      ["strings", json({ microsoft: "yes", gmail: "yes" })],
+      ["html", () => new Response("<html></html>", { status: 200 })],
+    ];
+    for (const [label, reply] of replies) {
+      stubFetch({ "/api/email/oauth/providers": reply });
+      expect(await api.getConnectProviders(), label).toBeNull();
+    }
+  });
+
+  it("the store keeps null on a 404, so the choices keep Gmail Coming soon", async () => {
+    stubFetch({ "/api/email/oauth/providers": json({ detail: "Not Found" }, 404) });
+    const { useEmailStore } = await import("./emailStore");
+    useEmailStore.setState({ connectProviders: undefined });
+    await useEmailStore.getState().fetchConnectProviders();
+    const read = useEmailStore.getState().connectProviders;
+    expect(read).toBeNull();
+    expect(connectChoices(read).find((p) => p.id === "gmail")?.note).toBe("Coming soon");
+  });
+
+  it("a read that never answers counts as failed after PROVIDERS_READ_TIMEOUT_MS", async () => {
+    vi.useFakeTimers();
+    stubFetch({ "/api/email/oauth/providers": () => new Promise<never>(() => {}) });
+    const { useEmailStore, PROVIDERS_READ_TIMEOUT_MS } = await import("./emailStore");
+    useEmailStore.setState({ connectProviders: undefined });
+    const done = useEmailStore.getState().fetchConnectProviders();
+    await vi.advanceTimersByTimeAsync(PROVIDERS_READ_TIMEOUT_MS);
+    await done;
+    expect(useEmailStore.getState().connectProviders).toBeNull();
+  });
+
+  it("the choices draw a skeleton until the read settles, and no provider", () => {
+    const markup = choicesMarkup(undefined);
+    expect(markup).toContain('role="status"');
+    expect(markup).not.toContain("data-provider");
+    expect(markup).not.toContain("Coming soon");
+  });
+
+  it("a URL that names Gmail opens no step while the read refuses it", () => {
+    expect(rangeStepProviderFrom("?connect=1&provider=gmail", MS_ONLY)).toBeNull();
+    expect(rangeStepProviderFrom("?connect=1&provider=gmail", liveProviders(null))).toBeNull();
+    // The list itself refuses a forced step for a provider that is not live.
+    expect(choicesMarkup(null, "gmail")).not.toMatch(/role="radiogroup"/);
+  });
+});
+
+describe("microsoft-unavailable-when-the-read-says-no", () => {
+  it("microsoft false shows Microsoft as not available, with the not-configured words (E-D4)", () => {
+    expect(UNAVAILABLE_NOTE.microsoft).toBe("Not available yet");
+    const [ms, gmail] = connectChoices({ microsoft: false, gmail: true });
+    expect(ms).toMatchObject({ id: "microsoft", available: false, note: "Not available yet" });
+    expect(gmail.available).toBe(true);
+    const markup = choicesMarkup({ microsoft: false, gmail: false });
+    expect(providerDisabled(markup, "microsoft")).toBe(true);
+    expect(providerDisabled(markup, "gmail")).toBe(true);
+    expect(markup).toContain("Not available yet");
+  });
+
+  it("no path offers a provider whose app is missing", () => {
+    const none = liveProviders({ microsoft: false, gmail: false });
+    expect(none.size).toBe(0);
+    expect(rangeStepProviderFrom("?connect=1&provider=microsoft", none)).toBeNull();
+    expect(retryTarget("microsoft", none)).toBe("/email?connect=1");
+    expect(choicesMarkup({ microsoft: false, gmail: true }, "microsoft")).not.toMatch(/role="radiogroup"/);
+  });
+});
+
+describe("empty-state-names-each-live-provider", () => {
+  function emptyState(availability: ProviderAvailability | null | undefined): string {
+    return renderToStaticMarkup(createElement(ConnectEmptyState, { onConnect: () => {}, availability }));
+  }
+
+  it("names each provider that the read offers (E-D3)", () => {
+    expect(signInLine(MS_ONLY)).toBe("You sign in with Microsoft. Metorite never sees your password.");
+    expect(signInLine(BOTH)).toBe("You sign in with Microsoft or Google. Metorite never sees your password.");
+    expect(signInLine(liveProviders({ microsoft: false, gmail: true }))).toBe(
+      "You sign in with Google. Metorite never sees your password.",
+    );
+    expect(signInLine(new Set())).toBe("Metorite never sees your password.");
+  });
+
+  it("the empty state draws the line from the read, and reads as today with Microsoft only", () => {
+    expect(emptyState(null)).toContain("You sign in with Microsoft. Metorite never sees your password.");
+    expect(emptyState({ microsoft: true, gmail: false })).toContain("You sign in with Microsoft. Metorite");
+    expect(emptyState({ microsoft: true, gmail: true })).toContain("You sign in with Microsoft or Google.");
+    // While the read runs, the line names no provider.
+    const pending = emptyState(undefined);
+    expect(pending).toContain("Metorite never sees your password.");
+    expect(pending).not.toContain("You sign in with");
+  });
+});
+
+describe("callback-copy-names-google", () => {
+  const gmail = { accountId: null, email: null, provider: "gmail" as const };
+  const ms = { accountId: null, email: null, provider: "microsoft" as const };
+
+  it("the provider comes from the URL, and only gmail names Google", () => {
+    expect(callbackProvider("gmail")).toBe("gmail");
+    expect(callbackProvider("microsoft")).toBe("microsoft");
+    for (const other of [null, "", "GMAIL", "imap", "<b>x</b>"]) expect(callbackProvider(other)).toBe("microsoft");
+    expect(PROVIDER_NAME).toEqual({ microsoft: "Microsoft", gmail: "Google" });
+  });
+
+  it("the decline text and the generic failure name Google for a Gmail try", () => {
+    const declined = callbackView({ ...gmail, error: "consent_declined" });
+    expect(declined.body).toContain(
+      "Google did not give Metorite access to your mailbox, so nothing was connected.",
+    );
+    const unknown = callbackView({ ...gmail, error: "provider_error" });
+    expect(unknown.body).toContain("Google or Metorite stopped the connection.");
+    for (const v of [declined, unknown]) expect(`${v.title} ${v.body}`).not.toContain("Microsoft");
+    // A Microsoft try reads as before.
+    expect(callbackView({ ...ms, error: "consent_declined" }).body).toContain("Microsoft did not give Metorite");
+    expect(callbackView({ ...ms, error: "provider_error" }).body).toContain("Microsoft or Metorite stopped");
+  });
+
+  it("a mailbox that was connected before names the sign-in page of the try", () => {
+    expect(alreadyConnectedCopy("ravi@gmail.test", "gmail")).toBe(
+      "ravi@gmail.test was already connected. Metorite signed it in again. " +
+        "To add a different mailbox, choose another account at Google.",
+    );
+    expect(alreadyConnectedCopy(null, "microsoft")).toMatch(/^This mailbox was already connected\..*at Microsoft\.$/);
+  });
+
+  it("the callback page reads provider from its URL and passes it to each copy (M3)", () => {
+    expect(CALLBACK_PAGE).toContain('const provider = callbackProvider(searchParams.get("provider"));');
+    expect(CALLBACK_PAGE).toContain("callbackView({ error, accountId, email, provider })");
+    expect(CALLBACK_PAGE).toContain("{alreadyConnectedCopy(email, provider)}");
+    expect(CALLBACK_PAGE).toContain("adminApprovalHelp(view.kind, provider)");
+    expect(CALLBACK_PAGE).not.toMatch(/at Microsoft\./);
+  });
+});
+
+describe("scope-missing-copy", () => {
+  it("scope_missing says that Metorite needs both permissions, and offers a retry", () => {
+    const v = callbackView({ error: "scope_missing", accountId: null, email: null, provider: "gmail" });
+    expect(v.kind).toBe("scope_missing");
+    expect(v.title).toBe("Metorite needs both permissions");
+    expect(v.body).toMatch(/^Google showed two permissions/);
+    expect(v.body).toContain("Metorite needs both");
+    expect(v.body).toContain("Try again");
+    expect(`${v.title} ${v.body}`).not.toMatch(/unexpected error/i);
+    expect(offersTryAgain("scope_missing")).toBe(true);
+    expect(offersConnectAgain("scope_missing")).toBe(false);
+    expect(CALLBACK_PAGE).toMatch(/scope_missing: \{ icon: "ShieldAlert", className: "bg-warning\/10 text-warning" \}/);
+  });
+});
+
+describe("workspace-admin-help-shows-the-client-id", () => {
+  const CLIENT_ID = "123456789012-abcdefg.apps.googleusercontent.com";
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("the help draws the client ID and the Admin console path of §12.4", () => {
+    const markup = renderToStaticMarkup(createElement(WorkspaceAdminSteps, { clientId: CLIENT_ID }));
+    expect(markup).toContain(CLIENT_ID);
+    for (const part of [
+      "Security → Access and data control → API controls",
+      "Manage third-party app access",
+      "Configure new app",
+      "Trusted",
+      WORKSPACE_ADMIN_HELP.copy,
+    ]) {
+      expect(markup, part).toContain(part);
+    }
+    const none = renderToStaticMarkup(createElement(WorkspaceAdminSteps, { clientId: null }));
+    expect(none).toContain(WORKSPACE_ADMIN_HELP.unavailable);
+    expect(none).not.toContain(WORKSPACE_ADMIN_HELP.copy);
+    expect(renderToStaticMarkup(createElement(WorkspaceAdminSteps, { clientId: undefined }))).toContain(
+      WORKSPACE_ADMIN_HELP.loading,
+    );
+  });
+
+  it("the client ID comes from GET /email/oauth/gmail/app, never a constant", async () => {
+    const asked = stubFetch({
+      "/api/email/oauth/gmail/app": json({
+        client_id: CLIENT_ID,
+        redirect_uri: "https://app.metorite.com/api/email/oauth/gmail/callback",
+      }),
+      "/api/email/oauth/microsoft/app": json({ client_id: "ms", redirect_uri: "https://r" }),
+    });
+    const api = await import("./api");
+    expect((await api.getMailAppInfo("gmail"))?.clientId).toBe(CLIENT_ID);
+    expect((await api.getMailAppInfo())?.clientId).toBe("ms");
+    expect(asked).toEqual(["/api/email/oauth/gmail/app", "/api/email/oauth/microsoft/app"]);
+    // While the flag is off, Gmail answers 503, and the help says so.
+    stubFetch({ "/api/email/oauth/gmail/app": json({ detail: "Gmail is not set up" }, 503) });
+    expect(await api.getMailAppInfo("gmail")).toBeNull();
+    const help = codeOnly(read("components/WorkspaceAdminHelp.tsx"));
+    expect(help).toContain('getMailAppInfo("gmail")');
+    expect(help).not.toMatch(/apps\.googleusercontent\.com/);
+  });
+
+  it("one line under a live Gmail choice opens the help, and nothing else does", () => {
+    expect(WORKSPACE_ADMIN_HELP.line).toBe("Company Google account? Your admin can trust Metorite once for everyone.");
+    expect(choicesMarkup({ microsoft: true, gmail: true })).toContain(WORKSPACE_ADMIN_HELP.line);
+    expect(choicesMarkup({ microsoft: true, gmail: false })).not.toContain(WORKSPACE_ADMIN_HELP.line);
+    const choices = codeOnly(read("components/ConnectChoices.tsx"));
+    expect(choices).toContain('{p.id === "gmail" && p.available && <WorkspaceAdminLine />}');
+    expect(choices).toMatch(/aria-expanded=\{open\}/);
+  });
+
+  it("workspace_admin_blocked shows the help and offers Connect again", () => {
+    const v = callbackView({ error: "workspace_admin_blocked", accountId: null, email: null, provider: "gmail" });
+    expect(v.kind).toBe("workspace_admin_blocked");
+    expect(v.title).toBe("Your Google Workspace admin needs to trust Metorite");
+    expect(showsWorkspaceAdminHelp(v.kind)).toBe(true);
+    expect(offersConnectAgain(v.kind)).toBe(true);
+    expect(offersTryAgain(v.kind)).toBe(false);
+    for (const kind of ["admin_consent_required", "consent_declined", "scope_missing", "unknown"] as const) {
+      expect(showsWorkspaceAdminHelp(kind), kind).toBe(false);
+    }
+    expect(CALLBACK_PAGE).toMatch(/\{showsWorkspaceAdminHelp\(view\.kind\) && \(\s*<div[^>]*>\s*<WorkspaceAdminHelp \/>/);
+    expect(CALLBACK_PAGE).toMatch(
+      /\{offersConnectAgain\(view\.kind\) && \(\s*<Button[\s\S]*?onClick=\{\(\) => connectAgain\(provider, live\)\}>\s*Approved\? Connect again/,
+    );
+  });
+
+  it("names only icons that exist", () => {
+    const names = ["components/WorkspaceAdminHelp.tsx", "components/ConnectChoices.tsx", "oauth/callback/page.tsx"]
+      .flatMap((f) => [...read(f).matchAll(/(?:name|icon)[=:] ?"([A-Za-z0-9]+)"/g)].map((m) => m[1]));
+    // The copy button swaps two names in one expression.
+    expect(read("components/WorkspaceAdminHelp.tsx")).toContain('icon={copied ? "Check" : "Copy"}');
+    names.push("Check", "Copy");
+    expect(names).toEqual(expect.arrayContaining(["ShieldAlert", "ShieldCheck"]));
+    for (const n of names) expect(isKnownIcon(n), n).toBe(true);
+  });
+});
+
+describe("gmail-folder-tree-shows-well-known-folders", () => {
+  const WELL_KNOWN = ["all", "inbox", "starred", "snoozed", "sent", "drafts", "archive", "junk", "trash"];
+  const label = (name: string, type: string, message_count = 0) => ({
+    provider_folder_id: name, name, type, message_count, unread_count: 0,
+  });
+  const GMAIL_LABELS = [
+    label("INBOX", "system", 5), label("SENT", "system", 3), label("DRAFT", "system", 1),
+    label("TRASH", "system", 2), label("SPAM", "system", 4), label("STARRED", "system"),
+    label("IMPORTANT", "system"), label("CATEGORY_SOCIAL", "system"),
+    label("Projects", "user", 7), label("Receipts", "user", 2), label("Archive", "user", 99),
+  ];
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a Gmail tree holds the well-known folders and Archive, and no user label (M4)", async () => {
+    const { mergeFolders } = await import("./emailStore");
+    const tree = mergeFolders(GMAIL_LABELS, {}, "gmail");
+    expect(tree.map((f) => f.key)).toEqual(WELL_KNOWN);
+    expect(tree.some((f) => f.type === "user")).toBe(false);
+    const count = (key: string) => tree.find((f) => f.key === key)?.count;
+    expect([count("inbox"), count("sent"), count("drafts"), count("junk"), count("trash")]).toEqual([5, 3, 1, 4, 2]);
+    // A user label named "Archive" never takes the place of the folder.
+    expect(count("archive")).toBe(0);
+  });
+
+  it("an Outlook tree keeps its user folders", async () => {
+    const { mergeFolders } = await import("./emailStore");
+    const outlook = [label("Inbox", "system", 5), label("Projects", "user", 7)];
+    expect(mergeFolders(outlook, {}, "microsoft").map((f) => f.key)).toEqual([...WELL_KNOWN, "projects"]);
+  });
+
+  it("the store passes the provider of the mailbox, and its user labels reach the label filter", async () => {
+    stubFetch({
+      "/api/email/accounts/g1/folders": json(GMAIL_LABELS),
+      "/api/email/accounts/g1/labels": json([{ name: "Projects", color: null }, { name: "Receipts", color: null }]),
+    });
+    const { useEmailStore } = await import("./emailStore");
+    useEmailStore.setState({ accounts: [{ id: "g1", provider: "gmail" }] as never, selectedAccountId: "g1", emails: [] });
+    await useEmailStore.getState().fetchFolders("g1");
+    expect(useEmailStore.getState().folders.map((f) => f.key)).toEqual(WELL_KNOWN);
+    await useEmailStore.getState().fetchLabels("g1");
+    expect(useEmailStore.getState().availableLabels).toEqual(expect.arrayContaining(["Projects", "Receipts"]));
+    const store = codeOnly(read("lib/emailStore.ts"));
+    expect(store).toContain("mergeFolders(rawFolders, emailCounts, provider)");
+    expect(store).toContain("mergeFolders(raw, {}, a.provider)");
+  });
+});
+
+describe("reconnect-banner-names-the-provider", () => {
+  it("the reconnect button names Outlook or Gmail (E-D3)", () => {
+    expect(RECONNECT_LABEL).toEqual({ microsoft: "Reconnect Outlook", gmail: "Reconnect Gmail" });
+    expect(PAGE).toMatch(
+      /const provider = reconnectProvider\(attentionAccount\);[\s\S]*?onClick=\{\(\) => handleConnect\(provider, attentionAccount\.emailAddress\)\}\s*>\s*\{RECONNECT_LABEL\[provider\]\}/,
+    );
+  });
+
+  it("the words of the banner name no provider, so they hold for both", () => {
+    expect(PAGE).toContain("reach the provider — message bodies, folders and statuses may be stale.");
+    expect(PAGE).toContain('"The connection may have expired. Reconnect to restore full access."');
   });
 });

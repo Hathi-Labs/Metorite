@@ -37,7 +37,9 @@ import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
   connectQuery,
   emailSurface,
+  liveProviders,
   rangeStepProviderFrom,
+  RECONNECT_LABEL,
   wantsConnectChoices,
   firstSyncTick,
   FIRST_SYNC_POLL_MS,
@@ -149,6 +151,8 @@ export default function EmailPage() {
     selectAll,
     allFolderCounts,
     setInAllInboxes,
+    connectProviders,
+    fetchConnectProviders,
   } = useEmailStore();
   // The mailbox that the composer sends from: the mailbox of the mail a
   // reply answers, else the selected one (EM-T8a, D-EM-20). New mail in All
@@ -174,10 +178,14 @@ export default function EmailPage() {
     if (open?.accountId === target) useEmailStore.setState(keep);
   }, [automationFeature, viewAll, defaultAccountId]);
 
-  // Fetch on mount
+  // Fetch on mount. The capability read of the connect flow runs beside the
+  // account read (WS-17 EM-G8): the connect choices wait on it.
   useEffect(() => {
     fetchAccounts();
   }, [fetchAccounts]);
+  useEffect(() => {
+    void fetchConnectProviders();
+  }, [fetchConnectProviders]);
 
   // /email?connect=1 opens the connect choices (the callback page's "Try
   // again" for a provider that is not live). With no mailbox, the empty state
@@ -186,10 +194,16 @@ export default function EmailPage() {
   // /email?connect=1&provider=microsoft opens the range step of that
   // provider at once. The callback page's "Try again" sends it, because that
   // retry is a first connect and must carry the range (EM-T6d fix round 1).
-  // Read once on the client. The connect choices mount only after the first
-  // account read, so no server render shows them.
-  const [rangeStepProvider, setRangeStepProvider] = useState<ConnectProviderId | null>(() =>
-    typeof window === "undefined" ? null : rangeStepProviderFrom(window.location.search)
+  // The query is read once on the client. The provider counts only when the
+  // capability read makes it live (EM-G8 item 2), and the connect choices
+  // mount only after that read and the first account read settle, so no
+  // server render shows them.
+  const [rangeStepQuery, setRangeStepQuery] = useState<string>(() =>
+    typeof window === "undefined" ? "" : window.location.search
+  );
+  const rangeStepProvider: ConnectProviderId | null = rangeStepProviderFrom(
+    rangeStepQuery,
+    liveProviders(connectProviders),
   );
   useEffect(() => {
     if (connectParamRef.current || accounts.length === 0) return;
@@ -785,6 +799,7 @@ export default function EmailPage() {
       <ConnectEmptyState
         onConnect={(provider, importMonths) => handleConnect(provider, undefined, importMonths)}
         initialProvider={rangeStepProvider}
+        availability={connectProviders}
         loadError={error}
         onRetry={() => void fetchAccounts()}
       />
@@ -1098,7 +1113,7 @@ export default function EmailPage() {
                   className="flex-shrink-0"
                   onClick={() => handleConnect(provider, attentionAccount.emailAddress)}
                 >
-                  {provider === "microsoft" ? "Reconnect Outlook" : "Reconnect Gmail"}
+                  {RECONNECT_LABEL[provider]}
                 </Button>
               );
             })()}
@@ -1361,7 +1376,7 @@ export default function EmailPage() {
         onClose={() => {
           setShowAddModal(false);
           // The next "Add account" opens the list, not the retry's step.
-          setRangeStepProvider(null);
+          setRangeStepQuery("");
         }}
         title="Connect a mailbox"
         icon="Mail"
@@ -1374,6 +1389,7 @@ export default function EmailPage() {
               setShowAddModal(false);
               handleConnect(provider, undefined, importMonths);
             }}
+            availability={connectProviders}
           />
         </div>
       </Modal>
