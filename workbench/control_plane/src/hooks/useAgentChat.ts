@@ -329,6 +329,7 @@ export function useAgentChat({
               case "reasoning":
               case "tool_start":
               case "tool_end":
+              case "tool_args":
               case "tool_partial":
                 upd((m) => applyStreamEvent(m, evt, fold));
                 break;
@@ -679,6 +680,7 @@ export function useAgentChat({
               case "progress":
               case "tool_start":
               case "tool_end":
+              case "tool_args":
               case "tool_partial":
                 updLast((m) => applyStreamEvent(m, evt, fold));
                 break;

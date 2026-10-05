@@ -330,6 +330,11 @@ async function translateAndPersistStream(
         } else if (t === "TOOL_CALL_ARGS") {
           const id = String(ev.toolCallId ?? "");
           toolArgs[id] = (toolArgs[id] ?? "") + String(ev.delta ?? "");
+          // Once the arguments are whole, the running row learns them: the
+          // trail then shows the command or the path while the step RUNS,
+          // not only after it ends. The same arguments `tool_end` carries.
+          const whole = wholeToolArgs(toolArgs[id]);
+          if (whole) out = { type: "tool_args", id: ev.toolCallId, args: whole };
         } else if (t === "TOOL_CALL_PARTIAL") {
           // Live terminal/tool output for a running tool — forward to the
           // client so output streams into the tool row (VS Code style).
@@ -526,6 +531,21 @@ function sseEvent(payload: Record<string, unknown>): Uint8Array {
 }
 
 /** Parse an accumulated AG-UI tool-args JSON string into an object for the UI. */
+/** The arguments once they are a whole, non-empty JSON object, else null.
+ *  A fragment is not forwarded: the row keeps what it had. */
+function wholeToolArgs(raw: string | undefined): Record<string, unknown> | null {
+  if (!raw || !raw.trim()) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
+      Object.keys(parsed).length > 0
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseToolArgs(raw: string | undefined): Record<string, unknown> {
   if (!raw || !raw.trim()) return {};
   try {
