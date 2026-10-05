@@ -1006,8 +1006,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
           />
         ) : isDraftEmail(email) ? (
           /* Standalone draft — editable composer. Pass the reply target so the
-             Reply / Reply All toggle can appear when it's a reply to a message. */
-          <DraftCard draft={email} replyTo={replyTarget} />
+             Reply / Reply All toggle can appear when it's a reply to a message.
+             The key mounts a fresh card for each draft. Without it, opening
+             draft B after draft A kept A's text, and an edit saved it into B
+             (EM-G3c-2-f1). */
+          <DraftCard key={email.id} draft={email} replyTo={replyTarget} />
         ) : (
         <>
         {/* Sender info — the avatar, name and every recipient open a contact card */}
