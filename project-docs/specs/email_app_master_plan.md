@@ -3897,10 +3897,12 @@ The R8 tests must show PASSED, not SKIPPED.
 
 #### 10.4.10 EM-T9 — a file on an Outlook draft (a LIVE defect)
 
-**Status.** ✅ MERGED (#643, 2026-10-05). The live check of the owner is still open. The audit of 2026-10-05
-gave GO-NARROWED (B1 to B7, N1 to N9), and it checked each anchor against the code on that day.
-The audit of EM-G3c found the defect (its C21). Outlook is the live provider, so this slice goes
-before the Gmail work that waits for customers. "As built" below records the build.
+**Status.** ✅ MERGED (#643, 2026-10-05). The live check of the owner is still open. The audit of
+2026-10-05 gave GO-NARROWED (B1 to B7, N1 to N9), and it checked each anchor against the code on
+that day. "As built" below records the build.
+
+**Why it went first.** The audit of EM-G3c found the defect (its C21). Outlook is the live
+provider, so this slice went before the Gmail work that waits for customers.
 
 **Gate.** 🟢 AGENT-SAFE build. No migration, no flag and no change to SQL text, so R8 does not bind
 it. The fix changes the live Outlook path, so it takes the full review loop for data. The live check
