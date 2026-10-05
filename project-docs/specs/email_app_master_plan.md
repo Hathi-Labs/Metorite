@@ -6577,7 +6577,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G7b** | 🟢 AGENT-SAFE · security review | A member allowlist for the Gmail connect, `EMAIL_GMAIL_CONNECT_MEMBERS` (go-live item A7) | After EM-G7 and EM-G8, before EM-G10. Merges dark | S | §12.3.9b |
 | **EM-G8** | 🟢 AGENT-SAFE · visual review | The connect UI: availability, copy, the Workspace admin help (GM-24, GM-26, GM-27) | After EM-G7 (E-D1). Merges dark | M | §12.3.10 |
 | **EM-G9** | 🟢 AGENT-SAFE · R8 | Parity of a Gmail and Outlook pair, and the known limits | After EM-G2 and EM-G3a | S | §12.3.11 |
-| **EM-G3c** | 🟢 AGENT-SAFE · visual review | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8) | After EM-G3a | M | §12.3.3b |
+| **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
@@ -7310,86 +7310,162 @@ also decide how often an autosave of a draft with files may run (§12.3.12).
 
 #### 12.3.3b EM-G3c — the size of a Gmail mail, and the autosave of a draft with files
 
-**Status.** 📝 SPECIFIED (2026-10-05). Not audited.
+**Status.** 📝 GO-NARROWED after the audit of 2026-10-05 (C1 to C21). The audit checked each anchor
+against the code on 2026-10-05. Not built. The audit split the slice into EM-G3c-1 (the backend)
+and EM-G3c-2 (the UI).
 
-**Gate.** 🟢 AGENT-SAFE. No migration, no column and no new flag. Gmail stays dark (D-EM-36).
+**Gate.** 🟢 AGENT-SAFE, both halves. No migration and no new flag. The backend stays dark with
+Gmail (D-EM-36). EM-G3c-2 changes the three composers, so it is LIVE for Outlook members, and it
+takes a visual review. The live measure moved to EM-G10 (§12.3.12), which is 🔴 OWNER-GATE.
 
-**Order.** After EM-G3a (#634). Before customers (§12.3.12). The owner's test does not need it.
+**Order.** After EM-G3a (#634) and after EM-T9 (§10.4.10). EM-T9 adds the first provider error of
+the draft routes, and EM-G3c-1 adds its second one beside it. EM-G3c-2 follows EM-G3c-1.
 
-**Size.** M. About 250 lines with tests.
+**Size.** L in all (C17). EM-G3c-1 is M, and EM-G3c-2 is M.
 
 **The problem (EM-G3a-f8, §12.3.3).** Three Gmail writes send the whole mail as base64url text in
-the JSON field `raw`, on the plain URI. They are `messages.send`, `drafts.create` and
-`drafts.update`. The reference pages of Google document no size limit for that plain request.
-Each of the three methods also has an upload URI (`/upload/gmail/v1/...`). The upload guide says
-that the upload URI is the path for a large mail.
+the JSON field `raw`, on the plain URI. The reference pages of Google document no size limit for
+that plain request. Each of the three methods also has an upload URI (`/upload/gmail/v1/...`), and
+the upload guide names it as the path for a large mail.
 
-The cost of an autosave is the second part of the problem. A Gmail update reads each file of the
-draft and sends it again (EM-G3a-f7). So one autosave of a draft with one 5 MB file sent 9.44 MB
-up and took 6.99 MB down.
+**The cost of an autosave.** A Gmail update reads each file of the draft and sends it again
+(EM-G3a-f7). So one autosave of a draft with one 5 MB file sent 9.44 MB up and took 6.99 MB down.
 
-**Measured facts (2026-10-05, from the code).**
+**The writes today (C3, C4).**
 
-- `create_draft` and `update_draft` post `{"message": {"raw", "threadId"}}` to
-  `/users/me/drafts` (`gmail.py:1164`, `:1209`).
-- The composer sends files only on the save before a send (`drafting.py:2167-2169`). Each later
-  update of that draft reads the files from Gmail and sends them again (`gmail.py:1200`).
-- Two composers autosave 1.2 seconds after each pause (`ComposePanel.tsx:252`,
-  `ConversationView.tsx:487`). Both `catch` blocks set the state to `idle`, so a failed save shows
-  nothing to the member.
+- `send_message` sends `POST /users/me/messages/send` with `{"raw", "threadId"}`
+  (`gmail.py:1120-1130`).
+- `create_draft` sends `POST /users/me/drafts` with `{"message": {"raw", "threadId"}}`
+  (`gmail.py:1164`).
+- `update_draft` sends `PUT /users/me/drafts/{id}` with the same body (`gmail.py:1209-1211`).
+  Before that, it reads `drafts.list`, the draft as `format=raw` and the thread
+  (`gmail.py:1199-1204`).
+- Each write uses `_get_client()` (`gmail.py:886-899`), with `base_url` `GMAIL_API_BASE`, a default
+  `Content-Type: application/json` and `GmailBearer`.
 
-**Scope.**
+**The callers today (C4, C5, C11).**
 
-1. **The upload URI for a mail with a file.** A built mail can hold one file or more. Then each of
-   the three writes goes to its upload URI with `uploadType=multipart`. The first part is the JSON
-   metadata (`threadId` for a draft or a send). The second part is the mail as `message/rfc822`.
-   A mail with no file keeps the plain URI and `raw`, so the fences of EM-G3a stay as they are.
-2. **One limit, checked before Google.** `GMAIL_MAIL_MAX_BYTES` is 25 MB of built mail, the limit
-   of Gmail for the files of one mail. A write over the limit raises `GmailMailTooLarge` before
-   any call to Google. The gateway answers 413 with `code: "mail_too_large"`.
-3. **Google's own refusal.** A 413 from Google, or a 400 whose reason names the size, also raises
-   `GmailMailTooLarge`. The gateway answers the same 413. A send is never retried (EM-G4a).
-4. **The autosave of a draft with files.** The composer keeps 1.2 seconds for a draft with no
-   file. For a draft that holds a file, it waits 10 seconds after the last edit. A save on close
-   and the save before a send still run at once, so no edit is lost.
-5. **A failed autosave shows.** Each composer shows "Not saved" when a save fails, and
-   "Too large to save" on a 413 with `code: "mail_too_large"`. The next edit tries again.
-6. **The live measure (EM-G10).** The owner's test mailbox measures one fact: does
-   `drafts.update` on the plain URI accept a mail of 6 MB? The answer goes into §12.3.3. It changes
-   no code, because item 1 already sends each mail with a file to the upload URI.
+- The composer sends files only on the save before a send
+  (`apps/services/gateway/gateway/routes/email/automation/drafting.py:2167-2169`). The send route
+  is `apps/services/gateway/gateway/routes/email/transport/send.py:175`.
+- Three composers autosave 1.2 seconds after each pause: `ComposePanel.tsx:252`,
+  `ConversationView.tsx:487` and `EmailDetail.tsx:312-358`. Each `catch` sets the state to `idle`.
+- No composer saves on close. The close paths drop the pending timer (`ComposePanel.tsx:361`,
+  `:370`, `EmailDetail.tsx:267`, `:1174`, and the unmount at `ConversationView.tsx:488`).
+
+**The cut of the proxy (C13).** Next 16.2.6 cuts a request body over 10,485,760 bytes
+(`experimental.proxyClientMaxBodySize`). `next.config.ts` does not set it, and `src/proxy.ts:124`
+matches `/api/*`. The cut route reads `{}` and answers 422 (`project_import.md:838`). So the
+base64 of all files of one request must stay under the cut, for each provider.
+
+**Scope of EM-G3c-1, the backend.**
+
+1. **One builder, two forms (C6).** `_build_gmail_raw` (`gmail.py:742-790`) splits into a builder
+   of the RFC 5322 bytes and a base64url wrapper. So one builder stays (GM-10).
+2. **The upload URI (C6).** A write goes to its upload URI in two cases. The mail holds a file, or
+   the built mail is over 1 MiB. The test reads the files AFTER the read-back of `update_draft`
+   (`gmail.py:1200`), not the `attachments` argument. A smaller mail with no file keeps the plain
+   URI and `raw`.
+3. **The upload request (C6).** The URI is absolute: `GMAIL_UPLOAD_BASE` +
+   `/users/me/{messages/send | drafts | drafts/{id}}?uploadType=multipart`. The request keeps
+   `_get_client()`, so `GmailBearer` and the EM-G4a seam stay. It sets its own
+   `Content-Type: multipart/related; boundary=<random>`, and it never uses `files=`.
+4. **The parts (C6).** Part 1 is `application/json; charset=UTF-8`. For `messages.send` it holds
+   `{"threadId": T}`. For the two draft writes it holds `{"message": {"threadId": T}}`. Part 2 is `message/rfc822`, with the raw bytes of the mail and no base64url.
+5. **One limit (C8).** `GMAIL_MAIL_MAX_BYTES` is 36,700,160 bytes (35 MiB) of built mail. That is
+   the `maxSize` of the media upload in the Gmail discovery document. The build checks it again
+   with one public GET of that document. A write over the limit raises before its write request.
+   An update still makes its reads first.
+6. **The error (C9).** `ProviderMailTooLarge` is a new class in `base.py`, beside
+   `ProviderRateLimited` and the class of EM-T9. `GmailMailTooLarge` is its subclass. A 413 from
+   Google raises it too, read from the status code only, because Google can answer with HTML.
+7. **The routes (C9).** A sibling of `_draft_changed_upstream` (`drafting.py:2125-2139`) answers
+   413 with a string detail, as `drafting.py:2126` does. It wraps `PUT /email/drafts`
+   (`drafting.py:2216-2234`, `:2265-2275`), the signed send (`drafting.py:2356-2387`) and
+   `POST /email/send` (`send.py:175-185`). The text is "This mail is too large to send."
+8. **One try for a send (C10).** The upload POST of `messages.send` and of `drafts.create` gets one
+   try (`_repeatable`, `gmail.py:334-343`). The PUT of `drafts.update` keeps its retry on a 429.
+9. **The fakes (C7).** Six fences of EM-G3a send a file and read `raw` from a JSON body
+   (`test_gmail_send_and_drafts.py:408`, `:433`, `:779`, `:800`, `:966`, `:1302`). The fake
+   `_Gmail.handle` (`:216-241`) parses an upload into the same `sent` and `saved` record. So the
+   six keep their assertions. `test_gmail_rate_limits.py:87-114` gets the same change.
+
+**Scope of EM-G3c-2, the UI.**
+
+10. **The pick limit (C13).** Each composer refuses a pick that makes the files of one mail pass
+    7,500,000 bytes, with a reason, as `importFlow.ts:39-45` does. The base64 of 7,500,000 bytes
+    stays under the cut of the proxy. The reason is "Files can be 7.5 MB in all, at most."
+11. **The flush (C11).** A pending save runs at once on a close, on a switch to another mail and on
+    an unmount, in each of the three composers.
+12. **The wait (C11).** For a Gmail draft that holds a file, the composer waits 10 seconds after
+    the last edit. Every other draft keeps 1.2 seconds. ConversationView reads
+    `draft.hasAttachments`. ComposePanel and EmailDetail read `hasAttachments` of the row that the
+    last save returned (`drafting.py:2142-2153`, sticky at `:2049-2052`). One pure helper in
+    `src/app/email/lib/` returns the wait, and the three composers call it.
+13. **A failed save shows (C12).** The three status unions (`ComposePanel.tsx:120`,
+    `ConversationView.tsx:397`, `EmailDetail.tsx:137`) get "Not saved", and "Too large to save" on
+    a 413. The text uses `text-destructive`, never `text-red-500` (conformance rule 5). The next
+    edit tries again.
+14. **A failed send shows (C12).** A 413 comes mostly on a send, because the save before a send
+    carries the files. `ConversationView.tsx:536-537` drops each send error, so it gets a slot for
+    a send error. Each composer shows the text of a 413 on a send.
 
 **Non-goals.** No resumable upload. No change to the Outlook or the IMAP write. No change to
-EM-G3a-f7 (an inline image of a draft made in Gmail web).
+EM-G3a-f7. No change to `actions.py`, which EM-G3b owns: its `except Exception` at
+`actions.py:609` already records the error. No higher cut in `next.config.ts`.
 
-**Fences (R7).** A new `tests/unit/test_gmail_mail_size.py`, plus two cases in the composer
-tests.
+**Known limit EM-G3c-f1 (C20).** The proxy stops `PUT /email/drafts` (`route.ts:156`) and
+`POST /email/drafts/send` (`postTimeout.ts:26`) after 30 seconds. A large signed send reads the
+mail and uploads it twice. When that passes 30 seconds, the member sees a 502, and the gateway
+still sends the mail.
+
+**Known limit EM-G3c-f2 (C21).** A send that a member tries again after a failed `drafts/send`
+adds each file twice. The composer sends the files again (`ComposePanel.tsx:332`,
+`EmailDetail.tsx:657`), and `update_draft` adds them to the files of the draft
+(`gmail.py:1200`). EM-T9-f1 records the same fault on Outlook, and one later slice owns both.
+
+**Fences of EM-G3c-1 (C14).** A new `tests/unit/test_gmail_mail_size.py`.
 
 - `test_a_draft_with_a_file_goes_to_the_upload_uri`
 - `test_a_draft_with_no_file_keeps_the_plain_uri`
+- `test_a_large_mail_with_no_file_goes_to_the_upload_uri`
 - `test_a_send_with_a_file_goes_to_the_upload_uri`
-- `test_a_mail_over_the_limit_raises_before_any_call`
+- `test_an_update_that_reads_back_a_file_goes_to_the_upload_uri`
+- `test_the_metadata_of_each_method_has_its_own_shape`
+- `test_a_reply_draft_with_a_file_keeps_its_thread_after_an_update`
+- `test_a_mail_over_the_limit_raises_before_the_write_request`
 - `test_a_413_from_google_raises_mail_too_large`
-- `test_the_route_answers_413_with_the_code`
-- the composer waits 10 seconds for a draft with a file, and shows "Not saved" on a failed save.
+- `test_an_upload_send_gets_one_try_on_a_429`
+- `test_each_route_answers_413_with_the_text` (the draft save, the signed send and the send)
 
-**Mutations.** M1 sends a draft with a file to the plain URI, and the first test fails. M2 moves
-the limit check after the call, and the limit test fails. M3 maps the 413 to a 500, and the route
-test fails. M4 sets the wait for a draft with a file to 1.2 seconds, and the composer test fails.
+**Fences of EM-G3c-2 (C14).** A `.test.ts` beside the helper of item 12, and a source fence that
+each composer calls the helper and flushes on close. Vitest runs `environment: "node"` with no DOM
+(`vitest.config.ts:17-18`), so the composer fences read the source, as `fromRow.test.ts:42-45`
+does.
 
-**Verify with.**
+**Mutations (C15).** M1 sends a draft with a file to the plain URI, and the first test fails. M2
+moves the limit check after the write, and the limit test fails. M3 maps the 413 to a 500, and the
+route test fails. M4 sets the wait of a draft with a file to 1.2 seconds, and the helper test
+fails.
+
+**More mutations (C15).** M5 routes on `attachments`, and the read-back test fails. M6 makes an
+upload send repeatable, and the one-try test fails. M7 removes the flush, and the flush fence
+fails.
+
+**Verify with (C16).**
 
 ```bash
-bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_gmail_mail_size.py tests/unit/test_gmail_send_and_drafts.py \
   tests/unit/test_gmail_rate_limits.py -v -rs
 uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
-  tests/unit/test_gmail_mail_size.py
-cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
+  tests/unit/test_gmail_mail_size.py tests/unit/test_gmail_send_and_drafts.py \
+  tests/unit/test_gmail_rate_limits.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/lib/theme/
 ```
 
-**Open for the audit.** (a) Does a multipart upload of `drafts.update` keep the `threadId`? (b) Is
-25 MB of BUILT mail the right limit, when base64 makes the files about one third larger? (c) Does
-the save on close exist in both composers today?
+**The open questions, answered (C18).** (a) The metadata carries `message.threadId`, and a fence
+pins it. The live proof joins EM-G10. (b) No. The limit is 35 MiB of built mail (item 5). (c) No
+composer saved on close, so item 11 adds the flush.
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
@@ -9303,6 +9379,8 @@ EM-G6a and EM-G6b are not needed (D-EM-32). The list "Before customers" below ho
     (`-in:inbox -in:sent -in:drafts`) and gives the archived mail.
 15. Read one mail with an ISO-8859-1 body. Record that `body.data` keeps the charset of its part,
     so the body shows with no U+FFFD.
+16. Save a reply draft with a file of 6 MB, then edit it in Metorite. Record that Gmail keeps
+    the draft in its thread, and keeps the file (EM-G3c C2, C18).
 
 **Evidence.** The log lines of each step, the row counts and the screenshots. Report each
 production act in the same message (CLAUDE.md §3a rule 2).
