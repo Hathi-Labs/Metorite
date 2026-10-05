@@ -67,9 +67,9 @@ reference tied to code. Do not put product specs in `docs/`.
   `department_centers.md` is now a design record (WS-13/14/15/16 parked).
 - **Apps** are the surfaces, in four sections: **Personal Center** (the
   per-user category, kept by name), **Apps**, **AI Studio**, **Admin**.
-  **Exactly ten panes are live** (eight until 2026-08-24, then D54's Calendar,
-  the owner's People and Email, and My Access moved into the People app on
-  2026-10-05).
+  **Exactly ten panes are live.** There were eight until 2026-08-24. D54 added
+  Calendar, the owner added People and Email, and on 2026-10-05 the owner moved
+  My Access into the People app.
   Every other pane is `preview` — routes,
   API and tests intact, nav entry absent. The allowlist of record is
   `specs/launch_surface.md` §2, mirrored in `src/lib/nav.ts`, and `nav.test.ts`

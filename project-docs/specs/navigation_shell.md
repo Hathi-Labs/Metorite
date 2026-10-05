@@ -161,8 +161,9 @@ an admin it adds Organisation and Approvals. My Profile and My access describe
 the member. The member does not work in them, so they leave the sidebar.
 
 **My Access moved first, on 2026-10-05.** The owner moved it into the People
-app, as the ungated "My access" tab at `/people/access`, beside My profile. The
-avatar menu links to that tab. It does not hold a second copy of the page.
+app, as the ungated "My access" tab at `/people/access`, beside My profile. When
+NS-2 builds the avatar menu, the menu links to that tab. It holds no second copy
+of the page.
 
 ---
 
@@ -335,7 +336,7 @@ the same ratchet as `conformance.test.ts`.
 | Projects | across | New task, New project | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
 | People | people | Request leave | the directory | — | Out today | — | None beyond the manifest |
 | My Profile | personal | — | — | — | — | — | Move to the avatar menu |
-| My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. The avatar menu links to it |
+| My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's avatar menu links to it |
 | Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |
 | Approvals | admin | — | — | `pending_actions` | Waiting for you | — | Its items feed the bell |
 | Organisation | admin | Invite a member | members | seat requests | — | — | Moves to the avatar menu |

@@ -119,10 +119,11 @@ fence is for.
 the sidebar and fold it into the People's app"). It is the "My access" tab of the
 People app, at `/people/access`, beside My profile.
 
-It is still ungated, because it is the page that explains a missing pane. `lib/access.ts` lists it in `ALWAYS_ALLOWED` by
-name, and the People layout shows the two personal tabs to a member without
-`feature:people`. `/access` redirects there. This is not a promotion and not a
-withdrawal. The page did not change what it shows, only where it lives.
+It is still ungated, because it is the page that explains a missing pane.
+`lib/access.ts` lists it in `ALWAYS_ALLOWED` by name, and the People layout shows the
+two personal tabs to a member without `feature:people`. `/access` redirects there.
+This is not a promotion and not a withdrawal. The page did not change what it shows,
+only where it lives.
 
 **"Personal Center" survives as a
 section label and nothing else.** It is a category of apps mapped one-to-one to

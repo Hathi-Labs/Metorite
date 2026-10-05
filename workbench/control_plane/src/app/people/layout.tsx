@@ -144,16 +144,19 @@ export function visibleTabs(directory: boolean, hr: boolean): TabDef[] {
 
 export default function PeopleLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "";
-  const { access } = useAccess();
+  const { access, loading } = useAccess();
 
   const visible = visibleTabs(
     access.features.includes("people"),
     hasCapability(access, "admin:members:read"),
   );
 
+  // ⚠️ Not while access resolves. `AccessProvider` starts at NO_ACCESS, which
+  // would draw the two personal tabs and then jump to the full bar, the same
+  // full-then-shrink shape `launch_surface.md` §8.1 forbids for the sidebar.
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {visible.length > 0 && (
+      {!loading && visible.length > 0 && (
         <Tabs
           tabs={visible}
           activeTab={activeTabFor(pathname)}
