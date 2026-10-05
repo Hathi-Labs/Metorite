@@ -75,3 +75,24 @@ def test_a_view_is_never_wrapped_twice():
     once = _tier2_tool_view(_agent_with([tool]), make_shim)
     twice = _tier2_tool_view(once, make_shim)
     assert twice is once
+
+
+def test_a_wrapped_platform_tool_keeps_its_egress_answer():
+    """H-236 trusts a platform tool by the identity of its callable. The shim
+    is a new callable, so it must inherit that trust. Otherwise a covered run
+    that falls back to Tier 2 withholds every platform tool it holds."""
+    from acb_skills.egress import is_egress_tool
+    from acb_skills.sandbox_tools import run_command
+
+    original = FunctionTool(name="run_command", description="Run a command.", func=run_command)
+
+    def make_shim(fn, name):
+        async def shim(*args, **kwargs):
+            return await fn(*args, **kwargs)
+        return shim
+
+    view = _tier2_tool_view(_agent_with([original]), make_shim)
+    (clone,) = view.default_options["tools"]
+    assert clone.func is not run_command
+    assert is_egress_tool(original) is False, "the fence needs a tool a covered run keeps"
+    assert is_egress_tool(clone) == is_egress_tool(original)

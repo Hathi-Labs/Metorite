@@ -106,6 +106,8 @@ def _tier2_tool_view(agent: Any, make_shim: Callable[[Any, str], Any]) -> Any:
     """
     import copy as _copy
 
+    from acb_skills.egress import _register_platform_wrapper
+
     opts = getattr(agent, "default_options", None)
     if not isinstance(opts, dict):
         return agent
@@ -123,7 +125,12 @@ def _tier2_tool_view(agent: Any, make_shim: Callable[[Any, str], Any]) -> Any:
             and name
             and not getattr(func, "__cc_tier2_shim__", False)
         ):
-            shim = make_shim(func, name)
+            # The egress rule (H-236) trusts a platform tool by the IDENTITY of
+            # its callable. A new shim is a new callable, so it must inherit
+            # that trust. Without this, a covered run on this path loses every
+            # platform tool (manage_todo_list, write_artifact, run_command, …).
+            # This module is in `orchestrator.*`, so the registry accepts it.
+            shim = _register_platform_wrapper(func, make_shim(func, name))
             try:
                 shim.__cc_tier2_shim__ = True
             except (AttributeError, TypeError):
