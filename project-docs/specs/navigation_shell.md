@@ -88,7 +88,7 @@ through one manifest, and no app builds its own copy.
 | `/dashboard` | A `ComingSoon` placeholder, and a `preview` pane | `src/app/dashboard/page.tsx` |
 | Desktop top bar | None in the shell. `AppShell` renders the sidebar and the page | `src/components/AppShell.tsx:158` |
 | App bar | `AppTopBar`, used by Projects and My Tasks. It holds "Search every project (⌘K)" | `src/components/AppTopBar.tsx` |
-| Search | Three palettes. Projects has `SearchPalette` and the command list `app/projects/lib/commands.ts`. My Tasks mounts the Projects palette. Email has its own `CommandPalette`. Three pages each hold a ⌘K listener | `app/projects/page.tsx:2635` · `app/tasks/page.tsx:180` · `app/email/page.tsx:678` · the key test `app/projects/lib/search.ts:143` |
+| Search | Three palettes. Projects has `SearchPalette` and the command list `app/projects/lib/commands.ts`. My Tasks mounts the Projects palette. Email has its own `CommandPalette`. Three pages each hold a ⌘K listener | `app/projects/page.tsx:2635` · `app/tasks/page.tsx:180` · `app/email/page.tsx:692` · the key test `app/projects/lib/search.ts:143` |
 | Bell | `NotificationBell` belongs to Projects. Projects and My Tasks mount it. Approvals has no badge | `app/projects/components/NotificationBell.tsx` |
 | Assistant | Three rails on the shared `AgentChat`: `task-manager`, `projects-assistant` and `email-assistant` | `app/tasks/components/AssistantRail.tsx` · `app/projects/components/AssistantRail.tsx` · `app/email/components/EmailAssistantChat.tsx` |
 | Personal rollup | None. No spec defined its content before this one | — |
@@ -319,14 +319,19 @@ sides, so no mirror can drift.
 `src/lib/shell/seams.test.ts` exists since 2026-10-05, ahead of NS-1. It
 sweeps `src/` and fails on these four:
 
-- a `metaKey` or `ctrlKey` handler for `k` outside `src/lib/shell/`
-- an import of `NotificationBell` outside the shell
-- a mount of `AgentChat` as a rail outside the dock and `/chat`
-- a `SearchPalette` or `CommandPalette` mount outside the shell
+- a ⌘K listener, in any of five spellings, with a modifier that is not negated
+- an import of `NotificationBell`, or a read of the notification list
+- an import of `AgentChat` or of a rail wrapper, except in `/chat`
+- an import of `SearchPalette` or `CommandPalette`
 
-The sweep starts with a baseline of today's sites, 14 in 8 files. The baseline
-only goes down, the same ratchet as `conformance.test.ts`. `src/lib/shell/` and
-`src/components/shell/` are exempt, because NS-1 builds the shell there.
+Imports, not JSX: an import cannot hide in a ternary or a renamed tag. It is
+also how the fence sees one app reuse another app's rail.
+
+The sweep starts with a baseline of today's sites, 18 in 4 apps. The debt is
+keyed by app folder, because D89's unit is the app, so a move inside one app
+is free. The baseline only goes down, the same ratchet as `conformance.test.ts`.
+`src/lib/shell/` is exempt, because NS-1 builds the shell there. It may hold one
+file per seam, so it cannot become a place to move an app's debt.
 
 **The spec half is R9** (`work_plan.md` §1). An app spec carries a "Shell
 manifest" section, and the spec-auditor refuses one without it.
@@ -606,7 +611,7 @@ Done when:
    shell's parts in `src/lib/shell/`, and adds no budget to `SEAM_DEBT`.
    With the flag on, only the shell's ⌘K listener fires. With the flag off,
    the three listeners at `app/projects/page.tsx:2635`, `app/tasks/page.tsx:180`
-   and `app/email/page.tsx:678` run as today. NS-9 deletes them.
+   and `app/email/page.tsx:692` run as today. NS-9 deletes them.
    Two tests pin the My Tasks listener today, `app/tasks/lib/searchHit.test.ts`
    and `app/tasks/lib/shortcuts.test.ts`. NS-1 keeps them green with the flag
    off, and NS-9 rewrites them.

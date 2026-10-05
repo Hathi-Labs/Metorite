@@ -271,11 +271,13 @@ Seven rules on top of the three above. Each one exists because it was broken:
    and a person saves it. The AI tier may fill the form, and it never saves.
    `project-docs/specs/navigation_shell.md` §5 is the contract, and §5.3 maps
    every live app onto it.
-   **Fence: `src/lib/shell/seams.test.ts`.** It fails on a ⌘K listener, a
-   `NotificationBell` import, an `<AgentChat>` rail or a palette mount. It
-   reads every file outside `src/lib/shell/` and `src/components/shell/`. Today's
-   sites sit in `SEAM_DEBT`, and each number only goes down.
-   ⚠️ **Do not add a file to `SEAM_DEBT` to make a new app pass.** If the app
+   **Fence: `src/lib/shell/seams.test.ts`.** It fails on a ⌘K listener, and on
+   an import of a bell, an assistant rail or a palette. That includes an
+   import of another app's rail or palette. It reads every file outside
+   `src/lib/shell/`, and it allows one file per seam inside it. The debt sits
+   in `SEAM_DEBT` per app folder, and each number only goes down. A move
+   inside one app is free.
+   ⚠️ **Do not add a key to `SEAM_DEBT` to make a new app pass.** If the app
    needs a missing shell part, build it once in `src/lib/shell/` (NS-1),
    for every app.
    From NS-2, `src/lib/nav.test.ts` will also fail on a live pane with no

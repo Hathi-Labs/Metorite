@@ -4702,7 +4702,8 @@ every UI change.
 
 **Fences:** `src/lib/nav.test.ts` (every live pane has a team and a purpose)
 and a new `src/lib/shell/seams.test.ts`, whose baseline only goes down (NS-1,
-NS-2).
+NS-2). *Pointer, 2026-10-05: `seams.test.ts` landed ahead of NS-1, keyed by
+app. R9 in §1 carries the spec half.*
 
 ---
 

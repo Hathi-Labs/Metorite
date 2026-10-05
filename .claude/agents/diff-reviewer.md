@@ -34,7 +34,9 @@ than no review.
    Copilot runtime; UI under `workbench/`; secrets never in agent/skill repos.
    An app that builds its own shell part is a placement defect too (D89). Look
    for a palette, a bell, an assistant rail, a ⌘K listener or a top bar inside
-   an app. Look for any new entry in `SEAM_DEBT` of `src/lib/shell/seams.test.ts`.
+   an app. Look for a new key or a higher number in `SEAM_DEBT` of
+   `src/lib/shell/seams.test.ts`. Look for a second file per seam in
+   `src/lib/shell/`.
    The test cannot see a top bar, so you must.
 6. **Durable state in the wrong place.** Deploy git-resets the tree, so tracked
    runtime files are wiped. Runtime state belongs in Postgres, not in files.
