@@ -45,10 +45,11 @@ All providers implement the `BaseEmailProvider` abstract interface:
   delta after the sweep, and Gmail and IMAP ignore it.
 - `import_batches(since, until, size)` — the import in lists, newest first
   across every folder (WS-17 EM-T6b). The default of the base class calls a
-  deep `sync_messages`, then sorts and cuts. Outlook merges one page stream
-  for each folder, and reads the next page of a folder only when that folder
-  held the newest head. It awaits `on_estimate` once with the sum of the
-  folder counts, or with `None`.
+  deep `sync_messages`, then sorts and cuts, and only IMAP uses it. Outlook
+  merges one page stream for each folder, and reads the next page of a
+  folder only when that folder held the newest head. It awaits `on_estimate`
+  once with the sum of the folder counts, or with `None`. Gmail pages one
+  list of all mail (contract 12).
 - `get_attachment()`
 
 ## Key Contracts
@@ -255,6 +256,32 @@ All providers implement the `BaseEmailProvider` abstract interface:
       opens an attached mail into its parts in `format=full`. Do not walk
       into a `message/*` part. It is one file, and the builder puts it in
       as a mail part (review round 2).
+
+12. **The Gmail import (WS-17 EM-G5a).** `GmailProvider.import_batches`
+    pages one `messages.list` of all mail. Do not put back a list for each
+    label. Fence: `tests/unit/test_gmail_import.py`, and the R8 case in
+    `TestTheImportOnARealDatabase` of `test_email_import_batches.py`.
+    - The list sends `includeSpamTrash=true`, no `labelIds`, and
+      `q=after:<floor> before:<bound>` in epoch seconds. So archived mail
+      with no label comes too, and a message with two labels comes once.
+    - The bound of a resume is the whole second of `until`, plus 1 second,
+      as for Outlook. A message newer than `until` drops, and a message
+      older than the floor drops too.
+    - Each page is one batch, sorted again newest first. The page fetches
+      its ids in parallel, `GMAIL_IMPORT_FETCHES` (10) at once, and each id
+      once in the whole import.
+    - Each page gathers every fetch before it yields. A raise cancels the
+      other fetches of the page, and waits for them. So the storage limit
+      closes the import with no fetch in flight.
+    - A 5xx or a transport error on a fetch fails the import, and the next
+      cycle resumes. A 404, another 4xx or a parse error keeps its record
+      (contract 9), and the batch goes on.
+    - `on_estimate` gets the `resultSizeEstimate` of the first answer once,
+      before the first fetch. `IMPORT_MAX_PAGES` (5000) ends the import and
+      logs `gmail.import_capped`.
+    - The import never calls `sync_messages(deep=True)`. `_deep_sweep`
+      stays for a direct call. `import_full_snapshot` stays False, so no
+      Gmail import reconciles (EM-G5b, not built).
 
 ## Inbound SMTP Server
 

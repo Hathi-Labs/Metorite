@@ -57,6 +57,10 @@ import email_ingestion.scheduler as sched
 from acb_auth.roles import UserContext, UserRole
 from acb_common import get_settings
 from acb_common.db import bind_tenant, clear_tenant, release_tenant
+
+# Import it before the ``gmail`` fixture swaps ``httpx.AsyncClient``:
+# ``openai``, which it imports, subclasses that class at import.
+from acb_llm import key_store as _key_store
 from email_ingestion.providers.base import (
     EmailAddress,
     EmailFolder,
@@ -64,7 +68,7 @@ from email_ingestion.providers.base import (
     SyncResult,
     canonical_folder,
 )
-from email_ingestion.providers.gmail import GmailProvider
+from email_ingestion.providers.imap import IMAPProvider
 from email_ingestion.providers.outlook import OutlookProvider
 from gateway.routes.email.transport import accounts
 from sqlalchemy import text
@@ -83,6 +87,11 @@ from tests.unit.test_email_sync_one_at_a_time import (
     _code_files,
     _innermost_function,
 )
+
+# ``gmail`` is a fixture, used by name, so the import is load-bearing even
+# though it reads as unused (WS-17 EM-G5a).
+from tests.unit.test_gmail_import import _Gmail, gmail  # noqa: F401
+from tests.unit.test_gmail_import import _provider as _gmail_provider
 
 # ``promoted`` and ``app_engine`` are used by name for fixture injection, so
 # the import is load-bearing even though it reads as unused.
@@ -676,13 +685,15 @@ def test_the_import_cap_is_far_above_the_deep_sweep() -> None:
 
 
 async def test_the_default_import_sorts_cuts_and_drops_mail_newer_than_until() -> None:
-    """Gmail and IMAP use the default of ``BaseEmailProvider`` (item 1)."""
+    """IMAP uses the default of ``BaseEmailProvider`` (item 1). Gmail has its
+    own import since EM-G5a (``test_gmail_import.py``)."""
     def _m(pid, at):
         return EmailMessage(provider_message_id=pid, thread_id=None,
                             folder="inbox", received_at=at)
 
     until = T0 - timedelta(hours=1)
-    p = GmailProvider({"access_token": "x", "refresh_token": "y"})
+    assert "import_batches" not in vars(IMAPProvider)
+    p = IMAPProvider({"host": "imap.example.org", "username": "u", "password": "p"})
     p.sync_messages = AsyncMock(return_value=SyncResult(messages=[  # type: ignore[method-assign]
         _m("b", T0 - timedelta(hours=3)), _m("new", T0), _m("none", None),
         _m("a", until), _m("c", (T0 - timedelta(hours=2)).replace(tzinfo=None)),
@@ -1709,6 +1720,78 @@ class TestTheImportOnARealDatabase:
             # upsert keeps one row. The count and the estimate both hold it.
             assert done["import_count"] == 251 == done["import_estimate"]
             assert done["import_reached_at"] == mail[-1].received_at
+        finally:
+            release_tenant(token)
+            _drop(p.admin_engine, account_id)
+
+    async def test_a_gmail_first_import_writes_the_estimate_and_resumes_below_it(
+        self, promoted, app_engine, gmail, monkeypatch,  # noqa: F811
+    ):
+        """WS-17 EM-G5a (spec §12.3.6.1). A real Gmail provider on the fake of
+        ``test_gmail_import.py`` imports through ``_sync_account``.
+
+        1. The first import writes the ``resultSizeEstimate`` of the first
+           answer as ``import_estimate`` (item 5). A 503 on one fetch of the
+           third page fails the import (E-G5-4). Two batches stay, and
+           ``import_reached_at`` is the oldest mail of the second.
+        2. The next cycle resumes. Its list sends ``before:`` the second
+           after ``import_reached_at`` (item 3, E-G5-3). It reads no newer
+           mail again, and the import ends ``done``."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        account_id = _seed_account(p.admin_engine, org=p.org_b,
+                                   owner="b@em-g5a.test")
+        _set(p.admin_engine, account_id, provider="gmail",
+             import_since=now - timedelta(days=30))
+        mail = [(f"g-{k:04d}", now - timedelta(minutes=10 * k + 1))
+                for k in range(250)]
+        for mid, at in mail:
+            gmail.add(mid, at, "INBOX")
+        gmail.add("g-old", now - timedelta(days=40), "INBOX")
+        answer = gmail.mail["g-0210"]
+        gmail.answers["g-0210"] = [
+            lambda _r: httpx.Response(503, json={"error": {"code": 503}}),
+            lambda _r: httpx.Response(200, json=answer)]
+
+        monkeypatch.setattr(_key_store, "get_key_store", lambda: _Store())
+        monkeypatch.setattr(sched, "build_provider",
+                            lambda name, creds: _gmail_provider())
+        app_dsn = p.app_url.render_as_string(hide_password=False)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(app_dsn):
+                first = await sched._sync_account(account_id,
+                                                  organization_id=p.org_b)
+                assert "error" in first, first
+                broken = _progress(p.admin_engine, account_id)
+                assert broken["import_estimate"] == 250, (
+                    "the estimate is not the resultSizeEstimate of Gmail")
+                assert broken["rows"] == 200
+                assert broken["import_phase"] == "importing"
+                assert broken["initial_sync_done"] is False
+                reached = broken["import_reached_at"]
+                assert reached == mail[199][1]
+                [floor_q] = gmail.lists[0]["q"]
+                assert floor_q.startswith("after:") and "before:" not in floor_q
+                first_lists = len(gmail.lists)
+
+                second = await sched._sync_account(account_id,
+                                                   organization_id=p.org_b)
+            assert "error" not in second, second
+            assert gmail.lists[first_lists]["q"] == [
+                f"{floor_q} before:{int(reached.timestamp()) + 1}"], (
+                "the resume did not read below import_reached_at")
+            assert all(gmail.fetched[mid] == 1 for mid, _ in mail[:199]), (
+                "the resume read mail newer than the point it reached")
+            done = _progress(p.admin_engine, account_id)
+            assert done["rows"] == 250
+            assert done["initial_sync_done"] is True
+            assert done["import_phase"] == "done"
+            # The message at the resume point is written twice, and the
+            # upsert keeps one row. The count and the estimate both hold it.
+            assert done["import_count"] == 251 == done["import_estimate"]
+            assert done["import_reached_at"] == mail[-1][1]
         finally:
             release_tenant(token)
             _drop(p.admin_engine, account_id)

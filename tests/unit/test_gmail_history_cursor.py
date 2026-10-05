@@ -215,10 +215,13 @@ def _labels_event(event: str, mid: str, *labels: str) -> dict[str, Any]:
 
 
 def _by_label(**ids: list[str]) -> Answer:
-    """``messages.list`` that answers each ``labelIds`` with its ids."""
+    """``messages.list`` that answers each ``labelIds`` with its ids. A list
+    with no ``labelIds`` is the list of all mail, as Gmail gives it: each id
+    of each label once. The import of EM-G5a sends that list."""
     def _answer(request: httpx.Request) -> httpx.Response:
         label = request.url.params.get("labelIds")
-        found = ids.get(label or "", [])
+        found = (ids.get(label, []) if label
+                 else list(dict.fromkeys(i for group in ids.values() for i in group)))
         return httpx.Response(200, json={"messages": [{"id": i} for i in found]})
     return _answer
 

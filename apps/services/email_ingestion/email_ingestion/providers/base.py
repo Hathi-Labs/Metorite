@@ -846,7 +846,8 @@ class BaseEmailProvider(ABC):
         ``on_estimate`` is awaited at most once, before the first list. This
         default never calls it. It calls ``sync_messages(deep=True,
         since=since)``, drops each message newer than ``until``, sorts and
-        cuts. Gmail and IMAP use it. Outlook merges its folders page by page.
+        cuts. IMAP uses it. Outlook merges its folders page by page, and
+        Gmail pages one list of all mail (WS-17 EM-G5a).
         """
         size = max(size, 1)
         result = await self.sync_messages(deep=True, since=since)

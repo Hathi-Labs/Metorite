@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2).
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). 🔨 **EM-G5a is BUILT, not merged (2026-10-05), branch `email-gmail-g5a`:** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). EM-G5b, the reconcile, waits for a new audit (§12.3.6.2).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -2768,8 +2768,8 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 **As built.**
 
 - `import_batches` takes the keyword `on_estimate`. Outlook awaits it once, before the first batch. The core then writes the estimate in a block of its own.
-- The default import of the base class does not call `on_estimate`. So Gmail and IMAP show a count and no estimate.
-  EM-G5 gives Gmail its own import with an estimate (§12.3.6).
+- The default import of the base class does not call `on_estimate`. So IMAP shows a count and no estimate.
+  EM-G5a gives Gmail its own import with an estimate (built 2026-10-05, not merged, §12.3.6.1).
 - Outlook counts only the folders whose first page opened. A missing folder adds no count and does not make the estimate NULL.
 - A resume writes the count so far plus the new count as the estimate. The import writes the message at the resume point again, and the count and the estimate both include it.
 - Outlook pages each folder by time (fix rounds 1 and 2). Each next page is a new query with `lt` the second after the oldest message of the last page, and the stream drops the ids that it read again. A `$skip` link shifted when a message moved out of a folder, and the import lost the message at the page edge.
@@ -2789,7 +2789,7 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 - Then, with no session open, Outlook looks up each candidate by `internetMessageId`, at most 50 for each folder. A message that Graph still has keeps its row, because the member moved it in the Outlook client. A failed lookup, or a row with no internet message id, keeps its row too. The trash checks `updated_at` again in its own block.
 - EM-T6d part 2 (#581) closed the follow-up of the EM-T6b review. `isFirstSyncPending` and `onboardingStage` check `syncEnabled`, so the panel does not freeze when the member turns sync off during the import.
 - `sync_messages` takes `catch_up`. Gmail and IMAP accept it and ignore it, so `gmail.py` and `imap.py` change by one argument each.
-  ⚠️ Gmail stores no history cursor today, so a pause loses Gmail mail. EM-G4 fixes it (§12.1 GM-16 to GM-18, §12.3.5).
+  EM-G4b (#632) fixed the loss of Gmail mail after a pause. Gmail now stores a history cursor, and a stale cursor sweeps back to the watermark (§12.1 GM-16 to GM-18, §12.3.5.2).
 - A deep sync of a member act writes no progress, also when the first import is not done. The next tick of the loop then runs the first import.
 - The `synced` result and `messages_synced` count the rows of the import and of the recurring sweep together.
 - Phase (c) and each batch of an import use one write, `_write_messages`.
@@ -6154,6 +6154,10 @@ change.
 > EM-G5a, EM-G9 and EM-G7b merge. EM-G5b, EM-G3b and EM-G3c move to "before customers" (§12.2,
 > §12.3.12).
 
+> **The split of EM-G5 (2026-10-05).** EM-G5a and EM-G5b take the place of EM-G5 (§12.3.6).
+> EM-G5a is 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g5a` (§12.3.6.1). EM-G5b is
+> ⛔ NO-GO until a new audit (§12.3.6.2).
+
 > **The slice names.** The slices are EM-G1 to EM-G10. §10.4.7 already uses the bare names G1 to
 > G5 for the gaps of EM-T6c, so the prefix keeps the two sets apart (R2).
 
@@ -7601,7 +7605,9 @@ this document.
 
 ##### 12.3.6.1 EM-G5a — the import
 
-**Status.** 📝 CLEARED by the audit of 2026-10-05, after E-G5-1 to E-G5-8 landed. Not built.
+**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g5a`. The audit of 2026-10-05
+cleared it after E-G5-1 to E-G5-8 landed. The as-built notes and the mutation table follow the
+verify block.
 
 **Gate.** 🟢 AGENT-SAFE · R8. No migration, no column and no flag. Gmail stays dark (D-EM-36).
 
@@ -7690,6 +7696,89 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 
 The R8 tests must show PASSED, with 0 skips. The count of `gmail.py` must stay at or below the
 count on main.
+
+**As built (2026-10-05, branch `email-gmail-g5a`).** The build follows items 1 to 5 and the rules
+E-G5-3 to E-G5-8. It adds no migration, no column, no table and no flag. Production holds no Gmail
+mailbox, and D-EM-36 keeps the Gmail connect dark.
+
+- **The list.** `GmailProvider.import_batches` sends `includeSpamTrash=true`, no `labelIds`, the
+  batch size as `maxResults` (500 at most), and `q=after:<floor> before:<bound>`. With no floor
+  and no bound, it sends no `q`.
+- **The window.** `_in_import_window` drops a message newer than `until` and a message older than
+  the floor. A message with no date stays, as in the base, and the core decides on it (EM-T6a).
+- **One fetch for each id.** `_fresh_ids` keeps the ids of the whole import in one set. So an id
+  that the list gives again at a page edge gets one fetch and one row.
+- **The fetch.** `_fetch_page` starts one task for each id, and a semaphore lets 10 run at once.
+  It gathers each task before it returns. When one task raises, it cancels the others and waits
+  for them. Each fetch goes through `get_message`, so the parse of EM-G2 and the rate limits of
+  EM-G4a apply.
+- **A failed fetch.** `_import_fetch` raises a spent rate limit at once. Each other failure leaves
+  its record through `_record_fetch_failure`. A 5xx or a transport error then raises
+  (`_transient`), and any other failure gives None.
+- **The estimate.** `_estimate_of` reads `resultSizeEstimate` as a whole number, or gives None.
+  The import awaits `on_estimate` after the first list answer and before the first fetch.
+- **The cap.** `IMPORT_MAX_PAGES` is 5000, 100 times the 50 pages of the deep sweep. At the cap
+  the import ends and logs `gmail.import_capped` with the pages and the count of messages.
+- **The label names.** The import loads the label names once, before the first fetch. So the
+  fetches of a page do not each read the label list.
+- **E-G5-7 and E-G5-8.** The comment of `_first_sweep` names known limit EM-G5-f1. The
+  docstrings of `sync_messages` and `_deep_sweep` say that the import does not call the deep sync.
+  The docstring of the default import in `base.py` says that only IMAP uses it.
+- **Two test fakes changed.** Two hermetic tests and two R8 tests of EM-G4b imported through the
+  label lists of the default import. `_by_label` in `test_gmail_history_cursor.py` now answers the
+  list of all mail with each id once, as Gmail does. The default-import test of
+  `test_email_import_batches.py` now uses IMAP, because Gmail does not use the default.
+- **The size.** The change to `gmail.py` has about 190 lines, and most of them are docstrings.
+  The new test file has 609 lines. Ruff finds 7 issues in `gmail.py`, the count on main.
+
+**The fences, as built.** `tests/unit/test_gmail_import.py` holds 21 cases. A fake Gmail on
+`httpx.MockTransport` answers the real `_get_client`. Its list honours `labelIds`,
+`includeSpamTrash`, `after:` and `before:`, so a mutation of the query changes what it gives.
+
+| Test | What it proves |
+|---|---|
+| `test_the_import_lists_all_mail_once_newest_first` (2 cases) | Eight messages of six kinds come once each and newest first, also when a page comes oldest first. Each list sends `includeSpamTrash=true` and no `labelIds`. |
+| `test_the_import_reads_archived_mail_with_no_label` | A message with no label comes, with the folder `archive` (GM-8). |
+| `test_a_message_with_two_labels_is_fetched_once` | A message with two user labels comes once, with one fetch. |
+| `test_an_id_listed_again_at_a_page_edge_is_fetched_once` | An id that the list gives again comes once, with one fetch. |
+| `test_the_import_fetches_in_parallel_at_most_ten_at_once` | A page of 30 ids runs 10 fetches at once, never more. |
+| `test_the_estimate_comes_from_result_size_estimate` (2 cases) | One call before the first fetch, with the value of the first answer, or None. |
+| `test_a_resume_passes_before` | The list sends `before:` the second after `until`. A message of that second that is newer than `until` drops. |
+| `test_a_resume_reads_the_second_it_reached_again` | A message 400 ms older than `until`, in the same second, comes (E-G5-3). |
+| `test_no_message_older_than_the_floor` | The list sends `after:` the floor. An older message drops, also when the list gives it. |
+| `test_a_transient_fetch_failure_fails_the_import` (2 cases) | A 503 and a transport error fail the import before the page yields (E-G5-4). |
+| `test_a_fetch_failure_that_stays_is_recorded_and_the_batch_goes_on` (3 cases) | The batch goes on after a 404, a 400 or a parse error, and each one leaves a record (E-G5-4). |
+| `test_a_rate_limit_cancels_the_other_fetches_and_raises` | A spent rate limit cancels the 4 other fetches and raises, with no fetch in flight (E-G5-5). |
+| `test_the_storage_limit_stops_the_import_with_no_fetch_in_flight` | `_run_import` writes the first batch with no fetch in flight, stops at the limit and reads no next page (E-G5-5). |
+| `test_the_import_cap_is_far_above_the_deep_sweep` | The cap is at least 25 times the 50 pages of the deep sweep (E-G5-6). |
+| `test_the_import_stops_at_the_page_cap_and_logs_it` | A list that never ends stops at the cap and logs `gmail.import_capped` (E-G5-6). |
+| `test_the_import_never_calls_the_deep_sync` | The import runs while `sync_messages` and `_deep_sweep` refuse each call (E-G5-8). |
+| R8 `test_a_gmail_first_import_writes_the_estimate_and_resumes_below_it` | On Postgres, through `_sync_account`, the estimate is 250. A 503 on page 3 fails the import at 200 rows. The resume sends `before:` the second after `import_reached_at`, and it ends `done` with 250 rows, a count of 251 and an estimate of 251. |
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against its named tests, with the
+database up. It then wrote back the original bytes of `gmail.py`, and the SHA-256 matched each
+time. Each mutation turned its named tests red. M9 to M12 are extra.
+
+| Id | Mutation (`gmail.py`) | Red tests |
+|---|---|---|
+| M1 | The list sends `labelIds` of `INBOX` | `test_the_import_reads_archived_mail_with_no_label` |
+| M2 | No call of `on_estimate` | both cases of the estimate test, and the R8 test |
+| M5 | `before:` with no 1 second | `test_a_resume_reads_the_second_it_reached_again`, and the R8 test |
+| M6 | A 5xx or a transport error gives None | both cases of `test_a_transient_fetch_failure_fails_the_import` |
+| M7 | `_fetch_page` returns at the first fetch that ends, and the others stay open | `test_the_storage_limit_stops_the_import_with_no_fetch_in_flight` |
+| M8 | The list sends no `includeSpamTrash` | both cases of `test_the_import_lists_all_mail_once_newest_first` |
+| M9 | A raise does not cancel the other fetches | `test_a_rate_limit_cancels_the_other_fetches_and_raises` |
+| M10 | No bound on the fetches at once | `test_the_import_fetches_in_parallel_at_most_ten_at_once` |
+| M11 | Gmail falls back to the default import | `test_the_import_never_calls_the_deep_sync` |
+| M12 | `IMPORT_MAX_PAGES` is 50 | `test_the_import_cap_is_far_above_the_deep_sweep` |
+
+M7 survived the first run. Each fetch of the fake took the same time, so all ten ended in one turn
+of the loop. The fake now gives each message its own time, as Gmail does, and M7 is red.
+
+**Verification (2026-10-05, a private database).** The pytest block above gave 317 passed and 0
+skipped. Each file whose name starts with `test_email_`, `test_gmail_` or `test_outlook_`, 145
+files, gave 2914 passed and 0 skipped. The first ruff line finds the 7 findings of `gmail.py`
+that main has, and none in the new test file. The second line of ruff passes.
 
 **Known limit EM-G5-f1 (E-G5-7).** `_first_sweep` still misses archived mail with no user label.
 It reads the user labels and five system labels, and no label reaches that mail. It runs only when
