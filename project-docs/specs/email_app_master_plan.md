@@ -1543,7 +1543,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 ✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). ✅ EM-T4b MERGED (#617, 2026-10-04, dark: cap 0, budget `log`). ✅ EM-T4a-2 PR-A MERGED (#621, 2026-10-04).
 
-EM-T4a-2 PR-B1, PR-B2 and PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+🔨 EM-T4a-2 PR-B1 BUILT, not merged (2026-10-05), branch `email-t4a2-prb1`. EM-T4a-2 PR-B2 and PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box. The dev-phase window of CLAUDE.md §3a does NOT open `EMAIL_LLM_BUDGET_MODE=enforce`. `enforce` holds back triage and drafts from a paying mailbox. So it is a product limit, and the owner decides it.
 
@@ -1761,7 +1761,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 ##### EM-T4a-2 — the decision core
 
-**Status (2026-10-05).** ✅ PR-A MERGED #621 (2026-10-04). PR-B1, PR-B2 and PR-B3 are not built.
+**Status (2026-10-05).** ✅ PR-A MERGED #621 (2026-10-04). 🔨 PR-B1 BUILT, not merged (2026-10-05), branch `email-t4a2-prb1`. PR-B2 and PR-B3 are not built. The PR-B1 notes follow the PR-A notes.
 
 The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The audit of 2026-10-05 read them again at `c26b67549`, and it split PR-B in three. The part adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
 
@@ -1915,6 +1915,47 @@ Two fakes of `_upsert_thread_status` in `test_email_reply_zero.py` now return Tr
 | The job reconciles the labels after a voided write | `[newer-inbound-in-b]` and `test_a_voided_write_reconciles_no_labels` |
 
 **Verified (2026-10-04).** On a private database, the Verify block gave 563 passed and 0 skipped. The 132 files `tests/unit/test_email_*.py` gave 2564 passed and 0 skipped. The ruff counts did not change: `replyzero.py` 23 and `test_email_automation_tenancy.py` 0.
+
+**PR-B1 as built (2026-10-05).**
+
+- `engine.py` has the two steps of the rule match. `read_rule_match(db, ...)` returns a `MatchRead`. It makes the reads of both modes in their old order. A learned pattern or a static condition decides there, with no model.
+- `ask_rule_match(read)` takes no `db`. It calls `_llm_pick_rule` or `_llm_pick_rules` unchanged, and it puts the matches in the old order.
+- `_match_email_to_rule`, `_match_email_to_rules_multi` and `classify_matches` keep their signatures. The first two run the two steps on one `db`, for the request paths of item 8.
+- The split form of `classify_matches` has three calls. `read_classification(db, ...)` runs the status-first step and the read step. `ask_rule_match` asks. `resolve_classification(db, ...)` runs the resolver with the plan of the read.
+- `_run_rules_job` opens Block R, then asks with no block open, then opens ONE Block W for the writes. The gap loop of `_maybe_classify_threads` has the same shape, with no stamp.
+- An `LLMUnavailable` from Block R, from the ask or from the resolver at the head of Block W skips the row. The row gets no apply and no stamp. The runner logs `email.classify_unavailable_skip` once, through `_classify_unavailable` (`runner.py`).
+- PR-B1 changes no prompt, tier, decision, SQL text, setting, flag or migration. The status asks stay where they were. In `on` of `email.thread_status`, the status-first ask runs in Block R and the ask after the match runs in Block W.
+
+**An agent decision (D16).** One handler covers Block R, the ask and Block W in each job. The old row block caught `LLMUnavailable` around the classify call only. Three handlers took `_run_rules_job` past the `C901` cap of 15.
+
+So an `LLMUnavailable` from the resolver now rolls Block W back, where before the job committed the block. Block W writes nothing before the resolver returns, so the result is the same. If a call in the apply raised `LLMUnavailable`, the row would now roll back and the job would go on. Before, the job stopped there. No call in the apply raises it (measured 2026-10-05).
+
+**Fences (R7).** All are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-no-session-across-the-match-ask`: `test_the_match_ask_runs_with_no_session_open`. It runs the runner, the runner in the multi-rule mode and the backfill, in `off`, `shadow` and `on` of `email.rule_match`. Each watched call carries a tag. Block W must be the next block after Block R, and it must hold each write. The companion is `test_the_match_fence_can_fail`.
+- `email-decision-core-steps`: `test_each_new_step_takes_db_and_opens_no_block`, with `test_the_step_fence_can_fail`. `test_both_jobs_call_the_split_form` refuses a composed form in a job body.
+- D-EM-8 and #110: `test_a_failed_match_ask_writes_nothing_and_stamps_nothing`, `test_an_undecided_resolver_writes_nothing_and_stamps_nothing` and `test_a_suppressed_match_stays_suppressed`.
+- R8: `TestTheSplitJobsWriteTheirOwnTenant`, six cases. Only the two model leaves are fakes.
+
+**The tests that moved.** Each patch of a composed name on a job path now patches `ask_rule_match`, or the read leaf `_load_rules`. No expected value changed. The patch of `resolve_conversation_status_matches` in `test_email_reply_zero.py` stays, because `resolve_classification` still calls it. PR-B2 moves it.
+
+**Mutations of PR-B1.** Each mutation ran against `test_email_automation_tenancy.py` on a real Postgres. After each one, the file came back to the blob of HEAD. A name in brackets is a case of the test.
+
+| Mutation | Red |
+|---|---|
+| The ask runs inside Block R of the runner | `test_the_match_ask_runs_with_no_session_open` [6 runner cases] and `test_a_suppressed_match_stays_suppressed` [2 runner cases] |
+| The ask runs inside Block R of the backfill | `test_the_match_ask_runs_with_no_session_open` [3 backfill cases] and `test_a_suppressed_match_stays_suppressed` [backfill] |
+| An `LLMUnavailable` from the ask stamps the row | `test_a_failed_match_ask_writes_nothing_and_stamps_nothing` [4 runner cases], and the R8 cases `test_an_undecided_email_is_not_stamped` (`test_email_decide_on.py`) and the two of `TestTheRunnerAtTheBudget` (`test_email_llm_cap.py`) |
+| The stamp moves out of Block W into its own block | `test_the_match_ask_runs_with_no_session_open` [6 runner cases] |
+| The read step opens a block, through an alias of the seam | `test_each_new_step_takes_db_and_opens_no_block` [read_rule_match] and `test_the_match_ask_runs_with_no_session_open` [9 cases] |
+| `resolve_classification` drops the suppressed flag | `test_a_suppressed_match_stays_suppressed` [3 cases] |
+| Block W applies the matches of the ask, not those of the resolver | `test_a_suppressed_match_stays_suppressed` [2 runner cases] |
+
+**A gap that a mutation found.** The first run of "the read step opens a block" stayed green. The plant imported the seam under another name, so the step fence did not see it. The step fence now refuses each `async with` and each import of a session opener in a step. The job fence now needs Block W to be the next block after Block R.
+
+**Verified (2026-10-05).** On the scratch database, the Verify block gave 755 passed and 0 skipped, with each R8 file in a run of its own. The 14 files with no R8 case gave 328. The six R8 files gave 87, 147, 73, 10, 76 and 34. At `c26b67549` the same runs gave 720 passed. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0.
+
+The diff holds 559 lines that are not in a test or a document (362 added and 197 removed). The 134 files `tests/unit/test_email_*.py` in one run gave 2655 passed and 66 errors at setup. Each error is in an R8 file that PR-B1 does not change, where the fixture of one file met the database of another. Run alone, three of those four files passed. `test_email_otp_token.py` still fails at setup when it runs alone, because a table of the scratch database is at the limit of 1600 columns.
 
 ##### EM-T4a-3 — the action tail on the sync path
 
