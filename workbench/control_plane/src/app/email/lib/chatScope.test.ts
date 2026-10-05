@@ -313,7 +313,12 @@ describe("email-chat-picker-dot", () => {
     const options = chatPage.slice(start, chatPage.indexOf("[emailAccounts],", start));
     expect(start).toBeGreaterThan(-1);
     expect(options).not.toMatch(/\baccent\b/);
-    expect(chatPage).not.toMatch(/\bnotice=/);
+    // /chat sends no mailbox note. Its one note is the recovery note after a
+    // refused chat moved to a new one (2026-10-05, lib/railSessions.ts).
+    // Exactly one `notice=`, and it is the recovery note.
+    expect(chatPage.match(/\bnotice=/g) ?? []).toHaveLength(1);
+    expect(chatPage).toMatch(/\bnotice=\{\s*recoveryNotice\b/);
+    expect(chatPage).not.toMatch(/\bscopeNotice\b|rememberChatScope/);
   });
 
   it("passes the options with their dots to the picker", () => {
@@ -403,7 +408,9 @@ describe("email-chat-removed-note", () => {
     expect(chat).toContain("const nextScopeMemory = rememberChatScope(scopeMemory, accounts, pickerId);");
     expect(chat).toContain("if (nextScopeMemory !== scopeMemory) setScopeMemory(nextScopeMemory);");
     expect(chat).toContain("onDismiss: () => setScopeMemory((m) => (m ? { ...m, note: null } : m)),");
-    expect(chat).toContain("notice={scopeNotice}");
+    // One note at a time: the recovery note (a refused chat moved to a new
+    // one, 2026-10-05) takes the slot, and the mailbox note shows otherwise.
+    expect(chat).toContain("notice={recoveryNotice ?? scopeNotice}");
     const agent = codeOnly(read("../../components/AgentChat.tsx"));
     expect(agent).toContain("notice?: { text: string; onDismiss?: () => void } | null;");
     const at = agent.indexOf("{notice && (");

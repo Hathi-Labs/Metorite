@@ -999,7 +999,7 @@ async def _guard_run_thread(user: UserContext, thread_id: str | None) -> None:
         _resolve_room, thread_id, getattr(user, "email", "") or "", org,
     )
     if room is not None and not room.can_send:
-        raise HTTPException(status_code=403, detail=room.denied("send messages"))
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("send messages"))
     await _prepare_if_new_thread(room, thread_id, org)
 
 
@@ -2038,7 +2038,7 @@ async def run_agent_stream_endpoint(
         _resolve_room, req.thread_id or "", actor_email, _room_org,
     )
     if room is not None and not room.can_send:
-        raise HTTPException(status_code=403, detail=room.denied("send messages"))
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("send messages"))
 
     agent_name = _address_agent(req, room, _room_org)
     # Org access control, enforcement seam 2: the picker is filtered, but the

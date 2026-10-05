@@ -7,22 +7,19 @@
  * agent — the exact pattern of the email app's EmailAssistantChat: streaming,
  * tool rendering, recovery, persistence, and compaction all come from the
  * shared chat infrastructure; this wrapper only
- *   1. manages the task-manager session list (shared @/lib/sessions store,
- *      scoped to agentName="task-manager" — the SAME conversations the main
- *      chat app sees),
+ *   1. manages the task-manager session list (`useAgentSessions`, scoped to
+ *      agentName="task-manager" — the SAME conversations the main chat app
+ *      sees — and to the signed-in member and org),
  *   2. feeds the agent the live My Tasks context (connected workspaces, current
  *      view, open item, inbox pressure) via buildTaskAssistantPersona,
  *   3. wires the My Tasks quick actions into the composer (user reviews & sends).
  */
 
 import Icon from "@/components/Icon";
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import AgentChat from "@/components/AgentChat";
-import {
-  getSessions, createSession, upsertSession, deleteSession,
-  enrichSession, fetchAndMergeSessionsFromDb, type ChatSession,
-} from "@/lib/sessions";
+import { useAgentSessions } from "@/hooks/useChatSessions";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useTaskStore } from "../lib/taskStore";
@@ -42,8 +39,6 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
 
   const activeRunIds = useActiveSessions();
 
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeId, setActiveId] = useState<string>("");
   const [showSessions, setShowSessions] = useState(false);
   const [pendingInput, setPendingInput] = useState<string | undefined>();
 
@@ -54,76 +49,31 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
     [memoryObjs],
   );
 
-  const taskSessions = useMemo(
-    () => sessions.filter((s) => s.agentName === AGENT),
-    [sessions],
-  );
-
-  // Restore the most recent task-manager session (or start one) on mount.
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    const existing = getSessions().filter((s) => s.agentName === AGENT);
-    if (existing.length > 0) {
-      setSessions(getSessions());
-      setActiveId(existing[0].id);
-    } else {
-      const s = createSession(AGENT);
-      upsertSession(s);
-      setSessions(getSessions());
-      setActiveId(s.id);
-    }
-  }, []);
-
-  // Merge sessions that live only in Postgres (cache clear, other device,
-  // or created from the main chat app).
-  useEffect(() => {
-    let cancelled = false;
-    fetchAndMergeSessionsFromDb()
-      .then((merged) => { if (!cancelled) setSessions(merged); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-  /* eslint-enable react-hooks/set-state-in-effect */
+  // The list is the signed-in member's in this org, and a restored chat the
+  // server refuses gives way to a new one (production bug, 2026-10-05).
+  const {
+    mine: taskSessions,
+    activeId,
+    activeSession,
+    newSession: openNewSession,
+    switchSession: openSession,
+    removeSession,
+    handleActivity,
+    onSessionRefused,
+    recoveredInput,
+    consumeRecoveredInput,
+    notice,
+  } = useAgentSessions(AGENT);
 
   const newSession = useCallback(() => {
-    const s = createSession(AGENT);
-    upsertSession(s);
-    setSessions(getSessions());
-    setActiveId(s.id);
+    openNewSession();
     setShowSessions(false);
-  }, []);
+  }, [openNewSession]);
 
   const switchSession = useCallback((id: string) => {
-    setActiveId(id);
+    openSession(id);
     setShowSessions(false);
-  }, []);
-
-  const removeSession = useCallback(
-    (id: string) => {
-      deleteSession(id);
-      const remaining = getSessions().filter((s) => s.agentName === AGENT);
-      setSessions(getSessions());
-      if (id === activeId) {
-        if (remaining.length > 0) {
-          setActiveId(remaining[0].id);
-        } else {
-          const s = createSession(AGENT);
-          upsertSession(s);
-          setSessions(getSessions());
-          setActiveId(s.id);
-        }
-      }
-    },
-    [activeId],
-  );
-
-  const handleActivity = useCallback(
-    (info: { firstUserMessage?: string; lastPreview?: string; messageCount: number }) => {
-      enrichSession(activeId, info);
-      setSessions(getSessions());
-    },
-    [activeId],
-  );
+  }, [openSession]);
 
   // Live My Tasks context — refreshed whenever the store or selection changes, so
   // "clarify this" / "process my inbox" need no ids from the user.
@@ -139,7 +89,6 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
     [items, selectedView, selectedItemId, settings],
   );
 
-  const activeSession = taskSessions.find((s) => s.id === activeId);
   const showQuickActions = !activeSession?.messageCount;
 
   return (
@@ -280,8 +229,13 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
             memoryUserId={userId}
             expectedMessageCount={activeSession.messageCount}
             onActivity={handleActivity}
-            pendingInput={pendingInput}
-            onPendingInputConsumed={() => setPendingInput(undefined)}
+            onSessionRefused={onSessionRefused}
+            notice={notice}
+            pendingInput={pendingInput ?? recoveredInput}
+            onPendingInputConsumed={() => {
+              setPendingInput(undefined);
+              consumeRecoveredInput();
+            }}
           />
         )}
       </div>
