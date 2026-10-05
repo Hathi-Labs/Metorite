@@ -465,14 +465,26 @@ def _put_times_out(request: httpx.Request) -> httpx.Response:
     raise httpx.ReadTimeout(f"timed out on {request.url}", request=request)
 
 
+def _marked(target: logging.Logger) -> list[logging.Filter]:
+    """The filters of this module on *target*."""
+    return [f for f in target.filters if getattr(f, "upload_url_filter", False)]
+
+
 @pytest.mark.parametrize("failure", [
     [None, 500], [None, _put_times_out], [None, None, 503]],
     ids=["second-put-500", "second-put-timeout", "last-put-503"])
 async def test_the_upload_token_never_reaches_a_log_or_a_traceback(
-        wire, caplog: pytest.LogCaptureFixture, failure: list[Any]) -> None:  # noqa: F811
+        wire, caplog: pytest.LogCaptureFixture,  # noqa: F811
+        monkeypatch: pytest.MonkeyPatch, failure: list[Any]) -> None:
     """M5 and M6. httpx logs each request at INFO with its full URL, and the
     gateway logs at INFO. The token in the query of the upload URL must not
-    reach a record, the text of the error, or a traceback."""
+    reach a record, the text of the error, or a traceback.
+
+    litellm puts a redaction filter of its own on the ``httpx`` logger when it
+    loads, and this process loads it. So the test keeps only the filter of
+    this module on that logger, and the fence proves that filter alone."""
+    target = logging.getLogger("httpx")
+    monkeypatch.setattr(target, "filters", _marked(target))
     caplog.set_level(logging.DEBUG)
     caplog.set_level(logging.DEBUG, logger="httpx")
     caplog.set_level(logging.DEBUG, logger="httpcore")
@@ -495,10 +507,6 @@ async def test_the_upload_token_never_reaches_a_log_or_a_traceback(
         assert UPLOAD_TOKEN not in text
         assert "authtoken" not in text
     assert exc.__cause__ is None and exc.__context__ is None
-
-
-def _marked(target: logging.Logger) -> list[logging.Filter]:
-    return [f for f in target.filters if getattr(f, "upload_url_filter", False)]
 
 
 def test_the_log_filter_is_installed_once(
