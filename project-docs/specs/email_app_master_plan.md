@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). EM-G5b, the reconcile, waits for a new audit (§12.3.6.2).
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). EM-G5b, the reconcile, waits for a new audit (§12.3.6.2). 🔨 **EM-G3b is BUILT, not merged (2026-10-05), branch `email-gmail-g3b`:** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -6391,6 +6391,10 @@ change.
 > Tests and docs only, with no SQL change. Four R8 fences prove "Also in", the draft dedupe and
 > the Sent-copy proof for a Gmail and Outlook pair.
 
+> **EM-G3b (2026-10-05).** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g3b`
+> (§12.3.4). A Gmail move to a user label files the message as `archive`, and the Gmail filters
+> show on the rules screen. No migration, no flag and no change to SQL text.
+
 > **D-EM-36 amended (orchestrator, 2026-10-05).** The flag flips for the owner's test after
 > EM-G5a, EM-G9 and EM-G7b merge. EM-G5b, EM-G3b and EM-G3c move to "before customers" (§12.2,
 > §12.3.12).
@@ -7301,9 +7305,10 @@ also decide how often an autosave of a draft with files may run (§12.3.12).
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
-**Status.** 🔨 IN BUILD (2026-10-05), branch `email-gmail-g3b`. The audit of 2026-10-05 gave
-GO-NARROWED. Its corrections are E-M1 to E-M13, E-F1 to E-F5 and E-V1 to E-V3, and the scope below
-holds each one. The audit checked each anchor against the code on 2026-10-05.
+**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g3b`. The audit of 2026-10-05
+gave GO-NARROWED. Its corrections are E-M1 to E-M13, E-F1 to E-F5 and E-V1 to E-V3, and the scope
+below holds each one. The audit checked each anchor against the code on 2026-10-05. The as-built
+notes and the mutation table are at the end of this section.
 
 **Gate.** 🟢 AGENT-SAFE. No migration, no flag and no change to SQL text.
 
@@ -7416,6 +7421,103 @@ uv run pytest tests/unit/test_gmail_move_and_filters.py tests/unit/test_email_un
 uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
   tests/unit/test_gmail_move_and_filters.py
 ```
+
+**As built (2026-10-05, branch `email-gmail-g3b`).** The build follows items 1 to 15 and the
+corrections of the audit. It adds no migration, no flag, no column and no SQL text. Production
+holds no Gmail mailbox, so no live mailbox changes.
+
+- **The move.** `GmailProvider.move_to_folder` reads the name with `canonical_folder`. Sent and
+  drafts raise `ValueError` before any request. Each other name that is no system folder goes to
+  `_user_label_id_for_move`.
+- **The system labels (E-M2, E-M3).** `_is_system_label_name` refuses a name in `_GMAIL_RESERVED`
+  and a name that starts with `CATEGORY_`, before any request. After `_ensure_label_id`, the move
+  also checks the id against the user labels. So a system label that Google adds later raises too.
+- **A failed label (E-M4).** When `_ensure_label_id` gives no id, the move raises `ValueError`.
+  `create_folder` raises the same class for the same case.
+- **The folder after a move.** Gmail also gives `None` for a system label name, because the move
+  refuses it. Item 5 names only sent and drafts, so this note makes item 5 complete.
+- **The helper (E-M6).** `local_folder_after_move` sits at the end of `base.py`. It calls the
+  method only on a `BaseEmailProvider`, so an `AsyncMock` fake makes no coroutine.
+- **The rule move (E-M12).** `_move_folder_action` in `actions.py` now holds the `MOVE_FOLDER`
+  branch. It asks the helper before the move, and a `None` answer raises before any provider call.
+  It calls `mirror_label` when the folder of the provider differs from `canonical_folder` of the
+  name. Only a Gmail user label does that. The complexity of `_apply_rule_actions` falls from 33
+  to 31.
+- **The PATCH (E-M8, E-M9).** `_folder_for_move` in `messages.py` builds the provider, asks the
+  helper and answers 400 for `None`. A provider that fails to build gives `canonical_folder(name)`.
+  The push then builds it again and logs the failure, as before. The push reuses the provider of
+  the folder step, and the complexity of `update_message` stays at 18.
+- **The no-op log (E-M11).** `_move_can_be_a_noop` is true when `REKEYS_MESSAGE_IDS` is `True`,
+  or when the class of the provider keeps `BaseEmailProvider.move_to_folder`. A test fake logs
+  nothing now.
+- **The filter list.** `list_filters` reads the labels only when a filter adds a user label. A
+  label id that is a system label name is no user label. The label token joins the names with
+  ", ", as Outlook does.
+- **The SQL (E-V1).** No statement changes its text. Only the values of `:f` and `:folder`
+  change.
+
+**The fences, as built.** `tests/unit/test_gmail_move_and_filters.py` holds 16 fences and 42
+cases, and all are hermetic. A fake Gmail on `httpx.MockTransport` keeps the labels of the mailbox
+and of each message.
+
+| Test | What it proves |
+|---|---|
+| `test_a_move_to_a_label_adds_it_and_removes_inbox` | One `modify` adds the user label and removes `INBOX`, `TRASH` and `SPAM`. The parse then files the message as `archive`. |
+| `test_a_move_to_a_new_label_creates_it_first` | A new name becomes a label before the `modify`, with its case and its "/". |
+| `test_the_folder_after_a_gmail_label_move_is_archive` (14 cases) | Gmail, the base and the helper give the folder of each name. The helper calls nothing on an `AsyncMock` fake or on a plain fake. |
+| `test_a_rule_move_stores_the_folder_of_the_provider` | The rule move stores `archive` and mirrors the label. A fake keeps the canonical key. A refused move makes no call and no write. |
+| `test_list_filters_maps_criteria_and_actions` | Three filters map to their name, their senders and their tokens, in order. An unknown label id shows as it is. A mailbox with no filter gives `[]` with no label read. |
+| `test_list_filters_answers_empty_on_a_403` | A plain 403 gives `[]` after one try. A 429 past the tries raises `GmailRateLimited`. |
+| `test_a_gmail_move_to_an_alias_hits_the_system_branch` (6 cases) | Each alias sends the request of its system folder and reads no label. |
+| `test_a_gmail_move_to_sent_or_drafts_is_refused` (4 cases) | Each name raises `ValueError` before any request. |
+| `test_a_move_to_a_system_label_name_is_refused` (6 cases) | A reserved name raises before any request. A system label outside the reserved set raises with no create and no `modify`. |
+| `test_a_failed_label_create_raises` | A create that Gmail refuses raises, and no `modify` goes out. |
+| `test_a_move_from_trash_to_a_label_removes_trash` | A message in Trash or Spam leaves for `archive`. |
+| `test_a_label_create_409_resolves_by_reread` | A 409 reads the labels again, and the move uses that label. |
+| `test_a_patch_move_stores_the_folder_of_the_provider` | The route builds the provider after the ownership read only, and stores `archive`. "Sent" answers 400 with no write and no request. A provider that fails to build stores the canonical key. |
+| `test_a_patch_move_keeps_the_case_of_the_name` | The provider gets "Cold Email", and a new Gmail label keeps that case. |
+| `test_the_restore_finds_a_gmail_label_move` | The restore moves the `archive` row of a rule label back to the Inbox. A refused rule label matches no row. |
+| `test_the_noop_log_still_fires_for_imap` | IMAP and a provider that re-keys log the no-op. A Gmail label move logs nothing. |
+
+**Mutations, as run (2026-10-05).** A script replaced one anchor for each mutation and ran the
+fence file. Then it restored the file with `git checkout`. Each time `git diff` was clean and the
+SHA-256 matched. Each mutation turned its fence red.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M1 | The label move drops `removeLabelIds` | 5 tests, with the label move test |
+| M2 | Gmail gives the label name from `folder_after_move` | 5 cases, with the folder test |
+| M3 | `list_filters` returns `[]` | the map test |
+| M4 | The move sends a new label name in lower case | 3 tests, with the new label test |
+| M5 | The rule move stores `canonical_folder` of the name again | the rule move test |
+| M5b | The rule move writes no mirror | the rule move test |
+| M6 | A plain 403 raises | the 403 test |
+| M6b | `list_filters` swallows `GmailRateLimited` | the 403 test |
+| M7 | The move reads the name with `.lower()` | 5 cases, with the alias test |
+| M8 | The move does not refuse sent and drafts | 2 cases of the sent and drafts test |
+| M9 | The move skips the check of a system label name | the 6 cases of the system label test |
+| M9b | The move skips the check against the user labels | the 6 cases of the system label test |
+| M10 | A failed label create returns with no error | the failed create test |
+| M11 | The label move removes `INBOX` only | 5 tests, with the Trash test |
+| M12 | A failed create reads no labels again | the 409 test |
+| M13 | The PATCH stores the name of the request | 2 tests, with the PATCH folder test |
+| M13b | The PATCH does not refuse a refused move | the PATCH folder test |
+| M13c | A provider that fails to build fails the PATCH | the PATCH folder test |
+| M14 | The PATCH sends the name with `.lower()` | the case test |
+| M15 | The restore compares with `canonical_folder` of the rule label | the restore test |
+| M16 | The no-op log fires only for a provider that re-keys | the IMAP test |
+| M16b | The no-op log fires for each provider, Gmail too | the IMAP test |
+| M17 | The helper calls `folder_after_move` on any provider | 17 cases, with the folder test |
+
+**Known limit EM-G3b-f4 (found in the build).** A PATCH move to a Gmail user label puts the label
+on the message in Gmail, and the row stores `archive`. The PATCH writes no mirror into
+`categories`, so the chip shows after the next sync. Item 8 does not ask for the mirror.
+
+**Known limit EM-G3b-f5.** The mirror of a rule move writes the name of the rule. When Gmail holds
+that label in another case, the next parse writes the name that Gmail holds.
+
+**Known limit EM-G3b-f6.** `canonical_folder` reads an empty name as `inbox`, so a Gmail move with
+an empty name now goes to the Inbox. Before the slice, Gmail did nothing for it.
 
 #### 12.3.5 EM-G4 — the history cursor, in two slices
 

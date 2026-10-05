@@ -463,6 +463,16 @@ async def test_a_patch_move_stores_the_folder_of_the_provider(
     assert db.params_of("UPDATE") == []
     assert fake.seen == []
 
+    # A provider that fails to build keeps the push best-effort: the row
+    # stores ``canonical_folder`` of the name, and the route still answers.
+    db = _Db()
+    _patch_route(monkeypatch, db, _provider())
+    monkeypatch.setattr(messages_mod, "_provider_for_message",
+                        AsyncMock(side_effect=HTTPException(status_code=400)))
+    await messages_mod.update_message(
+        "row-1", messages_mod.MessageUpdateModel(folder="Receipts"), user=USER)
+    assert db.params_of("folder = :folder")[0]["folder"] == "receipts"
+
 
 async def test_a_patch_move_keeps_the_case_of_the_name(
         fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
