@@ -177,7 +177,7 @@ async def test_the_chats_uploads_are_refused_and_agent_data_stays_home(runs) -> 
         escape = await wa.write_artifact("outputs/../../../x.md", "x")
         await _settle()
     assert "cannot write that chat's uploads" in upload.get("error", ""), upload
-    assert "escapes" in escape.get("error", ""), escape
+    assert "may not hold '..'" in escape.get("error", ""), escape
     # The sub-agent's own memory: its own dir, no link and no card.
     assert notes["path"] == "agent-data/welmont.md" and "download_url" not in notes
     assert (own / "agent-data" / "welmont.md").read_text(encoding="utf-8") == "a fact"
@@ -214,11 +214,8 @@ async def test_a_delegated_share_copies_the_file_into_the_chat(runs) -> None:
         with _sub_run() as own:
             (own / "outputs" / "reports").mkdir(parents=True)
             (own / "outputs" / "reports" / "summary.md").write_text(BRIEF, encoding="utf-8")
-            (own / "agent-data").mkdir(exist_ok=True)
-            (own / "agent-data" / "rows.csv").write_text("a,b", encoding="utf-8")
             first = await wa.share_artifact("outputs/reports/summary.md")
             second = await wa.share_artifact("outputs/reports/summary.md")
-            csv = await wa.share_artifact("agent-data/rows.csv")
             await _settle()
     copy = f"outputs/{slug}/reports/summary (1).md"
     assert [a["path"] for a in first["artifacts"]] == [copy], first
@@ -227,10 +224,107 @@ async def test_a_delegated_share_copies_the_file_into_the_chat(runs) -> None:
     assert (ws / copy).read_text(encoding="utf-8") == BRIEF
     # The same bytes again: the same copy, never a third file.
     assert [a["path"] for a in second["artifacts"]] == [copy], second
-    assert [a["path"] for a in csv["artifacts"]] == [f"outputs/{slug}/rows.csv"], csv
-    assert [c[2] for c in runs["cards"]] == [copy, copy, f"outputs/{slug}/rows.csv"]
-    assert [r[0] for r in runs["rows"]] == [copy, f"outputs/{slug}/rows.csv"]
+    assert [c[2] for c in runs["cards"]] == [copy, copy]
+    assert [r[0] for r in runs["rows"]] == [copy]
     assert {(r[1], r[2], r[3]) for r in runs["rows"]} == {(PA, f"o:{ORG_A}", t)}
+
+
+async def test_a_delegated_share_takes_only_its_own_outputs(runs) -> None:
+    """Fix round 1, P3. In a room, every member of the chat reads what the
+    chat holds. So a delegated share copies only a file of the sub-agent's
+    own ``outputs/``, never its memory (``agent-data/``) or a dotfile."""
+    t = new_thread()
+    with bound_run(ORG_A, agent=PA, thread=t, member=MEMBER) as ws, _sub_run() as own:
+        for rel in ("agent-data/NOTES.md", "outputs/.env", "outputs/.cache/x.md",
+                    "outputs/brief.md"):
+            (own / rel).parent.mkdir(parents=True, exist_ok=True)
+            (own / rel).write_text("SECRET" if "brief" not in rel else BRIEF,
+                                   encoding="utf-8")
+        memory = await wa.share_artifact("agent-data/NOTES.md")
+        dotfile = await wa.share_artifact("outputs/.env")
+        everything = await wa.share_artifact(".")
+        await _settle()
+    assert memory["artifacts"] == [] and "its own outputs/" in memory["error"], memory
+    assert dotfile["artifacts"] == [] and "its own outputs/" in dotfile["error"], dotfile
+    shown = [a["path"] for a in everything["artifacts"]]
+    assert len(shown) == 1 and shown[0].endswith("/brief.md"), everything
+    held = [p for p in (ws / "outputs").rglob("*") if p.is_file()]
+    assert [p.read_text(encoding="utf-8") for p in held] == [BRIEF], held
+
+
+#: A backslash, built so no string escape can turn into a control byte.
+_BACKSLASH = chr(92)
+
+
+@pytest.mark.parametrize("path", [
+    "outputs/../inputs/brief.pdf",      # the reviewer's repro
+    "reports/../../inputs/brief.pdf",
+    "./inputs/brief.pdf",
+    "/inputs/brief.pdf",                 # absolute, from the root of the dir
+    _BACKSLASH.join(["outputs", "..", "inputs", "brief.pdf"]),  # a Windows-shaped '..'
+    "outputs/./../inputs/brief.pdf",
+    "outputs/../agent-data/NOTES.md",
+])
+async def test_no_path_form_reaches_the_chats_upload(runs, path: str) -> None:
+    """Fix round 1, P1. The member's upload is ``inputs/<thread slug>/brief.pdf``.
+    No form of a delegated path replaces it, also with overwrite=True."""
+    from acb_skills.agent_paths import thread_slug
+
+    t = new_thread()
+    with bound_run(ORG_A, agent=PA, thread=t, member=MEMBER) as ws:
+        upload = ws / "inputs" / thread_slug(t) / "brief.pdf"
+        upload.parent.mkdir(parents=True)
+        upload.write_bytes(b"%PDF the member's own brief")
+        with _sub_run():
+            out = await wa.write_artifact(path, "FORGED", overwrite=True)
+            await _settle()
+    assert "error" in out and "refused" in out["error"], out
+    assert upload.read_bytes() == b"%PDF the member's own brief"
+    assert not (ws / "agent-data").exists() or not list((ws / "agent-data").rglob("*"))
+    assert runs["rows"] == [] and runs["cards"] == []
+
+
+async def test_a_url_encoded_dot_dot_stays_a_name_in_outputs(runs) -> None:
+    """No layer decodes a tool path, so ``%2e%2e`` is a folder name. The write
+    lands in the thread folder of the chat, and the upload keeps its bytes."""
+    from acb_skills.agent_paths import thread_slug
+
+    t = new_thread()
+    with bound_run(ORG_A, agent=PA, thread=t, member=MEMBER) as ws:
+        upload = ws / "inputs" / thread_slug(t) / "brief.pdf"
+        upload.parent.mkdir(parents=True)
+        upload.write_bytes(b"%PDF the member's own brief")
+        with _sub_run():
+            out = await wa.write_artifact("outputs/%2e%2e/inputs/brief.pdf", "X", overwrite=True)
+            await _settle()
+    assert out["path"] == f"outputs/{thread_slug(t)}/%2e%2e/inputs/brief.pdf", out
+    assert upload.read_bytes() == b"%PDF the member's own brief"
+
+
+async def test_a_same_named_file_of_another_size_is_never_read(runs, monkeypatch) -> None:
+    """Fix round 1, P3: the reuse check compares the size first."""
+    from acb_skills import safe_open
+    from acb_skills.agent_paths import thread_slug
+
+    t = new_thread()
+    reads: list[str] = []
+    real = safe_open.read_bytes
+
+    def spy(root: Any, rel: str, **kw: Any) -> Any:
+        reads.append(rel)
+        return real(root, rel, **kw)
+
+    with bound_run(ORG_A, agent=PA, thread=t, member=MEMBER) as ws, _sub_run() as own:
+        big = ws / "outputs" / thread_slug(t) / "brief.md"
+        big.parent.mkdir(parents=True)
+        big.write_bytes(b"x" * 100_000)
+        (own / "outputs").mkdir(parents=True, exist_ok=True)
+        (own / "outputs" / "brief.md").write_text(BRIEF, encoding="utf-8")
+        monkeypatch.setattr(safe_open, "read_bytes", spy)
+        out = await wa.share_artifact("outputs/brief.md")
+        await _settle()
+    assert [a["path"] for a in out["artifacts"]] == [f"outputs/{thread_slug(t)}/brief (1).md"]
+    assert f"outputs/{thread_slug(t)}/brief.md" not in reads, reads
 
 
 async def test_a_link_in_the_chats_folder_is_never_followed(runs) -> None:
@@ -256,6 +350,29 @@ async def test_a_link_in_the_chats_folder_is_never_followed(runs) -> None:
     assert "error" in out, out
     assert not list(elsewhere.iterdir()), "the write followed the link"
     assert runs["cards"] == [] and runs["rows"] == []
+
+
+async def test_a_delivery_holds_the_dir_lock_and_the_quota(sandbox, monkeypatch) -> None:  # noqa: F811
+    """Fix round 1, P3: a delegated write takes the broker's dir lock of the
+    chat's working dir, as the chat's own file tools do, and it refuses a
+    write while a container on that dir is over its quota."""
+    _cards(monkeypatch)
+    t = new_thread()
+    with bound_run(ORG_A, agent=PA, thread=t, member=MEMBER) as ws, _sub_run():
+        lock = sandbox.broker._lock_for(ws.resolve())
+        await lock.acquire()
+        task = asyncio.ensure_future(wa.write_artifact("reports/held.md", BRIEF))
+        await asyncio.sleep(0.2)
+        assert not task.done(), "the write did not wait for the dir lock"
+        assert not list((ws / "outputs").rglob("held.md"))
+        lock.release()
+        held = await task
+        monkeypatch.setattr(sandbox.broker, "writes_refused", lambda w: w == ws.resolve())
+        refused = await wa.write_artifact("reports/full.md", BRIEF)
+        await _settle()
+    assert held["path"].endswith("/reports/held.md"), held
+    assert "over its quota" in refused.get("error", ""), refused
+    assert not list((ws / "outputs").rglob("full.md"))
 
 
 async def test_the_chats_sandbox_sees_the_document_at_workspace_outputs(

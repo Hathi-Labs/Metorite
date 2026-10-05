@@ -4406,9 +4406,9 @@ top. A batch run is no target, so its sub-run keeps its own dir.
 | Tool of the delegated run | What it does now |
 |---|---|
 | `write_artifact`, a path in `outputs/` or in no folder | Writes into the thread folder of the chat (H-227). The card, the link and the blob row name the chat. |
-| `write_artifact`, a path in `inputs/` | Refuses. A file there reads as an upload of the member. |
+| `write_artifact`, a path that resolves anywhere else in the chat's dir | Refuses. A file in `inputs/` reads as an upload of the member, and `agent-data/` is the memory of the chat's agent. |
 | `write_artifact`, a path in `agent-data/` | Writes into the dir of the sub-agent, as before. It shows no card and no link, because no chat can open that dir. |
-| `share_artifact` | Copies the file into the thread folder of the chat, and shows the copy. The same bytes again use the same copy. |
+| `share_artifact` | Copies a file of the sub-agent's own `outputs/` into the thread folder of the chat, and shows the copy. The same bytes again use the same copy. It refuses a file of its `agent-data/` and a dotfile, because in a room every member reads what the chat holds. |
 | `save_note` | No change. A note is the memory of the sub-agent, and it shows no card. |
 
 **Why the write uses the safe opener.** The sandbox container of a covered
@@ -4416,6 +4416,20 @@ chat mounts the thread folder at `/workspace/outputs`, read-write. The
 container can put a link there. So the delivered write opens each part with
 `acb_skills.safe_open`, and a link at any depth stops the write. The next
 `run_command` of the chat sees the brief at `/workspace/outputs/reports/…`.
+
+**The path rule (fix round 1).** The first version checked the head of the
+input string, before the path resolved. So `outputs/../inputs/brief.pdf`
+passed, resolved into the upload folder of the chat, and replaced the
+member's upload with `overwrite=True`. Now the rule refuses a `..` or `.`
+part, a NUL, a drive and a `:` before any resolve. Then the rule reads the
+RESOLVED, thread-scoped path, and only `outputs/` passes.
+
+**The lock and the quota (fix round 1).** A delegated write holds the
+broker's dir lock of the chat's working dir (`SandboxBroker.host_dir_of`).
+The chat's own file tools and every container on the dir take that lock too.
+While a container on that dir is over its quota, the write refuses, as
+`TenantFileStore.write` does. The reuse check compares the size before
+it reads a file of the chat.
 
 **Option (b), not taken.** The event could name the dir of the sub-agent,
 and the route could serve from it. Then one link has two possible sources,
@@ -4446,12 +4460,15 @@ runs on the phase 4 catalog as the NOBYPASSRLS app role.
 | the Copilot sub-agent drops `deliver_to` | 2 |
 | the blob row names the sub-agent, not the chat | 3 |
 | the delivered write follows a link | 1 |
-| a delegated run may write the uploads of the chat | 1 |
 | a batch parent is a target too | 1 |
-
-**What this part does not do.** A delegated write does not check the disk
-quota of a covered chat's container, and it does not take the dir lock of
-the broker. The safe opener is the boundary against a link.
+| both `..` refusals removed (fix round 1) | 1 |
+| the head check on the resolved path removed | 3 |
+| the first rule put back: the head of the input string, no `..` refusal | 6 |
+| a delegated share takes any file of its dir | 1 |
+| a delegated share takes a dotfile of its `outputs/` | 1 |
+| the dir lock not taken | 1 |
+| the quota ignored | 1 |
+| the reuse check reads before it compares the size | 1 |
 
 **Verification.**
 

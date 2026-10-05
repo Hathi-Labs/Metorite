@@ -29,7 +29,7 @@ import contextlib
 import contextvars
 import hashlib
 import mimetypes
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -439,9 +439,10 @@ async def _take_batch_name(
     raise FileExistsError(rel)
 
 
-#: What a delegated run may NOT write in the chat that called it: the
-#: uploads of that chat. A file there reads as the member's own upload.
-_DELEGATED_REFUSED_HEADS = ("inputs",)
+#: The one folder of the chat that called it where a delegated run may
+#: write. Its uploads (``inputs/``) read as the member's own files, and its
+#: ``agent-data/`` is the memory of the chat's agent (PR #656, fix round 1).
+_DELIVERY_HEAD = "outputs"
 
 
 def _delivery_path(
@@ -452,24 +453,40 @@ def _delivery_path(
 
     The same rules as a document of the chat itself: containment
     (:func:`resolve_in_workspace`), the thread folder of the chat
-    (:func:`_chat_document_path`) and :func:`agent_paths.refused_write`. A
-    delegated run may not write the uploads of the chat.
+    (:func:`_chat_document_path`) and :func:`agent_paths.refused_write`.
+
+    A delegated run writes only in ``outputs/`` of the chat. The rule reads
+    the RESOLVED, thread-scoped path, never the input string, so
+    ``outputs/../inputs/x`` cannot reach an upload (fix round 1). A ``..``
+    or ``.`` part, a NUL and a drive are refused before any resolve.
     """
+    from acb_skills import safe_open
     from acb_skills.agent_paths import refused_write
 
+    raw = str(path or "").replace("\\", "/")
+    if chr(0) in raw or any(part == ".." for part in raw.split("/")):
+        return {"error": f"Path '{path}' was refused: it may not hold '..'."}
+    clean = _normalise_path(raw)
+    try:
+        safe_open.split_rel(clean)
+    except safe_open.UnsafePath as exc:
+        return {"error": f"Path '{path}' was refused: {exc}"}
+    if any(":" in part for part in clean.split("/")):
+        return {"error": f"Path '{path}' was refused: a name may not hold ':'."}
     root_r = Path(str(dest["workspace_root"])).resolve()
-    clean = _normalise_path(path)
-    if clean.split("/", 1)[0] in _DELEGATED_REFUSED_HEADS:
-        return {"error": (
-            f"Path '{path}' was refused: an agent that another chat called "
-            "cannot write that chat's uploads. Write to outputs/."
-        )}
     target = resolve_in_workspace(root_r, clean)
     if target is None:
         return {"error": f"Path '{path}' escapes the workspace and was refused."}
     scoped = _chat_document_path(target.relative_to(root_r).as_posix(), path, dest)
     if isinstance(scoped, dict):
         return scoped
+    head = scoped.split("/", 1)[0]
+    if head != _DELIVERY_HEAD or "/" not in scoped:
+        what = "that chat's uploads" if head == "inputs" else "outside its outputs/"
+        return {"error": (
+            f"Path '{path}' was refused: an agent that another chat called "
+            f"cannot write {what}. Write to outputs/."
+        )}
     reason = refused_write(
         root_r, scoped, member=member, thread_id=dest.get("session_id"),
     )
@@ -502,7 +519,7 @@ def _write_delivered(
     for counter in range(1000):
         name = p.name if counter == 0 else f"{p.stem} ({counter}){p.suffix}"
         candidate = str(p.with_name(name))
-        if reuse_same and safe_open.read_bytes(root, candidate) == data:
+        if reuse_same and _holds_same(root, candidate, data):
             return candidate, True, False
         try:
             safe_open.write_bytes(root, candidate, data, exclusive=True)
@@ -510,6 +527,31 @@ def _write_delivered(
             continue
         return candidate, False, True
     raise FileExistsError(rel)
+
+
+def _holds_same(root: Path, rel: str, data: bytes) -> bool:
+    """True when ``root/rel`` holds exactly *data*. The size comes first, so a
+    large file of the chat with the same name is never read (fix round 1)."""
+    from acb_skills import safe_open
+
+    st = safe_open.stat_file(root, rel)
+    if st is None or st.st_size != len(data):
+        return False
+    return safe_open.read_bytes(root, rel, limit=len(data)) == data
+
+
+@contextlib.asynccontextmanager
+async def _chat_dir_guard(root: Path) -> AsyncIterator[bool]:
+    """The broker's dir lock of the chat's working dir, while a delegated run
+    writes there (fix round 1). Yields True when a container on the dir is
+    over its quota. With no broker installed, there is no container."""
+    try:
+        from orchestrator.sandbox_broker import delivery_guard
+    except ImportError:
+        yield False
+        return
+    async with delivery_guard(root) as over_quota:
+        yield over_quota
 
 
 async def _deliver(
@@ -531,9 +573,18 @@ async def _deliver(
         return placed
     root, rel = placed
     try:
-        rel, existed, changed = await asyncio.to_thread(
-            _write_delivered, root, rel, data, overwrite=overwrite, reuse_same=reuse_same,
-        )
+        # The same lock as the chat's own file tools and every container on
+        # its dir, and the same quota rule (TenantFileStore.write).
+        async with _chat_dir_guard(root) as over_quota:
+            if over_quota:
+                return {"error": (
+                    "The working dir of the chat is over its quota, so nothing "
+                    "was written."
+                )}
+            rel, existed, changed = await asyncio.to_thread(
+                _write_delivered, root, rel, data,
+                overwrite=overwrite, reuse_same=reuse_same,
+            )
     except safe_open.UnsafePath:
         return {"error": f"Path '{path}' was refused: it has a link in it."}
     except (FileExistsError, IsADirectoryError, NotADirectoryError):
@@ -1021,21 +1072,24 @@ async def share_artifact(path: str) -> dict:
     return result
 
 
-def _delivered_rel(rel: str) -> str:
-    """The ``outputs/`` path that a delegated share gives a file of its own dir.
+def _delivered_rel(rel: str) -> str | None:
+    """The ``outputs/`` path that a delegated share gives a file of its own
+    dir, or ``None`` when the file may not leave that dir.
 
-    A file in ``outputs/`` keeps its path below ``outputs/``, less the
-    sub-agent's own thread folder. Any other file goes to ``outputs/<name>``.
+    Only a file in the sub-agent's own ``outputs/`` may go (fix round 1). Its
+    ``agent-data/`` is its memory, and in a room every member of the chat can
+    read what the chat holds. A name that starts with a dot is refused too. A
+    file keeps its path below ``outputs/``, less the sub-agent's own thread
+    folder.
     """
     from acb_skills.agent_paths import is_thread_slug
 
     parts = [p for p in rel.split("/") if p]
-    if parts and parts[0] == "outputs":
-        rest = parts[1:]
-        if len(rest) > 1 and is_thread_slug(rest[0]):
-            rest = rest[1:]
-    else:
-        rest = parts[-1:]
+    if len(parts) < 2 or parts[0] != "outputs" or any(p.startswith(".") for p in parts):
+        return None
+    rest = parts[1:]
+    if len(rest) > 1 and is_thread_slug(rest[0]):
+        rest = rest[1:]
     return "/".join(["outputs", *rest])
 
 
@@ -1057,6 +1111,13 @@ async def _share_delivered(
     errors: list[str] = []
     for f in files:
         own = f.resolve().relative_to(root).as_posix()
+        to = _delivered_rel(own)
+        if to is None:
+            errors.append(
+                f"{own}: an agent that another chat called shares only the files "
+                "of its own outputs/"
+            )
+            continue
         try:
             data = await asyncio.to_thread(safe_open.read_bytes, root, own)
         except (safe_open.UnsafePath, OSError):
@@ -1065,7 +1126,7 @@ async def _share_delivered(
             errors.append(f"{own}: not a regular file")
             continue
         out = await _deliver(
-            ctx, dest, _delivered_rel(own), data, overwrite=False, reuse_same=True,
+            ctx, dest, to, data, overwrite=False, reuse_same=True,
         )
         if "error" in out:
             errors.append(f"{own}: {out['error']}")
