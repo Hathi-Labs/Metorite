@@ -557,6 +557,26 @@ line — never reclaim a number by deleting the other entry.
   D-EM-31
 - **Added:** 2026-10-04 · the EM-G0 spec session
 
+### H-249 · The tenant session commits an aborted transaction with no error · [AGENT]
+- **Check:** `rg -n "aborted" packages/acb_common/acb_common/db.py` → no hit
+  in `tenant_session` means this entry is still open.
+- **Why.** A statement can fail inside a `tenant_session` block, and a reader
+  can catch the error with no `_savepoint`. Then Postgres aborts the
+  transaction, and each later statement of the block fails too. The block
+  exits normally, and `session.commit()` (`acb_common/db.py` ~:301-302) gives
+  no error. So each write after the swallowed error is lost, with no log line.
+- **Proof.** The review of EM-T4a-2 PR-B1 (2026-10-06) measured it on real
+  Postgres: an R8 case and an asyncpg probe both showed a silent commit. PR-B1
+  closed the two rule jobs with a `SELECT 1` at the end of each read block.
+  Each other block that swallows a failed statement has the same fault.
+- **Do.** Audit the fix in the seam before you build it. The first choice is to
+  raise in `tenant_session` when the transaction is aborted at its exit. That
+  changes the control flow of each caller that degrades on purpose, so list
+  those callers first. The other choice is a `_savepoint` in each reader that
+  swallows an error. Name the fence (R7) and run R8 on a private database.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.6 (PR-B1 review round 1)
+- **Added:** 2026-10-06 · the EM-T4a-2 PR-B1 session
+
 ### H-248 · Check that a reopened Outlook draft keeps its recipients (EM-T10) · [OWNER]
 - **Check:** `rg -n "EM-T10 live check passed" project-docs/specs/email_app_master_plan.md`
   → no hit means open. The owner reports the result. An agent then writes that
