@@ -161,10 +161,13 @@ def test_the_workspace_patch_writes_in_the_members_tenant(graph_as_app, roots): 
     a = graph_as_app.org_a
     sid = _seed_session(graph_as_app, a, _ALICE, None)
 
-    # No tenant: the room lookup fails closed first, so the answer is 403.
+    # No tenant: the room lookup fails closed first. A failed lookup is an
+    # outage, not a refusal, so the answer is 503 with the retry wording
+    # (PR #652 fix round 1, RoomAccess.refusal_status). Nothing is written.
     with pytest.raises(HTTPException) as err:
         _patch(sid, _user(_ALICE, None), str(roots.app_a))
-    assert err.value.status_code == 403
+    assert err.value.status_code == 503
+    assert "try again" in str(err.value.detail).lower()
     assert _stored(graph_as_app, sid) is None
     # The path check itself refuses with no tenant too.
     from gateway.routes.workspace import _allowed_workspace
