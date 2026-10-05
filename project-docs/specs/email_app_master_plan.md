@@ -7310,10 +7310,11 @@ also decide how often an autosave of a draft with files may run (§12.3.12).
 
 #### 12.3.3b EM-G3c — the size of a Gmail mail, and the autosave of a draft with files
 
-**Status.** EM-G3c-1 is ✅ MERGED (#649, 2026-10-05). EM-G3c-2 is
-not built. The audit of 2026-10-05 gave GO-NARROWED (C1 to C21), and it checked each anchor against
-the code. It split the slice into EM-G3c-1 (the backend) and EM-G3c-2 (the UI). The as-built notes
-and the mutation table of EM-G3c-1 are at the end of this section.
+**Status.** EM-G3c-1 is ✅ MERGED (#649, 2026-10-05). EM-G3c-2 is 🔨 BUILT, not merged
+(2026-10-05), branch `email-g3c2-composer`. The audit of 2026-10-05 gave GO-NARROWED (C1 to C21),
+and it checked each anchor against the code. It split the slice into EM-G3c-1 (the backend) and
+EM-G3c-2 (the UI). The as-built notes and the mutation tables of both halves are at the end of this
+section.
 
 **Gate.** 🟢 AGENT-SAFE, both halves. No migration and no new flag. The backend stays dark with
 Gmail (D-EM-36). EM-G3c-2 changes the three composers, so it is LIVE for Outlook members, and it
@@ -7551,6 +7552,104 @@ found a P0 or a P1. This round closes the four items below.
 3. A 413 from Google raises `GmailMailTooLarge(size, None)`. Its text says that the provider
    refused the size. It names no limit that did not apply (review note 3).
 4. Three facts need a live mailbox, so EM-G10 checks 17 to 19 hold them (review note 1).
+
+**As built, EM-G3c-2 (2026-10-05, branch `email-g3c2-composer`).** The build follows items 10 to
+14. It changes the UI only: no gateway file, no migration, no flag and no SQL text. The build found
+each anchor again in the code, a few lines below the lines of the audit.
+
+- **One module.** `src/app/email/lib/draftAutosave.ts` holds each rule once, and the three
+  composers import it. Vitest runs with no DOM here, so a rule inside a component has no fence.
+- **The pick limit (item 10).** `pickProblem` adds the files that the mail holds to the files of
+  the pick. Over 7,500,000 bytes, it refuses the whole pick with "Files can be 7.5 MB in all, at
+  most.". ComposePanel and EmailDetail ask it before they read a file. The DraftCard has no picker.
+- **The flush (item 11).** `createAutosave` holds one pending save. The cleanup of each autosave
+  effect calls `hold`, which stops the timer and keeps the save. A close, a switch to another mail
+  and an unmount call `flush`, which runs the save at once. A discard and a send call `cancel`.
+- **Where each composer flushes.** ComposePanel flushes on the X, the backdrop and an unmount.
+  EmailDetail flushes on the X, a new reply, a switch to another mail and an unmount. The DraftCard
+  flushes on an unmount and on a change of `draft.id`.
+- **The session guard.** A flushed save can end after the member opened another reply or another
+  mail. ComposePanel and EmailDetail keep a session number, and a save of an old session sets no
+  state.
+- **The wait (item 12).** `autosaveWait` gives 10 seconds to a Gmail draft that holds a file, and
+  1.2 seconds to each other draft. ComposePanel and EmailDetail read `hasAttachments` of the row
+  that the last autosave returned. The save before a send also sets it, when that save updated the
+  draft that the composer keeps. The DraftCard reads `draft.hasAttachments`.
+- **A failed save (item 13).** `failedSaveStatus` reads the status code only. A 413 gives "Too
+  large to save", and each other error gives "Not saved". The text is `text-destructive`, and the
+  next edit tries again.
+- **A failed send (item 14).** `sendFailureText` shows the `detail` of the gateway. So a 413 and
+  the 502 of EM-T9 each show their own text. The DraftCard has a line for the error of a send now,
+  and before this slice it dropped the error.
+
+**Departures from the spec (EM-G3c-2).**
+
+1. The error of the inline reply in EmailDetail takes its own line above the footer. The visual
+   review measured that footer at 1440 px. It holds six controls, and its status slot cut "Too large
+   to save" to "Too large to s…". A refused pick and a failed send use the same line.
+2. The send error of ComposePanel and EmailDetail moved from `text-red-500` to `text-destructive`.
+   So the palette budget of ComposePanel went from 1 to 0, and that of EmailDetail from 3 to 2.
+3. The pick limit counts the files that the member picks, and no workspace artifact. The gateway
+   reads the bytes of an artifact, so they never go through the proxy.
+4. EmailDetail also flushes when the member starts a new reply, because that closes the reply of
+   before. The pop-out does not flush. The full composer takes the text and saves its own draft.
+
+**Known limit EM-G3c-2-f1 (found in the build, on `main` before it).** EmailDetail draws a draft
+with no thread as one `DraftCard`, and that card has no React `key`. A switch from one such draft
+to another keeps the card and its text. A later edit then saves the text of the first draft to the
+second draft. The flush of this slice runs on a change of `draft.id`, so the pending edit goes to the
+first draft. No slice owns the stale text yet.
+
+**Known limit EM-G3c-2-f2 (on `main` before it).** The DraftCard autosaves after an edit of the To
+field or the body. An edit of Cc or Bcc does not start a save, so the next edit or the send carries
+it.
+
+**Known limit EM-G3c-2-f3.** The composer checks a pick against the files that it holds when the
+pick starts. Two picks in quick order can each fit and pass the limit together. The send then
+meets the cut of the proxy, and the composer shows the text of that error.
+
+**The fences, as built.** `src/app/email/lib/draftAutosave.test.ts` holds 39 cases in five named
+fences: `email-pick-limit`, `email-autosave-wait`, `email-autosave-flush`,
+`email-save-failed-shows` and `email-send-failed-shows`. Two cases drive `saveDraft` over a stub of
+`fetch`, so the contract between `gatewayFetch` and the module has a fence too.
+
+**Mutations, as run (2026-10-05).** A script replaced one anchor for each mutation, ran the fence
+file, and restored the file with `git checkout`. After each run, `git status` was clean. Each of the
+24 mutations turned a fence red. The first run found two fences that let a mutation pass (W3 and
+C1), and the build made both fences stricter.
+
+| Id | Mutation | Red cases | Red fence |
+|---|---|---|---|
+| M4 | The wait of a Gmail draft with a file is 1.2 seconds | 1 | `email-autosave-wait` |
+| M7a | ComposePanel closes with no flush | 1 | `email-autosave-flush` |
+| M7b | EmailDetail moves to another mail with no flush | 1 | `email-autosave-flush` |
+| M7c | The DraftCard unmounts with no flush | 1 | `email-autosave-flush` |
+| M7d | EmailDetail unmounts with no flush | 1 | `email-autosave-flush` |
+| M7e | The flush of the module drops the save | 2 | `email-autosave-flush` |
+| X1 | The cleanup of ComposePanel drops the save | 1 | `email-autosave-flush` |
+| X2 | The hold of the module drops the save | 1 | `email-autosave-flush` |
+| P1 | The limit is 7.5 MiB, not 7,500,000 bytes | 5 | `email-pick-limit` |
+| P2 | EmailDetail takes each pick | 1 | `email-pick-limit` |
+| P3 | The limit leaves out the files that the mail holds | 1 | `email-pick-limit` |
+| W1 | The DraftCard ignores `draft.hasAttachments` | 1 | `email-autosave-wait` |
+| W2 | Each draft with a file waits 10 seconds, Outlook too | 1 | `email-autosave-wait` |
+| W3 | ComposePanel does not read the row of the autosave | 1 | `email-autosave-wait` |
+| W4 | EmailDetail does not read the row of the save before a send | 1 | `email-autosave-wait` |
+| S1 | The 413 branch is gone | 2 | `email-save-failed-shows`, and the `api.ts` contract |
+| S2 | A failed save of the DraftCard goes back to idle | 1 | `email-save-failed-shows` |
+| S3 | The save state reads the text, not the status code | 1 | `email-save-failed-shows` |
+| E1 | The DraftCard drops the error of a send | 1 | `email-send-failed-shows` |
+| E2 | The send text drops the `detail` of the gateway | 3 | `email-send-failed-shows`, and the `api.ts` contract |
+| C1 | A discard of the DraftCard keeps the pending save | 1 | `email-autosave-flush` |
+| G1 | EmailDetail has no session guard | 1 | `email-autosave-flush` |
+| F1 | The send error of the inline reply goes back into the footer | 1 | `email-send-failed-shows` |
+| T1 | The failure text of the DraftCard is `text-red-500` | 2 | `email-save-failed-shows`, and conformance rule 5 |
+
+**Visual review (2026-10-05).** A Playwright rig stubbed the API and drew each new state in dark,
+light, compact and a violet accent. It drew "Not saved", "Too large to save" and the pick refusal
+in ComposePanel. It also drew the send error and "Too large to save" of the DraftCard, and the
+failure line of the inline reply. The rig is not committed. In light mode, each failure text
+measured rgb(198, 38, 32), and it stayed red under the violet accent.
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
@@ -9488,8 +9587,9 @@ customer connects Gmail, and no item has an owner yet.
 2. **EM-G3b**, a move to a user label, and the filter list (§12.3.4).
 3. **EM-G3c**, the size of a Gmail mail with files, and the autosave of a draft with files
    (§12.3.3b). It owns EM-G3a-f8 (§12.3.3). ✅ EM-G3c-1 merged as #649 (2026-10-05). A Gmail
-   write with a file goes to the upload URI, and a mail over the limit answers 413. EM-G3c-2 is not
-   built.
+   write with a file goes to the upload URI, and a mail over the limit answers 413. 🔨 EM-G3c-2 is
+   built, not merged (2026-10-05). The composers flush a pending save, and a Gmail draft with a
+   file waits 10 seconds. A failed save or send shows its reason.
 4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
    the old cursor (§12.3.5.2).
 5. **EM-G2-f1.** A large text part that Gmail sends by `attachmentId` gives an empty body
