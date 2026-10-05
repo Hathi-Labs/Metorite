@@ -16,11 +16,16 @@ and the rules of the build E-G5-3 to E-G5-8.
 * **The estimate (item 5).** ``on_estimate`` gets the ``resultSizeEstimate``
   of the first answer, once, before the first fetch.
 * **The cap (E-G5-6), and no deep sync (E-G5-8).**
+* **The confirm of the reconcile (WS-17 EM-G5b, §12.3.6.2).**
+  ``message_gone`` reads by the provider id with ``format=minimal``. Only a
+  404 with the reason ``notFound`` is gone (items 6 and 10). A spent rate
+  limit stops ``_confirm_gone`` (item 11). No Gmail sync result sets
+  ``full_snapshot`` (item 8).
 
 The fake Gmail answers on ``httpx.MockTransport``, so each request goes
-through the real ``_get_client`` and its ``GmailBearer``. The R8 case of this
-slice is in ``tests/unit/test_email_import_batches.py``
-(``TestTheImportOnARealDatabase``), and it uses the fake of this file.
+through the real ``_get_client`` and its ``GmailBearer``. The R8 cases of
+EM-G5a and EM-G5b are in ``tests/unit/test_email_import_batches.py``
+(``TestTheImportOnARealDatabase``), and they use the fake of this file.
 
 Run::
 
@@ -28,6 +33,7 @@ Run::
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import logging
@@ -35,6 +41,7 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -96,6 +103,19 @@ def _transport_error(request: httpx.Request) -> httpx.Response:
     raise httpx.ConnectError("the connection dropped", request=request)
 
 
+#: The answer of Gmail to a read of a deleted message, as Google sends it.
+_NOT_FOUND_BODY = {"error": {
+    "code": 404, "message": "Requested entity was not found.",
+    "errors": [{"message": "Requested entity was not found.",
+                "domain": "global", "reason": "notFound"}],
+    "status": "NOT_FOUND"}}
+
+
+def _gone(_request: httpx.Request) -> httpx.Response:
+    """A deleted message: a 404 with the reason ``notFound`` (EM-G5b C2)."""
+    return httpx.Response(404, json=_NOT_FOUND_BODY)
+
+
 class _Gmail:
     """One fake Gmail mailbox.
 
@@ -118,7 +138,17 @@ class _Gmail:
     overlap. ``slow`` adds more turns for one message id, so the fetches of a
     page end at different times, as they do at Gmail. With ``release`` set,
     a fetch of a message with no own answer waits for it. ``answers`` gives
-    a message id its own answers, in order, and the last one repeats."""
+    a message id its own answers, in order, and the last one repeats.
+
+    The reconcile (WS-17 EM-G5b):
+
+    * A fetch of an id that the mailbox does not hold answers 404 with the
+      reason ``notFound``, as Gmail does for a deleted message.
+    * A fetch with ``format=minimal`` is a confirm. ``confirms`` keeps its
+      id and its query, and it answers the minimal shape of Gmail.
+    * ``unlisted`` holds ids that the list leaves out and a fetch still
+      answers, as for a message that the import missed.
+    * ``stale_history`` makes ``history.list`` answer 404, a stale cursor."""
 
     def __init__(self) -> None:
         self.mail: dict[str, dict[str, Any]] = {}
@@ -137,6 +167,9 @@ class _Gmail:
         self.cancelled: list[str] = []
         self.release: asyncio.Event | None = None
         self.history_id = "500"
+        self.confirms: list[tuple[str, list[tuple[str, str]]]] = []
+        self.unlisted: set[str] = set()
+        self.stale_history = False
 
     def add(self, mid: str, at: datetime, *labels: str) -> None:
         self.mail[mid] = _raw(mid, at, *labels)
@@ -151,6 +184,8 @@ class _Gmail:
         for raw in self.mail.values():
             labels = set(raw["labelIds"])
             at = int(raw["internalDate"])
+            if raw["id"] in self.unlisted:
+                continue
             if not set(wanted) <= labels:
                 continue
             if not spam_trash and labels & {"SPAM", "TRASH"}:
@@ -187,6 +222,9 @@ class _Gmail:
 
     async def _fetch(self, mid: str, request: httpx.Request) -> httpx.Response:
         self.fetched[mid] = self.fetched.get(mid, 0) + 1
+        minimal = request.url.params.get("format") == "minimal"
+        if minimal:
+            self.confirms.append((mid, sorted(request.url.params.multi_items())))
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         try:
@@ -200,7 +238,11 @@ class _Gmail:
                 await self.release.wait()
             raw = self.mail.get(mid)
             if raw is None:
-                return httpx.Response(404, json={"error": {"code": 404}})
+                return _gone(request)
+            if minimal:
+                return httpx.Response(200, json={
+                    key: raw[key] for key in ("id", "threadId", "labelIds",
+                                              "internalDate")})
             return httpx.Response(200, json=raw)
         except asyncio.CancelledError:
             self.cancelled.append(mid)
@@ -219,6 +261,8 @@ class _Gmail:
             return await self._fetch(path.rsplit("/", 1)[-1], request)
         if path == "/labels":
             return httpx.Response(200, json={"labels": []})
+        if path == "/history" and self.stale_history:
+            return _gone(request)
         if path in ("/profile", "/history"):
             return httpx.Response(200, json={"historyId": self.history_id})
         return httpx.Response(404, json={"error": {"code": 404}})
@@ -567,20 +611,28 @@ async def test_the_import_stops_at_the_page_cap_and_logs_it(
         gmail: _Gmail, monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture) -> None:
     """E-G5-6. A list that never ends stops at the cap, and the log says
-    ``gmail.import_capped``."""
+    ``gmail.import_capped``. The provider records the cap for the scheduler
+    (EM-G5b item 12), and the next import that ends starts with no record."""
     for n in range(10):
         gmail.add(f"m{n}", T0 - timedelta(hours=n), "INBOX")
     gmail.endless = True
     monkeypatch.setattr(GmailProvider, "IMPORT_MAX_PAGES", 3)
+    provider = _provider()
+    assert provider.import_capped is False
 
     with caplog.at_level(logging.WARNING, logger=LOGGER):
-        batches = await _collect(_provider().import_batches(since=FLOOR, size=2))
+        batches = await _collect(provider.import_batches(since=FLOOR, size=2))
 
     assert len(gmail.lists) == 3
     assert _ids(batches) == [["m0", "m1"], ["m2", "m3"], ["m4", "m5"]]
     assert [r.getMessage() for r in caplog.records
             if r.getMessage().startswith("gmail.import_capped")] == [
         "gmail.import_capped pages=3 messages=6"]
+    assert provider.import_capped is True
+
+    gmail.endless = False
+    await _collect(provider.import_batches(since=FLOOR, size=20))
+    assert provider.import_capped is False, "an import that ended kept the cap"
 
 
 # ── E-G5-8: no deep sync ────────────────────────────────────────────────────
@@ -607,3 +659,134 @@ async def test_the_import_never_calls_the_deep_sync(
     assert "import_batches" in vars(GmailProvider)
     assert _ids(batches) == [["m0"]]
     assert calls == []
+
+
+# ── EM-G5b: the confirm of the reconcile (spec §12.3.6.2) ───────────────────
+
+#: A Gmail message id in the form that Gmail gives.
+_GMAIL_ID = "18c2f0a1b2c3d4e5"
+
+
+def _bare_404(_request: httpx.Request) -> httpx.Response:
+    """A 404 with no reason, as a proxy or a wrong path can give."""
+    return httpx.Response(404, json={"error": {"code": 404}})
+
+
+def _empty_404(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(404, text="")
+
+
+def _status_only_404(_request: httpx.Request) -> httpx.Response:
+    """A 404 that gives ``NOT_FOUND`` as its status and no reason."""
+    return httpx.Response(404, json={"error": {"code": 404, "status": "NOT_FOUND"}})
+
+
+@pytest.mark.parametrize(("held", "answer", "outcome"), [
+    (None, None, True),
+    ("INBOX", None, False),
+    ("TRASH", None, False),
+    ("SPAM", None, False),
+    (None, _bare_404, httpx.HTTPStatusError),
+    (None, _empty_404, httpx.HTTPStatusError),
+    (None, _status_only_404, httpx.HTTPStatusError),
+    (None, _refuse(400, "invalidArgument"), httpx.HTTPStatusError),
+    (None, _refuse(403, "forbidden"), httpx.HTTPStatusError),
+    (None, _refuse(429, "rateLimitExceeded"), GmailRateLimited),
+    (None, _refuse(500, "backendError"), httpx.HTTPStatusError),
+    (None, _transport_error, httpx.TransportError),
+], ids=["404_not_found", "200_inbox", "200_trash", "200_spam", "bare_404",
+        "empty_404", "status_only_404", "400", "403", "spent_429", "500",
+        "transport_error"])
+async def test_the_gmail_confirm_reads_by_the_provider_id(
+        gmail: _Gmail, held: str | None, answer: Answer | None,
+        outcome: bool | type[Exception]) -> None:
+    """EM-G5b items 6 and 10 (C1, C2), M11. ``message_gone`` reads
+    ``messages/{id}`` with ``format=minimal`` only, and the path holds the
+    provider id. Only a 404 whose body gives the reason ``notFound`` is
+    gone. A 200 keeps the row, also for a message in ``TRASH`` or ``SPAM``.
+    Each other answer raises, and that includes a bare 404 and a 404 that
+    gives only the status ``NOT_FOUND``. A spent rate limit raises
+    ``GmailRateLimited`` after the tries of the client seam (EM-G4a)."""
+    if held is not None:
+        gmail.add(_GMAIL_ID, T0, held)
+    if answer is not None:
+        gmail.answers[_GMAIL_ID] = [answer]
+    provider = _provider()
+
+    if isinstance(outcome, bool):
+        assert await provider.message_gone(_GMAIL_ID) is outcome
+    else:
+        with pytest.raises(outcome):
+            await provider.message_gone(_GMAIL_ID)
+
+    tries = 3 if outcome is GmailRateLimited else 1
+    assert gmail.confirms == [(_GMAIL_ID, [("format", "minimal")])] * tries
+
+
+@pytest.mark.parametrize("bad", ["", "a/b", "../labels/x", "a?b", "a#b", "a%2Fb",
+                                 "<m@example.org>", "a b"])
+async def test_the_gmail_confirm_refuses_an_id_that_is_not_a_gmail_id(
+        gmail: _Gmail, bad: str) -> None:
+    """EM-G5b item 10. An id that a path cannot hold as it is raises
+    ``ValueError``, and no request goes out. So a stored id can never send
+    the confirm to another resource whose 404 would trash a row."""
+    with pytest.raises(ValueError):
+        await _provider().message_gone(bad)
+    assert gmail.confirms == []
+    assert gmail.fetched == {}
+
+
+async def test_a_spent_rate_limit_stops_the_confirm(
+        gmail: _Gmail, caplog: pytest.LogCaptureFixture) -> None:
+    """EM-G5b item 11 (C4), M13. ``scheduler._confirm_gone`` stops at the
+    first spent rate limit. The row that a ``notFound`` confirmed before it
+    goes to trash. A failed lookup before it lets the confirm go on. Each
+    row after it gets no lookup, so it keeps its folder."""
+    gmail.answers["g-flaky"] = [_refuse(500, "backendError")]
+    gmail.answers["g-limited"] = [_refuse(429, "rateLimitExceeded")]
+    candidates = [(1, "g-gone", "<gone@example.org>"),
+                  (2, "g-flaky", "<flaky@example.org>"),
+                  (3, "g-limited", "<limited@example.org>"),
+                  (4, "g-after-1", "<after-1@example.org>"),
+                  (5, "g-after-2", "<after-2@example.org>")]
+
+    with caplog.at_level(logging.INFO, logger="email_ingestion.scheduler"):
+        gone = await sched._confirm_gone(_provider(), candidates,
+                                         account_id="acc-1")
+
+    assert gone == [1]
+    assert [mid for mid, _ in gmail.confirms] == [
+        "g-gone", "g-flaky", "g-limited", "g-limited", "g-limited"]
+    messages = [r.getMessage() for r in caplog.records]
+    assert "sync.import_reconcile_lookup_failed error=HTTPStatusError" in messages
+    assert ("sync.import_reconcile_rate_limited account=acc-1 gone=1 "
+            "unconfirmed=3") in messages
+
+
+async def test_no_gmail_sync_result_sets_full_snapshot(gmail: _Gmail) -> None:
+    """EM-G5b item 8. The recurring reconcile (``reconcile_full_snapshot``)
+    has no confirm, so it stays for Outlook only. Each sync path of Gmail
+    returns ``full_snapshot`` False: no cursor, the history, a stale cursor
+    and the deep sweep. No line of ``gmail.py`` sets the field."""
+    gmail.add("m0", T0, "INBOX")
+    gmail.add("m1", T0 - timedelta(hours=1))
+    results = {
+        "no_cursor": await _provider().sync_messages(history_id=None, since=FLOOR),
+        "history": await _provider().sync_messages(history_id="400", since=FLOOR),
+        "deep": await _provider().sync_messages(deep=True, since=FLOOR),
+    }
+    gmail.stale_history = True
+    results["stale_cursor"] = await _provider().sync_messages(
+        history_id="400", since=FLOOR)
+
+    assert results["stale_cursor"].cursor_reset is True
+    assert {name: r.full_snapshot for name, r in results.items()} == dict.fromkeys(
+        results, False)
+
+    tree = ast.parse(Path(gmail_mod.__file__).read_text(encoding="utf-8"))
+    sets = [node.lineno for node in ast.walk(tree)
+            if (isinstance(node, ast.keyword) and node.arg == "full_snapshot")
+            or (isinstance(node, ast.Attribute) and node.attr == "full_snapshot"
+                and isinstance(node.ctx, ast.Store))
+            or (isinstance(node, ast.Constant) and node.value == "full_snapshot")]
+    assert sets == [], f"gmail.py sets full_snapshot at the lines {sets}"

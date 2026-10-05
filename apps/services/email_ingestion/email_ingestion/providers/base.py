@@ -445,6 +445,12 @@ class BaseEmailProvider(ABC):
     #: deep sync of a member act then reconciles deletions from it (EM-T6b).
     import_full_snapshot: bool = False
 
+    #: True when that reconcile leaves out each row in drafts (WS-17 EM-G5b
+    #: item 9). Gmail gives a draft a new message id at each update, so a
+    #: missing draft id proves no delete. The scheduler reads it with
+    #: ``getattr``, so a fake that does not subclass this class gets False.
+    import_reconcile_skips_drafts: bool = False
+
     #: True when the provider gives a message a new id when it moves, so the
     #: ingest upsert may move the one row of a Message-ID to the new id
     #: (``persist.upsert_message(reclaim=...)``). Only Outlook does that.
