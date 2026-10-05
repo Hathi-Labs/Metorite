@@ -296,6 +296,22 @@ All providers implement the `BaseEmailProvider` abstract interface:
       removes its query. No error text, traceback or log line holds the URL.
     - `_attach_files` never deletes a draft. Only `create_draft` deletes a
       new draft whose file failed, and `update_draft` keeps the draft.
+14. **The Gmail move and the filter list (WS-17 EM-G3b, D-EM-33).** Fence:
+    `tests/unit/test_gmail_move_and_filters.py`.
+    - `move_to_folder` reads the name with `canonical_folder`, so each alias
+      of a system folder takes the system branch. Sent and drafts raise
+      `ValueError`. So does the name of a system label or a `CATEGORY_*`
+      label, because a move to "Starred" would star the message.
+    - Each other name is a user label. One `modify` adds it and removes
+      `INBOX`, `TRASH` and `SPAM`. A label that Gmail could not make raises.
+      The name goes to Google with its case.
+    - `folder_after_move(name)` gives the folder key that a move leaves. The
+      base gives `canonical_folder(name)`. Gmail gives `archive` for a user
+      label, and `None` for a move that it refuses. Read it only through
+      `local_folder_after_move`, because some test fakes do not subclass the
+      base.
+    - `list_filters` reads the key `filter` of `users.settings.filters.list`.
+      A plain 403 gives `[]`, and `GmailRateLimited` passes up.
 
 ## Inbound SMTP Server
 

@@ -1503,21 +1503,85 @@ class GmailProvider(BaseEmailProvider):
                 await super().bulk_apply(chunk, action, failed_out)
         return {}
 
+    # ── A move to a user label (WS-17 EM-G3b, GM-14, D-EM-33) ─────────────
+    # ``email_app_master_plan.md`` §12.3.4, items 1 to 5. A user label is a
+    # label and never a folder (O-GM-1), so a move to one files the message
+    # as ``archive``. Fence: test_gmail_move_and_filters.py.
+
+    #: The folder keys that a move reaches through a system label.
+    _MOVE_SYSTEM_KEYS = frozenset({"inbox", "archive", "trash", "junk"})
+    #: The folder keys that a move never reaches. Gmail sets ``SENT`` and
+    #: ``DRAFT`` itself, on a send and on a draft save (E-M2).
+    _MOVE_REFUSED_KEYS = frozenset({"sent", "drafts"})
+    #: A move to a user label removes these, so a move out of Trash or Spam
+    #: leaves ``archive`` (D-EM-33, E-M5).
+    _LABEL_MOVE_REMOVES = ("INBOX", "TRASH", "SPAM")
+
+    def _is_system_label_name(self, name: str) -> bool:
+        """True when ``name`` names a reserved system label or a ``CATEGORY_*``
+        label (E-M3). Without this rule, "Starred" stars the message."""
+        upper = (name or "").strip().upper()
+        return upper in self._GMAIL_RESERVED or upper.startswith("CATEGORY_")
+
+    def folder_after_move(self, name: str) -> str | None:
+        """The folder key after a move to ``name`` (EM-G3b item 5).
+
+        The key for inbox, archive, trash and junk, with each alias of
+        ``canonical_folder``. ``None`` for sent, drafts and a system label
+        name, because the move refuses them. ``archive`` for a user label."""
+        key = canonical_folder(name)
+        if key in self._MOVE_SYSTEM_KEYS:
+            return key
+        if key in self._MOVE_REFUSED_KEYS or self._is_system_label_name(name):
+            return None
+        return "archive"
+
+    async def _user_label_id_for_move(self, name: str) -> str:
+        """The id of the USER label ``name``, made when it is new (E-M2 to E-M4).
+
+        ``_ensure_label_id`` maps every label, system labels too, so the move
+        checks the result against the user labels. A label that Gmail could
+        not make raises, so no caller stores ``archive`` for a move that did
+        not occur. The name goes to Google unchanged, also with a "/"."""
+        if self._is_system_label_name(name):
+            raise ValueError(f"Gmail cannot move a message to the system label {name!r}")
+        label_id = await self._ensure_label_id(name)
+        if not label_id:
+            raise ValueError(f"Could not create Gmail label: {name!r}")
+        if label_id not in self._label_names_by_id:
+            raise ValueError(f"Gmail cannot move a message to the system label {name!r}")
+        return label_id
+
     async def move_to_folder(self, provider_message_id: str, folder: str) -> None:
-        """Move via Gmail label mutation (Gmail has labels, not folders)."""
-        folder = (folder or "").lower()
-        if folder == "trash":
+        """Move via Gmail label mutation (Gmail has labels, not folders).
+
+        ``canonical_folder`` reads the name, so "Bin", "Deleted Items" and
+        "Junk Email" reach the system branch (E-M1). Sent and drafts raise
+        ``ValueError`` (E-M2). Each other name is a user label: one
+        ``modify`` adds it and removes ``INBOX``, ``TRASH`` and ``SPAM``. Gmail
+        keeps the id, so the move returns ``None``."""
+        name = (folder or "").strip()
+        key = canonical_folder(name)
+        if key in self._MOVE_REFUSED_KEYS:
+            raise ValueError(f"Gmail cannot move a message to {key}")
+        if key == "trash":
             await self.trash_message(provider_message_id)
-        elif folder == "archive":
+        elif key == "archive":
             # Archiving in Gmail = removing the INBOX label.
             await self.modify_message(provider_message_id, remove_labels=["INBOX"])
-        elif folder == "inbox":
+        elif key == "inbox":
             await self.modify_message(
                 provider_message_id, add_labels=["INBOX"], remove_labels=["TRASH", "SPAM"]
             )
-        elif folder in ("junk", "spam"):
+        elif key == "junk":
             await self.modify_message(
                 provider_message_id, add_labels=["SPAM"], remove_labels=["INBOX"]
+            )
+        else:
+            label_id = await self._user_label_id_for_move(name)
+            await self.modify_message(
+                provider_message_id, add_labels=[label_id],
+                remove_labels=list(self._LABEL_MOVE_REMOVES),
             )
 
     # ── Labels ───────────────────────────────────────────────────────────
@@ -1694,6 +1758,80 @@ class GmailProvider(BaseEmailProvider):
         resp = await client.delete(f"/users/me/settings/filters/{filter_id}")
         if resp.status_code not in (200, 204, 404):
             resp.raise_for_status()
+
+    async def list_filters(self) -> list[dict[str, Any]]:
+        """Read the Gmail settings filters for the rules screen (GM-15).
+
+        WS-17 EM-G3b items 12 to 15 (§12.3.4). Each filter maps to the shape
+        of ``OutlookProvider.list_filters``. ``users.settings.filters.list``
+        answers with the key ``filter``, which is singular, and with ``{}``
+        for a mailbox with no filter (E-F1). A plain 403, such as a missing
+        ``gmail.settings.basic`` scope, gives ``[]``. ``GmailRateLimited``
+        passes up, and the caller answers ``provider_rules_supported: false``
+        for it (E-F5)."""
+        client = await self._get_client()
+        resp = await client.get("/users/me/settings/filters")
+        if resp.status_code == 403:
+            return []
+        resp.raise_for_status()
+        filters = resp.json().get("filter") or []
+        if any(self._filter_user_label_ids(f) for f in filters):
+            # Fills ``_label_names_by_id`` with the names of the user labels.
+            await self._label_name_id_map()
+        return [self._filter_view(f) for f in filters]
+
+    def _filter_user_label_ids(self, gmail_filter: dict[str, Any]) -> list[str]:
+        """The ids of the user labels that a filter adds. A system label id is
+        an action of its own (star, trash), or the map ignores it."""
+        action = gmail_filter.get("action") or {}
+        return [lid for lid in action.get("addLabelIds") or []
+                if not self._is_system_label_name(lid)]
+
+    def _filter_view(self, gmail_filter: dict[str, Any]) -> dict[str, Any]:
+        """One Gmail filter as ``{id, name, enabled, from_addresses, summary}``.
+
+        A Gmail filter is always enabled. The name is ``From <from>``, else
+        the query, else the subject. ``from_addresses`` holds ``criteria.from``
+        as one whole string, because it is a Gmail query such as "a OR b"
+        (E-F4). The summary tokens keep the order of item 14 (E-F2, E-F3)."""
+        criteria = gmail_filter.get("criteria") or {}
+        action = gmail_filter.get("action") or {}
+        added = action.get("addLabelIds") or []
+        removed = action.get("removeLabelIds") or []
+        sender = criteria.get("from") or ""
+        summary: list[str] = []
+        if criteria.get("subject"):
+            summary.append(f"subject contains “{criteria['subject']}”")
+        if criteria.get("to"):
+            summary.append(f"to contains “{criteria['to']}”")
+        if criteria.get("query"):
+            summary.append(f"matches “{criteria['query']}”")
+        if criteria.get("hasAttachment"):
+            summary.append("has attachment")
+        label_ids = self._filter_user_label_ids(gmail_filter)
+        if label_ids:
+            # An unknown id shows as it is (E-F3).
+            summary.append("label: " + ", ".join(
+                self._label_names_by_id.get(lid, lid) for lid in label_ids))
+        if "INBOX" in removed:
+            summary.append("skip inbox")
+        if "UNREAD" in removed:
+            summary.append("mark read")
+        if "STARRED" in added:
+            summary.append("star")
+        if action.get("forward"):
+            summary.append("forward")
+        if "TRASH" in added:
+            summary.append("trash")
+        name = (f"From {sender}" if sender
+                else criteria.get("query") or criteria.get("subject") or "")
+        return {
+            "id": gmail_filter.get("id", ""),
+            "name": name,
+            "enabled": True,
+            "from_addresses": [sender] if sender else [],
+            "summary": summary,
+        }
 
     async def set_labels(
         self,
