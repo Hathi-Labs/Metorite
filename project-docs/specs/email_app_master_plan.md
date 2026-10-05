@@ -610,7 +610,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** ✅ **EM-T6e MERGED #619 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
-| **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | 🔨 **BUILT, not merged (2026-10-05), branch `email-draftcard-recipients`.** **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
+| **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | ✅ **MERGED #658 (2026-10-05).** The live check (H-248) is open. **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -4138,10 +4138,12 @@ finding on an added line. `fromRow.test.ts` ran 32 passed. The run of `test_emai
 
 #### 10.4.11 EM-T10 — a draft card keeps the recipients of its draft (a LIVE defect)
 
-**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-draftcard-recipients`. The audit of
+**Status.** ✅ MERGED (#658, 2026-10-05). The live check of H-248 is open. The audit of
 2026-10-05 found it GO-NARROWED after C1 to C11, and it checked each anchor against the code at
-`c26b67549`. The reviews of EM-G3c-2 found the first defects (its known limits f6, f2 and f10). The
-audit found two more, C2 and C8. The "As built" notes below record the build.
+`c26b67549`. The "As built" notes below record the build.
+
+**Where the defects came from.** The reviews of EM-G3c-2 found the first defects (its known limits
+f6, f2 and f10). The audit found two more, C2 and C8.
 
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. It changes a live composer and the live Outlook
 reply create, so it takes the full review loop and a visual review. The live check is 🔴
