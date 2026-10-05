@@ -437,6 +437,7 @@ class Settings(BaseSettings):
     # cannot keep Gmail hidden. While this is false, `GET /email/oauth/
     # providers` answers `gmail: false`, and the authorize leg, the callback
     # leg and `GET /email/oauth/gmail/app` all refuse. Microsoft ignores it.
+    # `email_gmail_connect_members` (below) narrows it to listed members.
     # The one reader is
     # `gateway.routes.email.transport.oauth.gmail_connect_enabled`.
     #
@@ -454,6 +455,31 @@ class Settings(BaseSettings):
     # after EM-G2 to EM-G5 and EM-G9 merge (email_app_master_plan.md
     # §12.3.12). Fence: tests/unit/test_email_gmail_connect.py.
     email_gmail_connect: bool = False
+
+    # ── The member list of the Gmail connect (WS-17 EM-G7b, 2026-10-05) ─────
+    #
+    # The flag above is one value for the whole box. While the Google app is
+    # in Testing, Google refuses each user that is not a test user. So this
+    # list narrows the flag to the members of the owner's test. It holds
+    # member sign-in addresses, with a comma between addresses, and the match
+    # ignores case and the space around each address. The flag stays the
+    # master switch: off is nobody. On with an empty or blank list is every
+    # member, which is for the time after Google verifies the app. On with a
+    # list is the listed members only, and a value that holds only commas
+    # names nobody. Microsoft ignores it. The one reader is
+    # `gateway.routes.email.transport.oauth.gmail_connect_members`.
+    #
+    # ⚠️ An address, not a member id. The gateway checks `UserContext.email`
+    # of the session, and the signed state binds the same address.
+    # `UserContext.user_id` is an opaque token in two UUID spaces. Only the
+    # env file of the box sets the list, because `env_guard` refuses each
+    # `EMAIL_*` name on each Integrations write. Restart the gateway after
+    # each change, as for the flag.
+    #
+    # 🔴 A change on a box is gate `enforcement-flip`, as for the flag
+    # (email_app_master_plan.md §12.3.9b). Fence:
+    # tests/unit/test_email_gmail_connect.py.
+    email_gmail_connect_members: str = ""
 
     # Dynamic Agent Loader (v2 — ADR-013)
     # Repos are cloned ONCE into agents_clone_dir/repos/ and refreshed with

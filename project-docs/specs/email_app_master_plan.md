@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10).
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). 🔨 **EM-G7b is BUILT, not merged (2026-10-05), branch `email-gmail-g7b`:** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -6142,6 +6142,9 @@ change.
 > EM-G7. The connect UI reads the capability read, and Gmail stays "Coming soon" while the read
 > says `gmail: false`.
 
+> **EM-G7b (2026-10-05).** 🔨 BUILT, not merged, branch `email-gmail-g7b` (§12.3.9b). A member
+> allowlist narrows the Gmail connect, so the live test of EM-G10 reaches the listed members only.
+
 > **The slice names.** The slices are EM-G1 to EM-G10. §10.4.7 already uses the bare names G1 to
 > G5 for the gaps of EM-T6c, so the prefix keeps the two sets apart (R2).
 
@@ -7909,7 +7912,8 @@ rebased on #633, and these findings are closed:
 
 #### 12.3.9b EM-G7b — a member allowlist for the Gmail connect
 
-**Status.** 📝 SPECIFIED (2026-10-05).
+**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g7b`. The as-built notes and
+the mutation table are at the end of this section.
 
 **Why (go-live item A7, orchestrator decision, 2026-10-05).** `EMAIL_GMAIL_CONNECT` (D-EM-36) is
 one value for the whole box (`transport/oauth.py:119-132`). When it is on, each member of each
@@ -8007,6 +8011,52 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 
 `test_integrations_env_hardening.py` holds one R8 case. Run it against a private database, with
 `TENANT_LADDER_DATABASE_URL` set, so that no case skips.
+
+**As built (2026-10-05, branch `email-gmail-g7b`).** The build covers items 1 to 9. It adds no
+migration and changes no SQL.
+
+- **The setting.** `email_gmail_connect_members: str = ""` sits under `email_gmail_connect` in
+  `acb_common/settings.py`. Its comment names the one reader, the gate and the fence.
+- **The readers and the check** (`transport/oauth.py`). `_connect_members` parses the raw value
+  and caches it, as `scheduler._delta_accounts` does. It answers `None` for an empty or blank
+  value, and a set for each other value. `gmail_connect_members()` is the one reader of the field.
+  `gmail_connect_allowed(user)` asks the flag first, and then the list.
+- **The gates.** `provider_available` takes the `user` of the capability read. The authorize leg,
+  the callback and the app facts call the check with the `user` of `Depends(get_current_user)`.
+  `gmail_connect_enabled()` now has one caller, the check.
+- **The form.** The list holds sign-in addresses (item 2), because the gateway can check
+  `UserContext.email` from the session with no request input.
+- **No UI change and no Microsoft change.** The log line `email.oauth_gmail_dark` does not change,
+  and it carries no address.
+
+**The fences, as built.** `tests/unit/test_email_gmail_connect.py` grows from 60 to 96 cases. The
+36 new cases come from 16 tests: the 15 of the list above and `test_the_member_list_defaults_empty`.
+The fixture of the file sets the list to empty, so the cases of EM-G7 run as before. No other
+suite changed.
+
+**Mutations, as run (2026-10-05).** Each mutation ran against its named test and turned it red.
+`oauth.py` then went back to its exact SHA-256 (`7d66fb25`).
+
+| Id | Mutation | Red in the named test | Red in the whole file |
+|---|---|---|---|
+| M1 | The capability read ignores the list | `test_an_unlisted_member_reads_gmail_false`, 2 of 2 | 8 |
+| M2 | The authorize leg ignores the list | `test_an_unlisted_member_is_refused_at_authorize`, 2 of 2 | 7 |
+| M3 | The callback ignores the list | `test_an_unlisted_member_is_refused_at_the_callback`, 2 of 2 | 4 |
+| M4 | The match is case-sensitive | `test_the_list_ignores_case_and_space`, 3 of 5 | 4 |
+| M5 | The check drops the flag-off override | `test_the_flag_off_overrides_the_list`, 3 of 3 | 10 |
+| M6 | The app facts ignore the list | `test_an_unlisted_member_gets_no_app_facts`, 1 of 1 | 2 |
+| M7 | A list of only commas lifts the limit | `test_a_list_of_only_commas_lets_nobody_through`, 3 of 3 | 3 |
+| M8 | The match takes a part of an address | `test_the_list_matches_whole_addresses_only`, 5 of 6 | 5 |
+| M9 | The parse keeps the space around an entry | `test_the_list_ignores_case_and_space`, 2 of 5 | 5 |
+
+**Verify, as run.** The six suites of the verify command give 623 passed and 0 skipped, with
+`TENANT_LADDER_DATABASE_URL` on a private database. The three ruff checks exit clean.
+
+**Known limits (follow-ups, not fixed here).**
+
+- `work_plan.md` §6 row D4 does not name the list yet. The EM-G9 branch adds both Gmail names
+  there, so this branch leaves the row alone.
+- The order line of §12.3.12 (EM-G10) does not name EM-G7b yet.
 
 #### 12.3.10 EM-G8 — the connect UI
 
