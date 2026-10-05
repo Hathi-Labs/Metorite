@@ -21,6 +21,7 @@ import AppShell from "@/components/AppShell";
 import Providers from "@/components/Providers";
 import { UndoProvider } from "@/components/UndoProvider";
 import { ToastProvider } from "@/components/ui/Toast";
+import UpdateNotice from "@/lib/shell/UpdateNotice";
 import { themeBootScript } from "@/lib/theme/boot";
 
 export const metadata: Metadata = {
@@ -74,6 +75,12 @@ export default function RootLayout({
               or access context is re-resolving. A surface opts in by calling
               `useUndoScope()`; one that never does simply has an empty stack
               and disabled buttons. */}
+          {/* "Metorite is updating", instead of a 502 (navigation_shell.md
+              §7.3, owner directive 2026-10-05). Inside the toast provider,
+              because it speaks through the toast. OUTSIDE `Providers` for the
+              toast's own reason: it must speak while session and access are
+              failing to resolve, which is exactly what an update looks like. */}
+          <UpdateNotice />
           <UndoProvider>
             <Providers>
               <AppShell>{children}</AppShell>

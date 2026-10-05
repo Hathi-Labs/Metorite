@@ -58,6 +58,7 @@ through one manifest, and no app builds its own copy.
 - The app manifest and its rules for every app (§5).
 - The command bar, its three tiers and its metering (§6).
 - The assistant dock and the bell (§7).
+- What a member sees while Metorite updates (§7.3).
 - Role presets, pins, Desk mode and the first sign-in question (§8).
 - The phone shell (§9).
 
@@ -484,6 +485,63 @@ NS-4b ships `job` and `handoff`. NS-4c adds `answer` and `workflow_draft`.
 
 ---
 
+### 7.3 Updating, not broken
+
+**Owner directive, 2026-10-05.** The owner asked for a pop-up that says "The
+app is updating. Please wait a moment", in place of a 504. The owner then made
+it wider: every error that a database, backend or app update causes must leave
+the member calm.
+
+**What a deploy looks like from a browser.** Measured on the box on
+2026-10-05, from 04:05 to 04:08 UTC:
+
+- The gateway is down for 10 s.
+- Two minutes later, the workbench takes 7 s to stop. It is ready 140 ms after.
+- Caddy holds a request for up to 30 s (H-60).
+- `gatewayFetch` holds the workbench's own call to the gateway for up to 25 s
+  (H-194).
+
+Some requests still fail. A restart cuts an open stream, a hold can run out,
+and a route can answer 502 on its own.
+There was also no error page at all, so a crash showed React's raw
+"Application error". A tab that stayed open across a deploy produced exactly
+that crash the first time it loaded code that the new build had renamed.
+
+**Three layers, one message.**
+
+| Layer | When | What the member sees | Where |
+|---|---|---|---|
+| Caddy | The workbench has not answered for the whole 30 s hold | A full page, "Metorite is updating". It checks `/api/health` every 3 s and reloads by itself | `deploy/hostinger/caddy/updating/index.html`, the `handle_errors` block of `app.metorite.com` |
+| The shell | A request to `/api/*` gets a 502, 503 or 504, or no answer, AND `/api/health` then says the gateway is down | The shared toast: "Metorite is updating", then "Metorite is back" with a Refresh button. "Metorite was updated" with a Reload button when the build changed. "You are offline" when the browser has no network | `lib/shell/UpdateNotice.tsx`, `lib/shell/serviceHealth.ts`, `app/api/health/route.ts` |
+| The error page | A page throws | "This page did not load" with Try again and Reload. A tab out of date after a deploy reloads itself once | `app/error.tsx`, `app/global-error.tsx`, `lib/shell/ErrorScreen.tsx`, `lib/shell/chunkReload.ts` |
+
+**Rules.**
+
+1. **One failed route is not an update.** The shell asks `/api/health` first.
+   A healthy answer ends it with no message, and the route shows its own
+   error.
+2. **The shell never reloads a page by itself**, except a tab whose code is
+   out of date. A reload can lose what the member is typing, so the member
+   decides. The one exception reloads at most once a minute, so a real bug
+   can never loop.
+3. **The words make no promise the page cannot keep.** "If something did not
+   save while it was updating, try it again." The shell does not know what
+   saved.
+4. **One message at a time.** Every state uses one toast key, so "updating"
+   turns into "back" in place.
+5. **`/api/health` is public**, so the sign-in page can say "updating" too. It
+   answers up or down and a build id, and reads nothing private.
+6. **An app never shows its own "server unavailable" banner.** It is the
+   shell's message, under D89.
+
+**What it does not cover.** An open chat stream that a restart cuts still
+ends. NS-10 does not change how the chat reports that. A migration that holds a lock
+can make a request slow without failing it, so no layer sees it. R6 keeps
+old code working against the new schema, which is why a migration does not
+produce an error of its own.
+
+---
+
 ## 8. Presets, pins, Desk mode and the first sign-in
 
 ### 8.1 Presets
@@ -751,6 +809,26 @@ Done when:
    the per-app palette mounts are gone.
 2. Every row of the `seams.test.ts` baseline is zero.
 3. The flags of NS-1 and NS-6 are deleted from the code.
+
+### NS-10 · Updating, not broken (§7.3) — AGENT-SAFE · BUILT 2026-10-05
+
+No flag. The owner asked for this behaviour on 2026-10-05. A merge is its
+release, so it is live from that merge.
+
+Done when, all met:
+
+1. If the workbench has not answered for the 30 s hold, each path answers 503
+   with the updating page. It also sends
+   `Cache-Control: no-store` and `Retry-After: 10`. Measured on the box with
+   a throwaway Caddy in front of a closed port.
+2. A 502, 503 or 504 from `/api/*`, with the gateway down, shows "Metorite is
+   updating". The gateway's return shows "Metorite is back". A new build
+   shows "Metorite was updated". One failed route with a healthy gateway
+   shows nothing. A visual rig drove all four.
+3. A page that throws shows `ErrorScreen`, not React's raw error.
+4. Fences: `lib/shell/serviceHealth.test.ts`, `proxy.test.ts` (the public
+   probe), and `tests/unit/test_deploy_serialize.py::TestCaddyShowsTheUpdatingPage`.
+   Each was seen to fail first.
 
 ### NS-8 · Desk mode — BLOCKED (AGENT-SAFE when unblocked)
 

@@ -64,8 +64,15 @@ const PUBLIC_PAGES = new Set([
  * a `code` and `state` included, still meets `requireIdentity()` there, so a
  * signed-out member still gets 401 and never reaches the gateway. Fences:
  * `proxy.test.ts` and the callback's `route.test.ts`.
+ *
+ * `/api/health` (`navigation_shell.md` §7.3): the probe of the shell's update
+ * notice, so the sign-in page can say "updating" too. It answers up or down
+ * and a build id, and reads nothing private. Fence: `proxy.test.ts`.
  */
-const PUBLIC_API_PATHS = new Set(["/api/email/oauth/microsoft/callback"]);
+const PUBLIC_API_PATHS = new Set([
+  "/api/email/oauth/microsoft/callback",
+  "/api/health",
+]);
 
 export async function proxy(req: NextRequest) {
   // The laptop case, and ONLY the laptop case, runs open. This used to be

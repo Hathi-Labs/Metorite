@@ -1,0 +1,129 @@
+<!doctype html>
+<!--
+  Caddy serves this page when the workbench cannot answer at all, after the
+  30 s hold of `lb_try_duration` has run out (Caddyfile, app.metorite.com,
+  `handle_errors`). Spec: project-docs/specs/navigation_shell.md §7.3.
+
+  It must work with NOTHING else up: no Next, no gateway, no fonts, no CDN.
+  So every style and script is inline, and it loads no other file. The
+  colours copy the light and dark values of `--background`, `--foreground`,
+  `--muted-foreground`, `--border` and `--primary` in globals.css by hand,
+  because this page cannot read that file. Keep them in step if those change.
+
+  It checks /api/health every 3 s and reloads the moment the workbench
+  answers. A 200 from that route means Next is serving again.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Metorite is updating</title>
+<style>
+  :root {
+    --bg: hsl(220 13% 8%);
+    --fg: hsl(210 40% 98%);
+    --muted: hsl(215 20% 65%);
+    --border: hsl(220 13% 16%);
+    --card: hsl(220 13% 10%);
+    --primary: hsl(198 89% 50%);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: hsl(0 0% 100%);
+      --fg: hsl(222.2 84% 4.9%);
+      --muted: hsl(215.4 16.3% 46.9%);
+      --border: hsl(214.3 31.8% 91.4%);
+      --card: hsl(0 0% 100%);
+      --primary: hsl(198 89% 35%);
+      color-scheme: light;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px;
+  }
+  .card {
+    max-width: 420px;
+    width: 100%;
+    border: 1px solid var(--border);
+    background: var(--card);
+    border-radius: 12px;
+    padding: 32px 28px;
+    text-align: center;
+  }
+  .spinner {
+    width: 28px;
+    height: 28px;
+    margin: 0 auto 18px;
+    border-radius: 50%;
+    border: 3px solid var(--border);
+    border-top-color: var(--primary);
+    animation: spin 0.9s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 8px; }
+  p { margin: 0; color: var(--muted); }
+  .status { margin-top: 16px; font-size: 12px; }
+  button {
+    margin-top: 20px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 14px;
+    cursor: pointer;
+  }
+  button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+</style>
+</head>
+<body>
+  <main class="card" role="status" aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div>
+    <h1>Metorite is updating</h1>
+    <p>This usually takes under a minute. This page reloads by itself when Metorite is back.</p>
+    <p class="status" id="status">Checking again in a moment…</p>
+    <button type="button" id="now">Try now</button>
+  </main>
+<script>
+(function () {
+  var statusEl = document.getElementById("status");
+  var tries = 0;
+  var busy = false;
+  function check() {
+    if (busy) return;
+    busy = true;
+    tries += 1;
+    fetch("/api/health", { cache: "no-store" })
+      .then(function (r) {
+        if (r.ok) {
+          statusEl.textContent = "Metorite is back. Loading…";
+          window.location.reload();
+          return;
+        }
+        statusEl.textContent = tries < 20
+          ? "Still updating. Checking again in a moment…"
+          : "This is taking longer than usual. It keeps checking.";
+      })
+      .catch(function () {
+        statusEl.textContent = "Still updating. Checking again in a moment…";
+      })
+      .then(function () { busy = false; });
+  }
+  setInterval(check, 3000);
+  document.getElementById("now").addEventListener("click", check);
+})();
+</script>
+</body>
+</html>
