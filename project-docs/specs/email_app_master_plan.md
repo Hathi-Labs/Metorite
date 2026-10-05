@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b).
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). 🔨 **EM-G9 is BUILT, not merged (2026-10-05), branch `email-gmail-g9`:** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -4150,8 +4150,8 @@ opens All inboxes. After that, Email opens the last scope.
 | 7 | The member changes From on a saved reply draft | Email saves a new draft in the new mailbox, then deletes the draft in the old one. A provider draft cannot move between mailboxes. | EM-T8c |
 | 8 | The sending mailbox needs a reconnect | The send stops with "Reconnect <label> to send". The draft stays. | EM-T8c |
 | 9 | The sending mailbox is at the storage limit | The send runs. The limit is on the copy in Metorite only (D-EM-14). | — |
-| 10 | The same mail is in two mailboxes, for example a mail sent to both addresses | Two rows, each with its chip, each with "Also in <label>". The match is `internet_message_id` (migration 89). Known limit: only the Outlook provider stores `internet_message_id`. | EM-T8g-3 |
-| 11 | Both mailboxes have automatic drafts on, and the same mail is in both | The second draft does not start when the other mailbox already has a draft or a reply for that `internet_message_id`. Known limit: only the Outlook provider stores `internet_message_id`. | EM-T8g-3 |
+| 10 | The same mail is in two mailboxes, for example a mail sent to both addresses | Two rows, each with its chip, each with "Also in <label>". The match is `internet_message_id` (migration 89). Outlook stores `internet_message_id`, and Gmail does too since EM-G2 (#626). EM-G9 proves a Gmail and Outlook pair. Known limit: IMAP stores none, so an IMAP mailbox pairs with nothing. | EM-T8g-3, EM-G9 |
+| 11 | Both mailboxes have automatic drafts on, and the same mail is in both | The second draft does not start when the other mailbox already has a draft or a reply for that `internet_message_id`. Outlook stores `internet_message_id`, and Gmail does too since EM-G2 (#626). EM-G9 proves the dedupe across a Gmail and Outlook pair. Known limit: IMAP stores none. | EM-T8g-3, EM-G9 |
 | 12 | A rule forwards mail from A to B, and a rule in B forwards it back | A forward rule does not fire on mail that a Metorite rule forwarded. The forward carries the header `X-Metorite-Forwarded`. Today a FORWARD makes a draft, so a loop needs a send by the member at each hop. | deferred (§11.7.7) |
 | 13 | Two Outlook mailboxes return the same conversation id | The conversation key includes `account_id`. A conversation never spans two mailboxes (MB-12). | EM-T8d |
 | 14 | Mail between two mailboxes of the member | Not a cold sender, not "awaiting reply" (D-EM-27). A thread with no participant outside the member's mailboxes is FYI. It is never NEEDS_REPLY and never AWAITING. A mail with no recipient keeps its status. The cold check skips such a mail only when a Sent copy proves the send (edge case 26). | EM-T8e |
@@ -4166,9 +4166,9 @@ opens All inboxes. After that, Email opens the last scope.
 | 23 | Another app sends mail for the member, for example Notes | It uses the default mailbox and names it in its own confirm step | EM-T8f-2 |
 | 24 | A disconnect | The Mem0 drafting memories of the mailbox go too (MB-17) | EM-T8f |
 | 25 | A keyboard reply (`r`) in All inboxes | The mailbox of the focused mail, as for a click | EM-T8a |
-| 26 | An outside sender forges From as another mailbox of the member | The cold check runs. Only a Sent copy that proves the send stops it. The copy has the same Message-ID, and that ID is not empty. It sits in the `sent` folder of another mailbox of the member. It names this mailbox in To, Cc or Bcc, so a replayed Message-ID proves nothing. **Known limit:** only the Outlook provider stores the Message-ID, so the proof exists only between two Outlook mailboxes. A Gmail or IMAP pair gets the cold check, as before EM-T8e-1. **Accepted risk:** the classifier payload, Reply Zero, the digest and the cleanup still read a forged From as "self". The single address had the same exposure before EM-T8e-1. | EM-T8e-1 |
+| 26 | An outside sender forges From as another mailbox of the member | The cold check runs. Only a Sent copy that proves the send stops it. The copy has the same Message-ID, and that ID is not empty. It sits in the `sent` folder of another mailbox of the member. It names this mailbox in To, Cc or Bcc, so a replayed Message-ID proves nothing. **Known limit:** IMAP stores no Message-ID, so a pair with an IMAP mailbox gets the cold check, as before EM-T8e-1. Gmail stores it since EM-G2 (#626), and EM-G9 proves the proof from Gmail to Outlook and back. **Accepted risk:** the classifier payload, Reply Zero, the digest and the cleanup still read a forged From as "self". The single address had the same exposure before EM-T8e-1. | EM-T8e-1 |
 
-**Gmail (2026-10-04).** The known limits of edge cases 10, 11 and 26 hold for Outlook only today. EM-G2 gives Gmail the Message-ID, and EM-G9 proves each case for a Gmail and Outlook pair (§12).
+**Gmail (2026-10-05).** Edge cases 10, 11 and 26 hold for a Gmail and Outlook pair too. EM-G2 (#626) gives Gmail the Message-ID in the form of Graph, and EM-G9 proves each case (§12.3.11). EM-G9-f1 to EM-G9-f3 are the known limits of the pair.
 
 ### 11.7 Slices
 
@@ -4549,10 +4549,10 @@ fixes its five small findings.
   self-only path and the folder test of the proof. The folder test matters most. One forged mail
   to both A and B puts a copy with the same Message-ID in the inbox of mailbox B as well. Only
   the folder test refuses that copy.
-- **Known limit (F2), not fixed.** Only the Outlook provider stores `internet_message_id`. Gmail
-  and IMAP never set it. So "mail between two own mailboxes is never cold" holds only from
-  Outlook to Outlook. Other pairs get the cold check, which is as safe as before EM-T8e-1.
-  EM-G2 and EM-G9 end this limit for Gmail (§12.3.2, §12.3.11).
+- **Known limit (F2), closed for Gmail by EM-G2 and EM-G9.** Outlook stores
+  `internet_message_id`, and Gmail does too since EM-G2 (#626, §12.3.2). EM-G9 proves the Sent-copy
+  proof from Gmail to Outlook and back (§12.3.11). IMAP never sets it. So a pair with an IMAP
+  mailbox gets the cold check, which is as safe as before EM-T8e-1.
 - **Mutation result.** The run killed 50 of 50 mutants: 42 from the first build and round 1,
   and 8 from round 2. Each fence below is in `tests/unit/test_email_ai_context.py`.
 
@@ -5892,8 +5892,9 @@ the build, and the notes below say what round 1 changed.
 
 **Narrowed.**
 
-- Only Outlook mailboxes pair (the Known limit). This slice fills `internet_message_id` for no
-  other provider.
+- At the build, only Outlook mailboxes paired, and this slice filled `internet_message_id` for no
+  other provider. Since EM-G2 (#626) Gmail fills it too. EM-G9 proves a Gmail and Outlook pair
+  (§12.3.11).
 - The dedupe runs before the thread check (review round 1). So a run that skips trashes no draft
   of this mailbox. The build ran the thread check first, and a run that then met the lock left the
   pair with no draft.
@@ -6048,9 +6049,9 @@ member.
 **Scope.** `core.py`, `transport/messages.py`, `transport/search.py`, `automation/actions.py`,
 `automation/identity.py`, `components/EmailList.tsx`, `lib/api.ts`, `lib/types.ts` and tests.
 
-**Known limit.** Only the Outlook provider stores `internet_message_id`, so items 1 and 3 pair
-two Outlook mailboxes only. Edge case 26 has the same limit. A mail with an empty id pairs with
-nothing.
+**Known limit.** IMAP stores no `internet_message_id`, so items 1 and 3 never pair an IMAP
+mailbox. Edge case 26 has the same limit. Outlook stores it, and Gmail does too since EM-G2 (#626).
+EM-G9 proves a Gmail and Outlook pair (§12.3.11). A mail with an empty id pairs with nothing.
 
 1. **"Also in" (item 1, edge case 10).** `GET /email/messages` and `GET /email/search` give each
    row `also_in`, a list of mailbox ids. Each id is a paired mailbox that holds a copy. A copy has
@@ -6144,6 +6145,14 @@ change.
 
 > **EM-G7b (2026-10-05).** ✅ MERGED (#639, §12.3.9b). A member
 > allowlist narrows the Gmail connect, so the live test of EM-G10 reaches the listed members only.
+
+> **EM-G9 (2026-10-05).** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g9` (§12.3.11).
+> Tests and docs only, with no SQL change. Four R8 fences prove "Also in", the draft dedupe and
+> the Sent-copy proof for a Gmail and Outlook pair.
+
+> **D-EM-36 amended (orchestrator, 2026-10-05).** The flag flips for the owner's test after
+> EM-G5a, EM-G9 and EM-G7b merge. EM-G5b, EM-G3b and EM-G3c move to "before customers" (§12.2,
+> §12.3.12).
 
 > **The slice names.** The slices are EM-G1 to EM-G10. §10.4.7 already uses the bare names G1 to
 > G5 for the gaps of EM-T6c, so the prefix keeps the two sets apart (R2).
@@ -6254,7 +6263,27 @@ reverse it.
 | **D-EM-33** | **The folder model of Gmail.** The system labels decide the folder, in this order: `TRASH`, `SPAM`, `DRAFT`, `SENT`, `INBOX`. A Gmail message with no system label is in `archive`. A move to a user label adds that label and removes `INBOX`. The Archive folder pages with a query, never with `labelIds=["archive"]`. The orchestrator decided O-GM-1 on 2026-10-04: a user label is a label and never a folder. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-34** | **The re-key reclaim runs only for a provider that re-keys its ids.** That is Outlook, whose ids change on a move. Gmail never re-keys an id, so Gmail never folds two rows on one Message-ID. The provider attribute is false by default. IMAP stores no Message-ID today, so IMAP sees no change. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
 | **D-EM-35** | **Gmail shows only when the Google app is installed.** The UI reads a capability from the gateway: for each provider, whether its app credentials are set. Gmail is a live choice only when the answer is true. No member ever sees "configure Integrations". *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
-| **D-EM-36** | **The Gmail connect ships dark behind `EMAIL_GMAIL_CONNECT`, which is off by default.** The box in production holds a Google client today (§12.1), so the app alone cannot keep Gmail hidden. While the flag is off, the capability read answers `gmail: false`, and each Gmail leg of EM-G7 refuses. The flag flips at EM-G10 only, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`. The flip for the test of the owner also sets `EMAIL_GMAIL_CONNECT_MEMBERS` to the member address of the owner (EM-G7b, §12.3.9b). With the flag on and the list empty, every member sees Gmail, and that state is for the time after Google verifies the app. *Agent decision (orchestrator, 2026-10-05). The owner can reverse it.* |
+| **D-EM-36** | **The Gmail connect ships dark behind `EMAIL_GMAIL_CONNECT`, which is off by default.** The box in production holds a Google client today (§12.1), so the app alone cannot keep Gmail hidden. While the flag is off, the capability read answers `gmail: false`, and each Gmail leg of EM-G7 refuses. ~~The flag flips at EM-G10 only, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`.~~ **Amended (orchestrator, 2026-10-05): the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge, under gate `enforcement-flip`.** The flip for the test of the owner also sets `EMAIL_GMAIL_CONNECT_MEMBERS` to the member address of the owner (EM-G7b, §12.3.9b). With the flag on and the list empty, every member sees Gmail, and that state is for the time after Google verifies the app. The text below this table holds the reason. *Agent decision (orchestrator, 2026-10-05). The owner can reverse it.* |
+
+**The amendment of D-EM-36 (orchestrator, 2026-10-05).** The flag flips for the owner's test when
+three slices merge:
+
+- EM-G5a, the import half of EM-G5 (§12.3.6).
+- EM-G9, the parity of a Gmail and Outlook pair (§12.3.11).
+- EM-G7b, a member allowlist beside the flag. Its variable is
+  `EMAIL_GMAIL_CONNECT_MEMBERS` (#639).
+
+Three items move from "before the flip" to "before customers" (§12.3.12):
+
+- EM-G5b, the reconcile half of EM-G5. It needs a confirm by message id (E-G5-9).
+- EM-G3b, a move to a user label, and the filter list (§12.3.4).
+- EM-G3a-f8, the size limit of Google for a plain `drafts.update`, and the autosave of a draft
+  with files (§12.3.3). A new slice, EM-G3c, owns it.
+
+**Why.** The owner's test is one mailbox of one member, in the Testing mode of Google. In that
+mode a refresh token ends after 7 days. The history cursor of EM-G4b already reports each delete
+within a week. So the owner's test needs none of the three items, and each one binds a customer
+mailbox only.
 
 **Open questions for the orchestrator.** Each one blocks the slice in its last column. Each has a
 recommendation, and the slice scope below follows the recommendation. If the orchestrator decides
@@ -7006,16 +7035,18 @@ and it sends no file of the draft.
 an autosave is an update. An inline image (`cid:`) of a draft made in Gmail web is no file in that
 read, so an update drops it.
 
-**Known limit EM-G3a-f8, a precondition of EM-G10 and of the Gmail go-live.** The re-verify measured
-one autosave of a Gmail draft with one 5 MB file. It made 4 Gmail calls: `drafts.list`,
+**Known limit EM-G3a-f8, a precondition of customers.** ~~A precondition of EM-G10 and of the Gmail
+go-live.~~ The amendment of D-EM-36 (§12.2, 2026-10-05) moved it, and EM-G3c owns it.
+
+The re-verify measured one autosave of a Gmail draft with one 5 MB file. It made 4 Gmail calls: `drafts.list`,
 `messages.get` with `format=full`, `attachments.get` and `drafts.update`. It sent 9.44 MB up and
 took 6.99 MB down, and the composer autosaves after each pause of 1.2 seconds. Review round 2 puts
 one `messages.get` with `format=raw` in the place of the second and the third call. The bytes stay
 about the same.
 
 A file read that fails gives a 500, and the `catch` of the autosave hides it from the member.
-Before the go-live, a later slice must check the size limit of Google on a plain `drafts.update`.
-It must also decide how often an autosave of a draft with files may run.
+Before customers, EM-G3c must check the size limit of Google on a plain `drafts.update`. It must
+also decide how often an autosave of a draft with files may run (§12.3.12).
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
@@ -8236,27 +8267,35 @@ then went back to its exact SHA-256.
 
 #### 12.3.11 EM-G9 — parity of a Gmail and Outlook pair
 
+**Status.** 🔨 BUILT, not merged (2026-10-05), branch `email-gmail-g9`. The as-built notes, the
+mutation table and the known limits EM-G9-f1 to EM-G9-f3 are at the end of this section.
+
 **Gate.** 🟢 AGENT-SAFE · R8. No migration.
 
 **Order.** After EM-G2 and EM-G3a.
 
 **Size.** S. Tests and docs, about 150 lines.
 
-**Scope.**
+**Scope.** The EM-G9 build checked the anchors below at `a9a08deb9`.
 
 1. **"Also in".** One member has a Gmail and an Outlook mailbox. A mail sent to both shows "Also
-   in" on each row (`ALSO_IN_SQL`, `automation/identity.py:173`).
+   in" on each row (`ALSO_IN_SQL`, `automation/identity.py:174`).
 2. **The draft dedupe.** The second mailbox makes no draft when the first holds one
-   (`automation/identity.py:224`, `:247`).
-3. **The Sent-copy proof.** The proof holds from Gmail to Outlook and back (`:328`). Mail between
-   the two is not cold and not awaiting (D-EM-27).
+   (`_DRAFT_LOCK_SQL` at `automation/identity.py:225`, `_ANSWERED_IN_PAIR_SQL` at `:248`).
+3. **The Sent-copy proof.** The proof holds from Gmail to Outlook and back (`_PROVEN_OWN_SEND_SQL`
+   at `:330`). Mail between the two is not cold and not awaiting (D-EM-27).
 4. **The known limits.** Update §11.6 edge cases 10, 11 and 26. Update the F2 note of EM-T8e-1
    (§11.7.5) and the note of EM-T8g-3 on `internet_message_id` (§11.7.7).
+
+**Non-goals.** No change to the SQL of the four statements or to their callers. No change to
+IMAP. No change to the cold check. No migration.
 
 **The comments moved to EM-G2 (E9).** EM-G2 corrected each comment that said only Outlook stores
 the Message-ID. They sit above `ALSO_IN_SQL` and `_PROVEN_OWN_SEND_SQL` in `automation/identity.py`,
 in two lines of `apps/services/gateway/AGENTS.md`, and in the docstrings of
-`test_email_duplicates.py` and `test_email_ai_context.py`. This slice has no comment item.
+`test_email_duplicates.py` and `test_email_ai_context.py`. EM-G2 missed one comment. The doc
+comment of `alsoIn` in `workbench/control_plane/src/app/email/lib/types.ts` still said that only
+two Outlook mailboxes pair. EM-G9 corrects it.
 
 **Fences (R7).** New R8 cases in `tests/unit/test_email_duplicates.py` and
 `tests/unit/test_email_ai_context.py`. The Gmail rows come from the real parse of an EM-G2
@@ -8280,13 +8319,65 @@ uv run pytest tests/unit/test_email_duplicates.py tests/unit/test_email_ai_conte
 
 The R8 tests must show PASSED, with 0 skips.
 
+**As built (2026-10-05, branch `email-gmail-g9`).** No SQL and no provider code changed.
+
+- **The two reads.** `tests/unit/_email_pair_rows.py` gives each row from the real read of its
+  provider. A Gmail row comes from `GmailProvider.get_message` over an EM-G2 fixture. An Outlook
+  row comes from `OutlookProvider.list_messages` over one Graph message. `httpx.MockTransport`
+  answers each request.
+- **The Graph form is a literal.** The Outlook message carries the Message-ID as Graph gives it,
+  with its angle brackets and its case. The test writes that value as a literal. A value taken
+  from the Gmail parse would agree with each defect of that parse.
+- **The write.** Each row goes through `persist.upsert_message`, with the `REKEYS_MESSAGE_IDS`
+  flag of its provider (D-EM-34). Each read runs as `acb_app_h3rls`.
+- **Fixture (d)** holds a Message-ID in mixed case. So a parse that changes the case also breaks
+  the pair.
+
+**The fences, as built.** 8 new R8 cases. The run of the three files gives 165 passed, with 0
+skipped.
+
+| Test | File | What it proves |
+|---|---|---|
+| `test_also_in_pairs_a_gmail_and_an_outlook_copy` (2 cases) | `test_email_duplicates.py` | Each copy names the other mailbox, in the list, in one mailbox and in search. Both rows hold the Graph form. |
+| `test_draft_dedupe_spans_gmail_and_outlook` (3 cases) | `test_email_duplicates.py` | Gmail drafts first, or Outlook drafts first, or the member made the draft in Gmail web. The other mailbox makes no draft, and the skip reason is `answered`. The Gmail label `DRAFT` gives the folder `drafts`. |
+| `test_the_try_lock_spans_gmail_and_outlook` | `test_email_duplicates.py` | The Outlook run meets the lock of the Gmail run, and the skip reason is `busy`. |
+| `test_the_sent_proof_holds_from_gmail_to_outlook` | `test_email_ai_context.py` | Before the Gmail Sent copy syncs, the cold check runs (EM-G9-f1). After the sync, the proof holds and the check skips. The thread is self-only, so it is never awaiting. |
+| `test_the_sent_proof_holds_from_outlook_to_gmail` | `test_email_ai_context.py` | The same, from an Outlook Sent copy to a Gmail Inbox copy. |
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against the 8 cases on a real
+Postgres. Each file then went back to its exact SHA-256.
+
+| Id | Mutation | Red cases |
+|---|---|---|
+| M1 | The Gmail parse sets no Message-ID (`gmail.py`) | 8 of 8 |
+| M2 | The Gmail parse strips the angle brackets (`_gmail_message_id`) | 8 of 8 |
+| M3 | The Outlook parse strips the angle brackets (`outlook.py`) | 8 of 8 |
+
+Each red case failed on its behaviour: an empty "Also in", a second draft, or no proof.
+
+**Known limit EM-G9-f1, the order of the syncs.** Gmail polls, and Outlook gets a push. So a mail
+from Gmail to Outlook can meet the Outlook cold check before the Gmail Sent copy syncs. The check
+then has no proof, and it runs as for any mail with no proof. This fails safe.
+`test_the_sent_proof_holds_from_gmail_to_outlook` shows it.
+
+**Known limit EM-G9-f2, the forms of a Gmail address.** Gmail can deliver mail to other forms of
+one address: other dots, a `+tag`, or the domain `googlemail.com`. Each compare reads
+`email_address` exactly. So a Sent copy to such a form proves nothing, and the self set does not
+hold that form. The cold check then runs. This fails safe.
+
+**Known limit EM-G9-f3, the raw Message-ID.** The fences prove that the two parses keep one value.
+No test can prove that Gmail and Graph give the same raw value for one mail. EM-G10 check 6 tests
+it live.
+
 #### 12.3.12 EM-G10 — live acceptance (owner)
 
 **Gate.** 🔴 OWNER-GATE. The owner registers the Google app (§12.4 steps 1 to 8), names the test
 user (Q-GM-3) and gives the go. An agent writes the env under gate `env-write` and runs the checks.
 
-**Order.** Last. After EM-G1 to EM-G5, EM-G7, EM-G8 and EM-G9. EM-G6a and EM-G6b are not needed
-(D-EM-32).
+**Order.** Last. ~~After EM-G1 to EM-G5, EM-G7, EM-G8 and EM-G9.~~ **Amended (D-EM-36,
+orchestrator, 2026-10-05):** the owner's test runs after EM-G5a, EM-G9 and EM-G7b merge. The
+other slices that it needs merged before: EM-G1, EM-G2, EM-G3a, EM-G4a, EM-G4b, EM-G7 and EM-G8.
+EM-G6a and EM-G6b are not needed (D-EM-32). The list "Before customers" below holds what moved.
 
 **Size.** S. A run of the checks, and a report.
 
@@ -8321,6 +8412,25 @@ production act in the same message (CLAUDE.md §3a rule 2).
 **Non-goals.** Google verification and CASA (§12.4 steps 10 to 15). They come before customers,
 not before this check.
 
+**Before customers.** The amendment of D-EM-36 (§12.2) moves the first three items past the
+owner's test. The other items are known limits of merged slices. Each item must close before a
+customer connects Gmail, and no item has an owner yet.
+
+1. **EM-G5b**, the reconcile half of EM-G5 (§12.3.6). It needs a confirm by message id (E-G5-9).
+2. **EM-G3b**, a move to a user label, and the filter list (§12.3.4).
+3. **EM-G3c**, a new slice with no section yet. It owns EM-G3a-f8: the size limit of a plain
+   `drafts.update`, and the autosave of a draft with files (§12.3.3).
+4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
+   the old cursor (§12.3.5.2).
+5. **EM-G2-f1.** A large text part that Gmail sends by `attachmentId` gives an empty body
+   (§12.3.2).
+6. **EM-G3a-f7.** An update of a draft made in Gmail web drops its inline images (§12.3.3).
+7. **EM-G4a-f1.** A `batchModify` that stops on a rate limit falls back to one `modify` for each
+   message (§12.3.5.1).
+8. **The known limits of EM-G8** (§12.3.10). The rule editor suggests no Gmail user label. The
+   reconnect banner does not read the capability read. `provider_unavailable` shows the generic
+   failure.
+
 ### 12.4 Owner runbook — register the Metorite Google mail app (D-EM-5 amended, D-EM-31)
 
 These are one-time owner acts. No customer ever repeats them. An agent cannot do them, because
@@ -8352,7 +8462,8 @@ each one needs a Google account that Metorite owns (`work_plan.md` §6.0 B).
 
 **The dark flag (D-EM-36).** The box holds a Google client today, and nobody in this plan set it
 (Q-GM-6). So `EMAIL_GMAIL_CONNECT` keeps the Gmail connect dark until EM-G10. Set it to `true`
-only at EM-G10, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`.
+only for the owner's test, under gate `enforcement-flip`. That test waits for EM-G5a, EM-G9 and
+EM-G7b to merge (D-EM-36, amended 2026-10-05).
 
 **The member list (EM-G7b, gate `enforcement-flip`).** While the app is in Testing, set
 `EMAIL_GMAIL_CONNECT_MEMBERS` with the flag. It holds the Metorite sign-in address of each test

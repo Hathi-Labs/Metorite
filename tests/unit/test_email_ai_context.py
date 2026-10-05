@@ -21,6 +21,10 @@ R7 fences named here:
 * ``email-ai-context-one-mailbox`` (R8, D-EM-18): two mailboxes of one member,
   each with its own marker. For each background loader, the read for A holds
   no marker of B.
+* ``email-sent-proof-gmail-outlook`` (R8, WS-17 EM-G9, spec §12.3.11): the
+  Sent-copy proof holds from Gmail to Outlook and back, so mail between the
+  two is not cold and not awaiting. Each row is the real read of its
+  provider (``tests/unit/_email_pair_rows.py``), never a row built by hand.
 
 Run (real Postgres)::
 
@@ -43,6 +47,8 @@ pytest.importorskip("sqlalchemy")
 from acb_auth.roles import UserContext, UserRole
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
+from email_ingestion.providers.gmail import GmailProvider
+from email_ingestion.providers.outlook import OutlookProvider
 from fastapi import BackgroundTasks, HTTPException
 from gateway.routes.email import digest as digest_mod
 from gateway.routes.email.automation import actions as actions_mod
@@ -59,12 +65,14 @@ from gateway.routes.email.automation import voice_profile as voice_mod
 from gateway.routes.email.automation.identity import (
     SELF_ADDRESSES_SQL,
     SelfIdentity,
+    proven_own_send,
     resolve_self,
     sender_scope,
 )
 from gateway.routes.email.core import _date_range_clause, _tenant_session
 from sqlalchemy import text
 
+from tests.unit import _email_pair_rows as pair_rows
 from tests.unit._email_fakes import bind_db
 from tests.unit._tenant_ladder import tenant_engine_scope
 
@@ -110,12 +118,13 @@ def _insert(admin, sql: str, params: dict) -> str:
     return str(row[0]) if row else ""
 
 
-def _account(admin, *, org: str, owner: str, address: str) -> str:
+def _account(admin, *, org: str, owner: str, address: str,
+             provider: str = "microsoft") -> str:
     return _insert(admin, (
         "INSERT INTO email_accounts (user_id, provider, email_address, "
         "credentials_encrypted, initial_sync_done, organization_id) "
-        "VALUES (:u, 'microsoft', :m, 'x', true, CAST(:o AS uuid)) RETURNING id"),
-        {"u": owner, "m": address, "o": org})
+        "VALUES (:u, :prov, :m, 'x', true, CAST(:o AS uuid)) RETURNING id"),
+        {"u": owner, "prov": provider, "m": address, "o": org})
 
 
 def _addr_list(addrs: tuple | None) -> str | None:
@@ -524,6 +533,113 @@ class TestSelfIsEachMailboxOfTheMember:
                 {"a": f.a})}
         assert "news@vendor.test" in got
         assert f.b_addr not in got
+
+
+@pytest.fixture()
+def gmail_and_outlook(promoted, app_engine):  # noqa: F811
+    """A factory: one member with a Gmail mailbox and an Outlook mailbox in
+    org B (WS-17 EM-G9). The caller names the address of each, because the
+    proof reads the address of the mailbox in the recipients of the copy."""
+    _assert_non_priv(app_engine)
+    p = promoted
+    made: list[str] = []
+
+    def _make(*, gmail: str, outlook: str) -> SimpleNamespace:
+        t = _tag()
+        f = SimpleNamespace(p=p, admin=p.admin_engine, org=p.org_b, tag=t,
+                            member=f"member-{t}@signin-t8e.test")
+        f.gmail = _account(f.admin, org=f.org, owner=f.member, address=gmail,
+                           provider="gmail")
+        f.outlook = _account(f.admin, org=f.org, owner=f.member, address=outlook)
+        made.extend([f.gmail, f.outlook])
+        return f
+
+    try:
+        yield _make
+    finally:
+        _purge(p.admin_engine, *made)
+
+
+async def _cold_check_of(f, account: str, mail: str) -> tuple[bool, str]:
+    """Run the cold check of ``mail`` once. Returns the proof and the sender
+    scope of the payload. The caller binds the tenant."""
+    async with _tenant_session() as db:
+        payload = await engine_mod._email_payload_from_id(
+            db, mail, f.member, account_id=account)
+        proof = await proven_own_send(db, account, mail)
+        await senders_mod._maybe_block_cold(
+            db, None, account, mail, "pm", payload, "LABEL")
+    return proof, payload["sender_scope"]
+
+
+async def _self_only(account: str, thread: str) -> bool:
+    async with _tenant_session() as db:
+        return await replyzero_mod._thread_is_self_only(db, account, thread)
+
+
+@_DB_GATE
+class TestTheSentProofSpansGmailAndOutlook:
+    """``email-sent-proof-gmail-outlook`` (EM-G9 item 3, D-EM-27). Fixture (d)
+    is a mail from Asha to Ravi, with a Message-ID in mixed case. The member
+    owns both addresses, so the mail goes between two of their mailboxes.
+
+    Each case first stores the Inbox copy alone. The Sent copy has not synced
+    yet, so the cold check runs: that is known limit EM-G9-f1, and it fails
+    safe. Then the Sent copy syncs, and the check skips the mail."""
+
+    async def test_the_sent_proof_holds_from_gmail_to_outlook(
+        self, gmail_and_outlook, monkeypatch,
+    ):
+        name = pair_rows.MIXED_CASE
+        f = gmail_and_outlook(gmail=pair_rows.ASHA, outlook=pair_rows.RAVI)
+        sent = await pair_rows.gmail_read(name, pmid=f"g-sent-{f.tag}",
+                                          labels=["SENT"])
+        thread = f"ot-{f.tag}"
+        inbox = await pair_rows.outlook_read(pair_rows.graph_message(
+            f"o-in-{f.tag}", imid=pair_rows.GRAPH_MESSAGE_ID[name],
+            sender=pair_rows.ASHA, to=(pair_rows.RAVI,), thread=thread,
+            received=pair_rows.GRAPH_RECEIVED[name]), folder="inbox")
+        assert (sent.folder, inbox.folder) == ("sent", "inbox")
+        llm = AsyncMock(return_value=(False, ""))
+        monkeypatch.setattr(senders_mod, "_llm_is_cold", llm)
+        async with _as_app(f.p, f.org):
+            await pair_rows.write(f.outlook, inbox, OutlookProvider)
+            mail = pair_rows.row_id(f.admin, f.outlook, f"o-in-{f.tag}")
+            before = await _cold_check_of(f, f.outlook, mail)
+            await pair_rows.write(f.gmail, sent, GmailProvider)
+            after = await _cold_check_of(f, f.outlook, mail)
+            self_only = await _self_only(f.outlook, thread)
+        assert before == (False, "self")
+        assert after == (True, "self")
+        assert llm.await_count == 1, "the proven send got the cold check"
+        assert self_only is True, "mail between own mailboxes reads as awaiting"
+
+    async def test_the_sent_proof_holds_from_outlook_to_gmail(
+        self, gmail_and_outlook, monkeypatch,
+    ):
+        name = pair_rows.MIXED_CASE
+        f = gmail_and_outlook(gmail=pair_rows.RAVI, outlook=pair_rows.ASHA)
+        thread = f"gt-{f.tag}"
+        inbox = await pair_rows.gmail_read(name, pmid=f"g-in-{f.tag}",
+                                           labels=["INBOX"], thread=thread)
+        sent = await pair_rows.outlook_read(pair_rows.graph_message(
+            f"o-sent-{f.tag}", imid=pair_rows.GRAPH_MESSAGE_ID[name],
+            sender=pair_rows.ASHA, to=(pair_rows.RAVI,), thread=f"ot-{f.tag}",
+            received=pair_rows.GRAPH_RECEIVED[name]), folder="sentitems")
+        assert (sent.folder, inbox.folder) == ("sent", "inbox")
+        llm = AsyncMock(return_value=(False, ""))
+        monkeypatch.setattr(senders_mod, "_llm_is_cold", llm)
+        async with _as_app(f.p, f.org):
+            await pair_rows.write(f.gmail, inbox, GmailProvider)
+            mail = pair_rows.row_id(f.admin, f.gmail, f"g-in-{f.tag}")
+            before = await _cold_check_of(f, f.gmail, mail)
+            await pair_rows.write(f.outlook, sent, OutlookProvider)
+            after = await _cold_check_of(f, f.gmail, mail)
+            self_only = await _self_only(f.gmail, thread)
+        assert before == (False, "self")
+        assert after == (True, "self")
+        assert llm.await_count == 1, "the proven send got the cold check"
+        assert self_only is True, "mail between own mailboxes reads as awaiting"
 
 
 class _Store:

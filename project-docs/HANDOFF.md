@@ -510,8 +510,16 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-01 · the Outlook onboarding session
 
 ### H-241 · Register the Metorite Google mail app, so Gmail can connect · [OWNER]
-- **Check:** `ssh metorite 'sudo grep -c "^GMAIL_OAUTH_CLIENT_ID=." /opt/acb/app/.env'`
-  → `0` means open. The command prints a count, never the value.
+- **Check:** `rg -n "Q-GM-6 \(answered" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner closes it. The owner confirms that the client on
+  the box is the mail app of §12.4. An agent then writes
+  `**Q-GM-6 (answered, <date>).**` under §12.5.
+- ⚠️ **Do not count the keys on the box.** The box holds a Google client since
+  2026-10-05, and nobody in the plan set it (Q-GM-6). So a key count of 1 does
+  not show that the owner registered the app. The old Check counted
+  `GMAIL_OAUTH_CLIENT_ID=` lines. The orchestrator found that key by name on
+  2026-10-05 (§12.1), so a `/handoff` run can delete this entry too early.
+  The EM-G9 session wrote this Check on 2026-10-05.
 - **Why.** On 2026-10-04 the owner amended D-EM-5: Gmail and Google Workspace
   mailboxes join Outlook. The code needs ONE Google OAuth app that Metorite
   owns. An agent cannot create it, because it needs a Google account of
@@ -521,9 +529,10 @@ line — never reclaim a number by deleting the other entry.
   2. Give the client ID and the secret to an agent through a one-time channel.
      Do not paste the secret into a chat.
   3. The agent writes the two keys on the box under gate `env-write`.
-  4. Answer Q-GM-1 to Q-GM-5 (§12.5).
-- **Then.** EM-G10 runs after EM-G1 to EM-G5, EM-G7, EM-G8 and EM-G9 merge.
-  Google verification and CASA (§12.4 steps 10 to 15) come before customers.
+  4. Answer Q-GM-1 to Q-GM-6 (§12.5).
+- **Then.** The owner's test (EM-G10) runs after EM-G5a, EM-G9 and EM-G7b
+  merge (D-EM-36, amended 2026-10-05). EM-G5b, EM-G3b and EM-G3c come before
+  customers, with Google verification and CASA (§12.4 steps 10 to 15).
 - **Authority:** `specs/email_app_master_plan.md` §12.4 · D-EM-5 (amended) ·
   D-EM-31
 - **Added:** 2026-10-04 · the EM-G0 spec session
