@@ -112,6 +112,17 @@ class RoomAccess:
         """
         return self.role is not None
 
+    @property
+    def refusal_status(self) -> int:
+        """The HTTP status of a refusal: 503 when the lookup failed, else 403.
+
+        An outage and a refusal must never share an answer. A client that
+        restored a chat id from storage drops that id on a refusal
+        (``lib/railSessions.ts``), and a pool blip (EMAXCONNSESSION) answered
+        as a refusal made it drop the member's own chat.
+        """
+        return 503 if self.resolve_failed else 403
+
     def denied(self, action: str) -> str:
         """A refusal that names the room rule, not just 'forbidden'."""
         if self.resolve_failed:
