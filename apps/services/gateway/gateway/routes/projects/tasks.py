@@ -406,6 +406,22 @@ async def create_task(
             )
         root = await root_project_id(db, str(project_id))
         values["root_project_id"] = root
+        # The values pass the gate a PATCH puts them through
+        # (`custom_fields.apply_values`), against the definitions of the root
+        # the task is created in, in this transaction and before any write.
+        # Before this the create stored the body as it came: a wrong type, an
+        # option nobody defined, or a key from another project landed in the
+        # row and read back as a saved value. A stated null means "no value",
+        # so it leaves the column default rather than writing NULL into a
+        # NOT NULL column.
+        if "custom_fields" in values:
+            custom = values.pop("custom_fields")
+            if custom is not None:
+                shaped, _ = apply_values(
+                    {}, custom, await load_definitions(db, root),
+                )
+                if shaped:
+                    values["custom_fields"] = shaped
         # The ROOT scopes the counter, the types and the tenant. A STATUS scopes
         # to the nearest node that owns a set, which is the root until a
         # subproject overrides it (migration 196). Two names for two questions,
