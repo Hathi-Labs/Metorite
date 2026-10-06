@@ -111,33 +111,6 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-06 · the backup verify-drop fix (branch
   `backup-verify-drop`)
 
-### H-258 · Clear the 22 scratch databases that the nightly verify left on production · [OWNER]
-- **Check:** run this read-only query on the production project.
-  `SELECT count(*) FROM pg_database WHERE datname ~ '^acb_verify_[0-9]+$'`
-  → a count above 1 means this is open.
-- **What is there.** Measured 2026-10-06 with a read-only query: 22
-  databases, 923 MB, from `acb_verify_1789810167` to
-  `acb_verify_1791253876`. The owner is `postgres`, and no session was open
-  on them. The product database is 184 MB. These copies filled the disk, and
-  the provider made the project read-only for about 2 hours.
-- **What the fix does to them.** The PR that adds this entry makes the
-  nightly `backup_db.sh --verify-restore` sweep each scratch database that is
-  older than 6 hours. All 22 qualify. So **the first nightly run after the
-  deploy drops all 22 on production**, and it logs one line for each. No
-  agent dropped them, because that is a production act.
-- **Do.** Choose one. (a) Let the nightly run drop them, then read its log
-  with `journalctl -u acb-backup --since today` and run the Check. (b) Drop
-  them by hand now, with `DROP DATABASE "<name>" WITH (FORCE)` for each.
-- **⚠️ Also confirm the pooler port.** The drop sends
-  `SET default_transaction_read_only = off` and then the DROP, in one
-  session. That needs session mode (port 5432). In transaction mode (port
-  6543) the SET can reach another server connection. Check `PGPORT` in
-  `/opt/acb/app/.env`.
-- **Authority:** `scripts/backup_db.sh`, the "Scratch databases" block, and
-  its fence `scripts/rehearse_verify_scratch.sh`
-- **Added:** 2026-10-06 · the backup verify-drop fix (branch
-  `backup-verify-drop`)
-
 ### H-257 · Keep a node with a hidden parent out of the top level of the tree drag · [AGENT]
 - **Check:** `rg -n "parentId === null\) return \[\.\.\.roots\]" workbench/control_plane/src/app/projects/lib/treeDrop.ts`
   → a hit means this is open.
