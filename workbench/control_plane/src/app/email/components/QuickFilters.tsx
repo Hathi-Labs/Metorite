@@ -1,7 +1,11 @@
 "use client";
 
 import Icon from "@/components/Icon";
-import { useEffect, useState } from "react";
+import ScrollStrip from "@/components/ScrollStrip";
+import AnchoredPanel from "@/components/ui/AnchoredPanel";
+import Button from "@/components/ui/Button";
+import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
+import { useEffect, useRef, useState } from "react";
 import { useEmailStore } from "../lib/emailStore";
 import { SearchFilter, addFilter, filterKey } from "../lib/searchFilters";
 import { chipColors } from "../lib/labelColors";
@@ -21,6 +25,14 @@ import { getMessageFacets, MessageFacets } from "../lib/api";
  * "Needs reply" in Drafts — filters guaranteed to return nothing — and an empty
  * result from a chip is ambiguous in the worst way: you can't tell "no such mail
  * here" from "this is broken".
+ *
+ * ONE LINE, and every chip reachable (owner report, 2026-10-06). A busy mailbox
+ * has more chips than the row is wide, and the row hid its scrollbar, so a
+ * mouse could not reach the chips past the edge. The row is now a shared
+ * `ScrollStrip`: a fade and an arrow on each edge with chips behind it, and a
+ * vertical wheel that moves it sideways. A phone swipes it. The filter icon at
+ * its start opens "All filters", every chip wrapped in one panel, so a member
+ * sees the whole set at once on any screen. Both read the one store.
  */
 
 /** Curated triage buckets. Order = most-actionable first. `facet` names the key
@@ -146,44 +158,165 @@ export function QuickFilters() {
     ...extraChips(facets),
   ];
 
+  const activeCount = visible.filter(({ f }) => isActive(f)).length;
+  // Changes when a chip turns on or off, from here or from a search pill, so
+  // the strip can bring a chip that turned on into view.
+  const revealKey = searchFilters.map(filterKey).join("|");
+
   if (visible.length === 0) return null;
 
+  const chips = visible.map(({ label, facet, f }) => (
+    <Chip
+      key={label}
+      label={label}
+      f={f}
+      n={facetCount(facets, facet)}
+      active={isActive(f)}
+      folder={selectedFolder}
+      labelColors={labelColors}
+      onToggle={toggle}
+    />
+  ));
+
   return (
-    <div className="flex items-center gap-1.5 px-3 sm:px-4 py-1.5 border-b border-border overflow-x-auto scrollbar-hide flex-shrink-0 bg-card/40">
-      <Icon name="ListFilter" size={13} className="text-muted-foreground flex-shrink-0" />
-      {visible.map(({ label, facet, f }) => {
-        const active = isActive(f);
-        const c = f.kind === "tag" ? chipColors(f.value, labelColors) : null;
-        const n = facetCount(facets, facet);
-        return (
-          <button
-            key={label}
-            onClick={() => toggle(f)}
-            title={n > 0 ? `${n} in ${selectedFolder}` : undefined}
-            style={active && c ? { backgroundColor: c.bg, color: c.text } : undefined}
-            className={`flex items-center gap-1.5 flex-shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium border transition-colors ${
-              active
-                ? c
-                  ? "border-transparent"
-                  : "bg-primary text-primary-foreground border-transparent"
-                : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-            }`}
-          >
-            {c && !active && (
-              <span
-                className="w-2 h-2 rounded-full flex-shrink-0"
-                style={{ backgroundColor: c.bg }}
-              />
-            )}
-            {label}
-            {n > 0 && (
-              <span className={active ? "opacity-70" : "text-muted-foreground/70"}>
-                {n}
-              </span>
-            )}
-          </button>
-        );
-      })}
+    <div className="flex items-center gap-1 pl-1.5 pr-3 sm:pl-2.5 sm:pr-4 py-1.5 border-b border-border flex-shrink-0 bg-card/40">
+      <AllFilters count={visible.length} active={activeCount}>
+        {chips}
+      </AllFilters>
+      <ScrollStrip label="Quick filters" revealKey={revealKey} className="gap-1.5">
+        {chips}
+      </ScrollStrip>
+    </div>
+  );
+}
+
+/** One chip. The strip and the "All filters" panel draw the same one. */
+function Chip({
+  label,
+  f,
+  n,
+  active,
+  folder,
+  labelColors,
+  onToggle,
+}: {
+  label: string;
+  f: SearchFilter;
+  n: number;
+  active: boolean;
+  folder: string;
+  labelColors: Parameters<typeof chipColors>[1];
+  onToggle: (f: SearchFilter) => void;
+}) {
+  const c = f.kind === "tag" ? chipColors(f.value, labelColors) : null;
+  return (
+    <button
+      onClick={() => onToggle(f)}
+      aria-pressed={active}
+      title={n > 0 ? `${n} in ${folder}` : undefined}
+      style={active && c ? { backgroundColor: c.bg, color: c.text } : undefined}
+      className={`flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-medium border transition-colors ${
+        active
+          ? c
+            ? "border-transparent"
+            : "bg-primary text-primary-foreground border-transparent"
+          : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
+      }`}
+    >
+      {c && !active && (
+        <span
+          className="w-2 h-2 rounded-full flex-shrink-0"
+          style={{ backgroundColor: c.bg }}
+        />
+      )}
+      {label}
+      {n > 0 && (
+        <span className={active ? "opacity-70" : "text-muted-foreground/70"}>
+          {n}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/**
+ * The filter icon at the start of the row, and the panel it opens: every chip
+ * at once, wrapped. A badge counts the filters that are on, because one of
+ * them can sit past the edge of the row.
+ *
+ * The panel stays open while the member picks, since filters combine. A click
+ * outside, Escape or the icon again closes it.
+ */
+function AllFilters({
+  count,
+  active,
+  children,
+}: {
+  count: number;
+  active: number;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  // The wrapper is the anchor: `Button` does not forward a ref, and the
+  // wrapper is exactly the icon's box.
+  const [anchor, setAnchor] = useState<HTMLDivElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (shouldDismiss(e.target as Element | null, domClickWalk(rootRef.current))) {
+        setOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("pointerdown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div
+      ref={(el) => {
+        rootRef.current = el;
+        setAnchor(el);
+      }}
+      className="relative flex-shrink-0"
+    >
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={`All filters (${count})`}
+        title="All filters"
+        className="relative text-muted-foreground"
+      >
+        <Icon name="ListFilter" size={14} />
+        {active > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-semibold leading-none text-primary-foreground">
+            {active}
+          </span>
+        )}
+      </Button>
+      <AnchoredPanel
+        anchor={anchor}
+        open={open}
+        maxHeight={360}
+        className="w-[22rem] max-w-[calc(100vw-1.5rem)] p-3"
+        panelProps={{ role: "dialog", "aria-label": "All filters" }}
+      >
+        <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          All filters
+        </p>
+        <div className="flex max-h-[300px] flex-wrap gap-1.5 overflow-y-auto">{children}</div>
+      </AnchoredPanel>
     </div>
   );
 }
