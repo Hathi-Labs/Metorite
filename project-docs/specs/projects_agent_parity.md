@@ -1359,11 +1359,11 @@ as the answer. The slices build to these answers.
     tasks before the card (`GET /projects/tasks`). A task with the same
     title, made in the last 10 minutes, starts unticked. The selection
     card names the twin. The confirmation card and the receipt say why the
-    row is out. A twin in a triage lane, or one older than 10 minutes, is
-    not found.
+    row is out. The read takes the triage lane too (`include_triage`). A
+    twin older than 10 minutes is not found.
   - Fences. F2 gains witnesses for `create_tasks`. A `SENDS` value can now
     be a tuple of witnesses, and `tasks.due` names one key of a row.
-    `COMPOSITE["create_tasks"]` is `{"create_task"}`. F6 and F7 gain the
+    `COMPOSITE["create_tasks"]` is `{"create_task", "list_tasks"}`. F6 and F7 gain the
     tool. F3 does not change, because the app has no client method that
     makes a batch. `tests/unit/test_projects_create_tasks.py` holds the
     rest, and its R8 half runs a batch and its retry through the real
@@ -1383,3 +1383,19 @@ as the answer. The slices build to these answers.
     never says "unticked". The eval runner answers only a selection card,
     so a run that opens another form still fails. The confirmation card and
     the receipt now give each row the same number.
+  - PR #686 review round 2 (2026-10-06) fixed these findings:
+    - A create that lost its connection may have landed. Its row is an
+      `unknown:` line, and the first line of the receipt says how many
+      tasks may have been created. It never says "not created" of such a
+      row. The receipt card shows a partial result, not "Not done".
+    - The create and the writes after it are now two calls
+      (`_post_new_task`, `_follow_new_task`). So an assign that fails after
+      the create says that the task exists, as `create_task` says it. It
+      never sends the model back to `create_tasks` for that task.
+    - The confirmation card names the parent of a subtask, with its number
+      and its title, and its project when that is another project. The
+      lane of a subtask is fenced once, not twice.
+    - The confirmation card and the receipt always show an assignee as
+      the name and the address, because two people can share a name. The
+      selection card shows the name only.
+    - The read before the card takes the triage lane.

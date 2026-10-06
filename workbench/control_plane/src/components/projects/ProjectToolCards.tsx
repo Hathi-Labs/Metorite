@@ -509,6 +509,13 @@ const DONE_LINE_TOOLS = new Set(["mark_notifications_read"]);
  */
 export const STOPPED_LINE = /^\s*stopped:\s*\S/im;
 
+/**
+ * A row of a batch whose create may or may not have landed
+ * (`forms.py::_write_batch`, WS-46 P13 review round 2). Something MAY exist,
+ * so the receipt is partial, never a muted "Not done".
+ */
+export const UNKNOWN_LINE = /^\s*unknown:\s*row\s/im;
+
 export function classifyActionResult(
   result: string,
   status: ToolEvent["status"],
@@ -519,7 +526,7 @@ export function classifyActionResult(
   if (text.startsWith(CANCELLED)) return "cancelled";
   // A batch that stopped part way (WS-27bm S7d, §13.6 rule 9): something
   // exists, and the receipt says what did not happen. It is not a success.
-  if (receiptIdOf(text) && STOPPED_LINE.test(text)) return "partial";
+  if ((receiptIdOf(text) || UNKNOWN_LINE.test(text)) && STOPPED_LINE.test(text)) return "partial";
   if (receiptIdOf(text)) return "done";
   return DONE_LINE_TOOLS.has(tool) && /^\s*done:\s*\S/im.test(text) ? "done" : "refused";
 }
@@ -668,6 +675,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
             : meta.icon;
   const heading =
     outcome === "failed" ? `${meta.label} — failed`
+      : outcome === "partial" && rows.length === 0 ? "Tasks may have been created"
       : outcome === "partial" ? `${meta.label} — stopped part way (${rows.length})`
         : outcome === "cancelled" ? "Cancelled"
           : outcome === "refused" ? "Not done"

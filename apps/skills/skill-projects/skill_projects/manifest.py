@@ -508,7 +508,9 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "propose_plan": frozenset({"create_project", "create_task", "link_tasks"}),
     # WS-46 P13 — several new tasks in one project under ONE confirmation
     # card. Each row is create_task's own write, and its assign PUT after.
-    "create_tasks": frozenset({"create_task"}),
+    # Review round 2: the read before the card sends `include_triage` on
+    # list_tasks' route, so F2 holds that claim too.
+    "create_tasks": frozenset({"create_task", "list_tasks"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
 }
@@ -575,6 +577,9 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "watching": "list_tasks.watching",
         "page": "list_tasks.page",
         "page_size": "list_tasks.page_size",
+        # WS-46 P13 review round 2: the read before a batch's card takes the
+        # triage lane too, so a twin in triage starts unticked.
+        "include_triage": "create_tasks",
     },
     # WS-46 P13: create_tasks sends each field from one key of each row.
     ("POST", "/projects/tasks"): {
@@ -949,7 +954,6 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "archived_only": "The archive view. include_archived reads archived rows with the rest.",
         "importance_gte": _READ_FILTER_REASON,
         "tags_all": "Every tag rather than any tag. task_dataset takes tags_all.",
-        "include_triage": _TRIAGE_READ_REASON,
         "view_id": "The hand-arranged order of a saved view, which only the board reads.",
         "top_level": "The board's subtask toggle. Each row the chat reads names its parent.",
     },

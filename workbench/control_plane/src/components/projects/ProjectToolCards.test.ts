@@ -30,6 +30,7 @@ import {
   OPENS_APP,
   BATCH_TOOLS,
   batchNotes,
+  UNKNOWN_LINE,
 } from "./ProjectToolCards";
 
 const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -291,11 +292,24 @@ describe("WS-46 P13: the receipt of a batch of new tasks", () => {
 
   it("is not done when every row failed, because no task exists", () => {
     const none = [
-      "Nothing was created in «Ops». Each of the 1 tasks failed:",
+      "No task of the 1 is known to exist in «Ops». 1 was not created.",
       "failed: row 1 «Print the badges» refused (422): «No.».",
       "stopped: 1 of 1 rows failed and 0 follow-up writes did not land.",
     ].join("\n");
     expect(classifyActionResult(none, "done", "create_tasks")).toBe("refused");
+  });
+
+  it("is partial, never 'Not done', when a lost create may have landed (review round 2)", () => {
+    const dropped = [
+      "No task of the 2 is known to exist in «Ops». 2 may have been created: read the project before a retry.",
+      "unknown: row 1 «Book the caterer» lost its connection to the gateway (ConnectError), so it may or may not exist.",
+      "unknown: row 2 «Print the badges» lost its connection to the gateway (ConnectError), so it may or may not exist.",
+      "stopped: 2 of 2 rows failed and 0 follow-up writes did not land.",
+    ].join("\n");
+    expect(UNKNOWN_LINE.test(dropped)).toBe(true);
+    expect(classifyActionResult(dropped, "done", "create_tasks")).toBe("partial");
+    expect(toneFor("partial", "create_tasks")).toContain("warning");
+    expect(batchNotes(dropped)[0]).toMatch(/^unknown: row 1 Book the caterer lost its connection/);
   });
 
   it("keeps the lines about the rows, without the rows, the ids or the fence", () => {

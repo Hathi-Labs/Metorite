@@ -99,12 +99,15 @@ def _gateway(
     drop: tuple[str, ...] = (),
     boom: tuple[str, ...] = (),
     refuse_assign: bool = False,
+    assign_error: Exception | None = None,
+    parent: dict[str, Any] | None = None,
 ):
     """The writes fence's gateway, with numbered creates and failing rows.
 
     ``recent`` is what ``GET /projects/tasks`` lists. A title in ``refuse``
     gets a 422, in ``drop`` a lost connection, in ``boom`` an error no
-    gateway sends.
+    gateway sends. ``assign_error`` is raised by the assign PUT after a
+    create. ``parent`` replaces the row of task ``OTHER``.
     """
     numbers = itertools.count(20)
 
@@ -133,6 +136,10 @@ def _gateway(
             }
         if refuse_assign and method == "PUT" and path.endswith("/assignees"):
             return FakeResponse({"detail": "Not permitted."}, 403)
+        if assign_error is not None and method == "PUT" and path.endswith("/assignees"):
+            raise assign_error
+        if parent is not None and method == "GET" and path == f"/projects/tasks/{OTHER}":
+            return parent
         return tw.responder(call)
 
     return answer
@@ -294,7 +301,8 @@ async def test_the_selection_card_shows_plain_words_and_no_id(monkeypatch) -> No
     card = asked[0]
     assert card["title"] == "Create 3 tasks in «Ops»?"
     assert not _UUID_RE.search(card["context"] + card["detail"]), card
-    assert "row 1: «Book the caterer» · «Priya» · due Fri 9 Oct 2026" in card["context"]
+    # Review round 2: an assignee is always «Name» (address) on the card.
+    assert "row 1: «Book the caterer» · «Priya» (priya@x.io) · due Fri 9 Oct 2026" in card["context"]
     assert "status «In progress»" in card["context"]
     assert "30 min · tags «av»" in card["context"]
 
@@ -409,9 +417,12 @@ def test_the_row_keys_are_create_tasks_arguments() -> None:
 @pytest.mark.parametrize(
     ("kind", "words"),
     [
-        ("refuse", "refused (422): «That type is not in this project.»"),
-        ("drop", "lost its connection to the gateway (ConnectError)"),
-        ("boom", "failed (KeyError), so it may or may not exist"),
+        ("refuse", "failed: row 2 «Print the badges» refused (422): «That type is not in this "
+         "project.»"),
+        ("drop", "unknown: row 2 «Print the badges» lost its connection to the gateway "
+         "(ConnectError)"),
+        ("boom", "unknown: row 2 «Print the badges» failed (KeyError), so it may or may not "
+         "exist"),
     ],
 )
 async def test_a_row_the_server_refuses_does_not_stop_the_others(
@@ -427,9 +438,15 @@ async def test_a_row_the_server_refuses_does_not_stop_the_others(
         "Print the badges",
         "Test the projector",
     ]
-    assert out.startswith("Created 2 of 3 tasks in «Ops». 1 was not created:")
+    head = (
+        "Created 2 of 3 tasks in «Ops». 1 was not created."
+        if kind == "refuse"
+        else "Created 2 of 3 tasks in «Ops». 1 may have been created: read the project "
+        "before a retry."
+    )
+    assert out.startswith(head + "\n"), out
     assert out.count("full_id:") == 2
-    assert f"failed: row 2 «Print the badges» {words}" in out
+    assert words in out
     assert re.search(r"^stopped: 1 of 3 rows failed", out, re.MULTILINE)
     assert "Never create them again" in out
 
@@ -442,8 +459,27 @@ async def test_every_row_failing_still_reads_as_text(monkeypatch) -> None:
         _gateway(refuse=("Book the caterer", "Print the badges", "Test the projector")),
     )
     out = await skill_projects.create_tasks(UUID, THREE)
-    assert out.startswith("Nothing was created in «Ops». Each of the 3 tasks failed:")
+    assert out.startswith("No task of the 3 is known to exist in «Ops». 3 were not created.")
     assert "full_id:" not in out and out.count("failed: row") == 3
+
+
+async def test_every_create_dropped_reads_as_unknown_never_as_not_created(monkeypatch) -> None:
+    """Review round 2: a lost connection says nothing about the write, so the
+    head line never says "not created" or "Nothing was created" of it."""
+    approve(monkeypatch)
+    form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    fake_gateway(
+        monkeypatch,
+        _gateway(drop=("Book the caterer", "Print the badges", "Test the projector")),
+    )
+    out = await skill_projects.create_tasks(UUID, THREE)
+    assert out.startswith(
+        "No task of the 3 is known to exist in «Ops». 3 may have been created: read the "
+        "project before a retry.\n"
+    ), out
+    assert out.count("unknown: row") == 3 and "failed: row" not in out
+    assert "not created" not in out and "Nothing was created" not in out
+    assert re.search(r"^stopped: 3 of 3 rows failed", out, re.MULTILINE)
 
 
 async def test_an_assign_that_fails_after_the_create_is_named(monkeypatch) -> None:
@@ -452,8 +488,70 @@ async def test_an_assign_that_fails_after_the_create_is_named(monkeypatch) -> No
     calls = fake_gateway(monkeypatch, _gateway(refuse_assign=True))
     out = await skill_projects.create_tasks(UUID, THREE)
     assert len(_posts(calls)) == 3 and out.count("full_id:") == 3
-    assert "not saved: the assignees of #20 «Book the caterer» refused (403)" in out
-    assert "Use assign on that task." in out and "stopped:" in out
+    assert (
+        "not saved: the task #20 «Book the caterer» exists, but its assignees were refused "
+        "(403): «Not permitted.» Use assign on that task." in out
+    ), out
+    assert "stopped:" in out
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx.ReadTimeout("the assign went quiet"), KeyError("not a gateway error")],
+    ids=["ReadTimeout", "KeyError"],
+)
+async def test_an_assign_that_may_have_landed_says_the_task_exists(error, monkeypatch) -> None:
+    """Review round 2: the TASK exists, so the words are the single path's
+    (``writes._create_stopped``), and nothing sends the model back to
+    create_tasks for it. Mutation: give the assign the create's words
+    (``_failure``) -> this test fails."""
+    approve(monkeypatch)
+    form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    calls = fake_gateway(monkeypatch, _gateway(assign_error=error))
+    out = await skill_projects.create_tasks(UUID, THREE)
+    assert len(_posts(calls)) == 3 and out.count("full_id:") == 3
+    [line] = [ln for ln in out.splitlines() if ln.startswith("not saved:")]
+    assert line == (
+        "not saved: the task #20 «Book the caterer» exists. Its assignees may or may not be "
+        f"saved: the write failed ({type(error).__name__}). Read task_detail for this task "
+        "first, then use assign only if they are not there."
+    )
+    assert "create_tasks" not in line and "may or may not exist" not in out
+    assert out.startswith("Created 3 tasks in «Ops»:")
+
+
+async def test_the_card_names_the_parent_of_a_subtask(monkeypatch) -> None:
+    """Review round 2: number and title, and the project when it differs."""
+    asked = approve(monkeypatch)
+    drawn = form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    fake_gateway(monkeypatch, _gateway())
+    rows = json.dumps([{"title": "Weld it", "parent_task_id": OTHER}, {"title": "Paint it"}])
+    await skill_projects.create_tasks(UUID, rows)
+    card = asked[0]["context"]
+    assert "row 1: «Weld it» · nobody assigned · no due date · status «To do» (the parent's lane)" in card
+    assert "subtask of #8 «Order the nozzle»" in card and ", in " not in card
+    assert "««" not in card and "»»" not in card
+    hint = drawn[0]["props"]["data"]["fields"][0]["hint"]
+    assert hint == "nobody assigned · no due date · To do (the parent's lane)"
+
+
+async def test_the_card_names_the_project_of_a_parent_elsewhere(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    elsewhere = {**tw.OTHER_TASK, "project_id": tw.SALES, "project_name": "Sales"}
+    fake_gateway(monkeypatch, _gateway(parent=elsewhere))
+    rows = json.dumps([{"title": "Weld it", "parent_task_id": OTHER}, {"title": "Paint it"}])
+    await skill_projects.create_tasks(UUID, rows)
+    assert "subtask of #8 «Order the nozzle», in «Sales»" in asked[0]["context"]
+
+
+async def test_the_receipt_names_each_assignee(monkeypatch) -> None:
+    """Review round 2: the receipt reads «Name (address)», as the card does."""
+    approve(monkeypatch)
+    form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    fake_gateway(monkeypatch, _gateway())
+    out = await skill_projects.create_tasks(UUID, THREE)
+    assert "- #20 «Book the caterer» · status «To do» · due 2026-10-09 · «Priya (priya@x.io)»" in out
 
 
 # ── 5. A retry makes no second copy ─────────────────────────────────────────
@@ -554,7 +652,10 @@ async def test_the_recent_read_is_one_page_of_the_project(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, _gateway())
     await skill_projects.create_tasks(UUID, THREE)
     [read] = [c for c in calls if c["method"] == "GET" and c["path"] == "/projects/tasks"]
-    assert read["params"] == {"project_id": UUID, "page_size": F.RECENT_PAGE}
+    # Review round 2: the triage lane too, so a twin there starts unticked.
+    assert read["params"] == {
+        "project_id": UUID, "page_size": F.RECENT_PAGE, "include_triage": True,
+    }
 
 
 # ── 3b. F2 on the wire: a batch that drops a field fails (R7) ───────────────
@@ -615,7 +716,7 @@ def test_every_create_tasks_witness_is_on_the_create_and_assign_routes() -> None
     create = {n for (k, n) in sent if k == ("POST", "/projects/tasks")}
     assert create == set(m.SENDS[("POST", "/projects/tasks")])
     assert (("PUT", "/projects/tasks/{task_id}/assignees"), "assignees") in sent
-    assert m.COMPOSITE["create_tasks"] == frozenset({"create_task"})
+    assert m.COMPOSITE["create_tasks"] == frozenset({"create_task", "list_tasks"})
     assert m.tool_class("create_tasks") == "B"
 
 
@@ -772,6 +873,8 @@ def _real_routes(seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch):
                     user=user,
                     project_id=q.get("project_id"),
                     page=Page(page=1, page_size=int(q.get("page_size") or 50)),
+                    # Review round 2: the route's own triage clause, on asyncpg.
+                    include_triage=str(q.get("include_triage")).lower() == "true",
                 )
                 return FakeResponse(jsonable_encoder(listed))
         except HTTPException as exc:

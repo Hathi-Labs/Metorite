@@ -838,6 +838,9 @@ class _NewTask:
         self.status_label = status_label
         self.who = who
         self.extra = extra
+        #: The parent task's row, read before the card, for a subtask. The
+        #: batch card names it (WS-46 P13 review round 2).
+        self.parent: dict[str, Any] | None = None
 
 
 async def _prepare_new_task(
@@ -884,6 +887,7 @@ async def _prepare_new_task(
         pid, start=start, type_name=type_name, fields=fields, has_parent=bool(parent_task_id.strip())
     )
     payload.update(extra.payload)
+    parent: dict[str, Any] | None = None
     if parent_task_id.strip():
         parent_id, parent = await _task(parent_task_id)
         payload["parent_task_id"] = parent_id
@@ -893,7 +897,9 @@ async def _prepare_new_task(
             # the card would be false.
             status_label = await _parent_lane_label(pid, parent)
     who = [await _resolve_assignee(a) for a in assignees or []]
-    return _NewTask(pid, payload, status_label, who, extra)
+    new = _NewTask(pid, payload, status_label, who, extra)
+    new.parent = parent
+    return new
 
 
 async def _create_new_task(
@@ -906,10 +912,26 @@ async def _create_new_task(
     a raise: a raise reads to the model as "Function failed", and a second
     create makes a second task.
     """
-    task = await post("/projects/tasks", new.payload)
-    tid = uuid_of(str(task.get("id")), "task_id")
-    saved, failed = await _after_create(tid, task, new.who, new.extra, repeating or NO_REPEAT)
+    task = await _post_new_task(new)
+    saved, failed = await _follow_new_task(task, new, repeating)
     return task, saved, failed
+
+
+async def _post_new_task(new: _NewTask) -> dict[str, Any]:
+    """The create itself. It may raise, because nothing exists before it."""
+    return await post("/projects/tasks", new.payload)
+
+
+async def _follow_new_task(
+    task: dict[str, Any], new: _NewTask, repeating: _Repeat | None = None
+) -> tuple[dict[str, Any], tuple[str, Exception] | None]:
+    """The writes after the create: the assignees, then the repeat rule.
+
+    ``create_tasks`` calls the two halves apart, so an error after the POST
+    is a follow-up that failed, never a task that may not exist.
+    """
+    tid = uuid_of(str(task.get("id")), "task_id")
+    return await _after_create(tid, task, new.who, new.extra, repeating or NO_REPEAT)
 
 
 #: A write whose connection broke may or may not have landed. Both kinds end

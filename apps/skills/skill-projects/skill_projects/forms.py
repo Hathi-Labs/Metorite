@@ -55,12 +55,13 @@ from skill_projects.writes import (
     MAX_BATCH,
     AgentAssigneeRefused,
     _confirm,
-    _create_new_task,
     _date_arg,
     _fields_block,
     _fits_on_card,
+    _follow_new_task,
     _NewTask,
     _node,
+    _post_new_task,
     _prepare_new_task,
     _resolve_assignee,
     _split,
@@ -1074,7 +1075,8 @@ async def _write_plan(
 # at once. This tool takes the batch in ONE call. A selection card lets the
 # member untick a row, and ONE confirmation card then covers every ticked
 # row. Each row goes through create_task's own write path
-# (``writes._prepare_new_task`` and ``writes._create_new_task``).
+# (``writes._prepare_new_task``, then the two halves of
+# ``writes._create_new_task``: ``_post_new_task`` and ``_follow_new_task``).
 
 #: The keys of one row. Each one means what the create_task argument of the
 #: same name means, and ``tests/unit/test_projects_create_tasks.py`` holds
@@ -1317,9 +1319,19 @@ async def _names_of(who: list[str]) -> tuple[dict[str, str], list[str]]:
 
 
 def _person(who: str, names: dict[str, str]) -> str:
+    """The NAME the directory gives an address, for the selection card."""
     if who.startswith("agent:"):
         return f"agent {who.removeprefix('agent:')}"
     return names.get(who.lower()) or who
+
+
+def _person_card(who: str, names: dict[str, str]) -> str:
+    """An assignee on the confirmation card and the receipt: always
+    ``«Name» (address)`` when the directory knows the address. Two people can
+    share a name, and the card is consent, so it names the address too
+    (review round 2). An address the directory does not know stays bare."""
+    name = names.get(who.lower()) if "@" in who else None
+    return f"{data(name)} ({who})" if name else data(_person(who, names))
 
 
 def _created_at(row: dict[str, Any]) -> datetime | None:
@@ -1339,8 +1351,11 @@ async def _recent_titles(pid: str) -> dict[str, dict[str, Any]]:
     The create route takes no idempotency key (``TaskIn``), so a retry of a
     batch that half landed would make each landed task twice. This read
     before the card finds them, and the selection card starts them unticked.
+    The read takes the triage lane too, because a create can land a task
+    there and the list hides it by default (review round 2).
     """
-    page = (await get("/projects/tasks", {"project_id": pid, "page_size": RECENT_PAGE})) or {}
+    query = {"project_id": pid, "page_size": RECENT_PAGE, "include_triage": True}
+    page = (await get("/projects/tasks", query)) or {}
     since = datetime.now(UTC) - timedelta(minutes=RECENT_MINUTES)
     out: dict[str, dict[str, Any]] = {}
     for row in page.get("rows") or []:
@@ -1375,17 +1390,20 @@ def _describe(
         lane = p.new.status_label
     else:
         lane = f"{first_lane} (the first lane)" if first_lane else "the first lane"
+    # `_parent_lane_label` fences the lane name itself. Fence a bare name
+    # once, and never a fenced one twice (review round 2).
+    lane_card = lane if "«" in lane else data(lane)
     p.plain = " · ".join(
         [
             ", ".join(people) if people else "nobody assigned",
             f"due {_day_words(due)}" if due else "no due date",
-            _plain(lane),
+            _plain(lane.replace("«", "").replace("»", "")),
         ]
     )
     facts = [
-        ", ".join(data(n) for n in people) if people else "nobody assigned",
+        ", ".join(_person_card(w, names) for w in p.new.who) if p.new.who else "nobody assigned",
         f"due {_day_words(due)}" if due else "no due date",
-        f"status {data(lane)}",
+        f"status {lane_card}",
     ]
     if payload.get("start_date"):
         facts.append(f"start {_day_words(payload['start_date'])}")
@@ -1400,13 +1418,23 @@ def _describe(
     shown = card_view({k: payload[k] for k in ("importance", "leveraged") if k in payload})
     facts.extend(f"{k} {v}" for k, v in shown.items())
     if payload.get("parent_task_id"):
-        facts.append("a subtask")
+        facts.append(_parent_words(p.new.parent or {}, p.new.pid))
     if payload.get("description"):
         # The whole text, as the POST sends it. A cut card is not consent
         # (projects_ai_chat.md §13.6 rule 8), so a batch too long for the
         # card is refused by `_fits_on_card` instead (review round 1).
         facts.append("description " + data(payload["description"]))
     p.line = f"{data(p.title)} · " + " · ".join(facts)
+
+
+def _parent_words(parent: dict[str, Any], pid: str) -> str:
+    """``subtask of #8 «Order the nozzle»``, and its project when that is not
+    the project of the call (review round 2)."""
+    out = f"subtask of {_number(parent)} {data(parent.get('title'))}"
+    if parent.get("project_id") and str(parent.get("project_id")) != str(pid):
+        where = data(parent.get("project_name")) if parent.get("project_name") else None
+        out += f", in {where}" if where else ", in another project"
+    return out
 
 
 def _left_why(p: _BatchRow, drawn: bool) -> str:
@@ -1564,11 +1592,17 @@ async def create_tasks(project_id: str, tasks: str) -> str:
         context=_fields_block(_batch_card(node, chosen, left, strangers, drawn)),
     ):
         return CANCELLED
-    return await _write_batch(pid, node, chosen, left, drawn)
+    return await _write_batch(pid, node, chosen, left, drawn, names)
+
+
+def _uncertain(exc: Exception) -> bool:
+    """A write whose result nobody knows: a lost connection, or an error that
+    no gateway sends. A refusal of the gateway is a known result."""
+    return not isinstance(exc, GatewayRefusal)
 
 
 def _failure(exc: Exception) -> str:
-    """Why one row's write failed, in words the model can act on."""
+    """Why one row's CREATE failed, in words the model can act on."""
     if isinstance(exc, httpx.TransportError):
         return (
             f"lost its connection to the gateway ({type(exc).__name__}), so it may or may "
@@ -1588,6 +1622,23 @@ def _failure(exc: Exception) -> str:
     )
 
 
+def _unsaved(task: dict[str, Any], exc: Exception) -> str:
+    """Why the assign PUT after a create failed. The task EXISTS, so the words
+    are the single path's (``writes._create_stopped``), and they never send
+    the model back to create_tasks for it (review round 2)."""
+    ref = f"{_number(task)} {data(task.get('title'))}"
+    if _uncertain(exc):
+        return (
+            f"not saved: the task {ref} exists. Its assignees may or may not be saved: the "
+            f"write failed ({type(exc).__name__}). Read task_detail for this task first, "
+            "then use assign only if they are not there."
+        )
+    reason = _failure(exc)
+    return _said(f"not saved: the task {ref} exists, but its assignees were {reason}") + (
+        " Use assign on that task."
+    )
+
+
 def _said(line: str) -> str:
     """*line* with one full stop. A fenced detail often ends with its own."""
     return line if line.endswith((".", ".»")) else f"{line}."
@@ -1602,87 +1653,130 @@ async def _lane_names(pid: str) -> dict[str, str]:
     return {str(r.get("id")): str(r.get("name") or "") for r in rows}
 
 
+class _Outcome:
+    """What the writes of a batch did, row by row, for the receipt."""
+
+    def __init__(self) -> None:
+        self.made: list[tuple[_BatchRow, dict[str, Any]]] = []
+        #: Rows the gateway refused: no task exists.
+        self.refused: list[str] = []
+        #: Rows whose create may or may not have landed.
+        self.unknown: list[str] = []
+        #: Follow-up writes (the assignees) that did not land on a made task.
+        self.unsaved: list[str] = []
+
+
+def _log_unknown(exc: Exception, step: str) -> None:
+    if not isinstance(exc, _WRITE_FAILED):
+        # Caught, because a raise after a write makes the model create the
+        # tasks again. The trace stays in the log (review round 1).
+        _log.warning("projects.batch_row_failed", step=step, error=type(exc).__name__,
+                     exc_info=True)
+
+
 async def _write_batch(
     pid: str,
     node: dict[str, Any],
     chosen: list[_BatchRow],
     left: list[_BatchRow],
     drawn: bool = True,
+    names: dict[str, str] | None = None,
 ) -> str:
     """One write per ticked row, in order, and the receipt. It never raises.
 
-    A row that fails does not stop the next row. The receipt lists each task
-    made, with its number and its ``full_id``, and each row that failed, with
-    its reason. A raise here would read to the model as "Function failed",
-    and the model would make the tasks again.
+    A row that fails does not stop the next row. The create and the writes
+    after it are apart (``_post_new_task``, ``_follow_new_task``), so an
+    error after the POST is a follow-up that failed on a task that exists,
+    never a task that "may not exist". A raise here would read to the model
+    as "Function failed", and the model would make the tasks again.
     """
-    made: list[tuple[_BatchRow, dict[str, Any]]] = []
-    failed: list[str] = []
-    unsaved: list[str] = []
+    out = _Outcome()
     for p in chosen:
         try:
-            task, _saved, after = await _create_new_task(p.new)
+            task = await _post_new_task(p.new)
         except Exception as exc:  # each row ends in the receipt, never in a raise
-            if not isinstance(exc, _WRITE_FAILED):
-                # Caught, because a raise after a write makes the model create
-                # the tasks again. The trace stays in the log (review round 1).
-                _log.warning(
-                    "projects.batch_row_failed", error=type(exc).__name__, exc_info=True
-                )
-            failed.append(_said(f"failed: row {p.index} {data(p.title)} {_failure(exc)}"))
+            _log_unknown(exc, "create")
+            line = _said(f"{'unknown' if _uncertain(exc) else 'failed'}: row {p.index} "
+                         f"{data(p.title)} {_failure(exc)}")
+            (out.unknown if _uncertain(exc) else out.refused).append(line)
             continue
-        made.append((p, task))
+        out.made.append((p, task))
+        try:
+            _saved, after = await _follow_new_task(task, p.new)
+        except Exception as exc:  # the task exists: a follow-up, never a row
+            _log_unknown(exc, "follow-up")
+            after = ("assignees", exc)
         if after is not None:
-            unsaved.append(
-                _said(
-                    f"not saved: the assignees of {_number(task)} {data(task.get('title'))} "
-                    f"{_failure(after[1])}"
-                )
-                + " Use assign on that task."
-            )
+            out.unsaved.append(_unsaved(task, after[1]))
     lanes = await _lane_names(pid)
-    return _batch_receipt(node, chosen, left, made, failed, unsaved, lanes, drawn)
+    return _batch_receipt(node, chosen, left, out, lanes, drawn, names or {})
+
+
+def _head(where: str, many: int, out: _Outcome) -> str:
+    """The receipt's first line. It never says "not created" of a row whose
+    create may have landed (review round 2)."""
+    made, refused, unknown = len(out.made), len(out.refused), len(out.unknown)
+    if not refused and not unknown:
+        return f"Created {made} task{'s' if made != 1 else ''} in {where}:"
+    parts = [f"Created {made} of {many} tasks in {where}." if made else
+             f"No task of the {many} is known to exist in {where}."]
+    if unknown:
+        parts.append(
+            f"{unknown} may have been created: read the project before a retry."
+        )
+    if refused:
+        parts.append(f"{refused} {'was' if refused == 1 else 'were'} not created.")
+    return " ".join(parts)
+
+
+def _shown_task(task: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
+    """The created row as the receipt prints it: each assignee by NAME, with
+    the address, as the confirmation card shows them (review round 2)."""
+    who = [str(a) for a in task.get("assignees") or []]
+    if not who:
+        return task
+    shown = []
+    for a in who:
+        name = names.get(a.lower()) if "@" in a else None
+        shown.append(f"{name} ({a})" if name else a)
+    return {**task, "assignees": shown}
 
 
 def _batch_receipt(
     node: dict[str, Any],
     chosen: list[_BatchRow],
     left: list[_BatchRow],
-    made: list[tuple[_BatchRow, dict[str, Any]]],
-    failed: list[str],
-    unsaved: list[str],
+    out: _Outcome,
     lanes: dict[str, str],
     drawn: bool = True,
+    names: dict[str, str] | None = None,
 ) -> str:
-    where = data(node.get("name"))
     many = len(chosen)
-    if not failed:
-        head = f"Created {len(made)} task{'s' if len(made) != 1 else ''} in {where}:"
-    elif made:
-        head = (
-            f"Created {len(made)} of {many} tasks in {where}. {len(failed)} "
-            f"{'was' if len(failed) == 1 else 'were'} not created:"
+    lines = [_head(data(node.get("name")), many, out)]
+    for p, task in out.made:
+        lines.extend(
+            _task_line(_shown_task(task, names or {}), lanes.get(str(task.get("status_id")), ""))
         )
-    else:
-        head = f"Nothing was created in {where}. Each of the {many} tasks failed:"
-    out = [head]
-    for p, task in made:
-        out.extend(_task_line(task, lanes.get(str(task.get("status_id")), "")))
-        out.extend(level_note(_row_text(p.item, "priority"), task))
-    out.extend(failed)
-    out.extend(unsaved)
-    if failed or unsaved:
-        out.append(
-            f"stopped: {len(failed)} of {many} rows failed and {len(unsaved)} "
-            f"follow-up write{'s' if len(unsaved) != 1 else ''} did not land."
+        lines.extend(level_note(_row_text(p.item, "priority"), task))
+    lines.extend(out.refused)
+    lines.extend(out.unknown)
+    lines.extend(out.unsaved)
+    failed = len(out.refused) + len(out.unknown)
+    if failed or out.unsaved:
+        lines.append(
+            f"stopped: {failed} of {many} rows failed and {len(out.unsaved)} "
+            f"follow-up write{'s' if len(out.unsaved) != 1 else ''} did not land."
         )
-    if made:
-        out.append(
-            f"The {len(made)} task{'s' if len(made) != 1 else ''} listed above exist. Never "
+    if out.made:
+        made = len(out.made)
+        lines.append(
+            f"The {made} task{'s' if made != 1 else ''} listed above exist. Never "
             "create them again. To retry a failed row, call create_tasks with that row alone."
         )
-    out.extend(f"left out: row {p.index} {data(p.title)}, {_left_why(p, drawn)}." for p in left)
-    return "\n".join(out)
+    lines.extend(
+        f"left out: row {p.index} {data(p.title)}, {_left_why(p, drawn)}." for p in left
+    )
+    return "\n".join(lines)
 
 
 __all__ = ["create_tasks", "edit_project", "edit_task", "propose_plan"]
