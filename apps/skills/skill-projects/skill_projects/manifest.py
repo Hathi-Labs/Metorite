@@ -450,7 +450,11 @@ PLANNED: dict[str, str] = {
 #: reaches. ``test_projects_agent_writes.py`` holds every non-GET a tool
 #: issues to its own routes or to these.
 COMPOSITE: dict[str, frozenset[str]] = {
-    "create_task": frozenset({"assign"}),
+    # WS-46 P1 (D91): a repeating task is one act, so the rule is the second
+    # write under the create's one card (`PUT …/recurrence`).
+    "create_task": frozenset({"assign", "set_recurrence"}),
+    # WS-46 P1: the detail prints "Repeats:" from the `recurrence` read.
+    "task_detail": frozenset({"recurrence"}),
     "add_subtasks": frozenset({"create_task"}),
     # The create route's INSERT has no `required` column; the flag is a
     # PATCH under the same card (S2b verifier).

@@ -42,6 +42,7 @@ from skill_projects.priority import (
 from skill_projects.reads import _task_line
 from skill_projects.views import _emit, _plain, _template
 from skill_projects.writes import (
+    _WRITE_FAILED,
     CANCELLED,
     MAX_BATCH,
     AgentAssigneeRefused,
@@ -360,8 +361,8 @@ PREVIEW_PATH = "/projects/plan/preview"
 #: holds the same bound (``plan_preview.MAX_EFFORT_MINS``).
 MAX_EFFORT_MINS = 90 * 24 * 60
 #: A write whose connection broke may or may not have landed. Both kinds end
-#: the batch with the same receipt (§13.6 rule 9, review round 1).
-_WRITE_FAILED = (GatewayRefusal, httpx.TransportError)
+#: the batch with the same receipt (§13.6 rule 9, review round 1). The one
+#: pair lives in ``writes.py``, which ``create_task`` uses too (WS-46 P1).
 
 #: The words a mark carries on the card (§13.6 rules 1 and 2).
 MARK_WORDS = {
