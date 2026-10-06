@@ -5053,6 +5053,9 @@ uv run pytest tests/unit/test_own_tool_scope.py tests/unit/test_own_tool_scope_p
 uv run ruff check apps/services/orchestrator/orchestrator/_tool_injection.py apps/services/orchestrator/orchestrator/executor.py tests/unit/test_own_tool_scope.py tests/unit/test_own_tool_scope_parity.py
 ```
 
+The ruff command reports 154 errors. That count equals the base: 86 in `_tool_injection.py` and 68
+in `executor.py`. The two test files have no error.
+
 **The live check.** `executor.agent_tools_resolved` for one email chat shows `own=43`.
 
 **As built (2026-10-06, branch `agent-own-scope`).**
@@ -5089,6 +5092,31 @@ and `git status` was clean.
 | M2 | The email scope adds `search_emails` | 2: the parity equality test for email, and the trajectory built-tools test |
 | M3 | The email scope removes `create_rule` | 3: the parity equality, filter and instructions tests for email |
 | M4 | The email `instructions.md` names `save_episode` again | 1: the parity platform-tool test for email |
+| M5 | One site logs `pass` in place of `_log_agent_tools_resolved(` (site 1, then site 3) | 1: `test_each_executor_site_logs_after_the_injection` |
+
+**Review round 1 (2026-10-06): verifier PASS, reviewer APPROVE, P3 only.** The round fixed four
+findings.
+
+- **P3-1.** `test_each_executor_site_logs_after_the_injection` is a source fence. It finds the
+  three `_apply_own_tool_scope(` sites in `executor.py`. In each block, `_log_agent_tools_resolved(`
+  must come after `_inject_agent_tools(`. M5 turns it red.
+- **P3-7.** `test_tool_scope_trajectory.py` asserts again that `read_email`, `draft_reply` and
+  `send_email` are built and in the email scope.
+- **P3-4.** The description of `present_email_groups` named `find_needs_reply`,
+  `get_important_emails` and `search_emails`. The agent builds none of them. It now names
+  `find_priority` and `query_inbox`. Each of the two gives `id=` values.
+- **P3-6.** `agent_architecture.md` §12 now names the tickets `WS-8a` to `WS-8o`.
+
+**Board findings, open (P3).** This slice does not fix them.
+
+- **The `own` count comes before H-236.** Each site counts `own` before `_inject_agent_tools`. The
+  H-236 step in that call can take egress tools out of the own pool. So `own` means "own after
+  scope, before H-236". Read the log with that label.
+- **The self-anneal sites skip the own scope.** The two `_inject_agent_tools` calls near
+  `executor.py:5683` and `:5731` do not call `_apply_own_tool_scope`.
+- **The pool list has three copies.** `_own_tool_pools`, `_inspectable` and
+  `_withhold_egress_from_agent` each list the tool pools. `_own_tool_pools` does not read the
+  Copilot `_default_options`.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
