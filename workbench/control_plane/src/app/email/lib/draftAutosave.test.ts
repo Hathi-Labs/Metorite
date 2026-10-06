@@ -131,8 +131,14 @@ const SEND_DRAINS = {
   conversation: "await autosave.drain(0);",
 } as const;
 
-/** The pop-out of the inline reply, from its start to the command bridge. */
-const popOut = () => between(detail, "const popOutToComposer = () => {", "cmdRef.current =");
+/**
+ * The pop-out of the inline reply, from its start to the command bridge. It
+ * finds an `async` pop-out too, so the fence of an `await` names the fault.
+ */
+const popOut = () =>
+  between(detail, detail.includes("const popOutToComposer = async () => {")
+    ? "const popOutToComposer = async () => {"
+    : "const popOutToComposer = () => {", "cmdRef.current =");
 /** The defaults that the pop-out hands to the full composer. */
 const popOutDefaults = () => between(popOut(), "openCompose({", "});");
 /** The hand-over of the pop-out, which runs when the drain settles. */
