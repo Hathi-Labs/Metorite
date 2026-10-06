@@ -16,7 +16,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import ConfirmationCard, { cardSummary, isHiddenField, parseCardBody } from "@/components/ConfirmationCard";
-import ConfirmationQueue from "@/components/ConfirmationQueue";
+import ConfirmationQueue, { pickShown } from "@/components/ConfirmationQueue";
 import {
   EMPTY_CONFIRMATIONS,
   confirmationReducer,
@@ -101,8 +101,6 @@ describe("answering one card removes only that card", () => {
 });
 
 describe("confirmation_resolved closes a card, live and on a replay", () => {
-  // Mutation caught: `resolved` that only filters and does not remember —
-  // the replay that follows reopens the card.
   it("a replay with a resolved event leaves the answered card out", () => {
     const resolved = { type: "resolved" as const, requestId: "rid-1" };
     // The stream order: ten requests, the answer, then a since=0-0 replay.
@@ -111,6 +109,7 @@ describe("confirmation_resolved closes a card, live and on a replay", () => {
     expect(s.cards).toHaveLength(9);
   });
 
+  // Mutation caught: `resolved` that only filters and does not remember.
   it("a request that comes after its own resolved event stays closed", () => {
     const s = run([{ type: "resolved", requestId: "rid-1" }, requested(1)]);
     expect(s.cards).toEqual([]);
@@ -147,11 +146,22 @@ async function answerThrough(status: number | "throw") {
 
 describe("the answer POST: restore only on a failure a retry can pass", () => {
   // Mutation caught: restoring on every failure (the 2026-10-06 loop).
-  it("a 409 drops the card and a replay cannot bring it back", async () => {
+  it("a 409 drops the card", async () => {
     const { outcome, s } = await answerThrough(409);
     expect(outcome).toBe("drop");
     expect(s.cards.some((c) => c.key === "rid-2")).toBe(false);
-    expect(confirmationReducer(s, requested(2)).cards.some((c) => c.key === "rid-2")).toBe(false);
+    expect(s.answering.has("rid-2")).toBe(false);
+  });
+
+  // Mutation caught: a 4xx that remembers the id. The gateway also answers
+  // 409 when the control bus is slow, and then the tool still waits, so only
+  // the server's resolved event may close a card for good.
+  it("after a 409, only the server's resolved event keeps the card closed", async () => {
+    const { s } = await answerThrough(409);
+    const replay = confirmationReducer(s, requested(2));
+    expect(replay.cards.some((c) => c.key === "rid-2")).toBe(true);
+    const closed = run([{ type: "resolved", requestId: "rid-2" }, requested(2)], s);
+    expect(closed.cards.some((c) => c.key === "rid-2")).toBe(false);
   });
 
   // Mutation caught: dropping on every failure, which strands a parked run
@@ -194,6 +204,33 @@ describe("the resolved event is kept off the message and out of the panel", () =
   it("both client lists name confirmation_resolved", () => {
     expect(read("hooks/useAgentChat.ts")).toMatch(/HITL_CONTROL_EVENTS[\s\S]*?"confirmation_resolved"[\s\S]*?\]\)/);
     expect(read("components/GenerativeUIPanel.tsx")).toMatch(/PANEL_HIDDEN_EVENTS[\s\S]*?"confirmation_resolved"[\s\S]*?\]\)/);
+  });
+});
+
+describe("the card under the member's eye stays put", () => {
+  // Mutation caught: a pager that holds only a numeric index. A restore puts
+  // a card first, and a different card slides under the cursor.
+  it("a restore above the shown card does not change it", () => {
+    const cards = run(TEN).cards;
+    const shown = { key: "rid-4", index: 3 };
+    const restored = [{ ...cards[0], key: "rid-x", requestId: "rid-x" }, ...cards];
+    expect(restored[pickShown(restored, shown)].key).toBe("rid-4");
+  });
+
+  it("when the shown card leaves, the card now at its place shows", () => {
+    const cards = run([...TEN, { type: "answering", key: "rid-4" }]).cards;
+    expect(cards[pickShown(cards, { key: "rid-4", index: 3 })].key).toBe("rid-5");
+    expect(pickShown(cards.slice(0, 2), { key: "rid-9", index: 8 })).toBe(1);
+  });
+
+  // Mutation caught: buttons live on mount. In a queue the next card mounts
+  // where the answered one was, so a double-click signs a card nobody read.
+  it("a new card is not armed on its first render", () => {
+    const html = renderToStaticMarkup(
+      createElement(ConfirmationQueue, { cards: run(TEN).cards, onAnswer: () => {} }),
+    );
+    const approve = /<button[^>]*data-confirmation-approve[^>]*>/.exec(html)?.[0] ?? "";
+    expect(approve).toContain('aria-disabled="true"');
   });
 });
 

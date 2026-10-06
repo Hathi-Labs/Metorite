@@ -16,10 +16,14 @@
  *    replay that sends the request again does not bring the card back.
  * 3. A card that is being answered is not shown again by a replay.
  * 4. A failed answer restores its card ONLY when the failure can pass on a
- *    retry: a network fault or a 5xx. A 409 says the id is not waiting, so
- *    the card goes, and a restored card would 409 for ever. The POST and
- *    that rule are `lib/respondInput.ts`; `settleAnswer` turns its outcome
- *    into the action for the card.
+ *    retry: a network fault or a 5xx. A 4xx (a 409) removes the card, and a
+ *    restored card would get a 409 on every click. The POST and that rule
+ *    are `lib/respondInput.ts`. `settleAnswer` turns its outcome into the
+ *    action for the card.
+ * 5. A 4xx does NOT remember the id. The gateway also answers 409 when the
+ *    control bus is slow or has no listener (`dispatch_control`), and then
+ *    the tool still waits. Only the server's `confirmation_resolved` closes
+ *    a card for good, so a later replay can show a card that still waits.
  *
  * Pure, and in `lib/`, because `vitest.config.ts` runs in the node
  * environment. Fence: `src/lib/confirmationQueue.test.ts`.
@@ -42,7 +46,7 @@ export interface PendingConfirmation {
 
 export interface ConfirmationQueueState {
   cards: PendingConfirmation[];
-  /** Ids the server closed, or said are not waiting. A replay cannot reopen them. */
+  /** Ids the server closed, or that took an answer. A replay cannot reopen them. */
   resolved: ReadonlySet<string>;
   /** Ids with an answer in flight. A replay cannot reopen them either. */
   answering: ReadonlySet<string>;
@@ -59,6 +63,8 @@ export type ConfirmationAction =
   | { type: "resolved"; requestId: string }
   | { type: "answering"; key: string }
   | { type: "answered"; key: string }
+  /** The POST got a 4xx. The card stays gone until a replay shows it again. */
+  | { type: "dropped"; key: string }
   | { type: "restore"; card: PendingConfirmation }
   /** A non-blocking card, answered by a chat message. Its key can come again. */
   | { type: "dismiss"; key: string }
@@ -134,6 +140,8 @@ export function confirmationReducer(
         resolved: withAdded(state.resolved, action.key),
         answering: withRemoved(state.answering, action.key),
       };
+    case "dropped":
+      return { ...state, answering: withRemoved(state.answering, action.key) };
     case "restore": {
       const key = action.card.key;
       const answering = withRemoved(state.answering, key);
@@ -159,7 +167,7 @@ export function settleAnswer(
   card: PendingConfirmation,
   outcome: "ok" | "drop" | "retry",
 ): ConfirmationAction {
-  return outcome === "retry"
-    ? { type: "restore", card }
-    : { type: "answered", key: card.key };
+  if (outcome === "retry") return { type: "restore", card };
+  if (outcome === "drop") return { type: "dropped", key: card.key };
+  return { type: "answered", key: card.key };
 }

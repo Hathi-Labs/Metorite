@@ -417,7 +417,8 @@ async def request_confirmation(
         """
         import asyncio as _asyncio
         import contextlib as _contextlib
-        _answer = "TIMEOUT"
+        # Any other failure is no approval, so it closes the card as a REJECT.
+        _answer = "REJECT"
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
@@ -430,7 +431,7 @@ async def request_confirmation(
             _answer = "CANCELLED"
             raise
         except TimeoutError:
-            pass
+            _answer = "TIMEOUT"
         finally:
             _pending.pop(_rid, None)
             # Best effort: the run's end clears a blocking card too.

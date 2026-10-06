@@ -24,8 +24,21 @@
  * the paint).
  */
 
+import { useEffect, useState } from "react";
+
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+
+/**
+ * How long a new card ignores Approve and Reject.
+ *
+ * In a queue, the next card mounts in the place of the one just answered,
+ * and cards of one kind put Approve at the same pixel. So the second click
+ * of a double-click would sign a card the member never saw. The buttons do
+ * not grey out, so the card does not flash. They only ignore the click.
+ * Fence: `src/lib/confirmationQueue.test.ts` ("a new card is not armed").
+ */
+export const ARM_MS = 400;
 
 export interface CardField {
   label: string;
@@ -145,6 +158,11 @@ export default function ConfirmationCard({
   disabled = false,
   position,
 }: ConfirmationCardProps) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setArmed(true), ARM_MS);
+    return () => clearTimeout(t);
+  }, []);
   const { summary, rest } = cardSummary(title, detail);
   const body = parseCardBody(context);
   const many = position && position.total > 1;
@@ -214,10 +232,23 @@ export default function ConfirmationCard({
       )}
 
       <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2.5">
-        <Button size="sm" icon="Check" onClick={onApprove} disabled={disabled} data-confirmation-approve="">
+        <Button
+          size="sm"
+          icon="Check"
+          onClick={() => armed && onApprove()}
+          disabled={disabled}
+          aria-disabled={!armed || undefined}
+          data-confirmation-approve=""
+        >
           Approve
         </Button>
-        <Button variant="secondary" size="sm" onClick={onReject} disabled={disabled}>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => armed && onReject()}
+          disabled={disabled}
+          aria-disabled={!armed || undefined}
+        >
           Reject
         </Button>
         <span className="ml-auto text-[10px] text-muted-foreground">

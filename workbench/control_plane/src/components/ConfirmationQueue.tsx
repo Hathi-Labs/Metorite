@@ -36,15 +36,39 @@ export function shownIndex(index: number, total: number): number {
   return Math.min(Math.max(index, 0), total - 1);
 }
 
+export interface Shown {
+  /** The card the member looks at. Null before the first render pins one. */
+  key: string | null;
+  /** Where it was. Used only when that card has left the queue. */
+  index: number;
+}
+
+/**
+ * The card to show. The member's card stays under their eye while the queue
+ * moves around it: a restored card goes first, and an answer from another
+ * tab removes a card above it. A numeric index alone would slide a different
+ * card under the cursor, and the next Approve would sign it. When the card
+ * itself leaves (it was answered), the card now at its place takes over.
+ */
+export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
+  const found = shown.key === null ? -1 : cards.findIndex((c) => c.key === shown.key);
+  return found >= 0 ? found : shownIndex(shown.index, cards.length);
+}
+
 export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }: ConfirmationQueueProps) {
-  const [index, setIndex] = useState(initialIndex);
+  const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   if (cards.length === 0) return null;
-  const at = shownIndex(index, cards.length);
+  const at = pickShown(cards, shown);
   const card = cards[at];
+  if (shown.key !== card.key || shown.index !== at) {
+    // Pin the card on screen (React's adjust-state-during-render pattern).
+    setShown({ key: card.key, index: at });
+  }
+  const go = (to: number) => setShown({ key: cards[to].key, index: to });
   return (
     <ConfirmationCard
-      // A new key per card, so a long body scrolled on one card does not
-      // stay scrolled on the next.
+      // A new key per card: a long body scrolled on one card does not stay
+      // scrolled on the next, and the buttons arm again (ConfirmationCard).
       key={card.key}
       title={card.title}
       detail={card.detail}
@@ -52,8 +76,8 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
       position={{
         index: at,
         total: cards.length,
-        onPrev: () => setIndex(Math.max(0, at - 1)),
-        onNext: () => setIndex(Math.min(cards.length - 1, at + 1)),
+        onPrev: () => go(Math.max(0, at - 1)),
+        onNext: () => go(Math.min(cards.length - 1, at + 1)),
       }}
       onApprove={() => onAnswer(card, "APPROVE")}
       onReject={() => onAnswer(card, "REJECT")}
