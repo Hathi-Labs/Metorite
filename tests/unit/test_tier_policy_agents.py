@@ -388,7 +388,7 @@ class TestTheBatchPath:
             bound: list[bool] = []
             model = JsonModel(
                 [{"tool": "decide", "args": _DECIDE_ARGS}, {"text": "done"}],
-                on_request=lambda _i: bound.append("think_mode" in artifact_context()),
+                on_request=lambda _i, _b=bound: _b.append("think_mode" in artifact_context()),
             )
             _patch_native_load(monkeypatch, BATCH_AGENT, NATIVE[BATCH_AGENT], model)
             logs = _tap(monkeypatch)
