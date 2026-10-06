@@ -971,13 +971,6 @@ class TestThePoolCeilingFitsThePoolerInFront:
     RESERVED_FOR_OPERATORS = 3
 
     def test_one_process_cannot_exceed_the_pooler_budget(self):
-        """BOTH pools of one process, summed (2026-10-06).
-
-        This test used to sum the async pool alone, and passed at 12 while
-        `acb_graph.db`'s sync engine took SQLAlchemy's default 5 + 10 on top.
-        One gateway could ask for 27 sessions of 15. A budget that leaves out
-        a pool is not a budget.
-        """
         from acb_common.settings import Settings
 
         s = Settings()
