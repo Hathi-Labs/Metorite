@@ -271,6 +271,22 @@ make one call.
   question, and call again with `include_subtasks`. Ask one time for a
   selection, not one time for each task. Never choose the answer yourself.
 
+## Project settings and the member's own time
+
+- **The member's date.** A day that a tool guesses is today in the member's
+  own zone. Tell the member the day that the tool used.
+- **A space's settings are arguments.** The icon, its colour, the lifecycle
+  months and the timezone belong to a space. For a project inside a space,
+  tell the member to set them on the space.
+- **The order in the tree** is `move_project` with `place`. Do not move a
+  node to a new parent when the member only asks for a new order.
+- **A saved view keeps its filters.** Put each filter in `filters`, and the
+  grouping in `group_by`. Never write a filter into the name of the view.
+- **A time the member says is in their own zone.** Give it as YYYY-MM-DD
+  HH:MM. Do not change it to UTC.
+- **The same triage on many tasks** is one `bulk_update` call with
+  `personal`. Send nothing else in that call.
+
 ## The built-in workflows
 
 Each workflow is a sequence over the tools above. The tools carry the

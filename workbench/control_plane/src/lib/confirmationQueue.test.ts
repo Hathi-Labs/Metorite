@@ -1,0 +1,316 @@
+/**
+ * The confirmation queue, the answer POST and the card (2026-10-06).
+ *
+ * Production: a turn made ten card-gated calls in parallel. The chat had one
+ * card slot, so nine cards were never shown and the run never ended. A replay
+ * put the slot on a card the member had already approved, every Approve got a
+ * 409, and the card came back after each 409.
+ *
+ * Each block names the rule it fences and a mutation it catches.
+ */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+
+import ConfirmationCard, { cardSummary, isHiddenField, parseCardBody } from "@/components/ConfirmationCard";
+import ConfirmationQueue, { pickShown } from "@/components/ConfirmationQueue";
+import {
+  EMPTY_CONFIRMATIONS,
+  confirmationReducer,
+  settleAnswer,
+  type ConfirmationAction,
+  type ConfirmationQueueState,
+} from "@/lib/confirmationQueue";
+import { respondFailure, sendRespondInput } from "@/lib/respondInput";
+
+const SRC = fileURLToPath(new URL("..", import.meta.url));
+const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
+
+const PROJECT = "0f8fad5b-d9cb-469f-a165-70867728950e";
+const STATUS = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
+function requested(i: number) {
+  return {
+    type: "requested" as const,
+    value: {
+      title: "Create this task?",
+      detail: `«Task ${i}» · status Open`,
+      context: [
+        "This change is recorded as yours, made through the Projects assistant.",
+        `project_id: «${PROJECT}»`,
+        `title: «Task ${i}»`,
+        `status_id: «${STATUS}»`,
+        "status: Open",
+      ].join("\n"),
+      request_id: `rid-${i}`,
+    },
+  };
+}
+
+const run = (actions: ConfirmationAction[], from: ConfirmationQueueState = EMPTY_CONFIRMATIONS) =>
+  actions.reduce(confirmationReducer, from);
+
+const TEN = Array.from({ length: 10 }, (_, i) => requested(i + 1));
+
+// ── The queue ────────────────────────────────────────────────────────────────
+
+describe("every parallel card is kept", () => {
+  // Mutation caught: a `requested` that replaces the list (the old single
+  // slot) leaves one card.
+  it("ten parallel events make ten cards, in order", () => {
+    const s = run(TEN);
+    expect(s.cards.map((c) => c.key)).toEqual(TEN.map((a) => a.value.request_id));
+  });
+
+  // Mutation caught: no dedupe — a replay of the same ten makes twenty.
+  it("a replay of the same events adds no card", () => {
+    expect(run([...TEN, ...TEN]).cards).toHaveLength(10);
+  });
+
+  // Mutation caught: a queue view that renders only the first card, or a
+  // pager that cannot reach the last.
+  it("every card is reachable through the pager", () => {
+    const cards = run(TEN).cards;
+    for (let i = 0; i < cards.length; i++) {
+      const html = renderToStaticMarkup(
+        createElement(ConfirmationQueue, { cards, onAnswer: () => {}, initialIndex: i }),
+      );
+      expect(html).toContain(`Task ${i + 1}`);
+      expect(html).toContain(`${i + 1} of 10`);
+    }
+  });
+});
+
+describe("answering one card removes only that card", () => {
+  // Mutation caught: `answering` that clears the whole list.
+  it("ten minus one answered leaves nine", () => {
+    const s = run([...TEN, { type: "answering", key: "rid-3" }, settleAnswer(run(TEN).cards[2], "ok")]);
+    expect(s.cards).toHaveLength(9);
+    expect(s.cards.some((c) => c.key === "rid-3")).toBe(false);
+  });
+
+  // Mutation caught: a replay that arrives while the POST is in flight
+  // brings the card back, and the member answers it twice.
+  it("a replay during the POST does not reopen the card", () => {
+    const s = run([...TEN, { type: "answering", key: "rid-3" }, ...TEN]);
+    expect(s.cards.some((c) => c.key === "rid-3")).toBe(false);
+  });
+});
+
+describe("confirmation_resolved closes a card, live and on a replay", () => {
+  it("a replay with a resolved event leaves the answered card out", () => {
+    const resolved = { type: "resolved" as const, requestId: "rid-1" };
+    // The stream order: ten requests, the answer, then a since=0-0 replay.
+    const s = run([...TEN, resolved, ...TEN, resolved]);
+    expect(s.cards.map((c) => c.key)).not.toContain("rid-1");
+    expect(s.cards).toHaveLength(9);
+  });
+
+  // Mutation caught: `resolved` that only filters and does not remember.
+  it("a request that comes after its own resolved event stays closed", () => {
+    const s = run([{ type: "resolved", requestId: "rid-1" }, requested(1)]);
+    expect(s.cards).toEqual([]);
+  });
+
+  it("a finished run clears the blocking cards", () => {
+    expect(run([...TEN, { type: "runFinalized" }]).cards).toEqual([]);
+  });
+});
+
+// ── The answer POST ──────────────────────────────────────────────────────────
+
+function fakeFetch(status: number | "throw") {
+  return vi.fn(async () => {
+    if (status === "throw") throw new TypeError("Failed to fetch");
+    return new Response(status === 200 ? "{}" : "{\"detail\":\"x\"}", { status });
+  }) as unknown as typeof fetch;
+}
+
+const BODY = { request_id: "rid-2", answer: "APPROVE", was_freeform: false, thread_id: "t-1" };
+
+async function answerThrough(status: number | "throw") {
+  const silence = [vi.spyOn(console, "error").mockImplementation(() => {}), vi.spyOn(console, "warn").mockImplementation(() => {})];
+  try {
+    const card = run(TEN).cards[1];
+    const outcome = await sendRespondInput(BODY, fakeFetch(status));
+    // The card left the queue on the click, then the outcome settles it.
+    const s = run([...TEN, { type: "answering", key: card.key }, settleAnswer(card, outcome)]);
+    return { outcome, s };
+  } finally {
+    silence.forEach((s) => s.mockRestore());
+  }
+}
+
+describe("the answer POST: restore only on a failure a retry can pass", () => {
+  // Mutation caught: restoring on every failure (the 2026-10-06 loop).
+  it("a 409 drops the card", async () => {
+    const { outcome, s } = await answerThrough(409);
+    expect(outcome).toBe("drop");
+    expect(s.cards.some((c) => c.key === "rid-2")).toBe(false);
+    expect(s.answering.has("rid-2")).toBe(false);
+  });
+
+  // Mutation caught: a 4xx that remembers the id. The gateway also answers
+  // 409 when the control bus is slow, and then the tool still waits, so only
+  // the server's resolved event may close a card for good.
+  it("after a 409, only the server's resolved event keeps the card closed", async () => {
+    const { s } = await answerThrough(409);
+    const replay = confirmationReducer(s, requested(2));
+    expect(replay.cards.some((c) => c.key === "rid-2")).toBe(true);
+    const closed = run([{ type: "resolved", requestId: "rid-2" }, requested(2)], s);
+    expect(closed.cards.some((c) => c.key === "rid-2")).toBe(false);
+  });
+
+  // Mutation caught: dropping on every failure, which strands a parked run
+  // with no card after a gateway blip.
+  it("a 5xx restores the card, first in the queue", async () => {
+    const { outcome, s } = await answerThrough(502);
+    expect(outcome).toBe("retry");
+    expect(s.cards[0].key).toBe("rid-2");
+    expect(s.cards).toHaveLength(10);
+  });
+
+  it("a network fault restores the card", async () => {
+    const { outcome, s } = await answerThrough("throw");
+    expect(outcome).toBe("retry");
+    expect(s.cards.some((c) => c.key === "rid-2")).toBe(true);
+  });
+
+  it("a 2xx is ok, and the card stays gone", async () => {
+    const { outcome, s } = await answerThrough(200);
+    expect(outcome).toBe("ok");
+    expect(s.cards).toHaveLength(9);
+  });
+
+  it("every 4xx drops, every 5xx retries", () => {
+    expect([400, 401, 403, 404, 409, 422].map(respondFailure)).toEqual(Array(6).fill("drop"));
+    expect([500, 502, 503, 504].map(respondFailure)).toEqual(Array(4).fill("retry"));
+    expect(respondFailure(undefined)).toBe("retry");
+  });
+
+  // Mutation caught: a second fetch to respond-input that skips the rule.
+  it("the one fetch of respond-input is the helper's", () => {
+    expect(read("components/AgentChat.tsx")).not.toContain('fetch("/api/agent/respond-input"');
+    expect(read("lib/respondInput.ts").match(/"\/api\/agent\/respond-input"/g)).toHaveLength(1);
+  });
+});
+
+describe("the resolved event is kept off the message and out of the panel", () => {
+  // Mutation caught: the event lands on message.customEvents and draws a
+  // raw "Interactive view" fold under every answered card.
+  it("both client lists name confirmation_resolved", () => {
+    expect(read("hooks/useAgentChat.ts")).toMatch(/HITL_CONTROL_EVENTS[\s\S]*?"confirmation_resolved"[\s\S]*?\]\)/);
+    expect(read("components/GenerativeUIPanel.tsx")).toMatch(/PANEL_HIDDEN_EVENTS[\s\S]*?"confirmation_resolved"[\s\S]*?\]\)/);
+  });
+});
+
+describe("the card under the member's eye stays put", () => {
+  // Mutation caught: a pager that holds only a numeric index. A restore puts
+  // a card first, and a different card slides under the cursor.
+  it("a restore above the shown card does not change it", () => {
+    const cards = run(TEN).cards;
+    const shown = { key: "rid-4", index: 3 };
+    const restored = [{ ...cards[0], key: "rid-x", requestId: "rid-x" }, ...cards];
+    expect(restored[pickShown(restored, shown)].key).toBe("rid-4");
+  });
+
+  it("when the shown card leaves, the card now at its place shows", () => {
+    const cards = run([...TEN, { type: "answering", key: "rid-4" }]).cards;
+    expect(cards[pickShown(cards, { key: "rid-4", index: 3 })].key).toBe("rid-5");
+    expect(pickShown(cards.slice(0, 2), { key: "rid-9", index: 8 })).toBe(1);
+  });
+
+  // Mutation caught: buttons live on mount. In a queue the next card mounts
+  // where the answered one was, so a double-click signs a card nobody read.
+  it("a new card is not armed on its first render", () => {
+    const html = renderToStaticMarkup(
+      createElement(ConfirmationQueue, { cards: run(TEN).cards, onAnswer: () => {} }),
+    );
+    const approve = /<button[^>]*data-confirmation-approve[^>]*>/.exec(html)?.[0] ?? "";
+    expect(approve).toContain('aria-disabled="true"');
+  });
+});
+
+// ── The card ─────────────────────────────────────────────────────────────────
+
+describe("the card reads as a sentence, then rows", () => {
+  it("the summary joins the title and the name", () => {
+    expect(cardSummary("Create this task?", "«Fix the extruder» · status Open")).toEqual({
+      summary: "Create task «Fix the extruder»",
+      rest: "status Open",
+    });
+    // A title that is not "<verb> this <thing>?" stays as it is.
+    expect(cardSummary("Send this email?", "From a · To b")).toEqual({
+      summary: "Send this email?",
+      rest: "From a · To b",
+    });
+  });
+
+  // Mutation caught: a UUID field drawn as a row (the old monospace dump).
+  it("a *_id field that holds a UUID is hidden, and the names stay", () => {
+    const body = parseCardBody(requested(1).value.context);
+    expect(body.fields.map((f) => f.label)).toEqual(["Title", "Status"]);
+    expect(body.fields[0].value).toBe("Task 1");
+    expect(body.notes).toEqual(["This change is recorded as yours, made through the Projects assistant."]);
+    expect(isHiddenField("status_id", `«${STATUS}» → «${PROJECT}»`)).toBe(true);
+    expect(isHiddenField("task_number", PROJECT)).toBe(false);
+    expect(isHiddenField("parent_id", "not a uuid")).toBe(false);
+  });
+
+  it("an email body stays text, in the UI font", () => {
+    const body = parseCardBody("Hi Bob,\n\nThe report is attached.\nThanks: Ann");
+    expect(body.fields).toEqual([]);
+    expect(body.text).toContain("The report is attached.");
+    // A field whose value spans lines (a CRM description) stays text too,
+    // so no line is lost to a row it does not belong to.
+    const crm = parseCardBody("lead_name: Ann\ndescription: line one\nline two");
+    expect(crm.fields).toEqual([]);
+    expect(crm.text).toContain("line two");
+    const html = renderToStaticMarkup(
+      createElement(ConfirmationCard, {
+        title: "Send this email?",
+        context: "Hi Bob,\n\nThe report is attached.",
+        onApprove: () => {},
+        onReject: () => {},
+      }),
+    );
+    expect(html).not.toMatch(/font-mono|<pre/);
+  });
+});
+
+describe("the card wears the product tokens", () => {
+  const src = read("components/ConfirmationCard.tsx");
+  const html = renderToStaticMarkup(
+    createElement(ConfirmationCard, {
+      title: "Create this task?",
+      detail: "«Task 1» · status Open",
+      context: requested(1).value.context,
+      onApprove: () => {},
+      onReject: () => {},
+    }),
+  );
+
+  // Mutation caught: the amber card, the warning tone or a hover:bg-emerald.
+  it("no raw palette class, no warning tone, no emoji", () => {
+    expect(src).not.toMatch(/\b(?:bg|text|border|ring)-(?:amber|emerald|yellow|orange|red|green)-\d/);
+    expect(html).not.toMatch(/warning/);
+    expect(html).not.toMatch(/\p{Extended_Pictographic}/u);
+  });
+
+  // Mutation caught: Approve painted with a status hue (bg-success) instead
+  // of the primary action colour, which an accent change must move.
+  it("Approve is the primary Button, and the surface is neutral", () => {
+    const approve = /<button[^>]*data-confirmation-approve[^>]*>/.exec(html)?.[0] ?? "";
+    expect(approve).toContain("bg-primary");
+    expect(approve).not.toMatch(/bg-success|bg-warning|bg-destructive/);
+    expect(html).toMatch(/border-border bg-card/);
+  });
+
+  it("no UUID reaches the page", () => {
+    expect(html).not.toContain(PROJECT);
+    expect(html).not.toContain(STATUS);
+  });
+});

@@ -702,7 +702,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "intake_queue", "link_tasks", "list_integrations", "list_tasks",
     "list_workflows", "load_artifact_kit", "load_design_system", "manage_todo_list",
     "mark_notifications_read", "merge_tags", "merge_tasks", "move_project",
-    "move_task", "my_contexts", "my_led_projects", "my_task", "my_work",
+    "move_task", "my_areas", "my_contexts", "my_led_projects", "my_task", "my_work",
     "notifications", "open_in_app", "people_for", "project_access",
     "project_summary", "project_views", "projects_tree", "propose_plan",
     "read_attachment", "rebalance", "recall_timeline", "recurrence", "remember", "render_board",

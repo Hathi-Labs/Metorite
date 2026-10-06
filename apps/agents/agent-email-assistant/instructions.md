@@ -111,7 +111,6 @@ just paste it into chat.
    and give a one-line confidence (HIGH / MEDIUM / LOW).
 4. Only when the user asks *how* you'd phrase something (not for a saved draft)
    is it fine to compose inline without `draft_reply`.
-5. `save_episode` a one-line note of what was discussed.
 
 Every reply must: **open with a salutation on its own line** that addresses the
 recipient by name — 'Dear <name>,' for a formal thread, 'Hi <first name>,' for a

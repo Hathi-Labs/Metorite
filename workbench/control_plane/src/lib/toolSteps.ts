@@ -124,6 +124,7 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   my_task: { kind: "read", verb: V.read, object: "your task" },
   my_contexts: { kind: "read", verb: V.read, object: "your contexts" },
   my_led_projects: { kind: "read", verb: V.read, object: "the projects you lead" },
+  my_areas: { kind: "read", verb: V.read, object: "your areas" },
   people_for: { kind: "search", verb: V.find, object: "who could take it" },
   vocabulary: { kind: "read", verb: V.read, object: "the project's vocabulary" },
   calendar: { kind: "read", verb: V.read, object: "the calendar" },

@@ -798,7 +798,7 @@ consequence stated — rather than being a default nobody chose.
 ## 12. Phasing
 
 The phase letters below are the **map**. The dispatchable unit is the lettered ticket in
-§12.2 (`WS-8a`…`WS-8n`); each phase row names which tickets carry it.
+§12.2 (`WS-8a`…`WS-8o`). Each phase row names which tickets carry it.
 
 | Phase | Work | Tickets | Depends on |
 |---|---|---|---|
@@ -975,6 +975,13 @@ session" affordance is enabled only for an agent whose manifest returns
 `is_shareable() == True`, a test asserts a `personal`-instanced agent with `shareable: false`
 (i.e. `email-assistant`, `whatsapp-assistant`) is refused, and a test asserts a `shared`
 agent is allowed.
+
+**WS-8o — the own tool scope does nothing for a native MAF agent. AGENT-SAFE.** No migration
+and no flag. `_apply_own_tool_scope` filters `tools` and `_tools`. MAF 1.19 keeps the tools in
+`default_options["tools"]`.
+
+The scope of each agent is its built tools. A narrowing is an owner decision. Scope, fences and
+verification: `email_app_master_plan.md` §10.4.14. ✅ Merged #688 (2026-10-06).
 
 #### B — one builder
 

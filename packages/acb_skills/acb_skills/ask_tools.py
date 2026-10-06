@@ -342,6 +342,24 @@ async def ask_questions(questions: str) -> str:
     )
 
 
+#: The event that closes a confirmation card. ``answer`` is one of
+#: :data:`CONFIRMATION_ANSWERS`. The client drops the card whose
+#: ``request_id`` it names, live and on a replay. Fence:
+#: ``tests/unit/test_genui_hitl.py`` (the ``confirmation_resolved`` tests).
+CONFIRMATION_RESOLVED = "confirmation_resolved"
+CONFIRMATION_ANSWERS: frozenset[str] = frozenset(
+    {"APPROVE", "REJECT", "TIMEOUT", "CANCELLED"}
+)
+
+
+def _resolved_event(request_id: str, answer: str) -> dict:
+    return {
+        "type": "CUSTOM",
+        "name": CONFIRMATION_RESOLVED,
+        "value": {"request_id": request_id, "answer": answer},
+    }
+
+
 async def request_confirmation(
     title: str, detail: str = "", context: str = "",
     non_interactive_default: str = "deny",
@@ -386,16 +404,40 @@ async def request_confirmation(
             },
         }
 
-    async def _block_on(_fut, _rid, _pending) -> bool:
+    async def _block_on(_fut, _rid, _pending, _publish) -> bool:
+        """Park on the answer, then say on the stream that the card is closed.
+
+        A model can call card-gated tools in parallel, so one stream can carry
+        many ``confirmation_requested`` cards at once, and a replay sends all
+        of them again. With no closing event, the client cannot tell an
+        answered card from a waiting one. It showed the answered card again
+        (2026-10-06). ``_publish`` sends ``confirmation_resolved`` on the
+        stream that carried the card, on every way out: an answer, a timeout
+        and a cancel.
+        """
         import asyncio as _asyncio
+        import contextlib as _contextlib
+        # Any other failure is no approval, so it closes the card as a REJECT.
+        _answer = "REJECT"
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
-        except _asyncio.TimeoutError:
-            return False
+            _answer = (
+                "APPROVE"
+                if str(_result.get("answer", "")).strip().upper() == "APPROVE"
+                else "REJECT"
+            )
+        except _asyncio.CancelledError:
+            _answer = "CANCELLED"
+            raise
+        except TimeoutError:
+            _answer = "TIMEOUT"
         finally:
             _pending.pop(_rid, None)
-        return str(_result.get("answer", "")).strip().upper() == "APPROVE"
+            # Best effort: the run's end clears a blocking card too.
+            with _contextlib.suppress(Exception):
+                await _publish(_resolved_event(_rid, _answer))
+        return _answer == "APPROVE"
 
     # ── Path A: _active_run_queue (native MAF / Tier 2 blocking) ──────────
     try:
@@ -414,7 +456,7 @@ async def request_confirmation(
         _fut = _asyncio.get_running_loop().create_future()
         _pending_user_input[_rid] = _fut
         await queue.put(_event(_rid))
-        return await _block_on(_fut, _rid, _pending_user_input)
+        return await _block_on(_fut, _rid, _pending_user_input, queue.put)
 
     # ── Path C: Redis relay (blocking on BOTH Copilot-SDK and native MAF) ──
     # resolve_relay_thread_id survives the Copilot SDK thread hop that resets the
@@ -439,7 +481,11 @@ async def request_confirmation(
             _pending_user_input[_rid] = _fut
             _line = f"data: {_json.dumps(_event(_rid))}\n\n"
             await _push_sse_to_stream(_tid, _line)
-            return await _block_on(_fut, _rid, _pending_user_input)
+
+            async def _publish(ev: dict, _t: str = _tid) -> None:
+                await _push_sse_to_stream(_t, f"data: {_json.dumps(ev)}\n\n")
+
+            return await _block_on(_fut, _rid, _pending_user_input, _publish)
     except Exception:  # noqa: BLE001
         pass
 

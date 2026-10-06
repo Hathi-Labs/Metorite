@@ -278,6 +278,8 @@ _BASE: dict[str, dict[str, Any]] = {
     "move_project": {"project_id": UUID, "parent_project_id": tw.SALES},
     "move_task": {"task_ids": UUID, "destination_project_id": OTHER},
     "my_work": {},
+    # WS-46 P7 (G17)
+    "my_areas": {},
     "notifications": {},
     "people_for": {"query": "pri"},
     "propose_plan": {"name": "Q4 launch", "tasks": tw.PLAN_TASKS},
@@ -377,6 +379,24 @@ _SAMPLE: dict[str, Any] = {
     "watching": True,
     "weekdays": "1,3",
     "weeks": 3,
+    # WS-46 P7: a space's settings, the member's overlay, a view and a place.
+    "icon_slot": 3,
+    "archive_after_months": 6,
+    "close_after_months": 12,
+    "timezone": "Asia/Kolkata",
+    "untriaged": True,
+    "block_start": "2026-10-07 14:00",
+    "block_end": "2026-10-07 15:00",
+    "flexible": "yes",
+    "hard_date": "yes",
+    "actual_start": "2026-10-07 14:05",
+    "actual_end": "2026-10-07 14:50",
+    "deep_work": "yes",
+    "waiting_on": "Priya",
+    "waiting_since": "2026-10-05",
+    "expected_by": "2026-10-09",
+    "filters": '{"overdue": true}',
+    "personal": '{"disposition": "someday", "context": "@home"}',
 }
 #: The whole call, where the base call takes another branch of the tool.
 _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
@@ -481,6 +501,24 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
     ("GET", "/projects/candidates", "title"): {"title": "Weld the frame"},
     ("GET", "/projects/tasks/{task_id}/timeline", "kind"): {"task_id": UUID, "kind": "comments"},
     ("POST", "/projects/nodes", "kind"): {"name": "Q4 launch", "kind": "folder"},
+    # WS-46 P7: a Space Settings icon, not a task type's.
+    ("PATCH", "/projects/nodes/{project_id}", "icon"): {"project_id": UUID, "icon": "Rocket"},
+    # WS-46 P7 (G13): a reorder alone. Ops is first of two top-level nodes in
+    # the fake tree, and neither has a position, so the siblings spread too.
+    ("POST", "/projects/nodes/{project_id}/move", "position"): {
+        "project_id": UUID,
+        "place": "last",
+    },
+    ("PATCH", "/projects/views/{view_id}", "config"): {
+        "project_id": UUID,
+        "view_id": tw.VIEW_ID,
+        "filters": '{"overdue": true}',
+    },
+    # WS-46 P7 (G16): the overlay goes on its own, with no status.
+    ("POST", "/projects/tasks/bulk", "personal"): {
+        "task_ids": f"{UUID},{OTHER}",
+        "personal": '{"disposition": "someday"}',
+    },
 }
 
 

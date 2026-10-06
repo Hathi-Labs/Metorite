@@ -30,8 +30,10 @@ from evals.projects_ops.dataset import Dataset
 Step = tuple[Any, ...]
 
 
-def tool(name: str, **arguments: Any) -> Step:
-    return ("tool", name, json.dumps(arguments))
+def tool(tool_name: str, /, **arguments: Any) -> Step:
+    """One tool step. The tool name is positional, so an argument may be
+    called ``name`` (``save_view``, PO-9)."""
+    return ("tool", tool_name, json.dumps(arguments))
 
 
 def _po1(ds: Dataset) -> list[Step]:
@@ -115,18 +117,28 @@ def _po8(ds: Dataset) -> list[Step]:
     ]
 
 
-#: PO-9's rows, as a model writes them from the prompt.
-PO9_ROWS: tuple[dict[str, Any], ...] = (
+def _po9(ds: Dataset) -> list[Step]:
+    return [
+        tool("projects_tree"),
+        tool("save_view", project_id=ds.project("Launch").id, name="Overdue by owner",
+             view_type="board", filters=json.dumps({"overdue": True}), group_by="assignee"),
+        ("text", "I saved the board view «Overdue by owner» in Launch. It shows the overdue "
+                 "tasks, grouped by assignee."),
+    ]
+
+
+#: PO-10's rows, as a model writes them from the prompt.
+PO10_ROWS: tuple[dict[str, Any], ...] = (
     {"title": "Book the caterer", "assignees": "Priya Menon"},
     {"title": "Print the badges"},
     {"title": "Test the projector"},
 )
 
 
-def _po9(ds: Dataset) -> list[Step]:
+def _po10(ds: Dataset) -> list[Step]:
     return [
         tool("projects_tree"),
-        tool("create_tasks", project_id=ds.project("Launch").id, tasks=json.dumps(PO9_ROWS)),
+        tool("create_tasks", project_id=ds.project("Launch").id, tasks=json.dumps(PO10_ROWS)),
         ("text", "I added 3 tasks to Launch: «Book the caterer» for Priya Menon, «Print the "
                  "badges» and «Test the projector»."),
     ]
@@ -141,6 +153,7 @@ _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-7": _po7,
     "PO-8": _po8,
     "PO-9": _po9,
+    "PO-10": _po10,
 }
 
 SCRIPTED_IDS: tuple[str, ...] = tuple(_SEQUENCES)

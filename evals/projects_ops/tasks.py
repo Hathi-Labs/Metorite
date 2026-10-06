@@ -1,4 +1,6 @@
-"""The Projects operations tasks, PO-1 to PO-9 (WS-46 P3, PO-8 from P6, PO-9 from P13).
+"""The Projects operations tasks, PO-1 to PO-10 (WS-46 P3 and later slices).
+
+PO-8 is from P6, PO-9 from P7 and PO-10 from P13.
 
 Spec: ``project-docs/specs/projects_agent_parity.md`` §11.2. The spec gives
 each prompt in a short form. The full prompt below keeps its meaning and names
@@ -94,9 +96,17 @@ TASKS: tuple[TaskSpec, ...] = (
         "Monday, and the customer is Acme.",
         cards=(APPROVE,),
     ),
+    # WS-46 P7: a saved view with its filters and its grouping, in one call.
+    TaskSpec(
+        "PO-9", "A saved view with its filters",
+        "Save a board of the overdue work in Launch, grouped by owner",
+        "Save a board view in the Launch project called Overdue by owner. It shows the "
+        "overdue tasks, grouped by assignee.",
+        cards=(APPROVE,),
+    ),
     # WS-46 P13: several new tasks in a project that exists, as one batch.
     TaskSpec(
-        "PO-9", "Three new tasks in one call",
+        "PO-10", "Three new tasks in one call",
         "Add these 3 tasks to project X",
         "Add these 3 tasks to the Launch project: book the caterer for Priya Menon, print "
         "the badges, and test the projector.",

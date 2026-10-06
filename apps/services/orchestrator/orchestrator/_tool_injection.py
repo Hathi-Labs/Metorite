@@ -11,7 +11,8 @@ addendum, and merges MCP servers from the registry.
 
 Public surface re-exported by ``executor`` (external importers/tests reach these
 as ``orchestrator.executor.<name>``): ``_gate_injected_tool``, ``_tool_name``,
-``_apply_own_tool_scope``, ``_build_registry_block``,
+``_apply_own_tool_scope``, ``_count_agent_tools``,
+``_log_agent_tools_resolved``, ``_build_registry_block``,
 ``_build_injected_tools_addendum``, ``_inject_agent_tools``,
 ``_inject_mcp_servers``.
 """
@@ -927,14 +928,17 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
     Must run BEFORE ``_inject_agent_tools`` so platform-injected tools are
     never subject to the agent's own scope.  With no matches the full set is
     kept (fail open + warning), mirroring ``tool_scope`` semantics.
+
+    It reads each pool of :func:`_own_tool_pools` (WS-8o). Until 2026-10-06 it
+    read only ``tools`` and ``_tools``, so it did nothing for a native MAF
+    ``Agent``, which keeps its tools in ``default_options["tools"]``.
     """
     if not own_scope:
         return
     scope_set = set(own_scope)
     for agent in agents:
-        for attr in ("tools", "_tools"):
-            lst = getattr(agent, attr, None)
-            if not isinstance(lst, list) or not lst:
+        for attr, lst in _own_tool_pools(agent):
+            if not lst:
                 continue
             kept = [t for t in lst if _tool_name(t) in scope_set]
             if kept:
@@ -947,6 +951,59 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
                     requested=own_scope,
                     available=[_tool_name(t) for t in lst],
                 )
+
+
+def _own_tool_pools(agent: Any) -> list[tuple[str, list[Any]]]:
+    """The tool lists of ONE agent, each list once, with a label for the log.
+
+    A native MAF ``Agent`` (1.19) keeps its tools in
+    ``default_options["tools"]``. ``RawAgent.__init__`` puts them there, and
+    each run copies that list again, so a change in place holds for the run.
+    This is the idiom of :func:`_withhold_egress_from_agent`. A
+    ``GitHubCopilotAgent`` keeps ``_tools``, and a plain object ``tools``.
+    ``mcp_tools`` and the tools of a context provider are not the agent's own
+    tools, so no pool here holds them.
+    """
+    _do = getattr(agent, "default_options", None)
+    candidates: list[tuple[str, Any]] = [
+        ('default_options["tools"]',
+         _do.get("tools") if isinstance(_do, dict) else None),
+    ]
+    candidates += [(attr, getattr(agent, attr, None)) for attr in _TOOL_POOLS]
+    pools: list[tuple[str, list[Any]]] = []
+    seen: set[int] = set()
+    for label, pool in candidates:
+        if isinstance(pool, list) and id(pool) not in seen:
+            seen.add(id(pool))
+            pools.append((label, pool))
+    return pools
+
+
+def _count_agent_tools(agents: list[Any]) -> int:
+    """How many tools the pools of :func:`_own_tool_pools` hold, for all agents.
+
+    Read once after :func:`_apply_own_tool_scope` (``own``) and once after
+    :func:`_inject_agent_tools` (``total``). It counts tools that an agent
+    holds, not tool calls. ``run_trace.tool_count`` counts calls.
+    """
+    return sum(len(pool) for agent in agents for _, pool in _own_tool_pools(agent))
+
+
+def _log_agent_tools_resolved(
+    agent_name: str | None, agents: list[Any], own: int,
+) -> None:
+    """Log ``executor.agent_tools_resolved`` after the tool injection (WS-8o).
+
+    ``own`` is the count after the own tool scope, and ``total`` the count
+    after the injection. The live check of ``email_app_master_plan.md``
+    §10.4.14 reads ``own=43`` for one email chat.
+    """
+    _log.info(
+        "executor.agent_tools_resolved",
+        agent=agent_name,
+        own=own,
+        total=_count_agent_tools(agents),
+    )
 
 
 def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[Any]:

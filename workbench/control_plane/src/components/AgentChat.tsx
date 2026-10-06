@@ -10,7 +10,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, useReducer, useSyncExternalStore } from "react";
 import React from "react";
 import Link from "next/link";
 import { useAgentChat } from "@/hooks/useAgentChat";
@@ -24,7 +24,15 @@ import type { FileEntry } from "@/components/ArtifactSidebar";
 import FileUploadButton from "@/components/FileUploadButton";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import SuggestionPills from "@/components/SuggestionPills";
-import ConfirmationCard from "@/components/ConfirmationCard";
+import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
+import {
+  CONFIRMATION_RESOLVED,
+  EMPTY_CONFIRMATIONS,
+  confirmationReducer,
+  settleAnswer,
+  type PendingConfirmation,
+} from "@/lib/confirmationQueue";
+import { sendRespondInput } from "@/lib/respondInput";
 import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
 import TodoPanel from "@/components/TodoPanel";
@@ -787,15 +795,17 @@ export default function AgentChat({
     void applyCompaction();
   }, [compacting, isLoading, applyCompaction]);
 
-  // ── HITL (Human-in-the-Loop) confirmation state ────────────────────────
-  // When requestId is set the tool is blocking (the agent is parked on a
-  // Future — e.g. confirm-before-send); Approve/Reject POST to
-  // /api/agent/respond-input to resume the SAME stream.  Without requestId the
-  // legacy non-blocking path sends APPROVE/REJECT as a new chat message.
-  const [confirmation, setConfirmation] = useState<{
-    id: string; title: string; detail?: string; context?: string;
-    requestId?: string;
-  } | null>(null);
+  // ── HITL (Human-in-the-Loop) confirmation queue ────────────────────────
+  // A turn can park many gated tools at once, each on its own card, so this
+  // is a QUEUE keyed by request_id (`lib/confirmationQueue.ts`), never one
+  // slot. A blocking card (requestId) answers by POST to
+  // /api/agent/respond-input, which resumes the SAME stream. Without
+  // requestId the legacy non-blocking path sends APPROVE/REJECT as a new
+  // chat message.
+  const [confirmations, dispatchConfirmation] = useReducer(
+    confirmationReducer,
+    EMPTY_CONFIRMATIONS,
+  );
 
   // ── HITL elicitation state (VS Code ask_questions parity) ────────────
   // When requestId is set the tool is blocking (MAF Tier 2 path — the
@@ -825,18 +835,14 @@ export default function AgentChat({
       // other than the one this chat is showing, so a background run on a
       // different agent never injects its question card / HITL state here.
       if (threadId && threadId !== sessionId) return;
-      if (name === "confirmation_requested" && value && typeof value === "object") {
-        const v = value as Record<string, unknown>;
-        const reqId = v.request_id ? String(v.request_id) : undefined;
-        setConfirmation({
-          // Static fallback id — only one confirmation card renders at a time
-          // (state replace), and Date.now() here trips react-hooks/purity.
-          id: String(v.id ?? v.request_id ?? "confirmation"),
-          title: String(v.title ?? "Confirm action"),
-          detail: v.detail ? String(v.detail) : undefined,
-          context: v.context ? String(v.context) : undefined,
-          requestId: reqId,
-        });
+      if (name === "confirmation_requested") {
+        dispatchConfirmation({ type: "requested", value });
+      }
+      // The server closed a card: answered, timed out or cancelled. A replay
+      // carries this too, so an answered card never comes back.
+      if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
+        const rid = (value as Record<string, unknown>).request_id;
+        if (rid) dispatchConfirmation({ type: "resolved", requestId: String(rid) });
       }
       if (name === "elicitation_requested" && value && typeof value === "object") {
         const v = value as Record<string, unknown>;
@@ -901,6 +907,8 @@ export default function AgentChat({
           postRespondInput(
             { request_id: reqId, answer: message, was_freeform: true },
             () => submitText(message),
+            // Any failure sends the answer as a message, so it is never lost.
+            (outcome) => { if (outcome === "drop") submitText(message); },
           );
         } else {
           submitText(message);
@@ -913,7 +921,7 @@ export default function AgentChat({
       // run can never be waiting on input anymore.  Only clear a BLOCKING
       // confirmation (requestId, parked on a Future): a non-blocking one must
       // persist until the user answers (its answer is a new chat message).
-      setConfirmation((prev) => prev && prev.requestId ? null : prev);
+      dispatchConfirmation({ type: "runFinalized" });
       // Only clear elicitation when the agent was BLOCKED on a Future
       // (requestId present, MAF Tier 2 path).  For the Copilot SDK
       // non-blocking path (no requestId), the card must persist until
@@ -945,41 +953,36 @@ export default function AgentChat({
   const [hitlSession, setHitlSession] = useState(sessionId);
   if (hitlSession !== sessionId) {
     setHitlSession(sessionId);
-    setConfirmation(null);
+    dispatchConfirmation({ type: "reset" });
     setElicitation(null);
     setUserInput(null);
   }
 
-  // POST a blocking-HITL answer to /api/agent/respond-input.  On failure the
-  // card is RESTORED so the user can retry — the agent is still parked on its
-  // Future server-side, and the old fire-and-forget `.catch(() => {})` left a
-  // blocked run with no card and no error (a dead conversation).
+  // POST a blocking-HITL answer to /api/agent/respond-input.
+  //
+  // A failure that can pass on a retry (a network fault, a 5xx) RESTORES the
+  // card: the agent is still parked on its Future server-side, and the old
+  // fire-and-forget `.catch(() => {})` left a blocked run with no card and no
+  // error (a dead conversation). A 4xx does NOT restore it. A 409 says no
+  // question waits on that id, and a restored card got a 409 on every click
+  // (2026-10-06). `settle` hears "ok" or "drop" (`lib/respondInput.ts`).
   const postRespondInput = useCallback(
     (
       payload: { request_id: string; answer: string; was_freeform: boolean },
       restoreCard: () => void,
+      settle?: (outcome: "ok" | "drop") => void,
     ) => {
       const forSession = sessionIdRef.current;
-      void fetch("/api/agent/respond-input", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // thread_id lets the gateway route a HITL answer to whichever worker
-        // owns the parked run (P1-2 cross-worker control bus).
-        body: JSON.stringify({ ...payload, thread_id: forSession }),
-      })
-        .then(async (r) => {
-          if (!r.ok) {
-            throw new Error(await r.text().catch(() => `status ${r.status}`));
-          }
-        })
-        .catch((err: unknown) => {
-          console.error("respond-input failed — restoring HITL card", err);
-          // Only restore if the user is still on the session that asked.
-          if (sessionIdRef.current === forSession) restoreCard();
-        });
+      void sendRespondInput({ ...payload, thread_id: forSession }).then((outcome) => {
+        // Only touch the cards if the user is still on the session that asked.
+        if (sessionIdRef.current !== forSession) return;
+        if (outcome === "retry") restoreCard();
+        else settle?.(outcome);
+      });
     },
     [],
   );
+
 
   // Reload the persisted send-queue when switching sessions/agents so a message
   // queued on another session doesn't leak in and a queue left on THIS session
@@ -1341,6 +1344,7 @@ export default function AgentChat({
       postRespondInput(
         { request_id: requestId, answer, was_freeform: true },
         () => submitText(answer),
+        (outcome) => { if (outcome === "drop") submitText(answer); },
       );
     },
     [postRespondInput, submitText]
@@ -1434,38 +1438,28 @@ export default function AgentChat({
   // reference behaviour), not detached at the bottom of the message list. The
   // agent is parked mid-turn, so the card belongs with that turn's bubble.
   // Returns null when nothing is pending.
+  // Answer ONE confirmation card. Only that card leaves the queue.
+  const answerConfirmation = (card: PendingConfirmation, answer: ConfirmationAnswer) => {
+    if (!card.requestId) {
+      dispatchConfirmation({ type: "dismiss", key: card.key });
+      submitText(`${answer}: ${card.key}`);
+      return;
+    }
+    dispatchConfirmation({ type: "answering", key: card.key });
+    postRespondInput(
+      { request_id: card.requestId, answer, was_freeform: false },
+      () => dispatchConfirmation(settleAnswer(card, "retry")),
+      (outcome) => dispatchConfirmation(settleAnswer(card, outcome)),
+    );
+  };
+  const hasConfirmations = confirmations.cards.length > 0;
+
   const renderHitlCards = (): React.ReactNode => {
-    if (!confirmation && !elicitation && !userInput) return null;
+    if (!hasConfirmations && !elicitation && !userInput) return null;
     return (
       <>
-        {confirmation && (
-          <ConfirmationCard title={confirmation.title} detail={confirmation.detail} context={confirmation.context}
-            onApprove={() => {
-              const card = confirmation;
-              const reqId = card.requestId;
-              setConfirmation(null);
-              if (reqId) {
-                postRespondInput(
-                  { request_id: reqId, answer: "APPROVE", was_freeform: false },
-                  () => setConfirmation(card),
-                );
-              } else {
-                submitText(`APPROVE: ${card.id}`);
-              }
-            }}
-            onReject={() => {
-              const card = confirmation;
-              const reqId = card.requestId;
-              setConfirmation(null);
-              if (reqId) {
-                postRespondInput(
-                  { request_id: reqId, answer: "REJECT", was_freeform: false },
-                  () => setConfirmation(card),
-                );
-              } else {
-                submitText(`REJECT: ${card.id}`);
-              }
-            }} />
+        {hasConfirmations && (
+          <ConfirmationQueue cards={confirmations.cards} onAnswer={answerConfirmation} />
         )}
 
         {elicitation && (
@@ -1554,7 +1548,7 @@ export default function AgentChat({
   // The assistant turn the HITL card anchors to = the last assistant message
   // (the parked run streams into it). Used to render the card inline there.
   const hitlAnchorId = (() => {
-    if (!confirmation && !elicitation && !userInput) return null;
+    if (!hasConfirmations && !elicitation && !userInput) return null;
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === "assistant") return messages[i].id;
     }

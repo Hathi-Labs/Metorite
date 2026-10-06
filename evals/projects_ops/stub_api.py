@@ -23,6 +23,11 @@ Three rules of the real gateway hold here too:
 * A custom value goes through the route's own merge,
   ``gateway.routes.projects.custom_fields.apply_values``, at the create
   (#679) and at the edit (WS-46 P6).
+* A view's config goes through the route's own normaliser,
+  ``gateway.routes.projects.filters.normalise_view_config``, which drops a key
+  it does not know (WS-46 P7).
+* ``GET /projects/my/today`` answers the dataset's date and zone, as the
+  route answers the member's own (WS-46 P7).
 * A route this stub does not serve answers 404, with a reason that says so.
 """
 from __future__ import annotations
@@ -84,6 +89,7 @@ class OpsStub:
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     rules: dict[str, dict[str, Any]] = field(default_factory=dict)
     nodes: list[dict[str, Any]] = field(default_factory=list)
+    views: list[dict[str, Any]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
@@ -145,6 +151,9 @@ class OpsStub:
             ("GET", f"/projects/nodes/{_ID}/statuses", lambda i, _q, _b: self.statuses(i)),
             ("GET", f"/projects/nodes/{_ID}/types", lambda i, _q, _b: self.types(i)),
             ("GET", f"/projects/nodes/{_ID}/fields", lambda i, _q, _b: self.fields(i)),
+            ("GET", "/projects/my/today", lambda _i, _q, _b: self.today()),
+            ("GET", f"/projects/nodes/{_ID}/views", lambda i, _q, _b: self.list_views(i)),
+            ("POST", f"/projects/nodes/{_ID}/views", lambda i, _q, b: self.create_view(i, b)),
             ("GET", "/projects/assignees", lambda _i, q, _b: self.assignees(q)),
             ("GET", "/projects/people/names", lambda _i, q, _b: self.people_names(q)),
             ("POST", "/projects/tasks", lambda _i, _q, b: self.create_task(b)),
@@ -288,6 +297,30 @@ class OpsStub:
         self._task(task_id)
         return {"rule": copy.deepcopy(self.rules.get(task_id.lower()))}
 
+    def today(self) -> dict[str, Any]:
+        return {"today": self.dataset.today.isoformat(), "timezone": self.dataset.timezone,
+                "stored": True}
+
+    # ── saved views (WS-46 P7) ──────────────────────────────────────────────
+
+    def list_views(self, node_id: str) -> dict[str, Any]:
+        self._project_of(node_id)
+        rows = [copy.deepcopy(v) for v in self.views if v["project_id"] == node_id]
+        return {"rows": rows, "total": len(rows)}
+
+    def create_view(self, node_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        self._project_of(node_id)
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise StubError(422, "A view needs a name.")
+        kind = body.get("view_type") or "list"
+        if kind not in ("list", "board"):
+            raise StubError(422, f"Unknown view type '{kind}'.")
+        view = {"id": ident("view", node_id, name), "project_id": node_id, "name": name,
+                "view_type": kind, "config": normalise_config(body.get("config"))}
+        self.views.append(view)
+        return copy.deepcopy(view)
+
     def assignees(self, q: dict[str, str]) -> dict[str, Any]:
         words = (q.get("q") or "").strip().lower()
         people = [{"name": m.name, "assignee": m.email} for m in self.dataset.members
@@ -416,6 +449,14 @@ class OpsStub:
                 "parent_id": parent, "status": "active"}
         self.nodes.append(node)
         return dict(node)
+
+
+def normalise_config(config: Any) -> dict[str, Any]:
+    """The route's own normaliser of a view's config (``views.create_view``).
+    A module function, so a test can make the route drop a key."""
+    from gateway.routes.projects.filters import normalise_view_config
+
+    return normalise_view_config(config)
 
 
 # ── the HTTP server ─────────────────────────────────────────────────────────

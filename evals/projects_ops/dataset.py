@@ -17,15 +17,18 @@ The facts that the tasks lean on:
 * #7 in Ops has no repeat rule yet (PO-7). #12 is in Launch (PO-6).
 * Launch has the task types Bug and Chore, and one custom field, Customer,
   a choice of Acme or Globex (PO-8, WS-46 P6).
+* Launch has no saved view yet (PO-9, WS-46 P7).
 
-Today is the UTC date, because the tools take today as the UTC date
-(``skill_projects.writes._today`` and ``reads.legend``).
+Today is the member's own date in :data:`TIMEZONE`. Since WS-46 P7 the tools
+take today from ``GET /projects/my/today``, which the stub answers with this
+zone and this date. In the evening in India, that date is a day ahead of UTC.
 """
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 #: A fixed namespace, so every id is the same on every run.
 _NS = uuid.UUID("5d1c0b9e-46a3-4f0e-9b7c-2a1e6f3d8c40")
@@ -37,6 +40,9 @@ WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", 
 
 #: Lane categories that close a task.
 CLOSED = frozenset({"done", "cancelled"})
+
+#: The acting member's saved zone (``user_settings.timezone``), WS-46 P7.
+TIMEZONE = "Asia/Kolkata"
 
 
 def ident(*parts: str) -> str:
@@ -117,6 +123,8 @@ class Dataset:
     members: tuple[Member, ...]
     projects: tuple[Project, ...]
     tasks: tuple[Task, ...]
+    #: The acting member's zone. ``today`` is the date in it.
+    timezone: str = "UTC"
 
     def member(self, email: str) -> Member | None:
         wanted = (email or "").strip().lower()
@@ -147,8 +155,9 @@ def _lanes(project: str, *rows: tuple[str, str]) -> tuple[Lane, ...]:
 
 
 def load(today: date | None = None) -> Dataset:
-    """The dataset for *today* (default: the UTC date now)."""
-    day = today or datetime.now(UTC).date()
+    """The dataset for *today* (default: the member's date now, in
+    :data:`TIMEZONE`)."""
+    day = today or datetime.now(ZoneInfo(TIMEZONE)).date()
 
     def due(offset: int | None) -> date | None:
         return None if offset is None else day + timedelta(days=offset)
@@ -185,6 +194,7 @@ def load(today: date | None = None) -> Dataset:
     return Dataset(
         today=day, organization_id=ORGANIZATION_ID, space_id=ident("space", "Product"),
         space="Product", members=(MEMBER, PRIYA), projects=(launch, ops), tasks=tasks,
+        timezone=TIMEZONE,
     )
 
 
