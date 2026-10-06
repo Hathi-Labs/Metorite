@@ -58,6 +58,7 @@ __all__ = [
     "MAX_FILE_BYTES",
     "MAX_PDF_PAGES",
     "MAX_TEXT_LINES",
+    "PAGE_UNREADABLE",
     "PDF_STREAM_LIMIT",
     "SUPPORTED_SUFFIXES",
     "AttachmentRefused",
@@ -105,6 +106,10 @@ _MAX_XOBJECT_WALK = 2_000
 _MIN_PARTIAL_CHARS = 200
 #: Read at each call, so a test can lower it.
 DEADLINE_SECONDS = 20.0
+
+#: The line that stands for a PDF page that did not parse. The email text
+#: route reads a PDF of only these lines as unreadable (WS-17 EM-T11).
+PAGE_UNREADABLE = "(The text of this page could not be read.)"
 
 _TEXT_SUFFIXES = frozenset({".txt", ".md", ".csv"})
 SUPPORTED_SUFFIXES = frozenset({".docx", ".pdf"}) | _TEXT_SUFFIXES
@@ -651,7 +656,7 @@ def _page_text(pages: Any, index: int, deadline: _Deadline) -> tuple[str, int]:
     except AttachmentRefused:
         raise
     except Exception:  # one bad page is not a bad file
-        text = "(The text of this page could not be read.)"
+        text = PAGE_UNREADABLE
     head = f"[Page {index + 1}]"
     return (f"{head}\n{text}" if text else head), len(text)
 

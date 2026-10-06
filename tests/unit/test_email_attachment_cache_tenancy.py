@@ -196,9 +196,15 @@ def test_the_handler_no_longer_reaches_redis_by_hand() -> None:
     assert "email:att:cache" not in src
     assert "_get_redis" not in src
     assert not hasattr(core, "_get_redis")
-    handler = inspect.getsource(m.download_attachment)
+    # EM-T11: the download route and the text route share the one owned
+    # fetch, so the cache lives in that helper and in no route body. Review
+    # round 1: the key holds the id of the ROW, never the path text.
+    handler = inspect.getsource(m._fetch_owned_attachment)
     assert "organization_scope(org_id)" in handler
-    assert 'key("email-att", attachment_id)' in handler
+    assert 'key("email-att", str(row.id))' in handler
+    assert 'key("email-att", attachment_id)' not in handler
+    for route in (m.download_attachment, m.attachment_text):
+        assert "_fetch_owned_attachment(" in inspect.getsource(route)
 
 
 # ---------------------------------------------------------------------------
