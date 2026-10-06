@@ -71,6 +71,7 @@ pytestmark = _DB_GATE
 _ROOT = Path(__file__).resolve().parents[2]
 _SECRET = "wa-c1-r8-app-secret"
 _FN = "public.wa_account_for_phone_number_id(text)"
+_SUPABASE_ROLES = ("anon", "authenticated", "service_role")
 
 
 def _migration() -> Path:
@@ -134,6 +135,34 @@ def _payload(pnid: str, wamid: str, body: str) -> bytes:
                           "text": {"body": body}}],
         }}]}],
     }).encode("utf-8")
+
+
+def _change(pnid: str, wamid: str, body: str = "hello") -> dict:
+    """One ``messages`` change for one number, as Meta sends it."""
+    return {"field": "messages", "value": {
+        "metadata": {"display_phone_number": "910000000000",
+                     "phone_number_id": pnid},
+        "contacts": [{"profile": {"name": "Rajesh"}, "wa_id": "919990000001"}],
+        "messages": [{"from": "919990000001", "id": wamid,
+                      "timestamp": "1790000000", "type": "text",
+                      "text": {"body": body}}],
+    }}
+
+
+def _batch(*entries: list[dict]) -> bytes:
+    """One POST that carries several entries. Every customer WABA subscribes
+    the one Tech Provider app, so Meta can batch several numbers together."""
+    return json.dumps({
+        "object": "whatsapp_business_account",
+        "entry": [{"id": f"WABA-{i}", "changes": changes}
+                  for i, changes in enumerate(entries)],
+    }).encode("utf-8")
+
+
+def _message_row(admin_engine, wamid: str):
+    return _admin_one(admin_engine,
+                      "SELECT organization_id::text AS o, account_id::text AS a "
+                      "FROM wa_messages WHERE wa_message_id = :w", w=wamid)
 
 
 def _sign(raw: bytes, secret: str = _SECRET) -> str:
@@ -271,6 +300,77 @@ async def test_a_redelivered_batch_writes_no_second_row(
         assert resp.status_code == 200, resp.text
     assert _count_as(p.app_url, p.org_b, "wa_messages", acct) == 1
     assert _count_as(p.app_url, p.org_a, "wa_messages", acct) == 0
+
+
+# ── wa-webhook-one-tenant-per-number: a batch of several numbers ───────────
+
+async def test_a_batch_of_two_orgs_lands_each_message_under_its_own_org(
+    granted, app_engine, real_hooks,  # noqa: F811
+):
+    """Org A's number first, org B's second, in one POST. The first number
+    must not decide the tenant of the whole batch (review P0)."""
+    p = granted
+    pa, pb = f"pn-{uuid.uuid4().hex[:10]}", f"pn-{uuid.uuid4().hex[:10]}"
+    acct_a = _seed_account(p.admin_engine, org=p.org_a, pnid=pa,
+                           user="alice@wa-c1-a.test")
+    acct_b = _seed_account(p.admin_engine, org=p.org_b, pnid=pb,
+                           user="carol@wa-c1-b.test")
+    wa, wb = f"wamid.{uuid.uuid4().hex[:12]}", f"wamid.{uuid.uuid4().hex[:12]}"
+    raw = _batch([_change(pa, wa, "payment due")], [_change(pb, wb, "payment due")])
+
+    resp = await _post(p.app_url, raw, _sign(raw))
+
+    assert resp.status_code == 200, resp.text
+    row_a, row_b = _message_row(p.admin_engine, wa), _message_row(p.admin_engine, wb)
+    assert row_a is not None and (row_a.o, row_a.a) == (p.org_a, acct_a)
+    assert row_b is not None and (row_b.o, row_b.a) == (p.org_b, acct_b), (
+        f"org B's message landed as {row_b}, not under org B's account"
+    )
+    for table in ("wa_messages", "wa_chats", "wa_chat_status"):
+        assert _count_as(p.app_url, p.org_a, table, acct_a) == 1, table
+        assert _count_as(p.app_url, p.org_b, table, acct_b) == 1, table
+        assert _count_as(p.app_url, p.org_a, table, acct_b) == 0, table
+        assert _count_as(p.app_url, p.org_b, table, acct_a) == 0, table
+
+
+async def test_an_unknown_number_in_a_batch_does_not_block_a_known_one(
+    granted, app_engine, real_hooks,  # noqa: F811
+):
+    p = granted
+    known = f"pn-{uuid.uuid4().hex[:10]}"
+    acct = _seed_account(p.admin_engine, org=p.org_b, pnid=known,
+                         user="carol@wa-c1-b.test")
+    w_unknown = f"wamid.{uuid.uuid4().hex[:12]}"
+    w_known = f"wamid.{uuid.uuid4().hex[:12]}"
+    raw = _batch([_change(f"pn-unknown-{uuid.uuid4().hex[:8]}", w_unknown)],
+                 [_change(known, w_known)])
+
+    resp = await _post(p.app_url, raw, _sign(raw))
+
+    assert resp.status_code == 200, resp.text
+    assert _message_row(p.admin_engine, w_unknown) is None
+    row = _message_row(p.admin_engine, w_known)
+    assert row is not None and (row.o, row.a) == (p.org_b, acct)
+
+
+async def test_two_changes_for_one_number_in_one_batch_both_land(
+    granted, app_engine, real_hooks,  # noqa: F811
+):
+    """One entry with two changes, and a second entry, all for one number."""
+    p = granted
+    pnid = f"pn-{uuid.uuid4().hex[:10]}"
+    acct = _seed_account(p.admin_engine, org=p.org_a, pnid=pnid,
+                         user="alice@wa-c1-a.test")
+    w1, w2, w3 = (f"wamid.{uuid.uuid4().hex[:12]}" for _ in range(3))
+    raw = _batch([_change(pnid, w1), _change(pnid, w2)], [_change(pnid, w3)])
+
+    resp = await _post(p.app_url, raw, _sign(raw))
+
+    assert resp.status_code == 200, resp.text
+    for w in (w1, w2, w3):
+        row = _message_row(p.admin_engine, w)
+        assert row is not None and (row.o, row.a) == (p.org_a, acct), w
+    assert _count_as(p.app_url, p.org_a, "wa_messages", acct) == 3
 
 
 # ── wa-webhook-unknown-number-writes-nothing ────────────────────────────────
@@ -415,10 +515,29 @@ def test_the_precheck_refuses_a_duplicate_cloud_number(granted):
 
 
 def test_only_the_app_role_may_run_the_resolver(granted):
+    """PUBLIC may not run it, and nor may the three Supabase roles. The
+    scratch server has no such roles, so this creates them and grants them
+    EXECUTE, as a Supabase default privilege does. A replay of the migration
+    must then revoke all three."""
+    with granted.admin_engine.begin() as c:
+        for r in _SUPABASE_ROLES:
+            c.execute(text(
+                f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE "
+                f"rolname='{r}') THEN CREATE ROLE {r} NOLOGIN; END IF; END $$;"))
+            c.execute(text(f"GRANT EXECUTE ON FUNCTION {_FN} TO {r}"))
+    with granted.admin_engine.connect() as c:
+        with c.connection.dbapi_connection.cursor() as cur:
+            cur.execute(_migration().read_text(encoding="utf-8"))
+        c.connection.dbapi_connection.commit()
     with granted.admin_engine.connect() as c:
         public = c.execute(text(
             f"SELECT has_function_privilege('public', '{_FN}', 'EXECUTE')"
         )).scalar_one()
+        for r in _SUPABASE_ROLES:
+            held = c.execute(text(
+                f"SELECT has_function_privilege('{r}', '{_FN}', 'EXECUTE')"
+            )).scalar_one()
+            assert held is False, f"{r} may run the cross-tenant resolver"
         definer, path = c.execute(text(
             "SELECT p.prosecdef, p.proconfig FROM pg_proc p "
             "WHERE p.oid = CAST(:f AS regprocedure)"), {"f": _FN}).one()
