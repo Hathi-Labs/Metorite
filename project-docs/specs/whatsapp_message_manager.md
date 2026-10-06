@@ -11,6 +11,7 @@
 > record; §11 is the build log and current state. · sibling surface: `whatsapp_calls_note_taker.md` Surface C (calls + recording) SHIPPED 2026-08-02 on this stack *(cross-ref added 2026-08-09)*
 > *(Update 2026-08-01, doc-truth pass: header previously said "PLANNING — no code yet",
 > contradicting §11's own build log; verified against the repo.)*
+> 🆕 **2026-10-06: §12 is the self-serve connect (owner directive).** A member connects their own WhatsApp Business account through Embedded Signup with coexistence. 🔴 §12.3 F1: on production the webhook drops every inbound batch, because it binds no tenant under FORCE RLS. WA-C1 fixes it first.
 > **Mockups:** `mockups/whatsapp_message_manager.html` (7 screens + build notes, control-plane shell,
 > rebuilt around a single organizing spine — see §7)
 > **Anchors:** ADR-007 (WhatsApp via Meta Cloud API), `email_app_master_plan.md` (the vertical
@@ -841,3 +842,116 @@ import; an LLM refinement layered onto the deterministic intent/status
 classifiers for the ambiguous tail; the single-reply auto-send executor
 (reusing the broker handler seam). These need the Zoho/Odoo/Meta integrations or
 a running stack to validate end-to-end.
+
+---
+
+## 12. Self-serve connect for a WhatsApp Business account (2026-10-06)
+
+**Owner directive, 2026-10-06.** A member connects their own WhatsApp Business
+account the way they connect a mailbox. The agent then reads the messages,
+triages them and gives insights, and the member can chat over them. It is
+official only: a business number on the Cloud API, never the whatsmeow bridge.
+
+**Verified against code and production on 2026-10-06** at `origin/main`
+`e32bb2425`. This section wins over §3, §9 and §11 where they disagree. It does
+not change the WS-47 assistant channel (`whatsapp_assistant_channel.md`), which
+shares the same Meta app.
+
+### 12.1 The shape of the connect
+
+1. The member opens `/whatsapp/connect` and selects **Connect WhatsApp
+   Business**.
+2. Meta's Embedded Signup popup opens. The member signs in to Facebook, picks
+   their business portfolio, and picks their WhatsApp Business app number.
+3. They scan a QR code with the WhatsApp Business app on their phone. This is
+   Meta's **coexistence** mode. The number stays on the phone app, and messages
+   go to both places.
+4. Metorite receives the code and swaps it for a token on the server. It
+   subscribes its app to the member's WhatsApp Business Account (WABA), and it
+   starts the history sync.
+5. The last six months of 1:1 chats arrive, and new messages flow from then on.
+   Messages that the member sends from the phone arrive as echoes.
+
+The customer creates no Meta app, pastes no token and sets no webhook. Metorite
+owns one Meta app as a **Meta Tech Provider**. The customer pays Meta for any
+paid message through their own WABA payment method. Metorite does not resell
+messages.
+
+### 12.2 What coexistence does not carry
+
+Meta's coexistence mode does not deliver group chats, broadcast lists,
+disappearing or view-once messages, live location, or calls. Throughput is 20
+messages a second. The connection drops if the phone app is inactive for about
+14 days. So the group features of §4 (W4.1, "groups become one paragraph") get
+no data from a coexistence number. The connect screen says so.
+
+### 12.3 Measured state (2026-10-06)
+
+| # | Finding | Where | Severity |
+|---|---|---|---|
+| F1 | **The webhook binds no tenant.** It reads `wa_accounts` on an unbound session. Production has FORCE RLS and a NOT NULL `organization_id` on every `wa_*` table (read on the box, 2026-10-06). The account lookup returns no row, and the route logs `whatsapp.webhook.unknown_number` and answers 200. **Every inbound batch is dropped in silence.** The comment at `transport/webhook.py:118` says the tenant comes from the account row, and the code does not do it | `transport/webhook.py:80-132`, `whatsapp_ingestion/persist.py:244` | 🔴 P0 |
+| F2 | The same unbound session runs the post-sync hooks, the scheduler, the bridge push routes and the verify fallback | `automation/replyzero.py:142`, `intent.py:120`, `groups.py:201`, `transcription.py:153`, `outbound.py:72`, `scheduler.py:60,77`, `transport/bridge.py:315-470`, `transport/webhook.py:64` | 🔴 P0 |
+| F3 | Embedded Signup asks for no coexistence. `featureType` is `""`. The listener never reads `data.event`, so CANCEL and ERROR look like FINISH | `connect/page.tsx:461-513` | 🟠 |
+| F4 | The parser never reads `change.field`. `history`, `smb_message_echoes` and `smb_app_state_sync` save nothing. Every message is `direction="in"`, and statuses are dropped | `providers/webhook.py:117-199`, `persist.py:244-270` | 🟠 |
+| F5 | No `smb_app_data` sync call exists. Meta allows 24 hours, and after that the member must connect again | — | 🟠 |
+| F6 | A Cloud account stays `sync_status='importing'` forever. A failed WABA subscribe is logged and swallowed, and the UI says done | `transport/accounts.py:120`, `connect.py:232-239`, `page.tsx:504` | 🟠 |
+| F7 | A number is unique per member, not per platform. The webhook picks one row with `fetchone()`, so two connections of one number collide, possibly across orgs | `102_whatsapp.sql:43`, `webhook.py:80-87` | 🟠 |
+| F8 | `verify_signature` accepts an unsigned POST when `WHATSAPP_APP_SECRET` is unset | `webhook.py:37-39` | 🟠 |
+| F9 | Graph `v21.0` is pinned in four places, and the provider ignores `WHATSAPP_GRAPH_VERSION` | `connect.py:32`, `providers/cloud_api.py:24,36`, `lib/api.ts:111` | 🟡 |
+| F10 | The token's `expires_in` is dropped, and nothing detects a revoked token | `connect.py:141-158` | 🟡 |
+| F11 | No chat panel inside `/whatsapp`. The assistant is reachable only at `/chat?agent=whatsapp-assistant` | `app/whatsapp/`, `app/chat/page.tsx:734` | 🟡 |
+| F12 | All 25 `test_whatsapp_*.py` files are hermetic. No test runs `wa_*` SQL against a real database, so F1 shipped green (R8) | `tests/unit/` | 🟠 |
+
+### 12.4 Slices
+
+Each slice is one PR. Each one ships dark where it changes behaviour.
+
+| Id | What | Gate | Done when |
+|---|---|---|---|
+| **WA-C1** | **Bind the tenant on every service path.** The webhook reads the account by `phone_number_id` through one narrow RLS-exempt read that returns `(account_id, organization_id)`. It binds that org, and it runs persist and the hooks in `tenant_session`. The same for the paths of F2. One active account per `phone_number_id` across the platform (a partial unique index, next free migration number, R1). The WS-47 bot path is not in this slice | AGENT-SAFE | An R8 test as a non-owner role under FORCE RLS. A signed webhook for a connected number writes its rows with that org, and a member of another org sees none. An unknown number still answers 200 and writes nothing. F8 fails closed in production mode |
+| **WA-C2** | **Coexistence in Embedded Signup.** `featureType: "whatsapp_business_app_onboarding"`. A listener that reads `event` (FINISH, FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING, CANCEL, ERROR). No phone `/register` for a coexistence number. The WABA subscribe is a hard step. `sync_status` moves to `live`, and an error shows as an error | AGENT-SAFE | A hermetic test per event type. A subscribe failure shows an error and saves no live account. The connect screen names the limits of §12.2 |
+| **WA-C3** | **History and contacts.** Call `smb_app_data` for `smb_app_state_sync` and `history` right after connect, and record the phase. Parse the `history`, `smb_app_state_sync` and `smb_message_echoes` fields. An echo is `direction="out"`, and its chat is the `to` number. Save statuses | AGENT-SAFE | Meta's sample payload for each field persists the right rows (R8). A history batch is idempotent on `wa_message_id`. An echo threads into the right chat |
+| **WA-C4** | The Graph version comes from one setting, at the current version. Keep `expires_in`. Mark an account `reauth_needed` when Meta refuses its token | AGENT-SAFE | One constant, read by all four sites. A 190 error from Meta moves the account to `reauth_needed`, and the UI offers Reconnect |
+| **WA-C5** | **Chat over the messages** inside `/whatsapp`, through the one shared chat rail that Projects uses. No second chat seam | AGENT-SAFE | A member asks "who is waiting on me" in the rail, and the WhatsApp assistant answers from their own chats only |
+| **WA-C0** | **Meta Tech Provider setup** (§12.5) | **OWNER-GATE** | The app ID, the app secret, the Embedded Signup configuration ID and the verify token are on the box. The owner's own number connects through the popup |
+| **WA-C6** | Promote WhatsApp from `preview` to `live` (`launch_surface.md` §2 and `nav.ts`) | **OWNER-GATE** (H-21) | The owner's number has run one week on production with no lost batch |
+
+**Order.** WA-C1 comes first, because nothing else can work on production
+without it. Then WA-C2 and WA-C3, which the Meta App Review needs for its
+videos. Then WA-C4 and WA-C5. WA-C0 runs beside them.
+
+### 12.5 The Meta side (WA-C0, OWNER-GATE)
+
+One Meta app serves this inbox and the WS-47 bot number. HANDOFF **H-251**
+carries the shared steps. This slice adds these steps to them:
+
+1. Add **Facebook Login for Business** to the app, and create an **Embedded
+   Signup configuration** for WhatsApp. Its configuration ID is
+   `WHATSAPP_ES_CONFIG_ID`.
+2. In the WhatsApp webhook settings of the app, subscribe the fields
+   `messages`, `history`, `smb_app_state_sync` and `smb_message_echoes`.
+3. Become a **Tech Provider**. That is business verification, then App Review
+   with Advanced Access to `whatsapp_business_messaging` and
+   `whatsapp_business_management`. Meta asks for two videos: a message sent
+   from Metorite and received in WhatsApp, and a template created in Metorite.
+4. Before the review, the app works in development mode for people with a role
+   on the app. So the owner connects their own number first, and records the
+   videos from that.
+5. Put `WHATSAPP_APP_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_ES_CONFIG_ID`,
+   `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_PUBLIC_URL=https://api.metorite.com`
+   in the box `.env`. Never paste a value in chat.
+
+### 12.6 Verification commands
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8. Without it the DB tests SKIP
+uv run pytest tests/unit/test_whatsapp_webhook_parser.py tests/unit/test_whatsapp_persist.py tests/unit/test_whatsapp_connect.py -q
+uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_insert_fence.py -q
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/whatsapp
+```
+
+### 12.7 Sources
+
+[Meta: onboarding WhatsApp Business app users](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-business-app-users) ·
+[Meta: become a Tech Provider](https://developers.facebook.com/documentation/business-messaging/whatsapp/solution-providers/get-started-for-tech-providers) ·
+[Meta: Embedded Signup](https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/overview/)
