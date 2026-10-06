@@ -104,7 +104,8 @@ def _strict_tool_class() -> Any:
     if _STRICT_TOOL is not None:
         return _STRICT_TOOL
     from agent_framework import SKIP_PARSING, Content, FunctionTool
-    from skill_projects.refusals import unknown_argument_text
+    from pydantic import ValidationError
+    from skill_projects.refusals import bad_value_text, unknown_argument_text
 
     class _StrictTool(FunctionTool):
         """A tool that answers an argument it does not declare by name."""
@@ -144,20 +145,30 @@ def _strict_tool_class() -> Any:
             given = arguments
             if given is None and not kwargs and context is not None:
                 given = getattr(context, "arguments", None)
-            unknown = self.unknown_arguments(given)
-            if unknown:
-                text = unknown_argument_text(self.name, unknown, self.visible_arguments())
+            def answer_with(text: Any) -> Any:
                 if skip_parsing or self.result_parser is SKIP_PARSING:
                     return text
-                return [Content.from_text(text)]
+                return [Content.from_text(str(text))]
+
+            unknown = self.unknown_arguments(given)
+            if unknown:
+                return answer_with(
+                    unknown_argument_text(self.name, unknown, self.visible_arguments())
+                )
             if self.hidden_arguments(given):
-                values = self.input_model.model_validate(dict(given)).model_dump(exclude_unset=True)
+                # This branch skips MAF's invoke, so it also answers a value
+                # that fails validation, as MAF would not.
+                try:
+                    values = self.input_model.model_validate(dict(given)).model_dump(
+                        exclude_unset=True
+                    )
+                except ValidationError as exc:
+                    bad = [str(e["loc"][0]) for e in exc.errors() if e.get("loc")]
+                    return answer_with(bad_value_text(self.name, bad))
                 answer = self(**values)
                 if inspect.isawaitable(answer):
                     answer = await answer
-                if skip_parsing or self.result_parser is SKIP_PARSING:
-                    return answer
-                return [Content.from_text(str(answer))]
+                return answer_with(answer)
             return await super().invoke(
                 arguments=arguments,
                 context=context,

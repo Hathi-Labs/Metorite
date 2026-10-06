@@ -37,10 +37,15 @@ import functools
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
+from acb_common import get_logger
+
 from skill_projects.client import GatewayRefusal, data
+
+_log = get_logger("skill_projects.refusals")
 
 __all__ = [
     "REFUSED",
+    "bad_value_text",
     "refusal_text",
     "refusals_as_text",
     "unknown_argument_text",
@@ -99,6 +104,13 @@ _CLIENT_NEXT = (
     "If it is refused again, tell the member what it said."
 )
 
+#: For a refusal that no argument fixes: the manifest refused the route, or
+#: the run has no acting member (``GatewayRefusal.fixable`` is ``False``).
+_FINAL_NEXT = (
+    "Tell the member that this could not be done here. Do not try again, "
+    "and do not try another tool for the same act."
+)
+
 #: Argument names a model invents for a repeat rule.
 _REPEAT_WORDS = ("recur", "repeat", "rrule", "freq", "cron", "schedule")
 
@@ -116,7 +128,8 @@ def refusal_text(exc: GatewayRefusal) -> str:
     """
     status = getattr(exc, "status", None)
     if status is None:
-        return f"{REFUSED} {_one_line(str(exc))}\nNext: {_CLIENT_NEXT}"
+        nxt = _CLIENT_NEXT if getattr(exc, "fixable", True) else _FINAL_NEXT
+        return f"{REFUSED} {_one_line(str(exc))}\nNext: {nxt}"
     if status in _BY_STATUS:
         what, nxt = _BY_STATUS[status]
     elif status >= 500:
@@ -147,19 +160,43 @@ def refusals_as_text(
     ``functools.wraps`` keeps the name, the docstring, the signature (MAF
     builds the input model from it) and ``__tool_risk__``, which the egress
     rule reads (H-236). Any other exception is raised again.
+
+    Each refusal it turns into text also writes ONE warning,
+    ``projects.tool_refused``, with the tool, the status and the route
+    template. The log line holds no detail and no message, because those
+    can hold a title a member typed. So a refusal stays visible in the log,
+    as it was while MAF logged "Function failed".
     """
     if getattr(fn, WRAPPED_ATTR, False):
         return fn
+    tool = getattr(fn, "__name__", "")
 
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return await fn(*args, **kwargs)
         except GatewayRefusal as exc:
+            _log.warning(
+                "projects.tool_refused",
+                tool=tool,
+                status=getattr(exc, "status", None),
+                route=getattr(exc, "route", "") or "",
+            )
             return refusal_text(exc)
 
     setattr(wrapper, WRAPPED_ATTR, True)
     return wrapper
+
+
+def bad_value_text(tool: str, fields: Iterable[str]) -> str:
+    """The refusal for a call whose value *tool* cannot read. It names the
+    arguments and never repeats the value."""
+    names = list(dict.fromkeys(str(f) for f in fields)) or ["an argument"]
+    return (
+        f"{REFUSED} {tool} could not read the value of {', '.join(names)}, "
+        "so nothing was done.\n"
+        f"Next: Fix the value for {', '.join(names)}, and call the tool once more."
+    )
 
 
 def unknown_argument_text(tool: str, unknown: Iterable[str], known: Iterable[str]) -> str:

@@ -38,6 +38,7 @@ from skill_projects.priority import IMPORTANCE_REMOVED
 from skill_projects.refusals import (
     REFUSED,
     WRAPPED_ATTR,
+    refusal_text,
     refusals_as_text,
 )
 
@@ -158,8 +159,51 @@ async def test_a_refusal_of_the_client_itself_is_text_too(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, {})
     text = await _call("task_detail", task_id="task seven")
     assert text.startswith(f"{REFUSED} task_id must be a UUID"), text
-    assert "Next:" in text
+    assert "Next: Fix the one argument" in text
     assert calls == []
+
+
+async def test_a_refusal_that_no_argument_fixes_gets_a_neutral_next(monkeypatch) -> None:
+    """The run has no acting member. No argument fixes that, so the model
+    is told to stop, not to fix an argument."""
+    calls = fake_gateway(monkeypatch, {}, user=None)
+    text = await _call("task_detail", task_id=TASK)
+    assert text.startswith(f"{REFUSED} No acting user"), text
+    assert "Next: Tell the member that this could not be done here" in text
+    assert "Fix" not in text
+    assert calls == []
+
+
+async def test_a_manifest_refusal_gets_a_neutral_next(monkeypatch) -> None:
+    """A class X route (D-PM-35) is refused by the manifest itself."""
+    import skill_projects.client as client
+
+    fake_gateway(monkeypatch, {})
+    with pytest.raises(client.GatewayRefusal) as caught:
+        await client.request("DELETE", f"/projects/tasks/{TASK}")
+    assert caught.value.fixable is False
+    assert caught.value.route == "/projects/tasks/{task_id}"
+    text = refusal_text(caught.value)
+    assert "Next: Tell the member that this could not be done here" in text
+    assert "Fix" not in text
+
+
+async def test_a_refusal_writes_one_warning_with_no_detail(monkeypatch) -> None:
+    """The log keeps the refusal, by tool, status and route TEMPLATE. The
+    detail and the concrete path stay out of it."""
+    import structlog
+
+    fake_gateway(monkeypatch, lambda _c: _refuse(404, {"detail": "Task «Secret plan» not found."}))
+    with structlog.testing.capture_logs() as caps:
+        await _call("task_detail", task_id=TASK)
+    rows = [c for c in caps if c.get("event") == "projects.tool_refused"]
+    assert len(rows) == 1, caps
+    row = rows[0]
+    assert row["log_level"] == "warning"
+    assert row["tool"] == "task_detail"
+    assert row["status"] == 404
+    assert row["route"] == "/projects/tasks/{task_id}"
+    assert "Secret plan" not in repr(row) and TASK not in repr(row)
 
 
 # ── F4: the safe half ────────────────────────────────────────────────────────
@@ -193,11 +237,37 @@ async def test_a_5xx_body_never_reaches_the_model(status: int, monkeypatch) -> N
         ({"detail": "Use Bearer sk-live-abcdef0123456789 for this"}, "abcdef0123456789"),
         ({"detail": 'Traceback (most recent call last): File "core.py"'}, "core.py"),
         ({"detail": "(psycopg.errors.UniqueViolation) duplicate key"}, "UniqueViolation"),
+        ({"detail": "insert on pm_tasks violates foreign key constraint fk_x"}, "fk_x"),
+        ({"detail": "DETAIL:  Key (id)=(42) already exists."}, "(42)"),
+        ({"detail": "Token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl was refused"}, "eyJhbGci"),
+        ({"detail": "Assigned to priya@other.example already"}, "priya@other.example"),
+        ({"detail": "Could not read /opt/acb/agents/state.json"}, "/opt/acb"),
+        ({"detail": "Could not read /home/acb/.env"}, "/home/acb"),
+        ({"detail": "Could not read /srv/data/x and /var/lib/pg"}, "/var/lib"),
+        ({"detail": "Could not read C:\\Users\\acb\\secret.txt"}, "Users"),
     ],
 )
 def test_a_4xx_detail_loses_every_url_secret_and_stack(body: dict, absent: str) -> None:
     detail, _fields = safe_detail(400, body)
     assert absent not in detail, detail
+
+
+def test_the_acting_members_own_address_stays() -> None:
+    """The member may read her own address. Another one is masked."""
+    detail, _ = safe_detail(
+        409, {"detail": "pm@fracktal.in already watches it, and so does raj@fracktal.in"},
+        member="PM@fracktal.in",
+    )
+    assert "pm@fracktal.in" in detail
+    assert "raj@fracktal.in" not in detail and "<address removed>" in detail
+
+
+async def test_the_members_own_address_stays_on_the_wire(monkeypatch) -> None:
+    """``_raise_if_error`` passes the acting member to ``safe_detail``."""
+    said = "pm@fracktal.in and raj@fracktal.in already watch it."
+    fake_gateway(monkeypatch, lambda _c: _refuse(409, {"detail": said}))
+    text = await _call("task_detail", task_id=TASK)
+    assert "pm@fracktal.in" in text and "raj@fracktal.in" not in text
 
 
 def test_a_body_that_is_not_json_gives_no_detail() -> None:
@@ -273,6 +343,19 @@ async def test_a_hidden_argument_is_declared_not_unknown(monkeypatch) -> None:
     approve(monkeypatch)
     text = await _call("create_task", project_id=PROJECT, title="Send the timesheet", importance=3)
     assert text == IMPORTANCE_REMOVED
+    assert calls == []
+
+
+async def test_a_bad_value_beside_a_hidden_argument_is_a_refusal(monkeypatch) -> None:
+    """The hidden-argument branch skips MAF's invoke, so it answers a value
+    that fails validation itself, and it never repeats the value."""
+    calls = fake_gateway(monkeypatch, {})
+    text = await _call(
+        "create_task", project_id=PROJECT, title="Send the timesheet",
+        estimate_mins="lots-of-minutes", importance=3,
+    )
+    assert text.startswith(f"{REFUSED} create_task could not read the value of estimate_mins"), text
+    assert "lots-of-minutes" not in text
     assert calls == []
 
 

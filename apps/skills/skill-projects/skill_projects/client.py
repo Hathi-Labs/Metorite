@@ -31,7 +31,7 @@ from uuid import UUID
 
 import httpx
 
-from skill_projects.manifest import allowed
+from skill_projects.manifest import allowed, route_for
 
 __all__ = [
     "GatewayRefusal",
@@ -61,7 +61,13 @@ class GatewayRefusal(RuntimeError):
     ``fields`` a 422 names. ``skill_projects.refusals`` builds the model's
     text from those three, never from the message, so the route path in the
     message does not reach the model. A refusal of the client itself has
-    ``status`` ``None``: its message is text this package wrote."""
+    ``status`` ``None``: its message is text this package wrote.
+
+    ``fixable`` is ``False`` for a refusal that no argument can fix: the
+    manifest refused the route, or the run has no acting member. The model
+    then reads a neutral "Next:" line, not "fix the argument". ``route`` is
+    the manifest template of the refused call (``/projects/tasks/{task_id}``)
+    for the log line ``projects.tool_refused``, never the concrete path."""
 
     def __init__(
         self,
@@ -70,11 +76,15 @@ class GatewayRefusal(RuntimeError):
         status: int | None = None,
         detail: str = "",
         fields: tuple[str, ...] = (),
+        fixable: bool = True,
+        route: str = "",
     ) -> None:
         super().__init__(message)
         self.status = status
         self.detail = detail
         self.fields = fields
+        self.fixable = fixable
+        self.route = route
 
 
 def gateway_url() -> str:
@@ -113,7 +123,8 @@ def headers() -> dict[str, str]:
     if not user:
         raise GatewayRefusal(
             "No acting user for this run, so there is nobody to act as. "
-            "Refusing to call the gateway as the platform itself."
+            "Refusing to call the gateway as the platform itself.",
+            fixable=False,
         )
     return {
         "Authorization": f"Bearer {internal_token()}",
@@ -164,6 +175,8 @@ _LEAK_MARKERS = (
     "asyncpg",
     "[sql:",
     "background on this error",
+    "violates ",
+    "detail:  key (",
 )
 #: A URL or a DSN (``postgresql://user:pass@host/db``), in any scheme.
 _URL = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://\S+")
@@ -171,7 +184,18 @@ _URL = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://\S+")
 _SECRET = re.compile(
     r"(?i)\bbearer\s+\S+"
     r"|\b(?:sk|pk|rk|ghp|gho|ghs|xox[abprs]|cc_live|cc_depl)[-_][A-Za-z0-9_\-]{6,}"
+    r"|\beyJ[\w-]+\.[\w-]+\.[\w-]+"
 )
+#: An email address. Only the acting member's own address stays.
+_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+#: An absolute path on a server, or on a Windows box.
+_PATH = re.compile(r"(?:/(?:opt|home|srv|var)/|\b[A-Za-z]:\\)\S*")
+
+
+def _template(method: str, path: str) -> str:
+    """The manifest template of ``method path``, or ``""``."""
+    route = route_for(method, path)
+    return route.path if route is not None else ""
 
 
 def _field_of(loc: Any) -> str:
@@ -183,7 +207,7 @@ def _field_of(loc: Any) -> str:
     return names[-1] if names else ""
 
 
-def safe_detail(status: int, body: Any) -> tuple[str, tuple[str, ...]]:
+def safe_detail(status: int, body: Any, member: str = "") -> tuple[str, tuple[str, ...]]:
     """The gateway's own words from a refused response, and the fields a 422
     names. Only text the route wrote, and only the safe part of it.
 
@@ -196,8 +220,9 @@ def safe_detail(status: int, body: Any) -> tuple[str, tuple[str, ...]]:
     * A 5xx other than 503 gives nothing. The 503 that the gateway writes
       for an outage (``gateway.main._tenant_unbound``) is safe text.
 
-    Every result then loses any URL, DSN, bearer or key, and is cut to
-    :data:`DETAIL_MAX`. A detail that names a stack, a query or the
+    Every result then loses any URL, DSN, bearer, key, JWT and absolute
+    path, and each email address except *member*'s own (the acting member).
+    It is then cut to :data:`DETAIL_MAX`. A detail that names a stack, a query or the
     database layer is dropped whole (:data:`_LEAK_MARKERS`).
     """
     if status >= 500 and status != 503:
@@ -230,6 +255,12 @@ def safe_detail(status: int, body: Any) -> tuple[str, tuple[str, ...]]:
         return "", named
     text = _URL.sub("<link removed>", text)
     text = _SECRET.sub("<secret removed>", text)
+    own = member.strip().lower()
+    text = _EMAIL.sub(
+        lambda m: m.group(0) if own and m.group(0).lower() == own else "<address removed>",
+        text,
+    )
+    text = _PATH.sub("<path removed>", text)
     text = " ".join(text.split())
     if len(text) > DETAIL_MAX:
         text = text[: DETAIL_MAX - 1].rstrip() + "…"
@@ -243,7 +274,7 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         body: Any = resp.json()
     except Exception:
         body = None
-    detail, fields = safe_detail(resp.status_code, body)
+    detail, fields = safe_detail(resp.status_code, body, member=current_user_email())
     if resp.status_code == 404:
         hint = "Not found, or not visible to you."
     elif resp.status_code == 403:
@@ -255,6 +286,7 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         status=resp.status_code,
         detail=detail,
         fields=fields,
+        route=_template(method, path),
     )
 
 
@@ -269,7 +301,7 @@ async def request(
     exists, so a refused call never builds a client."""
     ok, why = allowed(method, path)
     if not ok:
-        raise GatewayRefusal(why)
+        raise GatewayRefusal(why, fixable=False, route=_template(method, path))
     # Both refusals come BEFORE the client exists: the manifest's, and the
     # no-acting-user one `headers()` raises. A refused call builds nothing.
     sent = headers()
