@@ -19,9 +19,11 @@
 import { useState } from "react";
 
 import ConfirmationCard from "@/components/ConfirmationCard";
-import type { PendingConfirmation } from "@/lib/confirmationQueue";
+import { approvalFor, type PendingConfirmation, type RowsApproval } from "@/lib/confirmationQueue";
 
-export type ConfirmationAnswer = "APPROVE" | "REJECT";
+/** A plain answer, or an Approve that names the ticked rows of a card with
+ *  rows (WS-46 P13 one-card). Both go in ONE respond-input. */
+export type ConfirmationAnswer = "APPROVE" | "REJECT" | RowsApproval;
 
 interface ConfirmationQueueProps {
   cards: PendingConfirmation[];
@@ -73,13 +75,18 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
       title={card.title}
       detail={card.detail}
       context={card.context}
+      rows={card.rows}
       position={{
         index: at,
         total: cards.length,
         onPrev: () => go(Math.max(0, at - 1)),
         onNext: () => go(Math.min(cards.length - 1, at + 1)),
       }}
-      onApprove={() => onAnswer(card, "APPROVE")}
+      onApprove={(ticked) => {
+        // One respond-input: the Approve and the ticked ids together.
+        const answer = approvalFor(card, ticked);
+        if (answer) onAnswer(card, answer);
+      }}
       onReject={() => onAnswer(card, "REJECT")}
     />
   );

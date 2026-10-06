@@ -19,7 +19,12 @@ import ConfirmationCard, { cardSummary, isHiddenField, parseCardBody } from "@/c
 import ConfirmationQueue, { pickShown } from "@/components/ConfirmationQueue";
 import {
   EMPTY_CONFIRMATIONS,
+  ROWS_ANSWER_PREFIX,
+  approvalFor,
+  approveRows,
+  cardFromEvent,
   confirmationReducer,
+  rowSummary,
   settleAnswer,
   type ConfirmationAction,
   type ConfirmationQueueState,
@@ -312,5 +317,100 @@ describe("the card wears the product tokens", () => {
   it("no UUID reaches the page", () => {
     expect(html).not.toContain(PROJECT);
     expect(html).not.toContain(STATUS);
+  });
+});
+
+// ── A card with rows: several tasks, ONE card (WS-46 P13 one-card) ───────────
+
+describe("a card with rows", () => {
+  const ROWS = [
+    { id: "row-1", label: "Book the caterer", hint: "Priya (priya@x.io) · due Fri 9 Oct 2026", checked: true },
+    { id: "row-2", label: "Print the badges", hint: "nobody assigned", checked: true },
+    { id: "row-3", label: "Send the invites", hint: "made 3 min ago, so it starts unticked", checked: false },
+  ];
+  const event = { title: "Create 3 tasks in «Ops»?", detail: "one batch", request_id: "rid-rows", rows: ROWS };
+  const card = (rows = ROWS) =>
+    renderToStaticMarkup(
+      createElement(ConfirmationCard, {
+        title: event.title,
+        detail: event.detail,
+        context: "project: «Ops»\ntasks: 3",
+        rows,
+        onApprove: () => {},
+        onReject: () => {},
+      }),
+    );
+
+  // Mutation caught: a parse that adds `rows` to every card changes the old cards.
+  it("a card with no rows is unchanged", () => {
+    expect("rows" in (cardFromEvent(requested(1).value) ?? {})).toBe(false);
+    expect(approvalFor({}, ["row-1"])).toBe("APPROVE");
+    const html = renderToStaticMarkup(
+      createElement(ConfirmationCard, {
+        title: "Create this task?",
+        detail: "«Task 1»",
+        onApprove: () => {},
+        onReject: () => {},
+      }),
+    );
+    expect(html).not.toContain("data-confirmation-rows");
+    expect(html).not.toMatch(/type="checkbox"/);
+  });
+
+  it("the event's rows reach the card, ticked as the tool asks", () => {
+    expect(cardFromEvent(event)?.rows).toEqual(ROWS);
+    const html = card();
+    expect(html.match(/type="checkbox"/g)).toHaveLength(3);
+    expect(html.match(/checked=""/g)).toHaveLength(2);
+    expect(html).toContain("cc-checkbox");
+    expect(html).toContain("Send the invites");
+    expect(html).toContain("made 3 min ago, so it starts unticked");
+  });
+
+  // Mutation caught: a summary that says the tool's count, not the ticked one.
+  it("the summary counts the ticked rows", () => {
+    expect(card()).toContain("Create 2 of 3 tasks in «Ops»?");
+    expect(rowSummary("Create 4 tasks in «Ops»?", 4, 4)).toBe("Create 4 tasks in «Ops»?");
+    expect(rowSummary("Create 4 tasks in «Ops»?", 1, 4)).toBe("Create 1 of 4 tasks in «Ops»?");
+    expect(rowSummary("Pick the rows", 1, 4)).toBe("Pick the rows (1 of 4)");
+  });
+
+  // Mutation caught: Approve live with nothing ticked.
+  it("Approve is off when no row is ticked", () => {
+    const none = card(ROWS.map((r) => ({ ...r, checked: false })));
+    const approve = /<button[^>]*data-confirmation-approve[^>]*>/.exec(none)?.[0] ?? "";
+    expect(approve).toMatch(/\sdisabled=""/);
+    expect(none).toContain("Create 0 of 3 tasks");
+    const some = /<button[^>]*data-confirmation-approve[^>]*>/.exec(card())?.[0] ?? "";
+    expect(some).not.toMatch(/\sdisabled=""/);
+  });
+
+  // Mutation caught: an answer that names an unticked row, or one the card
+  // never offered, or that approves with none.
+  it("Approve names exactly the ticked rows the card offered, in one answer", () => {
+    const pending = cardFromEvent(event)!;
+    expect(approvalFor(pending, ["row-2", "row-1"])).toBe('APPROVE {"rows":["row-1","row-2"]}');
+    expect(approvalFor(pending, ["row-1", "row-9"])).toBe('APPROVE {"rows":["row-1"]}');
+    expect(approvalFor(pending, [])).toBeNull();
+    expect(approvalFor(pending, undefined)).toBeNull();
+    expect(approveRows(["row-3"]).startsWith(ROWS_ANSWER_PREFIX)).toBe(true);
+  });
+
+  it("a rows list the card cannot read gives no row, so it cannot be approved", () => {
+    const bad = cardFromEvent({ ...event, rows: [{ id: "a" }, { id: "a" }] })!;
+    expect(bad.rows).toEqual([]);
+    expect(approvalFor(bad, ["a"])).toBeNull();
+  });
+
+  it("the card keeps the queue and the arming delay", () => {
+    const html = renderToStaticMarkup(
+      createElement(ConfirmationQueue, {
+        cards: [cardFromEvent(event)!, ...run(TEN).cards],
+        onAnswer: () => {},
+      }),
+    );
+    expect(html).toContain("1 of 11");
+    const approve = /<button[^>]*data-confirmation-approve[^>]*>/.exec(html)?.[0] ?? "";
+    expect(approve).toContain('aria-disabled="true"');
   });
 });

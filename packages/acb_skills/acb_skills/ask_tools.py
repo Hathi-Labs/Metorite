@@ -352,6 +352,72 @@ CONFIRMATION_ANSWERS: frozenset[str] = frozenset(
 )
 
 
+#: A confirmation card with ROWS (WS-46 P13 one-card). The member ticks the
+#: rows the act covers, and the answer names them:
+#: ``APPROVE {"rows": ["row-1", "row-3"]}``. A card with no rows keeps the
+#: plain ``APPROVE``. The client builds the answer in
+#: ``workbench/control_plane/src/lib/confirmationQueue.ts`` (``approveRows``),
+#: and ``tests/unit/test_confirmation_rows.py`` holds the two in step.
+ROWS_ANSWER_PREFIX = "APPROVE "
+#: The most rows one card may carry. A card nobody reads is not consent.
+MAX_CARD_ROWS = 100
+_ROW_ID_MAX = 64
+_ROW_LABEL_MAX = 200
+#: A hint carries every fact the row writes, so it is as long as a card body.
+_ROW_HINT_MAX = 4000
+
+
+def clean_card_rows(rows: list[dict] | None) -> list[dict] | None:
+    """The rows of a card, checked and clipped, or ``None`` for a card with none.
+
+    Each row is ``{id, label, hint?, checked?}``. An id is a short string that
+    is unique on the card. A bad row is a programming error of the calling
+    tool, so it raises ``ValueError`` before any card is drawn.
+    """
+    if rows is None:
+        return None
+    if not isinstance(rows, list) or not rows or len(rows) > MAX_CARD_ROWS:
+        raise ValueError(f"rows is a list of 1 to {MAX_CARD_ROWS} rows")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        rid = str((row or {}).get("id") or "").strip() if isinstance(row, dict) else ""
+        if not rid or len(rid) > _ROW_ID_MAX or rid in seen:
+            raise ValueError("each row needs its own short id")
+        seen.add(rid)
+        out.append({
+            "id": rid,
+            "label": str(row.get("label") or rid).strip()[:_ROW_LABEL_MAX],
+            "hint": str(row.get("hint") or "").strip()[:_ROW_HINT_MAX],
+            "checked": row.get("checked", True) is not False,
+        })
+    return out
+
+
+def ticked_rows(answer: str, offered: frozenset[str]) -> frozenset[str] | None:
+    """The row ids an answer approves, or ``None`` when it approves nothing.
+
+    Only ``APPROVE {"rows": [...]}`` approves a rows card. The ids must be a
+    non-empty subset of the card's own ids. A forged id, a list that is
+    empty, an answer that is not JSON, and a plain ``APPROVE`` each approve
+    NOTHING: the whole answer is refused, never trimmed to the ids that fit.
+    """
+    text = str(answer or "").strip()
+    if not text.upper().startswith(ROWS_ANSWER_PREFIX):
+        return None
+    try:
+        body = _json.loads(text[len(ROWS_ANSWER_PREFIX):])
+    except (TypeError, ValueError):
+        return None
+    ids = body.get("rows") if isinstance(body, dict) else None
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
+        return None
+    ticked = frozenset(ids)
+    if not ticked <= offered:
+        return None
+    return ticked
+
+
 def _resolved_event(request_id: str, answer: str) -> dict:
     return {
         "type": "CUSTOM",
@@ -363,7 +429,8 @@ def _resolved_event(request_id: str, answer: str) -> dict:
 async def request_confirmation(
     title: str, detail: str = "", context: str = "",
     non_interactive_default: str = "deny",
-) -> bool:
+    rows: list[dict] | None = None,
+) -> bool | frozenset[str]:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
     Renders a ``ConfirmationCard`` inline in the chat with Approve / Reject
@@ -382,29 +449,47 @@ async def request_confirmation(
             without a human (HH-2, OWASP LLM06 excessive agency).  Pass
             ``"approve"`` ONLY for reversible actions where automation must
             proceed unattended.
+        rows: optional ``[{id, label, hint, checked}]``. The card draws one
+            checkbox per row, ticked when ``checked``, and Approve then
+            names the ticked ids (:func:`ticked_rows`). With no rows the
+            card, its event and its answer are exactly as before.
 
     Returns:
-        ``True`` if the user approved, ``False`` if they rejected or did not
-        respond.  When no delivery channel exists, returns ``True`` only if
-        ``non_interactive_default="approve"`` was explicitly passed.
+        With no ``rows``: ``True`` if the user approved, ``False`` if they
+        rejected or did not respond.  When no delivery channel exists,
+        returns ``True`` only if ``non_interactive_default="approve"`` was
+        explicitly passed.
+
+        With ``rows``: the ``frozenset`` of the ticked row ids, each one an
+        id the card offered. It is EMPTY, and so falsy, when the member did
+        not approve, or when the answer named an id the card did not offer.
     """
     _title = str(title or "Confirm action").strip()[:120]
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
+    _rows = clean_card_rows(rows)
+    _offered = frozenset(r["id"] for r in _rows or [])
 
     def _event(request_id: str) -> dict:
-        return {
-            "type": "CUSTOM",
-            "name": "confirmation_requested",
-            "value": {
-                "title": _title,
-                "detail": _detail,
-                "context": _context,
-                "request_id": request_id,
-            },
+        value = {
+            "title": _title,
+            "detail": _detail,
+            "context": _context,
+            "request_id": request_id,
         }
+        if _rows is not None:
+            value["rows"] = _rows
+        return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
 
-    async def _block_on(_fut, _rid, _pending, _publish) -> bool:
+    def _verdict(result: dict) -> tuple[str, frozenset[str] | None]:
+        """The card's closing answer, and the ticked ids of a rows card."""
+        said = str(result.get("answer", "")).strip()
+        if _rows is None:
+            return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
+        ticked = ticked_rows(said, _offered)
+        return ("APPROVE" if ticked else "REJECT"), ticked
+
+    async def _block_on(_fut, _rid, _pending, _publish) -> bool | frozenset[str]:
         """Park on the answer, then say on the stream that the card is closed.
 
         A model can call card-gated tools in parallel, so one stream can carry
@@ -419,14 +504,11 @@ async def request_confirmation(
         import contextlib as _contextlib
         # Any other failure is no approval, so it closes the card as a REJECT.
         _answer = "REJECT"
+        _ticked: frozenset[str] | None = None
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
-            _answer = (
-                "APPROVE"
-                if str(_result.get("answer", "")).strip().upper() == "APPROVE"
-                else "REJECT"
-            )
+            _answer, _ticked = _verdict(_result)
         except _asyncio.CancelledError:
             _answer = "CANCELLED"
             raise
@@ -437,6 +519,8 @@ async def request_confirmation(
             # Best effort: the run's end clears a blocking card too.
             with _contextlib.suppress(Exception):
                 await _publish(_resolved_event(_rid, _answer))
+        if _rows is not None:
+            return _ticked or frozenset()
         return _answer == "APPROVE"
 
     # ── Path A: _active_run_queue (native MAF / Tier 2 blocking) ──────────
@@ -491,4 +575,7 @@ async def request_confirmation(
 
     # No delivery channel (non-interactive run) — fail CLOSED unless the
     # caller explicitly opted a reversible action into auto-approval.
-    return str(non_interactive_default).strip().lower() == "approve"
+    approved = str(non_interactive_default).strip().lower() == "approve"
+    if _rows is not None:
+        return frozenset(r["id"] for r in _rows if r["checked"]) if approved else frozenset()
+    return approved

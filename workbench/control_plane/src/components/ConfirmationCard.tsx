@@ -27,7 +27,9 @@
 import { useEffect, useState } from "react";
 
 import Button from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
+import { rowSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 
 /**
  * How long a new card ignores Approve and Reject.
@@ -141,7 +143,14 @@ interface ConfirmationCardProps {
   detail?: string;
   /** The body: `key: value` rows, or free text. */
   context?: string;
-  onApprove: () => void;
+  /**
+   * WS-46 P13 one-card: one checkbox per row, ticked as the tool asks. The
+   * summary counts the ticked rows, Approve stays off with none ticked, and
+   * Approve hands the ticked ids, in the card's order, to `onApprove`. With
+   * no rows the card is as before, and `onApprove` gets no ids.
+   */
+  rows?: ConfirmationRow[];
+  onApprove: (ticked?: string[]) => void;
   onReject: () => void;
   /** Disable buttons after a choice is made. */
   disabled?: boolean;
@@ -153,6 +162,7 @@ export default function ConfirmationCard({
   title,
   detail,
   context,
+  rows,
   onApprove,
   onReject,
   disabled = false,
@@ -163,10 +173,35 @@ export default function ConfirmationCard({
     const t = setTimeout(() => setArmed(true), ARM_MS);
     return () => clearTimeout(t);
   }, []);
-  const { summary, rest } = cardSummary(title, detail);
+  // The card is keyed per request (ConfirmationQueue), so this starts from
+  // the tool's ticks for each new card.
+  const [ticked, setTicked] = useState<ReadonlySet<string>>(
+    () => new Set((rows ?? []).filter((r) => r.checked).map((r) => r.id)),
+  );
+  const hasRows = rows !== undefined;
+  const tickedIds = (rows ?? []).filter((r) => ticked.has(r.id)).map((r) => r.id);
+  const toggle = (id: string, on: boolean) =>
+    setTicked((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const base = cardSummary(title, detail);
+  const summary = hasRows ? rowSummary(base.summary, tickedIds.length, rows.length) : base.summary;
+  const rest = base.rest;
   const body = parseCardBody(context);
   const many = position && position.total > 1;
-  const hasBody = body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
+  const hasBody =
+    hasRows || body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
+  const approve = () => {
+    if (!armed) return;
+    if (hasRows) {
+      if (tickedIds.length > 0) onApprove(tickedIds);
+      return;
+    }
+    onApprove();
+  };
   return (
     <section
       aria-label={summary}
@@ -206,6 +241,37 @@ export default function ConfirmationCard({
 
       {hasBody && (
         <div className="space-y-2 px-4 py-3">
+          {hasRows && (
+            <ul className="space-y-1.5" data-confirmation-rows="" aria-label="Rows this approval covers">
+              {rows.length === 0 && (
+                <li className="text-xs text-muted-foreground">
+                  The rows of this card could not be read, so it cannot be approved.
+                </li>
+              )}
+              {rows.map((r) => (
+                <li key={r.id}>
+                  <label className="flex min-w-0 cursor-pointer items-start gap-2">
+                    <Checkbox
+                      size="sm"
+                      className="mt-0.5"
+                      checked={ticked.has(r.id)}
+                      disabled={disabled}
+                      onChange={(e) => toggle(r.id, e.target.checked)}
+                      data-confirmation-row={r.id}
+                    />
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="break-words text-xs text-foreground">{r.label}</span>
+                      {r.hint && (
+                        <span className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+                          {r.hint}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          )}
           {body.fields.length > 0 && (
             <dl className="space-y-1">
               {body.fields.map((f, i) => (
@@ -235,8 +301,8 @@ export default function ConfirmationCard({
         <Button
           size="sm"
           icon="Check"
-          onClick={() => armed && onApprove()}
-          disabled={disabled}
+          onClick={approve}
+          disabled={disabled || (hasRows && tickedIds.length === 0)}
           aria-disabled={!armed || undefined}
           data-confirmation-approve=""
         >

@@ -964,7 +964,7 @@ slice updates this spec's status header in the same PR (R4).
 | **P10 · Attach a chat file to a task** | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
 | **P11 · Filter the board** | `set_filter`, once the page's filter state has a stable shape | G22 | Not now. The owner answered Q4 on 2026-10-06 |
 | **P12 · MCP facade for external clients** | Its own spec first (§5.3) | — | ⏸ PARKED, OWNER-GATE |
-| **P13 · Several new tasks in one call** ✅ BUILT 2026-10-06 | `create_tasks`: rows that take the keys of `create_task`, one selection card, one confirmation card, a receipt for each row · eval task PO-9 | — (a chat need, not a UI input) | AGENT-SAFE |
+| **P13 · Several new tasks in one call** ✅ BUILT 2026-10-06 | `create_tasks`: rows that take the keys of `create_task`, ONE confirmation card with a checkbox for each task, a receipt for each row · eval task PO-9 | — (a chat need, not a UI input) | AGENT-SAFE |
 
 **Order.** P1 first, because it is the reported failure. P2 next, because
 every later slice is easier to test when refusals are text. P3 then gives
@@ -1399,3 +1399,25 @@ as the answer. The slices build to these answers.
       the name and the address, because two people can share a name. The
       selection card shows the name only.
     - The read before the card takes the triage lane.
+- 2026-10-06 — P13, the one-card version. The owner asked for several tasks
+  on ONE card. These facts are as built:
+  - `request_confirmation` (`acb_skills/ask_tools.py`) takes optional
+    `rows=[{id, label, hint, checked}]`. The card draws a checkbox for each
+    row. Approve answers `APPROVE {"rows": [...]}` in the one
+    respond-input, and the call returns the set of the ticked ids.
+  - The answer must name only the card's own rows. A forged id, an empty
+    list, or a plain `APPROVE` approves nothing, and the card closes as a
+    REJECT. `confirmation_resolved` still fires.
+  - A card with no rows is as before: the same event, a plain answer and a
+    true or false result. `tests/unit/test_confirmation_rows.py` holds
+    this, and reads `lib/confirmationQueue.ts` so the two sides agree.
+  - `ConfirmationCard.tsx` draws the rows with the `Checkbox` primitive.
+    The summary counts the ticked rows, for example "Create 3 of 4 tasks".
+    Approve is off when no row is ticked. The card keeps the "1 of N"
+    queue and the 400 ms arming delay.
+  - `create_tasks` sends ONE card with the rows, and the selection card
+    is gone. A recent twin starts unticked, and its hint says why. The tool
+    writes exactly the ticked rows, and it refuses an id that the card did
+    not offer (`FORGED_ROWS`).
+  - The eval runner approves the rows of a card as the card shows it, and
+    answers no form card. PO-10 asks for one card with 3 rows.

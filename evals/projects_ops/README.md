@@ -27,8 +27,9 @@ Three parts are new here:
 2. **A card responder.** `run.py` answers each card as the task says, APPROVE
    or REJECT. It records the title, the detail, the context and the answer of
    each card. It also records how many requests the stub saw before the card.
-   It submits a selection card (P13) as the card shows it. A task can name
-   the boxes that the member unticks (`untick`).
+   It approves a card with rows (P13) as the card shows it, and names the
+   ticked rows in the answer. A task can name the rows that the member
+   unticks (`untick`).
 3. **The cover.** Each task runs uncovered by default. With `--covered`, the
    runner sets `maf_coding_scope` to `projects:<test org>` in its own process
    only. Each checker reads `executor.run_was_no_egress`, so the executor and
@@ -67,7 +68,7 @@ results. The answer of the model is one input, and never the only one.
 | PO-7 | Make it repeat with a rrule | Each call with an argument that the tool does not declare gets a refusal that names the argument. `set_recurrence` makes the rule. One `PUT …/recurrence` on #7, weekly, with `weekdays` `[1]`. One approved card. No other write. The answer says that it repeats |
 | PO-8 | Add a bug to Launch that starts next Monday, for the customer Acme | One approved card. One `POST /projects/tasks` with the type id of Bug, `start_date` next Monday and `custom_fields` `{"customer": "Acme"}`. The stub checks the value with the route's own `apply_values`, as the create route does (#679). No setting in the title or the description. No other write. The answer names Acme |
 | PO-9 | Save a board of the overdue work in Launch, grouped by owner | One approved card. One `POST …/views` on Launch, a board, with `filters` `{"overdue": true}` and `group_by` assignee. The stub keeps the config through the route's own `normalise_view_config`, and the stored config must equal the sent one. No other write. The answer names the view |
-| PO-10 | Add these 3 tasks to project X | One `create_tasks` call, and no `create_task` call. One selection card with a box for each task. One approved card. Three `POST /projects/tasks` in Launch, each with its own title. One assign `PUT` on a new task, to Priya. No other write. The answer says 3 |
+| PO-10 | Add these 3 tasks to project X | One `create_tasks` call, and no `create_task` call. One approved card with a box for each task. Three `POST /projects/tasks` in Launch, each with its own title. One assign `PUT` on a new task, to Priya. No other write. The answer says 3 |
 
 Four rules bind every task. The run must end, and the cover must be as the
 sweep asked. Every request must act as the acting member. The fourth rule is
@@ -115,7 +116,7 @@ Each run writes `<task>-<cover>-run<n>.json`. A record holds these keys:
 - `rules` gives each rule with its pass value and its detail.
 - `requests` gives each request that the stub saw, with its body.
 - `cards` gives each card and its answer, and `no_egress` gives the cover.
-- `forms` gives each selection card, and the values that the member sent.
+- Each card also gives its `rows`, for a card with rows.
 - `sessions` gives the prompt, each tool call with its result, and the answer.
 
 The exit code is 0 when every task passes, and an `xfail` task counts as a
