@@ -10,6 +10,7 @@ subscribed.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 from uuid import uuid4
 
@@ -108,11 +109,30 @@ async def verify_cloud_number(
     org A's ``phone_number_id`` with any token. Org A's inbound would then go
     to org B, and org A would get 409 for good. Call it BEFORE the session
     opens, so no database connection waits on Meta.
+
+    Round 3 of the review: the check reads ONLY the token from the caller's
+    blob. A caller ``graph_version`` such as ``v21.0/<waba>/phone_numbers#``
+    once turned the node read into an edge read that the caller's own token
+    passed. So the version is the server's, and the number must be digits.
     """
-    if not credentials.get("access_token"):
+    from whatsapp_ingestion.providers.factory import (
+        is_phone_number_id,
+        safe_graph_version,
+    )
+
+    if not is_phone_number_id(phone_number_id):
+        raise HTTPException(
+            status_code=400,
+            detail="phone_number_id must be the numeric id that Meta shows.")
+    token = credentials.get("access_token")
+    if not token or not isinstance(token, str):
         raise HTTPException(status_code=400, detail="access_token required")
-    creds = dict(credentials)
-    creds["phone_number_id"] = phone_number_id
+    creds = {
+        "access_token": token,
+        "phone_number_id": phone_number_id,
+        "graph_version": safe_graph_version(
+            os.environ.get("WHATSAPP_GRAPH_VERSION", "").strip() or None),
+    }
     try:
         profile = await _instantiate_provider(
             "cloud_api", creds).get_phone_number_profile()
@@ -124,9 +144,10 @@ async def verify_cloud_number(
             status_code=400, detail=friendly_meta_error(exc)) from exc
     if not isinstance(profile, dict):
         raise HTTPException(status_code=400, detail="Meta returned no profile.")
-    # Meta echoes the id of the number it read. A different id means the
-    # token answered for another number.
-    if profile.get("id") not in (None, phone_number_id):
+    # A node read on Graph always returns the `id` of the node. A missing id
+    # means Meta read something that is not this number, such as an edge
+    # list. A different id means the token answered for another number.
+    if profile.get("id") != phone_number_id:
         raise HTTPException(
             status_code=400,
             detail="Meta answered for a different phone number id.")
@@ -173,6 +194,12 @@ async def persist_account(
     creds = dict(credentials)
     creds["phone_number_id"] = phone_number_id
     creds.setdefault("waba_id", waba_id)
+    # Defence in depth: keep a caller graph_version only when it is a plain
+    # version. The provider also refuses a bad one when it reads the blob.
+    from whatsapp_ingestion.providers.factory import safe_graph_version
+    supplied_version = creds.pop("graph_version", None)
+    if supplied_version and safe_graph_version(supplied_version) == supplied_version:
+        creds["graph_version"] = supplied_version
 
     from acb_llm.key_store import get_key_store
     store = get_key_store()

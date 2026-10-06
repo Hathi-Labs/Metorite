@@ -13,6 +13,7 @@ Credentials dict (decrypted from ``wa_accounts.credentials_encrypted``)::
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -25,6 +26,24 @@ _DEFAULT_GRAPH_VERSION = "v21.0"
 _GRAPH_BASE = "https://graph.facebook.com"
 _TIMEOUT = httpx.Timeout(30.0)
 
+# Both values go into a Graph URL PATH. A `/`, `?` or `#` in either one can
+# turn a node read of the number into a read of some other Graph object
+# (WA-C1 review, round 3). ASCII digits only, so no Unicode digit gets in.
+_GRAPH_VERSION_RE = re.compile(r"v[0-9]+\.[0-9]+")
+_PHONE_NUMBER_ID_RE = re.compile(r"[0-9]+")
+
+
+def safe_graph_version(value: Any) -> str:
+    """``value`` when it is a Graph version such as ``v21.0``, else the default."""
+    if isinstance(value, str) and _GRAPH_VERSION_RE.fullmatch(value):
+        return value
+    return _DEFAULT_GRAPH_VERSION
+
+
+def is_phone_number_id(value: Any) -> bool:
+    """True when ``value`` is a Meta phone number id: ASCII digits only."""
+    return isinstance(value, str) and bool(_PHONE_NUMBER_ID_RE.fullmatch(value))
+
 
 class WhatsAppCloudProvider(BaseWhatsAppProvider):
     """WhatsApp Business Cloud API client."""
@@ -33,12 +52,17 @@ class WhatsAppCloudProvider(BaseWhatsAppProvider):
         super().__init__(credentials)
         self.access_token: str = credentials.get("access_token", "") or ""
         self.phone_number_id: str = credentials.get("phone_number_id", "") or ""
-        self.graph_version: str = (
-            credentials.get("graph_version") or _DEFAULT_GRAPH_VERSION
-        )
+        raw_version = credentials.get("graph_version")
+        self.graph_version: str = safe_graph_version(raw_version)
+        if raw_version and raw_version != self.graph_version:
+            logger.warning("whatsapp.cloud.graph_version_refused")
         if not self.access_token or not self.phone_number_id:
             raise ValueError(
                 "WhatsApp Cloud credentials need access_token + phone_number_id"
+            )
+        if not is_phone_number_id(self.phone_number_id):
+            raise ValueError(
+                "WhatsApp Cloud phone_number_id must be the numeric id from Meta"
             )
 
     @property

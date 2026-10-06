@@ -523,9 +523,12 @@ def test_only_the_app_role_may_run_the_resolver(granted):
     must then revoke all three."""
     with granted.admin_engine.begin() as c:
         for r in _SUPABASE_ROLES:
+            # A role is cluster-wide, so two R8 runs on one scratch server
+            # can race here. The loser catches the error and goes on.
             c.execute(text(
-                f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE "
-                f"rolname='{r}') THEN CREATE ROLE {r} NOLOGIN; END IF; END $$;"))
+                f"DO $$ BEGIN CREATE ROLE {r} NOLOGIN; "
+                f"EXCEPTION WHEN duplicate_object OR unique_violation "
+                f"THEN NULL; END $$;"))
             c.execute(text(f"GRANT EXECUTE ON FUNCTION {_FN} TO {r}"))
     with granted.admin_engine.connect() as c:
         with c.connection.dbapi_connection.cursor() as cur:

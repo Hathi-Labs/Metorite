@@ -4,6 +4,7 @@ extractor, the verify route (mocked provider), and the connection-info route."""
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 import gateway.routes.whatsapp.transport.connect as connect
 import pytest
@@ -407,7 +408,7 @@ async def test_a_profile_with_no_id_answers_400_and_writes_nothing(
 class _GraphClient:
     """Stands in for ``httpx.AsyncClient`` and records every URL."""
 
-    urls: list[str] = []
+    urls: ClassVar[list[str]] = []
 
     def __init__(self, *a, **kw):
         pass
@@ -444,7 +445,7 @@ async def test_a_caller_graph_version_never_reaches_the_url(
 
     import httpx
 
-    accounts, db, opened, _ = _manual_route(monkeypatch, None)
+    accounts, db, _opened, _ = _manual_route(monkeypatch, None)
     _GraphClient.urls = []
     monkeypatch.setattr(httpx, "AsyncClient", _GraphClient)
 
@@ -480,7 +481,7 @@ async def test_a_non_digit_phone_number_id_answers_400(monkeypatch, bad) -> None
     import pytest
     from fastapi import HTTPException
 
-    accounts, db, opened, meta_calls = _manual_route(
+    accounts, _db, opened, meta_calls = _manual_route(
         monkeypatch, _FakeProvider(profile={"id": bad}))
     with pytest.raises(HTTPException) as exc:
         await accounts.create_account(

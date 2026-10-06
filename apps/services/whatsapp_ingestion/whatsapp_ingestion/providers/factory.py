@@ -18,7 +18,15 @@ from typing import Any
 
 from whatsapp_ingestion.providers.base import BaseWhatsAppProvider
 from whatsapp_ingestion.providers.bridge import BridgeProvider
-from whatsapp_ingestion.providers.cloud_api import WhatsAppCloudProvider
+from whatsapp_ingestion.providers.cloud_api import (
+    WhatsAppCloudProvider,
+    is_phone_number_id,
+    safe_graph_version,
+)
+
+# The two Graph URL guards, named here so the gateway imports no concrete
+# provider (the rule of this module's docstring).
+__all__ = ["build_provider", "is_phone_number_id", "safe_graph_version"]
 
 _PROVIDERS = {
     "cloud_api": WhatsAppCloudProvider,
