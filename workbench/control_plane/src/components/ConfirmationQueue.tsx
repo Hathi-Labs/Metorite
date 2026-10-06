@@ -16,12 +16,20 @@
  * The queue itself is `lib/confirmationQueue.ts`.
  */
 
-import { useState } from "react";
+import { useReducer, useState } from "react";
 
 import ConfirmationCard from "@/components/ConfirmationCard";
-import type { PendingConfirmation } from "@/lib/confirmationQueue";
+import {
+  NO_TICKS,
+  rowTicksReducer,
+  rowsView,
+  type PendingConfirmation,
+  type RowsApproval,
+} from "@/lib/confirmationQueue";
 
-export type ConfirmationAnswer = "APPROVE" | "REJECT";
+/** A plain answer, or an Approve that names the ticked rows of a card with
+ *  rows (WS-46 P13 one-card). Both go in ONE respond-input. */
+export type ConfirmationAnswer = "APPROVE" | "REJECT" | RowsApproval;
 
 interface ConfirmationQueueProps {
   cards: PendingConfirmation[];
@@ -57,6 +65,10 @@ export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
 
 export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
+  // The member's ticks of every card with rows, by key. The queue holds
+  // them, so a page away and back keeps them (PR #691 review). The logic is
+  // `rowTicksReducer` and `rowsView`, and this component holds none.
+  const [ticks, tick] = useReducer(rowTicksReducer, NO_TICKS);
   if (cards.length === 0) return null;
   const at = pickShown(cards, shown);
   const card = cards[at];
@@ -65,6 +77,7 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
     setShown({ key: card.key, index: at });
   }
   const go = (to: number) => setShown({ key: cards[to].key, index: to });
+  const view = rowsView(card, ticks);
   return (
     <ConfirmationCard
       // A new key per card: a long body scrolled on one card does not stay
@@ -73,13 +86,19 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
       title={card.title}
       detail={card.detail}
       context={card.context}
+      rows={view.rows}
+      onToggle={(id, on) => tick({ type: "toggle", card, id, on })}
       position={{
         index: at,
         total: cards.length,
         onPrev: () => go(Math.max(0, at - 1)),
         onNext: () => go(Math.min(cards.length - 1, at + 1)),
       }}
-      onApprove={() => onAnswer(card, "APPROVE")}
+      onApprove={() => {
+        // One respond-input: the Approve and the ticked ids together. The
+        // answered card carries the ticks, so a restore shows them again.
+        if (view.approved) onAnswer(view.approved.card, view.approved.answer);
+      }}
       onReject={() => onAnswer(card, "REJECT")}
     />
   );

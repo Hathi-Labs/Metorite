@@ -11,10 +11,13 @@ mutation that turns it red (R7):
 1. **Every name is resolved before any card,** with create_task's own code.
    One bad row refuses the whole batch and names the row. Mutation: let a
    bad row through to the card -> ``test_one_bad_row_refuses_the_batch...``.
-2. **One selection card, then ONE confirmation card.** Each row is a
-   checkbox, ticked by default, with the assignee NAMES, the due date and the
-   status in plain words, and no id. Mutation: write every row whatever the
-   form says -> ``test_an_unticked_row_is_not_written``.
+2. **ONE confirmation card, with a checkbox for each row** (the one-card
+   version: ``request_confirmation`` rows). Each row is ticked by default,
+   with the assignee, the due date and the status in plain words, and no id.
+   The card answers with the ticked ids, and the tool writes exactly those.
+   Mutations: write every row whatever the card says ->
+   ``test_an_unticked_row_is_not_written``. Trust an id the card did not
+   offer -> ``test_a_forged_row_id_is_refused_and_nothing_is_written``.
 3. **The write path is create_task's.** A row sends the POST body that
    create_task sends for the same words, then the same assign PUT.
    Mutation: build the body by hand and drop a key -> F2 on the wire
@@ -64,6 +67,7 @@ from tests.unit import test_projects_agent_writes as tw
 from tests.unit._projects_agent_fakes import (
     FakeClient,
     FakeResponse,
+    answer_rows,
     approve,
     deny,
     fake_gateway,
@@ -73,7 +77,6 @@ from tests.unit._projects_agent_fakes import (
 
 UUID, OTHER = tw.UUID, tw.OTHER
 _UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-ALL_TICKED = 'Review tasks — {"row_1": true, "row_2": true, "row_3": true}'
 THREE = json.dumps(
     [
         {"title": "Book the caterer", "assignees": "Priya", "due": "2026-10-09"},
@@ -152,13 +155,15 @@ def _posts(calls: list[dict]) -> list[dict]:
 # ── 1. Every name before any card, and one bad row refuses the batch ────────
 
 
-async def test_three_good_rows_make_one_form_one_card_and_three_tasks(monkeypatch) -> None:
+async def test_three_good_rows_make_one_card_and_three_tasks(monkeypatch) -> None:
     asked = approve(monkeypatch)
-    drawn = form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    drawn = form_stub(monkeypatch, {})
     calls = fake_gateway(monkeypatch, _gateway())
     out = await skill_projects.create_tasks(UUID, THREE)
 
-    assert len(drawn) == 1 and len(asked) == 1, (drawn, asked)
+    # ONE card, with the rows on it, and no other card or form.
+    assert drawn == [] and len(asked) == 1, (drawn, asked)
+    assert [r["id"] for r in asked[0]["rows"]] == ["row-1", "row-2", "row-3"]
     posts = _posts(calls)
     assert [p["json"]["title"] for p in posts] == [
         "Book the caterer",
@@ -179,18 +184,20 @@ async def test_three_good_rows_make_one_form_one_card_and_three_tasks(monkeypatc
 async def test_every_call_before_the_card_is_a_read(monkeypatch) -> None:
     import acb_skills.ask_tools as ask_tools
 
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    from tests.unit._projects_agent_fakes import card_answer
+
     calls = fake_gateway(monkeypatch, _gateway())
 
-    async def marker(**kwargs: Any) -> bool:
+    async def marker(**kwargs: Any) -> Any:
         calls.append({"method": "CARD", "path": "", "headers": {}, "params": {}, "json": kwargs})
-        return True
+        return card_answer(kwargs, True)
 
     monkeypatch.setattr(ask_tools, "request_confirmation", marker)
     await skill_projects.create_tasks(UUID, THREE)
-    at = next(i for i, c in enumerate(calls) if c["method"] == "CARD")
-    assert all(m.is_read(c["method"], c["path"]) for c in calls[:at])
-    assert len(_posts(calls[at:])) == 3
+    cards = [i for i, c in enumerate(calls) if c["method"] == "CARD"]
+    assert len(cards) == 1, "exactly one confirmation"
+    assert all(m.is_read(c["method"], c["path"]) for c in calls[: cards[0]])
+    assert len(_posts(calls[cards[0]:])) == 3
 
 
 @pytest.mark.parametrize(
@@ -219,7 +226,7 @@ async def test_one_bad_row_refuses_the_batch_before_any_card(
     from skill_projects.refusals import refusals_as_text
 
     asked = approve(monkeypatch)
-    drawn = form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    drawn = form_stub(monkeypatch, {})
     calls = fake_gateway(monkeypatch, _gateway())
     raw = rows if isinstance(rows, str) else json.dumps(rows)
     out = await refusals_as_text(skill_projects.create_tasks)(UUID, raw)
@@ -238,7 +245,7 @@ async def test_the_batch_is_capped_at_one_card(monkeypatch) -> None:
 
 async def test_a_batch_that_does_not_fit_on_the_card_is_refused(monkeypatch) -> None:
     asked = approve(monkeypatch)
-    drawn = form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    drawn = form_stub(monkeypatch, {})
     calls = fake_gateway(monkeypatch, _gateway())
     rows = json.dumps([{"title": f"Task {n}", "description": "x" * 400} for n in range(20)])
     out = await skill_projects.create_tasks(UUID, rows)
@@ -276,92 +283,85 @@ async def test_an_agent_assignee_in_a_covered_run_is_refused_as_text(monkeypatch
 # ── 2. The selection card and the confirmation card ─────────────────────────
 
 
-async def test_the_selection_card_shows_plain_words_and_no_id(monkeypatch) -> None:
+async def test_the_card_rows_show_plain_words_and_no_id(monkeypatch) -> None:
     asked = approve(monkeypatch)
-    drawn = form_stub(monkeypatch, {"Add ": ALL_TICKED})
     fake_gateway(monkeypatch, _gateway())
     await skill_projects.create_tasks(UUID, THREE)
 
-    spec = drawn[0]
-    assert spec["hitl"] is True and spec["props"]["name"] == "formCard"
-    form = spec["props"]["data"]
-    assert form["title"] == "Add 3 tasks to Ops"
-    fields = form["fields"]
-    assert [f["type"] for f in fields] == ["checkbox"] * 3
-    assert [f["value"] for f in fields] == [True, True, True]
-    assert [f["label"] for f in fields] == [
+    card = asked[0]
+    assert card["title"] == "Create 3 tasks in «Ops»?"
+    rows = card["rows"]
+    assert [r["checked"] for r in rows] == [True, True, True]
+    assert [r["label"] for r in rows] == [
         "Book the caterer",
         "Print the badges",
         "Test the projector",
     ]
-    # The assignee's NAME from the directory, the due date in words, the lane.
-    assert fields[0]["hint"] == "Priya · due Fri 9 Oct 2026 · To do (the first lane)"
-    assert fields[1]["hint"] == "nobody assigned · no due date · In progress"
-    assert not _UUID_RE.search(json.dumps(spec)), spec
-    card = asked[0]
-    assert card["title"] == "Create 3 tasks in «Ops»?"
-    assert not _UUID_RE.search(card["context"] + card["detail"]), card
-    # Review round 2: an assignee is always «Name» (address) on the card.
-    assert "row 1: «Book the caterer» · «Priya» (priya@x.io) · due Fri 9 Oct 2026" in card["context"]
-    assert "status «In progress»" in card["context"]
-    assert "30 min · tags «av»" in card["context"]
+    # The assignee as Name (address), the due date in words, the lane, every
+    # fact the POST sends, and no guillemet and no id.
+    assert rows[0]["hint"] == "Priya (priya@x.io) · due Fri 9 Oct 2026 · status To do (the first lane)"
+    assert rows[1]["hint"] == "nobody assigned · no due date · status In progress"
+    assert rows[2]["hint"] == "nobody assigned · no due date · status To do (the first lane) · 30 min · tags av"
+    assert not _UUID_RE.search(json.dumps(card)), card
+    assert "«" not in json.dumps(rows)
+    # The body holds the fixed line only: the title and the rows say the rest.
+    assert card["context"].strip() == W.CARD_NOTE
+    assert "tasks" not in card["context"].lower().replace("assistant", "")
 
 
 async def test_an_unticked_row_is_not_written(monkeypatch) -> None:
-    asked = approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": 'Review tasks — {"row_1": true, "row_2": false, "row_3": true}'})
+    """Mutation: write every row whatever the card says -> this test fails."""
+    asked = answer_rows(monkeypatch, {"row-1", "row-3"})
     calls = fake_gateway(monkeypatch, _gateway())
     out = await skill_projects.create_tasks(UUID, THREE)
 
+    assert len(asked) == 1
     assert [p["json"]["title"] for p in _posts(calls)] == ["Book the caterer", "Test the projector"]
-    assert asked[0]["title"] == "Create 2 tasks in «Ops»?"
-    assert "row 2:" not in asked[0]["context"]
-    assert "row 2 left out: «Print the badges», unticked on the card" in asked[0]["context"]
     assert "left out: row 2 «Print the badges», unticked on the card." in out
-    # The card and the receipt give one row one number (review round 1).
-    assert "row 3: «Test the projector»" in asked[0]["context"]
+    assert out.startswith("Created 2 tasks in «Ops»:")
 
 
-async def test_a_form_with_every_row_unticked_writes_nothing(monkeypatch) -> None:
-    asked = approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": 'Review tasks — {"row_1": false}'})
+async def test_zero_ticked_rows_write_nothing(monkeypatch) -> None:
+    """An approval that names no row approves nothing. The card keeps Approve
+    off with none ticked, and the server refuses an empty list anyway.
+    Mutation: read an empty answer as "every row" -> this test fails."""
+    answer_rows(monkeypatch, set())
     calls = fake_gateway(monkeypatch, _gateway())
     out = await skill_projects.create_tasks(UUID, THREE)
-    assert out == F.NOTHING_TICKED and asked == [] and writes(calls) == []
+    assert out == W.CANCELLED and writes(calls) == []
 
 
-async def test_a_form_not_submitted_writes_nothing(monkeypatch) -> None:
-    asked = approve(monkeypatch)
-    form_stub(monkeypatch, {})
+async def test_a_forged_row_id_is_refused_and_nothing_is_written(monkeypatch) -> None:
+    """The card's answer may name only the card's own rows. ``ticked_rows``
+    refuses a forged id on the server, and the tool checks again. Mutation:
+    write the rows the answer names, offered or not -> this test fails."""
+    answer_rows(monkeypatch, {"row-1", "row-9"})
     calls = fake_gateway(monkeypatch, _gateway())
     out = await skill_projects.create_tasks(UUID, THREE)
-    assert out == F.NOT_SUBMITTED and asked == [] and writes(calls) == []
+    assert out == F.FORGED_ROWS and writes(calls) == []
 
 
-async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
-    deny(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
+async def test_a_door_that_answers_a_bool_writes_nothing(monkeypatch) -> None:
+    """A card with rows answers a set. A bare True is no answer to it."""
+    import acb_skills.ask_tools as ask_tools
+
+    async def yes(**_kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", yes)
     calls = fake_gateway(monkeypatch, _gateway())
     assert await skill_projects.create_tasks(UUID, THREE) == W.CANCELLED
     assert writes(calls) == []
 
 
-async def test_with_no_surface_for_the_form_the_card_alone_carries_the_batch(
-    monkeypatch,
-) -> None:
-    """A chat that cannot draw the form still gets the one confirmation card."""
-    import importlib
-
-    wa = importlib.import_module("acb_skills.write_artifact")
-
-    async def no_surface(_ui: str) -> dict:
-        return {"ok": False, "error": "no active run stream to render into"}
-
-    monkeypatch.setattr(wa, "emit_generative_ui", no_surface)
-    asked = approve(monkeypatch)
+async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
+    deny(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway())
-    out = await skill_projects.create_tasks(UUID, THREE)
-    assert len(asked) == 1 and len(_posts(calls)) == 3 and out.startswith("Created 3 tasks")
+    assert await skill_projects.create_tasks(UUID, THREE) == W.CANCELLED
+    assert writes(calls) == []
+
+
+
 
 
 # ── 3. The write path is create_task's ─────────────────────────────────────
@@ -386,7 +386,6 @@ async def test_a_row_sends_what_create_task_sends(monkeypatch) -> None:
     }
     assert set(words) == set(F.ROW_KEYS) - {"priority"}
     approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
     one = fake_gateway(monkeypatch, _gateway())
     await skill_projects.create_task(UUID, **words)
     batch = fake_gateway(monkeypatch, _gateway())
@@ -429,7 +428,6 @@ async def test_a_row_the_server_refuses_does_not_stop_the_others(
     kind: str, words: str, monkeypatch
 ) -> None:
     approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
     calls = fake_gateway(monkeypatch, _gateway(**{kind: ("Print the badges",)}))
     out = await skill_projects.create_tasks(UUID, THREE)  # never raises
 
@@ -453,7 +451,6 @@ async def test_a_row_the_server_refuses_does_not_stop_the_others(
 
 async def test_every_row_failing_still_reads_as_text(monkeypatch) -> None:
     approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
     fake_gateway(
         monkeypatch,
         _gateway(refuse=("Book the caterer", "Print the badges", "Test the projector")),
@@ -467,7 +464,6 @@ async def test_every_create_dropped_reads_as_unknown_never_as_not_created(monkey
     """Review round 2: a lost connection says nothing about the write, so the
     head line never says "not created" or "Nothing was created" of it."""
     approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
     fake_gateway(
         monkeypatch,
         _gateway(drop=("Book the caterer", "Print the badges", "Test the projector")),
@@ -484,7 +480,6 @@ async def test_every_create_dropped_reads_as_unknown_never_as_not_created(monkey
 
 async def test_an_assign_that_fails_after_the_create_is_named(monkeypatch) -> None:
     approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
     calls = fake_gateway(monkeypatch, _gateway(refuse_assign=True))
     out = await skill_projects.create_tasks(UUID, THREE)
     assert len(_posts(calls)) == 3 and out.count("full_id:") == 3
@@ -506,7 +501,6 @@ async def test_an_assign_that_may_have_landed_says_the_task_exists(error, monkey
     create_tasks for it. Mutation: give the assign the create's words
     (``_failure``) -> this test fails."""
     approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
     calls = fake_gateway(monkeypatch, _gateway(assign_error=error))
     out = await skill_projects.create_tasks(UUID, THREE)
     assert len(_posts(calls)) == 3 and out.count("full_id:") == 3
@@ -523,32 +517,28 @@ async def test_an_assign_that_may_have_landed_says_the_task_exists(error, monkey
 async def test_the_card_names_the_parent_of_a_subtask(monkeypatch) -> None:
     """Review round 2: number and title, and the project when it differs."""
     asked = approve(monkeypatch)
-    drawn = form_stub(monkeypatch, {"Add ": ALL_TICKED})
     fake_gateway(monkeypatch, _gateway())
     rows = json.dumps([{"title": "Weld it", "parent_task_id": OTHER}, {"title": "Paint it"}])
     await skill_projects.create_tasks(UUID, rows)
-    card = asked[0]["context"]
-    assert "row 1: «Weld it» · nobody assigned · no due date · status «To do» (the parent's lane)" in card
-    assert "subtask of #8 «Order the nozzle»" in card and ", in " not in card
-    assert "««" not in card and "»»" not in card
-    hint = drawn[0]["props"]["data"]["fields"][0]["hint"]
-    assert hint == "nobody assigned · no due date · To do (the parent's lane)"
+    hint = asked[0]["rows"][0]["hint"]
+    assert hint == (
+        "nobody assigned · no due date · status To do (the parent's lane) · "
+        "subtask of #8 Order the nozzle"
+    )
 
 
 async def test_the_card_names_the_project_of_a_parent_elsewhere(monkeypatch) -> None:
     asked = approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
     elsewhere = {**tw.OTHER_TASK, "project_id": tw.SALES, "project_name": "Sales"}
     fake_gateway(monkeypatch, _gateway(parent=elsewhere))
     rows = json.dumps([{"title": "Weld it", "parent_task_id": OTHER}, {"title": "Paint it"}])
     await skill_projects.create_tasks(UUID, rows)
-    assert "subtask of #8 «Order the nozzle», in «Sales»" in asked[0]["context"]
+    assert asked[0]["rows"][0]["hint"].endswith("subtask of #8 Order the nozzle, in Sales")
 
 
 async def test_the_receipt_names_each_assignee(monkeypatch) -> None:
     """Review round 2: the receipt reads «Name (address)», as the card does."""
     approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
     fake_gateway(monkeypatch, _gateway())
     out = await skill_projects.create_tasks(UUID, THREE)
     assert "- #20 «Book the caterer» · status «To do» · due 2026-10-09 · «Priya (priya@x.io)»" in out
@@ -571,84 +561,55 @@ def _made(title: str, minutes: int) -> dict[str, Any]:
 
 async def test_a_retry_does_not_duplicate(monkeypatch) -> None:
     """The first call made row 1 and lost row 2. The model calls again with the
-    same rows, and the member submits the selection card as drawn."""
+    same rows, and the member approves the card as drawn. Mutation: tick a
+    recent twin by default -> this test fails."""
     asked = approve(monkeypatch)
-    drawn = form_stub(monkeypatch, {})
-
-    async def as_drawn(ui: str) -> dict:
-        spec = json.loads(ui)
-        drawn.append(spec)
-        values = {f["name"]: f["value"] for f in spec["props"]["data"]["fields"]}
-        return {"ok": True, "response": f"Review tasks — {json.dumps(values)}"}
-
-    import importlib
-
-    monkeypatch.setattr(importlib.import_module("acb_skills.write_artifact"), "emit_generative_ui",
-                        as_drawn)
     calls = fake_gateway(monkeypatch, _gateway(recent=[_made("book the CATERER", 3)]))
     out = await skill_projects.create_tasks(UUID, THREE)
 
-    fields = drawn[0]["props"]["data"]["fields"]
-    assert [f["value"] for f in fields] == [False, True, True]
-    assert "made 3 min ago, as #12, so it starts unticked" in fields[0]["hint"]
+    rows = asked[0]["rows"]
+    assert [r["checked"] for r in rows] == [False, True, True]
+    assert rows[0]["hint"].endswith(
+        "a task with this title was made 3 min ago, as #12, so it starts unticked"
+    )
     assert [p["json"]["title"] for p in _posts(calls)] == ["Print the badges", "Test the projector"]
-    assert "row 1 left out: «Book the caterer», unticked on the card" in asked[0]["context"]
-    assert "row 1 «Book the caterer»" in out
+    assert (
+        "left out: row 1 «Book the caterer», unticked on the card, because a task with "
+        "this title was made 3 min ago, as #12." in out
+    )
 
 
 async def test_an_old_twin_is_not_a_retry(monkeypatch) -> None:
-    approve(monkeypatch)
-    drawn = form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    asked = approve(monkeypatch)
     fake_gateway(monkeypatch, _gateway(recent=[_made("Book the caterer", F.RECENT_MINUTES + 5)]))
     await skill_projects.create_tasks(UUID, THREE)
-    assert [f["value"] for f in drawn[0]["props"]["data"]["fields"]] == [True, True, True]
+    assert [r["checked"] for r in asked[0]["rows"]] == [True, True, True]
 
 
-async def test_a_twin_the_member_ticks_again_is_made_and_the_card_says_so(monkeypatch) -> None:
-    asked = approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
+async def test_a_twin_the_member_ticks_again_is_made(monkeypatch) -> None:
+    asked = answer_rows(monkeypatch, {"row-1", "row-2", "row-3"})
     calls = fake_gateway(monkeypatch, _gateway(recent=[_made("Book the caterer", 1)]))
     await skill_projects.create_tasks(UUID, THREE)
     assert len(_posts(calls)) == 3
-    assert "Approving makes a second task with this title" in asked[0]["context"]
+    assert "a task with this title was made 1 min ago" in asked[0]["rows"][0]["hint"]
 
 
-async def test_with_no_form_a_recent_twin_stays_out(monkeypatch) -> None:
-    import importlib
 
-    wa = importlib.import_module("acb_skills.write_artifact")
-
-    async def no_surface(_ui: str) -> dict:
-        return {"ok": False}
-
-    monkeypatch.setattr(wa, "emit_generative_ui", no_surface)
-    asked = approve(monkeypatch)
-    calls = fake_gateway(monkeypatch, _gateway(recent=[_made("Book the caterer", 2)]))
-    out = await skill_projects.create_tasks(UUID, THREE)
-    assert [p["json"]["title"] for p in _posts(calls)] == ["Print the badges", "Test the projector"]
-    # Both the card and the receipt say WHY, and never "unticked" (review round 1).
-    why = "because a task with this title was made 2 min ago, as #12"
-    assert f"row 1 left out: «Book the caterer», {why}" in asked[0]["context"]
-    assert f"left out: row 1 «Book the caterer», {why}." in out
-    assert "unticked" not in out
 
 
 async def test_the_card_shows_the_whole_description_it_writes(monkeypatch) -> None:
     """A cut card is not consent (projects_ai_chat.md §13.6 rule 8)."""
     asked = approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
     calls = fake_gateway(monkeypatch, _gateway())
     brief = "Book the hall for 120 people. " * 20 + "The last words."
     rows = json.dumps([{"title": "Book the hall", "description": brief}, {"title": "Pay"}])
     await skill_projects.create_tasks(UUID, rows)
     assert _posts(calls)[0]["json"]["description"] == brief.strip()
-    assert "The last words." in asked[0]["context"]
-    assert "truncated" not in asked[0]["context"]
+    assert asked[0]["rows"][0]["hint"].endswith("The last words.")
 
 
 async def test_the_recent_read_is_one_page_of_the_project(monkeypatch) -> None:
     approve(monkeypatch)
-    form_stub(monkeypatch, {"Add ": ALL_TICKED})
     calls = fake_gateway(monkeypatch, _gateway())
     await skill_projects.create_tasks(UUID, THREE)
     [read] = [c for c in calls if c["method"] == "GET" and c["path"] == "/projects/tasks"]
@@ -927,8 +888,15 @@ def _stored(seeded: dict[str, Any]) -> list[tuple[str, Any]]:
 async def _drive(
     seeded, monkeypatch, rows: list[dict[str, Any]], fake: Any = None
 ) -> tuple[str, list[dict]]:
-    """create_tasks over the real routes, with the selection card submitted as drawn."""
-    import importlib
+    """create_tasks over the real routes, and the REAL ``request_confirmation``.
+
+    The card is answered through ``executor.resolve_user_input``, as the
+    chat's respond-input does, with the rows the tool ticked.
+    """
+    import asyncio
+
+    from acb_skills.ask_tools import ROWS_ANSWER_PREFIX
+    from orchestrator import executor
 
     routes, eng = _real_routes(seeded, monkeypatch)
     calls: list[dict] = []
@@ -938,19 +906,30 @@ async def _drive(
         SimpleNamespace(AsyncClient=lambda **_kw: _RouteClient(calls, fake, routes)),
     )
     monkeypatch.setattr(client, "current_user_email", lambda: "p13@example.test")
-    approve(monkeypatch)
+    queue: asyncio.Queue = asyncio.Queue()
+    token = executor._active_run_queue.set(queue)
+    # The thread that owns the card: only it may answer (H-201).
+    owner = executor._stream_relay_thread_id.set("t-p13-r8")
 
-    async def as_drawn(ui: str) -> dict:
-        spec = json.loads(ui)
-        values = {f["name"]: f["value"] for f in spec["props"]["data"]["fields"]}
-        return {"ok": True, "response": f"Review tasks — {json.dumps(values)}"}
+    async def member() -> None:
+        ev = await queue.get()
+        value = ev["value"]
+        ticked = [r["id"] for r in value["rows"] if r["checked"]]
+        rid = value["request_id"]
+        answer = ROWS_ANSWER_PREFIX + json.dumps({"rows": ticked})
+        assert executor.resolve_user_input(
+            rid, answer, was_freeform=False,
+            thread_id=executor._pending_user_input.owner_of(rid),
+        )
 
-    monkeypatch.setattr(
-        importlib.import_module("acb_skills.write_artifact"), "emit_generative_ui", as_drawn
-    )
+    answering = asyncio.ensure_future(member())
     try:
         out = await skill_projects.create_tasks(seeded["project"], json.dumps(rows))
+        await asyncio.wait_for(answering, timeout=5)
     finally:
+        executor._active_run_queue.reset(token)
+        executor._stream_relay_thread_id.reset(owner)
+        answering.cancel()
         await eng.dispose()
     return out, calls
 
@@ -1001,8 +980,42 @@ async def test_r8_a_retry_over_the_real_list_route_makes_no_second_copy(
     again = [*first, {"title": "Count the kits"}]
     out, calls = await _drive(seeded, monkeypatch, again)
     assert out.startswith("Created 1 task"), out
-    assert "left out: row 1 «Pack the kits», unticked on the card." in out
-    assert "left out: row 2 «Ship the kits», unticked on the card." in out
+    assert "left out: row 1 «Pack the kits», unticked on the card, because" in out
+    assert "left out: row 2 «Ship the kits», unticked on the card, because" in out
     assert [t for t, _ in _stored(seeded)] == ["Pack the kits", "Ship the kits", "Count the kits"]
     [listed] = [c for c in calls if c["method"] == "GET" and c["path"] == "/projects/tasks"]
     assert listed["params"]["project_id"] == seeded["project"]
+
+
+async def test_a_title_longer_than_the_card_label_is_refused(monkeypatch) -> None:
+    """Review round 1: the card shows each title whole, or the batch is refused.
+    A cut card is not consent. Mutation: drop the check -> this test fails."""
+    from acb_skills.ask_tools import ROW_LABEL_MAX
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway())
+    rows = json.dumps([{"title": "x" * (ROW_LABEL_MAX + 1)}, {"title": "Pay"}])
+    out = await skill_projects.create_tasks(UUID, rows)
+    assert f"Row 1: a title is at most {ROW_LABEL_MAX} characters" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_eleven_rows_are_written_in_the_card_order(monkeypatch) -> None:
+    """PR #691 review: the order is the card's, also past row 9. Mutation:
+    sort the rows by their id ("row-10" before "row-2") -> this test fails."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway())
+    titles = [f"Task {n:02d}" for n in range(1, 12)]
+    out = await skill_projects.create_tasks(UUID, json.dumps([{"title": t} for t in titles]))
+    assert [r["id"] for r in asked[0]["rows"]] == [f"row-{n}" for n in range(1, 12)]
+    assert [p["json"]["title"] for p in _posts(calls)] == titles
+    receipt = [ln for ln in out.splitlines() if ln.startswith("- #")]
+    assert [re.search(r"«(.*?)»", ln).group(1) for ln in receipt] == titles
+
+
+async def test_eleven_rows_with_some_unticked_keep_the_card_order(monkeypatch) -> None:
+    answer_rows(monkeypatch, {f"row-{n}" for n in (11, 2, 10, 1)})
+    calls = fake_gateway(monkeypatch, _gateway())
+    titles = [f"Task {n:02d}" for n in range(1, 12)]
+    await skill_projects.create_tasks(UUID, json.dumps([{"title": t} for t in titles]))
+    assert [p["json"]["title"] for p in _posts(calls)] == ["Task 01", "Task 02", "Task 10", "Task 11"]

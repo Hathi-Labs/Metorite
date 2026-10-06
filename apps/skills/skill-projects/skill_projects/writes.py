@@ -140,11 +140,20 @@ def _card_lines(payload: dict[str, Any], *, before: dict[str, Any] | None = None
     return "\n".join(lines)
 
 
-async def _confirm(title: str, detail: str, context: str) -> bool:
-    """One door for every card. Imported inside so a test can stub the gate."""
+async def _confirm(
+    title: str, detail: str, context: str, rows: list[dict[str, Any]] | None = None
+) -> bool | frozenset[str]:
+    """One door for every card. Imported inside so a test can stub the gate.
+
+    With ``rows`` (WS-46 P13 one-card), the card draws one checkbox per row,
+    and the answer is the ``frozenset`` of the ticked row ids: empty when the
+    member did not approve. With no rows, the call is exactly as before.
+    """
     from acb_skills.ask_tools import request_confirmation
 
-    return await request_confirmation(title=title, detail=detail, context=context)
+    if rows is None:
+        return await request_confirmation(title=title, detail=detail, context=context)
+    return await request_confirmation(title=title, detail=detail, context=context, rows=rows)
 
 
 CANCELLED = "Cancelled — nothing was changed."

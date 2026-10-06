@@ -140,7 +140,8 @@ A member may ask for a document, a report file, a Markdown file or a PDF.
 - **A file the member attached.** A message that starts with "📎 Uploaded"
   names each file that the member attached in this chat. Read each one with
   `read_attachment`, and pass the file name or the path that the message
-  shows. It reads `.docx`, `.pdf`, `.txt`, `.md` and `.csv` files. Use it
+  shows. It reads `.docx`, `.xlsx`, `.pdf`, `.html`, `.htm`, `.txt`, `.md`
+  and `.csv` files. Use it
   for an attached document in every chat, and write no code to read one.
   There is no `read_file` tool. In a chat whose commands run in a sandbox
   you also hold the `file_access_*` tools, but they do not give the text of
@@ -233,8 +234,8 @@ make one call.
   Leave out a key that the member did not give.
 - **A bad row stops the batch before any card.** The refusal names the
   row. Fix that row, and call `create_tasks` once more with every row.
-- **The member can untick a row.** The first card lists each task with a
-  checkbox. The second card asks to create the tasks that stay ticked.
+- **The member can untick a row.** The one card lists each task with a
+  checkbox. The member approves once, and the tool creates the ticked tasks.
 - **Read the receipt.** It lists each task that the tool made, with its
   number. It also lists each row that failed, with the reason. Tell the
   member both. Never create a task again that the receipt lists. To try a

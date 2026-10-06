@@ -218,7 +218,8 @@ line — never reclaim a number by deleting the other entry.
      subscribe to `messages`.
   6. Add a payment method, submit the templates of §5.8, and publish the app.
   7. Put the four values of §5.1 in the box `.env`. Never paste them in chat.
-- **Authority:** `specs/whatsapp_assistant_channel.md` §6 · board row WS-47.
+- **The same Meta app also serves the WhatsApp inbox (WS-20 §12).** For that, add the Embedded Signup configuration, the four webhook fields and the Tech Provider App Review of `specs/whatsapp_message_manager.md` §12.5. Do both in one pass.
+- **Authority:** `specs/whatsapp_assistant_channel.md` §6 · `specs/whatsapp_message_manager.md` §12.5 · board rows WS-47 and WS-20.
 - **Added:** 2026-10-06 · the WS-47 spec session.
 
 ### H-250 · Bring the last database connections inside the pool budget · [AGENT]

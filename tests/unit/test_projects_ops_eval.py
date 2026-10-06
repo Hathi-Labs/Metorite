@@ -427,10 +427,10 @@ def _po10(*rows: dict[str, Any], project: str = "Launch", answer: str = "") -> l
 def test_po10_the_known_good_run_passes(harness: R.OpsHarness) -> None:
     record = _run(harness, "PO-10")
     assert record["status"] == "pass", record["failure"]
-    [form] = record["forms"]
-    assert [f["label"] for f in form["fields"]] == [r["title"] for r in S.PO10_ROWS]
-    assert form["fields"][0]["hint"].startswith("Priya Menon · no due date")
-    assert record["cards"][0]["title"] == "Create 3 tasks in «Launch»?"
+    [card] = record["cards"]
+    assert [r["label"] for r in card["rows"]] == [r["title"] for r in S.PO10_ROWS]
+    assert card["rows"][0]["hint"].startswith("Priya Menon (priya.menon@eval.example) · no due")
+    assert card["title"] == "Create 3 tasks in «Launch»?"
 
 
 def test_po10_one_call_per_task_fails(harness: R.OpsHarness) -> None:
@@ -441,7 +441,7 @@ def test_po10_one_call_per_task_fails(harness: R.OpsHarness) -> None:
              ("text", "I added 3 tasks.")]
     spec = dataclasses.replace(T.by_id("PO-10"), cards=(T.APPROVE,) * 3)
     failed = _failed(_run(harness, "PO-10", steps, spec=spec))
-    assert {"one_batch_call", "one_selection_card", "one_card"} <= failed
+    assert {"one_batch_call", "one_card_with_rows", "one_card"} <= failed
 
 
 def test_po10_a_declined_card_fails(harness: R.OpsHarness) -> None:
@@ -451,7 +451,7 @@ def test_po10_a_declined_card_fails(harness: R.OpsHarness) -> None:
 
 
 def test_po10_an_unticked_row_fails(harness: R.OpsHarness) -> None:
-    spec = dataclasses.replace(T.by_id("PO-10"), untick=("row_2",))
+    spec = dataclasses.replace(T.by_id("PO-10"), untick=("row-2",))
     record = _run(harness, "PO-10", _po10(), spec=spec)
     assert _failed(record) == {"three_tasks_in_launch"}
     assert [r["body"]["title"] for r in record["requests"]
@@ -480,33 +480,16 @@ def test_po10_an_answer_without_the_count_fails(harness: R.OpsHarness) -> None:
     assert _failed(_run(harness, "PO-10", steps)) == {"answer_counts_three"}
 
 
-def test_the_runner_answers_a_selection_card_and_no_other_form() -> None:
-    """Review round 1: an edit form or a plan the model should not open stays
-    unanswered, so its run still fails "run_completed"."""
-    from orchestrator import executor
-
-    loop = asyncio.new_event_loop()
-    try:
-        def parked(spec: dict[str, Any]) -> tuple[dict[str, Any], Any]:
-            fut = loop.create_future()
-            executor._pending_user_input["rq"] = fut
-            return {**spec, "request_id": "rq"}, fut
-
-        spec = T.by_id("PO-10")
-        plan, fut = parked({"props": {"name": "planCard", "data": {"tasks": []}}})
-        edit, _ = parked({"props": {"name": "formCard", "data": {
-            "fields": [{"name": "title", "type": "text", "value": "x"}]}}})
-        run = R._Run(stream=None)
-        assert not R._answer_form(run, spec, plan) and not fut.done()
-        assert not R._answer_form(run, spec, edit)
-        pick, fut = parked({"props": {"name": "formCard", "data": {
-            "submitLabel": "Review tasks",
-            "fields": [{"name": "row_1", "type": "checkbox", "value": True}]}}})
-        assert R._answer_form(run, spec, pick) and fut.done()
-        assert fut.result()["answer"] == 'Review tasks — {"row_1": true}'
-    finally:
-        executor._pending_user_input.pop("rq", None)
-        loop.close()
+def test_the_runner_answers_the_rows_of_a_card_as_drawn() -> None:
+    """A card with rows is approved with the rows the tool ticked, minus the
+    task's unticks. A decline and a plain card stay plain words."""
+    rows = [{"id": "row-1", "checked": True}, {"id": "row-2", "checked": True},
+            {"id": "row-3", "checked": False}]
+    assert R.card_answer(T.APPROVE, rows, ()) == 'APPROVE {"rows": ["row-1", "row-2"]}'
+    assert R.card_answer(T.APPROVE, rows, ("row-2",)) == 'APPROVE {"rows": ["row-1"]}'
+    assert R.card_answer(T.DECLINE, rows, ()) == T.DECLINE
+    assert R.card_answer(T.APPROVE, [], ()) == T.APPROVE
+    assert not hasattr(R, "_answer_form"), "the runner answers no form card"
 
 
 def test_a_covered_sweep_that_ran_uncovered_fails(

@@ -21,10 +21,10 @@ and ``propose_plan`` through ``create_project``, ``create_task`` (which
 assigns through ``assign``) and ``link_tasks``. Before each card it reads
 ``POST /projects/plan/preview``, which writes nothing (S7d, §13.6).
 
-``create_tasks`` (WS-46 P13) is the same two gestures for several new tasks
-in a project that exists: a selection card with one checkbox per task, then
-one confirmation card for the ticked tasks. It writes through
-``create_task``'s own write path, one task at a time.
+``create_tasks`` (WS-46 P13) makes several new tasks in a project that
+exists, under ONE confirmation card with one checkbox per task
+(``request_confirmation`` rows). The member's one Approve names the ticked
+tasks. It writes through ``create_task``'s own write path, one task at a time.
 """
 
 from __future__ import annotations
@@ -1072,9 +1072,9 @@ async def _write_plan(
 # Spec: ``projects_agent_parity.md`` §12, slice P13. On 2026-10-06 a member
 # asked for nine tasks in a project that existed. No tool took several
 # top-level tasks, so the model made nine create_task calls and nine cards
-# at once. This tool takes the batch in ONE call. A selection card lets the
-# member untick a row, and ONE confirmation card then covers every ticked
-# row. Each row goes through create_task's own write path
+# at once. This tool takes the batch in ONE call, under ONE confirmation
+# card with a checkbox for each row. The member's one Approve names the
+# ticked rows. Each row goes through create_task's own write path
 # (``writes._prepare_new_task``, then the two halves of
 # ``writes._create_new_task``: ``_post_new_task`` and ``_follow_new_task``).
 
@@ -1130,7 +1130,6 @@ RECENT_MINUTES = 10
 #: The read that finds those tasks. The list route sorts by ``created_at``,
 #: newest first, by default, so one page holds every recent task.
 RECENT_PAGE = 50
-NOTHING_TICKED = "Every task was unticked on the card, so nothing was created."
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
@@ -1144,10 +1143,10 @@ class _BatchRow:
         self.new = new
         #: A task with this title made in the last :data:`RECENT_MINUTES`.
         self.recent: dict[str, Any] | None = None
-        #: Assignees, due date and status, in plain words (the selection card).
-        self.plain = ""
         #: The full line of the confirmation card, fenced.
         self.line = ""
+        #: The same facts with no title: the row's hint on the card.
+        self.facts = ""
 
 
 def _batch_items(raw: Any) -> list[dict[str, Any]] | str:
@@ -1319,7 +1318,7 @@ async def _names_of(who: list[str]) -> tuple[dict[str, str], list[str]]:
 
 
 def _person(who: str, names: dict[str, str]) -> str:
-    """The NAME the directory gives an address, for the selection card."""
+    """The NAME the directory gives an address, or the address itself."""
     if who.startswith("agent:"):
         return f"agent {who.removeprefix('agent:')}"
     return names.get(who.lower()) or who
@@ -1350,7 +1349,7 @@ async def _recent_titles(pid: str) -> dict[str, dict[str, Any]]:
 
     The create route takes no idempotency key (``TaskIn``), so a retry of a
     batch that half landed would make each landed task twice. This read
-    before the card finds them, and the selection card starts them unticked.
+    before the card finds them, and the card starts them unticked.
     The read takes the triage lane too, because a create can land a task
     there and the list hides it by default (review round 2).
     """
@@ -1382,9 +1381,8 @@ def _recent_note(row: dict[str, Any]) -> str:
 def _describe(
     p: _BatchRow, names: dict[str, str], first_lane: str
 ) -> None:
-    """Fill the row's plain words and its confirmation line."""
+    """Fill the row's facts and its confirmation line."""
     payload = p.new.payload
-    people = [_person(w, names) for w in p.new.who]
     due = str(payload.get("due_at") or "")
     if "status_id" in payload or "parent_task_id" in payload:
         lane = p.new.status_label
@@ -1393,13 +1391,6 @@ def _describe(
     # `_parent_lane_label` fences the lane name itself. Fence a bare name
     # once, and never a fenced one twice (review round 2).
     lane_card = lane if "«" in lane else data(lane)
-    p.plain = " · ".join(
-        [
-            ", ".join(people) if people else "nobody assigned",
-            f"due {_day_words(due)}" if due else "no due date",
-            _plain(lane.replace("«", "").replace("»", "")),
-        ]
-    )
     facts = [
         ", ".join(_person_card(w, names) for w in p.new.who) if p.new.who else "nobody assigned",
         f"due {_day_words(due)}" if due else "no due date",
@@ -1424,7 +1415,8 @@ def _describe(
         # (projects_ai_chat.md §13.6 rule 8), so a batch too long for the
         # card is refused by `_fits_on_card` instead (review round 1).
         facts.append("description " + data(payload["description"]))
-    p.line = f"{data(p.title)} · " + " · ".join(facts)
+    p.facts = " · ".join(facts)
+    p.line = f"{data(p.title)} · {p.facts}"
 
 
 def _parent_words(parent: dict[str, Any], pid: str) -> str:
@@ -1437,101 +1429,66 @@ def _parent_words(parent: dict[str, Any], pid: str) -> str:
     return out
 
 
-def _left_why(p: _BatchRow, drawn: bool) -> str:
-    """Why a row is not on the confirmation card, in the member's words."""
-    if not drawn and p.recent is not None:
-        return f"because {_recent_note(p.recent)}"
+def _left_why(p: _BatchRow) -> str:
+    """Why a row is not written, in the member's words."""
+    if p.recent is not None:
+        return f"unticked on the card, because {_recent_note(p.recent)}"
     return "unticked on the card"
 
 
-def _batch_card(
-    node: dict[str, Any],
-    rows: list[_BatchRow],
-    left: list[_BatchRow],
-    strangers: list[str],
-    drawn: bool = True,
-) -> dict[str, Any]:
-    """The confirmation card: every task that will be made, and what is left out.
+def _row_id(p: _BatchRow) -> str:
+    """The row's id on the card. The answer names these ids, and nothing else."""
+    return f"row-{p.index}"
 
-    Each line carries the row's number from the call, as the receipt does, so
-    "row 3" means one task on both (review round 1).
+
+def _unfenced(text: str) -> str:
+    return " ".join(str(text).replace("«", "").replace("»", "").split())
+
+
+def _card_row(p: _BatchRow) -> dict[str, Any]:
+    """One checkbox of the card: the title, every fact the POST sends, and a
+    recent twin's reason. A row with a twin starts unticked."""
+    hint = _unfenced(p.facts)
+    if p.recent is not None:
+        hint += f" · {_recent_note(p.recent)}, so it starts unticked"
+    return {"id": _row_id(p), "label": _plain(p.title), "hint": hint, "checked": p.recent is None}
+
+
+def _batch_card(node: dict[str, Any], rows: list[_BatchRow], strangers: list[str]) -> dict[str, Any]:
+    """The confirmation card's body. The rows themselves are its checkboxes.
+
+    The title names the project and the count, and the rows carry every
+    fact, so the body repeats neither (PR #691 review: "Tasks 4" read wrong
+    once a row was unticked). It keeps a warning about an unknown address.
+    ``node`` and ``rows`` stay in the signature for the fit measure.
     """
-    card: dict[str, Any] = {"project": data(node.get("name")), "tasks": len(rows)}
-    for p in rows:
-        card[f"row {p.index}"] = p.line
-        if p.recent is not None:
-            card[f"row {p.index} check"] = (
-                f"{_recent_note(p.recent)}. Approving makes a second task with this title."
-            )
-    for p in left:
-        card[f"row {p.index} left out"] = f"{data(p.title)}, {_left_why(p, drawn)}"
+    del node, rows
+    card: dict[str, Any] = {}
     if strangers:
         card["not in the directory"] = ", ".join(strangers)
-    card["note"] = (
-        "Each task is its own write. A task that fails does not stop the others, "
-        "and the receipt names it."
-    )
     return card
 
 
-def _ticked(value: Any) -> bool:
-    return value is True or str(value).strip().lower() in ("true", "yes")
+def _fits(node: dict[str, Any], rows: list[_BatchRow], strangers: list[str]) -> bool:
+    """Does the whole batch, every row's facts included, fit on one card?
 
-
-async def _pick(
-    node: dict[str, Any], rows: list[_BatchRow]
-) -> tuple[set[int], bool] | str:
-    """The rows the member keeps ticked on the selection card, and whether the
-    card was drawn. Or the reason that nothing goes on.
-
-    The card is the ``formCard`` template with one checkbox per row, ticked by
-    default. A row with a recent twin starts unticked. The card is not
-    consent: the confirmation card after it is (``_confirm``). With no chat
-    surface to draw it, the confirmation card alone carries the batch, and
-    a row with a recent twin stays out. Both cards then say why.
+    A cut card is not consent (``projects_ai_chat.md`` §13.6 rule 8). The
+    measure is the body and one line for each row, as ``_fits_on_card``
+    counts a card.
     """
-    fields = [
-        {
-            "name": f"row_{p.index}",
-            "label": _plain(p.title),
-            "type": "checkbox",
-            "value": p.recent is None,
-            "hint": p.plain
-            + (f" · {_recent_note(p.recent)}, so it starts unticked" if p.recent else ""),
-        }
-        for p in rows
-    ]
-    n = len(rows)
-    result = await _emit(
-        {
-            **_template(
-                "formCard",
-                {
-                    "title": f"Add {n} task{'s' if n != 1 else ''} to {_plain(node.get('name'))}",
-                    "description": (
-                        "Untick a task to leave it out. A confirmation card follows, and "
-                        "nothing is created until you approve it."
-                    ),
-                    "submitLabel": "Review tasks",
-                    "fields": fields,
-                },
-            ),
-            "hitl": True,
-        }
-    )
-    if not result.get("ok"):
-        kept = {p.index for p in rows if p.recent is None}
-        if not kept:
-            return (
-                f"Each task has a twin made in the last {RECENT_MINUTES} minutes, so nothing "
-                "was created. Read list_tasks for this project to see them."
-            )
-        return kept, False
-    values = _answer(result.get("response"))
-    if values is None:
-        return NOT_SUBMITTED
-    picked = {p.index for p in rows if _ticked(values.get(f"row_{p.index}"))}
-    return (picked, True) if picked else NOTHING_TICKED
+    card = _batch_card(node, rows, strangers)
+    for p in rows:
+        card[f"row {p.index}"] = p.line
+        if p.recent is not None:
+            card[f"row {p.index} check"] = _recent_note(p.recent)
+    return _fits_on_card(card)
+
+
+#: The answer of a card that named a row it did not offer.
+FORGED_ROWS = (
+    "Refused: the card answered with a row it did not offer, so nothing was created. "
+    "Tell the member, and do not try again."
+)
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
@@ -1548,13 +1505,13 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     important and leveraged, type (by NAME), and fields (a JSON object keyed
     by field NAME). A repeating task is create_task with repeat, not this
     tool. Every name is checked before any card, and one bad row refuses the
-    whole batch and names the row. The member then sees one selection card,
-    where they can untick a row, and one confirmation card for the ticked
-    rows. A task with the same title made in this project in the last 10
-    minutes starts unticked, so a retry makes no second copy. Each row is
-    its own write: a row that fails does not stop the others, and the
-    receipt names each task made and each row that failed. Never create a
-    task again that the receipt lists. Archive is the undo."""
+    whole batch and names the row. The member then sees ONE card with a
+    checkbox for each task, and approves the ticked tasks once. A task with
+    the same title made in this project in the last 10 minutes starts
+    unticked, so a retry makes no second copy. Each row is its own write: a
+    row that fails does not stop the others, and the receipt names each task
+    made and each row that failed. Never create a task again that the
+    receipt lists. Archive is the undo."""
     pid = uuid_of(project_id, "project_id")
     items = _batch_items(tasks)
     if isinstance(items, str):
@@ -1573,26 +1530,37 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     for p in rows:
         p.recent = recent.get(p.title.lower())
         _describe(p, names, first_lane)
-    if not _fits_on_card(_batch_card(node, rows, [], strangers)):
+    from acb_skills.ask_tools import ROW_LABEL_MAX
+
+    long = next((p for p in rows if len(p.title) > ROW_LABEL_MAX), None)
+    if long is not None:
+        return (
+            f"Row {long.index}: a title is at most {ROW_LABEL_MAX} characters, because the "
+            "card shows each title whole. Put the rest in description. Nothing was created."
+        )
+    if not _fits(node, rows, strangers):
         return (
             f"These {len(rows)} tasks do not fit on one confirmation card. Split them into "
             "two calls. Nothing was created."
         )
-    picked = await _pick(node, rows)
-    if isinstance(picked, str):
-        return picked
-    ticked, drawn = picked
-    chosen = [p for p in rows if p.index in ticked]
-    left = [p for p in rows if p.index not in ticked]
-    k = len(chosen)
-    if not await _confirm(
-        title=f"Create {k} task{'s' if k != 1 else ''} in {data(node.get('name'))}?",
-        detail=f"one batch · {k} task{'s' if k != 1 else ''}"
-        + (f" · {len(left)} left out" if left else ""),
-        context=_fields_block(_batch_card(node, chosen, left, strangers, drawn)),
-    ):
+    n = len(rows)
+    ticked = await _confirm(
+        title=f"Create {n} task{'s' if n != 1 else ''} in {data(node.get('name'))}?",
+        detail=f"one batch in {data(node.get('name'))} · untick a task to leave it out",
+        context=_fields_block(_batch_card(node, rows, strangers)),
+        rows=[_card_row(p) for p in rows],
+    )
+    # The card answers with the ticked ids (`request_confirmation` rows). It
+    # already refuses an id it did not offer. This checks again, so a door
+    # that answers anything else writes nothing.
+    if not isinstance(ticked, frozenset) or not ticked:
         return CANCELLED
-    return await _write_batch(pid, node, chosen, left, drawn, names)
+    offered = {_row_id(p) for p in rows}
+    if not ticked <= offered:
+        return FORGED_ROWS
+    chosen = [p for p in rows if _row_id(p) in ticked]
+    left = [p for p in rows if _row_id(p) not in ticked]
+    return await _write_batch(pid, node, chosen, left, names)
 
 
 def _uncertain(exc: Exception) -> bool:
@@ -1679,7 +1647,6 @@ async def _write_batch(
     node: dict[str, Any],
     chosen: list[_BatchRow],
     left: list[_BatchRow],
-    drawn: bool = True,
     names: dict[str, str] | None = None,
 ) -> str:
     """One write per ticked row, in order, and the receipt. It never raises.
@@ -1709,7 +1676,7 @@ async def _write_batch(
         if after is not None:
             out.unsaved.append(_unsaved(task, after[1]))
     lanes = await _lane_names(pid)
-    return _batch_receipt(node, chosen, left, out, lanes, drawn, names or {})
+    return _batch_receipt(node, chosen, left, out, lanes, names or {})
 
 
 def _head(where: str, many: int, out: _Outcome) -> str:
@@ -1748,7 +1715,6 @@ def _batch_receipt(
     left: list[_BatchRow],
     out: _Outcome,
     lanes: dict[str, str],
-    drawn: bool = True,
     names: dict[str, str] | None = None,
 ) -> str:
     many = len(chosen)
@@ -1774,7 +1740,7 @@ def _batch_receipt(
             "create them again. To retry a failed row, call create_tasks with that row alone."
         )
     lines.extend(
-        f"left out: row {p.index} {data(p.title)}, {_left_why(p, drawn)}." for p in left
+        f"left out: row {p.index} {data(p.title)}, {_left_why(p)}." for p in left
     )
     return "\n".join(lines)
 
