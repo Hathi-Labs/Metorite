@@ -7276,7 +7276,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G8** | 🟢 AGENT-SAFE · visual review | The connect UI: availability, copy, the Workspace admin help (GM-24, GM-26, GM-27) | After EM-G7 (E-D1). Merges dark | M | §12.3.10 |
 | **EM-G9** | 🟢 AGENT-SAFE · R8 | Parity of a Gmail and Outlook pair, and the known limits | After EM-G2 and EM-G3a | S | §12.3.11 |
 | **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
-| **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | 📝 SPECIFIED (2026-10-06). The known limits f3, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
+| **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | 📝 SPECIFIED, audited GO-NARROWED (2026-10-06). The known limits f3, f5, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
@@ -8528,8 +8528,9 @@ the DraftCard had the same order. This round closes the P1 and the findings belo
 
 #### 12.3.3c EM-G3c-3 — the known limits of the composer autosave
 
-**Status.** 📝 SPECIFIED (2026-10-06). Not audited. It takes the known limits that EM-G3c-2 left
-open (§12.3.3b). EM-T10 fixed f2, f6 and f10.
+**Status.** 📝 SPECIFIED (2026-10-06). Audited 2026-10-06, GO-NARROWED. The audit checked each
+anchor against the code. It decided the shape of f8, included f5, and recorded f13. The slice takes
+the known limits that EM-G3c-2 left open (§12.3.3b), apart from f2, f6 and f10.
 
 **Gate.** 🟢 AGENT-SAFE. UI only. No migration, no flag and no gateway change. The three composers
 are LIVE for each Outlook member, so the slice takes the full review loop and a visual check.
@@ -8556,46 +8557,80 @@ are LIVE for each Outlook member, so the slice takes the full review loop and a 
 
 **Scope.**
 
-1. **A drain for one session (f7).** `createAutosave` tags each save with the session that
-   scheduled it. `drain(session)` drops the pending save and the waiting saves of that session
-   only. A waiting save of an ended session still runs. It updates its own draft through
-   `draftToUpdate`. The promise settles when each save before the drain settles.
-2. **A failed save is an unsaved edit (f9).** Pop out hands over `unsavedEdit: true` in two cases.
-   The drain dropped a save, or the last save failed (`draftStatus` is `not-saved` or `too-large`).
-3. **A discard finds the draft of the session (f12).** A discard deletes the last draft that its
-   session saved, in the mailbox that the save used. It does not compare the From of now. It also
-   deletes the stale drafts of the session. All three composers use one helper in
-   `lib/draftAutosave.ts`.
-4. **A pick counts the picks that are still being read (f3).** Each composer keeps the bytes of the
-   picks that it reads now. `pickProblem` counts them with the files that it holds.
-5. **The hand-over survives a New (f8).** The audit picks the shape. One option: Pop out opens
-   the composer before the drain, in a state that waits for the hand-over. Another option: the
-   store keeps a pending hand-over, and an open of New while it waits takes the hand-over.
+1. **A drain for one session (f7).** `schedule(run, waitMs, session)` tags each save with its
+   session. `drain(session)` drops the pending save and the waiting saves of that session only. It
+   starts a pending save of another session, as `flush` does. A waiting save of another session
+   still runs. The promise settles when the end of the chain settles. It gives true when it dropped
+   a save of its own session. The DraftCard passes session 0, because its key gives each draft its
+   own card.
+2. **A pop-out always hands over an unsaved edit (f9).** Pop out passes `unsavedEdit: true` in each
+   case. So the first save of the composer writes the text that the member sees into the draft.
+   This costs one save. The pop-out does not read `draftStatus`. The closure of the click cannot
+   see a save that fails during the drain.
+3. **A discard deletes each draft of its session (f12).** Add
+   `draftsToDiscard(session, live, last, stale)` to `lib/draftAutosave.ts`. It gives
+   `live.draftId` when the session is live. It gives `last.id` when `last.session` is the session,
+   in any mailbox. It also gives each stale id, with no duplicate. A discard reads the session and
+   the stale list before its drain. It calls the helper after the drain. ComposePanel and
+   EmailDetail use it.
+4. **A late save deletes the draft of the old mailbox (f5).** Add
+   `supersededDraft(save, last, savedId)`. It gives `last.id` only in one case. `last.session`
+   is the session of the save, `last.from` is another mailbox, and `last.id` is not `savedId`. Else
+   it gives null. The ended-session branch of each composer calls it after a save
+   that succeeds. The call comes before the branch writes `lastSaveRef`. The composer deletes the
+   draft that it gives.
+5. **A pick counts the picks that are being read (f3).** `pickProblem(held, picked, readingBytes)`
+   adds the bytes that are being read. `holdPick(counter, picked)` adds the bytes of the pick and
+   gives a release function. A second call of the release does nothing. Each composer calls the
+   release in a `finally`, after it adds the files. So a failed read releases its bytes. No session
+   resets the counter.
+6. **Pop out opens the composer at once (f8).** `popOutToComposer` calls `openCompose` before its
+   first `await`. It passes the text and a `handOver` promise. The promise settles after the drain,
+   with `draftId` and `draftHasFile`. Add `autosave.after(promise)`, which puts the promise at the
+   head of the chain. So each save, Send and Discard of the composer waits for the hand-over. The
+   composer applies the hand-over only while the session that opened it is live.
 
-**Open for the audit.** f5 (§12.3.3b) is close to f12. A save that ends after a switch leaves its
-draft in the old mailbox. The audit decides if item 3 covers it, or if it stays a known limit.
+**Why the composer opens at once (f8).** Three controls stay live while the drain waits: the New
+button of `EmailToolbar.tsx`, the New button of `EmailList.tsx` and the "c" key (`page.tsx`). The
+open modal covers both buttons, and `composeOpen` stops the key. A pending hand-over in the store
+leaves the gap open, and it needs merge logic.
+
+**Known limit EM-G3c-3-f13 (found in the audit, on `main` before it).** Pop out hands over no
+files. `openCompose` takes no attachments, and no inline save carries files. So a pop-out drops the
+files of the reply with no signal. A later slice owns it.
 
 **Non-goals.** f4 stays. A flushed save that fails after a close shows nothing, and `main` never
 tried that save. f11 stays. The proxy stops a save after 30 seconds, so a drain waits 30 seconds at
 most. Each Send shows its state while it waits. No change to the gateway or to the Gmail upload.
 
-**Fences (R7).** `src/app/email/lib/draftAutosave.test.ts` holds each rule, because vitest has no
-DOM in this package.
+**Fences (R7).** `src/app/email/lib/draftAutosave.test.ts` holds each rule that can live in the
+lib, because vitest has no DOM in this package. A source fence holds each rule that can live only in
+EmailDetail.
 
 - `email-drain-own-session`: a drain of session 2 keeps the waiting save of session 1, and that
-  save runs.
-- `email-popout-failed-save`: a pop-out after a failed save hands over `unsavedEdit: true`.
-- `email-discard-old-mailbox`: a discard after a change of From deletes the draft of the old
-  mailbox.
-- `email-pick-in-flight`: a second pick that fits alone, but not with a pick being read, is
-  refused.
-- `email-popout-handover`: an open of New during a pop-out keeps the hand-over.
-- A source fence checks that each composer calls the shared helpers.
+  save runs. The drain gives false.
+- `email-popout-unsaved`: a source fence finds `unsavedEdit: true,` in the defaults of
+  `popOutToComposer`.
+- `email-discard-old-mailbox`: `draftsToDiscard` gives the old-mailbox id and each stale id. It
+  gives no id of another session.
+- `email-switch-old-mailbox`: `supersededDraft` gives the old id for one session with two
+  mailboxes. It gives null for another session.
+- `email-pick-in-flight`: a second pick that fits alone, but not with a pick that is being read, is
+  refused. A release after a failed read frees its bytes once.
+- `email-popout-handover`: a save scheduled after `after(p)` starts only when p settles. A source
+  fence finds `openCompose({` before the first `await` in `popOutToComposer`.
+- A source fence checks that each composer passes a session to `schedule` and `drain`, and calls
+  each helper.
 
-**Mutations.** M1 makes the drain drop each session again, and `email-drain-own-session` fails. M2
-reads `unsavedEdit` from the drain only, and `email-popout-failed-save` fails. M3 compares the From
-of now in the discard, and `email-discard-old-mailbox` fails. M4 drops the in-flight bytes from the
-pick check, and `email-pick-in-flight` fails.
+**Mutations.** Each mutation must turn its fence red.
+
+- M1 drops each session in the drain. `email-drain-own-session` fails.
+- M2 hands over the result of the drain. `email-popout-unsaved` fails.
+- M3 compares the From in `draftsToDiscard`. `email-discard-old-mailbox` fails.
+- M4 drops `readingBytes`. `email-pick-in-flight` fails.
+- M5 makes the release run twice. `email-pick-in-flight` fails.
+- M6 awaits the drain before `openCompose`. `email-popout-handover` fails.
+- M7 ignores the session in `supersededDraft`. `email-switch-old-mailbox` fails.
 
 **Verify with.**
 
