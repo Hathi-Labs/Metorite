@@ -2339,9 +2339,37 @@ async def upsert_draft(
         return await _fetch_message_dict(db, local_id)
 
 
+class DraftExpect(BaseModel):
+    """The recipients that the chat card showed (WS-17 EM-T13b-1)."""
+
+    to: list[str] = []
+    cc: list[str] = []
+    bcc: list[str] = []
+
+
 class DraftSendRequest(BaseModel):
     account_id: str
     draft_id: str  # local email_messages id of the draft to send
+    # The email assistant sends what its card showed. None (the UI, and an
+    # older agent) checks nothing, as before.
+    expect: DraftExpect | None = None
+
+
+#: The answer when the row no longer holds the recipients of the card.
+DRAFT_RECIPIENTS_CHANGED_DETAIL = (
+    "The recipients of this draft changed. Nothing was sent.")
+
+
+def _draft_matches(drow: Any, expect: DraftExpect) -> bool:
+    """True when each address set of the row equals the set of the card.
+
+    The compare is in lower case, and the order does not count (EM-T13b-1)."""
+    pairs = ((expect.to, drow.to_addresses), (expect.cc, drow.cc_addresses),
+             (expect.bcc, drow.bcc_addresses))
+    return all(
+        {a.lower() for a in shown} == {a.lower() for a in _draft_addresses(col)}
+        for shown, col in pairs
+    )
 
 
 @router.post("/drafts/send")
@@ -2363,6 +2391,11 @@ async def send_draft_endpoint(
         ), {"id": req.draft_id, "aid": req.account_id})).fetchone()
         if not drow:
             raise HTTPException(status_code=404, detail="Draft not found")
+        # Send only what the card of the email assistant showed. A changed
+        # row answers 409 before any provider call (EM-T13b-1).
+        if req.expect is not None and not _draft_matches(drow, req.expect):
+            raise HTTPException(
+                status_code=409, detail=DRAFT_RECIPIENTS_CHANGED_DETAIL)
         async with provider_session(
             db, user.email or "anonymous", account_id=req.account_id,
         ) as sess:
