@@ -1,10 +1,12 @@
 """Transport · accounts — connected WhatsApp Business numbers (list/create/delete).
 
-Creation is the tail of the Meta Embedded Signup flow: the frontend completes the
-coexistence handshake with Meta and posts the resulting identifiers + system-user
-token here, which we encrypt and store. There is no polling scheduler — Meta
-pushes events to the webhook — so an account is "live" as soon as its webhook is
-subscribed.
+``POST /whatsapp/accounts`` is the manual path. The member pastes the ids and a
+token, Meta confirms them, and the row is saved with ``sync_status='importing'``.
+The Embedded Signup path (``connect.embedded_signup``) uses the same
+``persist_account``. It subscribes the app to the WABA as a hard step first, so
+it saves its row as ``'live'`` (WS-20 WA-C2). There is no polling scheduler,
+because Meta pushes events to the webhook. The manual path does not subscribe
+the app, so it keeps ``'importing'`` (spec §12.3 F6, open).
 """
 
 from __future__ import annotations
@@ -165,6 +167,7 @@ async def persist_account(
     credentials: dict[str, Any],
     webhook_verify_token: str | None,
     verified_profile: dict[str, Any],
+    sync_status: str = "importing",
 ) -> Any:
     """Encrypt the credentials + insert a wa_account, returning the row. Shared by
     the manual create route AND the Embedded Signup flow (W12) so both write the
@@ -175,6 +178,10 @@ async def persist_account(
     that Meta returned for this token and this number, from
     ``verify_cloud_number`` or from the Embedded Signup check. So no path can
     insert a Cloud API row that Meta did not confirm (WA-C1 review P1).
+
+    ``sync_status`` is the first status of the row. The Embedded Signup path
+    passes ``'live'``, because it subscribed the app to the WABA before it
+    calls this. The manual path keeps the default (WS-20 WA-C2 P3).
 
     The read-first check below sees only this member's rows in this tenant.
     Under FORCE RLS a row of another member or another org is invisible to it.
@@ -227,7 +234,7 @@ async def persist_account(
                        sync_status, is_default)
                     VALUES
                       (:id, :uid, :phone, :pnid, :waba, :name, :creds, :verify,
-                       'importing', :is_default)
+                       :sync_status, :is_default)
                     RETURNING id, phone_number, phone_number_id, waba_id,
                               display_name, avatar_color, sync_status, sync_error,
                               history_import_phase, quality_rating, last_synced_at,
@@ -235,7 +242,8 @@ async def persist_account(
             {"id": str(uuid4()), "uid": user_id,
              "phone": phone_number, "pnid": phone_number_id,
              "waba": waba_id, "name": display_name, "creds": encrypted,
-             "verify": webhook_verify_token, "is_default": is_first},
+             "verify": webhook_verify_token, "sync_status": sync_status,
+             "is_default": is_first},
         )
     except IntegrityError as exc:
         if _is_unique_violation(exc):
