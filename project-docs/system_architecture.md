@@ -452,6 +452,7 @@ flowchart TD
 
 ### ADR-007: WhatsApp via Meta Cloud API + dedicated agent number
 - **Decision:** Provision new business number; MAF skill (`skill-whatsapp-send`) handles webhook processing.
+- **Realised by WS-47 (2026-10-06):** `specs/whatsapp_assistant_channel.md` owns the dedicated number as a channel for members to talk to Metorite.
 
 ### ADR-008: LiteLLM gateway + RouteLLM + Anthropic/OpenAI prompt caching — **implemented (2026-07-03)**
 - **Decision:** litellm SDK for unified routing; Anthropic `cache_control` + OpenAI automatic caching on stable prefixes (50–90% cost reduction); RouteLLM in Phase 5.
