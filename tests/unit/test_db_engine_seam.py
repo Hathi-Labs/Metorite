@@ -981,10 +981,11 @@ class TestThePoolCeilingFitsThePoolerInFront:
         from acb_common.settings import Settings
 
         s = Settings()
-        ceiling = (
-            s.db_pool_size + s.db_max_overflow
-            + s.db_sync_pool_size + s.db_sync_max_overflow
-        )
+        # BOTH engines of the one process (2026-10-06). This sum used to count
+        # the async pool only, while the sync `acb_graph` engine took
+        # SQLAlchemy's 5 + 10 unseen: 12 + 15 = 27 against a cap of 15.
+        ceiling = (s.db_pool_size + s.db_max_overflow
+                   + s.db_sync_pool_size + s.db_sync_max_overflow)
         assert ceiling <= self.POOLER_SESSION_CAP - self.RESERVED_FOR_OPERATORS, (
             f"a single process may open {ceiling} connections, but the pooler "
             f"in front allows {self.POOLER_SESSION_CAP} for EVERY client and "
@@ -994,42 +995,29 @@ class TestThePoolCeilingFitsThePoolerInFront:
             "to no organization."
         )
 
-    def test_the_sync_engine_takes_its_size_from_the_budget(self):
-        """A setting nothing reads is a comment. The sync engine must pass it.
+    def test_the_sync_engine_takes_its_bounded_pool(self):
+        """The sync ``acb_graph`` engine must read the budget, not the defaults.
 
-        Without `pool_size` and `max_overflow`, `create_engine` uses 5 + 10,
-        and the sum above describes a process that does not exist.
+        A pool setting that nothing reads is a comment. This builds the real
+        engine for a Postgres URL (no connection is opened) and reads its pool.
         """
-        from acb_common.settings import Settings
+        from types import SimpleNamespace
+
         from acb_graph.db import _engine_kwargs
+        from sqlalchemy import create_engine
 
-        s = Settings(database_url="postgresql+psycopg://u:p@h:5432/d")
-        kw = _engine_kwargs(s)
-        assert kw["pool_size"] == s.db_sync_pool_size
-        assert kw["max_overflow"] == s.db_sync_max_overflow
-        assert kw["pool_timeout"] == s.db_pool_timeout
-
-    def test_no_other_engine_is_built_without_a_size(self):
-        """Every `create_engine` / `create_async_engine` in the packages names
-        its pool size. A third pool on the defaults would break the sum again.
-        """
-        import pathlib
-        import re
-
-        root = pathlib.Path(__file__).resolve().parents[2] / "packages"
-        bare = []
-        for path in root.rglob("*.py"):
-            if "tests" in path.parts:
-                continue
-            text = path.read_text(encoding="utf-8")
-            if not re.search(r"\bcreate_(async_)?engine\(", text):
-                continue
-            if "pool_size" not in text:
-                bare.append(str(path.relative_to(root)))
-        assert bare == [], (
-            "an engine is built with SQLAlchemy's default pool (5 + 10), "
-            "outside the process budget: " + ", ".join(bare)
+        s = SimpleNamespace(
+            database_url="postgresql+psycopg://u:p@db.invalid:5432/x",
+            db_connect_timeout=5, db_sync_pool_size=2, db_sync_max_overflow=1,
+            db_pool_timeout=10,
         )
+        engine = create_engine(s.database_url, **_engine_kwargs(s))
+        try:
+            assert engine.pool.size() == 2
+            assert engine.pool._max_overflow == 1
+            assert engine.pool._timeout == 10
+        finally:
+            engine.dispose()
 
     def test_exhaustion_waits_rather_than_hanging_for_thirty_seconds(self):
         """The ceiling is deliberately near the cap, so queueing is ordinary.

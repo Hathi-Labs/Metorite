@@ -99,8 +99,8 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `rg -n "psycopg.connect\(" packages/acb_common/acb_common/org_settings.py packages/acb_llm/acb_llm/model_config.py packages/acb_llm/acb_llm/key_store.py`.
   A hit means part 1 is open.
 - **Why:** Supabase's session pooler allows 15 clients for the whole
-  database. NS-11 (2026-10-06) sized both pools to fit: async 8 + 1 and
-  sync 2 + 1. The 2026-10-06 review found three more gaps.
+  database. PR #662 (2026-10-06) sized both pools to fit: async 7 + 2 and
+  sync 2 + 1. The NS-11 review the same day found three more gaps.
   1. **Bare connects outside both pools.** `org_settings` opens two per
      full page load (appearance and branding). `model_config.load_blob` and
      `KeyStore._execute` on a cache miss open more. During a migration, a

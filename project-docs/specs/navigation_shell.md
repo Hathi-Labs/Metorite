@@ -556,8 +556,8 @@ The box logged about 590 refusals (`EMAXCONNSESSION`) in two days, during
 deploys and at busy moments. Each one became a 500, and the shell ignores a
 500 on purpose. NS-11 changes three things:
 
-1. **The budget.** Async 8 + 1 and sync 2 + 1, so 12 for both pools. The
-   fence now sums both pools. Three slots stay free. A migration run, the
+1. **The budget.** PR #662 landed it the same day: async 7 + 2 and sync
+   2 + 1, so 12 for both pools. Its fence sums both pools. Three slots stay free. A migration run, the
    backup and an operator's `psql` use them. So do a few bare
    `psycopg.connect()` calls that are still outside both pools. H-250 moves those calls in.
 2. **The answer.** A refused connection is a 503 with `Retry-After` and the
@@ -865,8 +865,8 @@ Done when, all met:
 
 Done when, all met:
 
-1. `Settings` holds a budget of 12 for both pools: async 8 + 1, sync 2 + 1.
-   The sync engine of `acb_graph.db` reads its size from it.
+1. The budget of #662 holds: 12 for both pools, async 7 + 2 and sync 2 + 1.
+   NS-11 does not change it.
 2. A refused or timed-out database connection answers 503 with `Retry-After`
    and the code `db_busy`, and the body names no pooler. Any other exception
    keeps the bare 500.

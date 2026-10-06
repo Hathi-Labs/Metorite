@@ -92,34 +92,23 @@ class Settings(BaseSettings):
     # re-verifying against it. Session mode is what this deployment is
     # verified against; changing ports is its own decision, not a knob turn.
     #
-    # 🔴 **2026-10-06: the async pool was not the only pool.** `acb_graph.db`
-    # builds a SYNC engine for the audit path and the graph sessions, and it
-    # used SQLAlchemy's defaults: 5 + 10 = 15. So one gateway could ask for
-    # 12 + 15 = 27 sessions of a pooler that allows 15. Measured on the box
-    # the same day: Supavisor held all 15 sessions for `acb_app`, with ONE
-    # gateway running, and the gateway logged about 590 EMAXCONNSESSION
-    # refusals in two days. Each one reached a member as a 500.
+    # 🔴 **2026-10-06: the 12 above left out the SECOND engine.** The sync
+    # engine of `acb_graph` (the chat paths: `routes/chat.py`, `rooms.py`,
+    # `routes/agent.py`) had no pool settings, so it took SQLAlchemy's 5 + 10.
+    # One gateway process could ask the pooler for 12 + 15 = 27 clients.
+    # Production logged `EMAXCONNSESSION` 249 times in one hour on 2026-10-05,
+    # and a member of the second organization got the failures.
     #
-    # The budget now covers BOTH pools: async 8 + 1, sync 2 + 1, so 12. The
-    # async overflow went from 4 to 1 to pay for the sync pool. Exhaustion
-    # still queues (`db_pool_timeout`), so the cost is latency, not an error.
-    # Fence: `test_db_engine_seam.py::TestThePoolCeilingFitsThePoolerInFront`,
-    # which now sums both pools.
-    #
-    # ⚠️ **It does NOT yet cover the whole process.** A few callers open a
-    # bare `psycopg.connect()` outside both pools: `org_settings` (two per
-    # full page load, for appearance and branding), `model_config.load_blob`
-    # and `KeyStore` on a cache miss. They live inside the 3 slots this budget
-    # leaves free, beside a migration run, the backup and `psql`. H-250 moves
-    # them into the sync pool. Until then, a burst of page loads during a
-    # migration can still meet the pooler's cap.
-    db_pool_size: int = 8
-    db_max_overflow: int = 1
+    # The budget now holds BOTH engines of the one process: async 7 + 2 = 9,
+    # sync (`db_sync_*` below) 2 + 1 = 3, so 12 in all. That keeps the 3
+    # slots of headroom above for a migration, a `psql` and the backup job.
+    # Fence: `TestThePoolCeilingFitsThePoolerInFront` in
+    # `tests/unit/test_db_engine_seam.py`.
+    db_pool_size: int = 7
+    db_max_overflow: int = 2
 
-    # The SYNC engine of `acb_graph.db`, which shares the same pooler.
-    # ⚠️ Overflow 1, not 0. Some `async def` routes take a sync session on the
-    # event loop itself (H-250 lists 14). With 2 + 0 a third caller waits up
-    # to `db_pool_timeout` while it blocks the whole gateway, `/health` too.
+    # The pool of the sync `acb_graph` engine. It counts against the SAME
+    # pooler budget as the async pool above (see the note there).
     db_sync_pool_size: int = 2
     db_sync_max_overflow: int = 1
 
