@@ -931,6 +931,9 @@ than defaulting; a test proves the refusal.
 >
 > ➡️ **2026-10-01: slice 6b for the email scheduler and pipeline runs as WS-17 EM-T1b**
 > (`email_app_master_plan.md` §10.4.2). That spec owns it from that date.
+>
+> ➡️ **2026-10-06: the WhatsApp half of slice 6b runs as WS-20 WA-C1 and WA-C1b**
+> (`whatsapp_message_manager.md` §12.4). That spec owns it from that date.
 
 > ✅ **mcp_servers cross-tenant read gap CLOSED 2026-08-23 (WS-29, DARK,
 > `ACB_GRAPH_TENANT_BIND`).** Slice 7 (above) explicitly left `_inject_mcp_servers`
