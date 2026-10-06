@@ -7276,6 +7276,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G8** | 🟢 AGENT-SAFE · visual review | The connect UI: availability, copy, the Workspace admin help (GM-24, GM-26, GM-27) | After EM-G7 (E-D1). Merges dark | M | §12.3.10 |
 | **EM-G9** | 🟢 AGENT-SAFE · R8 | Parity of a Gmail and Outlook pair, and the known limits | After EM-G2 and EM-G3a | S | §12.3.11 |
 | **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
+| **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | 📝 SPECIFIED (2026-10-06). The known limits f3, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
@@ -8524,6 +8525,89 @@ the DraftCard had the same order. This round closes the P1 and the findings belo
 6. A drain does not stop a save that an edit schedules after it. So an edit during a send can save
    newer text into the draft while the send runs. That save carries the Cc and the Bcc now, and
    `main` had the same race.
+
+#### 12.3.3c EM-G3c-3 — the known limits of the composer autosave
+
+**Status.** 📝 SPECIFIED (2026-10-06). Not audited. It takes the known limits that EM-G3c-2 left
+open (§12.3.3b). EM-T10 fixed f2, f6 and f10.
+
+**Gate.** 🟢 AGENT-SAFE. UI only. No migration, no flag and no gateway change. The three composers
+are LIVE for each Outlook member, so the slice takes the full review loop and a visual check.
+
+**Size.** M.
+
+**The defects.** Each one loses an edit or leaves a draft, with no signal to the member.
+
+- **f7.** `drain()` (`lib/draftAutosave.ts` ~:241) drops each waiting save, also a save of a
+  session that ended. The member closes reply A while a save of A runs, and then presses Discard,
+  Pop out or Send on a new reply. The last edit of A is lost.
+- **f9.** The last save failed, and the member presses Pop out. The drain drops nothing, so
+  `unsavedEdit` is false (`EmailDetail.tsx` ~:870). The full composer opens clean, and its close
+  saves nothing.
+- **f12.** The member changes the From while the first save of a draft runs, and then presses
+  Discard. The Discard reads the new From (`EmailDetail.tsx` ~:669), so `draftToUpdate` does not
+  find the draft in the old mailbox, and that draft stays.
+- **f3.** The composer checks a pick against the files that it holds when the pick starts
+  (`EmailDetail.tsx` ~:824, `ComposePanel.tsx` ~:250). Two quick picks can each fit and pass the
+  limit together.
+- **f8.** Pop out closes the reply at once, and it opens the full composer after the drain
+  (`EmailDetail.tsx` ~:867-882). If the member opens the composer with New in that gap, the
+  hand-over is lost.
+
+**Scope.**
+
+1. **A drain for one session (f7).** `createAutosave` tags each save with the session that
+   scheduled it. `drain(session)` drops the pending save and the waiting saves of that session
+   only. A waiting save of an ended session still runs. It updates its own draft through
+   `draftToUpdate`. The promise settles when each save before the drain settles.
+2. **A failed save is an unsaved edit (f9).** Pop out hands over `unsavedEdit: true` in two cases.
+   The drain dropped a save, or the last save failed (`draftStatus` is `not-saved` or `too-large`).
+3. **A discard finds the draft of the session (f12).** A discard deletes the last draft that its
+   session saved, in the mailbox that the save used. It does not compare the From of now. It also
+   deletes the stale drafts of the session. All three composers use one helper in
+   `lib/draftAutosave.ts`.
+4. **A pick counts the picks that are still being read (f3).** Each composer keeps the bytes of the
+   picks that it reads now. `pickProblem` counts them with the files that it holds.
+5. **The hand-over survives a New (f8).** The audit picks the shape. One option: Pop out opens
+   the composer before the drain, in a state that waits for the hand-over. Another option: the
+   store keeps a pending hand-over, and an open of New while it waits takes the hand-over.
+
+**Open for the audit.** f5 (§12.3.3b) is close to f12. A save that ends after a switch leaves its
+draft in the old mailbox. The audit decides if item 3 covers it, or if it stays a known limit.
+
+**Non-goals.** f4 stays. A flushed save that fails after a close shows nothing, and `main` never
+tried that save. f11 stays. The proxy stops a save after 30 seconds, so a drain waits 30 seconds at
+most. Each Send shows its state while it waits. No change to the gateway or to the Gmail upload.
+
+**Fences (R7).** `src/app/email/lib/draftAutosave.test.ts` holds each rule, because vitest has no
+DOM in this package.
+
+- `email-drain-own-session`: a drain of session 2 keeps the waiting save of session 1, and that
+  save runs.
+- `email-popout-failed-save`: a pop-out after a failed save hands over `unsavedEdit: true`.
+- `email-discard-old-mailbox`: a discard after a change of From deletes the draft of the old
+  mailbox.
+- `email-pick-in-flight`: a second pick that fits alone, but not with a pick being read, is
+  refused.
+- `email-popout-handover`: an open of New during a pop-out keeps the hand-over.
+- A source fence checks that each composer calls the shared helpers.
+
+**Mutations.** M1 makes the drain drop each session again, and `email-drain-own-session` fails. M2
+reads `unsavedEdit` from the drain only, and `email-popout-failed-save` fails. M3 compares the From
+of now in the discard, and `email-discard-old-mailbox` fails. M4 drops the in-flight bytes from the
+pick check, and `email-pick-in-flight` fails.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane
+npx tsc --noEmit
+npx vitest run src/app/email/lib/draftAutosave.test.ts src/app/email
+```
+
+**The visual check.** Run the app in light mode, at compact density, with a changed accent. Open a
+reply, type, press Pop out, and check that the composer holds the text. Discard a reply after a
+change of From, and check the Drafts of both mailboxes.
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
