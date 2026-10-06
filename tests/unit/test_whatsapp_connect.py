@@ -460,6 +460,40 @@ async def test_a_caller_graph_version_never_reaches_the_url(
     assert stored["phone_number_id"] == _PNID
 
 
+async def test_the_check_hands_the_provider_only_token_number_and_server_version(
+    monkeypatch,
+) -> None:
+    """The rule in `verify_cloud_number` itself, not the provider's guard.
+
+    The provider also cleans `graph_version`, so a URL test cannot see this
+    rule fail (verifier mutation f). A stub provider records the creds.
+    """
+    import gateway.routes.whatsapp.transport.accounts as accounts
+
+    seen: list[dict] = []
+
+    class _Stub:
+        async def get_phone_number_profile(self):
+            return {"id": _PNID}
+
+    def _fake(provider, creds):
+        seen.append(dict(creds))
+        return _Stub()
+
+    monkeypatch.delenv("WHATSAPP_GRAPH_VERSION", raising=False)
+    monkeypatch.setattr(accounts, "_instantiate_provider", _fake)
+
+    await accounts.verify_cloud_number(_PNID, {
+        "access_token": "TOKEN",
+        "graph_version": "v21.0/777/phone_numbers#",
+        "phone_number_id": "999",
+        "base_url": "https://evil.example",
+    })
+
+    assert seen == [{"access_token": "TOKEN", "phone_number_id": _PNID,
+                     "graph_version": "v21.0"}]
+
+
 def test_a_stored_bad_graph_version_builds_the_default_url() -> None:
     from whatsapp_ingestion.providers.cloud_api import WhatsAppCloudProvider
 
