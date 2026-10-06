@@ -3823,7 +3823,13 @@ async def run_agent_stream(
             )
             # Refine the run's model ContextVar to the fully-resolved tier so
             # sub-agents spawned during this run inherit it (call_agent etc.).
-            if _final_model_early:
+            # WS-45 S2: a covered run publishes the agent's DEFAULT tier, not
+            # the turn's tier. A sub-agent has no policy of its own until S4,
+            # and a code turn would put every request of a fan-out on
+            # tier-powerful.
+            if _tier_run is not None:
+                _active_run_model.set(_tier_run.default)
+            elif _final_model_early:
                 _active_run_model.set(_final_model_early)
             _byok_provider_early: dict[str, Any] | None = None
             _byok_model_id_early = _final_model_early
@@ -3986,6 +3992,8 @@ async def run_agent_stream(
                 _nq: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
                 _nq_token = _active_run_queue.set(_nq)
                 _n_emitted = False
+                # WS-45 S2: ai.route events of a step with no output yet.
+                _held_routes: list[dict[str, Any]] = []
                 # Canonical translation state (message lifecycle + tool-call
                 # id dedup) — shared mapping with every other stream path.
                 _t_state = _TranslationState(run_id)
@@ -4093,10 +4101,20 @@ async def run_agent_stream(
                                 except Exception:
                                     _qev = None
                                 while _qev is not None:
-                                    _n_emitted = True
-                                    if _is_hitl_event(_qev):
-                                        _hitl_pending = True
-                                    yield _sse(_qev)
+                                    # WS-45 S2: an ai.route event is not
+                                    # output. Hold it until the step gives
+                                    # output, so a Tier 1 fault before any
+                                    # output still falls back to Tier 2.
+                                    if _is_route_event(_qev) and not _n_emitted:
+                                        _held_routes.append(_qev)
+                                    else:
+                                        for _hr in _held_routes:
+                                            yield _sse(_hr)
+                                        _held_routes.clear()
+                                        _n_emitted = True
+                                        if _is_hitl_event(_qev):
+                                            _hitl_pending = True
+                                        yield _sse(_qev)
                                     _qev = (
                                         _nq.get_nowait()
                                         if not _nq.empty() else None
@@ -4166,6 +4184,12 @@ async def run_agent_stream(
                                     _tc_args.pop(_cid, None)
                                 else:
                                     _n_emitted = True
+                                # WS-45 S2: the step gave output, so the held
+                                # ai.route events describe a real step. They
+                                # go out first.
+                                for _hr in _held_routes:
+                                    yield _sse(_hr)
+                                _held_routes.clear()
                                 yield _sse(_ev)
                             if _loop_tripped:
                                 _log.warning(
@@ -4195,12 +4219,24 @@ async def run_agent_stream(
                             # manage_todo_list, …) emitted during this update.
                             while not _nq.empty():
                                 _qev = _nq.get_nowait()
-                                if _qev:
-                                    _n_emitted = True
-                                    if _is_hitl_event(_qev):
-                                        _hitl_pending = True
-                                    yield _sse(_qev)
+                                if not _qev:
+                                    continue
+                                if _is_route_event(_qev) and not _n_emitted:
+                                    _held_routes.append(_qev)
+                                    continue
+                                for _hr in _held_routes:
+                                    yield _sse(_hr)
+                                _held_routes.clear()
+                                _n_emitted = True
+                                if _is_hitl_event(_qev):
+                                    _hitl_pending = True
+                                yield _sse(_qev)
                     # Drain any events that landed as the stream closed.
+                    # The stream ended without a fault, so a held ai.route
+                    # event goes out first.
+                    for _hr in _held_routes:
+                        yield _sse(_hr)
+                    _held_routes.clear()
                     while not _nq.empty():
                         _qev = _nq.get_nowait()
                         if _qev:
@@ -4248,6 +4284,12 @@ async def run_agent_stream(
                         })
                         return
                     # Nothing emitted yet — fall through to Tier 2 batch.
+                    # WS-45 S2: the held ai.route events go, and the policy
+                    # counts again from the first request, so Tier 2 sends
+                    # the chat one event for each step.
+                    _held_routes.clear()
+                    if _tier_run is not None:
+                        _tier_run.restart()
                     # `rejected_fields` names what a 422 refused. `error` is
                     # redacted: a 422's `input` can hold member messages.
                     _log.warning(
@@ -6186,6 +6228,17 @@ async def _tier_policy_for_run(
         kind=turn.kind,
         effort=tier_policy.normalise_effort(think_mode),
         emit=None if is_copilot else _emit_to_run(thread_id),
+    )
+
+
+def _is_route_event(event: Any) -> bool:
+    """True for the `ai.route` custom event. It is a label, not output."""
+    from acb_skills.tier_policy import ROUTE_EVENT
+
+    return (
+        isinstance(event, dict)
+        and event.get("type") == "CUSTOM"
+        and event.get("name") == ROUTE_EVENT
     )
 
 

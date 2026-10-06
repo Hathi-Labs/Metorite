@@ -692,3 +692,73 @@ def test_a_copilot_agent_gets_the_turn_tier_for_the_whole_run(monkeypatch, tmp_p
     assert len(wire.requests) == 1 and _is_turn_question(wire.bodies[0])
     assert agent.models and set(agent.models) == {"tier-powerful"}
     assert [(r["tier"], r["kind"]) for r in _routes(events)] == [("tier-powerful", "code")]
+
+
+# ── 5. PR #675 review, round 1 ───────────────────────────────────────────────
+
+
+def test_an_off_ladder_default_is_never_left() -> None:
+    """§4.2 rule 2. An admin's ``tier-code`` (or a ``provider/model``) default
+    cannot be compared with a rung, so no kind, hint or effort moves it."""
+    for default in ("tier-code", "deepseek/deepseek-v4-pro"):
+        for kind in tier_policy.TURN_KINDS:
+            for effort in tier_policy.EFFORTS:
+                c = tier_policy.choose(default=default, kind=kind, effort=effort,
+                                       hint="code")
+                assert c.tier == default, (default, kind, effort, c)
+
+
+@pytest.mark.usefixtures("_routed", "_a_tenant")
+class TestReviewRoundOne:
+    """P1: a Tier 1 fault still falls back. P2: a sub-agent inherits the
+    default, never the turn's tier."""
+
+    def test_a_sub_agent_inherits_the_default_not_the_turn_tier(self, monkeypatch) -> None:
+        """A code turn puts the parent's requests on ``tier-powerful``. The run
+        publishes the agent's default through ``_active_run_model``, so a
+        ``call_agent`` fan-out does not run every request on Powerful."""
+        executor = pytest.importorskip("orchestrator.executor")
+        _flags(monkeypatch, PA)
+        _wire(monkeypatch, _turn_reply("code"))
+        seen: list[str | None] = []
+        model = ScriptedModel(
+            [text_turn("done")],
+            on_request=lambda _i, _b: seen.append(executor._active_run_model.get()),
+        )
+        events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message=SECRET)
+        _ok(events)
+        assert [b["model"] for b in model.bodies] == ["tier-powerful"]
+        assert seen == ["tier-balanced"]
+
+    def test_a_tier1_fault_falls_back_with_one_route_event_per_step(
+        self, monkeypatch,
+    ) -> None:
+        """Tier 1 fails before its first output. The held ``ai.route`` event of
+        that attempt never reaches the chat, the run falls back to Tier 2, and
+        Tier 2 counts its requests from 1."""
+        executor = pytest.importorskip("orchestrator.executor")
+        _flags(monkeypatch, PA)
+        _wire(monkeypatch, _turn_reply("chat"))
+
+        def fail_first(*_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("tier 1 down before its first event")
+
+        monkeypatch.setattr(executor, "_translate_update", fail_first)
+
+        class _StreamThenBatch(ScriptedModel):
+            """Streams for Tier 1, and answers one JSON body for Tier 2."""
+
+            def __call__(self, request: httpx.Request) -> httpx.Response:
+                body = json.loads(request.content or b"{}")
+                if body.get("stream"):
+                    return super().__call__(request)
+                self.bodies.append(body)
+                return _completion("done")
+
+        model = _StreamThenBatch([text_turn("done")])
+        events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message="hi")
+        _ok(events)
+        assert len(model.bodies) == 2, "the run never reached the Tier 2 path"
+        routes = _routes(events)
+        assert [r["request"] for r in routes] == [1], routes
+        assert routes[0]["tier"] == "tier-balanced"

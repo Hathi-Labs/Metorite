@@ -209,10 +209,13 @@ def _at_least(floor: str, tier: str) -> str:
     """*tier*, but never below *floor* (§4.2 rule 2).
 
     A *floor* off the ladder (for example ``tier-code`` or a ``provider/model``
-    that an admin set) cannot be compared, so a raise to *tier* wins.
+    that an admin set) cannot be compared with a rung. The policy then keeps
+    *floor*, so it never moves a request off the admin's choice.
     """
     low, high = _rank(floor), _rank(tier)
-    if low is None or high is None:
+    if low is None:
+        return floor
+    if high is None:
         return tier
     return LADDER[max(low, high)]
 
@@ -271,7 +274,7 @@ def choose(
     kind = kind if kind in TURN_KINDS else "chat"
     mode = normalise_effort(effort)
     if mode == "max":
-        return Choice(MAX_TIER, kind, "effort")
+        return Choice(_at_least(default, MAX_TIER), kind, "effort")
     base = tier_for_kind(kind, default)
     reason = "default" if base == default else "turn_kind"
     if hint is None:
@@ -430,6 +433,15 @@ class RunTierPolicy:
         choice = self.run_choice()
         self.record(choice)
         return route_event(choice, self._requests)
+
+    def restart(self) -> None:
+        """Count again from the first request, after a Tier 1 fault.
+
+        The executor calls it when it falls back to Tier 2. Tier 2 then
+        numbers its own requests from 1, and no step gets two numbers.
+        """
+        self._requests = 0
+        self._called.clear()
 
     def note_tool(self, name: str) -> None:
         """Record a tool call. The next request reads it, once."""

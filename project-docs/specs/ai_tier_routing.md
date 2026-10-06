@@ -36,9 +36,20 @@ next.
   median that Q8 asks for can be read on a box. S2 did not measure it live.
 - With the flag unset, a dump of three projects-assistant runs (six requests
   and every event) was byte-identical on main and on the branch.
-- **Not built in S2:** a sub-agent still inherits its parent's tier through
-  `_active_run_model` (§4.5, last bullet). The batch path (`run_agent`) and
-  the sub-agent path attach no policy. S4 owns both.
+- **Not built in S2:** a sub-agent runs no policy of its own (§4.5, last
+  bullet). The batch path (`run_agent`) and the sub-agent path attach no
+  policy. S4 owns both.
+- **Until S4, a covered run publishes the agent's DEFAULT tier** through
+  `_active_run_model`, never the turn's tier. So a `call_agent` fan-out from a
+  code turn does not put every request of every sub-agent on
+  `tier-powerful`. Review P2 of PR #675 found this.
+- **An `ai.route` event is not output.** The Tier 1 path holds the event
+  until the step gives output. So a Tier 1 fault before any output still
+  falls back to Tier 2. On the fallback the held events go, and the policy
+  counts its requests from 1 again. Review P1 of PR #675 found this.
+- **An off-ladder default stays.** A `tier-code` or `provider/model` default
+  cannot be compared with a rung, so no kind, hint or effort moves it
+  (§4.2 rule 2).
 - **Q6 is not answered.** The box reads `ROUTER_SERVING_ENABLED=true` and
   `DECIDE_ENABLED=true`, and `AI_TIER_ROUTING` is not set. The live
   `tier_binding` rows were not read. `GET /catalog/models` needs an operator

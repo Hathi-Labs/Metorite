@@ -734,12 +734,21 @@ def test_the_covered_run_itself_holds_only_its_pinned_tools(sandbox, monkeypatch
     assert sent == []
 
 
-def test_a_covered_run_on_the_tier2_path_holds_the_same_tools(sandbox, monkeypatch) -> None:  # noqa: F811
+@pytest.mark.parametrize("tier_routing", ["", "projects-assistant"])
+def test_a_covered_run_on_the_tier2_path_holds_the_same_tools(
+    sandbox, monkeypatch, tier_routing: str,  # noqa: F811
+) -> None:
     """Tier 1 fails before its first event, so the run falls back to the Tier 2
     batch path. That path wraps each tool to stream its row. The wrapped run
     must offer the SAME pinned list, and still no egress tool (PR #654).
     The identity half of the egress rule is fenced in test_tier2_tool_view.py:
-    a top-level covered run offers this list whether or not a shim is trusted."""
+    a top-level covered run offers this list whether or not a shim is trusted.
+
+    WS-45 S2 (PR #675 review P1): with ``AI_TIER_ROUTING`` on, the tier
+    policy puts an ``ai.route`` event on the run queue before the first model
+    request. That event is not output, so the fallback must still happen."""
+    if tier_routing:
+        _decide_flags(monkeypatch, tier_routing=tier_routing, decide_enabled=False)
     _register_every_annotation()
     pa = _Model([_say("ok")])
     _harness(monkeypatch, sandbox, {PA: pa})
@@ -762,10 +771,17 @@ def test_a_covered_run_on_the_tier2_path_holds_the_same_tools(sandbox, monkeypat
     assert len(pa.bodies) >= 2, "the run never reached the Tier 2 path"
     offered = _offered(pa.bodies[-1])
     assert "run_command" in offered, "the run was not covered"
-    assert not _egress_in(pa.bodies[-1]), _egress_in(pa.bodies[-1])
-    assert offered == COVERED_PROJECTS_TOOLS, (
-        f"new: {sorted(offered - COVERED_PROJECTS_TOOLS)}, "
-        f"gone: {sorted(COVERED_PROJECTS_TOOLS - offered)}"
+    # `_egress_in` judges by NAME, and the name reads the Jev entry. So the
+    # System-1 `decide` of a flag-on run shows here, as in the S1 test.
+    assert _egress_in(pa.bodies[-1]) == (["decide"] if tier_routing else []), (
+        _egress_in(pa.bodies[-1])
+    )
+    expected = (
+        COVERED_PROJECTS_TOOLS_TIER_ROUTED if tier_routing else COVERED_PROJECTS_TOOLS
+    )
+    assert offered == expected, (
+        f"new: {sorted(offered - expected)}, "
+        f"gone: {sorted(expected - offered)}"
     )
 
 
