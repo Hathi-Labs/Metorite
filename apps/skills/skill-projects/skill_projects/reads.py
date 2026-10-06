@@ -20,7 +20,7 @@ Output conventions the cards read (``ProjectToolCards.tsx``):
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from skill_projects.client import GatewayRefusal, data, get, uuid_of
@@ -495,21 +495,61 @@ async def task_detail(task_id: str) -> str:
 # ── The member's own work ────────────────────────────────────────────────────
 
 
+def clock_of(row: Any) -> tuple[date | None, str]:
+    """``(today, zone)`` from ``GET /projects/my/today``, or ``(None, "")``
+    for an answer that carries neither (WS-46 P7). The one parser of the
+    member's date: ``my_work`` prints it, and the write tools that guess a
+    day take it (``writes._member_clock``)."""
+    if not isinstance(row, dict):
+        return None, ""
+    raw = str(row.get("today") or "").strip()
+    try:
+        day = date.fromisoformat(raw) if len(raw) == 10 else None
+    except ValueError:
+        day = None
+    zone = str(row.get("timezone") or "").strip()
+    return (day, zone) if day is not None and zone else (None, "")
+
+
+async def _clock_line() -> str:
+    """"Your date: Tuesday 2026-10-06 (Asia/Kolkata)." for the member's own
+    lists. ``legend`` states the UTC date, and the member's evening can be
+    the next day. An empty line when the read has no answer."""
+    try:
+        day, zone = clock_of(await get("/projects/my/today"))
+    except GatewayRefusal:
+        return ""
+    if day is None:
+        return ""
+    return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({zone})."
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
-async def my_work(view: str = "assigned", include_done: bool = False, page: int = 1) -> str:
+async def my_work(
+    view: str = "assigned", include_done: bool = False, page: int = 1, untriaged: bool = False
+) -> str:
     """The member's own work. view="assigned" lists tasks assigned to them
     across every project. view="inbox" lists their personal lens with the
-    per-member overlay (disposition, context, defer). Use this for "what is
-    mine?" and for triage. Never for another person's work — use list_tasks
-    with assignee for that."""
-    which = (view or "assigned").strip().lower()
+    per-member overlay (disposition, context, defer). untriaged=true reads
+    the inbox rows the member has never triaged, with who assigned each one:
+    "what landed on my plate". The first line is the member's own date and
+    zone. Use this for "what is mine?" and for triage. Never for another
+    person's work — use list_tasks with assignee for that."""
+    which = "inbox" if untriaged else (view or "assigned").strip().lower()
     params: dict[str, Any] = {"page": max(1, int(page or 1)), "page_size": MAX_PAGE}
     home: list[str] = []
+    clock = await _clock_line()
+    if clock:
+        home.append(clock)
     if which == "inbox":
         if include_done:
             params["include_done"] = True
+        if untriaged:
+            # WS-46 P7 (G18): the route narrows to rows with no overlay of
+            # mine, and adds `assigned_by` (personal.py `my_inbox`).
+            params["untriaged"] = True
         payload = await get("/projects/my/inbox", params)
-        title = "My inbox"
+        title = "Landed on my plate, not triaged yet" if untriaged else "My inbox"
         # The personal project is where a private task lives (D53). Named
         # here so "add this to my own list" has an id to land on later.
         # 404 until the member captures their first private task. That is
@@ -538,7 +578,7 @@ async def my_work(view: str = "assigned", include_done: bool = False, page: int 
     for row in rows:
         head, ident = _task_line(row, names.get(str(row.get("status_id")), ""))
         overlay: list[str] = []
-        for key in ("disposition", "context", "energy", "deferred_until"):
+        for key in ("disposition", "context", "energy", "deferred_until", "assigned_by"):
             if row.get(key):
                 overlay.append(f"{key} {data(row[key])}")
         if overlay:

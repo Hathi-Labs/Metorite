@@ -29,6 +29,7 @@ grant write (spec §12, question 2).
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from skill_projects import client as _client
@@ -49,9 +50,11 @@ from skill_projects.priority import (
 )
 from skill_projects.reads import _day, _task_line
 from skill_projects.writes import (
+    _REOPENING,
     CANCELLED,
     CARD_NOTE,
     MAX_BATCH,
+    OVERLAY_ARGUMENTS,
     _clears,
     _confirm,
     _field_of,
@@ -60,6 +63,7 @@ from skill_projects.writes import (
     _node,
     _one_named,
     _org_wide,
+    _overlay_values,
     _ref,
     _resolve_assignee,
     _split,
@@ -260,60 +264,239 @@ async def unarchive_project(project_id: str) -> str:
     )
 
 
+# ── The order of a node among its siblings (WS-46 P7, G13) ─────────────────
+#
+# The tree drag's maths (``lib/treeDrop.ts``), mirrored: a float position, the
+# midpoint of the two neighbours, and a one-time spread of a sibling set that
+# was never ordered. ``tests/unit/test_projects_project_fields.py`` holds the
+# two constants equal to the TypeScript.
+
+#: What a first, unordered sibling set is spread across (``POSITION_SPAN``).
+POSITION_SPAN = 65536
+#: The gap below which two positions are re-spread (``MIN_GAP``).
+MIN_GAP = 1e-6
+PLACES = ("first", "last", "before", "after")
+
+
+def _place_of(place: str) -> tuple[str, str] | str:
+    """``first``, ``last``, ``before <full_id>`` or ``after <full_id>`` ->
+    ``(word, sibling id)``, ``("", "")`` for none, or the refusal."""
+    raw = " ".join(str(place or "").replace(":", " ").split())
+    if not raw:
+        return "", ""
+    word, _, rest = raw.partition(" ")
+    word = word.lower()
+    if word in ("first", "last") and not rest:
+        return word, ""
+    if word in ("before", "after") and rest:
+        return word, uuid_of(rest, "place")
+    return (
+        "place is first, last, before <full_id> or after <full_id>, where the id is a "
+        "sibling's full_id from projects_tree."
+    )
+
+
+def _position_at(others: list[dict[str, Any]], index: int) -> float | None:
+    """``positionAt``: the float for a node landing at *index* among
+    *others*, or ``None`` when the set must be spread first."""
+    if any(not isinstance(n.get("position"), (int, float)) for n in others):
+        return None
+    before = float(others[index - 1]["position"]) if index > 0 else None
+    after = float(others[index]["position"]) if index < len(others) else None
+    if before is None and after is None:
+        return POSITION_SPAN / 2
+    if before is None:
+        return after / 2  # type: ignore[operator]
+    if after is None:
+        return before + POSITION_SPAN / 2
+    if after - before < MIN_GAP:
+        return None
+    return (before + after) / 2
+
+
+def _spread(others: list[dict[str, Any]], moving: str, index: int) -> list[tuple[str, float]]:
+    """``spreadPositions``: every sibling, evenly spread, the node at *index*."""
+    order = [str(n["id"]) for n in others[:index]] + [moving]
+    order += [str(n["id"]) for n in others[index:]]
+    step = POSITION_SPAN / (len(order) + 1)
+    return [(nid, step * (i + 1)) for i, nid in enumerate(order)]
+
+
+def _plan_place(
+    rows: list[dict[str, Any]], pid: str, parent_id: str | None, word: str, sibling: str
+) -> tuple[float, list[tuple[str, float]], str] | str | None:
+    """``(position, spread, phrase)`` for the node *pid* placed by *word*
+    under *parent_id*, ``None`` when it is there already, or the refusal.
+
+    The siblings are the live children of the parent in the tree's order,
+    which is the order the app draws.
+    """
+    if parent_id is None:
+        siblings = rows
+    else:
+        parent = _find_node(rows, parent_id)
+        siblings = (parent or {}).get("children") or []
+    live = [n for n in siblings if not n.get("archived_at")]
+    others = [n for n in live if str(n.get("id")) != pid]
+    if word in ("first", "last"):
+        index = 0 if word == "first" else len(others)
+        phrase = f"{word} among {_plural(len(others) + 1, 'sibling')}"
+    else:
+        at = next((i for i, n in enumerate(others) if str(n.get("id")) == sibling), None)
+        if at is None:
+            return (
+                f"{sibling} is not a live sibling there. The siblings are: "
+                + ", ".join(f"{data(n.get('name'))} ({n.get('id')})" for n in others)
+            )
+        index = at if word == "before" else at + 1
+        phrase = f"{word} {data(others[at].get('name'))}"
+    now = next((i for i, n in enumerate(live) if str(n.get("id")) == pid), None)
+    if now is not None and now == index:
+        return None
+    position = _position_at(others, index)
+    if position is not None:
+        return position, [], phrase
+    spread = _spread(others, pid, index)
+    mine = next(p for nid, p in spread if nid == pid)
+    return mine, [(nid, p) for nid, p in spread if nid != pid], phrase
+
+
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def move_project(
-    project_id: str, parent_project_id: str = "", to_top_level: bool = False
+    project_id: str, parent_project_id: str = "", to_top_level: bool = False, place: str = ""
 ) -> str:
     """Re-parent a project, folder or subproject under another node, or
     make it a space (to_top_level=true). ONE node per call. Every task under
     it is re-rooted, its types and counter follow the new root, and a task
     whose lane the new set lacks is re-pointed by category. The card leads
-    with the subtree size and the task count."""
+    with the subtree size and the task count.
+    place sets its order among its siblings, as the tree drag does: first,
+    last, before <full_id> or after <full_id> of a sibling. With place and no
+    parent, the node stays under its parent and only its order changes. A
+    sibling set that was never ordered is numbered once, and the card says
+    how many siblings that touches."""
     if _many(project_id):
         return f"move_project {ONE_ACT}"
-    if bool(parent_project_id.strip()) == bool(to_top_level):
-        return "Pass parent_project_id, or to_top_level=true to make it a space, not both."
+    placed = _place_of(place)
+    if isinstance(placed, str):
+        return placed
+    word, sibling = placed
+    reorder = bool(word) and not parent_project_id.strip() and not to_top_level
+    if not reorder and bool(parent_project_id.strip()) == bool(to_top_level):
+        return (
+            "Pass parent_project_id, or to_top_level=true to make it a space, not both. "
+            "To change only the order, pass place alone."
+        )
     pid, node = await _node(project_id)
+    found = await _move_target(pid, node, parent_project_id, word, reorder)
+    if isinstance(found, str):
+        return found
+    target, parent, where, tree_rows = found
+    plan = _plan_place(tree_rows, pid, target, word, sibling) if word else (0.0, [], "")
+    if plan is None:
+        return f"{data(node.get('name'))} is already {word} there. Nothing changed."
+    if isinstance(plan, str):
+        return plan
+    position, spread, phrase = plan
+    card = await _move_card(
+        pid, node, parent, target, where, tree_rows, phrase if word else "", len(spread), reorder
+    )
+    if isinstance(card, str):
+        return card
+    title, detail, impact, rest = card
+    if not await _confirm(title=title, detail=detail, context=_guard_card(impact, rest)):
+        return CANCELLED
+    # The spread first, every row of it, as the tree drag writes it: the
+    # node's own position means nothing until its siblings carry one.
+    for sid, at in spread:
+        sibling_id = uuid_of(sid, "sibling")
+        await post(
+            f"/projects/nodes/{sibling_id}/move",
+            {"parent_project_id": target, "position": at},
+        )
+    payload: dict[str, Any] = {"parent_project_id": target}
+    if word:
+        payload["position"] = position
+    result = (await post(f"/projects/nodes/{pid}/move", payload)) or {}
+    if reorder:
+        return f"Placed {data(node.get('name'))} {phrase} under {where}.\n  project_id: {pid}"
+    remapped = (result.get("statuses_remapped") or {}).get("moved")
+    tail = f" {remapped} task(s) changed lane." if remapped else ""
+    spot = f", {phrase}" if word else ""
+    return f"Moved {data(node.get('name'))} under {where}{spot}.{tail}\n  project_id: {pid}"
+
+
+async def _move_target(
+    pid: str, node: dict[str, Any], parent_project_id: str, word: str, reorder: bool
+) -> tuple[str | None, dict[str, Any] | None, str, list[dict[str, Any]]] | str:
+    """``(target parent id, parent row, its name, the tree)`` for a move, or
+    the refusal. A reorder keeps the node's own parent."""
     parent: dict[str, Any] | None = None
     parent_id = ""
     if parent_project_id.strip():
         parent_id, parent = await _node(parent_project_id)
         if parent_id == pid:
             return "A project cannot be moved under itself."
-        if str(parent.get("id")) == str(node.get("parent_project_id")):
+        if not word and str(parent.get("id")) == str(node.get("parent_project_id")):
             return f"{data(node.get('name'))} is already under {data(parent.get('name'))}."
-    elif node.get("parent_project_id") is None:
+    elif not reorder and node.get("parent_project_id") is None:
         return f"{data(node.get('name'))} is already a space."
+    rows = ((await get("/projects/tree")) or {}).get("rows") or []
+    if not reorder:
+        where = "the top level (a space)" if parent is None else data(parent.get("name"))
+        return parent_id or None, parent, where, rows
+    current = node.get("parent_project_id")
+    if not current:
+        return None, None, "the top level", rows
+    target = uuid_of(current, "parent_project_id")
+    return target, None, data((_find_node(rows, target) or {}).get("name") or "its parent"), rows
+
+
+async def _move_card(
+    pid: str,
+    node: dict[str, Any],
+    parent: dict[str, Any] | None,
+    target: str | None,
+    where: str,
+    rows: list[dict[str, Any]],
+    phrase: str,
+    spread: int,
+    reorder: bool,
+) -> tuple[str, str, str, dict[str, Any]] | str:
+    """``(title, detail, impact, rest)`` of the move card, or the refusal.
+    *target* is the new parent's id as the caller gave it, canonical."""
+    pid = uuid_of(pid, "project_id")
+    name = data(node.get("name"))
+    order: dict[str, Any] = {"place": phrase} if phrase else {}
+    if spread:
+        order["order"] = (
+            f"the siblings had no order yet, so {_plural(spread, 'other sibling')} "
+            "get a position too, once"
+        )
+    if reorder:
+        rest = {"project": name, "under": where, **order, "undo": "move it back with place"}
+        impact = f"{name} placed {phrase} under {where}"
+        return "Reorder this project?", f"{name} → {phrase} under {where}", impact, rest
     summary = (await get(f"/projects/nodes/{pid}/summary")) or {}
-    subtree = await _tree_node(pid)
-    if parent_id and subtree is not None and _find_node(subtree.get("children") or [], parent_id):
-        # `assert_no_project_cycle`'s 422, said before the card.
-        return f"{data(parent.get('name'))} is inside {data(node.get('name'))}. A tree cannot loop."
-    below = _descendants(subtree)
-    tasks = int(summary.get("tasks") or 0)
-    where = "the top level (a space)" if parent is None else data(parent.get("name"))
-    impact = (
-        f"{_plural(1 + below, 'project')} moved · {_plural(tasks, 'task')} re-rooted under {where}"
-    )
-    if not await _confirm(
-        title="Move this project?",
-        detail=f"{data(node.get('name'))} → {where} · {impact}",
-        context=_guard_card(
-            impact,
-            {
-                "project": data(node.get("name")),
-                "to": where,
-                "statuses": "a task whose lane the destination set lacks is re-pointed by category",
-                "undo": "move it back; the counter and types follow the new root",
-            },
-        ),
+    subtree = _find_node(rows, pid)
+    if parent is not None and target and subtree is not None and _find_node(
+        subtree.get("children") or [], target
     ):
-        return CANCELLED
-    payload: dict[str, Any] = {"parent_project_id": parent_id or None}
-    result = (await post(f"/projects/nodes/{pid}/move", payload)) or {}
-    remapped = (result.get("statuses_remapped") or {}).get("moved")
-    tail = f" {remapped} task(s) changed lane." if remapped else ""
-    return f"Moved {data(node.get('name'))} under {where}.{tail}\n  project_id: {pid}"
+        # `assert_no_project_cycle`'s 422, said before the card.
+        return f"{data(parent.get('name'))} is inside {name}. A tree cannot loop."
+    tasks = int(summary.get("tasks") or 0)
+    impact = (
+        f"{_plural(1 + _descendants(subtree), 'project')} moved · "
+        f"{_plural(tasks, 'task')} re-rooted under {where}"
+    )
+    rest = {
+        "project": name,
+        "to": where,
+        **order,
+        "statuses": "a task whose lane the destination set lacks is re-pointed by category",
+        "undo": "move it back; the counter and types follow the new root",
+    }
+    return "Move this project?", f"{name} → {where} · {impact}", impact, rest
 
 
 # ── Tasks ────────────────────────────────────────────────────────────────────
@@ -559,6 +742,7 @@ async def bulk_update(
     leveraged: str = "",
     importance: Removed = None,
     include_subtasks: str = "",
+    personal: str = "",
 ) -> str:
     """One change across a selection of tasks, in one transaction. task_ids
     is comma-separated, at most 50. status is by NAME and is resolved per
@@ -571,12 +755,34 @@ async def bulk_update(
     with action archive shelves each task's subtasks too, and yes with a
     status in a Done lane completes their open subtasks. Without it the
     subtasks stay as they are, and the card says so.
+    personal sets the member's OWN overlay on every task, as the My Tasks
+    bulk bar does: a JSON object with set_my_overlay's arguments, for example
+    {"disposition": "someday", "context": "@home"}. It goes on its own, with
+    no other change.
     The card names every task and the exact change."""
     ids = [uuid_of(t, "task_id") for t in _split(task_ids)]
     if not ids:
         return "Give at least one task id."
     if len(ids) > MAX_BATCH:
         return f"That is {len(ids)} tasks. The limit for one card is {MAX_BATCH}."
+    if str(personal or "").strip():
+        others = [
+            name for name, value in (
+                ("status", status), ("due", due), ("start", start), ("clear", clear),
+                ("estimate_mins", estimate_mins), ("assignees_add", assignees_add),
+                ("assignees_remove", assignees_remove), ("tags_add", tags_add),
+                ("tags_remove", tags_remove), ("action", action), ("priority", priority),
+                ("important", important), ("leveraged", leveraged),
+                ("include_subtasks", include_subtasks),
+            )
+            if str(value or "").strip() not in ("", "0")
+        ]
+        if others:
+            return (
+                f"personal goes on its own. Send {', '.join(others)} in another call: the "
+                "overlay is yours, and the other fields are the team's."
+            )
+        return await _bulk_personal(ids, personal)
     patch = _bulk_patch(
         status, importance, due, start, estimate_mins, clear, priority, important, leveraged
     )
@@ -615,6 +821,56 @@ async def bulk_update(
             out.extend(_task_line(t))
             # The level asked for, against each task's own due date.
             out.extend(level_note(priority, {**t, **patch}))
+    return "\n".join(out)
+
+
+async def _bulk_personal(ids: list[str], personal: str) -> str:
+    """``action: personal`` (``bulk.py`` ``validate_personal``): the member's
+    own overlay on every task of the selection, under one class C card."""
+    try:
+        given = json.loads(personal)
+    except ValueError:
+        given = None
+    if not isinstance(given, dict):
+        return (
+            "personal is a JSON object with set_my_overlay's arguments, for example "
+            f'{{"disposition": "someday"}}. The arguments are {", ".join(OVERLAY_ARGUMENTS)}.'
+        )
+    values = await _overlay_values(given, {})
+    if isinstance(values, str):
+        return values
+    if not values:
+        return "Nothing to change in personal."
+    tasks = [(await _task(t))[1] for t in ids]
+    shown = ", ".join(
+        f"{k} → {'cleared' if v is None else (v.get('email') if isinstance(v, dict) else v)}"
+        for k, v in values.items()
+    )
+    impact = f"{_plural(len(tasks), 'task')}: your own overlay only · {shown}"
+    rest: dict[str, Any] = {"seen by": "you only. The board does not change"}
+    finished = [t for t in tasks if t.get("completed_at")]
+    if values.get("disposition") in _REOPENING and finished:
+        rest["reopens"] = (
+            f"{_plural(len(finished), 'finished task')} reopen on the board (D77)"
+        )
+    for i, t in enumerate(tasks):
+        rest[f"task {i + 1}"] = _short_ref(t)
+    if not await _confirm(
+        title=f"Set your triage of {_plural(len(tasks), 'task')}?",
+        detail=impact,
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    body = {"task_ids": ids, "action": "personal", "personal": values}
+    result = (await post("/projects/tasks/bulk", body)) or {}
+    out = [
+        f"Your triage is set on {result.get('applied', 0)} of "
+        f"{result.get('requested', len(ids))} tasks: {shown}."
+    ]
+    for row in result.get("skipped") or []:
+        out.append(f"- skipped {row.get('task_id')}: {data(row.get('reason'))}")
+    for row in result.get("failed") or []:
+        out.append(f"- failed {row.get('task_id')}: {data(row.get('reason'))}")
     return "\n".join(out)
 
 

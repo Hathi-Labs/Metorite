@@ -42,6 +42,7 @@ import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -64,7 +65,7 @@ from skill_projects.priority import (
     priority_fields,
     takes_priority,
 )
-from skill_projects.reads import WEEKDAYS, _number, _rule_text, _task_line
+from skill_projects.reads import WEEKDAYS, _number, _rule_text, _task_line, clock_of
 
 try:
     from acb_skills.tool_annotations import annotate as _annotate
@@ -760,7 +761,7 @@ async def create_task(
     )
     if isinstance(flags, str):
         return flags
-    repeating = _repeat_for_create(
+    repeating = await _repeat_for_create(
         repeat=repeat,
         every=repeat_every,
         on=repeat_on,
@@ -1856,18 +1857,171 @@ async def create_project(
     )
 
 
+#: The icons Space Settings offers (``lib/tree.ts`` ``SPACE_ICON_CHOICES``).
+#: ``tests/unit/test_projects_project_fields.py`` holds the two lists equal,
+#: so the chat never stores an icon the picker cannot draw.
+SPACE_ICONS = (
+    "Boxes", "Layers", "LayoutGrid", "Package",
+    "Rocket", "Target", "Flag", "Star",
+    "Building2", "Briefcase", "Users", "Globe",
+    "Cpu", "Code", "Wrench", "Zap",
+    "Palette", "Camera", "Megaphone", "ShoppingCart",
+    "BookOpen", "Lightbulb", "Shield", "Truck",
+    "Headphones", "Coffee", "Gem", "Puzzle",
+    "Factory", "FlaskConical", "Printer", "Hammer",
+    "Cog", "Database", "Server", "Cloud",
+    "Home", "Landmark", "Mountain", "Waves",
+    "Wallet", "CreditCard", "TrendingUp", "Activity",
+    "Mail", "Phone", "MessageSquare", "Video",
+    "Radio", "Mic", "PenTool", "Newspaper",
+    "Calendar", "Clock", "Timer", "Sun",
+    "Moon", "Flame", "Car", "Stethoscope",
+    "Bot", "Brain", "Sparkles", "Monitor",
+)
+#: The colour slots of the categorical ramp, 1-based on the wire
+#: (``core.ICON_SLOT_RANGE``, held equal by the same test).
+ICON_SLOT_RANGE = (1, 12)
+#: The settings a space keeps for its whole subtree (``core.LIFECYCLE_FIELDS``).
+_ROOT_ONLY = ("archive_after_months", "close_after_months", "timezone")
+#: ``update_project``'s clear words: each empties one setting.
+_PROJECT_CLEAR = {
+    "icon": ("icon",),
+    "icon_slot": ("icon_slot",),
+    "archive_after_months": ("archive_after_months",),
+    "close_after_months": ("close_after_months",),
+}
+
+
+def _zone_refusal(name: str) -> str:
+    """``""`` for an IANA zone, else the refusal (the route's own check,
+    ``core.validate_lifecycle_settings``, said before the card)."""
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return f"timezone is an IANA name such as Asia/Kolkata, not {data(name)}."
+    return ""
+
+
+def _project_settings(
+    node: dict[str, Any],
+    icon: str,
+    icon_slot: int,
+    archive_after_months: int,
+    close_after_months: int,
+    timezone: str,
+    clear: str,
+) -> tuple[dict[str, Any], dict[str, Any]] | str:
+    """The settings half of ``update_project``: ``(payload, before)``, or the
+    refusal. Each check is the route's, said before the card."""
+    payload: dict[str, Any] = {}
+    if icon.strip():
+        found = [i for i in SPACE_ICONS if i.lower() == icon.strip().lower()]
+        if not found:
+            return f"icon is one of the Space Settings icons: {', '.join(SPACE_ICONS)}."
+        payload["icon"] = found[0]
+    if _int_or_none(icon_slot) is not None:
+        low, high = ICON_SLOT_RANGE
+        if not low <= int(icon_slot) <= high:
+            return f"icon_slot is a colour slot from {low} to {high}, not {icon_slot}."
+        payload["icon_slot"] = int(icon_slot)
+    for key, months in (
+        ("archive_after_months", archive_after_months),
+        ("close_after_months", close_after_months),
+    ):
+        if _int_or_none(months) is not None:
+            if int(months) < 1:
+                return f"{key} is a whole number of months, 1 or more. clear switches it off."
+            payload[key] = int(months)
+    if timezone.strip():
+        refusal = _zone_refusal(timezone.strip())
+        if refusal:
+            return refusal
+        payload["timezone"] = timezone.strip()
+    refusal = _clear_into(
+        payload, clear, _PROJECT_CLEAR,
+        {"timezone": "A timezone cannot be cleared. Set timezone=UTC instead."},
+    ) or _level_refusal(node, payload)
+    return refusal or (payload, {k: node.get(k) for k in payload})
+
+
+def _clear_into(
+    payload: dict[str, Any],
+    clear: str,
+    words: dict[str, tuple[str, ...]],
+    refused: dict[str, str] | None = None,
+) -> str:
+    """Put a ``None`` in *payload* for each field a ``clear`` word empties,
+    and ``""``, or the refusal. A word that is also set is refused, never
+    guessed. *refused* answers a word that may not be cleared."""
+    for word in _split(clear):
+        key = word.lower()
+        if refused and key in refused:
+            return refused[key]
+        fields = words.get(key)
+        if fields is None:
+            return f"clear takes {', '.join(words)}, not {data(word)}."
+        for field in fields:
+            if field in payload:
+                return f"{word} is both set and cleared. Pass one of the two."
+            payload[field] = None
+    return ""
+
+
+def _level_refusal(node: dict[str, Any], payload: dict[str, Any]) -> str:
+    """The two level rules of the node routes, before the card: an icon
+    belongs to a space, and the lifecycle policy to a root (``tree.py``
+    ``_refuse_identity_off_a_space`` and ``_refuse_lifecycle_on_child``)."""
+    if node.get("parent_project_id") is None:
+        return ""
+    if {"icon", "icon_slot"} & set(payload):
+        return (
+            f"The icon and its colour belong to a space. {data(node.get('name'))} is not a "
+            "space, so its marker is its run state or a folder."
+        )
+    if set(_ROOT_ONLY) & set(payload):
+        return (
+            "The lifecycle months and the timezone are settings of the space, and its "
+            f"whole subtree takes them. {data(node.get('name'))} is not a space. Set them "
+            "on its space."
+        )
+    return ""
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def update_project(
-    project_id: str, name: str = "", description: str = "", status: str = "", lead: str = ""
+    project_id: str,
+    name: str = "",
+    description: str = "",
+    status: str = "",
+    lead: str = "",
+    icon: str = "",
+    icon_slot: int = 0,
+    archive_after_months: int = 0,
+    close_after_months: int = 0,
+    timezone: str = "",
+    clear: str = "",
 ) -> str:
     """Rename a node, change its description, its run state (active,
     paused, stopped) or its lead. Only the arguments you pass change. The
     card shows before → after. Re-parenting is a move (S3), and archiving
-    is its own act."""
+    is its own act.
+    The settings of a SPACE (a node with no parent), as Space Settings and
+    the Lifecycle panel set them: icon is a Space Settings icon name, such
+    as Rocket. icon_slot is its colour, 1 to 12. archive_after_months
+    archives done and cancelled work untouched for that many months.
+    close_after_months closes open work untouched for that many months.
+    timezone is an IANA name, such as Asia/Kolkata, for the midnight those
+    months are measured from. clear switches settings off: icon, icon_slot,
+    archive_after_months, close_after_months (comma-separated)."""
     pid = uuid_of(project_id, "project_id")
     node = await get(f"/projects/nodes/{pid}")
-    payload: dict[str, Any] = {}
-    before: dict[str, Any] = {}
+    settings = _project_settings(
+        node, icon, icon_slot, archive_after_months, close_after_months, timezone, clear
+    )
+    if isinstance(settings, str):
+        return settings
+    payload: dict[str, Any] = dict(settings[0])
+    before: dict[str, Any] = dict(settings[1])
     if name.strip():
         payload["name"] = name.strip()
         before["name"] = node.get("name")
@@ -1892,7 +2046,12 @@ async def update_project(
     ):
         return CANCELLED
     row = await patch(f"/projects/nodes/{pid}", payload)
-    return f"Updated {data(row.get('name'))}.\n  full_id: {pid}"
+    shown = [
+        f"{key} {'off' if row.get(key) is None else data(row.get(key))}"
+        for key in settings[0]
+    ]
+    tail = f" Settings: {' · '.join(shown)}." if shown else ""
+    return f"Updated {data(row.get('name'))}.{tail}\n  full_id: {pid}"
 
 
 # ── Reports ──────────────────────────────────────────────────────────────────
@@ -2571,13 +2730,16 @@ def _build_rule(
     until: str,
     max_occurrences: int,
     default_weekday: int = 0,
+    today: date | None = None,
 ) -> dict[str, Any] | str:
     """The rule as the route takes it (``RecurrenceIn``), or the refusal.
 
     The same checks ``recurrence.validate_rule`` makes, made here so the
     member reads the reason before a card, not a 422 after one.
     ``default_weekday`` is the day a weekly rule with no weekdays takes
-    (Q1, :func:`_default_weekday`). Zero keeps the refusal.
+    (Q1, :func:`_default_weekday`). Zero keeps the refusal. ``today`` is the
+    member's date (:func:`_member_clock`), which an end date may not be
+    before. ``None`` is the UTC date.
     """
     kind = str(freq or "").strip().lower()
     if kind not in FREQS:
@@ -2590,7 +2752,9 @@ def _build_rule(
     except (TypeError, ValueError):
         return "interval, day_of_month, month_of_year and max_occurrences take whole numbers."
     day_of_month, month_of_year, max_occurrences = numbers
-    out_of_range = _range_refusal(every, day_of_month, month_of_year, max_occurrences, until)
+    out_of_range = _range_refusal(
+        every, day_of_month, month_of_year, max_occurrences, until, today or _today()
+    )
     if out_of_range:
         return out_of_range
     how = str(anchor or "due").strip().lower()
@@ -2623,7 +2787,12 @@ def _build_rule(
 
 
 def _range_refusal(
-    every: int, day_of_month: int, month_of_year: int, max_occurrences: int, until: str
+    every: int,
+    day_of_month: int,
+    month_of_year: int,
+    max_occurrences: int,
+    until: str,
+    today: date,
 ) -> str:
     """The refusal for a number or a date out of range, else ``""``.
 
@@ -2645,19 +2814,33 @@ def _range_refusal(
     end = _date_of(end_text) if len(end_text) == 10 else None
     if end is None:
         return f"until is a date, YYYY-MM-DD, not {data(end_text)}."
-    if end < _today():
+    if end < today:
         return f"until is {end_text}, which is in the past. Give today or a later date."
     return ""
 
 
 def _today() -> date:
-    """Today, as every read's legend states it to the model: the UTC date.
-
-    The spec asks for the member's timezone (§8.1 item 4). No ``/projects``
-    route gives it to the chat, and P1 changes no route. The card names the
-    day, so a member who sees the wrong one declines.
-    """
+    """The UTC date: what :func:`_member_clock` falls back to, and the date
+    every read's legend states to the model."""
     return datetime.now(UTC).date()
+
+
+async def _member_clock() -> tuple[date, str]:
+    """``(today, zone)`` in the member's own zone (WS-46 P7, §8.1 item 4).
+
+    From ``GET /projects/my/today``, which reads ``user_settings.timezone``,
+    the zone the Tasks and the Calendar clients save. P1 took the UTC date,
+    which is the wrong day for five and a half hours every evening in India.
+    A gateway that does not serve the read yet (R6, during a deploy) answers
+    UTC here, and a member with no saved zone gets UTC from the route. Either
+    way the card names the zone, so the member sees the guess. Read only when
+    a tool needs a day, so a call that guesses nothing costs no extra read.
+    """
+    try:
+        day, zone = clock_of(await get("/projects/my/today"))
+    except GatewayRefusal:
+        return _today(), "UTC"
+    return (day, zone) if day is not None else (_today(), "UTC")
 
 
 def _date_of(value: Any) -> date | None:
@@ -2669,16 +2852,17 @@ def _date_of(value: Any) -> date | None:
         return None
 
 
-def _default_weekday(due: date | None, today: date) -> tuple[int, str]:
+def _default_weekday(due: date | None, today: date, zone: str = "UTC") -> tuple[int, str]:
     """The day a weekly rule with no weekdays takes, and the card's reason.
 
-    Q1, the owner, 2026-10-06: the due date's weekday, else today's. The
-    card names the day so the member sees the guess and can decline.
+    Q1, the owner, 2026-10-06: the due date's weekday, else today's. Today
+    is the member's date in *zone* (WS-46 P7). The card names the day and
+    the zone, so the member sees the guess and can decline.
     """
     if due is not None:
         return due.isoweekday(), f"{WEEKDAYS[due.isoweekday() - 1]}, the due date's weekday"
     day = today.isoweekday()
-    return day, f"{WEEKDAYS[day - 1]}, today's weekday (UTC), because no due date was given"
+    return day, f"{WEEKDAYS[day - 1]}, today's weekday ({zone}), because no due date was given"
 
 
 def _first_due(rule: dict[str, Any], today: date) -> date:
@@ -2810,7 +2994,7 @@ class _Repeat:
 NO_REPEAT = _Repeat()
 
 
-def _repeat_for_create(
+async def _repeat_for_create(
     *,
     repeat: str,
     every: int,
@@ -2844,14 +3028,14 @@ def _repeat_for_create(
             names = ", ".join(stray or ["repeat_every"])
             return f"{names} needs repeat (one of {', '.join(FREQS)}). Nothing was created."
         return NO_REPEAT
-    today = _today()
     due_day = _date_of(due) if str(due or "").strip() else None
     if str(due or "").strip() and due_day is None:
         return "due is a date, YYYY-MM-DD."
-    weekday, note = _default_weekday(due_day, today)
+    today, zone = await _member_clock()
+    weekday, note = _default_weekday(due_day, today, zone)
     built = _build_rule(
         repeat, every, _weekday_numbers(on), day, month, anchor or "due", until, times,
-        default_weekday=weekday,
+        default_weekday=weekday, today=today,
     )
     if isinstance(built, str):
         # `_build_rule` speaks `set_recurrence`'s words. Name this tool's.
@@ -2867,7 +3051,11 @@ def _repeat_for_create(
 
 
 def _weekly_days(
-    freq: str, weekdays: str, current: dict[str, Any] | None, due_at: Any
+    freq: str,
+    weekdays: str,
+    current: dict[str, Any] | None,
+    due_at: Any,
+    clock: tuple[date, str],
 ) -> tuple[str, str]:
     """The weekdays ``set_recurrence`` sends, and the card's note for a guess.
 
@@ -2881,7 +3069,7 @@ def _weekly_days(
         return given, ""
     if current and current.get("freq") == "weekly" and current.get("weekdays"):
         return ",".join(str(d) for d in current["weekdays"]), ""
-    day, note = _default_weekday(_date_of(due_at), _today())
+    day, note = _default_weekday(_date_of(due_at), *clock)
     return str(day), note
 
 
@@ -2922,9 +3110,11 @@ async def set_recurrence(
             return CANCELLED
         await delete(f"/projects/tasks/{tid}/recurrence")
         return f"{_ref(task)} no longer repeats. Existing occurrences stay.\n  full_id: {tid}"
-    days, note = _weekly_days(freq, weekdays, current, task.get("due_at"))
+    clock = await _member_clock()
+    days, note = _weekly_days(freq, weekdays, current, task.get("due_at"), clock)
     built = _build_rule(
-        freq, interval, days, day_of_month, month_of_year, anchor, until, max_occurrences
+        freq, interval, days, day_of_month, month_of_year, anchor, until, max_occurrences,
+        today=clock[0],
     )
     if isinstance(built, str):
         return built
@@ -3028,6 +3218,162 @@ def _overlay_card(
     return card
 
 
+#: ``set_my_overlay``'s argument -> the overlay field it sets, for the times
+#: and the flags of WS-46 P7 (G15). The member's word is the key (§7.2).
+_OVERLAY_TIMES = {
+    "block_start": "scheduled_start",
+    "block_end": "scheduled_end",
+    "actual_start": "actual_start",
+    "actual_end": "actual_end",
+    "waiting_since": "delegated_at",
+}
+_OVERLAY_FLAGS = {"flexible": "flexible", "hard_date": "is_hard_date", "deep_work": "deep_work"}
+#: The clear words -> the overlay fields each one empties.
+_OVERLAY_CLEAR = {
+    "context": ("context",),
+    "energy": ("energy",),
+    "next_action": ("next_action",),
+    "block": ("scheduled_start", "scheduled_end"),
+    "actual": ("actual_start", "actual_end"),
+    "flexible": ("flexible",),
+    "hard_date": ("is_hard_date",),
+    "deep_work": ("deep_work",),
+    "waiting_on": ("waiting_on",),
+    "expected_by": ("expected_by",),
+}
+#: Every argument the overlay builder takes, so ``bulk_update``'s ``personal``
+#: object is refused by name for a key the single tool does not take.
+OVERLAY_ARGUMENTS = (
+    "disposition", "context", "energy", "next_action", "two_minute",
+    *_OVERLAY_TIMES, *_OVERLAY_FLAGS, "waiting_on", "expected_by", "clear",
+)
+_NAIVE_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$")
+
+
+def _instant(value: str, what: str, zone: str) -> str:
+    """A time the member gave -> the ISO instant the route stores.
+
+    ``2026-10-07 14:00`` is a time in the member's own zone (WS-46 P7), as the
+    Calendar shows it. A time with an offset or a ``Z`` is kept as given. A
+    date alone is refused: a block or an actual time is a time of day.
+    """
+    raw = str(value or "").strip()
+    if _NAIVE_TIME.match(raw):
+        local = datetime.fromisoformat(raw.replace(" ", "T"))
+        return local.replace(tzinfo=ZoneInfo(zone)).isoformat()
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.tzinfo is None or len(raw) <= 10:
+        raise GatewayRefusal(
+            f"{what} is a date and a time, YYYY-MM-DD HH:MM in your own zone, not {data(raw)}."
+        )
+    return parsed.isoformat()
+
+
+def _expected_by(value: str) -> str:
+    """The promised date, ``YYYY-MM-DD``, as the Tasks app's date picker
+    sends it (``ItemDetail.tsx``)."""
+    raw = str(value or "").strip()
+    if _date_of(raw) is None or len(raw) != 10:
+        raise GatewayRefusal(f"expected_by is a date, YYYY-MM-DD, not {data(raw)}.")
+    return raw
+
+
+async def _waiting_person(value: str) -> dict[str, Any]:
+    """``{name, email}`` for the person the member waits on: the shape the
+    Tasks app's Delegate dialog stores (``lens.ts`` ``lensDelegateItem``)."""
+    email = await _resolve_assignee_name(value)
+    if email.startswith("agent:"):
+        raise GatewayRefusal("waiting_on is a person. An agent is assigned, not chased.")
+    names = ((await get("/projects/people/names", {"emails": email})) or {}).get("names") or {}
+    name = next((str(v) for k, v in names.items() if str(k).lower() == email), "")
+    return {"name": name or email.split("@", 1)[0], "email": email}
+
+
+def _block_refusal(values: dict[str, Any], mine: dict[str, Any]) -> str:
+    """The route's merged-row check (``personal._reject_impossible_block``),
+    said before the card: a block ends after it starts."""
+    def at(key: str) -> datetime | None:
+        raw = values[key] if key in values else mine.get(key)
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00")) if raw else None
+        except ValueError:
+            return None
+
+    start, end = at("scheduled_start"), at("scheduled_end")
+    if start and end and start.tzinfo and end.tzinfo and end <= start:
+        return "block_end must be after block_start."
+    return ""
+
+
+async def _overlay_values(args: dict[str, Any], mine: dict[str, Any]) -> dict[str, Any] | str:
+    """The overlay body for *args*, keyed by ``set_my_overlay``'s argument
+    names, or the refusal. One builder for the single tool and for
+    ``bulk_update``'s ``personal`` action, so the two refuse the same words.
+
+    *mine* is the member's current overlay, or ``{}``. It decides the block
+    check and nothing else.
+    """
+    unknown = sorted(set(args) - set(OVERLAY_ARGUMENTS))
+    if unknown:
+        return f"The overlay takes {', '.join(OVERLAY_ARGUMENTS)}, not {', '.join(unknown)}."
+    given = {k: "" if v is None else str(v).strip() for k, v in args.items()}
+    values = _overlay_words(given)
+    if isinstance(values, str):
+        return values
+    await _overlay_times(given, values)
+    if given.get("waiting_on"):
+        values["waiting_on"] = await _waiting_person(given["waiting_on"])
+        # Migration 188: a chase has a since-when. The Delegate dialog
+        # stamps now, and so does the chat, unless the member gave one.
+        values.setdefault("delegated_at", datetime.now(UTC).replace(microsecond=0).isoformat())
+    if given.get("expected_by"):
+        values["expected_by"] = _expected_by(given["expected_by"])
+    refusal = _clear_into(values, given.get("clear", ""), _OVERLAY_CLEAR)
+    return refusal or _block_refusal(values, mine) or values
+
+
+def _overlay_words(given: dict[str, str]) -> dict[str, Any] | str:
+    """The triage words and the yes-or-no flags of the overlay, or the refusal."""
+    values: dict[str, Any] = {}
+    state, refusal = _overlay_disposition(given.get("disposition", ""))
+    if refusal:
+        return refusal
+    if state:
+        values["disposition"] = state
+    for key in ("context", "next_action"):
+        if given.get(key):
+            values[key] = given[key]
+    if given.get("energy"):
+        level = given["energy"].lower()
+        if level not in ENERGIES:
+            return f"energy is one of {', '.join(ENERGIES)}."
+        values["energy"] = level
+    for arg, field in {"two_minute": "is_two_minute", **_OVERLAY_FLAGS}.items():
+        flag = _yes_no(given.get(arg, ""), arg)
+        if flag is not None:
+            values[field] = flag
+    return values
+
+
+async def _overlay_times(given: dict[str, str], values: dict[str, Any]) -> None:
+    """The times of the overlay into *values*. A time with no offset is in
+    the member's own zone, read only when a time needs it (WS-46 P7). A
+    ``waiting_since`` may be a date alone, as the Tasks app keeps it."""
+    asked = [arg for arg in _OVERLAY_TIMES if given.get(arg)]
+    if not asked:
+        return
+    _day, zone = await _member_clock()
+    for arg in asked:
+        raw = given[arg]
+        if arg == "waiting_since" and len(raw) == 10 and _date_of(raw):
+            values[_OVERLAY_TIMES[arg]] = raw
+        else:
+            values[_OVERLAY_TIMES[arg]] = _instant(raw, arg, zone)
+
+
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def set_my_overlay(
     task_id: str,
@@ -3037,6 +3383,16 @@ async def set_my_overlay(
     next_action: str = "",
     estimate_mins: int = 0,
     two_minute: str = "",
+    block_start: str = "",
+    block_end: str = "",
+    flexible: str = "",
+    hard_date: str = "",
+    actual_start: str = "",
+    actual_end: str = "",
+    deep_work: str = "",
+    waiting_on: str = "",
+    waiting_since: str = "",
+    expected_by: str = "",
     clear: str = "",
 ) -> str:
     """Set the member's OWN triage of a task: disposition (INBOX, NEXT,
@@ -3046,7 +3402,17 @@ async def set_my_overlay(
     task's shared lane (D77), so finish a task with complete. INBOX,
     NEXT or WAITING on a finished task reopens it for the board. defer sets a
     date. The estimate is the TASK's, shared with the board since D77: set
-    it with update_task, not here."""
+    it with update_task, not here.
+    The member's own time for the task, which nobody else sees:
+    block_start and block_end are a block on their calendar, YYYY-MM-DD
+    HH:MM in their own zone. flexible (yes or no) says the block may move,
+    and hard_date (yes or no) says the date may not. actual_start and
+    actual_end are when the work really started and ended. deep_work (yes or
+    no) marks focus work. waiting_on is the person (name or email) the
+    member waits on. waiting_since is when the wait began, and it is now
+    when not given. expected_by (YYYY-MM-DD) is the date that person
+    promised. clear also takes block, actual, flexible, hard_date, deep_work,
+    waiting_on and expected_by."""
     tid, task = await _task(task_id)
     unread = ""
     try:
@@ -3058,46 +3424,26 @@ async def set_my_overlay(
         # The card must not claim "None →" for a value it never read.
         mine = {}
         unread = "not readable here — the task is not in your lens, so the card cannot show it"
-    payload: dict[str, Any] = {}
-    before: dict[str, Any] = {}
-    state, refusal = _overlay_disposition(disposition)
-    if refusal:
-        return refusal
-    if state:
-        payload["disposition"] = state
-        before["disposition"] = mine.get("disposition")
-    if context.strip():
-        payload["context"] = context.strip()
-        before["context"] = mine.get("context")
-    if energy.strip():
-        level = energy.strip().lower()
-        if level not in ENERGIES:
-            return f"energy is one of {', '.join(ENERGIES)}."
-        payload["energy"] = level
-        before["energy"] = mine.get("energy")
-    if next_action.strip():
-        payload["next_action"] = next_action.strip()
-        before["next_action"] = mine.get("next_action")
     if _int_or_none(estimate_mins) is not None:
         # D77: one estimate, on the task. Refused by name rather than
         # dropped, so the model learns where it goes.
         return ("The estimate is the task's own since D77, shared with the "
                 "board and People capacity. Set it with update_task "
                 "(estimate_mins).")
-    flag = _yes_no(two_minute, "two_minute")
-    if flag is not None:
-        payload["is_two_minute"] = flag
-        before["is_two_minute"] = mine.get("is_two_minute")
-    cleared: dict[str, Any] = {}
-    for field in _split(clear):
-        key = field.lower()
-        if key not in ("context", "energy", "next_action"):
-            return f"clear takes context, energy or next_action, not {data(field)}."
-        cleared[key] = None
-        before[key] = mine.get(key)
-    payload = {**cleared, **payload}
+    given = {
+        "disposition": disposition, "context": context, "energy": energy,
+        "next_action": next_action, "two_minute": two_minute, "block_start": block_start,
+        "block_end": block_end, "flexible": flexible, "hard_date": hard_date,
+        "actual_start": actual_start, "actual_end": actual_end, "deep_work": deep_work,
+        "waiting_on": waiting_on, "waiting_since": waiting_since, "expected_by": expected_by,
+        "clear": clear,
+    }
+    payload = await _overlay_values(given, mine if isinstance(mine, dict) else {})
+    if isinstance(payload, str):
+        return payload
     if not payload:
         return "Nothing to change. Pass at least one field."
+    before = {key: (mine or {}).get(key) for key in payload}
     card = _overlay_card(payload, task, unread)
     if not await _confirm(
         title="Update your triage of this task?",
