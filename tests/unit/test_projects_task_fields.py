@@ -103,14 +103,43 @@ def _forms(monkeypatch) -> None:
     form_stub(monkeypatch, tw.FORM_ANSWERS)
 
 
-def _gateway(*, subtasks: int = 0, done: int = 0, plan: dict | None = None, types=None):
-    """The writes fence's gateway, with subtasks, a richer type list and a plan."""
+def _child(n: int) -> str:
+    return str(uuid.UUID(int=0x6A8FAD5B0000000000000000000000 + n))
+
+
+def _flat(subtasks: int, done: int) -> dict[str, list[tuple[str, str]]]:
+    """*subtasks* direct children of each root task, the first *done* closed."""
+    rows = [(_child(i), "done" if i < done else "todo") for i in range(subtasks)]
+    return {UUID: rows, LIVE: rows}
+
+
+def _gateway(
+    *,
+    subtasks: int = 0,
+    done: int = 0,
+    plan: dict | None = None,
+    types=None,
+    tree: dict[str, list[tuple[str, str]]] | None = None,
+    task: dict | None = None,
+):
+    """The writes fence's gateway, with a subtree, a richer type list and a plan.
+
+    ``tree`` maps a task id to its direct children, ``(id, category)``, as
+    ``/relations`` lists them. A task that is not a key has no children.
+    """
+    children = tree if tree is not None else _flat(subtasks, done)
 
     def answer(call: dict) -> Any:
         path, method = call["path"], call["method"]
+        if task is not None and path == f"/projects/tasks/{UUID}" and method == "GET":
+            return task
         if path.endswith("/relations"):
-            rows = [{"id": CHILD, "title": f"step {i}"} for i in range(subtasks)]
-            return {"subtasks": rows, "progress": {"done": done}, "links": []}
+            tid = path.split("/")[-2]
+            rows = [
+                {"id": cid, "title": f"step {cid[-2:]}", "category": cat}
+                for cid, cat in children.get(tid, [])
+            ]
+            return {"subtasks": rows, "links": []}
         if path.endswith("/types") and method == "GET" and types is not None:
             return {"rows": types}
         if path == f"/projects/nodes/{OTHER}/fields" and plan is not None:
@@ -457,7 +486,7 @@ async def test_complete_with_yes_sends_the_flag_and_reports_the_count(monkeypatc
     out = await skill_projects.complete(UUID, include_subtasks="yes")
     sent = _writes_to(calls, "POST", "/projects/tasks/{task_id}/complete")
     assert sent[0]["params"] == {"include_subtasks": True}
-    assert "3 open subtasks completed too" in asked[0]["context"]
+    assert "3 open subtasks (every level) completed too" in asked[0]["context"]
     assert "Subtasks completed too: 3." in out
 
 
@@ -467,7 +496,7 @@ async def test_complete_with_no_sends_nothing_and_says_they_stay(monkeypatch) ->
     await skill_projects.complete(UUID, include_subtasks="no")
     sent = _writes_to(calls, "POST", "/projects/tasks/{task_id}/complete")
     assert sent[0]["params"] == {}
-    assert "2 open subtasks stay as they are" in asked[0]["context"]
+    assert "2 open subtasks (every level) stay as they are" in asked[0]["context"]
 
 
 async def test_a_task_with_no_open_subtasks_is_not_asked(monkeypatch) -> None:
@@ -483,7 +512,7 @@ async def test_archive_with_yes_shelves_the_subtasks_and_says_so(monkeypatch) ->
     out = await skill_projects.archive_task(LIVE, include_subtasks="yes")
     sent = _writes_to(calls, "POST", "/projects/tasks/{task_id}/archive")
     assert sent[0]["params"] == {"include_subtasks": True}
-    assert "2 subtasks archived with it" in asked[0]["detail"]
+    assert "2 subtasks (every level) archived with it" in asked[0]["detail"]
     assert "Subtasks archived too: 2." in out
 
 
@@ -499,13 +528,167 @@ async def test_update_with_yes_sends_the_flag_on_a_move_into_done(monkeypatch) -
 async def test_the_flag_with_no_act_it_belongs_to_is_refused(monkeypatch) -> None:
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway(subtasks=1))
-    with pytest.raises(W.GatewayRefusal, match="goes with a status in a Done lane"):
+    with pytest.raises(W.GatewayRefusal, match="goes with a status change into a Done lane"):
         await skill_projects.update_task(UUID, status="in progress", include_subtasks="yes")
     with pytest.raises(W.GatewayRefusal, match="goes with action archive"):
         await skill_projects.bulk_update(UUID, due="2026-10-09", include_subtasks="yes")
     with pytest.raises(W.GatewayRefusal, match="include_subtasks is yes or no"):
         await skill_projects.complete(UUID, include_subtasks="all of them")
     assert asked == [] and writes(calls) == []
+
+
+#: A nested subtree: LIVE has two children, one of them has two, and one
+#: of those has one more. Five descendants, and #A is closed.
+A, B, C, D, E = (_child(n) for n in range(10, 15))
+NESTED = {LIVE: [(A, "done"), (B, "todo")], A: [(C, "todo"), (D, "todo")], C: [(E, "todo")]}
+
+
+async def _direct_only(task_id: str) -> Any:
+    """The P6 count before review round 1: the direct children only."""
+    rows = NESTED.get(task_id, [])
+    return W.SubtreeCount(len(rows), sum(1 for _i, c in rows if c != "done"))
+
+
+async def test_the_count_reaches_every_level_the_cascade_reaches(monkeypatch) -> None:
+    """The archive cascade shelves every visible descendant (``cascade.
+    archive_subtree``), so the card counts five here, not the two children."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway(tree=NESTED))
+    out = await skill_projects.archive_task(LIVE)
+    assert "has 5 subtasks (every level)" in out
+    await skill_projects.archive_task(LIVE, include_subtasks="yes")
+    assert "5 subtasks (every level) archived with it" in asked[0]["detail"]
+    count = await W._subtask_counts(LIVE)
+    assert (count.total, count.open, count.capped) == (5, 4, False), "a closed child's own"
+    assert len([c for c in calls if c["path"].endswith("/relations")]) >= 6
+
+
+async def test_a_direct_children_count_fails_the_every_level_check(monkeypatch) -> None:
+    """The mutation: count the children only, and the card says 2, not 5."""
+    from skill_projects import guarded
+
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _gateway(tree=NESTED))
+    monkeypatch.setattr(guarded, "_subtask_counts", _direct_only)
+    await skill_projects.archive_task(LIVE, include_subtasks="yes")
+    assert "5 subtasks" not in asked[0]["detail"]
+
+
+async def test_complete_counts_the_open_ones_at_every_level(monkeypatch) -> None:
+    approve(monkeypatch)
+    tree = {UUID: NESTED[LIVE], A: NESTED[A], C: NESTED[C]}
+    fake_gateway(monkeypatch, _gateway(tree=tree))
+    out = await skill_projects.complete(UUID)
+    assert "has 4 open subtasks (every level)" in out, "under a closed child, too"
+
+
+async def test_a_huge_tree_is_read_to_a_cap_and_the_card_says_at_least(monkeypatch) -> None:
+    approve(monkeypatch)
+    monkeypatch.setattr(W, "SUBTREE_READS", 2)
+    fake_gateway(monkeypatch, _gateway(tree=NESTED))
+    out = await skill_projects.archive_task(LIVE)
+    assert "has at least 4 subtasks (every level)" in out
+
+
+# ── Review round 1 — the edit form asks the subtasks question itself ───────
+
+
+def _edit_answer(**over: Any) -> dict[str, str]:
+    form = {
+        "title": "Fix the extruder", "description": "", "status": "Done", "due": "2026-10-01",
+        "start": "", "important": True, "leveraged": False, "estimate_mins": 30, "tags": "",
+        **over,
+    }
+    return {"Edit #7": "Review changes — " + json.dumps(form)}
+
+
+async def test_the_edit_form_asks_the_subtasks_question_and_the_edit_applies(
+    monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    drawn = form_stub(monkeypatch, _edit_answer())
+    calls = fake_gateway(monkeypatch, _gateway(subtasks=3))
+    out = await skill_projects.edit_task(UUID)
+    field = next(f for f in drawn[0]["props"]["data"]["fields"] if f["name"] == "subtasks")
+    assert field["options"] == ["Only this task", "Complete them too"]
+    assert field["value"] == "Only this task", "D-PM-38 decision 2 is the default"
+    assert "3 open subtasks (every level)" in field["label"]
+    patched = _writes_to(calls, "PATCH", "/projects/tasks/{task_id}")
+    assert len(patched) == 1, f"the edit did not apply: {out!r}"
+    assert patched[0]["params"] == {}, "Only this task sends no flag"
+    body = patched[0]["json"]
+    assert body["status_id"] == tw.S3 and body["due_at"] == "2026-10-01"
+    assert body["estimate_mins"] == 30, "the form's other edits go with it"
+    assert "2 open subtasks" not in asked[0]["context"]
+    assert "3 open subtasks (every level) stay as they are" in asked[0]["context"]
+
+
+async def test_the_edit_form_can_complete_the_subtasks_too(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    form_stub(monkeypatch, _edit_answer(subtasks="Complete them too"))
+    calls = fake_gateway(monkeypatch, _gateway(subtasks=3))
+    await skill_projects.edit_task(UUID)
+    patched = _writes_to(calls, "PATCH", "/projects/tasks/{task_id}")
+    assert patched[0]["params"] == {"include_subtasks": True}
+    assert "3 open subtasks (every level) completed too" in asked[0]["context"]
+
+
+async def test_the_edit_form_without_a_done_status_sends_no_flag(monkeypatch) -> None:
+    approve(monkeypatch)
+    form_stub(monkeypatch, _edit_answer(status="In progress", subtasks="Complete them too"))
+    calls = fake_gateway(monkeypatch, _gateway(subtasks=3))
+    await skill_projects.edit_task(UUID)
+    patched = _writes_to(calls, "PATCH", "/projects/tasks/{task_id}")
+    assert patched[0]["params"] == {} and patched[0]["json"]["status_id"] == tw.S2
+
+
+async def test_a_form_with_no_subtasks_choice_strands_the_edit(monkeypatch) -> None:
+    """The mutation: the form does not read the subtasks, so it draws no
+    choice. update_task then asks after the submit, and nothing applies."""
+    from skill_projects import forms
+
+    async def none(_task_id: str) -> Any:
+        return W.SubtreeCount()
+
+    approve(monkeypatch)
+    form_stub(monkeypatch, _edit_answer())
+    calls = fake_gateway(monkeypatch, _gateway(subtasks=3))
+    monkeypatch.setattr(forms, "_subtask_counts", none)
+    out = await skill_projects.edit_task(UUID)
+    assert "Ask the member once" in out
+    assert _writes_to(calls, "PATCH", "/projects/tasks/{task_id}") == []
+
+
+# ── Review round 1 — a task already in the Done lane cascades nothing ──────
+
+
+async def test_a_task_already_done_is_not_asked_and_shows_no_cascade(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    done_task = {**tw.TASK, "status_id": tw.S3}
+    calls = fake_gateway(monkeypatch, _gateway(subtasks=3, task=done_task))
+    await skill_projects.update_task(UUID, status="done", title="Renamed")
+    assert "subtasks" not in asked[0]["context"]
+    assert _writes_to(calls, "PATCH", "/projects/tasks/{task_id}")[0]["params"] == {}
+    with pytest.raises(W.GatewayRefusal, match="status change into a Done lane"):
+        await skill_projects.update_task(UUID, status="done", include_subtasks="yes")
+
+
+# ── Review round 1 — the nits ───────────────────────────────────────────────
+
+
+def test_a_blank_answer_to_a_required_field_is_no_answer() -> None:
+    missing = ["PO number", "Count"]
+    card = {"field PO number": "  ", "field Count": "0"}
+    assert W._unanswered(missing, card, {"po_number": "  ", "count": 0}) == ["PO number"]
+    assert W._unanswered(missing, {"field PO number": "[]"}, {"po_number": []}) == missing
+
+
+@pytest.mark.parametrize("given", [["a", "b"], {"a": 1}])
+def test_a_text_field_refuses_a_list_or_an_object(given) -> None:
+    for kind in ("text", "url"):
+        definition = {"name": "F", "field_key": "f", "field_type": kind, "options": []}
+        with pytest.raises(W.GatewayRefusal, match="takes text, not a list"):
+            W._field_value(definition, given)
 
 
 async def test_a_move_asks_then_carries_the_subtasks(monkeypatch) -> None:
@@ -520,7 +703,7 @@ async def test_a_move_asks_then_carries_the_subtasks(monkeypatch) -> None:
     assert preview["include_subtasks"] is True, "the preview counts what the subtasks cost"
     body = _writes_to(calls, "POST", "/projects/tasks/move")[0]["json"]
     assert body["include_subtasks"] is True
-    assert "2 subtasks moved too" in asked[0]["context"]
+    assert "2 subtasks (every level) moved too" in asked[0]["context"]
 
 
 async def test_a_move_over_a_hidden_subtask_is_refused_before_the_card(monkeypatch) -> None:

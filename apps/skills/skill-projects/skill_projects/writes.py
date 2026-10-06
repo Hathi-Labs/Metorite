@@ -440,7 +440,20 @@ def _subtasks_wanted(value: str) -> bool | None:
     return _yes_no(value, "include_subtasks")
 
 
-def ask_about_subtasks(task: dict[str, Any], count: int, door: str) -> str:
+def _subtasks_phrase(count: int, door: str, capped: bool = False) -> str:
+    """``3 open subtasks (every level)``: the count the cascade acts on.
+
+    The gateway's cascade walks every level below the task
+    (``cascade.load_subtree``), so the count does too (:func:`_subtask_counts`).
+    """
+    noun = "open subtask" if door == "complete" else "subtask"
+    lead = "at least " if capped else ""
+    return f"{lead}{count} {noun}{'' if count == 1 else 's'} (every level)"
+
+
+def ask_about_subtasks(
+    task: dict[str, Any], count: int, door: str, capped: bool = False
+) -> str:
     """The one question D-PM-38 asks, before any card and before any write.
 
     The app asks it in a prompt (complete) or with a ticked box (move and
@@ -448,8 +461,7 @@ def ask_about_subtasks(task: dict[str, Any], count: int, door: str) -> str:
     card then shows the answer. The app's own default is named, so the
     member knows what the app would do.
     """
-    noun = "open subtask" if door == "complete" else "subtask"
-    many = f"{count} {noun}{'' if count == 1 else 's'}"
+    many = _subtasks_phrase(count, door, capped)
     them = "it" if count == 1 else "them"
     default = "they go with it" if CASCADE_DEFAULTS[door] else "only this task"
     return (
@@ -459,24 +471,68 @@ def ask_about_subtasks(task: dict[str, Any], count: int, door: str) -> str:
     )
 
 
-async def _subtask_counts(task_id: str) -> tuple[int, int]:
-    """``(direct subtasks, the open ones)`` that the member can see."""
-    tid = uuid_of(task_id, "task_id")
-    relations = (await get(f"/projects/tasks/{tid}/relations")) or {}
-    subtasks = relations.get("subtasks") or []
-    done = int((relations.get("progress") or {}).get("done") or 0)
-    return len(subtasks), max(0, len(subtasks) - done)
+#: The most ``/relations`` reads one subtree count makes. Past it the card
+#: says "at least", so a huge tree costs a bounded number of reads.
+SUBTREE_READS = 100
+
+_CLOSED_CATEGORIES = ("done", "cancelled")
 
 
-def _subtask_line(door: str, wanted: bool, count: int) -> dict[str, str]:
+class SubtreeCount:
+    """The descendants a cascade reaches, counted at every level.
+
+    ``total`` is every visible descendant that is not archived, which is the
+    set ``cascade.archive_subtree`` shelves. ``open`` is the part of it that
+    is not closed, which is the set ``cascade.complete_subtree`` completes.
+    ``capped`` says the walk stopped at :data:`SUBTREE_READS`.
+    """
+
+    def __init__(self, total: int = 0, open_: int = 0, capped: bool = False) -> None:
+        self.total = total
+        self.open = open_
+        self.capped = capped
+
+
+async def _subtask_counts(task_id: str) -> SubtreeCount:
+    """Every level below *task_id*, through ``/relations``, top down.
+
+    ``/relations`` lists the direct children that the member can see and
+    that are not archived. A walk of it reaches the descendants the
+    gateway's cascade acts on (``cascade.load_subtree``). One read per task
+    in the tree, to :data:`SUBTREE_READS`.
+    """
+    out = SubtreeCount()
+    queue = [task_id]
+    seen = {str(task_id)}
+    reads = 0
+    while queue:
+        if reads >= SUBTREE_READS:
+            out.capped = True
+            break
+        tid = uuid_of(queue.pop(0), "task_id")
+        relations = (await get(f"/projects/tasks/{tid}/relations")) or {}
+        reads += 1
+        for child in relations.get("subtasks") or []:
+            cid = str(child.get("id") or "")
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            out.total += 1
+            if child.get("category") not in _CLOSED_CATEGORIES:
+                out.open += 1
+            queue.append(cid)
+    return out
+
+
+def _subtask_line(door: str, wanted: bool, count: int, capped: bool = False) -> dict[str, str]:
     """The card's ``subtasks`` line: what the act does to them."""
     if not wanted and not count:
         return {}
-    noun = "open subtask" if door == "complete" else "subtask"
     if wanted:
-        many = f"{count} {noun}{'' if count == 1 else 's'}" if count else f"every {noun}"
+        noun = "open subtask" if door == "complete" else "subtask"
+        many = _subtasks_phrase(count, door, capped) if count else f"every {noun}"
         return {"subtasks": f"{many} {_CASCADE_VERB[door]} too"}
-    many = f"{count} {noun}{'' if count == 1 else 's'}"
+    many = _subtasks_phrase(count, door, capped)
     return {"subtasks": f"{many} stay as they are (include_subtasks=no)"}
 
 
@@ -566,11 +622,13 @@ def _date_value(name: str, value: Any, _options: list[str]) -> str:
 
 
 def _text_value(name: str, value: Any, _options: list[str]) -> str:
+    if isinstance(value, list | dict):
+        raise GatewayRefusal(f"{name} takes text, not a list or an object.")
     return str(value).strip()
 
 
 def _url_value(name: str, value: Any, _options: list[str]) -> str:
-    text_value = str(value).strip()
+    text_value = _text_value(name, value, _options)
     if text_value and not re.match(r"^https?://\S+$", text_value):
         raise GatewayRefusal(f"{name} takes a http(s) address, not {data(text_value)}.")
     return text_value
@@ -1013,21 +1071,27 @@ async def _edit_subtasks(
     """``include_subtasks`` on an edit: it means something only with a move
     into a Done lane, where the route completes the open subtasks too."""
     wanted = _subtasks_wanted(include_subtasks)
-    closing = lane is not None and lane.get("category") == "done"
+    # The PATCH route cascades on a status CHANGE into a Done lane only
+    # (`tasks.patch_task`), so a task already in that lane closes nothing.
+    closing = (
+        lane is not None
+        and lane.get("category") == "done"
+        and str(lane.get("id")) != str(task.get("status_id"))
+    )
     if not closing:
         if wanted is not None:
             raise GatewayRefusal(
-                "include_subtasks goes with a status in a Done lane. Pass that status, "
-                "or use complete."
+                "include_subtasks goes with a status change into a Done lane. Pass that "
+                "status for a task that is not in it yet, or use complete."
             )
         return
-    _total, open_count = await _subtask_counts(str(task.get("id")))
-    if wanted is None and open_count:
-        out.question = ask_about_subtasks(task, open_count, "complete")
+    count = await _subtask_counts(str(task.get("id")))
+    if wanted is None and count.open:
+        out.question = ask_about_subtasks(task, count.open, "complete", count.capped)
         return
     if wanted:
         out.params["include_subtasks"] = True
-    out.card.update(_subtask_line("complete", bool(wanted), open_count))
+    out.card.update(_subtask_line("complete", bool(wanted), count.open, count.capped))
 
 
 async def _edit_task_fields(
@@ -1500,14 +1564,27 @@ async def _required_refusal(dest: str, missing: list[str], many: bool) -> str:
     return out
 
 
+def _blank(value: Any) -> bool:
+    """Absent, as ``custom_fields._is_blank`` judges it: ``None``, blank text,
+    an empty list. ``0`` and ``False`` are answers."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return isinstance(value, list | dict) and not value
+
+
 def _unanswered(missing: list[str], card: dict[str, Any], values: dict[str, Any]) -> list[str]:
-    """The required fields among *missing* that ``fields`` gives no value."""
-    given = {k.lower() for k, v in values.items() if v is not None}
-    given |= {
-        label.removeprefix("field ").lower()
-        for label, shown in card.items()
-        if shown != "(empty)"
-    }
+    """The required fields among *missing* that ``fields`` gives no value.
+
+    *card* and *values* are filled in one loop (:func:`field_values`), so
+    the n-th label names the n-th key. A blank answer is no answer, as the
+    route's required check judges it.
+    """
+    given: set[str] = set()
+    for label, (key, value) in zip(card, values.items(), strict=False):
+        if not _blank(value):
+            given |= {key.lower(), label.removeprefix("field ").lower()}
     return [m for m in missing if m.strip().lower() not in given]
 
 
@@ -1667,11 +1744,11 @@ async def complete(task_id: str, include_subtasks: str = "") -> str:
     tid, task = await _task(task_id)
     if task.get("completed_at"):
         return f"{_ref(task)} is already done."
-    _total, open_count = await _subtask_counts(tid)
-    if wanted is None and open_count:
-        return ask_about_subtasks(task, open_count, "complete")
+    count = await _subtask_counts(tid)
+    if wanted is None and count.open:
+        return ask_about_subtasks(task, count.open, "complete", count.capped)
     card = {"task": _ref(task), "status": "the project's done lane"}
-    card.update(_subtask_line("complete", bool(wanted), open_count))
+    card.update(_subtask_line("complete", bool(wanted), count.open, count.capped))
     if not await _confirm(
         title="Mark this task done?",
         detail=_ref(task),

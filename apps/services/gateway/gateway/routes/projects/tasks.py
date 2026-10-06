@@ -137,8 +137,9 @@ class MoveTask(BaseModel):
     assignees: list[str] | None = None
     #: D-PM-38 decision 4 (S5). Carry every descendant to the new project too,
     #: each remapped into the destination's set by this same seam. FALSE by
-    #: default, so an old caller, the chat tools and the organize door move
-    #: one task. The move dialogs send true, because their box is ticked. It
+    #: default, so an old caller and the organize door move one task. The
+    #: move dialogs send true, because their box is ticked, and the Projects
+    #: chat's `move_task` sends it for a member's "yes" (WS-46 P6). It
     #: means something only when ``project_id`` changes.
     include_subtasks: bool = False
 

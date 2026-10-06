@@ -65,6 +65,7 @@ from skill_projects.writes import (
     _split,
     _subtask_counts,
     _subtask_receipt,
+    _subtasks_phrase,
     _subtasks_wanted,
     _task,
     _vocab,
@@ -341,14 +342,14 @@ async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     tid, task = await _task(task_id)
     if task.get("archived_at"):
         return f"{_ref(task)} is already archived."
-    total, open_subs = await _subtask_counts(tid)
-    if wanted is None and total:
-        return ask_about_subtasks(task, total, "archive")
+    count = await _subtask_counts(tid)
+    if wanted is None and count.total:
+        return ask_about_subtasks(task, count.total, "archive", count.capped)
     lane = await _status_name(task)
-    if wanted and total:
-        tail = f"{_plural(total, 'subtask')} archived with it"
+    if wanted and count.total:
+        tail = f"{_subtasks_phrase(count.total, 'archive', count.capped)} archived with it"
     else:
-        tail = f"{_plural(open_subs, 'open subtask')} left on the board"
+        tail = f"{_subtasks_phrase(count.open, 'complete', count.capped)} left on the board"
     impact = f"1 task archived from lane {lane} · {tail}"
     rest = {"task": _ref(task), "status": lane, "undo": "unarchive_task"}
     if not await _confirm(
