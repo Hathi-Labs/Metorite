@@ -95,6 +95,23 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-256 · Give `user_settings` a key for each organization of a member · [AGENT]
+- **Check:** `rg -n "user_id TEXT PRIMARY KEY" infra/postgres/51_gtd_settings.sql`,
+  then find a later migration that keys the table on
+  `(organization_id, user_id)`. No such migration means this is open.
+- **Why.** The table holds one row for each address, because `user_id` is
+  its whole primary key. The tenancy phases in `generated/` add
+  `organization_id` and FORCE RLS, and the key stays the same. So a member of two
+  organizations can save settings in one of them only. The insert in the
+  other one fails on the key. Since WS-46 P7 the Projects chat reads the
+  member's zone from this table (`GET /projects/my/today`).
+- **Do.** Measure the rows first. Then change the key in expand and contract
+  steps (R6): add a unique index on `(organization_id, user_id)`, move each
+  reader and writer to it, and drop the old key in a later release. Fence it
+  with an R8 test of one address in two organizations.
+- **Authority:** `specs/projects_agent_parity.md` §15, the P7 record · R5 · R6
+- **Added:** 2026-10-06 · WS-46 P7
+
 ### H-255 · Check the pop-out and the discard of a reply by eye (EM-G3c-3) · [OWNER]
 - **Check:** `rg -n "EM-G3c-3 visual check passed" project-docs/specs/email_app_master_plan.md`
   → no hit means open. The owner reports the result. An agent then writes that

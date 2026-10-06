@@ -1,12 +1,12 @@
 # The Projects operations eval (WS-46 P3)
 
-This folder holds the eval of WS-46 P3. It runs eight Projects operations
-tasks, PO-1 to PO-8, against projects-assistant, and checks each result. The
+This folder holds the eval of WS-46 P3. It runs nine Projects operations
+tasks, PO-1 to PO-9, against projects-assistant, and checks each result. The
 owning spec is `project-docs/specs/projects_agent_parity.md`, §11 and slice P3
 of §12. D91 is the decision.
 
-**Status.** Built on 2026-10-06. P6 added PO-8 on the same day. The scripted
-run passes seven tasks in seven, uncovered and covered. PO-3 is `xfail` until P8 and P9 ship. Nobody has run
+**Status.** Built on 2026-10-06. P6 added PO-8 and P7 added PO-9 on the same
+day. The scripted run passes eight tasks in eight, uncovered and covered. PO-3 is `xfail` until P8 and P9 ship. Nobody has run
 the model sweep yet.
 
 ## What it reuses, and what it adds
@@ -33,18 +33,22 @@ Three parts are new here:
 
 The stub email agent of §11.1 item 3 is part of PO-3. P9 builds it.
 
+Since WS-46 P7 the member of the dataset has a zone, `Asia/Kolkata`, and
+`today` is the date in it. The stub answers `GET /projects/my/today` with
+both, so a guessed day in PO-2 is the member's own.
+
 ## The files
 
 | File | What it holds |
 |---|---|
 | `run.py` | The runner. It extends the coding `Harness` with this stub and the cover |
-| `tasks.py` | The eight tasks, their full prompts and the answer to each card |
+| `tasks.py` | The nine tasks, their full prompts and the answer to each card |
 | `checkers.py` | One checker for each task, and the rules that bind every task |
 | `dataset.py` | The synthetic dataset, and the expected values that come from it |
 | `stub_api.py` | The stub of the Projects API, with write routes and a record of each request |
 | `scripted.py` | One known-good tool sequence for each task, for `--scripted` |
 
-## The eight tasks
+## The nine tasks
 
 Each checker reads the requests that the stub saw, the cards and the tool
 results. The answer of the model is one input, and never the only one.
@@ -59,6 +63,7 @@ results. The answer of the model is one input, and never the only one.
 | PO-6 | Set the status of #12 to Shipped | No write. A tool result starts with "Refused:" and names every lane of Launch. The answer names every lane |
 | PO-7 | Make it repeat with a rrule | Each call with an argument that the tool does not declare gets a refusal that names the argument. `set_recurrence` makes the rule. One `PUT …/recurrence` on #7, weekly, with `weekdays` `[1]`. One approved card. No other write. The answer says that it repeats |
 | PO-8 | Add a bug to Launch that starts next Monday, for the customer Acme | One approved card. One `POST /projects/tasks` with the type id of Bug, `start_date` next Monday and `custom_fields` `{"customer": "Acme"}`. The stub checks the value with the route's own `apply_values`, as the create route does (#679). No setting in the title or the description. No other write. The answer names Acme |
+| PO-9 | Save a board of the overdue work in Launch, grouped by owner | One approved card. One `POST …/views` on Launch, a board, with `filters` `{"overdue": true}` and `group_by` assignee. The stub keeps the config through the route's own `normalise_view_config`, and the stored config must equal the sent one. No other write. The answer names the view |
 
 Four rules bind every task. The run must end, and the cover must be as the
 sweep asked. Every request must act as the acting member. The fourth rule is
