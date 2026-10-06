@@ -1316,9 +1316,8 @@ async def emit_generative_ui(ui: str) -> dict:
          • formCard — {title?, description?, submitLabel?, fields:[{name,
              label, type('text'|'number'|'select'|'slider'|'toggle'|
              'checkbox'|'date'|'textarea'), placeholder?, value?, required?,
-             options?:[string] (select), min?/max?/step?/unit? (number|slider),
-             hint? (checkbox)}]} — a
-             schema-driven form; PAIR WITH ``"hitl":true`` so the submitted
+             options?:[string], min?/max?/step?/unit? (number|slider)}]}
+             — a schema-driven form; PAIR WITH ``"hitl":true`` so the submitted
              values come back as this call's result. Replaces hand-written
              HTML forms.
          • optionPicker — {title?, description?, multi?:bool, options:[{id,
