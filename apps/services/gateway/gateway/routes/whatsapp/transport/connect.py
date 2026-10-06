@@ -253,6 +253,9 @@ async def embedded_signup(
             waba_id=req.waba_id.strip() if req.waba_id else None,
             display_name=display, credentials=creds,
             webhook_verify_token=os.environ.get("WHATSAPP_VERIFY_TOKEN") or None,
+            # Step 2 verified this token for this number, so Meta is not
+            # called twice (WA-C1 review P1).
+            verified_profile=profile,
         )
         acct = _account_model(row)
     return EmbeddedSignupResponse(
