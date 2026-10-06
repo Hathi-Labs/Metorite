@@ -126,6 +126,11 @@ done
 pass "a session is open on $OLD2"
 
 run_backup A
+# The decoys first: a dropped decoy is the worst outcome, so it names itself.
+for db in "${DECOYS[@]}"; do
+  exists "$db" || { show_log; die "A: the sweep DROPPED the decoy '$db' — the pattern is too wide"; }
+done
+pass "all ${#DECOYS[@]} decoys survived the sweep"
 [ "$RC" = "0" ] || { show_log; die "A: backup_db.sh exited $RC (the sweep must drop $OLD2 although a session is open on it)"; }
 for db in "$OLD1" "$OLD2"; do
   exists "$db" && { show_log; die "A: stale $db survived the sweep"; }
@@ -135,12 +140,9 @@ pass "both stale scratch databases swept and logged, the open session included"
 exists "$FRESH" || die "A: the sweep dropped $FRESH, which is younger than 6 hours"
 pass "the fresh scratch database of a concurrent run survived"
 for db in "${DECOYS[@]}"; do
-  exists "$db" || { show_log; die "A: the sweep DROPPED the decoy '$db' — the pattern is too wide"; }
-done
-for db in "${DECOYS[@]}"; do
   [ -s "$DEST/$db.dump" ] || { show_log; die "A: decoy '$db' was left out of the backup"; }
 done
-pass "all ${#DECOYS[@]} decoys survived, and each one is in the backup"
+pass "each decoy is in the backup"
 ls "$DEST" | grep -qE '^acb_verify_[0-9]+\.dump$' && die "A: a scratch database was dumped"
 [ "$(q "select count(*) from pg_database where datname ~ '^acb_verify_[0-9]+\$'")" = "1" ] \
   || { show_log; die "A: the run left its own scratch database behind"; }
