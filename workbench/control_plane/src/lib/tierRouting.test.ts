@@ -15,7 +15,10 @@
  *   counts stay while any agent keeps a picker";
  * - the label repeats a tier, drops its order, or shows an unknown slug
  *   -> the `tierRouteLabel` cases;
- * - a word drifts from the `tier_catalog` seed -> "the words are the seed's".
+ * - a word drifts from the `tier_catalog` seed -> "the words are the seed's";
+ * - a covered agent keeps `restoredFor`, so a switch A -> covered B -> A writes
+ *   "auto" over A's choice (review P2 of PR #678) -> "a trip through a covered
+ *   agent keeps A's stored choice".
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,6 +33,7 @@ import {
   composerModelPlan,
   forgetModelChoice,
   getLastModel,
+  modelMemoryStep,
   modelPrefKey,
   routeTiers,
   staleModelKeys,
@@ -196,5 +200,78 @@ describe("tierRouteLabel", () => {
       expect(row![1].trim(), slug).toBe(word);
     }
     expect(Object.keys(TIER_WORDS).sort()).toEqual(["tier-balanced", "tier-fast", "tier-powerful"]);
+  });
+});
+
+describe("modelMemoryStep, the composer's persist effect", () => {
+  /**
+   * Drives the effect the way React runs it: once per render, and again
+   * after a `restore` changes the model. A switch of agent sets the model to
+   * "auto" first, as `handleSwitchAgent` does with the UI flag on.
+   */
+  function composer(store: ModelStore, covered: Set<string>) {
+    let agent = "";
+    let model = "auto";
+    let restoredFor: string | null = null;
+    const settle = () => {
+      for (let i = 0; i < 3; i++) {
+        const step = modelMemoryStep({
+          forced: false,
+          remember: !covered.has(agent),
+          tierUi: true,
+          agent,
+          model,
+          restoredFor,
+          readStored: () => getLastModel(agent, store),
+        });
+        restoredFor = step.restoredFor;
+        if (step.kind === "skip") return;
+        if (step.kind === "restore") {
+          model = step.model;
+          continue;
+        }
+        store.setItem(modelPrefKey(agent), model);
+        return;
+      }
+    };
+    return {
+      open(name: string) {
+        agent = name;
+        model = "auto";
+        settle();
+      },
+      get model() {
+        return model;
+      },
+    };
+  }
+
+  it("a trip through a covered agent keeps A's stored choice", () => {
+    const store = memoryStore({ "cc-model-a": "tier-powerful" });
+    const chat = composer(store, new Set(["b"]));
+    chat.open("a");
+    expect(chat.model).toBe("tier-powerful");
+    chat.open("b");
+    expect(chat.model).toBe("auto");
+    expect(store.data.has("cc-model-b")).toBe(false);
+    chat.open("a");
+    expect(chat.model).toBe("tier-powerful");
+    expect(store.data.get("cc-model-a")).toBe("tier-powerful");
+  });
+
+  it("with the UI flag off, persists as before and never restores", () => {
+    const step = modelMemoryStep({
+      forced: false, remember: true, tierUi: false, agent: "a", model: "x",
+      restoredFor: null, readStored: () => "y",
+    });
+    expect(step).toEqual({ kind: "persist", restoredFor: null });
+  });
+
+  it("a forced model writes nothing", () => {
+    const step = modelMemoryStep({
+      forced: true, remember: true, tierUi: true, agent: "a", model: "x",
+      restoredFor: "a", readStored: () => "y",
+    });
+    expect(step.kind).toBe("skip");
   });
 });

@@ -120,6 +120,46 @@ function store(s?: ModelStore): ModelStore {
   return s ?? globalThis.localStorage;
 }
 
+/**
+ * What the composer's persist effect does on one run (WS-45 S3).
+ *
+ * - `skip`: write nothing. A forced model is governed elsewhere, and a covered
+ *   agent keeps no choice.
+ * - `restore`: UI flag on, and this is the first live run for *agent*. Load
+ *   its stored choice into the composer, and write nothing over it.
+ * - `persist`: store the model in view, as before.
+ *
+ * `restoredFor` is the agent whose stored choice this mount has read. ⚠️ A
+ * covered agent CLEARS it. Without that, a switch from agent A to a covered
+ * agent and back skipped A's restore and wrote "auto" over A's choice
+ * (review P2 of PR #678).
+ */
+export type ModelMemoryStep =
+  | { kind: "skip"; restoredFor: string | null }
+  | { kind: "restore"; model: string; restoredFor: string }
+  | { kind: "persist"; restoredFor: string | null };
+
+export function modelMemoryStep(input: {
+  forced: boolean;
+  remember: boolean;
+  tierUi: boolean;
+  agent: string;
+  model: string;
+  restoredFor: string | null;
+  readStored: () => string | null;
+}): ModelMemoryStep {
+  if (input.forced) return { kind: "skip", restoredFor: input.restoredFor };
+  if (!input.remember) return { kind: "skip", restoredFor: null };
+  if (input.tierUi && input.restoredFor !== input.agent) {
+    const stored = input.readStored();
+    if (stored && stored !== input.model) {
+      return { kind: "restore", model: stored, restoredFor: input.agent };
+    }
+    return { kind: "persist", restoredFor: input.agent };
+  }
+  return { kind: "persist", restoredFor: input.restoredFor };
+}
+
 /** The stored choice of *agent*, or null. Never throws (SSR, private mode). */
 export function getLastModel(agent: string, s?: ModelStore): string | null {
   try {

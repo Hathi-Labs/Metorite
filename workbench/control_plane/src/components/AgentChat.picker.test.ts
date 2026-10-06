@@ -149,7 +149,8 @@ describe("the composer's wiring", () => {
     // The two reads it makes are behind the plan.
     expect(chat).toMatch(/tierUi \? null : getLastModel\(agentName\)/);
     expect(chat).toMatch(/modelPlan\.showPicker \? getModelUsage\(\) : \{\}/);
-    expect(chat).toMatch(/if \(!modelPlan\.rememberModel\) return;/);
+    expect(chat).toMatch(/modelMemoryStep\(\{[\s\S]*?remember: modelPlan\.rememberModel,/);
+    expect(chat).toMatch(/restoredForRef\.current = step\.restoredFor;/);
   });
 
   it("sends no model field for a covered agent (done-when 3)", () => {

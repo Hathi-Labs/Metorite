@@ -50,6 +50,7 @@ import {
   getLastModel,
   getModelUsage,
   incrementModelUsage,
+  modelMemoryStep,
   setLastModel,
   tierRoutingUiOn,
 } from "@/lib/tierRouting";
@@ -334,19 +335,24 @@ export default function AgentChat({
   useEffect(() => {
     // Don't persist/track an externally-forced model — it's governed by its own
     // setting and would otherwise overwrite the agent's own picker default.
-    if (forcedModel) return;
-    // A covered agent keeps no choice (WS-45 S3, §8).
-    if (!modelPlan.rememberModel) return;
-    if (tierUi && restoredForRef.current !== currentAgentName) {
-      // UI flag on: the first live render of this agent restores its choice,
-      // and writes nothing over it.
-      restoredForRef.current = currentAgentName;
-      const stored = getLastModel(currentAgentName);
-      if (stored && stored !== currentModel) {
-        prevModelRef.current = stored;
-        setCurrentModel(stored);
-        return;
-      }
+    // A covered agent keeps no choice (WS-45 S3, §8). With the UI flag on,
+    // the first live render of an agent restores its choice and writes
+    // nothing over it. `modelMemoryStep` decides which, and says why.
+    const step = modelMemoryStep({
+      forced: !!forcedModel,
+      remember: modelPlan.rememberModel,
+      tierUi,
+      agent: currentAgentName,
+      model: currentModel,
+      restoredFor: restoredForRef.current,
+      readStored: () => getLastModel(currentAgentName),
+    });
+    restoredForRef.current = step.restoredFor;
+    if (step.kind === "skip") return;
+    if (step.kind === "restore") {
+      prevModelRef.current = step.model;
+      setCurrentModel(step.model);
+      return;
     }
     setLastModel(currentAgentName, currentModel);
     if (prevModelRef.current !== null && prevModelRef.current !== currentModel) {
