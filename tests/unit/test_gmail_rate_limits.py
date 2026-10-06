@@ -57,6 +57,8 @@ from email_ingestion.providers.gmail import (
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "/gmail/v1/users/me"
+#: The upload URI of the three writes (EM-G3c-1 item 3).
+UPLOAD = "/upload" + API
 LOGGER = "email_ingestion.providers.gmail"
 
 #: One answer of the fake: it takes the request and gives the response.
@@ -72,12 +74,18 @@ class _Gmail:
     ``on`` gives a path its answers, in order. The last answer repeats. The
     access token ``at-1`` works until a test drops it from ``valid``. A
     refresh mints ``at-<n>``, and each older token stops working.
+
+    A write on the upload URI (EM-G3c-1) has the same path under
+    ``/upload``. The fake reads it as that path, so one script of ``on``
+    answers both URIs. ``uploads`` records the path of each upload.
     """
 
     def __init__(self) -> None:
         self.scripts: dict[tuple[str, str], list[Answer]] = {}
         #: (method, path, bearer) for each API request, the probe left out.
         self.seen: list[tuple[str, str, str]] = []
+        #: (method, path) of each request on the upload URI (EM-G3c-1).
+        self.uploads: list[tuple[str, str]] = []
         self.valid = {"at-1"}
         self.refreshes = 0
         self.n = 1
@@ -104,10 +112,14 @@ class _Gmail:
             # The probe of ``authenticate``. It never refreshes here.
             return httpx.Response(200, json={"historyId": "1"})
         bearer = request.headers.get("authorization", "").removeprefix("Bearer ")
-        self.seen.append((request.method, request.url.path, bearer))
+        path = request.url.path
+        if path.startswith(UPLOAD):
+            path = API + path.removeprefix(UPLOAD)
+            self.uploads.append((request.method, path))
+        self.seen.append((request.method, path, bearer))
         if bearer not in self.valid:
             return httpx.Response(401, json={"error": {"code": 401}})
-        answers = self.scripts.get((request.method, request.url.path))
+        answers = self.scripts.get((request.method, path))
         if not answers:
             return httpx.Response(404, json={"error": {"code": 404}})
         answer = answers.pop(0) if len(answers) > 1 else answers[0]

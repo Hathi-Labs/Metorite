@@ -227,11 +227,12 @@ All providers implement the `BaseEmailProvider` abstract interface:
 
 11. **Gmail send and drafts (WS-17 EM-G3a, O-GM-2).** Fence:
     `tests/unit/test_gmail_send_and_drafts.py`.
-    - `_build_gmail_raw` is the one MIME builder of `send_message`,
-      `create_draft` and `update_draft`. Do not add a second one. A body
-      with HTML is `multipart/alternative`, with the text part first. Each
-      attachment takes the type that the caller gives, else the type of its
-      name.
+    - `_build_gmail_mail` is the one MIME builder of `send_message`,
+      `create_draft` and `update_draft`. Do not add a second one. It gives
+      bytes, and `_gmail_raw` wraps them for the plain URI (contract 16). A
+      body with HTML is `multipart/alternative`, with the text part first.
+      Each attachment takes the type that the caller gives, else the type of
+      its name.
     - A reply reads its parent from Gmail (`format=metadata`), never from
       the local row, and sets `In-Reply-To` and `References`. A parent read
       that fails never fails the send.
@@ -280,8 +281,8 @@ All providers implement the `BaseEmailProvider` abstract interface:
       before the first fetch. `IMPORT_MAX_PAGES` (5000) ends the import and
       logs `gmail.import_capped`.
     - The import never calls `sync_messages(deep=True)`. `_deep_sweep`
-      stays for a direct call. `import_full_snapshot` stays False, so no
-      Gmail import reconciles (EM-G5b, not built).
+      stays for a direct call. `import_full_snapshot` is True, so the
+      deep sync of a member act reconciles the deletions (contract 15).
 
 13. **A file on an Outlook draft (WS-17 EM-T9).** `_attach_files` in
     `outlook.py` adds each file, or it raises `ProviderAttachmentFailed`
@@ -316,6 +317,65 @@ All providers implement the `BaseEmailProvider` abstract interface:
       base.
     - `list_filters` reads the key `filter` of `users.settings.filters.list`.
       A plain 403 gives `[]`, and `GmailRateLimited` passes up.
+
+15. **The Gmail reconcile (WS-17 EM-G5b).** A Resync, "Clean older mail"
+    and "Process past emails" trash a row that the member deleted in Gmail.
+    Fence: `tests/unit/test_gmail_import.py`, and the R8 cases in
+    `TestTheImportOnARealDatabase` of `test_email_import_batches.py`.
+    - The confirm asks Gmail by the provider id, through `message_gone`.
+      Never ask by the Message-ID, because one Message-ID can be on two
+      Gmail messages. Do not give Gmail a `message_exists`.
+    - Only a 404 whose body gives the reason `notFound` is a delete. A 200
+      keeps the row, also in `TRASH` or `SPAM`. A bare 404 and each other
+      answer raise, and the row stays.
+    - `message_gone` refuses an id that is not letters, digits, `-` and
+      `_`, before any request. So a stored id cannot send the read to
+      another resource.
+    - Rows in drafts stay out (`import_reconcile_skips_drafts`). Gmail gives
+      a draft a new id at each update, so a missing draft id proves no
+      delete. The history removes an old draft row (contract 2).
+    - At `IMPORT_MAX_PAGES` the import sets `import_capped`. The Resync then
+      runs no reconcile and logs `sync.import_reconcile_skipped
+      reason=capped`.
+    - No Gmail sync result sets `full_snapshot`, so the recurring reconcile
+      stays for Outlook only.
+
+16. **The size of a Gmail mail (WS-17 EM-G3c-1).** `GmailProvider._write_mail`
+    is the one write of `send_message`, `create_draft` and `update_draft`. Do
+    not send a write around it. Fence: `tests/unit/test_gmail_mail_size.py`.
+    - A mail with a file, or a built mail over `GMAIL_PLAIN_MAX_BYTES`
+      (1 MiB), goes to the upload URI `GMAIL_UPLOAD_BASE` with
+      `uploadType=multipart`. Each other mail keeps the plain URI and `raw`.
+    - `update_draft` decides on the files after the read-back of the draft,
+      never on `attachments`. An autosave adds no file, and the draft can
+      still hold one.
+    - The upload goes through `_get_client()`, so contract 9 holds for it.
+      Its body is `multipart/related`: the metadata in JSON, then the raw
+      mail as `message/rfc822`. Never use `files=`, because it builds
+      `multipart/form-data`.
+    - The metadata omits `threadId` where the plain JSON body omits it.
+      A draft write nests it in `message`.
+    - A built mail over `GMAIL_MAIL_MAX_BYTES` (36,700,160 bytes, the
+      `maxSize` of the discovery document) raises `GmailMailTooLarge` before
+      the write. A 413 raises it too, read from the status code only. It is
+      a `ProviderMailTooLarge`, its text holds no URL, and the routes answer
+      413. Outlook and IMAP never raise it.
+    - The upload POST of `messages.send` and `drafts.create` gets one try,
+      and the PUT of `drafts.update` keeps its retry on a 429.
+
+17. **The To of a reply draft (WS-17 EM-T10 item 6).** `create_draft` takes a
+    keyword-only `exact_to: bool = False` on the base class and on each
+    provider. Fence: `tests/unit/test_outlook_draft_cc.py`.
+    - Outlook's `createReply` sets the To to the sender, or to the Reply-To.
+      With `exact_to`, the PATCH of the reply writes `to` too, so a reply-all
+      draft keeps each address. Gmail and IMAP put `to` into the mail, so they
+      ignore the keyword.
+    - `PUT /email/drafts` passes `exact_to=True`, because the member typed
+      that To. The rule REPLY passes `exact_to=bool(a.get("to_address"))`,
+      so only a To typed into the rule goes over the To of `createReply`.
+      Each other caller keeps the default, so a Reply-To stays. The fence
+      counts the callers in `drafting.py`, `actions.py`, `followups.py` and
+      `notes/dispatch.py`. A new caller there fails it.
 
 ## Inbound SMTP Server
 
@@ -434,9 +494,10 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
     round 1). `_graph_link` checks the stored link, each next link and the
     delta link before a request or a store. Else the bearer goes to the host
     that the cursor names. A refused link drops, and the log names no URL.
-  - Only a normal incremental cycle runs the delta. A first import, a deep
-    sync and a cycle before `initial_sync_done` run none
-    (`scheduler._runs_delta_shadow`).
+  - Only a normal incremental cycle of the background loop runs the delta.
+    A first import, a deep sync, a cycle before `initial_sync_done` and each
+    caller that is not the loop (Sync now, the webhook, the rerun, the agent
+    tool) run none (`scheduler._runs_delta_shadow`, EM-T4d-f3).
   - A shadow cycle writes NULL into `email_sync_log.provider_history_id`.
     Only `last_history_id` keeps the cursor.
   - No `@removed` item becomes a `[DELETED]` marker, so the reconcile reads
@@ -455,15 +516,22 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
 - ⚠️ **Three guards protect the reconcile of a member-act import (EM-T6b
   fix rounds 2 and 3).** `reconcile.import_reconcile_candidates` takes
   `(id, folder, received_at)` tuples. It keeps a row written after phase
-  (a), because a move, a rule action or a draft during the import writes it
+  (a). A move, a rule action or a draft during the import writes that row,
   and Graph gives a moved message a new id. When a folder has more
   candidates than 50, or 2% of its rows, the reconcile leaves that folder
-  and logs `sync.import_reconcile_skipped`. Then, with no session open, the
-  provider looks up each candidate by `internetMessageId`, at most 50 for
-  each folder. A message that Graph still has keeps its row, because the
-  member moved it in the Outlook client. A failed lookup, or a row with no
-  internet message id, keeps its row too. `trash_import_rows` checks
+  and logs `sync.import_reconcile_skipped`. `trash_import_rows` checks
   `updated_at` again in its own block.
+  - **The confirm (WS-17 EM-G5b).** Each candidate is `(row id,
+    provider_message_id, internet_message_id)`. With no session open,
+    `_confirm_gone` looks up at most 50 candidates for each folder. The
+    provider decides the key. Outlook asks `message_exists` by the
+    Message-ID, so a message that the member moved in the Outlook client
+    keeps its row. Gmail asks `message_gone` by the provider id
+    (contract 15).
+  - A failed lookup, or a row with no key, keeps its row. A spent rate
+    limit (`ProviderRateLimited`) stops the lookups, and each row that was
+    not looked up keeps its folder. A provider that sets
+    `import_reconcile_skips_drafts` gives no row in drafts to the confirm.
 - ⚠️ **Each mailbox has a storage limit (WS-17 EM-T6c, D-EM-14).**
   `storage.py` is the one owner of the limit, the meter and the removal.
   The limit is `email_mailbox_storage_limit_mb` (500) for each mailbox. The

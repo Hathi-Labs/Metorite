@@ -1,8 +1,8 @@
 # AI tier routing — the platform picks the tier for each step
 
-**Status:** DRAFT, in review. Specified 2026-10-05. Nothing is built. Board row
-**WS-45**. Decision **D90** is PROPOSED in `work_plan.md` §3, and the owner
-confirms it.
+**Status:** DECIDED and ACTIVE. The owner accepted D90 on 2026-10-06, as
+written. Specified 2026-10-05. Nothing is built. Board row **WS-45**, and S1 is
+next. Decision **D90** is in `work_plan.md` §3.
 
 **Verified against code on 2026-10-05** at `origin/main` `28cfcf437`.
 **Owner:** vjvarada.
@@ -71,7 +71,7 @@ rule (§16.3). `projects_ai_chat.md` keeps what the Projects chat does.
   the tier that served the call.
 - **The email triage features stay on `tier-decide`.** D-EM-7 and D-EM-8 run
   `email.rule_match` and three more features on Jev. This spec does not move
-  them. §13 Q1 asks the owner whether they move later.
+  them. The owner answered §13 Q1 on 2026-10-06: they stay.
 - **Background jobs outside a chat keep their literal tiers.** The notes
   summary, the email digest and similar jobs choose a tier at the call site.
   H-44 owns that sweep (D59.4).
@@ -168,7 +168,7 @@ ContextVar (`orchestrator/agents.py:287-289`).
   (`002_seed_catalog.sql:88-92`).
 - ⚠️ **If production keeps that seed, Balanced and Powerful are the same
   model.** Then escalation to Powerful costs the Powerful rate and changes
-  nothing. The live binding is not in the repo. §13 Q6 asks the operator.
+  nothing. The live binding is not in the repo. S2 reads it (§13 Q6).
 - `infra/litellm/tier_overrides.yaml:1-13` disagrees with the seed. D58.4
   already retires it.
 - The Router resolves a tier to an ordered chain (`customer_console/router.py:120`,
@@ -251,7 +251,7 @@ leaves them.
 
 ---
 
-## 3. Decision D90 (PROPOSED — the owner confirms)
+## 3. Decision D90 (decided: owner, 2026-10-06)
 
 **D90 — The platform picks the tier for each step, by the kind of work. The
 chat's model picker goes, and the effort selector stays.** Owner direction,
@@ -281,7 +281,7 @@ chat's model picker goes, and the effort selector stays.** Owner direction,
 | Decision | What it says | What D90 does to it |
 |---|---|---|
 | **D75.6** | The main chat's `decide` tool calls the Router's `decide` task, served by Jev | **Amended.** The tool keeps its name and its place in the core floor. Its engine becomes the System-1 agent on `tier-fast`. The `decide` task and `tier-decide` stay for the email features |
-| **D75.1 to D75.5, D75.7, D75.8** | `decide` is a task, its hidden tier, its wire shape, its vendor, its adoption rules | **Unchanged.** They govern the email triage features, which keep Jev. §13 Q1 asks whether those move |
+| **D75.1 to D75.5, D75.7, D75.8** | `decide` is a task, its hidden tier, its wire shape, its vendor, its adoption rules | **Unchanged.** They govern the email triage features, which keep Jev (§13 Q1) |
 | **D59.5** | A customer MAY see tiers | **Narrowed, not reversed.** A tier label may still show (§7.2). A customer may not PICK a chat tier |
 | **D59.6 (4)** | A customer-visible tier choice in chat comes last | **Withdrawn.** It will not come |
 | **D67.1** | "The meter rates the tier the customer picked" | **Wording amended.** The meter rates the tier that served the call, which the platform picked. The key `(tier, task)` does not change |
@@ -298,9 +298,9 @@ chat's model picker goes, and the effort selector stays.** Owner direction,
 ### 3.3 What D90 does NOT decide
 
 - Which model serves each tier. The operator binds it.
-- Whether the email triage features leave Jev (§13 Q1).
-- Whether a member sees the tier label at all (§13 Q4). The default is yes,
-  in the message details.
+- The owner answered §13.2 Q1 to Q8 with their defaults on 2026-10-06. The
+  email triage features stay on Jev, and the tier label shows in the
+  message details.
 - The price of a tier (H-42).
 
 ---
@@ -333,8 +333,8 @@ holds a second copy.
    for a System-1 call. A turn classified as "chat" stays on the default. This
    keeps an admin's D-AI-4 choice in force.
 3. **A request names a tier slug, never a model** (D32.7). The policy only
-   chooses among `tier-fast`, `tier-balanced` and `tier-powerful`. §13 Q2 asks
-   whether code goes to `tier-code` when the operator binds it.
+   chooses among `tier-fast`, `tier-balanced` and `tier-powerful`. Code goes to
+   `tier-powerful`, not to `tier-code` (§13 Q2).
 
 ### 4.3 The turn kind
 
@@ -408,9 +408,8 @@ nudges the policy, and it sets the reasoning effort as today.
 - **The Copilot stream path sends `low` for Auto** (`executor.py:4251-4268`).
   S2 keeps it, because a Copilot agent needs it to stream its reasoning.
 
-**Open, for the owner (§13 Q3).** A fourth label, "Fast", could cap the turn
-at `tier-balanced`. It serves a member who wants the lowest cost. The default
-is no fourth label.
+**Answered (§13 Q3, owner 2026-10-06).** The selector gets no fourth label,
+"Fast". It keeps three labels.
 
 ---
 
@@ -525,7 +524,7 @@ check below passes. Here is how the System-1 callable passes each one:
 - ⚠️ **One condition keeps it true, and no test can hold it.** The vendor that
   serves `tier-fast` must already be a sub-processor for the organization.
   If an operator binds `tier-fast` to a new vendor, that vendor receives
-  covered content. This is advisory, and §13 Q5 asks the owner where it lives.
+  covered content. This is advisory. Per §13 Q5, an operator warning holds it.
   WS-37 owns the sub-processor list.
 - `test_delegation_no_egress.py:82-101` pins `EXPECTED_OPEN_WORLD`. S1 updates
   the pin in the same PR, with this section as the reason.
@@ -581,8 +580,8 @@ bound what an injection can do.
   kind. The chat folds the events of one answer into one quiet label, for
   example "Balanced, then Powerful". The label comes from `tier_catalog`
   (D-AI-1), never from a model name (D32.7).
-- **Where it shows.** In the answer's details menu, for every member. §13 Q4
-  asks the owner whether it shows at all, and to whom.
+- **Where it shows.** In the answer's details menu, for every member. The
+  owner chose this on 2026-10-06 (§13 Q4).
 - **An admin sees cost per tier** in the existing usage reads (CP-7,
   `GET /my/usage/activity`). Nothing new is needed there.
 - `/api/models/all` stays. The Models settings page and other surfaces read
@@ -819,7 +818,7 @@ source `system_one`.
 
 ---
 
-## 13. Owner gates and open questions
+## 13. Owner gates and answered questions
 
 ### 13.1 Gates — refuse these by name
 
@@ -829,9 +828,9 @@ source `system_one`.
 | Turn on `NEXT_PUBLIC_AI_TIER_ROUTING` in production | It is build-time and reaches every organization at once |
 | Bind `tier-fast` to a vendor that is not yet a sub-processor | §6.6. A covered run would send content to it |
 
-### 13.2 Open — each has a default an agent builds to
+### 13.2 Answered — the owner took each default on 2026-10-06
 
-| # | Question | Default |
+| # | Question | Answer |
 |---|---|---|
 | Q1 | Do the email triage features move from `tier-decide` (Jev) to the System-1 tool on `tier-fast`? | No. They stay on Jev under D-EM-7 and D-EM-8 |
 | Q2 | Does code go to `tier-code` when the operator binds it, instead of `tier-powerful`? | No. Code goes to `tier-powerful`, as the owner said |

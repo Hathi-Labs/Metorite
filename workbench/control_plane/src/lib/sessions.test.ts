@@ -9,9 +9,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fetchMessagesFromDb, getMessages, postMessagesWithRetry } from "./sessions";
+import {
+  bindChatScope,
+  chatKey,
+  fetchMessagesFromDb,
+  getMessages,
+  postMessagesWithRetry,
+} from "./sessions";
 
-const KEY = "cc-msgs-";
+/** The cache key of a session, in the namespace every test binds (PR #652). */
+const KEY = (id: string) => chatKey("msgs", id) as string;
 
 class MemoryStorage {
   private map = new Map<string, string>();
@@ -45,21 +52,23 @@ beforeEach(() => {
   const storage = new MemoryStorage();
   vi.stubGlobal("window", { localStorage: storage });
   vi.stubGlobal("localStorage", storage);
+  bindChatScope("member@example.com|org-1");
 });
 
 afterEach(() => {
+  bindChatScope(null);
   vi.unstubAllGlobals();
 });
 
 describe("fetchMessagesFromDb and the local cache", () => {
   it("uses the cache key the module reads", () => {
     // A wrong key here would make every case below pass for nothing.
-    localStorage.setItem(KEY + "s1", JSON.stringify(CACHED));
+    localStorage.setItem(KEY("s1"), JSON.stringify(CACHED));
     expect(getMessages("s1")).toHaveLength(2);
   });
 
   it("keeps a non-empty cache when the server answers []", async () => {
-    localStorage.setItem(KEY + "s1", JSON.stringify(CACHED));
+    localStorage.setItem(KEY("s1"), JSON.stringify(CACHED));
     answer([]);
     const got = await fetchMessagesFromDb("s1");
     expect(getMessages("s1").map((m) => m.id)).toEqual(["u1", "a1"]);
@@ -67,7 +76,7 @@ describe("fetchMessagesFromDb and the local cache", () => {
   });
 
   it("still writes a non-empty server answer over the cache", async () => {
-    localStorage.setItem(KEY + "s1", JSON.stringify(CACHED));
+    localStorage.setItem(KEY("s1"), JSON.stringify(CACHED));
     answer([
       { id: "u1", role: "user", content: "hello", timestamp: 1 },
       { id: "a1", role: "assistant", content: "hi there, longer", timestamp: 2 },
@@ -83,7 +92,7 @@ describe("fetchMessagesFromDb and the local cache", () => {
   });
 
   it("never touches the cache on a paginated fetch", async () => {
-    localStorage.setItem(KEY + "s1", JSON.stringify(CACHED));
+    localStorage.setItem(KEY("s1"), JSON.stringify(CACHED));
     answer([]);
     expect(await fetchMessagesFromDb("s1", { limit: 10 })).toEqual([]);
     expect(getMessages("s1")).toHaveLength(2);

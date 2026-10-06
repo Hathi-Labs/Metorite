@@ -324,8 +324,13 @@ class IMAPProvider(BaseEmailProvider):
         attachments: list[dict[str, Any]] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        *,
+        exact_to: bool = False,
     ) -> str:
-        """Save a draft by APPENDing it to the Drafts mailbox with the \\Draft flag."""
+        """Save a draft by APPENDing it to the Drafts mailbox with the \\Draft flag.
+
+        ``exact_to`` changes nothing here. The mail carries ``to`` in its To
+        header, so the To of an IMAP draft is always ``to`` (EM-T10 item 6)."""
         username = self.credentials.get(
             "imap_username", self.credentials.get("smtp_username", "")
         )

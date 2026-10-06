@@ -64,6 +64,10 @@ class ToolCallStreamState:
     seen: set[str] = field(default_factory=set)
     last_id: str | None = None
     counter: int = 0
+    # The argument text forwarded so far, per call id. MAF 1.19 puts the
+    # provider's call id on EVERY streamed chunk, not only the first, so a
+    # known id is not by itself a re-send: it can carry the next fragment.
+    args: dict[str, str] = field(default_factory=dict)
     # Name of the most recently STARTED tool call. A turn that ends on a
     # blocking HITL tool (ask_questions / ask_user / request_confirmation)
     # legitimately has no closing text — the question card IS the output — so
@@ -109,6 +113,18 @@ class TranslatorHooks:
     on_function_result: Callable[[str], None] | None = None
 
 
+def _complete_args(text: str) -> bool:
+    """True when *text* is a whole JSON object — the call's arguments are in."""
+    # A whole object ends in "}". Most fragments do not, so they cost no
+    # parse, and a long argument stream stays linear rather than quadratic.
+    if not text.rstrip().endswith("}"):
+        return False
+    try:
+        return isinstance(json.loads(text), dict)
+    except ValueError:
+        return False
+
+
 def function_call_events(
     content: Any, state: ToolCallStreamState,
 ) -> list[dict[str, Any]]:
@@ -130,19 +146,30 @@ def function_call_events(
     if not cid:
         # Continuation chunk for the in-flight call — args only, no new row.
         if state.last_id is not None:
-            return (
-                [{"type": "TOOL_CALL_ARGS",
-                  "toolCallId": state.last_id, "delta": delta}]
-                if delta else []
-            )
+            if not delta:
+                return []
+            state.args[state.last_id] = state.args.get(state.last_id, "") + delta
+            return [{"type": "TOOL_CALL_ARGS",
+                     "toolCallId": state.last_id, "delta": delta}]
         # No call started yet (defensive) — mint a synthetic id.
         state.counter += 1
         cid = f"{state.run_id}:fc:{state.counter}"
-    # A re-sent id for an already-started call: the row exists.
+    # A known id never opens a second row. It is either the NEXT argument
+    # fragment of a streamed call (MAF 1.19 repeats the provider id on every
+    # chunk, and parallel calls interleave by id), or a complete call sent
+    # again. The arguments seen so far tell the two apart: once they parse as
+    # a whole JSON object the call is complete, and more text is a re-send.
+    # Dropping every known-id chunk, as this did before, sent NO arguments for
+    # a native MAF call, so the trail could not show a command or a path.
     if cid in state.seen:
-        return []
+        so_far = state.args.get(cid, "")
+        if not delta or _complete_args(so_far):
+            return []
+        state.args[cid] = so_far + delta
+        return [{"type": "TOOL_CALL_ARGS", "toolCallId": cid, "delta": delta}]
     state.seen.add(cid)
     state.last_id = cid
+    state.args[cid] = delta
     name = getattr(content, "name", "") or "tool"
     state.last_name = name
     out: list[dict[str, Any]] = [{

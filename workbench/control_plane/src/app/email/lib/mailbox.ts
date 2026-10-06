@@ -90,6 +90,83 @@ export function replyRecipients(
   return { to, cc };
 }
 
+// ── The start of a draft card (EM-T10, §10.4.11) ───────────────────────────
+
+/** The recipients, the toggle and the Cc row of a draft card at its start. */
+export interface DraftStart {
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  /** `true` marks Reply All, `false` marks Reply, and `null` marks neither. */
+  replyAll: boolean | null;
+  /** The Cc and Bcc rows show at the start. */
+  showCc: boolean;
+}
+
+/** Each address of a list of parties, trimmed, with no empty entry. */
+const partyAddresses = (list?: Party[] | null): string[] =>
+  (list || []).map((p) => (p.email || "").trim()).filter(Boolean);
+
+/** The set of an address list: trimmed, lower case, with no display name. */
+const addressSet = (list: ReadonlyArray<string>): Set<string> =>
+  new Set(list.map((a) => a.trim().toLowerCase()).filter(Boolean));
+
+const sameAddresses = (a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean => {
+  const x = addressSet(a);
+  const y = addressSet(b);
+  return x.size === y.size && [...x].every((k) => y.has(k));
+};
+
+/**
+ * The start of a draft card (WS-17 EM-T10 items 1 to 3, C3 to C6).
+ *
+ * Before EM-T10 the card ignored the recipients of its draft. It started on
+ * Reply All with the lists of its reply target and no Bcc. So a reply that the
+ * member narrowed to the sender went to everyone at the next save, and a Bcc
+ * was lost (EM-G3c-2-f6).
+ *
+ * - A draft that holds a recipient in To, Cc or Bcc starts with its own lists.
+ *   A draft with no recipient starts with the reply-all lists, or empty when
+ *   the card has no reply target (`all` is null).
+ * - The toggle compares sets of trimmed, lower-case addresses. It marks Reply
+ *   when the To is the reply-only To, the Cc is empty, and the reply-all lists
+ *   differ from that To. It marks Reply All when the To and the Cc are the
+ *   reply-all lists, so a thread of two people starts on Reply All. Else it
+ *   marks neither: a forward, an edited To, another reply target, a Reply-To.
+ * - The Cc row shows for a Cc or a Bcc, and on a reply that does not start on
+ *   Reply.
+ *
+ * `all` is the reply-all To and Cc of the reply target, and `onlyTo` is its
+ * reply-only To. A click of the toggle computes them again from that target.
+ */
+export function draftRecipients(
+  draft: { to?: Party[] | null; cc?: Party[] | null; bcc?: Party[] | null },
+  all: { to: string[]; cc: string[] } | null,
+  onlyTo: string[] | null,
+): DraftStart {
+  const held = {
+    to: partyAddresses(draft.to),
+    cc: partyAddresses(draft.cc),
+    bcc: partyAddresses(draft.bcc),
+  };
+  const holdsOne = held.to.length + held.cc.length + held.bcc.length > 0;
+  const start = holdsOne
+    ? held
+    : { to: [...(all?.to ?? [])], cc: [...(all?.cc ?? [])], bcc: [] as string[] };
+  let replyAll: boolean | null = null;
+  if (all) {
+    const only = onlyTo ?? [];
+    const allIsOnly = sameAddresses(all.to, only) && addressSet(all.cc).size === 0;
+    if (!allIsOnly && sameAddresses(start.to, only) && addressSet(start.cc).size === 0) {
+      replyAll = false;
+    } else if (sameAddresses(start.to, all.to) && sameAddresses(start.cc, all.cc)) {
+      replyAll = true;
+    }
+  }
+  const showCc = start.cc.length > 0 || start.bcc.length > 0 || (!!all && replyAll !== false);
+  return { ...start, replyAll, showCc };
+}
+
 // ── The From row (EM-T8c, §11.4 and §11.7.3) ───────────────────────────────
 
 interface MailboxLike {

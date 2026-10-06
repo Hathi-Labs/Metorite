@@ -702,16 +702,18 @@ def live(family, monkeypatch):
     async def record_match(_db, _aid, email, message_id=None, **_kw):
         f.payloads[str(message_id)] = email
 
-    async def record_classify(_db, _aid, row, email, **_kw):
-        f.payloads[str(row.id)] = email
+    async def record_ask(read):
+        # EM-T4a-2 PR-B1: the rules job and the backfill ask the rule match
+        # in a step of its own, with the payload that the read step kept.
+        f.payloads[str(read.message_id)] = read.email
         return []
 
     monkeypatch.setattr(runner_mod, "_match_email_to_rule",
                         AsyncMock(side_effect=record_match))
-    monkeypatch.setattr(runner_mod, "classify_matches",
-                        AsyncMock(side_effect=record_classify))
-    monkeypatch.setattr(engine_mod, "classify_matches",
-                        AsyncMock(side_effect=record_classify))
+    monkeypatch.setattr(runner_mod, "ask_rule_match",
+                        AsyncMock(side_effect=record_ask))
+    monkeypatch.setattr(engine_mod, "ask_rule_match",
+                        AsyncMock(side_effect=record_ask))
     f.llm_cold = AsyncMock(return_value=(False, ""))
     monkeypatch.setattr(senders_mod, "_llm_is_cold", f.llm_cold)
     return f

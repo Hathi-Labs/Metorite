@@ -23,13 +23,13 @@ import {
   releaseStreamOwnership,
 } from "@/lib/chatStore";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
-import { parseAgentError } from "@/lib/parseAgentError";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
 import { agentAuthor } from "@/lib/projectsAgent";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
 import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, type StreamFold } from "@/lib/chatStream";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
+import { settleFailedTurn, type SessionRefusedHandler } from "@/lib/chatTurnFailure";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -112,6 +112,13 @@ interface UseAgentChatOptions {
   /** Thinking mode: "auto" | "thinking" | "max" */
   thinkMode?: string;
   onArtifact?: (entry: ArtifactEntry) => void;
+  /**
+   * The server refused this SESSION on send (404, or a 403 "not a
+   * participant"). Return true to take the turn: no error card is drawn, and
+   * the surface opens a new chat. Pass it only for a session restored from
+   * storage (`lib/railSessions.ts`), never for one the member opened.
+   */
+  onSessionRefused?: SessionRefusedHandler;
 }
 
 interface UseAgentChatReturn {
@@ -144,9 +151,12 @@ export function useAgentChat({
   systemContext,
   thinkMode,
   onArtifact,
+  onSessionRefused,
 }: UseAgentChatOptions): UseAgentChatReturn {
   const onArtifactRef = useRef(onArtifact);
   useEffect(() => { onArtifactRef.current = onArtifact; }, [onArtifact]);
+  const onSessionRefusedRef = useRef(onSessionRefused);
+  useEffect(() => { onSessionRefusedRef.current = onSessionRefused; }, [onSessionRefused]);
 
   // Keep latest values in refs so sendMessage always uses current values
   // even if its useCallback closure hasn't been recreated yet.
@@ -233,6 +243,9 @@ export function useAgentChat({
       // Emit run started event for subscribers
       emitAgentEvent("onRunStarted", { runId: assistantId, threadId });
 
+      // The HTTP status of a refused request, so the failure below can tell a
+      // refused SESSION from a failed turn. Null for an error inside a stream.
+      let failedStatus: number | null = null;
       try {
         // Build the history sent to the model from the ACTIVE context window
         // (everything from the most recent compaction checkpoint onward), so a
@@ -296,6 +309,7 @@ export function useAgentChat({
 
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => `status ${res.status}`);
+          failedStatus = res.status;
           throw new Error(text);
         }
 
@@ -329,6 +343,7 @@ export function useAgentChat({
               case "reasoning":
               case "tool_start":
               case "tool_end":
+              case "tool_args":
               case "tool_partial":
                 upd((m) => applyStreamEvent(m, evt, fold));
                 break;
@@ -424,21 +439,18 @@ export function useAgentChat({
           // Don't clear isLoading — let the polling effect handle recovery.
           return;
         }
-        const rawMsg = rawErr;
-        const parsed = parseAgentError(rawMsg);
-        emitAgentEvent("onError", { error: rawMsg, threadId });
-        setSessionState(threadId, (prev) => ({
-          ...prev,
-          error: rawMsg,
-          messages: prev.messages
-            .filter((m) => m.id !== assistantId)
-            .concat({
-              id: nanoid(),
-              role: "system",
-              content: `__ERROR__${JSON.stringify(parsed)}`,
-              timestamp: Date.now(),
-            }),
-        }));
+        // One seam decides what the failure leaves in the thread: an error
+        // card, or nothing when a surface recovers from a refused session.
+        const outcome = settleFailedTurn({
+          threadId,
+          userMsgId: userMsg.id,
+          assistantId,
+          content: userMsg.content,
+          rawErr,
+          status: failedStatus,
+          onSessionRefused: onSessionRefusedRef.current,
+        });
+        if (outcome === "error") emitAgentEvent("onError", { error: rawErr, threadId });
       } finally {
         // If a reconnect/replay loop superseded us mid-stream it now owns the
         // message AND the shared loading/abort state. A superseded loop must NOT
@@ -679,6 +691,7 @@ export function useAgentChat({
               case "progress":
               case "tool_start":
               case "tool_end":
+              case "tool_args":
               case "tool_partial":
                 updLast((m) => applyStreamEvent(m, evt, fold));
                 break;

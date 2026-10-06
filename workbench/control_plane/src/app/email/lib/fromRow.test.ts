@@ -22,6 +22,8 @@
 //     mailbox and folder.
 //   * `email-integrations-connect` (MB-16): Add on Integrations opens the
 //     connect flow of Email, and Integrations offers no Gmail or IMAP leg.
+//   * `email-draftcard-key` (EM-G3c-2-f1): every `<DraftCard` carries the id
+//     of its draft as its key, so a switch of draft mounts a fresh card.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createElement } from "react";
@@ -322,5 +324,28 @@ describe("Add on Integrations opens the connect flow of Email (MB-16)", () => {
     expect(integrations).not.toContain("AddIMAPModal");
     expect(integrations).not.toContain('onConnect("imap")');
     expect(integrations).not.toContain("IMAP/SMTP");
+  });
+});
+
+describe("Each draft card has the key of its draft (EM-G3c-2-f1)", () => {
+  // A DraftCard keeps its text, To and Cc in useState. With no key, a switch
+  // from draft A to draft B kept A's card, and an edit saved A's text into B.
+  const sources = {
+    detail: codeOnly(read("components/EmailDetail.tsx")),
+    conversation: codeOnly(read("components/ConversationView.tsx")),
+  };
+
+  it("keys the standalone draft card by the id of its draft", () => {
+    expect(sources.detail).toContain("<DraftCard key={email.id} draft={email}");
+  });
+
+  it("gives every DraftCard a key as its first prop", () => {
+    for (const src of Object.values(sources)) {
+      const cards = src.split(/<DraftCard\b/).slice(1);
+      expect(cards.length).toBeGreaterThan(0);
+      for (const card of cards) {
+        expect(card).toMatch(/^\s*key=\{/);
+      }
+    }
   });
 });

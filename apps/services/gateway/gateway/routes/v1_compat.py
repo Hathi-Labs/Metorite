@@ -126,6 +126,22 @@ def _clamp_max_tokens(requested: int, model: str) -> int:
     return limits.max_output
 
 
+def _requested_max_tokens(body: dict[str, Any]) -> int:
+    """The caller's output ceiling under EITHER OpenAI spelling, or the default.
+
+    🔴 The agent framework's ``OpenAIChatCompletionClient`` renames
+    ``max_tokens`` to ``max_completion_tokens`` before it sends. This path read
+    only the old spelling, so a native agent's own ceiling was silently
+    replaced by the platform default. The Router folds the two the same way
+    (``CompletionRequest._one_output_ceiling``).
+    """
+    return int(
+        body.get("max_tokens")
+        or body.get("max_completion_tokens")
+        or _DEFAULT_MAX_OUTPUT_TOKENS
+    )
+
+
 # ── Output-truncation visibility (audit CX4) ──────────────────────────────
 # When the provider cuts generation at max_tokens (finish_reason="length"),
 # the text just stops mid-sentence and the turn otherwise renders as a normal
@@ -717,8 +733,7 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     tools = body.get("tools")
     tool_choice = body.get("tool_choice", "auto")
     temperature = body.get("temperature", 0.2)
-    max_tokens = _clamp_max_tokens(
-        body.get("max_tokens") or _DEFAULT_MAX_OUTPUT_TOKENS, model)
+    max_tokens = _clamp_max_tokens(_requested_max_tokens(body), model)
     stream = body.get("stream", False)
     # Passthrough: custom api_base/api_key for Ollama / vLLM / self-hosted
     # endpoints — only when explicitly enabled (SSRF guard; see module top).

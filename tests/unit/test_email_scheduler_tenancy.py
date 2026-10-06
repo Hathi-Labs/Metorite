@@ -1140,8 +1140,10 @@ class TestTheSyncCoreWritesItsOwnTenant:
         token = clear_tenant()
         try:
             async with tenant_engine_scope(app_dsn):
+                # A loop cycle: only the loop runs the delta (EM-T4d-f3).
                 first = await sched._sync_account(account_id,
-                                                  organization_id=p.org_b)
+                                                  organization_id=p.org_b,
+                                                  from_loop=True)
             assert "error" not in first, first
             assert first["synced"] == 2
             assert len(graph.deltas) == len(SWEEP_SYSTEM_FOLDERS)
@@ -1168,7 +1170,8 @@ class TestTheSyncCoreWritesItsOwnTenant:
             before = len(graph.deltas)
             async with tenant_engine_scope(app_dsn):
                 second = await sched._sync_account(account_id,
-                                                   organization_id=p.org_b)
+                                                   organization_id=p.org_b,
+                                                   from_loop=True)
             assert "error" not in second, second
             assert len(graph.deltas) == before, "an off cycle sent a delta request"
             kept, logged = _stored()

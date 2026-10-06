@@ -1735,6 +1735,20 @@ class SandboxBroker:
         async with self._lock_for(binding.workspace):
             yield binding
 
+    @contextlib.asynccontextmanager
+    async def host_dir_of(self, workspace: Path) -> AsyncIterator[Path]:
+        """Hold the dir lock of *workspace*, for a host writer that is not its run.
+
+        PR #656: a delegated run delivers a document into the working dir of
+        the chat that called it, and a container of that chat can mount it.
+        This takes the SAME lock as :meth:`host_dir` and every container on
+        the dir. The caller takes *workspace* from a server-side binding
+        (``write_artifact.delegation_target``), never from input (R5).
+        """
+        source = Path(workspace).resolve()
+        async with self._lock_for(source):
+            yield source
+
     async def ensure_thread_dirs(self, binding: RunBinding) -> None:
         """Make the thread's output and upload folders and run-data dir before any start.
 
@@ -2189,6 +2203,22 @@ def is_sandbox_dir(path: str | os.PathLike[str]) -> bool:
 def refuse_if_sandbox_dir(path: str | os.PathLike[str]) -> None:
     """Each host git site calls this first (§7.5 rule A, WS-43e)."""
     get_broker().refuse_if_sandbox_dir(path)
+
+
+@contextlib.asynccontextmanager
+async def delivery_guard(workspace: Path) -> AsyncIterator[bool]:
+    """The dir lock of *workspace* for a delegated delivery (PR #656).
+
+    Yields ``True`` when a container on the dir is over its quota, so the
+    caller refuses the write (§7.1 rule 10). With no broker in this process,
+    no container can mount the dir, so there is no lock to take.
+    """
+    broker = _BROKER
+    if broker is None:
+        yield False
+        return
+    async with broker.host_dir_of(workspace) as source:
+        yield bool(broker.writes_refused(source))
 
 
 def covers(agent: str, org: str) -> bool:

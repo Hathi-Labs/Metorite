@@ -14,6 +14,8 @@ import json
 import logging
 import mimetypes
 import random
+import re
+import secrets
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timezone
 from email import encoders, message_from_bytes
@@ -38,6 +40,7 @@ from .base import (
     EmailFolder,
     EmailMessage,
     EstimateCallback,
+    ProviderMailTooLarge,
     ProviderRateLimited,
     RefreshingBearer,
     SyncResult,
@@ -599,6 +602,29 @@ def _fresh_ids(data: dict[str, Any], seen: set[str]) -> list[str]:
     return fresh
 
 
+# ── The reconcile (WS-17 EM-G5b, spec §12.3.6.2) ─────────────────────────────
+# Fence: tests/unit/test_gmail_import.py, and the R8 cases in
+# ``TestTheImportOnARealDatabase`` of tests/unit/test_email_import_batches.py.
+
+#: The form of a Gmail message id that the confirm puts into a path. Gmail
+#: gives hex ids. Other text, such as a ``/``, a ``?`` or a ``#``, can send
+#: the read to another resource, so the confirm refuses it (item 10).
+_GMAIL_MESSAGE_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _says_not_found(response: httpx.Response) -> bool:
+    """True when a Gmail error body gives the reason ``notFound`` (item 10,
+    C2). Google sends ``{"error": {"errors": [{"reason": "notFound"}]}}``
+    for a deleted message. A 404 with any other body, or with no body, is
+    not a proof of a delete, so the confirm raises for it."""
+    try:
+        errors = response.json()["error"]["errors"]
+        return any(isinstance(e, dict) and e.get("reason") == "notFound"
+                   for e in errors)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 class GmailBearer(RefreshingBearer):
     """The bearer of the Gmail client, with the rate limits of Gmail.
 
@@ -739,7 +765,7 @@ def _attachment_part(att: dict[str, Any]) -> Message:
     return part
 
 
-def _build_gmail_raw(
+def _build_gmail_mail(
     *,
     to: list[str] | None,
     subject: str | None,
@@ -749,8 +775,8 @@ def _build_gmail_raw(
     bcc: list[str] | None = None,
     attachments: list[dict[str, Any]] | None = None,
     reply_headers: dict[str, str] | None = None,
-) -> str:
-    """The ``raw`` value of a send or a draft: an RFC 5322 mail in base64url.
+) -> bytes:
+    """The RFC 5322 bytes of a send or a draft.
 
     The ONE builder of ``send_message``, ``create_draft`` and
     ``update_draft`` (EM-G3a item 1, GM-10). With ``body_html`` the body is
@@ -760,6 +786,10 @@ def _build_gmail_raw(
 
     A header is written only when its value is given, so an update that
     names no ``Cc`` writes none.
+
+    EM-G3c item 1: the builder gives bytes. The plain URI wraps them in
+    base64url with :func:`_gmail_raw`, and the upload URI sends them as they
+    are. So the two forms come from one builder.
     """
     text_part = MIMEText(body_text or "", "plain", "utf-8")
     body: Message
@@ -787,7 +817,13 @@ def _build_gmail_raw(
         msg["Subject"] = subject
     for name, value in (reply_headers or {}).items():
         msg[name] = value
-    return base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    return msg.as_bytes()
+
+
+def _gmail_raw(mail: bytes) -> str:
+    """The ``raw`` value of a write on the plain URI: the mail of
+    :func:`_build_gmail_mail` in base64url (EM-G3c item 1)."""
+    return base64.urlsafe_b64encode(mail).decode()
 
 
 def _newest_parent(thread: dict[str, Any]) -> dict[str, Any] | None:
@@ -825,6 +861,53 @@ def _reply_headers_of(parent: dict[str, Any] | None) -> dict[str, str]:
     if message_id not in references:
         references.append(message_id)
     return {"In-Reply-To": message_id, "References": " ".join(references)}
+
+
+# ── The size of a mail (WS-17 EM-G3c-1, EM-G3a-f8) ───────────────────────
+# ``email_app_master_plan.md`` §12.3.3b, items 1 to 8. Fence:
+# test_gmail_mail_size.py.
+
+#: The base of the upload URI of the three writes (item 3). The Gmail
+#: discovery document names ``/upload/gmail/v1/users/{userId}/...`` as the
+#: ``simple`` media upload of ``messages.send``, ``drafts.create`` and
+#: ``drafts.update``.
+GMAIL_UPLOAD_BASE = "https://gmail.googleapis.com/upload/gmail/v1"
+#: The most bytes of one built mail (item 5). It is the ``maxSize`` of the
+#: media upload of the three writes in the discovery document (revision
+#: 20260928, read 2026-10-05). A larger mail raises before its write.
+GMAIL_MAIL_MAX_BYTES = 36_700_160
+#: A mail with no file and at most this many bytes keeps the plain URI and
+#: ``raw`` (item 2). Google documents no limit for the plain request, so a
+#: larger mail goes to the upload URI.
+GMAIL_PLAIN_MAX_BYTES = 1_048_576
+
+
+class GmailMailTooLarge(ProviderMailTooLarge):
+    """Gmail cannot take this mail (EM-G3c item 6).
+
+    The write raises it before its request when the built mail is over
+    :data:`GMAIL_MAIL_MAX_BYTES`. A 413 from Google raises it too. The
+    write reads only the status code of that answer, because Google can
+    answer a 413 with HTML. The text holds two sizes and no URL."""
+
+
+def _upload_body(meta: dict[str, Any], mail: bytes) -> tuple[bytes, str]:
+    """The body and the ``Content-Type`` of one upload write (items 3, 4).
+
+    The body is ``multipart/related``. Part 1 is the metadata in JSON. Part
+    2 is the mail as ``message/rfc822``, in its raw bytes and not in
+    base64url. The boundary is random, and it never occurs in the mail."""
+    boundary = f"metorite-{secrets.token_hex(16)}"
+    while boundary.encode() in mail:
+        boundary = f"metorite-{secrets.token_hex(16)}"
+    head = (f"--{boundary}\r\n"
+            "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+            f"{json.dumps(meta)}\r\n"
+            f"--{boundary}\r\n"
+            "Content-Type: message/rfc822\r\n\r\n").encode()
+    tail = f"\r\n--{boundary}--\r\n".encode()
+    # One join, so no temporary ``head + mail`` copy (review note 2).
+    return b"".join((head, mail, tail)), f"multipart/related; boundary={boundary}"
 
 
 class GmailProvider(BaseEmailProvider):
@@ -867,6 +950,10 @@ class GmailProvider(BaseEmailProvider):
         #: The message id of each draft that ``trash_message`` discarded. The
         #: caller deletes the local row of each one (EM-G3a, E-A5).
         self.discarded_drafts: set[str] = set()
+        #: True when the last ``import_batches`` stopped at
+        #: ``IMPORT_MAX_PAGES``. The scheduler then runs no reconcile, because
+        #: the mail below the cap stays unread (WS-17 EM-G5b item 12, C5).
+        self.import_capped = False
 
     def credentials_dirty(self) -> bool:
         return self._creds_dirty
@@ -1108,28 +1195,24 @@ class GmailProvider(BaseEmailProvider):
     ) -> str:
         """Send a mail (``messages.send``) and return its message id.
 
-        ``_build_gmail_raw`` builds the body, the attachments and the reply
+        ``_build_gmail_mail`` builds the body, the attachments and the reply
         headers (WS-17 EM-G3a items 1 to 4). A reply also keeps ``threadId``.
-        The rate-limit helper sends this POST once only (EM-G4a).
+        The rate-limit helper sends this POST once only (EM-G4a), on the
+        plain URI and on the upload URI (EM-G3c item 8).
         """
-        raw = _build_gmail_raw(
+        mail = _build_gmail_mail(
             to=to, subject=subject, body_text=body_text, body_html=body_html,
             cc=cc, bcc=bcc, attachments=attachments,
             reply_headers=await self._reply_headers(
                 reply_to_message_id, thread_id))
-        body: dict[str, Any] = {"raw": raw}
         # Gmail threads by threadId. Prefer the real conversation id
         # (``thread_id``); fall back to ``reply_to_message_id`` only when a caller
         # passes a message id as the thread anchor. Passing a non-thread message
         # id here would fail to thread — the "reply shows as a separate email" bug.
-        tid = thread_id or reply_to_message_id
-        if tid:
-            body["threadId"] = tid
-
-        client = await self._get_client()
-        resp = await client.post("/users/me/messages/send", json=body)
-        resp.raise_for_status()
-        data = resp.json()
+        data = await self._write_mail(
+            "POST", "/messages/send", mail,
+            thread_id=thread_id or reply_to_message_id,
+            has_files=bool(attachments), draft=False)
         return data["id"]
 
     async def create_draft(
@@ -1143,6 +1226,8 @@ class GmailProvider(BaseEmailProvider):
         attachments: list[dict[str, Any]] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        *,
+        exact_to: bool = False,
     ) -> str:
         """Create a Gmail draft (``drafts.create``) and return the MESSAGE id
         of the draft (EM-G3a item 6, O-GM-2).
@@ -1150,20 +1235,19 @@ class GmailProvider(BaseEmailProvider):
         The local row holds that id, which is the id that the sync finds. So
         one draft keeps one row (GM-13). A reply keeps ``threadId`` and gets
         ``In-Reply-To`` and ``References`` (item 4).
+
+        ``exact_to`` changes nothing here. The builder puts ``to`` into the
+        mail, so the To of a Gmail draft is always ``to`` (EM-T10 item 6).
         """
-        raw = _build_gmail_raw(
+        mail = _build_gmail_mail(
             to=to, subject=subject, body_text=body_text, body_html=body_html,
             cc=cc, bcc=bcc, attachments=attachments,
             reply_headers=await self._reply_headers(
                 reply_to_message_id, thread_id))
-        message: dict[str, Any] = {"raw": raw}
-        tid = thread_id or reply_to_message_id
-        if tid:
-            message["threadId"] = tid
-        client = await self._get_client()
-        resp = await client.post("/users/me/drafts", json={"message": message})
-        resp.raise_for_status()
-        return self._remember_draft(resp.json())
+        return self._remember_draft(await self._write_mail(
+            "POST", "/drafts", mail,
+            thread_id=thread_id or reply_to_message_id,
+            has_files=bool(attachments), draft=True))
 
     async def update_draft(
         self,
@@ -1195,22 +1279,21 @@ class GmailProvider(BaseEmailProvider):
         that the draft holds stay: the update reads them from the draft first
         and builds them in again (review round 1, F1). Metorite keeps no bytes
         of a draft file, so Gmail is the one source of them.
+
+        EM-G3c item 2: the files AFTER the read-back decide the URI, not
+        ``attachments``. So an autosave that adds no file still goes to the
+        upload URI when the draft holds one.
         """
         gmail_draft_id = await self._draft_id_for(draft_id)
         files = [*await self._draft_files(draft_id), *(attachments or [])]
-        raw = _build_gmail_raw(
+        mail = _build_gmail_mail(
             to=to, subject=subject, body_text=body_text, body_html=body_html,
             cc=cc, bcc=bcc, attachments=files or None,
             reply_headers=await self._reply_headers(None, thread_id))
-        message: dict[str, Any] = {"raw": raw}
-        if thread_id:
-            message["threadId"] = thread_id
-        client = await self._get_client()
-        resp = await client.put(
-            f"/users/me/drafts/{gmail_draft_id}", json={"message": message}
-        )
-        resp.raise_for_status()
-        return self._remember_draft(resp.json(), old_message_id=draft_id)
+        data = await self._write_mail(
+            "PUT", f"/drafts/{gmail_draft_id}", mail,
+            thread_id=thread_id, has_files=bool(files), draft=True)
+        return self._remember_draft(data, old_message_id=draft_id)
 
     async def send_draft(self, draft_id: str) -> str | None:
         """Send a Gmail draft natively (``drafts.send``): Drafts → Sent.
@@ -1259,6 +1342,50 @@ class GmailProvider(BaseEmailProvider):
                 "gmail.parent_read_failed kind=%s id=%s error=%s status=%s",
                 kind, ref, type(exc).__name__, status)
             return {}
+
+    async def _write_mail(
+        self, method: str, path: str, mail: bytes, *,
+        thread_id: str | None, has_files: bool, draft: bool,
+    ) -> dict[str, Any]:
+        """Send one write of a built mail, and return the answer of Gmail.
+
+        WS-17 EM-G3c-1, items 2 to 6. ``path`` is the path of the write
+        under ``/users/me``. ``draft`` puts the mail inside ``message``, as
+        ``drafts.create`` and ``drafts.update`` need. With no ``thread_id``
+        the write sends no ``threadId``, on either URI.
+
+        * A mail over :data:`GMAIL_MAIL_MAX_BYTES` raises
+          :class:`GmailMailTooLarge` before the request (item 5).
+        * A mail with a file, or over :data:`GMAIL_PLAIN_MAX_BYTES`, goes to
+          the upload URI as ``multipart/related`` (items 2 to 4). The client
+          is still ``_get_client()``, so ``GmailBearer`` and its rate-limit
+          rule stay. ``Content-Type`` replaces the JSON type of the client.
+        * Each other mail keeps the plain URI and ``raw``, as before.
+        * A 413 raises :class:`GmailMailTooLarge`, read from the status
+          code only (item 6).
+        """
+        size = len(mail)
+        if size > GMAIL_MAIL_MAX_BYTES:
+            raise GmailMailTooLarge(size, GMAIL_MAIL_MAX_BYTES)
+        meta: dict[str, Any] = {"threadId": thread_id} if thread_id else {}
+        client = await self._get_client()
+        write = client.post if method == "POST" else client.put
+        if has_files or size > GMAIL_PLAIN_MAX_BYTES:
+            body, content_type = _upload_body(
+                {"message": meta} if draft else meta, mail)
+            resp = await write(
+                f"{GMAIL_UPLOAD_BASE}/users/me{path}",
+                params={"uploadType": "multipart"}, content=body,
+                headers={"Content-Type": content_type})
+        else:
+            message = {"raw": _gmail_raw(mail), **meta}
+            resp = await write(f"/users/me{path}",
+                               json={"message": message} if draft else message)
+        if resp.status_code == 413:
+            # Google refused it under the local limit, so name no limit.
+            raise GmailMailTooLarge(size, None)
+        resp.raise_for_status()
+        return resp.json()
 
     async def _draft_files(self, message_id: str) -> list[dict[str, Any]]:
         """The files of a draft, in the shape of ``attachments``.
@@ -1879,6 +2006,14 @@ class GmailProvider(BaseEmailProvider):
     #: list that never ends. At the cap the import ends and logs
     #: ``gmail.import_capped``. The model is ``OutlookProvider.IMPORT_MAX_PAGES``.
     IMPORT_MAX_PAGES = 5000
+    #: The import reads all mail back to the floor, so the deep sync of a
+    #: member act reconciles the deletions from it (WS-17 EM-G5b item 7).
+    #: ``message_gone`` confirms each candidate by its id before a trash.
+    import_full_snapshot = True
+    #: Gmail gives a draft a new message id at each update (O-GM-2), so the
+    #: reconcile leaves out each row in drafts (EM-G5b item 9, C3). The
+    #: history removes an old draft row (EM-G4b E-B2).
+    import_reconcile_skips_drafts = True
 
     async def _sweep_label(
         self,
@@ -2245,12 +2380,14 @@ class GmailProvider(BaseEmailProvider):
           the batch goes on (E-G5-4, ``_import_fetch``).
         * ``on_estimate`` is awaited once, with the ``resultSizeEstimate`` of
           the first answer, before the first fetch (item 5, D-EM-16).
-        * ``IMPORT_MAX_PAGES`` pages at most. At the cap the import ends and
-          logs ``gmail.import_capped`` (E-G5-6).
+        * ``IMPORT_MAX_PAGES`` pages at most. At the cap the import ends,
+          logs ``gmail.import_capped`` (E-G5-6) and sets ``import_capped``,
+          so the scheduler runs no reconcile (EM-G5b item 12).
 
         It never calls ``sync_messages(deep=True)`` (E-G5-8). A failed list
         page and a rate limit whose tries are spent raise, and the next
         cycle resumes from the point that the import reached."""
+        self.import_capped = False
         size = max(size, 1)
         client = await self._get_client()
         await self._ensure_label_names()
@@ -2275,6 +2412,7 @@ class GmailProvider(BaseEmailProvider):
             if not token:
                 return
             params["pageToken"] = token
+        self.import_capped = True
         logger.warning("gmail.import_capped pages=%d messages=%d",
                        self.IMPORT_MAX_PAGES, len(seen))
 
@@ -2315,6 +2453,39 @@ class GmailProvider(BaseEmailProvider):
                 if _transient(exc):
                     raise
                 return None
+
+    async def message_gone(self, provider_message_id: str) -> bool:
+        """True when Gmail deleted the message *provider_message_id* (WS-17
+        EM-G5b items 6 and 10, C1 and C2).
+
+        The reconcile of a member-act import asks this before it trashes a
+        row (``scheduler._confirm_gone``). Gmail never changes the id of a
+        message, so the provider id is the key. ``message_exists`` of Outlook
+        asks by the Message-ID, and Gmail has no such method on purpose: one
+        Message-ID can be on two Gmail messages.
+
+        * A 404 whose body gives the reason ``notFound`` gives True.
+        * A 200 gives False, also for a message in ``TRASH`` or ``SPAM``,
+          because the import read both.
+        * Each other answer raises, and that includes a 404 with no
+          ``notFound`` reason. The caller then keeps the row. A rate limit
+          whose tries are spent raises ``GmailRateLimited``, and the caller
+          stops the confirm (item 11).
+        * An id that is not a plain Gmail id raises ``ValueError``, and no
+          request goes out.
+
+        The read goes through ``_get_client``, so the rules of EM-G4a apply.
+        It sends ``format=minimal`` only, so no body of the mail comes back."""
+        if not _GMAIL_MESSAGE_ID.fullmatch(provider_message_id or ""):
+            raise ValueError("the confirm takes a Gmail message id only")
+        client = await self._get_client()
+        resp = await client.get(f"/users/me/messages/{provider_message_id}",
+                                params={"format": "minimal"})
+        if resp.status_code == 404 and _says_not_found(resp):
+            return True
+        # Each answer that is not a 2xx raises here, a bare 404 too.
+        resp.raise_for_status()
+        return False
 
     async def get_attachment(
         self, provider_message_id: str, provider_attachment_id: str

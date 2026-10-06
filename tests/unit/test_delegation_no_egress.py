@@ -732,6 +732,41 @@ def test_the_covered_run_itself_holds_only_its_pinned_tools(sandbox, monkeypatch
     assert sent == []
 
 
+def test_a_covered_run_on_the_tier2_path_holds_the_same_tools(sandbox, monkeypatch) -> None:  # noqa: F811
+    """Tier 1 fails before its first event, so the run falls back to the Tier 2
+    batch path. That path wraps each tool to stream its row. The wrapped run
+    must offer the SAME pinned list, and still no egress tool (PR #654).
+    The identity half of the egress rule is fenced in test_tier2_tool_view.py:
+    a top-level covered run offers this list whether or not a shim is trusted."""
+    _register_every_annotation()
+    pa = _Model([_say("ok")])
+    _harness(monkeypatch, sandbox, {PA: pa})
+
+    def fail_first(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("tier 1 down before its first event")
+
+    monkeypatch.setattr(executor, "_translate_update", fail_first)
+    real_view = executor._tier2_tool_view
+    views: list[int] = []
+
+    def spy_view(agent: Any, make_shim: Any) -> Any:
+        out = real_view(agent, make_shim)
+        views.append(len(out.default_options["tools"]) if out is not agent else 0)
+        return out
+
+    monkeypatch.setattr(executor, "_tier2_tool_view", spy_view)
+    _run_parent(ORG_A)
+    assert views and views[0] > 0, "the Tier 2 path wrapped no tool"
+    assert len(pa.bodies) >= 2, "the run never reached the Tier 2 path"
+    offered = _offered(pa.bodies[-1])
+    assert "run_command" in offered, "the run was not covered"
+    assert not _egress_in(pa.bodies[-1]), _egress_in(pa.bodies[-1])
+    assert offered == COVERED_PROJECTS_TOOLS, (
+        f"new: {sorted(offered - COVERED_PROJECTS_TOOLS)}, "
+        f"gone: {sorted(COVERED_PROJECTS_TOOLS - offered)}"
+    )
+
+
 def _spy_runs(monkeypatch) -> list[tuple[str, bool]]:
     from acb_skills.write_artifact import artifact_context
 

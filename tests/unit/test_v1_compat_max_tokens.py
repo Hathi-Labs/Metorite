@@ -103,6 +103,23 @@ def test_explicit_max_tokens_is_respected(monkeypatch) -> None:
     assert seen[0].get("max_tokens") == 256
 
 
+def test_the_agent_framework_spelling_is_respected(monkeypatch) -> None:
+    """MAF's ``OpenAIChatCompletionClient`` renames ``max_tokens`` to
+    ``max_completion_tokens``. This path read only the old name, so a native
+    agent's own ceiling was replaced by the default (2026-10-05)."""
+    seen: list[dict] = []
+    client = _mk_app(monkeypatch, seen)
+
+    r = _post(client, {
+        "model": "tier-powerful",
+        "max_completion_tokens": 256,
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert r.status_code == 200
+    assert seen[0].get("max_tokens") == 256
+    assert "max_completion_tokens" not in seen[0]
+
+
 def test_default_is_env_tunable(monkeypatch) -> None:
     """Operators can retune the ceiling without a code change."""
     import importlib

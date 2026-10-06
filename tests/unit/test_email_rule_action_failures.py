@@ -234,3 +234,42 @@ async def test_a_rule_draft_with_a_failed_file_is_deleted(kind: str) -> None:
                        "error": "The file quote.pdf could not be attached."}]
     client.delete.assert_awaited_once_with("/me/messages/rule-draft-1")
     upsert.assert_not_awaited()
+
+
+# ── a rule reply with a typed To (WS-17 EM-T10 review round 1) ──────────────
+
+
+@pytest.mark.parametrize(("to_address", "to_patch"), [
+    ("ops@em-t10.test", [{"emailAddress": {"address": "ops@em-t10.test"}}]),
+    (None, None),
+], ids=["typed-to", "default-to"])
+async def test_a_rule_reply_writes_a_typed_to_at_outlook(
+        to_address: str | None, to_patch: list | None) -> None:
+    """A rule REPLY with a To that the member typed must reach Graph. Outlook
+    makes the draft with ``createReply``, which addresses the sender, so the
+    PATCH must carry the typed To. With no typed To, the PATCH carries no To,
+    and ``createReply`` keeps its To, which honours a Reply-To."""
+    from email_ingestion.providers.outlook import OutlookProvider
+    from gateway.routes.email.automation import actions
+
+    client = AsyncMock()
+    client.post.return_value = _graph_answer(201, {"id": "rule-draft-2"})
+    client.patch.return_value = _graph_answer(200, {})
+    provider = OutlookProvider({"access_token": "t", "refresh_token": "r"})
+    provider._http = client
+    action = {"type": "REPLY", "content": "Thanks, we have it."}
+    if to_address:
+        action["to_address"] = to_address
+
+    with patch.object(actions, "_load_action_attachments", return_value=[]), \
+         patch.object(actions, "_skip_for_paired_mailbox",
+                      AsyncMock(return_value=False)), \
+         patch.object(actions, "_upsert_local_draft", AsyncMock()):
+        await actions._apply_rule_actions(
+            _db(), provider, "msg-2", "AAMk-parent-2", [action],
+            email={"from": "ravi@x.com", "subject": "Order"},
+            account_id=_ACC, errors_out=[])
+
+    (patch_call,) = client.patch.await_args_list
+    sent = patch_call.kwargs["json"]
+    assert sent.get("toRecipients") == to_patch

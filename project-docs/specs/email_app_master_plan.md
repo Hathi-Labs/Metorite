@@ -24,7 +24,7 @@
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
-> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). EM-G5b, the reconcile, waits for a new audit (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -606,10 +606,11 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
 | **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** ✅ **EM-T4b MERGED (#617, 2026-10-04), dark** (cap 0, budget `log`). **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
-| **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
+| **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). ⚠️ `email.thread_status=on` waits for PR-B3 of EM-T4a-2 to merge (§10.4.6). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
 | **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** ✅ **EM-T6e MERGED #619 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
+| **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | ✅ **MERGED #658 (2026-10-05).** The live check (H-248) is open. **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -1542,7 +1543,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 ✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). ✅ EM-T4b MERGED (#617, 2026-10-04, dark: cap 0, budget `log`). ✅ EM-T4a-2 PR-A MERGED (#621, 2026-10-04).
 
-EM-T4a-2 PR-B, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+✅ EM-T4a-2 PR-B1 MERGED (#661, 2026-10-06), with review round 1. EM-T4a-2 PR-B2 and PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box. The dev-phase window of CLAUDE.md §3a does NOT open `EMAIL_LLM_BUDGET_MODE=enforce`. `enforce` holds back triage and drafts from a paying mailbox. So it is a product limit, and the owner decides it.
 
@@ -1560,8 +1561,8 @@ EM-T4a-2 PR-B, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narr
 
 - Phase (e) of `_sync_account` holds one `tenant_session(org)` across up to 25 `provider.get_message` calls (`scheduler.py:412-418`, `body_backfill.py:97-99`).
 - Phase (f) holds one session across `litellm.aembedding` (`scheduler.py:423-429`, `email_embeddings.py:73`). It does nothing while `email_semantic_search_enabled` is false, which is its default (`settings.py:690`).
-- `_run_rules_job` opens one block for each row (`runner.py:1648`). The block covers the rule pick, the thread status call, the provider actions, the template call and the draft agent.
-- `_maybe_classify_threads` opens one block for each gap thread (`replyzero.py:1277`). `_mark_thread_replied` holds its first block across the status call (`replyzero.py:918-937`).
+- `_run_rules_job` (`runner.py:1669`) opens one block for each row (`runner.py:1767-1828`). The block covers the rule pick, the thread status call, the provider actions, the template call and the draft agent.
+- `_maybe_classify_threads` (`replyzero.py:2033`) opens one block for each gap thread (`replyzero.py:2195-2219`).
 - `_maybe_send_follow_up_reminders` holds one block for up to 50 threads (`followups.py:92-258`). The block covers `authenticate`, `set_labels`, the body fetch, the draft agent and `create_draft`.
 - `_maybe_send_digest` holds one block across the digest model call and `send_message` (`digest.py:708-772`).
 - `_bulk_reconcile_provider` holds one block across `bulk_apply` and across sleeps of 2 and 8 seconds (`senders.py:460`, `senders.py:493-520`).
@@ -1590,7 +1591,7 @@ The four triage decisions. Each one has an `on` path and an old path. The old pa
 | Decision | `on` | The old path |
 |---|---|---|
 | Rule match. `email.rule_match=on` is live for all organizations | `engine.py:761` `ask`, then `_ask_all` (`decide_features.py:526-530`). The Router path. The slot waits | `engine.py:860` and `:946`, `_llm_json` |
-| Thread status | `replyzero.py:560` `ask` | `replyzero.py:675` `_llm_json`, up to two tries |
+| Thread status | `replyzero.py:606` `ask` | `replyzero.py:721` `_llm_json`, up to two tries |
 | Cold check | `senders.py:1339` `ask` | `senders.py:1353` `_llm_json` |
 | Sender pin. The caller is `runner.py:1246` | `learning.py:161` `ask` | `learning.py:183` `_llm_json` |
 | Shadow, all four | — | `shadow` (`decide_features.py:687`) starts the task at `:728`. The task tries for a slot, or it skips |
@@ -1599,7 +1600,7 @@ The other model calls. "In" means inside the automation scope of EM-T4b item 5.
 
 | Call | The model await | Function | Scope |
 |---|---|---|---|
-| Template fill | `actions.py:305` | `_render_template` (`:278`) | In |
+| Template fill | `actions.py:320` | `_render_template` (`:292`) | In |
 | Drafter | `drafting.py:932` (stream) and `:938` | `_llm_draft_reply` (`:756`) | In from the rule DRAFT action (`actions.py:521`), the follow-ups (`followups.py:236`) and Process past. Out from `/draft-reply` (`drafting.py:1786`) and the reply mode of `/compose-assist` (`drafting.py:1924`) |
 | Consult plan | `drafting.py:1152` `_llm_json` | `_draft_consult_plan` (`:1108`) | As the drafter |
 | Specialist consults | `drafting.py:1577` `run_agent`, up to 90 s each, one after the other | `_orchestrate_draft` (`:1495`) | As the drafter |
@@ -1642,7 +1643,7 @@ Option (B), a listener on the seam, stays rejected.
 
 **One fence for every part (R7).**
 
-The fence is `test_no_session_is_open_during_the_provider_calls` in `tests/unit/test_email_scheduler_tenancy.py:665`. It counts the open `tenant_session` blocks. Its watched fake provider and its watched model call fail the test when a block is open during a call. A part that adds a provider call or a model call to the sync path adds that call to the watched fake.
+The fence is `test_no_session_is_open_during_the_provider_calls` in `tests/unit/test_email_scheduler_tenancy.py:669`. It counts the open `tenant_session` blocks. Its watched fake provider and its watched model call fail the test when a block is open during a call. A part that adds a provider call or a model call to the sync path adds that call to the watched fake.
 
 That fence cannot see a block in `routes/email`. So EM-T4a-2 has its own fence in `tests/unit/test_email_automation_tenancy.py` (see its section). This paragraph named `tests/unit/_io_watch.py` and `tests/unit/test_email_no_session_across_io.py` until 2026-10-04. Neither file exists, so do not cite them.
 
@@ -1760,31 +1761,36 @@ The R8 tests must show PASSED, not SKIPPED.
 
 ##### EM-T4a-2 — the decision core
 
-**Status (2026-10-04).** ✅ PR-A MERGED #621 (2026-10-04). PR-B is not built.
+**Status (2026-10-06).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. PR-B2 and PR-B3 are not built. The PR-B1 notes follow the PR-A notes.
 
-The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The part ships as two PRs, and PR-A goes first. It adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
+The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The audit of 2026-10-05 read them again at `c26b67549`, and it split PR-B in three. The part adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
 
 **Gate.** 🟢 AGENT-SAFE for the whole part.
 
-**Two PRs.**
+**Four PRs.** PR-A goes first, and then PR-B1, PR-B2 and PR-B3 in that order. The names PR-B1 to PR-B3 are not the "B1" and "B2" of other sections. Each PR stays under about 600 lines. The count is the lines of `git diff --stat` that are not in a test or a document.
 
 - **PR-A.** No session is open across the status ask of `_mark_thread_replied`. `recompute_thread_status` splits into a read step, an ask step and a write step. The write step carries the guard of item 6.
-- **PR-B.** The classify core in `_run_rules_job` (the runner loop) and in the gap loop of `_maybe_classify_threads`. If the diff of PR-B passes about 600 lines, it splits in two:
-  - **B1.** `off`, `shadow`, and the rule match in `on`.
-  - **B2.** The thread status in `on`. B2 must merge before the owner turns `email.thread_status` on.
+- **PR-B1. The rule-match ask.** The runner loop of `_run_rules_job` and the gap loop of `_maybe_classify_threads` ask the rule match with no block open.
+  - Done when: the watched model gets each rule-match ask with zero open blocks in both jobs, in `off`, `shadow` and `on` of `email.rule_match`.
+  - Done when: a failed or undecided match ask writes nothing and stamps nothing.
+- **PR-B2. The status ask in `off` and `shadow`.** These are the modes of `email.thread_status` on the box today. The two jobs ask the thread status of the resolver with no block open.
+  - Done when: the watched model gets each status ask of the two jobs with zero open blocks, in `off` and `shadow` of `email.thread_status`.
+- **PR-B3. The status ask in `on`.** The status ask of `status_before_match` (`replyzero.py:1172`) and of `_resolve_on` (`:1219`) runs with no block open. PR-B3 must merge before the owner turns `email.thread_status` on.
+  - Done when: the watched model gets each status ask of the two jobs with zero open blocks in `on`.
+  - Done when: an undecided status writes nothing and stamps nothing (D-EM-8).
 
-**Scope.** The paths are under `routes/email/automation/`, at `04a64ba4d`.
+**Scope.** The paths are under `routes/email/automation/`, at `c26b67549`.
 
 1. Split each function that reads and then asks a model. The read step takes `db`. The ask step takes no `db`.
 2. The rule match: `classify_matches` (`engine.py:1415`) with its two match helpers, `_match_email_to_rule` (`:1267`) and `_match_email_to_rules_multi` (`:1335`). Their asks are `_decide_rule_match` (`:750`), `_llm_pick_rule` (`:807`) and `_llm_pick_rules` (`:892`).
-3. The thread status of the resolver: `resolve_conversation_status_matches` (`replyzero.py:1230`), with `status_before_match` (`:1122`), `_resolve_on` (`:1169`) and `_determine_status_of` (`:1044`).
-4. The thread status of a reply: `recompute_thread_status` (`replyzero.py:1499`). It asks at `:1548` and writes at `:1575`.
-5. `_mark_thread_replied` (`replyzero.py:1583`, `@automation_job` at `:1582`) is the one path that reaches `recompute_thread_status`. The runner and the gap loop write the status through `project_reply_status_from_matches`, which asks no model. Block A (`:1611-1630`) is open across the ask. Block B (`:1647`) is open across `set_labels`, and EM-T4a-3 owns it.
+3. The thread status of the resolver: `resolve_conversation_status_matches` (`replyzero.py:1280`), with `status_before_match` (`:1172`), `_resolve_on` (`:1219`) and `_determine_status_of` (`:1094`).
+4. The thread status of a reply: `recompute_thread_status` (`replyzero.py:1707`). It asks at `:1751` and writes at `:1754`.
+5. `_mark_thread_replied` (`replyzero.py:1758`, `@automation_job` at `:1757`) is the one path that reaches `recompute_thread_status`. The runner and the gap loop write the status through `project_reply_status_from_matches`, which asks no model. Block A (`:1800-1820`) reads, and since PR-A no block is open across the ask. Block B (`:1846`) is open across `set_labels`, and EM-T4a-3 owns it.
 6. **The guard of the status write** (decided 2026-10-04). The read step records the newest non-NULL `received_at` of the thread in this mailbox. The write step writes the status only when no message of that thread is newer. The test counts only messages outside the `sent` and `drafts` folders.
    - The folder test is `LOWER(COALESCE(folder,'')) NOT IN ('sent','drafts')`. The sent copy of the member's own reply started the recompute, so it must not void the write. A new inbound message must void it.
    - A message with a NULL `received_at` never voids the write. A tie (an equal `received_at`) does not void it.
-   - The guard compares with the newest STORED row, never with `ctx.last_message_at`. That value is `now()` for a pending reply (`replyzero.py:1491`). The pattern is `MAX(received_at) > seen.received_at` (`runner.py:1384-1396`).
-   - The guard and the upsert are ONE SQL statement. The upsert carries the `NOT EXISTS`. Today `_upsert_thread_status` (`replyzero.py:48-83`) upserts on `(account_id, thread_id)` with no guard.
+   - The guard compares with the newest STORED row, never with `ctx.last_message_at`. That value is `now()` for a pending reply (`replyzero.py:1547-1548`). The pattern is `MAX(received_at) > seen.received_at` (`runner.py:1384-1396`).
+   - The guard and the upsert are ONE SQL statement. The upsert carries the `NOT EXISTS`. `_upsert_thread_status` (`replyzero.py:70-129`) upserts on `(account_id, thread_id)`, and PR-A gave it the guard.
    - A voided write writes no row and reconciles no labels.
 7. The EM-T5 shadow helper wraps the ask step only. In `on`, `decide_features.ask` is the ask step.
 8. The composed forms that take `db` stay for the request paths of EM-T4a-4. These paths are `run_rules_on_message` (`runner.py:1010`), `test_rules` (`:94`), `test_rules_recent` (`:137`) and `_process_past_emails_job` (`:1444`). A test may change a call shape. It never changes an expected value.
@@ -1793,7 +1799,29 @@ The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The p
 
 - `_ai_confirms_sender_pattern` (`learning.py:121`) is the sender pin, and the runner calls it after the rule match (`runner.py:1246`).
 - `_maybe_block_cold` (`senders.py:1400`) is the cold check, and it blocks the sender at the provider.
-- `_restore_conversation_messages` (`replyzero.py:985`) moves mail at the provider, and `_determined_matches` reaches it.
+- `_restore_conversation_messages` (`replyzero.py:1031`) moves mail at the provider, and `_determined_matches` reaches it.
+
+**One split seam.** The three parts of PR-B use one seam. Do not add a second pair of a read step and an ask step.
+
+- `engine.py` gets one read step and one ask step of the rule match. They come from `_match_email_to_rule` (`:1267`) and `_match_email_to_rules_multi` (`:1335`).
+- `engine.py` gets one split form of `classify_matches` (`:1415`), and both jobs call it. The composed forms keep their signatures for the request paths of item 8.
+- PR-B2 and PR-B3 reuse `read_thread_status` (`replyzero.py:1591`) and `ask_thread_status` (`:1627`) of PR-A. `StatusRead` (`:1561`) gets `move_keys` and the `message_id` of the row.
+- The runner and the gap loop do not call `write_thread_status`. Their writer stays `project_reply_status_from_matches`.
+
+**The block plan.** Each job keeps its blocks in its own body.
+
+1. Block R reads. It holds the status-first plan of fix round 3 and the read step of the rule match.
+2. The rule-match ask runs with no block open.
+3. Block W is ONE block. It holds the resolver with `_determined_matches`, then `_apply_matches`, the projection in its `_savepoint` (`runner.py:1809`), `_reconcile_thread_labels` and the stamp (`runner.py:1827`).
+4. `_determined_matches` calls `_restore_conversation_messages`, and EM-T4a-3 item 10 owns that call. The fence of Block W is `test_a_failed_projection_keeps_the_runner_stamp_in_b` (`test_email_automation_tenancy.py:1009`).
+5. The gap loop writes no stamp and has no `_savepoint`. Its Block W holds the resolver, the projection and the label reconcile.
+6. PR-B2 and PR-B3 add Block S. It reads the thread only when the job will ask the status. The status-first order of fix round 3 stays.
+
+**No guard in PR-B** (decided 2026-10-05). PR-B adds no guard to `project_reply_status_from_matches` (`replyzero.py:350-353`) or to `_stamp_processed_watermark` (`runner.py:1340-1343`). Each block runs READ COMMITTED. So the open block did not stop a concurrent write, and the split widens no race.
+
+The next cycle decides again. The runner selects an unstamped row again (`runner.py:1698`). The gap query selects a thread again when its `last_message_id` is not its newest (`replyzero.py:2108-2110`).
+
+**D-EM-8 in PR-B2 and PR-B3.** `ask_thread_status` swallows `DecisionUnavailable` and returns None. In the resolver, a None verdict must raise `DecisionUnavailable` again, so that the runner skips the row. The resolver must not read None as a thread with no status.
 
 **Non-goals.** No change to a prompt, a model tier or a decision. No change to the action tail, which is EM-T4a-3. No `llm_slot` around a call that is not a leaf (EM-T4b item 7). The model await stays in its slot in `_llm_json` or `_ask_all`.
 
@@ -1802,16 +1830,36 @@ The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The p
 - The watched model gets each rule-match and thread-status ask with zero open sessions, in the runner, the gap loop and `_mark_thread_replied`.
 - `_mark_thread_replied` is the one path to `recompute_thread_status`. A thread that gets a newer stored inbound message during the ask keeps its status row, and the job reconciles no labels. The next cycle decides it again.
 - `test_email_classify_matches.py`, `test_email_thread_single_classification.py` and `test_email_rules_engine.py` pass with no changed expected value.
-- R8: the runner and the gap loop write `email_thread_status` and `email_executed_rules` rows in org B. Org A reads none of them.
+- R8: the runner writes `email_executed_rules`, `email_thread_status` and `rules_processed_at` in org B. The gap loop writes `email_thread_status` in org B, and it never writes `email_executed_rules`. Org A reads none of them (check with `_isolated`, `test_email_automation_tenancy.py:508`).
+- The R8 case fakes the model LEAVES, not `classify_matches`. So the read SQL runs as `acb_app_h3rls`.
 
-**The fence (R7).** The scheduler fence (`test_no_session_is_open_during_the_provider_calls`, `test_email_scheduler_tenancy.py:669`) cannot see a block in `routes/email`. So the fence of this part lives in `tests/unit/test_email_automation_tenancy.py`. It extends `_open_count_session` (`:751`), as `test_the_sweep_holds_no_session_across_set_labels` (`:765`) uses it. It watches the model at two leaves, and it patches each leaf once:
+**The fence (R7).** The scheduler fence (`test_no_session_is_open_during_the_provider_calls`, `test_email_scheduler_tenancy.py:669`) cannot see a block in `routes/email`. So the fence of this part lives in `tests/unit/test_email_automation_tenancy.py`. It extends `_open_count_session` (`:776`), as `test_the_sweep_holds_no_session_across_set_labels` (`:795`) uses it. It watches the model at two leaves, and it patches each leaf once:
 
-- `acb_llm.decide`. `_ask_all` imports it at call time (`decide_features.py:518`).
+- `acb_llm.decide`. `_ask_all` imports it at call time (`decide_features.py:519`).
 - `acb_llm.context.acompletion_with_fallback`. `_llm_json` imports it at call time (`core.py:770`).
 
 Each module binds `_tenant_session` under its own name. So the fence patches each module that opens a block on the path. A companion test plants an ask inside a block and shows that the fence fails.
 
-**Files.** `routes/email/automation/replyzero.py` (PR-A), `engine.py` and `runner.py` (PR-B), with the fence file `tests/unit/test_email_automation_tenancy.py`.
+**The case of PR-B.** It reuses `_watch_sessions` (`:1127`), `_watch_model` (`:1144`) and `_asks_inside_a_block` (`:1216`). It tags each watched call by its `decide` question id or by its tier. The case sets the cold blocker to `OFF`, uses a rule that only labels, and has no auto-learn history. Until EM-T4a-3, three calls reach the same model leaves inside Block W:
+
+- the sender pin (`runner.py:1246`),
+- the cold check (`runner.py:1320`),
+- `_render_template` (`actions.py:292`).
+
+**The tests that move in PR-B1.** These tests patch a composed name on a job path. Each patch moves to the ask step or to a leaf, and no expected value changes:
+
+- `test_email_automation_tenancy.py:541`, `:692` and `:1026`.
+- `test_email_decide_on.py:635`.
+- `test_email_ai_context.py:711-713`.
+- `test_email_reply_zero.py`: five patches of `_match_email_to_rule` and one of `resolve_conversation_status_matches`.
+
+**The source fences.**
+
+- The blocks stay in the two job bodies, and so do the calls to `project_reply_status_from_matches` and `_reconcile_thread_labels`. Four tests read them: `test_email_thread_status_parity.py:24-63` and `:112-141`, `test_email_cleanup_backfill.py:125-133` and `test_email_process_past_drafting.py:31-38`.
+- `test_email_classifier_guidance.py:124-140` reads the new read step by name.
+- Each new step takes `db`, opens no block and calls no `commit()`. A sibling of `test_email_automation_tenancy.py:164-181` checks it, as `test_email_scheduler_tenancy.py:286` does.
+
+**Files.** `routes/email/automation/replyzero.py` (PR-A), and `engine.py`, `runner.py` and `replyzero.py` (PR-B), with the fence file `tests/unit/test_email_automation_tenancy.py`.
 
 **Verify with.**
 
@@ -1823,12 +1871,15 @@ uv run pytest tests/unit/test_email_automation_tenancy.py tests/unit/test_email_
   tests/unit/test_email_auto_learn_gate.py tests/unit/test_email_classifier_unavailable.py \
   tests/unit/test_email_apply_and_watermark.py tests/unit/test_email_decide_shadow.py \
   tests/unit/test_email_decide_on.py tests/unit/test_email_decide_questions.py \
-  tests/unit/test_email_llm_cap.py tests/unit/test_email_cold_gate_case.py -q -rs
+  tests/unit/test_email_llm_cap.py tests/unit/test_email_cold_gate_case.py \
+  tests/unit/test_email_ai_context.py tests/unit/test_email_classifier_guidance.py \
+  tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_process_past_drafting.py \
+  tests/unit/test_email_rule_action_failures.py tests/unit/test_db_engine_seam.py -q -rs
 ```
 
-With the database exported, the run shows 0 skips. At `04a64ba4d` with no database, the run shows 504 passed and 45 skipped.
+With the database exported, the run shows 0 skips. Run the R8 suites alone, because the `promoted` fixture takes one database name.
 
-Ruff: compare the count of each changed file with the base. At `04a64ba4d` the counts are `engine.py` 7, `replyzero.py` 23, `learning.py` 6, `senders.py` 13 and `runner.py` 17. A new test file has 0.
+Ruff: compare the count of each changed file with the base. At `c26b67549` the counts are `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0. A new test file has 0.
 
 **PR-A as built (2026-10-04).**
 
@@ -1865,18 +1916,99 @@ Two fakes of `_upsert_thread_status` in `test_email_reply_zero.py` now return Tr
 
 **Verified (2026-10-04).** On a private database, the Verify block gave 563 passed and 0 skipped. The 132 files `tests/unit/test_email_*.py` gave 2564 passed and 0 skipped. The ruff counts did not change: `replyzero.py` 23 and `test_email_automation_tenancy.py` 0.
 
+**PR-B1 as built (2026-10-05).**
+
+- `engine.py` has the two steps of the rule match. `read_rule_match(db, ...)` returns a `MatchRead`. It makes the reads of both modes in their old order. A learned pattern or a static condition decides there, with no model.
+- `ask_rule_match(read)` takes no `db`. It calls `_llm_pick_rule` or `_llm_pick_rules` unchanged, and it puts the matches in the old order.
+- `_match_email_to_rule`, `_match_email_to_rules_multi` and `classify_matches` keep their signatures. The first two run the two steps on one `db`, for the request paths of item 8.
+- The split form of `classify_matches` has three calls. `read_classification(db, ...)` runs the status-first step and the read step. `ask_rule_match` asks. `resolve_classification(db, ...)` runs the resolver with the plan of the read.
+- `_run_rules_job` opens Block R, then asks with no block open, then opens ONE Block W for the writes. The gap loop of `_maybe_classify_threads` has the same shape, with no stamp.
+- An `LLMUnavailable` from Block R, from the ask or from the resolver at the head of Block W skips the row. The row gets no apply and no stamp. The runner logs `email.classify_unavailable_skip` once, through `_classify_unavailable` (`runner.py`).
+- PR-B1 changes no prompt, tier, decision, SQL text, setting, flag or migration. The status asks stay where they were. In `on` of `email.thread_status`, the status-first ask runs in Block R and the ask after the match runs in Block W.
+
+**An agent decision (D16).** One handler covers Block R, the ask and Block W in each job. The old row block caught `LLMUnavailable` around the classify call only. Three handlers took `_run_rules_job` past the `C901` cap of 15.
+
+So an `LLMUnavailable` from the resolver now rolls Block W back, where before the job committed the block. Block W writes nothing before the resolver returns, so the result is the same. If a call in the apply raised `LLMUnavailable`, the row would now roll back and the job would go on. Before, the job stopped there. No call in the apply raises it (measured 2026-10-05).
+
+**A precondition for EM-T4a-3 (review round 1).** The one handler of each job also covers the apply in Block W. Four functions raise `LLMUnavailable` today. Each one is an ask, and it runs before Block W writes:
+
+- `_decide_rule_match` (`engine.py:768`), `_llm_pick_rule` (`:881`) and `_llm_pick_rules` (`:973`).
+- `_decide_thread_status` (`replyzero.py:615`).
+
+The model calls of the apply catch every error. They are `_render_template` (`actions.py:329`), the cold check `_llm_is_cold` (`senders.py:1343` and `:1362`) and the sender pin `_ai_confirms_sender_pattern` (`learning.py:166` and `:203`). EM-T4a-3 must keep this so. A raise after a provider action rolls Block W back and leaves the row unstamped, so the next cycle runs the action again. So EM-T4a-3 catches `LLMUnavailable` before the apply, or it changes the handler first. The fence `email-decision-core-apply-raises-no-unavailable` fails on a raise in the apply.
+
+**A known limit (review round 1).** Between Block R and Block W, a member can move or delete the email. In the same window, a second runner cycle can take the same unstamped row. Either one can cause an apply that is stale. The base had the same race over the same window, because READ COMMITTED took no snapshot and no lock. PR-B adds no guard ("No guard in PR-B" above), and a later ticket owns one if the owner wants it.
+
+**Fences (R7).** All are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-no-session-across-the-match-ask`: `test_the_match_ask_runs_with_no_session_open`. It runs the runner, the runner in the multi-rule mode and the backfill, in `off`, `shadow` and `on` of `email.rule_match`. Each watched call carries a tag. Block W must be the next block after Block R, and it must hold each write. The companion is `test_the_match_fence_can_fail`.
+- `email-decision-core-steps`: `test_each_new_step_takes_db_and_opens_no_block`, with `test_the_step_fence_can_fail`. `test_both_jobs_call_the_split_form` refuses a composed form in a job body.
+- D-EM-8 and #110: `test_a_failed_match_ask_writes_nothing_and_stamps_nothing`, `test_an_undecided_resolver_writes_nothing_and_stamps_nothing` and `test_a_suppressed_match_stays_suppressed`.
+- R8: `TestTheSplitJobsWriteTheirOwnTenant`, six cases. Only the two model leaves are fakes.
+
+**The tests that moved.** Each patch of a composed name on a job path now patches `ask_rule_match`, or the read leaf `_load_rules`. No expected value changed. The patch of `resolve_conversation_status_matches` in `test_email_reply_zero.py` stays, because `resolve_classification` still calls it. PR-B2 moves it.
+
+**Mutations of PR-B1.** Each mutation ran against `test_email_automation_tenancy.py` on a real Postgres. After each one, the file came back to the blob of HEAD. A name in brackets is a case of the test.
+
+| Mutation | Red |
+|---|---|
+| The ask runs inside Block R of the runner | `test_the_match_ask_runs_with_no_session_open` [6 runner cases] and `test_a_suppressed_match_stays_suppressed` [2 runner cases] |
+| The ask runs inside Block R of the backfill | `test_the_match_ask_runs_with_no_session_open` [3 backfill cases] and `test_a_suppressed_match_stays_suppressed` [backfill] |
+| An `LLMUnavailable` from the ask stamps the row | `test_a_failed_match_ask_writes_nothing_and_stamps_nothing` [4 runner cases], and the R8 cases `test_an_undecided_email_is_not_stamped` (`test_email_decide_on.py`) and the two of `TestTheRunnerAtTheBudget` (`test_email_llm_cap.py`) |
+| The stamp moves out of Block W into its own block | `test_the_match_ask_runs_with_no_session_open` [6 runner cases] |
+| The read step opens a block, through an alias of the seam | `test_each_new_step_takes_db_and_opens_no_block` [read_rule_match] and `test_the_match_ask_runs_with_no_session_open` [9 cases] |
+| `resolve_classification` drops the suppressed flag | `test_a_suppressed_match_stays_suppressed` [3 cases] |
+| Block W applies the matches of the ask, not those of the resolver | `test_a_suppressed_match_stays_suppressed` [2 runner cases] |
+
+**A gap that a mutation found.** The first run of "the read step opens a block" stayed green. The plant imported the seam under another name, so the step fence did not see it. The step fence now refuses each `async with` and each import of a session opener in a step. The job fence now needs Block W to be the next block after Block R.
+
+**Verified (2026-10-05).** On the scratch database, the Verify block gave 755 passed and 0 skipped, with each R8 file in a run of its own. The 14 files with no R8 case gave 328. The six R8 files gave 87, 147, 73, 10, 76 and 34. At `c26b67549` the same runs gave 720 passed. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0.
+
+The diff holds 559 lines that are not in a test or a document (362 added and 197 removed). The 134 files `tests/unit/test_email_*.py` in one run gave 2655 passed and 66 errors at setup. Each error is in an R8 file that PR-B1 does not change, where the fixture of one file met the database of another. Run alone, three of those four files passed. `test_email_otp_token.py` still fails at setup when it runs alone, because a table of the scratch database is at the limit of 1600 columns.
+
+**Review round 1 (2026-10-06).** The verifier passed PR-B1, and the reviewer approved it. Both found P2 items only. This round applies five of them, and it rebases the branch onto `093769bef`.
+
+- **An aborted Block R fails closed (reviewer P2-1).** A best-effort reader catches a failed statement with no savepoint, so the transaction stays aborted. The readers after it then fail and return empty values. The seam commits the aborted block with no error, and a probe through asyncpg showed it. So the ask ran on that empty context, and Block W applied and stamped the result. Each job body now ends Block R with `SELECT 1`, which raises on an aborted transaction.
+- **What the member sees.** The error is not `LLMUnavailable`, so the outer handler of the job catches it. The runner logs `email.run_rules_failed`, and the backfill logs `email.classify_threads_failed`. The job stops for this cycle, and the rows after it wait for the next cycle. Nothing stamped the row, so the next cycle selects it again. On the base, the next statement of the same block raised and stopped the job in the same way.
+- **Two fences read the split steps (reviewer P2-2).** `test_the_engine_reads_no_account_models` reads `read_rule_match` and `ask_rule_match` too. `test_a_retry_reclassifies_nothing` also refuses `read_rule_match`, `ask_rule_match` and `read_classification`.
+- **The precondition for EM-T4a-3 (verifier P2-2) and the known limit (verifier P2-3)** are above, after the agent decision.
+- **The rebase.** `work_plan.md` met #658 (EM-T10) on the WS-17 row. The row keeps the line of `main` and adds the PR-B1 phrase. #658 changed `actions.py` and `drafting.py` (`exact_to`). PR-B1 does not touch them, so the code merged with no conflict.
+- `test_email_reply_zero.py`: the backfill fake answers the new `SELECT 1`. No expected value changed.
+
+**Fences (R7) of review round 1.** Both are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-read-fails-closed`: `test_an_aborted_read_block_stops_the_row`, for each job and each of the four readers. A fake transaction refuses each statement after the failed one, until the next block. The R8 case `test_an_aborted_read_block_stops_the_row_in_b` fails one statement in Block R of the runner on a real Postgres.
+- `email-decision-core-apply-raises-no-unavailable`: `test_the_apply_raises_no_llm_unavailable`. It walks the calls of `routes/email` from the four roots of the apply. The walk must see the four raise sites and the three model calls of the apply. The companion is `test_the_apply_fence_can_fail`.
+
+**Mutations of review round 1.** After each one, the file came back to the blob of HEAD.
+
+| Mutation | Red |
+|---|---|
+| No `SELECT 1` in Block R of the runner | `test_an_aborted_read_block_stops_the_row` [8 runner cases], and the R8 case, where the ask ran on the real database |
+| No `SELECT 1` in Block R of the backfill | `test_an_aborted_read_block_stops_the_row` [4 backfill cases] |
+| `read_rule_match` reads `_account_models` | `test_the_engine_reads_no_account_models`. The fence of the base stayed green. |
+| `retry_failed_executions` names `read_rule_match`, `ask_rule_match` or `read_classification` | `test_a_retry_reclassifies_nothing`, for each of the three |
+| `_render_template` raises `LLMUnavailable` in its handler | `test_the_apply_raises_no_llm_unavailable` |
+| `_reconcile_thread_labels` calls `_decide_thread_status` | `test_the_apply_raises_no_llm_unavailable` |
+
+**Verified after review round 1 (2026-10-06).** A private database got the ladder once, and each R8 file ran in a run of its own. The 14 files with no R8 case gave 330 passed, because #658 added two cases. The two fence files of P2-2 gave 20 passed. The six R8 files gave 102, 147, 73, 10, 76 and 34 passed, with 0 skipped. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0.
+
+The diff now holds 563 lines that are not in a test or a document (366 added and 197 removed). The nine other test files that reach the two jobs passed, each in a run of its own.
+
 ##### EM-T4a-3 — the action tail on the sync path
 
-1. `_apply_rule_actions` (`actions.py:309`) plans, then pushes, then records. The provider calls, the template call and the draft run with no session.
+1. `_apply_rule_actions` (`actions.py:446`) plans, then pushes, then records. The provider calls, the template call and the draft run with no session.
 2. One block then writes the mirrors, the new ids and the audit row.
-3. `_reconcile_thread_labels` (`replyzero.py:678`) writes the mirror in a block. It calls `set_labels` after the block closes. The mirror stays first.
+3. `_reconcile_thread_labels` (`replyzero.py:1350`) writes the mirror in a block. It calls `set_labels` after the block closes. The mirror stays first.
 4. `_maybe_send_follow_up_reminders` reads in one block. It labels, fetches and drafts with no session. It stamps each thread in its own block.
 5. `_maybe_send_digest` builds the digest in one block and sends with no session. It stamps `last_digest_at` in a new block after the send returns.
 6. `_bulk_reconcile_provider` calls `bulk_apply` and sleeps with no session. It writes the new ids and the reverts in a block after each try.
 7. `_ensure_subscription` reads in one block, calls Graph with no session, and writes in a second block.
 8. `_ai_confirms_sender_pattern` (`learning.py:121`) reads in one block and asks with no session (moved from EM-T4a-2, 2026-10-04).
 9. `_maybe_block_cold` (`senders.py:1400`) asks and blocks the sender at the provider with no session (moved from EM-T4a-2).
-10. `_restore_conversation_messages` (`replyzero.py:985`) moves mail with no session and writes the new ids in a block (moved from EM-T4a-2).
+10. `_restore_conversation_messages` (`replyzero.py:1031`) moves mail with no session and writes the new ids in a block (moved from EM-T4a-2).
+
+**A precondition from PR-B1 (review round 1).** The one `except LLMUnavailable` of each PR-B1 job also covers the apply in Block W. No call of the apply raises it today. Keep it so: catch `LLMUnavailable` before the apply, or change the handler first. A raise after a provider action rolls Block W back, and the next cycle runs the action again. The fence `email-decision-core-apply-raises-no-unavailable` fails on such a raise, and EM-T4a-2 lists the four raise sites.
 
 **Non-goals.** No change to which actions run. Automation writes stay provider-first (§2).
 
@@ -1923,8 +2055,8 @@ API, and EM-T4b adds the shared cap and the budget.
 4. An automation scope marks the calls that the cap and the budget bind. A ContextVar holds it, and the scope carries the account id of the mailbox. `llm_slot()` reads the account id from the scope. `_llm_json` keeps its signature.
 5. These functions open the scope:
    - `as_mailbox_owner` (`scheduler_hooks.py:53`). It wraps `process_new_mail` (`:122-123`) and the hooks of the thread status, the digest and the follow-ups (`:307-309`).
-   - `_run_rules_job` (`runner.py:1666`) and `_process_past_emails_job` (`runner.py:1442`).
-   - `_reclassify_reply_zero_job` (`replyzero.py:2071`) and `_mark_thread_replied` (`replyzero.py:1576`).
+   - `_run_rules_job` (`runner.py:1669`) and `_process_past_emails_job` (`runner.py:1442`).
+   - `_reclassify_reply_zero_job` (`replyzero.py:2282`) and `_mark_thread_replied` (`replyzero.py:1758`).
    - `_build_voice_profile_job` (`voice_profile.py:338`) and `_learn_from_sent` (`drafting.py:531`).
    - The cleanup jobs `_sweep_job` (`cleanup.py:703`) and `_backfill_and_clean_job` (`cleanup.py:869`).
    - `_maybe_classify_threads` (`replyzero.py:1834`), the Reply Zero backfill. Each caller is a background path. On a mailbox with no status row, the Reply Zero list starts it as a `BackgroundTask` (`replyzero.py:2344`). Before review round 1 that task ran outside each scope (finding C).
@@ -2246,7 +2378,7 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_4
 
 **Status (2026-10-04).** ✅ MERGED #614. Review round 1 fixed seven findings. There is no migration. The code ships with `email_outlook_delta=off`, so it changes nothing on a box.
 
-To set `shadow` on a box is a later, separate act (gate `enforcement-flip`). Settle EM-T4d-f3 before that act. The fence is `tests/unit/test_outlook_delta_shadow.py`, with R8 in `test_email_scheduler_tenancy.py` on a private database. The As-built notes, the review round 1 note and the mutation table follow the Verify block.
+To set `shadow` on a box is a later, separate act (gate `enforcement-flip`). EM-T4d-f3 is settled (#660), so only the loop runs the delta. The fence is `tests/unit/test_outlook_delta_shadow.py`, with R8 in `test_email_scheduler_tenancy.py` on a private database. The As-built notes, the review round 1 note and the mutation table follow the Verify block.
 
 1. Add `email_outlook_delta` to settings: `off`, `shadow` or `on`. The default is `off`.
 2. A value of `on` resolves to `shadow` and logs `email.delta_mode_refused`. Only an edit of this section can lift that.
@@ -2380,7 +2512,7 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 - **F5, the cursor in the sync log.** Each shadow poll wrote 3 to 17 KB into a new `email_sync_log` row, and nothing read it. Now a shadow cycle writes NULL there, as `off` does for Outlook. A provider with a cursor of its own still writes it. Fence: `email-delta-sync-log`.
 - **F6, a long cycle.** The scheduler ran the delta after a first import and after a deep sync. That can push a manual sync past the 30 seconds of the Control Plane proxy.
   - `_runs_delta_shadow` in `scheduler.py` now runs it on a normal incremental cycle only.
-  - `deep=True` runs no delta, and no cycle runs it before `initial_sync_done`. Fence: `email-delta-normal-cycle`.
+  - `deep=True` runs no delta, and no cycle runs it before `initial_sync_done`. Only a cycle of the background loop runs it (EM-T4d-f3). Fence: `email-delta-normal-cycle`.
 - **F7, an old gap.** No test pinned how `catch_up_folders` names a user folder. A new test pins the canonical name in both branches of the sweep. It changes no behaviour. Fence: `email-catch-up-folder-name` in `tests/unit/test_email_import_batches.py`.
 - **The R8 case changed with F5.** `test_a_shadow_cursor_lands_in_org_b_and_off_keeps_it` now expects NULL in the log row. It still proves that org A cannot read the cursor or the log row of org B.
 
@@ -2399,7 +2531,7 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 | `email-delta-folder-set` | `test_the_folder_set_follows_the_sweep`, `test_a_failed_child_folder_read_keeps_the_link_of_the_nested_folder` |
 | `email-delta-link-host` | `test_a_stored_link_that_is_not_a_graph_link_sends_no_request` (5 links), `test_a_link_in_a_graph_answer_that_is_not_a_graph_link_is_refused` (next, delta) |
 | `email-delta-sync-log` | `test_a_shadow_cycle_writes_no_cursor_into_the_sync_log`, `test_off_still_writes_the_cursor_of_a_provider_into_the_sync_log`, and the R8 case |
-| `email-delta-normal-cycle` | `test_only_a_normal_cycle_sends_a_delta_request` (5 cycles) |
+| `email-delta-normal-cycle` | `test_only_a_normal_cycle_sends_a_delta_request` (7 cycles) |
 | `email-catch-up-folder-name` | `test_email_import_batches.py::test_a_short_user_folder_is_named_by_its_canonical_name` (2 branches) |
 | `email-delta-floor` | `test_a_seed_round_filters_on_the_floor` |
 | `email-delta-page-cap` | `test_a_folder_at_the_page_cap_goes_on_at_the_next_poll` |
@@ -2454,8 +2586,8 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 | F5a | The sync log gets the shadow cursor | `email-delta-sync-log` | red, 1 failed |
 | F5a-R8 | F5a, against the R8 case | R8 | red, 1 failed |
 | F5b | The sync log gets NULL for each provider | `email-delta-sync-log` | red, 1 failed |
-| F6a | A deep sync runs the delta | `email-delta-normal-cycle` | red, 2 failed |
-| F6b | A cycle before `initial_sync_done` runs the delta | `email-delta-normal-cycle` | red, 2 failed |
+| F6a | A deep sync runs the delta | `email-delta-normal-cycle` | red, 1 failed (the deep cycle of the loop, since EM-T4d-f3) |
+| F6b | A cycle before `initial_sync_done` runs the delta | `email-delta-normal-cycle` | red, 1 failed (`first-import`, since EM-T4d-f3) |
 | F7a | A catch-up page names a user folder by its id | `email-catch-up-folder-name` | red, 1 failed |
 | F7b | A failed first page names a user folder by its id | `email-catch-up-folder-name` | red, 1 failed |
 
@@ -2464,7 +2596,7 @@ uv run ruff check . --select F821,F601,F602,F502,F7,B006
 - **EM-T4d-2**, as above: `on` and a delete rule, after the live check.
 - **EM-T4d-f1.** Count an id that the sweep saw and that the delta reports as `@removed` in the same round apart from `sweep_only`. It would remove the false `sweep_only` of a draft that the member sends. Item 8 says that an `@removed` item adds to `removed` only, so this needs an edit of item 8.
 - **EM-T4d-f2 (review round 1).** The `httpx` logger at INFO can print the URL of each request. A delta URL holds its `$deltatoken`, and a sweep URL is in the log the same way. Decide the level of that logger for the whole service. This round changed no logging.
-- **EM-T4d-f3 (re-verify of round 1). Settle this before anyone sets `shadow` on a box.** A plain "Sync now" by a member sends `deep=None`, so it runs the delta like a loop cycle (`sync.py:264-266`). The webhook, the rerun and the agent tool `sync_account` do the same. A folder with no stored link then seeds, with up to 20 pages, inside the 30-second budget of the proxy. That happens on the first shadow poll, after a Resync, after a dropped link and for a new user folder. The fix is to run the delta only from the loop (`from_loop`), or to accept the cost for the few listed mailboxes.
+- **EM-T4d-f3 (re-verify of round 1). Settle this before anyone sets `shadow` on a box.** A plain "Sync now" by a member sends `deep=None`, so it runs the delta like a loop cycle (`sync.py:264-266`). The webhook, the rerun and the agent tool `sync_account` do the same. A folder with no stored link then seeds, with up to 20 pages, inside the 30-second budget of the proxy. That happens on the first shadow poll, after a Resync, after a dropped link and for a new user folder. The fix is to run the delta only from the loop (`from_loop`), or to accept the cost for the few listed mailboxes. ✅ **Settled (#660, 2026-10-05).** `_runs_delta_shadow` takes `from_loop`, so only a cycle of the background loop runs the delta. The fence `email-delta-normal-cycle` (`test_outlook_delta_shadow.py`) has a case `member-sync-now`, and a gate with no `from_loop` turns it red.
 - **EM-T4d-f4 (re-verify of round 1).** When the `childFolders` read fails on every poll, the delta keeps the link of a deleted top-level user folder. The growth stops at the count of deleted folders.
 
 ##### EM-T4e — §7 item 4, the N+1 reads and the indexes
@@ -2628,7 +2760,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 **Recorded risks.**
 
-- **R-1.** A split can write a stale decision, because a newer message can come in during the ask. EM-T4a-2 guards the write with the newest stored `received_at` that its read saw (its item 6).
+- **R-1.** A split can write a stale decision, because a newer message can come in during the ask. EM-T4a-2 guards the write with the newest stored `received_at` that its read saw (its item 6). The guard covers `_mark_thread_replied` only. PR-B adds no guard, and EM-T4a-2 records why.
 - **R-2.** A split can lose atomicity between a provider act and its mirror. The provider acts first, as today. When the mirror write fails, the next sync corrects the row.
 - **R-3.** EM-T4a-4 can turn on jobs that do nothing on the box today. EM-T4b must merge first.
 - **R-4.** The 401 retry sends a request twice. Each body in both providers is JSON or form data, so httpx can send it again.
@@ -3391,7 +3523,7 @@ The fences are `tests/unit/test_email_decide_on.py` (R8 for the runner, Process 
 
 The fences are the R8 classes `TestTheThreadStatusOnJev`, `TestTheColdCheckOnJev` and `TestTheSenderPinOnJev`, and the hermetic cases, in `tests/unit/test_email_decide_on.py`.
 
-**To turn the three features on, after the owner's "go".** The orchestrator sets these two values on the box and restarts the gateway:
+**To turn the three features on, after the owner's "go".** ⚠️ First, PR-B3 of EM-T4a-2 must merge (§10.4.6). Until then the status ask of `on` runs inside a block. The orchestrator sets these two values on the box and restarts the gateway:
 
 ```text
 DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on
@@ -4134,6 +4266,229 @@ are R8 cases of `test_email_provider_401_retry.py` and `test_gmail_send_and_draf
 does not bind this slice. The ruff count of the four files of B7 fell from 69 to 67, with no
 finding on an added line. `fromRow.test.ts` ran 32 passed. The run of `test_email_*`,
 `test_outlook_*` and `test_gmail_*` ran 2606 passed and 390 skipped, each skip an R8 case.
+
+#### 10.4.11 EM-T10 — a draft card keeps the recipients of its draft (a LIVE defect)
+
+**Status.** ✅ MERGED (#658, 2026-10-05). The live check of H-248 is open. The audit of
+2026-10-05 found it GO-NARROWED after C1 to C11, and it checked each anchor against the code at
+`c26b67549`. The "As built" notes below record the build.
+
+**Where the defects came from.** The reviews of EM-G3c-2 found the first defects (its known limits
+f6, f2 and f10). The audit found two more, C2 and C8.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. It changes a live composer and the live Outlook
+reply create, so it takes the full review loop and a visual review. The live check is 🔴
+OWNER-GATE.
+
+**Size.** M.
+
+**The defects (LIVE on Outlook).**
+
+- **The card ignores the recipients of its draft.** The `DraftCard`
+  (`workbench/control_plane/src/app/email/components/ConversationView.tsx` ~:355-380) starts To
+  and Cc from the reply-all lists of its reply target, and Bcc empty. In a thread, the reply target
+  is the newest mail that is not a draft (~:80). The draft row holds its own To, Cc and Bcc
+  (`apps/services/gateway/gateway/routes/email/automation/drafting.py` ~:2012-2040, and the sync
+  of each provider, `persist.py` ~:102-105).
+- **So a narrowed reply widens.** A member narrows a reply to the sender with Reply, and it saves.
+  In the thread, the card shows Reply All with the reply-all To and Cc. The first edit or a send
+  writes them over the draft, so the reply goes to everyone. A Bcc is lost the same way.
+- **The standalone card can start with the last mail (C2).** `EmailDetail` stays mounted
+  across a selection, and it resets `detail` only after the first render. In that render the card
+  for draft B mounts with the last mail as its reply target (`EmailDetail.tsx` ~:518-524,
+  ~:1155). So B starts with the recipients of that mail. The `key` of #650 fixed half of this.
+- **A Cc or Bcc edit saves nothing (f2, C1).** The autosave depends on `[body, quote, to]` (~:507),
+  and the Cc and Bcc inputs never set `dirty` (~:664, ~:673).
+- **The inline Send can send twice (f10).** `handleInlineSend` (`EmailDetail.tsx` ~:713) has no
+  sending state. A second click, or Ctrl+Enter (~:1400), sends again.
+- **Outlook drops the To of a reply on create (C8).** The reply path of `create_draft`
+  (`apps/services/email_ingestion/email_ingestion/providers/outlook.py` ~:1114-1126) calls
+  `createReply`, then PATCHes only the body, Cc and Bcc. So a reply-all draft saved once holds only
+  the sender in To at Graph, and the next sync writes that To over the row. Today the card hides
+  this, because it ignores the To of the row. Once the card reads the row (item 1), a reply-all
+  draft would narrow to the sender after a sync. So item 6 ships in the same PR as item 1.
+
+**Scope.**
+
+1. **The start state (C3).** A draft can hold a recipient in To, Cc or Bcc. Then the card starts
+   with the lists of the draft, exactly as the row holds them. A draft with no recipient and a reply target
+   starts with the reply-all lists. A draft with no recipient and no reply target starts empty.
+2. **The toggle (C4).** Compare sets of trimmed, lower-case addresses, and ignore display names.
+   - Start on Reply when the To set of the draft equals the reply-only To set, the Cc of the draft
+     is empty, and the reply-all lists differ from the reply-only To.
+   - Start on Reply All when the To and Cc sets of the draft equal the reply-all sets. A thread of
+     two people matches both, so it starts on Reply All, as today.
+   - Otherwise start with neither button marked (`replyAll: null`). That covers a forward, a To
+     that the member edited, a changed reply target and a Reply-To address.
+   - A click still computes To and Cc again from the reply target of the card.
+3. **The Cc row (C5).** It shows at the start in two cases. One case is a Cc or a Bcc that is not
+   empty. The other is a card with a reply target that does not start on Reply.
+4. **A Cc or Bcc edit saves (f2, C1).** The Cc and Bcc `onChange` set `dirty`, as To does
+   (~:648). The autosave depends on `[body, quote, to, cc, bcc]`.
+5. **The standalone reply target (C2).** `EmailDetail` uses
+   `const view: Email = detail?.id === email.id ? detail : email` (~:518), and the standalone card
+   gets `replyTo={view}` (~:1155). So the first render never uses the last mail.
+6. **The Outlook To of a reply (C8).** `create_draft` takes a keyword `exact_to: bool = False` on
+   the base class and on each provider. On Outlook, the reply path also PATCHes `toRecipients`
+   when `exact_to` is true. `upsert_draft` (the composers) passes `exact_to=True`. The AI drafts
+   (`drafting.py` ~:1774) and the rule actions (`actions.py` ~:610, ~:654) keep the default. So
+   `createReply` keeps a Reply-To address. Gmail and IMAP build the To into the mail already, so
+   they ignore the keyword.
+7. **One send at a time (f10, C7).** One guard at the top of `handleInlineSend` returns while a
+   send runs, so it covers Ctrl+Enter too. The state is set after the early returns and before the
+   drain, and it clears in `finally`. The Send button uses `Button` with `icon="Send"` and
+   `loading={sending}`, and keeps the label "Send". `if (!email) return` stays as it is.
+
+**The helper (C6).** `draftRecipients` goes in `workbench/control_plane/src/app/email/lib/mailbox.ts`,
+beside `replyRecipients` (~:54-91). It takes the draft, the reply-all lists and the reply-only To.
+It returns To, Cc, Bcc, the toggle and the Cc row. Its tests go in `mailbox.test.ts`.
+
+**AI drafts (C9).** An AI draft addresses the sender only (`drafting.py` ~:1774-1790, `actions.py`
+~:620-626). Today the card widens it to reply-all. After the fix it opens on Reply, to the sender,
+as the draft holds it.
+
+**Non-goals.** No Bcc row in ComposePanel. No change to the undo-send reopen. No change to the
+stale thread frame. No change to Discard while a send runs.
+
+**Known limit EM-T10-f1 (corrected by the verifier, P2-3).** An older build saved each Outlook reply
+with the To that `createReply` gives: the sender, or the Reply-To. So a reply-all draft that the old
+code saved only once now opens with that narrowed To, and on Reply when its Cc is empty. The member
+sees the To before a send. The next save writes the To that the card shows.
+
+**Fences (R7).**
+
+- `mailbox.test.ts`: the cases of `draftRecipients`.
+  - A reply narrowed to the sender, a reply with a Bcc, and a draft with only a Bcc.
+  - A draft with no recipient, a new mail with a Cc, and an AI draft.
+  - A thread of two people, a changed reply target and a difference of case.
+- `draftAutosave.test.ts`: source fences. The card uses the helper. Its autosave depends on `cc`
+  and `bcc`, and both `onChange` handlers set `dirty`. The standalone card uses `view`. The inline
+  Send guard is at the top of `handleInlineSend`. Two existing class tests (~:623, ~:633) read
+  `=== false` and `=== true`.
+- `tests/unit/test_outlook_draft_cc.py`: with `exact_to=True`, the reply create PATCHes the To.
+  With the default, it does not.
+
+**Mutations.** M1 makes the helper ignore the To of the draft, and the narrowed-reply case fails. M2
+makes it ignore the Bcc, and the Bcc case fails. M3 drops `cc` from the deps, and the deps fence
+fails. M4 removes the guard of `handleInlineSend`, and its fence fails.
+
+**More mutations.** M5 removes `dirty` from the Cc `onChange`, and its fence fails. M6 puts back
+`detail ?? email`, and the standalone fence fails. M7 makes Outlook PATCH the To with the default
+keyword, and the Outlook test fails.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane && npm install && npx tsc --noEmit && npx vitest run src/app/email src/lib/theme/
+uv run pytest tests/unit/test_outlook_draft_cc.py tests/unit/test_outlook_drafts.py \
+  tests/unit/test_email_draft_attachments.py tests/unit/test_outlook_attachments.py \
+  tests/unit/test_gmail_send_and_drafts.py tests/unit/test_email_rule_action_failures.py -q -rs
+```
+
+Restore `package-lock.json` from `origin/main` before each commit.
+
+**As built (2026-10-05).** Three code commits on `email-draftcard-recipients`: `d1d430f0a` (item 6),
+`c2240a8d2` (items 1 to 5 and 7) and `ca384508c` (the `dirty` ref, departure 1).
+
+- **Item 6.** `create_draft` takes a keyword-only `exact_to: bool = False` on `BaseEmailProvider`
+  and on the Outlook, Gmail and IMAP providers. On Outlook, the reply path adds `toRecipients` to
+  its one PATCH when `exact_to` is true. `upsert_draft` passes `exact_to=True` on each of its three
+  creates.
+- **The other callers of `create_draft` keep the default.** They are the AI draft (`drafting.py`
+  ~:1774), the chat card (`save_draft`, ~:2505) and the two rule actions (`actions.py` ~:610,
+  ~:654). The follow-up nudge (`followups.py` ~:250) and the Notes dispatch (`notes/dispatch.py`
+  ~:339) keep it too. Each test fake takes `**_kw` or is an `AsyncMock`, so each fake takes the
+  keyword.
+- **Items 1 to 3.** `draftRecipients` in `lib/mailbox.ts` gives the start. The card calls it once,
+  in a lazy `useState`, so a later render does not move the start. The card computes the reply
+  lists only when it has a reply target. Before, it computed them from the draft itself when
+  `replyTo` was the draft.
+- **Item 4.** The Cc and the Bcc `onChange` set `dirty`, and the autosave depends on
+  `[body, quote, to, cc, bcc]`.
+- **Item 5.** `view` is `detail?.id === email.id ? detail : email`, and the standalone card gets
+  `replyTo={view}`. The key stays `key={email.id}`.
+- **Item 7.** `sendingRef` is the guard, and the `sending` state draws the button. The guard is the
+  first statement of `handleInlineSend`, and `if (!email) return` stays as it was. The state starts
+  after the last early return. The drain moved inside the `try`, and its `finally` clears the ref
+  and the state. The Send button is `Button` with `icon="Send"` and `loading={sending}`, with the
+  label "Send". Its icon is 14 px now, the size that `Button` draws. It was 12 px.
+
+**Departures from the spec (EM-T10).**
+
+1. The DraftCard declares its `dirty` ref above `applyReplyAll` now. That function read it above
+   its `useRef` line. So the React lint did not see a `useRef` value in `dirty`. Each `onChange`
+   that set it was an error of `react-hooks/immutability`, and item 4 added two of them. After the
+   move, `ConversationView.tsx` has 0 eslint errors, and `origin/main` has 2.
+2. `upsert_draft` passes `exact_to=True` on all three creates, not only on the reply. The update
+   fallback and the new draft set the To already, so the keyword changes no request there. One rule
+   for the whole route is easier to fence.
+3. The Send button calls `() => void handleInlineSend()`, so React gets no promise from the click.
+4. The build added fences that the spec did not name. `test_outlook_draft_cc.py` checks that each
+   provider takes the keyword, and that only `upsert_draft` passes it.
+
+**Known limit EM-T10-f2 (on `main` before it).** The standalone card shows no Reply or Reply All
+toggle. Its reply target is `view`, the draft itself, so the card has no reply target. It still
+starts with the recipients of its own draft. Before the fix of C2, the stale first render was the
+one case that showed a toggle there.
+
+**The fences, as built.** `mailbox.test.ts` holds 10 cases in the fence `email-draftcard-start`.
+`draftAutosave.test.ts` holds 7 cases in the fence `email-draftcard-recipients`.
+`test_outlook_draft_cc.py` holds 8 new cases.
+
+**Mutations, as run (2026-10-05).** For each row, a script put one change into the code, ran the
+fence file, and restored the file with `git checkout`. Each fix was in a commit first. After each row, `git status` was
+clean and the fix was in the file again. Each of the 14 mutations turned its fence red.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | `draftRecipients` ignores the To of the draft | `mailbox.test.ts`, the narrowed reply (7 cases red) |
+| M2 | `draftRecipients` ignores the Bcc of the draft | `mailbox.test.ts`, the reply with a Bcc (2 cases red) |
+| M3 | The autosave deps drop `cc` | `draftAutosave.test.ts`, a Cc or Bcc edit saves |
+| M4 | The guard of `handleInlineSend` goes | `draftAutosave.test.ts`, one inline send at a time |
+| M5 | The Cc `onChange` sets no `dirty` | `draftAutosave.test.ts`, a Cc or Bcc edit saves |
+| M6 | `view` is `detail ?? email` again | `draftAutosave.test.ts`, the standalone card gets `view` |
+| M7 | Outlook PATCHes the To with the default keyword | `test_outlook_draft_cc.py`, the default case |
+| X1 | Outlook never PATCHes the To | `test_outlook_draft_cc.py`, the `exact_to` case |
+| X2 | The composer reply drops `exact_to=True` | `test_outlook_draft_cc.py`, only the composer save |
+| X3 | The Reply button marks on `!replyAll` again | `draftAutosave.test.ts`, null marks neither |
+| X4 | The standalone card gets `replyTarget` again | `draftAutosave.test.ts`, the standalone card gets `view` |
+| X5 | The Bcc `onChange` sets no `dirty` | `draftAutosave.test.ts`, a Cc or Bcc edit saves |
+| X6 | The toggle forgets that reply-all can equal reply | `mailbox.test.ts`, a thread of two people |
+| X7 | The inline Send loses `loading` | `draftAutosave.test.ts`, the Send button loads |
+| R1 | The rule REPLY drops `exact_to` | `test_a_rule_reply_writes_a_typed_to_at_outlook` and the caller fence (2 red) |
+| R2 | Reply no longer needs an empty Cc | `mailbox.test.ts`, a reply to the sender with a Cc |
+
+**Review round 1 (2026-10-05).** The verifier passed EM-T10, and the reviewer approved it. Neither
+found a P0 or a P1. This round closes two P2s and records the rest.
+
+1. A rule REPLY with a To that the member typed now reaches Outlook (reviewer P2-1). It passes
+   `exact_to=bool(a.get("to_address"))`, so a rule with no typed To keeps the Reply-To of
+   `createReply`. A runtime test drives the real `OutlookProvider`.
+2. The toggle rule that Reply needs an empty Cc has its own case (verifier P2-1).
+
+**Known limit EM-T10-f3 (reviewer P2-2, older than EM-T10).** The composer reads From and never
+Reply-To, because `Email` and `replyRecipients` carry no Reply-To. Item 6 writes that To over the
+Reply-To of `createReply` on the first save. Each send from Metorite already used it on `main`. So
+only a draft that Metorite saved once and that the member sends from native Outlook changes. A
+later ticket owns a Reply-To in the composer.
+
+**Known limit EM-T10-f4 (verifier P2-2, older than EM-T10).** An AI draft's row holds the From as
+its To. A send from the card before the next sync writes the From over a Reply-To. `main` wrote the
+wider reply-all lists, so EM-T10 makes this case better.
+
+**Known limit EM-T10-f5 (older than EM-T10).** Reply clears the Bcc (`applyReplyAll(false)`), also
+when Reply is already marked. A rule's Cc and Bcc never reach `create_draft`. The `sendingRef` of
+the inline reply is not per mail, so a slow send of mail A can reset the reply of mail B.
+
+**The visual review (2026-10-05).** A page that the build never committed drew four DraftCards and
+the inline Send, idle and loading. Playwright took each one in dark, light, light compact, and
+light compact with the Rose accent. Reply, Reply All and neither drew as the spec says. A human
+must still look at the card in a real thread, at the neighbouring inline reply, and at the toggle
+on a phone.
+
+**The live check (🔴 OWNER-GATE).** In Outlook, the owner saves a reply narrowed to the sender, opens
+it again, and checks that To still holds only the sender. The owner also saves a reply-all draft,
+waits for one sync, opens it again, and checks that To still holds everyone.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
@@ -6401,7 +6756,8 @@ change.
 
 > **The split of EM-G5 (2026-10-05).** EM-G5a and EM-G5b take the place of EM-G5 (§12.3.6).
 > EM-G5a is ✅ MERGED (#641, 2026-10-05) (§12.3.6.1). EM-G5b is
-> ⛔ NO-GO until a new audit (§12.3.6.2).
+> ✅ MERGED (#647, 2026-10-05) (§12.3.6.2). The second audit
+> cleared it as GO-NARROWED.
 
 > **The slice names.** The slices are EM-G1 to EM-G10. §10.4.7 already uses the bare names G1 to
 > G5 for the gaps of EM-T6c, so the prefix keeps the two sets apart (R2).
@@ -6489,7 +6845,7 @@ EM-G10.
 | **GM-17** | **The history branch has four defects, and it never runs today.** It reads one page and ignores `nextPageToken`. It asks for the label events and drops them, so an archive, a read mark, a star or a label made in Gmail never syncs. It stores the current id of the mailbox after that one page, so the changes on the later pages are lost. A stale cursor answers 404, and `raise_for_status` fails each cycle until a Resync. | `gmail.py:935-979`, `:940`, `:943`, `:946`, `transport/sync.py:283-325` | EM-G4b |
 | **GM-18** | **A pause loses mail.** The provider ignores `catch_up`, so it never reads the mail past the first page of a label after a pause (against D-EM-13). `email_ingestion/AGENTS.md:40` said that the Gmail cursor reads each change. EM-G0 corrects that line. | `gmail.py:898-900` | EM-G4b |
 | **GM-19** | **The import has no stream, no estimate and no resume point.** Gmail uses the default of the base class, which fetches all, then sorts and cuts. The progress shows a count with no estimate (against D-EM-16). | `base.py:830-858` (moved from `:785-813`, checked at `a9a08deb9`) | EM-G5a |
-| **GM-20** | **No reconcile.** `import_full_snapshot` is False, and `message_exists` is absent. So Resync and Process past emails trash no row that Gmail deleted. | `base.py:432`, `scheduler.py:771`, `:881-883`, `:924-929`, `outlook.py:1361`, `:1850-1864` (moved from `base.py:407`, `scheduler.py:669`, `:780`, `outlook.py:1357` and `:1846`, checked at `a9a08deb9`) | EM-G5b |
+| **GM-20** | **No reconcile.** `import_full_snapshot` is False, so Resync and Process past emails trash no row that Gmail deleted. Gmail also has no confirm by its own id. The confirm of Outlook, `message_exists`, asks by the Message-ID, and that key cannot prove a Gmail delete (C1). ✅ EM-G5b fixes it, merged as #647 (2026-10-05). `import_full_snapshot` is True, and `message_gone` confirms by the provider id. | `base.py:432`, `scheduler.py:771`, `:881-883`, `:924-929`, `outlook.py:1361`, `:1850-1864` (moved from `base.py:407`, `scheduler.py:669`, `:780`, `outlook.py:1357` and `:1846`, checked at `a9a08deb9` and again at `3c1a27012`). The fix: `gmail.py:1764`, `:2209`, `scheduler.py:761`, `:959-961` on branch `email-gmail-g5b` | EM-G5b |
 | **GM-21** | **No push.** Gmail has no watch and no stop. `_ensure_subscription` returns early for a provider that is not Microsoft. `/webhooks/gmail` is the Phase-1 receiver. It never finds an `email_accounts` row and never calls `_webhook_sync`. Gmail polls only. | `transport/sync.py:438-508`, `:469`, `apps/services/ingestion/ingestion/sources/gmail/webhook.py:41-149`, `gateway/main.py:597`, `:1200-1205` | EM-G6a, EM-G6b |
 | **GM-22** | **The scope is the widest restricted scope.** The authorize leg asks `https://mail.google.com/`. The callback never reads the granted scope, and Google lets a member clear a scope on the consent page. | `gmail.py:138`, `transport/oauth.py:201-207`, `:273-385` | EM-G7 (D-EM-31) |
 | **GM-23** | **Google errors map to a generic code.** Only `access_denied` maps, to `consent_declined`. | `transport/oauth.py:388-415` | EM-G7 |
@@ -6569,13 +6925,14 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G4a** | 🟢 AGENT-SAFE | The rate-limit helper at the client seam, and the record of a failed fetch (GM-9, items 8 to 10) | After EM-G2 | S | §12.3.5.1 |
 | **EM-G4b** | 🟢 AGENT-SAFE · R8 | The history cursor, the label events, the stale cursor and its recovery (GM-16 to GM-18, items 1 to 7 and 11) | After EM-G4a | L | §12.3.5.2 |
 | **EM-G5a** | 🟢 AGENT-SAFE · R8 | The import, the estimate and the resume (GM-8, GM-19, items 1 to 5) | After EM-G4a and EM-G4b | L | §12.3.6.1 |
-| **EM-G5b** | 🟢 AGENT-SAFE · R8 · ⛔ NO-GO until a new audit | The reconcile (GM-20, items 6 to 8, E-G5-9) | After EM-G5a | M | §12.3.6.2 |
+| **EM-G5b** | 🟢 AGENT-SAFE · R8 · ✅ MERGED #647 | The reconcile (GM-20, items 6 to 12, E-G5-9) | After EM-G5a | M | §12.3.6.2 |
 | **EM-G6a** | 🟢 AGENT-SAFE build · security review · R8 · 🔴 flip (`enforcement-flip`) | The push route and its tenant, dark (GM-21) | After EM-G4b and O-GM-4 | M | §12.3.7 |
 | **EM-G6b** | 🟢 AGENT-SAFE build · 🔴 flip (`enforcement-flip`) | The watch, its renewal and its stop, dark (GM-21) | After EM-G6a | M | §12.3.8 |
 | **EM-G7** | 🟢 AGENT-SAFE · security review | The connect backend: scopes, granted scope, errors, bounces, the capability read (GM-22 to GM-25) | Any time. Merges dark | M | §12.3.9 |
 | **EM-G7b** | 🟢 AGENT-SAFE · security review | A member allowlist for the Gmail connect, `EMAIL_GMAIL_CONNECT_MEMBERS` (go-live item A7) | After EM-G7 and EM-G8, before EM-G10. Merges dark | S | §12.3.9b |
 | **EM-G8** | 🟢 AGENT-SAFE · visual review | The connect UI: availability, copy, the Workspace admin help (GM-24, GM-26, GM-27) | After EM-G7 (E-D1). Merges dark | M | §12.3.10 |
 | **EM-G9** | 🟢 AGENT-SAFE · R8 | Parity of a Gmail and Outlook pair, and the known limits | After EM-G2 and EM-G3a | S | §12.3.11 |
+| **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
@@ -7257,8 +7614,11 @@ fence `test_an_outlook_draft_to_two_people_and_a_cc_sends_to_all_three`.
 
 **Known limit EM-G3a-f1.** A member edits a draft in Gmail web, then in Metorite before the next
 sync. Gmail gave the draft a new message id, so the local row holds an old id. `update_draft` then
-raises `GmailDraftNotFound`, and the route answers 409 since review round 1. The sync writes the
-new id as a second row, and the old row stays until a reconcile removes it (EM-G4b, EM-G5).
+raises `GmailDraftNotFound`, and the route answers 409 since review round 1.
+
+The sync writes the new id as a second row. The old row stays until the history of EM-G4b reports the delete of
+the old id, and E-B2 deletes the row. No reconcile removes it, because EM-G5b leaves drafts
+out (item 9, the second audit of 2026-10-05).
 
 **Known limit EM-G3a-f2.** A sync can hold its copy of the new id in an open transaction while the
 save moves its row. The move then waits for that transaction, and it fails on the unique key. The
@@ -7302,6 +7662,525 @@ about the same.
 A file read that fails gives a 500, and the `catch` of the autosave hides it from the member.
 Before customers, EM-G3c must check the size limit of Google on a plain `drafts.update`. It must
 also decide how often an autosave of a draft with files may run (§12.3.12).
+
+#### 12.3.3b EM-G3c — the size of a Gmail mail, and the autosave of a draft with files
+
+**Status.** EM-G3c-1 is ✅ MERGED (#649, 2026-10-05). EM-G3c-2 is ✅ MERGED (#651,
+2026-10-05), and review round 2 fixed the P1 of the re-verify. The
+audit of 2026-10-05 gave GO-NARROWED (C1 to C21),
+and it checked each anchor against the code. It split the slice into EM-G3c-1 (the backend) and
+EM-G3c-2 (the UI). The as-built notes, the review rounds and the mutation tables of both halves are
+at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE, both halves. No migration and no new flag. The backend stays dark with
+Gmail (D-EM-36). EM-G3c-2 changes the three composers, so it is LIVE for Outlook members, and it
+takes a visual review. The live measure moved to EM-G10 (§12.3.12), which is 🔴 OWNER-GATE.
+
+**Order.** After EM-G3a (#634) and after EM-T9 (§10.4.10). EM-T9 adds the first provider error of
+the draft routes, and EM-G3c-1 adds its second one beside it. EM-G3c-2 follows EM-G3c-1.
+
+**Size.** L in all (C17). EM-G3c-1 is M, and EM-G3c-2 is M.
+
+**The problem (EM-G3a-f8, §12.3.3).** Three Gmail writes send the whole mail as base64url text in
+the JSON field `raw`, on the plain URI. The reference pages of Google document no size limit for
+that plain request. Each of the three methods also has an upload URI (`/upload/gmail/v1/...`), and
+the upload guide names it as the path for a large mail.
+
+**The cost of an autosave.** A Gmail update reads each file of the draft and sends it again
+(EM-G3a-f7). So one autosave of a draft with one 5 MB file sent 9.44 MB up and took 6.99 MB down.
+
+**The writes today (C3, C4).**
+
+- `send_message` sends `POST /users/me/messages/send` with `{"raw", "threadId"}`
+  (`gmail.py:1120-1130`).
+- `create_draft` sends `POST /users/me/drafts` with `{"message": {"raw", "threadId"}}`
+  (`gmail.py:1164`).
+- `update_draft` sends `PUT /users/me/drafts/{id}` with the same body (`gmail.py:1209-1211`).
+  Before that, it reads `drafts.list`, the draft as `format=raw` and the thread
+  (`gmail.py:1199-1204`).
+- Each write uses `_get_client()` (`gmail.py:886-899`), with `base_url` `GMAIL_API_BASE`, a default
+  `Content-Type: application/json` and `GmailBearer`.
+
+**The callers today (C4, C5, C11).**
+
+- The composer sends files only on the save before a send
+  (`apps/services/gateway/gateway/routes/email/automation/drafting.py:2167-2169`). The send route
+  is `apps/services/gateway/gateway/routes/email/transport/send.py:175`.
+- Three composers autosave 1.2 seconds after each pause: `ComposePanel.tsx:252`,
+  `ConversationView.tsx:487` and `EmailDetail.tsx:312-358`. Each `catch` sets the state to `idle`.
+- No composer saves on close. The close paths drop the pending timer (`ComposePanel.tsx:361`,
+  `:370`, `EmailDetail.tsx:267`, `:1174`, and the unmount at `ConversationView.tsx:488`).
+
+**The cut of the proxy (C13).** Next 16.2.6 cuts a request body over 10,485,760 bytes
+(`experimental.proxyClientMaxBodySize`). `next.config.ts` does not set it, and `src/proxy.ts:124`
+matches `/api/*`. The cut route reads `{}` and answers 422 (`project_import.md:838`). So the
+base64 of all files of one request must stay under the cut, for each provider.
+
+**Scope of EM-G3c-1, the backend.**
+
+1. **One builder, two forms (C6).** `_build_gmail_raw` (`gmail.py:742-790`) splits into a builder
+   of the RFC 5322 bytes and a base64url wrapper. So one builder stays (GM-10).
+2. **The upload URI (C6).** A write goes to its upload URI in two cases. The mail holds a file, or
+   the built mail is over 1 MiB. The test reads the files AFTER the read-back of `update_draft`
+   (`gmail.py:1200`), not the `attachments` argument. A smaller mail with no file keeps the plain
+   URI and `raw`.
+3. **The upload request (C6).** The URI is absolute: `GMAIL_UPLOAD_BASE` +
+   `/users/me/{messages/send | drafts | drafts/{id}}?uploadType=multipart`. The request keeps
+   `_get_client()`, so `GmailBearer` and the EM-G4a seam stay. It sets its own
+   `Content-Type: multipart/related; boundary=<random>`, and it never uses `files=`.
+4. **The parts (C6).** Part 1 is `application/json; charset=UTF-8`. For `messages.send` it holds
+   `{"threadId": T}`. For the two draft writes it holds `{"message": {"threadId": T}}`. Part 2 is `message/rfc822`, with the raw bytes of the mail and no base64url.
+5. **One limit (C8).** `GMAIL_MAIL_MAX_BYTES` is 36,700,160 bytes (35 MiB) of built mail. That is
+   the `maxSize` of the media upload in the Gmail discovery document. The build checks it again
+   with one public GET of that document. A write over the limit raises before its write request.
+   An update still makes its reads first.
+6. **The error (C9).** `ProviderMailTooLarge` is a new class in `base.py`, beside
+   `ProviderRateLimited` and the class of EM-T9. `GmailMailTooLarge` is its subclass. A 413 from
+   Google raises it too, read from the status code only, because Google can answer with HTML.
+7. **The routes (C9).** A sibling of `_draft_changed_upstream` (`drafting.py:2125-2139`) answers
+   413 with a string detail, as `drafting.py:2126` does. It wraps `PUT /email/drafts`
+   (`drafting.py:2216-2234`, `:2265-2275`), the signed send (`drafting.py:2356-2387`) and
+   `POST /email/send` (`send.py:175-185`). The text is "This mail is too large to send."
+8. **One try for a send (C10).** The upload POST of `messages.send` and of `drafts.create` gets one
+   try (`_repeatable`, `gmail.py:334-343`). The PUT of `drafts.update` keeps its retry on a 429.
+9. **The fakes (C7).** Six fences of EM-G3a send a file and read `raw` from a JSON body
+   (`test_gmail_send_and_drafts.py:408`, `:433`, `:779`, `:800`, `:966`, `:1302`). The fake
+   `_Gmail.handle` (`:216-241`) parses an upload into the same `sent` and `saved` record. So the
+   six keep their assertions. `test_gmail_rate_limits.py:87-114` gets the same change.
+
+**Scope of EM-G3c-2, the UI.**
+
+10. **The pick limit (C13).** Each composer refuses a pick that makes the files of one mail pass
+    7,500,000 bytes, with a reason, as `importFlow.ts:39-45` does. The base64 of 7,500,000 bytes
+    stays under the cut of the proxy. The reason is "Files can be 7.5 MB in all, at most."
+11. **The flush (C11).** A pending save runs at once on a close, on a switch to another mail and on
+    an unmount, in each of the three composers.
+12. **The wait (C11).** For a Gmail draft that holds a file, the composer waits 10 seconds after
+    the last edit. Every other draft keeps 1.2 seconds. ConversationView reads
+    `draft.hasAttachments`. ComposePanel and EmailDetail read `hasAttachments` of the row that the
+    last save returned (`drafting.py:2142-2153`, sticky at `:2049-2052`). One pure helper in
+    `src/app/email/lib/` returns the wait, and the three composers call it.
+13. **A failed save shows (C12).** The three status unions (`ComposePanel.tsx:120`,
+    `ConversationView.tsx:397`, `EmailDetail.tsx:137`) get "Not saved", and "Too large to save" on
+    a 413. The text uses `text-destructive`, never `text-red-500` (conformance rule 5). The next
+    edit tries again.
+14. **A failed send shows (C12).** A 413 comes mostly on a send, because the save before a send
+    carries the files. `ConversationView.tsx:536-537` drops each send error, so it gets a slot for
+    a send error. Each composer shows the text of a 413 on a send.
+
+**Non-goals.** No resumable upload. No change to the Outlook or the IMAP write. No change to
+EM-G3a-f7. No change to `actions.py`, which EM-G3b owns: its `except Exception` at
+`actions.py:609` already records the error. No higher cut in `next.config.ts`.
+
+**Known limit EM-G3c-f1 (C20).** The proxy stops `PUT /email/drafts` (`route.ts:156`) and
+`POST /email/drafts/send` (`postTimeout.ts:26`) after 30 seconds. A large signed send reads the
+mail and uploads it twice. When that passes 30 seconds, the member sees a 502, and the gateway
+still sends the mail.
+
+**Known limit EM-G3c-f2 (C21).** A send that a member tries again after a failed `drafts/send`
+adds each file twice. The composer sends the files again (`ComposePanel.tsx:332`,
+`EmailDetail.tsx:657`), and `update_draft` adds them to the files of the draft
+(`gmail.py:1200`). EM-T9-f1 records the same fault on Outlook, and one later slice owns both.
+
+**Fences of EM-G3c-1 (C14).** A new `tests/unit/test_gmail_mail_size.py`.
+
+- `test_a_draft_with_a_file_goes_to_the_upload_uri`
+- `test_a_draft_with_no_file_keeps_the_plain_uri`
+- `test_a_large_mail_with_no_file_goes_to_the_upload_uri`
+- `test_a_send_with_a_file_goes_to_the_upload_uri`
+- `test_an_update_that_reads_back_a_file_goes_to_the_upload_uri`
+- `test_the_metadata_of_each_method_has_its_own_shape`
+- `test_a_reply_draft_with_a_file_keeps_its_thread_after_an_update`
+- `test_a_mail_over_the_limit_raises_before_the_write_request`
+- `test_a_413_from_google_raises_mail_too_large`
+- `test_an_upload_send_gets_one_try_on_a_429`
+- `test_each_route_answers_413_with_the_text` (the draft save, the signed send and the send)
+
+**Fences of EM-G3c-2 (C14).** A `.test.ts` beside the helper of item 12, and a source fence that
+each composer calls the helper and flushes on close. Vitest runs `environment: "node"` with no DOM
+(`vitest.config.ts:17-18`), so the composer fences read the source, as `fromRow.test.ts:42-45`
+does.
+
+**Mutations (C15).** M1 sends a draft with a file to the plain URI, and the first test fails. M2
+moves the limit check after the write, and the limit test fails. M3 maps the 413 to a 500, and the
+route test fails. M4 sets the wait of a draft with a file to 1.2 seconds, and the helper test
+fails.
+
+**More mutations (C15).** M5 routes on `attachments`, and the read-back test fails. M6 makes an
+upload send repeatable, and the one-try test fails. M7 removes the flush, and the flush fence
+fails.
+
+**Verify with (C16).**
+
+```bash
+uv run pytest tests/unit/test_gmail_mail_size.py tests/unit/test_gmail_send_and_drafts.py \
+  tests/unit/test_gmail_rate_limits.py -v -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
+  tests/unit/test_gmail_mail_size.py tests/unit/test_gmail_send_and_drafts.py \
+  tests/unit/test_gmail_rate_limits.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/lib/theme/
+```
+
+**The open questions, answered (C18).** (a) The metadata carries `message.threadId`, and a fence
+pins it. The live proof joins EM-G10. (b) No. The limit is 35 MiB of built mail (item 5). (c) No
+composer saved on close, so item 11 adds the flush.
+
+**As built, EM-G3c-1 (2026-10-05, branch `email-gmail-g3c`).** The build follows items 1 to 9. It
+adds no migration, no flag, no column and no SQL text. Production holds no Gmail mailbox, so no live
+mailbox changes. EM-T9 (#643), EM-G3b (#645) and EM-G5b (#647) merged after the audit, so the build
+found each anchor again in the code.
+
+- **One builder (item 1).** `_build_gmail_mail` gives the RFC 5322 bytes, and `_gmail_raw` wraps
+  them in base64url. `_build_gmail_raw` is gone, because no caller still needs it.
+- **The write (item 2).** `GmailProvider._write_mail` is the one write of the three methods. It
+  checks the limit first, and then it picks the URI. A mail with a file, or a built mail over
+  `GMAIL_PLAIN_MAX_BYTES` (1,048,576 bytes), goes to the upload URI. Each other mail keeps the
+  plain URI and the JSON body of before.
+- **The request (item 3).** The upload goes through `_get_client()`, so the bearer, the refresh and
+  the rate-limit rule stay. It sends `Content-Type: multipart/related` with a random boundary. That
+  header replaces the JSON type of the client. The body is bytes, so a retry of the PUT sends it
+  whole.
+- **The parts (item 4).** Part 1 holds `{"threadId": T}` or `{"message": {"threadId": T}}`. With no
+  thread, part 1 is `{}` or `{"message": {}}`, because the plain JSON body also omits `threadId`. A
+  fence compares the two forms. EM-G10 must prove that Google takes `{}` as metadata.
+- **The limit (item 5).** The build read the public discovery document of Gmail on 2026-10-05, at
+  revision 20260928. `drafts.create`, `drafts.update` and `messages.send` each give `maxSize`
+  36700160 and the `simple` upload path of item 3. `drafts.send` gives the same `maxSize`, and no
+  write here uploads to it.
+- **The error (item 6).** `ProviderMailTooLarge(size, limit)` holds two integers, and
+  `GmailMailTooLarge` is its subclass. The write raises it before the request, and on a 413 of
+  either URI. The text names the two sizes and no URL.
+- **The routes (item 7).** `_mail_too_large` in `drafting.py` answers 413 with "This mail is too
+  large to send.". It wraps the update, reply and new branches of `PUT /email/drafts`, and the
+  signed send. `transport/send.py` imports it inside `send_email`, because `drafting.py` imports
+  `send.py`. The unsigned `drafts.send` uploads no mail, so it stays unwrapped.
+- **One try (item 8).** `_repeatable` did not change. The upload paths of `messages.send` and
+  `drafts.create` end in no action that sets a state, so each gets one try. The PUT of
+  `drafts.update` keeps its retry. A fence pins each case.
+- **The fakes (item 9).** The fake of `test_gmail_send_and_drafts.py` parses an upload with
+  `parse_upload` into the JSON body that it stands for. It answers 400 for any other shape. The six
+  fences of EM-G3a kept their assertions, and the R8 fence ran on the scratch database. The fake of
+  `test_gmail_rate_limits.py` reads an upload path as its API path, so one script answers both URIs.
+
+**Known limit EM-G3c-f3 (found in the build).** Item 7 names three routes. Seven other callers of
+the three writes map no 413: `digest.py`, `followups.py`, `senders.py`, `actions.py`,
+`notes/dispatch.py`, and `/draft-reply` and `/drafts/save` in `drafting.py`. A Gmail mail over the
+limit from one of them raises `GmailMailTooLarge`, and the caller sees an error that it does not
+map. `actions.py` belongs to EM-G3b, and its `except Exception` records the error.
+
+**Known limit EM-G3c-f4 (found in the build, measured in review).** An upload holds two copies of
+the mail in memory: the built mail and the upload body. At the limit, they use about 70 MiB in the
+gateway for one write. The builder of the mail peaks at about five times the mail, as on `main`.
+The plain path of `main` peaked higher for the same mail, at about 140 MiB for 30 MiB, so this
+slice lowers the peak.
+
+**The fences, as built.** `tests/unit/test_gmail_mail_size.py` holds the 11 fences of item 9 and 37
+cases, and all are hermetic. One case builds a mail over the real limit, and it takes about one
+second.
+
+**Mutations, as run (2026-10-05).** A script replaced one anchor for each mutation and ran the fence
+file. Then it restored the file with `git checkout`, and the SHA-256 matched each time. Each
+mutation turned its fence red. The table holds 12 mutations: the five of the spec and seven more
+(X1 to X7), so each fence has one. M4 and M7 belong to EM-G3c-2.
+
+| Id | Mutation | Red cases | Red fences |
+|---|---|---|---|
+| M1 | A draft with a file goes to the plain URI | 12 | the first fence, and the read-back, metadata, thread, 413 and one-try fences |
+| M2 | The limit check moves after the write | 9 | the limit fence and the route fence |
+| M3 | The route maps the 413 to a 500 | 5 | the route fence |
+| M5 | `update_draft` routes on `attachments` | 4 | the read-back fence, and the thread, 413 and one-try fences |
+| M6 | An upload send is repeatable | 2 | the one-try fence |
+| X1 | A send with a file goes to the plain URI | 5 | the send fence, and the metadata, 413 and one-try fences |
+| X2 | A large mail with no file keeps the plain URI | 3 | the large-mail fence |
+| X3 | The upload metadata drops `threadId` | 5 | the metadata fence, the thread fence and the send fence |
+| X4 | The write does not read a 413 | 5 | the 413 fence |
+| X5 | `POST /email/send` loses the mapper | 1 | the route fence |
+| X6 | The upload uses a client with no bearer | 9 | the first fence, the send fence, the 413 fence and the one-try fence |
+| X7 | Each mail goes to the upload URI | 14 | the plain-URI fence, and the large-mail, metadata and 413 fences |
+| V1 | The boundary is never drawn again | 1 | `test_a_boundary_that_occurs_in_the_mail_is_drawn_again` (review round 1) |
+
+**Review round 1 (2026-10-05).** The verifier passed EM-G3c-1, and the reviewer approved it. Neither
+found a P0 or a P1. This round closes the four items below.
+
+1. The rule that draws the boundary again had no fence (verifier P2-1). The new fence pins
+   `secrets.token_hex`, and V1 turns it red.
+2. `_upload_body` joins the three parts once, so it makes no temporary copy (review note 2).
+3. A 413 from Google raises `GmailMailTooLarge(size, None)`. Its text says that the provider
+   refused the size. It names no limit that did not apply (review note 3).
+4. Three facts need a live mailbox, so EM-G10 checks 17 to 19 hold them (review note 1).
+
+**As built, EM-G3c-2 (2026-10-05, branch `email-g3c2-composer`).** The build follows items 10 to
+14. It changes the UI only: no gateway file, no migration, no flag and no SQL text. The build found
+each anchor again in the code, a few lines below the lines of the audit.
+
+- **One module.** `src/app/email/lib/draftAutosave.ts` holds each rule once, and the three
+  composers import it. Vitest runs with no DOM here, so a rule inside a component has no fence.
+- **The pick limit (item 10).** `pickProblem` adds the files that the mail holds to the files of
+  the pick. Over 7,500,000 bytes, it refuses the whole pick with "Files can be 7.5 MB in all, at
+  most.". ComposePanel and EmailDetail ask it before they read a file. The DraftCard has no picker.
+- **The flush (item 11).** `createAutosave` holds one pending save. The cleanup of each autosave
+  effect calls `hold`, which stops the timer and keeps the save. A close, a switch to another mail
+  and an unmount call `flush`, which runs the save at once. Since review round 2, a send, a
+  discard and a pop-out call `drain`.
+- **Where each composer flushes.** ComposePanel flushes on the X, the backdrop and an unmount.
+  EmailDetail flushes on the X, a new reply, a switch to another mail and an unmount. The DraftCard
+  flushes on an unmount and on a change of `draft.id`.
+- **The session guard.** A flushed save can end after the member opened another reply or another
+  mail. ComposePanel and EmailDetail keep a session number, and a save of an old session sets no
+  state.
+- **The wait (item 12).** `autosaveWait` gives 10 seconds to a Gmail draft that holds a file, and
+  1.2 seconds to each other draft. ComposePanel and EmailDetail read `hasAttachments` of the row
+  that the last autosave returned. The save before a send also sets it, when that save updated the
+  draft that the composer keeps. The DraftCard reads `draft.hasAttachments`.
+- **A failed save (item 13).** `failedSaveStatus` reads the status code only. A 413 gives "Too
+  large to save", and each other error gives "Not saved". The text is `text-destructive`, and the
+  next edit tries again.
+- **A failed send (item 14).** `sendFailureText` shows the `detail` of the gateway. So a 413 and
+  the 502 of EM-T9 each show their own text. The DraftCard has a line for the error of a send now,
+  and before this slice it dropped the error.
+
+**Departures from the spec (EM-G3c-2).**
+
+1. The error of the inline reply in EmailDetail takes its own line above the footer. The visual
+   review measured that footer at 1440 px. It holds six controls, and its status slot cut "Too large
+   to save" to "Too large to s…". A refused pick and a failed send use the same line.
+2. The send error of ComposePanel and EmailDetail moved from `text-red-500` to `text-destructive`.
+   So the palette budget of ComposePanel went from 1 to 0, and that of EmailDetail from 3 to 2.
+3. The pick limit counts the files that the member picks, and no workspace artifact. The gateway
+   reads the bytes of an artifact, so they never go through the proxy.
+4. EmailDetail also flushes when the member starts a new reply, because that closes the reply of
+   before. The pop-out does not flush, because that flush and the save of the full composer make two
+   drafts. Review round 1 corrected the rest. The composer of the pop-out opened clean, and it saved
+   nothing until a new edit. Now the pop-out sends `unsavedEdit`, which is true while a save of the reply
+   waits. Then the composer of the pop-out opens dirty, and its own save keeps the edit.
+
+**Known limit EM-G3c-2-f1 (found in the build, on `main` before it, ✅ fixed in review round 1).**
+EmailDetail drew a draft with no thread as one `DraftCard`, and that card had no React `key`. A
+switch from one such draft to another kept the card and its text. A later edit then saved the text
+of the first draft to the second draft. The card now has `key={email.id}`, so each draft gets its
+own card. The unmount of the old card flushes its pending edit to its own draft.
+
+**Known limit EM-G3c-2-f2 (on `main` before it).** The DraftCard autosaves after an edit of the To
+field or the body. An edit of Cc or Bcc does not start a save, so the next edit or the send carries
+it. ✅ EM-T10 item 4 fixes it (§10.4.11, built 2026-10-05, branch `email-draftcard-recipients`).
+
+**Known limit EM-G3c-2-f3.** The composer checks a pick against the files that it holds when the
+pick starts. Two picks in quick order can each fit and pass the limit together. The send then
+meets the cut of the proxy, and the composer shows the text of that error.
+
+**Known limit EM-G3c-2-f4 (verifier P2-3).** A save that a close or a switch flushed can fail, and
+then no "Not saved" shows. The member closed the composer, or the composer shows another reply, so
+the text has no place. `main` never tried that save, so this is no worse than `main`.
+
+**Known limit EM-G3c-2-f5 (re-verify F3, on `519489183` too).** The member changes the From while
+the first save of a draft runs, and then switches to another mail. That save ends in the old
+mailbox after its session ended, so no list holds its draft as stale. The old mailbox keeps that
+draft beside the draft of the new mailbox. Without the switch, the save puts its draft on the stale
+list, and the next save deletes it.
+
+**Known limit EM-G3c-2-f6 (found in review round 2, on `main` before it).** The DraftCard does not
+read the Cc and the Bcc of its draft. It starts with the Cc of a reply-all to the mail that it
+answers, or with no Cc, and with no Bcc. Its next save and its send write those lists over the
+lists of the draft. So a reply that the inline reply saved with a Bcc loses the Bcc in the
+DraftCard. ✅ Fixed: EM-T10 item 1 starts the card with the To, Cc and Bcc of its draft (§10.4.11,
+built 2026-10-05, branch `email-draftcard-recipients`).
+
+**The re-verify of review round 2 (2026-10-05).** It passed the slice, with no P0 and no P1. The
+orchestrator stopped the fix rounds there: two rounds on a live surface, and each P2 below is
+narrow. None of them is worse than `main`. A later slice owns them, with its own review.
+
+**Known limit EM-G3c-2-f7 (re-verify F1).** The drain also drops a waiting save of an ENDED
+session. The member closes reply A while a save of A runs, so the flushed save of A waits. Then
+the member opens a reply and presses Discard, Pop out or Send within that one save. The drain drops
+the save of A, so A's last edit is lost with no signal.
+
+Round 1 kept that save, and `main` lost each close edit. The fix is a drain that drops only the
+saves of its own session.
+
+**Known limit EM-G3c-2-f8 (re-verify F2).** Pop out closes the reply at once and opens the full
+composer after the drain. If the member opens the composer with New inside that gap, the composer
+ignores the hand-over, and an edit that the drain dropped is lost.
+
+**Known limit EM-G3c-2-f9 (re-verify F3).** The last save fails, and the member presses Pop out.
+The drain drops nothing, so the composer opens clean, and a close then saves nothing. `main` lost
+each pending edit at a pop-out.
+
+**Known limit EM-G3c-2-f10 (re-verify F4).** The inline Send shows no state while it drains. A
+second click waits on the same drain and then sends again. The gateway answers 404 for a sent
+draft, so the likely result is an error, not a second mail. ComposePanel and the DraftCard set
+their "Sending" state before the drain. ✅ EM-T10 item 7 fixes it with one guard at the top of
+`handleInlineSend` and a Send button that loads (§10.4.11, built 2026-10-05, branch
+`email-draftcard-recipients`).
+
+**Known limit EM-G3c-2-f11 (re-verify F6).** No client timeout bounds the drain. The proxy stops a
+save after 30 seconds, so a drain waits 30 seconds at most. On a Gmail draft with a file, a Send
+now waits for the autosave upload that runs.
+
+**Known limit EM-G3c-2-f12 (re-verify F7).** The member changes the From and presses Discard
+within one create. The Discard reads the new From, so it does not find the draft of the old
+mailbox, and that draft stays. This is close to f5.
+
+**The fences, as built.** `src/app/email/lib/draftAutosave.test.ts` holds 71 cases in five named
+fences: `email-pick-limit`, `email-autosave-wait`, `email-autosave-flush`,
+`email-save-failed-shows` and `email-send-failed-shows`. The build added 39 cases, and review round
+1 added 16. Review round 2 removed one case and added 17. Two cases drive `saveDraft` over a stub
+of `fetch`, so the contract between `gatewayFetch` and the module has a fence too.
+
+**Mutations, as run (2026-10-05).** A script replaced one anchor for each mutation, ran the fence
+file, and restored the file with `git checkout`. After each run, `git status` was clean. Each of the
+24 mutations turned a fence red. The first run found two fences that let a mutation pass (W3 and
+C1), and the build made both fences stricter. Review round 1 ran 15 more (R1 to R12, and G1 again),
+and each turned its fence red.
+
+Review round 2 ran 19 more (D1 to F2f) from a script. Each turned its fence red, and `git diff` was
+empty after each row.
+
+| Id | Mutation | Red cases | Red fence |
+|---|---|---|---|
+| M4 | The wait of a Gmail draft with a file is 1.2 seconds | 1 | `email-autosave-wait` |
+| M7a | ComposePanel closes with no flush | 1 | `email-autosave-flush` |
+| M7b | EmailDetail moves to another mail with no flush | 1 | `email-autosave-flush` |
+| M7c | The DraftCard unmounts with no flush | 1 | `email-autosave-flush` |
+| M7d | EmailDetail unmounts with no flush | 1 | `email-autosave-flush` |
+| M7e | The flush of the module drops the save | 2 | `email-autosave-flush` |
+| X1 | The cleanup of ComposePanel drops the save | 1 | `email-autosave-flush` |
+| X2 | The hold of the module drops the save | 1 | `email-autosave-flush` |
+| P1 | The limit is 7.5 MiB, not 7,500,000 bytes | 5 | `email-pick-limit` |
+| P2 | EmailDetail takes each pick | 1 | `email-pick-limit` |
+| P3 | The limit leaves out the files that the mail holds | 1 | `email-pick-limit` |
+| W1 | The DraftCard ignores `draft.hasAttachments` | 1 | `email-autosave-wait` |
+| W2 | Each draft with a file waits 10 seconds, Outlook too | 1 | `email-autosave-wait` |
+| W3 | ComposePanel does not read the row of the autosave | 1 | `email-autosave-wait` |
+| W4 | EmailDetail does not read the row of the save before a send | 1 | `email-autosave-wait` |
+| S1 | The 413 branch is gone | 2 | `email-save-failed-shows`, and the `api.ts` contract |
+| S2 | A failed save of the DraftCard goes back to idle | 1 | `email-save-failed-shows` |
+| S3 | The save state reads the text, not the status code | 1 | `email-save-failed-shows` |
+| E1 | The DraftCard drops the error of a send | 1 | `email-send-failed-shows` |
+| E2 | The send text drops the `detail` of the gateway | 3 | `email-send-failed-shows`, and the `api.ts` contract |
+| C1 | A discard of the DraftCard keeps the pending save | 1 | `email-autosave-flush` |
+| G1 | EmailDetail has no session guard | 1, and 2 in review round 1 | `email-autosave-flush` |
+| F1 | The send error of the inline reply goes back into the footer | 1 | `email-send-failed-shows` |
+| T1 | The failure text of the DraftCard is `text-red-500` | 2 | `email-save-failed-shows`, and conformance rule 5 |
+| R1 | The standalone DraftCard has no `key` (item 1) | 1 | `email-autosave-flush` |
+| R2 | A flushed save starts at once, while a save runs (item 2) | 4 | `email-autosave-flush` |
+| R3a | ComposePanel deletes the stale drafts after the guard (item 3) | 1 | `email-autosave-flush` |
+| R3b | EmailDetail deletes the stale drafts after the guard (item 3) | 1 | `email-autosave-flush` |
+| R4 | The pop-out opens ComposePanel clean (item 4) | 1 | `email-autosave-flush` |
+| R5a | ComposePanel guards after it writes the draft id (item 5) | 3 | `email-autosave-flush`, `email-autosave-wait` |
+| R5b | EmailDetail guards after it writes the draft id (item 5) | 3 | `email-autosave-flush`, `email-autosave-wait` |
+| R6 | A send of the inline reply keeps an old send error (item 6) | 1 | `email-send-failed-shows` |
+| R7 | `draftToUpdate` gives an ended save the draft of the new session | 2 | `email-autosave-flush` |
+| R8 | ComposePanel shows "Saving" for an ended session | 1 | `email-autosave-flush` |
+| R9 | The stale list does not empty in place | 1 | `email-autosave-flush` |
+| R10 | An ended save of EmailDetail keeps no record of its draft | 1 | `email-autosave-flush` |
+| R11 | EmailDetail reads `draftIdRef` in the save | 1 | `email-autosave-flush` |
+| R12 | A DraftCard of ConversationView has no `key` | 1 | `email-autosave-flush` |
+| D1 | The drain keeps each save that waits (round 2, item 1) | 2 | `email-autosave-flush`, with the probe |
+| D1b | The drain does not wait for the save that runs | 3 | `email-autosave-flush`, with the probe |
+| D2a | ComposePanel sends with no await of the drain | 3 | `email-autosave-flush`, `email-send-failed-shows` |
+| D2b | EmailDetail sends with no await of the drain | 2 | `email-autosave-flush` |
+| D2c | The DraftCard sends with no await of the drain | 1 | `email-autosave-flush` |
+| D2d | ComposePanel sends after a cancel, as in round 1 | 3 | `email-autosave-flush`, `email-send-failed-shows` |
+| D3a | ComposePanel deletes before the drain settles | 1 | `email-autosave-flush` |
+| D3b | EmailDetail deletes before the drain settles | 1 | `email-autosave-flush` |
+| D3c | The DraftCard deletes before the drain settles | 1 | `email-autosave-flush` |
+| D4 | The discard of ComposePanel reads `draftIdRef`, not `draftToUpdate` | 1 | `email-autosave-flush` |
+| B1 | The inline autosave drops the Bcc (round 2, item 2) | 1 | `email-autosave-flush` |
+| B2 | An edit of the Bcc starts no inline autosave | 1 | `email-autosave-flush` |
+| B3 | The inline autosave drops the Cc | 1 | `email-autosave-flush` |
+| F2a | ComposePanel ignores the draft of a pop-out (round 2, item 3) | 1 | `email-autosave-flush` |
+| F2b | The pop-out hands over a draft with a Bcc | 1 | `email-autosave-flush` |
+| F2c | The pop-out drops the Cc | 1 | `email-autosave-flush` |
+| F2d | The pop-out opens before the drain settles | 2 | `email-autosave-flush` |
+| F2e | `page.tsx` does not pass the draft id | 1 | `email-autosave-flush` |
+| F2f | The draft of a pop-out is not the last save of its session | 1 | `email-autosave-flush` |
+
+**Visual review (2026-10-05).** A Playwright rig stubbed the API and drew each new state in dark,
+light, compact and a violet accent. It drew "Not saved", "Too large to save" and the pick refusal
+in ComposePanel. It also drew the send error and "Too large to save" of the DraftCard, and the
+failure line of the inline reply. The rig is not committed. In light mode, each failure text
+measured rgb(198, 38, 32), and it stayed red under the violet accent.
+
+**Review round 1 (2026-10-05).** The verifier passed EM-G3c-2. The reviewer asked for one change, a
+P1 that was on `main` before this slice. Both found the same P2 items. This round closes the six
+items below, and it records EM-G3c-2-f4.
+
+1. **The key of the DraftCard (P1, EM-G3c-2-f1).** The standalone `DraftCard` of EmailDetail has
+   `key={email.id}`. The `DraftCard` list of ConversationView had its key already, and no other
+   file draws a `DraftCard`.
+2. **One save at a time (P2).** `createAutosave` starts a save that the timer or a flush fires only
+   after the save before it settles. When no save runs, the save starts at once, so a switch still
+   flushes before it clears the draft id. A save reads its draft id when it runs. So a save that
+   waited for the first save of a draft updates that draft. The newer text lands last.
+3. **The stale drafts of an ended session (P2).** Each composer keeps the stale list of the session
+   when it schedules a save. A save that ends after its session ended deletes that list, unless the
+   save wrote one of its drafts. It writes no draft id, no file flag and no state of the new
+   session.
+4. **The pop-out (P2).** The pop-out sends `unsavedEdit: autosave.pending`, and the full composer
+   opens dirty when it is true. Departure 4 above holds the correction.
+5. **The order of the session guard (P2).** The fence now checks the order in the scheduled save of
+   ComposePanel and of EmailDetail. The guard must come before the write of the draft id.
+6. **An old send error (note).** `handleInlineSend` clears `sendErr` when a send starts, as
+   `handleSend` of ComposePanel does. So an old send error does not hide a later "Not saved".
+
+**Departures of review round 1.**
+
+1. A save that waited can run after a switch or a new reply ended its session. If it read
+   `draftIdRef`, it would read the cleared id of the new session and make a second draft. So
+   `draftToUpdate` gives it the draft that its own session saved last, in the same mailbox.
+   `lastSaveRef` in each composer keeps that draft.
+2. A save of an ended session does not set "Saving". With the order of item 2, that state could
+   land on the new reply and stay there.
+3. `unsavedEdit` is true only while a save of the reply waits, not for each pop-out with text. So
+   a pop-out with no new edit makes no second draft. A draft that the reply saved before the pop-out
+   stays in Drafts, as on `main`. An undo-send reopen also carries `replyToBody`, and it stays clean,
+   as on `main`. Review round 2 replaced this rule (its item 3).
+4. A cancel drops only the pending save. A save that started, or that waits for the save before it,
+   still runs. A switch flushes and then cancels in the same render. A cancel that dropped a waiting
+   save would lose that edit.
+
+**Review round 2 (2026-10-05).** An independent re-verify failed round 1 on a P1 that round 1 made.
+The inline reply on Outlook has draft X, and its save S1 of X is slow. The member types and pauses,
+so save S2 fires and waits for S1. The member types again and clicks Send. The cancel dropped only
+the pending save, so S2 ran after the save of the send.
+
+The inline autosave sent no Cc and no Bcc, so S2 wrote older text and empty lists into the draft.
+The send read the row of X, and the mail went out with no Cc and no Bcc. A probe measured the order of the
+calls. It was `[S1, S2, SEND]` at `519489183`, and `[S1, SEND, S2]` with round 1. ComposePanel and
+the DraftCard had the same order. This round closes the P1 and the findings below.
+
+1. **The drain (the P1 and F4).** `createAutosave` has `drain`. It drops the pending save and each
+   save that waits, and its promise settles when the save that runs settles. Each send awaits it
+   before the save of the send, and each discard awaits it before the delete. A close and a switch
+   still call `flush`, so departure 4 of round 1 holds for them. The probe is a case now, and its
+   order is `[S1, SEND]`.
+2. **The Cc and the Bcc of the inline reply.** Each autosave of the inline reply carries the Cc
+   and the Bcc. Before, `api.ts` sent empty lists, and each autosave cleared both on Outlook. That
+   fault was on `main` before this slice. An edit of the Bcc starts a save too.
+3. **The pop-out (F2).** The pop-out drains, and it waits for the save that runs. Then it gives the
+   full composer the draft id, the file flag and the Cc of the reply. The composer updates that
+   draft and makes no second draft. `unsavedEdit` is true when the drain dropped an edit.
+4. **The orphan draft.** A first save that runs at a send, a discard or a pop-out now gives its
+   draft id first. The send then sends that draft, and the discard deletes it. Before, each of the
+   three left an orphan draft, on `519489183` too.
+5. **F3.** This round records it as EM-G3c-2-f5, with no code.
+
+**Departures of review round 2.**
+
+1. The pop-out drains too, and the brief named only the send and the discard. Else a save of the
+   reply could write older text after the pop-out.
+2. The pop-out carries the Cc. The full composer saves the draft with its own Cc. An empty Cc there
+   would clear the Cc of the draft. On `main`, the full composer opened with no Cc.
+3. The full composer has no Bcc row, so its saves send an empty Bcc. So the pop-out of a reply with
+   a Bcc gives no draft id. The full composer then makes its own draft, as in round 1. That case
+   still makes a second draft.
+4. A discard closes the composer at once, and it deletes the draft after the drain settles. The
+   delete asks `draftToUpdate`, so it finds the draft after the discard ended the session.
+5. The pop-out closes the reply at once, and the full composer opens when the save that runs
+   settles. On Outlook, that wait is one draft save.
+6. A drain does not stop a save that an edit schedules after it. So an edit during a send can save
+   newer text into the draft while the send runs. That save carries the Cc and the Bcc now, and
+   `main` had the same race.
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
@@ -8043,7 +8922,7 @@ again, with M23 to M30 added.
 
 **The split (the audit of 2026-10-05).** The audit of EM-G5 cleared the import and stopped the
 reconcile. The confirm of the old item 6 can trash a live row, so the reconcile waits for a new
-confirm. EM-G5a is the import, items 1 to 5. EM-G5b is the reconcile, items 6 to 8, with the rule
+confirm. EM-G5a is the import, items 1 to 5. EM-G5b is the reconcile, items 6 to 12, with the rule
 E-G5-9. Each item keeps its number, so "EM-G5 item 4" still names one item.
 
 **The rules of the audit (E-G5-1 to E-G5-10).** E-G5-3 to E-G5-8 bind the build of EM-G5a, and
@@ -8240,38 +9119,208 @@ of EM-G4b reads each later change.
 
 ##### 12.3.6.2 EM-G5b — the reconcile
 
-**Status.** ⛔ NO-GO (the audit of 2026-10-05). The confirm of the old item 6 can trash a live row,
-so E-G5-9 replaces it. A new audit clears EM-G5b before its build. Not built.
+**Status.** ✅ MERGED (#647, 2026-10-05). The second audit of
+2026-10-05 cleared it as GO-NARROWED. The first audit stopped the confirm of the old item 6, and
+E-G5-9 replaced it. The second audit found three more paths that can trash a row: the key of the
+confirm, a stale draft row and a bare 404. C1 to C9 close them, and the scope below holds each
+one.
 
-**Gate.** 🟢 AGENT-SAFE · R8, because the reconcile trashes rows. No migration.
+The as-built notes and the mutation table follow the build-PR note.
 
-**Order.** After EM-G5a, because the reconcile reads the snapshot of the import.
+**Gate.** 🟢 AGENT-SAFE · R8, because the reconcile trashes rows. No migration and no flag. The
+slice changes shared code of the live Outlook reconcile. So it takes the full review loop for data
+(C9).
+
+**Order.** After EM-G5a (#641), because the reconcile reads the snapshot of the import.
 
 **Size.** M.
 
+**The candidates today (the second audit).** A candidate is a row of the account in a folder that
+the snapshot holds. The row is not in `trash`, and its `received_at` is at or after the oldest
+written message of that folder. Its id is not in the snapshot. Its `updated_at` is set and older
+than `db_now`. A folder with more than max(50, 2%) candidates is skipped, and a folder sends at
+most 50 lookups (`reconcile.py:40-47`, `:78-103`).
+
 **Scope.**
 
-6. **The confirm (GM-20, E-G5-9).** Gmail confirms each candidate by its id, with
-   `GET messages/{id}?format=minimal`. A 404 means that Gmail deleted the message. A 200 keeps the
-   row. Any other answer raises, and the row stays. Gmail never changes an id (D-EM-34), so the
-   confirm keys on the id and not on the Message-ID. The old item 6 listed with
-   `q=rfc822msgid:<id>`, and the audit stopped it.
+6. **The confirm (GM-20, E-G5-9, C1).** Gmail confirms each candidate by its provider id, with
+   `GET messages/{id}?format=minimal`. A new method of the provider holds that read, with its own
+   name. Outlook keeps `message_exists(internet_message_id)`, and its behaviour does not change.
+   - `import_reconcile_candidates` returns `(row id, provider_message_id, internet_message_id)`
+     (`reconcile.py:101-102`).
+   - `_confirm_gone` (`scheduler.py:761-786`) picks the key for each provider.
+   - A Gmail message keeps its id. A draft does not (O-GM-2), and item 9 covers drafts.
 7. **`import_full_snapshot = True`.** The import reads all mail back to the floor. So a deep sync
-   that a member starts reconciles the deletions (`scheduler.py:924-929`).
-8. **The recurring reconcile** of `reconcile_full_snapshot` stays for Outlook only. The Gmail
-   history reports each delete (EM-G4b item 4).
+   that a member starts reconciles the deletions (`scheduler.py:924-929`). Three member acts start
+   it: Resync (`sync.py:323-324`), "Clean older mail" (`cleanup.py:923-924`) and "Process past
+   emails" (`runner.py:1431`). The first import collects no snapshot (`scheduler.py:881-883`).
+8. **The recurring reconcile** of `reconcile_full_snapshot` stays for Outlook only. It has no
+   confirm (`reconcile.py:115-160`). The Gmail history reports each delete (EM-G4b item 4). No
+   Gmail sync result sets `full_snapshot`, and a fence now pins that.
+9. **Drafts stay out (C3).** The Gmail reconcile leaves out each row in drafts. It uses the filter
+   of `storage.py:88`: `LOWER(COALESCE(folder,'')) NOT IN ('drafts','draft')`. Gmail gives a draft
+   a new message id at each update, so a missing draft id proves no delete. The history of EM-G4b
+   removes an old draft row through E-B2 (`scheduler.py:343-347`).
+10. **The 404 rule (C2).** "Gone" means a 404 whose body gives the reason `notFound`. Each other
+    answer raises, and that includes a bare 404. A raise keeps the row. A 200 keeps the row, also
+    for a message in `TRASH` or `SPAM`, because the import read both. The confirm goes through
+    `_get_client()`, so the rules of EM-G4a apply. It sends `format=minimal` only.
+11. **A rate limit stops the confirm (C4).** `_confirm_gone` stops at the first
+    `ProviderRateLimited`. Each row that it did not confirm keeps its folder
+    (`scheduler.py:797-801`). Outlook raises no `ProviderRateLimited`, so no live path changes.
+12. **A capped import runs no reconcile (C5).** Gmail records when its import reaches
+    `IMPORT_MAX_PAGES` (`gmail.py:2167`). `_run_import` then skips the reconcile, as it does
+    at the storage limit (`scheduler.py:956-961`). It logs `sync.import_reconcile_skipped` with
+    `reason=capped`, the event of the storage-limit skip. The audit text named
+    `email.import.reconcile_skipped`, and no code logs that name.
 
-**Fences (R7).**
+**Non-goals (C8).** No recurring reconcile for Gmail. No delete path for a draft row. No change to
+rows in `trash` (E-G5-10). No change to the `[DELETED]` rule of `scheduler.py:539-549`. No flag.
 
-- R8, in `tests/unit/test_email_import_batches.py`:
-  `test_a_gmail_resync_trashes_a_row_that_gmail_deleted`
-- R8, the negative fence of E-G5-9:
-  `test_a_row_that_the_import_missed_and_gmail_holds_keeps_its_row`
-- A fence of the confirm by id. It takes the place of `test_message_exists_reads_rfc822msgid`.
+**Fences (R7, C6).**
 
-**Mutations.** M3 sets `import_full_snapshot = False`, and the resync test fails. M4 makes the
+- R8, in `tests/unit/test_email_import_batches.py`, with a real `GmailProvider` on the fake of
+  `tests/unit/test_gmail_import.py`:
+  - `test_a_gmail_resync_trashes_a_row_that_gmail_deleted`
+  - `test_a_row_that_the_import_missed_and_gmail_holds_keeps_its_row`. Its row has a Message-ID
+    that differs from its id, and the fake answers 404 to each id that it does not hold.
+  - `test_a_stale_gmail_draft_row_stays_in_drafts_with_no_lookup`
+  - `test_a_capped_gmail_import_runs_no_reconcile`
+- Hermetic, in `tests/unit/test_gmail_import.py`:
+  - `test_the_gmail_confirm_reads_by_the_provider_id`. A 404 with `notFound` gives gone. A 200 for
+    `INBOX`, `TRASH` and `SPAM` keeps the row. A bare 404, a 400, a 403, a spent 429, a 500 and a
+    transport error each raise. The path holds the provider id.
+  - `test_a_spent_rate_limit_stops_the_confirm`
+  - `test_no_gmail_sync_result_sets_full_snapshot` (item 8)
+- The four Outlook R8 fences of `test_email_import_batches.py` and its hermetic fence of the
+  Outlook confirm stay green.
+
+**Mutations (C7).** M3 sets `import_full_snapshot = False`, and the resync test fails. M4 makes the
 confirm keep each row, and the resync test fails. M9 trashes each candidate with no confirm, and
 the negative fence fails.
+
+**The mutations of the second audit.** M10 sends the Message-ID to the confirm, and the negative
+fence fails. M11 counts a bare 404 as gone, and the confirm fence fails. M12 keeps drafts in the
+candidates, and the draft fence fails. M13 lets the confirm go on after a rate limit, and the rate-limit fence fails.
+M14 runs the reconcile after a capped import, and the cap fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_import.py tests/unit/test_email_import_batches.py \
+  tests/unit/test_email_storage_limit.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_gmail_history_cursor.py tests/unit/test_gmail_rate_limits.py \
+  tests/unit/test_email_rekey_reclaim.py tests/unit/test_email_scheduler_tenancy.py -v -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/providers/gmail.py \
+  apps/services/email_ingestion/email_ingestion/reconcile.py \
+  apps/services/email_ingestion/email_ingestion/scheduler.py tests/unit/test_gmail_import.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 tests must show PASSED, with 0 skips. The ruff count of each file must stay at or below its
+count on `main`.
+
+**In the build PR (R4, C10).** Correct GM-20 (§12.1) and the status of this section. Correct
+`AGENTS.md:283-284` and `:421-432`, and the docstrings at `scheduler.py:764-770`, `:873-880` and
+`reconcile.py:61-77`.
+
+**As built (2026-10-05, branch `email-gmail-g5b`).** The build follows items 6 to 12. It adds no
+migration, no column, no table and no flag. Production holds no Gmail mailbox, and D-EM-36 keeps
+the Gmail connect dark.
+
+The same branch holds the C10 corrections. They are GM-20, the status lines and the three
+docstrings. In `email_ingestion/AGENTS.md`, they are contracts 12 and 13 and the paragraph of the
+three guards.
+
+- **The key (item 6, C1).** Each candidate is a triple: the row id, `provider_message_id` and
+  `internet_message_id` (`reconcile.py:67-123`). The confirm, `_confirm_gone`
+  (`scheduler.py:761`), asks `message_gone` by the provider id when the provider has that method.
+  Else it asks `message_exists` by the Message-ID, as before.
+- **The confirm (item 10, C2).** The new method `GmailProvider.message_gone` (`gmail.py:2209`)
+  reads `messages/{id}` with `format=minimal` through `_get_client`. Only a 404 whose body gives
+  the reason `notFound` gives True (`_says_not_found`). A 2xx gives False, and each other answer
+  raises.
+- **The reason, not the status.** A 404 that gives only the status `NOT_FOUND` raises. Google
+  sends the reason and the status together for a deleted message. So the narrower test loses no
+  delete, and a changed body of Google keeps the row.
+- **An id guard (an addition to the scope).** The method `message_gone` refuses an id that holds
+  a character other than a letter, a digit, `-` or `_` (`_GMAIL_MESSAGE_ID`). It refuses before
+  any request. A stored id with a `/`, a `?` or a `#` could send the read to another resource.
+  The refusal raises, so the row stays.
+- **Item 7.** The attribute `GmailProvider.import_full_snapshot` is True (`gmail.py:1764`).
+- **Item 9 (C3), for Gmail only.** Gmail sets `import_reconcile_skips_drafts`, a new attribute of
+  the base class that is False by default (`base.py:438`). The scheduler then passes
+  `skip_drafts=True` in `_reconcile_import`, and the query adds the filter of
+  `storage.KEPT_FOLDERS_SQL`. The statement of Outlook keeps the text of main.
+- **Why the filter binds Gmail only.** The Outlook sweep reads `drafts` (`outlook.py:74`). Its
+  parse keeps the `internetMessageId` of Graph for each message (`outlook.py:1975`). So an Outlook
+  draft row can be a candidate today, and a filter for both providers would change Outlook.
+- **Item 11 (C4).** The confirm stops at the first `ProviderRateLimited`. It logs
+  `sync.import_reconcile_rate_limited` with the mailbox, the rows gone and the rows not confirmed.
+  The rows that it confirmed before the stop go to trash. Another failure lets the confirm go on.
+- **Item 12 (C5).** The import sets `import_capped` at the cap, and clears it when an import
+  starts. Then `_run_import` logs `sync.import_reconcile_skipped account=<id> reason=capped` and
+  runs no reconcile.
+- **Item 8.** No line of `gmail.py` sets `full_snapshot`. A fence reads the source and each sync
+  path.
+- **One Outlook fence changed, and it is stronger.** The fake of
+  `test_a_resync_reconciles_once_against_its_whole_import` takes the place of
+  `import_reconcile_candidates`. It now takes `skip_drafts`, and it fails when the Outlook resync
+  passes True. The four Outlook R8 fences did not change, and they pass.
+- **The test fake.** The fake of `test_gmail_import.py` gives the body of Google to an id that it
+  does not hold. That body is a 404 with the reason `notFound` and the status `NOT_FOUND`. A path
+  that the fake does not know still gets a bare 404. The fake records each `format=minimal` read in
+  `confirms`. The set `unlisted` holds a message that the list leaves out, and the flag
+  `stale_history` makes the history answer 404.
+
+**The fences, as built.** The R8 cases run as `acb_app_h3rls` and call `_assert_non_priv`.
+
+| Test | What it proves |
+|---|---|
+| R8 `test_a_gmail_resync_trashes_a_row_that_gmail_deleted` | Through `_sync_account(deep=True)`, a row that Gmail deleted goes to trash in org B. The one confirm sends its provider id with `format=minimal`. The 30 imported rows stay in the Inbox. Org A reads no trash row. |
+| R8 `test_a_row_that_the_import_missed_and_gmail_holds_keeps_its_row` | The list leaves out a message that Gmail holds, and its Message-ID differs from its id. The confirm asks by the provider id. Gmail answers 200, and the row stays. |
+| R8 `test_a_stale_gmail_draft_row_stays_in_drafts_with_no_lookup` | Two drafts came in the import. An old draft row gets no lookup and stays in drafts. A deleted Inbox row of the same Resync goes to trash. |
+| R8 `test_a_capped_gmail_import_runs_no_reconcile` | The cap is 2 pages. A deleted row inside the pages that the import read gets no lookup and stays. The log says `reason=capped`. |
+| R8 `test_only_the_gmail_reconcile_leaves_out_drafts` (extra) | On real SQL, each candidate is the triple of C1. With `skip_drafts`, a draft row is no candidate. Without it, as for Outlook, the same row is a candidate. |
+| `test_the_gmail_confirm_reads_by_the_provider_id` (12 cases) | A 404 with `notFound` is gone. A 200 for `INBOX`, `TRASH` and `SPAM` keeps the row. A bare 404, an empty 404, a 404 with the status only, a 400, a 403, a spent 429, a 500 and a transport error raise. Each try is one `format=minimal` read of the provider id. |
+| `test_the_gmail_confirm_refuses_an_id_that_is_not_a_gmail_id` (8 cases, extra) | An empty id, a `/`, a `../`, a `?`, a `#`, a `%`, a Message-ID and a space each raise. No request goes out. |
+| `test_a_spent_rate_limit_stops_the_confirm` | A 500 lets the confirm go on, and a spent 429 stops it. The row that it confirmed before stays confirmed. The two rows after the stop get no lookup. |
+| `test_no_gmail_sync_result_sets_full_snapshot` | No cursor, the history, a stale cursor and the deep sweep each return `full_snapshot` False. No line of `gmail.py` sets the field. |
+| `test_the_import_stops_at_the_page_cap_and_logs_it` (EM-G5a, extended) | The provider records the cap. The next import that ends clears the record. |
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against the ten fences above, with
+the database up. It then ran `git checkout --` on the file, and `git diff` was empty each time.
+Each mutation turned its named fence red. M12b and M15 to M17 are extra.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M3 | `GmailProvider.import_full_snapshot = False` | the resync fence, and the negative, draft and cap fences |
+| M4 | `message_gone` gives False for a 404 with `notFound` | the resync fence, and the draft, confirm and rate-limit fences |
+| M9 | `_confirm_gone` gives each candidate with no lookup | the negative fence, and the resync, draft and rate-limit fences |
+| M10 | The Gmail confirm sends the Message-ID | the negative fence, and the resync, draft and rate-limit fences |
+| M11 | A 404 with no `notFound` is gone | the confirm fence: the bare, empty and status-only 404 |
+| M12 | The query has no filter for drafts | the draft fence, and `test_only_the_gmail_reconcile_leaves_out_drafts` |
+| M12b | Gmail sets `import_reconcile_skips_drafts = False` | the draft fence |
+| M13 | The confirm goes on after a spent rate limit | the rate-limit fence |
+| M14 | The reconcile runs after a capped import | the cap fence |
+| M15 | `message_gone` has no id guard | the id-guard fence, 8 cases |
+| M16 | The import never sets `import_capped` | the cap fence, and the cap test of EM-G5a |
+| M17 | The first sweep sets `full_snapshot=True` | `test_no_gmail_sync_result_sets_full_snapshot` |
+
+Under M10 the id guard refuses the Message-ID, so no read goes out. The negative fence fails on
+its check of the confirm read, and the resync fence keeps a deleted row. Without the guard, the
+fake answers `notFound` to the Message-ID, and the reconcile trashes the live row of the negative
+fence.
+
+**Verification (2026-10-05, the shared scratch database).** The pytest block above gave 344
+passed and 0 skipped. The 140 files whose names start with `test_email_` or `test_gmail_` gave
+2899 passed and 0 skipped, with the memory and calendar tests left out. The first ruff line finds
+16 findings: the 7 of `gmail.py` and the 9 of `scheduler.py` that main has. It finds none in
+`reconcile.py` or in the test file. The second line of ruff passes.
+
+The shared database gave `AdminShutdown` to some runs, while a second session used it. The build
+ran each of those runs again, and each count above comes from a clean run.
 
 #### 12.3.7 EM-G6a — the push route and its tenant (dark)
 
@@ -9045,6 +10094,14 @@ EM-G6a and EM-G6b are not needed (D-EM-32). The list "Before customers" below ho
     (`-in:inbox -in:sent -in:drafts`) and gives the archived mail.
 15. Read one mail with an ISO-8859-1 body. Record that `body.data` keeps the charset of its part,
     so the body shows with no U+FFFD.
+16. Save a reply draft with a file of 6 MB, then edit it in Metorite. Record that Gmail keeps
+    the draft in its thread, and keeps the file (EM-G3c C2, C18).
+17. Send a NEW mail with a file of 1 MB, which is not a reply. Its upload sends the empty
+    metadata `{}`. Record that Gmail takes it (EM-G3c-1 review note 1).
+18. Save a new draft with a file. Its upload sends `{"message": {}}`. Record that Gmail shows one
+    draft with the file.
+19. Send a mail with a file of about 20 MB. Record the time of the save and of the send. The proxy
+    stops a request after 30 seconds (EM-G3c-f1).
 
 **Evidence.** The log lines of each step, the row counts and the screenshots. Report each
 production act in the same message (CLAUDE.md §3a rule 2).
@@ -9057,9 +10114,13 @@ owner's test. The other items are known limits of merged slices. Each item must 
 customer connects Gmail, and no item has an owner yet.
 
 1. **EM-G5b**, the reconcile half of EM-G5 (§12.3.6). It needs a confirm by message id (E-G5-9).
+   🔨 Built, not merged (2026-10-05): the confirm asks Gmail by the provider id (§12.3.6.2).
 2. **EM-G3b**, a move to a user label, and the filter list (§12.3.4).
-3. **EM-G3c**, a new slice with no section yet. It owns EM-G3a-f8: the size limit of a plain
-   `drafts.update`, and the autosave of a draft with files (§12.3.3).
+3. **EM-G3c**, the size of a Gmail mail with files, and the autosave of a draft with files
+   (§12.3.3b). It owns EM-G3a-f8 (§12.3.3). ✅ EM-G3c-1 merged as #649 (2026-10-05). A Gmail
+   write with a file goes to the upload URI, and a mail over the limit answers 413. ✅ EM-G3c-2 is
+   merged as #651 (2026-10-05). The composers flush a pending save, and a Gmail draft with a
+   file waits 10 seconds. A failed save or send shows its reason.
 4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
    the old cursor (§12.3.5.2).
 5. **EM-G2-f1.** A large text part that Gmail sends by `attachmentId` gives an empty body

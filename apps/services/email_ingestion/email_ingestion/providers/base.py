@@ -44,6 +44,28 @@ class ProviderAttachmentFailed(Exception):
         super().__init__(f"The file {filename} could not be attached.")
 
 
+class ProviderMailTooLarge(Exception):
+    """A mail is too large for the provider (WS-17 EM-G3c-1).
+
+    It holds the size of the built mail and the limit, in bytes, and nothing
+    else. It never takes a URL, a request or a response, and it never
+    subclasses ``httpx.HTTPStatusError``, whose text holds the URL. A typed
+    error of a provider adds this class, as ``GmailMailTooLarge`` does. The
+    send and the draft routes answer 413 (``email_app_master_plan.md``
+    §12.3.3b items 6 and 7). Outlook and IMAP never raise it.
+
+    ``limit`` is ``None`` when the provider refused the mail (a 413) under
+    the local limit, so the text never names a limit that did not apply."""
+
+    def __init__(self, size: int, limit: int | None) -> None:
+        self.size = size
+        self.limit = limit
+        super().__init__(
+            f"The mail has {size} bytes, and the limit is {limit} bytes."
+            if limit is not None else
+            f"The provider refused a mail of {size} bytes as too large.")
+
+
 class _RefreshableProvider(Protocol):
     """What :class:`RefreshingBearer` reads from an OAuth provider."""
 
@@ -445,6 +467,12 @@ class BaseEmailProvider(ABC):
     #: deep sync of a member act then reconciles deletions from it (EM-T6b).
     import_full_snapshot: bool = False
 
+    #: True when that reconcile leaves out each row in drafts (WS-17 EM-G5b
+    #: item 9). Gmail gives a draft a new message id at each update, so a
+    #: missing draft id proves no delete. The scheduler reads it with
+    #: ``getattr``, so a fake that does not subclass this class gets False.
+    import_reconcile_skips_drafts: bool = False
+
     #: True when the provider gives a message a new id when it moves, so the
     #: ingest upsert may move the one row of a Message-ID to the new id
     #: (``persist.upsert_message(reclaim=...)``). Only Outlook does that.
@@ -756,6 +784,8 @@ class BaseEmailProvider(ABC):
         attachments: list[dict[str, Any]] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        *,
+        exact_to: bool = False,
     ) -> str:
         """Create a DRAFT message (not sent) on the provider; return its id.
 
@@ -765,6 +795,13 @@ class BaseEmailProvider(ABC):
 
         ``attachments`` (optional): a list of ``{"filename": str, "content":
         bytes, "mime_type": str}`` to attach to the draft.
+
+        ``exact_to`` (keyword only, WS-17 EM-T10 item 6): the To of a reply
+        draft is ``to`` exactly. Only the composers pass it, through
+        ``PUT /email/drafts``, because the member typed that To. Outlook then
+        writes ``toRecipients`` over the To that ``createReply`` set. With the
+        default, a reply keeps the To of the provider, so a Reply-To address
+        stays. Gmail and IMAP build ``to`` into the mail, so they ignore it.
 
         Used by Assistant reply/forward/draft rule actions. Raises
         NotImplementedError if the provider doesn't support drafts so the caller

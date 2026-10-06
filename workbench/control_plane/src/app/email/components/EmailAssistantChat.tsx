@@ -10,9 +10,9 @@
  * chat app automatically flow into the email app.
  *
  * The wrapper's only jobs are:
- *   1. Manage the email-assistant session list (via the shared @/lib/sessions
- *      store, scoped to agentName="email-assistant" — so these conversations are
- *      the SAME objects the chat app sees).
+ *   1. Manage the email-assistant session list (`useAgentSessions`, scoped to
+ *      agentName="email-assistant" — so these conversations are the SAME
+ *      objects the chat app sees — and to the signed-in member and org).
  *   2. Feed the agent the user's current email context (the chat scope, one
  *      mailbox or All inboxes, + the open email) so it can act on "this email"
  *      without the user repeating ids (EM-T8e-3, `lib/chatScope.ts`).
@@ -23,10 +23,7 @@ import Icon from "@/components/Icon";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import AgentChat from "@/components/AgentChat";
-import {
-  getSessions, createSession, upsertSession, deleteSession,
-  enrichSession, fetchAndMergeSessionsFromDb, type ChatSession,
-} from "@/lib/sessions";
+import { useAgentSessions } from "@/hooks/useChatSessions";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useEmailStore } from "../lib/emailStore";
@@ -72,8 +69,6 @@ export function EmailAssistantChat({
 
   const activeRunIds = useActiveSessions();
 
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeId, setActiveId] = useState<string>("");
   const [showSessions, setShowSessions] = useState(false);
   const [pendingInput, setPendingInput] = useState<string | undefined>();
 
@@ -168,36 +163,23 @@ export function EmailAssistantChat({
     [memoryObjs],
   );
 
-  const emailSessions = useMemo(
-    () => sessions.filter((s) => s.agentName === AGENT),
-    [sessions],
-  );
+  // The list is the signed-in member's in this org, and a restored chat the
+  // server refuses gives way to a new one (production bug, 2026-10-05).
+  const {
+    mine: emailSessions,
+    activeId,
+    activeSession,
+    newSession: openNewSession,
+    switchSession: openSession,
+    removeSession,
+    handleActivity,
+    onSessionRefused,
+    recoveredInput,
+    consumeRecoveredInput,
+    notice: recoveryNotice,
+  } = useAgentSessions(AGENT);
 
-  // Restore the most recent email-assistant session (or start one) on mount.
   /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    const existing = getSessions().filter((s) => s.agentName === AGENT);
-    if (existing.length > 0) {
-      setSessions(getSessions());
-      setActiveId(existing[0].id);
-    } else {
-      const s = createSession(AGENT);
-      upsertSession(s);
-      setSessions(getSessions());
-      setActiveId(s.id);
-    }
-  }, []);
-
-  // Merge email-assistant sessions that live only in Postgres (cache clear,
-  // other device, or created from the main chat app).
-  useEffect(() => {
-    let cancelled = false;
-    fetchAndMergeSessionsFromDb()
-      .then((merged) => { if (!cancelled) setSessions(merged); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-
   // The Assistant's "Fix" flow hands a correction prompt through the store —
   // drop it into the composer (the user reviews & sends it).
   useEffect(() => {
@@ -209,44 +191,14 @@ export function EmailAssistantChat({
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const newSession = useCallback(() => {
-    const s = createSession(AGENT);
-    upsertSession(s);
-    setSessions(getSessions());
-    setActiveId(s.id);
+    openNewSession();
     setShowSessions(false);
-  }, []);
+  }, [openNewSession]);
 
   const switchSession = useCallback((id: string) => {
-    setActiveId(id);
+    openSession(id);
     setShowSessions(false);
-  }, []);
-
-  const removeSession = useCallback(
-    (id: string) => {
-      deleteSession(id);
-      const remaining = getSessions().filter((s) => s.agentName === AGENT);
-      setSessions(getSessions());
-      if (id === activeId) {
-        if (remaining.length > 0) {
-          setActiveId(remaining[0].id);
-        } else {
-          const s = createSession(AGENT);
-          upsertSession(s);
-          setSessions(getSessions());
-          setActiveId(s.id);
-        }
-      }
-    },
-    [activeId],
-  );
-
-  const handleActivity = useCallback(
-    (info: { firstUserMessage?: string; lastPreview?: string; messageCount: number }) => {
-      enrichSession(activeId, info);
-      setSessions(getSessions());
-    },
-    [activeId],
-  );
+  }, [openSession]);
 
   // Compose the email context the agent operates with — the connected accounts,
   // the scope of the chat, and the currently-open email — via the SHARED builder
@@ -265,7 +217,6 @@ export function EmailAssistantChat({
     [accounts, emails, chatAccountId, chatAllInboxes, selectedEmailId, acctSettings],
   );
 
-  const activeSession = emailSessions.find((s) => s.id === activeId);
 
   return (
     <div className="flex flex-col h-full bg-sidebar text-sidebar-foreground overflow-hidden">
@@ -387,13 +338,17 @@ export function EmailAssistantChat({
             mailboxes={mailboxOptions}
             activeMailboxId={pickerId}
             onMailboxChange={pickChatScope}
-            notice={scopeNotice}
+            notice={recoveryNotice ?? scopeNotice}
             memories={memories}
             memoryUserId={userId}
             expectedMessageCount={activeSession.messageCount}
             onActivity={handleActivity}
-            pendingInput={pendingInput}
-            onPendingInputConsumed={() => setPendingInput(undefined)}
+            onSessionRefused={onSessionRefused}
+            pendingInput={pendingInput ?? recoveredInput}
+            onPendingInputConsumed={() => {
+              setPendingInput(undefined);
+              consumeRecoveredInput();
+            }}
           />
         )}
       </div>

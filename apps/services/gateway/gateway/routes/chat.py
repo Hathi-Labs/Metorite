@@ -1049,7 +1049,7 @@ async def save_messages(
         organization_id=user.organization_id,
     )
     if not room.can_send:
-        raise HTTPException(status_code=403, detail=room.denied("save messages"))
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("save messages"))
 
     # A declined write is not an error (S13, §19.4 rule 5). The row stays as
     # it was, and ``unchanged`` names it so the caller can tell.

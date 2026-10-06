@@ -213,16 +213,20 @@ def outlook_delta_mode(account_id: str) -> str:
 
 def _runs_delta_shadow(
     provider_name: str, account_id: str, row: Any, *, deep: bool | None,
+    from_loop: bool,
 ) -> bool:
     """True when this cycle runs the Graph delta in shadow (WS-17 EM-T4d).
 
-    Only a normal incremental cycle of a listed Outlook mailbox runs it
-    (review round 1 F6). A first import, the deep sync of a member act
-    (``deep=True``) and each cycle before ``initial_sync_done`` run none.
-    Those cycles already hold the mailbox lock for a long sweep. The delta
-    adds its Graph calls, so a manual sync could pass the 30 seconds of the
-    Control Plane proxy."""
-    if provider_name != "microsoft" or deep:
+    Only a normal incremental cycle of the background loop runs it, for a
+    listed Outlook mailbox (review round 1 F6, EM-T4d-f3). A first import,
+    the deep sync of a member act (``deep=True``) and each cycle before
+    ``initial_sync_done`` run none. Each caller that is not the loop runs
+    none either: a member's "Sync now" and the agent tool ``sync_account``
+    send ``deep=None`` like the loop and wait on the 30 seconds of the
+    Control Plane proxy, and the webhook and the rerun are not the loop. A
+    seed round of a folder can read up to 20 pages. The ``deep`` clause
+    keeps a deep cycle of the loop itself out (EM-T4d-f3)."""
+    if provider_name != "microsoft" or deep or not from_loop:
         return False
     if not getattr(row, "initial_sync_done", False):
         return False
@@ -759,30 +763,50 @@ def _oldest_received(messages: list[Any]) -> datetime | None:
 
 
 async def _confirm_gone(
-    provider: Any, candidates: list[tuple[Any, str | None]],
+    provider: Any, candidates: list[tuple[Any, str | None, str | None]], *,
+    account_id: str | None = None,
 ) -> list[Any]:
     """The candidate rows whose message the provider no longer has.
 
-    It asks the provider by ``internet_message_id``, with no session open
-    (fix round 3). A move in the Outlook client gives the message a new id,
-    so the import did not read it, and the lookup still finds it. A row with
-    no internet message id, a failed lookup, or a provider with no lookup
-    keeps its row: the reconcile never trashes on doubt."""
+    It asks the provider with no session open (fix round 3), and the
+    provider decides the key (WS-17 EM-G5b item 6, C1):
+
+    * Gmail asks ``message_gone`` by ``provider_message_id``. Gmail never
+      changes the id of a message, and a Message-ID can be on two messages.
+      Only ``True``, a 404 with the reason ``notFound``, trashes the row.
+    * Outlook asks ``message_exists`` by ``internet_message_id``. A move in
+      the Outlook client gives the message a new id, so the import did not
+      read it, and the lookup still finds it. Only ``False`` trashes the row.
+
+    A row with no key, a failed lookup, or a provider with no lookup keeps
+    its row: the reconcile never trashes on doubt. A rate limit whose tries
+    are spent (``ProviderRateLimited``) stops the confirm (item 11, C4). The
+    rows that it did not confirm keep their folder, and the log line
+    ``sync.import_reconcile_rate_limited`` names ``account_id``."""
+    gone_by_id = getattr(provider, "message_gone", None)
     exists = getattr(provider, "message_exists", None)
-    if exists is None:
+    if gone_by_id is None and exists is None:
         return []
     gone: list[Any] = []
-    for row_id, internet_message_id in candidates:
-        if not internet_message_id:
-            continue
+    for asked, (row_id, provider_message_id, internet_message_id) in enumerate(
+            candidates):
         try:
-            found = await exists(internet_message_id)
+            if gone_by_id is not None:
+                if provider_message_id and await gone_by_id(
+                        provider_message_id) is True:
+                    gone.append(row_id)
+            elif internet_message_id and await exists(
+                    internet_message_id) is False:
+                gone.append(row_id)
+        except ProviderRateLimited:
+            logger.warning("sync.import_reconcile_rate_limited account=%s gone=%d "
+                           "unconfirmed=%d", account_id, len(gone),
+                           len(candidates) - asked)
+            break
         except Exception as exc:
             logger.info("sync.import_reconcile_lookup_failed error=%s",
                         type(exc).__name__)
             continue
-        if found is False:
-            gone.append(row_id)
     return gone
 
 
@@ -796,16 +820,20 @@ async def _reconcile_import(
     no session open, and a second block moves the confirmed rows to trash
     (fix round 3). A failure rolls back only the reconcile, and the sync goes
     on (fix round 1). With no database time for the start, it trashes
-    nothing (fix round 2)."""
+    nothing (fix round 2). A provider that sets
+    ``import_reconcile_skips_drafts`` (Gmail) gives no row in drafts to the
+    confirm (WS-17 EM-G5b item 9)."""
     if started_at is None:
         logger.warning("sync.import_reconcile_skipped account=%s reason=no_start",
                        account_id)
         return
+    skip_drafts = getattr(provider, "import_reconcile_skips_drafts", False) is True
     try:
         async with tenant_session(org) as db:
             candidates = await import_reconcile_candidates(
-                db, account_id, snapshot, started_at=started_at)
-        gone = await _confirm_gone(provider, candidates)
+                db, account_id, snapshot, started_at=started_at,
+                skip_drafts=skip_drafts)
+        gone = await _confirm_gone(provider, candidates, account_id=account_id)
         if not gone:
             return
         async with tenant_session(org) as db:
@@ -873,11 +901,19 @@ async def _run_import(
     When the deep sync of a member act ends with no error, and the provider
     reads every folder (``import_full_snapshot``), one more block reconciles
     deletions against the id, folder and time of each message the import
-    wrote (fix round 1). The recurring sweep reaches only its newest pages,
-    so a Resync otherwise kept older mail that the member deleted in Outlook.
-    It keeps a row written after phase (a), and it skips a folder with too
-    many candidates (``import_reconcile_candidates``, fix round 2). A failed
-    reconcile is logged and does not fail the sync."""
+    wrote (fix round 1). Outlook and Gmail set it (WS-17 EM-G5b item 7). The
+    recurring sweep reaches only its newest pages, so a Resync otherwise kept
+    older mail that the member deleted in the mailbox. It keeps a row written
+    after phase (a), and it skips a folder with too many candidates
+    (``import_reconcile_candidates``, fix round 2). The provider confirms each
+    candidate before a trash (``_confirm_gone``). A failed reconcile is
+    logged and does not fail the sync.
+
+    An import that a provider capped runs no reconcile either (EM-G5b item
+    12, C5). Gmail sets ``import_capped`` when its import reaches
+    ``IMPORT_MAX_PAGES``, so the mail below the cap stays unread. The log
+    says ``sync.import_reconcile_skipped`` with ``reason=capped``, as it
+    says ``reason=limit`` at the storage limit."""
     snapshot: list[tuple[str, str, Any]] | None = (
         [] if not progress and getattr(provider, "import_full_snapshot", False)
         else None)
@@ -923,6 +959,9 @@ async def _run_import(
                 break
     if snapshot is not None and tally["limit"]:
         logger.info("sync.import_reconcile_skipped account=%s reason=limit",
+                    account_id)
+    elif snapshot is not None and getattr(provider, "import_capped", False) is True:
+        logger.info("sync.import_reconcile_skipped account=%s reason=capped",
                     account_id)
     elif snapshot is not None:
         await _reconcile_import(org, account_id, provider, snapshot,
@@ -1436,10 +1475,11 @@ async def _sync_cycle(
         # ``last_synced_at``, so the next cycle reads the pause again.
         # ``delta_shadow`` adds the Graph delta of a listed Outlook mailbox
         # after the sweep (EM-T4d). The sweep stays the one writer, and the
-        # delta runs inside this one call, with no session open. A first
-        # import or a deep sync runs no delta (review round 1 F6).
+        # delta runs inside this one call, with no session open. Only a loop
+        # cycle runs it: a first import, a deep sync and a member's "Sync
+        # now" run none (review round 1 F6, EM-T4d-f3).
         delta_shadow = _runs_delta_shadow(provider_name, account_id, row,
-                                          deep=deep)
+                                          deep=deep, from_loop=from_loop)
         sync_result = await provider.sync_messages(
             history_id=history_id,
             max_results=100,

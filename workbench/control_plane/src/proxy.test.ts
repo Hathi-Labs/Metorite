@@ -86,6 +86,17 @@ describe("proxy — the admin-consent return (EM-T3c)", () => {
     }
   });
 
+  it("passes a signed-out GET to the update probe, and nothing under it", async () => {
+    // navigation_shell.md §7.3: the sign-in page must be able to say
+    // "Metorite is updating" too. Exact path only.
+    const res = await proxy(request("/api/health"));
+    expect(passed(res)).toBe(true);
+    expect(posture.authCalls).toBe(0);
+    for (const path of ["/api/health/x", "/api/healthz", "/api/health-admin"]) {
+      expect((await proxy(request(path))).status, path).toBe(401);
+    }
+  });
+
   it("does not open a subpath of the public page", async () => {
     const res = await proxy(request("/oauth/approved/x"));
     expect(res.status).toBe(307);

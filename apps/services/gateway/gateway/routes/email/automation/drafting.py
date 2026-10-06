@@ -14,7 +14,10 @@ from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion.llm_cap import automation_job, llm_slot
-from email_ingestion.providers.base import ProviderAttachmentFailed
+from email_ingestion.providers.base import (
+    ProviderAttachmentFailed,
+    ProviderMailTooLarge,
+)
 from email_ingestion.providers.gmail import GmailDraftNotFound
 from fastapi import BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -2163,6 +2166,28 @@ def _file_not_attached() -> Iterator[None]:
         ) from exc
 
 
+#: The answer when the provider cannot take a mail of its size (EM-G3c-1).
+MAIL_TOO_LARGE_DETAIL = "This mail is too large to send."
+
+
+@contextmanager
+def _mail_too_large() -> Iterator[None]:
+    """Answer 413 when the mail is too large for the provider.
+
+    WS-17 EM-G3c-1 item 7 (``email_app_master_plan.md`` §12.3.3b). The
+    sibling of :func:`_file_not_attached`. Gmail raises
+    ``ProviderMailTooLarge`` before its write, or on a 413 of Google. The
+    detail is a string, as in each error of this package. The raise comes
+    before ``_upsert_local_draft``, so a save writes no local row. Outlook and
+    IMAP never raise it. ``transport/send.py`` uses it too, through an import
+    in the route, because this module imports that one."""
+    try:
+        yield
+    except ProviderMailTooLarge as exc:
+        raise HTTPException(
+            status_code=413, detail=MAIL_TOO_LARGE_DETAIL) from exc
+
+
 async def _fetch_message_dict(db: Any, message_id: str) -> dict[str, Any]:
     """Return one stored message in the API (snake_case) shape, or {}."""
     row = (await db.execute(text(
@@ -2238,7 +2263,8 @@ async def upsert_draft(
                 thread_id = drow.thread_id
                 subject = subject or (drow.subject or "")
                 try:
-                    with _draft_changed_upstream(), _file_not_attached():
+                    with (_draft_changed_upstream(), _file_not_attached(),
+                          _mail_too_large()):
                         provider_id = await provider.update_draft(
                             drow.provider_message_id, to=to or None,
                             subject=subject or None, body_text=body,
@@ -2250,7 +2276,7 @@ async def upsert_draft(
                     provider_id = await provider.create_draft(
                         to=to, subject=subject, body_text=body,
                         thread_id=thread_id or None, cc=cc, bcc=bcc,
-                        attachments=atts or None,
+                        attachments=atts or None, exact_to=True,
                     )
                     try:
                         await provider.trash_message(drow.provider_message_id)
@@ -2286,18 +2312,20 @@ async def upsert_draft(
                         else json.loads(rrow.from_address or "{}")
                     if frm.get("email"):
                         to = [frm["email"]]
-                with _file_not_attached():
+                # The member typed this To, so the reply keeps each address.
+                # Outlook's createReply sets only the sender (EM-T10 item 6).
+                with _file_not_attached(), _mail_too_large():
                     provider_id = await provider.create_draft(
                         to=to, subject=subject, body_text=body,
                         reply_to_message_id=rrow.provider_message_id,
                         thread_id=thread_id or None, cc=cc, bcc=bcc,
-                        attachments=atts or None,
+                        attachments=atts or None, exact_to=True,
                     )
             else:
-                with _file_not_attached():
+                with _file_not_attached(), _mail_too_large():
                     provider_id = await provider.create_draft(
                         to=to, subject=subject, body_text=body, cc=cc, bcc=bcc,
-                        attachments=atts or None,
+                        attachments=atts or None, exact_to=True,
                     )
 
             # Each To address goes into the row, because the signed send reads
@@ -2383,7 +2411,9 @@ async def send_draft_endpoint(
                 send_text, send_html = build_signed_bodies(
                     signature, drow.body_text or "", None)
                 try:
-                    with _draft_changed_upstream():
+                    # A Gmail draft whose files make the signed mail too
+                    # large answers 413 (EM-G3c-1 item 7).
+                    with _draft_changed_upstream(), _mail_too_large():
                         # No ``attachments``: Outlook keeps the files of its
                         # draft, and Gmail reads them back from its draft.
                         signed_id = await provider.update_draft(
