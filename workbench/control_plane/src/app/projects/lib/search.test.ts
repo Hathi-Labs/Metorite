@@ -20,6 +20,9 @@
  *   fixed on the server.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -282,17 +285,21 @@ describe("hitContext", () => {
 
 // ── the minimum, and its one exception (D-PM-31) ────────────────────────────
 
-describe("isTaskNumberQuery — mirrors the gateway's filters.task_number", () => {
-  it.each(["#7", "7", " #42 ", "# 42", "##7", "1".repeat(18)])("%j is a task number", (q) => {
-    expect(isTaskNumberQuery(q)).toBe(true);
-  });
+/**
+ * The ONE case table for the rule, `searchMinimumCases.json`. The gateway's
+ * `tests/unit/test_projects_search_minimum_lockstep.py` reads the same file
+ * and checks `filters.task_number` and the chat tool against it. A change to
+ * either side that the other does not share fails one of the two suites.
+ */
+const CASES: { q: string; number: number | null; searchable: boolean }[] = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./searchMinimumCases.json", import.meta.url)), "utf8"),
+);
 
-  it.each(["", "#", "4.2", "-1", "42a", "²", "1".repeat(19), "#7 x"])(
-    "%j is not",
-    (q) => {
-      expect(isTaskNumberQuery(q)).toBe(false);
-    },
-  );
+describe("the shared case table (searchMinimumCases.json)", () => {
+  it.each(CASES)("%j", ({ q, number, searchable }) => {
+    expect(isTaskNumberQuery(q)).toBe(number !== null);
+    expect(isSearchableQuery(q)).toBe(searchable);
+  });
 });
 
 describe("isSearchableQuery — the one gate before /projects/search", () => {

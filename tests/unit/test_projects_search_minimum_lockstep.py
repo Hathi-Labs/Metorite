@@ -22,6 +22,7 @@ a second copy of the same kind that had no fence.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -34,16 +35,14 @@ from gateway.routes.projects import search as search_route
 from skill_projects import reads
 
 REPO = Path(__file__).resolve().parents[2]
-SEARCH_TS = (
-    REPO / "workbench" / "control_plane" / "src" / "app" / "projects" / "lib"
-    / "search.ts"
-)
+LIB = REPO / "workbench" / "control_plane" / "src" / "app" / "projects" / "lib"
+SEARCH_TS = LIB / "search.ts"
 
-#: Inputs on both sides of every edge of the task-number rule.
-NUMBER_CASES = (
-    "#7", "7", " #7 ", "# 7", "##7", "#42", "1" * 18, "1" * 19, "", "#", "ab",
-    "abc", "4.2", "-1", "42a", "²", "#٧", "#7 x",  # noqa: RUF001 — a non-ASCII digit, on purpose
-)
+#: The ONE case table for the rule. ``search.test.ts`` checks the browser's
+#: ``isTaskNumberQuery`` and ``isSearchableQuery`` against the same file, so
+#: the browser, the route and the tool all answer to one list of inputs.
+CASES = json.loads((LIB / "searchMinimumCases.json").read_text(encoding="utf-8"))
+NUMBER_CASES = tuple(c["q"] for c in CASES)
 
 
 def ts_min_query(source: str) -> int:
@@ -79,6 +78,14 @@ def test_the_tool_and_the_route_agree_on_what_a_task_number_is(raw: str) -> None
 def test_the_tool_and_the_route_agree_on_what_is_too_short(raw: str) -> None:
     term = raw.strip()
     assert reads._short_text(term) == filters.short_text_query(term)
+
+
+@pytest.mark.parametrize("case", CASES, ids=[repr(c["q"]) for c in CASES])
+def test_the_route_answers_the_shared_case_table(case: dict) -> None:
+    """The browser checks the same rows in ``search.test.ts``."""
+    term = case["q"].strip()
+    assert filters.task_number(case["q"]) == case["number"]
+    assert (bool(term) and not filters.short_text_query(term)) is case["searchable"]
 
 
 def test_the_tool_says_the_routes_sentence() -> None:

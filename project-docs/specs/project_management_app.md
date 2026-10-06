@@ -1665,9 +1665,11 @@ Owner ruling, 2026-10-06. The ruling keeps D-PM-31 and adds one exception.
   tenant and visibility clauses, and an index serves it.
 - `/projects/search` answers 422 for 1 or 2 characters of text, and the message says what to
   type. The palette and the pickers check the same rule before they call. The list endpoint
-  still answers an empty list.
+  still answers an empty list. For that case the board and the list show "Type at least 3
+  characters to search", not "No tasks match your filters".
 - A query that is only digits no longer matches titles that contain those digits.
-- `tests/unit/test_projects_search_minimum_lockstep.py` holds the three copies equal (R7).
+- `tests/unit/test_projects_search_minimum_lockstep.py` holds the three copies equal (R7). It and
+  `search.test.ts` check one case table, `app/projects/lib/searchMinimumCases.json`.
   `tests/unit/test_projects_search_r8.py` runs the route on a real database (R8).
 
 ---

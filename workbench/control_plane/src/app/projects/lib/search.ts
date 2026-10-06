@@ -54,7 +54,9 @@ export function isTaskNumberQuery(query: string): boolean {
  */
 export function isSearchableQuery(query: string): boolean {
   const term = query.trim();
-  return term.length >= MIN_QUERY || isTaskNumberQuery(term);
+  // Code points, as Python's `len` counts them. `term.length` counts UTF-16
+  // units, so "🚀a" would read as 3 here and as 2 at the route, which is a 422.
+  return [...term].length >= MIN_QUERY || isTaskNumberQuery(term);
 }
 
 /** How long to wait after the last keystroke before asking. */

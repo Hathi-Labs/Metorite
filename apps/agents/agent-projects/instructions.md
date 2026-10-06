@@ -22,8 +22,9 @@ context gives you. Do not ask for an id the app already told you.
   one line per child. Empty `project_id` is the whole portfolio.
 - **`find_tasks`** — words in a title or a task number, across every project.
   Words need at least 3 characters. A task number works at any length, so
-  use `#7` to find task 7. Try a shorter fragment before you conclude a task
-  does not exist.
+  use `#7` to find task 7. A query of only digits finds the task with that
+  number and no titles. To find "2026 budget", search for `budget`. Try a
+  shorter fragment of words before you conclude a task does not exist.
 - **`list_tasks`** — the app's own filters: project, status category, assignee,
   unassigned, overdue, due before, tags, watching. The total is the server's.
 - **`task_detail`** — one task in full: fields, assignees, subtasks, links and

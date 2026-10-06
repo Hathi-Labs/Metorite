@@ -270,8 +270,10 @@ def _short_query(term: str) -> str:
 async def find_tasks(query: str, limit: int = 10) -> str:
     """Search tasks by words in the title, or by task number, across every
     project the member can see. Words need at least 3 characters. A task
-    number works at any length: "#7" finds task 7 exactly. Returns ranked hits
-    with the project and status, each with a `full_id` for task_detail."""
+    number works at any length: "#7" finds task 7 exactly. A query of only
+    digits finds that task number and no titles, so add a word to find a
+    title that holds a number. Returns ranked hits with the project and
+    status, each with a `full_id` for task_detail."""
     term = (query or "").strip()
     if not term or _short_text(term):
         return _short_query(term)

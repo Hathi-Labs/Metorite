@@ -1100,8 +1100,10 @@ as the answer. The slices build to these answers.
   - The PO-6 refusal names the lanes on its "Refused:" line. Its "Next:"
     line is the general one. So the checker reads the whole refusal, not
     the "Next:" line that §11.2 names.
-  - A finding, not fixed in P3: `find_tasks` refuses a query under 3
-    characters, and the route takes 2 (`filters.MIN_QUERY`). So the tool
-    refuses "#7". The PO-7 sequence reads the task with `list_tasks`.
+  - A finding of P3: `find_tasks` refused a query under 3 characters, and
+    the route took 2 (`filters.MIN_QUERY`). So the tool refused "#7".
+    **Fixed 2026-10-06** under D-PM-31: the text minimum is 3 on the route,
+    the tool and the browser, and a task number passes at any length. The
+    PO-7 sequence now calls `find_tasks("#7")`.
   - Nobody has run the model sweep. On the production Router it is
     OWNER-GATE (§11.3).
