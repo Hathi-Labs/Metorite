@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from acb_auth import require_feature_router
 from acb_common import get_logger
 from fastapi import APIRouter, HTTPException
 
@@ -39,7 +40,6 @@ from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 # hooks then open `_tenant_session()` under that binding.
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 from pydantic import BaseModel
-from acb_auth import require_feature_router
 
 _log = get_logger("gateway.whatsapp")
 

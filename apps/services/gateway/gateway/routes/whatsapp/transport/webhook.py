@@ -23,7 +23,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from typing import Any
 
 from acb_common import get_logger, get_settings
 from fastapi import Request, Response
