@@ -422,6 +422,16 @@ async def task_detail(task_id: str) -> str:
         out.append("  fields: " + ", ".join(f"{k}={data(v)}" for k, v in fields.items()))
     if task.get("description"):
         out.append(f"  description: {data(str(task['description'])[:1200])}")
+    # WS-46 P1 (G2): the rule is not on the task row, so it is one more GET.
+    # A task that repeats says so here, and the model needs no second read.
+    # A failed read says so. It never reads as "does not repeat".
+    try:
+        rule = await _rule_of(tid)
+    except GatewayRefusal:
+        out.append("  Repeats: unknown, the rule could not be read. Use recurrence.")
+    else:
+        if rule:
+            out.append(f"  Repeats: {_rule_text(rule)}")
 
     out.extend(await _relations_block(tid))
     out.extend(await _attachments_block(tid))
@@ -488,14 +498,22 @@ async def my_work(view: str = "assigned", include_done: bool = False, page: int 
 # ── People and vocabulary ────────────────────────────────────────────────────
 
 
-WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+#: ISO weekdays: 1 is Monday. The full name, because the card names a day
+#: the tool may have guessed (WS-46 P1, spec §8.1 item 4).
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def _and(words: list[str]) -> str:
+    """``Monday``, ``Monday and Friday``, ``Monday, Wednesday and Friday``."""
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
 
 
 def _rule_text(rule: dict[str, Any] | None) -> str:
-    """``every 2 weeks on Mon, Wed · from the due date · until 2026-12-31``.
+    """``every 2 weeks on Monday and Wednesday, from the due date, until 2026-12-31``.
 
     One renderer for the read, the card and the receipt, so the three cannot
-    describe one rule three ways.
+    describe one rule three ways. It is one sentence, so a receipt reads
+    "It repeats every week on Friday" (WS-46 P1, spec §8.1 item 2).
     """
     if not rule:
         return "does not repeat"
@@ -503,14 +521,14 @@ def _rule_text(rule: dict[str, Any] | None) -> str:
     every = int(rule.get("interval") or 1)
     unit = {"daily": "day", "weekly": "week", "monthly": "month", "yearly": "year"}.get(freq, freq)
     head = f"every {unit}" if every == 1 else f"every {every} {unit}s"
-    parts = [head]
     days = [int(d) for d in rule.get("weekdays") or [] if 1 <= int(d) <= 7]
     if days:
-        parts.append("on " + ", ".join(WEEKDAYS[d - 1] for d in days))
+        head += " on " + _and([WEEKDAYS[d - 1] for d in days])
     if rule.get("day_of_month"):
-        parts.append(f"on day {rule['day_of_month']}")
+        head += f" on day {rule['day_of_month']}"
     if rule.get("month_of_year"):
-        parts.append(f"in month {rule['month_of_year']}")
+        head += f" in month {rule['month_of_year']}"
+    parts = [head]
     anchor = str(rule.get("anchor") or "due")
     parts.append("from the due date" if anchor == "due" else "from the last completion")
     if rule.get("until_at"):
@@ -520,7 +538,14 @@ def _rule_text(rule: dict[str, Any] | None) -> str:
     made = rule.get("occurrences_made")
     if made:
         parts.append(f"{made} made so far")
-    return " · ".join(parts)
+    return ", ".join(parts)
+
+
+async def _rule_of(task_id: str) -> dict[str, Any] | None:
+    """The task's repeat rule, or ``None``. The one GET ``recurrence`` reads,
+    which ``task_detail`` reaches through ``manifest.COMPOSITE``."""
+    tid = uuid_of(task_id, "task_id")
+    return ((await get(f"/projects/tasks/{tid}/recurrence")) or {}).get("rule")
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
@@ -529,8 +554,7 @@ async def recurrence(task_id: str) -> str:
     anchor (from the due date or from the last completion), end date or
     count, and how many occurrences exist. set_recurrence changes it."""
     tid = uuid_of(task_id, "task_id")
-    rule = ((await get(f"/projects/tasks/{tid}/recurrence")) or {}).get("rule")
-    return f"Repeats: {_rule_text(rule)}\n  full_id: {tid}"
+    return f"Repeats: {_rule_text(await _rule_of(tid))}\n  full_id: {tid}"
 
 
 OVERLAY_FACTS = (
