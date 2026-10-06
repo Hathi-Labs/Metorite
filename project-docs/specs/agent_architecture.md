@@ -798,7 +798,7 @@ consequence stated — rather than being a default nobody chose.
 ## 12. Phasing
 
 The phase letters below are the **map**. The dispatchable unit is the lettered ticket in
-§12.2 (`WS-8a`…`WS-8n`); each phase row names which tickets carry it.
+§12.2 (`WS-8a`…`WS-8o`). Each phase row names which tickets carry it.
 
 | Phase | Work | Tickets | Depends on |
 |---|---|---|---|

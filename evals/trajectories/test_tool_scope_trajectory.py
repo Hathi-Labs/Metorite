@@ -98,6 +98,11 @@ def test_email_assistant_own_tool_scope_names_are_all_built_tools(monkeypatch):
     assert built, "email-assistant built no tool"
     missing = [t for t in scope if t not in built]
     assert not missing, f"own_tool_scope names tools build_agents() does not give: {missing}"
+    # The core read and send actions are built and in scope. (send_email sends
+    # both new mail and replies, through reply_to_email_id.)
+    for essential in ("read_email", "draft_reply", "send_email"):
+        assert essential in built, f"email-assistant no longer builds {essential}"
+        assert essential in scope, f"email-assistant own_tool_scope dropped {essential}"
 
 
 # ── 2. BEHAVIORAL: _apply_own_tool_scope filters, and fails open ─────────────

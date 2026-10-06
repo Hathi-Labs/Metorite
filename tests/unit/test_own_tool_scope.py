@@ -135,3 +135,31 @@ def test_the_resolved_log_names_own_and_total(monkeypatch):
         "executor.agent_tools_resolved",
         {"agent": "email-assistant", "own": 2, "total": 3},
     )]
+
+
+def test_each_executor_site_logs_after_the_injection():
+    """P3-1: each of the three sites that run the own scope logs the count.
+
+    A source fence. Each ``_apply_own_tool_scope(`` call in ``executor.py``
+    opens one block, and that block must hold ``_inject_agent_tools(`` and
+    then ``_log_agent_tools_resolved(``. The block ends at the next scope
+    call, or at the end of the file.
+    """
+    from pathlib import Path
+
+    import orchestrator.executor as ex
+
+    src = Path(ex.__file__).read_text(encoding="utf-8")
+    marker = "_apply_own_tool_scope(\n"
+    starts = [i for i in range(len(src)) if src.startswith(marker, i)]
+    assert len(starts) == 3, f"expected 3 scope sites, found {len(starts)}"
+    for n, start in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(src)
+        block = src[start:end]
+        inject = block.find("_inject_agent_tools(")
+        assert inject != -1, f"site {n + 1}: no _inject_agent_tools( after the scope"
+        log = block.find("_log_agent_tools_resolved(", inject)
+        assert log != -1, (
+            f"site {n + 1}: no _log_agent_tools_resolved( after "
+            "_inject_agent_tools( (WS-8o, §10.4.14 item 6)"
+        )
