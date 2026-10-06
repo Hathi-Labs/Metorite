@@ -33,7 +33,7 @@ import {
   sortQueue,
   type IntakeItem,
 } from "../lib/intake";
-import { MIN_QUERY, type Hit } from "../lib/search";
+import { isSearchableQuery, type Hit } from "../lib/search";
 
 type Ruling = "accept" | "duplicate" | "snooze";
 
@@ -82,7 +82,7 @@ export function TriageRail({ projectId, statuses, onOpenTask, onResolved }: Prop
     // The duplicate picker rides the existing search surface — same ranking,
     // same visibility, same escaping as ⌘K.
     const term = duplicateQuery.trim();
-    if (term.length < MIN_QUERY) {
+    if (!isSearchableQuery(term)) {
       setHits([]);
       return;
     }

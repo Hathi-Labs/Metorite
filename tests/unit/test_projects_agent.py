@@ -898,11 +898,68 @@ async def test_report_render_prints_the_sections_the_route_returns(monkeypatch) 
     assert "stuck: overdue_total 2" in text
 
 
-async def test_find_tasks_refuses_a_short_query_without_a_call(monkeypatch) -> None:
+@pytest.mark.parametrize("query", ["ab", " a ", "#"])
+async def test_find_tasks_refuses_short_text_without_a_call(monkeypatch, query) -> None:
+    """D-PM-31: text needs 3 characters. The sentence names the term, its
+    length, and the way out, so the model can ask again with a number."""
     calls = fake_gateway(monkeypatch, _detail_responder)
-    out = await skill_projects.find_tasks("ab")
-    assert "3 characters" in out
+    out = await skill_projects.find_tasks(query)
+    term = query.strip()
+    assert out == (
+        f"Give at least 3 characters to search («{term}» is {len(term)})."
+        " A task number works at any length: #7."
+    )
     assert calls == []
+
+
+@pytest.mark.parametrize("query", ["", "   ", "﻿"])
+async def test_find_tasks_with_no_query_asks_for_one(monkeypatch, query) -> None:
+    calls = fake_gateway(monkeypatch, _detail_responder)
+    out = await skill_projects.find_tasks(query)
+    assert out == "Give at least 3 characters to search, or a task number such as #7."
+    assert calls == []
+
+
+def _search_responder(call: dict) -> Any:
+    """``/projects/search`` with one task, #7, found by its number."""
+    if call["path"] == "/projects/search":
+        return {
+            "rows": [{
+                "id": UUID, "title": "Unrelated work", "task_number": 7,
+                "project_id": OTHER, "project_name": "Ops",
+                "status_name": "To do", "category": "todo", "rank": 0,
+            }],
+            "total": 1, "truncated": False, "query": call["params"]["q"],
+        }
+    return empty_list(call)
+
+
+@pytest.mark.parametrize("query", ["#7", "7", " #7 "])
+async def test_find_tasks_takes_a_task_number_at_any_length(monkeypatch, query) -> None:
+    """The defect WS-46 P3 found: the tool refused "#7", and the route finds
+    it. A task number is an exact lookup, so the minimum does not apply."""
+    calls = fake_gateway(monkeypatch, _search_responder)
+    out = await skill_projects.find_tasks(query)
+    assert [c["path"] for c in calls] == ["/projects/search"]
+    assert calls[0]["params"]["q"] == query.strip()
+    assert "- #7 «Unrelated work»" in out
+    assert f"full_id: {UUID}" in out
+
+
+async def test_list_tasks_refuses_short_text_without_a_call(monkeypatch) -> None:
+    """The list route matches NOTHING for short text, so relaying it would
+    say "no task matches those filters", which is false."""
+    calls = fake_gateway(monkeypatch, empty_list)
+    out = await skill_projects.list_tasks(query="ab")
+    assert out.startswith("Give at least 3 characters to search («ab» is 2).")
+    assert calls == []
+
+
+async def test_list_tasks_sends_a_task_number_on(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, empty_list)
+    await skill_projects.list_tasks(query=" #7 ")
+    assert [c["path"] for c in calls] == ["/projects/tasks"]
+    assert calls[0]["params"]["q"] == "#7"
 
 
 async def test_a_gateway_404_is_relayed_as_not_visible(monkeypatch) -> None:
