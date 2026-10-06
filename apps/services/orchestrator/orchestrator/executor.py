@@ -3485,6 +3485,9 @@ async def run_agent_stream(
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)
+    # WS-45 S2: the run's tier policy. Set after the load, for a covered
+    # agent only. None everywhere else.
+    _tier_run: Any = None
     _relay_mark_inactive = None  # type: ignore[assignment]
     _relay_mark_active = None  # type: ignore[assignment]
     with contextlib.suppress(Exception):
@@ -3775,6 +3778,21 @@ async def run_agent_stream(
             #   1. Request ``model`` parameter (explicit user override)
             #   2. Global ``copilot_chat_model`` setting (env / .env)
             #   3. Agent's ``model_tier`` from config.json (per-agent default)
+            #
+            # WS-45 S2 (D90): an agent that AI_TIER_ROUTING covers takes its
+            # tier from the policy instead, and ignores 1 and 2. None for
+            # every other agent, so this block runs as before.
+            _tier_run = await _tier_policy_for_run(
+                agent_name, agent,
+                run_id=run_id, thread_id=thread_id, model=model,
+                think_mode=think_mode, event_payload=event_payload,
+                config=loaded.config,
+                agent_md_model=(
+                    (_agent_md_spec.model or "").strip()
+                    if _agent_md_spec is not None else ""
+                ),
+                is_copilot=_is_copilot_sdk,
+            )
             _requested_model_early = (model or "").strip()
             _configured_model_early = (
                 getattr(settings, "copilot_chat_model", "") or ""
@@ -3796,6 +3814,8 @@ async def run_agent_stream(
                 or _agent_md_model
                 or _agent_model_tier
             )
+            if _tier_run is not None:
+                _final_model_early = _tier_run.run_tier()
             # BYOK-by-default: route every Copilot SDK agent through the LiteLLM
             # gateway and normalise any bare/empty model to the default tier.
             _final_model_early, _is_byok_early = _byok_default_model(
@@ -3854,6 +3874,11 @@ async def run_agent_stream(
                     )
                 except Exception:
                     pass
+            # WS-45 S2 (§4.5): a Copilot SDK agent cannot switch per request,
+            # so it keeps the turn's tier for the whole run. Log it and tell
+            # the chat once. A native agent's middleware does it per request.
+            if _tier_run is not None and _is_copilot_sdk:
+                yield _sse(_tier_run.announce_run())
 
             # ── Reasoning depth (chat UI "thinking" toggle) ─────────────
             # Applied at the SAME seam as the model, and to every agent this
@@ -3973,7 +3998,11 @@ async def run_agent_stream(
                     async with contextlib.AsyncExitStack() as _nstack:
                         if hasattr(type(agent), "__aenter__"):
                             await _nstack.enter_async_context(agent)
-                        _agen = _agent_for_run(agent, _native_ctx).run(
+                        # WS-45 S2: a covered run's view also carries the
+                        # tier policy. None leaves the view as it was.
+                        _agen = _with_tier_policy(
+                            _agent_for_run(agent, _native_ctx), _tier_run,
+                        ).run(
                             _native_input, stream=True,
                         ).__aiter__()
                         # Race the agent's next update against the injected-tool
@@ -5250,7 +5279,10 @@ async def run_agent_stream(
                         agent_name, run_id, event_payload, integrations,
                         native=not _is_copilot_sdk,
                     )
-                    response = await _agent_for_run(agent, _run_ctx).run(
+                    response = await _with_tier_policy(
+                        _agent_for_run(agent, _run_ctx),
+                        None if _is_copilot_sdk else _tier_run,
+                    ).run(
                         _run_input,
                     )
                 return getattr(response, "text", "") or ""
@@ -6041,6 +6073,130 @@ def _agent_for_run(agent: Any, provider: Any) -> Any:
     from orchestrator._native_run_context import agent_for_run
 
     return agent_for_run(agent, provider)
+
+
+# ── WS-45 S2: the tier policy of a run (ai_tier_routing.md §4, §5, D90) ─────
+#
+# `acb_skills.tier_policy` holds the policy. These helpers only glue it to a
+# run. With `AI_TIER_ROUTING` unset, `_tier_policy_for_run` returns None at
+# once, and no other line of a run changes.
+
+
+def _tier_policy_covers(agent_name: str) -> bool:
+    """True when `AI_TIER_ROUTING` covers *agent_name*. Fails closed."""
+    try:
+        from acb_skills.tier_policy import tier_routing_on
+    except ImportError:
+        return False
+    return tier_routing_on(agent_name)
+
+
+def _agent_default_tier(
+    agent: Any, config: dict[str, Any], agent_md_model: str, *, is_copilot: bool,
+) -> str:
+    """The agent's own default tier (D-AI-4), the Balanced rung of the policy.
+
+    A native agent's default is its build-time client model, so
+    `PROJECTS_AGENT_MODEL` and the other agent env vars keep their meaning
+    (§8). `copilot_chat_model` does not count for a covered agent. A model
+    that is not a gateway id reads as `tier-balanced`.
+    """
+    from acb_skills.tier_policy import DEFAULT_TIER
+
+    if is_copilot:
+        found = agent_md_model or str(config.get("model_tier") or "")
+    else:
+        found = (
+            str(getattr(getattr(agent, "client", None), "model", "") or "")
+            or str(config.get("model_tier") or "")
+        )
+    found = found.strip()
+    return found if _is_gateway_model(found) else DEFAULT_TIER
+
+
+def _agent_tool_names(agent: Any) -> list[str]:
+    """The names of the tools *agent* holds, for the turn-kind question."""
+    from acb_skills.tool_guard import tool_name
+
+    opts = getattr(agent, "default_options", None)
+    tools = (opts.get("tools") if isinstance(opts, dict) else None) or (
+        getattr(agent, "_tools", None) or []
+    )
+    return [n for n in (tool_name(t) for t in tools) if n]
+
+
+def _emit_to_run(thread_id: str | None) -> Any:
+    """A callback that puts one event on the run's own queue, or nowhere."""
+    def _emit(event: dict[str, Any]) -> None:
+        queue = resolve_run_queue(thread_id)
+        if queue is not None:
+            queue.put_nowait(event)
+    return _emit
+
+
+async def _tier_policy_for_run(
+    agent_name: str,
+    agent: Any,
+    *,
+    run_id: str,
+    thread_id: str | None,
+    model: str | None,
+    think_mode: str | None,
+    event_payload: dict[str, Any],
+    config: dict[str, Any],
+    agent_md_model: str,
+    is_copilot: bool,
+) -> Any:
+    """The run's `RunTierPolicy`, or None when the flag does not cover the agent.
+
+    A covered run ignores the client's *model* and logs
+    `ai_route.model_ignored` (§8). It asks the turn kind ONCE, here, before
+    the first main request (§4.3), and logs `ai_route.turn_kind` with the
+    latency, so Q8's cost can be read on a box. No line holds tenant text.
+    """
+    if not _tier_policy_covers(agent_name):
+        return None
+    from acb_skills import tier_policy
+
+    requested = (model or "").strip()
+    if requested:
+        _log.info(
+            "ai_route.model_ignored", agent=agent_name, run_id=run_id,
+            model=requested[:80],
+        )
+    default = _agent_default_tier(
+        agent, config, agent_md_model, is_copilot=is_copilot,
+    )
+    message = ""
+    if isinstance(event_payload, dict):
+        message = str(
+            event_payload.get("message") or event_payload.get("user_query") or ""
+        )
+    turn = await tier_policy.turn_kind(
+        message, _agent_tool_names(agent), think_mode,
+    )
+    _log.info(
+        "ai_route.turn_kind", agent=agent_name, run_id=run_id, kind=turn.kind,
+        source=turn.source, latency_ms=turn.latency_ms,
+    )
+    return tier_policy.RunTierPolicy(
+        agent=agent_name,
+        run_id=run_id,
+        default=default,
+        kind=turn.kind,
+        effort=tier_policy.normalise_effort(think_mode),
+        emit=None if is_copilot else _emit_to_run(thread_id),
+    )
+
+
+def _with_tier_policy(view: Any, policy: Any) -> Any:
+    """*view*, or a per-run copy that carries the tier policy's provider."""
+    if policy is None:
+        return view
+    from acb_skills.tier_policy import TierPolicyProvider
+    from orchestrator._native_run_context import agent_with_providers
+
+    return agent_with_providers(view, [TierPolicyProvider(policy)])
 
 
 def _cap_structured_history(

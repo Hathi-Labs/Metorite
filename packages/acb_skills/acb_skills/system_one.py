@@ -197,7 +197,19 @@ def _gateway() -> tuple[str, str]:
     return f"{base.rstrip('/')}/v1", key
 
 
-def _build_agent() -> tuple[Any, Any]:
+def warm() -> None:
+    """Import what a call needs, so a caller's own timer counts no import.
+
+    The turn-kind question of ``tier_policy`` waits at most 1.5 s, and the
+    first imports of a cold process can take longer than that.
+    """
+    import importlib
+
+    for module in ("acb_llm.attribution", "acb_llm.routed", "agent_framework.openai"):
+        importlib.import_module(module)
+
+
+def _build_agent(timeout_s: float = TIMEOUT_S) -> tuple[Any, Any]:
     """A ``system-one`` agent with no tools, and the HTTP client under it.
 
     Built for each call and closed after it, so no connection pool outlives
@@ -212,7 +224,7 @@ def _build_agent() -> tuple[Any, Any]:
         base_url=base_url,
         api_key=api_key,
         default_headers={"X-CC-Source": SOURCE},
-    ).with_options(timeout=TIMEOUT_S, max_retries=0)
+    ).with_options(timeout=timeout_s, max_retries=0)
     client = OpenAIChatCompletionClient(model=SYSTEM_ONE_TIER, async_client=async_client)
     agent = Agent(client=client, instructions=INSTRUCTIONS, name=AGENT_NAME)
     return agent, async_client
@@ -283,13 +295,16 @@ def parse_answers(text: str, items: list[Item]) -> list[Answer]:
     return out
 
 
-async def ask(context: str, items: list[Item]) -> list[Answer]:
+async def ask(
+    context: str, items: list[Item], *, timeout_s: float = TIMEOUT_S,
+) -> list[Answer]:
     """Ask System 1 every item in ONE ``tier-fast`` request. Never logs content.
 
     Raises :class:`SystemOneUnavailable` when this box does not route through
     the Router, when the Router refuses, when the request takes more than
-    :data:`TIMEOUT_S`, or when the reply is not the fixed shape. Nothing falls
-    back to a direct vendor call (D57.7).
+    *timeout_s* (:data:`TIMEOUT_S` for the ``decide`` tool), or when the
+    reply is not the fixed shape. Nothing falls back to a direct vendor call
+    (D57.7).
     """
     if not items or len(items) > MAX_ITEMS:
         raise SystemOneUnavailable("bad_items")
@@ -307,7 +322,7 @@ async def ask(context: str, items: list[Item]) -> list[Answer]:
         headers["X-CC-Agent"] = calling
 
     try:
-        agent, async_client = _build_agent()
+        agent, async_client = _build_agent(timeout_s)
     except Exception as exc:
         _log.warning("system_one.build_failed", error_type=type(exc).__name__)
         raise SystemOneUnavailable("build_failed") from exc
