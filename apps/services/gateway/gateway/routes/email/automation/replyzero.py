@@ -1860,16 +1860,24 @@ async def read_job_status(
     """The read of the status ask of a job (PR-B2 item 3). It takes ``db``,
     opens no block and asks no model. A job calls it in Block S.
 
-    It reads what :func:`_determine_status_of` reads: ``about`` with
-    ``include_kb=False``, the self addresses, then
-    :func:`read_thread_status` with the id of the row. Returns None for a
-    thread with no rows. A failed read logs
-    ``email.resolve_conversation_status_failed`` and returns None, as the
-    resolver does today. Block S then runs ``SELECT 1``, so a read that
-    left the block aborted stops the job (item 6).
+    It reads what :func:`_determine_status_of` reads, in its order. A
+    self-only thread reads nothing more, and its read says ``self_only``
+    with no context (review round 1). Any other thread reads ``about`` with
+    ``include_kb=False``, the self addresses, then :func:`read_thread_status`
+    with the id of the row. Returns None for a thread with no rows. A failed
+    read logs ``email.resolve_conversation_status_failed`` and returns None,
+    as the resolver does today. Block S then runs ``SELECT 1``, so a read
+    that left the block aborted stops the job (item 6).
     """
     row_id = getattr(message_row, "id", None)
+    message_id = str(row_id) if row_id is not None else None
     try:
+        # D-EM-27 first, as in `_determine_status_of`: FYI, with no ask.
+        if await _thread_is_self_only(db, account_id, message_row.thread_id):
+            return StatusRead(
+                account_id=account_id, thread_id=message_row.thread_id,
+                trigger="inbound", ctx=None, acc_email="", about="",
+                model=_STATUS_MODEL, self_only=True, message_id=message_id)
         # The knowledge base is drafting facts, and the status needs none.
         about, _sig = await _load_assistant_about(
             db, account_id, include_kb=False)
@@ -1877,8 +1885,7 @@ async def read_job_status(
         return await read_thread_status(
             db, account_id, message_row.thread_id, trigger="inbound",
             about=about, acc_email=me.address,
-            self_addresses=me.self_addresses,
-            message_id=str(row_id) if row_id is not None else None,
+            self_addresses=me.self_addresses, message_id=message_id,
             move_keys=move_keys)
     except Exception as exc:
         _log.warning("email.resolve_conversation_status_failed",

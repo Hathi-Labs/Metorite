@@ -2214,6 +2214,43 @@ async def test_the_job_status_fence_can_fail(monkeypatch, decide_env):
     assert _status_asks(tagged) == [("completion", "tier-balanced", 1)]
 
 
+#: A conversation rule that the rule match picks (review round 1).
+_B2_REPLY_RULE = {"id": "r-reply", "name": "Reply", "enabled": True,
+                  "instructions": "a mail that asks the owner a question",
+                  "system_type": "REPLY",
+                  "actions": [{"type": "LABEL", "label": "Reply"}]}
+
+
+@pytest.mark.parametrize("mode", ["off", "shadow"])
+@pytest.mark.parametrize("job", sorted(_B1_JOBS))
+async def test_a_conversation_match_asks_the_status_of_a_new_thread(
+    job, mode, monkeypatch, decide_env,
+):
+    """``email-decision-core-no-session-across-the-job-status-ask``, the
+    other half of item 2 (review round 1, reviewer P2).
+
+    The first inbound mail of a new thread matches the conversation rule
+    Reply, and the thread is not a conversation yet. The job still asks the
+    status: Block S reads, the ask sees zero open blocks, and the status
+    rule Done is the ONE live match."""
+    state, tagged, calls = _b2_env(monkeypatch, decide_env, mode, job=job,
+                                   conversation=False)
+    monkeypatch.setattr(engine_mod, "_load_rules",
+                        AsyncMock(return_value=[_B2_REPLY_RULE]))
+
+    await _B1_JOBS[job]()
+
+    blocks = _blocks(calls)
+    assert "read_job_status" in blocks, (
+        f"a conversation match on a new thread asked no status: {blocks}")
+    asks = _status_asks(tagged)
+    assert {leaf for leaf, _t, _n in asks} == _LEAVES[mode], tagged
+    assert [n for _l, _t, n in asks] == [0] * len(asks), tagged
+    assert blocks["resolve_classification"][0] == blocks["read_job_status"][0] + 1
+    assert _applied(job, calls) == [("r-done", None)]
+    assert state["open"] == 0
+
+
 def _bound_args(fn, args, kwargs) -> dict:
     """The arguments of one call of ``fn``, with each default filled in."""
     bound = inspect.signature(fn).bind(*args, **kwargs)
@@ -2280,6 +2317,64 @@ async def test_the_split_status_asks_what_the_composed_form_asks(
     assert len(builds) == 2 and builds[0] == builds[1], builds
     assert builds[0]["self_addresses"] == selves
     assert split == replyzero_mod.JobStatus("verdict", composed)
+
+
+async def test_a_self_only_thread_needs_no_other_read(monkeypatch, decide_env):
+    """``email-decision-core-status-parity``, a self-only thread on a failure
+    path (review round 1, verifier F1).
+
+    ``_determine_status_of`` tests self-only first and reads nothing more.
+    So a self-only thread is FYI even when the ``about`` read and the self
+    read fail. The split read keeps that order and gives FYI too, with no
+    failure logged."""
+    _dc_mode(monkeypatch, decide_env, "off")
+
+    async def _broken(*_a, **_kw):
+        raise RuntimeError("the read failed")
+
+    build = AsyncMock(side_effect=_broken)
+    for name, value in (("_load_assistant_about", _broken),
+                        ("resolve_self", _broken),
+                        ("build_thread_context", build),
+                        ("_thread_is_self_only", AsyncMock(return_value=True))):
+        monkeypatch.setattr(replyzero_mod, name, value)
+    row, db = _b1_row(), AsyncMock()
+
+    with structlog.testing.capture_logs() as caps:
+        composed = await replyzero_mod._determine_status_of(db, _DC_ACC, row)
+        split = await replyzero_mod.ask_job_status(
+            await replyzero_mod.read_job_status(db, _DC_ACC, row))
+
+    assert composed == ("FYI", True)
+    assert split == replyzero_mod.JobStatus("verdict", ("FYI", True)), split
+    build.assert_not_awaited()
+    assert "email.resolve_conversation_status_failed" not in [
+        c.get("event") for c in caps]
+
+
+@pytest.mark.parametrize("mode", ["on", "off"])
+async def test_the_conversation_read_stays_out_of_on(mode, monkeypatch, decide_env):
+    """Review round 1 (verifier F2). Item 1 reads the conversation test in
+    Block R outside ``on`` only. In ``on`` the plan of ``status_before_match``
+    owns it, so ``read_classification`` must not read it again. ``off`` is
+    the control, and it shows that the case can see the read."""
+    _dc_mode(monkeypatch, decide_env, mode)
+    conversation = AsyncMock(return_value=True)
+    monkeypatch.setattr(replyzero_mod, "_thread_is_conversation", conversation)
+    monkeypatch.setattr(replyzero_mod, "status_before_match", AsyncMock(
+        return_value=replyzero_mod.StatusFirst(rules={})))
+    monkeypatch.setattr(engine_mod, "read_rule_match", AsyncMock(return_value=None))
+    email = {"from": "billing@vendor-b1.test", "subject": "Invoice 42"}
+
+    plan = await engine_mod.read_classification(
+        AsyncMock(), _DC_ACC, _b1_row(), email, resolve=True)
+
+    if mode == "on":
+        conversation.assert_not_awaited()
+        assert plan.conversation is False
+    else:
+        conversation.assert_awaited_once()
+        assert plan.conversation is True
 
 
 @pytest.mark.parametrize("job", sorted(_B1_JOBS))

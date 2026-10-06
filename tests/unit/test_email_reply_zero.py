@@ -352,7 +352,8 @@ async def test_backfill_handles_outbound_reply_and_engine_for_inbound() -> None:
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_mark_thread_replied", mark), \
             patch.object(_rz, "_thread_is_conversation",
-                         AsyncMock(return_value=False)),             patch.object(_rz, "read_job_status",
+                         AsyncMock(return_value=False)), \
+            patch.object(_rz, "read_job_status",
                          AsyncMock(return_value=None)), \
             patch.object(_rz, "_upsert_thread_status",
                          AsyncMock(side_effect=rec)), \
