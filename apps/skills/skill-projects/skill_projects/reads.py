@@ -19,6 +19,7 @@ Output conventions the cards read (``ProjectToolCards.tsx``):
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -54,8 +55,15 @@ def legend() -> str:
     now = datetime.now(UTC)
     return f"{DATA_LEGEND} Today is {now:%A} {now:%Y-%m-%d} (UTC)."
 
-#: The largest page a list tool asks for. The route caps at 50 anyway.
+#: The largest page a list tool asks for. ``/projects/search`` caps at 50
+#: (``search.MAX_HITS``). The list routes cap at 100 (``core.MAX_PAGE_SIZE``),
+#: so 50 is this tool's own choice there, not the route's limit.
 MAX_PAGE = 50
+#: The shortest TEXT query the routes run (``filters.MIN_QUERY``, D-PM-31).
+#: The skill cannot import gateway code, so this is a copy, and
+#: ``tests/unit/test_projects_search_minimum_lockstep.py`` holds it equal to
+#: the route and to the browser. A task number passes at any length.
+MIN_QUERY = 3
 #: How many timeline rows a detail read carries.
 TIMELINE_ROWS = 12
 
@@ -233,14 +241,53 @@ async def project_summary(project_id: str = "") -> str:
 # ── Finding and listing tasks ────────────────────────────────────────────────
 
 
+_EDGE_SPACE = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+
+
+def _clean(raw: str) -> str:
+    """Edge whitespace and U+FEFF removed: the route's ``filters.clean_query``."""
+    return _EDGE_SPACE.sub("", raw or "")
+
+
+def _task_number(raw: str) -> int | None:
+    """``#7`` or ``7`` → 7, else ``None``. The same rule as the route's
+    ``filters.task_number``, and the lockstep test holds the two equal."""
+    stripped = _clean(_clean(raw).lstrip("#"))
+    if not (stripped.isascii() and stripped.isdigit()) or len(stripped) > 18:
+        return None
+    return int(stripped)
+
+
+def _short_text(term: str) -> bool:
+    """True for text too short to search. A task number is never short."""
+    return bool(term) and len(term) < MIN_QUERY and _task_number(term) is None
+
+
+def _short_query(term: str) -> str:
+    """The answer for a text query the routes will not run (D-PM-31).
+
+    The search route answers 422 and the list route answers EMPTY. A tool
+    that relayed the empty list would say "no task matches", which is false.
+    """
+    if not term:
+        return f"Give at least {MIN_QUERY} characters to search, or a task number such as #7."
+    return (
+        f"Give at least {MIN_QUERY} characters to search"
+        f" ({data(term)} is {len(term)}). A task number works at any length: #7."
+    )
+
+
 @_annotate(read_only=True, idempotent=True, open_world=False)
 async def find_tasks(query: str, limit: int = 10) -> str:
     """Search tasks by words in the title, or by task number, across every
-    project the member can see. At least 3 characters. Returns ranked hits
-    with the project and status, each with a `full_id` for task_detail."""
-    term = (query or "").strip()
-    if len(term) < 3:
-        return "Give at least 3 characters to search."
+    project the member can see. Words need at least 3 characters. A task
+    number works at any length: "#7" finds task 7 exactly. A query of only
+    digits finds that task number and no titles, so add a word to find a
+    title that holds a number. Returns ranked hits with the project and
+    status, each with a `full_id` for task_detail."""
+    term = _clean(query or "")
+    if not term or _short_text(term):
+        return _short_query(term)
     cap = max(1, min(int(limit or 10), MAX_PAGE))
     payload = await get("/projects/search", {"q": term, "limit": cap})
     rows = (payload or {}).get("rows") or []
@@ -275,7 +322,8 @@ async def list_tasks(
     project the member can see. status_category is one of todo, in_progress,
     done, cancelled (comma-separated for several). assignee is an email.
     tags is comma-separated. watching=true lists only tasks the member
-    watches. The total is the server's count, and page_size caps at 50."""
+    watches. query needs 3 characters, or a task number such as #7. The
+    total is the server's count, and page_size caps at 50."""
     params: dict[str, Any] = {
         "page": max(1, int(page or 1)),
         "page_size": max(1, min(int(page_size or 25), MAX_PAGE)),
@@ -299,8 +347,13 @@ async def list_tasks(
         params["watching"] = True
     if include_archived:
         params["include_archived"] = True
-    if query:
-        params["q"] = query
+    term = _clean(query or "")
+    if term:
+        # The list route matches NOTHING for short text (filters.py), so a
+        # 2-character query would read as "no task matches those filters".
+        if _short_text(term):
+            return _short_query(term)
+        params["q"] = term
 
     payload = await get("/projects/tasks", params)
     rows = (payload or {}).get("rows") or []

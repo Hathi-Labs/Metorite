@@ -29,6 +29,9 @@ surface a task the list would not.
 **`#123` is a task number, not a phrase.** A workspace numbers its tasks and
 people quote those numbers; searching for `#42` and getting every task whose
 description contains "42" is a search box that has ignored what you typed.
+Since D-PM-31 was built (2026-10-06), a query that is only a number is an
+EXACT lookup, and it passes at any length. Every other query needs
+`MIN_QUERY` characters, or the route answers 422.
 
 **LIKE metacharacters are escaped** — see `like_escape`. That was a live defect
 on the list endpoint too, not a new-code precaution.
@@ -51,7 +54,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
     MAX_DEPTH,
     _tenant_session,
@@ -65,16 +68,25 @@ from gateway.routes.projects.core import (
 from gateway.routes.projects.filters import (
     MIN_QUERY,
     attach_parent_context,
+    clean_query,
     like_escape,
+    short_query_message,
+    short_text_query,
+    task_number,
 )
 from sqlalchemy import text
 
 # `MIN_QUERY` — the shortest text query either search surface will run — is
 # imported above and RE-EXPORTED here (`__all__`), not defined here (WS-27be).
-# Shorter than it and every query is a table scan returning half the workspace;
-# both surfaces answer an EMPTY result rather than a 422, because a search box
-# types one character on the way to typing three and an error flashing in a
-# palette on every keystroke is noise the user cannot act on.
+# So is `task_number`, because the list endpoint's `?q=` now asks it too.
+#
+# D-PM-31 (built 2026-10-06): a TEXT query shorter than `MIN_QUERY` is a 422
+# here, with a sentence that says what to type. The palette and the duplicate
+# picker gate on the same rule before they call (`app/projects/lib/search.ts`),
+# so the 422 reaches only a caller that skipped the gate — the chat tool once
+# did, and an empty answer told it "no task matches", which was false. The
+# list endpoint still answers EMPTY for a short `?q=`, because a filter box
+# types one character on the way to three.
 #
 # It moved to `filters` because `filters.build_task_filters` now enforces the
 # same threshold on the list endpoint's `?q=`, and the two must agree by
@@ -85,19 +97,6 @@ from sqlalchemy import text
 
 #: The most hits one search returns. Not a page — see the module docstring.
 MAX_HITS = 50
-
-
-def task_number(raw: str) -> int | None:
-    """``#42`` or ``42`` → 42, else ``None``.
-
-    Bounded to what the column can hold: `task_number` is a BIGINT, and a
-    forty-digit "number" is a phrase somebody typed, not a lookup. Without the
-    bound it would also be an unbounded integer parse on user input.
-    """
-    stripped = raw.strip().lstrip("#").strip()
-    if not stripped.isdigit() or len(stripped) > 18:
-        return None
-    return int(stripped)
 
 
 #: Ranked in SQL, because the ordering has to be applied BEFORE the limit.
@@ -120,6 +119,11 @@ def task_number(raw: str) -> int | None:
 #: `AmbiguousParameterError: could not determine data type of parameter $1`.
 #: Every hermetic test passed with the cast missing, because a Python fake has
 #: no type system to be ambiguous about; only the live run found it.
+#:
+#: ``{match}`` is one of the two arms below. A query that is only a task number
+#: (`#7`, `7`) gets the EXACT arm, at any length (D-PM-31's exception): it is
+#: an equality on `idx_pm_tasks_task_number`, and it never runs the text scan.
+#: Every other query gets the TEXT arm.
 _SEARCH_SQL = """
 SELECT t.id, t.title, t.task_number, t.project_id, t.status_id, t.due_at,
        t.completed_at, t.parent_task_id, p.name AS project_name, s.name AS status_name,
@@ -137,13 +141,15 @@ SELECT t.id, t.title, t.task_number, t.project_id, t.status_id, t.due_at,
  WHERE {visible}
    AND {triage}
    AND t.archived_at IS NULL{exclude}
-   AND (t.title ILIKE :term
-        OR t.description ILIKE :term
-        OR (CAST(:number AS bigint) IS NOT NULL
-            AND t.task_number = CAST(:number AS bigint)))
+   AND {match}
  ORDER BY rank, t.updated_at DESC, t.id
  LIMIT :cap
 """
+
+#: The arm for a text query: the title or the description, by substring.
+_TEXT_MATCH = "(t.title ILIKE :term OR t.description ILIKE :term)"
+#: The arm for a task-number query: an exact match, served by an index.
+_NUMBER_MATCH = "t.task_number = CAST(:number AS bigint)"
 
 
 #: The clause `exclude_relatives_of` adds (WS-27w item 5, P-7). A fragment
@@ -236,9 +242,12 @@ async def search_tasks(
     the thing you cannot navigate to, and scoping it to the selected project
     would make it a filter with a different name.
     """
-    term = q.strip()
-    if len(term) < MIN_QUERY:
+    term = clean_query(q)
+    if not term:
         return {"rows": [], "total": 0, "truncated": False, "query": term}
+    if short_text_query(term):
+        raise HTTPException(status_code=422, detail=short_query_message(term))
+    number = task_number(term)
 
     cap = max(1, min(int(limit), MAX_HITS))
     escaped = like_escape(term)
@@ -261,13 +270,14 @@ async def search_tasks(
                 visible=task_visibility_clause(vis),
                 triage="TRUE" if include_triage else triage_exclusion_clause(),
                 exclude=exclude_sql,
+                match=_TEXT_MATCH if number is None else _NUMBER_MATCH,
             )),
             {
                 **vis.params,
                 **exclude_params,
                 "term": f"%{escaped}%",
                 "prefix": f"{escaped}%",
-                "number": task_number(term),
+                "number": number,
                 # One more than the cap, so "there are more" is a fact rather
                 # than a guess — the WS-27q lesson: silence about truncation is
                 # the only unacceptable answer.

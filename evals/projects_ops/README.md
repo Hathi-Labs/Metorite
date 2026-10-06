@@ -126,7 +126,11 @@ PO-3 has no sequence, so the fence proves its checker on recorded runs.
 
 ## A finding of P3
 
-`find_tasks` refuses a query under 3 characters. The route takes 2
-(`gateway/routes/projects/filters.py`, `MIN_QUERY`). So the tool refuses
-"#7", and the route would find it. P3 does not fix this. The PO-7 sequence
-reads the task with `list_tasks` instead.
+`find_tasks` refused a query under 3 characters, and the route took 2. So
+the tool refused "#7", and the route would find it. The PO-7 sequence read
+the task with `list_tasks` instead.
+
+**Fixed 2026-10-06.** D-PM-31 sets the text minimum at 3 on the route, the
+tool and the browser. A query that is only a task number, such as "#7",
+passes at any length as an exact lookup. The PO-7 sequence now calls
+`find_tasks("#7")`.

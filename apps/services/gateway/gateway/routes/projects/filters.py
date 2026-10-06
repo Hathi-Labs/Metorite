@@ -19,6 +19,7 @@ people work around for months instead of reporting.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -52,14 +53,68 @@ MAX_MULTI = 100
 #: module is the one it already depends on, so the arrow only points one way);
 #: two copies of a threshold is how they stop matching.
 #:
-#: ⚠️ **Two characters is one below the length a trigram index can serve.**
-#: `pg_trgm` extracts whole trigrams from the pattern, and `%ab%` contains none
-#: — measured on 240k rows, a 2-character term is still a 168 ms full scan while
-#: a 3-character one is 0.4 ms off `idx_pm_tasks_title_trgm` (migration 170).
-#: Raising this to 3 would make every accepted query servable, but it is a
-#: PRODUCT change — "qa", "ui" and "hr" are real searches — so it is recorded as
-#: owed in project_management_app.md §11.33 rather than taken here.
-MIN_QUERY = 2
+#: **3, by D-PM-31** (owner, 2026-08-13; built 2026-10-06). `pg_trgm` extracts
+#: whole trigrams from the pattern, and `%ab%` contains none — measured on 240k
+#: rows, a 2-character term was a 168 ms full scan while a 3-character one is
+#: 0.4 ms off `idx_pm_tasks_title_trgm` (migration 170). At 3, every accepted
+#: text query is one the index can serve.
+#:
+#: ⚠️ **A task number is not text, and it passes at any length** (the owner's
+#: exception, 2026-10-06). `#7` is an exact lookup on `task_number`, served by
+#: `idx_pm_tasks_task_number` (migration 170), so the trigram reason does not
+#: apply to it. :func:`task_number` decides what counts as one, and
+#: :func:`short_text_query` is the one test both endpoints ask.
+#:
+#: Two other readers hold a copy, because they cannot import this: the chat tool
+#: (`skill_projects/reads.py`) and the browser (`app/projects/lib/search.ts`).
+#: `tests/unit/test_projects_search_minimum_lockstep.py` holds all three equal.
+MIN_QUERY = 3
+
+
+#: Whitespace at either end, plus U+FEFF. ``str.strip`` keeps U+FEFF and
+#: JavaScript's ``trim`` drops it, so a pasted "\ufeff7" was a task number in
+#: the browser and a 422 here. ``search.ts`` ``cleanQuery`` strips this set.
+_EDGE_SPACE = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+
+
+def clean_query(raw: str) -> str:
+    """A query with its edge whitespace (and U+FEFF) removed. The one trim
+    the minimum rule reads, here and in the browser."""
+    return _EDGE_SPACE.sub("", raw or "")
+
+
+def task_number(raw: str) -> int | None:
+    """``#42`` or ``42`` → 42, else ``None``.
+
+    Bounded to what the column can hold: `task_number` is a BIGINT, and a
+    forty-digit "number" is a phrase somebody typed, not a lookup. Without the
+    bound it would also be an unbounded integer parse on user input.
+
+    ASCII digits only. ``str.isdigit`` is also true for ``²``, and ``int("²")``
+    raises, so without ``isascii`` a superscript answered a 500.
+    """
+    stripped = clean_query(clean_query(raw).lstrip("#"))
+    if not (stripped.isascii() and stripped.isdigit()) or len(stripped) > 18:
+        return None
+    return int(stripped)
+
+
+def short_text_query(term: str) -> bool:
+    """True when ``term`` is text too short to search (D-PM-31).
+
+    An empty term is not a query at all, and a task number passes at any
+    length, so neither is "short".
+    """
+    return bool(term) and len(term) < MIN_QUERY and task_number(term) is None
+
+
+def short_query_message(term: str) -> str:
+    """The 422 detail for a short text query. The chat tool says the same
+    sentence with the term in «guillemets», because it fences member text."""
+    return (
+        f"Give at least {MIN_QUERY} characters to search ('{term}' is"
+        f" {len(term)}). A task number works at any length: #7."
+    )
 
 
 def split_csv(raw: str | None) -> list[str]:
@@ -278,8 +333,16 @@ def build_task_filters(
     # A literal, not a bound parameter: the planner constant-folds it into a
     # one-time filter and the query never touches `pm_tasks` at all, which is
     # the entire point.
-    term = (q or "").strip()
-    if term and len(term) < MIN_QUERY:
+    #
+    # D-PM-31's exception: a query that is only a task number (`#7`, `7`) is
+    # an exact lookup on `task_number`, at any length, and never a text scan.
+    # The search route answers it the same way, so the two endpoints agree.
+    term = clean_query(q or "")
+    number = task_number(term) if term else None
+    if number is not None:
+        clauses.append("t.task_number = :q_number")
+        params["q_number"] = number
+    elif short_text_query(term):
         clauses.append("FALSE")
     elif term:
         clauses.append("(t.title ILIKE :q OR t.description ILIKE :q)")

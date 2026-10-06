@@ -54,6 +54,7 @@ import {
   highlight,
   hitContext,
   isCurrent,
+  isSearchableQuery,
   moveSelection,
   paletteKey,
   paletteState,
@@ -108,7 +109,7 @@ export function SearchPalette({
   useEffect(() => {
     if (!open) return;
     const term = query.trim();
-    if (term.length < 2) {
+    if (!isSearchableQuery(term)) {
       setHits(null);
       setLoading(false);
       return;

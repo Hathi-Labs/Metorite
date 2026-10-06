@@ -28,8 +28,45 @@ export interface Hit {
   parent?: ParentFact | null;
 }
 
-/** Mirrors the gateway's `MIN_QUERY`. Below it the endpoint answers empty. */
-export const MIN_QUERY = 2;
+/**
+ * Mirrors the gateway's `MIN_QUERY` (D-PM-31): the shortest TEXT query the
+ * search route runs. Shorter text is a 422 there, so the palette never sends
+ * it. `tests/unit/test_projects_search_minimum_lockstep.py` reads this line
+ * and holds it equal to the gateway and to the chat tool.
+ */
+export const MIN_QUERY = 3;
+
+/**
+ * Is this query only a task number (`#7`, `7`, `# 7`)? Mirrors the gateway's
+ * `filters.task_number`: ASCII digits, at most 18 of them. A task number is
+ * an exact lookup, so it passes at any length (the owner's exception to
+ * D-PM-31, 2026-10-06).
+ */
+/**
+ * A query with its edge whitespace removed, by the gateway's rule
+ * (`filters.clean_query`): Python's whitespace set plus U+FEFF. `trim` alone
+ * keeps `\x1c`-`\x1f` and `\x85`, which Python strips, so add them here.
+ */
+export function cleanQuery(query: string): string {
+  return query.replace(/^[\s\x1c-\x1f\x85]+|[\s\x1c-\x1f\x85]+$/g, "");
+}
+
+export function isTaskNumberQuery(query: string): boolean {
+  const stripped = cleanQuery(cleanQuery(query).replace(/^#+/, ""));
+  return /^[0-9]{1,18}$/.test(stripped);
+}
+
+/**
+ * Is this query worth sending to `/projects/search`? Text needs `MIN_QUERY`
+ * characters, and a task number passes at any length. The ONE gate: the
+ * palette, the duplicate picker and `pagedPicker` all ask this.
+ */
+export function isSearchableQuery(query: string): boolean {
+  const term = cleanQuery(query);
+  // Code points, as Python's `len` counts them. `term.length` counts UTF-16
+  // units, so "🚀a" would read as 3 here and as 2 at the route, which is a 422.
+  return [...term].length >= MIN_QUERY || isTaskNumberQuery(term);
+}
 
 /** How long to wait after the last keystroke before asking. */
 export const DEBOUNCE_MS = 180;
@@ -59,7 +96,7 @@ export function paletteState(input: {
   error: string | null;
 }): PaletteState {
   if (input.error) return { kind: "error", message: input.error };
-  if (input.query.trim().length < MIN_QUERY) return { kind: "idle" };
+  if (!isSearchableQuery(input.query)) return { kind: "idle" };
   if (input.loading) {
     // A previous answer stays on screen while the next one loads, so the list
     // does not blank and re-fill under the cursor on every keystroke.
