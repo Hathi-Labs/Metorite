@@ -91,8 +91,26 @@ class Settings(BaseSettings):
     # (see `db_statement_cache_size` below), and `SET LOCAL` semantics want
     # re-verifying against it. Session mode is what this deployment is
     # verified against; changing ports is its own decision, not a knob turn.
+    #
+    # 🔴 **2026-10-06: the async pool was not the only pool.** `acb_graph.db`
+    # builds a SYNC engine for the audit path and the graph sessions, and it
+    # used SQLAlchemy's defaults: 5 + 10 = 15. So one gateway could ask for
+    # 12 + 15 = 27 sessions of a pooler that allows 15. Measured on the box
+    # the same day: Supavisor held all 15 sessions for `acb_app`, with ONE
+    # gateway running, and the gateway logged about 590 EMAXCONNSESSION
+    # refusals in two days. Each one reached a member as a 500.
+    #
+    # The budget is now for the PROCESS: async 8 + 2, sync 2 + 0, so 12 in
+    # all. The overflow went from 4 to 2 to pay for the sync pool. Exhaustion
+    # still queues (`db_pool_timeout`), so the cost is latency, not an error.
+    # Fence: `test_db_engine_seam.py::TestThePoolCeilingFitsThePoolerInFront`,
+    # which now sums both pools.
     db_pool_size: int = 8
-    db_max_overflow: int = 4
+    db_max_overflow: int = 2
+
+    # The SYNC engine of `acb_graph.db`, which shares the same pooler.
+    db_sync_pool_size: int = 2
+    db_sync_max_overflow: int = 0
 
     # How long a caller waits for a free connection before giving up.
     #

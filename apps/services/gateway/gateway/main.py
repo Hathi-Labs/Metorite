@@ -9,9 +9,10 @@ from acb_auth import (UserContext, UserRole, get_current_user,
                       identity_read_failed, require_authenticated,
                       require_role)
 from acb_common import configure_logging, get_logger, get_settings
+from acb_common import db_busy
 from acb_common.db import TenantUnbound, clear_tenant, release_tenant
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from gateway.build_info import applied_marker, build_sha
@@ -732,6 +733,9 @@ async def _tenant_unbound(request: Request, exc: TenantUnbound) -> JSONResponse:
         },
     )
     if unreachable:
+        # `/health` says "db busy" for a moment, so the shell's update notice
+        # can explain this to the member (navigation_shell.md §7.3).
+        db_busy.mark()
         # ⚠️ **503, and it is checked BEFORE `identified`.** This is our
         # fault, it is retryable, and saying so is the entire point: the
         # advice the 403 gives — ask an administrator — could not have fixed
@@ -781,6 +785,42 @@ async def _tenant_unbound(request: Request, exc: TenantUnbound) -> JSONResponse:
             "code": "tenant_unbound",
         },
     )
+
+
+# ── A refused database connection is a 503, not a 500 (2026-10-06) ─────────
+# Measured on the box: about 590 EMAXCONNSESSION refusals from Supabase's
+# pooler in two days, during deploys and at busy moments. Each one reached a
+# member as "The server had an error (500). Nothing was saved." A connection
+# that could not be had is not a defect in the route. It is the service being
+# briefly unavailable, so the answer is 503 with a short Retry-After. The
+# workbench then says "Metorite is busy or updating" (`lib/apiError.ts`), and
+# the shell's notice shows "Metorite is busy" (navigation_shell.md §7.3).
+#
+# ⚠️ Every OTHER exception keeps exactly the old answer: a bare 500, and
+# Starlette's ServerErrorMiddleware still logs the traceback, because it
+# raises the exception again after this handler answers.
+# ⚠️ The driver's message is NOT echoed. It names the pooler host and limits.
+# Fence: tests/unit/test_db_busy.py.
+@app.exception_handler(Exception)
+async def _db_unavailable(request: Request, exc: Exception):
+    if db_busy.is_db_unavailable(exc):
+        db_busy.mark()
+        _log.warning(
+            "db.unavailable",
+            extra={"db_path": request.url.path, "db_error": type(exc).__name__},
+        )
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "3"},
+            content={
+                "detail": (
+                    "Metorite is busy for a moment, often during an update."
+                    " Try again in a moment."
+                ),
+                "code": "db_busy",
+            },
+        )
+    return PlainTextResponse("Internal Server Error", status_code=500)
 
 
 # ── Tenant scope (MT-1c / H2) ── every HTTP request runs inside its own tenant
@@ -1559,6 +1599,10 @@ except Exception:  # pragma: no cover
 class Health(BaseModel):
     status: str
     env: str
+    #: "busy" when the database refused a connection in the last few
+    #: seconds, from memory: this route never opens a connection, so a probe
+    #: adds no load at the moment there is none to spare (db_busy.py).
+    db: str = "ok"
 
 
 class Version(BaseModel):
@@ -1630,7 +1674,11 @@ def _runtime_checks() -> dict[str, dict]:
 
 @app.get("/health", response_model=Health, tags=["meta"])
 async def health() -> Health:
-    return Health(status="ok", env=get_settings().acb_env)
+    return Health(
+        status="ok",
+        env=get_settings().acb_env,
+        db="busy" if db_busy.recently_busy() else "ok",
+    )
 
 
 @app.get("/version", response_model=Version, tags=["meta"])

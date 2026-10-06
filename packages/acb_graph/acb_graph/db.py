@@ -57,6 +57,15 @@ def _engine_kwargs(settings) -> dict:
     kwargs: dict = {"pool_pre_ping": True, "future": True}
     if settings.database_url.startswith("postgresql"):
         kwargs["connect_args"] = {"connect_timeout": settings.db_connect_timeout}
+        # 🔴 The pool size is the PROCESS budget, not SQLAlchemy's default
+        # 5 + 10. This engine shares Supabase's session pooler (15 clients
+        # for the whole database) with the async pool of `acb_common.db`.
+        # Left at the default, the two together could ask for 27 (measured
+        # 2026-10-06: about 590 refusals in two days, each one a member's 500).
+        # See `acb_common.settings.db_sync_pool_size`.
+        kwargs["pool_size"] = settings.db_sync_pool_size
+        kwargs["max_overflow"] = settings.db_sync_max_overflow
+        kwargs["pool_timeout"] = settings.db_pool_timeout
     return kwargs
 
 

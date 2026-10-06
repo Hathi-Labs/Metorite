@@ -544,6 +544,28 @@ that crash the first time it loaded code that the new build had renamed.
 6. **An app never shows its own "server unavailable" banner.** It is the
    shell's message, under D89.
 
+**A busy database (NS-11, 2026-10-06).** The owner saw "The server had an
+error (500). Nothing was saved." in Projects during a deploy, and no pop-up.
+The cause was not the restart. Supabase's session pooler allows 15 clients
+for the whole database, and one gateway could ask for 27:
+
+- the async pool of `acb_common.db`, 8 + 4.
+- the sync pool of `acb_graph.db`, on SQLAlchemy's default 5 + 10.
+
+The box logged about 590 refusals (`EMAXCONNSESSION`) in two days, during
+deploys and at busy moments. Each one became a 500, and the shell ignores a
+500 on purpose. NS-11 changes three things:
+
+1. **The budget.** Async 8 + 2 and sync 2 + 0, so 12 for the process. Three
+   slots stay free for a migration run, the backup and an operator's `psql`.
+   The fence now sums both pools.
+2. **The answer.** A refused connection is a 503 with `Retry-After` and the
+   code `db_busy` (`acb_common/db_busy.py`). Every other error keeps its 500.
+3. **The words.** The gateway's `/health` says `db: "busy"` for 15 s, from
+   memory. The shell shows "Metorite is busy" and then "Metorite has caught
+   up". A panel shows "Metorite is busy or updating. Wait a moment and try
+   again."
+
 **What it does not cover.** An open chat stream that a restart cuts still
 ends. NS-10 does not change how the chat reports that. A migration that holds a lock
 can make a request slow without failing it, so no layer sees it. R6 keeps
@@ -837,6 +859,23 @@ Done when, all met:
 3. Fences: `lib/shell/serviceHealth.test.ts` and `proxy.test.ts` (the public
    probe). Each was seen to fail first. `e2e/toast.spec.ts` stubs the probe
    as healthy, because CI runs no gateway.
+
+### NS-11 · A busy database is "busy", not a 500 (§7.3) — AGENT-SAFE · BUILT 2026-10-06
+
+Done when, all met:
+
+1. `Settings` holds a process budget of 12: async 8 + 2, sync 2 + 0. The sync
+   engine of `acb_graph.db` reads its size from it.
+2. A refused or timed-out database connection answers 503 with `Retry-After`
+   and the code `db_busy`, and the body names no pooler. Any other exception
+   keeps the bare 500.
+3. `/health` reports `db: "busy"` for 15 s after a refusal, with no database
+   call. `/api/health` passes it on as `gateway: "busy"`.
+4. The shell shows "Metorite is busy", then "Metorite has caught up".
+5. Fences, each seen red first:
+   `test_db_engine_seam.py::TestThePoolCeilingFitsThePoolerInFront` (both
+   pools, and no engine on the default pool), `tests/unit/test_db_busy.py`,
+   `lib/shell/serviceHealth.test.ts` and `lib/apiError.test.ts`.
 
 ### NS-10b · Updating, not broken: the Caddy page (§7.3) — OWNER-GATE (gate (a))
 
