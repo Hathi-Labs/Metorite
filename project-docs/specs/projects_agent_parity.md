@@ -2,7 +2,9 @@
 
 **Status: ACTIVE. D91 DECIDED by the owner on 2026-10-06, with the defaults
 of §14 as the answers to Q1 to Q6. P1 is BUILT (2026-10-06, branch
-`ws46-p1-recurring-task`). P2 is next.** Written 2026-10-05.
+`ws46-p1-recurring-task`). P2 is BUILT (2026-10-06): a refusal
+reaches the model as text, and an unknown argument is refused by name.
+P3 is next.** Written 2026-10-05.
 **P1, as built.** `create_task` takes the eight `repeat*` arguments and sets
 the rule under its one card. `task_detail` prints "Repeats:". The fence is
 `tests/unit/test_projects_recurring_task.py`. One deviation: the weekly
@@ -396,8 +398,8 @@ records the extension (§13).
 | **F1** `tests/unit/test_projects_chat_coverage.py` | Every router route has a manifest row, and every row names a route the router serves | Exists (D-PM-37) |
 | **F2** `tests/unit/test_projects_field_parity.py` | Every field of a mapped route's body and query has a tool argument, or a recorded exemption | New, P3 |
 | **F3** `tests/unit/test_projects_ui_actions.py` | Every UI client method is named in `UI_ACTIONS`, with a tool or an exemption | New, P4 |
-| **F4** `tests/unit/test_projects_agent_refusals.py` | Every exported tool gives a refusal back as text, and a 422 detail reaches the model | New, P2 |
-| **F5** the same file | Every tool's input model refuses an argument it does not declare | New, P2 |
+| **F4** `tests/unit/test_projects_agent_refusals.py` | Every exported tool gives a refusal back as text, and a 422 detail reaches the model | Exists (P2) |
+| **F5** the same file | Every tool's input model refuses an argument it does not declare | Exists (P2) |
 | **F6** `tests/unit/test_delegation_no_egress.py:687-732` | A covered run holds exactly the pinned tools. A new Projects tool must join the list on purpose | Exists (H-236) |
 | **F7** `tests/unit/test_projects_agent.py:110` | `own_tool_scope` equals `__all__` | Exists |
 
@@ -936,7 +938,7 @@ slice updates this spec's status header in the same PR (R4).
 | Slice | Builds | Closes | Gate |
 |---|---|---|---|
 | **P1 · The recurring task** ✅ BUILT 2026-10-06 | `create_task` takes the rule under one card · the weekly default · `task_detail` shows the rule · §9.1 and §9.2 | G1, G2 | AGENT-SAFE |
-| **P2 · Refusals the model reads** | `refusals_as_text` on every tool · `extra="forbid"` input models · §9.3 · F4 and F5 | G3, G4 | AGENT-SAFE |
+| **P2 · Refusals the model reads** ✅ built 2026-10-06 | `refusals_as_text` on every tool · `extra="forbid"` input models · §9.3 · F4 and F5 | G3, G4 | AGENT-SAFE |
 | **P3 · The eval harness** | `evals/projects_ops/` with PO-1, PO-2 and PO-4 to PO-7, scripted, both modes | — | AGENT-SAFE. The sweep on the production Router is OWNER-GATE |
 | **P4 · The field fence** | `SENDS`, `FIELD_EXEMPT`, `FIELD_PLANNED` and F2. Every open gap is recorded in `FIELD_PLANNED` | — | AGENT-SAFE |
 | **P5 · The UI action fence** | `UI_ACTIONS` and F3 | — | AGENT-SAFE |
@@ -1060,3 +1062,24 @@ as the answer. The slices build to these answers.
   now one sentence with full day names. The instructions gain the section
   "Repeating work and settings". PO-1 and PO-2 run in scripted mode in the
   fence file until P3 builds `evals/projects_ops/`.
+- 2026-10-06 — P2 is built, for the Projects agent only. These facts are
+  as built:
+  - `skill_projects/refusals.py` holds `refusals_as_text` and the text of
+    each refusal. `agents.py` registers each tool through it.
+  - `GatewayRefusal` carries `status`, `detail` and `fields`.
+    `client.safe_detail` makes the detail safe. It removes each URL, DSN,
+    bearer, key, JWT and absolute path. It masks each email address
+    except the address of the acting member. It drops a stack or a
+    database error whole.
+  - A refusal that no argument fixes (the manifest, or no acting member)
+    tells the model to stop, not to fix an argument.
+  - Each refusal writes one warning, `projects.tool_refused`, with the
+    tool, the status and the route template, and no detail.
+  - A 5xx gives the model no detail. A 503 keeps the outage sentence of the
+    gateway and says "Try again".
+  - MAF answers a schema failure with "Argument parsing failed.", and that
+    text names nothing. So `_StrictTool.invoke` in `agents.py` checks the
+    keys first, as §7.6 allows.
+  - A declared field that the schema hides, `importance: Removed`, still
+    gets the answer of its own tool.
+  - The seam is per agent. Other agents keep the MAF default.
