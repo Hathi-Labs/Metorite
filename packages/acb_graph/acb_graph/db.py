@@ -53,10 +53,20 @@ def _engine_kwargs(settings) -> dict:
     fails fast and the caller's error handling takes over. ``connect_timeout``
     is a libpq/psycopg param, so it is only applied to Postgres URLs; sqlite or
     other dialects used in tests are left untouched.
+
+    The pool is bounded too, on Postgres URLs only. With no settings this
+    engine took SQLAlchemy's 5 + 10, on top of the async pool, and the gateway
+    asked the Supabase session pooler (15 clients) for more than it allows.
+    The size, the overflow and the wait come from settings, inside ONE budget
+    with the async pool (``acb_common.settings``, ``db_sync_pool_size``).
     """
     kwargs: dict = {"pool_pre_ping": True, "future": True}
     if settings.database_url.startswith("postgresql"):
         kwargs["connect_args"] = {"connect_timeout": settings.db_connect_timeout}
+        kwargs["pool_size"] = settings.db_sync_pool_size
+        kwargs["max_overflow"] = settings.db_sync_max_overflow
+        kwargs["pool_timeout"] = settings.db_pool_timeout
+        kwargs["pool_recycle"] = 1800
     return kwargs
 
 
