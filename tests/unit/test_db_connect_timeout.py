@@ -26,7 +26,8 @@ def test_default_connect_timeout_is_positive():
 
 def test_postgres_url_gets_connect_timeout():
     s = SimpleNamespace(
-        database_url="postgresql+psycopg://u:p@db:5432/x", db_connect_timeout=7
+        database_url="postgresql+psycopg://u:p@db:5432/x", db_connect_timeout=7,
+        db_sync_pool_size=2, db_sync_max_overflow=1, db_pool_timeout=10,
     )
     kw = _engine_kwargs(s)
     assert kw["connect_args"] == {"connect_timeout": 7}
@@ -38,3 +39,5 @@ def test_non_postgres_url_left_untouched():
     s = SimpleNamespace(database_url="sqlite:///./x.db", db_connect_timeout=7)
     kw = _engine_kwargs(s)
     assert "connect_args" not in kw
+    # The pool budget binds the Postgres pooler only (2026-10-06).
+    assert "pool_size" not in kw

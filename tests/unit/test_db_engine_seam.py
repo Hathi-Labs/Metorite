@@ -974,7 +974,11 @@ class TestThePoolCeilingFitsThePoolerInFront:
         from acb_common.settings import Settings
 
         s = Settings()
-        ceiling = s.db_pool_size + s.db_max_overflow
+        # BOTH engines of the one process (2026-10-06). This sum used to count
+        # the async pool only, while the sync `acb_graph` engine took
+        # SQLAlchemy's 5 + 10 unseen: 12 + 15 = 27 against a cap of 15.
+        ceiling = (s.db_pool_size + s.db_max_overflow
+                   + s.db_sync_pool_size + s.db_sync_max_overflow)
         assert ceiling <= self.POOLER_SESSION_CAP - self.RESERVED_FOR_OPERATORS, (
             f"a single process may open {ceiling} connections, but the pooler "
             f"in front allows {self.POOLER_SESSION_CAP} for EVERY client and "
@@ -983,6 +987,30 @@ class TestThePoolCeilingFitsThePoolerInFront:
             "`resolve_identity` cannot read, and the member is told they belong "
             "to no organization."
         )
+
+    def test_the_sync_engine_takes_its_bounded_pool(self):
+        """The sync ``acb_graph`` engine must read the budget, not the defaults.
+
+        A pool setting that nothing reads is a comment. This builds the real
+        engine for a Postgres URL (no connection is opened) and reads its pool.
+        """
+        from types import SimpleNamespace
+
+        from acb_graph.db import _engine_kwargs
+        from sqlalchemy import create_engine
+
+        s = SimpleNamespace(
+            database_url="postgresql+psycopg://u:p@db.invalid:5432/x",
+            db_connect_timeout=5, db_sync_pool_size=2, db_sync_max_overflow=1,
+            db_pool_timeout=10,
+        )
+        engine = create_engine(s.database_url, **_engine_kwargs(s))
+        try:
+            assert engine.pool.size() == 2
+            assert engine.pool._max_overflow == 1
+            assert engine.pool._timeout == 10
+        finally:
+            engine.dispose()
 
     def test_exhaustion_waits_rather_than_hanging_for_thirty_seconds(self):
         """The ceiling is deliberately near the cap, so queueing is ordinary.
