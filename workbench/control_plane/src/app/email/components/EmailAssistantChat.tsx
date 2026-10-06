@@ -40,6 +40,8 @@ import {
   type ChatScopePick,
 } from "../lib/chatScope";
 import { getAssistantSettings } from "../lib/api";
+import { useTierRouted } from "@/hooks/useTierRouted";
+import { governedModelProps, readsChatModel } from "@/lib/tierRouting";
 
 const AGENT = "email-assistant";
 
@@ -116,6 +118,11 @@ export function EmailAssistantChat({
   // All inboxes reads no settings: each mailbox has its own (D-EM-24), so the
   // chat runs on tier-powerful there.
   const [chatModel, setChatModel] = useState<string | undefined>("tier-powerful");
+  // WS-45 S4 (D90): a covered email-assistant runs on the platform's tier,
+  // so the chat neither reads nor passes `chat_model`. With the UI flag off
+  // it is known and not covered, so the read and the props are as before.
+  const tier = useTierRouted(AGENT);
+  const readsModel = readsChatModel(tier);
   const [acctSettings, setAcctSettings] =
     useState<PersonaAccountSettings | null>(null);
   useEffect(() => {
@@ -137,7 +144,8 @@ export function EmailAssistantChat({
     read
       .then((s) => {
         if (cancelled) return;
-        setChatModel(s.chat_model || "tier-powerful");
+        // WS-45 S4: a covered email-assistant reads no `chat_model`.
+        if (readsModel) setChatModel(s.chat_model || "tier-powerful");
         setAcctSettings({
           about: s.about,
           personal_instructions: s.personal_instructions,
@@ -152,7 +160,7 @@ export function EmailAssistantChat({
     return () => {
       cancelled = true;
     };
-  }, [chatAllInboxes, chatAccountId]);
+  }, [chatAllInboxes, chatAccountId, readsModel]);
 
   // Inject Mem0 memories so the assistant has the SAME cross-conversation
   // continuity here as in the chat app (parity) — shared fetch + 30s poll via
@@ -331,8 +339,7 @@ export function EmailAssistantChat({
             agentName={AGENT}
             sessionId={activeSession.id}
             compact
-            model={chatModel}
-            lockModel
+            {...governedModelProps(tier.covered, chatModel)}
             persona={emailContextStr}
             emailContext={{ accountId: chatAccountId, emailId: selectedEmailId }}
             mailboxes={mailboxOptions}

@@ -28,6 +28,8 @@ import { SignatureEditor } from "../../SignatureEditor";
 import { DigestSettingsDialog } from "../DigestSettingsDialog";
 import { Modal, SectionHeader, SettingCard, Toggle } from "../ui";
 import { VoiceProfileDialog } from "./VoiceProfileDialog";
+import { useTierRouted } from "@/hooks/useTierRouted";
+import { visibleModelRows } from "@/lib/tierRouting";
 import {
   Empty, Field, IconAction, INPUT_BASE, INPUT_CLS, Spinner, summary,
 } from "./common";
@@ -129,6 +131,8 @@ function OrgDomainsCard({
 
 export function SettingsTab({ accountId }: { accountId: string | null }) {
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
+  // WS-45 S4 (D90): the chat model row leaves for a covered email-assistant.
+  const tier = useTierRouted("email-assistant");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -414,7 +418,9 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
           />
           {/* No rules model (D-EM-7): the rules run on the `decide` tier,
               and no member can change it. */}
-          {([
+          {/* WS-45 S4 (§7.1): no chat reads the chat model of a covered
+              email-assistant, so its row leaves. The column stays (R6). */}
+          {visibleModelRows([
             {
               key: "draft_model" as const,
               title: "Draft writing model",
@@ -439,7 +445,7 @@ export function SettingsTab({ accountId }: { accountId: string | null }) {
               value: s.chat_model,
               def: "tier-balanced",
             },
-          ]).map((cfg) => (
+          ], "chat_model", tier.covered).map((cfg) => (
             <SettingCard
               key={cfg.key}
               title={cfg.title}

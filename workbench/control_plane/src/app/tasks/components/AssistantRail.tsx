@@ -22,6 +22,8 @@ import AgentChat from "@/components/AgentChat";
 import { useAgentSessions } from "@/hooks/useChatSessions";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
+import { useTierRouted } from "@/hooks/useTierRouted";
+import { governedModelProps } from "@/lib/tierRouting";
 import { useTaskStore } from "../lib/taskStore";
 import { buildTaskAssistantPersona } from "../lib/taskAssistantPersona";
 import { QUICK_ACTIONS } from "../lib/mockData";
@@ -33,6 +35,9 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
   const userId: string = nextAuthSession?.user?.email ?? "dev@fracktal.in";
 
   const chatModel = useTaskStore((s) => s.settings.chatModel);
+  // WS-45 S4 (D90): a covered task-manager runs on the platform's tier, so the
+  // rail passes no `chat_model`. Not covered with the UI flag off.
+  const tier = useTierRouted(AGENT);
   const items = useTaskStore((s) => s.items);
   const selectedView = useTaskStore((s) => s.selectedView);
   const selectedItemId = useTaskStore((s) => s.selectedItemId);
@@ -222,8 +227,7 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
             agentName={AGENT}
             sessionId={activeSession.id}
             compact
-            model={chatModel}
-            lockModel
+            {...governedModelProps(tier.covered, chatModel)}
             persona={taskContextStr}
             memories={memories}
             memoryUserId={userId}
