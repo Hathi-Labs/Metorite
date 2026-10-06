@@ -1780,6 +1780,60 @@ The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The a
   - Done when: the watched model gets each status ask of the two jobs with zero open blocks in `on`.
   - Done when: an undecided status writes nothing and stamps nothing (D-EM-8).
 
+**PR-B2 as specified (audit of 2026-10-06, at `8843870a6`).** PR-B2 changes the job path of `off`
+and `shadow` only. `on` and the request paths do not change. The two jobs are `_run_rules_job`
+(`runner.py`) and `_maybe_classify_threads` (`replyzero.py`).
+
+1. `read_classification` reads `_thread_is_conversation` in Block R when `resolve` is True and the
+   mode is not `on`. `ClassifyRead` gets a `conversation` field.
+2. The job asks when the row has a thread, and a match has a conversation key or `conversation` is
+   True. Block S opens only then.
+3. Block S calls one read helper. It loads `about` with `include_kb=False`, calls `resolve_self`, and
+   then calls `read_thread_status`. This helper is part of the one seam.
+4. `StatusRead` gets `move_keys` and `message_id`. The job passes the id of the row. When
+   `message_id` is None, `ask_thread_status` uses `ctx.last_message_id`.
+5. A self-only read gives `("FYI", True)`, and the job asks no model. A read of None means no
+   status.
+6. Block S catches an error of the read, as the resolver does today. Then Block S runs `SELECT 1`.
+   An aborted block raises there and stops the job.
+7. An error of the ask that is not `DecisionUnavailable` keeps the per-message matches. The job logs
+   `email.resolve_conversation_status_failed`. This rule includes `LLMBudgetExhausted`.
+8. Block W gets a status carrier with four states: not asked, no status, undecided and a verdict.
+   `resolve_classification` and `resolve_conversation_status_matches` take it as a keyword.
+9. When the state is "undecided", the resolver raises `DecisionUnavailable` (D-EM-8). The job skips
+   the row.
+10. Block W is the next block after Block R, or after Block S when the job asks. Update the
+    assertion of `test_the_match_ask_runs_with_no_session_open` to say so.
+
+**Done when (PR-B2, added by the audit).** The split read and `_determine_status_of` give the same
+arguments to `_llm_determine_thread_status`. An error of the ask applies and stamps the per-message
+matches. An aborted Block S stamps nothing. R8: a conversation thread gets its status rule in org B,
+and org A reads none of it.
+
+**Fences of PR-B2 (R7).**
+
+- `email-decision-core-no-session-across-the-job-status-ask`:
+  `test_the_job_status_ask_runs_with_no_session_open`, for each job in `off` and `shadow`. The
+  companion is `test_the_job_status_fence_can_fail`.
+- `email-decision-core-status-parity`: `test_the_split_status_asks_what_the_composed_form_asks`,
+  for a normal thread and a self-only thread.
+- `email-decision-core-status-degrades`: `test_a_failed_status_ask_keeps_the_per_message_matches`,
+  `test_an_undecided_status_skips_the_row` and `test_an_aborted_status_block_stops_the_job`.
+- The step fence also reads the new helper in `replyzero.py`.
+- R8: `TestTheSplitJobsWriteTheirOwnTenant` gets `test_the_runner_resolves_a_conversation_in_b`
+  and `test_the_backfill_resolves_a_conversation_in_b`, in `off` and `shadow`.
+
+**Mutations of PR-B2.** Each mutation must turn a fence red.
+
+- The ask runs in Block W.
+- Block S stays open across the ask.
+- An error of the ask passes up.
+- An "undecided" state keeps the matches.
+- Block S has no `SELECT 1`.
+- The job passes `ctx.last_message_id`.
+- The read helper uses `include_kb=True`.
+- A self-only thread asks the model.
+
 **Scope.** The paths are under `routes/email/automation/`, at `c26b67549`.
 
 1. Split each function that reads and then asks a model. The read step takes `db`. The ask step takes no `db`.
