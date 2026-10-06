@@ -20,6 +20,9 @@ Three rules of the real gateway hold here too:
 * A repeat rule goes through the route's own check,
   ``gateway.routes.projects.recurrence.validate_rule``. So a rule that the
   gateway refuses with a 422 is refused here with the same words.
+* A custom value goes through the route's own merge,
+  ``gateway.routes.projects.custom_fields.apply_values``, at the create
+  (#679) and at the edit (WS-46 P6).
 * A route this stub does not serve answers 404, with a reason that says so.
 """
 from __future__ import annotations
@@ -42,9 +45,10 @@ NOT_SERVED = "The eval stub does not serve this route."
 NOT_VISIBLE = "Not found, or not visible to you."
 
 #: The fields ``PATCH /projects/tasks/{id}`` and a bulk ``patch`` may set here.
+#: ``type_id`` and ``custom_fields`` since WS-46 P6.
 _PATCHABLE = frozenset({
     "title", "description", "status_id", "due_at", "start_date", "estimate_mins", "tags",
-    "importance", "leveraged",
+    "importance", "leveraged", "type_id", "custom_fields",
 })
 
 _ID = r"(?P<id>[0-9a-fA-F-]{36})"
@@ -139,6 +143,8 @@ class OpsStub:
              lambda i, _q, _b: self._exists(i, {"rows": [], "total": 0})),
             ("GET", f"/projects/nodes/{_ID}", lambda i, _q, _b: self.node(i)),
             ("GET", f"/projects/nodes/{_ID}/statuses", lambda i, _q, _b: self.statuses(i)),
+            ("GET", f"/projects/nodes/{_ID}/types", lambda i, _q, _b: self.types(i)),
+            ("GET", f"/projects/nodes/{_ID}/fields", lambda i, _q, _b: self.fields(i)),
             ("GET", "/projects/assignees", lambda _i, q, _b: self.assignees(q)),
             ("GET", "/projects/people/names", lambda _i, q, _b: self.people_names(q)),
             ("POST", "/projects/tasks", lambda _i, _q, b: self.create_task(b)),
@@ -194,6 +200,22 @@ class OpsStub:
         rows = [{"id": lane.id, "name": lane.name, "category": lane.category, "position": i}
                 for i, lane in enumerate(project.lanes)]
         return {"rows": rows, "total": len(rows)}
+
+    def types(self, node_id: str) -> dict[str, Any]:
+        project = self._project_of(node_id)
+        rows = [{"id": t.id, "name": t.name, "is_epic": False, "project_id": project.id}
+                for t in project.types]
+        return {"rows": rows, "total": len(rows)}
+
+    def fields(self, node_id: str) -> dict[str, Any]:
+        project = self._project_of(node_id)
+        rows = [f.definition(project.id) for f in project.fields]
+        return {"rows": rows, "total": len(rows)}
+
+    def _check_type(self, project: Project, type_id: Any) -> None:
+        if type_id is not None and str(type_id) not in {t.id for t in project.types}:
+            raise StubError(422, [{"loc": ["body", "type_id"],
+                                   "msg": "That type is not in this project."}])
 
     def _category(self, row: dict[str, Any]) -> str:
         project = self._project_of(str(row["project_id"]))
@@ -288,6 +310,7 @@ class OpsStub:
         if status_id not in lane_ids:
             raise StubError(422, [{"loc": ["body", "status_id"],
                                    "msg": "That status is not in this project."}])
+        self._check_type(project, body.get("type_id"))
         number = 1 + max(int(r["task_number"]) for r in self.tasks.values())
         tid = ident("created", str(number))
         row = {
@@ -298,8 +321,12 @@ class OpsStub:
             "assignees": [], "tags": list(body.get("tags") or []),
             "description": str(body.get("description") or ""),
             "source": str(body.get("source") or "manual"), "archived_at": None,
-            "completed_at": None,
+            "completed_at": None, "type_id": body.get("type_id"), "custom_fields": {},
         }
+        if body.get("custom_fields") is not None:
+            # The create route's own check (#679), before the row exists, so a
+            # refused value leaves no task.
+            row["custom_fields"] = self._merge_values(project, row, body["custom_fields"])
         self.tasks[tid] = row
         return self._public(row)
 
@@ -318,8 +345,25 @@ class OpsStub:
             if body["status_id"] not in lanes:
                 raise StubError(422, [{"loc": ["body", "status_id"],
                                        "msg": "That status is not in this project."}])
-        row.update(copy.deepcopy(body))
+        project = self._project_of(str(row["project_id"]))
+        self._check_type(project, body.get("type_id"))
+        update = copy.deepcopy(body)
+        if "custom_fields" in update:
+            update["custom_fields"] = self._merge_values(project, row, update["custom_fields"])
+        row.update(update)
         return self._public(row)
+
+    def _merge_values(self, project: Project, row: dict[str, Any], given: Any) -> dict:
+        """The route's own merge and check of custom values (``apply_values``)."""
+        from fastapi import HTTPException
+        from gateway.routes.projects.custom_fields import apply_values
+
+        definitions = [f.definition(project.id) for f in project.fields]
+        try:
+            merged, _changes = apply_values(row.get("custom_fields") or {}, given, definitions)
+        except HTTPException as exc:
+            raise StubError(exc.status_code, exc.detail) from exc
+        return merged
 
     def bulk(self, body: dict[str, Any]) -> dict[str, Any]:
         ids = [str(i).lower() for i in body.get("task_ids") or []]

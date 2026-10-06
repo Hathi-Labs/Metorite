@@ -2093,8 +2093,9 @@ async def complete_task(
     D-PM-38 decision 2 (S5). ``?include_subtasks=true`` completes every open
     descendant too, each into the first Done status of its OWN set
     (``cascade.complete_subtree``), in this transaction. The default is
-    false: the owner's prompt defaults to "Only this task", and the chat tool
-    and old callers keep completing one task. The reply then carries
+    false: the owner's prompt defaults to "Only this task", and old callers
+    keep completing one task. The Projects chat's `complete` sends it for a
+    member's "yes", which it asks for first (WS-46 P6). The reply then carries
     ``subtasks_completed`` and ``subtask_changes`` (each child's status before
     and after), which is what the client's Undo puts back.
     """

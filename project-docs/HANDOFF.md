@@ -95,6 +95,26 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-254 · Count a task's subtasks with one gateway read, as the cascade counts them · [AGENT]
+- **Check:** `rg -n "_subtask_counts" apps/skills/skill-projects/skill_projects/writes.py`
+  and read the function. A loop over `/projects/tasks/{tid}/relations` means
+  this is open.
+- **Why.** Before a complete, an archive or an edit of a parent, the Projects
+  chat counts the subtasks for its card and its question (WS-46 P6). It walks
+  `/relations` one task at a time, up to 100 reads. `edit_task` walks it
+  twice, once before the form and once in `update_task`. `/relations` lists
+  only the visible children that are not archived. So the walk misses a
+  visible task under an archived or hidden child. The cascade
+  (`cascade.load_subtree`) reaches that task, so the card can count fewer
+  tasks than the act changes.
+- **Do.** Add one read route that counts with `cascade.load_subtree`: the
+  visible descendants that are not archived, and the open ones among them.
+  Map it in the manifest as class A. Point `_subtask_counts` at it, with one
+  read for each act. Fence it with a hidden child that has a visible child.
+- **Authority:** `specs/projects_agent_parity.md` §15, the P6 record ·
+  PR #677 review
+- **Added:** 2026-10-06 · WS-46 P6 review round 2
+
 ### H-253 · One member can still hold both parse slots of the gateway (EM-T11) · [AGENT]
 - **Check:** `rg -n "EM-T11 slot gap closed" project-docs/specs/email_app_master_plan.md`
   → no hit means open.

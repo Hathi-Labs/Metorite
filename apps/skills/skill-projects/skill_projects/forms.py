@@ -44,6 +44,7 @@ from skill_projects.views import _emit, _plain, _template
 from skill_projects.writes import (
     _WRITE_FAILED,
     CANCELLED,
+    CASCADE_DEFAULTS,
     MAX_BATCH,
     AgentAssigneeRefused,
     _confirm,
@@ -52,6 +53,8 @@ from skill_projects.writes import (
     _node,
     _resolve_assignee,
     _statuses_of,
+    _subtask_counts,
+    _subtasks_phrase,
     _task,
     _unknown_addresses,
     agent_assignee_refusal_as_text,
@@ -110,12 +113,17 @@ def _clean(value: Any) -> str:
 async def edit_task(task_id: str) -> str:
     """Open an editable form for a task in the chat: title, description,
     status (by name), due, start, the Important and Leveraged flags,
-    estimate, tags. The member
+    estimate, tags. A task with open subtasks also gets a Subtasks choice,
+    for a Done status (D-PM-38). The member
     edits and submits; the changed fields then go through update_task's
     confirmation card, before → after. Nothing is written until that card
     is approved. Assignees are changed with assign."""
     tid, task = await _task(task_id)
     statuses = await _statuses_of(str(task.get("project_id")))
+    # WS-46 P6: read BEFORE the form, so the form asks the D-PM-38 question
+    # itself. update_task would otherwise ask it after the submit, and the
+    # form has no way to answer it.
+    subtree = await _subtask_counts(tid)
     names = [str(s.get("name")) for s in statuses]
     current = next(
         (str(s.get("name")) for s in statuses if str(s.get("id")) == str(task.get("status_id"))),
@@ -171,6 +179,8 @@ async def edit_task(task_id: str) -> str:
             "value": ", ".join(str(t) for t in task.get("tags") or []),
         },
     ]
+    if subtree.open:
+        fields.append(_subtasks_field(subtree.open, subtree.capped))
     values = await _ask(
         _template(
             "formCard",
@@ -189,10 +199,55 @@ async def edit_task(task_id: str) -> str:
         return changes
     if not changes:
         return f"Nothing changed on {_ref(task)}."
+    cascade = _form_subtasks(values, changes, statuses, task) if subtree.open else {}
+    if isinstance(cascade, str):
+        return cascade
+    changes.update(cascade)
     # `update_task` reads the row again, shows the before → after card, and
     # writes only on approval. The form was the member's wording; the card
     # is their consent.
     return await update_task(tid, **changes)
+
+
+#: The two answers of the form's Subtasks choice (D-PM-38 decision 2).
+ONLY_THIS_TASK = "Only this task"
+COMPLETE_THEM_TOO = "Complete them too"
+
+
+def _subtasks_field(open_count: int, capped: bool) -> dict[str, Any]:
+    """The form's Subtasks choice. Its default is the app's
+    (``CASCADE_DEFAULTS["complete"]``): only this task."""
+    return {
+        "name": "subtasks",
+        "label": f"If you set a Done status: {_subtasks_phrase(open_count, 'complete', capped)}",
+        "type": "select",
+        "options": [ONLY_THIS_TASK, COMPLETE_THEM_TOO],
+        "value": COMPLETE_THEM_TOO if CASCADE_DEFAULTS["complete"] else ONLY_THIS_TASK,
+    }
+
+
+def _form_subtasks(
+    values: dict[str, Any],
+    changes: dict[str, Any],
+    statuses: list[dict[str, Any]],
+    task: dict[str, Any],
+) -> dict[str, str] | str:
+    """``include_subtasks`` for ``update_task``, from the form's answer.
+
+    It goes only with a status CHANGE into a Done lane, the one act where
+    the route completes the subtasks too. Any other edit sends nothing.
+    """
+    wanted = str(changes.get("status") or "").strip().lower()
+    lanes = [s for s in statuses if str(s.get("name") or "").strip().lower() == wanted]
+    if len(lanes) != 1 or lanes[0].get("category") != "done":
+        return {}
+    if str(lanes[0].get("id")) == str(task.get("status_id")):
+        return {}
+    default = COMPLETE_THEM_TOO if CASCADE_DEFAULTS["complete"] else ONLY_THIS_TASK
+    choice = _clean(values.get("subtasks")) or default
+    if choice not in (ONLY_THIS_TASK, COMPLETE_THEM_TOO):
+        return f"subtasks is {ONLY_THIS_TASK} or {COMPLETE_THEM_TOO}, not {data(choice)}."
+    return {"include_subtasks": "yes" if choice == COMPLETE_THEM_TOO else "no"}
 
 
 def _numeric_changes(

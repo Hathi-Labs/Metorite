@@ -9,7 +9,9 @@ scripted run passes six tasks in six, uncovered and covered. PO-3 is
 `xfail` until P8 and P9. P4 is BUILT (2026-10-06): the field fence F2 holds
 each of the 313 request fields of a mapped route to one decision. P5 is
 BUILT (2026-10-06): the UI action fence F3 holds each of the 104 Projects
-UI client methods to one decision. P6 to P10 are open.** Written 2026-10-05.
+UI client methods to one decision. P6 is BUILT (2026-10-06). The chat now
+sets each task field of the screen (G5 to G9). P7 to P10 are open.** Written
+2026-10-05.
 **P1, as built.** `create_task` takes the eight `repeat*` arguments and sets
 the rule under its one card. `task_detail` prints "Repeats:". The fence is
 `tests/unit/test_projects_recurring_task.py`. One deviation: the weekly
@@ -195,11 +197,11 @@ the chat does part of it, or does it in a way that fails in practice.
 | G2 | A task's repeat rule in its detail | `RepeatEditor` reads it (`RepeatEditor.tsx:62`) | `GET …/recurrence` (`recurrence.py:407`) | A separate `recurrence` read. `task_detail` does not show the rule | Partial | P1 |
 | G3 | Refusal text reaches the model | Not applicable | Every route's 404, 403 and 422 detail | The model reads "Error: Function failed." | **Defect, every tool** | P2 |
 | G4 | An unknown argument is refused | Not applicable | Not applicable | MAF drops it in silence | **Defect, every tool** | P2 |
-| G5 | Start date when a task is made | Task panel | `POST /projects/tasks` `start_date` (`core.py:705-720`) | `update_task` only | Partial | P6 |
-| G6 | A task's type | Board group drag (`lib/board.ts:179`) | `TaskIn.type_id` | None | **Missing** | P6 |
-| G7 | Custom field values on a task | `CustomFieldValues.tsx:69` | `PATCH /projects/tasks/{id}` `custom_fields` | None | **Missing** | P6 |
-| G8 | Required fields of the target project on a move | `PromoteFields.tsx:142` | `MoveTask.custom_fields` (`tasks.py:126-143`) | `move_task` does not send them | Partial | P6 |
-| G9 | Close or archive the subtasks too (D-PM-38) | Asked once in the panel and the bulk bar | `include_subtasks` on `PATCH`, move and bulk (`tasks.py:467`, `bulk.py:122`) | Never sent | Partial | P6 |
+| G5 | Start date when a task is made | Task panel | `POST /projects/tasks` `start_date` (`core.py:705-720`) | `update_task` only | Closed by P6: `create_task.start` | P6 |
+| G6 | A task's type | Board group drag (`lib/board.ts:179`) | `TaskIn.type_id` | None | Closed by P6: `type` on `create_task` and `update_task` | P6 |
+| G7 | Custom field values on a task | `CustomFieldValues.tsx:69` | `PATCH /projects/tasks/{id}` `custom_fields` | None | Closed by P6: `fields` on `create_task` and `update_task` | P6 |
+| G8 | Required fields of the target project on a move | `PromoteFields.tsx:142` | `MoveTask.custom_fields` (`tasks.py:126-143`) | `move_task` does not send them | Closed by P6: `move_task.fields` | P6 |
+| G9 | Close or archive the subtasks too (D-PM-38) | Asked once in the panel and the bulk bar | `include_subtasks` on `PATCH`, move and bulk (`tasks.py:467`, `bulk.py:122`) | Never sent | Closed by P6: `include_subtasks` on five tools | P6 |
 | G10 | Where a task came from | Set by the capture paths | `TaskIn.source` (`core.py:370`: `manual`, `import`, `email`, `agent`, `automation`) | Never set | Partial | P9 |
 | G11 | Intake with its source and reference | Email capture in the Tasks app | `IntakeIn.source`, `source_ref` (`intake.py:99-100`) | `capture_intake` sends neither | Partial | P9 |
 | G12 | Project settings: icon, task prefix, timezone, lifecycle months | `saveSpaceSettings` (`page.tsx:1271`), `LifecyclePolicy.tsx:53` | `PATCH /projects/nodes/{id}` (`ProjectIn`, `core.py:615-634`) | `update_project` sends name, description, status and lead only | Partial | P7 |
@@ -214,7 +216,8 @@ the chat does part of it, or does it in a way that fails in practice.
 | G21 | **Attach a file to a task** | `TaskBody.tsx:455` | `POST /projects/tasks/{id}/attachments` (multipart) | Class X, "The chat has no file input". That reason is false since H-229 | **Missing** | P10 |
 | G22 | Filter the board from the chat | The filter bar | Browser state | `set_filter` is not built (`projects_ai_chat.md` §4.2) | **Missing** | Not now (Q4) |
 
-**Count: 22 gaps.**
+**Count: 22 gaps.** The counts below are the measure of 2026-10-05. P1, P2
+and P6 have closed G1 to G9 since then.
 
 - 6 missing: G6, G7, G17, G20, G21 and G22.
 - 14 partial: G1, G2, G5, G8 to G16, G18 and G19.
@@ -909,6 +912,7 @@ does.
 | **PO-5** | PO-4, with the card declined | Zero writes. The answer says nothing changed |
 | **PO-6** | "Set the status of #12 to Shipped", where no lane is named Shipped | No write. The answer names the real lanes, from the refusal's "Next:" line |
 | **PO-7** | "Make it repeat with a rrule" on an existing task | The model uses `set_recurrence` and gets a rule. An invented argument is refused by name, never dropped |
+| **PO-8** | "Add a bug to Launch that starts next Monday, for the customer Acme" (P6) | One card. One `POST /projects/tasks` with the type id of Bug, `start_date` next Monday and `custom_fields` `{"customer": "Acme"}`. No other write. No setting in the title or the description. The answer names Acme |
 
 PO-3 needs P8 (subprojects in a plan) and P9. Until both ship, PO-3 is
 `xfail` with the slice ids, and the runner reports it as such.
@@ -947,7 +951,7 @@ slice updates this spec's status header in the same PR (R4).
 | **P3 · The eval harness** ✅ BUILT 2026-10-06 | `evals/projects_ops/` with PO-1, PO-2 and PO-4 to PO-7, scripted, both modes | — | AGENT-SAFE. The sweep on the production Router is OWNER-GATE |
 | **P4 · The field fence** ✅ BUILT 2026-10-06 | `SENDS`, `FIELD_EXEMPT`, `FIELD_PLANNED` and F2. `FIELD_PLANNED` holds every open gap | — | AGENT-SAFE |
 | **P5 · The UI action fence** ✅ BUILT 2026-10-06 | `UI_ACTIONS`, `UI_EXEMPT`, `UI_PLANNED` and F3 · the `calendar` tool reads the subtree | — | AGENT-SAFE |
-| **P6 · Task fields** | `start` on create · task type by name · custom field values by name · required fields on a move · `include_subtasks`, asked once as D-PM-38 asks | G5 to G9 | AGENT-SAFE |
+| **P6 · Task fields** ✅ BUILT 2026-10-06 | `start` on create · task type by name · custom field values by name · required fields on a move · `include_subtasks`, asked once as D-PM-38 asks | G5 to G9 | AGENT-SAFE |
 | **P7 · Project and personal fields** | Project settings · node order · a view with its filters · the full overlay · the overlay in bulk · `my_areas` · `untriaged` | G12 to G18 | AGENT-SAFE |
 | **P8 · Plans that match the app** | `propose_plan` rows take a subproject group and a repeat rule · `capture_intake` and `create_personal_task` take a repeat rule | G19, G20 | AGENT-SAFE |
 | **P9 · Context from email and CRM** | §9.4 · the delegated message shape · the mailbox line on the card · `source` and `source_ref` · PO-3 | G10, G11 | AGENT-SAFE |
@@ -1159,3 +1163,67 @@ as the answer. The slices build to these answers.
   - A limit of F3: it reads the Projects app only. The Tasks lens
     (`app/tasks/lib/lens.ts`) and the People app also call
     `/api/projects`, and no fence reads them.
+- 2026-10-06 — P6 is built. These facts are as built:
+  - `create_task` takes `start`, `type` and `fields`. `update_task` takes
+    `type`, `fields` and `include_subtasks`, and `clear` takes `type`.
+    `move_task` takes `fields` and `include_subtasks`. `complete`,
+    `archive_task` and `bulk_update` take `include_subtasks`. No tool name
+    is new, so `COVERED_PROJECTS_TOOLS` and `own_tool_scope` do not change.
+  - `fields` is a JSON object keyed by field NAME (§7.3). The tool resolves
+    each name against the project's fields and gives the value the shape of
+    its type. An unknown name, an option that is not on the list, or a
+    value of the wrong type is refused before the card.
+  - `create_task` sends `custom_fields` in its POST, so the create is one
+    atomic write. Since #679 the create route checks each value through
+    `custom_fields.apply_values`, before the insert. So a value the route
+    refuses refuses the create, and no task is left behind. The fences are
+    `test_a_refused_value_refuses_the_create_and_leaves_no_task` and its R8
+    twin, `test_r8_a_value_the_create_route_refuses_leaves_no_task`. An
+    earlier draft of P6 sent the values in a PATCH after the create,
+    because the create route did not check them then. Review round 2
+    removed that PATCH.
+  - `type` resolves by name. An epic type under a parent is refused before
+    the card, as `core.assert_epic_has_no_parent` refuses it.
+  - A move with `fields` takes one task. It goes through
+    `POST /projects/tasks/{task_id}/move`, the route of the app's promote
+    door, which lands each answer under the destination's key. A move that
+    stays in one space refuses `fields`, because that route then ignores
+    them. A move with a required field that has no answer names each such
+    field, with its type and its options, before the card.
+  - `include_subtasks` is `yes` or `no`, and it is asked once (D-PM-38).
+    A single-task door reads the subtasks first. When the task has
+    subtasks and the member did not answer, the tool asks the member and
+    writes nothing. The question names the app's default:
+    `CASCADE_DEFAULTS`, a mirror of `lib/subtaskCascade.ts`. A bulk act does
+    not read each subtree, so its card states the rule. A flag with no act
+    that it belongs to is refused.
+  - `client.post` and `client.patch` take a query string, because the
+    archive door, the complete door and the PATCH read the flag there.
+  - Fences: F2 holds 14 new `SENDS` rows. The new file
+    `tests/unit/test_projects_task_fields.py` holds the checks before the
+    card, the cards and the receipts. For each of the 14 rows, a mutation
+    strips the field from the request and turns the F2 wire check red. Its
+    R8 half sends the chat's create body through the real create route on
+    asyncpg, over the tenant ladder. `test_subtasks_s5.py` no longer pins "the Projects chat
+    does not send it".
+  - The eval gains PO-8, which passes in scripted mode. Each of its rules
+    fails on one mutation in `test_projects_ops_eval.py`.
+  - No gateway file changed in its logic. Review round 1 changed five
+    gateway comments that said "the chat tools move one task".
+  - Review round 1 (2026-10-06) fixed four findings:
+    - `edit_task` reads the subtasks before it draws the form. With open
+      subtasks, the form has a Subtasks choice, and "Only this task" is the
+      default. The choice goes to `update_task` as `include_subtasks`.
+      Before the fix, a form that set Done on a parent wrote nothing.
+    - The count walks every level of `/relations`, because the cascade
+      acts on every level (`cascade.load_subtree`). The walk stops at 100
+      reads, and the card then says "at least".
+    - An edit shows a cascade only for a status CHANGE into a Done lane,
+      because only then does the PATCH route cascade.
+    - A blank answer to a required field is no answer. A text field refuses
+      a list or an object.
+  - A limit of the subtree count, not fixed: the chat walks `/relations`
+    one task at a time, up to 100 reads, and `edit_task` walks it twice.
+    `/relations` hides an archived or hidden child, so the walk misses a
+    visible task under one. The cascade reaches that task. The fix is one
+    gateway read that counts with `cascade.load_subtree` (H-254).

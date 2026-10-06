@@ -374,6 +374,45 @@ def check_po7(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-8: the type, the start date and a field, in one call (WS-46 P6) ─────
+
+
+def check_po8(ev: Evidence) -> list[Rule]:
+    launch = ev.dataset.project("Launch")
+    bug = launch.task_type("Bug").id
+    monday = ds_mod.next_monday(ev.dataset.today).isoformat()
+    posts = ev.writes_to("POST", "/projects/tasks")
+    body = posts[0].body if len(posts) == 1 and isinstance(posts[0].body, dict) else {}
+    stored = (posts[0].response or {}).get("custom_fields") if len(posts) == 1 else None
+    want = {"customer": "Acme"}
+    words = f"{body.get('title') or ''} {body.get('description') or ''}"
+    leaked = [w for w in ("acme", "monday", monday) if w in words.lower()]
+    return [
+        _one_approved_card(ev),
+        _rule("one_create", len(posts) == 1 and posts[0].status < 400,
+              "one POST /projects/tasks", f"{len(posts)} POST /projects/tasks"),
+        _rule("type_is_bug", body.get("type_id") == bug,
+              "the create carries the type_id of Launch's Bug",
+              f"the create's type_id is {body.get('type_id')!r}, not {bug}"),
+        _rule("start_is_next_monday", body.get("start_date") == monday,
+              f"the create carries start_date {monday}",
+              f"the create's start_date is {body.get('start_date')!r}, not {monday}"),
+        _rule("values_in_the_create",
+              body.get("custom_fields") == want and stored == want,
+              "the create itself sets customer to Acme, and the stub stored it",
+              f"the create sent custom_fields {body.get('custom_fields')!r}, "
+              f"and the stub stored {stored!r}"),
+        _rule("settings_not_in_text", not leaked,
+              "the title and the description hold no setting",
+              f"the title or the description carries {leaked}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the create is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_the_customer", "acme" in ev.answer.lower(),
+              "the answer names the customer", "the answer does not name Acme"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -384,6 +423,7 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-5": check_po5,
     "PO-6": check_po6,
     "PO-7": check_po7,
+    "PO-8": check_po8,
 }
 
 

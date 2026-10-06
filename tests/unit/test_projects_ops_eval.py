@@ -108,8 +108,8 @@ def test_next_monday(today: date, monday: date) -> None:
 # ── the task table ──────────────────────────────────────────────────────────
 
 
-def test_the_seven_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
-    assert tuple(f"PO-{n}" for n in range(1, 8)) == T.TASK_IDS
+def test_the_eight_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
+    assert tuple(f"PO-{n}" for n in range(1, 9)) == T.TASK_IDS
     assert set(C.CHECKERS) == set(T.TASK_IDS)
     for spec in T.TASKS:
         assert (spec.id in S.SCRIPTED_IDS) is (spec.xfail is None), spec.id
@@ -121,7 +121,7 @@ def test_the_task_selector() -> None:
     assert [t.id for t in T.select("all")] == list(T.TASK_IDS)
     assert [t.id for t in T.select("PO-4, PO-1")] == ["PO-4", "PO-1"]
     with pytest.raises(ValueError):
-        T.select("PO-8")
+        T.select("PO-9")
 
 
 # ── 2. the scripted sweep, through the REAL executor ────────────────────────
@@ -168,7 +168,7 @@ def test_the_scripted_sweep_passes_every_task_uncovered(
         assert record["status"] == want, (task_id, record["failure"])
     assert all(r["no_egress"] == [False] for r in records if r["status"] == "pass")
     assert R.coding.exit_code(records) == R.EXIT_PASS
-    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 7
+    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 8
 
 
 def test_the_scripted_sweep_passes_every_task_covered(
@@ -342,6 +342,79 @@ def test_po7_the_rule_on_another_task_fails(harness: R.OpsHarness) -> None:
     steps = [tool("set_recurrence", task_id=DS.task(8).id, freq="weekly", weekdays="1"),
              ("text", "It repeats.")]
     assert {"rule_on_the_task"} <= _failed(_run(harness, "PO-7", steps))
+
+
+def _po8(**create: Any) -> list[Any]:
+    """PO-8's create, with one argument changed. ``None`` leaves it out."""
+    args = {"project_id": LAUNCH.id, "title": "Fix the badge scanner", "type": "Bug",
+            "start": D.next_monday(DS.today).isoformat(),
+            "fields": json.dumps({"Customer": "Acme"}), **create}
+    return [tool("create_task", **{k: v for k, v in args.items() if v is not None}),
+            ("text", "I made the bug for Acme.")]
+
+
+def test_po8_the_known_good_run_passes(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-8")
+    assert record["status"] == "pass", record["failure"]
+    assert "type: «Bug»" in record["cards"][0]["context"]
+    assert "field Customer: «Acme»" in record["cards"][0]["context"]
+
+
+def test_po8_no_type_fails(harness: R.OpsHarness) -> None:
+    assert _failed(_run(harness, "PO-8", _po8(type=None))) == {"type_is_bug"}
+
+
+def test_po8_the_wrong_start_fails(harness: R.OpsHarness) -> None:
+    tuesday = (D.next_monday(DS.today) + timedelta(days=1)).isoformat()
+    assert _failed(_run(harness, "PO-8", _po8(start=tuesday))) == {"start_is_next_monday"}
+
+
+def test_po8_the_field_in_the_text_and_not_in_its_argument_fails(harness: R.OpsHarness) -> None:
+    """The failure P1 named, for a field: the setting goes in the description."""
+    record = _run(harness, "PO-8", _po8(fields=None, description="Customer: Acme"))
+    assert _failed(record) == {"values_in_the_create", "settings_not_in_text"}
+
+
+def test_po8_the_wrong_value_fails(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-8", _po8(fields=json.dumps({"Customer": "Globex"})))
+    assert _failed(record) == {"values_in_the_create"}
+
+
+def test_po8_a_declined_card_fails(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-8"), cards=(T.DECLINE,))
+    record = _run(harness, "PO-8", _po8(), spec=spec)
+    assert {"one_card", "one_create", "type_is_bug", "values_in_the_create"} <= _failed(record)
+
+
+def test_po8_a_second_write_fails(harness: R.OpsHarness) -> None:
+    steps = [*_po8()[:-1], tool("update_task", task_id=DS.task(4).id, title="Order banners"),
+             ("text", "Made it for Acme.")]
+    spec = dataclasses.replace(T.by_id("PO-8"), cards=(T.APPROVE, T.APPROVE))
+    assert {"one_card", "nothing_else_written"} <= _failed(
+        _run(harness, "PO-8", steps, spec=spec))
+
+
+def test_po8_an_answer_without_the_customer_fails(harness: R.OpsHarness) -> None:
+    steps = [*_po8()[:-1], ("text", "I made the bug.")]
+    assert _failed(_run(harness, "PO-8", steps)) == {"answer_names_the_customer"}
+
+
+def test_po8_a_value_the_route_refuses_is_refused_by_the_stub() -> None:
+    """The stub checks a value with the route's own merge, as it checks a rule:
+    at the create (#679), where a refusal leaves no task, and at the edit."""
+    stub = stub_api.OpsStub(DS)
+    before = len(stub.tasks)
+    body = {"project_id": LAUNCH.id, "title": "Fix it", "custom_fields": {"customer": "Initech"}}
+    status, answer = stub.handle("POST", "/projects/tasks", T.MEMBER, body)
+    assert status == 422 and "Initech" in json.dumps(answer) and len(stub.tasks) == before
+    body["custom_fields"] = {"customer": "Acme"}
+    status, answer = stub.handle("POST", "/projects/tasks", T.MEMBER, body)
+    assert status == 200 and answer["custom_fields"] == {"customer": "Acme"}
+    path = f"/projects/tasks/{DS.task(4).id}"
+    status, body = stub.handle("PATCH", path, T.MEMBER, {"custom_fields": {"customer": "Initech"}})
+    assert status == 422 and "Initech" in json.dumps(body)
+    status, body = stub.handle("PATCH", path, T.MEMBER, {"custom_fields": {"customer": "Acme"}})
+    assert status == 200 and body["custom_fields"] == {"customer": "Acme"}
 
 
 def test_a_covered_sweep_that_ran_uncovered_fails(

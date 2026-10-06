@@ -33,6 +33,7 @@ from typing import Any
 
 from skill_projects import client as _client
 from skill_projects.client import (
+    GatewayRefusal,
     data,
     delete,
     get,
@@ -62,9 +63,14 @@ from skill_projects.writes import (
     _ref,
     _resolve_assignee,
     _split,
+    _subtask_counts,
+    _subtask_receipt,
+    _subtasks_phrase,
+    _subtasks_wanted,
     _task,
     _vocab,
     agent_assignee_refusal_as_text,
+    ask_about_subtasks,
 )
 
 try:
@@ -322,35 +328,42 @@ async def _status_name(task: dict[str, Any]) -> str:
 
 
 @_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
-async def archive_task(task_id: str) -> str:
+async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     """Shelve one task from every board, list, calendar and search. ONE
     task per call, from any status; archiving is a filing decision and
-    claims no outcome. Subtasks stay where they are: the gateway also takes
-    include_subtasks, which shelves them too, and this tool does NOT send it.
-    The card carries the title, the lane and how many open subtasks it leaves
-    behind. unarchive_task is the undo."""
+    claims no outcome. include_subtasks (yes or no): yes shelves its
+    subtasks too. When the task has subtasks and no answer is given, the
+    tool asks first (D-PM-38: the app takes them along by default). The card
+    carries the title, the lane and what happens to the subtasks.
+    unarchive_task is the undo, and it restores one task."""
     if _many(task_id):
         return f"archive_task {ONE_ACT}"
+    wanted = _subtasks_wanted(include_subtasks)
     tid, task = await _task(task_id)
     if task.get("archived_at"):
         return f"{_ref(task)} is already archived."
-    relations = (await get(f"/projects/tasks/{tid}/relations")) or {}
-    progress = relations.get("progress") or {}
-    subtasks = relations.get("subtasks") or []
-    open_subs = max(0, len(subtasks) - int(progress.get("done") or 0))
+    count = await _subtask_counts(tid)
+    if wanted is None and count.total:
+        return ask_about_subtasks(task, count.total, "archive", count.capped)
     lane = await _status_name(task)
-    impact = (
-        f"1 task archived from lane {lane} · {_plural(open_subs, 'open subtask')} left on the board"
-    )
+    if wanted and count.total:
+        tail = f"{_subtasks_phrase(count.total, 'archive', count.capped)} archived with it"
+    else:
+        tail = f"{_subtasks_phrase(count.open, 'complete', count.capped)} left on the board"
+    impact = f"1 task archived from lane {lane} · {tail}"
+    rest = {"task": _ref(task), "status": lane, "undo": "unarchive_task"}
     if not await _confirm(
         title="Archive this task?",
         detail=f"{_ref(task)} · {impact}",
-        context=_guard_card(impact, {"task": _ref(task), "status": lane, "undo": "unarchive_task"}),
+        context=_guard_card(impact, rest),
     ):
         return CANCELLED
-    row = await post(f"/projects/tasks/{tid}/archive")
+    params = {"include_subtasks": True} if wanted else None
+    row = await post(f"/projects/tasks/{tid}/archive", params=params)
     merged = {**task, **(row if isinstance(row, dict) else {})}
-    return "\n".join(["Archived:", *_task_line(merged)])
+    return "\n".join(
+        ["Archived:", *_task_line(merged), *_subtask_receipt(row, "subtasks_archived", "archive")]
+    )
 
 
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
@@ -482,6 +495,31 @@ async def _bulk_body(
     return body
 
 
+def _bulk_subtasks(body: dict[str, Any], include_subtasks: str) -> dict[str, str]:
+    """``include_subtasks`` on a bulk act, asked once for the whole selection.
+
+    It means something with ``action: archive`` and with a status patch,
+    where the route cascades into a Done lane. It is set on *body* here.
+    Returns the card's ``subtasks`` line. A bulk act does not read each
+    task's subtree first, so the line states the rule and not a count.
+    """
+    wanted = _subtasks_wanted(include_subtasks)
+    archiving = body.get("action") == "archive"
+    closing = "status" in (body.get("patch") or {})
+    if not archiving and not closing:
+        if wanted is not None:
+            raise GatewayRefusal(
+                "include_subtasks goes with action archive, or with a status in a Done lane."
+            )
+        return {}
+    if wanted:
+        body["include_subtasks"] = True
+        if archiving:
+            return {"subtasks": "archived with each task"}
+        return {"subtasks": "open subtasks completed too, where a task lands in a Done lane"}
+    return {"subtasks": "stay as they are (include_subtasks=yes takes them too)"}
+
+
 def _bulk_impact(body: dict[str, Any], n: int) -> str:
     verb = body.get("action")
     if verb:
@@ -520,6 +558,7 @@ async def bulk_update(
     important: str = "",
     leveraged: str = "",
     importance: Removed = None,
+    include_subtasks: str = "",
 ) -> str:
     """One change across a selection of tasks, in one transaction. task_ids
     is comma-separated, at most 50. status is by NAME and is resolved per
@@ -528,6 +567,10 @@ async def bulk_update(
     not pass stays as it is on every task. assignees_add/remove and
     tags_add/remove take comma-separated values. action is archive or
     unarchive, on its own with no other change. Deleting is not offered.
+    include_subtasks (yes or no) is asked once for the whole selection: yes
+    with action archive shelves each task's subtasks too, and yes with a
+    status in a Done lane completes their open subtasks. Without it the
+    subtasks stay as they are, and the card says so.
     The card names every task and the exact change."""
     ids = [uuid_of(t, "task_id") for t in _split(task_ids)]
     if not ids:
@@ -544,9 +587,10 @@ async def bulk_update(
     )
     if isinstance(body, str):
         return body
+    subtasks = _bulk_subtasks(body, include_subtasks)
     tasks = [(await _task(t))[1] for t in ids]
     impact = _bulk_impact(body, len(tasks))
-    rest: dict[str, Any] = {}
+    rest: dict[str, Any] = dict(subtasks)
     for i, t in enumerate(tasks):
         rest[f"task {i + 1}"] = _short_ref(t)
     if not await _confirm(
@@ -557,6 +601,8 @@ async def bulk_update(
         return CANCELLED
     result = (await post("/projects/tasks/bulk", body)) or {}
     out = [f"Applied to {result.get('applied', 0)} of {result.get('requested', len(ids))} tasks."]
+    door = ("subtasks_archived", "archive") if body.get("action") else ("subtasks_completed", "complete")
+    out.extend(_subtask_receipt(result, *door))
     for row in result.get("skipped") or []:
         out.append(f"- skipped {row.get('task_id')}: {data(row.get('reason'))}")
     for row in result.get("failed") or []:

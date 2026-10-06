@@ -1,4 +1,4 @@
-"""The seven Projects operations tasks, PO-1 to PO-7 (WS-46 P3).
+"""The Projects operations tasks, PO-1 to PO-8 (WS-46 P3, and PO-8 from P6).
 
 Spec: ``project-docs/specs/projects_agent_parity.md`` §11.2. The spec gives
 each prompt in a short form. The full prompt below keeps its meaning and names
@@ -81,6 +81,14 @@ TASKS: tuple[TaskSpec, ...] = (
         "PO-7", "An invented argument",
         "Make it repeat with a rrule",
         "Make task #7 repeat every Monday. Use the rrule FREQ=WEEKLY;BYDAY=MO.",
+        cards=(APPROVE,),
+    ),
+    # WS-46 P6: the type, the start date and a custom field, in one call.
+    TaskSpec(
+        "PO-8", "A task with its type, its start and a field",
+        "Add a bug to Launch that starts next Monday, for the customer Acme",
+        "Add a bug to the Launch project: fix the badge scanner. The work starts next "
+        "Monday, and the customer is Acme.",
         cards=(APPROVE,),
     ),
 )
