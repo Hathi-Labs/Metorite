@@ -8776,6 +8776,22 @@ X3 now turn more cases red, because the new cases read the same code.
 | MT | The pop-out calls `openCompose` in a `.then` of the drain | 1 | `email-popout-handover` |
 | MF | `changeFrom` sets the From of now after the wait | 1 | `email-popout-handover` |
 
+**The re-verify of round 1 (2026-10-06): PASS.** No P0, no P1 and no P2. The re-verifier ran the
+scenario of the reviewer and the case of the implementer through the real code. Each gave one draft
+for each reply. A copy of the chain with `recordSave` alone gave two drafts, so the ordered apply is
+necessary. A rejected hand-over and an apply that throws both free the chain.
+
+- **P3, fixed.** Two saves that settle in the wait of `changeFrom` can give one id. The stale branch
+  of ComposePanel pushed it twice, and the second delete showed "Failed to delete email". The push
+  now skips an id that the list holds. A source fence holds it, and its mutation went red.
+- **Known limit EM-G3c-3-f15.** The member changes the From, and the signature fetch is slow. A save
+  of the old From that settles in that wait goes on the stale list. If the member then closes the
+  composer, no save of the new From runs, so the list is never dropped. One or two copies stay in
+  the old mailbox. Before round 1 the same steps left one draft. The window needs a signature fetch
+  that takes more than 1.2 seconds.
+- **Note.** The MT row counts 1 red case. Another form of the same mutation turns 4 red, so the
+  count depends on the form.
+
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
 **Status.** ✅ MERGED (#645, 2026-10-05). The audit of 2026-10-05
