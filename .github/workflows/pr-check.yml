@@ -511,6 +511,20 @@ jobs:
           PGPASSWORD: rehearsal
         run: bash scripts/rehearse_restore.sh
 
+      # The fence for the scratch databases of the deep verify (incident
+      # 2026-10-06: 22 undropped copies filled the managed disk and the project
+      # went read-only). It sweeps, drops with FORCE on a read-only server,
+      # spares the decoys, and fails loudly when a drop fails. It needs this
+      # job's private server, because it uses ALTER SYSTEM and the sweep drops
+      # every stale `acb_verify_<digits>` database on the cluster.
+      - name: Rehearse the scratch-database drop and sweep
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: rehearsal
+        run: bash scripts/rehearse_verify_scratch.sh
+
   # BO-6. The ladder is 152 hand-written, hand-idempotent SQL files replayed
   # against production on every deploy, and until now nothing exercised it
   # anywhere else — a migration that only fails on a FRESH database (the state

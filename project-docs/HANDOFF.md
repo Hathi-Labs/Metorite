@@ -95,6 +95,22 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-259 · Make a failed nightly backup reach a person · [AGENT]
+- **Check:** `rg -n "acb-backup" .github/workflows/vps-health.yml`
+  → no hit means this is open.
+- **Why.** `backup_db.sh` now exits 1 when a scratch database will not drop.
+  That is the signal for the 2026-10-06 incident. But `acb-backup.service`
+  has no `OnFailure=`, and `vps-health.yml` reads `is-failed` for
+  `acb-smoke-chat` only. So nobody sees a backup that failed.
+- **Do.** Read `systemctl is-failed acb-backup.service` in `vps-health.yml`,
+  the same way as for `acb-smoke-chat`. First read the last runs on the box.
+  If the unit is red today for another reason (H-98), name it, or the new
+  check is red on its first run.
+- **Authority:** `scripts/backup_db.sh`, the "Scratch databases" block.
+  Review round 1 of the verify-drop fix found this gap.
+- **Added:** 2026-10-06 · the backup verify-drop fix (branch
+  `backup-verify-drop`)
+
 ### H-257 · Keep a node with a hidden parent out of the top level of the tree drag · [AGENT]
 - **Check:** `rg -n "parentId === null\) return \[\.\.\.roots\]" workbench/control_plane/src/app/projects/lib/treeDrop.ts`
   → a hit means this is open.

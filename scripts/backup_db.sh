@@ -111,6 +111,94 @@ require_postgres() {
 
 require_postgres
 
+# ── Scratch databases of the deep verify ────────────────────────────────────
+#
+# 🔴 **Incident, 2026-10-06.** The deep verify below restores into a scratch
+# database named `acb_verify_<epoch>`. On the managed cluster its drop failed
+# every night from 2026-09-19, and `>/dev/null 2>&1 || true` hid each failure.
+# 22 scratch copies (923 MB, measured) piled up beside a 184 MB product database.
+# Supabase then put the whole project into read-only mode, so every write
+# failed for about 2 hours, and deploys hung in the pre-migration backup.
+#
+# The rules that replace the silent drop. The fence for all of them is
+# `scripts/rehearse_verify_scratch.sh`, which CI runs against a real server.
+#
+#   1. The drop uses FORCE. An open connection to the scratch database (the
+#      pooler keeps one) no longer blocks it.
+#   2. The drop turns off `default_transaction_read_only` in its own session,
+#      as a separate statement. A provider that went read-only because its
+#      disk filled can still be given the space back.
+#   3. A failed drop prints an ERROR with the reason, and the backup exits 1
+#      AFTER the dump and the manifest are complete. A good dump stays on disk.
+#   4. A run sweeps stale scratch databases before it makes a new one.
+#   5. If two or more are still there after the sweep, the run makes no new
+#      one. So a drop that keeps failing cannot pile copies up again.
+#
+# ⚠️ **The one pattern.** A scratch database matches `^acb_verify_[0-9]+$` and
+# NOTHING else. `LIKE 'acb_verify_%'` is wrong, because `_` is a LIKE
+# wildcard: it also matches `acb_verifyx`. This pattern decides what the sweep
+# DROPS, so a wide pattern deletes somebody's database.
+#
+# ⚠️ Lower-case names on purpose. `test_integrations_env_hardening.py` reads
+# every UPPER-CASE variable here as an env name that the deployment sets.
+scratch_re='^acb_verify_[0-9]+$'
+# A scratch database whose name is older than this is left over. Six hours is
+# far longer than one verify takes, so a concurrent run keeps its own copy.
+scratch_stale_seconds=21600
+scratch_drop_failures=0
+
+# psql and libpq can echo a connection string, password included, into an
+# error. Apply this to every error text before it reaches a log. It is the
+# same sed as apply_customer_console_migrations.sh, plus the key=value form and
+# the literal PGPASSWORD.
+redact() {
+  local text
+  text="$(sed -E 's#(//[^:/@[:space:]]+):[^@[:space:]]*@#\1:***@#g; s#(password=)[^[:space:]]*#\1***#Ig')"
+  if [ -n "${PGPASSWORD:-}" ]; then
+    text="${text//"$PGPASSWORD"/***}"
+  fi
+  printf '%s\n' "$text"
+}
+
+# drop_scratch <db> — drop one scratch database, or say loudly why not.
+# Returns non-zero on failure. It never exits, so the caller decides when.
+#
+# ⚠️ Two `-c` options, never one string. psql sends each `-c` as its own
+# statement in ONE session, so the SET applies to the DROP. One string with
+# both statements runs as one implicit transaction, and DROP DATABASE refuses
+# to run inside a transaction block.
+# ⚠️ Through a pooler, this needs SESSION mode (port 5432). In transaction mode
+# the two statements can reach two different server connections.
+drop_scratch() {
+  local db="$1" err
+  if ! [[ "$db" =~ $scratch_re ]]; then
+    echo "ERROR: refusing to drop '$db' — it is not a scratch database ($scratch_re)." >&2
+    return 1
+  fi
+  if err="$(pg psql -U "$PG_USER" -d postgres -X -q -v ON_ERROR_STOP=1 \
+              -c 'SET default_transaction_read_only = off' \
+              -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  echo "ERROR: could not drop scratch database '$db'. Reason:" >&2
+  printf '%s\n' "${err:-<psql gave no reason>}" | redact | sed 's/^/    /' >&2
+  return 1
+}
+
+# The advisory guard. It reports a pile-up and changes no exit code. It runs on
+# EVERY backup, the pre-migration one too, because that is the run an operator
+# watches during a deploy.
+scratch_count="$(pg psql -U "$PG_USER" -d postgres -tAc \
+  "select count(*) from pg_database where datname ~ '$scratch_re'" 2>/dev/null || true)"
+if ! [[ "$scratch_count" =~ ^[0-9]+$ ]]; then
+  warn "WARNING (advisory): could not count the scratch databases."
+elif [ "$scratch_count" -gt 2 ]; then
+  warn "WARNING (advisory): $scratch_count scratch databases ($scratch_re) exist on this"
+  warn "cluster. A run leaves at most one, so earlier drops failed. Each is a full"
+  warn "copy of the app database. On a managed provider they fill the disk, and a"
+  warn "full disk makes the project read-only (2026-10-06)."
+fi
+
 STAMP="$(date -u '+%Y-%m-%dT%H%M%SZ')"
 DEST="$BACKUP_DIR/$STAMP"
 mkdir -p "$DEST"
@@ -139,8 +227,11 @@ pg pg_dumpall -U "$PG_USER" --globals-only > "$DEST/globals.sql"
 # it were a real database. Observed: `acb_verify_1789810167.dump` in a manifest.
 # A backup that backs up its own scratch copy wastes disk and, worse, makes the
 # manifest describe something that was never part of the product.
+# ⚠️ The exclusion uses `$scratch_re` since 2026-10-06. It used
+# `LIKE 'acb_verify_%'`, which ALSO excluded a real database named, for
+# example, `acb_verifyx`, so that database was never backed up.
 DBS="$(pg psql -U "$PG_USER" -d postgres -tAc \
-  "select datname from pg_database where datistemplate = false and datname not like 'acb_verify_%' and (datname <> 'postgres' or datname = '$APP_DB') order by datname")"
+  "select datname from pg_database where datistemplate = false and datname !~ '$scratch_re' and (datname <> 'postgres' or datname = '$APP_DB') order by datname")"
 
 for db in $DBS; do
   printf "    - %-16s ... " "$db"
@@ -207,11 +298,53 @@ cat "$DEST/MANIFEST.txt" | sed 's/^/    /'
 # which is a different claim — and the one everybody assumes without testing.
 if [ "$VERIFY_RESTORE" = "1" ]; then
   say "Deep verify — restoring $APP_DB.dump into a scratch database"
+
+  # The sweep (rule 4). The age comes from the epoch in the NAME, compared with
+  # the server's clock. `substring(... from '[0-9]+$')` is NULL for a name
+  # with no trailing digits, and a NULL age never qualifies.
+  stale="$(pg psql -U "$PG_USER" -d postgres -tAc \
+    "select datname from pg_database
+      where datname ~ '$scratch_re'
+        and substring(datname from '[0-9]+\$')::numeric
+            < extract(epoch from now()) - $scratch_stale_seconds
+      order by datname")"
+  for old in $stale; do
+    if drop_scratch "$old"; then
+      echo "    swept stale scratch database $old"
+    else
+      scratch_drop_failures=$((scratch_drop_failures + 1))
+    fi
+  done
+
+  # 🔴 **The cap (rule 5).** A drop can fail for a reason that FORCE and the SET
+  # do not cure, and the first cause of the incident was never seen. So after
+  # the sweep, count again. Two or more left means drops keep failing. Then
+  # this run makes NO new copy, and the pile stops at two whatever the cause.
+  # The verify is lost for that night, and the exit code says so.
+  left="$(pg psql -U "$PG_USER" -d postgres -tAc \
+    "select count(*) from pg_database where datname ~ '$scratch_re'")"
+  if [ "$left" -ge 2 ]; then
+    echo "ERROR: $left scratch databases ($scratch_re) are still on the cluster after" >&2
+    echo "       the sweep. The deep verify is SKIPPED, so that no new copy is made." >&2
+    scratch_drop_failures=$((scratch_drop_failures + 1))
+    VERIFY_RESTORE=0
+  fi
+fi
+
+if [ "$VERIFY_RESTORE" = "1" ]; then
   SCRATCH="acb_verify_$(date -u +%s)"
   pg createdb -U "$PG_USER" "$SCRATCH"
   # Trap so a failure part-way through cannot leave a stray multi-hundred-MB
-  # database behind on a box with finite disk.
-  trap 'pg dropdb -U "$PG_USER" --if-exists "$SCRATCH" >/dev/null 2>&1 || true' EXIT
+  # database behind on a box with finite disk. Every exit while it is armed is
+  # already a failure, so a failed drop here keeps the exit code non-zero.
+  on_exit_drop_scratch() {
+    local rc=$?
+    if ! drop_scratch "$SCRATCH"; then
+      [ "$rc" = "0" ] && rc=1
+    fi
+    exit "$rc"
+  }
+  trap on_exit_drop_scratch EXIT
   # The log goes in $DEST, NOT /tmp. Two reasons, one of which already bit us:
   # `fs.protected_regular=2` (Ubuntu default) forbids opening an existing file
   # in a sticky world-writable dir owned by another user — and that applies to
@@ -276,8 +409,13 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
     exit 1
   fi
   echo "    restore verified"
-  pg dropdb -U "$PG_USER" --if-exists "$SCRATCH" >/dev/null 2>&1 || true
+  # Disarm the trap FIRST, so a failed drop is counted once, here.
   trap - EXIT
+  if drop_scratch "$SCRATCH"; then
+    echo "    scratch database $SCRATCH dropped"
+  else
+    scratch_drop_failures=$((scratch_drop_failures + 1))
+  fi
 fi
 
 # --- The Customer Console's own cluster (H-98) -------------------------------
@@ -361,5 +499,17 @@ if [ "$total" -gt "$KEEP_DAILY" ]; then
   done
 fi
 echo "    $(ls -1d [0-9]*Z 2>/dev/null | wc -l) backup(s) retained, $(du -sh "$BACKUP_DIR" | cut -f1) total"
+
+# --- A scratch database that would not drop (rule 3) -------------------------
+# Checked LAST on purpose. The dump, the manifest, the Console dump and the
+# off-box copy are all complete, so the exit code can be red without one good
+# dump being lost. Red is right: a scratch database that stays is a full copy
+# of the app database on a disk that a provider can make read-only.
+if [ "$scratch_drop_failures" -gt 0 ]; then
+  echo "ERROR: $scratch_drop_failures scratch database(s) could not be dropped. See the" >&2
+  echo "       ERROR lines above for each name and reason. The dump at $DEST IS" >&2
+  echo "       complete and good. Drop the scratch databases before the disk fills." >&2
+  exit 1
+fi
 
 say "Backup complete: $DEST"
