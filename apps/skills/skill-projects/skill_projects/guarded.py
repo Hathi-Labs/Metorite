@@ -332,10 +332,19 @@ def _plan_place(
     which is the order the app draws.
     """
     if parent_id is None:
-        siblings = rows
+        # Only the true roots. The tree shows a node whose parent the member
+        # cannot see as a root (tree.py `get_tree`). A spread that wrote
+        # `parent_project_id: null` for it would make it a space (review
+        # round 1).
+        siblings = [n for n in rows if n.get("parent_project_id") is None]
     else:
         parent = _find_node(rows, parent_id)
-        siblings = (parent or {}).get("children") or []
+        if parent is None:
+            return (
+                "Its parent is not visible to you, so the order of its siblings "
+                "cannot be read. Ask a person who can see the parent."
+            )
+        siblings = parent.get("children") or []
     live = [n for n in siblings if not n.get("archived_at")]
     others = [n for n in live if str(n.get("id")) != pid]
     if word in ("first", "last"):
@@ -388,6 +397,12 @@ async def move_project(
             "To change only the order, pass place alone."
         )
     pid, node = await _node(project_id)
+    if word and parent_project_id.strip() and uuid_of(parent_project_id, "parent_project_id") == str(
+        node.get("parent_project_id")
+    ):
+        # The node's own parent with a place is a reorder, and its card says
+        # so. It is not a move (review round 1).
+        reorder, parent_project_id = True, ""
     found = await _move_target(pid, node, parent_project_id, word, reorder)
     if isinstance(found, str):
         return found

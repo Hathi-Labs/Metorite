@@ -336,6 +336,51 @@ async def test_an_unordered_set_is_spread_once_siblings_first(monkeypatch) -> No
     assert "1 other sibling get a position too" in asked[0]["context"]
 
 
+
+async def test_a_root_whose_parent_is_hidden_is_not_a_sibling_at_the_top(monkeypatch) -> None:
+    """Review round 1, a blocker: the tree draws a node whose parent the
+    member cannot see as a root. A spread that wrote ``parent_project_id:
+    null`` for it would make it a space."""
+    approve(monkeypatch)
+    orphan = {"id": SIBLING, "name": "Granted", "parent_project_id": OTHER,
+              "position": None, "children": []}
+    tree = {"rows": [
+        {"id": PROJECT, "name": "Product", "parent_project_id": None, "position": None,
+         "children": []},
+        {"id": THIRD, "name": "Sales", "parent_project_id": None, "position": None,
+         "children": []},
+        orphan,
+    ]}
+    node = {"id": THIRD, "name": "Sales", "parent_project_id": None}
+    calls = fake_gateway(monkeypatch, _gateway({
+        ("GET", "/projects/tree"): tree, ("GET", f"/projects/nodes/{THIRD}"): node,
+    }))
+    await skill_projects.move_project(THIRD, place="first")
+    moved = [c["path"] for c in writes(calls)]
+    assert f"/projects/nodes/{SIBLING}/move" not in moved
+    assert moved == [f"/projects/nodes/{PROJECT}/move", f"/projects/nodes/{THIRD}/move"]
+
+
+async def test_a_reorder_under_a_hidden_parent_is_refused(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway({
+        ("GET", "/projects/tree"): _tree(),
+        ("GET", f"/projects/nodes/{CHILD}"): {"id": CHILD, "name": "Website",
+                                               "parent_project_id": OTHER},
+    }))
+    out = await skill_projects.move_project(CHILD, place="first")
+    assert "not visible to you" in out and asked == [] and writes(calls) == []
+
+
+async def test_a_place_under_its_own_parent_is_a_reorder(monkeypatch) -> None:
+    """Review round 1: the card of a reorder says reorder, not move."""
+    asked = approve(monkeypatch)
+    tree = _tree(_kid(SIBLING, "Docs", 100.0), _kid(CHILD, "Website", 200.0))
+    calls = fake_gateway(monkeypatch, _move_gateway(tree))
+    out = await skill_projects.move_project(CHILD, parent_project_id=PROJECT, place="first")
+    assert asked[0]["title"] == "Reorder this project?" and out.startswith("Placed")
+    assert [c["json"] for c in writes(calls)] == [{"parent_project_id": PROJECT, "position": 50.0}]
+
 async def test_a_node_already_in_its_place_writes_nothing(monkeypatch) -> None:
     asked = approve(monkeypatch)
     tree = _tree(_kid(CHILD, "Website", 100.0), _kid(SIBLING, "Docs", 200.0))
@@ -565,6 +610,30 @@ async def test_a_block_end_is_judged_against_the_stored_start(monkeypatch) -> No
     out = await skill_projects.set_my_overlay(TASK, block_end="2026-10-07 15:00")
     assert "after block_start" in out and asked == [] and writes(calls) == []
 
+
+
+async def test_a_time_with_no_saved_zone_is_read_in_utc(monkeypatch) -> None:
+    """Review round 1, a blocker: the card's label "UTC, no zone saved" is
+    not a zone, and a time must never be read in it."""
+    unsaved = {"today": "2026-10-06", "timezone": "UTC", "stored": False}
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway({("GET", "/projects/my/today"): unsaved}))
+    await skill_projects.set_my_overlay(TASK, block_start="2026-10-07 14:00")
+    body = _sent(calls, "PATCH", f"/projects/tasks/{TASK}/personal")[0]["json"]
+    assert body == {"scheduled_start": "2026-10-07T14:00:00+00:00"}
+
+
+async def test_a_chase_of_the_same_person_keeps_its_age(monkeypatch) -> None:
+    """Review round 1: the age is what a person scans before a nudge."""
+    stored = {"id": TASK, "waiting_on": {"name": "Priya", "email": "priya@x.io"},
+              "delegated_at": "2026-09-26T10:00:00+00:00"}
+    approve(monkeypatch)
+    calls = fake_gateway(
+        monkeypatch, _gateway({("GET", f"/projects/my/tasks/{TASK}"): stored})
+    )
+    await skill_projects.set_my_overlay(TASK, waiting_on="Priya", expected_by="2026-10-09")
+    body = _sent(calls, "PATCH", f"/projects/tasks/{TASK}/personal")[0]["json"]
+    assert "delegated_at" not in body and body["expected_by"] == "2026-10-09"
 
 # ── G16: the overlay over a selection ───────────────────────────────────────
 

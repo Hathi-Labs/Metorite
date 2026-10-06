@@ -1285,9 +1285,26 @@ as the answer. The slices build to these answers.
   - Fences: `tests/unit/test_projects_project_fields.py` holds the checks
     before each card, the cards, the receipts and the copies of the app's
     and the route's vocabulary. F2 holds each new `SENDS` row on the wire.
-    17 mutations each turn a fence red. The R8 half reads the zone on
+    22 mutations each turn a fence red. The R8 half reads the zone on
     asyncpg, as a role that FORCE RLS binds, on the promoted catalog of the
     H3 rehearsal. Another tenant and an unbound session read no zone.
   - A finding, not fixed: the primary key of `user_settings` is `user_id`
     alone. So a member of two organizations can have one settings row only
     (H-256).
+  - Review round 1 (2026-10-06) fixed four findings:
+    - A member with no saved zone got the label "UTC, no zone saved" as a
+      zone, and a block time then failed with "Function failed". The zone
+      and the label of the card are now two values.
+    - The tree shows a node whose parent the member cannot see as a root.
+      A spread at the top level would then send `parent_project_id: null`
+      for that node and make it a space. The top level now holds the true
+      roots only. A reorder under a parent that the member cannot see is
+      refused.
+    - `place` with the node's own parent is a reorder, and the card says
+      "Reorder", not "Move".
+    - A chase of the same person keeps its start time. A new person starts
+      a new chase.
+  - A limit, not fixed: `bulk_update` with `waiting_on` starts the chase
+    now on each task, because it does not read each overlay first. The app's
+    tree drag has the hidden-parent defect too (`treeDrop.ts` `siblingsOf`).
+    H-257 records it.

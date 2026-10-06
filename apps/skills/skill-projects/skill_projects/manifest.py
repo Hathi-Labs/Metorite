@@ -996,7 +996,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "close_after_months": _SETTINGS_AFTER_CREATE_REASON,
         "timezone": _SETTINGS_AFTER_CREATE_REASON,
         "task_prefix": _TASK_PREFIX_REASON,
-        "position": "A new node lands last among its siblings. move_project sets its place.",
+        "position": "A new node takes no position, as the app's create sends none. move_project sets its place.",
     },
     ("PATCH", "/projects/nodes/{project_id}"): {
         "parent_project_id": "The route refuses it: a re-parent goes through move_project.",

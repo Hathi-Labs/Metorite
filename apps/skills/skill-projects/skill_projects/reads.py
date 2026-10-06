@@ -495,9 +495,11 @@ async def task_detail(task_id: str) -> str:
 # ── The member's own work ────────────────────────────────────────────────────
 
 
-def clock_of(row: Any) -> tuple[date | None, str]:
-    """``(today, zone)`` from ``GET /projects/my/today``, or ``(None, "")``
-    for an answer that carries neither (WS-46 P7). The one parser of the
+def clock_of(row: Any) -> tuple[date | None, str, str]:
+    """``(today, zone, label)`` from ``GET /projects/my/today``, or
+    ``(None, "", "")`` for an answer that carries neither (WS-46 P7).
+    ``zone`` is the IANA name a time is read in. ``label`` is what a card
+    prints, and it is never given to ``ZoneInfo`` (review round 1). The one parser of the
     member's date: ``my_work`` prints it, and the write tools that guess a
     day take it (``writes._member_clock``).
 
@@ -507,7 +509,7 @@ def clock_of(row: Any) -> tuple[date | None, str]:
     no card claims that the member chose UTC.
     """
     if not isinstance(row, dict):
-        return None, ""
+        return None, "", ""
     raw = str(row.get("today") or "").strip()
     try:
         day = date.fromisoformat(raw) if len(raw) == 10 else None
@@ -515,8 +517,9 @@ def clock_of(row: Any) -> tuple[date | None, str]:
         day = None
     zone = str(row.get("timezone") or "").strip()
     if day is None or not zone:
-        return None, ""
-    return day, zone if row.get("stored", True) else f"{zone}, no zone saved"
+        return None, "", ""
+    label = zone if row.get("stored", True) else f"{zone}, no zone saved"
+    return day, zone, label
 
 
 async def _clock_line() -> str:
@@ -524,12 +527,12 @@ async def _clock_line() -> str:
     lists. ``legend`` states the UTC date, and the member's evening can be
     the next day. An empty line when the read has no answer."""
     try:
-        day, zone = clock_of(await get("/projects/my/today"))
+        day, _zone, label = clock_of(await get("/projects/my/today"))
     except GatewayRefusal:
         return ""
     if day is None:
         return ""
-    return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({zone})."
+    return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({label})."
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)

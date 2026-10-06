@@ -2825,8 +2825,8 @@ def _today() -> date:
     return datetime.now(UTC).date()
 
 
-async def _member_clock() -> tuple[date, str]:
-    """``(today, zone)`` in the member's own zone (WS-46 P7, §8.1 item 4).
+async def _member_clock() -> tuple[date, str, str]:
+    """``(today, zone, label)`` in the member's own zone (WS-46 P7, §8.1 item 4).
 
     From ``GET /projects/my/today``, which reads ``user_settings.timezone``,
     the zone the Tasks and the Calendar clients save. P1 took the UTC date,
@@ -2837,10 +2837,10 @@ async def _member_clock() -> tuple[date, str]:
     a tool needs a day, so a call that guesses nothing costs no extra read.
     """
     try:
-        day, zone = clock_of(await get("/projects/my/today"))
+        day, zone, label = clock_of(await get("/projects/my/today"))
     except GatewayRefusal:
-        return _today(), "UTC"
-    return (day, zone) if day is not None else (_today(), "UTC")
+        return _today(), "UTC", "UTC"
+    return (day, zone, label) if day is not None else (_today(), "UTC", "UTC")
 
 
 def _date_of(value: Any) -> date | None:
@@ -3031,8 +3031,8 @@ async def _repeat_for_create(
     due_day = _date_of(due) if str(due or "").strip() else None
     if str(due or "").strip() and due_day is None:
         return "due is a date, YYYY-MM-DD."
-    today, zone = await _member_clock()
-    weekday, note = _default_weekday(due_day, today, zone)
+    today, _zone, label = await _member_clock()
+    weekday, note = _default_weekday(due_day, today, label)
     built = _build_rule(
         repeat, every, _weekday_numbers(on), day, month, anchor or "due", until, times,
         default_weekday=weekday, today=today,
@@ -3055,7 +3055,7 @@ def _weekly_days(
     weekdays: str,
     current: dict[str, Any] | None,
     due_at: Any,
-    clock: tuple[date, str],
+    clock: tuple[date, str, str],
 ) -> tuple[str, str]:
     """The weekdays ``set_recurrence`` sends, and the card's note for a guess.
 
@@ -3069,7 +3069,7 @@ def _weekly_days(
         return given, ""
     if current and current.get("freq") == "weekly" and current.get("weekdays"):
         return ",".join(str(d) for d in current["weekdays"]), ""
-    day, note = _default_weekday(_date_of(due_at), *clock)
+    day, note = _default_weekday(_date_of(due_at), clock[0], clock[2])
     return str(day), note
 
 
@@ -3327,12 +3327,24 @@ async def _overlay_values(args: dict[str, Any], mine: dict[str, Any]) -> dict[st
     if given.get("waiting_on"):
         values["waiting_on"] = await _waiting_person(given["waiting_on"])
         # Migration 188: a chase has a since-when. The Delegate dialog
-        # stamps now, and so does the chat, unless the member gave one.
-        values.setdefault("delegated_at", datetime.now(UTC).replace(microsecond=0).isoformat())
+        # stamps now, and so does the chat, unless the member gave one. A
+        # chase of the same person keeps its age (review round 1): the age
+        # is the column a person scans before a nudge.
+        if not _same_chase(values["waiting_on"], mine):
+            values.setdefault(
+                "delegated_at", datetime.now(UTC).replace(microsecond=0).isoformat()
+            )
     if given.get("expected_by"):
         values["expected_by"] = _expected_by(given["expected_by"])
     refusal = _clear_into(values, given.get("clear", ""), _OVERLAY_CLEAR)
     return refusal or _block_refusal(values, mine) or values
+
+
+def _same_chase(person: dict[str, Any], mine: dict[str, Any]) -> bool:
+    """Does the member already wait on *person*, with a since-when stored?"""
+    stored = mine.get("waiting_on") if isinstance(mine.get("waiting_on"), dict) else {}
+    email = str(stored.get("email") or "").lower()
+    return bool(email) and email == person.get("email") and bool(mine.get("delegated_at"))
 
 
 def _overlay_words(given: dict[str, str]) -> dict[str, Any] | str:
@@ -3365,7 +3377,7 @@ async def _overlay_times(given: dict[str, str], values: dict[str, Any]) -> None:
     asked = [arg for arg in _OVERLAY_TIMES if given.get(arg)]
     if not asked:
         return
-    _day, zone = await _member_clock()
+    _day, zone, _label = await _member_clock()
     for arg in asked:
         raw = given[arg]
         if arg == "waiting_since" and len(raw) == 10 and _date_of(raw):

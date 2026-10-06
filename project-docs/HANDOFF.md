@@ -95,6 +95,20 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-257 · Keep a node with a hidden parent out of the top level of the tree drag · [AGENT]
+- **Check:** `rg -n "parentId === null\) return \[\.\.\.roots\]" workbench/control_plane/src/app/projects/lib/treeDrop.ts`
+  → a hit means this is open.
+- **Why.** `get_tree` shows a node whose parent the member cannot see as a
+  root. `siblingsOf(roots, null)` counts that node as a top-level sibling.
+  When the top level has no order yet, the drag spreads the positions and
+  sends `parent_project_id: null` for that node. The move route then makes it
+  a space, with its own lanes. The chat had the same defect, and WS-46 P7
+  review round 1 fixed it in `guarded.py` `_plan_place`.
+- **Do.** Keep only the roots with no `parent_project_id` in `siblingsOf`.
+  Fence it in `treeDrop.test.ts` with a hidden-parent root.
+- **Authority:** `specs/projects_agent_parity.md` §15, the P7 record
+- **Added:** 2026-10-06 · WS-46 P7 review round 1
+
 ### H-256 · Give `user_settings` a key for each organization of a member · [AGENT]
 - **Check:** `rg -n "user_id TEXT PRIMARY KEY" infra/postgres/51_gtd_settings.sql`,
   then find a later migration that keys the table on
