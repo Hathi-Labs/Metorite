@@ -616,7 +616,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T11b** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #692 (2026-10-06).** GO-NARROWED by the audit. The shared reader reads `.xlsx` and HTML, with the hardened zip and XML path of a `.docx`. No migration, no flag and no new dependency. See §10.4.13. | See §10.4.13. |
 | **EM-T12** | 🟢 AGENT-SAFE | ✅ **MERGED #688 (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
 | **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
-| **EM-T13b** | 🟢 AGENT-SAFE · security review | 📝 **SPECIFIED (2026-10-06), a later PR than EM-T13a.** The `unsubscribe_sender` card names the host or the `mailto:` address of the stored link. The `send_draft` card names the To, Cc and Bcc of the draft. See §10.4.15. | See §10.4.15. |
+| **EM-T13b** | 🟢 AGENT-SAFE · security review | 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -5571,9 +5571,8 @@ forward each mail to an outside address. The model reads such text today through
 The two new routes are additive. No change to `run_rules`, `resolve_execution` or
 `learn_rule_pattern`. No change to the self-anneal retry, which is a separate board finding.
 
-**EM-T13b (a later PR).** `unsubscribe_sender` sends no `unsubscribe_link`, so the route uses the
-stored link. The card names the host or the `mailto:` address. The `send_draft` card names the To,
-Cc and Bcc of the draft.
+**EM-T13b (two later PRs).** See the subsection "EM-T13b" at the end of this section. Its audit of
+2026-10-07 split the work into EM-T13b-1 and EM-T13b-2.
 
 **Board findings (audit of 2026-10-06).** `_self_anneal` drops `own_tool_scope` and `tool_scope`
 (`executor.py` ~:5675 and ~:5723). `learn_rule_pattern` reports "Learned" when the route saved
@@ -5749,6 +5748,75 @@ database. Then `git checkout` put the file back, and `git status` was clean.
 | M24 | The second read compares the actions only | the field fence | red, 3 failed |
 | M25 | The card keeps the quotes of a name | the injected name fence | red, 1 failed |
 | M26 | `RuleActionModel` takes an unknown key | the unknown key fence | red, 1 failed |
+
+##### EM-T13b — the unsubscribe and draft cards name the target, and a webhook refuses a private host
+
+**Status.** 📝 SPECIFIED (2026-10-07). Audited 2026-10-07, GO-NARROWED. Two PRs: EM-T13b-1 (the cards) and EM-T13b-2 (the webhook guard).
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. Both PRs change LIVE paths, so each takes the full review loop and a security review. The owner does the live check of a real send.
+
+**Size.** S and S.
+
+**The gap.**
+- `unsubscribe_sender` (`apps/agents/agent-email-assistant/agents.py` ~:2286) takes `unsubscribe_link` from the model. The route (`routes/email/automation/senders.py` ~:891) uses that link when it is set. An `http` link gets a POST, then a GET (`_http_unsubscribe` ~:760). A `mailto:` link sends the subject and body of the link from the mailbox of the member (`_mailto_unsubscribe` ~:794). The card names only the sender.
+- The stored link is `MAX(email_messages.unsubscribe_link)` for the sender. It comes from `List-Unsubscribe`, else from an anchor in the HTML.
+- The `send_draft` card (~:2252) names no recipient. `POST /email/drafts/send` (`drafting.py` ~:2347) reads To, Cc and Bcc from the local row.
+- `CALL_WEBHOOK` (`actions.py` ~:673-675) posts to the saved URL. It does no host check and no IP pin, and it puts no cap on the answer. The rules UI saves such a rule with no card.
+
+**Scope, EM-T13b-1.**
+1. **A target route.** `GET /email/unsubscribe/target?account_id=&email=` checks the owner of the mailbox. It answers `{"kind", "link", "host", "address"}`, and `kind` is `one-click`, `mailto` or `block`. One helper in `senders.py` reads the stored link, and the POST also calls it.
+2. **The tool.** `unsubscribe_sender` loses the parameter `unsubscribe_link`. It calls the target route before the card. Then it posts the exact link that the card showed.
+3. **The unsubscribe card.** A one-click line shows `host: <host>`, from `_url_problem`. A mailto line shows `mail to: <address>`, from `_address_problem`. A block line says that the sender has no link. When a check fails, the tool asks nothing and sends nothing.
+4. **An old gateway.** When the target route answers 404 or 405, the tool sends nothing. It tells the member that the feature is not ready.
+5. **The draft card.** Before the card, `send_draft` reads `GET /email/messages/{draft_id}`. A row of another mailbox, or a row outside Drafts, sends nothing. The detail holds a count. The context holds each To, Cc and Bcc address on its own line, through `_card_text`.
+6. **Send what the card showed.** The tool adds `expect` (`to`, `cc`, `bcc`) to `POST /email/drafts/send`. Before the provider call, the route compares the sets in lower case with the row. A difference answers 409 and sends nothing. An old gateway ignores the field, which is the behaviour of today.
+
+**Scope, EM-T13b-2.**
+1. **One seam.** `_host_is_public` and `_is_safe_external_url` move from `senders.py` to `gateway/outbound_guard.py`. The unsubscribe path and the webhook both call that module. `senders.py` imports the two old names again.
+2. **The check.** The URL must use `http` or `https` and have a host. It must have no user name, no password and no backslash. The guard resolves the host once. It unwraps an IPv4-mapped address. It refuses the URL when any address is multicast or is not `is_global`.
+3. **The pin (DNS rebinding).** The guard connects to the first resolved address and sends the `Host` header of the URL. For `https`, it sets the `sni_hostname` extension, so TLS checks the name. It also sets `trust_env=False`.
+4. **No redirect.** `follow_redirects=False`. A 3xx is a failure.
+5. **Caps.** The connect timeout is 3 seconds, and the total is 10 seconds. The guard streams the answer and reads at most 64 KiB.
+6. **The record.** A refusal raises `OutboundRefused`. The `except` of `_apply_rule_actions` logs `email.rule_action_failed`. It also writes `{"type": "CALL_WEBHOOK", "error": "webhook refused: <host> <reason>"}` to `action_errors`, and History shows that entry. The error never holds the path or the query.
+
+**Non-goals.** No change to the rules UI or to the webhook body. No change to the copies in `email/transport/attachments.py` (~:51) and `workflows/tools.py` (~:102). No change to the `send_email` card.
+
+No check that a link from the UI is a stored link. No port limit. No SQL change in EM-T13b-2.
+
+**Fences (R7).** For EM-T13b-1, in `tests/unit/test_email_send_cards.py`:
+- The tool has no `unsubscribe_link` parameter, and it posts the link of the target route.
+- The card names the host of a one-click link and the address of a mailto link.
+- A mailto address that `_address_problem` refuses sends nothing.
+- A 404 from the target route sends nothing.
+- The draft card names each To, Cc and Bcc. A refusal or a headless call sends nothing.
+- A draft of another mailbox sends nothing.
+- An `expect` that does not match answers 409 and calls no provider.
+- R8: on a real database, the target route returns the link of the named mailbox only.
+
+For EM-T13b-2, in `tests/unit/test_email_webhook_guard.py`:
+- The guard refuses `127.0.0.1`, `10.0.0.5`, `169.254.169.254`, `100.64.0.1`, `::1`, `::ffff:127.0.0.1` and `224.0.0.1`, and no request goes out.
+- The guard refuses a host name that resolves to a private address.
+- The request goes to the resolved IP with the `Host` header and the SNI name, and the guard resolves the host once.
+- The guard does not follow a 3xx.
+- The guard reads no more of the answer than the cap.
+- The guard refuses `file:`, `ftp:` and a URL with a user name.
+- A refusal writes the host and the reason to `errors_out`, with no path and no query.
+
+**Mutations.** EM-T13b-1: N1 keeps the link from the model. N2 drops the host from the card. N3 skips `_address_problem`.
+
+N4 drops the 409 compare. N5 drops the Bcc line. N6 drops the account filter of the target route, and the R8 fence fails.
+
+EM-T13b-2: W1 drops the guard call. W2 uses `is_private` in place of `is_global`. W3 connects to the URL host and does not pin the IP. W4 sets `follow_redirects=True`. W5 reads the whole answer. W6 puts the URL in the error.
+
+**Verify with.**
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_send_cards.py tests/unit/test_email_unsubscribe.py tests/unit/test_email_rule_confirm.py tests/unit/test_email_tool_consolidation.py tests/unit/test_tool_schema_diet.py tests/unit/test_outlook_drafts.py tests/unit/test_gmail_send_and_drafts.py -v -rs
+uv run pytest tests/unit/test_email_webhook_guard.py tests/unit/test_email_unsubscribe.py tests/unit/test_email_rule_action_failures.py tests/unit/test_email_rules_engine.py -v -rs
+uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gateway/gateway/routes/email/automation/senders.py apps/services/gateway/gateway/routes/email/automation/drafting.py apps/services/gateway/gateway/routes/email/automation/actions.py apps/services/gateway/gateway/outbound_guard.py
+```
+
+**Board findings.** The `send_email` card can hide a Bcc after 500 characters, and that is a candidate for EM-T13c. The webhook post runs while the tenant session of `_apply_rule_actions` is open. Two IP-check copies remain, in `attachments.py` and `workflows/tools.py`. A `send_draft` with no signature sends the recipients that the provider holds, and those can differ from the row.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
