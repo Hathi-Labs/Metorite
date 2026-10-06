@@ -195,6 +195,38 @@ describe("the monitor", () => {
     expect(r.monitor.state()).toBe("recovered");
   });
 
+  it("says busy, not updating, when the gateway answers and its database is busy", async () => {
+    // 2026-10-06: the pooler refused connections, the gateway now answers 503,
+    // and its /health says db busy. That is "catching up", not "restarting".
+    const r = rig([
+      { up: true, build: "b1" }, // start
+      { up: true, busy: true, build: "b1" }, // the suspicion
+      { up: true, busy: true, build: "b1" }, // poll 1: still busy
+      { up: true, build: "b1" }, // poll 2: caught up
+    ]);
+    await r.monitor.start();
+    r.monitor.suspect();
+    await r.flush();
+    expect(r.monitor.state()).toBe("busy");
+    await r.advance(POLL_FAST_MS);
+    expect(r.states().filter((s) => s === "busy")).toHaveLength(1);
+    await r.advance(POLL_FAST_MS);
+    expect(r.seen.at(-1)).toEqual(["recovered", { buildChanged: false, from: "busy" }]);
+  });
+
+  it("moves from busy to updating when the gateway then goes down", async () => {
+    const r = rig([
+      { up: true, build: "b1" },
+      { up: true, busy: true, build: "b1" },
+      { up: false, build: null },
+    ]);
+    await r.monitor.start();
+    r.monitor.suspect();
+    await r.flush();
+    await r.advance(POLL_FAST_MS);
+    expect(r.states()).toEqual(["checking", "busy", "updating"]);
+  });
+
   it("ignores a second suspicion while one is being checked or reported", async () => {
     const probe = vi.fn(async () => ({ up: false, build: null }) as ProbeResult);
     const monitor = createMonitor({
@@ -335,9 +367,18 @@ describe("the probe", () => {
   it("reads up and the build", async () => {
     expect(await probeHealth(answer('{"gateway":"up","build":"b7"}'))).toEqual({
       up: true,
+      busy: false,
       build: "b7",
     });
     expect((await probeHealth(answer('{"gateway":"down","build":"b7"}'))).up).toBe(false);
+  });
+
+  it("reads busy as up and busy, so the monitor can tell the two apart", async () => {
+    expect(await probeHealth(answer('{"gateway":"busy","build":"b7"}'))).toEqual({
+      up: true,
+      busy: true,
+      build: "b7",
+    });
   });
 
   it("reads Caddy's HTML updating page as down", async () => {

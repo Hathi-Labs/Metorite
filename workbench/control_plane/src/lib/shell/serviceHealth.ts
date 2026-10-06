@@ -27,9 +27,22 @@
  * member decides.
  */
 
-export type Health = "ok" | "checking" | "updating" | "offline" | "recovered";
+export type Health =
+  | "ok"
+  | "checking"
+  | "updating"
+  | "busy"
+  | "offline"
+  | "recovered";
 
-/** The statuses a restart produces. A 500 is an answer, so it is not here. */
+/** The states in which the product is not fully available. */
+const OUTAGE: ReadonlySet<Health> = new Set(["updating", "busy", "offline"]);
+
+/**
+ * The statuses a restart or a busy database produces. A 500 is an answer, so
+ * it is not here. Since 2026-10-06 the gateway answers a refused database
+ * connection with 503 (`acb_common/db_busy.py`), so that case lands here too.
+ */
 export const UPDATE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
 export const HEALTH_PATH = "/api/health";
@@ -43,6 +56,12 @@ export const RECOVERED_MS = 8_000;
 
 export interface ProbeResult {
   up: boolean;
+  /**
+   * The gateway answers, and its database refused a connection a moment ago.
+   * The gateway knows this from memory (`/health`'s `db` field), so asking
+   * costs no database call.
+   */
+  busy?: boolean;
   build: string | null;
 }
 
@@ -100,13 +119,27 @@ export function createMonitor(deps: MonitorDeps): Monitor {
   };
 
   const down = () => {
-    if (state !== "updating" && state !== "offline") downSince = deps.now();
+    if (!OUTAGE.has(state)) downSince = deps.now();
     const next: Health = deps.online() ? "updating" : "offline";
     // Speak only on a CHANGE. A poll that finds the gateway still down must
     // not show the toast again: the member may have dismissed it, and the
     // toast re-raises a dismissed key.
     if (next !== state) set(next);
     schedulePoll();
+  };
+
+  /** The gateway answers, and its database is catching up. */
+  const busy = () => {
+    if (!OUTAGE.has(state)) downSince = deps.now();
+    if (state !== "busy") set("busy");
+    schedulePoll();
+  };
+
+  /** One probe answer, for a monitor that is already in an outage. */
+  const react = (r: ProbeResult) => {
+    if (!r.up) down();
+    else if (r.busy) busy();
+    else up(r.build);
   };
 
   const up = (build: string | null) => {
@@ -131,9 +164,7 @@ export function createMonitor(deps: MonitorDeps): Monitor {
     cancel = deps.setTimer(async () => {
       cancel = null;
       if (disposed) return;
-      const r = await safeProbe();
-      if (r.up) up(r.build);
-      else down();
+      react(await safeProbe());
     }, wait);
   };
 
@@ -147,12 +178,12 @@ export function createMonitor(deps: MonitorDeps): Monitor {
       set("checking");
       void safeProbe().then((r) => {
         if (disposed || state !== "checking") return;
-        if (r.up) {
+        if (r.up && !r.busy) {
           // One route failed, and the product is fine. Say nothing.
           if (baseline === null) baseline = r.build;
           set("ok");
         } else {
-          down();
+          react(r);
         }
       });
     },
@@ -160,7 +191,7 @@ export function createMonitor(deps: MonitorDeps): Monitor {
       if (!online) {
         down();
       } else if (state === "offline") {
-        void safeProbe().then((r) => (r.up ? up(r.build) : down()));
+        void safeProbe().then(react);
       }
     },
     state: () => state,
@@ -234,7 +265,8 @@ export async function probeHealth(
   if (!res.ok) return { up: false, build: null };
   try {
     const body = (await res.json()) as { gateway?: string; build?: string | null };
-    return { up: body.gateway === "up", build: body.build ?? null };
+    const busy = body.gateway === "busy";
+    return { up: body.gateway === "up" || busy, busy, build: body.build ?? null };
   } catch {
     return { up: false, build: null };
   }
