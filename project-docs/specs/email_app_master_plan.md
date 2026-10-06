@@ -612,9 +612,9 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
 | **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | ✅ **MERGED #658 (2026-10-05).** The live check (H-248) is open. **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
 | **EM-T11** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #672 (2026-10-06), with review round 1.** GO-NARROWED by the audit. No migration and no flag. **A chat cannot read the files of a mail.** A text route for an attachment through the shared reader of H-229, and a `read_email_attachment` tool for the email assistant. No `.xlsx` and no HTML (EM-T11b). See §10.4.12. | See §10.4.12. |
-| **EM-T11b** | 🟢 AGENT-SAFE · security review · 🔴 live check | 🔨 **BUILT, not merged (2026-10-06).** GO-NARROWED by the audit. The shared reader reads `.xlsx` and HTML, with the hardened zip and XML path of a `.docx`. No migration, no flag and no new dependency. See §10.4.13. | See §10.4.13. |
+| **EM-T11b** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #692 (2026-10-06).** GO-NARROWED by the audit. The shared reader reads `.xlsx` and HTML, with the hardened zip and XML path of a `.docx`. No migration, no flag and no new dependency. See §10.4.13. | See §10.4.13. |
 | **EM-T12** | 🟢 AGENT-SAFE | ✅ **MERGED #688 (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
-| **EM-T13** | 🟢 AGENT-SAFE · security review | 🔨 **EM-T13a BUILT, not merged (`email-rule-confirm`, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
+| **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
 | **EM-T13b** | 🟢 AGENT-SAFE · security review | 📝 **SPECIFIED (2026-10-06), a later PR than EM-T13a.** The `unsubscribe_sender` card names the host or the `mailto:` address of the stored link. The `send_draft` card names the To, Cc and Bcc of the draft. See §10.4.15. | See §10.4.15. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
@@ -4970,7 +4970,7 @@ summarise a PDF that came in a mail. Each chat must quote the file.
 
 #### 10.4.13 EM-T11b — the assistant reads an Excel file and an HTML file
 
-**Status.** 🔨 BUILT, not merged (2026-10-06), on the branch `email-att-xlsx`. The text was
+**Status.** ✅ MERGED #692 (2026-10-06), after the branch `email-att-xlsx`. The text was
 verified against code on 2026-10-06 at `a2bb34a82`. The spec-auditor gave GO-NARROWED, and this text
 holds its corrections. The "As built" notes below record the build. The owner asked for it on
 2026-10-06, because the assistant must read and understand an Excel file that comes in a mail.
@@ -5523,7 +5523,7 @@ findings.
 
 #### 10.4.15 EM-T13 — a rule that sends mail out asks the member first
 
-**Status.** 🔨 EM-T13a BUILT, not merged (branch `email-rule-confirm`, 2026-10-06), with review
+**Status.** ✅ EM-T13a MERGED (#690, 2026-10-06), with review
 rounds 1 and 2. EM-T13b is 📝 SPECIFIED.
 
 **The audit.** 📝 SPECIFIED (2026-10-06). Audited 2026-10-06, GO-NARROWED. The rule tools are not
