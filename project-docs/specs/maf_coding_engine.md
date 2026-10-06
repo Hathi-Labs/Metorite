@@ -1802,7 +1802,7 @@ until its PR merges.
 | WS-43v | ▶ Projects track step 3: the light eval | WS-43d, WS-43u | AGENT-SAFE on a local stack |
 | WS-43w | ▶ Projects track step 4: the owner flip for Fracktal | WS-43v, PR #591, PR #598 | **OWNER-GATE** (WS43-G1, WS43-G2, WS43-G3) |
 | WS-43x | The Email track (§16.4): WS-43x1 and WS-43x2 | WS-43y3 | See the two steps |
-| WS-43y1a | 🔨 BUILT with review rounds 1 to 3, not merged. The data engine and the image (§7.10): the image change, the CSV and TSV reader, the type rules, the SQL rule and the five verbs | WS-43b | AGENT-SAFE. The box build is WS43-G2 |
+| WS-43y1a | ✅ MERGED #697 (2026-10-07), with review rounds 1 to 3. Dark until WS43-G2. The data engine and the image (§7.10): the image change, the CSV and TSV reader, the type rules, the SQL rule and the five verbs | WS-43b | AGENT-SAFE. The box build is WS43-G2 |
 | WS-43y1b | 📝 The `.xlsx` reader, the nine layout rules, Excel dates and the zip and XML checks | WS-43y1a | AGENT-SAFE |
 | WS-43y2a | 📝 The dataset dir: its mount point, its mount, its lifetime, the quota and the purge | WS-43y1a, WS-43c | AGENT-SAFE |
 | WS-43y2b | 📝 The six data tools, the sources and the envelope | WS-43y2a | AGENT-SAFE |
@@ -3265,8 +3265,8 @@ lines.
 ### WS-43y1 — The data engine and the image 🔲 📝 **Specified 2026-10-06**
 
 **Status.** 📝 SPECIFIED (2026-10-06). Audited GO-NARROWED 2026-10-06.
-WS-43y1a 🔨 BUILT with review rounds 1 to 3, not merged (branch
-`data-toolkit`, 2026-10-07). WS-43y1b 🔲.
+WS-43y1a ✅ MERGED #697 (2026-10-07), with review rounds 1 to 3. It is
+dark until the owner's WS43-G2 act. WS-43y1b 🔲.
 
 **Gate.** AGENT-SAFE. It ships dark, because no tool calls the engine yet.
 To build the new image on the box is WS43-G2.
