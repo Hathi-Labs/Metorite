@@ -5816,7 +5816,7 @@ uv run pytest tests/unit/test_email_webhook_guard.py tests/unit/test_email_unsub
 uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gateway/gateway/routes/email/automation/senders.py apps/services/gateway/gateway/routes/email/automation/drafting.py apps/services/gateway/gateway/routes/email/automation/actions.py apps/services/gateway/gateway/outbound_guard.py
 ```
 
-**Board findings.** The `send_email` card can hide a Bcc after 500 characters, and that is a candidate for EM-T13c. The webhook post runs while the tenant session of `_apply_rule_actions` is open. Two IP-check copies remain, in `attachments.py` and `workflows/tools.py`. A `send_draft` with no signature sends the recipients that the provider holds, and those can differ from the row.
+**Board findings.** The `send_email` card can hide a Bcc after 500 characters, and that is a candidate for EM-T13c. The webhook post runs while the tenant session of `_apply_rule_actions` is open. Two IP-check copies remain, in `attachments.py` and `workflows/tools.py`. A `send_draft` from the UI with no signature sends the recipients that the provider holds, and those can differ from the row. Review round 1 of EM-T13b-1 closed this gap for the chat.
 
 **As built (EM-T13b-1, 2026-10-07).** 🔨 BUILT, not merged. No migration and no flag.
 
@@ -5862,6 +5862,29 @@ uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gate
 | N4 | The route does no 409 compare | the 409 fence | red, 4 failed |
 | N5 | The card has no Bcc line | the draft card fence | red, 4 failed |
 | N6 | The read of the stored link has no mailbox filter | the R8 fence | red, 1 failed |
+
+**Review round 1 (EM-T13b-1, 2026-10-07).** The verifier passed with P2 and P3 items. The security review asked for changes on one P1. Each finding has a fix and a fence below.
+
+1. **P1, the Reply-To.** `draft_reply` and the rule `DRAFT_EMAIL` path write the From of the mail to the row. Outlook's `createReply` keeps the Reply-To on the provider draft. So the card showed `billing@vendor.com`, and the unsigned send went to `pay@vendor-billing.co`. Also, on the signed path, `cc or None` and `bcc or None` kept a Cc or a Bcc that only the provider held.
+   **The fix.** With `expect`, `POST /email/drafts/send` calls `update_draft` with the exact To, Cc and Bcc of the row before the native send. It passes an empty list too, and it does this on the signed and the unsigned path. Outlook's PATCH clears a list that is empty. Gmail builds the whole draft again, so an empty list leaves no header. A send with no `expect`, from the UI, does not change.
+2. **P2, the mailto text.** The sender of the list writes the subject and the body of a `mailto:` link, and the send uses them. Now the target route answers `subject` and `body`, and the card shows both in `context`. The rule: a subject or a body longer than 200 characters sends nothing. A URL (`http:`, `https:`, `www.` or `://`) or a hidden character also sends nothing. A real unsubscribe mail needs none of these.
+3. **P3, the draft card.** A non-ASCII domain stays legal, because a draft can hold an IDN address. The line marks it as `(non-ASCII domain: <punycode>)`. A draft with an address longer than 254 characters sends nothing, so the card never cuts an address.
+4. **P3, the answer.** The last answer of `unsubscribe_sender` names the cleaned sender, as the card does.
+5. **P2, the base.** The branch now sits on `origin/main`. The rebase met one conflict, in the WS-17 row of `work_plan.md`. The fix kept the row of main and added the EM-T13b-1 entry.
+
+**Known limit (round 1).** An unsigned send with `expect` now writes the row body to the provider draft, as a signed send always did. An Outlook draft with HTML formatting then goes out as plain text. The recipients win over the format.
+
+**Mutations (review round 1).** The runner ran N1 to N6 again on the new code, and each one is still red. Each row below changed one file and ran `test_email_send_cards.py` on a private ladder database. Then `git checkout` put the file back, and `git status` was clean.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| N7 | The update goes back to `or None` | the provider-only Cc and Bcc fence | red, 2 failed |
+| N8 | The unsigned path skips `update_draft` | the Reply-To fence | red, 2 failed |
+| N9 | The card has no subject and no body | the mailto text fence | red, 1 failed |
+| N10 | No check of the mailto subject and body | the mailto refusal fence | red, 7 failed |
+| N11 | No mark on a non-ASCII domain | the IDN fence | red, 1 failed |
+| N12 | No limit on the length of a draft address | the long address fence | red, 1 failed |
+| N13 | The answer names the raw sender | the answer fence | red, 1 failed |
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
