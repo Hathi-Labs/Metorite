@@ -33,7 +33,7 @@ import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from http.server import ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
@@ -322,6 +322,8 @@ class OpsStub:
             "description": str(body.get("description") or ""),
             "source": str(body.get("source") or "manual"), "archived_at": None,
             "completed_at": None, "type_id": body.get("type_id"), "custom_fields": {},
+            # WS-46 P13: create_tasks reads the newest tasks before its card.
+            "created_at": datetime.now(UTC).isoformat(),
         }
         if body.get("custom_fields") is not None:
             # The create route's own check (#679), before the row exists, so a

@@ -163,6 +163,9 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   edit_task: { icon: "PenLine", label: "Task updated" },
   edit_project: { icon: "PenLine", label: "Project updated" },
   propose_plan: { icon: "ListTodo", label: "Plan created" },
+  // WS-46 P13 — several new tasks in one project. Its receipt lists every
+  // task it made, so it draws through `BatchReceiptCard`, not one link.
+  create_tasks: { icon: "ListPlus", label: "Tasks created" },
   // S5 — the rest of the writes
   save_view: { icon: "LayoutList", label: "View saved" },
   capture_intake: { icon: "Inbox", label: "Captured into intake" },
@@ -608,6 +611,101 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   );
 }
 
+/**
+ * The write tools whose receipt lists SEVERAL tasks, each with its own
+ * `full_id` line. `BatchReceiptCard` draws each one as a row that opens the
+ * task, and the lines about the rows that failed under them.
+ */
+export const BATCH_TOOLS: ReadonlySet<string> = new Set(["create_tasks"]);
+
+const NL = "\n";
+
+/**
+ * A batch receipt's lines for a person, without the head line and the task
+ * rows (the card draws those as rows). What stays: each row that failed, a
+ * follow-up that did not land, the stop line and the rows left out. The line
+ * that tells the MODEL not to make the tasks again is not for a person. Pure,
+ * exported for its test.
+ */
+export function batchNotes(result: string): string[] {
+  const lines = withoutLegend(result).split(NL);
+  const kept: string[] = [];
+  for (let k = 1; k < lines.length; k++) {
+    const line = lines[k];
+    const next = lines[k + 1] ?? "";
+    if (/^\s*-\s*#\S+\s*«/.test(line) && /^\s*full_id:/i.test(next)) {
+      k++; // the task row and its id line: drawn as a row
+      continue;
+    }
+    if (/^\s*full_id:/i.test(line) || !line.trim()) continue;
+    if (/listed above exist\. Never create them again/.test(line)) continue;
+    kept.push(line);
+  }
+  return forPeople(kept.join(NL)).split(NL).filter((l) => l.trim());
+}
+
+/**
+ * The receipt of `create_tasks`: a heading with the count, one row per task
+ * made (each opens the task in Projects), and the lines about each row that
+ * failed. A partial batch wears the warning tone, as `toneFor` gives it.
+ */
+function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
+  const meta = ACTION_META[e.name] ?? { icon: "ListPlus", label: genericLabel(e.name) };
+  const result = (e.result || "").trim();
+  const outcome = classifyActionResult(result, e.status, e.name);
+  useEffect(() => {
+    if ((outcome === "done" || outcome === "partial") && isFreshReceipt(e)) announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [outcome, e.id]);
+  const rows = parseTaskRows(result);
+  const head = forPeople(withoutLegend(result).split(NL)[0] ?? "");
+  const notes = batchNotes(result);
+  const icon =
+    outcome === "failed" ? "X"
+      : outcome === "partial" ? "AlertTriangle"
+        : outcome === "cancelled" ? "Ban"
+          : outcome === "refused" ? "Info"
+            : meta.icon;
+  const heading =
+    outcome === "failed" ? `${meta.label} — failed`
+      : outcome === "partial" ? `${meta.label} — stopped part way (${rows.length})`
+        : outcome === "cancelled" ? "Cancelled"
+          : outcome === "refused" ? "Not done"
+            : `${meta.label} (${rows.length})`;
+  return (
+    <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 flex-shrink-0">
+          <AppIcon name={icon} size={13} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-medium text-foreground">{heading}</div>
+          {head && (outcome !== "done" || rows.length === 0) && (
+            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">{head}</div>
+          )}
+          {rows.length > 0 && (
+            <div className="mt-1 space-y-0.5 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
+              {rows.map((r) => (
+                <TaskRowView key={r.id} row={r} />
+              ))}
+            </div>
+          )}
+          {notes.length > 0 && (
+            <div className="mt-1 space-y-0.5">
+              {notes.map((n, i) => (
+                <div key={i} className="text-[10px] text-muted-foreground whitespace-pre-wrap"
+                  style={{ overflowWrap: "anywhere" }}>
+                  {n}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** A label for a tool this file has no entry for — the generic card. */
 function genericLabel(name: string): string {
   const words = name.replace(/_/g, " ").trim();
@@ -632,6 +730,10 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
     const meta = INFO_META[e.name];
     if (meta) {
       items.push(<InfoCard key={e.id} event={e} icon={meta.icon} label={meta.label} />);
+      continue;
+    }
+    if (BATCH_TOOLS.has(e.name)) {
+      items.push(<BatchReceiptCard key={e.id} event={e} />);
       continue;
     }
     if (e.name in ACTION_META) {

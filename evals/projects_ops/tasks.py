@@ -1,4 +1,4 @@
-"""The Projects operations tasks, PO-1 to PO-8 (WS-46 P3, and PO-8 from P6).
+"""The Projects operations tasks, PO-1 to PO-9 (WS-46 P3, PO-8 from P6, PO-9 from P13).
 
 Spec: ``project-docs/specs/projects_agent_parity.md`` §11.2. The spec gives
 each prompt in a short form. The full prompt below keeps its meaning and names
@@ -36,6 +36,9 @@ class TaskSpec:
     cards: tuple[str, ...] = ()
     #: Why the task cannot pass yet, with the slice ids. The runner skips it.
     xfail: str | None = None
+    #: WS-46 P13: the fields the member unticks on a selection card. The
+    #: member submits every other field of the card as drawn.
+    untick: tuple[str, ...] = ()
 
 
 TASKS: tuple[TaskSpec, ...] = (
@@ -89,6 +92,14 @@ TASKS: tuple[TaskSpec, ...] = (
         "Add a bug to Launch that starts next Monday, for the customer Acme",
         "Add a bug to the Launch project: fix the badge scanner. The work starts next "
         "Monday, and the customer is Acme.",
+        cards=(APPROVE,),
+    ),
+    # WS-46 P13: several new tasks in a project that exists, as one batch.
+    TaskSpec(
+        "PO-9", "Three new tasks in one call",
+        "Add these 3 tasks to project X",
+        "Add these 3 tasks to the Launch project: book the caterer for Priya Menon, print "
+        "the badges, and test the projector.",
         cards=(APPROVE,),
     ),
 )

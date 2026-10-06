@@ -127,8 +127,8 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
   },
   {
     name: "formCard",
-    summary: "Schema-driven form (text/number/select/slider/toggle/date/textarea) that submits values back — pair with hitl.",
-    data: "{ title?, description?, submitLabel?, fields:[{ name, label, type('text'|'number'|'select'|'slider'|'toggle'|'date'|'textarea'), placeholder?, value?, required?, options?:[string], min?, max?, step?, unit? }] }",
+    summary: "Schema-driven form (text/number/select/slider/toggle/checkbox/date/textarea) that submits values back — pair with hitl.",
+    data: "{ title?, description?, submitLabel?, fields:[{ name, label, type('text'|'number'|'select'|'slider'|'toggle'|'checkbox'|'date'|'textarea'), placeholder?, value?, required?, options?:[string], min?, max?, step?, unit?, hint? }] }",
   },
   {
     name: "optionPicker",
@@ -815,7 +815,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     for (const f of fields) {
       const name = str(f.name);
       if (!name) continue;
-      init[name] = f.value ?? (str(f.type) === "toggle" ? false
+      init[name] = f.value ?? (str(f.type) === "toggle" || str(f.type) === "checkbox" ? false
         : str(f.type) === "slider" ? num(f.min, 0) : "");
     }
     return init;
@@ -849,6 +849,27 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           const name = str(f.name);
           const type = str(f.type, "text");
           const v = values[name];
+          if (type === "checkbox") {
+            // WS-46 P13: one row of a batch the member can leave out. The
+            // label is the row, and the hint carries its facts in plain words.
+            return (
+              <label key={name || i} className="flex min-w-0 items-start gap-2"
+                style={{ animation: `ccFadeUp .3s ease ${i * 0.04}s both` }}>
+                <Checkbox size="sm" checked={!!v} disabled={submitted} className="mt-0.5"
+                  onChange={(e) => set(name, e.target.checked)} />
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-xs text-foreground" style={{ overflowWrap: "anywhere" }}>
+                    {str(f.label, name)}
+                  </span>
+                  {f.hint != null && (
+                    <span className="text-[11px] text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
+                      {str(f.hint)}
+                    </span>
+                  )}
+                </span>
+              </label>
+            );
+          }
           return (
             <label key={name || i} style={{ display: "flex", flexDirection: "column", gap: 4,
               animation: `ccFadeUp .3s ease ${i * 0.04}s both` }}>

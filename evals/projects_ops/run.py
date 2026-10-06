@@ -91,6 +91,8 @@ class OpsHarness(coding.Harness):
 class _Run:
     stream: Any
     cards: list[Card] = field(default_factory=list)
+    #: WS-46 P13: each selection card, with the member's submit.
+    forms: list[dict[str, Any]] = field(default_factory=list)
     no_egress: bool = False
 
 
@@ -105,6 +107,24 @@ def _answer_card(harness: OpsHarness, run: _Run, spec: TaskSpec, value: dict[str
         title=str(value.get("title") or ""), detail=str(value.get("detail") or ""),
         context=str(value.get("context") or ""), answer=answer, at=seen,
     ))
+    return True
+
+
+def _answer_form(run: _Run, spec: TaskSpec, value: dict[str, Any]) -> bool:
+    """Submit a blocking form card as drawn, as a member who reads it and
+    agrees. A field in ``spec.untick`` is submitted unticked. False when no
+    form was waiting."""
+    props = value.get("props") if isinstance(value.get("props"), dict) else {}
+    data = props.get("data") if isinstance(props.get("data"), dict) else {}
+    fields = [f for f in data.get("fields") or [] if isinstance(f, dict)]
+    values = {str(f.get("name")): f.get("value") for f in fields}
+    for name in spec.untick:
+        if name in values:
+            values[name] = False
+    label = str(data.get("submitLabel") or data.get("title") or "Form")
+    if not coding._resolve_card(value, {"answer": f"{label} — {json.dumps(values)}"}):
+        return False
+    run.forms.append({"title": str(data.get("title") or ""), "fields": fields, "values": values})
     return True
 
 
@@ -125,6 +145,10 @@ async def _drive(harness: OpsHarness, session: Session, spec: TaskSpec, run: _Ru
                 value = event.get("value") or {}
                 if (event.get("type") == "CUSTOM" and event.get("name") == "confirmation_requested"
                         and isinstance(value, dict) and _answer_card(harness, run, spec, value)):
+                    continue
+                if (event.get("type") == "CUSTOM" and event.get("name") == "generative_ui"
+                        and isinstance(value, dict) and value.get("request_id")
+                        and _answer_form(run, spec, value)):
                     continue
                 coding._take(run.stream, event)
     finally:
@@ -190,7 +214,7 @@ async def run_task(
     session, ran, tap, wall = await run_session(harness, spec, steps)
     evidence = Evidence(
         task_id=spec.id, dataset=harness.dataset, sessions=[session],
-        requests=list(harness.ops.requests), cards=ran.cards,
+        requests=list(harness.ops.requests), cards=ran.cards, forms=ran.forms,
         covered=harness.covered, no_egress=[ran.no_egress],
     )
     return {**head, **_verdict(evidence), **_record(evidence, tap, wall)}
@@ -223,6 +247,7 @@ def _record(evidence: Evidence, tap: coding.ModelTap, wall: float) -> dict[str, 
         "no_egress": evidence.no_egress,
         "cards": [{"title": c.title, "detail": c.detail, "context": c.context,
                    "answer": c.answer, "at": c.at} for c in evidence.cards],
+        "forms": evidence.forms,
         "requests": [{"method": r.method, "path": r.path, "query": r.query, "member": r.member,
                       "status": r.status, "body": _clip(r.body)} for r in evidence.requests],
         "sessions": [{

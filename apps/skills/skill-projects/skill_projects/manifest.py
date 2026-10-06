@@ -57,6 +57,7 @@ __all__ = [
     "route_for",
     "tool_class",
     "tools_by_class",
+    "witnesses",
 ]
 
 CLASSES = ("A", "B", "C", "X")
@@ -496,6 +497,9 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "edit_project": frozenset({"update_project"}),
     # S7d — the plan also writes its `blocks` links under the same card.
     "propose_plan": frozenset({"create_project", "create_task", "link_tasks"}),
+    # WS-46 P13 — several new tasks in one project under ONE confirmation
+    # card. Each row is create_task's own write, and its assign PUT after.
+    "create_tasks": frozenset({"create_task"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
 }
@@ -541,7 +545,12 @@ IDENTITY_HEADERS: frozenset[str] = frozenset(
 #: per field is enough. The fence calls each witness through the fake gateway
 #: and asserts that the request carries the field, so a claim the tool does
 #: not honour fails.
-SENDS: dict[tuple[str, str], dict[str, str]] = {
+#:
+#: WS-46 P13: a value may also be a TUPLE of witnesses, when a second tool
+#: sends the same field. ``"tool.argument.key"`` names one key of a JSON row
+#: argument, for example ``create_tasks.tasks.due``. The fence checks each
+#: witness of the tuple on the wire.
+SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     # ── tasks ────────────────────────────────────────────────────────────
     ("GET", "/projects/tasks"): {
         "project_id": "list_tasks.project_id",
@@ -558,22 +567,26 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "page": "list_tasks.page",
         "page_size": "list_tasks.page_size",
     },
+    # WS-46 P13: create_tasks sends each field from one key of each row.
     ("POST", "/projects/tasks"): {
-        "project_id": "create_task.project_id",
-        "parent_task_id": "create_task.parent_task_id",
-        "status_id": "create_task.status",
-        "title": "create_task.title",
-        "description": "create_task.description",
-        "importance": "create_task.important",
-        "leveraged": "create_task.leveraged",
-        "estimate_mins": "create_task.estimate_mins",
-        "due_at": "create_task.due",
-        "tags": "create_task.tags",
+        "project_id": ("create_task.project_id", "create_tasks.project_id"),
+        "parent_task_id": (
+            "create_task.parent_task_id",
+            "create_tasks.tasks.parent_task_id",
+        ),
+        "status_id": ("create_task.status", "create_tasks.tasks.status"),
+        "title": ("create_task.title", "create_tasks.tasks.title"),
+        "description": ("create_task.description", "create_tasks.tasks.description"),
+        "importance": ("create_task.important", "create_tasks.tasks.important"),
+        "leveraged": ("create_task.leveraged", "create_tasks.tasks.leveraged"),
+        "estimate_mins": ("create_task.estimate_mins", "create_tasks.tasks.estimate_mins"),
+        "due_at": ("create_task.due", "create_tasks.tasks.due"),
+        "tags": ("create_task.tags", "create_tasks.tasks.tags"),
         # WS-46 P6: G5, G6 and G7. The route checks each custom value
         # through `custom_fields.apply_values` (#679), before the insert.
-        "start_date": "create_task.start",
-        "type_id": "create_task.type",
-        "custom_fields": "create_task.fields",
+        "start_date": ("create_task.start", "create_tasks.tasks.start"),
+        "type_id": ("create_task.type", "create_tasks.tasks.type"),
+        "custom_fields": ("create_task.fields", "create_tasks.tasks.fields"),
     },
     ("PATCH", "/projects/tasks/{task_id}"): {
         "status_id": "update_task.status",
@@ -598,7 +611,9 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "custom_fields": "move_task.fields",
         "include_subtasks": "move_task.include_subtasks",
     },
-    ("PUT", "/projects/tasks/{task_id}/assignees"): {"assignees": "assign.assignees"},
+    ("PUT", "/projects/tasks/{task_id}/assignees"): {
+        "assignees": ("assign.assignees", "create_tasks.tasks.assignees"),
+    },
     ("POST", "/projects/tasks/{task_id}/links"): {
         "target_task_id": "link_tasks.other_task_id",
         "link_type": "link_tasks.link_type",
@@ -1219,6 +1234,11 @@ UI_PLANNED: dict[str, str] = {
     # G21 (P10): the chat attaches a file the member gave it in this thread.
     "attachmentsApi.upload": "G21",
 }
+
+
+def witnesses(value: str | tuple[str, ...]) -> tuple[str, ...]:
+    """The witnesses of one ``SENDS`` value: one string, or a tuple of them."""
+    return (value,) if isinstance(value, str) else tuple(value)
 
 
 def tool_class(name: str) -> str | None:

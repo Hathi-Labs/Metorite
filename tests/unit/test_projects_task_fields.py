@@ -839,7 +839,8 @@ class _Stripping(FakeClient):
 
 async def _witness_holds(key, name, monkeypatch, *, strip: bool) -> bool:
     """F2's wire check for one field, with the field stripped or not."""
-    witness = m.SENDS[key][name]
+    # The first witness is the P6 tool's. WS-46 P13 added a second for some.
+    witness = m.witnesses(m.SENDS[key][name])[0]
     tool, _, arg = witness.partition(".")
     approve(monkeypatch)
     calls: list[dict] = []

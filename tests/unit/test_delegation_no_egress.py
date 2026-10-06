@@ -692,7 +692,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "ask_questions", "assign", "bulk_update", "calendar", "call_agent",
     "call_agent_background", "call_agents_parallel", "capture_intake", "comment",
     "complete", "create_field", "create_personal_task", "create_project",
-    "create_status", "create_tag", "create_task", "create_type", "defer",
+    "create_status", "create_tag", "create_task", "create_tasks", "create_type", "defer",
     "delete_attachment", "delete_comment", "delete_field", "delete_status",
     "delete_tag", "delete_type", "delete_view", "edit_comment", "edit_project",
     "edit_task", "emit_generative_ui", "file_access_delete", "file_access_grep",

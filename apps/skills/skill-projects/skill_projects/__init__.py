@@ -9,7 +9,7 @@ Spec: ``project-docs/specs/projects_ai_chat.md``.
 tool that is not exported is in ``manifest.PLANNED`` with its slice.
 """
 
-from skill_projects.forms import edit_project, edit_task, propose_plan
+from skill_projects.forms import create_tasks, edit_project, edit_task, propose_plan
 from skill_projects.guarded import (
     archive_project,
     archive_task,
@@ -184,6 +184,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "edit_project",
     "edit_task",
     "propose_plan",
+    # Class B — several new tasks in one project, one batch (WS-46 P13)
+    "create_tasks",
     # Class B — the rest of the writes (S5)
     "capture_intake",
     "mark_notifications_read",

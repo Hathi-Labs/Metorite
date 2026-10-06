@@ -10,8 +10,9 @@ scripted run passes six tasks in six, uncovered and covered. PO-3 is
 each of the 313 request fields of a mapped route to one decision. P5 is
 BUILT (2026-10-06): the UI action fence F3 holds each of the 104 Projects
 UI client methods to one decision. P6 is BUILT (2026-10-06). The chat now
-sets each task field of the screen (G5 to G9). P7 to P10 are open.** Written
-2026-10-05.
+sets each task field of the screen (G5 to G9). P13 is BUILT (2026-10-06):
+`create_tasks` makes several new tasks in one project as one batch. P7 to
+P10 are open.** Written 2026-10-05.
 **P1, as built.** `create_task` takes the eight `repeat*` arguments and sets
 the rule under its one card. `task_detail` prints "Repeats:". The fence is
 `tests/unit/test_projects_recurring_task.py`. One deviation: the weekly
@@ -958,6 +959,7 @@ slice updates this spec's status header in the same PR (R4).
 | **P10 · Attach a chat file to a task** | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
 | **P11 · Filter the board** | `set_filter`, once the page's filter state has a stable shape | G22 | Not now. The owner answered Q4 on 2026-10-06 |
 | **P12 · MCP facade for external clients** | Its own spec first (§5.3) | — | ⏸ PARKED, OWNER-GATE |
+| **P13 · Several new tasks in one call** ✅ BUILT 2026-10-06 | `create_tasks`: rows that take the keys of `create_task`, one selection card, one confirmation card, a receipt for each row · eval task PO-9 | — (a chat need, not a UI input) | AGENT-SAFE |
 
 **Order.** P1 first, because it is the reported failure. P2 next, because
 every later slice is easier to test when refusals are text. P3 then gives
@@ -1227,3 +1229,53 @@ as the answer. The slices build to these answers.
     `/relations` hides an archived or hidden child, so the walk misses a
     visible task under one. The cascade reaches that task. The fix is one
     gateway read that counts with `cascade.load_subtree` (H-254).
+- 2026-10-06 — P13 is built. The cause is a production run of the same
+  day. A member asked for nine tasks from an email, in a project that
+  existed. No tool took several top-level tasks. So the model called
+  `create_task` nine times at once, and each call drew its own card. These
+  facts are as built:
+  - `create_tasks(project_id, tasks)` is in `skill_projects/forms.py`.
+    `tasks` is a JSON list with one row for each task. A row takes the keys
+    of `create_task`: `forms.ROW_KEYS`. The repeat keys stay with
+    `create_task`. A row that holds one is refused by name.
+  - Each row goes through the code of `create_task`.
+    `writes._prepare_new_task` resolves each name before any card.
+    `writes._create_new_task` sends the POST and the assign PUT.
+    `create_task` now calls the same two functions.
+  - One bad row refuses the whole batch before any card, and the refusal
+    names the row. Two rows with one title are refused too. The cap is
+    `MAX_BATCH`, and the card must fit (`_fits_on_card`).
+  - The member sees two cards, in order. The first card is the selection
+    card: the `formCard` template, with one checkbox for each task. The
+    checkbox is ticked at the start. Its row shows the title, the names of
+    the assignees, the due date and the status in words. The second card
+    is the one confirmation card. Its one Approve makes the ticked tasks.
+  - Why two cards and not one. The confirmation card has no checkbox for a
+    row. The class B fence also wants exactly one call of
+    `request_confirmation` (`test_everything_before_the_card_is_a_read`).
+    One card needs a row choice in `ConfirmationCard.tsx` and in
+    `ask_tools.request_confirmation`, which another builder owns.
+  - `formCard` gains the field type `checkbox` and the field key `hint`.
+  - Each row is its own write. A row that fails does not stop the next
+    row. The receipt lists each task made, with its number and its
+    `full_id`. It lists each failed row, with its reason, and it ends with
+    a `stopped:` line. The tool catches each error after the card, so it
+    never raises after the first write.
+  - A retry makes no second copy. `POST /projects/tasks` takes no
+    idempotency key. So the tool reads one page of the project's newest
+    tasks before the card (`GET /projects/tasks`). A task with the same
+    title, made in the last 10 minutes, starts unticked, and both cards
+    name it.
+  - Fences. F2 gains witnesses for `create_tasks`. A `SENDS` value can now
+    be a tuple of witnesses, and `tasks.due` names one key of a row.
+    `COMPOSITE["create_tasks"]` is `{"create_task"}`. F6 and F7 gain the
+    tool. F3 does not change, because the app has no client method that
+    makes a batch. `tests/unit/test_projects_create_tasks.py` holds the
+    rest, and its R8 half runs a batch and its retry through the real
+    create and list routes on asyncpg.
+  - The receipt card is `BatchReceiptCard` in `ProjectToolCards.tsx`. It
+    draws each task as a row that opens the task. The trail reads "Added
+    tasks to a project".
+  - The eval gains PO-9, "add these 3 tasks to project X". Its runner now
+    submits a selection card as the card shows it.
+  - The tool count is 88. `__all__` and `own_tool_scope` each gain one.

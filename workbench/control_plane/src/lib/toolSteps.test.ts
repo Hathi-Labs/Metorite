@@ -85,6 +85,9 @@ describe("describeToolStep — a step in words", () => {
     expect(step("report_save").label).toBe("Saved a report");
     expect(step("archive_project", {}, "running").label).toBe("Archiving a project");
     expect(step("search_emails").label).toBe("Searched emails");
+    // WS-46 P13: the batch reads as one act on a project, never "a tasks".
+    expect(step("create_tasks").label).toBe("Added tasks to a project");
+    expect(step("create_tasks", {}, "running").label).toBe("Adding tasks to a project");
   });
 
   it("keys on the bare name when a runtime prefixes it", () => {
