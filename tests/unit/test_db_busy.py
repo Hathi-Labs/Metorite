@@ -88,6 +88,40 @@ class TestWhatCountsAsUnavailable:
         assert not db_busy.is_db_unavailable(httpx.ConnectError("connection refused"))
         assert not db_busy.is_db_unavailable(ConnectionRefusedError("connection refused"))
 
+    def test_a_marker_in_the_parameters_is_not_a_refusal(self) -> None:
+        # Review P2 (2026-10-06): `str(StatementError)` holds the bound
+        # parameters. A task or an integration error can contain any text.
+        orig = asyncpg.exceptions.UniqueViolationError("duplicate key value")
+        wrapped = sa_exc.DBAPIError.instance(
+            "INSERT INTO t VALUES (:e)",
+            {"e": "Connection refused by host"},
+            orig,
+            Exception,
+        )
+        assert not db_busy.is_db_unavailable(wrapped)
+
+    def test_a_marker_in_the_sql_text_is_not_a_refusal(self) -> None:
+        orig = asyncpg.exceptions.UndefinedColumnError('column "x" does not exist')
+        wrapped = sa_exc.DBAPIError.instance(
+            "SELECT 'too many clients' AS note, x FROM t", {}, orig, Exception
+        )
+        assert not db_busy.is_db_unavailable(wrapped)
+
+    def test_a_connection_sqlstate_counts_whatever_the_words(self) -> None:
+        orig = asyncpg.exceptions.TooManyConnectionsError("sorry")
+        assert db_busy.is_db_unavailable(_wrapped(orig))
+
+    def test_a_bug_raised_while_handling_a_refusal_stays_a_bug(self) -> None:
+        # `__context__` is not followed: this is a KeyError, not a refusal.
+        try:
+            try:
+                raise asyncpg.exceptions.InternalServerError(REFUSAL)
+            except Exception:
+                {}["rows"]
+        except KeyError as bug:
+            assert bug.__context__ is not None
+            assert not db_busy.is_db_unavailable(bug)
+
 
 class TestTheBusyWindow:
     def test_busy_for_the_window_then_clear(self) -> None:

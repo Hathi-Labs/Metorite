@@ -100,17 +100,28 @@ class Settings(BaseSettings):
     # gateway running, and the gateway logged about 590 EMAXCONNSESSION
     # refusals in two days. Each one reached a member as a 500.
     #
-    # The budget is now for the PROCESS: async 8 + 2, sync 2 + 0, so 12 in
-    # all. The overflow went from 4 to 2 to pay for the sync pool. Exhaustion
+    # The budget now covers BOTH pools: async 8 + 1, sync 2 + 1, so 12. The
+    # async overflow went from 4 to 1 to pay for the sync pool. Exhaustion
     # still queues (`db_pool_timeout`), so the cost is latency, not an error.
     # Fence: `test_db_engine_seam.py::TestThePoolCeilingFitsThePoolerInFront`,
     # which now sums both pools.
+    #
+    # ⚠️ **It does NOT yet cover the whole process.** A few callers open a
+    # bare `psycopg.connect()` outside both pools: `org_settings` (two per
+    # full page load, for appearance and branding), `model_config.load_blob`
+    # and `KeyStore` on a cache miss. They live inside the 3 slots this budget
+    # leaves free, beside a migration run, the backup and `psql`. H-250 moves
+    # them into the sync pool. Until then, a burst of page loads during a
+    # migration can still meet the pooler's cap.
     db_pool_size: int = 8
-    db_max_overflow: int = 2
+    db_max_overflow: int = 1
 
     # The SYNC engine of `acb_graph.db`, which shares the same pooler.
+    # ⚠️ Overflow 1, not 0. Some `async def` routes take a sync session on the
+    # event loop itself (H-250 lists 14). With 2 + 0 a third caller waits up
+    # to `db_pool_timeout` while it blocks the whole gateway, `/health` too.
     db_sync_pool_size: int = 2
-    db_sync_max_overflow: int = 0
+    db_sync_max_overflow: int = 1
 
     # How long a caller waits for a free connection before giving up.
     #

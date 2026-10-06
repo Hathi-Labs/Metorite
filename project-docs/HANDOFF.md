@@ -95,6 +95,30 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-250 · Bring the last database connections inside the pool budget · [AGENT]
+- **Check:** `rg -n "psycopg.connect\(" packages/acb_common/acb_common/org_settings.py packages/acb_llm/acb_llm/model_config.py packages/acb_llm/acb_llm/key_store.py`.
+  A hit means part 1 is open.
+- **Why:** Supabase's session pooler allows 15 clients for the whole
+  database. NS-11 (2026-10-06) sized both pools to fit: async 8 + 1 and
+  sync 2 + 1. The 2026-10-06 review found three more gaps.
+  1. **Bare connects outside both pools.** `org_settings` opens two per
+     full page load (appearance and branding). `model_config.load_blob` and
+     `KeyStore._execute` on a cache miss open more. During a migration, a
+     burst of page loads can still meet the cap. Route each one through the
+     sync pool, then make the fence in `test_db_engine_seam.py` refuse a bare
+     `psycopg.connect` in the gateway's import graph.
+  2. **Sync sessions on the event loop.** 14 `async def` routes take a sync
+     `get_session` or `tenant_session` with no `to_thread`, for example
+     `routes/chat.py:1152` and `orchestrator/_tool_injection.py:1738`. A wait
+     for the pool blocks the whole gateway. Move each one into
+     `asyncio.to_thread`.
+  3. **mem0's own pool.** `mem0`'s pgvector store opens a `psycopg_pool`
+     (up to 5) on the same `DATABASE_URL` when `MEM0_ENABLED` is on. Read the
+     box `.env` first. If it is on, count it in the budget.
+- **Authority:** `specs/navigation_shell.md` §7.3 and NS-11 ·
+  `acb_common/settings.py` (the budget comment).
+- **Added:** 2026-10-06 · the NS-11 session.
+
 ### H-246 · Approve the Caddy "updating" page, or say no · [OWNER]
 - **Check:** `rg -n "CADDY-AUTH-APPROVED 3c8217ff" .claude/OWNER_GRANTS.md`.
   No hit means this is open.
