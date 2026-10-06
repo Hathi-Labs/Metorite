@@ -35,8 +35,11 @@ project's own list the way a status is, every match and never the first.
 
 from __future__ import annotations
 
+import calendar
 import functools
+import re
 from collections.abc import Awaitable, Callable
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from skill_projects.client import (
@@ -58,7 +61,7 @@ from skill_projects.priority import (
     priority_fields,
     takes_priority,
 )
-from skill_projects.reads import _rule_text, _task_line
+from skill_projects.reads import WEEKDAYS, _number, _rule_text, _task_line
 
 try:
     from acb_skills.tool_annotations import annotate as _annotate
@@ -420,6 +423,14 @@ async def create_task(
     important: str = "",
     leveraged: str = "",
     importance: Removed = None,
+    repeat: str = "",
+    repeat_every: int = 1,
+    repeat_on: str = "",
+    repeat_day: int = 0,
+    repeat_month: int = 0,
+    repeat_from: str = "",
+    repeat_until: str = "",
+    repeat_times: int = 0,
 ) -> str:
     """Create one task in a project. project_id is a `full_id` from
     projects_tree (a project or subproject, never a folder). status is by
@@ -429,7 +440,17 @@ async def create_task(
     to leave the task unjudged.
     parent_task_id makes it a subtask. A subtask with no status lands in the
     parent's status when that status is open. The member approves a card first;
-    nothing is created if they decline. Archive is the undo."""
+    nothing is created if they decline. Archive is the undo.
+    A repeating task is ONE call: pass repeat (daily, weekly, monthly or
+    yearly), and never put "weekly" in the title. repeat_every is every N
+    (1 to 365, default 1). repeat_on is comma-separated weekdays, 1 (Monday)
+    to 7 (Sunday). A weekly task with no repeat_on takes the due date's
+    weekday, else today's, and the card names the day. repeat_day is the day
+    of the month, needed for monthly and yearly. repeat_month is the month
+    for yearly. repeat_from is due (keep the schedule, the default) or
+    completed. repeat_until is YYYY-MM-DD. repeat_times is the most copies.
+    With no due, due becomes the first day the rule lands on. The next copy
+    appears when this one is done. set_recurrence changes or stops it."""
     pid = uuid_of(project_id, "project_id")
     name = str(title or "").strip()
     if not name:
@@ -439,6 +460,19 @@ async def create_task(
     )
     if isinstance(flags, str):
         return flags
+    repeating = _repeat_for_create(
+        repeat=repeat,
+        every=repeat_every,
+        on=repeat_on,
+        day=repeat_day,
+        month=repeat_month,
+        anchor=repeat_from,
+        until=repeat_until,
+        times=repeat_times,
+        due=due,
+    )
+    if isinstance(repeating, str):
+        return repeating
     payload: dict[str, Any] = {"project_id": pid, "title": name}
     if description.strip():
         payload["description"] = description.strip()
@@ -448,8 +482,9 @@ async def create_task(
         status_label = str(row.get("name"))
     else:
         status_label = "the default"
-    if due.strip():
-        payload["due_at"] = due.strip()
+    due_at = repeating.due_at(due)
+    if due_at:
+        payload["due_at"] = due_at
     payload.update(flags)
     est = _int_or_none(estimate_mins)
     if est is not None:
@@ -468,14 +503,13 @@ async def create_task(
 
     card = _priority_card(payload)
     card["status"] = status_label
-    if who:
-        card["assignees"] = ", ".join(who)
-        strangers = await _unknown_addresses(who)
-        if strangers:
-            card["not in the directory"] = ", ".join(strangers)
+    card.update(await _assignee_card_lines(who))
+    card.update(repeating.card_lines())
     if not await _confirm(
-        title="Create this task?",
-        detail=f"{data(name)} · status {status_label}" + (f" · {', '.join(who)}" if who else ""),
+        title=repeating.card_title,
+        detail=f"{data(name)} · status {status_label}"
+        + (f" · {', '.join(who)}" if who else "")
+        + repeating.detail(),
         context=_fields_block(card),
     ):
         return CANCELLED
@@ -488,9 +522,29 @@ async def create_task(
         # The receipt names the lane the row really landed in, read off the
         # created row, as `add_subtasks` does. The card was a forecast.
         status_label = await _lane_name(pid, task.get("status_id")) or status_label
-    return "\n".join(
-        ["Created:", *_task_line(task, status_label), *level_note(priority, task)]
+    return await repeating.save(
+        tid, task, [*_task_line(task, status_label), *level_note(priority, task)]
     )
+
+
+#: What a member who looks for next week's copy today must be told. There is
+#: no scheduler (``recurrence.py``): the successor is made when a task closes.
+NEXT_COPY = (
+    "The next one appears when this one is done. No copy exists before then, "
+    "and none is made while the project is paused."
+)
+
+
+async def _assignee_card_lines(who: list[str]) -> dict[str, Any]:
+    """The create card's assignee lines, with the addresses the directory
+    does not know (H-162). Empty when nobody is assigned."""
+    if not who:
+        return {}
+    lines = {"assignees": ", ".join(who)}
+    strangers = await _unknown_addresses(who)
+    if strangers:
+        lines["not in the directory"] = ", ".join(strangers)
+    return lines
 
 
 #: The card's words for a step whose lane the preview cannot name.
@@ -1730,11 +1784,14 @@ def _build_rule(
     anchor: str,
     until: str,
     max_occurrences: int,
+    default_weekday: int = 0,
 ) -> dict[str, Any] | str:
     """The rule as the route takes it (``RecurrenceIn``), or the refusal.
 
     The same checks ``recurrence.validate_rule`` makes, made here so the
     member reads the reason before a card, not a 422 after one.
+    ``default_weekday`` is the day a weekly rule with no weekdays takes
+    (Q1, :func:`_default_weekday`). Zero keeps the refusal.
     """
     kind = str(freq or "").strip().lower()
     if kind not in FREQS:
@@ -1752,6 +1809,8 @@ def _build_rule(
     days = [int(p) for p in parts]
     if any(d < 1 or d > 7 for d in days):
         return "weekdays are 1 (Monday) to 7 (Sunday)."
+    if kind == "weekly" and not days and 1 <= default_weekday <= 7:
+        days = [default_weekday]
     if kind == "weekly" and not days:
         return "A weekly rule needs weekdays, 1 (Monday) to 7 (Sunday)."
     if kind in ("monthly", "yearly") and not day_of_month:
@@ -1771,6 +1830,203 @@ def _build_rule(
     return rule
 
 
+def _today() -> date:
+    """Today, as every read's legend states it to the model: the UTC date.
+
+    The spec asks for the member's timezone (§8.1 item 4). No ``/projects``
+    route gives it to the chat, and P1 changes no route. The card names the
+    day, so a member who sees the wrong one declines.
+    """
+    return datetime.now(UTC).date()
+
+
+def _date_of(value: Any) -> date | None:
+    """``2026-10-09`` or ``2026-10-09T00:00:00+00:00`` → a date. Else ``None``."""
+    raw = str(value or "").strip()[:10]
+    try:
+        return date.fromisoformat(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def _default_weekday(due: date | None, today: date) -> tuple[int, str]:
+    """The day a weekly rule with no weekdays takes, and the card's reason.
+
+    Q1, the owner, 2026-10-06: the due date's weekday, else today's. The
+    card names the day so the member sees the guess and can decline.
+    """
+    if due is not None:
+        return due.isoweekday(), f"{WEEKDAYS[due.isoweekday() - 1]}, the due date's weekday"
+    day = today.isoweekday()
+    return day, f"{WEEKDAYS[day - 1]}, today's weekday (UTC), because no due date was given"
+
+
+def _first_due(rule: dict[str, Any], today: date) -> date:
+    """The first day on or after *today* that *rule* lands on (§8.1 item 5)."""
+    freq = rule["freq"]
+    if freq == "weekly":
+        days = set(rule.get("weekdays") or [])
+        ahead = (today + timedelta(days=n) for n in range(7))
+        return next(d for d in ahead if d.isoweekday() in days)
+    if freq == "daily":
+        return today
+    wanted = int(rule["day_of_month"])
+    month = rule.get("month_of_year")
+    if freq == "yearly" and month:
+        for year in (today.year, today.year + 1):
+            day = min(wanted, calendar.monthrange(year, int(month))[1])
+            if date(year, int(month), day) >= today:
+                return date(year, int(month), day)
+    # Monthly, or yearly with no month: this month's day, else next month's.
+    year, mon = today.year, today.month
+    for _ in range(2):
+        day = min(wanted, calendar.monthrange(year, mon)[1])
+        if date(year, mon, day) >= today:
+            return date(year, mon, day)
+        year, mon = (year + 1, 1) if mon == 12 else (year, mon + 1)
+    return today  # unreachable: next month's day is always ahead
+
+
+#: `create_task`'s argument → the `set_recurrence` word `_build_rule` names.
+_REPEAT_WORDS = {
+    "freq": "repeat",
+    "interval": "repeat_every",
+    "weekdays": "repeat_on",
+    "day_of_month": "repeat_day",
+    "anchor": "repeat_from",
+    "until": "repeat_until",
+}
+_REPEAT_WORD = re.compile(r"\b(" + "|".join(_REPEAT_WORDS) + r")\b")
+
+
+def _weekday_numbers(spoken: str) -> str:
+    """``fri, 1`` → ``5,1``. A day name is accepted as well as its number."""
+    out: list[str] = []
+    for part in _split(spoken):
+        word = part.lower()
+        named = [
+            i + 1 for i, d in enumerate(WEEKDAYS) if len(word) >= 3 and d.lower().startswith(word)
+        ]
+        out.append(str(named[0]) if len(named) == 1 else part)
+    return ",".join(out)
+
+
+class _Repeat:
+    """The rule ``create_task`` sets after the create, under the same card.
+
+    ``rule=None`` is a task that does not repeat. It adds nothing to the
+    card and sends exactly what ``create_task`` sent before P1 (§8.2 item 5).
+    """
+
+    def __init__(
+        self, rule: dict[str, Any] | None = None, first_due: str = "", day_note: str = ""
+    ) -> None:
+        self.rule = rule
+        self.first_due = first_due
+        self.day_note = day_note
+
+    def due_at(self, due: str) -> str:
+        """The member's due date, else the rule's first day (§8.1 item 5).
+        "Every Friday" expects a Friday on the task."""
+        return str(due or "").strip() or self.first_due
+
+    @property
+    def card_title(self) -> str:
+        return "Create this repeating task?" if self.rule else "Create this task?"
+
+    def detail(self) -> str:
+        return f" · repeats {_rule_text(self.rule)}" if self.rule else ""
+
+    def card_lines(self) -> dict[str, Any]:
+        if not self.rule:
+            return {}
+        lines: dict[str, Any] = {"repeats": _rule_text(self.rule)}
+        if self.day_note:
+            lines["repeat day"] = f"{self.day_note}. Decline if you meant another day."
+        if self.first_due:
+            lines["first due"] = f"{self.first_due}, the first day the rule lands on"
+        lines["next copy"] = NEXT_COPY
+        return lines
+
+    async def save(self, task_id: str, task: dict[str, Any], lines: list[str]) -> str:
+        """The receipt, after the second write of the one approval (§8.1 item 3).
+
+        A refusal of the rule is named, and the task stays (item 6). The
+        ``stopped:`` line makes the receipt card show a partial result.
+        """
+        if not self.rule:
+            return "\n".join(["Created:", *lines])
+        tid = uuid_of(task_id, "task_id")  # the writes fence: a canonical id
+        try:
+            saved = (await put(f"/projects/tasks/{tid}/recurrence", self.rule)) or {}
+        except GatewayRefusal as exc:
+            return "\n".join(
+                [
+                    f"Created {_number(task)}. The repeat rule was NOT saved: {data(str(exc))}.",
+                    *lines,
+                    "stopped: the repeat rule. set_recurrence on this task can add it.",
+                ]
+            )
+        rule = saved.get("rule") or self.rule
+        return "\n".join(["Created:", *lines, f"It repeats {_rule_text(rule)}.", NEXT_COPY])
+
+
+NO_REPEAT = _Repeat()
+
+
+def _repeat_for_create(
+    *,
+    repeat: str,
+    every: int,
+    on: str,
+    day: int,
+    month: int,
+    anchor: str,
+    until: str,
+    times: int,
+    due: str,
+) -> _Repeat | str:
+    """The rule ``create_task`` sets, :data:`NO_REPEAT`, or the refusal.
+
+    A repeat argument with no ``repeat`` is refused, never dropped: the
+    member asked for a rule, and a task with none is the failure P1 fixes.
+    """
+    if not str(repeat or "").strip():
+        stray = [
+            name
+            for name, value in (
+                ("repeat_on", on),
+                ("repeat_day", day),
+                ("repeat_month", month),
+                ("repeat_from", anchor),
+                ("repeat_until", until),
+                ("repeat_times", times),
+            )
+            if str(value or "").strip() not in ("", "0")
+        ]
+        if every not in (None, "", 0, 1) or stray:
+            names = ", ".join(stray or ["repeat_every"])
+            return f"{names} needs repeat (one of {', '.join(FREQS)}). Nothing was created."
+        return NO_REPEAT
+    today = _today()
+    due_day = _date_of(due) if str(due or "").strip() else None
+    if str(due or "").strip() and due_day is None:
+        return "due is a date, YYYY-MM-DD."
+    weekday, note = _default_weekday(due_day, today)
+    built = _build_rule(
+        repeat, every, _weekday_numbers(on), day, month, anchor or "due", until, times,
+        default_weekday=weekday,
+    )
+    if isinstance(built, str):
+        # `_build_rule` speaks `set_recurrence`'s words. Name this tool's.
+        return _REPEAT_WORD.sub(lambda m: _REPEAT_WORDS[m.group(1)], built)
+    guessed = built["freq"] == "weekly" and not _split(on)
+    first = ""
+    if due_day is None and built["anchor"] == "due":
+        first = _first_due(built, today).isoformat()
+    return _Repeat(built, first, note if guessed else "")
+
+
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def set_recurrence(
     task_id: str,
@@ -1786,11 +2042,13 @@ async def set_recurrence(
 ) -> str:
     """Make a task repeat, change its cadence, or stop it (stop=true). freq
     is daily, weekly, monthly or yearly. interval is every N. weekdays is
-    comma-separated 1 (Monday) to 7, required for weekly. day_of_month for
-    monthly and yearly; month_of_year for yearly. anchor is due (keep the
-    schedule) or completed (measure from when the last one was finished).
-    until is YYYY-MM-DD. The card shows the current rule and the new one.
-    Stopping keeps the task and every occurrence already made."""
+    comma-separated 1 (Monday) to 7. A weekly rule with no weekdays takes
+    the task's due weekday, else today's, and the card names the day.
+    day_of_month for monthly and yearly; month_of_year for yearly. anchor is
+    due (keep the schedule) or completed (measure from when the last one was
+    finished). until is YYYY-MM-DD. The card shows the current rule and the
+    new one. Stopping keeps the task and every occurrence already made. To
+    make a NEW task that repeats, use create_task with repeat instead."""
     tid, task = await _task(task_id)
     current = ((await get(f"/projects/tasks/{tid}/recurrence")) or {}).get("rule")
     if stop:
@@ -1806,13 +2064,25 @@ async def set_recurrence(
             return CANCELLED
         await delete(f"/projects/tasks/{tid}/recurrence")
         return f"{_ref(task)} no longer repeats. Existing occurrences stay.\n  full_id: {tid}"
+    # §8.1 item 8: the same weekly default as `create_task`, so the two agree.
+    weekday, note = _default_weekday(_date_of(task.get("due_at")), _today())
     built = _build_rule(
-        freq, interval, weekdays, day_of_month, month_of_year, anchor, until, max_occurrences
+        freq,
+        interval,
+        _weekday_numbers(weekdays),
+        day_of_month,
+        month_of_year,
+        anchor,
+        until,
+        max_occurrences,
+        default_weekday=weekday,
     )
     if isinstance(built, str):
         return built
     rule = built
     card = {"task": _ref(task), "rule": _rule_text(rule)}
+    if rule["freq"] == "weekly" and not _split(weekdays):
+        card["repeat day"] = f"{note}. Decline if you meant another day."
     before = {"rule": _rule_text(current)} if current else None
     if not await _confirm(
         title="Repeat this task?" if not current else "Change how this task repeats?",
