@@ -521,7 +521,7 @@ that crash the first time it loaded code that the new build had renamed.
 
 | Layer | When | What the member sees | Where |
 |---|---|---|---|
-| Caddy (NS-10b, waits for the owner: gate (a)) | The workbench has not answered for the whole 30 s hold | A full page, "Metorite is updating". It checks `/api/health` every 3 s and reloads by itself | `deploy/hostinger/caddy/updating/index.html`, the `handle_errors` block of `app.metorite.com` |
+| Caddy (NS-10b) | The workbench has not answered for the whole 30 s hold | A full page, "Metorite is updating". It checks `/api/health` every 3 s and reloads by itself | `deploy/hostinger/caddy/updating/index.html`, the `handle_errors` block of `app.metorite.com` |
 | The shell | A request to `/api/*` gets a 502, 503 or 504, or no answer, AND `/api/health` then says the gateway is down | The shared toast: "Metorite is updating", then "Metorite is back" with a Refresh button. "Metorite was updated" with a Reload button when the build changed. "You are offline" when the browser has no network | `lib/shell/UpdateNotice.tsx`, `lib/shell/serviceHealth.ts`, `app/api/health/route.ts` |
 | The error page | A page throws | "This page did not load" with Try again and Reload. A tab out of date after a deploy reloads itself once | `app/error.tsx`, `app/global-error.tsx`, `lib/shell/ErrorScreen.tsx`, `lib/shell/chunkReload.ts` |
 
@@ -878,19 +878,20 @@ Done when, all met:
    never counts a marker in the SQL or its parameters. Also:
    `lib/shell/serviceHealth.test.ts` and `lib/apiError.test.ts`.
 
-### NS-10b · Updating, not broken: the Caddy page (§7.3) — OWNER-GATE (gate (a))
+### NS-10b · Updating, not broken: the Caddy page (§7.3) — BUILT 2026-10-06 (gate (a) approved by the owner)
 
-**Built on branch `update-notice-caddy`, and NOT merged.** The page needs a
-`header` line and a `rewrite` line in the `app.metorite.com` block. The fence
-`tests/unit/test_caddy_auth_gate.py` treats every such line as a sign-in line,
-so the change needs the owner's approval (`work_plan.md` §6, gate (a)). The
-owner adds this line to `.claude/OWNER_GRANTS.md`:
+The page needs a `header` line and a `rewrite` line in the
+`app.metorite.com` block. The fence `tests/unit/test_caddy_auth_gate.py`
+treats every such line as a sign-in line, so the change needed the owner's
+approval (`work_plan.md` §6, gate (a)). The owner wrote this line in
+`.claude/OWNER_GRANTS.md` by hand on 2026-10-06:
 
     CADDY-AUTH-APPROVED 3c8217ffb4fa3fc9d049ee170ec057c7f65fee739ba9a167573a96aaba5dce21
 
-HANDOFF **H-246** carries it. ⚠️ An agent must not edit `_BASELINE`, and must
-not swap in a directive the fence does not list, such as `try_files` for
-`rewrite`. Either one passes the test and defeats the gate.
+⚠️ An agent must not edit `_BASELINE`, and must not swap in a directive the
+fence does not list, such as `try_files` for `rewrite`. Either one passes the
+test and defeats the gate. A LATER change to these lines changes the hash, and
+it needs a new approval line.
 
 Done when, all met:
 
