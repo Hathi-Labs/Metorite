@@ -113,17 +113,15 @@ async def process_new_messages(account_id: str) -> None:
     the newly-landed messages. Grows the way the email on_new_mail pipeline did;
     sender categorization + auto-answer execution layer on here later."""
     from gateway.routes.whatsapp.automation.commitments import apply_commitments
-    from gateway.routes.whatsapp.core import _get_db
-    # H4: post-sync hook — fired by the Meta webhook / bridge ingest (service
-    # identity, no member session), so there is NO ambient tenant to bind and
-    # none may be inherited; H4 threads an explicit one from the account row.
-    db = await _get_db()
-    try:
+    from gateway.routes.whatsapp.core import _tenant_session
+    # WS-20 WA-C1: the caller binds the account's tenant. The Meta webhook
+    # binds the org of the account row before it fires this hook. With no
+    # binding, `_tenant_session()` raises `TenantUnbound` and writes nothing.
+    # The bridge routes bind nothing yet (§12.4, out of WA-C1), and
+    # `fire_post_sync_hooks` logs that failure.
+    async with _tenant_session() as db:
         classified = await apply_intents(db, account_id)
         commitments = await apply_commitments(db, account_id)
-        await db.commit()
-        _log.info("whatsapp.process_new_messages.done",
-                  account_id=account_id, classified=classified,
-                  commitments=commitments)
-    finally:
-        await db.close()
+    _log.info("whatsapp.process_new_messages.done",
+              account_id=account_id, classified=classified,
+              commitments=commitments)

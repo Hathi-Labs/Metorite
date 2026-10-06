@@ -44,6 +44,55 @@ def test_no_secret_configured_passes_with_warning() -> None:
     assert verify_signature(None, b"x", None) is True
 
 
+# ── F8: the route refuses a missing secret outside dev (WS-20 WA-C1) ─────────
+
+@pytest.fixture()
+def _acb_env(monkeypatch: pytest.MonkeyPatch):
+    """Set ``ACB_ENV`` for one test. ``get_settings`` is cached, so the cache
+    is cleared before and after."""
+    from acb_common import get_settings
+
+    def _set(value: str) -> None:
+        monkeypatch.setenv("ACB_ENV", value)
+        get_settings.cache_clear()
+
+    yield _set
+    get_settings.cache_clear()
+
+
+def _webhook_client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway.routes.whatsapp.transport.webhook import receive_webhook
+
+    app = FastAPI()
+    app.post("/whatsapp/webhook")(receive_webhook)
+    return TestClient(app)
+
+
+def test_no_secret_outside_dev_answers_403_before_any_read(
+    monkeypatch: pytest.MonkeyPatch, _acb_env,
+) -> None:
+    """``ACB_ENV`` absent means ``prod``. No database is set up here, so a
+    route that reached its account read would fail with a 500, not a 403."""
+    monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
+    for env in ("prod", "staging"):
+        _acb_env(env)
+        resp = _webhook_client().post("/whatsapp/webhook", content=b'{"entry": []}')
+        assert resp.status_code == 403, env
+
+
+def test_no_secret_in_dev_accepts_the_post(
+    monkeypatch: pytest.MonkeyPatch, _acb_env,
+) -> None:
+    """An empty batch carries no number, so the route answers 200 and reads
+    nothing."""
+    monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
+    _acb_env("dev")
+    resp = _webhook_client().post("/whatsapp/webhook", content=b'{"entry": []}')
+    assert resp.status_code == 200
+
+
 # ── 24h send window + regime ──────────────────────────────────────────────────
 
 def test_window_open_only_before_expiry() -> None:

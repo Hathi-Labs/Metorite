@@ -27,12 +27,16 @@ from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 # `TenantUnbound` rather than defaulting: fail closed, never "the usual org".
 #
 # ⚠️ NOT every site in this package uses it. This surface is ingestion-heavy:
-# the Meta webhook, the whatsmeow bridge's five push routes, the post-sync
-# hooks and the enrichment scheduler all run with NO ambient tenant (Meta and
-# the Go bridge authenticate with their own secrets, not a member session;
-# `system:internal` binds nothing). Those stay on `_get_db` with an H4/H6
-# marker at each site until an explicit tenant is threaded through — deriving
-# it ambiently there is exactly what the H2 runbook forbids.
+# the whatsmeow bridge's five push routes, the GET verify fallback and the
+# enrichment scheduler run with NO ambient tenant (the Go bridge authenticates
+# with its own secret, not a member session; `system:internal` binds
+# nothing). Those stay on `_get_db` with an H4/H6 marker at each site until an
+# explicit tenant is threaded through — deriving it ambiently there is exactly
+# what the H2 runbook forbids.
+#
+# WS-20 WA-C1: the Meta webhook POST binds the tenant of the account row that
+# owns the number, read through a SECURITY DEFINER resolver. The two post-sync
+# hooks then open `_tenant_session()` under that binding.
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 from pydantic import BaseModel
 from acb_auth import require_feature_router

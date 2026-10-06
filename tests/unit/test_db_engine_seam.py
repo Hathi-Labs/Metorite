@@ -371,12 +371,17 @@ H2_CONVERTED_PACKAGES: tuple[str, ...] = (
 #: batch) and background consumers (post-sync hooks, the enrichment loop, the
 #: Action Broker broadcast handler). H4/H6 owns threading an explicit tenant
 #: through each; every site carries the matching `# H4`/`# H4/H6` marker.
+#:
+#: WS-20 WA-C1 (2026-10-06) took the two post-sync hooks off the list:
+#: `intent.py` and `replyzero.py` open `_tenant_session()`, and the Meta
+#: webhook POST binds the account's tenant before it fires them.
+#: `webhook.py` keeps 2: the GET verify fallback (WA-C1b) and the POST's
+#: tenant-DISCOVERY read `_resolve_account`, which reads only through the
+#: SECURITY DEFINER resolver (H2_TENANT_DISCOVERY_SITES below).
 H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
     "apps/services/gateway/gateway/routes/whatsapp/transport/webhook.py": 2,
     "apps/services/gateway/gateway/routes/whatsapp/transport/bridge.py": 5,
     "apps/services/gateway/gateway/routes/whatsapp/scheduler.py": 2,
-    "apps/services/gateway/gateway/routes/whatsapp/automation/intent.py": 1,
-    "apps/services/gateway/gateway/routes/whatsapp/automation/replyzero.py": 1,
     "apps/services/gateway/gateway/routes/whatsapp/automation/transcription.py": 1,
     "apps/services/gateway/gateway/routes/whatsapp/automation/groups.py": 1,
     "apps/services/gateway/gateway/routes/whatsapp/automation/outbound.py": 1,
@@ -441,7 +446,11 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: `_remove_block_filter` and `_process_past_emails_job` (-12). routes/email
 #: keeps only the discovery read of `mailbox_owner`, which
 #: `test_email_request_jobs_tenancy.py` pins.
-H2_BASELINE_ELSEWHERE = 80
+#: 80 → 77: WS-20 WA-C1 (2026-10-06). The two WhatsApp post-sync hooks
+#: `classify_chats` and `process_new_messages` moved to `_tenant_session()`
+#: (-2). The webhook's `_resolve_account` became a tenant-discovery entry
+#: (-1). `test_whatsapp_webhook_under_rls.py` fences the path under FORCE RLS.
+H2_BASELINE_ELSEWHERE = 77
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -687,6 +696,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "bills, so this read decides the tenant. Since EM-T1b-1 the read runs "
         "in `tenant_session()` when a tenant is bound, and this one unbound "
         "site serves only the case with no tenant",
+    ("apps/services/gateway/gateway/routes/whatsapp/transport/webhook.py",
+     "_resolve_account"):
+        "WS-20 WA-C1: which tenant owns the Meta number of a webhook batch. "
+        "The org is the answer, so the read cannot run bound. Unlike the "
+        "entries above it does NOT go blind under FORCE RLS: it reads only "
+        "through the SECURITY DEFINER `wa_account_for_phone_number_id`, "
+        "granted to `acb_app` alone, and the route binds the org it returns",
 }
 
 

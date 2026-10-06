@@ -7,8 +7,15 @@ Two verbs, no auth (Meta calls it):
   token matches the configured one.
 * ``POST /whatsapp/webhook`` — the event feed. We verify the
   ``X-Hub-Signature-256`` HMAC over the RAW body, parse it, resolve the owning
-  account by ``phone_number_id``, persist idempotently, and fire the post-sync
-  hooks. We return 200 fast so Meta doesn't retry a slow-but-successful batch.
+  account AND its tenant by ``phone_number_id``, bind that tenant, persist
+  idempotently, and fire the post-sync hooks. We return 200 fast so Meta
+  doesn't retry a slow-but-successful batch.
+
+WS-20 WA-C1 (``whatsapp_message_manager.md`` §12.4). Meta sends no member
+session, so the POST binds the tenant that owns the number. The owner comes
+from ``wa_account_for_phone_number_id``, a SECURITY DEFINER read that sees
+through FORCE RLS. Before WA-C1 the route read ``wa_accounts`` unbound, saw no
+row, and dropped every batch as an unknown number (F1).
 """
 
 from __future__ import annotations
@@ -18,9 +25,15 @@ import hmac
 import os
 from typing import Any
 
-from acb_common import get_logger
+from acb_common import get_logger, get_settings
 from fastapi import Request, Response
-from gateway.routes.whatsapp.core import _get_db, fire_post_sync_hooks, router
+from gateway.db import bind_tenant, release_tenant
+from gateway.routes.whatsapp.core import (
+    _get_db,
+    _tenant_session,
+    fire_post_sync_hooks,
+    router,
+)
 from sqlalchemy import text
 
 _log = get_logger("gateway.whatsapp.webhook")
@@ -30,9 +43,9 @@ def verify_signature(app_secret: str | None, raw_body: bytes, header: str | None
     """Verify Meta's ``X-Hub-Signature-256: sha256=<hex>`` over the raw body.
 
     Pure + unit-testable. When no ``app_secret`` is configured we return True and
-    log a warning (dev/self-host without the secret set) — production MUST set
-    ``WHATSAPP_APP_SECRET``. A malformed/missing header with a secret present
-    fails closed.
+    log a warning (dev/self-host without the secret set). A malformed/missing
+    header with a secret present fails closed. ⚠️ The route, not this function,
+    refuses a missing secret outside dev (F8, ``receive_webhook``).
     """
     if not app_secret:
         _log.warning("whatsapp.webhook.signature_unverified_no_secret")
@@ -77,23 +90,47 @@ async def verify_webhook(request: Request):
     return Response(status_code=403, content="verification failed")
 
 
-async def _resolve_account_id(db: Any, phone_number_id: str | None) -> str | None:
+async def _resolve_account(phone_number_id: str | None) -> tuple[str, str] | None:
+    """Which Cloud API account, and which tenant, own a Meta number.
+
+    Tenant DISCOVERY, so the read cannot run bound: the organization is its
+    answer. It runs on an unbound session and reads only through the SECURITY
+    DEFINER function of the WA-C1 migration, which sees through FORCE RLS and
+    returns ``(account_id, organization_id)``. Only ``acb_app`` may run it.
+
+    Returns ``None`` when no Cloud API account holds the number, when the row
+    has no tenant, or when the function cannot see through RLS (it then
+    returns no row and warns in the Postgres log). The index of the same
+    migration makes a Cloud API number unique, so two rows cannot happen.
+    """
     if not phone_number_id:
         return None
-    row = (await db.execute(
-        text("SELECT id FROM wa_accounts WHERE phone_number_id = :pnid"),
-        {"pnid": phone_number_id},
-    )).fetchone()
-    return str(row.id) if row else None
+    db = await _get_db()
+    try:
+        rows = (await db.execute(
+            text("""SELECT account_id, organization_id
+                    FROM public.wa_account_for_phone_number_id(:pnid)"""),
+            {"pnid": phone_number_id},
+        )).fetchall()
+    finally:
+        await db.close()
+    if len(rows) != 1 or rows[0].organization_id is None:
+        return None
+    return str(rows[0].account_id), str(rows[0].organization_id)
 
 
 @router.post("/webhook")
 async def receive_webhook(request: Request):
     """Ingest a Meta event batch: verify → parse → persist → hooks."""
     raw = await request.body()
+    app_secret = os.environ.get("WHATSAPP_APP_SECRET")
+    if not app_secret and get_settings().acb_env != "dev":
+        # F8: with no secret, verify_signature accepts any body. Outside dev
+        # that lets anyone write messages into a connected number's inbox.
+        _log.warning("whatsapp.webhook.refused_no_app_secret")
+        return Response(status_code=403, content="webhook not configured")
     if not verify_signature(
-        os.environ.get("WHATSAPP_APP_SECRET"), raw,
-        request.headers.get("X-Hub-Signature-256"),
+        app_secret, raw, request.headers.get("X-Hub-Signature-256"),
     ):
         return Response(status_code=403, content="bad signature")
 
@@ -115,22 +152,23 @@ async def receive_webhook(request: Request):
         # A status-only or empty batch with no metadata — ack so Meta stops.
         return Response(status_code=200, content="ok")
 
-    # H4/H6: service-identity route — Meta authenticates by webhook signature,
-    # no member session, so `system:internal`/anonymous binds NO tenant and
-    # `tenant_session()` here would 500 every inbound batch. Derive the tenant
-    # from the wa_accounts row resolved by phone_number_id.
-    db = await _get_db()
-    try:
-        account_id = await _resolve_account_id(db, result.phone_number_id)
-        if not account_id:
-            _log.warning(
-                "whatsapp.webhook.unknown_number",
-                phone_number_id=result.phone_number_id,
-            )
-            return Response(status_code=200, content="ok")  # ack; nothing to do
+    owner = await _resolve_account(result.phone_number_id)
+    if owner is None:
+        _log.warning(
+            "whatsapp.webhook.unknown_number",
+            phone_number_id=result.phone_number_id,
+        )
+        return Response(status_code=200, content="ok")  # ack; nothing to do
+    account_id, organization_id = owner
 
-        counts = await persist_sync_result(db, account_id, result)
-        await db.commit()
+    # Bind the account's tenant for the persist AND the hooks, and release it
+    # in `finally` (the shape of `routes/email/transport/sync.py`
+    # `_webhook_sync`). `run_hook` awaits each hook in this task, so the two
+    # hooks' own `_tenant_session()` reads this binding.
+    token = bind_tenant(organization_id)
+    try:
+        async with _tenant_session() as db:
+            counts = await persist_sync_result(db, account_id, result)
 
         # Fire the shared post-sync pipeline (same brain the whatsmeow bridge uses).
         await fire_post_sync_hooks(account_id, counts)
@@ -142,4 +180,4 @@ async def receive_webhook(request: Request):
         )
         return Response(status_code=200, content="ok")
     finally:
-        await db.close()
+        release_tenant(token)

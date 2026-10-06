@@ -406,7 +406,7 @@ def test_the_precheck_refuses_a_duplicate_cloud_number(granted):
                     "phone_number_id, credentials_encrypted, organization_id) "
                     "VALUES (:u, '+91', :p, 'enc', CAST(:o AS uuid))"),
                     {"u": user, "p": pnid, "o": granted.org_a})
-            with pytest.raises(DBAPIError) as err, \
+            with pytest.raises(psycopg.Error) as err, \
                     c.connection.dbapi_connection.cursor() as cur:
                 cur.execute(block.group(0))
             assert "1 Cloud API phone_number_id value(s)" in str(err.value)

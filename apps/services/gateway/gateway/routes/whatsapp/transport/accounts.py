@@ -22,6 +22,31 @@ from gateway.routes.whatsapp.core import (
 )
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+
+#: SQLSTATE of a unique violation.
+_UNIQUE_VIOLATION = "23505"
+
+#: The 409 detail of a number that is already connected, by anyone.
+ALREADY_CONNECTED = "Number already connected"
+
+
+def _is_unique_violation(err: BaseException) -> bool:
+    """True when ``err``, or a driver error under it, is SQLSTATE 23505.
+
+    SQLAlchemy wraps the driver error. psycopg carries ``sqlstate`` and the
+    asyncpg adapter carries ``pgcode``, so the check walks ``orig`` and
+    ``__cause__`` (the shape of ``email/transport/accounts._is_lock_timeout``).
+    """
+    seen: BaseException | None = err
+    for _ in range(5):
+        if seen is None:
+            return False
+        code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
+        if code == _UNIQUE_VIOLATION:
+            return True
+        seen = getattr(seen, "orig", None) or seen.__cause__
+    return False
 
 
 class CreateAccountRequest(BaseModel):
@@ -81,8 +106,16 @@ async def persist_account(
 ) -> Any:
     """Encrypt the credentials + insert a wa_account, returning the row. Shared by
     the manual create route AND the Embedded Signup flow (W12) so both write the
-    number the same way. Raises 409 if this user already connected the number.
-    Caller owns the transaction (commit)."""
+    number the same way. Raises 409 if anyone already connected the number.
+    Caller owns the transaction (commit).
+
+    The read-first check below sees only this member's rows in this tenant.
+    Under FORCE RLS a row of another member or another org is invisible to it.
+    The INSERT then meets a unique index, and the member gets the same 409,
+    never a 500. Two indexes can refuse it: migration 102's
+    ``UNIQUE (user_id, phone_number_id)``, and WA-C1's platform-wide index on a
+    Cloud API ``phone_number_id`` (F7). The violation aborts the transaction,
+    so the caller's session rolls back on the raised 409."""
     if not credentials.get("access_token"):
         raise HTTPException(status_code=400, detail="access_token required")
 
@@ -102,7 +135,7 @@ async def persist_account(
         {"uid": user_id, "pnid": phone_number_id},
     )).fetchone()
     if existing:
-        raise HTTPException(status_code=409, detail="Number already connected")
+        raise HTTPException(status_code=409, detail=ALREADY_CONNECTED)
 
     # First account for this user becomes the default.
     is_first = (await db.execute(
@@ -110,23 +143,30 @@ async def persist_account(
         {"uid": user_id},
     )).scalar() == 0
 
-    return (await db.execute(
-        text("""INSERT INTO wa_accounts
-                  (id, user_id, phone_number, phone_number_id, waba_id,
-                   display_name, credentials_encrypted, webhook_verify_token,
-                   sync_status, is_default)
-                VALUES
-                  (:id, :uid, :phone, :pnid, :waba, :name, :creds, :verify,
-                   'importing', :is_default)
-                RETURNING id, phone_number, phone_number_id, waba_id,
-                          display_name, avatar_color, sync_status, sync_error,
-                          history_import_phase, quality_rating, last_synced_at,
-                          is_default"""),
-        {"id": str(uuid4()), "uid": user_id,
-         "phone": phone_number, "pnid": phone_number_id,
-         "waba": waba_id, "name": display_name, "creds": encrypted,
-         "verify": webhook_verify_token, "is_default": is_first},
-    )).fetchone()
+    try:
+        inserted = await db.execute(
+            text("""INSERT INTO wa_accounts
+                      (id, user_id, phone_number, phone_number_id, waba_id,
+                       display_name, credentials_encrypted, webhook_verify_token,
+                       sync_status, is_default)
+                    VALUES
+                      (:id, :uid, :phone, :pnid, :waba, :name, :creds, :verify,
+                       'importing', :is_default)
+                    RETURNING id, phone_number, phone_number_id, waba_id,
+                              display_name, avatar_color, sync_status, sync_error,
+                              history_import_phase, quality_rating, last_synced_at,
+                              is_default"""),
+            {"id": str(uuid4()), "uid": user_id,
+             "phone": phone_number, "pnid": phone_number_id,
+             "waba": waba_id, "name": display_name, "creds": encrypted,
+             "verify": webhook_verify_token, "is_default": is_first},
+        )
+    except IntegrityError as exc:
+        if _is_unique_violation(exc):
+            raise HTTPException(
+                status_code=409, detail=ALREADY_CONNECTED) from exc
+        raise
+    return inserted.fetchone()
 
 
 @router.post("/accounts", response_model=WhatsAppAccountModel, status_code=201)
