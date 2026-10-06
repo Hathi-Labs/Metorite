@@ -1666,6 +1666,24 @@ def _classify_unavailable(account_id: str, r: Any, exc: Exception) -> None:
                  error=str(exc)[:160])
 
 
+async def _rules_job_provider(acc: Any) -> tuple[Any, Any]:
+    """The provider and the key store of the rules job, or ``(None, None)``
+    with no account row. The provider authenticates here, with no session
+    open, and it is None when that fails (the store stays).
+
+    WS-17 EM-T4a-2 PR-B2 moved this out of ``_run_rules_job`` unchanged, so
+    Block S fits under the ``C901`` cap of 15."""
+    if not acc:
+        return None, None
+    from acb_llm.key_store import get_key_store
+    store = get_key_store()
+    creds = json.loads(store.decrypt(acc.credentials_encrypted))
+    provider = _instantiate_provider(acc.provider, creds)
+    if not await provider.authenticate():
+        provider = None
+    return provider, store
+
+
 #: The caller name of the automatic run (`scheduler_hooks.auto_run_rules_for_account`).
 _SCHEDULER = "scheduler"
 
@@ -1699,6 +1717,9 @@ async def _run_rules_job(
     session, and the broad handler logs it.
     """
     try:
+        # Lazy, as the projection import in Block W: replyzero owns the status ask.
+        from gateway.routes.email.automation import replyzero as rz
+
         # Phase 0: every read the loop needs.
         # The floor is one of two fixed texts, never a value from a request.
         new_mail_only = _NEW_MAIL_ONLY if user_email == _SCHEDULER else ""
@@ -1752,15 +1773,7 @@ async def _run_rules_job(
             attach = await _attachment_summaries(db, [r.id for r in rows])
 
         # The provider authenticates with NO session open.
-        provider = None
-        store = None
-        if acc:
-            from acb_llm.key_store import get_key_store
-            store = get_key_store()
-            creds = json.loads(store.decrypt(acc.credentials_encrypted))
-            provider = _instantiate_provider(acc.provider, creds)
-            if not await provider.authenticate():
-                provider = None
+        provider, store = await _rules_job_provider(acc)
 
         # Reply Zero (unified): project each thread's reply status from the rule
         # the engine matched. Rows are newest-first, so the first message seen per
@@ -1790,6 +1803,15 @@ async def _run_rules_job(
                     await db.execute(text("SELECT 1"))
                 # Multi-rule applies every match; otherwise the single best.
                 asked = await ask_rule_match(plan.match)
+                # Block S (EM-T4a-2 PR-B2): only when the job asks the
+                # thread status. The ask runs with NO block open after it.
+                status = rz.NOT_ASKED
+                if rz.status_ask_needed(plan, r, asked):
+                    async with _tenant_session() as db:
+                        seen = await rz.read_job_status(db, account_id, r)
+                        # Fail closed, as at the end of Block R.
+                        await db.execute(text("SELECT 1"))
+                    status = await rz.ask_job_status(seen)
                 # Block W: ONE block, where the per-row commit used to land.
                 # The apply, the projection and the stamp commit together.
                 # EM-T4 owns the model and provider I/O that stays inside.
@@ -1798,7 +1820,8 @@ async def _run_rules_job(
                     # conversation keeps its ONE status (#110), even when the
                     # message matched no rule.
                     matches = await resolve_classification(
-                        db, account_id, r, plan, asked, provider=provider)
+                        db, account_id, r, plan, asked, provider=provider,
+                        status=status)
                     apply = (not dry_run) and provider is not None
                     await _apply_matches(
                         db, provider, r, frm, email, matches,

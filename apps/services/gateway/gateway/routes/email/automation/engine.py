@@ -1548,11 +1548,14 @@ class ClassifyRead:
     ``replyzero.status_before_match`` learned in ``on``, or None (a
     ``replyzero.StatusFirst``, typed ``Any`` because replyzero imports this
     module). ``resolve`` says whether Block W runs the resolver.
+    ``conversation`` is ``replyzero._thread_is_conversation``, read outside
+    ``on`` only (PR-B2 item 1). The job asks the status when it is True.
     """
 
     match: MatchRead
     first: Any = None
     resolve: bool = True
+    conversation: bool = False
 
 
 async def read_classification(
@@ -1567,22 +1570,35 @@ async def read_classification(
     ``DecisionUnavailable`` before the rule match is read or paid. In ``on``
     of ``email.thread_status`` that step still asks its model here, inside
     Block R, until PR-B3 (§10.4.6). The rule match asks nothing here.
+
+    PR-B2: outside ``on``, it also reads whether the thread is a
+    conversation, so the job knows in Block R whether it asks the status.
     """
     # Lazy: replyzero imports this module (see classify_matches).
-    from gateway.routes.email.automation.replyzero import status_before_match
+    from gateway.routes.email.automation.replyzero import (
+        _thread_is_conversation,
+        status_before_match,
+    )
 
     row_id = getattr(message_row, "id", None)
+    thread_id = getattr(message_row, "thread_id", None)
     first = (await status_before_match(db, account_id, message_row)
              if resolve else None)
     match = await read_rule_match(
         db, account_id, email, multi_rule=multi_rule,
         message_id=str(row_id) if row_id is not None else None)
-    return ClassifyRead(match=match, first=first, resolve=resolve)
+    conversation = bool(
+        resolve and thread_id
+        and decide_features.mode_for("email.thread_status") != "on"
+        and await _thread_is_conversation(db, account_id, thread_id))
+    return ClassifyRead(match=match, first=first, resolve=resolve,
+                        conversation=conversation)
 
 
 async def resolve_classification(
     db: Any, account_id: str, message_row: Any, read: ClassifyRead,
     matches: list[dict[str, Any]], *, provider: Any = None,
+    status: Any = None,
 ) -> list[dict[str, Any]]:
     """The resolver half of :func:`classify_matches` for a job (WS-17
     EM-T4a-2 PR-B1). It takes ``db`` and opens no block. A job calls it
@@ -1592,6 +1608,9 @@ async def resolve_classification(
     it runs the conversation resolver with the status-first plan of the
     read, as :func:`classify_matches` does. A suppressed match keeps its
     flag. ``DecisionUnavailable`` passes up, so the job skips the email.
+
+    PR-B2: ``status`` is the ``replyzero.JobStatus`` that the job asked
+    with no block open, and the resolver asks no model with it.
     """
     if not read.resolve:
         return matches
@@ -1601,7 +1620,7 @@ async def resolve_classification(
     )
     resolved = await resolve_conversation_status_matches(
         db, account_id, message_row, matches, provider=provider,
-        first=read.first)
+        first=read.first, status=status)
     return resolved or []
 
 

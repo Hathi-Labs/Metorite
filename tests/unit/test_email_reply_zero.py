@@ -316,6 +316,9 @@ def _backfill_db(latest, existing):
         # The `SELECT 1` at the end of Block R of the gap row (EM-T4a-2 PR-B1
         # review round 1). It raises when a reader left the block aborted.
         _result(),
+        # The `SELECT 1` at the end of Block S, where a gap row whose match
+        # is a conversation rule reads its thread status (EM-T4a-2 PR-B2).
+        _result(),
         # The projection of an open status asks whether the thread has a
         # participant outside the member's mailboxes (EM-T8e-1 round 1).
         _has_outsider(),
@@ -348,9 +351,10 @@ async def test_backfill_handles_outbound_reply_and_engine_for_inbound() -> None:
             patch.object(_rz, "_load_assistant_about",
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_mark_thread_replied", mark), \
-            patch.object(_rz, "resolve_conversation_status_matches",
-                         AsyncMock(side_effect=lambda _d, _a, _r, ms,
-                                   **_kw: ms)), \
+            patch.object(_rz, "_thread_is_conversation",
+                         AsyncMock(return_value=False)), \
+            patch.object(_rz, "read_job_status",
+                         AsyncMock(return_value=None)), \
             patch.object(_rz, "_upsert_thread_status",
                          AsyncMock(side_effect=rec)), \
             _asked(AsyncMock(return_value=[to_reply_match])), \
