@@ -107,6 +107,78 @@ export function chatModelField(model: string | null | undefined): { model?: stri
   return model === null ? {} : { model: model ?? "auto" };
 }
 
+// ── A model that a surface governs from a setting (S4, §7.1) ────────────────
+
+/**
+ * Whether the platform picks the tier of *agent*, for a surface outside the
+ * composer: the email chat, the Tasks and Projects rails, and the two
+ * `chat_model` settings controls (WS-45 S4).
+ *
+ * The same answer as `composerModelPlan(...).covered`. UI flag off: never.
+ * Agent list not loaded yet: not yet, so a surface keeps today's behaviour
+ * until it knows.
+ */
+export function tierRoutedFor(input: {
+  uiOn: boolean;
+  agentsKnown: boolean;
+  entry: TierRoutedEntry | null | undefined;
+}): boolean {
+  return composerModelPlan(input).covered;
+}
+
+/** What `useTierRouted` gives a surface: does it know yet, and is it covered. */
+export interface TierCoverage {
+  /** True with the UI flag off, and once the agent list has answered. */
+  known: boolean;
+  /** The platform picks the tier (`tierRoutedFor`). */
+  covered: boolean;
+}
+
+/**
+ * True when a surface may read the `chat_model` setting (§11 S4 done-when 2
+ * and 3). Not until it knows that the agent is not covered, so a covered
+ * agent's setting is never read, not even once before the list lands.
+ * UI flag off: always, as today.
+ */
+export function readsChatModel(c: TierCoverage): boolean {
+  return c.known && !c.covered;
+}
+
+/**
+ * The `model` and `lockModel` props that a surface hands `AgentChat`, when it
+ * forces the model from a `chat_model` setting (S4, §7.1).
+ *
+ * - Not covered (and every case with the UI flag off): the setting's model,
+ *   locked, as today.
+ * - Covered: neither prop. The platform picks the tier, so the setting is not
+ *   read, and the composer draws no picker anyway (S3).
+ *
+ * Spread into the props, so an uncovered surface renders the same props.
+ */
+export function governedModelProps(
+  covered: boolean,
+  model: string | undefined,
+  lock = true,
+): { model?: string; lockModel?: boolean } {
+  if (covered) return {};
+  return lock ? { model, lockModel: true } : { model };
+}
+
+/**
+ * The model-setting rows a settings panel draws. A covered agent's chat row
+ * leaves, because no chat reads it (§7.1). Every other row stays: the
+ * background features keep their literal tiers (§1.2, H-44).
+ *
+ * The column stays in the database. A drop is a later decision (§8, R6).
+ */
+export function visibleModelRows<T extends { key: string }>(
+  rows: readonly T[],
+  chatKey: string,
+  covered: boolean,
+): T[] {
+  return covered ? rows.filter((r) => r.key !== chatKey) : [...rows];
+}
+
 // ── The stored choice (§8, the `localStorage` row) ──────────────────────────
 
 /** The per-agent key of the picker's choice. */

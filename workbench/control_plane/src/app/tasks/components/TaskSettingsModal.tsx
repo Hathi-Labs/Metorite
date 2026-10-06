@@ -5,6 +5,8 @@ import Icon from "@/components/Icon";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTaskStore } from "../lib/taskStore";
 import type { TaskSettings } from "../lib/api";
+import { useTierRouted } from "@/hooks/useTierRouted";
+import { visibleModelRows } from "@/lib/tierRouting";
 import {
   COLUMNS,
   DEFAULT_VISIBLE,
@@ -82,6 +84,9 @@ function SettingsPanel() {
   const backend = useTaskStore((s) => s.backend);
   const settings = useTaskStore((s) => s.settings);
   const updateSettings = useTaskStore((s) => s.updateSettings);
+  // WS-45 S4 (D90, §7.1): no chat reads the chat model of a covered
+  // task-manager, so its control leaves. The other rows stay (§1.2).
+  const tier = useTierRouted("task-manager");
 
   // Tier list + enabled models — the same sources the email settings use.
   const [tiers, setTiers] = useState<LLMTierInfo[]>([]);
@@ -130,7 +135,7 @@ function SettingsPanel() {
               <Icon name="Sparkles" className="h-3.5 w-3.5" /> AI models
             </h3>
             <div className="flex flex-col gap-2">
-              {MODEL_FIELDS.map((cfg) => (
+              {visibleModelRows(MODEL_FIELDS, "chatModel", tier.covered).map((cfg) => (
                 <div
                   key={cfg.key}
                   className="rounded-lg border border-border px-3 py-2.5"

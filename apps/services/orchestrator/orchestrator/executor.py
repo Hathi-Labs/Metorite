@@ -1150,6 +1150,24 @@ async def _run_sub_agent_streaming(
                 ) or (
                     loaded.config.get("model_tier") or ""
                 ).strip()
+                # WS-45 S4 (§4.5): a covered sub-agent runs its own policy.
+                # It ignores the parent's tier, and a Copilot SDK agent keeps
+                # the policy's tier for the whole run. None when not covered.
+                _sub_tier = await _tier_policy_for_run(
+                    agent_name, agent,
+                    run_id=run_id, thread_id=None, model=model,
+                    think_mode=artifact_context().get("think_mode"),
+                    event_payload={"message": message_str},
+                    config=loaded.config,
+                    agent_md_model=(
+                        (_agent_md_spec.model or "").strip()
+                        if _agent_md_spec is not None else ""
+                    ),
+                    is_copilot=True, emit=False,
+                )
+                if _sub_tier is not None:
+                    _model = _sub_tier.run_tier()
+                    _sub_tier.announce_run()
                 # BYOK-by-default: normalise bare/empty names to the default
                 # tier and force gateway routing (mirrors the chat path).
                 _model, _is_sub_byok = _byok_default_model(_model, settings)
@@ -2611,6 +2629,16 @@ async def _run_agent_inner(
     # error then retries (self-anneal) with this answer, never the parent's.
     _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
     derive_artifact_context(no_egress=_no_egress)
+    # WS-45 S4: a covered batch run has its own tier policy (below). Its
+    # effort is the payload's, else the parent run's, from the parent's
+    # bound context (a sub-agent). Both are read for a covered agent only.
+    _batch_covered = _tier_policy_covers(agent_name)
+    _batch_effort = ""
+    if _batch_covered:
+        _batch_effort = str(
+            (event_payload.get("think_mode") if isinstance(event_payload, dict) else "")
+            or _parent_ctx.get("think_mode") or "auto"
+        )
 
     # ── Run correlation for the batch path (usage attribution) ─────────────
     # The streaming path binds the same fields. `run_agent` opened the scope
@@ -2875,6 +2903,9 @@ async def _run_agent_inner(
                 no_egress=_no_egress,
                 # The chat that asked, for a delegated run.
                 **({"deliver_to": _deliver_to} if _deliver_to is not None else {}),
+                # WS-45 S4: the System-1 threshold of a covered run follows
+                # the effort. Absent for every other agent, as before.
+                **({"think_mode": _batch_effort} if _batch_covered else {}),
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -2939,19 +2970,39 @@ async def _run_agent_inner(
             #  - Native MAF agents: _apply_byok_… is a no-op, so set
             #    default_options["model"] here — the MAF client otherwise keeps
             #    its build-time model and ignores the requested/inherited tier.
+            # WS-45 S4 (D90 §4.5): an agent that AI_TIER_ROUTING covers runs
+            # its OWN policy here. It ignores *model*, the tier its caller
+            # passed or its parent published, and logs ai_route.model_ignored.
+            # None for every other agent, so the block below runs as before.
+            _batch_tier = None
+            if agents and _batch_covered:
+                _batch_tier = await _tier_policy_for_run(
+                    agent_name, agents[0],
+                    run_id=run_id, thread_id=thread_id, model=model,
+                    think_mode=_batch_effort, event_payload=event_payload,
+                    config=loaded.config, agent_md_model="",
+                    is_copilot=_is_copilot_agent, emit=False,
+                )
             if agents:
                 _agent0 = agents[0]
                 _cfg_tier = (loaded.config.get("model_tier") or "")
+                _batch_model = (
+                    _batch_tier.run_tier() if _batch_tier is not None
+                    else model or ""
+                )
+                if _batch_tier is not None and _is_copilot_agent:
+                    # A Copilot SDK agent keeps one tier for the whole run.
+                    _batch_tier.announce_run()
                 try:
                     # Copilot-SDK agents: pin gateway /v1 (BYOK) + model.
                     _apply_byok_provider_for_copilot_sdk(
-                        _agent0, model or "", settings,
+                        _agent0, _batch_model, settings,
                         agent_model_tier=_cfg_tier,
                     )
                     # Native MAF agents: set default_options["model"] so the
                     # requested/inherited tier is honoured (no-op for Copilot SDK).
                     _apply_model_for_maf_agent(
-                        _agent0, model or "", settings,
+                        _agent0, _batch_model, settings,
                         agent_model_tier=_cfg_tier,
                     )
                 except Exception as _be:
@@ -2968,6 +3019,7 @@ async def _run_agent_inner(
                     "integration_warnings": integration_warnings,
                 },
                 integrations=integrations,
+                tier_policy=None if _is_copilot_agent else _batch_tier,
             )
 
         record(
@@ -5820,11 +5872,16 @@ async def _run_with_maf_agent(
     thread_id: str,
     event_payload: dict[str, Any],
     integrations: dict[str, Any],
+    tier_policy: Any = None,
 ) -> dict[str, Any]:
     """Execute the primary agent from *agents* via MAF and return a normalised result dict.
 
     Accepts any MAF ``BaseAgent`` subclass including ``GitHubCopilotAgent``.
     Automatically calls ``start()`` / ``stop()`` if the agent supports it.
+
+    *tier_policy* is the run's ``RunTierPolicy`` (WS-45 S4), for a native
+    agent that ``AI_TIER_ROUTING`` covers. The run then uses a per-run copy
+    of the agent that carries the policy. None changes nothing.
     """
     import contextlib
 
@@ -5921,7 +5978,7 @@ async def _run_with_maf_agent(
         # Standard Agent has a no-op __aenter__/__aexit__ — both are safe here.
         if hasattr(type(agent), "__aenter__"):
             await stack.enter_async_context(agent)
-        response = await agent.run(run_input)
+        response = await _with_tier_policy(agent, tier_policy).run(run_input)
 
     text: str = getattr(response, "text", "") or ""
     return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text}
@@ -6188,6 +6245,7 @@ async def _tier_policy_for_run(
     config: dict[str, Any],
     agent_md_model: str,
     is_copilot: bool,
+    emit: bool = True,
 ) -> Any:
     """The run's `RunTierPolicy`, or None when the flag does not cover the agent.
 
@@ -6195,6 +6253,10 @@ async def _tier_policy_for_run(
     `ai_route.model_ignored` (§8). It asks the turn kind ONCE, here, before
     the first main request (§4.3), and logs `ai_route.turn_kind` with the
     latency, so Q8's cost can be read on a box. No line holds tenant text.
+
+    *emit* False sends no `ai.route` event. The batch path and a sub-agent
+    pass it (S4). `resolve_run_queue` reads the PARENT's queue first, so a
+    sub-agent's events would join the parent's answer label.
     """
     if not _tier_policy_covers(agent_name):
         return None
@@ -6227,7 +6289,7 @@ async def _tier_policy_for_run(
         default=default,
         kind=turn.kind,
         effort=tier_policy.normalise_effort(think_mode),
-        emit=None if is_copilot else _emit_to_run(thread_id),
+        emit=None if (is_copilot or not emit) else _emit_to_run(thread_id),
     )
 
 
