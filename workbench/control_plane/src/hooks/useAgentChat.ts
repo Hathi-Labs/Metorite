@@ -30,6 +30,7 @@ import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
 import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, type StreamFold } from "@/lib/chatStream";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { settleFailedTurn, type SessionRefusedHandler } from "@/lib/chatTurnFailure";
+import { chatModelField } from "@/lib/tierRouting";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -106,7 +107,9 @@ interface UseAgentChatOptions {
   agentName: string;
   threadId: string;
   initialMessages?: ChatMessage[];
-  model?: string;
+  /** The model the picker chose. `null` sends NO `model` field: the platform
+   *  picks the tier for a covered agent (WS-45 S3, `lib/tierRouting.ts`). */
+  model?: string | null;
   mode?: "copilot" | "litellm";
   systemContext?: string;
   /** Thinking mode: "auto" | "thinking" | "max" */
@@ -272,7 +275,7 @@ export function useAgentChat({
             messages: history,
             threadId,
             mode: modeRef.current,
-            model: modelRef.current ?? "auto",
+            ...chatModelField(modelRef.current),
             context: systemContextRef.current ?? undefined,
             thinkMode: thinkModeRef.current ?? "auto",
             // Pass the assistant message ID so the server-side proxy persists
@@ -611,7 +614,7 @@ export function useAgentChat({
               .map((m) => ({ role: m.role, content: m.content })),
             threadId,
             mode: modeRef.current,
-            model: modelRef.current ?? "auto",
+            ...chatModelField(modelRef.current),
             context: systemContextRef.current ?? undefined,
             thinkMode: thinkModeRef.current ?? "auto",
             assistantMessageId: lastId,

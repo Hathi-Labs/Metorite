@@ -44,6 +44,15 @@ import { useAgentEvents } from "@/lib/agentEvents";
 import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFrontendTool";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
+import {
+  composerModelPlan,
+  forgetModelChoice,
+  getLastModel,
+  getModelUsage,
+  incrementModelUsage,
+  setLastModel,
+  tierRoutingUiOn,
+} from "@/lib/tierRouting";
 
 // Unified model fallback — shown while /api/models/all is loading.
 // Always includes the tiers (always accessible) and Gemini models (default provider).
@@ -117,35 +126,9 @@ const AGENT_SUGGESTIONS: Record<string, string[]> = {
 };
 
 // ── Per-agent model memory ──────────────────────────────────────────────
-
-const MODEL_PREF_KEY = (agent: string) => `cc-model-${agent}`;
-const MODEL_USAGE_KEY = "cc-model-usage";
-
-function getLastModel(agentName: string): string | null {
-  try {
-    return localStorage.getItem(MODEL_PREF_KEY(agentName));
-  } catch { return null; }
-}
-
-function setLastModel(agentName: string, modelId: string): void {
-  try { localStorage.setItem(MODEL_PREF_KEY(agentName), modelId); } catch { /* noop */ }
-}
-
-function getModelUsage(): Record<string, number> {
-  try {
-    const raw = localStorage.getItem(MODEL_USAGE_KEY);
-    return raw ? JSON.parse(raw) as Record<string, number> : {};
-  } catch { return {}; }
-}
-
-function incrementModelUsage(modelId: string): void {
-  if (modelId === "auto") return; // don't track auto
-  try {
-    const usage = getModelUsage();
-    usage[modelId] = (usage[modelId] ?? 0) + 1;
-    localStorage.setItem(MODEL_USAGE_KEY, JSON.stringify(usage));
-  } catch { /* noop */ }
-}
+// The helpers and the `localStorage` keys live in `lib/tierRouting.ts`
+// (WS-45 S3), so a covered agent reads no stored choice and a test can
+// prove it.
 
 interface AgentChatProps {
   agentName: string;
@@ -274,8 +257,13 @@ export default function AgentChat({
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
   const [currentAgentName, setCurrentAgentName] = useState(agentName);
+  // WS-45 S3: the UI flag. Off, the model picker works as it always did.
+  const tierUi = tierRoutingUiOn();
   const [currentModel, setCurrentModel] = useState(
-    () => forcedModel || getLastModel(agentName) || "auto",
+    // With the UI flag on, the stored choice is read only once the agent is
+    // known to keep its picker (the persist effect below), never for a
+    // covered agent.
+    () => forcedModel || (tierUi ? null : getLastModel(agentName)) || "auto",
   );
   // Conform to an externally-governed model (e.g. the email assistant's
   // `chat_model` setting) and re-sync if it changes.
@@ -296,10 +284,36 @@ export default function AgentChat({
   const [thinkMode, setThinkMode] = useState<ThinkMode>("auto");
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [agents, setAgents] = useState<AgentEntry[]>(externalAgents ?? []);
+  // True once the agent list has answered (or the parent passed one). The
+  // UI flag reads coverage from it, so nothing is decided before it lands.
+  const [agentsKnown, setAgentsKnown] = useState(!!externalAgents);
   const [models, setModels] = useState<UnifiedModel[]>(MODELS_FALLBACK);
 
-  // Fetch the unified model list (Copilot SDK + LiteLLM) on mount.
+  // ────────────────────────────────────────────────────────────────────────
+
+  // Resolve the selected model's routing runtime (copilot SDK vs gateway BYOK).
+  const selectedModel = models.find((m) => m.id === currentModel);
+  const currentRuntime = selectedModel?.runtime ?? "copilot";
+
+  // Resolve the active agent's metadata (runtime classification, repo link, etc.)
+  // NOTE: computed here (before useAgentChat) so we can override the routing mode.
+  const currentAgentEntry = agents.find((a) => a.name === currentAgentName);
+  // WS-45 S3 (D90): for an agent that the backend flag covers, the platform
+  // picks the tier. No picker, no models fetch, no stored choice and no
+  // `model` field. The gateway stamps `tier_routed` on the agent list entry,
+  // so nothing here names an agent. UI flag off: every field is as today.
+  const modelPlan = composerModelPlan({
+    uiOn: tierUi,
+    agentsKnown,
+    entry: currentAgentEntry,
+  });
+
+  // Fetch the unified model list (Copilot SDK + LiteLLM) once the picker is
+  // live. UI flag off: on mount, as before.
+  const modelsFetchedRef = useRef(false);
   useEffect(() => {
+    if (!modelPlan.fetchModels || modelsFetchedRef.current) return;
+    modelsFetchedRef.current = true;
     fetch("/api/models/all")
       .then((r) => r.json())
       .then((data: unknown) => {
@@ -309,26 +323,48 @@ export default function AgentChat({
         }
       })
       .catch(() => {}); // Keep fallback list on error
-  }, []);
+  }, [modelPlan.fetchModels]);
 
   // Persist model preference per agent + track usage count.
   // Only count usage on an ACTUAL model change (not on mount or agent switch),
   // otherwise every session open inflates the "Frequently Used" ranking.
   const prevModelRef = useRef<string | null>(null);
+  // UI flag on: the agent whose stored choice this mount already read.
+  const restoredForRef = useRef<string | null>(null);
   useEffect(() => {
     // Don't persist/track an externally-forced model — it's governed by its own
     // setting and would otherwise overwrite the agent's own picker default.
     if (forcedModel) return;
+    // A covered agent keeps no choice (WS-45 S3, §8).
+    if (!modelPlan.rememberModel) return;
+    if (tierUi && restoredForRef.current !== currentAgentName) {
+      // UI flag on: the first live render of this agent restores its choice,
+      // and writes nothing over it.
+      restoredForRef.current = currentAgentName;
+      const stored = getLastModel(currentAgentName);
+      if (stored && stored !== currentModel) {
+        prevModelRef.current = stored;
+        setCurrentModel(stored);
+        return;
+      }
+    }
     setLastModel(currentAgentName, currentModel);
     if (prevModelRef.current !== null && prevModelRef.current !== currentModel) {
       incrementModelUsage(currentModel);
     }
     prevModelRef.current = currentModel;
-  }, [currentModel, currentAgentName, forcedModel]);
+  }, [currentModel, currentAgentName, forcedModel, tierUi, modelPlan.rememberModel]);
+
+  // A covered agent's stored choice goes, once per mount (§8).
+  useEffect(() => {
+    if (!modelPlan.covered) return;
+    forgetModelChoice(currentAgentName, agents);
+  }, [modelPlan.covered, currentAgentName, agents]);
 
   // ── Model sorting: frequently used models float to the top ──────────────
   const sortedModels = useMemo(() => {
-    const usage = getModelUsage();
+    // A covered agent reads no stored counts (WS-45 S3). UI flag off: always read.
+    const usage = modelPlan.showPicker ? getModelUsage() : {};
     const topIds = Object.entries(usage)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 4)
@@ -345,16 +381,7 @@ export default function AgentChat({
       ...frequent.map((m) => withGroup(m, "Frequently Used")),
       ...rest,
     ];
-  }, [models]);
-  // ────────────────────────────────────────────────────────────────────────
-
-  // Resolve the selected model's routing runtime (copilot SDK vs gateway BYOK).
-  const selectedModel = models.find((m) => m.id === currentModel);
-  const currentRuntime = selectedModel?.runtime ?? "copilot";
-
-  // Resolve the active agent's metadata (runtime classification, repo link, etc.)
-  // NOTE: computed here (before useAgentChat) so we can override the routing mode.
-  const currentAgentEntry = agents.find((a) => a.name === currentAgentName);
+  }, [models, modelPlan.showPicker]);
   const agentRuntime: string = currentAgentEntry?.agent_runtime ?? "maf";
   // Friendly display name (alias) for UI labels only — dispatch, localStorage
   // and routing keep using the canonical `currentAgentName`.
@@ -369,7 +396,9 @@ export default function AgentChat({
   // The orchestrator (Metorite) still uses model-driven routing for
   // fast stateless chat when LiteLLM models are selected.
   const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "metorite";
-  const effectiveRuntime = isOrchestrator ? currentRuntime : "copilot";
+  // A covered orchestrator takes the executor path too: the direct LiteLLM
+  // path would skip the tier policy (WS-45 S3).
+  const effectiveRuntime = isOrchestrator && !modelPlan.covered ? currentRuntime : "copilot";
 
   // Documents the user currently has open in the side-panel editor — folded
   // into the agent's context so it knows what the user is looking at / editing
@@ -419,7 +448,8 @@ export default function AgentChat({
   const { messages, isLoading, error, sendMessage, stopGeneration, setMessages, recovering, runStatus } = useAgentChat({
     agentName: currentAgentName,
     threadId: sessionId,
-    model: currentModel,
+    // `null` sends no `model` field for a covered agent (WS-45 S3).
+    model: modelPlan.sendModel ? currentModel : null,
     mode: effectiveRuntime,
     systemContext,
     thinkMode,
@@ -657,10 +687,13 @@ export default function AgentChat({
   // Real per-model context window (dynamically loaded from the gateway via
   // /api/models/all).  Falls back to the static estimate when unknown.
   const currentModelContextWindow = selectedModel?.contextWindow;
+  // A covered agent has no chosen model, so the ring estimates on the
+  // default window and names no model (WS-45 S3).
+  const ringModel = modelPlan.covered ? "auto" : currentModel;
   const contextUsage = useMemo(
-    () => computeContextUsage(activeMessages, currentModel, systemContext, currentModelContextWindow),
+    () => computeContextUsage(activeMessages, ringModel, systemContext, currentModelContextWindow),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [settledContentLen, activeMessages.length, currentModel, systemContext, currentModelContextWindow],
+    [settledContentLen, activeMessages.length, ringModel, systemContext, currentModelContextWindow],
   );
   const [compacting, setCompacting] = useState(false);
   // Armed = allowed to auto-compact.  Disarmed after a compaction fires and
@@ -1070,11 +1103,13 @@ export default function AgentChat({
 
   // Fetch available agents for the switcher if not provided by parent
   useEffect(() => {
-    if (externalAgents) { setAgents(externalAgents); return; }
+    if (externalAgents) { setAgents(externalAgents); setAgentsKnown(true); return; }
     fetch("/api/agent/list")
       .then((r) => r.json())
       .then((data: unknown) => { if (Array.isArray(data)) setAgents(data as AgentEntry[]); })
-      .catch(() => {});
+      .catch(() => {})
+      // Known on an error too: the static fallback marks no agent covered.
+      .finally(() => setAgentsKnown(true));
   }, [externalAgents]);
 
   // Refresh statuses once a NEW assistant message has SETTLED (credentials may
@@ -1334,9 +1369,11 @@ export default function AgentChat({
   /** Switch the active agent mid-chat. History is retained and passed as context. */
   const handleSwitchAgent = useCallback((entry: AgentEntry) => {
     setCurrentAgentName(entry.name);
-    setCurrentModel(getLastModel(entry.name) ?? "auto");
+    // UI flag on: the persist effect restores the stored choice, and only
+    // for an agent that keeps its picker (WS-45 S3).
+    setCurrentModel(tierUi ? "auto" : (getLastModel(entry.name) ?? "auto"));
     setShowAgentMenu(false);
-  }, []);
+  }, [tierUi]);
 
   const currentModelLabel =
     sortedModels.find((m) => m.id === currentModel)?.label ?? currentModel;
@@ -2086,8 +2123,9 @@ export default function AgentChat({
               )}
 
               {/* Model selector — hidden when the model is governed externally
-                  (e.g. the email Assistant's chat_model setting). */}
-              {!lockModel && (
+                  (e.g. the email Assistant's chat_model setting), and for an
+                  agent the tier policy covers (WS-45 S3, D90). */}
+              {!lockModel && modelPlan.showPicker && (
               <div className="relative">
                 <button onClick={() => setShowModelMenu((v) => !v)}
                   className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-secondary hover:text-foreground tech-transition truncate max-w-[110px] sm:max-w-[150px]">
@@ -2116,7 +2154,8 @@ export default function AgentChat({
               </div>
               )}
 
-              <span className="w-px h-3.5 bg-secondary/60 shrink-0" />
+              {/* The picker's divider goes with it (WS-45 S3). */}
+              {modelPlan.showPicker && <span className="w-px h-3.5 bg-secondary/60 shrink-0" />}
 
               {/* Thinking mode — compact dropdown (saves space, easier tap on mobile) */}
               <div className="relative">
@@ -2151,7 +2190,7 @@ export default function AgentChat({
                 totalTokens={contextUsage.totalTokens}
                 compacting={compacting}
                 onCompact={handleCompact}
-                modelId={currentModel}
+                modelId={modelPlan.covered ? undefined : currentModel}
                 isLoading={isLoading}
               />
 

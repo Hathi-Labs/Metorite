@@ -24,6 +24,8 @@ import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 import { EntityIndexContext } from "@/components/ChatEntityPill";
 import { buildEntityIndex } from "@/lib/entityIndex";
 import { pillsForTurn } from "@/lib/projectsAgent";
+import AnswerDetails from "@/components/AnswerDetails";
+import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 
 /** The only part of a room participant a message bubble needs: a face. */
 export type BubbleParticipant = Pick<
@@ -236,6 +238,10 @@ function MessageBubble({
   const genUiEvents = (message.customEvents ?? [])
     .filter((e) => e.name === "generative_ui" && e.value != null)
     .map((e) => e.value);
+
+  // The tiers that served this answer (WS-45 S3, D90 Q4), for every member.
+  // Null with the UI flag off, so the action row is as it was.
+  const tierLabel = tierRoutingUiOn() ? tierRouteLabel(message.customEvents) : null;
 
   const timestamp = new Date(message.timestamp).toLocaleTimeString([], {
     hour: "2-digit",
@@ -576,6 +582,7 @@ function MessageBubble({
               onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined}
             />
           )}
+          {tierLabel && <AnswerDetails tierLabel={tierLabel} />}
           <div className="text-[10px] text-muted-foreground">{timestamp}</div>
         </div>
       )}

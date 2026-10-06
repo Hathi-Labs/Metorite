@@ -106,6 +106,8 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
       "NEXT_PUBLIC_PROJECTS_CHAT",
       "NEXT_PUBLIC_PROJECTS_IMPORT",
       "NEXT_PUBLIC_SHOW_PREVIEW_APPS",
+      // WS-45 S3: the chat's model picker leaves for a covered agent.
+      "NEXT_PUBLIC_AI_TIER_ROUTING",
     ];
     const all = sourcesNamingAFlag()
       .map((f) => f.text)

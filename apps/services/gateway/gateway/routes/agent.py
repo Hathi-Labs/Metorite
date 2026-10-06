@@ -1317,6 +1317,26 @@ def _set_agent_alias(name: str, alias: str) -> str:
     return alias
 
 
+def _stamp_tier_routing(agents: list[dict]) -> None:
+    """Set ``tier_routed`` on each entry (WS-45 S3, ``ai_tier_routing.md`` §9).
+
+    True when ``AI_TIER_ROUTING`` covers the agent. The value comes from
+    ``tier_policy.tier_routing_on``, the ONE reader of the flag, so the chat
+    and the executor cannot disagree. It fails closed: a fault marks every
+    agent False, and the chat then draws its picker as today. The field
+    carries a yes or no only, never a tier or a model.
+    """
+    try:
+        from acb_skills.tier_policy import tier_routing_on  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — a broken import must not arm the UI
+        tier_routing_on = None
+    for a in agents:
+        try:
+            a["tier_routed"] = bool(tier_routing_on and tier_routing_on(a.get("name")))
+        except Exception:  # noqa: BLE001
+            a["tier_routed"] = False
+
+
 @router.get("", summary="List all registered agents")
 async def list_agents(
     user: UserContext = Depends(get_current_user),
@@ -1394,6 +1414,10 @@ async def list_agents(
     aliases = _load_agent_aliases()
     for a in merged:
         a["display_name"] = aliases.get(a["name"], "")
+
+    # WS-45 S3: which agents the tier policy covers, so the chat can drop
+    # its model picker for exactly those, and name none itself.
+    _stamp_tier_routing(merged)
 
     # ── Access filter (org access control, enforcement seam 2) ────────────
     # This list feeds both the chat agent picker and the /agents management
