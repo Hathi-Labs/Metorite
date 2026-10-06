@@ -4814,6 +4814,22 @@ committed first, and each of the 17 rows turned its fence red.
 | R1-N2name | `read_email` prints the file name as it came | `test_read_email_prints_each_name_on_one_line` |
 | R1-N2mime | `read_email` prints the type as it came | `test_read_email_prints_each_name_on_one_line` |
 
+**The re-verify of round 1 (2026-10-06): PASS.** No P0 and no P1. Each fault class of the download
+route gets the status of main, and each mutation of the re-verifier went red. It found two P2 items.
+
+- **P2. The guard does not cover a slot that outlives its request.** The hold of item 7 ends with
+  the request. A parse slot ends with its worker thread. A parse that runs past its deadline
+  answers "took too long" and keeps its slot. So one member can hold both slots of the process.
+  Each slot stays held while its worker runs past 22 s. A sender can mail a file that does this. This is a
+  known limit, and nothing fixes it yet. A fix keeps the hold until the worker gives its slot back.
+- **P2. The 404 test checks the text cache too.** `test_an_attachment_of_another_member_is_404`
+  now asserts that the route reads no text cache before the owner check. Before, only the R8 case
+  caught that mutation.
+
+A timing test failed 2 times in 5 under load:
+`test_a_flat_wide_part_is_refused_at_the_element_cap` in `test_read_attachment.py`. It took 8.8 s,
+and its limit is 8 s. This diff does not touch the code under that test.
+
 **The live check (🔴 OWNER-GATE).** The owner asks the Email chat, and then the Projects chat, to
 summarise a PDF that came in a mail. Each chat must quote the file.
 

@@ -288,6 +288,9 @@ class TestTheTextRoute:
         assert h.provider_calls == 0 and h.redis.calls == [], (
             "the route read the cache or the provider before the owner check"
         )
+        assert h.text_redis.calls == [], (
+            "the route read the text cache before the owner check"
+        )
 
     async def test_a_file_over_15_mb_is_413_before_the_fetch(self, monkeypatch) -> None:
         h = _Harness(monkeypatch, filename="big.pdf", payload=b"%PDF-",
