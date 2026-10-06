@@ -897,10 +897,10 @@ no data from a coexistence number. The connect screen says so.
 | F6 | A Cloud account stays `sync_status='importing'` forever. A failed WABA subscribe is logged and swallowed, and the UI says done | `transport/accounts.py:120`, `connect.py:232-239`, `page.tsx:504` | 🟠 |
 | F7 | A number is unique per member, not per platform. The webhook picks one row with `fetchone()`, so two connections of one number collide, possibly across orgs | `102_whatsapp.sql:43`, `webhook.py:80-87` | 🟠 |
 | F8 | `verify_signature` accepts an unsigned POST when `WHATSAPP_APP_SECRET` is unset | `webhook.py:37-39` | 🟠 |
-| F9 | Graph `v21.0` is pinned in four places, and the provider ignores `WHATSAPP_GRAPH_VERSION` | `connect.py:32`, `providers/cloud_api.py:24,36`, `lib/api.ts:111` | 🟡 |
+| F9 | Graph `v21.0` is pinned in four places, and the provider ignores `WHATSAPP_GRAPH_VERSION` | `connect.py:32`, `providers/cloud_api.py:24,37`, `app/whatsapp/lib/api.ts:112` | 🟡 |
 | F10 | The token's `expires_in` is dropped, and nothing detects a revoked token | `connect.py:141-158` | 🟡 |
-| F11 | No chat panel inside `/whatsapp`. The assistant is reachable only at `/chat?agent=whatsapp-assistant` | `app/whatsapp/`, `app/chat/page.tsx:734` | 🟡 |
-| F12 | All 25 `test_whatsapp_*.py` files are hermetic. No test runs `wa_*` SQL against a real database, so F1 shipped green (R8) | `tests/unit/` | 🟠 |
+| F11 | No chat panel inside `/whatsapp`. The assistant is reachable only at `/chat?agent=whatsapp-assistant`, and no frontend file names it | `app/whatsapp/`, `app/chat/page.tsx:734` (the generic `agent` parameter) | 🟡 |
+| F12 | All 27 `test_whatsapp_*.py` files are hermetic. No test runs `wa_*` SQL against a real database, so F1 shipped green (R8) | `tests/unit/` | 🟠 |
 
 ### 12.4 Slices
 
@@ -908,7 +908,8 @@ Each slice is one PR. Each one ships dark where it changes behaviour.
 
 | Id | What | Gate | Done when |
 |---|---|---|---|
-| **WA-C1** | **Bind the tenant on every service path.** The webhook reads the account by `phone_number_id` through one narrow RLS-exempt read that returns `(account_id, organization_id)`. It binds that org, and it runs persist and the hooks in `tenant_session`. The same for the paths of F2. One active account per `phone_number_id` across the platform (a partial unique index, next free migration number, R1). The WS-47 bot path is not in this slice | AGENT-SAFE | An R8 test as a non-owner role under FORCE RLS. A signed webhook for a connected number writes its rows with that org, and a member of another org sees none. An unknown number still answers 200 and writes nothing. F8 fails closed in production mode |
+| **WA-C1** | **Bind the tenant on the webhook POST path.** Migration (next free number at build time, R1): a partial unique index on `wa_accounts(phone_number_id) WHERE provider = 'cloud_api'`, with a DO-block pre-check that raises with the duplicate count. One SECURITY DEFINER function in the shape of `222_chat_session_exists.sql` returns `(account_id, organization_id)` for a `cloud_api` `phone_number_id`. Only `acb_app` may execute it. It returns an org id, which goes past the one-bit rule of 222, and the reason is that the gateway can already bind any tenant. The POST reads through it, binds the org, runs `persist_sync_result` in `_tenant_session()`, fires the hooks, and releases the tenant in `finally` (the pattern of `routes/email/transport/sync.py:328-352`). The two hooks on that path (`replyzero.py:142`, `intent.py:120`) take `_tenant_session()`. F8: with `WHATSAPP_APP_SECRET` unset and `ACB_ENV` not `dev`, the POST answers 403, and `verify_signature` stays pure. A second connect of a connected number answers 409, not 500. `H2_WHATSAPP_EXEMPT_SITES` in `test_db_engine_seam.py` shrinks to the sites that remain | AGENT-SAFE | An R8 test on the `promoted` fixture, as a NOBYPASSRLS non-owner role. A signed webhook for a connected number writes its message, chat status and intent rows under that org, and a member of another org sees none. An unknown number answers 200 and writes nothing. With no app secret outside dev, the POST answers 403. It is red before the fix |
+| **WA-C1b** | **Bind the tenant on the other service paths.** The enrichment scheduler (`scheduler.py:60,77`, `groups.py:201`, `transcription.py:153`) loops per org in the shape of `email_ingestion/scheduler.py:396-434`, with no DEFINER. The GET verify fallback (`webhook.py:64`) is removed, because a Tech Provider app has one verify token, `WHATSAPP_VERIFY_TOKEN`. The broadcast handler (`outbound.py:72`) takes the org from the account row of its proposal | AGENT-SAFE | With live accounts in two orgs, one enrichment cycle reads and writes each account's rows under its own org (R8). The GET answers 403 for any token but the env token. A broadcast writes under its account's org (R8) |
 | **WA-C2** | **Coexistence in Embedded Signup.** `featureType: "whatsapp_business_app_onboarding"`. A listener that reads `event` (FINISH, FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING, CANCEL, ERROR). No phone `/register` for a coexistence number. The WABA subscribe is a hard step. `sync_status` moves to `live`, and an error shows as an error | AGENT-SAFE | A hermetic test per event type. A subscribe failure shows an error and saves no live account. The connect screen names the limits of §12.2 |
 | **WA-C3** | **History and contacts.** Call `smb_app_data` for `smb_app_state_sync` and `history` right after connect, and record the phase. Parse the `history`, `smb_app_state_sync` and `smb_message_echoes` fields. An echo is `direction="out"`, and its chat is the `to` number. Save statuses | AGENT-SAFE | Meta's sample payload for each field persists the right rows (R8). A history batch is idempotent on `wa_message_id`. An echo threads into the right chat |
 | **WA-C4** | The Graph version comes from one setting, at the current version. Keep `expires_in`. Mark an account `reauth_needed` when Meta refuses its token | AGENT-SAFE | One constant, read by all four sites. A 190 error from Meta moves the account to `reauth_needed`, and the UI offers Reconnect |
@@ -916,8 +917,10 @@ Each slice is one PR. Each one ships dark where it changes behaviour.
 | **WA-C0** | **Meta Tech Provider setup** (§12.5) | **OWNER-GATE** | The app ID, the app secret, the Embedded Signup configuration ID and the verify token are on the box. The owner's own number connects through the popup |
 | **WA-C6** | Promote WhatsApp from `preview` to `live` (`launch_surface.md` §2 and `nav.ts`) | **OWNER-GATE** (H-21) | The owner's number has run one week on production with no lost batch |
 
+**The bridge routes are out of §12.** §12 is official only, and the bridge stays off. Their five push routes are public, and `bridge_secret_ok` passes when `WHATSAPP_BRIDGE_SECRET` is unset. FORCE RLS blocks their writes today by accident. A tenant binding taken from the `account_id` in the body would open a cross-org write. So no slice binds a tenant there until `WHATSAPP_BRIDGE_SECRET` fails closed outside dev.
+
 **Order.** WA-C1 comes first, because nothing else can work on production
-without it. Then WA-C2 and WA-C3, which the Meta App Review needs for its
+without it. WA-C1b comes before `WHATSAPP_ENRICHMENT` is turned on. Then WA-C2 and WA-C3, which the Meta App Review needs for its
 videos. Then WA-C4 and WA-C5. WA-C0 runs beside them.
 
 ### 12.5 The Meta side (WA-C0, OWNER-GATE)
@@ -946,7 +949,10 @@ carries the shared steps. This slice adds these steps to them:
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8. Without it the DB tests SKIP
 uv run pytest tests/unit/test_whatsapp_webhook_parser.py tests/unit/test_whatsapp_persist.py tests/unit/test_whatsapp_connect.py -q
-uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_insert_fence.py -q
+uv run pytest tests/unit/test_whatsapp_routes.py tests/unit/test_whatsapp_replyzero.py tests/unit/test_whatsapp_intent.py -q
+uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_insert_fence.py tests/unit/test_db_engine_seam.py -q
+uv run pytest tests/unit/<the new R8 file> -q -rs        # a SKIP is not a pass
+uv run ruff check apps/services/gateway/gateway/routes/whatsapp apps/services/whatsapp_ingestion
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/whatsapp
 ```
 
