@@ -5,9 +5,56 @@ written. Specified 2026-10-05. Board row **WS-45**, and decision **D90** is in
 `work_plan.md` §3.
 
 **S1 is built and dark** (2026-10-06, PR #667).
-**S2 is built and dark** (2026-10-06, branch `ws45-s2-tier-policy`).
-`AI_TIER_ROUTING` ships empty, and the flag covers no agent on any box. S3 is
-next.
+**S2 is built and dark** (2026-10-06, PR #675).
+**S3 is built and dark** (2026-10-06, branch `ws45-s3-picker`).
+`AI_TIER_ROUTING` ships empty, and `NEXT_PUBLIC_AI_TIER_ROUTING` ships OFF.
+Neither flag covers an agent on any box. S4 is next.
+
+**S3 build notes (2026-10-06).** Read these before S4.
+
+- `src/lib/tierRouting.ts` holds every rule of S3 as a pure function. The
+  composer, the hook and the answer only call it.
+- **The client learns coverage from the agent list.** `GET /agent` sets
+  `tier_routed` on each entry with `_stamp_tier_routing`, which asks
+  `tier_policy.tier_routing_on`. No file in the Control Plane names a covered
+  agent. An entry with no field reads as not covered.
+- A covered agent needs BOTH flags. With the UI flag on and no agent covered,
+  every picker draws as today. So the wrong order of the two flips is safe.
+- For a covered agent, the composer draws no picker and no divider. It
+  fetches no `/api/models/all` and reads no `cc-model-` key. It sends no
+  `model` field, and it takes the executor path for the orchestrator too. The
+  effort selector keeps Auto, Thinking and Max (Q3).
+- The composer deletes `cc-model-<agent>` for a covered agent. It deletes
+  `cc-model-usage` only when the flag covers every agent in the list. The
+  counts still sort the picker of an agent that the flag does not cover.
+- With the UI flag on, the composer draws no picker until the agent list
+  lands. A turn sent before then sends `model` with the forced model or
+  `auto`, never the stored choice. The composer reads no stored choice until
+  it knows that the agent keeps its picker. Review P3 of PR #678 found that
+  this note claimed otherwise.
+- The context ring of a covered agent names no model, and it estimates on
+  the `auto` window.
+- **The tier label** is in a new details menu on each answer,
+  `components/AnswerDetails.tsx`, for every member (Q4). It names each tier
+  once, in first-use order, for example "Balanced, then Powerful". An
+  off-ladder slug draws nothing, so no model can show (D32.7).
+- ⚠️ **The words are a fenced mirror.** The Control Plane does not read
+  `GET /my/tiers` yet (`ai_metering_and_analytics.md` §8.4 clause 6). So
+  `TIER_WORDS` copies the seed rows of `015_tier_pricing.sql`, and
+  `tierRouting.test.ts` reads that file and fails on a drift. An operator
+  edit of a label does not reach the chat until that read ships.
+- `ai.route` never draws in the raw "Interactive view" fold, with the flag on
+  or off. This is the one change that does not wait for the UI flag. Only a
+  covered run emits the event, and no box covers an agent.
+- The spec named the fence `AgentChat.picker.test.tsx`. Vitest here collects
+  `*.test.ts` only, so the file is `AgentChat.picker.test.ts`.
+- With both flags off, the composer and the answer draw the same markup as
+  `origin/main`. A one-time check compared 7 composer cases and 3 answer
+  cases byte for byte. The committed fence holds the flag-off markup equal
+  across coverage values.
+- **Not built in S3:** the chat of the Email app still passes `model` and
+  `lockModel`, and the two `chat_model` controls stay (S4). The `route.ts` field
+  `model` stays (§8, contract).
 
 **S2 build notes (2026-10-06).** Read these before S3 or S4.
 
@@ -726,9 +773,12 @@ needs restoring.
 
 | Rule | Fence | Kind |
 |---|---|---|
-| The chat shows no model picker while the UI flag is on | `src/components/AgentChat.picker.test.tsx` (new). No "LiteLLM — Tiers" text, no fetch of `/api/models/all` from the composer | vitest |
+| The chat shows no model picker while the UI flag is on | `src/components/AgentChat.picker.test.ts` (new, S3). The markup of a covered agent holds no picker, and the one fetch of `/api/models/all` waits for the plan | vitest |
 | The effort selector stays with three labels | Same file. It finds Auto, Thinking and Max | vitest |
 | The composer reads no model from `localStorage` | Same file. A source check finds no `cc-model-` key in `AgentChat.tsx` | vitest |
+| The chat learns coverage from the server, never from a list of its own | `tests/unit/test_agent_list_tier_routed.py` (S3). `GET /agent` sets `tier_routed` from `tier_routing_on`, and a fault marks no agent | pytest |
+| An answer names its tiers in its details menu, for every member | `AgentChat.picker.test.ts` and `src/lib/tierRouting.test.ts` (S3). Two events give one label. An off-ladder slug draws nothing. The words match the `tier_catalog` seed | vitest |
+| The UI flag off changes nothing | `AgentChat.picker.test.ts`. The flag-off markup is the same for each coverage value. An answer with `ai.route` events draws the same as one with none | vitest |
 | The executor ignores a client model for a covered agent | `tests/unit/test_tier_policy.py` (new) | pytest |
 | The policy table lives in one place | `test_tier_policy.py`. Each kind maps to a tier in the slate, and each `TOOL_HINTS` name exists in a tool registry | pytest |
 | A tool hint raises the NEXT request only | `test_tier_policy.py`, through a real `OpenAIChatCompletionClient` on an `httpx.MockTransport`, as in `test_native_maf_wire.py` | pytest |
@@ -884,11 +934,12 @@ uv run pytest tests/unit/test_system_one_tool.py tests/unit/test_tier_policy.py 
   tests/unit/test_tool_schema_diet.py tests/unit/test_core_tool_floor.py \
   tests/unit/test_internal_ai_is_routed.py tests/unit/test_native_maf_wire.py \
   tests/unit/test_think_mode.py tests/unit/test_byok_default.py \
-  tests/unit/test_no_direct_ai_vendor_calls.py -q
+  tests/unit/test_no_direct_ai_vendor_calls.py \
+  tests/unit/test_agent_list_tier_routed.py -q
 
 # The UI fences (S3)
 cd workbench/control_plane && npx tsc --noEmit && \
-  npx vitest run src/components/AgentChat.picker.test.tsx \
+  npx vitest run src/components/AgentChat.picker.test.ts src/lib/tierRouting.test.ts \
   src/app/api/models/all/route.test.ts src/app/email/lib/chatScope.test.ts
 
 # The writing fence (every PR that touches markdown)

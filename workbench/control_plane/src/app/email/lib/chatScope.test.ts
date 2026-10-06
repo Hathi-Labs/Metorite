@@ -292,7 +292,9 @@ describe("email-chat-picker-dot", () => {
   it("draws the dot beside the label in AgentChat, with no raw palette class", () => {
     const agent = codeOnly(read("../../components/AgentChat.tsx"));
     const start = agent.indexOf("{(mailboxes?.length ?? 0) > 0 && (");
-    const end = agent.indexOf("{!lockModel && (", start);
+    // The model picker follows the mailbox picker. Since WS-45 S3 it waits
+    // for the tier plan too (`lib/tierRouting.ts`).
+    const end = agent.indexOf("{!lockModel && modelPlan.showPicker && (", start);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const picker = agent.slice(start, end);

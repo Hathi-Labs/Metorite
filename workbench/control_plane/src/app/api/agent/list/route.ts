@@ -52,6 +52,10 @@ export interface AgentEntry {
   repo_url?: string;
   local_path?: string;
   dynamic?: boolean;
+  /** WS-45 S3: the backend flag `AI_TIER_ROUTING` covers this agent, so the
+   *  platform picks its tier and the chat shows no model picker. The gateway
+   *  stamps it. Absent reads as not covered (`lib/tierRouting.ts`). */
+  tier_routed?: boolean;
   /** Number of commits the local clone is behind origin (0 = up-to-date) */
   behind_by?: number;
   /** Dependency-install health for this agent's clone. */

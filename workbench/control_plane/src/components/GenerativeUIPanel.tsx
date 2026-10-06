@@ -106,6 +106,10 @@ const PANEL_HIDDEN_EVENTS = new Set([
   // 2026-09-23).
   "artifact_created",
   "artifact_updated",
+  // The tier of one model request (WS-45 S2). A label, not a view: the
+  // answer's details menu names it (S3), and raw JSON here would show a
+  // fold on every answer of a covered agent.
+  "ai.route",
 ]);
 
 /** A typed renderer for a specific custom-event `name`, returning the card body
