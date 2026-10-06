@@ -24,6 +24,11 @@ WS-46 P4 (D91) takes the same rule from the route to the FIELD. :data:`SENDS`,
 :data:`FIELD_EXEMPT` and :data:`FIELD_PLANNED` hold every field of a mapped
 route's request, and ``tests/unit/test_projects_field_parity.py`` (fence F2)
 reads the fields from the real router.
+
+WS-46 P5 takes it to the UI client METHOD. :data:`UI_ACTIONS`,
+:data:`UI_EXEMPT` and :data:`UI_PLANNED` hold every method of the Projects
+client, and ``tests/unit/test_projects_ui_actions.py`` (fence F3) reads the
+methods and the routes they call from the TypeScript source.
 """
 
 from __future__ import annotations
@@ -42,6 +47,9 @@ __all__ = [
     "PLANNED",
     "READ_ONLY_POSTS",
     "SENDS",
+    "UI_ACTIONS",
+    "UI_EXEMPT",
+    "UI_PLANNED",
     "Route",
     "allowed",
     "is_read",
@@ -728,6 +736,8 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "from": "calendar.start",
         "to": "calendar.end",
         "project_id": "calendar.project_id",
+        # WS-46 P5: the app's calendar sends it, so the chat's does too.
+        "include_subtree": "calendar.include_subtree",
     },
     # ── recurrence ───────────────────────────────────────────────────────
     ("PUT", "/projects/tasks/{task_id}/recurrence"): {
@@ -942,9 +952,6 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "include_done": "Done work is read through my_work include_done.",
     },
     ("GET", "/projects/calendar"): {
-        # A finding of P4, recorded and not fixed: the route's default is the
-        # named node only, so a space's calendar shows no subproject work.
-        "include_subtree": "The route's default reads the named node only. A subproject has its own id.",
         "status_id": _READ_FILTER_REASON,
         "status_category": _READ_FILTER_REASON,
         "assignee": _READ_FILTER_REASON,
@@ -1050,6 +1057,168 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     },
     ("GET", "/projects/my/areas"): {"include_archived": "G17"},
     ("GET", "/projects/my/inbox"): {"untriaged": "G18"},
+}
+
+
+# ── WS-46 P5 (D91, fence F3) — every UI client METHOD, not only every field ──
+#
+# Spec: ``project-docs/specs/projects_agent_parity.md`` §6.4. A UI action can
+# be new while its route is old, so F1 and F2 cannot see it. The client method
+# is where a UI action first exists in code. ``tests/unit/test_projects_ui_actions.py``
+# reads each method of the Projects client files as TEXT, reads the verb and
+# the path that the method calls, and holds the method to one of these three
+# tables. A method that is in none of them fails by its name and its file.
+#
+# The key is ``object.method``, for example ``projectsApi.createTask``. A free
+# function that builds a gateway path takes the stem of its file as the
+# object, for example ``export.exportPath``.
+
+#: A UI client method -> the tool that does the same act. The fence asserts
+#: that the tool may reach the route that the method calls (``reaches``), and
+#: that the route is not class X. So a false claim fails.
+UI_ACTIONS: dict[str, str] = {
+    # ── projectsApi: the tree and the roll-ups ───────────────────────────
+    "projectsApi.tree": "projects_tree",
+    "projectsApi.summary": "project_summary",
+    "projectsApi.portfolio": "project_summary",
+    "projectsApi.createProject": "create_project",
+    "projectsApi.patchProject": "update_project",
+    "projectsApi.moveNode": "move_project",
+    "projectsApi.archiveProject": "archive_project",
+    "projectsApi.unarchiveProject": "unarchive_project",
+    "projectsApi.grants": "project_access",
+    # ── projectsApi: analytics and reports ───────────────────────────────
+    "projectsApi.stuck": "analytics_stuck",
+    "projectsApi.load": "analytics_load",
+    "projectsApi.throughput": "analytics_throughput",
+    "projectsApi.finished": "analytics_finished",
+    "projectsApi.outlook": "analytics_outlook",
+    "projectsApi.capacity": "team_capacity",
+    "projectsApi.conflicts": "find_conflicts",
+    "projectsApi.reports": "report_list",
+    "projectsApi.reportTemplates": "render_report",
+    "projectsApi.reportSubjects": "render_report",
+    "projectsApi.createReport": "report_save",
+    "projectsApi.patchReport": "report_save",
+    "projectsApi.renderReport": "report_render",
+    "projectsApi.previewReport": "render_report",
+    "projectsApi.deleteReport": "report_delete",
+    # ── projectsApi: statuses and status sets ────────────────────────────
+    "projectsApi.statuses": "vocabulary",
+    "projectsApi.statusSet": "vocabulary",
+    "projectsApi.previewStatusSet": "set_status_set",
+    "projectsApi.setStatusSet": "set_status_set",
+    "projectsApi.createStatus": "create_status",
+    "projectsApi.patchStatus": "update_status",
+    "projectsApi.deleteStatus": "delete_status",
+    # ── projectsApi: tasks ───────────────────────────────────────────────
+    "projectsApi.tasks": "list_tasks",
+    "projectsApi.calendar": "calendar",
+    "projectsApi.search": "find_tasks",
+    "projectsApi.task": "task_detail",
+    "projectsApi.timeline": "task_detail",
+    "projectsApi.relations": "task_detail",
+    "projectsApi.createTask": "create_task",
+    "projectsApi.patchTask": "update_task",
+    "projectsApi.archiveTask": "archive_task",
+    "projectsApi.unarchiveTask": "unarchive_task",
+    "projectsApi.previewMove": "move_task",
+    "projectsApi.moveTasks": "move_task",
+    "projectsApi.mergeTasks": "merge_tasks",
+    "projectsApi.bulkEdit": "bulk_update",
+    "projectsApi.setAssignees": "assign",
+    "projectsApi.comment": "comment",
+    "projectsApi.createLink": "link_tasks",
+    "projectsApi.deleteLink": "unlink_tasks",
+    "projectsApi.recurrence": "recurrence",
+    "projectsApi.setRecurrence": "set_recurrence",
+    "projectsApi.clearRecurrence": "set_recurrence",
+    # ── projectsApi: people and fit ──────────────────────────────────────
+    "projectsApi.suggestAssignees": "people_for",
+    "projectsApi.personNames": "people_for",
+    "projectsApi.taskCandidates": "fit_for_task",
+    # ── projectsApi: tags, types and fields ──────────────────────────────
+    "projectsApi.tags": "vocabulary",
+    "projectsApi.createTag": "create_tag",
+    "projectsApi.patchTag": "update_tag",
+    "projectsApi.tagImpact": "delete_tag",
+    "projectsApi.mergeTag": "merge_tags",
+    "projectsApi.deleteTag": "delete_tag",
+    "projectsApi.types": "vocabulary",
+    "projectsApi.createType": "create_type",
+    "projectsApi.patchType": "update_type",
+    "projectsApi.deleteType": "delete_type",
+    "projectsApi.fields": "vocabulary",
+    "projectsApi.createField": "create_field",
+    "projectsApi.patchField": "update_field",
+    "projectsApi.deleteField": "delete_field",
+    # ── projectsApi: saved views ─────────────────────────────────────────
+    "projectsApi.views": "project_views",
+    "projectsApi.createView": "save_view",
+    "projectsApi.patchView": "save_view",
+    "projectsApi.deleteView": "delete_view",
+    # ── attachmentsApi ───────────────────────────────────────────────────
+    "attachmentsApi.list": "task_detail",
+    "attachmentsApi.detach": "delete_attachment",
+    # ── notificationsApi ─────────────────────────────────────────────────
+    "notificationsApi.list": "notifications",
+    "notificationsApi.markRead": "mark_notifications_read",
+    "notificationsApi.markAllRead": "mark_notifications_read",
+    # ── watchersApi · projectWatchersApi ─────────────────────────────────
+    "watchersApi.get": "watchers",
+    "watchersApi.watch": "watch",
+    "watchersApi.unwatch": "watch",
+    "projectWatchersApi.get": "watchers",
+    "projectWatchersApi.watch": "watch",
+    "projectWatchersApi.unwatch": "watch",
+    # ── intakeApi ────────────────────────────────────────────────────────
+    "intakeApi.queue": "intake_queue",
+    "intakeApi.capture": "capture_intake",
+    "intakeApi.accept": "triage_intake",
+    "intakeApi.decline": "triage_intake",
+    "intakeApi.duplicate": "triage_intake",
+    "intakeApi.snooze": "triage_intake",
+}
+
+#: A UI client method the chat does not mirror, and why. The fence allows an
+#: exemption only where the route the method calls is class X. Where a tool
+#: reaches the route, the method names the tool in ``UI_ACTIONS``.
+UI_EXEMPT: dict[str, str] = {
+    "projectsApi.deleteProject": _DELETE_REASON,
+    "projectsApi.deleteTask": _DELETE_REASON,
+    "projectsApi.setViewState": (
+        "The member's own overlay on a saved view (WS-27ae). " + _UI_STATE_REASON
+    ),
+    "projectsApi.setPositions": (
+        "The hand-dragged order of cards on a saved view. " + _UI_STATE_REASON
+    ),
+    "projectsApi.vocabulary": (
+        "The shared vocabulary list of Projects settings. The chat reads a "
+        "space's effective tags, fields and types through vocabulary."
+    ),
+    "projectsApi.vocabularyImpact": (
+        "The count shown before an admin deletes or merges a shared entry. "
+        "The chat neither deletes nor merges shared entries."
+    ),
+    "export.exportPath": (
+        "The CSV download of the board's filter. A file download is the app's "
+        "export button, and a chat answer carries text."
+    ),
+    "importApi.upload": _IMPORT_REASON,
+    "importApi.get": _IMPORT_REASON,
+    "importApi.saveMapping": _IMPORT_REASON,
+    "importApi.list": _IMPORT_REASON,
+    "importApi.discard": _IMPORT_REASON,
+    "importApi.apply": _IMPORT_REASON,
+}
+
+#: A UI client method that a later slice gives the chat: method -> its gap id
+#: in the gap table of ``projects_agent_parity.md`` §3.3. The fence reads the
+#: spec, and fails when the slice of that gap is marked built. The slice that
+#: closes the gap moves its rows to ``UI_ACTIONS``, so this table only shrinks.
+UI_PLANNED: dict[str, str] = {
+    # G21 (P10): the chat attaches a file the member gave it in this thread.
+    "attachmentsApi.upload": "G21",
 }
 
 
