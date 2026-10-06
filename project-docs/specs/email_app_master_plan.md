@@ -612,7 +612,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
 | **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | ✅ **MERGED #658 (2026-10-05).** The live check (H-248) is open. **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
 | **EM-T11** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #672 (2026-10-06), with review round 1.** GO-NARROWED by the audit. No migration and no flag. **A chat cannot read the files of a mail.** A text route for an attachment through the shared reader of H-229, and a `read_email_attachment` tool for the email assistant. No `.xlsx` and no HTML (EM-T11b). See §10.4.12. | See §10.4.12. |
-| **EM-T12** | 🟢 AGENT-SAFE | 📝 **SPECIFIED, GO-NARROWED by the audit (2026-10-06).** Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
+| **EM-T12** | 🟢 AGENT-SAFE | 🔨 **BUILT, not merged (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -4967,9 +4967,9 @@ summarise a PDF that came in a mail. Each chat must quote the file.
 
 #### 10.4.14 EM-T12 — the own tool scope of an agent works again
 
-**Status.** 📝 SPECIFIED (2026-10-06). The audit gave GO-NARROWED on 2026-10-06, and this section
-holds its edits. An exploration of the agent platform found the defect on 2026-10-06, before the
-shared data tools add more tools to each agent.
+**Status.** 🔨 BUILT, not merged (2026-10-06). The audit gave GO-NARROWED on 2026-10-06, and this
+section holds its edits. "As built" below records the build. An exploration of the agent platform
+found the defect on 2026-10-06, before the shared data tools add more tools to each agent.
 
 **Owner.** Board row WS-8o (`agent_architecture.md` §12.2). This section holds the scope, the fences
 and the verification.
@@ -5054,6 +5054,41 @@ uv run ruff check apps/services/orchestrator/orchestrator/_tool_injection.py app
 ```
 
 **The live check.** `executor.agent_tools_resolved` for one email chat shows `own=43`.
+
+**As built (2026-10-06, branch `agent-own-scope`).**
+
+- **The filter.** `_own_tool_pools(agent)` in `_tool_injection.py` returns each tool list of one
+  agent once: `default_options["tools"]`, then `tools` and `_tools`. `_apply_own_tool_scope`
+  filters each pool in place, and keeps the fail-open rule for each pool. No pool holds
+  `mcp_tools` or the tools of a context provider.
+- **The log.** `_count_agent_tools(agents)` counts the tools in those pools.
+  `_log_agent_tools_resolved` writes `executor.agent_tools_resolved` with `agent`, `own` and
+  `total`. Each of the three sites in `executor.py` counts `own` after the scope, and logs after
+  `_inject_agent_tools`.
+- **The configs.** The email scope is the 43 built tools, in build order. The crm, projects and
+  whatsapp scopes do not change. The email `instructions.md` does not name `save_episode` now.
+- **The fences.** `test_own_tool_scope.py` adds six tests on a real `Agent(client=None)`. The new
+  `test_own_tool_scope_parity.py` holds 17 tests. `test_tool_scope_trajectory.py` builds the
+  email agent and checks membership in its built tools. The asserts at `:85` and `:88` are gone.
+
+**Tool counts, `build_agents()` against the filter on.**
+
+| Agent | Built | Filter on | Scope | Lost |
+|---|---|---|---|---|
+| crm | 8 | 8 | 8 | none |
+| email-assistant | 43 | 43 | 43 | none |
+| projects | 87 | 87 | 87 | none |
+| whatsapp-assistant | 13 | 13 | 13 | none |
+
+**Mutations, as run.** Each mutation ran on a committed tree. After each one the file came back,
+and `git status` was clean.
+
+| ID | Mutation | Tests that failed |
+|---|---|---|
+| M1 | `_apply_own_tool_scope` reads only `tools` and `_tools` again | 2: `test_filters_a_real_maf_agent_in_its_default_options`, `test_the_count_reads_the_real_agent` |
+| M2 | The email scope adds `search_emails` | 2: the parity equality test for email, and the trajectory built-tools test |
+| M3 | The email scope removes `create_rule` | 3: the parity equality, filter and instructions tests for email |
+| M4 | The email `instructions.md` names `save_episode` again | 1: the parity platform-tool test for email |
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

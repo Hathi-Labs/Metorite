@@ -981,7 +981,7 @@ and no flag. `_apply_own_tool_scope` filters `tools` and `_tools`. MAF 1.19 keep
 `default_options["tools"]`.
 
 The scope of each agent is its built tools. A narrowing is an owner decision. Scope, fences and
-verification: `email_app_master_plan.md` §10.4.14.
+verification: `email_app_master_plan.md` §10.4.14. 🔨 Built, not merged (2026-10-06).
 
 #### B — one builder
 
