@@ -1326,14 +1326,16 @@ def _stamp_tier_routing(agents: list[dict]) -> None:
     agent False, and the chat then draws its picker as today. The field
     carries a yes or no only, never a tier or a model.
     """
+    # Imported here, as the other acb_skills reads of this module are. A
+    # broken import must not arm the UI, so it marks every agent False.
     try:
-        from acb_skills.tier_policy import tier_routing_on  # noqa: PLC0415
-    except Exception:  # noqa: BLE001 — a broken import must not arm the UI
+        from acb_skills.tier_policy import tier_routing_on
+    except Exception:
         tier_routing_on = None
     for a in agents:
         try:
             a["tier_routed"] = bool(tier_routing_on and tier_routing_on(a.get("name")))
-        except Exception:  # noqa: BLE001
+        except Exception:
             a["tier_routed"] = False
 
 

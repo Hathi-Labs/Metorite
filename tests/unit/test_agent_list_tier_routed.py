@@ -26,7 +26,6 @@ from types import SimpleNamespace
 import pytest
 from acb_common.settings import get_settings
 from acb_skills import tier_policy
-
 from gateway.routes import agent as agent_routes
 
 
