@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+from typing import Any
 
 from acb_common import get_logger, get_settings
 from fastapi import Request, Response
@@ -120,7 +121,8 @@ async def _resolve_account(phone_number_id: str | None) -> tuple[str, str] | Non
 
 @router.post("/webhook")
 async def receive_webhook(request: Request):
-    """Ingest a Meta event batch: verify → parse → persist → hooks."""
+    """Ingest a Meta event batch: verify → split by number → for each number,
+    resolve its tenant → persist → hooks."""
     raw = await request.body()
     app_secret = os.environ.get("WHATSAPP_APP_SECRET")
     if not app_secret and get_settings().acb_env != "dev":
@@ -139,25 +141,96 @@ async def receive_webhook(request: Request):
     except ValueError:
         return Response(status_code=400, content="invalid json")
 
+    groups, unrouted = split_by_number(payload)
+    if unrouted:
+        _log.warning("whatsapp.webhook.changes_without_number", changes=unrouted)
+    # Every customer WABA subscribes the one Tech Provider app, so one POST
+    # can carry several numbers, and so several tenants. Each number is one
+    # unit: resolve its owner, bind that org, persist, fire the hooks. One
+    # failed unit must not stop the others. The persist path is idempotent on
+    # `wa_message_id`, so the 500 below makes Meta send the whole batch again
+    # and the units that landed write nothing new.
+    failed = 0
+    for phone_number_id, sub_payload in groups.items():
+        try:
+            await _ingest_number(phone_number_id, sub_payload)
+        except Exception as exc:
+            failed += 1
+            _log.warning(
+                "whatsapp.webhook.number_failed",
+                phone_number_id=phone_number_id, error=str(exc)[:200],
+            )
+    if failed:
+        return Response(status_code=500, content="retry")
+    return Response(status_code=200, content="ok")
+
+
+def split_by_number(payload: Any) -> tuple[dict[str, dict[str, Any]], int]:
+    """Split a webhook body into one sub-payload for each Meta number.
+
+    The key is ``change.value.metadata.phone_number_id``. Each sub-payload
+    keeps Meta's ``entry`` / ``changes`` shape, so ``parse_webhook`` reads it
+    as it reads a full body. A change with no number goes to no group and is
+    counted in the second value. Total: a malformed body gives no groups and
+    never raises.
+
+    The parser keeps only the FIRST number of a batch. Before this split, a
+    batch that carried org A's number first put org B's messages under org
+    A's account (WA-C1 review P0).
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    # The index of the source entry that each group's last entry copies.
+    last_source: dict[str, int] = {}
+    unrouted = 0
+    if not isinstance(payload, dict):
+        return groups, unrouted
+    entries = payload.get("entry")
+    if not isinstance(entries, list):
+        return groups, unrouted
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        changes = entry.get("changes")
+        if not isinstance(changes, list):
+            continue
+        for change in changes:
+            value = change.get("value") if isinstance(change, dict) else None
+            meta = value.get("metadata") if isinstance(value, dict) else None
+            pnid = meta.get("phone_number_id") if isinstance(meta, dict) else None
+            if not isinstance(pnid, str) or not pnid:
+                unrouted += 1
+                continue
+            group = groups.setdefault(pnid, {
+                "object": payload.get("object"), "entry": [],
+            })
+            # One entry per source entry, in order, so the shape stays Meta's.
+            if last_source.get(pnid) != index:
+                group["entry"].append({"id": entry.get("id"), "changes": []})
+                last_source[pnid] = index
+            group["entry"][-1]["changes"].append(change)
+    return groups, unrouted
+
+
+async def _ingest_number(phone_number_id: str, sub_payload: dict[str, Any]) -> None:
+    """Persist one number's part of a batch under the tenant that owns it.
+
+    An unknown number writes nothing and is not an error.
+    """
     from whatsapp_ingestion.persist import persist_sync_result
     from whatsapp_ingestion.providers.webhook import parse_webhook
 
-    result = parse_webhook(payload)
+    result = parse_webhook(sub_payload)
     if result.errors:
         # The parser is total (never raises); surface malformed changes instead of
         # swallowing them silently.
         _log.warning("whatsapp.webhook.parse_errors", errors=result.errors[:5])
-    if not result.phone_number_id:
-        # A status-only or empty batch with no metadata — ack so Meta stops.
-        return Response(status_code=200, content="ok")
 
-    owner = await _resolve_account(result.phone_number_id)
+    owner = await _resolve_account(phone_number_id)
     if owner is None:
         _log.warning(
-            "whatsapp.webhook.unknown_number",
-            phone_number_id=result.phone_number_id,
+            "whatsapp.webhook.unknown_number", phone_number_id=phone_number_id,
         )
-        return Response(status_code=200, content="ok")  # ack; nothing to do
+        return
     account_id, organization_id = owner
 
     # Bind the account's tenant for the persist AND the hooks, and release it
@@ -177,6 +250,5 @@ async def receive_webhook(request: Request):
             account_id=account_id, messages=counts["messages"],
             statuses=len(result.statuses),
         )
-        return Response(status_code=200, content="ok")
     finally:
         release_tenant(token)

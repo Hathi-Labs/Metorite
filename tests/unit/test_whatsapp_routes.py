@@ -93,6 +93,75 @@ def test_no_secret_in_dev_accepts_the_post(
     assert resp.status_code == 200
 
 
+# ── One unit for each Meta number in a batch (WA-C1 review P0) ───────────────
+
+def _chg(pnid: str | None, wamid: str) -> dict:
+    meta = {"phone_number_id": pnid} if pnid else {}
+    return {"field": "messages", "value": {"metadata": meta, "messages": [{
+        "from": "91", "id": wamid, "timestamp": "1790000000", "type": "text",
+        "text": {"body": "hi"}}]}}
+
+
+def test_split_by_number_gives_each_number_only_its_own_changes() -> None:
+    from gateway.routes.whatsapp.transport.webhook import split_by_number
+    from whatsapp_ingestion.providers.webhook import parse_webhook
+
+    payload = {"object": "whatsapp_business_account", "entry": [
+        {"id": "W1", "changes": [_chg("PA", "a1"), _chg("PB", "b1")]},
+        {"id": "W2", "changes": [_chg("PA", "a2"), _chg(None, "x1")]},
+    ]}
+    groups, unrouted = split_by_number(payload)
+    assert set(groups) == {"PA", "PB"}
+    assert unrouted == 1
+    assert [e["id"] for e in groups["PA"]["entry"]] == ["W1", "W2"]
+    a = parse_webhook(groups["PA"])
+    b = parse_webhook(groups["PB"])
+    assert (a.phone_number_id, [m.wa_message_id for m in a.messages]) == (
+        "PA", ["a1", "a2"])
+    assert (b.phone_number_id, [m.wa_message_id for m in b.messages]) == (
+        "PB", ["b1"])
+
+
+@pytest.mark.parametrize("payload", [
+    None, [], "x", {}, {"entry": None}, {"entry": ["x", None]},
+    {"entry": [{"changes": "x"}]}, {"entry": [{"changes": [None, 3, {"value": 1}]}]},
+    {"entry": [{"changes": [{"value": {"metadata": {"phone_number_id": 7}}}]}]},
+])
+def test_split_by_number_is_total(payload) -> None:
+    from gateway.routes.whatsapp.transport.webhook import split_by_number
+
+    groups, _ = split_by_number(payload)
+    assert groups == {}
+
+
+def test_a_failed_number_answers_500_after_the_others_ran(
+    monkeypatch: pytest.MonkeyPatch, _acb_env,
+) -> None:
+    """Meta then sends the batch again. The persist path is idempotent, so
+    the numbers that landed write nothing new."""
+    import json
+
+    from gateway.routes.whatsapp.transport import webhook
+
+    ran: list[str] = []
+
+    async def _ingest(pnid, sub_payload):
+        ran.append(pnid)
+        if pnid == "PA":
+            raise RuntimeError("db down")
+
+    monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
+    _acb_env("dev")
+    monkeypatch.setattr(webhook, "_ingest_number", _ingest)
+    body = json.dumps({"entry": [
+        {"id": "W1", "changes": [_chg("PA", "a1")]},
+        {"id": "W2", "changes": [_chg("PB", "b1")]},
+    ]}).encode()
+    resp = _webhook_client().post("/whatsapp/webhook", content=body)
+    assert resp.status_code == 500
+    assert ran == ["PA", "PB"]
+
+
 # ── 24h send window + regime ──────────────────────────────────────────────────
 
 def test_window_open_only_before_expiry() -> None:
