@@ -1014,12 +1014,55 @@ async def test_a_weekly_rule_without_weekdays_takes_todays_day_and_says_so(monke
     import datetime as dt
 
     monkeypatch.setattr(W, "_today", lambda: dt.date(2026, 10, 6))  # a Tuesday
+
+    def no_rule_yet(call: dict) -> Any:
+        if call["path"].endswith("/recurrence") and call["method"] == "GET":
+            return {"rule": None}
+        return responder(call)
+
     asked = approve(monkeypatch)
-    calls = fake_gateway(monkeypatch, responder)
+    calls = fake_gateway(monkeypatch, no_rule_yet)
     await skill_projects.set_recurrence(UUID, freq="weekly")
     put = [c for c in writes(calls) if c["method"] == "PUT"]
     assert put[0]["json"]["weekdays"] == [2]
     assert "repeat day: «Tuesday, today's weekday (UTC)" in asked[0]["context"]
+
+
+async def test_a_weekly_rule_that_exists_keeps_its_days(monkeypatch) -> None:
+    """WS-46 P1 review: "make it every 2 weeks" on a task that repeats every
+    Monday keeps Monday. The default is for a task with no weekly rule."""
+    import datetime as dt
+
+    monkeypatch.setattr(W, "_today", lambda: dt.date(2026, 10, 6))  # a Tuesday
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)  # the current rule: weekly on Monday
+    await skill_projects.set_recurrence(UUID, freq="weekly", interval=2)
+    put = [c for c in writes(calls) if c["method"] == "PUT"]
+    assert put[0]["json"]["weekdays"] == [1]
+    assert "repeat day" not in asked[0]["context"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "word"),
+    [
+        ({"freq": "daily", "interval": 0}, "interval is 1 to 365, not 0"),
+        ({"freq": "monthly", "day_of_month": 32}, "day_of_month is 1 to 31"),
+        ({"freq": "yearly", "day_of_month": 1, "month_of_year": 13}, "month_of_year is 1 to 12"),
+        ({"freq": "daily", "max_occurrences": -1}, "max_occurrences is 1 or more"),
+        ({"freq": "daily", "until": "2026-13-01"}, "until is a date, YYYY-MM-DD"),
+        ({"freq": "daily", "until": "2026-10-05"}, "in the past"),
+    ],
+)
+async def test_set_recurrence_refuses_a_number_out_of_range_before_the_card(
+    kwargs: dict, word: str, monkeypatch
+) -> None:
+    import datetime as dt
+
+    monkeypatch.setattr(W, "_today", lambda: dt.date(2026, 10, 6))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    assert word in await skill_projects.set_recurrence(UUID, **kwargs)
+    assert asked == [] and writes(calls) == []
 
 
 async def test_a_bad_weekday_is_still_refused_before_the_card(monkeypatch) -> None:

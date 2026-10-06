@@ -42,6 +42,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import httpx
+
 from skill_projects.client import (
     GatewayRefusal,
     data,
@@ -515,16 +517,77 @@ async def create_task(
         return CANCELLED
     task = await post("/projects/tasks", payload)
     tid = uuid_of(str(task.get("id")), "task_id")
-    if who:
-        await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})
-        task["assignees"] = who
+    # The task exists from here on. Each later write that fails ends in a
+    # `stopped:` receipt and never in a raise: a raise reads to the model as
+    # "Function failed", and a second create_task makes a second task.
+    failed = await _assign_after_create(tid, task, who)
+    saved: dict[str, Any] = {}
+    if failed is None:
+        saved, failed = await repeating.save(tid)
     if "status_id" not in payload:
         # The receipt names the lane the row really landed in, read off the
-        # created row, as `add_subtasks` does. The card was a forecast.
+        # created row, as `add_subtasks` does. The card was a forecast. The
+        # read runs after every write, and `_lane_name` never raises.
         status_label = await _lane_name(pid, task.get("status_id")) or status_label
-    return await repeating.save(
-        tid, task, [*_task_line(task, status_label), *level_note(priority, task)]
-    )
+    lines = [*_task_line(task, status_label), *level_note(priority, task)]
+    return repeating.receipt(task, lines, saved, failed)
+
+
+#: A write whose connection broke may or may not have landed. Both kinds end
+#: a run of writes with a `stopped:` receipt (``forms.py`` uses the same pair).
+_WRITE_FAILED = (GatewayRefusal, httpx.TransportError)
+
+#: The words of a create's partial receipt, for each write after the create:
+#: the subject, its verb, the read that checks it, and the tool that finishes it.
+_AFTER_CREATE: dict[str, tuple[str, str, str, str]] = {
+    "assignees": ("assignees", "were", "task_detail", "assign"),
+    "rule": ("repeat rule", "was", "recurrence", "set_recurrence"),
+}
+
+
+async def _assign_after_create(
+    task_id: str, task: dict[str, Any], who: list[str]
+) -> tuple[str, Exception] | None:
+    """The assign PUT after a create, or the failure that stops the receipt."""
+    if not who:
+        return None
+    tid = uuid_of(task_id, "task_id")  # the writes fence: a canonical id
+    try:
+        await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})
+    except _WRITE_FAILED as exc:
+        return "assignees", exc
+    task["assignees"] = who
+    return None
+
+
+def _create_stopped(
+    task: dict[str, Any], lines: list[str], step: str, exc: Exception, left: str
+) -> str:
+    """The receipt of a create whose later write failed (§8.1 item 6).
+
+    The task exists, so the receipt carries its ``full_id`` and a
+    ``stopped:`` line, and the receipt card shows a partial result. A broken
+    connection says nothing about the write it carried (``forms._stopped``),
+    so the model reads the row before it tries once more.
+    """
+    noun, verb, check, fix = _AFTER_CREATE[step]
+    n = _number(task)
+    if isinstance(exc, httpx.TransportError):
+        head = f"Created {n}. The {noun} may or may not be saved."
+        stop = (
+            f"stopped: the write of the {noun} lost its connection to the gateway "
+            f"({type(exc).__name__}). "
+            f"That write may or may not have landed. Read {check} for this task "
+            f"first, and use {fix} only if it is not there."
+        )
+    else:
+        head = f"Created {n}. The {noun} {verb} NOT saved: {data(str(exc))}."
+        stop = f"stopped: the {noun} {verb} refused. {fix} on this task can finish it."
+    out = [head, *lines, stop]
+    if left:
+        out.append(f"not tried: {left}")
+    out.append(f"Never call create_task again for this task. It exists as {n}.")
+    return "\n".join(out)
 
 
 #: What a member who looks for next week's copy today must be told. There is
@@ -1796,19 +1859,27 @@ def _build_rule(
     kind = str(freq or "").strip().lower()
     if kind not in FREQS:
         return f"freq is one of {', '.join(FREQS)}."
-    every = int(interval or 1)
-    if not 1 <= every <= 365:
-        return "interval is 1 to 365."
+    try:
+        # Absent is every 1. An explicit 0 is a mistake, never "every 1"
+        # (the gateway's `validate_rule` says the same).
+        every = 1 if interval in (None, "") else int(interval)
+        numbers = [int(day_of_month or 0), int(month_of_year or 0), int(max_occurrences or 0)]
+    except (TypeError, ValueError):
+        return "interval, day_of_month, month_of_year and max_occurrences take whole numbers."
+    day_of_month, month_of_year, max_occurrences = numbers
+    out_of_range = _range_refusal(every, day_of_month, month_of_year, max_occurrences, until)
+    if out_of_range:
+        return out_of_range
     how = str(anchor or "due").strip().lower()
     if how not in ANCHORS:
         return f"anchor is {' or '.join(ANCHORS)}."
     rule: dict[str, Any] = {"freq": kind, "interval": every, "anchor": how}
     parts = _split(weekdays)
     if not all(p.isdigit() for p in parts):
-        return "weekdays are numbers, 1 (Monday) to 7 (Sunday)."
+        return "weekdays takes numbers, 1 (Monday) to 7 (Sunday)."
     days = [int(p) for p in parts]
     if any(d < 1 or d > 7 for d in days):
-        return "weekdays are 1 (Monday) to 7 (Sunday)."
+        return "weekdays takes 1 (Monday) to 7 (Sunday)."
     if kind == "weekly" and not days and 1 <= default_weekday <= 7:
         days = [default_weekday]
     if kind == "weekly" and not days:
@@ -1818,16 +1889,42 @@ def _build_rule(
     if days:
         rule["weekdays"] = days
     if day_of_month:
-        rule["day_of_month"] = int(day_of_month)
+        rule["day_of_month"] = day_of_month
     if month_of_year:
-        rule["month_of_year"] = int(month_of_year)
-    if until.strip():
-        if len(until.strip()) != 10:
-            return "until is a date, YYYY-MM-DD."
-        rule["until_at"] = until.strip()
+        rule["month_of_year"] = month_of_year
+    if str(until or "").strip():
+        rule["until_at"] = str(until).strip()
     if max_occurrences:
-        rule["max_occurrences"] = int(max_occurrences)
+        rule["max_occurrences"] = max_occurrences
     return rule
+
+
+def _range_refusal(
+    every: int, day_of_month: int, month_of_year: int, max_occurrences: int, until: str
+) -> str:
+    """The refusal for a number or a date out of range, else ``""``.
+
+    Checked before the card (WS-46 P1 review), so a member never approves a
+    rule the route then refuses, and ``_first_due`` never meets a bad month.
+    Zero in the three optional numbers means "not given".
+    """
+    if not 1 <= every <= 365:
+        return f"interval is 1 to 365, not {every}."
+    if day_of_month and not 1 <= day_of_month <= 31:
+        return f"day_of_month is 1 to 31, not {day_of_month}."
+    if month_of_year and not 1 <= month_of_year <= 12:
+        return f"month_of_year is 1 to 12, not {month_of_year}."
+    if max_occurrences < 0:
+        return f"max_occurrences is 1 or more, not {max_occurrences}."
+    end_text = str(until or "").strip()
+    if not end_text:
+        return ""
+    end = _date_of(end_text) if len(end_text) == 10 else None
+    if end is None:
+        return f"until is a date, YYYY-MM-DD, not {data(end_text)}."
+    if end < _today():
+        return f"until is {end_text}, which is in the past. Give today or a later date."
+    return ""
 
 
 def _today() -> date:
@@ -1893,6 +1990,8 @@ _REPEAT_WORDS = {
     "interval": "repeat_every",
     "weekdays": "repeat_on",
     "day_of_month": "repeat_day",
+    "month_of_year": "repeat_month",
+    "max_occurrences": "repeat_times",
     "anchor": "repeat_from",
     "until": "repeat_until",
 }
@@ -1948,25 +2047,35 @@ class _Repeat:
         lines["next copy"] = NEXT_COPY
         return lines
 
-    async def save(self, task_id: str, task: dict[str, Any], lines: list[str]) -> str:
-        """The receipt, after the second write of the one approval (§8.1 item 3).
-
-        A refusal of the rule is named, and the task stays (item 6). The
-        ``stopped:`` line makes the receipt card show a partial result.
-        """
+    async def save(self, task_id: str) -> tuple[dict[str, Any], tuple[str, Exception] | None]:
+        """The second write of the one approval (§8.1 item 3): the route's
+        answer, or the failure that stops the receipt. Never a raise."""
         if not self.rule:
-            return "\n".join(["Created:", *lines])
+            return {}, None
         tid = uuid_of(task_id, "task_id")  # the writes fence: a canonical id
         try:
-            saved = (await put(f"/projects/tasks/{tid}/recurrence", self.rule)) or {}
-        except GatewayRefusal as exc:
-            return "\n".join(
-                [
-                    f"Created {_number(task)}. The repeat rule was NOT saved: {data(str(exc))}.",
-                    *lines,
-                    "stopped: the repeat rule. set_recurrence on this task can add it.",
-                ]
+            return (await put(f"/projects/tasks/{tid}/recurrence", self.rule)) or {}, None
+        except _WRITE_FAILED as exc:
+            return {}, ("rule", exc)
+
+    def receipt(
+        self,
+        task: dict[str, Any],
+        lines: list[str],
+        saved: dict[str, Any],
+        failed: tuple[str, Exception] | None,
+    ) -> str:
+        """What the member reads. A failed write is named, the task stays
+        (item 6), and the rule it did not try is listed."""
+        if failed is not None:
+            left = (
+                "the repeat rule. Use set_recurrence on this task to add it."
+                if self.rule and failed[0] != "rule"
+                else ""
             )
+            return _create_stopped(task, lines, failed[0], failed[1], left)
+        if not self.rule:
+            return "\n".join(["Created:", *lines])
         rule = saved.get("rule") or self.rule
         return "\n".join(["Created:", *lines, f"It repeats {_rule_text(rule)}.", NEXT_COPY])
 
@@ -2023,8 +2132,30 @@ def _repeat_for_create(
     guessed = built["freq"] == "weekly" and not _split(on)
     first = ""
     if due_day is None and built["anchor"] == "due":
-        first = _first_due(built, today).isoformat()
+        try:
+            first = _first_due(built, today).isoformat()
+        except (ValueError, StopIteration):  # IllegalMonthError is a ValueError
+            return "The rule gives no first date. Pass due as YYYY-MM-DD."
     return _Repeat(built, first, note if guessed else "")
+
+
+def _weekly_days(
+    freq: str, weekdays: str, current: dict[str, Any] | None, due_at: Any
+) -> tuple[str, str]:
+    """The weekdays ``set_recurrence`` sends, and the card's note for a guess.
+
+    Days the member named win. A weekly rule that exists keeps its days, so
+    "make it every 2 weeks" does not move the day (WS-46 P1 review). Only a
+    task with no weekly rule takes the Q1 default (§8.1 item 8), the same
+    default ``create_task`` takes.
+    """
+    given = _weekday_numbers(weekdays)
+    if given or str(freq or "").strip().lower() != "weekly":
+        return given, ""
+    if current and current.get("freq") == "weekly" and current.get("weekdays"):
+        return ",".join(str(d) for d in current["weekdays"]), ""
+    day, note = _default_weekday(_date_of(due_at), _today())
+    return str(day), note
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
@@ -2064,24 +2195,15 @@ async def set_recurrence(
             return CANCELLED
         await delete(f"/projects/tasks/{tid}/recurrence")
         return f"{_ref(task)} no longer repeats. Existing occurrences stay.\n  full_id: {tid}"
-    # §8.1 item 8: the same weekly default as `create_task`, so the two agree.
-    weekday, note = _default_weekday(_date_of(task.get("due_at")), _today())
+    days, note = _weekly_days(freq, weekdays, current, task.get("due_at"))
     built = _build_rule(
-        freq,
-        interval,
-        _weekday_numbers(weekdays),
-        day_of_month,
-        month_of_year,
-        anchor,
-        until,
-        max_occurrences,
-        default_weekday=weekday,
+        freq, interval, days, day_of_month, month_of_year, anchor, until, max_occurrences
     )
     if isinstance(built, str):
         return built
     rule = built
     card = {"task": _ref(task), "rule": _rule_text(rule)}
-    if rule["freq"] == "weekly" and not _split(weekdays):
+    if note:
         card["repeat day"] = f"{note}. Decline if you meant another day."
     before = {"rule": _rule_text(current)} if current else None
     if not await _confirm(

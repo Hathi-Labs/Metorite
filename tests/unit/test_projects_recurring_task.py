@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
+import httpx
 import pytest
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
@@ -166,13 +167,124 @@ async def test_a_refused_rule_names_the_task_and_the_refusal(monkeypatch) -> Non
     out = await skill_projects.create_task(PROJECT, "Send the timesheet", repeat="weekly")
     assert out.startswith("Created #9. The repeat rule was NOT saved: «Projects PUT")
     assert "Weekdays are 1 to 7." in out
-    assert "\nstopped: the repeat rule." in out, "the receipt card must show a partial result"
+    assert "\nstopped: the repeat rule was refused." in out, "the receipt card shows a partial"
+    assert "Never call create_task again for this task." in out
     assert f"full_id: {TASK_ID}" in out
     # The task stays. Nothing archives it.
     assert [c["path"] for c in writes(calls)] == [
         "/projects/tasks",
         f"/projects/tasks/{TASK_ID}/recurrence",
     ]
+
+
+# ── Review round 1 — a broken connection after the create never raises ─────
+
+
+def _broken(calls: list[dict], *, on: str, exc: Exception) -> Any:
+    """A ``put`` that records the call, then fails on the path ending *on*."""
+
+    async def put(path: str, payload: dict | None = None) -> Any:
+        calls.append({"method": "PUT", "path": path, "json": payload, "params": {}, "headers": {}})
+        if path.endswith(on):
+            raise exc
+        return {"rule": payload} if path.endswith("/recurrence") else {}
+
+    return put
+
+
+async def test_a_timeout_on_the_rule_is_a_stopped_receipt_not_a_raise(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway)
+    monkeypatch.setattr(
+        W, "put", _broken(calls, on="/recurrence", exc=httpx.ReadTimeout("timed out"))
+    )
+    out = await skill_projects.create_task(PROJECT, "Send the timesheet", repeat="weekly")
+    assert out.startswith("Created #9. The repeat rule may or may not be saved.")
+    assert (
+        "\nstopped: the write of the repeat rule lost its connection to the gateway "
+        "(ReadTimeout)." in out
+    )
+    assert "Read recurrence for this task first" in out
+    assert "Never call create_task again for this task. It exists as #9." in out
+    assert f"full_id: {TASK_ID}" in out
+    assert len(_posts(calls)) == 1, "one task, and no second create"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ConnectError("refused"),
+        W.GatewayRefusal("Projects PUT /projects/tasks/x/assignees: Failed (422). Bad address."),
+    ],
+)
+async def test_a_failed_assign_stops_before_the_rule_and_names_it(failure, monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway)
+    monkeypatch.setattr(W, "put", _broken(calls, on="/assignees", exc=failure))
+    out = await skill_projects.create_task(
+        PROJECT, "Send the timesheet", assignees="a@x.io", repeat="weekly"
+    )
+    assert out.startswith("Created #9. The assignees ")
+    assert "\nstopped: the " in out and "assignees" in out.split("stopped:")[1]
+    assert "not tried: the repeat rule. Use set_recurrence on this task to add it." in out
+    assert "Never call create_task again for this task." in out
+    assert _rule_puts(calls) == [], "the rule is not tried after a failed assign"
+    assert len(_posts(calls)) == 1
+
+
+async def test_a_failed_assign_on_a_plain_task_lists_nothing_not_tried(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway)
+    monkeypatch.setattr(W, "put", _broken(calls, on="/assignees", exc=httpx.ReadTimeout("t")))
+    out = await skill_projects.create_task(PROJECT, "Call the vendor", assignees="a@x.io")
+    assert "\nstopped: the write of the assignees lost its connection" in out
+    assert "Read task_detail for this task first" in out
+    assert "not tried" not in out
+
+
+# ── Review round 1 — numbers and dates out of range, before the card ───────
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "word"),
+    [
+        ({"repeat": "daily", "repeat_every": 0}, "repeat_every is 1 to 365, not 0"),
+        ({"repeat": "monthly", "repeat_day": 32}, "repeat_day is 1 to 31, not 32"),
+        ({"repeat": "monthly", "repeat_day": -1}, "repeat_day is 1 to 31, not -1"),
+        ({"repeat": "yearly", "repeat_day": 1, "repeat_month": 13}, "repeat_month is 1 to 12"),
+        ({"repeat": "daily", "repeat_times": -2}, "repeat_times is 1 or more"),
+        ({"repeat": "daily", "repeat_until": "2026-02-30"}, "repeat_until is a date, YYYY-MM-DD"),
+        ({"repeat": "daily", "repeat_until": "next week"}, "repeat_until is a date, YYYY-MM-DD"),
+        ({"repeat": "daily", "repeat_until": "2026-10-05"}, "in the past"),
+        ({"repeat": "weekly", "repeat_on": "9"}, "repeat_on takes 1 (Monday) to 7 (Sunday)"),
+        ({"repeat": "weekly", "repeat_on": "x"}, "repeat_on takes numbers"),
+    ],
+)
+async def test_a_rule_out_of_range_is_refused_before_the_card(kwargs, word, monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway)
+    out = await skill_projects.create_task(PROJECT, "Send the timesheet", **kwargs)
+    assert word in out, out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_an_end_date_of_today_is_allowed(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway)
+    await skill_projects.create_task(PROJECT, "Last one", repeat="daily", repeat_until="2026-10-06")
+    assert _rule_puts(calls)[0]["json"]["until_at"] == "2026-10-06"
+
+
+async def test_a_first_date_that_cannot_be_computed_is_text_not_a_raise(monkeypatch) -> None:
+    def boom(_rule: dict, _day: dt.date) -> dt.date:
+        raise ValueError("bad month")
+
+    monkeypatch.setattr(W, "_first_due", boom)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway)
+    out = await skill_projects.create_task(PROJECT, "X", repeat="monthly", repeat_day=5)
+    assert out == "The rule gives no first date. Pass due as YYYY-MM-DD."
+    assert asked == [] and writes(calls) == []
 
 
 # ── §8.2 item 5 — no repeat argument: exactly what it sent before ──────────
