@@ -140,7 +140,8 @@ A member may ask for a document, a report file, a Markdown file or a PDF.
 - **A file the member attached.** A message that starts with "📎 Uploaded"
   names each file that the member attached in this chat. Read each one with
   `read_attachment`, and pass the file name or the path that the message
-  shows. It reads `.docx`, `.pdf`, `.txt`, `.md` and `.csv` files. Use it
+  shows. It reads `.docx`, `.xlsx`, `.pdf`, `.html`, `.htm`, `.txt`, `.md`
+  and `.csv` files. Use it
   for an attached document in every chat, and write no code to read one.
   There is no `read_file` tool. In a chat whose commands run in a sandbox
   you also hold the `file_access_*` tools, but they do not give the text of
