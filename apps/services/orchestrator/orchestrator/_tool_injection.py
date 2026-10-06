@@ -949,7 +949,7 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
                 )
 
 
-def _collect_injectable_platform_tools() -> list[Any]:
+def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[Any]:
     """Import + return the statically importable platform tools, in injection order.
 
     Pure collection/introspection — no agent is touched. This is the exact
@@ -960,6 +960,10 @@ def _collect_injectable_platform_tools() -> list[Any]:
     ``GET /integrations/skills``) so the catalog can never drift from what
     injection actually offers. Per-agent additions (granted Custom-App action
     tools, the workflow trio) are NOT part of this static set.
+
+    *agent_name* picks the ``decide`` engine, and nothing else (WS-45 S1,
+    ``ai_tier_routing.md`` §6.1). With ``AI_TIER_ROUTING`` empty, or with no
+    name, the list is exactly what it was before.
     """
     try:
         from acb_skills.agent_tools import call_agent  # noqa: PLC0415
@@ -1108,10 +1112,14 @@ def _collect_injectable_platform_tools() -> list[Any]:
     # Injected ONLY while DECIDE_ENABLED is on. `decide_tool_enabled` is the
     # one switch, and `addendum.rendered_parts` asks the same function, so
     # the prompt never advertises a tool that is not here.
+    # WS-45 S1 (D90): an agent that AI_TIER_ROUTING covers gets the System-1
+    # engine of the SAME tool name instead, on our Router's `tier-fast`.
+    # `decide_tool_for` is the one place that picks the engine.
     try:
-        from acb_skills.decide_tools import decide, decide_tool_enabled
-        if decide_tool_enabled():
-            _all_tools = [*_all_tools, decide]
+        from acb_skills.decide_tools import decide_tool_for
+        _decide = decide_tool_for(agent_name)
+        if _decide is not None:
+            _all_tools = [*_all_tools, _decide]
     except ImportError:
         pass
 
@@ -1188,7 +1196,7 @@ def _inject_agent_tools(
                                    + appends tool guidance to ``_default_options.system_message``
         Legacy Copilot SDK path  — appends to ``agent._default_options.tools`` (list)
     """
-    _all_tools = _collect_injectable_platform_tools()
+    _all_tools = _collect_injectable_platform_tools(agent_name)
     if not _all_tools:
         if no_egress:  # H-236 holds even when nothing else is injected
             _apply_no_egress(agents, agent_name)

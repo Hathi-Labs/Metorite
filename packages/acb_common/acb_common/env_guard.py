@@ -131,6 +131,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "AGENTS_CLONE_DIR", "GITHUB_INSTALLATION_ID", "GITHUB_ORG",
     "GITHUB_BOT_NAME", "GITHUB_BOT_EMAIL", "GITHUB_PAT",
     "ENABLE_INSTRUMENTATION", "CI",
+    # WS-45 (D90): the agents that the tier policy covers. It moves what an
+    # organization pays, so only the operator writes it (ai_tier_routing.md).
+    "AI_TIER_ROUTING",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
     # Deploy, backup and watchdog scripts (variables they read).

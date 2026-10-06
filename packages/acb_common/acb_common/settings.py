@@ -334,6 +334,19 @@ class Settings(BaseSettings):
     decide_feature_modes: str = ""
     decide_feature_orgs: str = ""
 
+    # ── AI tier routing (WS-45, D90) ────────────────────────────────────────
+    #
+    # The agents that the platform's tier policy covers. A comma list of agent
+    # names, or `*` for every agent. Empty means OFF, and every agent behaves
+    # as before. S1: a covered agent holds the System-1 `decide`, which runs
+    # on OUR Router's `tier-fast`, in place of the `decide` task's vendor. The
+    # one reader is `acb_skills.tier_policy.tier_routing_on`, and it fails
+    # closed. Spec: ai_tier_routing.md §9.
+    #
+    # 🔴 OWNER-GATE on production: to add an agent changes what a live
+    # organization pays (spec §13.1). Fence: tests/unit/test_tier_policy.py.
+    ai_tier_routing: str = ""
+
     # ── The cap and the budget of the email model calls (WS-17 EM-T4b) ─────
     #
     # They bind the model calls of the email automation only, the calls

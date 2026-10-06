@@ -3676,6 +3676,9 @@ async def run_agent_stream(
                 # bind True for itself: its delegations compute it from
                 # covers(), and the sandbox middleware withholds its own.
                 no_egress=_stream_no_egress,
+                # WS-45 S1: the effort mode, so the System-1 `decide` reads
+                # its threshold from the run binding (ai_tier_routing.md §5).
+                think_mode=think_mode or "auto",
             )
             try:
                 # Ensure the three visible workspace directories exist so the

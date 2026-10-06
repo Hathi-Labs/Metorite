@@ -1,8 +1,41 @@
 # AI tier routing — the platform picks the tier for each step
 
 **Status:** DECIDED and ACTIVE. The owner accepted D90 on 2026-10-06, as
-written. Specified 2026-10-05. Nothing is built. Board row **WS-45**, and S1 is
-next. Decision **D90** is in `work_plan.md` §3.
+written. Specified 2026-10-05. Board row **WS-45**, and decision **D90** is in
+`work_plan.md` §3.
+
+**S1 is built and dark** (2026-10-06, branch `ws45-s1-system-one`).
+`AI_TIER_ROUTING` ships empty, and the flag covers no agent on any box. S2 is
+next.
+
+**S1 build notes (2026-10-06).** Read these before S2.
+
+- The System-1 callable sets `__tool_risk__` itself and does NOT call
+  `annotate()`. `annotate` writes `TOOL_ANNOTATIONS["decide"]` by name, and
+  that entry is the Jev engine's. §6.6 now says so.
+- §2.7 is stale. The core floor measured **8997 of 9000** on 2026-10-06, not
+  8925. So the System-1 description was cut until its schema cost 181 tokens,
+  the same as the Jev schema.
+- The 3 s limit is the client's own request timeout, with no retry. A
+  `wait_for` around the whole call also counted the first imports of a cold
+  process.
+- `kind` keeps today's default, `yes_no`, as §6.3 says "does not break it".
+- The tool makes no request when `acb_llm.routed.routing_is_on()` is false.
+  So no System-1 call reaches a vendor directly (owner answer Q1).
+- The addendum line of §6.8 is NOT built. The injection chain caches the
+  addendum per scope, not per agent, and the tool description carries the
+  batch rule. With
+  `DECIDE_ENABLED` off, a covered agent's prompt does not name `decide`.
+- `test_no_direct_ai_vendor_calls.py` (§10, §12) is NOT built in S1.
+- ⚠️ **For S2 or S4: the skills catalog shows the Jev schema.**
+  `gateway/routes/integrations_skills.py:49` calls
+  `_collect_injectable_platform_tools()` with no agent name. So for an agent
+  that the flag covers, the Skills tab shows the Jev `decide` schema, and it
+  measures the Jev cost. The agent's run holds the System-1 schema. Review
+  found this on 2026-10-06. S1 does not change the catalog.
+- The reason filter drops a reason with `//`, `www.`, a backtick, a known
+  scheme such as `mailto:` or `javascript:`, any other scheme with no space
+  after the colon, or a bare domain with a path. Review P3 widened it.
 
 **Verified against code on 2026-10-05** at `origin/main` `28cfcf437`.
 **Owner:** vjvarada.
@@ -509,7 +542,7 @@ check below passes. Here is how the System-1 callable passes each one:
 |---|---|---|
 | Not an MCP tool | `:242` | It is a plain function in `acb_skills` |
 | Not a store write | `:247` | `decide` is not in `STORE_WRITES` |
-| Its annotation says `open_world` is `False` | `:249-250` | `annotate(read_only=True, destructive=False, idempotent=True, open_world=False)` sets `__tool_risk__` on the function. `_risk_of` reads that first (`:217-220`) |
+| Its annotation says `open_world` is `False` | `:249-250` | `decide_tools.SYSTEM_ONE_RISK` is set as `__tool_risk__` on the function, with no `annotate()` call, so the Jev registry entry stays. `_risk_of` reads the function first (`:217-220`) |
 | The platform owns the callable | `:221`, `:183-196` | `_collect_injectable_platform_tools` registers it with `_register_platform_callable`, as it does for every platform tool |
 
 - **The Jev `decide` stays `open_world=True`.** Its annotation in
@@ -526,8 +559,10 @@ check below passes. Here is how the System-1 callable passes each one:
   If an operator binds `tier-fast` to a new vendor, that vendor receives
   covered content. This is advisory. Per §13 Q5, an operator warning holds it.
   WS-37 owns the sub-processor list.
-- `test_delegation_no_egress.py:82-101` pins `EXPECTED_OPEN_WORLD`. S1 updates
-  the pin in the same PR, with this section as the reason.
+- `test_delegation_no_egress.py:82-101` pins `EXPECTED_OPEN_WORLD`. It keeps
+  `decide`, because the Jev entry stays `open_world=True`. S1 adds
+  `COVERED_PROJECTS_TOOLS_TIER_ROUTED` beside `COVERED_PROJECTS_TOOLS`, with
+  this section as the reason. The plain pin does not move.
 
 ### 6.7 Its output is data
 
@@ -655,7 +690,7 @@ needs restoring.
 | A choice outside the options reads as `unsure` | `test_system_one_tool.py` | pytest |
 | The reason is capped, cleaned and framed as data | `test_system_one_tool.py` | pytest |
 | The System-1 request is attributed to the calling agent | `test_system_one_tool.py`, and `test_internal_ai_is_routed.py` gains one case | pytest |
-| A `no_egress` run keeps the System-1 `decide` and drops the Jev `decide` | `test_delegation_no_egress.py` gains two cases. `EXPECTED_OPEN_WORLD` moves in the same PR | pytest |
+| A `no_egress` run keeps the System-1 `decide` and drops the Jev `decide` | `test_delegation_no_egress.py` gains two cases and the pin `COVERED_PROJECTS_TOOLS_TIER_ROUTED` | pytest |
 | The `decide` schema stays under its ceiling | `test_tool_schema_diet.py`, `CORE_SCHEMA_CEILINGS` and `CALL_CONTRACTS` | pytest |
 | The flag fails closed | `test_tier_policy.py`. A broken settings read reads as OFF | pytest |
 | No new direct vendor call | `tests/unit/test_no_direct_ai_vendor_calls.py` (new). It scans `apps/` and `packages/` for `litellm` verbs, the `openai` and `anthropic` SDKs and vendor AI hosts. A baseline lists the §2.10 paths with a reason each, and it only goes down. `apps/services/customer_console/` is exempt, because it IS the Router | pytest |
