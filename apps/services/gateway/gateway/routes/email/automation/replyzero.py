@@ -1281,6 +1281,7 @@ async def resolve_conversation_status_matches(
     db: Any, account_id: str, message_row: Any,
     matches: list[dict[str, Any]] | None,
     *, provider: Any = None, first: StatusFirst | None = None,
+    status: JobStatus | None = None,
 ) -> list[dict[str, Any]] | None:
     """A conversation has ONE classification, re-evaluated on every new message.
 
@@ -1313,7 +1314,12 @@ async def resolve_conversation_status_matches(
     so the runner skips the row, applies nothing and stamps nothing (D-EM-8).
     The ``decide`` call names the mailbox owner. Fix round 3: ``on`` runs
     :func:`_resolve_on`, with ``first`` from :func:`status_before_match`.
-    ``off`` and ``shadow`` run the path below, as before."""
+    ``off`` and ``shadow`` run the path below, as before.
+
+    WS-17 EM-T4a-2 PR-B2: a job passes ``status``, the :class:`JobStatus`
+    that it asked with no block open. Then the resolver asks no model and
+    reads no conversation test (:func:`_resolve_asked`). With ``status``
+    None it asks, as before, for the request paths of EM-T4a-4."""
     # Lazy: the engine imports this module.
     from gateway.routes.email.automation.engine import DecisionUnavailable
 
@@ -1324,6 +1330,9 @@ async def resolve_conversation_status_matches(
     thread_id = getattr(message_row, "thread_id", None)
     if not thread_id:
         return matches
+    if status is not None:
+        return await _resolve_asked(
+            db, provider, account_id, thread_id, matches, status)
     if not any(_match_conversation_key(m) for m in matches) \
             and not await _thread_is_conversation(db, account_id, thread_id):
         return matches
@@ -1342,6 +1351,38 @@ async def resolve_conversation_status_matches(
         # caller skips it. It is not a failure to degrade from (D-EM-8).
         raise
     except Exception as exc:  # noqa: BLE001
+        _log.warning("email.resolve_conversation_status_failed",
+                     account_id=account_id, error=str(exc)[:160])
+        return matches
+
+
+async def _resolve_asked(
+    db: Any, provider: Any, account_id: str, thread_id: str,
+    matches: list[dict[str, Any]], status: JobStatus,
+) -> list[dict[str, Any]]:
+    """The resolver of ``off`` and ``shadow`` with the status of a job
+    (WS-17 EM-T4a-2 PR-B2 items 8 and 9). It asks no model.
+
+    "Undecided" raises ``DecisionUnavailable``, so the job skips the row
+    (D-EM-8). "Not asked" and "no status" keep the per-message matches. A
+    verdict runs the rest of the resolver: the enabled rule of the status
+    becomes the ONE live match. A failure there keeps the matches, as before.
+    """
+    # Lazy: the engine imports this module.
+    from gateway.routes.email.automation.engine import DecisionUnavailable
+
+    if status.state == UNDECIDED.state:
+        raise DecisionUnavailable("decide gave no thread status")
+    if status.verdict is None:
+        return matches
+    try:
+        determined, _flag = status.verdict
+        target = await _conversation_rule_for_status(db, account_id, determined)
+        if not target:
+            return matches
+        return await _determined_matches(
+            db, provider, account_id, thread_id, determined, target, matches)
+    except Exception as exc:
         _log.warning("email.resolve_conversation_status_failed",
                      account_id=account_id, error=str(exc)[:160])
         return matches
@@ -1567,6 +1608,10 @@ class StatusRead:
     text, the corrections and the member of a ``decide`` call.
     ``self_only`` means that each participant is a mailbox of the member
     (D-EM-27). Such a thread is FYI, and no model is asked for it.
+
+    PR-B2: ``message_id`` is the id of the row that a job resolves, and the
+    ask puts it in each ``decide`` log line. With None the ask uses
+    ``ctx.last_message_id``. ``move_keys`` reaches ``on`` only (fix round 3).
     """
 
     account_id: str
@@ -1579,6 +1624,8 @@ class StatusRead:
     self_only: bool
     corrections: str = ""
     member: str | None = None
+    message_id: str | None = None
+    move_keys: frozenset[str] = frozenset()
 
     @property
     def seen_at(self) -> Any:
@@ -1595,6 +1642,8 @@ async def read_thread_status(
     pending_reply: tuple[str, str] | None = None,
     model: str = _STATUS_MODEL,
     self_addresses: frozenset[str] | set[str] | None = None,
+    message_id: str | None = None,
+    move_keys: frozenset[str] = frozenset(),
 ) -> StatusRead | None:
     """The READ step of the thread status (WS-17 EM-T4a-2). It takes ``db``,
     opens no block and asks no model.
@@ -1603,7 +1652,8 @@ async def read_thread_status(
     resolves the self addresses when ``self_addresses`` is None). For a
     thread that is not self-only it also reads the corrections and the
     mailbox owner for a ``decide`` call in ``on``. Returns None when the
-    thread has no rows."""
+    thread has no rows. ``message_id`` and ``move_keys`` go into the
+    :class:`StatusRead` as they are (PR-B2)."""
     # Lazy: the engine imports this module.
     from gateway.routes.email.automation.engine import _decide_member
 
@@ -1615,7 +1665,8 @@ async def read_thread_status(
         return None
     facts: dict[str, Any] = {
         "account_id": account_id, "thread_id": thread_id, "trigger": trigger,
-        "ctx": ctx, "acc_email": acc_email, "about": about, "model": model}
+        "ctx": ctx, "acc_email": acc_email, "about": about, "model": model,
+        "message_id": message_id, "move_keys": frozenset(move_keys)}
     if await _thread_is_self_only(db, account_id, thread_id):
         return StatusRead(**facts, self_only=True)
     return StatusRead(
@@ -1632,12 +1683,14 @@ async def ask_thread_status(read: StatusRead) -> tuple[str, bool] | None:
     model await stays in its own slot, in ``_llm_json`` or ``_ask_all``
     (EM-T4b), so this adds no ``llm_slot``. ``LLMBudgetExhausted`` passes up
     (EM-T4b item 13), so no caller writes a guessed status. The caller never
-    asks for a self-only thread."""
+    asks for a self-only thread. The log id is ``read.message_id``, or
+    ``ctx.last_message_id`` when that is None (PR-B2 item 4)."""
     # Lazy: the engine imports this module.
     from gateway.routes.email.automation.engine import DecisionUnavailable
 
     ctx = read.ctx
-    last_id = ctx.last_message_id
+    last_id = read.message_id if read.message_id is not None \
+        else ctx.last_message_id
     try:
         return await _llm_determine_thread_status(
             ctx.thread_text, read.acc_email, read.about,
@@ -1646,7 +1699,7 @@ async def ask_thread_status(read: StatusRead) -> tuple[str, bool] | None:
             account_id=read.account_id,
             thread_messages=getattr(ctx, "messages", None),
             message_id=str(last_id) if last_id is not None else None,
-            member=read.member)
+            member=read.member, move_keys=read.move_keys)
     except DecisionUnavailable:
         return None
 
@@ -1752,6 +1805,108 @@ async def recompute_thread_status(
         if verdict is None:
             return None
     return await write_thread_status(db, read, verdict)
+
+
+# ── The status ask of the two jobs (WS-17 EM-T4a-2 PR-B2) ──────────────────
+# In `off` and `shadow` of `email.thread_status`, `_run_rules_job` and the gap
+# loop of `_maybe_classify_threads` ask the status of the resolver with NO
+# block open. After the rule-match ask, `status_ask_needed` says whether the
+# job asks. Then Block S calls `read_job_status` and ends with `SELECT 1`,
+# `ask_job_status` asks with no block open, and Block W gives the
+# `JobStatus` to the resolver. `on` does not change here (PR-B3).
+
+
+@dataclass(frozen=True)
+class JobStatus:
+    """The status that a job carries into Block W (WS-17 EM-T4a-2 PR-B2).
+
+    ``state`` is one of four: ``not_asked`` (the job asked nothing),
+    ``none`` (no status: a thread with no rows, or a failed read or ask),
+    ``undecided`` (``decide`` gave no decision, D-EM-8) and ``verdict``.
+    ``verdict`` holds ``(status, flag)`` in the last state only.
+    """
+
+    state: str
+    verdict: tuple[str, bool] | None = None
+
+
+NOT_ASKED = JobStatus("not_asked")
+NO_STATUS = JobStatus("none")
+UNDECIDED = JobStatus("undecided")
+
+
+def status_ask_needed(
+    read: Any, message_row: Any, matches: list[dict[str, Any]],
+) -> bool:
+    """Does the job ask the thread status of this row (PR-B2 item 2)?
+
+    ``read`` is the ``engine.ClassifyRead`` of Block R. Yes when the
+    resolver runs, the mode is not ``on``, the row has a thread, and a match
+    has a conversation key or the thread is a conversation. This is the
+    test of :func:`resolve_conversation_status_matches` before it asks.
+    """
+    return bool(
+        read.resolve
+        and decide_features.mode_for("email.thread_status") != "on"
+        and getattr(message_row, "thread_id", None)
+        and (read.conversation
+             or any(_match_conversation_key(m) for m in matches)))
+
+
+async def read_job_status(
+    db: Any, account_id: str, message_row: Any,
+    *, move_keys: frozenset[str] = frozenset(),
+) -> StatusRead | None:
+    """The read of the status ask of a job (PR-B2 item 3). It takes ``db``,
+    opens no block and asks no model. A job calls it in Block S.
+
+    It reads what :func:`_determine_status_of` reads: ``about`` with
+    ``include_kb=False``, the self addresses, then
+    :func:`read_thread_status` with the id of the row. Returns None for a
+    thread with no rows. A failed read logs
+    ``email.resolve_conversation_status_failed`` and returns None, as the
+    resolver does today. Block S then runs ``SELECT 1``, so a read that
+    left the block aborted stops the job (item 6).
+    """
+    row_id = getattr(message_row, "id", None)
+    try:
+        # The knowledge base is drafting facts, and the status needs none.
+        about, _sig = await _load_assistant_about(
+            db, account_id, include_kb=False)
+        me = await resolve_self(db, account_id)
+        return await read_thread_status(
+            db, account_id, message_row.thread_id, trigger="inbound",
+            about=about, acc_email=me.address,
+            self_addresses=me.self_addresses,
+            message_id=str(row_id) if row_id is not None else None,
+            move_keys=move_keys)
+    except Exception as exc:
+        _log.warning("email.resolve_conversation_status_failed",
+                     account_id=account_id, error=str(exc)[:160])
+        return None
+
+
+async def ask_job_status(read: StatusRead | None) -> JobStatus:
+    """The status ask of a job (PR-B2 items 5 and 7). It takes NO ``db``.
+
+    A read of None gives no status. A self-only thread is FYI, and no model
+    is asked (D-EM-27). ``ask_thread_status`` turns ``DecisionUnavailable``
+    into None, which is "undecided". Any other error of the ask, and
+    ``LLMBudgetExhausted`` too, logs
+    ``email.resolve_conversation_status_failed`` and gives no status, so the
+    per-message matches stand.
+    """
+    if read is None:
+        return NO_STATUS
+    if read.self_only:
+        return JobStatus("verdict", ("FYI", True))
+    try:
+        verdict = await ask_thread_status(read)
+    except Exception as exc:
+        _log.warning("email.resolve_conversation_status_failed",
+                     account_id=read.account_id, error=str(exc)[:160])
+        return NO_STATUS
+    return UNDECIDED if verdict is None else JobStatus("verdict", verdict)
 
 
 @automation_job  # EM-T4b: the cap and the daily budget bind its model calls
@@ -2063,7 +2218,9 @@ async def _maybe_classify_threads(account_id: str) -> None:
     model call in sessions of its own. Phase 2 reads the gap attachments and
     the account. The provider authenticates with no session open. Each gap
     thread gets Block R, the rule-match ask with no block open, and Block W
-    (EM-T4a-2 PR-B1, §10.4.6). A last block persists rotated credentials.
+    (EM-T4a-2 PR-B1, §10.4.6). When the job asks the thread status, Block S
+    reads it between the two, and the ask runs with no block open (PR-B2).
+    A last block persists rotated credentials.
     """
     try:
         from gateway.routes.email.automation.engine import (  # noqa: PLC0415
@@ -2204,12 +2361,22 @@ async def _maybe_classify_threads(account_id: str) -> None:
                     # Fail closed: this raises when a reader swallowed a failed statement.
                     await db.execute(text("SELECT 1"))
                 asked = await ask_rule_match(plan.match)
+                # Block S (EM-T4a-2 PR-B2): only when the job asks the
+                # status. The ask runs with NO block open after it.
+                status = NOT_ASKED
+                if status_ask_needed(plan, r, asked):
+                    async with _tenant_session() as db:
+                        seen = await read_job_status(db, account_id, r)
+                        # Fail closed, as at the end of Block R.
+                        await db.execute(text("SELECT 1"))
+                    status = await ask_job_status(seen)
                 # Block W: one block per gap thread. It lands where the
                 # per-thread commit used to land. EM-T4 owns the model and
                 # provider I/O inside it.
                 async with _tenant_session() as db:
                     matches = await resolve_classification(
-                        db, account_id, r, plan, asked, provider=provider)
+                        db, account_id, r, plan, asked, provider=provider,
+                        status=status)
                     keep_label = await project_reply_status_from_matches(
                         db, account_id, r, matches)
                     # Collapse the thread to that ONE conversation label. This
