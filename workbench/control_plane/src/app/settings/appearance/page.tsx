@@ -32,7 +32,12 @@ import { isSafeColor } from "@/lib/theme/css";
 import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
 import { DENSITY_SCALE } from "@/lib/theme/types";
 import SettingsHeader from "@/components/SettingsHeader";
-import { autoFoldEnabled, setAutoFoldEnabled } from "@/lib/sidebarFold";
+import {
+  AUTO_FOLD_EVENT,
+  FOLD_IGNORE_ATTR,
+  autoFoldEnabled,
+  setAutoFoldEnabled,
+} from "@/lib/sidebarFold";
 
 const DENSITY_LABELS: Record<Density, string> = {
   compact: "Compact",
@@ -213,12 +218,20 @@ function SidebarSettings() {
   const [on, setOn] = useState(() =>
     typeof window === "undefined" ? true : autoFoldEnabled(),
   );
+  // The tip's "Keep it open" changes the same choice, from the sidebar.
+  useEffect(() => {
+    const sync = () => setOn(autoFoldEnabled());
+    window.addEventListener(AUTO_FOLD_EVENT, sync);
+    return () => window.removeEventListener(AUTO_FOLD_EVENT, sync);
+  }, []);
   const choose = (next: boolean) => {
     setAutoFoldEnabled(next);
     setOn(next);
   };
+  // ⚠️ The marker stops a click on "Keep it open" from folding the sidebar,
+  // which it otherwise does, because the fold runs before the choice saves.
   return (
-    <section>
+    <section {...{ [FOLD_IGNORE_ATTR]: "" }}>
       <SectionHeading
         title="Sidebar"
         description="Fold the sidebar when you start to work in an app you opened from it. The button at its top opens it again."

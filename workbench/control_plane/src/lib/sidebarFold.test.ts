@@ -5,6 +5,7 @@ import {
   HINT_COUNT_KEY,
   HINT_LIMIT,
   autoFoldEnabled,
+  floatingOpen,
   isPlainNavClick,
   isWorkEvent,
   readCollapsed,
@@ -151,5 +152,27 @@ describe("shouldFold", () => {
     ["the event is not work", { work: false }],
   ])("does not fold when %s", (_, over) => {
     expect(shouldFold({ ...go, ...over })).toBe(false);
+  });
+});
+
+describe("floatingOpen", () => {
+  /** Just enough of the DOM: a list of nodes, and which ones sit in the rail. */
+  const node = (inRail: boolean) => ({ inRail }) as unknown as Element;
+  const root = (nodes: Element[]) =>
+    ({ querySelectorAll: () => nodes }) as unknown as ParentNode;
+  const rail = {
+    contains: (el: Element) => (el as unknown as { inRail: boolean }).inRail,
+  } as unknown as Element;
+
+  it("waits while a menu, a listbox or a dialog is open in the app", () => {
+    expect(floatingOpen(root([node(false)]), rail)).toBe(true);
+  });
+
+  it("ignores the sidebar's own expanded section headings", () => {
+    expect(floatingOpen(root([node(true), node(true)]), rail)).toBe(false);
+  });
+
+  it("folds when nothing floats", () => {
+    expect(floatingOpen(root([]), rail)).toBe(false);
   });
 });

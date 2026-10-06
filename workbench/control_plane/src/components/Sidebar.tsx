@@ -8,8 +8,10 @@ import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
 import {
+  FOLD_IGNORE_ATTR,
   HINT_DISMISS_MS,
   autoFoldEnabled,
+  floatingOpen,
   isPlainNavClick,
   isWorkEvent,
   readCollapsed,
@@ -45,8 +47,12 @@ export default function Sidebar() {
   const asideRef = useRef<HTMLElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const armedRef = useRef(false);
-  // A counter, not a flag, so a second fold restarts the pulse.
+  // `beacon` counts folds and keys the button, so a second fold restarts the
+  // pulse. `pulsing` says whether this fold's pulse still runs. It ends by
+  // itself, and on the member's own toggle, so a later manual collapse does
+  // not pulse and the reduced-motion tint does not stay.
   const [beacon, setBeacon] = useState(0);
+  const [pulsing, setPulsing] = useState(false);
   const [tipOpen, setTipOpen] = useState(false);
   const setCollapsed = useCallback((next: boolean) => {
     setCollapsedState(next);
@@ -56,6 +62,7 @@ export default function Sidebar() {
   const toggleByMember = () => {
     armedRef.current = false;
     setTipOpen(false);
+    setPulsing(false);
     setCollapsed(!collapsed);
   };
   const armFold = useCallback((e: MouseEvent) => {
@@ -185,9 +192,10 @@ export default function Sidebar() {
   // Capture phase, so an app that stops propagation still counts as work.
   useEffect(() => {
     const onWork = (e: Event) => {
-      if (!armedRef.current) return;
+      // A script's `.click()` is not the member working.
+      if (!armedRef.current || !e.isTrusted) return;
       const target = e.target instanceof Element ? e.target : null;
-      if (!target) return;
+      if (!target || target.closest(`[${FOLD_IGNORE_ATTR}]`)) return;
       const inSidebar = !!asideRef.current?.contains(target);
       const inMain = !!target.closest("main");
       const work = isWorkEvent({
@@ -201,9 +209,19 @@ export default function Sidebar() {
       if (!shouldFold({ armed: true, enabled: autoFoldEnabled(), collapsed, inSidebar, inMain, work })) {
         return;
       }
-      setCollapsed(true);
-      setBeacon((n) => n + 1);
-      if (takeHint()) setTipOpen(true);
+      // One frame later, so the click's own handler has run. If it opened a
+      // menu, the fold waits for the next work (`floatingOpen` says why).
+      requestAnimationFrame(() => {
+        if (floatingOpen(document, asideRef.current)) {
+          armedRef.current = true;
+          return;
+        }
+        if (!autoFoldEnabled()) return;
+        setCollapsed(true);
+        setBeacon((n) => n + 1);
+        setPulsing(true);
+        if (takeHint()) setTipOpen(true);
+      });
     };
     document.addEventListener("click", onWork, true);
     document.addEventListener("keydown", onWork, true);
@@ -212,6 +230,13 @@ export default function Sidebar() {
       document.removeEventListener("keydown", onWork, true);
     };
   }, [collapsed, setCollapsed]);
+
+  // The pulse runs three times (`.sidebar-beacon`, about 3.7s), then ends.
+  useEffect(() => {
+    if (!pulsing) return;
+    const timer = setTimeout(() => setPulsing(false), 4000);
+    return () => clearTimeout(timer);
+  }, [pulsing, beacon]);
 
   // The tip closes by itself, and on Escape.
   useEffect(() => {
@@ -246,6 +271,13 @@ export default function Sidebar() {
     <aside
       ref={asideRef}
       data-collapsed={collapsed ? "true" : "false"}
+      // A fold widens <main> but fires no window `resize`, and some layouts
+      // measure only on that event. Tell them once the width settles.
+      onTransitionEnd={(e) => {
+        if (e.target === e.currentTarget && e.propertyName === "width") {
+          window.dispatchEvent(new Event("resize"));
+        }
+      }}
       className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border ${
         collapsed ? "w-14" : "w-64"
       }`}
@@ -264,7 +296,7 @@ export default function Sidebar() {
           key={beacon}
           onClick={toggleByMember}
           className={`shrink-0 rounded-lg p-1.5 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
-            collapsed && beacon > 0 ? "sidebar-beacon" : ""
+            collapsed && pulsing ? "sidebar-beacon" : ""
           }`}
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}

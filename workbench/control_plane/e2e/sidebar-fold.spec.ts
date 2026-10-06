@@ -17,6 +17,10 @@ import { expect, test, type Page } from "@playwright/test";
  *   3. A member who opens the rail again keeps it open on the next click.
  *   4. "Keep it open" stops the fold, and the choice survives a reload.
  *   5. The folded state survives a reload.
+ *   6. A first click that opens a menu does not fold until the menu closes.
+ *      Several menus measure their trigger once, and the fold moves it.
+ *   7. "Keep it open" on the Appearance page keeps it open. The fold listener
+ *      runs before the choice saves, so without the ignore marker it folds.
  */
 
 const ADMIN = {
@@ -118,4 +122,38 @@ test("the folded rail survives a reload", async ({ page }) => {
 
   await page.reload();
   await expect(rail(page)).toHaveAttribute("data-collapsed", "true");
+});
+
+test("a first click that opens a menu waits for the menu to close", async ({ page }) => {
+  await openFromSidebar(page, "Organisation");
+  await page.waitForURL("**/settings/organization**");
+  // A stand-in menu trigger in the app: the click sets aria-expanded, as
+  // every menu trigger in the product does.
+  await page.evaluate(() => {
+    const b = document.createElement("button");
+    b.textContent = "Fake menu";
+    b.setAttribute("aria-expanded", "false");
+    b.onclick = () => b.setAttribute("aria-expanded", "true");
+    document.querySelector("main")!.prepend(b);
+  });
+  await page.getByRole("button", { name: "Fake menu" }).click();
+  await page.waitForTimeout(400);
+  await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
+
+  // The menu closes. The next work folds.
+  await page.evaluate(() =>
+    document.querySelector('main [aria-expanded="true"]')!.setAttribute("aria-expanded", "false"),
+  );
+  await workInApp(page);
+  await expect(rail(page)).toHaveAttribute("data-collapsed", "true");
+});
+
+test("Keep it open on the Appearance page keeps the sidebar open", async ({ page }) => {
+  await openFromSidebar(page, "Appearance");
+  const keep = page.locator("main").getByRole("button", { name: "Keep it open" });
+  await keep.click();
+  await page.waitForTimeout(400);
+  await expect(rail(page)).toHaveAttribute("data-collapsed", "false");
+  await expect(tip(page)).toHaveCount(0);
+  await expect(keep).toHaveClass(/border-primary/);
 });

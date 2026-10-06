@@ -61,8 +61,43 @@ export function autoFoldEnabled(): boolean {
   return read(AUTO_FOLD_KEY) !== "off";
 }
 
+/** Fired on `window` when the choice changes, so every view of it agrees. */
+export const AUTO_FOLD_EVENT = "cc-sidebar-autofold-change";
+
 export function setAutoFoldEnabled(on: boolean): void {
   write(AUTO_FOLD_KEY, on ? "on" : "off");
+  try {
+    window.dispatchEvent(new Event(AUTO_FOLD_EVENT));
+  } catch {
+    // No window: a test, or the server. Nothing listens there.
+  }
+}
+
+/**
+ * A press inside an element with this attribute is never work.
+ *
+ * ⚠️ The Appearance page's own "Keep it open" choice needs it. The fold
+ * listener runs in the capture phase, BEFORE the choice saves, so without the
+ * marker that click folds the sidebar the member just asked to keep open.
+ */
+export const FOLD_IGNORE_ATTR = "data-sidebar-fold-ignore";
+
+/**
+ * Something floating is open: a menu, a listbox, a dialog or an expanded
+ * trigger, outside the sidebar.
+ *
+ * ⚠️ The fold waits while one is open. Several of our menus measure their
+ * trigger ONE time, when they open. The fold then moves the trigger about
+ * 200px to the left, and the menu stays where the trigger was.
+ */
+export function floatingOpen(root: ParentNode, sidebar: Element | null): boolean {
+  const open = root.querySelectorAll(
+    '[aria-expanded="true"], [role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"]',
+  );
+  for (const el of Array.from(open)) {
+    if (!sidebar || !sidebar.contains(el)) return true;
+  }
+  return false;
 }
 
 export function readCollapsed(): boolean {
