@@ -267,3 +267,49 @@ def test_core_floor_schema_total_stays_under_the_ratchet(tools) -> None:
         f"core-floor schemas total {total} tokens (ratchet "
         f"{CORE_SCHEMA_TOTAL_CEILING}) — the WS-23 diet is being undone"
     )
+
+
+# ── 4. The System-1 engine of `decide` (WS-45 S1, D90) ─────────────────────
+#
+# `ai_tier_routing.md` §6.3. An agent that AI_TIER_ROUTING covers holds the
+# System-1 engine in the SAME floor slot, so its schema pays from the same
+# total. It widens the Jev contract by `items`, and breaks nothing.
+
+#: The System-1 `decide` contract: the Jev contract, plus `items`.
+SYSTEM_ONE_DECIDE_CONTRACT: dict[str, object] = {
+    "params": {**CALL_CONTRACTS["decide"]["params"], "items": "string"},
+    "required": CALL_CONTRACTS["decide"]["required"],
+}
+
+#: Measured 181 on 2026-10-06, the same as the Jev engine. The floor with the
+#: Jev engine measured 8997 of 9000 that day, so the System-1 description was
+#: cut to fit, and its ceiling is the Jev ceiling.
+SYSTEM_ONE_DECIDE_CEILING = 200
+
+
+def test_the_system_one_decide_widens_the_contract_and_breaks_nothing() -> None:
+    from acb_skills.decide_tools import system_one_decide
+
+    fn = sf.tool_json_schema(system_one_decide)["function"]
+    assert fn["name"] == "decide"
+    got = {k: v["type"] for k, v in fn["parameters"]["properties"].items()}
+    assert got == SYSTEM_ONE_DECIDE_CONTRACT["params"]
+    assert sorted(fn["parameters"]["required"]) == SYSTEM_ONE_DECIDE_CONTRACT["required"]
+    assert len(fn["description"]) > 60
+
+
+def test_the_system_one_decide_stays_under_its_ceiling_and_the_floor_total(tools) -> None:
+    from acb_skills.decide_tools import system_one_decide
+
+    cost = _schema_tokens(system_one_decide)
+    assert cost <= SYSTEM_ONE_DECIDE_CEILING, (
+        f"system-one decide: {cost} > {SYSTEM_ONE_DECIDE_CEILING}"
+    )
+    total = sum(
+        _schema_tokens(system_one_decide if n == "decide" else tools[n])
+        for n in sorted(ti._CORE_STANDARD_TOOL_NAMES) if n in tools
+    )
+    assert total <= CORE_SCHEMA_TOTAL_CEILING, (
+        f"a covered agent's floor totals {total} tokens (ratchet "
+        f"{CORE_SCHEMA_TOTAL_CEILING})"
+    )

@@ -60,6 +60,28 @@ clone cache.
    `addendum.rendered_parts` both ask it, so with `DECIDE_ENABLED` off the
    tool is not injected and no section names it.
    Fence: tests/unit/test_decide_tool.py.
+   WS-45 S1 (D90, spec `project-docs/specs/ai_tier_routing.md` §6): the tool
+   has TWO engines and ONE name. `decide_tool_for(agent_name)` is the one
+   place that picks. An agent that `AI_TIER_ROUTING` covers gets
+   `system_one_decide`, whatever `DECIDE_ENABLED` says. Every other agent gets
+   the Jev `decide` while `DECIDE_ENABLED` is on. `system_one_decide` sets
+   `__tool_risk__` (`open_world=False`) on the function and never calls
+   `annotate()`, because `annotate` writes the Jev engine's registry entry by
+   name. Its output is data: a fixed lead, an option of the question or
+   `unsure`, and a reason with no line break, no URL and no code fence, at
+   most 120 characters. Fences: tests/unit/test_system_one_tool.py and
+   tests/unit/test_delegation_no_egress.py.
+5b-1. system_one.py -- the `system-one` MAF agent. It holds no tools, and it is
+   not in `_AGENT_REGISTRY`. `ask()` sends a batch of up to 20 questions in
+   ONE request on `tier-fast`, with a strict JSON-schema `response_format`,
+   through `acb_llm.attribution.attributed_openai` to the gateway's `/v1`.
+   It sends nothing when `acb_llm.routed.routing_is_on()` is false, so it
+   never reaches a vendor directly. The 3 s limit is the client's request
+   timeout, with no retry. It logs no context, question or option.
+5b-2. tier_policy.py -- the ONE reader of `AI_TIER_ROUTING`
+   (`tier_routing_on`, fails closed) and the System-1 tier and thresholds
+   (0.70, 0.80, 0.90 by effort). S2 adds the table of §4.1 here, and nothing
+   else holds a second copy. Fence: tests/unit/test_tier_policy.py.
 5c. permission_policy.py -- the B6 risk-aware handler, plus the D85 guard
    `guard_shared_agent_shell`. The guard refuses a shell request when the
    run's artifact context does not say `host_shell_refused=False`, in every

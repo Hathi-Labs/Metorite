@@ -353,8 +353,9 @@ def test_the_no_match_fallback_cannot_restore_a_shell_tool(monkeypatch) -> None:
     async def code_task(task: str) -> str:
         return ""
 
+    # It takes the agent name since WS-45 S1 (the `decide` engine).
     monkeypatch.setattr(ti, "_collect_injectable_platform_tools",
-                        lambda: [run_script, code_task])
+                        lambda *_a, **_k: [run_script, code_task])
     agent = _FakeNativeAgent()
     ti._inject_agent_tools([agent], tool_scope=None, agent_name="crm-assistant",
                            agent_config=_config("crm-assistant"))

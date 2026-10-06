@@ -767,6 +767,104 @@ def test_a_covered_run_on_the_tier2_path_holds_the_same_tools(sandbox, monkeypat
     )
 
 
+# ── WS-45 S1 (D90): the System-1 `decide` in a covered run ──────────────────
+#
+# `ai_tier_routing.md` §6.6. The pin above is the run with AI_TIER_ROUTING
+# unset, and it does not move. With the flag on for projects-assistant, the
+# covered run holds the pin plus `decide`: the System-1 engine, which says
+# `open_world=False` on the function. That is the ONE deliberate change to
+# the pin, and it lives here, beside it. The Jev engine keeps its
+# `open_world=True` entry, so EXPECTED_OPEN_WORLD keeps `decide` too.
+
+#: A covered projects-assistant run under AI_TIER_ROUTING=projects-assistant.
+COVERED_PROJECTS_TOOLS_TIER_ROUTED = COVERED_PROJECTS_TOOLS | {"decide"}
+
+
+def _decide_flags(monkeypatch, *, tier_routing: str, decide_enabled: bool) -> None:
+    """Set the two flags on the settings object the sandbox fixture holds.
+
+    ``get_settings.cache_clear()`` would drop the fixture's scope, so the
+    attributes are set in place. The Router wiring lets the System-1 call go.
+    """
+    from acb_common.settings import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ai_tier_routing", tier_routing)
+    monkeypatch.setattr(settings, "decide_enabled", decide_enabled)
+    monkeypatch.setattr(settings, "router_serving_enabled", True)
+    monkeypatch.setattr(settings, "customer_console_url", "https://console.test")
+    monkeypatch.setattr(settings, "customer_console_org_key", "cc_live_fixture_notarealsecret")
+    ti._build_injected_tools_addendum.cache_clear()
+
+
+def _system_one_wire(monkeypatch) -> list[httpx.Request]:
+    """The transport under the System-1 client, and nothing else."""
+    import openai
+
+    seen: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        content = json.dumps({"answers": [
+            {"id": "q", "choice": "yes", "confidence": 0.95, "reason": "it is due today"},
+        ]})
+        return httpx.Response(200, json={
+            "id": "s1", "object": "chat.completion", "created": 0, "model": "probe",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": content}}],
+        })
+
+    def factory(**kw: Any) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(answer), **kw)
+
+    monkeypatch.setattr(openai, "DefaultAsyncHttpxClient", factory)
+    return seen
+
+
+def test_a_covered_run_keeps_the_system_one_decide(sandbox, monkeypatch) -> None:  # noqa: F811
+    """S1 done-when 8. The run is ``no_egress``, it holds ``decide``, and a
+    call to it runs: the egress middleware neither withholds nor refuses it."""
+    _register_every_annotation()
+    _decide_flags(monkeypatch, tier_routing=PA, decide_enabled=False)
+    seen = _system_one_wire(monkeypatch)
+    args = {"question": "Is it urgent?", "context": "due today"}
+    pa = _Model([_call("decide", args), _say("ok")])
+    sent = _harness(monkeypatch, sandbox, {PA: pa})
+    _run_parent(ORG_A)
+    offered = _offered(pa.bodies[0])
+    assert "run_command" in offered, "the run was not covered"
+    assert offered == COVERED_PROJECTS_TOOLS_TIER_ROUTED, (
+        f"new: {sorted(offered - COVERED_PROJECTS_TOOLS_TIER_ROUTED)}, "
+        f"gone: {sorted(COVERED_PROJECTS_TOOLS_TIER_ROUTED - offered)}"
+    )
+    schema = next(t for t in pa.bodies[0]["tools"] if t["function"]["name"] == "decide")
+    assert "items" in schema["function"]["parameters"]["properties"], "the Jev engine"
+    # `_egress_in` judges by NAME, and the name reads the Jev entry. Every
+    # other offered tool is still clean.
+    assert _egress_in(pa.bodies[0]) == ["decide"], _egress_in(pa.bodies[0])
+    results = _results(pa.bodies[1])
+    assert results and not any(_blocked(r) for r in results), results
+    assert results[0].endswith("yes (confidence 0.95) — it is due today"), results
+    assert len(seen) == 1 and json.loads(seen[0].content)["model"] == "tier-fast"
+    assert sent == [], "the host sent a request"
+
+
+def test_a_covered_run_drops_the_jev_decide(sandbox, monkeypatch) -> None:  # noqa: F811
+    """The flag is unset and DECIDE_ENABLED is on. The Jev engine reaches a
+    separate sub-processor, so the covered run holds the plain pin."""
+    _register_every_annotation()
+    _decide_flags(monkeypatch, tier_routing="", decide_enabled=True)
+    pa = _Model([_say("ok")])
+    _harness(monkeypatch, sandbox, {PA: pa})
+    _run_parent(ORG_A)
+    offered = _offered(pa.bodies[0])
+    assert "run_command" in offered, "the run was not covered"
+    assert offered == COVERED_PROJECTS_TOOLS, (
+        f"new: {sorted(offered - COVERED_PROJECTS_TOOLS)}, "
+        f"gone: {sorted(COVERED_PROJECTS_TOOLS - offered)}"
+    )
+
+
 def _spy_runs(monkeypatch) -> list[tuple[str, bool]]:
     from acb_skills.write_artifact import artifact_context
 
