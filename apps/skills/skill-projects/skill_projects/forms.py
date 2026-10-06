@@ -1455,14 +1455,17 @@ def _card_row(p: _BatchRow) -> dict[str, Any]:
 
 
 def _batch_card(node: dict[str, Any], rows: list[_BatchRow], strangers: list[str]) -> dict[str, Any]:
-    """The confirmation card's body. The rows themselves are its checkboxes."""
-    card: dict[str, Any] = {"project": data(node.get("name")), "tasks offered": len(rows)}
+    """The confirmation card's body. The rows themselves are its checkboxes.
+
+    The title names the project and the count, and the rows carry every
+    fact, so the body repeats neither (PR #691 review: "Tasks 4" read wrong
+    once a row was unticked). It keeps a warning about an unknown address.
+    ``node`` and ``rows`` stay in the signature for the fit measure.
+    """
+    del node, rows
+    card: dict[str, Any] = {}
     if strangers:
         card["not in the directory"] = ", ".join(strangers)
-    card["note"] = (
-        "Untick a task to leave it out. Each task is its own write. A task that fails "
-        "does not stop the others, and the receipt names it."
-    )
     return card
 
 
@@ -1543,7 +1546,7 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     n = len(rows)
     ticked = await _confirm(
         title=f"Create {n} task{'s' if n != 1 else ''} in {data(node.get('name'))}?",
-        detail="one batch · untick a task to leave it out",
+        detail=f"one batch in {data(node.get('name'))} · untick a task to leave it out",
         context=_fields_block(_batch_card(node, rows, strangers)),
         rows=[_card_row(p) for p in rows],
     )

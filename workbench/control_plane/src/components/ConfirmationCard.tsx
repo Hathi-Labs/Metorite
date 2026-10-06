@@ -29,7 +29,7 @@ import { useEffect, useState } from "react";
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
-import { rowSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
+import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 
 /**
  * How long a new card ignores Approve and Reject.
@@ -150,9 +150,10 @@ interface ConfirmationCardProps {
    * no rows the card is as before, and `onApprove` gets no ids.
    */
   rows?: ConfirmationRow[];
-  /** Each change of the ticks, so the queue keeps them across a remount. */
-  onTickedChange?: (ticked: string[]) => void;
-  onApprove: (ticked?: string[]) => void;
+  /** A tick or an untick of one row. The queue keeps the ticks (`rowTicksReducer`). */
+  onToggle?: (id: string, on: boolean) => void;
+  /** Approve. For a card with rows, the queue sends the ticks it holds. */
+  onApprove: () => void;
   onReject: () => void;
   /** Disable buttons after a choice is made. */
   disabled?: boolean;
@@ -165,7 +166,7 @@ export default function ConfirmationCard({
   detail,
   context,
   rows,
-  onTickedChange,
+  onToggle,
   onApprove,
   onReject,
   disabled = false,
@@ -176,34 +177,20 @@ export default function ConfirmationCard({
     const t = setTimeout(() => setArmed(true), ARM_MS);
     return () => clearTimeout(t);
   }, []);
-  // The card is keyed per request (ConfirmationQueue), so this starts from
-  // the rows' ticks: the tool's, or the member's when the queue kept them.
-  const [ticked, setTicked] = useState<ReadonlySet<string>>(
-    () => new Set((rows ?? []).filter((r) => r.checked).map((r) => r.id)),
-  );
+  // The rows come ticked as the member left them (`rowsView` in the queue).
+  // The card holds no tick state and no tick logic (PR #691 review): a tick
+  // goes up through `onToggle`, and Approve sends what the queue computed.
   const hasRows = rows !== undefined;
-  const tickedIds = (rows ?? []).filter((r) => ticked.has(r.id)).map((r) => r.id);
-  const toggle = (id: string, on: boolean) => {
-    const next = new Set(ticked);
-    if (on) next.add(id);
-    else next.delete(id);
-    setTicked(next);
-    onTickedChange?.((rows ?? []).filter((r) => next.has(r.id)).map((r) => r.id));
-  };
   const base = cardSummary(title, detail);
-  const summary = hasRows ? rowSummary(base.summary, tickedIds.length, rows.length) : base.summary;
+  const summary = rowsSummary(base.summary, rows);
   const rest = base.rest;
+  const approvable = canApprove(rows);
   const body = parseCardBody(context);
   const many = position && position.total > 1;
   const hasBody =
     hasRows || body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
   const approve = () => {
-    if (!armed) return;
-    if (hasRows) {
-      if (tickedIds.length > 0) onApprove(tickedIds);
-      return;
-    }
-    onApprove();
+    if (armed && approvable) onApprove();
   };
   return (
     <section
@@ -257,9 +244,9 @@ export default function ConfirmationCard({
                     <Checkbox
                       size="sm"
                       className="mt-0.5"
-                      checked={ticked.has(r.id)}
+                      checked={r.checked}
                       disabled={disabled}
-                      onChange={(e) => toggle(r.id, e.target.checked)}
+                      onChange={(e) => onToggle?.(r.id, e.target.checked)}
                       data-confirmation-row={r.id}
                     />
                     <span className="flex min-w-0 flex-col gap-0.5">
@@ -305,7 +292,7 @@ export default function ConfirmationCard({
           size="sm"
           icon="Check"
           onClick={approve}
-          disabled={disabled || (hasRows && tickedIds.length === 0)}
+          disabled={disabled || !approvable}
           aria-disabled={!armed || undefined}
           data-confirmation-approve=""
         >

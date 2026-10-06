@@ -304,7 +304,9 @@ async def test_the_card_rows_show_plain_words_and_no_id(monkeypatch) -> None:
     assert rows[2]["hint"] == "nobody assigned · no due date · status To do (the first lane) · 30 min · tags av"
     assert not _UUID_RE.search(json.dumps(card)), card
     assert "«" not in json.dumps(rows)
-    assert "project: «Ops»" in card["context"] and "tasks offered: 3" in card["context"]
+    # The body holds the fixed line only: the title and the rows say the rest.
+    assert card["context"].strip() == W.CARD_NOTE
+    assert "tasks" not in card["context"].lower().replace("assistant", "")
 
 
 async def test_an_unticked_row_is_not_written(monkeypatch) -> None:
@@ -996,3 +998,24 @@ async def test_a_title_longer_than_the_card_label_is_refused(monkeypatch) -> Non
     out = await skill_projects.create_tasks(UUID, rows)
     assert f"Row 1: a title is at most {ROW_LABEL_MAX} characters" in out
     assert asked == [] and writes(calls) == []
+
+
+async def test_eleven_rows_are_written_in_the_card_order(monkeypatch) -> None:
+    """PR #691 review: the order is the card's, also past row 9. Mutation:
+    sort the rows by their id ("row-10" before "row-2") -> this test fails."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway())
+    titles = [f"Task {n:02d}" for n in range(1, 12)]
+    out = await skill_projects.create_tasks(UUID, json.dumps([{"title": t} for t in titles]))
+    assert [r["id"] for r in asked[0]["rows"]] == [f"row-{n}" for n in range(1, 12)]
+    assert [p["json"]["title"] for p in _posts(calls)] == titles
+    receipt = [ln for ln in out.splitlines() if ln.startswith("- #")]
+    assert [re.search(r"«(.*?)»", ln).group(1) for ln in receipt] == titles
+
+
+async def test_eleven_rows_with_some_unticked_keep_the_card_order(monkeypatch) -> None:
+    answer_rows(monkeypatch, {f"row-{n}" for n in (11, 2, 10, 1)})
+    calls = fake_gateway(monkeypatch, _gateway())
+    titles = [f"Task {n:02d}" for n in range(1, 12)]
+    await skill_projects.create_tasks(UUID, json.dumps([{"title": t} for t in titles]))
+    assert [p["json"]["title"] for p in _posts(calls)] == ["Task 01", "Task 02", "Task 10", "Task 11"]

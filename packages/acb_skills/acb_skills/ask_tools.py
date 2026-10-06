@@ -396,6 +396,14 @@ def clean_card_rows(rows: list[dict] | None) -> list[dict] | None:
     return out
 
 
+#: The longest answer a rows card can honestly send: the prefix, the JSON
+#: frame, and every row id of the largest card, each quoted, with a comma
+#: and a space. A longer answer is refused before the parse.
+MAX_ROWS_ANSWER = len(ROWS_ANSWER_PREFIX) + len('{"rows": []}') + MAX_CARD_ROWS * (
+    _ROW_ID_MAX + 4
+)
+
+
 def ticked_rows(answer: str, offered: frozenset[str]) -> frozenset[str] | None:
     """The row ids an answer approves, or ``None`` when it approves nothing.
 
@@ -403,9 +411,15 @@ def ticked_rows(answer: str, offered: frozenset[str]) -> frozenset[str] | None:
     non-empty subset of the card's own ids. A forged id, a list that is
     empty, an answer that is not JSON, and a plain ``APPROVE`` each approve
     NOTHING: the whole answer is refused, never trimmed to the ids that fit.
+
+    The answer is bounded before the parse (PR #691 review): it is at most
+    :data:`MAX_ROWS_ANSWER` characters, and it names no more ids than the
+    card offered.
     """
     text = str(answer or "").strip()
     if not text.upper().startswith(ROWS_ANSWER_PREFIX):
+        return None
+    if len(text) > MAX_ROWS_ANSWER:
         return None
     try:
         body = _json.loads(text[len(ROWS_ANSWER_PREFIX):])
@@ -413,6 +427,8 @@ def ticked_rows(answer: str, offered: frozenset[str]) -> frozenset[str] | None:
         return None
     ids = body.get("rows") if isinstance(body, dict) else None
     if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
+        return None
+    if len(ids) > len(offered):
         return None
     ticked = frozenset(ids)
     if not ticked <= offered:

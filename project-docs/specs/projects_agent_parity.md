@@ -1434,3 +1434,17 @@ as the answer. The slices build to these answers.
     with rows as a plain card. Its Approve sends a plain `APPROVE`, which
     the server refuses, so the member reads "Cancelled" until the tab
     reloads. This fails closed.
+  - PR #691 review (2026-10-06) fixed these findings:
+    - Nothing fenced the client half of consent. The tick logic is now pure
+      (`rowTicksReducer`, `ticksOf`, `rowsView`, `rowsSummary` and
+      `canApprove` in `lib/confirmationQueue.ts`). The card holds no tick
+      state, and the queue keeps the ticks of each card by its key. Two
+      mutations of the review are now red: Approve that sends the tool's
+      ticks, and a page away and back that loses the member's ticks.
+    - The write order is fenced for 11 rows, where "row-10" sorts before
+      "row-2" as text.
+    - `ticked_rows` refuses an answer longer than `MAX_ROWS_ANSWER`, before
+      the parse, and an answer that names more ids than the card offered.
+    - A card with rows shows no project, count or note under its rows. The
+      title names the project and the count, and the count changes as the
+      member unticks.

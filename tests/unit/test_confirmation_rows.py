@@ -165,6 +165,26 @@ def test_the_client_answer_is_the_one_the_server_reads():
 def test_a_deeply_nested_answer_approves_nothing():
     """Review round 1: the parse of a nested answer raises RecursionError, and
     the card still closes as a REJECT with no row."""
-    result, _card, closed = _ask(at.ROWS_ANSWER_PREFIX + "[" * 100_000)
+    # Inside the length bound, so the parse itself meets the nesting.
+    nested = at.ROWS_ANSWER_PREFIX + "[" * (at.MAX_ROWS_ANSWER - len(at.ROWS_ANSWER_PREFIX))
+    assert len(nested) <= at.MAX_ROWS_ANSWER
+    result, _card, closed = _ask(nested)
     assert result == frozenset()
     assert closed["value"]["answer"] == "REJECT"
+
+
+def test_an_answer_too_long_or_too_many_ids_approves_nothing():
+    """PR #691 review: the answer is bounded before the parse. Mutations:
+    drop the length check, or the count check -> this test fails."""
+    offered = frozenset({"row-1", "row-2"})
+    # Valid JSON, padded inside the object, so only the length refuses it.
+    long = at.ROWS_ANSWER_PREFIX + '{"rows": ["row-1"]' + " " * at.MAX_ROWS_ANSWER + "}"
+    assert at.ticked_rows(long, offered) is None
+    many = _rows_answer(["row-1", "row-2", "row-1"])
+    assert at.ticked_rows(many, offered) is None
+    assert at.ticked_rows(_rows_answer(["row-1", "row-2"]), offered) == offered
+    # The largest honest answer fits under the bound.
+    ids = [f"r{'x' * 62}{i:02d}"[:64] for i in range(at.MAX_CARD_ROWS)]
+    assert len(_rows_answer(ids)) <= at.MAX_ROWS_ANSWER
+    result, _card, closed = _ask(long)
+    assert result == frozenset() and closed["value"]["answer"] == "REJECT"

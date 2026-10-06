@@ -28,6 +28,11 @@ import {
   rowSummary,
   settleAnswer,
   withTicked,
+  NO_TICKS,
+  rowTicksReducer,
+  rowsView,
+  ticksOf,
+  type RowTicks,
   type ConfirmationAction,
   type ConfirmationQueueState,
 } from "@/lib/confirmationQueue";
@@ -437,5 +442,92 @@ describe("a card with rows", () => {
     expect(html).toContain("1 of 11");
     const approve = /<button[^>]*data-confirmation-approve[^>]*>/.exec(html)?.[0] ?? "";
     expect(approve).toContain('aria-disabled="true"');
+  });
+});
+
+// ── The ticks are the member's (PR #691 review) ──────────────────────────────
+//
+// The card and the queue hold no tick logic. The logic is pure, and these
+// tests drive it the way the card's checkboxes and the pager do. Two
+// mutations of the review, each one red here:
+//   (a) Approve sends the tool's default ticks, not the member's
+//       (`ticksOf` ignores the kept ticks) -> "Approve sends the member's ticks".
+//   (b) Paging away and back resets the ticks (`rowTicksReducer` keeps one
+//       card only) -> "a page away and back keeps each card's ticks".
+describe("the ticks are the member's", () => {
+  const rows = (prefix: string) => [
+    { id: `${prefix}-1`, label: "One", checked: true },
+    { id: `${prefix}-2`, label: "Two", checked: true },
+    { id: `${prefix}-3`, label: "Three", checked: false },
+  ];
+  const cardA = { key: "rid-a", title: "Create 3 tasks in «Ops»?", requestId: "rid-a", rows: rows("a") };
+  const cardB = { key: "rid-b", title: "Create 3 tasks in «Web»?", requestId: "rid-b", rows: rows("b") };
+  const toggle = (ticks: RowTicks, card: typeof cardA, id: string, on: boolean) =>
+    rowTicksReducer(ticks, { type: "toggle", card, id, on });
+
+  it("Approve sends the member's ticks, never the tool's defaults", () => {
+    let ticks = toggle(NO_TICKS, cardA, "a-1", false);
+    ticks = toggle(ticks, cardA, "a-3", true);
+    const view = rowsView(cardA, ticks);
+    expect(view.approved?.answer).toBe('APPROVE {"rows":["a-2","a-3"]}');
+    expect(view.rows?.map((r) => r.checked)).toEqual([false, true, true]);
+    // The card the answer path restores carries the same ticks.
+    expect(view.approved?.card.rows?.map((r) => r.checked)).toEqual([false, true, true]);
+    // With no tick yet, the tool's defaults stand.
+    expect(rowsView(cardA, NO_TICKS).approved?.answer).toBe('APPROVE {"rows":["a-1","a-2"]}');
+  });
+
+  it("a page away and back keeps each card's ticks", () => {
+    let ticks = toggle(NO_TICKS, cardA, "a-2", false);
+    ticks = toggle(ticks, cardB, "b-1", false); // the member pages to B
+    ticks = toggle(ticks, cardB, "b-3", true);
+    expect(ticksOf(cardA, ticks)).toEqual(["a-1"]); // and back to A
+    expect(ticksOf(cardB, ticks)).toEqual(["b-2", "b-3"]);
+    const html = renderToStaticMarkup(
+      createElement(ConfirmationCard, {
+        title: cardA.title,
+        rows: rowsView(cardA, ticks).rows,
+        onApprove: () => {},
+        onReject: () => {},
+      }),
+    );
+    expect(html.match(/checked=""/g)).toHaveLength(1);
+    expect(html).toContain("Create 1 of 3 tasks");
+  });
+
+  it("unticking every row leaves nothing to send", () => {
+    let ticks = toggle(NO_TICKS, cardA, "a-1", false);
+    ticks = toggle(ticks, cardA, "a-2", false);
+    expect(rowsView(cardA, ticks).approved).toBeNull();
+  });
+
+  it("a tick of a row the card does not offer changes nothing", () => {
+    expect(toggle(NO_TICKS, cardA, "zz", true)).toBe(NO_TICKS);
+    expect(rowTicksReducer(NO_TICKS, { type: "toggle", card: { key: "k" }, id: "a-1", on: true }))
+      .toBe(NO_TICKS);
+  });
+
+  it("a card with no rows is the plain Approve, untouched by any tick", () => {
+    const plain = { key: "rid-p", title: "Send this email?", requestId: "rid-p" };
+    expect(rowsView(plain, NO_TICKS)).toEqual({ approved: { card: plain, answer: "APPROVE" } });
+  });
+
+  // The components call these functions, and hold no logic of their own.
+  // A mutation that puts tick logic back in a component fails here.
+  it("the card holds no tick state, and the queue answers from rowsView", () => {
+    // The component itself, not the pure parse helpers above it in the file.
+    const source = read("components/ConfirmationCard.tsx");
+    const card = source.slice(source.indexOf("export default function ConfirmationCard"));
+    expect(card.length).toBeGreaterThan(100);
+    expect(card).not.toMatch(/useState<[^>]*Set/);
+    expect(card).not.toMatch(/\.filter\(/);
+    expect(card).toContain("rowsSummary(base.summary, rows)");
+    expect(card).toContain("canApprove(rows)");
+    const queue = read("components/ConfirmationQueue.tsx");
+    expect(queue).toContain("useReducer(rowTicksReducer, NO_TICKS)");
+    expect(queue).toContain("const view = rowsView(card, ticks);");
+    expect(queue).toContain("rows={view.rows}");
+    expect(queue).toContain("onAnswer(view.approved.card, view.approved.answer)");
+    expect(queue).not.toMatch(/\.filter\(|\.checked/);
   });
 });

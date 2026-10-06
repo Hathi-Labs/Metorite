@@ -123,6 +123,70 @@ export function withTicked(
   return { ...card, rows: card.rows.map((r) => ({ ...r, checked: on.has(r.id) })) };
 }
 
+// ── The ticks of a card with rows, as pure functions (PR #691 review) ───────
+//
+// The card and the queue hold no tick logic of their own. The queue keeps
+// the member's ticks in `rowTicksReducer`, per card key, so a page away and
+// back keeps them. `rowsView` turns a card and those ticks into what the card
+// draws and what its Approve sends. Fence: `confirmationQueue.test.ts`
+// ("the ticks are the member's"), whose mutations name these functions.
+
+/** The member's ticks of every card with rows, by card key. */
+export type RowTicks = Readonly<Record<string, readonly string[]>>;
+
+export const NO_TICKS: RowTicks = {};
+
+export type RowTickAction = {
+  type: "toggle";
+  card: Pick<PendingConfirmation, "key" | "rows">;
+  id: string;
+  on: boolean;
+};
+
+/** The ids the member has ticked on *card*: the kept ticks, else the tool's.
+ *  Only ids the card offers, in the card's order. */
+export function ticksOf(card: Pick<PendingConfirmation, "key" | "rows">, ticks: RowTicks): string[] {
+  if (!card.rows) return [];
+  const kept = ticks[card.key];
+  const on = new Set(kept ?? card.rows.filter((r) => r.checked).map((r) => r.id));
+  return card.rows.filter((r) => on.has(r.id)).map((r) => r.id);
+}
+
+/** One tick or untick, kept under the card's key. Other cards keep theirs. */
+export function rowTicksReducer(ticks: RowTicks, action: RowTickAction): RowTicks {
+  const { card } = action;
+  if (!card.rows || !card.rows.some((r) => r.id === action.id)) return ticks;
+  const next = new Set(ticksOf(card, ticks));
+  if (action.on) next.add(action.id);
+  else next.delete(action.id);
+  return { ...ticks, [card.key]: card.rows.filter((r) => next.has(r.id)).map((r) => r.id) };
+}
+
+export interface RowsView {
+  /** The rows as the card draws them: each ticked as the member left it. */
+  rows?: ConfirmationRow[];
+  /** What Approve sends, or null when it may not send (no row ticked). */
+  approved: { card: PendingConfirmation; answer: "APPROVE" | RowsApproval } | null;
+}
+
+/** What the card draws, and what its Approve sends, for *card* and *ticks*. */
+export function rowsView(card: PendingConfirmation, ticks: RowTicks): RowsView {
+  if (card.rows === undefined) return { approved: approvedCard(card) };
+  const ticked = ticksOf(card, ticks);
+  return { rows: withTicked(card, ticked).rows, approved: approvedCard(card, ticked) };
+}
+
+/** The card's summary line, counting the rows ticked now. */
+export function rowsSummary(summary: string, rows?: readonly ConfirmationRow[]): string {
+  if (rows === undefined) return summary;
+  return rowSummary(summary, rows.filter((r) => r.checked).length, rows.length);
+}
+
+/** Approve may send: a card with no rows, or a card with a row ticked. */
+export function canApprove(rows?: readonly ConfirmationRow[]): boolean {
+  return rows === undefined || rows.some((r) => r.checked);
+}
+
 /**
  * What the queue sends for an Approve: the answer, and the card with the
  * member's ticks on it, which a failed POST restores. Null approves nothing.
