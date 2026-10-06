@@ -3,7 +3,10 @@ extractor, the verify route (mocked provider), and the connection-info route."""
 
 from __future__ import annotations
 
+import json
+
 import gateway.routes.whatsapp.transport.connect as connect
+import pytest
 from gateway.routes.whatsapp.transport.connect import friendly_meta_error
 
 # ── pure error extractor ──────────────────────────────────────────────────────
@@ -293,18 +296,25 @@ def _manual_route(monkeypatch, provider):
 
     class _Store:
         def encrypt(self, raw):
+            db.stored.append(raw)
             return "enc"
 
+    db.stored = []
+    monkeypatch.delenv("WHATSAPP_GRAPH_VERSION", raising=False)
     monkeypatch.setattr(accounts, "_tenant_session", _tenant_session)
-    monkeypatch.setattr(accounts, "_instantiate_provider", _provider)
+    if provider is not None:
+        monkeypatch.setattr(accounts, "_instantiate_provider", _provider)
     monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
     return accounts, db, opened, meta_calls
 
 
-def _create_req(accounts, token="SUPPLIED"):
+_PNID = "1234567890"
+
+
+def _create_req(accounts, token="SUPPLIED", pnid=_PNID, **blob):
     return accounts.CreateAccountRequest(
-        phone_number="+91", phone_number_id="pn-A",
-        credentials={"access_token": token, "phone_number_id": "pn-OTHER"})
+        phone_number="+91", phone_number_id=pnid,
+        credentials={"access_token": token, "phone_number_id": "999", **blob})
 
 
 async def test_manual_create_refused_by_meta_answers_400_and_writes_nothing(
@@ -327,9 +337,9 @@ async def test_manual_create_refused_by_meta_answers_400_and_writes_nothing(
     assert exc.value.detail == "Invalid OAuth access token. (Meta code 190)"
     assert opened == [] and db.sql == [], "a refused number opened a session"
     # Meta checked the SUPPLIED token for the number of the request, never
-    # for a number that the credentials blob names.
+    # for a number that the credentials blob names, at the server's version.
     assert meta_calls == [{"name": "cloud_api", "access_token": "SUPPLIED",
-                           "phone_number_id": "pn-A"}]
+                           "phone_number_id": _PNID, "graph_version": "v21.0"}]
 
 
 async def test_manual_create_refuses_a_profile_for_another_number(
@@ -341,7 +351,7 @@ async def test_manual_create_refuses_a_profile_for_another_number(
     from fastapi import HTTPException
 
     accounts, db, opened, _ = _manual_route(
-        monkeypatch, _FakeProvider(profile={"id": "pn-SOMEONE-ELSE"}))
+        monkeypatch, _FakeProvider(profile={"id": "5555555555"}))
     with pytest.raises(HTTPException) as exc:
         await accounts.create_account(
             _create_req(accounts), user=SimpleNamespace(email="carol@b"))
@@ -353,11 +363,11 @@ async def test_manual_create_confirmed_by_meta_inserts(monkeypatch) -> None:
     from types import SimpleNamespace
 
     accounts, db, opened, _ = _manual_route(
-        monkeypatch, _FakeProvider(profile={"id": "pn-A",
+        monkeypatch, _FakeProvider(profile={"id": _PNID,
                                             "verified_name": "A"}))
     out = await accounts.create_account(
         _create_req(accounts), user=SimpleNamespace(email="alice@a"))
-    assert out.phone_number_id == "pn-A"
+    assert out.phone_number_id == _PNID
     assert opened == [1]
     assert any("INSERT INTO wa_accounts" in s for s in db.sql)
 
@@ -369,5 +379,120 @@ async def test_persist_account_cannot_run_without_a_verified_profile() -> None:
     with pytest.raises(TypeError):
         await persist_account(  # type: ignore[call-arg]
             _AccountsDB(), user_id="u", phone_number="+91",
-            phone_number_id="pn-A", waba_id=None, display_name="",
+            phone_number_id=_PNID, waba_id=None, display_name="",
             credentials={"access_token": "t"}, webhook_verify_token=None)
+
+
+# ── round 3: the URL Meta reads cannot be steered by the caller ─────────────
+
+async def test_a_profile_with_no_id_answers_400_and_writes_nothing(
+    monkeypatch,
+) -> None:
+    """A node read on Graph always returns ``id``. An edge read such as
+    ``/<waba>/phone_numbers`` returns ``{"data": [...]}`` with none."""
+    from types import SimpleNamespace
+
+    import pytest
+    from fastapi import HTTPException
+
+    accounts, db, opened, _ = _manual_route(
+        monkeypatch, _FakeProvider(profile={"data": [{"id": _PNID}]}))
+    with pytest.raises(HTTPException) as exc:
+        await accounts.create_account(
+            _create_req(accounts), user=SimpleNamespace(email="carol@b"))
+    assert exc.value.status_code == 400
+    assert opened == [] and db.sql == [], "an unproven number was inserted"
+
+
+class _GraphClient:
+    """Stands in for ``httpx.AsyncClient`` and records every URL."""
+
+    urls: list[str] = []
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, headers=None, params=None):
+        import httpx
+
+        _GraphClient.urls.append(str(httpx.URL(url)))
+
+        class _R:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"id": _PNID, "verified_name": "A"}
+
+        return _R()
+
+
+@pytest.mark.parametrize("bad", [
+    "v21.0/777/phone_numbers#", "v21.0/777/phone_numbers?x=", "v21.0?x=1",
+    "../v1", "v21", "",
+])
+async def test_a_caller_graph_version_never_reaches_the_url(
+    monkeypatch, bad,
+) -> None:
+    from types import SimpleNamespace
+
+    import httpx
+
+    accounts, db, opened, _ = _manual_route(monkeypatch, None)
+    _GraphClient.urls = []
+    monkeypatch.setattr(httpx, "AsyncClient", _GraphClient)
+
+    await accounts.create_account(
+        _create_req(accounts, graph_version=bad),
+        user=SimpleNamespace(email="carol@b"))
+
+    assert _GraphClient.urls == [f"https://graph.facebook.com/v21.0/{_PNID}"]
+    # Defence in depth: the stored blob carries no caller graph_version.
+    stored = json.loads(db.stored[-1])
+    assert "graph_version" not in stored
+    assert stored["phone_number_id"] == _PNID
+
+
+def test_a_stored_bad_graph_version_builds_the_default_url() -> None:
+    from whatsapp_ingestion.providers.cloud_api import WhatsAppCloudProvider
+
+    for bad in ("v21.0/777/phone_numbers#", "v21.0?x=", "x", 21):
+        p = WhatsAppCloudProvider({"access_token": "t", "phone_number_id": _PNID,
+                                   "graph_version": bad})
+        assert p.graph_version == "v21.0", bad
+        assert p._messages_url == (
+            f"https://graph.facebook.com/v21.0/{_PNID}/messages")
+    good = WhatsAppCloudProvider({"access_token": "t", "phone_number_id": _PNID,
+                                  "graph_version": "v22.0"})
+    assert good.graph_version == "v22.0"
+
+
+@pytest.mark.parametrize("bad", ["pn-A", "123/456", "123?x=", "123#", " 123", ""])
+async def test_a_non_digit_phone_number_id_answers_400(monkeypatch, bad) -> None:
+    from types import SimpleNamespace
+
+    import pytest
+    from fastapi import HTTPException
+
+    accounts, db, opened, meta_calls = _manual_route(
+        monkeypatch, _FakeProvider(profile={"id": bad}))
+    with pytest.raises(HTTPException) as exc:
+        await accounts.create_account(
+            _create_req(accounts, pnid=bad), user=SimpleNamespace(email="c@b"))
+    assert exc.value.status_code == 400
+    assert meta_calls == [] and opened == []
+
+
+@pytest.mark.parametrize("bad", ["pn-A", "123/456/messages", "1?x=", ""])
+def test_the_provider_refuses_a_non_digit_phone_number_id(bad) -> None:
+    import pytest
+    from whatsapp_ingestion.providers.cloud_api import WhatsAppCloudProvider
+
+    with pytest.raises(ValueError):
+        WhatsAppCloudProvider({"access_token": "t", "phone_number_id": bad})
