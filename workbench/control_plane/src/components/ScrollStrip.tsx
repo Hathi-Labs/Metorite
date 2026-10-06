@@ -77,17 +77,27 @@ export default function ScrollStrip({
     );
   }, []);
 
-  // Scroll, a resize of the row, and a chip arriving or leaving all move the
-  // edges. A ResizeObserver on the row alone misses a new chip, so the chips'
-  // own list is watched too.
+  // Scroll, a resize of the row, and a chip arriving, leaving or changing
+  // width all move the edges.
+  // ⚠️ The row is `flex-1 min-w-0`, so its own box does not follow its
+  // content. A pill that goes bold when active, or a web font that swaps in,
+  // widens the content and not the box. So each CHIP is observed too, and a
+  // new chip is observed when it arrives.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     measure();
     el.addEventListener("scroll", measure, { passive: true });
     const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    const mo = new MutationObserver(measure);
+    const watchChips = () => {
+      ro.observe(el);
+      for (const c of Array.from(el.children)) ro.observe(c);
+    };
+    watchChips();
+    const mo = new MutationObserver(() => {
+      watchChips();
+      measure();
+    });
     mo.observe(el, { childList: true, subtree: true, characterData: true });
     return () => {
       el.removeEventListener("scroll", measure);
@@ -102,6 +112,9 @@ export default function ScrollStrip({
     const el = ref.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      // Ctrl+wheel and a trackpad pinch arrive as a wheel with ctrlKey. That
+      // is the page zoom, and the row must not take it.
+      if (e.ctrlKey) return;
       const now = hiddenEdges(el.scrollLeft, el.clientWidth, el.scrollWidth);
       const dx = wheelToRow(e.deltaX, e.deltaY, now);
       if (dx === 0) return;
@@ -154,12 +167,21 @@ export default function ScrollStrip({
     }
   }, []);
 
+  // ⚠️ Reveal the chip that TURNED ON, never the first chip that is on.
+  // Filters combine, so two chips on is normal. Revealing the first one sent
+  // the row back to the start, away from the chip the member had just
+  // clicked. A chip turning off reveals nothing.
+  const pressedRef = useRef<Set<Element>>(new Set());
   useEffect(() => {
     if (revealKey === undefined) return;
-    const chip = ref.current?.querySelector<HTMLElement>(
-      ':scope > [aria-pressed="true"]',
+    const now = Array.from(
+      ref.current?.querySelectorAll<HTMLElement>(
+        ':scope > [aria-pressed="true"]',
+      ) ?? [],
     );
-    if (chip) reveal(chip);
+    const added = now.find((c) => !pressedRef.current.has(c));
+    pressedRef.current = new Set(now);
+    if (added) reveal(added);
   }, [revealKey, reveal]);
 
   const mask = edgeMask(edges);

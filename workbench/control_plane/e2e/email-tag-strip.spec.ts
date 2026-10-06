@@ -15,7 +15,9 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   3. A vertical wheel over the row moves it sideways.
  *   4. "All filters" shows every chip at once, and a chip turned on there
  *      scrolls into view in the row.
- *   5. On a phone, there are no arrows. The row swipes, and "All filters" is
+ *   5. With two chips on, turning on the second keeps the row on it. A build
+ *      that reveals the first chip on scrolls back to the start.
+ *   6. On a phone, there are no arrows. The row swipes, and "All filters" is
  *      still there.
  */
 
@@ -167,6 +169,36 @@ test.describe("desktop", () => {
       .toBe(true);
     // The badge counts it.
     await expect(page.getByRole("button", { name: /^All filters/ })).toContainText("1");
+  });
+});
+
+test.describe("two filters on", () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+
+  test("turning on a second chip keeps the row on that chip, not on the first", async ({ page }) => {
+    await installMocks(page);
+    await page.goto("/email");
+    await expect(strip(page).locator(":scope > button")).toHaveCount(19);
+
+    await strip(page).getByRole("button", { name: /^Unread/ }).click();
+    await expect(strip(page).getByRole("button", { name: /^Unread/ })).toHaveAttribute("aria-pressed", "true");
+
+    // Page to the end, and turn on the last chip.
+    for (let i = 0; i < 12 && (await arrow(page, "end").count()) > 0; i++) {
+      await arrow(page, "end").click();
+      await page.waitForTimeout(450);
+    }
+    const last = strip(page).getByRole("button", { name: /^Travel Bookings/ });
+    await last.click();
+    await expect(last).toHaveAttribute("aria-pressed", "true");
+    await page.waitForTimeout(600);
+
+    // The row stays at the end. A build that reveals the FIRST chip on goes back to 0.
+    const m = await metrics(page);
+    expect(m.left).toBeGreaterThan(m.max / 2);
+    const row = (await strip(page).boundingBox())!;
+    const c = (await last.boundingBox())!;
+    expect(c.x).toBeGreaterThanOrEqual(row.x - 1);
   });
 });
 
