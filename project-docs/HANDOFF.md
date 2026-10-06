@@ -95,6 +95,39 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-253 · One member can still hold both parse slots of the gateway (EM-T11) · [AGENT]
+- **Check:** `rg -n "EM-T11 slot gap closed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open.
+- **Why.** The text route of EM-T11 lets a member run one read at a time. The
+  hold ends with the request, but a parse slot ends with its worker thread. A
+  parse that runs past its deadline answers "took too long" and keeps its slot.
+  So one member can hold both slots of the process, for every org, while each
+  worker runs past 22 seconds. A sender can mail a file that does this.
+- **Do.** Keep the hold of `_ReadHold`
+  (`gateway/routes/email/transport/attachments.py`) until the worker of
+  `acb_skills.attachment_tools.parse_bounded` gives its slot back. Add a fence
+  with a stuck reader and a short deadline. Member A reads twice, and then
+  member B must still get a slot. Then write the line of the Check under §10.4.12.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.12, the re-verify of round 1
+- **Added:** 2026-10-06 · the EM-T11 session
+
+### H-252 · Ask a chat to summarise a PDF that came in a mail (EM-T11) · [OWNER]
+- **Check:** `rg -n "EM-T11 live check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result. An agent then writes that
+  line, with the date, under §10.4.12. Then it deletes this entry.
+- **Why.** Before EM-T11, each chat answered that it could not read the files
+  of a mail. The email assistant now has a `read_email_attachment` tool. Fakes
+  test it. Nobody has checked it with a real model and a real mailbox, and an
+  agent must not use a real mailbox.
+- **Do.** In Metorite, with a connected mailbox:
+  1. Find a mail with a PDF or a Word file. In the Email chat, ask for a
+     summary of that file. Check that the answer quotes the file.
+  2. In the Projects chat, ask the same question. It hands the question to the
+     email assistant. Check that the answer quotes the file.
+  3. Report each answer, or the error that each chat gives.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.12
+- **Added:** 2026-10-06 · the EM-T11 session
+
 ### H-251 · Set up the Metorite WhatsApp bot number at Meta · [OWNER]
 - **Check:** on the box, `grep -c '^WHATSAPP_ASSISTANT_PHONE_NUMBER_ID=.' /opt/acb/app/.env`.
   An output of 0 means this is open. Do not print the line, because the
