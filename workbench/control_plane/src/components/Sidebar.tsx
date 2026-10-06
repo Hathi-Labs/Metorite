@@ -8,7 +8,6 @@ import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
 import {
-  FOLD_IGNORE_ATTR,
   HINT_DISMISS_MS,
   autoFoldEnabled,
   floatingOpen,
@@ -195,7 +194,7 @@ export default function Sidebar() {
       // A script's `.click()` is not the member working.
       if (!armedRef.current || !e.isTrusted) return;
       const target = e.target instanceof Element ? e.target : null;
-      if (!target || target.closest(`[${FOLD_IGNORE_ATTR}]`)) return;
+      if (!target) return;
       const inSidebar = !!asideRef.current?.contains(target);
       const inMain = !!target.closest("main");
       const work = isWorkEvent({
@@ -209,8 +208,10 @@ export default function Sidebar() {
       if (!shouldFold({ armed: true, enabled: autoFoldEnabled(), collapsed, inSidebar, inMain, work })) {
         return;
       }
-      // One frame later, so the click's own handler has run. If it opened a
-      // menu, the fold waits for the next work (`floatingOpen` says why).
+      // One frame later, so the click's own handler has run. Two things need
+      // that. If the click opened a menu, the fold waits for the next work
+      // (`floatingOpen` says why). And the setting is read AFTER the click, so
+      // "Keep it open" on the Appearance page saves before the fold looks.
       requestAnimationFrame(() => {
         if (floatingOpen(document, asideRef.current)) {
           armedRef.current = true;

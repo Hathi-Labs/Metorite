@@ -20,7 +20,8 @@ import { expect, test, type Page } from "@playwright/test";
  *   6. A first click that opens a menu does not fold until the menu closes.
  *      Several menus measure their trigger once, and the fold moves it.
  *   7. "Keep it open" on the Appearance page keeps it open. The fold listener
- *      runs before the choice saves, so without the ignore marker it folds.
+ *      runs before the choice saves, so a fold that read the setting at once
+ *      would fold the sidebar the member just asked to keep open.
  */
 
 const ADMIN = {

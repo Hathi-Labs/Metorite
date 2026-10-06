@@ -34,7 +34,6 @@ import { DENSITY_SCALE } from "@/lib/theme/types";
 import SettingsHeader from "@/components/SettingsHeader";
 import {
   AUTO_FOLD_EVENT,
-  FOLD_IGNORE_ATTR,
   autoFoldEnabled,
   setAutoFoldEnabled,
 } from "@/lib/sidebarFold";
@@ -228,10 +227,8 @@ function SidebarSettings() {
     setAutoFoldEnabled(next);
     setOn(next);
   };
-  // ⚠️ The marker stops a click on "Keep it open" from folding the sidebar,
-  // which it otherwise does, because the fold runs before the choice saves.
   return (
-    <section {...{ [FOLD_IGNORE_ATTR]: "" }}>
+    <section>
       <SectionHeading
         title="Sidebar"
         description="Fold the sidebar when you start to work in an app you opened from it. The button at its top opens it again."

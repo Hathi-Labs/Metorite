@@ -74,15 +74,6 @@ export function setAutoFoldEnabled(on: boolean): void {
 }
 
 /**
- * A press inside an element with this attribute is never work.
- *
- * ⚠️ The Appearance page's own "Keep it open" choice needs it. The fold
- * listener runs in the capture phase, BEFORE the choice saves, so without the
- * marker that click folds the sidebar the member just asked to keep open.
- */
-export const FOLD_IGNORE_ATTR = "data-sidebar-fold-ignore";
-
-/**
  * Something floating is open: a menu, a listbox, a dialog or an expanded
  * trigger, outside the sidebar.
  *
