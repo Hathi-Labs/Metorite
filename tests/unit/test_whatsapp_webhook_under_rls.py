@@ -478,6 +478,8 @@ async def test_a_second_connect_from_another_org_answers_409(
                     db, user_id="carol@wa-c1-b.test", phone_number="+910000000000",
                     phone_number_id=pnid, waba_id=None, display_name="B",
                     credentials={"access_token": "t"}, webhook_verify_token=None,
+                    # Assume Meta confirmed B's token. The index still refuses.
+                    verified_profile={"id": pnid},
                 )
     assert err.value.status_code == 409
     assert err.value.detail == "Number already connected"

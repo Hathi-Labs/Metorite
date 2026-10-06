@@ -17,6 +17,7 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.whatsapp.core import (
     WhatsAppAccountModel,
+    _instantiate_provider,
     _tenant_session,
     router,
 )
@@ -93,6 +94,45 @@ async def list_accounts(user: UserContext = Depends(get_current_user)):
         return [_account_model(r) for r in rows]
 
 
+async def verify_cloud_number(
+    phone_number_id: str, credentials: dict[str, Any],
+) -> dict[str, Any]:
+    """Prove that the supplied token can act for this Cloud API number.
+
+    Meta's phone-number profile answers 200 only when the token holds the
+    number. Returns that profile. A refusal answers 400 with Meta's own
+    message, cleaned by ``friendly_meta_error``.
+
+    WA-C1 review P1. The index of migration 230 makes the first claim of a
+    number exclusive. Without this check, a member of org B could register
+    org A's ``phone_number_id`` with any token. Org A's inbound would then go
+    to org B, and org A would get 409 for good. Call it BEFORE the session
+    opens, so no database connection waits on Meta.
+    """
+    if not credentials.get("access_token"):
+        raise HTTPException(status_code=400, detail="access_token required")
+    creds = dict(credentials)
+    creds["phone_number_id"] = phone_number_id
+    try:
+        profile = await _instantiate_provider(
+            "cloud_api", creds).get_phone_number_profile()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        from gateway.routes.whatsapp.transport.connect import friendly_meta_error
+        raise HTTPException(
+            status_code=400, detail=friendly_meta_error(exc)) from exc
+    if not isinstance(profile, dict):
+        raise HTTPException(status_code=400, detail="Meta returned no profile.")
+    # Meta echoes the id of the number it read. A different id means the
+    # token answered for another number.
+    if profile.get("id") not in (None, phone_number_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Meta answered for a different phone number id.")
+    return profile
+
+
 async def persist_account(
     db: Any,
     *,
@@ -103,11 +143,17 @@ async def persist_account(
     display_name: str,
     credentials: dict[str, Any],
     webhook_verify_token: str | None,
+    verified_profile: dict[str, Any],
 ) -> Any:
     """Encrypt the credentials + insert a wa_account, returning the row. Shared by
     the manual create route AND the Embedded Signup flow (W12) so both write the
     number the same way. Raises 409 if anyone already connected the number.
     Caller owns the transaction (commit).
+
+    ``verified_profile`` is required and has no default. It is the profile
+    that Meta returned for this token and this number, from
+    ``verify_cloud_number`` or from the Embedded Signup check. So no path can
+    insert a Cloud API row that Meta did not confirm (WA-C1 review P1).
 
     The read-first check below sees only this member's rows in this tenant.
     Under FORCE RLS a row of another member or another org is invisible to it.
@@ -118,11 +164,14 @@ async def persist_account(
     so the caller's session rolls back on the raised 409."""
     if not credentials.get("access_token"):
         raise HTTPException(status_code=400, detail="access_token required")
+    if not isinstance(verified_profile, dict):
+        raise TypeError("persist_account needs the profile Meta verified")
 
     # The provider reads phone_number_id/waba_id from the creds blob — fold them
-    # in so the stored blob is self-contained.
+    # in so the stored blob is self-contained. The number is the one Meta
+    # verified, so a blob cannot name a second number.
     creds = dict(credentials)
-    creds.setdefault("phone_number_id", phone_number_id)
+    creds["phone_number_id"] = phone_number_id
     creds.setdefault("waba_id", waba_id)
 
     from acb_llm.key_store import get_key_store
@@ -173,7 +222,11 @@ async def persist_account(
 async def create_account(
     req: CreateAccountRequest, user: UserContext = Depends(get_current_user),
 ):
-    """Register a WhatsApp Business number (the manual / guided-wizard path)."""
+    """Register a WhatsApp Business number (the manual / guided-wizard path).
+
+    Meta must confirm the supplied token for this number first. Then the
+    session opens (WA-C1 review P1)."""
+    profile = await verify_cloud_number(req.phone_number_id, req.credentials)
     async with _tenant_session() as db:
         row = await persist_account(
             db, user_id=user.email or "anonymous",
@@ -181,6 +234,7 @@ async def create_account(
             waba_id=req.waba_id, display_name=req.display_name,
             credentials=req.credentials,
             webhook_verify_token=req.webhook_verify_token,
+            verified_profile=profile,
         )
         return _account_model(row)
 
