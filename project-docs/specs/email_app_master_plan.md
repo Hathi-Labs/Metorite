@@ -8697,6 +8697,10 @@ a few lines from the line that the audit gave.
 now makes a draft. The composer opens dirty in each case (item 2), so its first save writes the
 reply. On `main`, that composer saved nothing until an edit. This is the cost that item 2 accepts.
 
+**The Bcc case of f14 (review round 1).** A reply with a Bcc and a saved draft hands over no draft,
+because the full composer has no Bcc row. So the composer that opens dirty makes a second copy at
+once, with no edit. The build keeps this, because the composer must never clear a Bcc.
+
 **The fences, as built.** `src/app/email/lib/draftAutosave.test.ts` holds 103 cases, 25 more than
 the 78 of before. The six new fences are `email-drain-own-session`, `email-popout-unsaved`,
 `email-discard-old-mailbox`, `email-switch-old-mailbox`, `email-pick-in-flight` and
@@ -8729,6 +8733,48 @@ a fence for it, and the second run turned it red.
 | X9 | ComposePanel ignores a change of From before the hand-over | 1 | `email-popout-handover` |
 | X10 | The DraftCard drains with no session | 2 | `email-drain-own-session`, `email-autosave-flush` |
 | X11 | The pop-out deletes the stale drafts before the drain settles | 1 | `email-autosave-flush` |
+
+**Review round 1 (2026-10-06).** The verifier failed the branch on one fence that was missing, and
+the reviewer asked for changes. Neither found a P0 or a P1. This round closes the six items below.
+
+1. **An older save wrote over the record of the hand-over (reviewer P2).** The apply of the
+   hand-over ran on a `.then` of the promise, outside the order of the chain. So a slow save of an
+   earlier session could settle after it and replace its record. Then the next save of the new
+   session made a second draft. `recordSave` now keeps the record of the newer session, and each
+   write of `lastSaveRef` goes through it.
+2. **The order of the apply (found in this round).** With `recordSave` only, the fault moved to the
+   older session. Its slow first save and its flushed edit then read the record of the new session.
+   So the edit made a second draft. `after(promise, apply)` now runs the apply in the order of the
+   chain. Each save before it settles first, and each save after it starts later.
+3. **Departure 1 had no fence (verifier P2, R7).** A case now checks that the record comes before
+   the guard of the session. MA moves the record after the guard, and the case turns red.
+4. **The f8 fence read only the text `await` (reviewer P3).** A case now counts the braces and the
+   parentheses before `openCompose({`. A call inside a callback of the drain leaves them open, and
+   MT turns the case red.
+5. **A one-render window of departure 2 (verifier P3).** `changeFrom` of ComposePanel sets
+   `liveFromRef` before its first `await`. A save that settles in that wait can put the draft on the
+   stale list. So `changeFrom` adds no id twice.
+6. **The Bcc case of f14 (both).** This section records it above, with no change of behaviour.
+
+**Departure of review round 1.** The request of the round named `recordSave` only. With only
+`recordSave`, the case of item 2 made a second draft, so the build added the ordered apply too. Each
+of the two cases has a fence.
+
+**The fences after review round 1.** The fence file holds 111 cases, 8 more than before. The run of
+`src/app/email` has 723 cases.
+
+**Mutations of review round 1, as run (2026-10-06).** The script ran the 20 rows of before again,
+and 6 new rows. Each of the 26 turned a fence red, and `git status` was clean after each row. X2 and
+X3 now turn more cases red, because the new cases read the same code.
+
+| Id | Mutation | Red cases | Red fences |
+|---|---|---|---|
+| MR | `recordSave` drops the session comparison | 2 | `email-popout-handover` |
+| MA | The hand-over records the draft after the guard of the session | 1 | `email-popout-handover` |
+| MO | `after` runs the apply outside the order of the chain | 2 | `email-popout-handover` |
+| MO2 | ComposePanel applies the hand-over on `handOver.then` | 4 | `email-popout-handover`, `email-autosave-flush` |
+| MT | The pop-out calls `openCompose` in a `.then` of the drain | 1 | `email-popout-handover` |
+| MF | `changeFrom` sets the From of now after the wait | 1 | `email-popout-handover` |
 
 #### 12.3.4 EM-G3b — a move to a user label, and the filter list
 
