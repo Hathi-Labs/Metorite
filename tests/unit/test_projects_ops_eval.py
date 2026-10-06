@@ -480,6 +480,35 @@ def test_po9_an_answer_without_the_count_fails(harness: R.OpsHarness) -> None:
     assert _failed(_run(harness, "PO-9", steps)) == {"answer_counts_three"}
 
 
+def test_the_runner_answers_a_selection_card_and_no_other_form() -> None:
+    """Review round 1: an edit form or a plan the model should not open stays
+    unanswered, so its run still fails "run_completed"."""
+    from orchestrator import executor
+
+    loop = asyncio.new_event_loop()
+    try:
+        def parked(spec: dict[str, Any]) -> tuple[dict[str, Any], Any]:
+            fut = loop.create_future()
+            executor._pending_user_input["rq"] = fut
+            return {**spec, "request_id": "rq"}, fut
+
+        spec = T.by_id("PO-9")
+        plan, fut = parked({"props": {"name": "planCard", "data": {"tasks": []}}})
+        edit, _ = parked({"props": {"name": "formCard", "data": {
+            "fields": [{"name": "title", "type": "text", "value": "x"}]}}})
+        run = R._Run(stream=None)
+        assert not R._answer_form(run, spec, plan) and not fut.done()
+        assert not R._answer_form(run, spec, edit)
+        pick, fut = parked({"props": {"name": "formCard", "data": {
+            "submitLabel": "Review tasks",
+            "fields": [{"name": "row_1", "type": "checkbox", "value": True}]}}})
+        assert R._answer_form(run, spec, pick) and fut.done()
+        assert fut.result()["answer"] == 'Review tasks — {"row_1": true}'
+    finally:
+        executor._pending_user_input.pop("rq", None)
+        loop.close()
+
+
 def test_a_covered_sweep_that_ran_uncovered_fails(
     covered_harness: R.OpsHarness, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

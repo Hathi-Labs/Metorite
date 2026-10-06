@@ -294,7 +294,7 @@ async def test_the_selection_card_shows_plain_words_and_no_id(monkeypatch) -> No
     card = asked[0]
     assert card["title"] == "Create 3 tasks in «Ops»?"
     assert not _UUID_RE.search(card["context"] + card["detail"]), card
-    assert "task 1: «Book the caterer» · «Priya» · due Fri 9 Oct 2026" in card["context"]
+    assert "row 1: «Book the caterer» · «Priya» · due Fri 9 Oct 2026" in card["context"]
     assert "status «In progress»" in card["context"]
     assert "30 min · tags «av»" in card["context"]
 
@@ -307,9 +307,11 @@ async def test_an_unticked_row_is_not_written(monkeypatch) -> None:
 
     assert [p["json"]["title"] for p in _posts(calls)] == ["Book the caterer", "Test the projector"]
     assert asked[0]["title"] == "Create 2 tasks in «Ops»?"
-    assert "Print the badges" not in asked[0]["context"].split("left out")[0]
-    assert "left out: «Print the badges»" in asked[0]["context"]
-    assert "left out, unticked on the card: row 2 «Print the badges»" in out
+    assert "row 2:" not in asked[0]["context"]
+    assert "row 2 left out: «Print the badges», unticked on the card" in asked[0]["context"]
+    assert "left out: row 2 «Print the badges», unticked on the card." in out
+    # The card and the receipt give one row one number (review round 1).
+    assert "row 3: «Test the projector»" in asked[0]["context"]
 
 
 async def test_a_form_with_every_row_unticked_writes_nothing(monkeypatch) -> None:
@@ -492,7 +494,7 @@ async def test_a_retry_does_not_duplicate(monkeypatch) -> None:
     assert [f["value"] for f in fields] == [False, True, True]
     assert "made 3 min ago, as #12, so it starts unticked" in fields[0]["hint"]
     assert [p["json"]["title"] for p in _posts(calls)] == ["Print the badges", "Test the projector"]
-    assert "left out: «Book the caterer»" in asked[0]["context"]
+    assert "row 1 left out: «Book the caterer», unticked on the card" in asked[0]["context"]
     assert "row 1 «Book the caterer»" in out
 
 
@@ -522,10 +524,28 @@ async def test_with_no_form_a_recent_twin_stays_out(monkeypatch) -> None:
         return {"ok": False}
 
     monkeypatch.setattr(wa, "emit_generative_ui", no_surface)
-    approve(monkeypatch)
+    asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway(recent=[_made("Book the caterer", 2)]))
-    await skill_projects.create_tasks(UUID, THREE)
+    out = await skill_projects.create_tasks(UUID, THREE)
     assert [p["json"]["title"] for p in _posts(calls)] == ["Print the badges", "Test the projector"]
+    # Both the card and the receipt say WHY, and never "unticked" (review round 1).
+    why = "because a task with this title was made 2 min ago, as #12"
+    assert f"row 1 left out: «Book the caterer», {why}" in asked[0]["context"]
+    assert f"left out: row 1 «Book the caterer», {why}." in out
+    assert "unticked" not in out
+
+
+async def test_the_card_shows_the_whole_description_it_writes(monkeypatch) -> None:
+    """A cut card is not consent (projects_ai_chat.md §13.6 rule 8)."""
+    asked = approve(monkeypatch)
+    form_stub(monkeypatch, {"Add ": ALL_TICKED})
+    calls = fake_gateway(monkeypatch, _gateway())
+    brief = "Book the hall for 120 people. " * 20 + "The last words."
+    rows = json.dumps([{"title": "Book the hall", "description": brief}, {"title": "Pay"}])
+    await skill_projects.create_tasks(UUID, rows)
+    assert _posts(calls)[0]["json"]["description"] == brief.strip()
+    assert "The last words." in asked[0]["context"]
+    assert "truncated" not in asked[0]["context"]
 
 
 async def test_the_recent_read_is_one_page_of_the_project(monkeypatch) -> None:
@@ -878,7 +898,8 @@ async def test_r8_a_retry_over_the_real_list_route_makes_no_second_copy(
     again = [*first, {"title": "Count the kits"}]
     out, calls = await _drive(seeded, monkeypatch, again)
     assert out.startswith("Created 1 task"), out
-    assert "left out, unticked on the card: row 1 «Pack the kits», row 2 «Ship the kits»" in out
+    assert "left out: row 1 «Pack the kits», unticked on the card." in out
+    assert "left out: row 2 «Ship the kits», unticked on the card." in out
     assert [t for t, _ in _stored(seeded)] == ["Pack the kits", "Ship the kits", "Count the kits"]
     [listed] = [c for c in calls if c["method"] == "GET" and c["path"] == "/projects/tasks"]
     assert listed["params"]["project_id"] == seeded["project"]

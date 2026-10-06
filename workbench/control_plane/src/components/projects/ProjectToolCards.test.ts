@@ -275,7 +275,7 @@ describe("WS-46 P13: the receipt of a batch of new tasks", () => {
     "failed: row 2 «Print the badges» refused (422): «That type is not in this project.»",
     "stopped: 1 of 3 rows failed and 0 follow-up writes did not land.",
     "The 2 tasks listed above exist. Never create them again. To retry a failed row, call create_tasks with that row alone.",
-    "left out, unticked on the card: row 4 «Order the banners»",
+    "left out: row 4 «Order the banners», unticked on the card.",
   ].join("\n");
 
   it("draws through the batch card, which lists every task it made", () => {
@@ -303,7 +303,7 @@ describe("WS-46 P13: the receipt of a batch of new tasks", () => {
     expect(notes).toEqual([
       "failed: row 2 Print the badges refused (422): That type is not in this project.",
       "stopped: 1 of 3 rows failed and 0 follow-up writes did not land.",
-      "left out, unticked on the card: row 4 Order the banners",
+      "left out: row 4 Order the banners, unticked on the card.",
     ]);
     expect(notes.join(" ")).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
   });

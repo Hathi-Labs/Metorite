@@ -1264,8 +1264,10 @@ as the answer. The slices build to these answers.
   - A retry makes no second copy. `POST /projects/tasks` takes no
     idempotency key. So the tool reads one page of the project's newest
     tasks before the card (`GET /projects/tasks`). A task with the same
-    title, made in the last 10 minutes, starts unticked, and both cards
-    name it.
+    title, made in the last 10 minutes, starts unticked. The selection
+    card names the twin. The confirmation card and the receipt say why the
+    row is out. A twin in a triage lane, or one older than 10 minutes, is
+    not found.
   - Fences. F2 gains witnesses for `create_tasks`. A `SENDS` value can now
     be a tuple of witnesses, and `tasks.due` names one key of a row.
     `COMPOSITE["create_tasks"]` is `{"create_task"}`. F6 and F7 gain the
@@ -1279,3 +1281,10 @@ as the answer. The slices build to these answers.
   - The eval gains PO-9, "add these 3 tasks to project X". Its runner now
     submits a selection card as the card shows it.
   - The tool count is 88. `__all__` and `own_tool_scope` each gain one.
+  - Review round 1 (2026-10-06) fixed four findings. The confirmation card
+    shows the whole description that the POST sends, and does not cut it.
+    A row that fails with an error that no gateway sends keeps its trace in
+    the log. A row left out because no form could be drawn says why, and
+    never says "unticked". The eval runner answers only a selection card,
+    so a run that opens another form still fails. The confirmation card and
+    the receipt now give each row the same number.

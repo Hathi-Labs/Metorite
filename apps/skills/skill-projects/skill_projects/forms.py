@@ -1402,24 +1402,41 @@ def _describe(
     if payload.get("parent_task_id"):
         facts.append("a subtask")
     if payload.get("description"):
-        about = " ".join(str(payload["description"]).split())
-        facts.append("description " + data(about[:120] + ("…" if len(about) > 120 else "")))
+        # The whole text, as the POST sends it. A cut card is not consent
+        # (projects_ai_chat.md §13.6 rule 8), so a batch too long for the
+        # card is refused by `_fits_on_card` instead (review round 1).
+        facts.append("description " + data(payload["description"]))
     p.line = f"{data(p.title)} · " + " · ".join(facts)
 
 
+def _left_why(p: _BatchRow, drawn: bool) -> str:
+    """Why a row is not on the confirmation card, in the member's words."""
+    if not drawn and p.recent is not None:
+        return f"because {_recent_note(p.recent)}"
+    return "unticked on the card"
+
+
 def _batch_card(
-    node: dict[str, Any], rows: list[_BatchRow], left: list[_BatchRow], strangers: list[str]
+    node: dict[str, Any],
+    rows: list[_BatchRow],
+    left: list[_BatchRow],
+    strangers: list[str],
+    drawn: bool = True,
 ) -> dict[str, Any]:
-    """The confirmation card: every task that will be made, and what is left out."""
+    """The confirmation card: every task that will be made, and what is left out.
+
+    Each line carries the row's number from the call, as the receipt does, so
+    "row 3" means one task on both (review round 1).
+    """
     card: dict[str, Any] = {"project": data(node.get("name")), "tasks": len(rows)}
-    for n, p in enumerate(rows, start=1):
-        card[f"task {n}"] = p.line
+    for p in rows:
+        card[f"row {p.index}"] = p.line
         if p.recent is not None:
-            card[f"task {n} check"] = (
+            card[f"row {p.index} check"] = (
                 f"{_recent_note(p.recent)}. Approving makes a second task with this title."
             )
-    if left:
-        card["left out"] = ", ".join(data(p.title) for p in left)
+    for p in left:
+        card[f"row {p.index} left out"] = f"{data(p.title)}, {_left_why(p, drawn)}"
     if strangers:
         card["not in the directory"] = ", ".join(strangers)
     card["note"] = (
@@ -1433,14 +1450,17 @@ def _ticked(value: Any) -> bool:
     return value is True or str(value).strip().lower() in ("true", "yes")
 
 
-async def _pick(node: dict[str, Any], rows: list[_BatchRow]) -> set[int] | str:
-    """The rows the member keeps ticked on the selection card, or why none.
+async def _pick(
+    node: dict[str, Any], rows: list[_BatchRow]
+) -> tuple[set[int], bool] | str:
+    """The rows the member keeps ticked on the selection card, and whether the
+    card was drawn. Or the reason that nothing goes on.
 
     The card is the ``formCard`` template with one checkbox per row, ticked by
     default. A row with a recent twin starts unticked. The card is not
     consent: the confirmation card after it is (``_confirm``). With no chat
     surface to draw it, the confirmation card alone carries the batch, and
-    a row with a recent twin stays out.
+    a row with a recent twin stays out. Both cards then say why.
     """
     fields = [
         {
@@ -1473,15 +1493,17 @@ async def _pick(node: dict[str, Any], rows: list[_BatchRow]) -> set[int] | str:
     )
     if not result.get("ok"):
         kept = {p.index for p in rows if p.recent is None}
-        return kept or (
-            f"Each task has a twin made in the last {RECENT_MINUTES} minutes, so nothing "
-            "was created. Read list_tasks for this project to see them."
-        )
+        if not kept:
+            return (
+                f"Each task has a twin made in the last {RECENT_MINUTES} minutes, so nothing "
+                "was created. Read list_tasks for this project to see them."
+            )
+        return kept, False
     values = _answer(result.get("response"))
     if values is None:
         return NOT_SUBMITTED
     picked = {p.index for p in rows if _ticked(values.get(f"row_{p.index}"))}
-    return picked or NOTHING_TICKED
+    return (picked, True) if picked else NOTHING_TICKED
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
@@ -1531,17 +1553,18 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     picked = await _pick(node, rows)
     if isinstance(picked, str):
         return picked
-    chosen = [p for p in rows if p.index in picked]
-    left = [p for p in rows if p.index not in picked]
+    ticked, drawn = picked
+    chosen = [p for p in rows if p.index in ticked]
+    left = [p for p in rows if p.index not in ticked]
     k = len(chosen)
     if not await _confirm(
         title=f"Create {k} task{'s' if k != 1 else ''} in {data(node.get('name'))}?",
         detail=f"one batch · {k} task{'s' if k != 1 else ''}"
         + (f" · {len(left)} left out" if left else ""),
-        context=_fields_block(_batch_card(node, chosen, left, strangers)),
+        context=_fields_block(_batch_card(node, chosen, left, strangers, drawn)),
     ):
         return CANCELLED
-    return await _write_batch(pid, node, chosen, left)
+    return await _write_batch(pid, node, chosen, left, drawn)
 
 
 def _failure(exc: Exception) -> str:
@@ -1549,7 +1572,8 @@ def _failure(exc: Exception) -> str:
     if isinstance(exc, httpx.TransportError):
         return (
             f"lost its connection to the gateway ({type(exc).__name__}), so it may or may "
-            "not exist. A retry with create_tasks leaves it out when it exists."
+            f"not exist. Read list_tasks before a retry. Within {RECENT_MINUTES} minutes, "
+            "a retry with create_tasks starts it unticked when it exists."
         )
     if isinstance(exc, GatewayRefusal):
         status = getattr(exc, "status", None)
@@ -1558,8 +1582,9 @@ def _failure(exc: Exception) -> str:
             return f"refused ({status})" + (f": {data(detail)}" if detail else "")
         return f"refused: {' '.join(str(exc).split())}"
     return (
-        f"failed ({type(exc).__name__}), so it may or may not exist. A retry with "
-        "create_tasks leaves it out when it exists."
+        f"failed ({type(exc).__name__}), so it may or may not exist. Read list_tasks "
+        f"before a retry. Within {RECENT_MINUTES} minutes, a retry with create_tasks "
+        "starts it unticked when it exists."
     )
 
 
@@ -1578,7 +1603,11 @@ async def _lane_names(pid: str) -> dict[str, str]:
 
 
 async def _write_batch(
-    pid: str, node: dict[str, Any], chosen: list[_BatchRow], left: list[_BatchRow]
+    pid: str,
+    node: dict[str, Any],
+    chosen: list[_BatchRow],
+    left: list[_BatchRow],
+    drawn: bool = True,
 ) -> str:
     """One write per ticked row, in order, and the receipt. It never raises.
 
@@ -1595,7 +1624,11 @@ async def _write_batch(
             task, _saved, after = await _create_new_task(p.new)
         except Exception as exc:  # each row ends in the receipt, never in a raise
             if not isinstance(exc, _WRITE_FAILED):
-                _log.warning("projects.batch_row_failed", error=type(exc).__name__)
+                # Caught, because a raise after a write makes the model create
+                # the tasks again. The trace stays in the log (review round 1).
+                _log.warning(
+                    "projects.batch_row_failed", error=type(exc).__name__, exc_info=True
+                )
             failed.append(_said(f"failed: row {p.index} {data(p.title)} {_failure(exc)}"))
             continue
         made.append((p, task))
@@ -1607,7 +1640,8 @@ async def _write_batch(
                 )
                 + " Use assign on that task."
             )
-    return _batch_receipt(node, chosen, left, made, failed, unsaved, await _lane_names(pid))
+    lanes = await _lane_names(pid)
+    return _batch_receipt(node, chosen, left, made, failed, unsaved, lanes, drawn)
 
 
 def _batch_receipt(
@@ -1618,6 +1652,7 @@ def _batch_receipt(
     failed: list[str],
     unsaved: list[str],
     lanes: dict[str, str],
+    drawn: bool = True,
 ) -> str:
     where = data(node.get("name"))
     many = len(chosen)
@@ -1646,11 +1681,7 @@ def _batch_receipt(
             f"The {len(made)} task{'s' if len(made) != 1 else ''} listed above exist. Never "
             "create them again. To retry a failed row, call create_tasks with that row alone."
         )
-    if left:
-        out.append(
-            "left out, unticked on the card: "
-            + ", ".join(f"row {p.index} {data(p.title)}" for p in left)
-        )
+    out.extend(f"left out: row {p.index} {data(p.title)}, {_left_why(p, drawn)}." for p in left)
     return "\n".join(out)
 
 

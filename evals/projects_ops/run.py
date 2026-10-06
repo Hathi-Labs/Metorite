@@ -111,12 +111,18 @@ def _answer_card(harness: OpsHarness, run: _Run, spec: TaskSpec, value: dict[str
 
 
 def _answer_form(run: _Run, spec: TaskSpec, value: dict[str, Any]) -> bool:
-    """Submit a blocking form card as drawn, as a member who reads it and
-    agrees. A field in ``spec.untick`` is submitted unticked. False when no
-    form was waiting."""
+    """Submit a SELECTION card as drawn, as a member who reads it and agrees.
+    A field in ``spec.untick`` is submitted unticked. False when no selection
+    card was waiting.
+
+    Only a ``formCard`` with checkbox fields is answered (review round 1).
+    Any other blocking card, an edit form or a plan, stays unanswered, so a
+    run that opens one it should not open still fails "run_completed"."""
     props = value.get("props") if isinstance(value.get("props"), dict) else {}
     data = props.get("data") if isinstance(props.get("data"), dict) else {}
     fields = [f for f in data.get("fields") or [] if isinstance(f, dict)]
+    if props.get("name") != "formCard" or not any(f.get("type") == "checkbox" for f in fields):
+        return False
     values = {str(f.get("name")): f.get("value") for f in fields}
     for name in spec.untick:
         if name in values:
