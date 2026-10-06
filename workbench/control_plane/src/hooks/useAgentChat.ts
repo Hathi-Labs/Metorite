@@ -43,6 +43,9 @@ const HITL_CONTROL_EVENTS = new Set([
   "elicitation_requested",
   "user_input_requested",
   "confirmation_requested",
+  // A card the server closed (`lib/confirmationQueue.ts`). It drives the
+  // queue, and is no data to draw.
+  "confirmation_resolved",
   // A dispatched browser action (H-164): a side effect, never a view. Kept
   // off the message so it neither draws a raw-JSON fold nor is saved.
   "frontend_tool",

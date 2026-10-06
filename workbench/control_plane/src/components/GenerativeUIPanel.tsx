@@ -98,6 +98,9 @@ const PANEL_HIDDEN_EVENTS = new Set([
   "elicitation_requested",
   "user_input_requested",
   "confirmation_requested",
+  // A closed card. The chat translator saves every custom event on the
+  // message, so a reloaded thread carries this one too.
+  "confirmation_resolved",
   "generative_ui",
   // A dispatched browser action (H-164): a side effect with nothing to show.
   "frontend_tool",

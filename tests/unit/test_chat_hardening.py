@@ -202,11 +202,35 @@ def test_hitl_cards_cleared_on_session_switch_and_failures_surfaced():
     chat = (REPO / "workbench/control_plane/src/components/AgentChat.tsx").read_text(encoding="utf-8")
     # Session-switch reset (React reset-during-render pattern).
     assert "setHitlSession(sessionId);" in chat
-    assert "setConfirmation(null);\n    setElicitation(null);\n    setUserInput(null);" in chat
-    # All blocking answers go through the restoring helper — the ONLY direct
-    # fetch to respond-input is the helper's own (which surfaces failures).
+    assert (
+        'dispatchConfirmation({ type: "reset" });\n    setElicitation(null);\n    setUserInput(null);'
+        in chat
+    )
+    # All blocking answers go through the restoring helper. The ONLY fetch to
+    # respond-input is `lib/respondInput.ts`, which owns the failure rule (a
+    # 4xx drops the card, a 5xx or a network fault restores it).
     assert chat.count("postRespondInput(") >= 4
-    assert chat.count('fetch("/api/agent/respond-input"') == 1
+    assert 'fetch("/api/agent/respond-input"' not in chat
+    helper = (REPO / "workbench/control_plane/src/lib/respondInput.ts").read_text(encoding="utf-8")
+    assert helper.count('"/api/agent/respond-input"') == 1
+
+
+def test_confirmation_resolved_name_agrees_across_the_wire():
+    """2026-10-06: the server closes each confirmation card with
+    ``confirmation_resolved``. The client drops the card, keeps the event off
+    the message, and hides it in the panel. A rename on one side alone puts
+    the answered card back on every replay. Mutation caught: renaming the
+    constant in ``ask_tools.py`` or in ``lib/confirmationQueue.ts`` alone."""
+    from acb_skills.ask_tools import CONFIRMATION_RESOLVED
+
+    cp = REPO / "workbench/control_plane/src"
+    queue = (cp / "lib/confirmationQueue.ts").read_text(encoding="utf-8")
+    assert f'export const CONFIRMATION_RESOLVED = "{CONFIRMATION_RESOLVED}";' in queue
+    for rel in ("hooks/useAgentChat.ts", "components/GenerativeUIPanel.tsx"):
+        src = (cp / rel).read_text(encoding="utf-8")
+        assert f'"{CONFIRMATION_RESOLVED}"' in src, rel
+    chat = (cp / "components/AgentChat.tsx").read_text(encoding="utf-8")
+    assert "name === CONFIRMATION_RESOLVED" in chat
 
 
 def test_sub_agent_streaming_binds_hitl_handler():
