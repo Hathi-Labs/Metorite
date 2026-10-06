@@ -208,8 +208,16 @@ async def ai_chat(
     # is no account_id or the per-account lookup fails. It reads the RESOLVED id,
     # never req.account_id: the body may name a mailbox of another member
     # (D-EM-4, EM-T2c item 2).
-    chat_model = "tier-powerful"
-    if account_id:
+    #
+    # WS-45 S4 (D90, §8): for an email-assistant that AI_TIER_ROUTING covers,
+    # the platform picks the tier of each step. So the route reads no
+    # `chat_model` and sends no model. The column stays (R6). An uncovered
+    # agent reads it exactly as before.
+    from acb_skills.tier_policy import tier_routing_on  # noqa: PLC0415
+
+    covered = tier_routing_on("email-assistant")
+    chat_model: str | None = None if covered else "tier-powerful"
+    if account_id and not covered:
         try:
             from gateway.routes.email.automation.assistant import _account_models  # noqa: PLC0415
             async with _tenant_session() as _mdb:

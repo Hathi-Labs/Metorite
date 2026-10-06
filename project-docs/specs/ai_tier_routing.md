@@ -7,10 +7,73 @@ written. Specified 2026-10-05. Board row **WS-45**, and decision **D90** is in
 **S1 is built and dark** (2026-10-06, PR #667).
 **S2 is built and dark** (2026-10-06, PR #675).
 **S3 is built and dark** (2026-10-06, PR #678).
-**S4a, the vendor-call fence, is built** (2026-10-06, branch
-`ws45-s4-tier-agents`). The rest of S4 is S4b, and it is next.
+**S4a, the vendor-call fence, is built** (2026-10-06, PR #681).
+**S4b, every other agent, is built and dark** (2026-10-06, branch
+`ws45-s4b-tier-agents`). S5 is next, and it is spec only.
 `AI_TIER_ROUTING` ships empty, and `NEXT_PUBLIC_AI_TIER_ROUTING` ships OFF.
 Neither flag covers an agent on any box.
+
+**S4b build notes (2026-10-06).** Read these before S5, or before an agent
+joins the flag on a box.
+
+- **The chat path needed no change for the other agents.** The S2 glue reads
+  the flag by agent name. `test_tier_policy_agents.py` drives the real
+  factory of email-assistant, crm-assistant, whatsapp-assistant, apis-config
+  and the orchestrator through the real `run_agent_stream`. Each passes S2
+  done-when items 1 to 5. The same tests also pass on `origin/main`.
+- **Item 4 for an agent with no hinted tool.** Only projects-assistant and
+  email-assistant hold a tool in `TOOL_HINTS`. The test names `decide` as a
+  hint for the run, so it proves that the hint middleware is on each
+  agent's run. `TOOL_HINTS` does not change.
+- **The two Copilot SDK agents** (task-manager, app-builder) hold items 1, 2,
+  3 and 5 at run level. Item 4 cannot hold for them (§4.5, D84).
+- **The batch path (`run_agent`) now runs the policy** for a covered agent. It
+  ignores the caller's `model`, logs `ai_route.model_ignored`, asks the turn
+  kind, and attaches `TierPolicyProvider` to a per-run copy of the agent.
+  Its effort is the payload's `think_mode`, else the parent run's. A covered
+  batch run also binds `think_mode` in its artifact context, so the System-1
+  threshold follows the effort.
+- **Review P3 of S4b, two fixes on the batch path.** A Copilot SDK agent
+  takes its `.agent.md` model as its default, as on the stream path. A
+  self-anneal retry of a covered native run keeps the run's policy, and
+  counts its requests from 1 again.
+- **A sub-agent runs its own policy (§4.5).** A MAF sub-agent runs through
+  the batch path, so the line above covers it. A Copilot SDK sub-agent gets
+  the policy's tier for the whole run. A sub-agent that the flag does not
+  cover still inherits the parent's tier through `_active_run_model`, as
+  before.
+- ⚠️ **A sub-agent emits no `ai.route` event.** `resolve_run_queue` reads the
+  PARENT's queue first, so the event would join the parent's answer label.
+  `_tier_policy_for_run` takes `emit=False` for this. The
+  `ai_route.chosen` lines still show each request.
+- **The surfaces.** `hooks/useTierRouted.ts` reads coverage from
+  `GET /api/agent/list`, and makes no request with the UI flag off.
+  `lib/tierRouting.ts` holds the rules: `governedModelProps`,
+  `readsChatModel` and `visibleModelRows`.
+  - The email chat (`chat/page.tsx`, `EmailAssistantChat.tsx`) and the Tasks
+    rail pass no `model` and no `lockModel` for a covered agent.
+  - The Projects rail reads the same `user_settings.chat_model` row, so it
+    follows the same rule.
+  - A surface reads `chat_model` only once it knows that the agent is not
+    covered, so a covered setting is never read, not even once.
+- **The two controls.** The chat row of the email assistant settings leaves
+  for a covered email-assistant. ⚠️ The chat row of the Tasks settings has
+  two chat readers, the Tasks rail and the Projects rail. So it leaves only
+  when the flag covers task-manager AND projects-assistant (review P2 of
+  S4b). Every other model row stays, because a background feature keeps its
+  literal tier (§1.2). Both columns stay (§8, R6).
+- **The backend.** `POST /email/automation/ai/chat` reads no `chat_model`
+  and sends no model for a covered email-assistant. The Tasks chat sends
+  its model from the client, so the backend held no Tasks read to remove.
+  The day plan of the Calendar (`routes/tasks/calendar.py`) still reads the
+  chat row. It is a background feature, and H-44 owns it. Once the Tasks
+  row leaves, the day plan keeps the saved value, and no control changes
+  it until H-44 gives it a tier of its own.
+- **Done-when 4.** S4b adds no router in front of the orchestrator. Its pick
+  of a specialist uses the System-1 `decide` only when the model calls it.
+- **Not built in S4b:** the `/copilot/chat` AG-UI door of the orchestrator
+  still honours a `model` query parameter. A covered chat does not take that
+  door (S3). An API caller still can, until the contract step of §8.
 
 **S4a build notes (2026-10-06).** Read these before S4b or S5.
 
@@ -44,8 +107,8 @@ Neither flag covers an agent on any box.
   host built at run time, and a library that builds its own vendor client
   (mem0, graphiti-core). `acb_memory/_gateway_env.py` holds both libraries on
   the gateway.
-- **Not built in S4a (S4b owns each):** the policy for a sub-agent and for the
-  batch path (`run_agent`), the email chat's `model` and `lockModel`, the two
+- **S4b built the rest:** the policy for a sub-agent and for the batch path
+  (`run_agent`), the email chat's `model` and `lockModel`, the two
   `chat_model` controls, and the per-agent proof of S2 done-when items 1 to 5.
 
 **S3 build notes (2026-10-06).** Read these before S4.

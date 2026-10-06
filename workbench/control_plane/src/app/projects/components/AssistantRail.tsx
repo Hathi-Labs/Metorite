@@ -54,6 +54,8 @@ import {
 // (the entity pills, WS-27bm S9). Re-exported for the rail's callers.
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 export { PROJECTS_AGENT };
+import { useTierRouted } from "@/hooks/useTierRouted";
+import { governedModelProps, readsChatModel } from "@/lib/tierRouting";
 
 /** The permission the vocabulary writes need (`routes/projects/core.py`). */
 const SETTINGS_WRITE = "projects:settings:write";
@@ -107,13 +109,19 @@ export function AssistantRail({
   // set in the Tasks app's settings. The Projects chat reads the same row, so
   // there is no second setting to keep in step. Unset until it arrives.
   const [chatModel, setChatModel] = useState<string | undefined>();
+  // WS-45 S4 (D90): a covered projects-assistant reads no `chat_model`, and
+  // the rail passes none. With the UI flag off it is known and not covered,
+  // so the read and the props are as before.
+  const tier = useTierRouted(PROJECTS_AGENT);
+  const readsModel = readsChatModel(tier);
   useEffect(() => {
+    if (!readsModel) return;
     let cancelled = false;
     fetchTaskSettings()
       .then((s) => { if (!cancelled && s.chatModel) setChatModel(s.chatModel); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [readsModel]);
 
   // Mem0 parity with the chat, email and tasks apps.
   const { memories: memoryObjs } = useChatMemories(userId);
@@ -341,7 +349,7 @@ export function AssistantRail({
             agentName={PROJECTS_AGENT}
             sessionId={activeSession.id}
             compact
-            model={chatModel}
+            {...governedModelProps(tier.covered, chatModel, false)}
             persona={persona}
             memories={memories}
             memoryUserId={userId}
