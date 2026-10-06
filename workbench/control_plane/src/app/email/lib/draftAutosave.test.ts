@@ -1378,6 +1378,13 @@ describe("email-popout-handover: the record of the hand-over (review round 1)", 
     // A save that settled in the wait can have put the draft on the list.
     expect(change).toContain("if (!staleDraftsRef.current.includes(draftIdRef.current)) staleDraftsRef.current.push(draftIdRef.current);");
   });
+
+  it("puts a draft of the old From on the stale list once (re-verify of round 1)", () => {
+    // Two saves that settle in the wait of changeFrom give one id. A second
+    // push made a second delete, and its 404 showed an error.
+    expect(compose).toContain("if (!staleDraftsRef.current.includes(saved.id)) staleDraftsRef.current.push(saved.id);");
+    expect(compose).not.toMatch(/^\s*staleDraftsRef\.current\.push\(saved\.id\);/m);
+  });
 });
 
 // ── email-save-failed-shows ──────────────────────────────────────────────

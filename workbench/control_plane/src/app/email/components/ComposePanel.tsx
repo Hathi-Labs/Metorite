@@ -340,8 +340,9 @@ export function ComposePanel({
         if (liveFromRef.current !== savingFrom) {
           // The From changed while this save ran. Its draft belongs to the
           // old mailbox, so it is stale, and the next save starts a new one
-          // in the new mailbox (EM-T8c review).
-          staleDraftsRef.current.push(saved.id);
+          // in the new mailbox (EM-T8c review). Two saves in the wait of
+          // changeFrom can give one id, and it goes on the list once.
+          if (!staleDraftsRef.current.includes(saved.id)) staleDraftsRef.current.push(saved.id);
           setDraftStatus("idle");
           return;
         }
