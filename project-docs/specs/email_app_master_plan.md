@@ -1544,7 +1544,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 ✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). ✅ EM-T4b MERGED (#617, 2026-10-04, dark: cap 0, budget `log`). ✅ EM-T4a-2 PR-A MERGED (#621, 2026-10-04).
 
-✅ EM-T4a-2 PR-B1 MERGED (#661, 2026-10-06), with review round 1. EM-T4a-2 PR-B2 and PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+✅ EM-T4a-2 PR-B1 MERGED (#661, 2026-10-06), with review round 1. 🔨 EM-T4a-2 PR-B2 built, not merged (2026-10-06). EM-T4a-2 PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box. The dev-phase window of CLAUDE.md §3a does NOT open `EMAIL_LLM_BUDGET_MODE=enforce`. `enforce` holds back triage and drafts from a paying mailbox. So it is a product limit, and the owner decides it.
 
@@ -1762,7 +1762,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 ##### EM-T4a-2 — the decision core
 
-**Status (2026-10-06).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. PR-B2 and PR-B3 are not built. The PR-B1 notes follow the PR-A notes.
+**Status (2026-10-06).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. 🔨 PR-B2 built, not merged (`email-t4a2-prb2`, 2026-10-06). PR-B3 is not built. The PR-B1 notes follow the PR-A notes, and the PR-B2 notes follow the PR-B1 notes.
 
 The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The audit of 2026-10-05 read them again at `c26b67549`, and it split PR-B in three. The part adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
 
@@ -2049,6 +2049,55 @@ The diff holds 559 lines that are not in a test or a document (362 added and 197
 **Verified after review round 1 (2026-10-06).** A private database got the ladder once, and each R8 file ran in a run of its own. The 14 files with no R8 case gave 330 passed, because #658 added two cases. The two fence files of P2-2 gave 20 passed. The six R8 files gave 102, 147, 73, 10, 76 and 34 passed, with 0 skipped. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0.
 
 The diff now holds 563 lines that are not in a test or a document (366 added and 197 removed). The nine other test files that reach the two jobs passed, each in a run of its own.
+
+**PR-B2 as built (2026-10-06).**
+
+- `read_classification` (`engine.py`) reads `_thread_is_conversation` in Block R when `resolve` is True and the mode is not `on`. `ClassifyRead.conversation` holds the answer.
+- `replyzero.py` has the steps of the job status ask. `status_ask_needed` says whether the job asks. `read_job_status(db, ...)` loads `about` with `include_kb=False`, calls `resolve_self`, and then calls `read_thread_status` with the id of the row. `ask_job_status(read)` takes no `db`.
+- `StatusRead` has `message_id` and `move_keys`. `ask_thread_status` uses `ctx.last_message_id` when `message_id` is None. `_mark_thread_replied` passes neither, so its ask does not change.
+- `JobStatus` is the carrier of item 8. Its four states are `not_asked`, `none`, `undecided` and `verdict`. `resolve_classification` and `resolve_conversation_status_matches` take it as the keyword `status`.
+- With a carrier, the resolver of `off` and `shadow` runs `_resolve_asked`. It asks no model and does not read `_thread_is_conversation` again. With no carrier, the resolver asks as before, for the request paths of item 8 of the scope.
+- Each job body runs Block R and then the rule-match ask. When the job asks the status, Block S reads and the ask runs with no block open. Block W comes last. Block S ends with `SELECT 1`.
+- A failed read or a failed ask logs `email.resolve_conversation_status_failed` and gives "no status", so the per-message matches stand. "Undecided" raises `DecisionUnavailable` at the head of Block W, and the job skips the row.
+- PR-B2 changes no prompt, tier, decision, setting, flag or migration. Its one new statement is the `SELECT 1` of Block S. `on`, `status_before_match`, `_resolve_on`, the request paths and the action tail do not change.
+
+**Agent decisions (D16).** Each one is a departure from the letter of the specification, and none changes a decision.
+
+1. `_run_rules_job` was at the `C901` cap of 15, and Block S adds one `if`. So the provider build of Phase 0 moved, with no change, into `_rules_job_provider` (`runner.py`). The helper opens no block, and the ruff count of `runner.py` stays 17.
+2. Item 6 says that Block S catches an error of the read. `read_job_status` catches it, for the same cap. Block S calls the helper, so the catch is inside Block S.
+3. Block R reads `_thread_is_conversation` for each row that the job resolves outside `on`. The old resolver read it only when no match had a conversation key. The answer is the same, and Block R makes one more read.
+4. For a self-only thread, `read_job_status` reads `about` and the self addresses before the self-only test. `_determine_status_of` tests first. Both give FYI and ask no model.
+5. `read_job_status` sets the trigger `inbound`. The jobs write through `project_reply_status_from_matches`, so no write reads it.
+
+**A new raise site.** `_resolve_asked` raises `DecisionUnavailable` for "undecided". It runs first in Block W, before any write, so the precondition of PR-B1 holds. The fence `email-decision-core-apply-raises-no-unavailable` does not reach it from the apply.
+
+**Fences (R7).** All are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-no-session-across-the-job-status-ask`: `test_the_job_status_ask_runs_with_no_session_open`, for the runner, the runner in the multi-rule mode and the backfill, in `off` and `shadow`. Block S must follow Block R, and Block W must follow Block S. The companion is `test_the_job_status_fence_can_fail`.
+- `email-decision-core-status-parity`: `test_the_split_status_asks_what_the_composed_form_asks`, for a normal thread and a self-only thread. It also compares the arguments of `build_thread_context`.
+- `email-decision-core-status-degrades`: `test_a_failed_status_ask_keeps_the_per_message_matches`, `test_an_undecided_status_skips_the_row` and `test_an_aborted_status_block_stops_the_job`, for each job.
+- `email-decision-core-steps` reads `read_job_status`, `ask_job_status`, `status_ask_needed` and `_resolve_asked` in `replyzero.py`. `test_both_jobs_call_the_split_form` needs the three steps of PR-B2 in both job bodies.
+- Item 10: `test_the_match_ask_runs_with_no_session_open` accepts Block S between Block R and Block W.
+- R8: `TestTheSplitJobsWriteTheirOwnTenant` gets `test_the_runner_resolves_a_conversation_in_b` and `test_the_backfill_resolves_a_conversation_in_b`, in `off` and `shadow`. A thread with an older reply in `sent` gets DONE from its Done rule in org B. Org A reads none of it.
+
+**The test that moved.** `test_email_reply_zero.py` patched `resolve_conversation_status_matches` in the backfill case. It now patches `_thread_is_conversation` and `read_job_status`, and its fake answers the `SELECT 1` of Block S. No expected value changed.
+
+**Mutations of PR-B2.** Each mutation ran against `test_email_automation_tenancy.py` on a private database. After each one, `git status` was clean.
+
+| Mutation | Red |
+|---|---|
+| The ask runs in Block W, in both jobs | `test_the_job_status_ask_runs_with_no_session_open` [6 cases] and `test_a_failed_status_ask_keeps_the_per_message_matches` [3 cases] |
+| Block S stays open across the ask, in both jobs | `test_the_job_status_ask_runs_with_no_session_open` [6 cases] and `test_a_failed_status_ask_keeps_the_per_message_matches` [3 cases] |
+| An error of the ask passes up (`ask_job_status` catches nothing) | `test_a_failed_status_ask_keeps_the_per_message_matches` [3 cases] |
+| An "undecided" state keeps the matches (`_resolve_asked`) | `test_an_undecided_status_skips_the_row` [3 cases] |
+| Block S has no `SELECT 1`, in both jobs | `test_an_aborted_status_block_stops_the_job` [3 cases] |
+| The job passes `ctx.last_message_id` (`message_id=None` in `read_job_status`) | `test_the_split_status_asks_what_the_composed_form_asks` [normal thread] |
+| The read helper uses `include_kb=True` | `test_the_split_status_asks_what_the_composed_form_asks` [normal thread] |
+| A self-only thread asks the model (`ask_job_status` drops its test) | `test_the_split_status_asks_what_the_composed_form_asks` [self-only thread] |
+
+**Verified (2026-10-06).** A private database got `01_schema.sql` and the ladder (226 files), and each R8 file ran in a run of its own. The 14 files with no R8 case gave 330 passed. The six R8 files gave 128, 147, 73, 10, 76 and 35 passed, with 0 skipped. `test_email_automation_tenancy.py` has 26 new cases. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0.
+
+The diff holds 251 lines that are not in a test or a document (230 added and 21 removed).
 
 ##### EM-T4a-3 — the action tail on the sync path
 

@@ -1717,7 +1717,7 @@ async def _run_rules_job(
     session, and the broad handler logs it.
     """
     try:
-        # Lazy: replyzero imports this package, and it owns the status ask.
+        # Lazy, as the projection import in Block W: replyzero owns the status ask.
         from gateway.routes.email.automation import replyzero as rz
 
         # Phase 0: every read the loop needs.
