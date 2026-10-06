@@ -19,6 +19,11 @@ Classes:
 
 A row may name a tool that is not built yet. Every such tool is in
 :data:`PLANNED` with the slice that builds it, and the fence asserts that.
+
+WS-46 P4 (D91) takes the same rule from the route to the FIELD. :data:`SENDS`,
+:data:`FIELD_EXEMPT` and :data:`FIELD_PLANNED` hold every field of a mapped
+route's request, and ``tests/unit/test_projects_field_parity.py`` (fence F2)
+reads the fields from the real router.
 """
 
 from __future__ import annotations
@@ -29,9 +34,14 @@ from dataclasses import dataclass
 __all__ = [
     "CLASSES",
     "COMPOSITE",
+    "FIELD_EXEMPT",
+    "FIELD_GAPS",
+    "FIELD_PLANNED",
+    "IDENTITY_HEADERS",
     "MANIFEST",
     "PLANNED",
     "READ_ONLY_POSTS",
+    "SENDS",
     "Route",
     "allowed",
     "is_read",
@@ -492,6 +502,555 @@ READ_ONLY_POSTS: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/projects/reports/preview"),
     }
 )
+
+
+# ── WS-46 P4 (D91, fence F2) — every request FIELD, not only every route ─────
+#
+# Spec: ``project-docs/specs/projects_agent_parity.md`` §6.3. D-PM-37 holds
+# each ROUTE to a decision. These three tables hold each FIELD of a mapped
+# route's request to one. ``tests/unit/test_projects_field_parity.py`` reads
+# the fields from FastAPI's own ``route.dependant`` (the body model's fields,
+# the query parameters and the route's own headers), and fails on a field
+# that is in none of the three, or in more than one. So a new field on a
+# Projects route cannot merge until its author decides what the chat does
+# with it. Class X routes have no tool, and their fields are not held here.
+#
+# The wire name is the key: an alias (``from``, ``If-Match``) where the route
+# declares one. A dict body with no model is one field, the parameter name.
+
+#: Headers a route's DEPENDENCY declares. They are the auth seam, and the
+#: client sets each one from the run binding, never from a tool argument
+#: (R11, user_management_contract.md). The fence ignores these four and
+#: fails on any other header a dependency adds.
+IDENTITY_HEADERS: frozenset[str] = frozenset(
+    {"x-user-email", "x-user-role", "authorization", "x-actor-via"}
+)
+
+#: For each mapped route: request field -> the tool that sends it. The value is
+#: ``"tool.argument"`` when an argument sets the field, or ``"tool"`` when the
+#: tool sets it by itself (a fixed page size, ``include_subtree``). One witness
+#: per field is enough. The fence calls each witness through the fake gateway
+#: and asserts that the request carries the field, so a claim the tool does
+#: not honour fails.
+SENDS: dict[tuple[str, str], dict[str, str]] = {
+    # ── tasks ────────────────────────────────────────────────────────────
+    ("GET", "/projects/tasks"): {
+        "project_id": "list_tasks.project_id",
+        "include_subtree": "list_tasks.include_subtree",
+        "q": "list_tasks.query",
+        "include_archived": "list_tasks.include_archived",
+        "status_category": "list_tasks.status_category",
+        "assignees": "list_tasks.assignee",
+        "unassigned": "list_tasks.unassigned",
+        "overdue": "list_tasks.overdue",
+        "due_before": "list_tasks.due_before",
+        "tags": "list_tasks.tags",
+        "watching": "list_tasks.watching",
+        "page": "list_tasks.page",
+        "page_size": "list_tasks.page_size",
+    },
+    ("POST", "/projects/tasks"): {
+        "project_id": "create_task.project_id",
+        "parent_task_id": "create_task.parent_task_id",
+        "status_id": "create_task.status",
+        "title": "create_task.title",
+        "description": "create_task.description",
+        "importance": "create_task.important",
+        "leveraged": "create_task.leveraged",
+        "estimate_mins": "create_task.estimate_mins",
+        "due_at": "create_task.due",
+        "tags": "create_task.tags",
+    },
+    ("PATCH", "/projects/tasks/{task_id}"): {
+        "status_id": "update_task.status",
+        "title": "update_task.title",
+        "description": "update_task.description",
+        "importance": "update_task.important",
+        "leveraged": "update_task.leveraged",
+        "estimate_mins": "update_task.estimate_mins",
+        "start_date": "update_task.start",
+        "due_at": "update_task.due",
+        "tags": "update_task.tags",
+    },
+    ("POST", "/projects/tasks/{task_id}/move"): {
+        "parent_task_id": "move_task.parent_task_id",
+    },
+    ("PUT", "/projects/tasks/{task_id}/assignees"): {"assignees": "assign.assignees"},
+    ("POST", "/projects/tasks/{task_id}/links"): {
+        "target_task_id": "link_tasks.other_task_id",
+        "link_type": "link_tasks.link_type",
+    },
+    ("POST", "/projects/tasks/bulk"): {
+        "task_ids": "bulk_update.task_ids",
+        "patch": "bulk_update.status",
+        "assignees_add": "bulk_update.assignees_add",
+        "assignees_remove": "bulk_update.assignees_remove",
+        "tags_add": "bulk_update.tags_add",
+        "tags_remove": "bulk_update.tags_remove",
+        "action": "bulk_update.action",
+    },
+    ("POST", "/projects/tasks/move/preview"): {
+        "task_ids": "move_task.task_ids",
+        "destination_project_id": "move_task.destination_project_id",
+    },
+    ("POST", "/projects/tasks/move"): {
+        "task_ids": "move_task.task_ids",
+        "destination_project_id": "move_task.destination_project_id",
+        "accept_drops": "move_task",
+        "accepted_drops": "move_task",
+    },
+    ("POST", "/projects/tasks/{task_id}/merge"): {"sources": "merge_tasks.source_task_ids"},
+    ("GET", "/projects/search"): {"q": "find_tasks.query", "limit": "find_tasks.limit"},
+    # ── activity ─────────────────────────────────────────────────────────
+    ("GET", "/projects/tasks/{task_id}/timeline"): {
+        "kind": "render_timeline.kind",
+        "page": "task_detail",
+        "page_size": "task_detail",
+    },
+    ("POST", "/projects/tasks/{task_id}/comments"): {
+        "body": "comment.body",
+        "parent_id": "comment.reply_to",
+    },
+    ("PATCH", "/projects/comments/{activity_id}"): {"body": "edit_comment.body"},
+    # ── statuses, types, fields, tags ────────────────────────────────────
+    ("POST", "/projects/nodes/{project_id}/statuses"): {
+        "name": "create_status.name",
+        "color": "create_status.color",
+        "position": "create_status",
+        "category": "create_status.category",
+    },
+    ("PATCH", "/projects/statuses/{status_id}"): {
+        "name": "update_status.name",
+        "color": "update_status.color",
+        "position": "update_status.position",
+        "category": "update_status.category",
+    },
+    ("DELETE", "/projects/statuses/{status_id}"): {"move_to": "delete_status.move_to"},
+    ("POST", "/projects/nodes/{project_id}/status-set/preview"): {
+        "mode": "set_status_set.mode",
+        "copy_from": "set_status_set.copy_from",
+    },
+    ("POST", "/projects/nodes/{project_id}/status-set"): {
+        "mode": "set_status_set.mode",
+        "copy_from": "set_status_set.copy_from",
+    },
+    ("POST", "/projects/nodes/{project_id}/types"): {
+        "name": "create_type.name",
+        "icon": "create_type.icon",
+        "color": "create_type.color",
+        "is_default": "create_type.is_default",
+        "scope": "create_type.org_wide",
+        "is_epic": "create_type.is_epic",
+    },
+    ("PATCH", "/projects/types/{type_id}"): {
+        "name": "update_type.name",
+        "icon": "update_type.icon",
+        "color": "update_type.color",
+        "is_default": "update_type.make_default",
+        "is_epic": "update_type.epic",
+    },
+    ("POST", "/projects/nodes/{project_id}/fields"): {
+        "name": "create_field.name",
+        "description": "create_field.description",
+        "field_type": "create_field.field_type",
+        "options": "create_field.options",
+        "scope": "create_field.org_wide",
+    },
+    ("PATCH", "/projects/fields/{field_id}"): {
+        "name": "update_field.name",
+        "description": "update_field.description",
+        "field_type": "update_field.field_type",
+        "options": "update_field.options",
+        "required": "update_field.required",
+    },
+    ("POST", "/projects/nodes/{project_id}/tags"): {
+        "name": "create_tag.name",
+        "color": "create_tag.color",
+        "description": "create_tag.description",
+        "scope": "create_tag.org_wide",
+    },
+    ("PATCH", "/projects/tags/{tag_id}"): {
+        "name": "update_tag.name",
+        "color": "update_tag.color",
+        "description": "update_tag.description",
+    },
+    ("POST", "/projects/tags/{tag_id}/merge"): {"into_tag_id": "merge_tags.into"},
+    # ── the tree and the views ───────────────────────────────────────────
+    ("POST", "/projects/nodes"): {
+        "name": "create_project.name",
+        "description": "create_project.description",
+        "parent_project_id": "create_project.parent_project_id",
+        "kind": "create_project.kind",
+        "lead": "create_project.lead",
+    },
+    ("PATCH", "/projects/nodes/{project_id}"): {
+        "name": "update_project.name",
+        "description": "update_project.description",
+        "status": "update_project.status",
+        "lead": "update_project.lead",
+    },
+    ("POST", "/projects/nodes/{project_id}/move"): {
+        "parent_project_id": "move_project.parent_project_id",
+    },
+    ("POST", "/projects/nodes/{project_id}/views"): {
+        "name": "save_view.name",
+        "view_type": "save_view.view_type",
+    },
+    ("PATCH", "/projects/views/{view_id}"): {"name": "save_view.view_id"},
+    # ── the member's own work ────────────────────────────────────────────
+    ("GET", "/projects/assigned-to-me"): {
+        "include_done": "my_work.include_done",
+        "page": "my_work.page",
+        "page_size": "my_work",
+    },
+    ("GET", "/projects/my/inbox"): {
+        "include_done": "my_work.include_done",
+        "page": "my_work.page",
+        "page_size": "my_work",
+    },
+    ("POST", "/projects/my/tasks"): {
+        "title": "create_personal_task.title",
+        "next_action": "create_personal_task.next_action",
+        "context": "create_personal_task.context",
+        "due_at": "create_personal_task.due",
+        "notes": "create_personal_task.notes",
+    },
+    ("PATCH", "/projects/tasks/{task_id}/personal"): {
+        "disposition": "set_my_overlay.disposition",
+        "next_action": "set_my_overlay.next_action",
+        "context": "set_my_overlay.context",
+        "energy": "set_my_overlay.energy",
+        "is_two_minute": "set_my_overlay.two_minute",
+    },
+    ("POST", "/projects/tasks/{task_id}/defer"): {"until": "defer.until"},
+    ("GET", "/projects/my/calendar"): {"start": "calendar.start", "end": "calendar.end"},
+    ("GET", "/projects/calendar"): {
+        "from": "calendar.start",
+        "to": "calendar.end",
+        "project_id": "calendar.project_id",
+    },
+    # ── recurrence ───────────────────────────────────────────────────────
+    ("PUT", "/projects/tasks/{task_id}/recurrence"): {
+        "freq": "set_recurrence.freq",
+        "interval": "set_recurrence.interval",
+        "anchor": "set_recurrence.anchor",
+        "weekdays": "set_recurrence.weekdays",
+        "day_of_month": "set_recurrence.day_of_month",
+        "month_of_year": "set_recurrence.month_of_year",
+        "until_at": "set_recurrence.until",
+        "max_occurrences": "set_recurrence.max_occurrences",
+    },
+    # ── intake and the bell ──────────────────────────────────────────────
+    ("POST", "/projects/intake"): {
+        "project_id": "capture_intake.project_id",
+        "title": "capture_intake.title",
+        "description": "capture_intake.description",
+        "importance": "capture_intake.important",
+        "leveraged": "capture_intake.leveraged",
+        "due_at": "capture_intake.due",
+    },
+    ("GET", "/projects/intake"): {
+        "project_id": "intake_queue.project_id",
+        "page": "intake_queue",
+        "page_size": "intake_queue",
+    },
+    ("POST", "/projects/intake/{task_id}/accept"): {"status_id": "triage_intake.status"},
+    ("POST", "/projects/intake/{task_id}/duplicate"): {
+        "duplicate_of_task_id": "triage_intake.duplicate_of",
+    },
+    ("POST", "/projects/intake/{task_id}/snooze"): {"until": "triage_intake.until"},
+    ("GET", "/projects/notifications"): {
+        "unread_only": "notifications.unread_only",
+        "page": "notifications",
+        "page_size": "notifications",
+    },
+    ("POST", "/projects/notifications/read"): {
+        "ids": "mark_notifications_read.ids",
+        "all": "mark_notifications_read.all_unread",
+    },
+    # ── people, fit and analytics ────────────────────────────────────────
+    ("GET", "/projects/people/names"): {"emails": "people_for.emails"},
+    ("GET", "/projects/assignees"): {"q": "people_for.query", "due": "people_for.due"},
+    ("GET", "/projects/candidates"): {
+        "title": "fit_for_task.title",
+        "tags": "fit_for_task.tags",
+        "due": "fit_for_task.due",
+    },
+    ("GET", "/projects/analytics/stuck"): {
+        "project_id": "analytics_stuck.project_id",
+        "include_subtree": "analytics_stuck",
+    },
+    ("GET", "/projects/analytics/load"): {
+        "project_id": "analytics_load.project_id",
+        "include_subtree": "analytics_load",
+    },
+    ("GET", "/projects/analytics/throughput"): {
+        "project_id": "analytics_throughput.project_id",
+        "include_subtree": "analytics_throughput",
+        "weeks": "analytics_throughput.weeks",
+    },
+    ("GET", "/projects/analytics/finished"): {
+        "project_id": "analytics_finished.project_id",
+        "include_subtree": "analytics_finished",
+        "weeks": "analytics_finished.weeks",
+        "skip_current_week": "analytics_finished.skip_current_week",
+    },
+    ("GET", "/projects/analytics/outlook"): {
+        "project_id": "analytics_outlook.project_id",
+        "include_subtree": "analytics_outlook",
+    },
+    ("GET", "/projects/analytics/capacity"): {
+        "project_id": "team_capacity.project_id",
+        "include_subtree": "team_capacity",
+        "horizon_days": "team_capacity.horizon_days",
+    },
+    ("GET", "/projects/analytics/conflicts"): {
+        "project_id": "find_conflicts.project_id",
+        "include_subtree": "find_conflicts",
+        "horizon_days": "find_conflicts.horizon_days",
+    },
+    ("GET", "/projects/analytics/rebalance"): {
+        "project_id": "rebalance.project_id",
+        "include_subtree": "rebalance",
+        "horizon_days": "rebalance.horizon_days",
+    },
+    # ── plans and reports ────────────────────────────────────────────────
+    ("POST", "/projects/plan/preview"): {"rows": "propose_plan.tasks"},
+    ("POST", "/projects/reports"): {"payload": "report_save.name"},
+    ("PATCH", "/projects/reports/{report_id}"): {"payload": "report_save.report_id"},
+    ("POST", "/projects/reports/preview"): {"payload": "render_report.template"},
+}
+
+_ORDER_REASON = "The order of rows on screen, which a person drags in the app."
+_MAPPING_CARD_REASON = (
+    "The answer on the app's mapping card. Without it the server's own rule maps "
+    "each row, and the preview the chat card shows already counts that rule."
+)
+_READ_FILTER_REASON = (
+    "A filter of the app's list. The chat narrows tasks through list_tasks, "
+    "which prints the facts this filter reads."
+)
+_SCOPE_AT_CREATE_REASON = (
+    "Where a NEW row lands. The PATCH route drops it, because a row keeps its scope."
+)
+_TRIAGE_READ_REASON = "Intake rows. The chat reads them through intake_queue."
+
+#: A field the chat does not set, and why. A reason names the tool or the
+#: rule that answers the need, so a reviewer can check the claim.
+FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/projects/tasks"): {
+        "parent_task_id": "Subtasks are read through task_detail, which lists them.",
+        "status_id": (
+            "One lane by id. list_tasks filters by status_category, and render_board "
+            "groups the tasks by lane."
+        ),
+        "assignee": "The older single form. list_tasks sends assignees.",
+        "sort": "The order of the app's list. The chat orders its own answer.",
+        "direction": "The order of the app's list. The chat orders its own answer.",
+        "archived_only": "The archive view. include_archived reads archived rows with the rest.",
+        "importance_gte": _READ_FILTER_REASON,
+        "tags_all": "Every tag rather than any tag. task_dataset takes tags_all.",
+        "include_triage": _TRIAGE_READ_REASON,
+        "view_id": "The hand-arranged order of a saved view, which only the board reads.",
+        "top_level": "The board's subtask toggle. Each row the chat reads names its parent.",
+    },
+    ("PATCH", "/projects/tasks/{task_id}"): {
+        "If-Match": "The browser's edit guard (D-PM-20). A chat write reads the row first.",
+        "project_id": "The route refuses it: a move goes through move_task.",
+        "parent_task_id": "The route refuses it: a re-parent goes through move_task.",
+        "source": "Where a task came from is a fact of its create. An edit keeps it.",
+    },
+    ("POST", "/projects/tasks/{task_id}/move"): {
+        "project_id": (
+            "move_task moves between projects through POST /projects/tasks/move, the "
+            "route with the preview and the drop check."
+        ),
+        "assignees": (
+            "Promote-and-assign is the Clarify card's one transaction. The chat "
+            "assigns through assign."
+        ),
+    },
+    ("POST", "/projects/tasks/move/preview"): {
+        "status_map": _MAPPING_CARD_REASON,
+        "field_map": _MAPPING_CARD_REASON,
+        "accept_drops": "A preview writes nothing, so it has nothing to accept.",
+        "accepted_drops": "A preview writes nothing, so it has nothing to accept.",
+    },
+    ("POST", "/projects/tasks/move"): {
+        "status_map": _MAPPING_CARD_REASON,
+        "field_map": _MAPPING_CARD_REASON,
+    },
+    ("GET", "/projects/search"): {
+        "exclude_relatives_of": "The link picker's filter in the app. task_detail reads links.",
+        "include_triage": _TRIAGE_READ_REASON,
+    },
+    ("PATCH", "/projects/comments/{activity_id}"): {
+        "parent_id": "Only POST reads it. An edit cannot re-parent a comment (activities.py).",
+    },
+    ("POST", "/projects/nodes/{project_id}/status-set/preview"): {
+        "mapping": _MAPPING_CARD_REASON,
+    },
+    ("POST", "/projects/nodes/{project_id}/status-set"): {"mapping": _MAPPING_CARD_REASON},
+    ("PATCH", "/projects/types/{type_id}"): {"scope": _SCOPE_AT_CREATE_REASON},
+    ("POST", "/projects/nodes/{project_id}/fields"): {
+        "field_key": "The route makes the key from the name.",
+        "position": _ORDER_REASON,
+        "required": (
+            "The create route stores no required flag. create_field sets it with a "
+            "PATCH under the same card."
+        ),
+    },
+    ("PATCH", "/projects/fields/{field_id}"): {
+        "field_key": "The route refuses it: a key is the identity of every stored value.",
+        "position": _ORDER_REASON,
+        "scope": _SCOPE_AT_CREATE_REASON,
+    },
+    ("PATCH", "/projects/tags/{tag_id}"): {"scope": _SCOPE_AT_CREATE_REASON},
+    ("POST", "/projects/nodes"): {
+        "status": "A new node starts active. update_project sets another status.",
+    },
+    ("PATCH", "/projects/nodes/{project_id}"): {
+        "parent_project_id": "The route refuses it: a re-parent goes through move_project.",
+        "kind": "The route refuses it: a node's kind is set at its create.",
+        "source": "Where a node came from is a fact of its create. An edit keeps it.",
+    },
+    ("POST", "/projects/nodes/{project_id}/views"): {"position": _ORDER_REASON},
+    ("PATCH", "/projects/views/{view_id}"): {
+        "view_type": "A view keeps its type. The app has no control that changes it.",
+        "position": _ORDER_REASON,
+    },
+    ("GET", "/projects/my/inbox"): {
+        "disposition": "A chip of the lens. my_work prints the disposition of each row.",
+        "context": "A chip of the lens. my_work prints the context of each row.",
+        "include_deferred": (
+            "A deferred task leaves the lens until its date, as in the app. list_tasks reads it."
+        ),
+        "include_archived": "Archived work is read through list_tasks include_archived.",
+    },
+    ("PATCH", "/projects/tasks/{task_id}/personal"): {
+        "time_estimate_mins": (
+            "Retired by D77. The route refuses it by name. update_task sets the estimate."
+        ),
+        "defer_until": "defer writes it, through POST /projects/tasks/{task_id}/defer.",
+        "important": "Retired by D78. The route refuses it by name. update_task sets it.",
+        "leveraged": "Retired by D78. The route refuses it by name. update_task sets it.",
+        "kept_mine": "The member's dismissal of the app's delegate hint. The chat shows no hint.",
+        "sort_key": _ORDER_REASON,
+        "last_nudged_at": "The nudge route writes it, and the nudge stays out of the chat (Q3).",
+    },
+    ("GET", "/projects/my/calendar"): {
+        "include_done": "Done work is read through my_work include_done.",
+    },
+    ("GET", "/projects/calendar"): {
+        # A finding of P4, recorded and not fixed: the route's default is the
+        # named node only, so a space's calendar shows no subproject work.
+        "include_subtree": "The route's default reads the named node only. A subproject has its own id.",
+        "status_id": _READ_FILTER_REASON,
+        "status_category": _READ_FILTER_REASON,
+        "assignee": _READ_FILTER_REASON,
+        "assignees": _READ_FILTER_REASON,
+        "unassigned": _READ_FILTER_REASON,
+        "overdue": _READ_FILTER_REASON,
+        "importance_gte": _READ_FILTER_REASON,
+        "q": _READ_FILTER_REASON,
+        "tags": _READ_FILTER_REASON,
+        "tags_all": _READ_FILTER_REASON,
+        "include_archived": _READ_FILTER_REASON,
+        "archived_only": _READ_FILTER_REASON,
+        "include_links": "The dependency lines on the app's calendar. task_detail reads links.",
+        "include_undated": "A task with no date is not on a calendar. list_tasks reads it.",
+        "include_triage": _TRIAGE_READ_REASON,
+        "watching": _READ_FILTER_REASON,
+        "top_level": _READ_FILTER_REASON,
+    },
+    ("GET", "/projects/analytics/outlook"): {
+        "weeks": "The app sends no horizon either. The tool reads the route's default.",
+    },
+}
+
+#: The open gaps of ``projects_agent_parity.md`` §3.3 that a field waits on,
+#: and the slice of §12 that closes each. The fence reads the spec: a gap id
+#: must be a row of the gap table, and its slice must not be marked built.
+FIELD_GAPS: dict[str, str] = {
+    "G5": "P6",
+    "G6": "P6",
+    "G7": "P6",
+    "G8": "P6",
+    "G9": "P6",
+    "G10": "P9",
+    "G11": "P9",
+    "G12": "P7",
+    "G13": "P7",
+    "G14": "P7",
+    "G15": "P7",
+    "G16": "P7",
+    "G17": "P7",
+    "G18": "P7",
+}
+
+#: A field that a later slice gives the chat: field -> its gap id. The slice
+#: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
+FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
+    ("POST", "/projects/tasks"): {
+        "start_date": "G5",
+        "type_id": "G6",
+        "custom_fields": "G7",
+        "source": "G10",
+    },
+    ("PATCH", "/projects/tasks/{task_id}"): {
+        "type_id": "G6",
+        "custom_fields": "G7",
+        "include_subtasks": "G9",
+    },
+    ("POST", "/projects/tasks/{task_id}/move"): {
+        "custom_fields": "G8",
+        "include_subtasks": "G9",
+    },
+    ("POST", "/projects/tasks/move/preview"): {"include_subtasks": "G9"},
+    ("POST", "/projects/tasks/move"): {"include_subtasks": "G9"},
+    ("POST", "/projects/tasks/{task_id}/archive"): {"include_subtasks": "G9"},
+    ("POST", "/projects/tasks/{task_id}/complete"): {"include_subtasks": "G9"},
+    ("POST", "/projects/tasks/bulk"): {"personal": "G16", "include_subtasks": "G9"},
+    ("POST", "/projects/intake"): {"source": "G11", "source_ref": "G11"},
+    # G12, the project settings. A create takes them as well as an edit.
+    ("POST", "/projects/nodes"): {
+        "icon": "G12",
+        "icon_slot": "G12",
+        "task_prefix": "G12",
+        "archive_after_months": "G12",
+        "close_after_months": "G12",
+        "timezone": "G12",
+        "position": "G13",
+        # G10's rule, on a node: the route takes `agent` as a source.
+        "source": "G10",
+    },
+    ("PATCH", "/projects/nodes/{project_id}"): {
+        "icon": "G12",
+        "icon_slot": "G12",
+        "task_prefix": "G12",
+        "archive_after_months": "G12",
+        "close_after_months": "G12",
+        "timezone": "G12",
+        "position": "G13",
+    },
+    ("POST", "/projects/nodes/{project_id}/move"): {"position": "G13"},
+    ("POST", "/projects/nodes/{project_id}/views"): {"config": "G14"},
+    ("PATCH", "/projects/views/{view_id}"): {"config": "G14"},
+    ("PATCH", "/projects/tasks/{task_id}/personal"): {
+        "scheduled_start": "G15",
+        "scheduled_end": "G15",
+        "flexible": "G15",
+        "is_hard_date": "G15",
+        "actual_start": "G15",
+        "actual_end": "G15",
+        "deep_work": "G15",
+        "waiting_on": "G15",
+        "delegated_at": "G15",
+        "expected_by": "G15",
+    },
+    ("GET", "/projects/my/areas"): {"include_archived": "G17"},
+    ("GET", "/projects/my/inbox"): {"untriaged": "G18"},
+}
 
 
 def tool_class(name: str) -> str | None:
