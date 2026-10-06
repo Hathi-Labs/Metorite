@@ -65,6 +65,13 @@ and streams chat responses as AG-UI events.
    - An agent shape the control cannot read (a MAF agent that is not an `Agent` and not Copilot-shaped) raises `NoEgressRefused`. `_run_agent_inner` answers it before the self-anneal and the self-mutation, so nothing retries a refused run.
    - Fence: `tests/unit/test_delegation_no_egress.py` (WS43-F24).
 
+18. **A covered agent's run takes its tier from the policy** (WS-45 S2, D90, `project-docs/specs/ai_tier_routing.md` §4.5). The policy lives in `acb_skills.tier_policy`. The executor holds only the glue.
+   - `_tier_policy_for_run` is the one entry. It returns None when `AI_TIER_ROUTING` does not cover the agent, and then no line of the run changes.
+   - For a covered agent it ignores the request's `model` and `copilot_chat_model`, logs `ai_route.model_ignored`, and asks the turn kind before the model block of `run_agent_stream`.
+   - `_with_tier_policy` adds the provider to the run's view on the native Tier 1 and Tier 2 paths. A Copilot SDK agent keeps the turn's tier for the whole run, and the executor yields one `ai.route` event for it.
+   - The batch path and the sub-agent path attach no policy yet (S4).
+   - Fence: `tests/unit/test_tier_policy.py`.
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature
