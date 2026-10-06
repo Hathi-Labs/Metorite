@@ -215,6 +215,10 @@ clone cache.
    `RefuseTools`) that takes a rule. The host-tool control of
    `sandbox_tools` and the egress control of `egress` both use it. Do not
    write a third copy of the pair.
+5j. ask_tools.py -- `request_confirmation` is the one HITL card gate, and it
+   fails closed. `confirmation_channel_open()` reads the same two channels.
+   A tool reads it only after a denial, to tell a refusal from a run with
+   no live chat. It never decides an action (WS-17 EM-T13a).
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a
    typo'd `cc-` class renders unstyled, a `cc-bar` without `--v` draws empty. The

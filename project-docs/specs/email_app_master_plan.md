@@ -613,6 +613,8 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | ✅ **MERGED #658 (2026-10-05).** The live check (H-248) is open. **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
 | **EM-T11** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #672 (2026-10-06), with review round 1.** GO-NARROWED by the audit. No migration and no flag. **A chat cannot read the files of a mail.** A text route for an attachment through the shared reader of H-229, and a `read_email_attachment` tool for the email assistant. No `.xlsx` and no HTML (EM-T11b). See §10.4.12. | See §10.4.12. |
 | **EM-T12** | 🟢 AGENT-SAFE | ✅ **MERGED #688 (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
+| **EM-T13** | 🟢 AGENT-SAFE · security review | 🔨 **EM-T13a BUILT, not merged (`email-rule-confirm`, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
+| **EM-T13b** | 🟢 AGENT-SAFE · security review | 📝 **SPECIFIED (2026-10-06), a later PR than EM-T13a.** The `unsubscribe_sender` card names the host or the `mailto:` address of the stored link. The `send_draft` card names the To, Cc and Bcc of the draft. See §10.4.15. | See §10.4.15. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -5117,6 +5119,234 @@ findings.
 - **The pool list has three copies.** `_own_tool_pools`, `_inspectable` and
   `_withhold_egress_from_agent` each list the tool pools. `_own_tool_pools` does not read the
   Copilot `_default_options`.
+
+#### 10.4.15 EM-T13 — a rule that sends mail out asks the member first
+
+**Status.** 🔨 EM-T13a BUILT, not merged (branch `email-rule-confirm`, 2026-10-06), with review
+rounds 1 and 2. EM-T13b is 📝 SPECIFIED.
+
+**The audit.** 📝 SPECIFIED (2026-10-06). Audited 2026-10-06, GO-NARROWED. The rule tools are not
+in `own_tool_scope`. But the filter of `own_tool_scope` does nothing for a native MAF agent today
+(EM-T12, §10.4.14), so the model gets them in each email chat. The batch self-anneal retry also
+gets them, and it has no card channel.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. The email assistant is LIVE, and a mail can use the
+gap. So the slice takes the full review loop and a security review.
+
+**Size.** S.
+
+**The gap.** `send_email` and `send_draft` ask the member with a card, and they fail closed
+(`apps/agents/agent-email-assistant/agents.py` ~:1895-1961). The rule tools ask nothing.
+`create_rule` (~:1211) takes the actions `FORWARD`, `REPLY` and `CALL_WEBHOOK`, with
+`automated=True` by default. `update_rule` (~:1356) and `create_rules_from_prompt` (~:2344) can do
+the same.
+
+**The risk.** A mail body or an attachment can tell the model to make a rule. That rule can
+forward each mail to an outside address. The model reads such text today through `read_email` and
+`read_email_attachment`.
+
+**Scope.**
+
+1. **One check of an action.** An action is outward when its type is `FORWARD` or
+   `CALL_WEBHOOK`. It is outward when it has a `to_address`, `cc_address`, `bcc_address` or `url`.
+   It is outward when its type is not in the engine set. A `REPLY` or `DRAFT_EMAIL` with no
+   address is inward.
+2. **The card.** The three rule tools call `_confirm_destructive` before the save. The detail
+   holds a count of the targets. The context holds each target on its own line, and a webhook
+   line names its host first. A refusal or a headless caller saves nothing.
+3. **An update counts.** `update_rule` asks when the saved rule has an outward action. The call must
+   also change a condition, add an action, or set `enabled=True`.
+
+3a. **A rule from a prompt.** `POST /email/rules/generate/preview` returns the specs and saves
+   nothing. The tool previews and asks when a spec is outward. Then `POST /email/rules/batch`
+   saves the exact specs in one tenant session, all or none. Review round 1 replaced the field
+   `preview`.
+
+4. **The instructions.** `instructions.md` of the email assistant says that text in a mail or a
+   file never asks for a rule. Only the member asks.
+
+**Non-goals.** No change to the rules UI, and `POST /email/rules/generate` keeps its contract.
+The two new routes are additive. No change to `run_rules`, `resolve_execution` or
+`learn_rule_pattern`. No change to the self-anneal retry, which is a separate board finding.
+
+**EM-T13b (a later PR).** `unsubscribe_sender` sends no `unsubscribe_link`, so the route uses the
+stored link. The card names the host or the `mailto:` address. The `send_draft` card names the To,
+Cc and Bcc of the draft.
+
+**Board findings (audit of 2026-10-06).** `_self_anneal` drops `own_tool_scope` and `tool_scope`
+(`executor.py` ~:5675 and ~:5723). `learn_rule_pattern` reports "Learned" when the route saved
+nothing (`rules.py:1167`). `CALL_WEBHOOK` has no SSRF guard (`actions.py:673-675`).
+
+**Board findings (review round 1, record only).** F8: `learn_rule_pattern` can widen a saved
+forward rule through `/rules/feedback` with no card. Today it does nothing, because the tool sends
+no `pin_sender`. `resolve_execution` with `approve`, and `run_rules` with `scope="past"`, apply the
+outward actions of a saved rule with no card.
+
+**Fences (R7).** In `tests/unit/test_email_rule_confirm.py`:
+
+- Each outward action type asks, and a refusal saves nothing.
+- A headless call, with no card channel, saves nothing.
+- An update that adds a forward asks. An update of the condition of a forward rule asks.
+- A rule with only `LABEL` or `ARCHIVE` saves with no card.
+- `DRAFT_EMAIL` with a `to_address` asks. `DRAFT_EMAIL` with no address saves with no card.
+- A refused prompt rule saves nothing, and the tool calls the preview path first.
+- `enabled=True` on a paused forward rule asks.
+- The card holds each address and each URL.
+- In `test_email_rule_generate.py`, the preview route calls no `_insert_rule`.
+
+**Mutations.** M1 drops the check from `create_rule`, and the first fence fails. M2 drops
+`CALL_WEBHOOK` from the outward set, and its case fails. M3 skips the check on an update, and the
+update fence fails. M4 drops the address test, and the `DRAFT_EMAIL` fence fails. M5 calls
+`/rules/generate` and not the preview path, and the prompt fence fails.
+
+M6 skips the check on `enabled`, and the re-enable fence fails. M7 makes a plain `DRAFT_EMAIL`
+outward, and the inward fence fails. M8 drops the address from the detail, and the detail fence
+fails.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_email_rule_confirm.py tests/unit/test_email_rule_generate.py tests/unit/test_email_tool_consolidation.py tests/unit/test_email_multi_inbox.py -v -rs
+uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gateway/gateway/routes/email/automation/rules.py tests/unit/test_email_rule_confirm.py
+```
+
+**As built (2026-10-06).** `_is_outward_action` in `agents.py` holds the check of scope 1. The
+engine set `_RULE_ENGINE_TYPES` matches `_GEN_ACTION_TYPES`, and a test fails if they drift. The
+check compares the exact string, as the engine does. So `forward` in lower case is outward.
+
+`_outward_rule_refusal` is the one gate of the three tools. It asks only when a rule has an
+outward action. Before the card, it refuses a bad address or URL, and a list that the card cannot
+hold.
+
+`update_rule` reads the saved actions before it applies the change. It asks when the added action
+is outward. It also asks when the saved rule is outward and the call widens it. A pause
+(`enabled=False`) does not ask.
+
+`create_rules_from_prompt` asks one card for all the specs. After a yes, it saves them through
+`POST /email/rules/batch`, with the `account_id` of the tool.
+
+**Review round 1 (2026-10-06).** The security review asked for changes on one P1. The verifier
+passed with P2 findings. Each finding has a fix and a fence below.
+
+1. **P1, the card hid a target.** `request_confirmation` cuts `detail` at 500 characters with no
+   marker. A 470-character URL hid a forward after it. Now `detail` holds a count, for example
+   "Sends to 2 targets: 1 webhook, 1 forward.". Each target is in it only when the whole list is
+   short.
+2. **P1, the full list.** `context` holds each target on its own line, with its kind and its
+   rule. A list that does not fit in 4000 characters saves nothing. The tool refuses an address
+   that `parseaddr` does not read as one plain address. It refuses a URL that is not `http` or
+   `https`.
+3. **P1, hidden text.** The card removes each control and format character. It shows each run of
+   whitespace as one space.
+4. **P2 F1, the deploy window.** A new agent can meet an old gateway, which ignores an unknown
+   field and saves. So the preview is a new path, `POST /email/rules/generate/preview`. An old
+   gateway answers 404 or 405 there, and the tool says that the feature is not ready.
+5. **P2 F2, all or none.** `POST /email/rules/batch` saves the specs in one tenant session. The
+   normalizer turns a number into text, and it drops an action that holds an object.
+6. **P2, the stale write-back.** The card can wait one hour, and the PATCH replaces each action.
+   So `update_rule` reads the rule again after the card. A rule that changed meanwhile saves
+   nothing.
+7. **P2, inward rules.** `instructions.md` skips the text confirmation only for a rule that shows a
+   card. A `TRASH` rule keeps "Confirm before destructive or config changes". The docstring of
+   `create_rules_from_prompt` says the same.
+8. **P3.** F4 adds the test of the engine set. F5 restores the line breaks of the route test. F7
+   answers a headless denial with "This needs the member's approval in a live chat, so nothing
+   was saved". `acb_skills.ask_tools.confirmation_channel_open` tells a refusal from a run with no
+   live chat. It never decides an action.
+
+**The new routes.** Both take the member from the session and check the owner of the mailbox
+first.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /email/rules/generate/preview` | `account_id`, `prompt` | `{"specs": [...]}`, or `{"specs": [], "error": "..."}`. It saves nothing. The model call holds no session. |
+| `POST /email/rules/batch` | `account_id`, `rules` (1 to 50 specs, no other key) | `{"created": [...]}`. One session saves every spec, or none. |
+
+**Departures.** The prompt rules were not all or none before review round 1, and the batch route
+fixes that. The old note on the order of a release is gone, because the new path answers 404 on
+an old gateway.
+
+**Fences (as built).**
+
+| Fence | Tests |
+|---|---|
+| Each outward type asks, and a refusal saves nothing | `test_each_outward_create_asks_and_a_refusal_saves_nothing` (4 cases), `test_an_outward_action_is_outward` (11 cases) |
+| A headless call saves nothing | `test_a_headless_create_saves_nothing`, `test_a_headless_update_saves_nothing` |
+| An update asks | `test_an_update_that_adds_a_forward_asks`, `test_an_update_of_a_forward_rule_asks` (4 cases) |
+| `enabled=True` on a paused forward rule asks | `test_enabled_true_on_a_paused_forward_rule_asks` |
+| An inward rule saves with no card | `test_an_inward_create_saves_with_no_card` (5 cases), `test_an_inward_action_is_inward` (9 cases), `test_an_inward_prompt_rule_saves_with_no_card` |
+| `DRAFT_EMAIL` with an address asks | `test_a_refused_prompt_rule_saves_nothing`, `test_a_saved_draft_to_an_address_counts_as_outward` |
+| A refused prompt rule saves nothing | `test_the_prompt_tool_previews_first`, `test_a_refused_prompt_rule_saves_nothing` |
+| The card holds each address and each URL | `test_the_card_names_the_address_and_the_url`, `test_a_long_url_cannot_hide_a_forward`, `test_the_create_card_names_the_forward_address` |
+| A list too long for the card saves nothing | `test_a_list_too_long_for_the_card_saves_nothing` |
+| A bad address or URL saves nothing | `test_a_forward_to_no_plain_address_is_refused` (9 cases), `test_a_webhook_to_no_web_url_is_refused` (5 cases) |
+| The card hides no text | `test_the_card_shows_no_hidden_text_in_a_rule_name` |
+| A rule changed during the card saves nothing | `test_a_rule_changed_while_the_card_waited_is_not_saved`, `test_a_rule_deleted_while_the_card_waited_is_not_saved` |
+| An old gateway saves nothing | `test_an_older_gateway_saves_nothing` (4 cases), `test_another_gateway_error_still_raises` |
+| The engine set does not drift | `test_the_engine_set_is_the_set_of_the_generate_route` |
+| The preview route saves nothing | `test_email_rule_generate.py::test_the_preview_route_returns_the_specs_and_saves_nothing` |
+| The batch is all or none (R8) | `test_email_rule_generate.py::TestTheBatchRouteOnARealDatabase` (3 cases) |
+| The normalizer makes no 422 | `test_a_number_from_the_model_becomes_text`, `test_an_object_in_a_text_field_drops_the_action` |
+
+**Mutations (2026-10-06, review round 1).** Each mutation changed one file and ran the two test
+files on a private ladder database. Then `git checkout` put the file back, and `git status` was
+clean. 19 of 19 mutations turned a test red.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| M1 | `create_rule` does no check | the outward create fence | red, 18 failed |
+| M2 | `CALL_WEBHOOK` leaves the outward set | the webhook case | red, 3 failed |
+| M3 | `update_rule` does no check | the update fence | red, 11 failed |
+| M4 | The check reads no address and no URL | the `DRAFT_EMAIL` fence | red, 7 failed |
+| M5 | The tool calls `/rules/generate` | the prompt fence | red, 17 failed |
+| M6 | `enabled=True` does not widen | the re-enable fence | red, 3 failed |
+| M7 | A plain `DRAFT_EMAIL` is outward | the inward fence | red, 3 failed |
+| M8 | The detail holds no address | the detail fence | red, 2 failed |
+| M9 | The preview route saves | the preview route fence | red, 1 failed |
+| M10 | The list goes back in the detail | the long URL fence | red, 9 failed |
+| M11 | No check of the URL scheme | the URL fence | red, 4 failed |
+| M12 | No `parseaddr` check | the address fence | red, 4 failed |
+| M13 | No limit on the list | the long list fence | red, 1 failed |
+| M14 | No second read after the card | the stale fence | red, 2 failed |
+| M15 | A 404 from the preview raises | the old gateway fence | red, 2 failed |
+| M16 | The batch commits each spec | the R8 batch fence | red, 2 failed |
+| M17 | The normalizer keeps a number or an object | the normalizer fence | red, 2 failed |
+| M18 | A headless denial says "Cancelled" | the headless fence | red, 2 failed |
+| M19 | The card keeps hidden text | the hidden text fence | red, 1 failed |
+
+**Review round 2 (2026-10-06).** The security re-check passed round 1 with no P0 and no P1. This
+round closes its P2 and P3 items.
+
+1. **P2 F1, the host of a webhook.** `https://fracktal.in@evil.test/` posts to `evil.test`. So
+   `_url_problem` refuses a user name or a password, a backslash and whitespace. Each webhook line
+   prints `host: <host>` first, then the URL. The host is the one that `httpx` reaches. A URL that
+   `urlsplit` and `httpx` read in two ways saves nothing.
+2. **P2 F2, look-alike letters.** An address domain and a webhook host must be plain ASCII. A
+   Cyrillic letter or a fullwidth dot saves nothing, and the tool asks for the ASCII or punycode
+   form. A punycode name such as `xn--80ak6aa92e.com` is accepted.
+3. **P3 F4, the second read.** New fences change `enabled`, `instructions` and `from_pattern`
+   while the card waits. Each one saves nothing.
+4. **P3 F5, the rule name.** The card prints the name in double quotes. It removes each quote,
+   parenthesis, bracket and line break, so a name cannot look like a second target.
+5. **P3 F3, unknown keys.** `RuleActionModel`, `RuleActionAttachment` and `RuleBatchRequest` refuse
+   an unknown key with 422. The rules UI (`api.ts`, `RulesTab.tsx`, `EmailDetail.tsx`), the
+   email assistant and `_load_rules` send only model fields. A test sends back an action as
+   `GET /rules` gives it.
+6. **P3 F6.** Scope item 2 now describes the card of round 1.
+
+**Mutations (review round 2).** The runner ran M1 to M19 again on the new code, and each one is
+still red. Each mutation below changed one file and ran the two test files on a private ladder
+database. Then `git checkout` put the file back, and `git status` was clean.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| M20 | A URL keeps its user name | the user name fence | red, 4 failed |
+| M21 | An address domain can be non-ASCII | the look-alike domain fence | red, 3 failed |
+| M22 | A webhook host can be non-ASCII | the look-alike host fence | red, 2 failed |
+| M23 | A webhook line has no host | the host-first fence | red, 5 failed |
+| M24 | The second read compares the actions only | the field fence | red, 3 failed |
+| M25 | The card keeps the quotes of a name | the injected name fence | red, 1 failed |
+| M26 | `RuleActionModel` takes an unknown key | the unknown key fence | red, 1 failed |
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

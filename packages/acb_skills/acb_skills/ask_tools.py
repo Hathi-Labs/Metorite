@@ -360,6 +360,27 @@ def _resolved_event(request_id: str, answer: str) -> dict:
     }
 
 
+def confirmation_channel_open() -> bool:
+    """True when this run has a channel that can show a card to a member.
+
+    It reads the two channels that :func:`request_confirmation` tries: path A
+    (``_active_run_queue``) and path C (the relay thread). A tool reads it only
+    AFTER a denial, to tell a refusal from a run with no live chat (WS-17
+    EM-T13a). It never decides an action. ``request_confirmation`` stays the
+    one gate, and it fails closed, so a drift here changes a message only.
+    """
+    try:
+        from orchestrator.executor import (
+            _active_run_queue,
+            resolve_relay_thread_id,
+        )
+        if _active_run_queue.get(None) is not None:
+            return True
+        return bool(resolve_relay_thread_id())
+    except Exception:
+        return False
+
+
 async def request_confirmation(
     title: str, detail: str = "", context: str = "",
     non_interactive_default: str = "deny",
