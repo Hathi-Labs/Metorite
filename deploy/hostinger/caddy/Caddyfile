@@ -62,6 +62,30 @@ app.metorite.com {
 		lb_try_duration 30s
 		lb_try_interval 250ms
 	}
+
+	# ── When the workbench cannot answer (navigation_shell.md §7.3) ─────────
+	# The hold above covers a restart of a few seconds. If the workbench has
+	# still not answered when the 30 s hold runs out, a member sees our page,
+	# "Metorite is updating", and not Caddy's bare 502. The page checks
+	# /api/health every 3 s and reloads by itself.
+	#
+	# ⚠️ `handle_errors` runs on a CADDY error only: a dial that failed for the
+	# whole hold. A 502, 503 or 504 that the workbench itself RETURNS is an
+	# answer, and it passes to the browser as it is. The app's own update
+	# notice (`lib/shell/UpdateNotice.tsx`) handles those.
+	#
+	# The page is served from the checkout, so a deploy updates it and the
+	# apply installs nothing. It keeps 503 (and Retry-After), so a client and a
+	# crawler both read "come back", never "this is the page".
+	handle_errors 502 503 504 {
+		root * /opt/acb/app/deploy/hostinger/caddy/updating
+		rewrite * /index.html
+		header Cache-Control "no-store"
+		header Retry-After "10"
+		file_server {
+			status 503
+		}
+	}
 }
 
 # --- Marketing apex (WS-33) ---
