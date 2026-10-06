@@ -25,7 +25,12 @@ import httpx
 from acb_auth import UserContext, get_current_user
 from acb_common import db_busy
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
-from acb_skills.attachment_text import PAGE_UNREADABLE, SUPPORTED_SUFFIXES, Extracted
+from acb_skills.attachment_text import (
+    PAGE_UNREADABLE,
+    SUPPORTED_SENTENCE,
+    SUPPORTED_SUFFIXES,
+    Extracted,
+)
 from acb_skills.attachment_tools import parse_bounded
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -339,6 +344,8 @@ MAX_TEXT_OUTPUT_CHARS = 20_000
 _SUFFIX_OF_MIME = {
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "text/html": ".html",
     "text/plain": ".txt",
     "text/markdown": ".md",
     "text/csv": ".csv",
@@ -389,7 +396,8 @@ class AttachmentTextModel(BaseModel):
     """The answer of ``GET /email/attachments/{id}/text``.
 
     ``kind`` is the type that the shared reader read (``pdf``, ``docx``,
-    ``txt``, ``md`` or ``csv``), or one of three answers with no text:
+    ``xlsx``, ``html``, ``txt``, ``md`` or ``csv``), or one of three answers
+    with no text:
     ``unsupported`` (a type or a source that the slice does not read),
     ``no_text`` (an image, or a file with no text layer) and ``unreadable``
     (the reader refused the file: a password, a limit, a broken file, no page
@@ -452,8 +460,7 @@ def _no_fetch(row: Any) -> tuple[str, str] | None:
         return "no_text", _IMAGE_REASON
     if suffix not in SUPPORTED_SUFFIXES:
         return "unsupported", (
-            f"I cannot read a {suffix or 'file without a type'} file. "
-            "I read .pdf, .docx, .txt, .md and .csv files."
+            f"I cannot read a {suffix or 'file without a type'} file. {SUPPORTED_SENTENCE}"
         )
     return None
 

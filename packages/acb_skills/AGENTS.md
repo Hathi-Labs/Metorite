@@ -144,8 +144,9 @@ clone cache.
    tests/unit/test_projects_agent.py.
 5f. attachment_text.py + attachment_tools.py -- `read_attachment` (H-229,
    spec: project-docs/specs/projects_ai_chat.md §22). It returns the text of a
-   `.docx`, `.pdf`, `.txt`, `.md` or `.csv` file attached in the caller's own
-   chat. `attachment_text` parses bytes only: no subprocess, no code, and
+   file attached in the caller's own chat. It reads `.docx`, `.xlsx`, `.pdf`,
+   `.html`, `.htm`, `.txt`, `.md` and `.csv`. `SUPPORTED_SENTENCE` is the ONE
+   sentence that lists the kinds. `attachment_text` parses bytes only: no subprocess, no code, and
    pypdf's `jbig2dec` is off. Every cap is a module constant there. The PDF
    deadline stops a page in the middle (pypdf's `visitor_operand_before`). A
    Word part must be UTF-8, and `pyexpat` refuses a DTD at its first event.
@@ -173,6 +174,21 @@ clone cache.
    `attachment_text.PAGE_UNREADABLE` is the line for a PDF page that did not
    parse. The email text route reads a PDF of only such lines as unreadable.
    Fence: tests/unit/test_email_attachment_text.py.
+   WS-17 EM-T11b (spec `email_app_master_plan.md` §10.4.13): a `.xlsx` takes
+   the zip and XML helpers of a `.docx`, with no `openpyxl`. Each helper
+   takes the format name, so a `.docx` keeps each refusal sentence. The
+   reader reads only parts in `xl/`, reads each part once and ignores an
+   external target. The `MAX_XLSX_*` caps stop the read and set `stopped`.
+   HTML goes through `html.parser` with `convert_charrefs=True`, and it
+   checks the deadline before each chunk. The reader cuts a construct that
+   the parser holds past `MAX_HTML_HELD`. The cut follows the state of the
+   parser (`_cut_held`). It reads at most `MAX_HTML_CHARS` characters.
+   No regex may run over a whole line
+   of HTML. A quadratic one holds the GIL (round 1, P0). Do not add a third
+   reader of HTML (`email/signature.py` and `body_backfill.py` move onto this
+   one later).
+   Fences: tests/unit/test_attachment_xlsx.py and section 14 of
+   tests/unit/test_read_attachment.py.
 5g. egress.py -- the network control on a covered run and every run under it
    (H-236, spec `maf_coding_engine.md` §16.3). It FAILS CLOSED. Such a run
    binds `no_egress=True` in its artifact context and holds only the

@@ -612,6 +612,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
 | **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | ✅ **MERGED #658 (2026-10-05).** The live check (H-248) is open. **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
 | **EM-T11** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #672 (2026-10-06), with review round 1.** GO-NARROWED by the audit. No migration and no flag. **A chat cannot read the files of a mail.** A text route for an attachment through the shared reader of H-229, and a `read_email_attachment` tool for the email assistant. No `.xlsx` and no HTML (EM-T11b). See §10.4.12. | See §10.4.12. |
+| **EM-T11b** | 🟢 AGENT-SAFE · security review · 🔴 live check | 🔨 **BUILT, not merged (2026-10-06).** GO-NARROWED by the audit. The shared reader reads `.xlsx` and HTML, with the hardened zip and XML path of a `.docx`. No migration, no flag and no new dependency. See §10.4.13. | See §10.4.13. |
 | **EM-T12** | 🟢 AGENT-SAFE | ✅ **MERGED #688 (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
 | **EM-T13** | 🟢 AGENT-SAFE · security review | 🔨 **EM-T13a BUILT, not merged (`email-rule-confirm`, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
 | **EM-T13b** | 🟢 AGENT-SAFE · security review | 📝 **SPECIFIED (2026-10-06), a later PR than EM-T13a.** The `unsubscribe_sender` card names the host or the `mailto:` address of the stored link. The `send_draft` card names the To, Cc and Bcc of the draft. See §10.4.15. | See §10.4.15. |
@@ -4966,6 +4967,406 @@ and its limit is 8 s. This diff does not touch the code under that test.
 
 **The live check (🔴 OWNER-GATE).** The owner asks the Email chat, and then the Projects chat, to
 summarise a PDF that came in a mail. Each chat must quote the file.
+
+#### 10.4.13 EM-T11b — the assistant reads an Excel file and an HTML file
+
+**Status.** 🔨 BUILT, not merged (2026-10-06), on the branch `email-att-xlsx`. The text was
+verified against code on 2026-10-06 at `a2bb34a82`. The spec-auditor gave GO-NARROWED, and this text
+holds its corrections. The "As built" notes below record the build. The owner asked for it on
+2026-10-06, because the assistant must read and understand an Excel file that comes in a mail.
+
+**Gate.** 🟢 AGENT-SAFE. No migration, no flag and no new dependency. The shared reader of H-229
+reads files that a sender controls, so the slice takes the full review loop and a security review.
+
+**No flag.** The orchestrator decided this on 2026-10-06, for the reason of §10.4.12. The member
+asks for each read.
+
+**Size.** M.
+
+**The gap.** EM-T11 (§10.4.12) reads PDF, Word, CSV, text and Markdown. A `.xlsx` file and an
+HTML file answer `unsupported`. Spreadsheets carry most of the numbers of a company: invoices,
+quotes, price lists, timesheets and plans.
+
+**Scope.**
+
+1. **One reader of `.xlsx`.** `attachment_text` reads a `.xlsx` with the `.docx` path, and it uses
+   no `openpyxl`. It reuses `_read_part`, `_require_utf8`, `_no_dtd`, `_Guard` and `_parse_xml`.
+   Each refusal of these takes the format name as an argument. A `.docx` keeps each refusal text
+   of today.
+   - `_Rels` collects each relationship. `_main_part` takes a default name, `xl/workbook.xml` for a
+     workbook.
+   - The reader reads `<sheet name state r:id>` from the workbook, and it matches attributes by
+     local name.
+   - It finds each target in the rels part of the workbook. A target that starts with `/` starts
+     at the package root. Any other target starts at the folder of the workbook.
+   - It normalises each path and refuses a part outside `xl/`. It reads each part once. It ignores
+     `TargetMode="External"`.
+   - It reads type `worksheet` only. It finds the strings by type `sharedStrings`, else at
+     `xl/sharedStrings.xml`.
+2. **The text shape.**
+   - A sheet with a value starts with `## Sheet: <name>`. A hidden sheet adds ` (hidden)`.
+   - Each row with a value is one line. The line starts with the reference of its first value,
+     for example `B3`, and a tab.
+   - The values follow in column order, with one tab between two columns. An empty cell between
+     two values gives an empty field.
+   - A cell with no `r` takes the next column. A cell that is not to the right of the cell before
+     it is dropped.
+   - A tab, CR or LF in a value or a sheet name becomes one space.
+   - `t="s"` gives the shared string at that index. `t="inlineStr"` gives the text of `<is>`. A
+     string is the `<t>` text, including the `<t>` text of each `<r>`. The `<t>` of `<rPh>` is no
+     text.
+   - `t="b"` gives `TRUE` or `FALSE`. Every other type gives the `<v>` text as it is.
+   - A formula gives its cached `<v>` and never its `<f>`. A formula with no `<v>` gives an empty
+     field.
+   - A date gives its serial number. A workbook with no value gives empty text, so the route
+     answers `no_text`.
+3. **The caps.** The `.docx` caps bind, and a parse past the deadline is refused, as for a `.docx`.
+   A shared strings part over 20 MB is refused. These caps stop the read and set `stopped`:
+   - 50 worksheets, 5,000 `<row>` elements in a sheet, and column 200 (`GR`).
+   - 100,000 `<c>` elements in the workbook, empty or not.
+   - 100,000 shared strings. An index past them gives an empty field.
+   - 60 MB of unpacked XML for the workbook.
+   - `MAX_EXTRACT_CHARS`, checked after each cell.
+
+   The parse of a sheet ends at `</sheetData>`.
+4. **HTML.** `.html`, `.htm` and `text/html` give `kind: "html"`. The reader uses
+   `html.parser.HTMLParser(convert_charrefs=True)`, which expands no declared entity.
+   - It decodes with `_decode` and calls `deadline.check()` before each `_CHUNK`.
+   - It drops `script`, `style`, `template`, `noscript`, `svg`, `head`, comments and
+     declarations.
+   - A block element ends a line, and a `td` or a `th` adds a tab.
+   - It keeps `MAX_TEXT_LINES` and `MAX_EXTRACT_CHARS`.
+5. **The callers.** `SUPPORTED_SUFFIXES` gains `.xlsx`, `.html` and `.htm`. One sentence lists the
+   kinds, with `.docx` first. Change these anchors:
+   - `attachment_text.py` ~:114-115 and ~:176-181.
+   - `attachment_tools.py`: `_KINDS` ~:102, the docstring ~:333, and `_where` ~:400-404.
+   - `transport/attachments.py`: `_SUFFIX_OF_MIME` ~:339 (the spreadsheetml type, `text/html`),
+     `_no_fetch` ~:453-457, and the model docstring ~:391.
+   - `agents.py`: `_ATTACHMENT_KINDS` ~:529 and the docstring ~:622-629.
+   - `agent-email-assistant/instructions.md` ~:73-79. Add: "A spreadsheet arrives one sheet at a
+     time, as rows of cells. A date can show as a serial number of days."
+   - `agent-projects/instructions.md` ~:143, `skill_families.py` ~:149, and
+     `packages/acb_skills/AGENTS.md` 5f.
+   - Tests: in `test_read_attachment.py`, ~:264-266 and ~:486-488 move to `.pptx`. In
+     `test_email_attachment_text.py` ~:338-351, the `xlsx` and `html` ids go and the sentence
+     check changes.
+6. **No old formats.** `.xls`, `.xlsm` with macros, `.xlsb` and `.ods` stay `unsupported`, with a
+   reason. A macro never runs, because the reader reads only XML.
+
+**Non-goals.** No calculation, no chart and no pivot of the data. The sandbox owns calculation
+(WS-43x). No change to the download route.
+
+**Fences (R7).** In `tests/unit/test_read_attachment.py` or a new
+`tests/unit/test_attachment_xlsx.py`:
+
+- A workbook with two sheets, shared strings, inline strings, numbers and a formula with a cached
+  value reads as the text of item 2.
+- Each cap of item 3 cuts the text, sets `truncated`, and stays inside the deadline.
+- The reader refuses a zip bomb and an XML bomb (an entity or a DTD). It also refuses a part over
+  its byte cap, and a sheet path outside `xl/`.
+- An HTML file loses a `<script>` and a `<style>` and keeps its text.
+- `tests/unit/test_email_attachment_text.py`: the route answers `kind: "xlsx"` and `kind: "html"`.
+- A sheet target `../word/document.xml` is not read.
+- A tab in a value stays in one field.
+- An `<rPh>` adds no text.
+- With `MAX_EXTRACT_CHARS` lowered, the read stops in the middle of a row.
+- `test_a_parse_past_its_deadline_stops` (~:255) gains `.xlsx` and `.html`.
+- A comment in HTML adds no text.
+- An unclosed comment of several MB answers inside the deadline.
+
+**Mutations.** M1 drops the row cap, and its fence fails. M2 reads the formula in place of the
+cached value, and its fence fails. M3 allows a DTD, and the XML bomb fence fails. M4 keeps the
+`<script>` text, and the HTML fence fails. The audit added seven more:
+
+- M5 drops the `xl/` check, and the target fence fails.
+- M6 drops the cap on shared strings, and the strings fence fails.
+- M7 checks the char cap only after each row.
+- M8 keeps the tab.
+- M9 drops the HTML deadline check.
+- M10 keeps the `<template>` text.
+- M11 drops the `<c>` cap, and `_Guard` then refuses the file where the fence expects `stopped`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_read_attachment.py tests/unit/test_attachment_xlsx.py tests/unit/test_email_attachment_text.py -v -rs
+uv run pytest evals/trajectories/test_attachment_scope_trajectory.py -q
+uv run ruff check packages/acb_skills/acb_skills/attachment_text.py packages/acb_skills/acb_skills/attachment_tools.py tests/unit/test_attachment_xlsx.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+`attachments.py` and `agents.py` hold 16 old ruff findings, and the change must keep that count.
+`test_a_flat_wide_part_is_refused_at_the_element_cap` is a known timing flake under load.
+
+**Board finding (not this slice).** Two more readers turn HTML into text:
+`email/signature.py::html_to_text` and `body_backfill.py::_html_to_text`. This slice does not reuse
+them, and it does not change them. A later ticket moves both onto the reader of item 4.
+
+**As built (2026-10-06).** Six commits on `email-att-xlsx` came before the review.
+`bfe89881a` holds the corrections of the audit, and `afec81464` the code and the fences.
+`485d7e12d` and `5c3a4fc60` hold the hardening, and `50daf67ac` and `6c74d1339` this record. Review
+round 1 adds `2c235d66c` (the fixes) and one more record commit.
+
+- **The shared helpers.** `_read_part`, `_require_utf8`, `_no_dtd`, `_Guard`, `_parse_xml` and
+  `_main_part` take the format name, and the default is `Word document`. A `.docx` keeps each
+  refusal sentence byte for byte. A workbook says `Excel workbook` and `from Excel`.
+- **The parts.** `_Rels` keeps each relationship in `found`. The reader reads the rels part of the
+  workbook first, and then the workbook. `_Workbook` keeps only an entry whose rel id names a
+  worksheet, the first entry for each part, and at most `MAX_XLSX_SHEETS` + 1 parts.
+- **The budget.** `_Budget` counts the workbook, its rels part, the shared strings and each sheet
+  against `MAX_XLSX_XML_BYTES`. A part over its own cap is refused. A part that does not fit in what
+  is left stops the read.
+- **The text.** `extract_text` gives `kind="xlsx"`, `unit="cell"`, and `read` counts the values
+  that it kept. An HTML file gives `kind="html"` and `unit="line"`.
+- **One sentence.** `attachment_text.SUPPORTED_SENTENCE` lists the kinds, with `.docx` first.
+  `extract_text`, `read_attachment` and the email text route each say it.
+
+**Departures from the spec (EM-T11b).**
+
+1. The row cap ends its sheet, and the read goes on with the next sheet. A cell past column 200 is
+   dropped, and the read goes on with the next row. Each sets `stopped`. The sheet cap, the cell
+   cap, the XML budget and the char cap stop the whole read. One wide sheet must not hide the
+   sheets after it.
+2. `unit` is `cell`, and `read` counts the values that the reader kept. The last cut of the text
+   hides a stop in the middle of a row. `read` shows it, so the fence of M7 can see it.
+3. A part outside `xl/` refuses the whole file, not only that part. The check also covers the main
+   part that `_rels/.rels` names.
+4. The audit did not name `addendum.py` ~:261, which lists the kinds of `read_attachment`. The
+   build changed it too, so the model reads one list.
+5. `_Workbook` keeps at most `MAX_XLSX_SHEETS` + 1 parts, and one entry for each part. The spec
+   named no bound. Without it, a workbook of a million entries keeps a million tuples.
+6. A row number and a shared string index take ASCII digits only. `str.isdigit` takes a
+   superscript two, and `int` then refuses the whole file.
+7. HTML: a `<body>` ends an unclosed `<head>`. The parser collapses white space. A NUL byte
+   refuses the file, as for a text file. The refusal says "a web page", and `_KINDS` and
+   `_ATTACHMENT_KINDS` name it `web page`.
+   - HTML decodes as UTF-8 only, with `_decode`, and the reader does not read a `<meta charset>`.
+     So a page in Windows-1252 gives U+FFFD for each byte past ASCII.
+8. A boolean of `1` or `true` gives `TRUE`. Each other value gives `FALSE`, and no value gives an
+   empty field. A `veryHidden` sheet says ` (hidden)` too.
+9. The email instructions split the attachment paragraph into two, to keep the STE paragraph
+   limit.
+10. The R8 runs used one private database, `acb_emt11b_00348`, on the scratch tenant server, with
+    `01_schema.sql` and the ladder (226 files). The phase-4 fixture made its `_h3rls` sibling
+    and dropped it at teardown. Each R8 file ran in its own process. The build dropped the private
+    database at the end, and no database of that name is left.
+11. `tests/unit/_xlsx_build.py` builds each workbook with `zipfile`. Three test files share it.
+
+**The fences, as built.** `test_attachment_xlsx.py` holds 58 cases in four classes:
+`TestTheTextShape`, `TestTheCaps`, `TestTheParts` and `TestTheRefusals`. Section 14 of
+`test_read_attachment.py` holds 14 cases for HTML. `test_a_parse_past_its_deadline_stops` and
+`test_no_parse_starts_a_process` gained `.xlsx` and `.html`. `test_email_attachment_text.py` reads
+an `.xlsx`, a `.html` and a `.htm` file, and two more by type. An `.xls`, an `.xlsm`, an `.xlsb`
+and an `.ods` stay `unsupported`, and an empty workbook answers `no_text`.
+
+**The verify block, as run (2026-10-06).** On the private database, each file in its own process:
+`test_read_attachment.py` 105 passed, `test_attachment_xlsx.py` 58 passed and
+`test_email_attachment_text.py` 76 passed, with 0 skipped. The trajectory eval gave 3 passed. Both
+ruff lines passed. `attachments.py` and `agents.py` still hold 16 old findings.
+
+**Mutations, as run (2026-10-06).** For each row, a script put one change into the code, ran the
+fence, and restored the file with `git checkout`. Each fix was in a commit first. After each row,
+`git status` was clean. Each of the 26 rows turned its fence red.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | The row cap is gone | `test_the_row_cap_ends_the_sheet` |
+| M2 | The reader reads the `<f>` text as the value | `test_a_formula_gives_its_cached_value_never_its_formula` |
+| M3 | The parser allows a DTD | `test_a_dtd_in_any_part_is_refused_at_its_first_event`, `test_an_entity_in_a_sheet_never_reaches_the_text` |
+| M4 | HTML keeps the `<script>` text | `test_html_loses_its_script_and_style_and_keeps_its_text` |
+| M5 | The `xl/` check is gone | `test_a_sheet_target_outside_xl_is_refused` |
+| M6 | The cap on shared strings is gone | `test_the_strings_cap_leaves_an_empty_field` |
+| M7 | The char cap is checked only after each row | `test_the_char_cap_stops_in_the_middle_of_a_row` |
+| M8 | A tab in a value stays a tab | `test_a_tab_cr_or_lf_in_a_value_stays_in_one_field` |
+| M9 | The HTML deadline check is gone | `test_a_parse_past_its_deadline_stops[.html]`, `test_the_html_deadline_stops_a_parse_between_chunks` |
+| M10 | HTML keeps the `<template>` text | `test_html_drops_the_text_of_a_template_a_noscript_and_an_svg[template]` |
+| M11 | The `<c>` cap is gone, and `_Guard` refuses the file | `test_a_million_empty_cells_stop_and_are_not_refused` |
+| X1 | The column cap is gone | `test_a_cell_past_column_gr_is_dropped` |
+| X2 | A sheet part can be read twice | `test_each_part_is_read_once` |
+| X3 | An external target is followed | `test_an_external_target_is_ignored` |
+| X4 | A hidden sheet does not say so | `test_a_hidden_sheet_says_so` |
+| X5 | A phonetic run of a shared string adds text | `test_a_phonetic_run_adds_no_text` |
+| X6 | The workbook keeps each entry of one part | `test_many_sheet_entries_for_one_part_keep_one` |
+| X7 | The XML budget is gone | `test_the_unpacked_xml_cap_stops_before_the_next_sheet` |
+| X8 | The strings part takes the part cap of Word | `test_a_strings_part_over_its_byte_cap_is_refused` |
+| X9 | A cell that goes back is kept | `test_a_cell_that_goes_back_is_dropped` |
+| X10 | An HTML comment adds text | `test_an_html_comment_and_a_declaration_add_no_text` |
+| X11 | A `<body>` does not end an unclosed `<head>` | `test_an_unclosed_head_ends_at_the_body` |
+| X12 | The HTML char cap is gone | `test_html_keeps_its_char_cap` |
+| X13 | The route drops the spreadsheet type | `test_a_name_with_no_suffix_takes_the_excel_or_html_type` |
+| X14 | The tool has no label for a workbook | `test_the_tool_names_an_excel_workbook` |
+| X15 | A row number takes any digit | `test_a_number_that_is_not_ascii_is_no_index_and_no_row` |
+
+**Review round 1 (2026-10-06).** The security reviewer asked for changes on one P0. The verifier
+passed the slice with five P3 items. Commit `2c235d66c` fixes each finding.
+
+1. **P0. The gateway froze.** `end_line` joined a line with the regex `` *\t *``. That regex is
+   quadratic on a run of spaces with no tab. It holds the GIL inside one C call, so no deadline
+   check ran. `"<i> " * 400_000` (1.6 MB) took 82.8 s. Under `parse_bounded`, 800 KB stalled the
+   event loop for 21.8 s.
+   - The fix: a split on the tab, a strip of each field and a join, each one pass. `_add` adds no
+     space after a space, so a line holds no run of spaces. The HTML path holds no other regex
+     over a whole line. `_SPACES` runs once on the data of one handler call, and it is linear.
+   - The `.xlsx` path holds three regexes over attacker text. Each one is a `fullmatch` of at most
+     11 characters, so it ends in constant time.
+   - The fences: the 1.6 MB file reads inside the deadline, the join of 100,000 spaces takes under
+     0.5 s, a line holds no run of spaces, and a heartbeat under `parse_bounded` never waits 0.5 s.
+2. **P2. An unclosed start tag.** `html.parser` scans its whole buffer again at each feed while a
+   tag stays open. An unclosed tag of 8 MB or 25 MB took the full 20 s deadline and held a parse
+   slot.
+   - The fix: `_feed_bounded` reads `rawdata` after each chunk. The parser keeps there the
+     construct that it has not closed. Past `MAX_HTML_HELD` (64 KB), the reader drops it and goes
+     on after its end: `-->` for a comment, else `>`. A long inline image is cut, and the text
+     around it is kept.
+   - A crafted tag with a `>` inside a quoted value can make the reader go on inside the tag. Then
+     part of the tag reads as text, and the work stays linear.
+3. **P3. Line breaks.** `_FLAT` maps a tab and each break of `str.splitlines` to one space:
+   `_LINE_BREAKS`. A value or a sheet name with U+2028 cannot forge a `## Sheet:` line.
+4. **P3. The bound of `_Workbook`.** Only a part that the zip holds counts toward the bound. The
+   workbook, its rels and the strings do not count. A real sheet after missing ones is read.
+5. **P3. Past column GR.** A dropped cell past GR moves the column, so a later cell with no `r` is
+   dropped too.
+6. **P3. The `xl/` fence.** The target `../xlother/sheet1.xml` is refused, and the check holds its
+   slash.
+7. **P3. A doctype subset.** `html.parser` ends a declaration at its first `>`. The reader drops
+   the data that follows, up to `]>` or the next start tag.
+8. **P3.** `test_read_attachment.py` reads `REPO = Path(...)` again.
+
+**Timings of the attack files (2026-10-06, one process each).**
+
+| File | Before | After |
+|---|---|---|
+| `"<i> " * 400_000`, 1.6 MB | 82.84 s | 1.30 s |
+| The same, 800 KB under `parse_bounded` | 22.52 s, the loop stalled 21.79 s | 0.66 s, the worst stall 0.03 s |
+| An unclosed tag, 8 MB | 20.27 s, refused as too slow | 0.03 s, the text before it |
+| An unclosed tag, 25 MB | 20.05 s, refused as too slow | 0.03 s, the text before it |
+| A tag of 8 MB, then text | 20.41 s, refused as too slow | 0.03 s, the text after it |
+
+**Departure of round 1.** The reviewer asked for a read of the 1.6 MB file in less than one second.
+The parser `html.parser` alone takes about 1.1 s for its 400,000 tags on the dev box. So that fence takes
+15 s, under the deadline. `test_the_line_join_is_linear_on_a_run_of_spaces` fences the join with a
+bound of 0.5 s. The heartbeat fence holds the bound of 0.5 s that the reviewer asked for.
+
+**The fences of round 1.** `test_attachment_xlsx.py` holds 67 cases now, and
+`test_read_attachment.py` 115 with section 15. On a new private database, `acb_emt11b_r1_04014`,
+each file ran in its own process: 115, 67 and 76 passed, with 0 skipped. The trajectory eval gave
+3 passed, and ruff stayed at the base.
+
+**Mutations of round 1, as run (2026-10-06).** The same method as above, on `2c235d66c`. The 26
+rows of the first table ran again on the new code. X2 survived. Round 1 made its guard a second
+copy: `_Workbook` keeps one entry for each part, and the bound skips the other parts of the book.
+
+X2b drops both guards and turns red. Each of the 11 new rows turned its fence red.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| X2b | Both guards of one read for each part are gone | `test_each_part_is_read_once` |
+| R1-P0 | The old code: the regex join, and no space rule | `test_the_line_join_is_linear_on_a_run_of_spaces`, `test_a_line_of_spaces_reads_inside_the_deadline`, `test_a_parse_never_stalls_the_event_loop` |
+| R1-P0join | The regex join alone | `test_the_line_join_is_linear_on_a_run_of_spaces` |
+| R1-P0dedupe | No space rule alone | `test_a_line_holds_no_run_of_spaces` |
+| R1-P2 | No cut of a held construct | `test_an_unclosed_start_tag_answers_fast`, `test_the_text_after_a_long_tag_is_kept` |
+| R1-P2c | A cut comment ends at the next `>` | `test_a_long_comment_with_a_gt_inside_adds_no_text` |
+| R1-P3decl | The tail of a subset is text again | `test_the_internal_subset_of_a_doctype_adds_no_text` |
+| R1-P3lb | Only CR and LF are line breaks | `test_no_line_break_in_a_value_or_a_name_starts_a_line`, `test_the_line_breaks_are_every_break_of_splitlines` |
+| R1-P3wb | An entry with no part counts toward the bound | `test_an_entry_with_no_part_does_not_count_toward_the_bound` |
+| R1-P3col | A dropped cell past GR keeps the column | `test_a_cell_with_no_reference_after_column_gr_is_dropped_too` |
+| R1-P3xl | The `xl` check drops its slash | `test_a_sheet_target_outside_xl_is_refused` |
+
+**Review round 2 (2026-10-06).** The security reviewer ran its attacks again. The P0 is fixed, and
+each hostile file runs in linear time. The cut of round 1 added one P1. Commits `f4b6acc1f`,
+`b62741195` and `efecf76fa` fix each finding. The proof files of the reviewer, `p9.py` to `p12.py`,
+are fences in section 16 of `test_read_attachment.py`.
+
+1. **P1. Text after a long script or style was lost.** In the raw text of `<script>` or `<style>`,
+   the cut went on after the next `>`. That `>` could close the end tag. Then the parser stayed in
+   raw text. The reader dropped each word after the block, and `stopped` stayed false.
+   - The fix: in raw text, the feed goes on AT the end tag that the parser looks for
+     (`page.interesting`), so the parser closes the element.
+   - A cut of raw text that a member can see, the text of a `<textarea>` or a `<title>` in the
+     body, sets `stopped`. A cut of a script or a style drops no page text.
+2. **P3. A `>` inside a quoted attribute.** The cut of a start tag went on at a `>` inside the
+   quotes. So the body of a script read as page text.
+   - The fix: `_start_tag_end` ends the tag at its first `>` outside quotes. A quote opens a value
+     only after `=`, as in `html.parser`.
+   - The reader then calls the start handler for the cut tag, so its element counts. A cut
+     `<script>` or `<style>` puts the parser into its raw text mode.
+   - A cut that finds no end, or that ends before the parser does, sets `stopped`.
+3. **P2. A dense file held a parse slot for most of the deadline.** `"<i> " * 6_000_000` (24 MB)
+   took 19.4 s, in linear time.
+   - The fix: `MAX_HTML_CHARS` (4 M characters) ends the read with `stopped`. Each search of a cut
+     stops at that cap too.
+   - The `.xlsx` path keeps the deadline of 20 s as its envelope, with no change in this round.
+
+**Timings of round 2 (2026-10-06, one process each, idle box).**
+
+| File | Before | After |
+|---|---|---|
+| A style of 150 KB in the head, then text | the text lost | the text kept, 0.02 s |
+| A JSON script of 190 KB between two paragraphs | the second paragraph lost | both kept |
+| `<script><!--` and 140 KB, then text | the text lost | the text kept |
+| A script tag with a `>` in a quoted value of 140 KB | the script body read as text | no leak |
+| `"<i> " * 6_000_000`, 24 MB | 19.24 s | 3.25 s, `stopped` |
+| Bare attributes, 30,000 for each tag, 24 MB | 20.01 s, refused as too slow | 2.69 s, `stopped` |
+| Bare attributes, 300 for each tag, 12 MB | 15.19 s | 1.39 s, `stopped` |
+| `"<"` repeated, 24 MB | 3.69 s | 3.55 s, `stopped` at the char cap |
+| `"<td>"` repeated, 24 MB | 5.67 s | 2.86 s, `stopped` |
+
+The other 14 files of `p11.py` answer in 0.4 s or less after the fix. The worst stall of the event
+loop under `parse_bounded` is 0.09 s.
+
+**Departure of round 2.** The fences of the dense files measure the CPU time of the parse
+thread, with a bound of six seconds. Wall time on the shared dev box changed by a factor of five under
+the load of other sessions, and CPU time did not.
+
+**The fences of round 2.** Section 16 of `test_read_attachment.py` holds 31 cases. On a new
+private database, `acb_emt11b_r2_07134`, each file ran in its own process. The files gave 146, 67
+and 76 passed, with 0 skipped. The trajectory eval gave 3 passed, and ruff stayed at the base. The
+build dropped the database at the end.
+
+**Mutations of round 2, as run (2026-10-06).** The same method as above, on `b62741195`. Each row
+of the two tables before ran again, and only X2 survived, for the reason of round 1.
+
+R2-P3quote
+survived at first, because the raw text mode of a cut `<script>` also hid the leak. Commit
+`efecf76fa` adds a fence on an `<img>` tag, and the row then turned red on that commit. Each of the
+8 rows below turned its fence red. R1-P2c is a row of round 1 on the new code.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| R2-P1 | A cut in raw text goes on after the next `>` | `test_a_long_script_or_style_keeps_the_text_after_it` |
+| R2-P1stop | A cut of visible raw text does not set `stopped` | `test_a_cut_of_visible_raw_text_sets_stopped` |
+| R2-P3quote | The end of a cut tag ignores quotes | `test_a_gt_inside_a_long_attribute_of_any_tag_leaks_no_text` |
+| R2-P3handler | A cut start tag opens no element | `test_a_cut_start_tag_still_opens_its_element` |
+| R2-P3raw | A cut script tag leaves the parser out of raw text | `test_a_cut_script_tag_puts_the_parser_in_raw_text` |
+| R2-P2cap | The input cap is gone | `test_html_past_its_input_cap_stops`, `test_a_dense_file_at_the_size_cap_answers_in_seconds` |
+| R2-P2bound | The searches of a cut run past the cap | `test_an_unclosed_start_tag_answers_fast` |
+| R1-P2c | A held comment is cut as a tag | `test_a_long_comment_with_a_gt_inside_adds_no_text` |
+
+**Review round 3 (2026-10-06): APPROVE.** The security reviewer approved round 2 at `25f7fb2cb`.
+The worst stall of the event loop was 0.06 s, and the worst time in a parse slot was 3.6 s. Two
+small items remained. In each, a cut dropped page text, and `stopped` stayed false. Commits
+`0bc6a7c9b` and `83a1b2e22` fix both, with fences from the reviewer's `p14.py`.
+
+1. **P2. Held page text.** `html.parser` holds text back for an `&` near the end of a feed. Across
+   two feeds it can hold more than 64 KB of page text, and the cut dropped it up to the next `>`.
+   - The fix: the reader gives that text to the text handler, unescaped, up to the held `&`. Then
+     the feed goes on at that `&`, so the work stays linear.
+   - Held page text that holds a tag sets `stopped`.
+2. **P3. The end of a comment.** A comment also ends at `--!>`, as in `html.parser` and in a
+   browser. The cut searches `--!?>`.
+
+The first fence of P2 ended its second feed with a full reference, so the parser held nothing, and
+R3-P2 survived. Commit `83a1b2e22` ends both feeds as `p14.py` does, and the row then turned red.
+The three fence files gave 148, 67 and 76 passed on a private database, with 0 skipped.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| R3-P2 | Held page text is cut to the next `>` | `test_held_visible_text_goes_to_the_page` |
+| R3-P3 | A comment ends only at `-->` | `test_a_comment_also_ends_at_dash_dash_bang_gt` |
+
+**The live check (🔴 OWNER-GATE).** The owner asks the Email chat to summarise an Excel file that
+came in a mail. The answer must quote numbers from at least two cells.
 
 #### 10.4.14 EM-T12 — the own tool scope of an agent works again
 
