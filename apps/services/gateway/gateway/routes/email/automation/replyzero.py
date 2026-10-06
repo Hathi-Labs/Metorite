@@ -1612,6 +1612,10 @@ class StatusRead:
     PR-B2: ``message_id`` is the id of the row that a job resolves, and the
     ask puts it in each ``decide`` log line. With None the ask uses
     ``ctx.last_message_id``. ``move_keys`` reaches ``on`` only (fix round 3).
+
+    ⚠️ The read of a self-only thread from ``read_job_status`` holds
+    ``ctx=None``. Only ``ask_job_status`` takes it, and that step returns FYI
+    before it reads ``ctx``. ``write_thread_status`` needs a context.
     """
 
     account_id: str

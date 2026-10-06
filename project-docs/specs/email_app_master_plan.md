@@ -2059,7 +2059,7 @@ The diff now holds 563 lines that are not in a test or a document (366 added and
 - With a carrier, the resolver of `off` and `shadow` runs `_resolve_asked`. It asks no model and does not read `_thread_is_conversation` again. With no carrier, the resolver asks as before, for the request paths of item 8 of the scope.
 - Each job body runs Block R and then the rule-match ask. When the job asks the status, Block S reads and the ask runs with no block open. Block W comes last. Block S ends with `SELECT 1`.
 - A failed read or a failed ask logs `email.resolve_conversation_status_failed` and gives "no status", so the per-message matches stand. "Undecided" raises `DecisionUnavailable` at the head of Block W, and the job skips the row.
-- PR-B2 changes no prompt, tier, decision, setting, flag or migration. Its one new statement is the `SELECT 1` of Block S. `on`, `status_before_match`, `_resolve_on`, the request paths and the action tail do not change.
+- PR-B2 changes no prompt, tier, decision, setting, flag or migration. Agent decisions 3 and 4 below give its new statements. `on`, `status_before_match`, `_resolve_on`, the request paths and the action tail do not change.
 
 **Agent decisions (D16).** Each one is a departure from the letter of the specification, and none changes a decision.
 
@@ -2102,7 +2102,7 @@ The diff holds 251 lines that are not in a test or a document (230 added and 21 
 **Review round 1 (2026-10-06).** The verifier passed PR-B2, and the reviewer approved it. This round applies one P2 item and five P3 items, and it rebases the branch onto `6731f55c0` (#684).
 
 - **A fence for a conversation match on a new thread (reviewer P2).** The first inbound mail of a new thread can match the rule Reply while `_thread_is_conversation` is False. `main` asks the status there, and so does PR-B2, through the second term of `status_ask_needed`. No case covered that term.
-- **Item 3 is corrected (verifier F1).** Item 3 read `about` and the self addresses before the self-only test. `_determine_status_of` tests self-only first and reads nothing more. So a failed `about` read on a self-only thread gave FYI on `main` and "no status" on the branch. `read_job_status` now tests self-only first, and its read of such a thread holds no context.
+- **Agent decision 4 is corrected (verifier F1).** The first build read `about` and the self addresses before the self-only test. `_determine_status_of` tests self-only first and reads nothing more. So a failed `about` read on a self-only thread gave FYI on `main` and "no status" on the branch. `read_job_status` now tests self-only first, and its read of such a thread holds no context.
 - **A fence for the conversation read in `on` (verifier F2).** In `on`, `read_classification` must not call `_thread_is_conversation`, because the plan of `status_before_match` owns that read.
 - **The cost of item 1 (F3).** Agent decision 3 above now gives the true cost.
 - **The split line (F5).** In `test_email_reply_zero.py`, two `patch.object` calls shared one line. Each one now has its own line.
