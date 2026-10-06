@@ -66,6 +66,7 @@ from skill_projects.writes import (
     _overlay_values,
     _ref,
     _resolve_assignee,
+    _same_chase,
     _split,
     _subtask_counts,
     _subtask_receipt,
@@ -857,12 +858,19 @@ async def _bulk_personal(ids: list[str], personal: str) -> str:
     if not values:
         return "Nothing to change in personal."
     tasks = [(await _task(t))[1] for t in ids]
+    groups = await _chase_groups(ids, values, bool(str(given.get("waiting_since") or "").strip()))
     shown = ", ".join(
         f"{k} → {'cleared' if v is None else (v.get('email') if isinstance(v, dict) else v)}"
         for k, v in values.items()
     )
     impact = f"{_plural(len(tasks), 'task')}: your own overlay only · {shown}"
     rest: dict[str, Any] = {"seen by": "you only. The board does not change"}
+    kept = sum(len(g) for g, v in groups if "waiting_on" in v and "delegated_at" not in v)
+    if kept:
+        rest["waiting since"] = (
+            f"{_plural(kept, 'task')} already wait on this person and keep their start. "
+            "The others start now"
+        )
     finished = [t for t in tasks if t.get("completed_at")]
     if values.get("disposition") in _REOPENING and finished:
         rest["reopens"] = (
@@ -876,17 +884,46 @@ async def _bulk_personal(ids: list[str], personal: str) -> str:
         context=_guard_card(impact, rest),
     ):
         return CANCELLED
-    body = {"task_ids": ids, "action": "personal", "personal": values}
-    result = (await post("/projects/tasks/bulk", body)) or {}
-    out = [
-        f"Your triage is set on {result.get('applied', 0)} of "
-        f"{result.get('requested', len(ids))} tasks: {shown}."
-    ]
-    for row in result.get("skipped") or []:
+    applied, skipped, failed = 0, [], []
+    for group_ids, group_values in groups:
+        body = {"task_ids": group_ids, "action": "personal", "personal": group_values}
+        result = (await post("/projects/tasks/bulk", body)) or {}
+        applied += int(result.get("applied") or 0)
+        skipped += result.get("skipped") or []
+        failed += result.get("failed") or []
+    out = [f"Your triage is set on {applied} of {len(ids)} tasks: {shown}."]
+    for row in skipped:
         out.append(f"- skipped {row.get('task_id')}: {data(row.get('reason'))}")
-    for row in result.get("failed") or []:
+    for row in failed:
         out.append(f"- failed {row.get('task_id')}: {data(row.get('reason'))}")
     return "\n".join(out)
+
+
+async def _chase_groups(
+    ids: list[str], values: dict[str, Any], since_given: bool
+) -> list[tuple[list[str], dict[str, Any]]]:
+    """The bulk bodies for one overlay: ``[(task ids, values)]``.
+
+    The route writes ONE overlay to every task of a request. A chase needs a
+    since-when (migration 188), and the tool stamps now. A task that already
+    waits on the same person keeps its start, because the age is what a
+    person scans before a nudge (PR #683 review). So each overlay is read
+    first, and those tasks get a second body with no ``delegated_at``. The
+    app's own bulk bar sends a disposition only, and never a chase.
+    """
+    if "waiting_on" not in values or since_given:
+        return [(ids, values)]
+    same: list[str] = []
+    new: list[str] = []
+    for tid in ids:
+        task_id = uuid_of(tid, "task_id")
+        try:
+            mine = (await get(f"/projects/my/tasks/{task_id}")) or {}
+        except GatewayRefusal:
+            mine = {}
+        (same if _same_chase(values["waiting_on"], mine) else new).append(tid)
+    keep = {k: v for k, v in values.items() if k != "delegated_at"}
+    return [g for g in ((same, keep), (new, values)) if g[0]]
 
 
 # ── The timeline ─────────────────────────────────────────────────────────────

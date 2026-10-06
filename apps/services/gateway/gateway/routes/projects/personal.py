@@ -1459,7 +1459,8 @@ def zone_name(tz_name: Any) -> str:
     so a route never reports a zone that its date was not computed in."""
     try:
         ZoneInfo(str(tz_name or "UTC"))
-    except (ZoneInfoNotFoundError, ValueError):
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # OSError: "America" is a directory of the zone database, not a zone.
         return "UTC"
     return str(tz_name or "UTC")
 
@@ -1499,10 +1500,12 @@ async def my_today(user: UserContext = Depends(get_current_user)) -> dict[str, A
     `user_settings.timezone`, the one store of it, which the Tasks and the
     Calendar clients write. This route only reads it.
 
-    ``stored`` is ``false`` when the member has no settings row, so a caller
+    ``stored`` is ``false`` when the member has no saved zone, so a caller
     can say "UTC, because no zone is saved" and not claim that the member
-    chose UTC. It writes nothing, and it reads only the caller's own row: the
-    address is the authenticated one, never a parameter (R11).
+    chose UTC. ``valid`` is ``false`` when the saved zone is not an IANA
+    name, and the date is then the UTC date. It writes nothing, and it reads
+    only the caller's own row: the address is the authenticated one, never a
+    parameter (R11).
     """
     email = actor(user).lower()
     async with _tenant_session() as db:
@@ -1512,6 +1515,7 @@ async def my_today(user: UserContext = Depends(get_current_user)) -> dict[str, A
         "today": local_date(zone, datetime.now(UTC)).isoformat(),
         "timezone": zone,
         "stored": stored is not None,
+        "valid": stored is None or zone == str(stored),
     }
 
 

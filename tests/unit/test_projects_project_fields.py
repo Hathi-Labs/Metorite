@@ -175,6 +175,16 @@ async def test_a_member_with_no_saved_zone_is_told_so(monkeypatch) -> None:
     assert "Tuesday, today's weekday (UTC, no zone saved)" in asked[0]["context"]
 
 
+
+async def test_a_saved_zone_that_is_not_valid_is_named(monkeypatch) -> None:
+    """PR #683 review: a stored "America" is not a zone. The card must not
+    say that the member chose UTC."""
+    bad = {"today": "2026-10-06", "timezone": "UTC", "stored": True, "valid": False}
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _gateway({("GET", "/projects/my/today"): bad}))
+    await skill_projects.create_task(PROJECT, "Review the backlog", repeat="weekly")
+    assert "Tuesday, today's weekday (UTC, no valid zone saved)" in asked[0]["context"]
+
 async def test_a_create_with_no_rule_reads_no_clock(monkeypatch) -> None:
     """§8.2 item 5 holds: a plain create sends what it sent before P1."""
     approve(monkeypatch)
@@ -234,6 +244,8 @@ async def test_clear_switches_a_lifecycle_policy_off(monkeypatch) -> None:
         ({"icon_slot": 13}, "1 to 12"),
         ({"archive_after_months": -2}, "1 or more"),
         ({"timezone": "Mars/Olympus"}, "IANA name"),
+        # A directory of the zone database: ZoneInfo raises PermissionError.
+        ({"timezone": "America"}, "IANA name"),
         ({"clear": "timezone"}, "cannot be cleared"),
         ({"clear": "lead"}, "clear takes"),
         ({"icon": "Rocket", "clear": "icon"}, "both set and cleared"),
@@ -673,6 +685,47 @@ async def test_a_bad_bulk_overlay_is_refused_before_the_card(monkeypatch, kwargs
     assert words in out and asked == [] and writes(calls) == []
 
 
+
+async def test_a_bulk_chase_keeps_the_age_of_each_same_person_chase(monkeypatch) -> None:
+    """PR #683 review: three tasks already wait on Priya and keep their start.
+    Two do not, and their chase starts now. The route writes one overlay to
+    every task of a request, so the two sets go in two requests."""
+    ids = [f"{n}a8fad5b-d9cb-469f-a165-70867728950e" for n in range(1, 6)]
+    waiting = {"waiting_on": {"name": "Priya", "email": "priya@x.io"},
+               "delegated_at": "2026-09-26T10:00:00+00:00"}
+    table: dict[tuple[str, str], Any] = {
+        ("POST", "/projects/tasks/bulk"): lambda c: {"applied": len(c["json"]["task_ids"])},
+    }
+    for i, tid in enumerate(ids):
+        table[("GET", f"/projects/tasks/{tid}")] = {"id": tid, "task_number": 20 + i,
+                                                   "title": f"Task {i}", "completed_at": None}
+        table[("GET", f"/projects/my/tasks/{tid}")] = (
+            {"id": tid, **waiting} if i < 3 else {"id": tid, "waiting_on": None}
+        )
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway(table))
+    out = await skill_projects.bulk_update(",".join(ids), personal='{"waiting_on": "Priya"}')
+    bodies = [c["json"] for c in _sent(calls, "POST", "/projects/tasks/bulk")]
+    assert len(bodies) == 2
+    keep, new = bodies
+    assert keep["task_ids"] == ids[:3] and "delegated_at" not in keep["personal"]
+    assert new["task_ids"] == ids[3:] and new["personal"]["delegated_at"]
+    assert keep["personal"]["waiting_on"] == new["personal"]["waiting_on"]
+    assert "3 tasks already wait on this person and keep their start" in asked[0]["context"]
+    assert "set on 5 of 5 tasks" in out
+
+
+async def test_a_bulk_chase_with_a_given_start_is_one_request(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway({
+        ("POST", "/projects/tasks/bulk"): {"applied": 2},
+    }))
+    await skill_projects.bulk_update(
+        f"{TASK},{OTHER}", personal='{"waiting_on": "Priya", "waiting_since": "2026-10-01"}'
+    )
+    bodies = [c["json"] for c in _sent(calls, "POST", "/projects/tasks/bulk")]
+    assert len(bodies) == 1 and bodies[0]["personal"]["delegated_at"] == "2026-10-01"
+
 def test_the_single_tool_and_the_bulk_take_the_same_overlay_words() -> None:
     """One builder, so the two cannot drift. Each argument of the overlay
     builder is an argument of ``set_my_overlay``."""
@@ -716,10 +769,45 @@ def test_zone_name_reports_utc_for_a_zone_it_cannot_read() -> None:
 
     assert zone_name("Asia/Kolkata") == "Asia/Kolkata"
     assert zone_name(None) == "UTC" and zone_name("Mars/Olympus") == "UTC"
+    # A directory of the zone database: ZoneInfo raises PermissionError, and
+    # GET /projects/my/today answered a 500 (PR #683 review).
+    assert zone_name("America") == "UTC"
     at = dt.datetime(2026, 10, 6, 20, 0, tzinfo=dt.UTC)
     assert local_date("Asia/Kolkata", at) == WEDNESDAY
     assert local_date("Mars/Olympus", at) == TUESDAY
 
+
+
+def test_the_lifecycle_check_refuses_a_zone_directory() -> None:
+    """``core.validate_lifecycle_settings`` answered a 500 for "America"."""
+    pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
+    from fastapi import HTTPException
+    from gateway.routes.projects.core import validate_lifecycle_settings
+
+    with pytest.raises(HTTPException) as refused:
+        validate_lifecycle_settings({"timezone": "America"})
+    assert refused.value.status_code == 422
+
+
+async def test_the_route_names_a_saved_zone_that_is_not_valid(monkeypatch) -> None:
+    pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
+    from contextlib import asynccontextmanager
+
+    from gateway.routes.projects import personal
+
+    from tests.unit._projects_fakes import projects_user
+
+    @asynccontextmanager
+    async def _session(*_a: Any, **_k: Any):
+        yield None
+
+    async def _stored(_db: Any, _email: str) -> str:
+        return "America"
+
+    monkeypatch.setattr(personal, "_tenant_session", _session)
+    monkeypatch.setattr(personal, "stored_zone", _stored)
+    out = await personal.my_today(user=projects_user("zone@p7.test"))
+    assert out["timezone"] == "UTC" and out["stored"] is True and out["valid"] is False
 
 # ── R8 — the read of the member's zone, on asyncpg, under FORCE RLS ─────────
 #
@@ -825,4 +913,6 @@ async def test_r8_the_route_answers_the_members_own_date(zoned, monkeypatch) -> 
     finally:
         await eng.dispose()
     here = dt.datetime.now(ZoneInfo("Pacific/Kiritimati")).date().isoformat()
-    assert out == {"today": here, "timezone": "Pacific/Kiritimati", "stored": True}
+    assert out == {
+        "today": here, "timezone": "Pacific/Kiritimati", "stored": True, "valid": True
+    }

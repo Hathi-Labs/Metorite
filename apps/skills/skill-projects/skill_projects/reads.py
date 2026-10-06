@@ -518,7 +518,12 @@ def clock_of(row: Any) -> tuple[date | None, str, str]:
     zone = str(row.get("timezone") or "").strip()
     if day is None or not zone:
         return None, "", ""
-    label = zone if row.get("stored", True) else f"{zone}, no zone saved"
+    if not row.get("stored", True):
+        label = f"{zone}, no zone saved"
+    elif not row.get("valid", True):
+        label = f"{zone}, no valid zone saved"
+    else:
+        label = zone
     return day, zone, label
 
 

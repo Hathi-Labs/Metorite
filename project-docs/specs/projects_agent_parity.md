@@ -1285,7 +1285,7 @@ as the answer. The slices build to these answers.
   - Fences: `tests/unit/test_projects_project_fields.py` holds the checks
     before each card, the cards, the receipts and the copies of the app's
     and the route's vocabulary. F2 holds each new `SENDS` row on the wire.
-    22 mutations each turn a fence red. The R8 half reads the zone on
+    29 mutations each turn a fence red. The R8 half reads the zone on
     asyncpg, as a role that FORCE RLS binds, on the promoted catalog of the
     H3 rehearsal. Another tenant and an unbound session read no zone.
   - A finding, not fixed: the primary key of `user_settings` is `user_id`
@@ -1304,7 +1304,18 @@ as the answer. The slices build to these answers.
       "Reorder", not "Move".
     - A chase of the same person keeps its start time. A new person starts
       a new chase.
-  - A limit, not fixed: `bulk_update` with `waiting_on` starts the chase
-    now on each task, because it does not read each overlay first. The app's
-    tree drag has the hidden-parent defect too (`treeDrop.ts` `siblingsOf`).
-    H-257 records it.
+  - A finding, not fixed: the app's tree drag has the hidden-parent defect
+    too (`treeDrop.ts` `siblingsOf`). H-257 records it.
+  - PR #683 review round 2 (2026-10-06) fixed four findings:
+    - `bulk_update` with `waiting_on` reads the overlay of each task first.
+      A task that waits on the same person keeps its start. The route
+      writes one overlay to each task of a request, so the two sets go in
+      two requests under the one card. The app's own bulk bar sends a
+      disposition only, and never a chase.
+    - A zone database directory, such as "America", is not a zone. The
+      tool refused it with "Function failed", and `GET /projects/my/today`
+      and `core.validate_lifecycle_settings` answered a 500. Each now
+      catches `OSError` too, and the lifecycle check answers a 422.
+    - `GET /projects/my/today` answers `valid: false` for a saved zone that
+      is not valid. The card then says "UTC, no valid zone saved".
+    - The working trail of the chat names `my_areas` (`toolSteps.ts`).

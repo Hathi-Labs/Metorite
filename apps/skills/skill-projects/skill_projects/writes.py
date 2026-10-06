@@ -1897,7 +1897,8 @@ def _zone_refusal(name: str) -> str:
     ``core.validate_lifecycle_settings``, said before the card)."""
     try:
         ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError):
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # OSError: "America" is a directory of the zone database, not a zone.
         return f"timezone is an IANA name such as Asia/Kolkata, not {data(name)}."
     return ""
 
