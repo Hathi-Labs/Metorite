@@ -362,7 +362,9 @@ ROWS_ANSWER_PREFIX = "APPROVE "
 #: The most rows one card may carry. A card nobody reads is not consent.
 MAX_CARD_ROWS = 100
 _ROW_ID_MAX = 64
-_ROW_LABEL_MAX = 200
+#: The longest row label the card draws. A tool whose label is its write
+#: (a task title) refuses a longer one, because a cut card is not consent.
+ROW_LABEL_MAX = 500
 #: A hint carries every fact the row writes, so it is as long as a card body.
 _ROW_HINT_MAX = 4000
 
@@ -387,7 +389,7 @@ def clean_card_rows(rows: list[dict] | None) -> list[dict] | None:
         seen.add(rid)
         out.append({
             "id": rid,
-            "label": str(row.get("label") or rid).strip()[:_ROW_LABEL_MAX],
+            "label": str(row.get("label") or rid).strip()[:ROW_LABEL_MAX],
             "hint": str(row.get("hint") or "").strip()[:_ROW_HINT_MAX],
             "checked": row.get("checked", True) is not False,
         })
@@ -407,7 +409,7 @@ def ticked_rows(answer: str, offered: frozenset[str]) -> frozenset[str] | None:
         return None
     try:
         body = _json.loads(text[len(ROWS_ANSWER_PREFIX):])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
     ids = body.get("rows") if isinstance(body, dict) else None
     if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):

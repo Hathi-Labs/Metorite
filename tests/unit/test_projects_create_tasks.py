@@ -983,3 +983,16 @@ async def test_r8_a_retry_over_the_real_list_route_makes_no_second_copy(
     assert [t for t, _ in _stored(seeded)] == ["Pack the kits", "Ship the kits", "Count the kits"]
     [listed] = [c for c in calls if c["method"] == "GET" and c["path"] == "/projects/tasks"]
     assert listed["params"]["project_id"] == seeded["project"]
+
+
+async def test_a_title_longer_than_the_card_label_is_refused(monkeypatch) -> None:
+    """Review round 1: the card shows each title whole, or the batch is refused.
+    A cut card is not consent. Mutation: drop the check -> this test fails."""
+    from acb_skills.ask_tools import ROW_LABEL_MAX
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _gateway())
+    rows = json.dumps([{"title": "x" * (ROW_LABEL_MAX + 1)}, {"title": "Pay"}])
+    out = await skill_projects.create_tasks(UUID, rows)
+    assert f"Row 1: a title is at most {ROW_LABEL_MAX} characters" in out
+    assert asked == [] and writes(calls) == []

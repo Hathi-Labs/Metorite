@@ -1072,9 +1072,9 @@ async def _write_plan(
 # Spec: ``projects_agent_parity.md`` §12, slice P13. On 2026-10-06 a member
 # asked for nine tasks in a project that existed. No tool took several
 # top-level tasks, so the model made nine create_task calls and nine cards
-# at once. This tool takes the batch in ONE call. A selection card lets the
-# member untick a row, and ONE confirmation card then covers every ticked
-# row. Each row goes through create_task's own write path
+# at once. This tool takes the batch in ONE call, under ONE confirmation
+# card with a checkbox for each row. The member's one Approve names the
+# ticked rows. Each row goes through create_task's own write path
 # (``writes._prepare_new_task``, then the two halves of
 # ``writes._create_new_task``: ``_post_new_task`` and ``_follow_new_task``).
 
@@ -1143,8 +1143,6 @@ class _BatchRow:
         self.new = new
         #: A task with this title made in the last :data:`RECENT_MINUTES`.
         self.recent: dict[str, Any] | None = None
-        #: Assignees, due date and status, in plain words (the selection card).
-        self.plain = ""
         #: The full line of the confirmation card, fenced.
         self.line = ""
         #: The same facts with no title: the row's hint on the card.
@@ -1320,7 +1318,7 @@ async def _names_of(who: list[str]) -> tuple[dict[str, str], list[str]]:
 
 
 def _person(who: str, names: dict[str, str]) -> str:
-    """The NAME the directory gives an address, for the selection card."""
+    """The NAME the directory gives an address, or the address itself."""
     if who.startswith("agent:"):
         return f"agent {who.removeprefix('agent:')}"
     return names.get(who.lower()) or who
@@ -1351,7 +1349,7 @@ async def _recent_titles(pid: str) -> dict[str, dict[str, Any]]:
 
     The create route takes no idempotency key (``TaskIn``), so a retry of a
     batch that half landed would make each landed task twice. This read
-    before the card finds them, and the selection card starts them unticked.
+    before the card finds them, and the card starts them unticked.
     The read takes the triage lane too, because a create can land a task
     there and the list hides it by default (review round 2).
     """
@@ -1383,9 +1381,8 @@ def _recent_note(row: dict[str, Any]) -> str:
 def _describe(
     p: _BatchRow, names: dict[str, str], first_lane: str
 ) -> None:
-    """Fill the row's plain words and its confirmation line."""
+    """Fill the row's facts and its confirmation line."""
     payload = p.new.payload
-    people = [_person(w, names) for w in p.new.who]
     due = str(payload.get("due_at") or "")
     if "status_id" in payload or "parent_task_id" in payload:
         lane = p.new.status_label
@@ -1394,13 +1391,6 @@ def _describe(
     # `_parent_lane_label` fences the lane name itself. Fence a bare name
     # once, and never a fenced one twice (review round 2).
     lane_card = lane if "«" in lane else data(lane)
-    p.plain = " · ".join(
-        [
-            ", ".join(people) if people else "nobody assigned",
-            f"due {_day_words(due)}" if due else "no due date",
-            _plain(lane.replace("«", "").replace("»", "")),
-        ]
-    )
     facts = [
         ", ".join(_person_card(w, names) for w in p.new.who) if p.new.who else "nobody assigned",
         f"due {_day_words(due)}" if due else "no due date",
@@ -1537,6 +1527,14 @@ async def create_tasks(project_id: str, tasks: str) -> str:
     for p in rows:
         p.recent = recent.get(p.title.lower())
         _describe(p, names, first_lane)
+    from acb_skills.ask_tools import ROW_LABEL_MAX
+
+    long = next((p for p in rows if len(p.title) > ROW_LABEL_MAX), None)
+    if long is not None:
+        return (
+            f"Row {long.index}: a title is at most {ROW_LABEL_MAX} characters, because the "
+            "card shows each title whole. Put the rest in description. Nothing was created."
+        )
     if not _fits(node, rows, strangers):
         return (
             f"These {len(rows)} tasks do not fit on one confirmation card. Split them into "

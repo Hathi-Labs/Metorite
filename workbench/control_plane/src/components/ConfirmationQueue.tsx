@@ -19,7 +19,12 @@
 import { useState } from "react";
 
 import ConfirmationCard from "@/components/ConfirmationCard";
-import { approvalFor, type PendingConfirmation, type RowsApproval } from "@/lib/confirmationQueue";
+import {
+  approvedCard,
+  withTicked,
+  type PendingConfirmation,
+  type RowsApproval,
+} from "@/lib/confirmationQueue";
 
 /** A plain answer, or an Approve that names the ticked rows of a card with
  *  rows (WS-46 P13 one-card). Both go in ONE respond-input. */
@@ -59,6 +64,7 @@ export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
 
 export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
+  const [ticks, setTicks] = useState<Record<string, string[]>>({});
   if (cards.length === 0) return null;
   const at = pickShown(cards, shown);
   const card = cards[at];
@@ -67,6 +73,10 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
     setShown({ key: card.key, index: at });
   }
   const go = (to: number) => setShown({ key: cards[to].key, index: to });
+  // The member's ticks, per card. A card remounts when the member pages away
+  // and back, and when a failed POST restores it, and both must keep the
+  // ticks the member chose (review round 1). `withTicked` carries them.
+  const shownCard = withTicked(card, ticks[card.key]);
   return (
     <ConfirmationCard
       // A new key per card: a long body scrolled on one card does not stay
@@ -75,7 +85,8 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
       title={card.title}
       detail={card.detail}
       context={card.context}
-      rows={card.rows}
+      rows={shownCard.rows}
+      onTickedChange={(ids) => setTicks((prev) => ({ ...prev, [card.key]: ids }))}
       position={{
         index: at,
         total: cards.length,
@@ -83,9 +94,10 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
         onNext: () => go(Math.min(cards.length - 1, at + 1)),
       }}
       onApprove={(ticked) => {
-        // One respond-input: the Approve and the ticked ids together.
-        const answer = approvalFor(card, ticked);
-        if (answer) onAnswer(card, answer);
+        // One respond-input: the Approve and the ticked ids together. The
+        // answered card carries the ticks, so a restore shows them again.
+        const approved = approvedCard(card, ticked);
+        if (approved) onAnswer(approved.card, approved.answer);
       }}
       onReject={() => onAnswer(card, "REJECT")}
     />

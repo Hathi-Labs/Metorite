@@ -160,3 +160,11 @@ def test_the_client_answer_is_the_one_the_server_reads():
     offered = frozenset({"row-1", "row-2"})
     # What `approveRows(["row-2"])` sends: the prefix, then JSON.stringify.
     assert at.ticked_rows('APPROVE {"rows":["row-2"]}', offered) == frozenset({"row-2"})
+
+
+def test_a_deeply_nested_answer_approves_nothing():
+    """Review round 1: the parse of a nested answer raises RecursionError, and
+    the card still closes as a REJECT with no row."""
+    result, _card, closed = _ask(at.ROWS_ANSWER_PREFIX + "[" * 100_000)
+    assert result == frozenset()
+    assert closed["value"]["answer"] == "REJECT"

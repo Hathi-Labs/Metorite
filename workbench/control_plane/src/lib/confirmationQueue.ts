@@ -109,6 +109,33 @@ export function rowSummary(title: string, ticked: number, total: number): string
 }
 
 /**
+ * The card as the member left it: each row ticked as the member ticked it.
+ * The queue hands THIS card to the answer path, so a restore after a failed
+ * POST (a 5xx, a network fault) shows the member's ticks, never the tool's
+ * defaults again (review round 1). A card with no rows is the same card.
+ */
+export function withTicked(
+  card: PendingConfirmation,
+  ticked?: readonly string[],
+): PendingConfirmation {
+  if (card.rows === undefined || ticked === undefined) return card;
+  const on = new Set(ticked);
+  return { ...card, rows: card.rows.map((r) => ({ ...r, checked: on.has(r.id) })) };
+}
+
+/**
+ * What the queue sends for an Approve: the answer, and the card with the
+ * member's ticks on it, which a failed POST restores. Null approves nothing.
+ */
+export function approvedCard(
+  card: PendingConfirmation,
+  ticked?: readonly string[],
+): { card: PendingConfirmation; answer: "APPROVE" | RowsApproval } | null {
+  const answer = approvalFor(card, ticked);
+  return answer ? { card: withTicked(card, ticked), answer } : null;
+}
+
+/**
  * The Approve answer of a card: a plain `APPROVE` for a card with no rows,
  * and the ticked ids for a card with rows. It keeps only ids the card
  * offered, in the card's order, and gives null when none is left, because

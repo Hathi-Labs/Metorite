@@ -964,7 +964,7 @@ slice updates this spec's status header in the same PR (R4).
 | **P10 · Attach a chat file to a task** | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
 | **P11 · Filter the board** | `set_filter`, once the page's filter state has a stable shape | G22 | Not now. The owner answered Q4 on 2026-10-06 |
 | **P12 · MCP facade for external clients** | Its own spec first (§5.3) | — | ⏸ PARKED, OWNER-GATE |
-| **P13 · Several new tasks in one call** ✅ BUILT 2026-10-06 | `create_tasks`: rows that take the keys of `create_task`, ONE confirmation card with a checkbox for each task, a receipt for each row · eval task PO-9 | — (a chat need, not a UI input) | AGENT-SAFE |
+| **P13 · Several new tasks in one call** ✅ BUILT 2026-10-06 | `create_tasks`: rows that take the keys of `create_task`, ONE confirmation card with a checkbox for each task, a receipt for each row · eval task PO-10 | — (a chat need, not a UI input) | AGENT-SAFE |
 
 **Order.** P1 first, because it is the reported failure. P2 next, because
 every later slice is easier to test when refusals are text. P3 then gives
@@ -1421,3 +1421,16 @@ as the answer. The slices build to these answers.
     not offer (`FORGED_ROWS`).
   - The eval runner approves the rows of a card as the card shows it, and
     answers no form card. PO-10 asks for one card with 3 rows.
+  - Review round 1 fixed these findings:
+    - The card cut a row label at 200 characters, and the POST sent the
+      whole title. The label limit is now 500 (`ROW_LABEL_MAX`), and
+      `create_tasks` refuses a longer title before the card.
+    - A failed POST restored the card with the tool's ticks. The queue now
+      keeps the member's ticks, across a restore and across a page of the
+      queue (`approvedCard`, `withTicked`).
+    - A deeply nested answer raised a `RecursionError` in the parse. It now
+      approves nothing.
+  - A limit, not fixed: a browser tab from before the deploy draws a card
+    with rows as a plain card. Its Approve sends a plain `APPROVE`, which
+    the server refuses, so the member reads "Cancelled" until the tab
+    reloads. This fails closed.

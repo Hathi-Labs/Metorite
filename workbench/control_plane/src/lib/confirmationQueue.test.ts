@@ -22,10 +22,12 @@ import {
   ROWS_ANSWER_PREFIX,
   approvalFor,
   approveRows,
+  approvedCard,
   cardFromEvent,
   confirmationReducer,
   rowSummary,
   settleAnswer,
+  withTicked,
   type ConfirmationAction,
   type ConfirmationQueueState,
 } from "@/lib/confirmationQueue";
@@ -394,6 +396,29 @@ describe("a card with rows", () => {
     expect(approvalFor(pending, [])).toBeNull();
     expect(approvalFor(pending, undefined)).toBeNull();
     expect(approveRows(["row-3"]).startsWith(ROWS_ANSWER_PREFIX)).toBe(true);
+  });
+
+  // Review round 1. Mutation caught: the queue answers with the card as the
+  // tool sent it, so a restore after a 5xx shows the tool's ticks again.
+  it("a restore after a failed POST keeps the member's ticks", () => {
+    const pending = cardFromEvent(event)!;
+    // The queue's Approve path: the answer and the card it hands on.
+    const approved = approvedCard(pending, ["row-1"])!;
+    expect(approved.answer).toBe('APPROVE {"rows":["row-1"]}');
+    const answered = approved.card;
+    expect(approvedCard(pending, [])).toBeNull();
+    const state = run([
+      { type: "requested", value: event },
+      { type: "answering", key: pending.key },
+      settleAnswer(answered, "retry"),
+    ]);
+    expect(state.cards[0].rows?.map((r) => r.checked)).toEqual([true, false, false]);
+    const html = renderToStaticMarkup(
+      createElement(ConfirmationQueue, { cards: state.cards, onAnswer: () => {} }),
+    );
+    expect(html.match(/checked=""/g)).toHaveLength(1);
+    expect(html).toContain("Create 1 of 3 tasks");
+    expect(withTicked({ key: "k", title: "t" }, ["a"])).toEqual({ key: "k", title: "t" });
   });
 
   it("a rows list the card cannot read gives no row, so it cannot be approved", () => {

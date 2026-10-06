@@ -150,6 +150,8 @@ interface ConfirmationCardProps {
    * no rows the card is as before, and `onApprove` gets no ids.
    */
   rows?: ConfirmationRow[];
+  /** Each change of the ticks, so the queue keeps them across a remount. */
+  onTickedChange?: (ticked: string[]) => void;
   onApprove: (ticked?: string[]) => void;
   onReject: () => void;
   /** Disable buttons after a choice is made. */
@@ -163,6 +165,7 @@ export default function ConfirmationCard({
   detail,
   context,
   rows,
+  onTickedChange,
   onApprove,
   onReject,
   disabled = false,
@@ -174,19 +177,19 @@ export default function ConfirmationCard({
     return () => clearTimeout(t);
   }, []);
   // The card is keyed per request (ConfirmationQueue), so this starts from
-  // the tool's ticks for each new card.
+  // the rows' ticks: the tool's, or the member's when the queue kept them.
   const [ticked, setTicked] = useState<ReadonlySet<string>>(
     () => new Set((rows ?? []).filter((r) => r.checked).map((r) => r.id)),
   );
   const hasRows = rows !== undefined;
   const tickedIds = (rows ?? []).filter((r) => ticked.has(r.id)).map((r) => r.id);
-  const toggle = (id: string, on: boolean) =>
-    setTicked((prev) => {
-      const next = new Set(prev);
-      if (on) next.add(id);
-      else next.delete(id);
-      return next;
-    });
+  const toggle = (id: string, on: boolean) => {
+    const next = new Set(ticked);
+    if (on) next.add(id);
+    else next.delete(id);
+    setTicked(next);
+    onTickedChange?.((rows ?? []).filter((r) => next.has(r.id)).map((r) => r.id));
+  };
   const base = cardSummary(title, detail);
   const summary = hasRows ? rowSummary(base.summary, tickedIds.length, rows.length) : base.summary;
   const rest = base.rest;
