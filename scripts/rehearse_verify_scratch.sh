@@ -6,7 +6,7 @@
 # On 2026-10-06 the production cluster went READ-ONLY for about 2 hours. The
 # nightly deep verify restores into `acb_verify_<epoch>`, and its drop had
 # failed silently every night since 2026-09-19 (`>/dev/null 2>&1 || true`).
-# 23 scratch copies filled the disk, and the provider stopped every write.
+# 22 scratch copies (923 MB) filled the disk, and the provider stopped every write.
 #
 # This runs the REAL `backup_db.sh` against a REAL Postgres (R8), in four
 # scenes. Each scene names the mutation it catches (R7):
@@ -23,6 +23,9 @@
 #        mutation: put back `|| true`    -> the exit code goes green
 #        mutation: drop `redact`         -> the shim's password reaches the log
 #   D. The advisory guard prints a WARNING with the count (no exit code).
+#   E. The cap. With a drop that keeps failing, the third night makes no new
+#      copy, so the pile stops at two.
+#        mutation: remove the post-sweep count -> a third copy is made
 #
 # ⚠️ **Run it against a THROWAWAY server only.** It drops every database it
 # creates, it toggles a server setting with ALTER SYSTEM, and the sweep in
@@ -144,6 +147,8 @@ ls "$DEST" | grep -qE '^acb_verify_[0-9]+\.dump$' && die "A: a scratch database 
 pass "the run dropped its own scratch database"
 kill "$HOLDER_PID" 2>/dev/null || true
 HOLDER_PID=""
+# The fresh copy has done its job. Scene E counts copies, so it must not stay.
+rmdb "$FRESH"
 
 # ── D. The advisory guard ───────────────────────────────────────────────────
 # Scene A started with three scratch databases (two stale, one fresh).
@@ -203,5 +208,20 @@ grep -q 'scratch database(s) could not be dropped' "$LOG" || die "C: no closing 
 pass "the ERROR names the database, gives the reason, and shows no password"
 grep -q "restore verified" "$LOG" || die "C: the verify itself did not pass first"
 pass "the failure came after a passed verify, so it is the drop alone"
+
+# ── E. The cap: a drop that keeps failing cannot pile copies up ─────────────
+# Scene C left one copy. Two more nights with the same broken drop: the first
+# leaves a second copy, and the next one must refuse to make a third.
+say "E. The cap: two more nights with a drop that keeps failing"
+run_backup E1 "$SHIM"
+run_backup E2 "$SHIM"
+left="$(q "select count(*) from pg_database where datname ~ '^acb_verify_[0-9]+\$'")"
+[ "$left" -le 2 ] || die "E: $left scratch copies after three failed nights — the pile grows"
+grep -q "The deep verify is SKIPPED" "$LOG" || { show_log; die "E: the third night did not skip the verify"; }
+grep -q "restore verified" "$WORK/E1.log" || { show_log; die "E: the second night should still verify (one copy left)"; }
+grep -q "restore verified" "$LOG" && { show_log; die "E: the third night made a new copy"; }
+[ "$RC" != "0" ] || { show_log; die "E: a skipped verify exited 0"; }
+[ -s "$DEST/$LIVE_DB.dump" ] || die "E: no dump on the night the verify was skipped"
+pass "$left copies after three failed nights, and the third night skipped the verify loudly"
 
 printf "\n==> SCRATCH-DATABASE REHEARSAL PASSED\n"

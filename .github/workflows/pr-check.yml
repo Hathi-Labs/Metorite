@@ -512,7 +512,7 @@ jobs:
         run: bash scripts/rehearse_restore.sh
 
       # The fence for the scratch databases of the deep verify (incident
-      # 2026-10-06: 23 undropped copies filled the managed disk and the project
+      # 2026-10-06: 22 undropped copies filled the managed disk and the project
       # went read-only). It sweeps, drops with FORCE on a read-only server,
       # spares the decoys, and fails loudly when a drop fails. It needs this
       # job's private server, because it uses ALTER SYSTEM and the sweep drops

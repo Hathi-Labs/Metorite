@@ -240,7 +240,7 @@ def test_the_app_database_is_derived_from_env_and_never_excluded() -> None:
 
 def test_the_scratch_database_fence_runs_in_ci_and_the_silent_drop_stays_gone() -> None:
     """🔴 Incident 2026-10-06: the deep verify's scratch drop failed every night
-    behind `>/dev/null 2>&1 || true`. 23 copies filled the managed disk and the
+    behind `>/dev/null 2>&1 || true`. 22 copies filled the managed disk and the
     provider made the whole project read-only for about 2 hours.
 
     The real fence is `scripts/rehearse_verify_scratch.sh`, which runs the

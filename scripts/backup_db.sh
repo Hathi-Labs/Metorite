@@ -116,7 +116,7 @@ require_postgres
 # 🔴 **Incident, 2026-10-06.** The deep verify below restores into a scratch
 # database named `acb_verify_<epoch>`. On the managed cluster its drop failed
 # every night from 2026-09-19, and `>/dev/null 2>&1 || true` hid each failure.
-# 23 scratch copies (about 1.2 GB) piled up beside a 184 MB product database.
+# 22 scratch copies (923 MB, measured) piled up beside a 184 MB product database.
 # Supabase then put the whole project into read-only mode, so every write
 # failed for about 2 hours, and deploys hung in the pre-migration backup.
 #
@@ -130,8 +130,9 @@ require_postgres
 #      disk filled can still be given the space back.
 #   3. A failed drop prints an ERROR with the reason, and the backup exits 1
 #      AFTER the dump and the manifest are complete. A good dump stays on disk.
-#   4. A run sweeps stale scratch databases before it makes a new one, so one
-#      bad night cannot pile up again.
+#   4. A run sweeps stale scratch databases before it makes a new one.
+#   5. If two or more are still there after the sweep, the run makes no new
+#      one. So a drop that keeps failing cannot pile copies up again.
 #
 # ⚠️ **The one pattern.** A scratch database matches `^acb_verify_[0-9]+$` and
 # NOTHING else. `LIKE 'acb_verify_%'` is wrong, because `_` is a LIKE
@@ -315,6 +316,22 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
     fi
   done
 
+  # 🔴 **The cap (rule 5).** A drop can fail for a reason that FORCE and the SET
+  # do not cure, and the first cause of the incident was never seen. So after
+  # the sweep, count again. Two or more left means drops keep failing. Then
+  # this run makes NO new copy, and the pile stops at two whatever the cause.
+  # The verify is lost for that night, and the exit code says so.
+  left="$(pg psql -U "$PG_USER" -d postgres -tAc \
+    "select count(*) from pg_database where datname ~ '$scratch_re'")"
+  if [ "$left" -ge 2 ]; then
+    echo "ERROR: $left scratch databases ($scratch_re) are still on the cluster after" >&2
+    echo "       the sweep. The deep verify is SKIPPED, so that no new copy is made." >&2
+    scratch_drop_failures=$((scratch_drop_failures + 1))
+    VERIFY_RESTORE=0
+  fi
+fi
+
+if [ "$VERIFY_RESTORE" = "1" ]; then
   SCRATCH="acb_verify_$(date -u +%s)"
   pg createdb -U "$PG_USER" "$SCRATCH"
   # Trap so a failure part-way through cannot leave a stray multi-hundred-MB
