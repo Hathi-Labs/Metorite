@@ -94,6 +94,11 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && node --version \
     && npm --version
 
+# The fixed data engine of §7.10 (WS-43y1a). The broker runs it as
+# `python3 -I /opt/sandbox/data_engine.py <verb> <request id>`. Root owns it,
+# and no uid can change it. It comes after pip, so an edit keeps the pip layer.
+COPY --chmod=0444 sandbox/data_engine.py /opt/sandbox/data_engine.py
+
 # A uid with no /etc/passwd entry gets HOME=/, which --read-only makes
 # unwritable. /tmp is the broker's tmpfs, so matplotlib, pip and npm write there.
 ENV HOME=/tmp

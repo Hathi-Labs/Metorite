@@ -92,6 +92,8 @@ _SANDBOX_MODULES: dict[str, str] = {
     "beautifulsoup4": "bs4",
     "lxml": "lxml",
     "jinja2": "jinja2",
+    # The data toolkit (WS-43y1a): the SQL engine of sandbox/data_engine.py.
+    "duckdb": "duckdb",
 }
 
 #: Packages that the image must not pin, directly or as a dependency, and why.
