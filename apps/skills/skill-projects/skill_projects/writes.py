@@ -806,7 +806,9 @@ async def create_task(
     who = [await _resolve_assignee(a) for a in _split(assignees)]
 
     card = _priority_card(payload)
+    # The card names the type and each field by NAME (`extra.card`).
     card.pop("type_id", None)
+    card.pop("custom_fields", None)
     card["status"] = status_label
     card.update(extra.card)
     card.update(await _assignee_card_lines(who))
@@ -842,8 +844,6 @@ _WRITE_FAILED = (GatewayRefusal, httpx.TransportError)
 #: the subject, its verb, the read that checks it, and the tool that finishes it.
 _AFTER_CREATE: dict[str, tuple[str, str, str, str]] = {
     "assignees": ("assignees", "were", "task_detail", "assign"),
-    # WS-46 P6: the custom values go in a PATCH after the create.
-    "fields": ("custom field values", "were", "task_detail", "update_task with fields"),
     "rule": ("repeat rule", "was", "recurrence", "set_recurrence"),
 }
 
@@ -851,11 +851,12 @@ _AFTER_CREATE: dict[str, tuple[str, str, str, str]] = {
 class _NewFields:
     """The P6 fields of a create (G5, G6, G7), resolved before the card.
 
-    ``payload`` goes in the POST: the start date and the type. ``values``
-    are the custom values, keyed by ``field_key``. They go in a PATCH after
-    the create, under the same card, because the PATCH route checks each
-    value (``custom_fields.apply_values``) and the create route stores what
-    it is given. ``card`` is what the member reads.
+    ``payload`` goes in the POST: the start date, the type and the custom
+    values (``custom_fields``, keyed by ``field_key``). ``values`` is that
+    last part again, for the receipt. The create route checks each value
+    through ``custom_fields.apply_values`` (#679), in the transaction of the
+    insert. So a value the route refuses leaves no task behind, and the
+    create is one atomic write. ``card`` is what the member reads.
     """
 
     def __init__(self) -> None:
@@ -893,6 +894,7 @@ async def _new_task_fields(
             raise GatewayRefusal(
                 "A new task has no value to empty. Leave that field out of fields."
             )
+        out.payload["custom_fields"] = out.values
         out.card.update(lines)
     return out
 
@@ -906,29 +908,14 @@ async def _after_create(
 ) -> tuple[dict[str, Any], tuple[str, Exception] | None]:
     """The writes after the create, in order, under its one card.
 
-    The assignees, then the custom values (P6), then the repeat rule (P1).
-    The first one that fails stops the rest, and the receipt names it.
+    The assignees, then the repeat rule (P1). The first one that fails stops
+    the rest, and the receipt names it. The custom values are not here: they
+    are in the create itself (:class:`_NewFields`).
     """
     failed = await _assign_after_create(task_id, task, who)
-    if failed is None:
-        failed = await _fields_after_create(task_id, extra.values)
     if failed is not None:
         return {}, failed
     return await repeating.save(task_id)
-
-
-async def _fields_after_create(
-    task_id: str, values: dict[str, Any]
-) -> tuple[str, Exception] | None:
-    """The custom values PATCH after a create, or the failure that stops the receipt."""
-    if not values:
-        return None
-    tid = uuid_of(task_id, "task_id")  # the writes fence: a canonical id
-    try:
-        await patch(f"/projects/tasks/{tid}", {"custom_fields": values})
-    except _WRITE_FAILED as exc:
-        return "fields", exc
-    return None
 
 
 async def _assign_after_create(
@@ -2804,16 +2791,16 @@ class _Repeat:
     ) -> str:
         """What the member reads. A failed write is named, the task stays
         (item 6), and each write it did not try is listed."""
-        values = bool(extra and extra.values)
-        if failed is not None:
-            left = []
-            if values and failed[0] == "assignees":
-                left.append("the custom field values. Use update_task with fields to set them.")
-            if self.rule and failed[0] != "rule":
-                left.append("the repeat rule. Use set_recurrence on this task to add it.")
-            return _create_stopped(task, lines, failed[0], failed[1], " Also ".join(left))
-        if values and extra is not None:
+        if extra is not None and extra.values:
+            # Saved by the create itself, so they hold even if a later write fails.
             lines = [*lines, "Fields set:", *extra.receipt_lines()]
+        if failed is not None:
+            left = (
+                "the repeat rule. Use set_recurrence on this task to add it."
+                if self.rule and failed[0] != "rule"
+                else ""
+            )
+            return _create_stopped(task, lines, failed[0], failed[1], left)
         if not self.rule:
             return "\n".join(["Created:", *lines])
         rule = saved.get("rule") or self.rule

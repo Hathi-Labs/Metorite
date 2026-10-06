@@ -383,10 +383,8 @@ def check_po8(ev: Evidence) -> list[Rule]:
     monday = ds_mod.next_monday(ev.dataset.today).isoformat()
     posts = ev.writes_to("POST", "/projects/tasks")
     body = posts[0].body if len(posts) == 1 and isinstance(posts[0].body, dict) else {}
-    created = str((posts[0].response or {}).get("id") or "") if len(posts) == 1 else ""
-    patches = [r for r in ev.writes() if r.method == "PATCH"]
-    on_task = [r for r in patches if r.path == f"/projects/tasks/{created}" and r.status < 400]
-    values = on_task[0].body if len(on_task) == 1 and isinstance(on_task[0].body, dict) else {}
+    stored = (posts[0].response or {}).get("custom_fields") if len(posts) == 1 else None
+    want = {"customer": "Acme"}
     words = f"{body.get('title') or ''} {body.get('description') or ''}"
     leaked = [w for w in ("acme", "monday", monday) if w in words.lower()]
     return [
@@ -399,15 +397,16 @@ def check_po8(ev: Evidence) -> list[Rule]:
         _rule("start_is_next_monday", body.get("start_date") == monday,
               f"the create carries start_date {monday}",
               f"the create's start_date is {body.get('start_date')!r}, not {monday}"),
-        _rule("values_on_the_task",
-              len(patches) == 1 and values == {"custom_fields": {"customer": "Acme"}},
-              "one PATCH on the created task sets customer to Acme",
-              f"the PATCH writes were {[(r.path, r.body, r.status) for r in patches]}"),
+        _rule("values_in_the_create",
+              body.get("custom_fields") == want and stored == want,
+              "the create itself sets customer to Acme, and the stub stored it",
+              f"the create sent custom_fields {body.get('custom_fields')!r}, "
+              f"and the stub stored {stored!r}"),
         _rule("settings_not_in_text", not leaked,
               "the title and the description hold no setting",
               f"the title or the description carries {leaked}"),
-        _rule("nothing_else_written", len(ev.writes()) == 2,
-              "the create and the values are the only writes",
+        _rule("nothing_else_written", len(ev.writes()) == 1,
+              "the create is the only write",
               f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
         _rule("answer_names_the_customer", "acme" in ev.answer.lower(),
               "the answer names the customer", "the answer does not name Acme"),

@@ -58,7 +58,7 @@ results. The answer of the model is one input, and never the only one.
 | PO-5 | PO-4, with the card declined | One declined card that lists the overdue tasks. No write. The answer says that nothing changed |
 | PO-6 | Set the status of #12 to Shipped | No write. A tool result starts with "Refused:" and names every lane of Launch. The answer names every lane |
 | PO-7 | Make it repeat with a rrule | Each call with an argument that the tool does not declare gets a refusal that names the argument. `set_recurrence` makes the rule. One `PUT …/recurrence` on #7, weekly, with `weekdays` `[1]`. One approved card. No other write. The answer says that it repeats |
-| PO-8 | Add a bug to Launch that starts next Monday, for the customer Acme | One approved card. One `POST /projects/tasks` with the type id of Bug and `start_date` next Monday. One `PATCH` on the new task with `custom_fields` `{"customer": "Acme"}`, which the stub checks with the route's own `apply_values`. No setting in the title or the description. No other write. The answer names Acme |
+| PO-8 | Add a bug to Launch that starts next Monday, for the customer Acme | One approved card. One `POST /projects/tasks` with the type id of Bug, `start_date` next Monday and `custom_fields` `{"customer": "Acme"}`. The stub checks the value with the route's own `apply_values`, as the create route does (#679). No setting in the title or the description. No other write. The answer names Acme |
 
 Four rules bind every task. The run must end, and the cover must be as the
 sweep asked. Every request must act as the acting member. The fourth rule is

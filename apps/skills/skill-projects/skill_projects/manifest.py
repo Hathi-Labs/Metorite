@@ -469,10 +469,9 @@ PLANNED: dict[str, str] = {
 #: issues to its own routes or to these.
 COMPOSITE: dict[str, frozenset[str]] = {
     # WS-46 P1 (D91): a repeating task is one act, so the rule is the second
-    # write under the create's one card (`PUT …/recurrence`). WS-46 P6: the
-    # custom values are a PATCH after the create, under the same card,
-    # because the PATCH route checks each value and the create route does not.
-    "create_task": frozenset({"assign", "set_recurrence", "update_task"}),
+    # write under the create's one card (`PUT …/recurrence`). WS-46 P6 sends
+    # the custom values in the create itself, which checks them (#679).
+    "create_task": frozenset({"assign", "set_recurrence"}),
     # WS-46 P1: the detail prints "Repeats:" from the `recurrence` read.
     "task_detail": frozenset({"recurrence"}),
     "add_subtasks": frozenset({"create_task"}),
@@ -570,9 +569,11 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "estimate_mins": "create_task.estimate_mins",
         "due_at": "create_task.due",
         "tags": "create_task.tags",
-        # WS-46 P6: G5 and G6.
+        # WS-46 P6: G5, G6 and G7. The route checks each custom value
+        # through `custom_fields.apply_values` (#679), before the insert.
         "start_date": "create_task.start",
         "type_id": "create_task.type",
+        "custom_fields": "create_task.fields",
     },
     ("PATCH", "/projects/tasks/{task_id}"): {
         "status_id": "update_task.status",
@@ -887,13 +888,6 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "include_triage": _TRIAGE_READ_REASON,
         "view_id": "The hand-arranged order of a saved view, which only the board reads.",
         "top_level": "The board's subtask toggle. Each row the chat reads names its parent.",
-    },
-    ("POST", "/projects/tasks"): {
-        "custom_fields": (
-            "create_task sends the values in a PATCH after the create, under the same "
-            "card (update_task's route). The PATCH route checks each value "
-            "(custom_fields.apply_values), and the create route stores what it is given."
-        ),
     },
     ("PATCH", "/projects/tasks/{task_id}"): {
         "If-Match": "The browser's edit guard (D-PM-20). A chat write reads the row first.",

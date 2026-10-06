@@ -15,17 +15,20 @@ Each new argument has the same five parts, and this file holds each one:
 4. **The wire carries it.** F2 (``test_projects_field_parity.py``) holds the
    witness of each field. The mutation half below strips each P6 field from
    the request and proves that the F2 check then fails (R7).
-5. **A refusal is text.** A route refusal after the card ends in a
-   ``stopped:`` receipt for a create, as P1's rule does, and never in a raise.
+5. **A refusal is text.** The create sends its custom values in the POST
+   itself, which checks them (#679). So a refused value refuses the whole
+   create, and no task is left behind. A refused write after the create
+   ends in a ``stopped:`` receipt, as P1's rule does, and never in a raise.
 
 The subtasks are asked ONCE (D-PM-38). A single-task door asks the member
 first when the task has subtasks and the member has not said. A bulk act
 does not read each subtree, so its card states the rule.
 
-R8: the half at the end runs the write the chat now sends on asyncpg, over
-the tenant ladder: a task row with a type and a start date through
-``core.insert_row``, and custom values through ``custom_fields.apply_values``
-and ``core.update_row``. A fake stores whatever it is handed.
+R8: the half at the end runs the body the chat sends on asyncpg, over the
+tenant ladder. A row with a type and a start date goes through
+``core.insert_row``. The custom values go through the real create route
+(``tasks.create_task``), which checks them with ``apply_values``. A refused
+value leaves no row. A fake stores whatever it is handed.
 """
 
 from __future__ import annotations
@@ -37,7 +40,6 @@ import uuid
 from types import SimpleNamespace
 from typing import Any
 
-import httpx
 import pytest
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
@@ -238,21 +240,19 @@ async def test_an_epic_type_under_a_parent_is_refused_before_the_card(monkeypatc
 # ── G7 — custom field values by name ────────────────────────────────────────
 
 
-async def test_create_writes_the_values_in_a_patch_after_the_create(monkeypatch) -> None:
-    """The create route stores custom values unchecked. The PATCH route checks
-    each one, so the values go there, under the create's one card."""
+async def test_create_sends_the_values_in_the_create_itself(monkeypatch) -> None:
+    """The create route checks each value through ``apply_values`` (#679), so
+    the values go in the POST: one atomic write, and no PATCH after it."""
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway())
     out = await skill_projects.create_task(UUID, "Weld the frame", fields='{"customer": "smb"}')
     post = _writes_to(calls, "POST", "/projects/tasks")[0]["json"]
-    assert "custom_fields" not in post
-    patched = _writes_to(calls, "PATCH", "/projects/tasks/{task_id}")
-    assert [p["json"] for p in patched] == [{"custom_fields": {"customer": "SMB"}}]
-    assert patched[0]["path"] == f"/projects/tasks/{OTHER}", "the PATCH is on the created task"
+    assert post["custom_fields"] == {"customer": "SMB"}
+    assert _writes_to(calls, "PATCH", "/projects/tasks/{task_id}") == []
     assert len(asked) == 1 and "field Customer: «SMB»" in asked[0]["context"]
+    assert "custom_fields" not in asked[0]["context"], "the card names each field by name"
     assert "Fields set:" in out and "field Customer: SMB" in out
-    assert "update_task" in m.COMPOSITE["create_task"]
-
+    assert "update_task" not in m.COMPOSITE["create_task"]
 
 async def test_update_sends_values_keyed_by_field_key_and_shows_before_after(monkeypatch) -> None:
     asked = approve(monkeypatch)
@@ -325,40 +325,53 @@ def test_a_value_of_the_wrong_type_is_refused(kind, given) -> None:
         W._field_value(definition, given)
 
 
-async def test_a_refused_values_patch_after_the_create_is_a_stopped_receipt(monkeypatch) -> None:
+def _refuse_the_create(call: dict) -> Any:
+    """The create route's own 422 for a value (``apply_values``, #679). A
+    create with no values passes, as the route lets it."""
+    body = call["json"] if isinstance(call["json"], dict) else {}
+    if call["method"] == "POST" and call["path"] == "/projects/tasks" and "custom_fields" in body:
+        return FakeResponse({"detail": "Custom field 'customer': 'SMB' is not one of []."}, 422)
+    return _gateway()(call)
+
+
+async def test_a_refused_value_refuses_the_create_and_leaves_no_task(monkeypatch) -> None:
+    """THE FENCE for G7 at the create. A value the route refuses refuses the
+    create itself: no task, no assign, no rule, and the model reads why."""
+    from skill_projects.refusals import REFUSED, refusals_as_text
+
     approve(monkeypatch)
-
-    def answer(call: dict) -> Any:
-        if call["method"] == "PATCH":
-            return FakeResponse({"detail": "Custom field 'customer': 'SMB' is not one of []."}, 422)
-        return _gateway()(call)
-
-    calls = fake_gateway(monkeypatch, answer)
-    out = await skill_projects.create_task(
-        UUID, "Weld the frame", fields='{"Customer": "SMB"}', repeat="daily"
+    calls = fake_gateway(monkeypatch, _refuse_the_create)
+    create = refusals_as_text(skill_projects.create_task)
+    out = await create(
+        UUID, "Weld the frame", assignees="a@x.io", fields='{"Customer": "SMB"}', repeat="daily"
     )
-    assert out.startswith("Created #9. The custom field values were NOT saved")
-    assert "\nstopped: the custom field values were refused." in out
-    assert "not tried: the repeat rule." in out, "the rule after the values is named, not tried"
-    assert "Never call create_task again for this task." in out
-    assert [c["method"] for c in writes(calls)] == ["POST", "PATCH"]
+    assert out.startswith(REFUSED) and "'customer'" in out
+    assert "Created" not in out, "no task exists, so the receipt claims none"
+    assert [(c["method"], c["path"]) for c in writes(calls)] == [("POST", "/projects/tasks")]
 
 
-async def test_a_lost_connection_on_the_values_is_not_a_raise(monkeypatch) -> None:
+async def test_a_values_write_after_the_create_is_a_mutation_the_fence_catches(
+    monkeypatch,
+) -> None:
+    """The mutation: the values leave the POST for a second write. The POST
+    then succeeds without them, and a task exists before its values do."""
     approve(monkeypatch)
-    calls = fake_gateway(monkeypatch, _gateway())
+    real = W._new_task_fields
 
-    async def broken(path: str, payload: dict, params: dict | None = None) -> Any:
-        calls.append({"method": "PATCH", "path": path, "json": payload, "params": {}})
-        raise httpx.ReadTimeout("timed out")
+    async def split(*args: Any, **kwargs: Any) -> Any:
+        out = await real(*args, **kwargs)
+        out.payload.pop("custom_fields", None)
+        return out
 
-    monkeypatch.setattr(W, "patch", broken)
+    monkeypatch.setattr(W, "_new_task_fields", split)
+    calls = fake_gateway(monkeypatch, _refuse_the_create)
     out = await skill_projects.create_task(UUID, "Weld the frame", fields='{"Customer": "SMB"}')
-    assert out.startswith("Created #9. The custom field values may or may not be saved.")
-    assert "Read task_detail for this task first" in out
+    assert "custom_fields" not in _writes_to(calls, "POST", "/projects/tasks")[0]["json"]
+    # The fence above asserts no "Created" and one write. Here a task exists.
+    assert out.startswith("Created"), "the mutated create leaves a task behind"
 
 
-async def test_a_failed_assign_names_the_values_it_did_not_try(monkeypatch) -> None:
+async def test_a_failed_assign_still_shows_the_values_the_create_saved(monkeypatch) -> None:
     approve(monkeypatch)
 
     def answer(call: dict) -> Any:
@@ -370,7 +383,9 @@ async def test_a_failed_assign_names_the_values_it_did_not_try(monkeypatch) -> N
     out = await skill_projects.create_task(
         UUID, "Weld the frame", assignees="a@x.io", fields='{"Customer": "SMB"}'
     )
-    assert "not tried: the custom field values." in out
+    assert out.startswith("Created #9. The assignees were NOT saved")
+    assert "field Customer: SMB" in out, "the values went in with the create"
+    assert "not tried" not in out
     assert _writes_to(calls, "PATCH", "/projects/tasks/{task_id}") == []
 
 
@@ -774,6 +789,7 @@ def test_the_defaults_check_fails_on_a_drift() -> None:
 #: Every field P6 moved into ``SENDS``. One mutation each.
 P6_SENDS: tuple[tuple[tuple[str, str], str], ...] = (
     (("POST", "/projects/tasks"), "start_date"),
+    (("POST", "/projects/tasks"), "custom_fields"),
     (("POST", "/projects/tasks"), "type_id"),
     (("PATCH", "/projects/tasks/{task_id}"), "type_id"),
     (("PATCH", "/projects/tasks/{task_id}"), "custom_fields"),
@@ -795,8 +811,9 @@ def test_every_p6_field_is_a_sends_row_and_no_p6_gap_is_planned() -> None:
     planned = {g for names in m.FIELD_PLANNED.values() for g in names.values()}
     assert not planned & {"G5", "G6", "G7", "G8", "G9"}
     assert not {"G5", "G6", "G7", "G8", "G9"} & set(m.FIELD_GAPS)
-    exempt = m.FIELD_EXEMPT[("POST", "/projects/tasks")]["custom_fields"]
-    assert "PATCH" in exempt, "the create's values are exempt because a PATCH sends them"
+    assert "custom_fields" not in m.FIELD_EXEMPT.get(("POST", "/projects/tasks"), {}), (
+        "the create sends its values itself since #679"
+    )
 
 
 class _Stripping(FakeClient):
@@ -846,23 +863,6 @@ async def test_a_tool_that_drops_a_p6_field_fails_the_wire_check(key, name, monk
     assert not await _witness_holds(key, name, monkeypatch, strip=True), (
         f"F2 still passes with {name} stripped from {key[0]} {key[1]}: the check proves nothing"
     )
-
-
-async def test_a_create_that_drops_its_values_patch_is_caught(monkeypatch) -> None:
-    """The create's values are FIELD_EXEMPT on the POST, so F2 holds no wire
-    for them. This test is their fence, and the mutation drops the PATCH."""
-    approve(monkeypatch)
-    calls = fake_gateway(monkeypatch, _gateway())
-    await skill_projects.create_task(UUID, "Weld the frame", fields='{"Customer": "SMB"}')
-    assert _writes_to(calls, "PATCH", "/projects/tasks/{task_id}")
-
-    async def dropped(_task_id: str, _values: dict) -> None:
-        return None
-
-    monkeypatch.setattr(W, "_fields_after_create", dropped)
-    calls.clear()
-    await skill_projects.create_task(UUID, "Weld the frame", fields='{"Customer": "SMB"}')
-    assert _writes_to(calls, "PATCH", "/projects/tasks/{task_id}") == []
 
 
 # ── 5. A refusal reaches the model as text ──────────────────────────────────
@@ -955,10 +955,10 @@ def project(ladder):
 
 
 @_r8
-async def test_r8_the_create_and_the_values_patch_land_on_asyncpg(project) -> None:
+async def test_r8_the_create_body_lands_on_asyncpg(project) -> None:
     """The POST body the chat sends (a type id and a start date) through the
-    create route's ``insert_row``, then the PATCH body (``custom_fields`` by
-    key) through ``apply_values`` and ``update_row``, as ``patch_task`` runs."""
+    create route's ``insert_row``, then values by key through
+    ``apply_values`` and ``update_row``, the seams both routes share."""
     pytest.importorskip("asyncpg")
     from gateway.routes.projects import core
     from gateway.routes.projects.custom_fields import apply_values
@@ -997,3 +997,66 @@ async def test_r8_the_create_and_the_values_patch_land_on_asyncpg(project) -> No
             assert stored == {"customer": "SMB"} and changes["customer"]["to"] == "SMB"
     finally:
         await eng.dispose()
+
+
+# ── R8 — the chat's custom values through the REAL create route (#679) ──────
+#
+# The fixtures of the route's own fence, reused rather than copied: two roots,
+# a lane and four fields in ``home``, one field that only ``away`` defines.
+from tests.unit.test_projects_create_custom_values import (  # noqa: E402
+    _create_on_db,
+    _ladder,  # noqa: F401 — a fixture `seeded` needs
+    _stored,
+    seeded,  # noqa: F401 — a fixture
+)
+
+
+async def _chat_values(monkeypatch, fields: str, rows: list[dict[str, Any]]) -> Any:
+    """The ``custom_fields`` that ``create_task`` puts in its POST, over a
+    project that lists *rows* as its fields."""
+
+    def answer(call: dict) -> Any:
+        if call["path"].endswith("/fields") and call["method"] == "GET":
+            return {"rows": rows}
+        return _gateway()(call)
+
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, answer)
+    await skill_projects.create_task(UUID, "Weld the frame", fields=fields)
+    return _writes_to(calls, "POST", "/projects/tasks")[0]["json"]["custom_fields"]
+
+
+def _home_rows() -> list[dict[str, Any]]:
+    return [
+        {"name": "Hours", "field_key": "hours", "field_type": "number", "options": []},
+        {"name": "Tier", "field_key": "tier", "field_type": "select",
+         "options": ["gold", "silver"]},
+        # A field the chat read, which the root does not define (a drift).
+        {"name": "Away only", "field_key": "away_only", "field_type": "text", "options": []},
+    ]
+
+
+@_r8
+async def test_r8_the_chat_values_are_stored_shaped_by_the_create_route(
+    seeded, monkeypatch  # noqa: F811
+) -> None:
+    custom = await _chat_values(monkeypatch, '{"Hours": "2.5", "tier": "GOLD"}', _home_rows())
+    assert custom == {"hours": 2.5, "tier": "gold"}
+    created = await _create_on_db(seeded, monkeypatch, custom)
+    assert created["custom_fields"] == {"hours": 2.5, "tier": "gold"}
+    assert _stored(seeded) == [{"hours": 2.5, "tier": "gold"}]
+
+
+@_r8
+async def test_r8_a_value_the_create_route_refuses_leaves_no_task(
+    seeded, monkeypatch  # noqa: F811
+) -> None:
+    """THE R8 FENCE for the atomic create: the route refuses the value, and
+    no row lands. A values PATCH after the create would leave one."""
+    from fastapi import HTTPException
+
+    custom = await _chat_values(monkeypatch, '{"Away only": "x"}', _home_rows())
+    with pytest.raises(HTTPException) as refused:
+        await _create_on_db(seeded, monkeypatch, custom)
+    assert refused.value.status_code == 422 and "'away_only'" in str(refused.value.detail)
+    assert _stored(seeded) == []

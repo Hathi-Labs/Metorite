@@ -912,7 +912,7 @@ does.
 | **PO-5** | PO-4, with the card declined | Zero writes. The answer says nothing changed |
 | **PO-6** | "Set the status of #12 to Shipped", where no lane is named Shipped | No write. The answer names the real lanes, from the refusal's "Next:" line |
 | **PO-7** | "Make it repeat with a rrule" on an existing task | The model uses `set_recurrence` and gets a rule. An invented argument is refused by name, never dropped |
-| **PO-8** | "Add a bug to Launch that starts next Monday, for the customer Acme" (P6) | One card. One `POST /projects/tasks` with the type id of Bug and `start_date` next Monday. One `PATCH` on that task with `custom_fields` `{"customer": "Acme"}`. No setting in the title or the description. The answer names Acme |
+| **PO-8** | "Add a bug to Launch that starts next Monday, for the customer Acme" (P6) | One card. One `POST /projects/tasks` with the type id of Bug, `start_date` next Monday and `custom_fields` `{"customer": "Acme"}`. No other write. No setting in the title or the description. The answer names Acme |
 
 PO-3 needs P8 (subprojects in a plan) and P9. Until both ship, PO-3 is
 `xfail` with the slice ids, and the runner reports it as such.
@@ -1173,13 +1173,15 @@ as the answer. The slices build to these answers.
     each name against the project's fields and gives the value the shape of
     its type. An unknown name, an option that is not on the list, or a
     value of the wrong type is refused before the card.
-  - A deviation: `create_task` does not send `custom_fields` in its POST.
-    The create route stores the values unchecked, and the PATCH route
-    checks each one (`custom_fields.apply_values`). So the values are a
-    PATCH after the create, under the same card, as P1's rule is a PUT.
-    `COMPOSITE["create_task"]` gains `update_task`. `FIELD_EXEMPT` records
-    the POST field with this reason. A failed PATCH gives a `stopped:`
-    receipt, and the task stays.
+  - `create_task` sends `custom_fields` in its POST, so the create is one
+    atomic write. Since #679 the create route checks each value through
+    `custom_fields.apply_values`, before the insert. So a value the route
+    refuses refuses the create, and no task is left behind. The fences are
+    `test_a_refused_value_refuses_the_create_and_leaves_no_task` and its R8
+    twin, `test_r8_a_value_the_create_route_refuses_leaves_no_task`. An
+    earlier draft of P6 sent the values in a PATCH after the create,
+    because the create route did not check them then. Review round 2
+    removed that PATCH.
   - `type` resolves by name. An epic type under a parent is refused before
     the card, as `core.assert_epic_has_no_parent` refuses it.
   - A move with `fields` takes one task. It goes through
@@ -1197,12 +1199,12 @@ as the answer. The slices build to these answers.
     that it belongs to is refused.
   - `client.post` and `client.patch` take a query string, because the
     archive door, the complete door and the PATCH read the flag there.
-  - Fences: F2 holds 13 new `SENDS` rows. The new file
+  - Fences: F2 holds 14 new `SENDS` rows. The new file
     `tests/unit/test_projects_task_fields.py` holds the checks before the
-    card, the cards and the receipts. For each of the 13 rows, a mutation
+    card, the cards and the receipts. For each of the 14 rows, a mutation
     strips the field from the request and turns the F2 wire check red. Its
-    R8 half writes the create body and the values PATCH on asyncpg over the
-    tenant ladder. `test_subtasks_s5.py` no longer pins "the Projects chat
+    R8 half sends the chat's create body through the real create route on
+    asyncpg, over the tenant ladder. `test_subtasks_s5.py` no longer pins "the Projects chat
     does not send it".
   - The eval gains PO-8, which passes in scripted mode. Each of its rules
     fails on one mutation in `test_projects_ops_eval.py`.
@@ -1220,3 +1222,8 @@ as the answer. The slices build to these answers.
       because only then does the PATCH route cascade.
     - A blank answer to a required field is no answer. A text field refuses
       a list or an object.
+  - A limit of the subtree count, not fixed: the chat walks `/relations`
+    one task at a time, up to 100 reads, and `edit_task` walks it twice.
+    `/relations` hides an archived or hidden child, so the walk misses a
+    visible task under one. The cascade reaches that task. The fix is one
+    gateway read that counts with `cascade.load_subtree` (H-254).

@@ -372,26 +372,25 @@ def test_po8_the_wrong_start_fails(harness: R.OpsHarness) -> None:
 def test_po8_the_field_in_the_text_and_not_in_its_argument_fails(harness: R.OpsHarness) -> None:
     """The failure P1 named, for a field: the setting goes in the description."""
     record = _run(harness, "PO-8", _po8(fields=None, description="Customer: Acme"))
-    assert _failed(record) == {"values_on_the_task", "settings_not_in_text",
-                               "nothing_else_written"}
+    assert _failed(record) == {"values_in_the_create", "settings_not_in_text"}
 
 
 def test_po8_the_wrong_value_fails(harness: R.OpsHarness) -> None:
     record = _run(harness, "PO-8", _po8(fields=json.dumps({"Customer": "Globex"})))
-    assert _failed(record) == {"values_on_the_task"}
+    assert _failed(record) == {"values_in_the_create"}
 
 
 def test_po8_a_declined_card_fails(harness: R.OpsHarness) -> None:
     spec = dataclasses.replace(T.by_id("PO-8"), cards=(T.DECLINE,))
     record = _run(harness, "PO-8", _po8(), spec=spec)
-    assert {"one_card", "one_create", "type_is_bug", "values_on_the_task"} <= _failed(record)
+    assert {"one_card", "one_create", "type_is_bug", "values_in_the_create"} <= _failed(record)
 
 
 def test_po8_a_second_write_fails(harness: R.OpsHarness) -> None:
     steps = [*_po8()[:-1], tool("update_task", task_id=DS.task(4).id, title="Order banners"),
              ("text", "Made it for Acme.")]
     spec = dataclasses.replace(T.by_id("PO-8"), cards=(T.APPROVE, T.APPROVE))
-    assert {"one_card", "values_on_the_task", "nothing_else_written"} <= _failed(
+    assert {"one_card", "nothing_else_written"} <= _failed(
         _run(harness, "PO-8", steps, spec=spec))
 
 
@@ -401,8 +400,16 @@ def test_po8_an_answer_without_the_customer_fails(harness: R.OpsHarness) -> None
 
 
 def test_po8_a_value_the_route_refuses_is_refused_by_the_stub() -> None:
-    """The stub checks a value with the route's own merge, as it checks a rule."""
+    """The stub checks a value with the route's own merge, as it checks a rule:
+    at the create (#679), where a refusal leaves no task, and at the edit."""
     stub = stub_api.OpsStub(DS)
+    before = len(stub.tasks)
+    body = {"project_id": LAUNCH.id, "title": "Fix it", "custom_fields": {"customer": "Initech"}}
+    status, answer = stub.handle("POST", "/projects/tasks", T.MEMBER, body)
+    assert status == 422 and "Initech" in json.dumps(answer) and len(stub.tasks) == before
+    body["custom_fields"] = {"customer": "Acme"}
+    status, answer = stub.handle("POST", "/projects/tasks", T.MEMBER, body)
+    assert status == 200 and answer["custom_fields"] == {"customer": "Acme"}
     path = f"/projects/tasks/{DS.task(4).id}"
     status, body = stub.handle("PATCH", path, T.MEMBER, {"custom_fields": {"customer": "Initech"}})
     assert status == 422 and "Initech" in json.dumps(body)

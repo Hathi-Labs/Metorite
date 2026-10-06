@@ -21,7 +21,8 @@ Three rules of the real gateway hold here too:
   ``gateway.routes.projects.recurrence.validate_rule``. So a rule that the
   gateway refuses with a 422 is refused here with the same words.
 * A custom value goes through the route's own merge,
-  ``gateway.routes.projects.custom_fields.apply_values`` (WS-46 P6).
+  ``gateway.routes.projects.custom_fields.apply_values``, at the create
+  (#679) and at the edit (WS-46 P6).
 * A route this stub does not serve answers 404, with a reason that says so.
 """
 from __future__ import annotations
@@ -322,6 +323,10 @@ class OpsStub:
             "source": str(body.get("source") or "manual"), "archived_at": None,
             "completed_at": None, "type_id": body.get("type_id"), "custom_fields": {},
         }
+        if body.get("custom_fields") is not None:
+            # The create route's own check (#679), before the row exists, so a
+            # refused value leaves no task.
+            row["custom_fields"] = self._merge_values(project, row, body["custom_fields"])
         self.tasks[tid] = row
         return self._public(row)
 
