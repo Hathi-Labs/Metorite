@@ -363,6 +363,20 @@ All providers implement the `BaseEmailProvider` abstract interface:
     - The upload POST of `messages.send` and `drafts.create` gets one try,
       and the PUT of `drafts.update` keeps its retry on a 429.
 
+17. **The To of a reply draft (WS-17 EM-T10 item 6).** `create_draft` takes a
+    keyword-only `exact_to: bool = False` on the base class and on each
+    provider. Fence: `tests/unit/test_outlook_draft_cc.py`.
+    - Outlook's `createReply` sets the To to the sender, or to the Reply-To.
+      With `exact_to`, the PATCH of the reply writes `to` too, so a reply-all
+      draft keeps each address. Gmail and IMAP put `to` into the mail, so they
+      ignore the keyword.
+    - `PUT /email/drafts` passes `exact_to=True`, because the member typed
+      that To. The rule REPLY passes `exact_to=bool(a.get("to_address"))`,
+      so only a To typed into the rule goes over the To of `createReply`.
+      Each other caller keeps the default, so a Reply-To stays. The fence
+      counts the callers in `drafting.py`, `actions.py`, `followups.py` and
+      `notes/dispatch.py`. A new caller there fails it.
+
 ## Inbound SMTP Server
 
 `inbound.py` runs an aiosmtpd SMTP server that accepts inbound emails and persists
@@ -480,9 +494,10 @@ them directly to `email_messages`.  Started/stopped via the gateway lifespan.
     round 1). `_graph_link` checks the stored link, each next link and the
     delta link before a request or a store. Else the bearer goes to the host
     that the cursor names. A refused link drops, and the log names no URL.
-  - Only a normal incremental cycle runs the delta. A first import, a deep
-    sync and a cycle before `initial_sync_done` run none
-    (`scheduler._runs_delta_shadow`).
+  - Only a normal incremental cycle of the background loop runs the delta.
+    A first import, a deep sync, a cycle before `initial_sync_done` and each
+    caller that is not the loop (Sync now, the webhook, the rerun, the agent
+    tool) run none (`scheduler._runs_delta_shadow`, EM-T4d-f3).
   - A shadow cycle writes NULL into `email_sync_log.provider_history_id`.
     Only `last_history_id` keeps the cursor.
   - No `@removed` item becomes a `[DELETED]` marker, so the reconcile reads

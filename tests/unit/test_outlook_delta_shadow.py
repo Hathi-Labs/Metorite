@@ -514,7 +514,8 @@ async def _cycle(monkeypatch, graph: _Graph, cursor: str | None, *,
                  since: datetime | None = None,
                  initial_sync_done: bool = True,
                  provider: Callable[[], Any] | None = None,
-                 provider_name: str = "microsoft") -> SimpleNamespace:
+                 provider_name: str = "microsoft",
+                 from_loop: bool = True) -> SimpleNamespace:
     """One ``_sync_account`` cycle on fake sessions and the real provider.
 
     It returns the result, the cursor that phase (d) writes, the value that
@@ -571,7 +572,8 @@ async def _cycle(monkeypatch, graph: _Graph, cursor: str | None, *,
                         lambda name, creds: (provider or _provider)())
     try:
         res = await sched._sync_account(account_id, organization_id="org-1",
-                                        deep=deep, since=since)
+                                        deep=deep, since=since,
+                                        from_loop=from_loop)
     finally:
         graph.handle = real_handle  # type: ignore[method-assign]
         monkeypatch.setattr(httpx, "AsyncClient", real_client)
@@ -701,23 +703,27 @@ async def test_off_still_writes_the_cursor_of_a_provider_into_the_sync_log(
 # ── email-delta-normal-cycle ────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(("deep", "since", "done", "imports", "runs"), [
-    (None, None, True, False, True),
-    (None, None, False, True, False),
-    (True, "floor", True, True, False),
-    (True, None, True, True, False),
-    (False, None, False, False, False),
-], ids=["normal-cycle", "first-import", "member-deep-sync", "manual-full-sync",
-        "rerun-during-import"])
+@pytest.mark.parametrize(("deep", "since", "done", "loop", "imports", "runs"), [
+    (None, None, True, True, False, True),
+    (None, None, True, False, False, False),
+    (None, None, False, True, True, False),
+    (True, "floor", True, False, True, False),
+    (True, None, True, False, True, False),
+    (True, None, True, True, True, False),
+    (False, None, False, False, False, False),
+], ids=["normal-cycle", "member-sync-now", "first-import", "member-deep-sync",
+        "manual-full-sync", "deep-cycle-of-the-loop", "rerun-during-import"])
 async def test_only_a_normal_cycle_sends_a_delta_request(
-    monkeypatch, deep, since, done, imports, runs,
+    monkeypatch, deep, since, done, loop, imports, runs,
 ) -> None:
     """``email-delta-normal-cycle``, review round 1 F6. A listed mailbox in
     ``shadow`` runs the delta on a normal incremental cycle only. A first
     import, the deep sync of a member act (with or without ``since``) and a
     rerun before the import ends send no delta request. Those cycles hold
     the mailbox lock for a long sweep, and a manual sync has 30 seconds.
-    The sweep runs in each of them."""
+    A member's "Sync now" sends ``deep=None`` like the loop, and it runs no
+    delta either, because it is not the loop (EM-T4d-f3). The sweep runs in
+    each of them."""
     graph = _Graph()
     _mailbox(graph)
     _set_mode(monkeypatch, "shadow")
@@ -729,7 +735,8 @@ async def test_only_a_normal_cycle_sends_a_delta_request(
 
     monkeypatch.setattr(sched, "_import_in_batches", _import)
     run = await _cycle(monkeypatch, graph, None, deep=deep,
-                       since=_floor() if since else None, initial_sync_done=done)
+                       since=_floor() if since else None, initial_sync_done=done,
+                       from_loop=loop)
     assert "error" not in run.result, run.result
     assert bool(imported) is imports
     assert graph.sweeps, "the sweep did not run"

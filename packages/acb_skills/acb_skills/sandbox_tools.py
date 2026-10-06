@@ -291,8 +291,8 @@ async def run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -
     """Run a shell command in this chat's sandbox and return its output.
 
     The sandbox is a Linux container with Python 3.12, pandas, numpy,
-    matplotlib, openpyxl and the other packages of the coding image. It has
-    NO network. It sees this workspace at ``/workspace``:
+    matplotlib, openpyxl, python-docx, python-pptx and the other packages of
+    the coding image. It has NO network. It sees this workspace at ``/workspace``:
 
     * ``/workspace/.run/`` holds the data files of this run. Put member data
       here. It is deleted when the run ends.

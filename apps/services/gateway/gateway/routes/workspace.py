@@ -1654,10 +1654,12 @@ async def _refuse_unless_room(
     if send:
         if not room.can_send:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=room.refusal_status,
                 detail=room.denied("change its files"),
             )
     elif not room.can_read:
+        if room.resolve_failed:
+            raise HTTPException(status_code=503, detail=room.denied("read its files"))
         raise HTTPException(status_code=404, detail="Workspace not found for session")
 
 

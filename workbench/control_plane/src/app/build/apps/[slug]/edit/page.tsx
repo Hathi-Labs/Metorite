@@ -31,11 +31,16 @@ import Tabs from "@/components/Tabs";
 import { useMobileDrawer } from "@/components/AppShell";
 import { useViewMode } from "@/components/ViewModeProvider";
 import {
+  builderSessionKey,
   createSession,
+  fetchAndMergeSessionsFromDb,
+  getBuilderSessionId,
   getSessions,
+  setBuilderSessionId,
   upsertSession,
   type ChatSession,
 } from "@/lib/sessions";
+import { useChatScope } from "@/hooks/useChatSessions";
 import {
   buildAppSrcDoc,
   extractCcIconNames,
@@ -53,7 +58,6 @@ type PendingToolConfirm = CcToolConfirmRequest & {
 };
 
 const BUILDER_AGENT = "app-builder";
-const SESSION_KEY_PREFIX = "cc-app-builder-session-";
 /** Fallback poll — run-end sync (onActivity) is the primary refresh path. */
 const PREVIEW_POLL_MS = 30_000;
 /** Settle time after an assistant turn lands before refetch + sync. */
@@ -387,37 +391,40 @@ function describeFailure(result: TestResult): string {
   return result.error ?? "unknown failure";
 }
 
-/** Find-or-create the ONE builder chat session for this app. */
-function ensureBuilderSession(slug: string): ChatSession {
+/**
+ * Find-or-create the ONE builder chat session for this app, for the signed-in
+ * member in this org. Null while no member is bound.
+ *
+ * The per-app id lives in the member's chat namespace (PR #652). An app slug
+ * is unique inside one org only, so the old browser-wide key could hand one
+ * org's builder chat to another org's app. That old key is deleted on bind
+ * and never read.
+ */
+async function ensureBuilderSession(slug: string): Promise<ChatSession | null> {
+  if (!builderSessionKey(slug)) return null;
   const name = `app:${slug}`;
-  const sessions = getSessions();
-  // 1. Stable id remembered per app.
-  const storedId =
-    typeof window !== "undefined"
-      ? localStorage.getItem(SESSION_KEY_PREFIX + slug)
-      : null;
-  if (storedId) {
-    const existing = sessions.find((s) => s.id === storedId);
+  const find = (sessions: ChatSession[]): ChatSession | undefined => {
+    // 1. The stable id remembered for this app, if the member's list holds it.
+    const storedId = getBuilderSessionId(slug);
+    const existing = storedId ? sessions.find((s) => s.id === storedId) : undefined;
     if (existing) return existing;
-  }
-  // 2. A session already named for this app (e.g. from another device merge).
-  const named = sessions.find(
-    (s) => s.agentName === BUILDER_AGENT && s.name === name
-  );
-  if (named) {
-    try {
-      localStorage.setItem(SESSION_KEY_PREFIX + slug, named.id);
-    } catch {}
-    return named;
+    // 2. A session already named for this app (e.g. from another device merge).
+    return sessions.find((s) => s.agentName === BUILDER_AGENT && s.name === name);
+  };
+  // The member's list in this browser can be empty (a new device, or the first
+  // visit after the list moved into its namespace). Ask the server before
+  // starting a second builder chat for the same app.
+  const found = find(getSessions()) ?? find(await fetchAndMergeSessionsFromDb());
+  if (found) {
+    setBuilderSessionId(slug, found.id);
+    return found;
   }
   // 3. Fresh session, named for the app.
   const s = createSession(BUILDER_AGENT);
   s.name = name;
   s.title = name;
   upsertSession(s);
-  try {
-    localStorage.setItem(SESSION_KEY_PREFIX + slug, s.id);
-  } catch {}
+  setBuilderSessionId(slug, s.id);
   return s;
 }
 
@@ -1089,20 +1096,27 @@ function Workshop({ slug }: { slug: string }) {
   // ── Builder session wiring (critical) ───────────────────────────────
   // Only editors receive workspace_path from the API; without it the chat is
   // replaced by a read-only notice.
+  const chatScopeId = useChatScope();
   useEffect(() => {
     if (!app) return;
     if (!app.workspace_path) return;
-    const s = ensureBuilderSession(slug);
-    setChatSession(s);
-    // Bind the builder's working directory to the app workspace (idempotent).
-    fetch(`/api/agent/workspace/${s.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workspace_path: app.workspace_path }),
-    })
-      .then((res) => setWorkspaceBound(res.ok))
-      .catch(() => setWorkspaceBound(false));
-  }, [app, slug]);
+    if (!chatScopeId) return;
+    const workspacePath = app.workspace_path;
+    let cancelled = false;
+    void ensureBuilderSession(slug).then((s) => {
+      if (cancelled || !s) return;
+      setChatSession(s);
+      // Bind the builder's working directory to the app workspace (idempotent).
+      fetch(`/api/agent/workspace/${s.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspace_path: workspacePath }),
+      })
+        .then((res) => { if (!cancelled) setWorkspaceBound(res.ok); })
+        .catch(() => { if (!cancelled) setWorkspaceBound(false); });
+    });
+    return () => { cancelled = true; };
+  }, [app, slug, chatScopeId]);
 
   // ── Draft preview fetch + poll ──────────────────────────────────────
   const refreshPreview = useCallback(async () => {

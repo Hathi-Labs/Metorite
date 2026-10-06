@@ -488,6 +488,11 @@ no scopes. `customer_console.md` §6A.14 CP-13d is the contract.
 floor. The tool sends no member, because a run's member can come from a
 caller's payload (the R11 finding in §6A.14 CP-13d).
 
+📌 **D90 (decided 2026-10-06) moves the engine of this tool to `tier-fast`.**
+For an agent in `AI_TIER_ROUTING`, the tool runs an MAF agent with no tools,
+in process. It is still not a delegation, and it uses no depth level.
+`ai_tier_routing.md` §6 owns the design.
+
 > **A delegated run executes at the caller's clearance, intersected with the callee's declared
 > scopes. Never wider.**
 

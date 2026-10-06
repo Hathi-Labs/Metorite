@@ -2276,7 +2276,7 @@ async def upsert_draft(
                     provider_id = await provider.create_draft(
                         to=to, subject=subject, body_text=body,
                         thread_id=thread_id or None, cc=cc, bcc=bcc,
-                        attachments=atts or None,
+                        attachments=atts or None, exact_to=True,
                     )
                     try:
                         await provider.trash_message(drow.provider_message_id)
@@ -2312,18 +2312,20 @@ async def upsert_draft(
                         else json.loads(rrow.from_address or "{}")
                     if frm.get("email"):
                         to = [frm["email"]]
+                # The member typed this To, so the reply keeps each address.
+                # Outlook's createReply sets only the sender (EM-T10 item 6).
                 with _file_not_attached(), _mail_too_large():
                     provider_id = await provider.create_draft(
                         to=to, subject=subject, body_text=body,
                         reply_to_message_id=rrow.provider_message_id,
                         thread_id=thread_id or None, cc=cc, bcc=bcc,
-                        attachments=atts or None,
+                        attachments=atts or None, exact_to=True,
                     )
             else:
                 with _file_not_attached(), _mail_too_large():
                     provider_id = await provider.create_draft(
                         to=to, subject=subject, body_text=body, cc=cc, bcc=bcc,
-                        attachments=atts or None,
+                        attachments=atts or None, exact_to=True,
                     )
 
             # Each To address goes into the row, because the signed send reads

@@ -15,7 +15,7 @@ import { MessageContent } from "./MessageContent";
 import { AttachmentList } from "./AttachmentList";
 import { getSignatureText, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
-import { ownAddresses, replyRecipients } from "../lib/mailbox";
+import { draftRecipients, ownAddresses, replyRecipients } from "../lib/mailbox";
 import { TaskCaptureModal, type CommitmentContext } from "./TaskCaptureModal";
 import { ContactTrigger, RecipientList } from "./ContactCard";
 import {
@@ -355,11 +355,15 @@ export function DraftCard({
   const draftTo = draft.to.map((t) => t.email).filter(Boolean);
   // REPLY-ALL recipients: the original sender + everyone on To, minus the
   // member; original Cc carried over. Falls back to what the draft has.
-  const all = replyTo ? replyRecipients(replyTo, "reply-all", own, sendingAddress) : null;
+  const all = hasReplyTarget && replyTo
+    ? replyRecipients(replyTo, "reply-all", own, sendingAddress)
+    : null;
   const replyAllTo = all && all.to.length ? all.to : draftTo;
   const replyAllCc = all ? all.cc : [];
   // REPLY (sender only) recipients.
-  const only = replyTo ? replyRecipients(replyTo, "reply", own, sendingAddress) : null;
+  const only = hasReplyTarget && replyTo
+    ? replyRecipients(replyTo, "reply", own, sendingAddress)
+    : null;
   const replyOnlyTo = only && only.to.length ? only.to : draftTo;
 
   // Split any quoted trailing chain out of the draft body so the editable box
@@ -369,15 +373,26 @@ export function DraftCard({
   const [hydratedBody, setHydratedBody] = useState<string | null>(null);
   const [body, setBody] = useState(initSplit.main);
   const [quote, setQuote] = useState(initSplit.quoted || "");
-  const [to, setTo] = useState(replyAllTo.join(", "));
-  const [cc, setCc] = useState(replyAllCc.join(", "));
-  const [bcc, setBcc] = useState("");
-  // Default to reply-all when replying to a real message (parity with
-  // EmailDetail); the toggle narrows to the sender only.
-  const [replyAll, setReplyAll] = useState(hasReplyTarget);
-  // Show Cc/Bcc up-front on a reply so they're always visible; keep them behind
-  // the reveal button only for a from-scratch draft.
-  const [showCc, setShowCc] = useState(hasReplyTarget || replyAllCc.length > 0);
+  // The card starts with the To, Cc and Bcc of its draft, and with the button
+  // that matches them, or neither (EM-T10). Before, it started on Reply All
+  // and wrote those lists over a reply that the member had narrowed.
+  const [start] = useState(() =>
+    draftRecipients(
+      draft,
+      all ? { to: replyAllTo, cc: replyAllCc } : null,
+      only ? replyOnlyTo : null,
+    ),
+  );
+  const [to, setTo] = useState(start.to.join(", "));
+  const [cc, setCc] = useState(start.cc.join(", "));
+  const [bcc, setBcc] = useState(start.bcc.join(", "));
+  // `null` marks neither button: the lists match no click of the toggle.
+  const [replyAll, setReplyAll] = useState<boolean | null>(start.replyAll);
+  // The Cc row shows for a Cc or a Bcc, and on a reply that is not Reply.
+  const [showCc, setShowCc] = useState(start.showCc);
+  // An edit of the member. Only then does the autosave run. It is declared
+  // before its first reader, so the React lint knows it is a ref.
+  const dirty = useRef(false);
 
   /** Flip Reply ↔ Reply All, recomputing To/Cc from the original message.
    *  Reply All reveals the Cc/Bcc fields; Reply (sender only) hides them and
@@ -399,7 +414,6 @@ export function DraftCard({
   const [sending, setSending] = useState(false);
   // The text of a failed send. Before EM-G3c-2 the card dropped it (item 14).
   const [sendError, setSendError] = useState<string | null>(null);
-  const dirty = useRef(false);
   const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
   // The pending autosave. An unmount and a change of draft run it at once
   // (EM-G3c-2 item 11).
@@ -503,8 +517,9 @@ export function DraftCard({
     ));
     // Stop the timer and keep the save, so an unmount can still flush it.
     return () => autosave.hold();
+    // An edit of the Cc or the Bcc saves too (EM-T10 item 4, EM-G3c-2-f2).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body, quote, to]);
+  }, [body, quote, to, cc, bcc]);
 
   // An unmount, and a switch of the card to another draft, run the pending
   // save at once (EM-G3c-2 item 11). The save names the draft of before.
@@ -620,7 +635,7 @@ export function DraftCard({
               onClick={() => applyReplyAll(false)}
               title="Reply to sender only"
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
-                !replyAll ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                replyAll === false ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <AppIcon name="Reply" size={11} className="flex-shrink-0" /> Reply
@@ -630,7 +645,7 @@ export function DraftCard({
               onClick={() => applyReplyAll(true)}
               title="Reply to everyone"
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
-                replyAll ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                replyAll === true ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <AppIcon name="ReplyAll" size={11} className="flex-shrink-0" /> Reply All
@@ -661,7 +676,7 @@ export function DraftCard({
           <>
             <RecipientInput
               value={cc}
-              onChange={setCc}
+              onChange={(v) => { dirty.current = true; setCc(v); }}
               accountId={draft.accountId || selectedAccountId}
               ariaLabel="Cc recipients"
               placeholder="Cc (comma-separated)"
@@ -670,7 +685,7 @@ export function DraftCard({
             />
             <RecipientInput
               value={bcc}
-              onChange={setBcc}
+              onChange={(v) => { dirty.current = true; setBcc(v); }}
               accountId={draft.accountId || selectedAccountId}
               ariaLabel="Bcc recipients"
               placeholder="Bcc (comma-separated)"

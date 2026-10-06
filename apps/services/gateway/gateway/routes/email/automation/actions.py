@@ -607,11 +607,16 @@ async def _apply_rule_actions(
                 to = a.get("to_address") or email.get("from", "")
                 if not to:
                     continue
+                # A To that the member typed into the rule is their choice,
+                # so Outlook writes it over the To of createReply. With none,
+                # createReply keeps its To, which honours a Reply-To (EM-T10
+                # review round 1).
                 draft_pid = await provider.create_draft(
                     to=[to], subject=subj, body_text=body,
                     reply_to_message_id=provider_msg_id,
                     thread_id=email.get("thread_id") or None,
                     attachments=_load_action_attachments(a, user_email) or None,
+                    exact_to=bool(a.get("to_address")),
                 )
                 # Mirror the draft locally so it shows in the Drafts folder and
                 # in-thread immediately (matches the manual draft write-path).

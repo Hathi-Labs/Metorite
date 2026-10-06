@@ -2848,3 +2848,163 @@ def test_a_vendor_auth_failure_answers_502_never_401(client, org_key):
         "messages": [{"role": "user", "content": "hi"}]})
     assert r.status_code == 502
     assert r.json()["detail"] == "upstream provider error"
+
+
+# ── The agent framework's request shape (2026-10-05) ────────────────────────
+
+_AF_MSG = [{"role": "user", "content": "x"}]
+
+
+class TestTheAgentFrameworkShape:
+    """MAF's ``OpenAIChatCompletionClient`` sends `stream_options` on every
+    stream and spells the ceiling `max_completion_tokens`. Both were 422s, and
+    every native agent run fell back to Tier 2. The hermetic fence that builds
+    the client's real bodies is ``test_router_accepts_agent_framework.py``.
+    These tests carry the same two keys through the ROUTE, the provider call
+    and the meter, against a real database (R8)."""
+
+    def test_max_completion_tokens_reaches_the_provider_as_max_tokens(
+            self, client, org_key, calls):
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "messages": _AF_MSG,
+            "max_completion_tokens": 500})
+
+        assert r.status_code == 200, r.text
+        assert calls[-1]["max_tokens"] == 500
+        # ONE spelling upstream. litellm names it per vendor.
+        assert "max_completion_tokens" not in calls[-1]
+
+    def test_max_completion_tokens_is_clamped_like_max_tokens(
+            self, client, org_key, calls):
+        _, key = org_key
+        client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "messages": _AF_MSG,
+            "max_completion_tokens": 10_000_000})
+
+        assert calls[-1]["max_tokens"] == 32_000
+
+    def test_two_different_ceilings_are_refused_before_the_provider(
+            self, client, org_key, calls):
+        _, key = org_key
+        before = len(calls)
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "messages": _AF_MSG,
+            "max_tokens": 900, "max_completion_tokens": 100})
+
+        assert r.status_code == 422
+        assert "disagree" in r.text
+        assert len(calls) == before
+
+    def test_the_same_ceiling_twice_is_served(self, client, org_key, calls):
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "messages": _AF_MSG,
+            "max_tokens": 900, "max_completion_tokens": 900})
+
+        assert r.status_code == 200, r.text
+        assert calls[-1]["max_tokens"] == 900
+
+    def test_stream_options_on_a_buffered_call_is_not_forwarded(
+            self, client, org_key, calls):
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "messages": _AF_MSG,
+            "stream_options": {"include_usage": True}})
+
+        assert r.status_code == 200, r.text
+        # A provider answers a buffered call that carries stream_options 400.
+        assert "stream_options" not in calls[-1]
+
+    def test_an_unknown_stream_option_is_refused(self, client, org_key):
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "messages": _AF_MSG, "stream": True,
+            "stream_options": {"include_usage": True, "api_base": "x"}})
+
+        assert r.status_code == 422
+
+    @pytest.mark.parametrize("field,value", [
+        ("store", True), ("metadata", {"k": "v"}), ("service_tier", "priority"),
+        ("modalities", ["text", "audio"]), ("prediction", {"type": "content"}),
+        ("web_search_options", {}), ("logprobs", True),
+    ])
+    def test_the_keys_kept_forbidden_are_refused_at_the_route(
+            self, client, org_key, field, value):
+        _, key = org_key
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "messages": _AF_MSG, field: value})
+
+        assert r.status_code == 422, f"{field} was accepted"
+
+    # ── metering: the usage frame, with and without the caller's option ──
+
+    @pytest.mark.parametrize("caller_option", [
+        None, {"include_usage": True}, {"include_usage": False},
+    ], ids=["absent", "include_usage", "include_usage_false"])
+    def test_a_stream_is_charged_from_its_usage_frame(
+            self, client, org_key, db, caller_option):
+        """Whatever the caller sends, the provider is asked for the usage
+        frame, and the row carries ITS counts. `false` cannot switch the
+        meter off: the caller's value is never forwarded."""
+        seen: list[dict] = []
+
+        async def _stub(**kwargs):
+            seen.append(kwargs)
+
+            async def _gen():
+                for f in PROVIDER_FRAMES:
+                    yield f
+
+            return _gen()
+
+        slug, key = org_key
+        before = TestMetering._count_served(db, slug)
+        router_mod.set_provider_call(_stub)
+        body = {"model": "tier-balanced", "stream": True, "messages": _AF_MSG}
+        if caller_option is not None:
+            body["stream_options"] = caller_option
+
+        with client.stream("POST", "/v1/chat/completions", headers=key,
+                           json=body) as r:
+            assert r.status_code == 200
+            relayed = b"".join(r.iter_bytes())
+
+        assert seen[-1]["stream_options"] == {"include_usage": True}
+        # The usage frame reaches the caller, as it did before this change.
+        assert relayed == b"".join(PROVIDER_FRAMES)
+        assert TestMetering._count_served(db, slug) == before + 1
+        with db.begin() as c:
+            row = c.execute(text(
+                "SELECT prompt_tokens, completion_tokens, cached_tokens, "
+                "metering_fault FROM usage_event u JOIN organization o "
+                "ON o.id = u.organization_id WHERE o.slug = :s "
+                "AND u.refusal_reason IS NULL "
+                "ORDER BY u.created_at DESC LIMIT 1"), {"s": slug}).first()
+        assert tuple(row) == (1200, 40, 900, None)
+
+    def test_a_stream_with_no_usage_frame_is_still_one_row(
+            self, client, org_key, db):
+        """A provider that ignores `include_usage` sends no counts. That is
+        metered as before: one row, zero tokens, and the fault named, so an
+        operator sees the gap rather than a free call."""
+        slug, key = org_key
+        before = TestMetering._count_served(db, slug)
+        # The two content frames and the sentinel. No usage frame.
+        router_mod.set_provider_call(_streaming_provider(
+            [PROVIDER_FRAMES[0], PROVIDER_FRAMES[1], PROVIDER_FRAMES[3]]))
+
+        with client.stream("POST", "/v1/chat/completions", headers=key, json={
+                "model": "tier-balanced", "stream": True, "messages": _AF_MSG,
+                "stream_options": {"include_usage": True}}) as r:
+            r.read()
+
+        assert TestMetering._count_served(db, slug) == before + 1
+        with db.begin() as c:
+            row = c.execute(text(
+                "SELECT prompt_tokens, completion_tokens, metering_fault "
+                "FROM usage_event u JOIN organization o "
+                "ON o.id = u.organization_id WHERE o.slug = :s "
+                "AND u.refusal_reason IS NULL "
+                "ORDER BY u.created_at DESC LIMIT 1"), {"s": slug}).first()
+        assert tuple(row) == (0, 0, "usage_unreadable")

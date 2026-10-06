@@ -32,11 +32,12 @@ import ContextRing from "@/components/ContextRing";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
+import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { PresenceRail } from "@/components/room/PresenceRail";
 import { useRoom } from "@/hooks/useRoom";
 import { peopleOf } from "@/lib/rooms";
-import { getMessages, saveMessages, fetchMessagesFromDb, getQueue, saveQueue, type PersistedMessage } from "@/lib/sessions";
+import { getMessages, saveMessages, fetchMessagesFromDb, getQueue, saveQueue, cacheMessages, type PersistedMessage } from "@/lib/sessions";
 import { computeContextUsage, activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { serializeReasoning } from "@/lib/chatStream";
 import { useAgentEvents } from "@/lib/agentEvents";
@@ -237,6 +238,14 @@ interface AgentChatProps {
    */
   pendingInput?: string;
   onPendingInputConsumed?: () => void;
+  /**
+   * The server refused this SESSION on send (another org, or a room the member
+   * is not in). Return true to take the turn: no error card is drawn, and the
+   * parent opens a new chat. Pass it ONLY for a session restored from storage
+   * (`useAgentSessions` in hooks/useChatSessions.ts). A chat the member opened
+   * on purpose omits it, and its refusal shows as an error.
+   */
+  onSessionRefused?: (pendingText: string) => boolean;
 }
 
 export default function AgentChat({
@@ -261,6 +270,7 @@ export default function AgentChat({
   compact,
   pendingInput,
   onPendingInputConsumed,
+  onSessionRefused,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
   const [currentAgentName, setCurrentAgentName] = useState(agentName);
@@ -414,6 +424,7 @@ export default function AgentChat({
     systemContext,
     thinkMode,
     onArtifact,
+    onSessionRefused,
     // Load the FULL persisted history into memory so the context sent to the
     // model and the context-usage estimate are both accurate.  We only window
     // the RENDERING (below) for performance — not the data.
@@ -582,13 +593,15 @@ export default function AgentChat({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRunActive]);
 
-  // Current running tool name — shown in the live indicator when a tool is in flight.
+  // The step in flight, in words ("Running a script in the sandbox"), for the
+  // live indicator while a tool runs. `lib/toolSteps.ts` is the one
+  // vocabulary, so this line and the trail above it never disagree.
   const liveToolName = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.role !== "assistant" || !m.streaming) break;
       const running = m.toolEvents?.find((t) => t.status === "running");
-      if (running) return running.name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      if (running) return describeToolStep(running).label;
     }
     return null;
   }, [messages]);
@@ -982,10 +995,8 @@ export default function AgentChat({
           JSON.stringify(payload)
         );
       } catch { /* best-effort */ }
-      // Also save to localStorage synchronously
-      try {
-        localStorage.setItem(`cc-msgs-${sessionId}`, JSON.stringify(toSave));
-      } catch { /* quota exceeded */ }
+      // Also save to the local cache synchronously, in the member's namespace.
+      cacheMessages(sessionId, toSave);
     };
     window.addEventListener("beforeunload", handleUnload);
     window.addEventListener("pagehide", handleUnload);
@@ -1776,7 +1787,7 @@ export default function AgentChat({
           <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-[11px] text-muted-foreground chat-fade-in">
             <Icon name="LoaderCircle" className="text-sky-400 animate-spin shrink-0" size={12} strokeWidth={1.5} />
             <span className="italic truncate">
-              {liveToolName ? `Running ${liveToolName}…` : `${liveWorkingMsg}…`}
+              {liveToolName ? `${liveToolName}…` : `${liveWorkingMsg}…`}
             </span>
             <span className="flex items-center gap-0.5 shrink-0" aria-hidden="true">
               <span className="chat-typing-dot" />

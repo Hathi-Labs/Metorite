@@ -10,9 +10,9 @@
  * AssistantRail and the email app's EmailAssistantChat: streaming, tool
  * rendering, HITL cards, recovery, persistence and compaction all come from
  * the shared chat infrastructure. This wrapper only
- *   1. manages the projects-assistant session list (shared @/lib/sessions
- *      store, scoped to agentName="projects-assistant" — the SAME
- *      conversations the main chat app sees),
+ *   1. manages the projects-assistant session list (`useAgentSessions`,
+ *      scoped to agentName="projects-assistant" — the SAME conversations the
+ *      main chat app sees — and to the signed-in member and org),
  *   2. feeds the agent the member's PLACE (selected node, view, filters, open
  *      task, selection) via buildProjectsAssistantPersona,
  *   3. offers four quick actions that drop a prompt into the composer.
@@ -26,10 +26,7 @@ import Button from "@/components/ui/Button";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import AgentChat from "@/components/AgentChat";
-import {
-  getSessions, createSession, upsertSession, deleteSession,
-  enrichSession, fetchAndMergeSessionsFromDb, type ChatSession,
-} from "@/lib/sessions";
+import { useAgentSessions } from "@/hooks/useChatSessions";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useAccess } from "@/components/AccessProvider";
@@ -104,8 +101,6 @@ export function AssistantRail({
 
   const activeRunIds = useActiveSessions();
 
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [activeId, setActiveId] = useState<string>("");
   const [showSessions, setShowSessions] = useState(false);
   const [pendingInput, setPendingInput] = useState<string | undefined>();
   // The member's chat model is ONE row of preference (`user_settings.chat_model`),
@@ -127,73 +122,31 @@ export function AssistantRail({
     [memoryObjs],
   );
 
-  const mySessions = useMemo(
-    () => sessions.filter((s) => s.agentName === PROJECTS_AGENT),
-    [sessions],
-  );
-
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    const existing = getSessions().filter((s) => s.agentName === PROJECTS_AGENT);
-    if (existing.length > 0) {
-      setSessions(getSessions());
-      setActiveId(existing[0].id);
-    } else {
-      const s = createSession(PROJECTS_AGENT);
-      upsertSession(s);
-      setSessions(getSessions());
-      setActiveId(s.id);
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchAndMergeSessionsFromDb()
-      .then((merged) => { if (!cancelled) setSessions(merged); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-  /* eslint-enable react-hooks/set-state-in-effect */
+  // The list is the signed-in member's in this org, and a restored chat the
+  // server refuses gives way to a new one (production bug, 2026-10-05).
+  const {
+    mine: mySessions,
+    activeId,
+    activeSession,
+    newSession: openNewSession,
+    switchSession: openSession,
+    removeSession,
+    handleActivity,
+    onSessionRefused,
+    recoveredInput,
+    consumeRecoveredInput,
+    notice,
+  } = useAgentSessions(PROJECTS_AGENT);
 
   const newSession = useCallback(() => {
-    const s = createSession(PROJECTS_AGENT);
-    upsertSession(s);
-    setSessions(getSessions());
-    setActiveId(s.id);
+    openNewSession();
     setShowSessions(false);
-  }, []);
+  }, [openNewSession]);
 
   const switchSession = useCallback((id: string) => {
-    setActiveId(id);
+    openSession(id);
     setShowSessions(false);
-  }, []);
-
-  const removeSession = useCallback(
-    (id: string) => {
-      deleteSession(id);
-      const remaining = getSessions().filter((s) => s.agentName === PROJECTS_AGENT);
-      setSessions(getSessions());
-      if (id === activeId) {
-        if (remaining.length > 0) {
-          setActiveId(remaining[0].id);
-        } else {
-          const s = createSession(PROJECTS_AGENT);
-          upsertSession(s);
-          setSessions(getSessions());
-          setActiveId(s.id);
-        }
-      }
-    },
-    [activeId],
-  );
-
-  const handleActivity = useCallback(
-    (info: { firstUserMessage?: string; lastPreview?: string; messageCount: number }) => {
-      enrichSession(activeId, info);
-      setSessions(getSessions());
-    },
-    [activeId],
-  );
+  }, [openSession]);
 
   // The focus: a hint, never a boundary (`lib/chatScope.ts`). It follows the
   // tree until the member picks in the header, then it holds.
@@ -233,8 +186,6 @@ export function AssistantRail({
       timezone,
     });
   }, [focusNode, view, filters, openTask, selectedTaskIds, access]);
-
-  const activeSession = mySessions.find((s) => s.id === activeId);
 
   // WS-27bm S8 (spec §14). The side panel beside the board shows THIS
   // conversation's files only, so a tab left open by `/chat` or by another
@@ -397,8 +348,13 @@ export function AssistantRail({
             expectedMessageCount={activeSession.messageCount}
             onActivity={handleActivity}
             onArtifact={handleArtifact}
-            pendingInput={pendingInput}
-            onPendingInputConsumed={() => setPendingInput(undefined)}
+            onSessionRefused={onSessionRefused}
+            notice={notice}
+            pendingInput={pendingInput ?? recoveredInput}
+            onPendingInputConsumed={() => {
+              setPendingInput(undefined);
+              consumeRecoveredInput();
+            }}
           />
         )}
       </div>

@@ -100,6 +100,40 @@ class TestTheEstimate:
         assert e.reason == "unmeasured"
 
 
+class TestTheHoldUsesTheClampedCeiling:
+    """The hold reserves for the output the provider CAN produce.
+
+    `_kwargs_for` clamps `max_tokens` to `_MAX_OUTPUT_TOKENS` before the
+    provider call. The hold read the caller's value before that clamp, so
+    `max_tokens=10_000_000` reserved for ten million output tokens, and a
+    funded caller got a 402 for a call it could afford.
+    """
+
+    def _held(self, monkeypatch, max_tokens):
+        from customer_console import main
+
+        held: list[Decimal] = []
+        monkeypatch.setattr(main.router_mod, "resolve_tier_rate", lambda *a: PRICED)
+        monkeypatch.setattr(
+            main.store, "place_hold", lambda conn, **kw: held.append(kw["credits"]),
+        )
+        refusal = main._place_call_hold(
+            None, org_id="o", request_id="r", tier="tier-balanced", task="chat",
+            messages=[{"role": "user", "content": "x" * 400}], max_tokens=max_tokens,
+        )
+        assert refusal is None
+        return held[0]
+
+    def test_a_huge_ceiling_reserves_no_more_than_the_clamp(self, monkeypatch):
+        from customer_console.main import _MAX_OUTPUT_TOKENS
+
+        assert self._held(monkeypatch, 10_000_000) == self._held(
+            monkeypatch, _MAX_OUTPUT_TOKENS)
+
+    def test_a_ceiling_under_the_clamp_is_reserved_as_asked(self, monkeypatch):
+        assert self._held(monkeypatch, 1000) < self._held(monkeypatch, 2000)
+
+
 # ── The ledger cycle: R8, against a real database ──────────────────────────
 
 pytestmark = pytest.mark.skipif(

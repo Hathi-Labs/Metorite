@@ -93,6 +93,65 @@ from orchestrator._tool_injection import (
     _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
 )
+def _tier2_tool_view(agent: Any, make_shim: Callable[[Any, str], Any]) -> Any:
+    """*agent*, or a per-run copy whose ``default_options`` tools are shimmed.
+
+    The Tier 2 batch path shows a tool row only for a tool it wrapped in
+    ``make_shim``. MAF 1.19 holds a native ``Agent``'s tools in
+    ``default_options["tools"]`` as ``FunctionTool`` objects, which the older
+    ``agent.tools`` and ``@tool`` lookups never reach. Each one is cloned with
+    its ``func`` replaced by the shim, so the name, description, schema and
+    approval mode stay the tool's own. Neither the agent nor a tool object is
+    changed, because another run may hold them. No such tools: *agent* itself.
+    """
+    import copy as _copy
+
+    from acb_skills.egress import _register_platform_wrapper
+
+    opts = getattr(agent, "default_options", None)
+    if not isinstance(opts, dict):
+        return agent
+    tools = opts.get("tools")
+    if not isinstance(tools, (list, tuple)) or not tools:
+        return agent
+    shimmed: list[Any] = []
+    changed = False
+    for item in tools:
+        func = getattr(item, "func", None)
+        name = getattr(item, "name", None) or getattr(func, "__name__", None)
+        if (
+            callable(func)
+            and isinstance(name, str)
+            and name
+            and not getattr(func, "__cc_tier2_shim__", False)
+        ):
+            # The egress rule (H-236) trusts a platform tool by the IDENTITY of
+            # its callable. A new shim is a new callable, so it must inherit
+            # that trust. Without this, a covered run on this path loses every
+            # platform tool (manage_todo_list, write_artifact, run_command, …).
+            # This module is in `orchestrator.*`, so the registry accepts it.
+            shim = _register_platform_wrapper(func, make_shim(func, name))
+            try:
+                shim.__cc_tier2_shim__ = True
+            except (AttributeError, TypeError):
+                pass
+            clone = _copy.copy(item)
+            try:
+                clone.func = shim
+            except (AttributeError, TypeError):
+                shimmed.append(item)
+                continue
+            shimmed.append(clone)
+            changed = True
+        else:
+            shimmed.append(item)
+    if not changed:
+        return agent
+    view = _copy.copy(agent)
+    view.default_options = {**opts, "tools": shimmed}
+    return view
+
+
 def _missing_module_name(exc: BaseException) -> str | None:
     """Best-effort top-level module name from an ImportError/ModuleNotFoundError.
 
@@ -873,6 +932,7 @@ async def _run_sub_agent_streaming(
     # in the finally, so the sub-agent can never change what the parent sees.
     from acb_skills.write_artifact import (
         artifact_context,
+        delegation_target,
         derive_artifact_context,
         enter_artifact_context,
         reset_artifact_context,
@@ -881,6 +941,10 @@ async def _run_sub_agent_streaming(
     # The parent run's acting member, from the parent's bound context and
     # never from the delegated message (H-201 P2-c).
     _parent_member = str(artifact_context().get("member") or "")
+    # The chat that asked: its working dir, store key, agent and session,
+    # from the parent's bound context only (R5). A document this sub-agent
+    # writes goes there, so its card opens in that chat.
+    _deliver_to = delegation_target(artifact_context())
     # H-236: no egress tool for this sub-run when its parent was no_egress,
     # or when its own agent is covered. Decided once, from the parent's
     # binding, and bound at once, so no later path reads the parent's frame.
@@ -1049,6 +1113,9 @@ async def _run_sub_agent_streaming(
                 # H-236: set from the parent's binding, never cleared here.
                 # The batch run of a MAF sub-agent reads it as its parent.
                 no_egress=_sub_no_egress,
+                # The chat that asked. The batch run of a MAF sub-agent
+                # passes it on (``delegation_target``).
+                deliver_to=_deliver_to,
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -2527,9 +2594,14 @@ async def _run_agent_inner(
     from acb_skills.write_artifact import (
         artifact_context,
         bind_artifact_context,
+        delegation_target,
         derive_artifact_context,
     )
     _parent_ctx = artifact_context()
+    # A delegated run delivers its documents to the chat that asked, so the
+    # card opens there. From the parent's bound context only (R5). ``None``
+    # for a run with no parent, and for a sub-run of a batch run.
+    _deliver_to = delegation_target(_parent_ctx)
     # A run with no chat and no parent run is a BATCH run. Its documents
     # belong to the organization (write_artifact). A delegated run is not:
     # its parent's chat may hold a member's data.
@@ -2801,6 +2873,8 @@ async def _run_agent_inner(
                 # H-236: a delegated run of a covered parent sends nothing
                 # off the platform. Its own delegations inherit this.
                 no_egress=_no_egress,
+                # The chat that asked, for a delegated run.
+                **({"deliver_to": _deliver_to} if _deliver_to is not None else {}),
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -3090,6 +3164,90 @@ _sse_seq: int = 0
 # a reconnect with a local cursor can skip the first <threadSeq> Redis entries
 # instead of blindly re-replaying the whole run from 0-0.
 _thread_emit_seq: dict[str, int] = {}
+
+
+#: How much of a Tier 1 failure the fallback log keeps, AFTER redaction.
+#:
+#: 🔴 **Short on purpose, and redacted first.** For a body-level 422, FastAPI
+#: puts the refused value into ``detail[].input``, and for a body the value can
+#: be the whole request, the member's messages included. A 2000-character cut
+#: (#657) could therefore carry member content into the gateway log. The field
+#: names travel in ``rejected_fields`` instead, so the text needs no length.
+_FALLBACK_ERROR_CHARS = 200
+
+#: The ONLY keys of a 422 ``detail`` entry the log may carry. An allowlist,
+#: because ``input`` is the leak and ``ctx`` can echo a value too.
+_DETAIL_KEYS_LOGGED = ("type", "loc", "msg")
+
+#: Where an ``input`` value starts in an error that arrived as TEXT. The text
+#: is cut there, because a value's end cannot be found safely in a repr.
+_INPUT_KEY = re.compile(r"""['"]input['"]\s*:""")
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    """*exc* and each exception it wraps, once each, outermost first."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        chain.append(cur)
+        cur = getattr(cur, "inner_exception", None) or cur.__cause__
+    return chain
+
+
+def _detail_of(exc: BaseException) -> list[Any] | None:
+    """The parsed 422 ``detail`` list on *exc*, or None."""
+    body = getattr(exc, "body", None)
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return detail if isinstance(detail, list) else None
+
+
+def _rejected_request_fields(exc: BaseException) -> list[str]:
+    """The request fields a 422 refused, read from the exception chain.
+
+    The model client wraps the HTTP error (``ChatClientException`` around an
+    ``openai.UnprocessableEntityError``), and the parsed body sits on the
+    inner one. Each ``detail`` entry carries ``loc = ["body", <field>, ...]``.
+    Returns ``[]`` for any other failure. It never raises, because it runs
+    inside an error path.
+    """
+    fields: list[str] = []
+    for cur in _exception_chain(exc):
+        for item in _detail_of(cur) or []:
+            loc = item.get("loc") if isinstance(item, dict) else None
+            if isinstance(loc, list | tuple) and len(loc) >= 2 and loc[0] == "body":
+                name = ".".join(str(part) for part in loc[1:])
+                if name not in fields:
+                    fields.append(name)
+    return fields
+
+
+def _redacted_fallback_error(exc: BaseException) -> str:
+    """The Tier 1 failure as log text, with every ``input`` value removed.
+
+    A parsed 422 is rebuilt from :data:`_DETAIL_KEYS_LOGGED` alone. Any other
+    failure is its own text, cut where an ``input`` key starts. Then the
+    result is cut to :data:`_FALLBACK_ERROR_CHARS`. It never raises.
+    """
+    text: str | None = None
+    for cur in _exception_chain(exc):
+        detail = _detail_of(cur)
+        if detail is None:
+            continue
+        kept = [
+            {k: item[k] for k in _DETAIL_KEYS_LOGGED if k in item}
+            for item in detail if isinstance(item, dict)
+        ]
+        status = getattr(cur, "status_code", None)
+        text = f"{type(cur).__name__} {status}: {json.dumps(kept, default=str)}"
+        break
+    if text is None:
+        text = str(exc)
+    found = _INPUT_KEY.search(text)
+    if found is not None:
+        text = text[: found.start()] + "[input removed]"
+    return text[:_FALLBACK_ERROR_CHARS]
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -4058,9 +4216,14 @@ async def run_agent_stream(
                         })
                         return
                     # Nothing emitted yet — fall through to Tier 2 batch.
+                    # `rejected_fields` names what a 422 refused. `error` is
+                    # redacted: a 422's `input` can hold member messages.
                     _log.warning(
                         "executor.native_maf_stream_fallback",
-                        agent=agent_name, error=str(_nexc)[:200],
+                        agent=agent_name,
+                        error_type=type(_nexc).__name__,
+                        error=_redacted_fallback_error(_nexc),
+                        rejected_fields=_rejected_request_fields(_nexc),
                     )
 
             # ── Tier 1.5: GitHubCopilotAgent native streaming ───────────────
@@ -4979,6 +5142,17 @@ async def run_agent_stream(
                         except (AttributeError, TypeError):
                             pass
 
+            # MAF 1.19 keeps a native Agent's tools in `default_options["tools"]`,
+            # and the agent has no `.tools` at all, so both loops above shim
+            # nothing for it. A native agent that fell back here from Tier 1 then
+            # streamed no tool row: the trail showed "Thinking…", the todo list
+            # and the artifact cards, and none of its steps (owner report,
+            # 2026-10-05). Shim them on a PER-RUN view, so the agent object that
+            # another run holds never changes. The restore below still reads the
+            # shared object, which the view never wrote.
+            _t2_shared_agent = agent
+            agent = _tier2_tool_view(agent, _make_tool_shim)
+
             # Run the agent in a background task.
             message = _build_event_message(agent_name, run_id, event_payload, integrations)
 
@@ -5101,15 +5275,15 @@ async def run_agent_stream(
             # Restore patched tools (attribute-based)
             for attr, _, original in patched:
                 try:
-                    object.__setattr__(agent, attr, original)
+                    object.__setattr__(_t2_shared_agent, attr, original)
                 except Exception:
                     pass
 
             # Restore shimmed list entries
-            if hasattr(agent, "tools") and isinstance(agent.tools, (list, tuple)):
+            if hasattr(_t2_shared_agent, "tools") and isinstance(_t2_shared_agent.tools, (list, tuple)):
                 for _idx, _orig in _shimmed_list_indices:
                     try:
-                        agent.tools[_idx] = _orig
+                        _t2_shared_agent.tools[_idx] = _orig
                     except Exception:
                         pass
 

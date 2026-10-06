@@ -22,6 +22,8 @@ import {
 } from "@/app/email/lib/emailAssistantPersona";
 import { getAssistantSettings } from "@/app/email/lib/api";
 import AgentChat from "@/components/AgentChat";
+import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
+import { carriedText, recoverRefused, recoveredNotice, type RailPick } from "@/lib/railSessions";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
@@ -576,6 +578,13 @@ function ChatPageInner() {
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
+  // The member and org the list belongs to (null until known), and the id the
+  // page restored from that list. Only a restored id recovers from a refusal
+  // (production bug, 2026-10-05, `lib/railSessions.ts`).
+  const chatScopeId = useChatScope();
+  const [restoredId, setRestoredId] = useState<string | null>(null);
+  const [recoveredInput, setRecoveredInput] = useState<string | undefined>();
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   // Cross-conversation memory (load + 30s poll) — injected into AgentChat for
   // continuity; managed in the full memory manager at /memory, not here.
   const { memories } = useChatMemories(userId);
@@ -701,35 +710,49 @@ function ChatPageInner() {
     [agentList],
   );
 
-  // Load sessions from localStorage on mount.
+  // Load the member's sessions from localStorage once the member is known, and
+  // again when the member or the org changes.
   // If ?agent=<name> is in the URL, immediately open a new session for that agent.
   // If no sessions exist, show the agent picker — never default to any agent.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    setRecoveryNotice(null);
+    setRecoveredInput(undefined);
+    if (!chatScopeId) {
+      setSessions([]);
+      setActiveSessionId("");
+      setRestoredId(null);
+      return;
+    }
     const agentParam = searchParams?.get("agent");
     const existing = getSessions();
     if (agentParam) {
-      const existing2 = getSessions();
-      const match = existing2.find((s) => s.agentName === agentParam);
+      const match = existing.find((s) => s.agentName === agentParam);
       if (match) {
-        setSessions(getSessions());
+        setSessions(existing);
         setActiveSessionId(match.id);
+        setRestoredId(match.id);
       } else {
         const fresh = createSession(agentParam);
         upsertSession(fresh);
         setSessions(getSessions());
         setActiveSessionId(fresh.id);
+        setRestoredId(null);
       }
     } else if (existing.length === 0) {
       // No sessions yet — show the agent picker so the user explicitly
       // chooses which agent to talk to instead of defaulting blindly.
+      setSessions([]);
+      setActiveSessionId("");
+      setRestoredId(null);
       setShowPicker(true);
     } else {
       setSessions(existing);
       setActiveSessionId(existing[0].id);
+      setRestoredId(existing[0].id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time init
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per member
+  }, [chatScopeId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // After initial localStorage render, fetch from Postgres and merge any sessions
@@ -737,6 +760,7 @@ function ChatPageInner() {
   // Also poll every 30s so sessions created on other devices appear in the sidebar
   // without requiring a page refresh.
   useEffect(() => {
+    if (!chatScopeId) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
 
@@ -753,7 +777,32 @@ function ChatPageInner() {
     sync();
 
     return () => { cancelled = true; clearTimeout(timer); };
+  }, [chatScopeId]);
+
+  // A restored id the server refuses gives way to a new chat with the same
+  // agent, and no error card. The latest pick is kept in a ref, because the
+  // refusal arrives after an await.
+  const pickRef = useRef<RailPick>({ activeId: "", restoredId: null });
+  useEffect(() => {
+    pickRef.current = { activeId: activeSessionId, restoredId };
+  }, [activeSessionId, restoredId]);
+  const recoverChat = useCallback((refusedId: string, pendingText?: string): boolean => {
+    const agent = getSessions().find((s) => s.id === refusedId)?.agentName;
+    if (!agent || isUnresolvedAgent(agent)) return false;
+    const next = recoverRefused(pickRef.current, refusedId, agent);
+    if (!next) return false;
+    pickRef.current = next;
+    // The refused message and the refused chat's queue go to the composer,
+    // and the note explains the new chat on load and on send alike.
+    const carried = carriedText(refusedId, pendingText);
+    setSessions(getSessions());
+    setActiveSessionId(next.activeId);
+    setRestoredId(null);
+    setRecoveredInput(carried);
+    setRecoveryNotice(recoveredNotice(carried));
+    return true;
   }, []);
+  const onSessionRefused = useRestoredSessionGuard(activeSessionId, restoredId, recoverChat);
 
   const handleNewSession = useCallback(() => {
     setShowPicker(true);
@@ -771,18 +820,23 @@ function ChatPageInner() {
         upsertSession(repaired);
         setSessions(getSessions());
         setActiveSessionId(repaired.id);
+        setRestoredId(null);
         return;
       }
       const s = createSession(agentName);
       upsertSession(s);
       setSessions(getSessions());
       setActiveSessionId(s.id);
+      setRestoredId(null);
+      setRecoveryNotice(null);
     },
     [activeSessionId]
   );
 
   const handleSelectSession = useCallback((id: string) => {
     setActiveSessionId(id);
+    setRestoredId(null);
+    setRecoveryNotice(null);
   }, []);
 
   const handleDeleteSession = useCallback(
@@ -800,6 +854,7 @@ function ChatPageInner() {
       const remaining = getSessions();
       setSessions(remaining);
       if (id === activeSessionId) {
+        setRestoredId(null);
         if (remaining.length > 0) {
           // Prefer a sibling of the SAME agent so deleting a session doesn't
           // bounce the user into an unrelated agent's conversation (sessions are
@@ -1101,6 +1156,14 @@ function ChatPageInner() {
                 availableAgents={agentList.length > 0 ? agentList : undefined}
                 expectedMessageCount={activeSession.messageCount}
                 onActivity={(info) => handleActivity(activeSession.id, info)}
+                onSessionRefused={onSessionRefused}
+                notice={
+                  recoveryNotice
+                    ? { text: recoveryNotice, onDismiss: () => setRecoveryNotice(null) }
+                    : null
+                }
+                pendingInput={recoveredInput}
+                onPendingInputConsumed={() => setRecoveredInput(undefined)}
                 onArtifact={(entry: ArtifactEntry) => {
                   const name = entry.path.split("/").pop() ?? entry.path;
                   setArtifactUpdates((prev) => {

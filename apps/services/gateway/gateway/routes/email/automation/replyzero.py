@@ -2062,13 +2062,16 @@ async def _maybe_classify_threads(account_id: str) -> None:
     ``_mark_thread_replied`` with NO session open, because that call spends a
     model call in sessions of its own. Phase 2 reads the gap attachments and
     the account. The provider authenticates with no session open. Each gap
-    thread gets one block, and a last block persists rotated credentials.
+    thread gets Block R, the rule-match ask with no block open, and Block W
+    (EM-T4a-2 PR-B1, §10.4.6). A last block persists rotated credentials.
     """
     try:
         from gateway.routes.email.automation.engine import (  # noqa: PLC0415
             LLMUnavailable,
-            classify_matches,
+            ask_rule_match,
             email_dict_from_row,
+            read_classification,
+            resolve_classification,
         )
         async with _tenant_session() as db:
             # Select threads that NEED WORK, not simply the newest ones.
@@ -2085,13 +2088,13 @@ async def _maybe_classify_threads(account_id: str) -> None:
             # 🔴 The new-mail floor (owner decision (d), EM-T5b-2 fix rounds
             # 2 and 3): an INBOX or a SENT gap thread is selected only when
             # its latest message arrived at or after the oldest enabled rule.
-            # The inbox rows go to `classify_matches`, and the sent rows go
-            # to `_mark_thread_replied`. Each one asks for a status (Jev in
-            # `on`) and writes it and provider labels. Older mail changes
-            # only through "Process past emails". With no enabled rule the
-            # floor is NULL, so neither kind is selected. The filed rows keep
-            # no floor: they get a fixed FYI, with no model call and no
-            # provider write.
+            # The inbox rows go to the split form of `classify_matches`, and
+            # the sent rows go to `_mark_thread_replied`. Each one asks for a
+            # status (Jev in `on`) and writes it and provider labels. Older
+            # mail changes only through "Process past emails". With no
+            # enabled rule the floor is NULL, so neither kind is selected.
+            # The filed rows keep no floor: they get a fixed FYI, with no
+            # model call and no provider write.
             from gateway.routes.email.automation.rules import NEW_MAIL_FLOOR_SQL
             rows = (await db.execute(text(
                 f"""WITH latest AS (
@@ -2190,33 +2193,42 @@ async def _maybe_classify_threads(account_id: str) -> None:
                 r, self_email, about, extra_domains=extra_domains,
                 attachments=gap_attach.get(str(r.id), ""),
                 self_addresses=me.self_addresses)
-            # One block per gap thread. It lands where the per-thread commit
-            # used to land. EM-T4 owns the model and provider I/O inside it.
-            async with _tenant_session() as db:
-                # Match + full-thread status determination through the shared
-                # enforcement point (the SAME #110 path the live runner uses).
-                try:
-                    matches = await classify_matches(
-                        db, account_id, r, email,
-                        multi_rule=False, resolve=True, provider=provider)
-                except LLMUnavailable:
-                    # Classifier down for this one — skip it (this backfill
-                    # writes no watermark, so the gap query re-selects it next
-                    # cycle) rather than abort the whole batch on the outer
-                    # handler.
-                    continue
-                keep_label = await project_reply_status_from_matches(
-                    db, account_id, r, matches)
-                # Collapse the thread to that ONE conversation label. This
-                # backfill wrote the status row but never reconciled the labels,
-                # so earlier messages kept whatever they were tagged with and a
-                # thread ended up wearing Reply AND Awaiting AND Done at once —
-                # 68 threads on the live account. The status row and the labels
-                # are two views of one decision; writing only the first is what
-                # let them disagree.
-                if keep_label:
-                    await _reconcile_thread_labels(
-                        db, provider, account_id, r.thread_id, keep_label)
+            # Match + full-thread status determination through the shared
+            # split form of engine.classify_matches (the SAME #110 path the
+            # live runner uses, EM-T4a-2 PR-B1, §10.4.6). Block R reads, the
+            # rule-match ask runs with NO block open, and Block W writes.
+            try:
+                async with _tenant_session() as db:
+                    plan = await read_classification(
+                        db, account_id, r, email, multi_rule=False, resolve=True)
+                    # Fail closed: this raises when a reader swallowed a failed statement.
+                    await db.execute(text("SELECT 1"))
+                asked = await ask_rule_match(plan.match)
+                # Block W: one block per gap thread. It lands where the
+                # per-thread commit used to land. EM-T4 owns the model and
+                # provider I/O inside it.
+                async with _tenant_session() as db:
+                    matches = await resolve_classification(
+                        db, account_id, r, plan, asked, provider=provider)
+                    keep_label = await project_reply_status_from_matches(
+                        db, account_id, r, matches)
+                    # Collapse the thread to that ONE conversation label. This
+                    # backfill wrote the status row but never reconciled the
+                    # labels, so earlier messages kept whatever they were
+                    # tagged with and a thread ended up wearing Reply AND
+                    # Awaiting AND Done at once — 68 threads on the live
+                    # account. The status row and the labels are two views of
+                    # one decision; writing only the first is what let them
+                    # disagree.
+                    if keep_label:
+                        await _reconcile_thread_labels(
+                            db, provider, account_id, r.thread_id, keep_label)
+            except LLMUnavailable:
+                # Classifier down for this one — skip it (this backfill writes
+                # no watermark, so the gap query re-selects it next cycle)
+                # rather than abort the whole batch on the outer handler. The
+                # raise comes before any write of Block W, which rolls back.
+                continue
         if provider is not None and store is not None \
                 and provider.credentials_dirty():
             async with _tenant_session() as db:

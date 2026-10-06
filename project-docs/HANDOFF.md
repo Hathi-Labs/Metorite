@@ -557,6 +557,44 @@ line — never reclaim a number by deleting the other entry.
   D-EM-31
 - **Added:** 2026-10-04 · the EM-G0 spec session
 
+### H-249 · The tenant session commits an aborted transaction with no error · [AGENT]
+- **Check:** `rg -n "aborted" packages/acb_common/acb_common/db.py` → no hit
+  in `tenant_session` means this entry is still open.
+- **Why.** A statement can fail inside a `tenant_session` block, and a reader
+  can catch the error with no `_savepoint`. Then Postgres aborts the
+  transaction, and each later statement of the block fails too. The block
+  exits normally, and `session.commit()` (`acb_common/db.py` ~:301-302) gives
+  no error. So each write after the swallowed error is lost, with no log line.
+- **Proof.** The review of EM-T4a-2 PR-B1 (2026-10-06) measured it on real
+  Postgres: an R8 case and an asyncpg probe both showed a silent commit. PR-B1
+  closed the two rule jobs with a `SELECT 1` at the end of each read block.
+  Each other block that swallows a failed statement has the same fault.
+- **Do.** Audit the fix in the seam before you build it. The first choice is to
+  raise in `tenant_session` when the transaction is aborted at its exit. That
+  changes the control flow of each caller that degrades on purpose, so list
+  those callers first. The other choice is a `_savepoint` in each reader that
+  swallows an error. Name the fence (R7) and run R8 on a private database.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.6 (PR-B1 review round 1)
+- **Added:** 2026-10-06 · the EM-T4a-2 PR-B1 session
+
+### H-248 · Check that a reopened Outlook draft keeps its recipients (EM-T10) · [OWNER]
+- **Check:** `rg -n "EM-T10 live check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result. An agent then writes that
+  line, with the date, under §10.4.11. Then it deletes this entry.
+- **Why.** EM-T10 fixed a LIVE defect. A reply that the member narrowed to the
+  sender went to everyone again after a reopen, and a Bcc was lost. Outlook also
+  dropped the To of a reply on its first save. Fakes test the fix. Nobody has
+  checked it on a real mailbox yet, and an agent must not use a real mailbox.
+- **Do.** In Metorite, with a connected Outlook mailbox:
+  1. Open a mail that went to several people. Click Reply, type a line, and wait
+     two seconds. Close the reply, open the draft again, and check that To holds
+     only the sender.
+  2. Make a second reply with Reply All. Wait five minutes for one sync. Open
+     the draft again, and check that To still holds everyone.
+  3. Do not send either draft. Discard both.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.11
+- **Added:** 2026-10-05 · the EM-T10 session
+
 ### H-247 · Send three test mails from Outlook, to prove the fix of a lost file (EM-T9) · [OWNER]
 - **Check:** `rg -n "EM-T9 live check passed" project-docs/specs/email_app_master_plan.md`
   → no hit means open. The owner reports the result of the three mails. An agent
@@ -893,7 +931,8 @@ line — never reclaim a number by deleting the other entry.
 - **Done, by owner report on 2026-10-02 (not measured):** the AI/ML API account, the key, and `tier-decide` bound to `aimlapi/typesafe/jev`. D-EM-9 answers residency for email triage.
 - **Done, by owner report on 2026-10-02 (decision (a), `email_app_master_plan.md` §10.2):** `DECIDE_ENABLED=true` is ON in production since 12:16 UTC. One smoke `decide` call from the box reached Jev, with a probability of 0.99 in 1.5 s. So step 3 below is done.
 - **Done, by orchestrator report on 2026-10-02:** `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` are on the box since 16:31 UTC. The first live `decide.decided` line came at 16:50:47 UTC.
-- **Next, after EM-T5b-2 in full merges:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
+- **First, PR-B3 of EM-T4a-2 must merge.** Until then the status ask of `on` runs inside a block (`email_app_master_plan.md` §10.4.6).
+- **Next, after EM-T5b-2 in full merges and after PR-B3:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
 - **Do this, in order:**
   1. Give the deployment key of the box the `serve` capability. It is a hand edit (§8 gate 7), as H-152 says.
   2. Set `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Leave `ROUTER_SERVING_ENABLED` unset, so chat stays on its current path.

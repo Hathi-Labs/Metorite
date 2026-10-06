@@ -316,6 +316,24 @@ def test_the_sandbox_section_names_the_rules_of_16_3() -> None:
     )
 
 
+def test_the_sandbox_section_owns_the_document_files() -> None:
+    """Rule 8: a covered run may make a PDF, .docx, .pptx or .xlsx in the
+    sandbox, and claims a file only when it is in outputs. The section names
+    the rule "A PDF" of the Projects instructions as the rule it comes before.
+    WS43-F25 checks that each named library is in the image."""
+    text = ad.render_run_sections({"run_command"})
+    for phrase in (
+        'These rules come before the rules "No file and no code over the rows" and "A PDF"',
+        "**You may make a document file.**",
+        "a PDF, a `.docx`, a `.pptx` or a `.xlsx`",
+        "Save it in `/workspace/outputs/`, and a card shows it in the chat.",
+        "Say that you made the file only when the command succeeded",
+    ):
+        assert phrase in text, phrase
+    for library in ("reportlab", "python-docx", "python-pptx", "openpyxl"):
+        assert library in ad.SANDBOX_LIBRARIES, library
+
+
 def test_fail_closed_on_injection_narrows_unscoped_agent(
     monkeypatch, _injection_env
 ) -> None:
