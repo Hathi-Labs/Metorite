@@ -42,8 +42,17 @@ export const MIN_QUERY = 3;
  * an exact lookup, so it passes at any length (the owner's exception to
  * D-PM-31, 2026-10-06).
  */
+/**
+ * A query with its edge whitespace removed, by the gateway's rule
+ * (`filters.clean_query`): Python's whitespace set plus U+FEFF. `trim` alone
+ * keeps `\x1c`-`\x1f` and `\x85`, which Python strips, so add them here.
+ */
+export function cleanQuery(query: string): string {
+  return query.replace(/^[\s\x1c-\x1f\x85]+|[\s\x1c-\x1f\x85]+$/g, "");
+}
+
 export function isTaskNumberQuery(query: string): boolean {
-  const stripped = query.trim().replace(/^#+/, "").trim();
+  const stripped = cleanQuery(cleanQuery(query).replace(/^#+/, ""));
   return /^[0-9]{1,18}$/.test(stripped);
 }
 
@@ -53,7 +62,7 @@ export function isTaskNumberQuery(query: string): boolean {
  * palette, the duplicate picker and `pagedPicker` all ask this.
  */
 export function isSearchableQuery(query: string): boolean {
-  const term = query.trim();
+  const term = cleanQuery(query);
   // Code points, as Python's `len` counts them. `term.length` counts UTF-16
   // units, so "🚀a" would read as 3 here and as 2 at the route, which is a 422.
   return [...term].length >= MIN_QUERY || isTaskNumberQuery(term);

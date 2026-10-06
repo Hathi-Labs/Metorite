@@ -76,14 +76,15 @@ def test_the_tool_and_the_route_agree_on_what_a_task_number_is(raw: str) -> None
 
 @pytest.mark.parametrize("raw", NUMBER_CASES)
 def test_the_tool_and_the_route_agree_on_what_is_too_short(raw: str) -> None:
-    term = raw.strip()
+    assert reads._clean(raw) == filters.clean_query(raw)
+    term = filters.clean_query(raw)
     assert reads._short_text(term) == filters.short_text_query(term)
 
 
 @pytest.mark.parametrize("case", CASES, ids=[repr(c["q"]) for c in CASES])
 def test_the_route_answers_the_shared_case_table(case: dict) -> None:
     """The browser checks the same rows in ``search.test.ts``."""
-    term = case["q"].strip()
+    term = filters.clean_query(case["q"])
     assert filters.task_number(case["q"]) == case["number"]
     assert (bool(term) and not filters.short_text_query(term)) is case["searchable"]
 

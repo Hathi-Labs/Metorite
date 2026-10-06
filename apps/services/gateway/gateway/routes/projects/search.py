@@ -68,6 +68,7 @@ from gateway.routes.projects.core import (
 from gateway.routes.projects.filters import (
     MIN_QUERY,
     attach_parent_context,
+    clean_query,
     like_escape,
     short_query_message,
     short_text_query,
@@ -241,7 +242,7 @@ async def search_tasks(
     the thing you cannot navigate to, and scoping it to the selected project
     would make it a filter with a different name.
     """
-    term = q.strip()
+    term = clean_query(q)
     if not term:
         return {"rows": [], "total": 0, "truncated": False, "query": term}
     if short_text_query(term):

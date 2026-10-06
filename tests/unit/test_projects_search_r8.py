@@ -243,3 +243,221 @@ def test_the_exact_arm_alone_names_the_task_number_index(seeded):
     finally:
         eng.dispose()
     assert "idx_pm_tasks_task_number" in plan, plan
+
+
+# ── The grant axis: a restricted reader (review of #673) ────────────────────
+#
+# Every case above is ``unrestricted=True``, so they prove the TENANT on the
+# exact arm and nothing about GRANTS. A route that moved the number lookup out
+# of the shared WHERE (``task_number = N OR (...visible...)``) would leak an
+# ungranted, archived or triage task, and those cases would stay green. These
+# run a member who holds one direct grant and one group grant.
+
+VIS_ACTOR = "alice-vis@example.test"
+VIS_OTHER = "bob-vis@example.test"
+
+#: name → (project, status category, archived, assignee, Alice sees it). The
+#: last column is read off the visibility rules, not off the route.
+VIS_TASKS = {
+    "granted": ("G", "todo", False, None, True),
+    "ungranted": ("H", "todo", False, None, False),
+    "assignee_only": ("H", "todo", False, VIS_ACTOR, True),
+    "group_granted": ("GRP", "todo", False, None, True),
+    "no_grant": ("NONE", "todo", False, None, False),
+    "archived": ("G", "todo", True, None, False),
+    "triage": ("G", "triage", False, None, False),
+}
+VIS_SEEN = sorted(name for name, spec in VIS_TASKS.items() if spec[4])
+
+
+@pytest.fixture(scope="module")
+def vis_seeded(seeded):
+    """Four projects in org A: granted to Alice, granted to Bob, granted to
+    ``group:ops``, and granted to nobody. The task numbers are high and
+    unique, so they cannot collide with the cases above."""
+    from sqlalchemy import create_engine
+
+    eng = create_engine(_TENANT_URL, future=True)
+    org = seeded["org_a"]
+    tag = uuid.uuid4().hex[:6]
+    base = 900_000 + (uuid.uuid4().int % 50_000) * 10
+    made: dict[str, Any] = {"org": org, "tag": tag, "projects": {}, "numbers": {}}
+    with eng.begin() as c:
+        statuses: dict[tuple[str, str], str] = {}
+        for key, subject in (("G", VIS_ACTOR), ("H", VIS_OTHER),
+                             ("GRP", "group:ops"), ("NONE", None)):
+            pid = str(c.execute(
+                text(
+                    "INSERT INTO pm_projects (name, status, source, created_by,"
+                    " organization_id, timezone, parent_project_id,"
+                    " owns_statuses) VALUES (:n,'active','manual',:a,"
+                    " CAST(:o AS uuid),'Asia/Kolkata',NULL,true) RETURNING id"
+                ),
+                {"n": f"vis-{key}-{tag}", "a": ACTOR, "o": org},
+            ).scalar_one())
+            made["projects"][key] = pid
+            if subject:
+                c.execute(
+                    text(
+                        "INSERT INTO pm_project_grants (project_id, subject,"
+                        " created_by, organization_id) VALUES (CAST(:p AS uuid),"
+                        " :s, :a, CAST(:o AS uuid))"
+                    ),
+                    {"p": pid, "s": subject, "a": ACTOR, "o": org},
+                )
+            for name, cat, pos in (("To do", "todo", 0), ("Parked", "triage", 1)):
+                statuses[(key, cat)] = str(c.execute(
+                    text(
+                        "INSERT INTO pm_task_statuses (project_id,name,color,"
+                        " position,category) VALUES (CAST(:p AS uuid),:n,'gray',"
+                        " :pos,:cat) RETURNING id"
+                    ),
+                    {"p": pid, "n": name, "pos": pos, "cat": cat},
+                ).scalar_one())
+        for i, (name, (proj, cat, archived, assignee, _seen)) in enumerate(VIS_TASKS.items()):
+            number = base + i
+            made["numbers"][name] = number
+            tid = str(c.execute(
+                text(
+                    "INSERT INTO pm_tasks (title, project_id, root_project_id,"
+                    " status_id, created_by, organization_id, task_number,"
+                    " archived_at) VALUES (:t, CAST(:p AS uuid), CAST(:p AS uuid),"
+                    " CAST(:s AS uuid), :a, CAST(:o AS uuid), :n,"
+                    " CASE WHEN :arch THEN now() ELSE NULL END) RETURNING id"
+                ),
+                {"t": f"zqx{tag} {name}", "p": made["projects"][proj],
+                 "s": statuses[(proj, cat)], "a": ACTOR, "o": org, "n": number,
+                 "arch": archived},
+            ).scalar_one())
+            if assignee:
+                c.execute(
+                    text(
+                        "INSERT INTO pm_task_assignees (task_id, assignee,"
+                        " assigned_by) VALUES (CAST(:t AS uuid), :a, :b)"
+                    ),
+                    {"t": tid, "a": assignee, "b": ACTOR},
+                )
+        made["missing"] = base + len(VIS_TASKS) + 5
+    yield made
+    ids = list(made["projects"].values())
+    with eng.begin() as c:
+        c.execute(
+            text(
+                "DELETE FROM pm_task_assignees WHERE task_id IN (SELECT id FROM"
+                " pm_tasks WHERE project_id = ANY(CAST(:p AS uuid[])))"
+            ),
+            {"p": ids},
+        )
+        for table, column in (("pm_tasks", "project_id"),
+                              ("pm_project_grants", "project_id"),
+                              ("pm_task_statuses", "project_id"),
+                              ("pm_projects", "id")):
+            c.execute(
+                text(f"DELETE FROM {table} WHERE {column} = ANY(CAST(:p AS uuid[]))"),
+                {"p": ids},
+            )
+    eng.dispose()
+
+
+def _alice(org: str) -> Any:
+    from gateway.routes.projects.core import Visibility
+
+    return Visibility(unrestricted=False, email=VIS_ACTOR, groups=("group:ops",),
+                      organization_id=org)
+
+
+async def _search_as_alice(vis_seeded, monkeypatch, q: str) -> dict[str, Any]:
+    from contextlib import asynccontextmanager
+
+    from acb_auth import UserContext, UserRole, build_access
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    eng = create_async_engine(_async_url(), future=True, poolclass=NullPool)
+
+    @asynccontextmanager
+    async def _session(*_a, **_k):
+        async with eng.connect() as conn:
+            yield conn
+
+    async def _vis(_db, _user):
+        return _alice(vis_seeded["org"])
+
+    monkeypatch.setattr(route, "_tenant_session", _session)
+    monkeypatch.setattr(route, "resolve_visibility", _vis)
+    user = UserContext(email=VIS_ACTOR, role=UserRole.EMPLOYEE,
+                       access=build_access(["feature:projects"]))
+    try:
+        return await route.search_tasks(q=q, user=user)
+    finally:
+        await eng.dispose()
+
+
+def _list_as_alice(vis_seeded, q: str) -> list[str]:
+    """The list endpoint's composition: the visibility clause, the shared
+    filters (the archived rules included) and the triage exclusion."""
+    from gateway.routes.projects.core import task_visibility_clause, triage_exclusion_clause
+    from gateway.routes.projects.filters import build_task_filters
+    from sqlalchemy import create_engine
+
+    vis = _alice(vis_seeded["org"])
+    clauses = [task_visibility_clause(vis)]
+    params = dict(vis.params)
+    more, bound = build_task_filters(q=q)
+    clauses += more
+    params.update(bound)
+    clauses.append(triage_exclusion_clause())
+    eng = create_engine(_TENANT_URL, future=True)
+    try:
+        with eng.begin() as c:
+            rows = c.execute(
+                text("SELECT t.title FROM pm_tasks t WHERE " + " AND ".join(clauses)),
+                params,
+            )
+            return sorted(r.title.split()[1] for r in rows)
+    finally:
+        eng.dispose()
+
+
+def _names(body: dict[str, Any]) -> list[str]:
+    return sorted(r["title"].split()[1] for r in body["rows"])
+
+
+@pytest.mark.asyncio
+async def test_a_restricted_reader_sees_by_number_exactly_what_text_shows(
+    vis_seeded, monkeypatch,
+):
+    """Search: the text query and each task number agree, task by task."""
+    words = await _search_as_alice(vis_seeded, monkeypatch, f"zqx{vis_seeded['tag']}")
+    assert _names(words) == VIS_SEEN
+    for name, number in vis_seeded["numbers"].items():
+        body = await _search_as_alice(vis_seeded, monkeypatch, f"#{number}")
+        want = [name] if name in VIS_SEEN else []
+        assert _names(body) == want, f"#{number} ({name}) on /projects/search"
+
+
+def test_the_list_composition_agrees_with_text_by_number(vis_seeded):
+    """The list endpoint: the same claim, through ``build_task_filters``."""
+    assert _list_as_alice(vis_seeded, f"zqx{vis_seeded['tag']}") == VIS_SEEN
+    for name, number in vis_seeded["numbers"].items():
+        want = [name] if name in VIS_SEEN else []
+        assert _list_as_alice(vis_seeded, f"#{number}") == want, f"#{number} ({name}) on the list"
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_number_answers_exactly_what_a_missing_one_does(
+    vis_seeded, monkeypatch,
+):
+    """No enumeration. A number Alice may not see and a number that nobody
+    holds give the same body, except for the echoed query."""
+    missing = await _search_as_alice(vis_seeded, monkeypatch, f"#{vis_seeded['missing']}")
+    assert missing["rows"] == [] and missing["total"] == 0
+    for name, spec in VIS_TASKS.items():
+        if spec[4]:
+            continue
+        hidden = await _search_as_alice(
+            vis_seeded, monkeypatch, f"#{vis_seeded['numbers'][name]}",
+        )
+        assert {k: v for k, v in hidden.items() if k != "query"} == {
+            k: v for k, v in missing.items() if k != "query"
+        }, name

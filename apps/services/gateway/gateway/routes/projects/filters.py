@@ -19,6 +19,7 @@ people work around for months instead of reporting.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -70,6 +71,18 @@ MAX_MULTI = 100
 MIN_QUERY = 3
 
 
+#: Whitespace at either end, plus U+FEFF. ``str.strip`` keeps U+FEFF and
+#: JavaScript's ``trim`` drops it, so a pasted "\ufeff7" was a task number in
+#: the browser and a 422 here. ``search.ts`` ``cleanQuery`` strips this set.
+_EDGE_SPACE = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+
+
+def clean_query(raw: str) -> str:
+    """A query with its edge whitespace (and U+FEFF) removed. The one trim
+    the minimum rule reads, here and in the browser."""
+    return _EDGE_SPACE.sub("", raw or "")
+
+
 def task_number(raw: str) -> int | None:
     """``#42`` or ``42`` → 42, else ``None``.
 
@@ -80,7 +93,7 @@ def task_number(raw: str) -> int | None:
     ASCII digits only. ``str.isdigit`` is also true for ``²``, and ``int("²")``
     raises, so without ``isascii`` a superscript answered a 500.
     """
-    stripped = raw.strip().lstrip("#").strip()
+    stripped = clean_query(clean_query(raw).lstrip("#"))
     if not (stripped.isascii() and stripped.isdigit()) or len(stripped) > 18:
         return None
     return int(stripped)
@@ -324,7 +337,7 @@ def build_task_filters(
     # D-PM-31's exception: a query that is only a task number (`#7`, `7`) is
     # an exact lookup on `task_number`, at any length, and never a text scan.
     # The search route answers it the same way, so the two endpoints agree.
-    term = (q or "").strip()
+    term = clean_query(q or "")
     number = task_number(term) if term else None
     if number is not None:
         clauses.append("t.task_number = :q_number")

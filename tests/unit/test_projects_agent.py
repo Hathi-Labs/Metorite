@@ -912,6 +912,14 @@ async def test_find_tasks_refuses_short_text_without_a_call(monkeypatch, query) 
     assert calls == []
 
 
+@pytest.mark.parametrize("query", ["", "   ", "﻿"])
+async def test_find_tasks_with_no_query_asks_for_one(monkeypatch, query) -> None:
+    calls = fake_gateway(monkeypatch, _detail_responder)
+    out = await skill_projects.find_tasks(query)
+    assert out == "Give at least 3 characters to search, or a task number such as #7."
+    assert calls == []
+
+
 def _search_responder(call: dict) -> Any:
     """``/projects/search`` with one task, #7, found by its number."""
     if call["path"] == "/projects/search":

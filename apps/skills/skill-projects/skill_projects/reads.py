@@ -19,6 +19,7 @@ Output conventions the cards read (``ProjectToolCards.tsx``):
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -240,10 +241,18 @@ async def project_summary(project_id: str = "") -> str:
 # ── Finding and listing tasks ────────────────────────────────────────────────
 
 
+_EDGE_SPACE = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+
+
+def _clean(raw: str) -> str:
+    """Edge whitespace and U+FEFF removed: the route's ``filters.clean_query``."""
+    return _EDGE_SPACE.sub("", raw or "")
+
+
 def _task_number(raw: str) -> int | None:
     """``#7`` or ``7`` → 7, else ``None``. The same rule as the route's
     ``filters.task_number``, and the lockstep test holds the two equal."""
-    stripped = raw.strip().lstrip("#").strip()
+    stripped = _clean(_clean(raw).lstrip("#"))
     if not (stripped.isascii() and stripped.isdigit()) or len(stripped) > 18:
         return None
     return int(stripped)
@@ -260,6 +269,8 @@ def _short_query(term: str) -> str:
     The search route answers 422 and the list route answers EMPTY. A tool
     that relayed the empty list would say "no task matches", which is false.
     """
+    if not term:
+        return f"Give at least {MIN_QUERY} characters to search, or a task number such as #7."
     return (
         f"Give at least {MIN_QUERY} characters to search"
         f" ({data(term)} is {len(term)}). A task number works at any length: #7."
@@ -274,7 +285,7 @@ async def find_tasks(query: str, limit: int = 10) -> str:
     digits finds that task number and no titles, so add a word to find a
     title that holds a number. Returns ranked hits with the project and
     status, each with a `full_id` for task_detail."""
-    term = (query or "").strip()
+    term = _clean(query or "")
     if not term or _short_text(term):
         return _short_query(term)
     cap = max(1, min(int(limit or 10), MAX_PAGE))
@@ -336,7 +347,7 @@ async def list_tasks(
         params["watching"] = True
     if include_archived:
         params["include_archived"] = True
-    term = (query or "").strip()
+    term = _clean(query or "")
     if term:
         # The list route matches NOTHING for short text (filters.py), so a
         # 2-character query would read as "no task matches those filters".
