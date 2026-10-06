@@ -1112,9 +1112,13 @@ class TestTheOwnerCheckOnARealDatabase:
                         att_a, _user(member_a, p.org_b))
                     assert (owned.kind, owned.text) == ("txt", "the contract of member A")
                     # Review round 1: an upper-case spelling reads the same row
-                    # on the real database, from the cached text.
+                    # on the real database, from the cached text. The download
+                    # route takes the raw path text, and it hits the one entry
+                    # that `str(row.id)` of the real driver keys.
                     again = await m.attachment_text(att_a.upper(), _user(member_a, p.org_b))
                     assert again == owned
+                    resp = await m.download_attachment(att_a.upper(), _user(member_a, p.org_b))
+                    assert resp.headers["x-cache"] == "HIT"
                     for route in (m.attachment_text, m.download_attachment):
                         with pytest.raises(HTTPException) as err:
                             await route(att_a, _user(member_b, p.org_b))
