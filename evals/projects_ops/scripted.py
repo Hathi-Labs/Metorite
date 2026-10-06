@@ -127,6 +127,23 @@ def _po9(ds: Dataset) -> list[Step]:
     ]
 
 
+#: PO-10's rows, as a model writes them from the prompt.
+PO10_ROWS: tuple[dict[str, Any], ...] = (
+    {"title": "Book the caterer", "assignees": "Priya Menon"},
+    {"title": "Print the badges"},
+    {"title": "Test the projector"},
+)
+
+
+def _po10(ds: Dataset) -> list[Step]:
+    return [
+        tool("projects_tree"),
+        tool("create_tasks", project_id=ds.project("Launch").id, tasks=json.dumps(PO10_ROWS)),
+        ("text", "I added 3 tasks to Launch: «Book the caterer» for Priya Menon, «Print the "
+                 "badges» and «Test the projector»."),
+    ]
+
+
 _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-1": _po1,
     "PO-2": _po2,
@@ -136,6 +153,7 @@ _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-7": _po7,
     "PO-8": _po8,
     "PO-9": _po9,
+    "PO-10": _po10,
 }
 
 SCRIPTED_IDS: tuple[str, ...] = tuple(_SEQUENCES)

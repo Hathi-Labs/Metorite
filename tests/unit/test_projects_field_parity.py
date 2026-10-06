@@ -28,6 +28,7 @@ patched at httpx.
 from __future__ import annotations
 
 import inspect
+import json
 import re
 from typing import Any
 
@@ -203,23 +204,33 @@ def test_every_exemption_carries_a_reason() -> None:
 
 
 def _witnesses() -> list[tuple[Route, str, str, str]]:
-    """``(route, field, tool, argument)`` for each SENDS entry. ``argument`` is
-    empty when the tool sets the field by itself."""
+    """``(route, field, tool, argument)`` for each SENDS witness. ``argument`` is
+    empty when the tool sets the field by itself. A value may hold several
+    witnesses (WS-46 P13), and ``argument`` may name one key of a JSON row
+    argument, as ``tasks.due``."""
     out = []
     for key, names in sorted(m.SENDS.items()):
-        for name, witness in sorted(names.items()):
-            tool, _, arg = witness.partition(".")
-            out.append((key, name, tool, arg))
+        for name, value in sorted(names.items()):
+            for witness in m.witnesses(value):
+                tool, _, arg = witness.partition(".")
+                out.append((key, name, tool, arg))
     return out
 
 
 def test_every_witness_is_an_argument_of_a_tool_that_reaches_the_route() -> None:
+    from skill_projects import forms
+
     rows = {(r.method, r.path): r for r in m.MANIFEST}
     for key, name, tool, arg in _witnesses():
         assert tool in skill_projects.__all__, f"{key} · {name}: {tool} is not an exported tool"
         if arg:
+            param, _, row_key = arg.partition(".")
             params = inspect.signature(getattr(skill_projects, tool)).parameters
-            assert arg in params, f"{key} · {name}: {tool} has no argument {arg!r}"
+            assert param in params, f"{key} · {name}: {tool} has no argument {param!r}"
+            if row_key:
+                # Only create_tasks takes rows today. Its row keys are ROW_KEYS.
+                assert (tool, param) == ("create_tasks", "tasks"), f"{key} · {name}: {arg}"
+                assert row_key in forms.ROW_KEYS, f"{key} · {name}: no row key {row_key!r}"
         assert m.reaches(tool, rows[key].tool), (
             f"{key} · {name}: {tool} may not reach a route the manifest gives {rows[key].tool}"
         )
@@ -249,6 +260,8 @@ _BASE: dict[str, dict[str, Any]] = {
     "create_status": {"project_id": UUID, "name": "Blocked"},
     "create_tag": {"project_id": UUID, "name": "q4"},
     "create_task": {"project_id": UUID, "title": "Call the vendor"},
+    # WS-46 P13: one row. A witness of a row key replaces the row.
+    "create_tasks": {"project_id": UUID, "tasks": '[{"title": "Call the vendor"}]'},
     "create_type": {"project_id": UUID, "name": "Chore"},
     "defer": {"task_id": UUID, "until": "2026-10-06"},
     "delete_status": {"project_id": UUID, "status": "to do", "move_to": "done"},
@@ -291,6 +304,7 @@ _BASE: dict[str, dict[str, Any]] = {
 _SAMPLE: dict[str, Any] = {
     "all_unread": True,
     "assignee": "priya@x.io",
+    "assignees": "priya@x.io",
     "assignees_add": "Priya",
     "assignees_remove": "a@x.io",
     "category": "done",
@@ -509,8 +523,13 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
 
 
 def _call_for(key: Route, name: str, tool: str, arg: str) -> dict[str, Any]:
+    param, _, row_key = arg.partition(".")
+    if row_key:
+        # WS-46 P13: one row, with the base title and the one key the witness names.
+        row = {"title": "Call the vendor", row_key: _SAMPLE[row_key]}
+        return {**_BASE.get(tool, {}), param: json.dumps([row])}
     full = _CALL.get((key[0], key[1], name))
-    if full is not None:
+    if full is not None and tool != "create_tasks":
         return full
     base = dict(_BASE.get(tool, {}))
     if arg and arg not in base:

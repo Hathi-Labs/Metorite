@@ -28,6 +28,9 @@ import {
   receiptIdOf,
   rowIdOf,
   OPENS_APP,
+  BATCH_TOOLS,
+  batchNotes,
+  UNKNOWN_LINE,
 } from "./ProjectToolCards";
 
 const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -258,5 +261,64 @@ describe("WS-27bn R5f: every app card opens Reports", () => {
     ]) {
       expect(OPENS_APP[tool]?.app, tool).toBe("reports");
     }
+  });
+});
+
+describe("WS-46 P13: the receipt of a batch of new tasks", () => {
+  const OTHER = "1f8fad5b-d9cb-469f-a165-70867728950e";
+  // The shape `forms.py::_batch_receipt` prints, row for row.
+  const partial = [
+    "Created 2 of 3 tasks in «Ops». 1 was not created:",
+    "- #20 «Book the caterer» · status «To do» · due 2026-10-09 · «priya@x.io»",
+    `  full_id: ${ID}`,
+    "- #21 «Test the projector» · status «To do»",
+    `  full_id: ${OTHER}`,
+    "failed: row 2 «Print the badges» refused (422): «That type is not in this project.»",
+    "stopped: 1 of 3 rows failed and 0 follow-up writes did not land.",
+    "The 2 tasks listed above exist. Never create them again. To retry a failed row, call create_tasks with that row alone.",
+    "left out: row 4 «Order the banners», unticked on the card.",
+  ].join("\n");
+
+  it("draws through the batch card, which lists every task it made", () => {
+    expect(BATCH_TOOLS.has("create_tasks")).toBe(true);
+    expect(parseTaskRows(partial).map((r) => r.number)).toEqual(["#20", "#21"]);
+  });
+
+  it("is partial when a row failed, and done when none did", () => {
+    expect(classifyActionResult(partial, "done", "create_tasks")).toBe("partial");
+    const clean = partial.split("\n").slice(0, 5).join("\n").replace("2 of 3", "2");
+    expect(classifyActionResult(clean, "done", "create_tasks")).toBe("done");
+  });
+
+  it("is not done when every row failed, because no task exists", () => {
+    const none = [
+      "No task of the 1 is known to exist in «Ops». 1 was not created.",
+      "failed: row 1 «Print the badges» refused (422): «No.».",
+      "stopped: 1 of 1 rows failed and 0 follow-up writes did not land.",
+    ].join("\n");
+    expect(classifyActionResult(none, "done", "create_tasks")).toBe("refused");
+  });
+
+  it("is partial, never 'Not done', when a lost create may have landed (review round 2)", () => {
+    const dropped = [
+      "No task of the 2 is known to exist in «Ops». 2 may have been created: read the project before a retry.",
+      "unknown: row 1 «Book the caterer» lost its connection to the gateway (ConnectError), so it may or may not exist.",
+      "unknown: row 2 «Print the badges» lost its connection to the gateway (ConnectError), so it may or may not exist.",
+      "stopped: 2 of 2 rows failed and 0 follow-up writes did not land.",
+    ].join("\n");
+    expect(UNKNOWN_LINE.test(dropped)).toBe(true);
+    expect(classifyActionResult(dropped, "done", "create_tasks")).toBe("partial");
+    expect(toneFor("partial", "create_tasks")).toContain("warning");
+    expect(batchNotes(dropped)[0]).toMatch(/^unknown: row 1 Book the caterer lost its connection/);
+  });
+
+  it("keeps the lines about the rows, without the rows, the ids or the fence", () => {
+    const notes = batchNotes(partial);
+    expect(notes).toEqual([
+      "failed: row 2 Print the badges refused (422): That type is not in this project.",
+      "stopped: 1 of 3 rows failed and 0 follow-up writes did not land.",
+      "left out: row 4 Order the banners, unticked on the card.",
+    ]);
+    expect(notes.join(" ")).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
   });
 });

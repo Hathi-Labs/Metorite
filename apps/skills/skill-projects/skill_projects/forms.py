@@ -20,26 +20,33 @@ through ``update_task``'s route, ``edit_project`` through ``update_project``'s,
 and ``propose_plan`` through ``create_project``, ``create_task`` (which
 assigns through ``assign``) and ``link_tasks``. Before each card it reads
 ``POST /projects/plan/preview``, which writes nothing (S7d, §13.6).
+
+``create_tasks`` (WS-46 P13) is the same two gestures for several new tasks
+in a project that exists: a selection card with one checkbox per task, then
+one confirmation card for the ticked tasks. It writes through
+``create_task``'s own write path, one task at a time.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
+from acb_common import get_logger
 from acb_common.priority import importance_for, important_from_importance
 
-from skill_projects.client import GatewayRefusal, data, post, put, uuid_of
+from skill_projects.client import GatewayRefusal, data, get, post, put, uuid_of
 from skill_projects.priority import (
     card_view,
     flag,
     level_label,
+    level_note,
     priority_fields,
 )
-from skill_projects.reads import _task_line
+from skill_projects.reads import WEEKDAYS, _number, _task_line
 from skill_projects.views import _emit, _plain, _template
 from skill_projects.writes import (
     _WRITE_FAILED,
@@ -48,10 +55,16 @@ from skill_projects.writes import (
     MAX_BATCH,
     AgentAssigneeRefused,
     _confirm,
+    _date_arg,
     _fields_block,
     _fits_on_card,
+    _follow_new_task,
+    _NewTask,
     _node,
+    _post_new_task,
+    _prepare_new_task,
     _resolve_assignee,
+    _split,
     _statuses_of,
     _subtask_counts,
     _subtasks_phrase,
@@ -61,6 +74,8 @@ from skill_projects.writes import (
     update_project,
     update_task,
 )
+
+_log = get_logger("skill_projects.forms")
 
 try:
     from acb_skills.tool_annotations import annotate as _annotate
@@ -1052,4 +1067,716 @@ async def _write_plan(
     return "\n".join(out)
 
 
-__all__ = ["edit_project", "edit_task", "propose_plan"]
+# ── Several new tasks in one project, as one batch (WS-46 P13) ───────────────
+#
+# Spec: ``projects_agent_parity.md`` §12, slice P13. On 2026-10-06 a member
+# asked for nine tasks in a project that existed. No tool took several
+# top-level tasks, so the model made nine create_task calls and nine cards
+# at once. This tool takes the batch in ONE call. A selection card lets the
+# member untick a row, and ONE confirmation card then covers every ticked
+# row. Each row goes through create_task's own write path
+# (``writes._prepare_new_task``, then the two halves of
+# ``writes._create_new_task``: ``_post_new_task`` and ``_follow_new_task``).
+
+#: The keys of one row. Each one means what the create_task argument of the
+#: same name means, and ``tests/unit/test_projects_create_tasks.py`` holds
+#: the two lists in step.
+ROW_KEYS: tuple[str, ...] = (
+    "title",
+    "description",
+    "status",
+    "assignees",
+    "due",
+    "start",
+    "estimate_mins",
+    "tags",
+    "parent_task_id",
+    "priority",
+    "important",
+    "leveraged",
+    "type",
+    "fields",
+)
+#: The create_task arguments a row does not take: the repeat rule (P1) and
+#: the retired ``importance``. A repeating task is create_task's alone.
+REPEAT_KEYS: tuple[str, ...] = (
+    "repeat",
+    "repeat_every",
+    "repeat_on",
+    "repeat_day",
+    "repeat_month",
+    "repeat_from",
+    "repeat_until",
+    "repeat_times",
+)
+REPEAT_REFUSED = (
+    "create_tasks makes tasks that do not repeat. Make each repeating task with "
+    "create_task and repeat, one call for each."
+)
+PROJECT_REFUSED = (
+    "Every task of one call goes to the project_id of the call. For tasks in "
+    "another project, make a second call."
+)
+TASKS_FORMAT = (
+    'tasks is a JSON list with one object per task, for example [{"title": "Book the '
+    'venue", "assignees": "Priya", "due": "2026-10-09"}]. The keys are: '
+    + ", ".join(ROW_KEYS)
+    + ". Only title is required."
+)
+#: How recent a task with the same title in the same project must be to read
+#: as the same task. The create route takes no idempotency key, so this read
+#: before the card is what makes a retry safe: such a row starts unticked.
+RECENT_MINUTES = 10
+#: The read that finds those tasks. The list route sorts by ``created_at``,
+#: newest first, by default, so one page holds every recent task.
+RECENT_PAGE = 50
+NOTHING_TICKED = "Every task was unticked on the card, so nothing was created."
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+class _BatchRow:
+    """One row of a batch: the member's words, and create_task's resolved body."""
+
+    def __init__(self, index: int, title: str, item: dict[str, Any], new: _NewTask) -> None:
+        self.index = index
+        self.title = title
+        self.item = item
+        self.new = new
+        #: A task with this title made in the last :data:`RECENT_MINUTES`.
+        self.recent: dict[str, Any] | None = None
+        #: Assignees, due date and status, in plain words (the selection card).
+        self.plain = ""
+        #: The full line of the confirmation card, fenced.
+        self.line = ""
+
+
+def _batch_items(raw: Any) -> list[dict[str, Any]] | str:
+    """The rows as the model sent them, checked for shape, or the refusal."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return TASKS_FORMAT
+    if not isinstance(raw, list) or not raw:
+        return TASKS_FORMAT
+    if len(raw) > MAX_BATCH:
+        return (
+            f"That is {len(raw)} tasks. The limit for one card is {MAX_BATCH}. Split them "
+            "into two calls. Nothing was created."
+        )
+    seen: dict[str, int] = {}
+    for i, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            return f"Row {i} is not an object. {TASKS_FORMAT}"
+        title = _clean(item.get("title"))
+        label = f"Row {i}" + (f" ({data(title)})" if title else "")
+        for key in item:
+            if key in REPEAT_KEYS:
+                return f"{label}: {REPEAT_REFUSED} Nothing was created."
+            if key == "project_id":
+                return f"{label}: {PROJECT_REFUSED} Nothing was created."
+            if key not in ROW_KEYS and key != "importance":
+                return (
+                    f"{label} has no key {data(key)}. The keys are: {', '.join(ROW_KEYS)}. "
+                    "Nothing was created."
+                )
+        if not title:
+            return f"Row {i} has no title. Every task needs one. Nothing was created."
+        twin = seen.setdefault(title.lower(), i)
+        if twin != i:
+            return (
+                f"Rows {twin} and {i} have the same title, {data(title)}. Give each task its "
+                "own title, or drop one. Nothing was created."
+            )
+    return raw
+
+
+def _row_text(item: dict[str, Any], key: str) -> str:
+    """A text key of a row. A list or an object is refused, never stringified."""
+    value = item.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, list | dict):
+        raise GatewayRefusal(f"{key} takes text, not a list or an object.")
+    return str(value).strip()
+
+
+def _row_list(item: dict[str, Any], key: str) -> list[str]:
+    """``assignees`` or ``tags``: a comma-separated string, or a list."""
+    value = item.get(key)
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, dict):
+        raise GatewayRefusal(f"{key} takes a comma-separated list, not an object.")
+    return _split(str(value))
+
+
+def _row_estimate(item: dict[str, Any]) -> int:
+    value = item.get("estimate_mins")
+    if value in (None, ""):
+        return 0
+    if isinstance(value, bool) or not str(value).strip().isdigit():
+        raise GatewayRefusal(f"estimate_mins is a whole number of minutes, not {data(value)}.")
+    return int(str(value).strip())
+
+
+def _row_fields(item: dict[str, Any]) -> str:
+    """``fields`` as create_task takes it: a JSON object string."""
+    value = item.get("fields")
+    if value in (None, ""):
+        return ""
+    if isinstance(value, dict):
+        return json.dumps(value)
+    if isinstance(value, str):
+        return value
+    raise GatewayRefusal(
+        'fields is a JSON object keyed by field NAME, for example {"Customer": "Acme"}.'
+    )
+
+
+def _relabel(label: str, exc: GatewayRefusal) -> GatewayRefusal:
+    """*exc*, said for one row. A gateway refusal keeps its safe detail only."""
+    if getattr(exc, "status", None) is not None:
+        hint = "Not found, or not visible to you." if exc.status == 404 else f"({exc.status})"
+        said = f"{hint} {data(exc.detail)}" if exc.detail else hint
+    else:
+        said = " ".join(str(exc).split())
+    text_ = f"{label}: {said} Nothing was created."
+    if isinstance(exc, AgentAssigneeRefused):
+        return AgentAssigneeRefused(text_)
+    return GatewayRefusal(text_, fixable=getattr(exc, "fixable", True))
+
+
+async def _batch_row(
+    pid: str, index: int, item: dict[str, Any], statuses: list[dict[str, Any]]
+) -> _BatchRow:
+    """One row resolved by create_task's own code, or the refusal that names it."""
+    title = _clean(item.get("title"))
+    label = f"Row {index} ({data(title)})"
+    try:
+        flags = priority_fields(
+            priority=_row_text(item, "priority"),
+            important=item.get("important", ""),
+            leveraged=item.get("leveraged", ""),
+            importance=item.get("importance"),
+        )
+        if isinstance(flags, str):
+            raise GatewayRefusal(flags)
+        new = await _prepare_new_task(
+            pid,
+            title,
+            description=_row_text(item, "description"),
+            status=_row_text(item, "status"),
+            due_at=_date_arg(_row_text(item, "due"), "due"),
+            flags=flags,
+            estimate_mins=_row_estimate(item),
+            tags=_row_list(item, "tags"),
+            start=_row_text(item, "start"),
+            type_name=_row_text(item, "type"),
+            fields=_row_fields(item),
+            parent_task_id=_row_text(item, "parent_task_id"),
+            assignees=_row_list(item, "assignees"),
+            statuses=statuses,
+        )
+    except GatewayRefusal as exc:
+        raise _relabel(label, exc) from None
+    return _BatchRow(index, title, item, new)
+
+
+def _first_lane(statuses: list[dict[str, Any]]) -> str:
+    """The lane a task with no status lands in: the first by position, never
+    triage (``core.load_default_status``)."""
+    lanes = [s for s in statuses if s.get("category") != "triage"]
+    if lanes and all(s.get("position") is not None for s in lanes):
+        lanes.sort(key=lambda s: (int(s["position"]), str(s.get("name") or "")))
+    # With no position on the rows, the route's own order stands.
+    return str(lanes[0].get("name") or "") if lanes else ""
+
+
+def _day_words(value: str) -> str:
+    """``2026-10-09`` → ``Fri 9 Oct 2026``."""
+    try:
+        day = date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return str(value)
+    return f"{WEEKDAYS[day.weekday()][:3]} {day.day} {_MONTHS[day.month - 1]} {day.year}"
+
+
+async def _names_of(who: list[str]) -> tuple[dict[str, str], list[str]]:
+    """The directory name of each address, and the addresses it does not know.
+
+    One read for the whole batch (``/projects/people/names``), as
+    ``writes._unknown_addresses`` reads it for one task (H-162).
+    """
+    addresses = sorted({a for a in who if "@" in a})
+    if not addresses:
+        return {}, []
+    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
+    names = {str(k).lower(): str(v) for k, v in (payload.get("names") or {}).items()}
+    return names, [a for a in addresses if a.lower() not in names]
+
+
+def _person(who: str, names: dict[str, str]) -> str:
+    """The NAME the directory gives an address, for the selection card."""
+    if who.startswith("agent:"):
+        return f"agent {who.removeprefix('agent:')}"
+    return names.get(who.lower()) or who
+
+
+def _person_card(who: str, names: dict[str, str]) -> str:
+    """An assignee on the confirmation card and the receipt: always
+    ``«Name» (address)`` when the directory knows the address. Two people can
+    share a name, and the card is consent, so it names the address too
+    (review round 2). An address the directory does not know stays bare."""
+    name = names.get(who.lower()) if "@" in who else None
+    return f"{data(name)} ({who})" if name else data(_person(who, names))
+
+
+def _created_at(row: dict[str, Any]) -> datetime | None:
+    raw = str(row.get("created_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        made = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return made if made.tzinfo else made.replace(tzinfo=UTC)
+
+
+async def _recent_titles(pid: str) -> dict[str, dict[str, Any]]:
+    """Each title of a task made in *pid* in the last :data:`RECENT_MINUTES`.
+
+    The create route takes no idempotency key (``TaskIn``), so a retry of a
+    batch that half landed would make each landed task twice. This read
+    before the card finds them, and the selection card starts them unticked.
+    The read takes the triage lane too, because a create can land a task
+    there and the list hides it by default (review round 2).
+    """
+    query = {"project_id": pid, "page_size": RECENT_PAGE, "include_triage": True}
+    page = (await get("/projects/tasks", query)) or {}
+    since = datetime.now(UTC) - timedelta(minutes=RECENT_MINUTES)
+    out: dict[str, dict[str, Any]] = {}
+    for row in page.get("rows") or []:
+        made = _created_at(row)
+        if made is None or made < since:
+            continue
+        out.setdefault(_clean(row.get("title")).lower(), row)
+    return out
+
+
+def _minutes_ago(row: dict[str, Any]) -> int:
+    made = _created_at(row)
+    if made is None:
+        return 0
+    return max(0, int((datetime.now(UTC) - made).total_seconds() // 60))
+
+
+def _recent_note(row: dict[str, Any]) -> str:
+    ago = _minutes_ago(row)
+    when = "less than a minute ago" if ago < 1 else f"{ago} min ago"
+    return f"a task with this title was made {when}, as {_number(row)}"
+
+
+def _describe(
+    p: _BatchRow, names: dict[str, str], first_lane: str
+) -> None:
+    """Fill the row's plain words and its confirmation line."""
+    payload = p.new.payload
+    people = [_person(w, names) for w in p.new.who]
+    due = str(payload.get("due_at") or "")
+    if "status_id" in payload or "parent_task_id" in payload:
+        lane = p.new.status_label
+    else:
+        lane = f"{first_lane} (the first lane)" if first_lane else "the first lane"
+    # `_parent_lane_label` fences the lane name itself. Fence a bare name
+    # once, and never a fenced one twice (review round 2).
+    lane_card = lane if "«" in lane else data(lane)
+    p.plain = " · ".join(
+        [
+            ", ".join(people) if people else "nobody assigned",
+            f"due {_day_words(due)}" if due else "no due date",
+            _plain(lane.replace("«", "").replace("»", "")),
+        ]
+    )
+    facts = [
+        ", ".join(_person_card(w, names) for w in p.new.who) if p.new.who else "nobody assigned",
+        f"due {_day_words(due)}" if due else "no due date",
+        f"status {lane_card}",
+    ]
+    if payload.get("start_date"):
+        facts.append(f"start {_day_words(payload['start_date'])}")
+    if payload.get("estimate_mins"):
+        facts.append(f"{payload['estimate_mins']} min")
+    if payload.get("tags"):
+        facts.append("tags " + ", ".join(data(t) for t in payload["tags"]))
+    # The type and each custom value, by NAME. The start is said above.
+    facts.extend(
+        f"{key} {data(value)}" for key, value in p.new.extra.card.items() if key != "start"
+    )
+    shown = card_view({k: payload[k] for k in ("importance", "leveraged") if k in payload})
+    facts.extend(f"{k} {v}" for k, v in shown.items())
+    if payload.get("parent_task_id"):
+        facts.append(_parent_words(p.new.parent or {}, p.new.pid))
+    if payload.get("description"):
+        # The whole text, as the POST sends it. A cut card is not consent
+        # (projects_ai_chat.md §13.6 rule 8), so a batch too long for the
+        # card is refused by `_fits_on_card` instead (review round 1).
+        facts.append("description " + data(payload["description"]))
+    p.line = f"{data(p.title)} · " + " · ".join(facts)
+
+
+def _parent_words(parent: dict[str, Any], pid: str) -> str:
+    """``subtask of #8 «Order the nozzle»``, and its project when that is not
+    the project of the call (review round 2)."""
+    out = f"subtask of {_number(parent)} {data(parent.get('title'))}"
+    if parent.get("project_id") and str(parent.get("project_id")) != str(pid):
+        where = data(parent.get("project_name")) if parent.get("project_name") else None
+        out += f", in {where}" if where else ", in another project"
+    return out
+
+
+def _left_why(p: _BatchRow, drawn: bool) -> str:
+    """Why a row is not on the confirmation card, in the member's words."""
+    if not drawn and p.recent is not None:
+        return f"because {_recent_note(p.recent)}"
+    return "unticked on the card"
+
+
+def _batch_card(
+    node: dict[str, Any],
+    rows: list[_BatchRow],
+    left: list[_BatchRow],
+    strangers: list[str],
+    drawn: bool = True,
+) -> dict[str, Any]:
+    """The confirmation card: every task that will be made, and what is left out.
+
+    Each line carries the row's number from the call, as the receipt does, so
+    "row 3" means one task on both (review round 1).
+    """
+    card: dict[str, Any] = {"project": data(node.get("name")), "tasks": len(rows)}
+    for p in rows:
+        card[f"row {p.index}"] = p.line
+        if p.recent is not None:
+            card[f"row {p.index} check"] = (
+                f"{_recent_note(p.recent)}. Approving makes a second task with this title."
+            )
+    for p in left:
+        card[f"row {p.index} left out"] = f"{data(p.title)}, {_left_why(p, drawn)}"
+    if strangers:
+        card["not in the directory"] = ", ".join(strangers)
+    card["note"] = (
+        "Each task is its own write. A task that fails does not stop the others, "
+        "and the receipt names it."
+    )
+    return card
+
+
+def _ticked(value: Any) -> bool:
+    return value is True or str(value).strip().lower() in ("true", "yes")
+
+
+async def _pick(
+    node: dict[str, Any], rows: list[_BatchRow]
+) -> tuple[set[int], bool] | str:
+    """The rows the member keeps ticked on the selection card, and whether the
+    card was drawn. Or the reason that nothing goes on.
+
+    The card is the ``formCard`` template with one checkbox per row, ticked by
+    default. A row with a recent twin starts unticked. The card is not
+    consent: the confirmation card after it is (``_confirm``). With no chat
+    surface to draw it, the confirmation card alone carries the batch, and
+    a row with a recent twin stays out. Both cards then say why.
+    """
+    fields = [
+        {
+            "name": f"row_{p.index}",
+            "label": _plain(p.title),
+            "type": "checkbox",
+            "value": p.recent is None,
+            "hint": p.plain
+            + (f" · {_recent_note(p.recent)}, so it starts unticked" if p.recent else ""),
+        }
+        for p in rows
+    ]
+    n = len(rows)
+    result = await _emit(
+        {
+            **_template(
+                "formCard",
+                {
+                    "title": f"Add {n} task{'s' if n != 1 else ''} to {_plain(node.get('name'))}",
+                    "description": (
+                        "Untick a task to leave it out. A confirmation card follows, and "
+                        "nothing is created until you approve it."
+                    ),
+                    "submitLabel": "Review tasks",
+                    "fields": fields,
+                },
+            ),
+            "hitl": True,
+        }
+    )
+    if not result.get("ok"):
+        kept = {p.index for p in rows if p.recent is None}
+        if not kept:
+            return (
+                f"Each task has a twin made in the last {RECENT_MINUTES} minutes, so nothing "
+                "was created. Read list_tasks for this project to see them."
+            )
+        return kept, False
+    values = _answer(result.get("response"))
+    if values is None:
+        return NOT_SUBMITTED
+    picked = {p.index for p in rows if _ticked(values.get(f"row_{p.index}"))}
+    return (picked, True) if picked else NOTHING_TICKED
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@agent_assignee_refusal_as_text
+async def create_tasks(project_id: str, tasks: str) -> str:
+    """Create several new tasks in ONE project as one batch. Use it for 2 or
+    more new tasks, and never call create_task several times in parallel.
+    project_id is a `full_id` from projects_tree (a project or subproject,
+    never a folder). tasks is a JSON list with one object per task. Each
+    object takes the keys of create_task, with the same meaning: title
+    (required), description, status (by NAME), assignees (comma-separated
+    emails, agent:<name>, or people's names), due and start (YYYY-MM-DD),
+    estimate_mins, tags (comma-separated), parent_task_id, priority or
+    important and leveraged, type (by NAME), and fields (a JSON object keyed
+    by field NAME). A repeating task is create_task with repeat, not this
+    tool. Every name is checked before any card, and one bad row refuses the
+    whole batch and names the row. The member then sees one selection card,
+    where they can untick a row, and one confirmation card for the ticked
+    rows. A task with the same title made in this project in the last 10
+    minutes starts unticked, so a retry makes no second copy. Each row is
+    its own write: a row that fails does not stop the others, and the
+    receipt names each task made and each row that failed. Never create a
+    task again that the receipt lists. Archive is the undo."""
+    pid = uuid_of(project_id, "project_id")
+    items = _batch_items(tasks)
+    if isinstance(items, str):
+        return items
+    pid, node = await _node(pid)
+    if node.get("kind") == "folder":
+        return (
+            f"{data(node.get('name'))} is a folder. A folder holds projects, not tasks. "
+            "Pick a project inside it. Nothing was created."
+        )
+    statuses = await _statuses_of(pid)
+    rows = [await _batch_row(pid, i, item, statuses) for i, item in enumerate(items, start=1)]
+    names, strangers = await _names_of([w for p in rows for w in p.new.who])
+    recent = await _recent_titles(pid)
+    first_lane = _first_lane(statuses)
+    for p in rows:
+        p.recent = recent.get(p.title.lower())
+        _describe(p, names, first_lane)
+    if not _fits_on_card(_batch_card(node, rows, [], strangers)):
+        return (
+            f"These {len(rows)} tasks do not fit on one confirmation card. Split them into "
+            "two calls. Nothing was created."
+        )
+    picked = await _pick(node, rows)
+    if isinstance(picked, str):
+        return picked
+    ticked, drawn = picked
+    chosen = [p for p in rows if p.index in ticked]
+    left = [p for p in rows if p.index not in ticked]
+    k = len(chosen)
+    if not await _confirm(
+        title=f"Create {k} task{'s' if k != 1 else ''} in {data(node.get('name'))}?",
+        detail=f"one batch · {k} task{'s' if k != 1 else ''}"
+        + (f" · {len(left)} left out" if left else ""),
+        context=_fields_block(_batch_card(node, chosen, left, strangers, drawn)),
+    ):
+        return CANCELLED
+    return await _write_batch(pid, node, chosen, left, drawn, names)
+
+
+def _uncertain(exc: Exception) -> bool:
+    """A write whose result nobody knows: a lost connection, or an error that
+    no gateway sends. A refusal of the gateway is a known result."""
+    return not isinstance(exc, GatewayRefusal)
+
+
+def _failure(exc: Exception) -> str:
+    """Why one row's CREATE failed, in words the model can act on."""
+    if isinstance(exc, httpx.TransportError):
+        return (
+            f"lost its connection to the gateway ({type(exc).__name__}), so it may or may "
+            f"not exist. Read list_tasks before a retry. Within {RECENT_MINUTES} minutes, "
+            "a retry with create_tasks starts it unticked when it exists."
+        )
+    if isinstance(exc, GatewayRefusal):
+        status = getattr(exc, "status", None)
+        if status is not None:
+            detail = getattr(exc, "detail", "")
+            return f"refused ({status})" + (f": {data(detail)}" if detail else "")
+        return f"refused: {' '.join(str(exc).split())}"
+    return (
+        f"failed ({type(exc).__name__}), so it may or may not exist. Read list_tasks "
+        f"before a retry. Within {RECENT_MINUTES} minutes, a retry with create_tasks "
+        "starts it unticked when it exists."
+    )
+
+
+def _unsaved(task: dict[str, Any], exc: Exception) -> str:
+    """Why the assign PUT after a create failed. The task EXISTS, so the words
+    are the single path's (``writes._create_stopped``), and they never send
+    the model back to create_tasks for it (review round 2)."""
+    ref = f"{_number(task)} {data(task.get('title'))}"
+    if _uncertain(exc):
+        return (
+            f"not saved: the task {ref} exists. Its assignees may or may not be saved: the "
+            f"write failed ({type(exc).__name__}). Read task_detail for this task first, "
+            "then use assign only if they are not there."
+        )
+    reason = _failure(exc)
+    return _said(f"not saved: the task {ref} exists, but its assignees were {reason}") + (
+        " Use assign on that task."
+    )
+
+
+def _said(line: str) -> str:
+    """*line* with one full stop. A fenced detail often ends with its own."""
+    return line if line.endswith((".", ".»")) else f"{line}."
+
+
+async def _lane_names(pid: str) -> dict[str, str]:
+    """``status_id → name``, read after the writes. Never raises."""
+    try:
+        rows = await _statuses_of(pid)
+    except Exception:  # a receipt detail, never a write
+        return {}
+    return {str(r.get("id")): str(r.get("name") or "") for r in rows}
+
+
+class _Outcome:
+    """What the writes of a batch did, row by row, for the receipt."""
+
+    def __init__(self) -> None:
+        self.made: list[tuple[_BatchRow, dict[str, Any]]] = []
+        #: Rows the gateway refused: no task exists.
+        self.refused: list[str] = []
+        #: Rows whose create may or may not have landed.
+        self.unknown: list[str] = []
+        #: Follow-up writes (the assignees) that did not land on a made task.
+        self.unsaved: list[str] = []
+
+
+def _log_unknown(exc: Exception, step: str) -> None:
+    if not isinstance(exc, _WRITE_FAILED):
+        # Caught, because a raise after a write makes the model create the
+        # tasks again. The trace stays in the log (review round 1).
+        _log.warning("projects.batch_row_failed", step=step, error=type(exc).__name__,
+                     exc_info=True)
+
+
+async def _write_batch(
+    pid: str,
+    node: dict[str, Any],
+    chosen: list[_BatchRow],
+    left: list[_BatchRow],
+    drawn: bool = True,
+    names: dict[str, str] | None = None,
+) -> str:
+    """One write per ticked row, in order, and the receipt. It never raises.
+
+    A row that fails does not stop the next row. The create and the writes
+    after it are apart (``_post_new_task``, ``_follow_new_task``), so an
+    error after the POST is a follow-up that failed on a task that exists,
+    never a task that "may not exist". A raise here would read to the model
+    as "Function failed", and the model would make the tasks again.
+    """
+    out = _Outcome()
+    for p in chosen:
+        try:
+            task = await _post_new_task(p.new)
+        except Exception as exc:  # each row ends in the receipt, never in a raise
+            _log_unknown(exc, "create")
+            line = _said(f"{'unknown' if _uncertain(exc) else 'failed'}: row {p.index} "
+                         f"{data(p.title)} {_failure(exc)}")
+            (out.unknown if _uncertain(exc) else out.refused).append(line)
+            continue
+        out.made.append((p, task))
+        try:
+            _saved, after = await _follow_new_task(task, p.new)
+        except Exception as exc:  # the task exists: a follow-up, never a row
+            _log_unknown(exc, "follow-up")
+            after = ("assignees", exc)
+        if after is not None:
+            out.unsaved.append(_unsaved(task, after[1]))
+    lanes = await _lane_names(pid)
+    return _batch_receipt(node, chosen, left, out, lanes, drawn, names or {})
+
+
+def _head(where: str, many: int, out: _Outcome) -> str:
+    """The receipt's first line. It never says "not created" of a row whose
+    create may have landed (review round 2)."""
+    made, refused, unknown = len(out.made), len(out.refused), len(out.unknown)
+    if not refused and not unknown:
+        return f"Created {made} task{'s' if made != 1 else ''} in {where}:"
+    parts = [f"Created {made} of {many} tasks in {where}." if made else
+             f"No task of the {many} is known to exist in {where}."]
+    if unknown:
+        parts.append(
+            f"{unknown} may have been created: read the project before a retry."
+        )
+    if refused:
+        parts.append(f"{refused} {'was' if refused == 1 else 'were'} not created.")
+    return " ".join(parts)
+
+
+def _shown_task(task: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
+    """The created row as the receipt prints it: each assignee by NAME, with
+    the address, as the confirmation card shows them (review round 2)."""
+    who = [str(a) for a in task.get("assignees") or []]
+    if not who:
+        return task
+    shown = []
+    for a in who:
+        name = names.get(a.lower()) if "@" in a else None
+        shown.append(f"{name} ({a})" if name else a)
+    return {**task, "assignees": shown}
+
+
+def _batch_receipt(
+    node: dict[str, Any],
+    chosen: list[_BatchRow],
+    left: list[_BatchRow],
+    out: _Outcome,
+    lanes: dict[str, str],
+    drawn: bool = True,
+    names: dict[str, str] | None = None,
+) -> str:
+    many = len(chosen)
+    lines = [_head(data(node.get("name")), many, out)]
+    for p, task in out.made:
+        lines.extend(
+            _task_line(_shown_task(task, names or {}), lanes.get(str(task.get("status_id")), ""))
+        )
+        lines.extend(level_note(_row_text(p.item, "priority"), task))
+    lines.extend(out.refused)
+    lines.extend(out.unknown)
+    lines.extend(out.unsaved)
+    failed = len(out.refused) + len(out.unknown)
+    if failed or out.unsaved:
+        lines.append(
+            f"stopped: {failed} of {many} rows failed and {len(out.unsaved)} "
+            f"follow-up write{'s' if len(out.unsaved) != 1 else ''} did not land."
+        )
+    if out.made:
+        made = len(out.made)
+        lines.append(
+            f"The {made} task{'s' if made != 1 else ''} listed above exist. Never "
+            "create them again. To retry a failed row, call create_tasks with that row alone."
+        )
+    lines.extend(
+        f"left out: row {p.index} {data(p.title)}, {_left_why(p, drawn)}." for p in left
+    )
+    return "\n".join(lines)
+
+
+__all__ = ["create_tasks", "edit_project", "edit_task", "propose_plan"]

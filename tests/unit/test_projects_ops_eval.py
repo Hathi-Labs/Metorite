@@ -108,8 +108,8 @@ def test_next_monday(today: date, monday: date) -> None:
 # ── the task table ──────────────────────────────────────────────────────────
 
 
-def test_the_nine_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
-    assert tuple(f"PO-{n}" for n in range(1, 10)) == T.TASK_IDS
+def test_the_ten_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
+    assert tuple(f"PO-{n}" for n in range(1, 11)) == T.TASK_IDS
     assert set(C.CHECKERS) == set(T.TASK_IDS)
     for spec in T.TASKS:
         assert (spec.id in S.SCRIPTED_IDS) is (spec.xfail is None), spec.id
@@ -121,7 +121,7 @@ def test_the_task_selector() -> None:
     assert [t.id for t in T.select("all")] == list(T.TASK_IDS)
     assert [t.id for t in T.select("PO-4, PO-1")] == ["PO-4", "PO-1"]
     with pytest.raises(ValueError):
-        T.select("PO-10")
+        T.select("PO-11")
 
 
 # ── 2. the scripted sweep, through the REAL executor ────────────────────────
@@ -168,7 +168,7 @@ def test_the_scripted_sweep_passes_every_task_uncovered(
         assert record["status"] == want, (task_id, record["failure"])
     assert all(r["no_egress"] == [False] for r in records if r["status"] == "pass")
     assert R.coding.exit_code(records) == R.EXIT_PASS
-    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 9
+    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 10
 
 
 def test_the_scripted_sweep_passes_every_task_covered(
@@ -415,6 +415,98 @@ def test_po8_a_value_the_route_refuses_is_refused_by_the_stub() -> None:
     assert status == 422 and "Initech" in json.dumps(body)
     status, body = stub.handle("PATCH", path, T.MEMBER, {"custom_fields": {"customer": "Acme"}})
     assert status == 200 and body["custom_fields"] == {"customer": "Acme"}
+
+
+def _po10(*rows: dict[str, Any], project: str = "Launch", answer: str = "") -> list[Any]:
+    """PO-10's batch. No rows means the known-good rows."""
+    return [tool("create_tasks", project_id=DS.project(project).id,
+                 tasks=json.dumps(list(rows or S.PO10_ROWS))),
+            ("text", answer or "I added 3 tasks to Launch.")]
+
+
+def test_po10_the_known_good_run_passes(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-10")
+    assert record["status"] == "pass", record["failure"]
+    [form] = record["forms"]
+    assert [f["label"] for f in form["fields"]] == [r["title"] for r in S.PO10_ROWS]
+    assert form["fields"][0]["hint"].startswith("Priya Menon · no due date")
+    assert record["cards"][0]["title"] == "Create 3 tasks in «Launch»?"
+
+
+def test_po10_one_call_per_task_fails(harness: R.OpsHarness) -> None:
+    """The failure of 2026-10-06: one create_task, and one card, per task."""
+    launch = LAUNCH.id
+    steps = [*[tool("create_task", project_id=launch, title=r["title"],
+                    assignees=r.get("assignees", "")) for r in S.PO10_ROWS],
+             ("text", "I added 3 tasks.")]
+    spec = dataclasses.replace(T.by_id("PO-10"), cards=(T.APPROVE,) * 3)
+    failed = _failed(_run(harness, "PO-10", steps, spec=spec))
+    assert {"one_batch_call", "one_selection_card", "one_card"} <= failed
+
+
+def test_po10_a_declined_card_fails(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-10"), cards=(T.DECLINE,))
+    failed = _failed(_run(harness, "PO-10", _po10(), spec=spec))
+    assert failed == {"one_card", "three_tasks_in_launch", "priya_holds_one"}
+
+
+def test_po10_an_unticked_row_fails(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-10"), untick=("row_2",))
+    record = _run(harness, "PO-10", _po10(), spec=spec)
+    assert _failed(record) == {"three_tasks_in_launch"}
+    assert [r["body"]["title"] for r in record["requests"]
+            if r["method"] == "POST"] == ["Book the caterer", "Test the projector"]
+
+
+def test_po10_the_wrong_project_fails(harness: R.OpsHarness) -> None:
+    assert _failed(_run(harness, "PO-10", _po10(project="Ops"))) == {"three_tasks_in_launch"}
+
+
+def test_po10_no_owner_fails(harness: R.OpsHarness) -> None:
+    rows = [{"title": r["title"]} for r in S.PO10_ROWS]
+    assert _failed(_run(harness, "PO-10", _po10(*rows))) == {"priya_holds_one"}
+
+
+def test_po10_a_second_write_fails(harness: R.OpsHarness) -> None:
+    steps = [*_po10()[:-1], tool("update_task", task_id=DS.task(4).id, title="Order banners"),
+             ("text", "I added 3 tasks.")]
+    spec = dataclasses.replace(T.by_id("PO-10"), cards=(T.APPROVE, T.APPROVE))
+    assert {"one_card", "nothing_else_written"} <= _failed(
+        _run(harness, "PO-10", steps, spec=spec))
+
+
+def test_po10_an_answer_without_the_count_fails(harness: R.OpsHarness) -> None:
+    steps = _po10(answer="I added the tasks to Launch.")
+    assert _failed(_run(harness, "PO-10", steps)) == {"answer_counts_three"}
+
+
+def test_the_runner_answers_a_selection_card_and_no_other_form() -> None:
+    """Review round 1: an edit form or a plan the model should not open stays
+    unanswered, so its run still fails "run_completed"."""
+    from orchestrator import executor
+
+    loop = asyncio.new_event_loop()
+    try:
+        def parked(spec: dict[str, Any]) -> tuple[dict[str, Any], Any]:
+            fut = loop.create_future()
+            executor._pending_user_input["rq"] = fut
+            return {**spec, "request_id": "rq"}, fut
+
+        spec = T.by_id("PO-10")
+        plan, fut = parked({"props": {"name": "planCard", "data": {"tasks": []}}})
+        edit, _ = parked({"props": {"name": "formCard", "data": {
+            "fields": [{"name": "title", "type": "text", "value": "x"}]}}})
+        run = R._Run(stream=None)
+        assert not R._answer_form(run, spec, plan) and not fut.done()
+        assert not R._answer_form(run, spec, edit)
+        pick, fut = parked({"props": {"name": "formCard", "data": {
+            "submitLabel": "Review tasks",
+            "fields": [{"name": "row_1", "type": "checkbox", "value": True}]}}})
+        assert R._answer_form(run, spec, pick) and fut.done()
+        assert fut.result()["answer"] == 'Review tasks — {"row_1": true}'
+    finally:
+        executor._pending_user_input.pop("rq", None)
+        loop.close()
 
 
 def test_a_covered_sweep_that_ran_uncovered_fails(

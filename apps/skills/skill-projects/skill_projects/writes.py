@@ -774,28 +774,120 @@ async def create_task(
     )
     if isinstance(repeating, str):
         return repeating
+    new = await _prepare_new_task(
+        pid,
+        name,
+        description=description,
+        status=status,
+        due_at=repeating.due_at(due),
+        flags=flags,
+        estimate_mins=estimate_mins,
+        tags=_split(tags),
+        start=start,
+        type_name=type,
+        fields=fields,
+        parent_task_id=parent_task_id,
+        assignees=_split(assignees),
+    )
+    card = _priority_card(new.payload)
+    # The card names the type and each field by NAME (`extra.card`).
+    card.pop("type_id", None)
+    card.pop("custom_fields", None)
+    card["status"] = new.status_label
+    card.update(new.extra.card)
+    card.update(await _assignee_card_lines(new.who))
+    card.update(repeating.card_lines())
+    if not await _confirm(
+        title=repeating.card_title,
+        detail=f"{data(name)} · status {new.status_label}"
+        + (f" · {', '.join(new.who)}" if new.who else "")
+        + repeating.detail(),
+        context=_fields_block(card),
+    ):
+        return CANCELLED
+    task, saved, failed = await _create_new_task(new, repeating)
+    status_label = new.status_label
+    if "status_id" not in new.payload:
+        # The receipt names the lane the row really landed in, read off the
+        # created row, as `add_subtasks` does. The card was a forecast. The
+        # read runs after every write, and `_lane_name` never raises.
+        status_label = await _lane_name(pid, task.get("status_id")) or status_label
+    lines = [*_task_line(task, status_label), *level_note(priority, task)]
+    return repeating.receipt(task, lines, saved, failed, new.extra)
+
+
+class _NewTask:
+    """One new task, resolved before its card: the POST body and its follow-ups.
+
+    ``create_task`` makes one and ``create_tasks`` (``forms.py``, WS-46 P13)
+    makes one per row, so both send the same body for the same words.
+    ``status_label`` is what the card says the status will be. ``who`` is
+    the resolved assignees, which the assign PUT sends after the create.
+    """
+
+    def __init__(
+        self,
+        pid: str,
+        payload: dict[str, Any],
+        status_label: str,
+        who: list[str],
+        extra: _NewFields,
+    ) -> None:
+        self.pid = pid
+        self.payload = payload
+        self.status_label = status_label
+        self.who = who
+        self.extra = extra
+        #: The parent task's row, read before the card, for a subtask. The
+        #: batch card names it (WS-46 P13 review round 2).
+        self.parent: dict[str, Any] | None = None
+
+
+async def _prepare_new_task(
+    pid: str,
+    name: str,
+    *,
+    description: str = "",
+    status: str = "",
+    due_at: str = "",
+    flags: dict[str, Any] | None = None,
+    estimate_mins: Any = 0,
+    tags: list[str] | None = None,
+    start: str = "",
+    type_name: str = "",
+    fields: str = "",
+    parent_task_id: str = "",
+    assignees: list[str] | None = None,
+    statuses: list[dict[str, Any]] | None = None,
+) -> _NewTask:
+    """Every name of one new task resolved, before any card. Raises the refusal.
+
+    Only reads happen here. ``statuses`` is the project's lane list when the
+    caller read it already, so a batch reads it once and not once per row.
+    """
     payload: dict[str, Any] = {"project_id": pid, "title": name}
     if description.strip():
         payload["description"] = description.strip()
     if status.strip():
-        row = await _resolve_status(pid, status)
+        rows = statuses if statuses is not None else await _statuses_of(pid)
+        row = _one_named(rows, status, "status", "statuses")
         payload["status_id"] = str(row.get("id"))
         status_label = str(row.get("name"))
     else:
         status_label = "the default"
-    due_at = repeating.due_at(due)
     if due_at:
         payload["due_at"] = due_at
-    payload.update(flags)
+    payload.update(flags or {})
     est = _int_or_none(estimate_mins)
     if est is not None:
         payload["estimate_mins"] = est
-    if tags.strip():
-        payload["tags"] = _split(tags)
+    if tags:
+        payload["tags"] = list(tags)
     extra = await _new_task_fields(
-        pid, start=start, type_name=type, fields=fields, has_parent=bool(parent_task_id.strip())
+        pid, start=start, type_name=type_name, fields=fields, has_parent=bool(parent_task_id.strip())
     )
     payload.update(extra.payload)
+    parent: dict[str, Any] | None = None
     if parent_task_id.strip():
         parent_id, parent = await _task(parent_task_id)
         payload["parent_task_id"] = parent_id
@@ -804,37 +896,42 @@ async def create_task(
             # lane (`core.parent_lane_status`, §11.42), so "the default" on
             # the card would be false.
             status_label = await _parent_lane_label(pid, parent)
-    who = [await _resolve_assignee(a) for a in _split(assignees)]
+    who = [await _resolve_assignee(a) for a in assignees or []]
+    new = _NewTask(pid, payload, status_label, who, extra)
+    new.parent = parent
+    return new
 
-    card = _priority_card(payload)
-    # The card names the type and each field by NAME (`extra.card`).
-    card.pop("type_id", None)
-    card.pop("custom_fields", None)
-    card["status"] = status_label
-    card.update(extra.card)
-    card.update(await _assignee_card_lines(who))
-    card.update(repeating.card_lines())
-    if not await _confirm(
-        title=repeating.card_title,
-        detail=f"{data(name)} · status {status_label}"
-        + (f" · {', '.join(who)}" if who else "")
-        + repeating.detail(),
-        context=_fields_block(card),
-    ):
-        return CANCELLED
-    task = await post("/projects/tasks", payload)
+
+async def _create_new_task(
+    new: _NewTask, repeating: _Repeat | None = None
+) -> tuple[dict[str, Any], dict[str, Any], tuple[str, Exception] | None]:
+    """The one write path of a new task: the POST, then its follow-ups.
+
+    The POST may raise, because nothing exists before it. After it the task
+    exists. Each later write that fails comes back as ``failed`` and never as
+    a raise: a raise reads to the model as "Function failed", and a second
+    create makes a second task.
+    """
+    task = await _post_new_task(new)
+    saved, failed = await _follow_new_task(task, new, repeating)
+    return task, saved, failed
+
+
+async def _post_new_task(new: _NewTask) -> dict[str, Any]:
+    """The create itself. It may raise, because nothing exists before it."""
+    return await post("/projects/tasks", new.payload)
+
+
+async def _follow_new_task(
+    task: dict[str, Any], new: _NewTask, repeating: _Repeat | None = None
+) -> tuple[dict[str, Any], tuple[str, Exception] | None]:
+    """The writes after the create: the assignees, then the repeat rule.
+
+    ``create_tasks`` calls the two halves apart, so an error after the POST
+    is a follow-up that failed, never a task that may not exist.
+    """
     tid = uuid_of(str(task.get("id")), "task_id")
-    # The task exists from here on. Each later write that fails ends in a
-    # `stopped:` receipt and never in a raise: a raise reads to the model as
-    # "Function failed", and a second create_task makes a second task.
-    saved, failed = await _after_create(tid, task, who, extra, repeating)
-    if "status_id" not in payload:
-        # The receipt names the lane the row really landed in, read off the
-        # created row, as `add_subtasks` does. The card was a forecast. The
-        # read runs after every write, and `_lane_name` never raises.
-        status_label = await _lane_name(pid, task.get("status_id")) or status_label
-    lines = [*_task_line(task, status_label), *level_note(priority, task)]
-    return repeating.receipt(task, lines, saved, failed, extra)
+    return await _after_create(tid, task, new.who, new.extra, repeating or NO_REPEAT)
 
 
 #: A write whose connection broke may or may not have landed. Both kinds end

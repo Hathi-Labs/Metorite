@@ -378,6 +378,8 @@ FORM_ANSWERS: dict[str, str] = {
     '"estimate_mins": 30, "tags": ""}',
     "Edit Ops": 'Review changes — {"name": "Ops v2", "description": "", "status": "paused", "lead": ""}',
     "Plan": 'Review plan — {"project": {"name": "Q4 launch"}, "tasks": ' + PLAN_TASKS + "}",
+    # WS-46 P13: the selection card of create_tasks, every row kept ticked.
+    "Add ": 'Review tasks — {"row_1": true, "row_2": true, "row_3": true}',
 }
 
 #: One or more invocations per class B tool. Together they must reach every
@@ -501,6 +503,14 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         {"task_id": UUID, "action": "snooze", "until": "2026-10-06"},
     ],
     "mark_notifications_read": [{"ids": OTHER}, {"all_unread": True}],
+    # WS-46 P13 — several new tasks, one selection card, one confirmation card.
+    "create_tasks": [
+        {
+            "project_id": UUID,
+            "tasks": '[{"title": "Call the vendor", "status": "in progress", '
+            '"assignees": "Priya", "due": "2026-09-30"}, {"title": "Draft the brief"}]',
+        }
+    ],
     "propose_plan": [
         {
             "name": "Q4 launch",

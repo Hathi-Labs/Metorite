@@ -73,6 +73,8 @@ class Evidence:
     sessions: list[Session]
     requests: list[OpsRequest] = field(default_factory=list)
     cards: list[Card] = field(default_factory=list)
+    #: WS-46 P13: each selection card the member saw, with what they submitted.
+    forms: list[dict[str, Any]] = field(default_factory=list)
     #: The cover the sweep asked for (``--covered``).
     covered: bool = False
     #: The ``no_egress`` flag each session's run bound (H-236), as the executor recorded it.
@@ -443,6 +445,53 @@ def check_po9(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-10: three new tasks in one call (WS-46 P13) ───────────────────────────
+
+
+def check_po10(ev: Evidence) -> list[Rule]:
+    launch = ev.dataset.project("Launch").id
+    priya = ds_mod.PRIYA.email
+    batch = [c for c in ev.calls if c.name == "create_tasks"]
+    single = [c for c in ev.calls if c.name == "create_task"]
+    boxes = [
+        [f for f in form.get("fields") or [] if f.get("type") == "checkbox"] for form in ev.forms
+    ]
+    posts = ev.writes_to("POST", "/projects/tasks")
+    made = {str((p.response or {}).get("id") or "") for p in posts if p.status < 400}
+    titles = {str((p.body or {}).get("title") or "").strip().lower() for p in posts}
+    in_launch = all((p.body or {}).get("project_id") == launch for p in posts)
+    assigns = [r for r in ev.writes() if r.method == "PUT" and r.path.endswith("/assignees")]
+    on_new = [r for r in assigns if r.path.split("/")[-2] in made]
+    others = [
+        (r.method, r.path) for r in ev.writes()
+        if not (r.method == "POST" and r.path == "/projects/tasks")
+        and not (r.method == "PUT" and r.path.endswith("/assignees"))
+    ]
+    return [
+        _rule("one_batch_call", len(batch) == 1 and not single,
+              "one create_tasks call, and no create_task call",
+              f"{len(batch)} create_tasks and {len(single)} create_task calls"),
+        _rule("one_selection_card", len(boxes) == 1 and len(boxes[0]) == 3,
+              "one selection card with a checkbox for each of the 3 tasks",
+              f"{len(boxes)} selection cards, with {[len(b) for b in boxes]} checkboxes"),
+        _one_approved_card(ev),
+        _rule("three_tasks_in_launch",
+              len(posts) == 3 and len(made) == 3 and len(titles) == 3 and in_launch,
+              "three POST /projects/tasks in Launch, each with its own title",
+              f"{len(posts)} creates, {len(made)} made, titles {sorted(titles)}, "
+              f"all in Launch: {in_launch}"),
+        _rule("priya_holds_one", len(assigns) == 1 and len(on_new) == 1
+              and (on_new[0].body or {}).get("assignees") == [priya],
+              f"one assign PUT on a new task, to {priya}",
+              f"the assign writes were {[(r.path, r.body) for r in assigns]}"),
+        _rule("nothing_else_written", not others,
+              "the creates and the assign are the only writes",
+              f"other writes: {others}"),
+        _rule("answer_counts_three", bool(re.search(r"\b(3|three)\b", ev.answer, re.I)),
+              "the answer says 3 tasks", "the answer does not say how many tasks it made"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -455,6 +504,7 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-7": check_po7,
     "PO-8": check_po8,
     "PO-9": check_po9,
+    "PO-10": check_po10,
 }
 
 

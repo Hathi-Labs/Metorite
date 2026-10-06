@@ -103,6 +103,7 @@
     "edit_project",
     "edit_task",
     "propose_plan",
+    "create_tasks",
     "capture_intake",
     "mark_notifications_read",
     "save_view",
