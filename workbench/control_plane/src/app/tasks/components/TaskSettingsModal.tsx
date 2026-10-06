@@ -84,9 +84,14 @@ function SettingsPanel() {
   const backend = useTaskStore((s) => s.backend);
   const settings = useTaskStore((s) => s.settings);
   const updateSettings = useTaskStore((s) => s.updateSettings);
-  // WS-45 S4 (D90, §7.1): no chat reads the chat model of a covered
-  // task-manager, so its control leaves. The other rows stay (§1.2).
-  const tier = useTierRouted("task-manager");
+  // WS-45 S4 (D90, §7.1): the row `user_settings.chat_model` has TWO chat
+  // readers, the Tasks rail (task-manager) and the Projects rail
+  // (projects-assistant). Its control leaves only when the platform routes
+  // both, so a member never loses the control of a chat that still reads it
+  // (review P2 of S4b). The other rows stay (§1.2).
+  const tasksTier = useTierRouted("task-manager");
+  const projectsTier = useTierRouted("projects-assistant");
+  const chatRowLeaves = tasksTier.covered && projectsTier.covered;
 
   // Tier list + enabled models — the same sources the email settings use.
   const [tiers, setTiers] = useState<LLMTierInfo[]>([]);
@@ -135,7 +140,7 @@ function SettingsPanel() {
               <Icon name="Sparkles" className="h-3.5 w-3.5" /> AI models
             </h3>
             <div className="flex flex-col gap-2">
-              {visibleModelRows(MODEL_FIELDS, "chatModel", tier.covered).map((cfg) => (
+              {visibleModelRows(MODEL_FIELDS, "chatModel", chatRowLeaves).map((cfg) => (
                 <div
                   key={cfg.key}
                   className="rounded-lg border border-border px-3 py-2.5"

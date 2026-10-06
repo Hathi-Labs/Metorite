@@ -2724,6 +2724,10 @@ async def _run_agent_inner(
         )
     )
 
+    # WS-45 S4: the run's tier policy, for a covered native agent. Set in the
+    # load below. The self-anneal retry takes it too (review P3).
+    _batch_tier = None
+    _is_copilot_agent = False
     try:
         _effective_agent_dir: str | None = None
         # The dir the git helpers, the self-anneal and the self-mutation use.
@@ -2846,7 +2850,9 @@ async def _run_agent_inner(
 
             agents = loaded.build_agents()
             # Honour .github/agents/<name>.agent.md (instructions override).
-            _apply_agent_md_overrides(agents, loaded.agent_dir, agent_name)
+            _batch_md_spec = _apply_agent_md_overrides(
+                agents, loaded.agent_dir, agent_name,
+            )
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
@@ -2974,13 +2980,17 @@ async def _run_agent_inner(
             # its OWN policy here. It ignores *model*, the tier its caller
             # passed or its parent published, and logs ai_route.model_ignored.
             # None for every other agent, so the block below runs as before.
-            _batch_tier = None
             if agents and _batch_covered:
                 _batch_tier = await _tier_policy_for_run(
                     agent_name, agents[0],
                     run_id=run_id, thread_id=thread_id, model=model,
                     think_mode=_batch_effort, event_payload=event_payload,
-                    config=loaded.config, agent_md_model="",
+                    config=loaded.config,
+                    # The .agent.md model counts for a Copilot SDK default,
+                    # as on the stream and sub-agent paths (review P3).
+                    agent_md_model=(
+                        (getattr(_batch_md_spec, "model", "") or "").strip()
+                    ),
                     is_copilot=_is_copilot_agent, emit=False,
                 )
             if agents:
@@ -3144,6 +3154,8 @@ async def _run_agent_inner(
             error=exc,
             # H-236: every retry injects with THIS run's answer.
             no_egress=_no_egress,
+            # WS-45 S4: a retry of a covered native run keeps its policy.
+            tier_policy=None if _is_copilot_agent else _batch_tier,
         )
         if recovery is not None:
             return recovery
@@ -5614,11 +5626,15 @@ async def _self_anneal(
     agent_dir: str | None,
     error: Exception,
     no_egress: bool,
+    tier_policy: Any = None,
 ) -> dict[str, Any] | None:
     """Self-annealing loop.
 
     *no_egress* is the H-236 answer of the run that failed. Every retry
     injects with it, so a retry can never hold more tools than the run did.
+
+    *tier_policy* is the failed run's ``RunTierPolicy`` (WS-45 S4), or None.
+    Each retry runs with it, counted from its first request again.
 
     1. Classify the error.
     2. Apply an in-process fix if one exists for this error class.
@@ -5671,6 +5687,7 @@ async def _self_anneal(
                                 "integration_warnings": integration_warnings,
                             },
                             integrations=integrations,
+                            tier_policy=_retry_policy(tier_policy),
                         )
                     _log.info("self_anneal.retry_success",
                               agent=agent_name, attempt=attempt + 1)
@@ -5718,6 +5735,7 @@ async def _self_anneal(
                             "integration_warnings": integration_warnings,
                         },
                         integrations=integrations,
+                        tier_policy=_retry_policy(tier_policy),
                     )
                 _log.info("self_anneal.retry_success",
                           agent=agent_name, attempt=attempt + 1)
@@ -6302,6 +6320,13 @@ def _is_route_event(event: Any) -> bool:
         and event.get("type") == "CUSTOM"
         and event.get("name") == ROUTE_EVENT
     )
+
+
+def _retry_policy(policy: Any) -> Any:
+    """*policy*, counted from its first request again, for a retry. Or None."""
+    if policy is not None:
+        policy.restart()
+    return policy
 
 
 def _with_tier_policy(view: Any, policy: Any) -> Any:

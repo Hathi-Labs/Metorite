@@ -134,8 +134,12 @@ describe("each surface calls the rules", () => {
     expect(email).toContain('useTierRouted("email-assistant")');
     expect(email).toMatch(/\], "chat_model", tier\.covered\)\.map\(\(cfg\)/);
     const tasks = read("app/tasks/components/TaskSettingsModal.tsx");
+    // Review P2 of S4b: the Tasks row has two chat readers, so it leaves
+    // only when the platform routes both of them.
     expect(tasks).toContain('useTierRouted("task-manager")');
-    expect(tasks).toContain('visibleModelRows(MODEL_FIELDS, "chatModel", tier.covered)');
+    expect(tasks).toContain('useTierRouted("projects-assistant")');
+    expect(tasks).toContain("const chatRowLeaves = tasksTier.covered && projectsTier.covered;");
+    expect(tasks).toContain('visibleModelRows(MODEL_FIELDS, "chatModel", chatRowLeaves)');
   });
 });
 

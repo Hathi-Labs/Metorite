@@ -33,11 +33,15 @@ joins the flag on a box.
   Its effort is the payload's `think_mode`, else the parent run's. A covered
   batch run also binds `think_mode` in its artifact context, so the System-1
   threshold follows the effort.
+- **Review P3 of S4b, two fixes on the batch path.** A Copilot SDK agent
+  takes its `.agent.md` model as its default, as on the stream path. A
+  self-anneal retry of a covered native run keeps the run's policy, and
+  counts its requests from 1 again.
 - **A sub-agent runs its own policy (§4.5).** A MAF sub-agent runs through
   the batch path, so the line above covers it. A Copilot SDK sub-agent gets
   the policy's tier for the whole run. A sub-agent that the flag does not
-  cover still inherits
-  the parent's tier through `_active_run_model`, as before.
+  cover still inherits the parent's tier through `_active_run_model`, as
+  before.
 - ⚠️ **A sub-agent emits no `ai.route` event.** `resolve_run_queue` reads the
   PARENT's queue first, so the event would join the parent's answer label.
   `_tier_policy_for_run` takes `emit=False` for this. The
@@ -52,15 +56,19 @@ joins the flag on a box.
     follows the same rule.
   - A surface reads `chat_model` only once it knows that the agent is not
     covered, so a covered setting is never read, not even once.
-- **The two controls.** The chat row of the email assistant settings and of
-  the Tasks settings leaves for a covered agent. Every other model row
-  stays, because a background feature keeps its literal tier (§1.2). Both
-  columns stay (§8, R6).
+- **The two controls.** The chat row of the email assistant settings leaves
+  for a covered email-assistant. ⚠️ The chat row of the Tasks settings has
+  two chat readers, the Tasks rail and the Projects rail. So it leaves only
+  when the flag covers task-manager AND projects-assistant (review P2 of
+  S4b). Every other model row stays, because a background feature keeps its
+  literal tier (§1.2). Both columns stay (§8, R6).
 - **The backend.** `POST /email/automation/ai/chat` reads no `chat_model`
   and sends no model for a covered email-assistant. The Tasks chat sends
   its model from the client, so the backend held no Tasks read to remove.
   The day plan of the Calendar (`routes/tasks/calendar.py`) still reads the
-  chat row. It is a background feature, and H-44 owns it.
+  chat row. It is a background feature, and H-44 owns it. Once the Tasks
+  row leaves, the day plan keeps the saved value, and no control changes
+  it until H-44 gives it a tier of its own.
 - **Done-when 4.** S4b adds no router in front of the orchestrator. Its pick
   of a specialist uses the System-1 `decide` only when the model calls it.
 - **Not built in S4b:** the `/copilot/chat` AG-UI door of the orchestrator

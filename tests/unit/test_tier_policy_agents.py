@@ -400,6 +400,70 @@ class TestTheBatchPath:
         assert [b["model"] for b in json.loads(runs[0])] == ["tier-powerful", "tier-powerful"]
 
 
+    def test_a_self_anneal_retry_keeps_the_policy(self, monkeypatch) -> None:
+        """Review P3 of S4b. A covered batch run hits a rate limit, and the
+        self-anneal retries it. The retry keeps the run's policy, so a Max
+        run stays on tier-powerful. Max asks no turn kind, so no cold
+        System-1 timeout can make this test pass or fail by chance."""
+        import acb_skills.integrations as integrations_mod
+        import acb_skills.loader as loader_mod
+
+        executor = pytest.importorskip("orchestrator.executor")
+        _flags(monkeypatch, BATCH_AGENT)
+        wire = _wire(monkeypatch, _turn_reply("chat"))
+
+        class _LimitedOnce(JsonModel):
+            def __call__(self, request: httpx.Request) -> httpx.Response:
+                if not self.bodies:
+                    self.bodies.append(json.loads(request.content or b"{}"))
+                    # A 400, so the SDK does not retry it itself. Its text
+                    # reads as a rate limit to the self-anneal.
+                    return httpx.Response(400, json={"error": {"message": "rate limit"}})
+                return super().__call__(request)
+
+        model = _LimitedOnce([{"text": "done"}])
+        _patch_native_load(monkeypatch, BATCH_AGENT, NATIVE[BATCH_AGENT], model)
+        # The retry loads through the loader's own names, not the executor's.
+        monkeypatch.setattr(loader_mod, "load_agent", executor.load_agent)
+        monkeypatch.setattr(integrations_mod, "build_integrations", executor.build_integrations)
+
+        async def _no_wait(_s: float) -> None:
+            return None
+
+        monkeypatch.setattr(executor.asyncio, "sleep", _no_wait)
+        logs = _tap(monkeypatch)
+        result = _batch(BATCH_AGENT, message=SECRET, model="tier-fast",
+                        payload={"think_mode": "max"})
+        assert result["answer"] == "done"
+        assert any(r.get("event") == "self_anneal.retry_success" for r in logs)
+        assert [b["model"] for b in model.bodies] == ["tier-powerful", "tier-powerful"]
+        assert wire.requests == []
+        chosen = [r["request"] for r in logs if r.get("event") == "ai_route.chosen"]
+        assert chosen == [1, 1], "the retry counts its requests from 1 again"
+
+    def test_a_covered_copilot_batch_run_keeps_its_agent_md_default(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        """Review P3 of S4b. The batch path reads the ``.agent.md`` model as the
+        default of a Copilot SDK agent, as the stream path does."""
+        executor = pytest.importorskip("orchestrator.executor")
+        routes_agent = pytest.importorskip("gateway.routes.agent")
+        _flags(monkeypatch, "task-manager")
+        _wire(monkeypatch, _turn_reply("chat"))
+        agent = _CopilotShaped()
+        monkeypatch.setattr(executor, "load_agent",
+                            lambda *a, **k: _loaded(agent, "task-manager", tmp_path))
+        monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
+        monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
+
+        class _Spec:
+            model = "tier-fast"
+
+        monkeypatch.setattr(executor, "_apply_agent_md_overrides", lambda *a, **k: _Spec())
+        _batch("task-manager", message="hi", model="tier-powerful")
+        assert set(agent.models) == {"tier-fast"}
+
+
 # ── 4. Sub-agents (§4.5, the last bullet) ────────────────────────────────────
 
 
