@@ -21,11 +21,13 @@ Neither flag covers an agent on any box.
   `packages/`, and the root `agents.py`. A comment and a docstring do not
   trip it. `apps/services/customer_console/` is exempt, because it is the
   Router. A `tests` directory is exempt too.
-- It counts five kinds of finding: a `litellm` verb (an alias counts), an
+- It counts five kinds of finding: each use of a `litellm` verb, an
   `openai` or `anthropic` SDK client, an MAF chat client with no
   `async_client` and no `base_url`, a vendor AI SDK import, and a vendor AI
-  host in a string. A litellm helper that sends no request does not count.
-- **The baseline holds 13 files and 24 findings** on 2026-10-06. It keys each
+  host in a string. An alias counts as the name it stands for. A litellm
+  helper that sends no request does not count. Review P1 of PR #681 found
+  that the first version counted an import once, so a second call was free.
+- **The baseline holds 13 files and 26 findings** on 2026-10-06. It keys each
   file on the label of each finding and its count, with a reason. A count
   above the baseline fails, and a count below it fails too. So the PR that
   removes a call lowers the baseline in the same PR.

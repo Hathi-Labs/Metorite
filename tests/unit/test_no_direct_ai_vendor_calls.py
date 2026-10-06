@@ -17,10 +17,11 @@ A ``tests`` directory is exempt too, because a test calls no vendor.
 
 What counts as a direct vendor call
 -----------------------------------
-* a ``litellm`` verb, such as ``litellm.acompletion`` or
-  ``from litellm import aembedding``, also through an alias,
+* each use of a ``litellm`` verb, such as ``litellm.acompletion`` or a bare
+  ``aembedding`` that ``from litellm import`` binds, also through an alias.
+  The import alone does not count, so a second call raises the count,
 * the construction of an ``openai`` or ``anthropic`` SDK client, such as
-  ``OpenAI(...)`` or ``AsyncAnthropic(...)``,
+  ``OpenAI(...)`` or ``AsyncAnthropic(...)``, also through an alias,
 * an MAF chat client with no ``async_client`` and no ``base_url``, because
   its default address is the vendor,
 * an import of a vendor AI SDK, such as ``anthropic`` or ``deepgram``,
@@ -173,7 +174,8 @@ _BASELINE: dict[str, _Entry] = {
     "apps/services/gateway/gateway/routes/notes/live.py": _Entry(
         {"host api.deepgram.com": 1, "host assemblyai.com": 1},
         "Live notes mint Deepgram and AssemblyAI stream keys. S5 step 4 needs "
-        "its own design",
+        "its own design. §2.10 names Deepgram only. The AssemblyAI key was "
+        "found 2026-10-06",
     ),
     "apps/services/meeting_bot/app/live.py": _Entry(
         {"host assemblyai.com": 1},
@@ -188,17 +190,17 @@ _BASELINE: dict[str, _Entry] = {
     ),
     "packages/acb_llm/acb_llm/context.py": _Entry(
         {"litellm verb acompletion": 2},
-        "acompletion_with_fallback and acompletion_stream_text call litellm "
-        "when ROUTER_SERVING_ENABLED is off (H-171). The streamed helper has "
-        "no routed branch yet",
+        "acompletion_with_fallback calls litellm when ROUTER_SERVING_ENABLED "
+        "is off (H-171). acompletion_stream_text has no routed branch, so it "
+        "calls litellm whatever the flag says",
     ),
     "packages/acb_llm/acb_llm/client.py": _Entry(
-        {"litellm verb acompletion": 1},
+        {"litellm verb acompletion": 2},
         "complete and complete_with_tools call litellm when "
         "ROUTER_SERVING_ENABLED is off (H-171). Not in §2.10, found 2026-10-06",
     ),
     "apps/services/gateway/gateway/routes/v1_compat.py": _Entry(
-        {"litellm verb acompletion": 1},
+        {"litellm verb acompletion": 2},
         "The gateway /v1 door calls litellm when its Router hop is off "
         "(ROUTER_SERVING_ENABLED). Not in §2.10, found 2026-10-06",
     ),
@@ -258,18 +260,70 @@ def _docstring_ids(tree: ast.AST) -> set[int]:
     return out
 
 
+def _root_name(node: ast.expr) -> str | None:
+    """The name at the root of ``a.b.c``, or None."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+@dataclass
+class _Bindings:
+    """The names that one file binds to a vendor call, read before the visit.
+
+    ``litellm_modules`` holds each name bound to ``litellm`` or a module under
+    it. ``verbs`` maps a name to the litellm verb it is bound to. ``clients``
+    maps a name to the SDK or MAF client class it is bound to. So an alias
+    counts as the name it stands for.
+    """
+
+    litellm_modules: set[str] = field(default_factory=lambda: {"litellm"})
+    verbs: dict[str, str] = field(default_factory=dict)
+    clients: dict[str, str] = field(default_factory=dict)
+
+
+def _bindings(tree: ast.AST) -> _Bindings:
+    out = _Bindings()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if _is_module(alias.name, ("litellm",)):
+                    out.litellm_modules.add(alias.asname or "litellm")
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            from_litellm = _is_module(node.module, ("litellm",))
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if from_litellm and alias.name in _LITELLM_VERBS:
+                    out.verbs[bound] = alias.name
+                elif from_litellm and alias.name == "main":
+                    out.litellm_modules.add(bound)
+                if alias.name in _SDK_CLIENTS | _MAF_CLIENTS:
+                    out.clients[bound] = alias.name
+    return out
+
+
+def _names_an_address(kw: ast.keyword) -> bool:
+    """True when *kw* gives an MAF client an address that is not None."""
+    if kw.arg not in _MAF_ADDRESS_ARGS:
+        return False
+    return not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+
+
 @dataclass
 class _VendorFinder(ast.NodeVisitor):
-    """Collects each direct vendor call in one syntax tree, as a label."""
+    """Collects each direct vendor call in one syntax tree, as a label.
+
+    A litellm verb counts at each USE (``litellm.acompletion`` or a bare
+    ``acompletion`` bound by ``from litellm import``), never at the import.
+    So the two forms count in one unit, and a second call raises the count.
+    """
 
     docstrings: set[int]
-    litellm_names: set[str] = field(default_factory=lambda: {"litellm"})
+    bound: _Bindings
     hits: list[str] = field(default_factory=list)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            if alias.name == "litellm":
-                self.litellm_names.add(alias.asname or "litellm")
             sdk = _is_module(alias.name, _VENDOR_SDKS)
             if sdk:
                 self.hits.append(f"sdk {sdk}")
@@ -278,30 +332,32 @@ class _VendorFinder(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
         if node.level == 0 and module:
-            if _is_module(module, ("litellm",)):
-                for alias in node.names:
-                    if alias.name in _LITELLM_VERBS:
-                        self.hits.append(f"litellm verb {alias.name}")
             sdk = _is_module(module, _VENDOR_SDKS)
             if sdk:
                 self.hits.append(f"sdk {sdk}")
         self.generic_visit(node)
 
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load) and node.id in self.bound.verbs:
+            self.hits.append(f"litellm verb {self.bound.verbs[node.id]}")
+        self.generic_visit(node)
+
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if (
-            isinstance(node.value, ast.Name)
-            and node.value.id in self.litellm_names
-            and node.attr in _LITELLM_VERBS
+            node.attr in _LITELLM_VERBS
+            and _root_name(node.value) in self.bound.litellm_modules
         ):
             self.hits.append(f"litellm verb {node.attr}")
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         name = _call_name(node.func)
+        if isinstance(node.func, ast.Name):
+            name = self.bound.clients.get(node.func.id, name)
         if name in _SDK_CLIENTS:
             self.hits.append(f"client {name}")
         elif name in _MAF_CLIENTS and not any(
-            kw.arg in _MAF_ADDRESS_ARGS for kw in node.keywords
+            _names_an_address(kw) for kw in node.keywords
         ):
             self.hits.append(f"maf client {name} with no address")
         self.generic_visit(node)
@@ -316,16 +372,11 @@ class _VendorFinder(ast.NodeVisitor):
 def _vendor_calls(source: str, filename: str = "<source>") -> Counter[str]:
     """Each direct vendor call in *source*, counted by label.
 
-    A syntax error RAISES. It never skips. The aliases of ``litellm`` are
-    read first, so a later ``_litellm.acompletion`` counts.
+    A syntax error RAISES. It never skips. The bindings are read first, so a
+    later ``_litellm.acompletion`` or an aliased client counts.
     """
     tree = ast.parse(source, filename=filename)
-    finder = _VendorFinder(docstrings=_docstring_ids(tree))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "litellm":
-                    finder.litellm_names.add(alias.asname or "litellm")
+    finder = _VendorFinder(docstrings=_docstring_ids(tree), bound=_bindings(tree))
     finder.visit(tree)
     return Counter(finder.hits)
 
@@ -494,9 +545,17 @@ def test_the_seam_cannot_reach_a_vendor_by_default() -> None:
         ("import litellm\nlitellm.acompletion(model='x')\n", "litellm verb acompletion"),
         ("import litellm as _l\nawait _l.aembedding(model='x')\n", "litellm verb aembedding"),
         ("def f():\n    import litellm as ll\n    ll.atranscription()\n", "litellm verb atranscription"),
-        ("from litellm import acompletion\n", "litellm verb acompletion"),
-        ("from litellm import aspeech as s\n", "litellm verb aspeech"),
-        ("from litellm.main import completion\n", "litellm verb completion"),
+        ("from litellm import acompletion\nawait acompletion(m)\n", "litellm verb acompletion"),
+        ("from litellm import aspeech as s\nawait s(x)\n", "litellm verb aspeech"),
+        ("from litellm.main import completion\ncompletion(m)\n", "litellm verb completion"),
+        ("import litellm.main as m\nm.acompletion(x)\n", "litellm verb acompletion"),
+        ("import litellm\nlitellm.main.acompletion(x)\n", "litellm verb acompletion"),
+        ("from litellm import main as lm\nlm.aembedding(x)\n", "litellm verb aembedding"),
+        ("from openai import AsyncOpenAI as C\nc = C()\n", "client AsyncOpenAI"),
+        ("from agent_framework.openai import OpenAIChatCompletionClient as K\nK(model='m')\n",
+         "maf client OpenAIChatCompletionClient with no address"),
+        ("c = OpenAIChatCompletionClient(model='m', base_url=None)\n",
+         "maf client OpenAIChatCompletionClient with no address"),
         ("import litellm\nr = litellm.Router(model_list=[])\n", "litellm verb Router"),
         ("from openai import OpenAI\nc = OpenAI(api_key=k)\n", "client OpenAI"),
         ("import openai\nc = openai.AsyncOpenAI()\n", "client AsyncOpenAI"),
@@ -525,6 +584,7 @@ def test_the_finder_catches_a_direct_call(source: str, label: str) -> None:
         "def f():\n    'from litellm import acompletion, api.openai.com'\n",
         "import litellm\nlitellm.drop_params = True\ncost = litellm.model_cost\n",
         "from litellm import ModelResponse, token_counter, model_cost\n",
+        "from litellm import acompletion  # imported and never used\n",
         "import openai\nh = openai.DefaultAsyncHttpxClient()\n",
         "c = OpenAIChatCompletionClient(model='tier-fast', async_client=ac)\n",
         "c = OpenAIChatCompletionClient(model='m', base_url=gateway)\n",
@@ -536,6 +596,16 @@ def test_the_finder_catches_a_direct_call(source: str, label: str) -> None:
 )
 def test_the_finder_ignores_text_and_routed_calls(source: str) -> None:
     assert not _vendor_calls(source), f"the fence flagged a non-call: {source!r}"
+
+
+def test_each_use_of_an_imported_verb_counts() -> None:
+    """Review P1 of PR #681. The import counted once, so a second call was free."""
+    one = "from litellm import acompletion\nawait acompletion(a)\n"
+    two = one + "await acompletion(b)\n"
+    assert _vendor_calls(one)["litellm verb acompletion"] == 1
+    assert _vendor_calls(two)["litellm verb acompletion"] == 2
+    attr = "import litellm\nlitellm.acompletion(a)\nlitellm.acompletion(b)\n"
+    assert _vendor_calls(attr)["litellm verb acompletion"] == 2
 
 
 def test_a_file_that_does_not_parse_fails(tmp_path: Path) -> None:
