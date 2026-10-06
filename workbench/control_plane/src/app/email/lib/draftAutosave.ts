@@ -225,8 +225,12 @@ export interface Autosave {
    * Put `promise` at the head of the chain. Each save, and each drain, that
    * comes after waits until it settles (EM-G3c-3 item 6). A pop-out opens the
    * full composer at once and gives it the draft of the reply later.
+   *
+   * `apply` gets the value of `promise` in the order of the chain: after each
+   * save before it settled, and before each save after it starts (review
+   * round 1). A save of an older session cannot settle after it.
    */
-  after(promise: Promise<unknown>): void;
+  after<T>(promise: Promise<T>, apply?: (value: T) => void): void;
   /** True while a save waits for its timer or for a flush. */
   readonly pending: boolean;
 }
@@ -310,9 +314,9 @@ export function createAutosave(timers: AutosaveTimers = BROWSER_TIMERS): Autosav
       // of the chain settles when each save that still runs has settled.
       return (last ?? Promise.resolve()).then(() => dropped);
     },
-    after(promise) {
+    after(promise, apply) {
       // The hand-over can fail, and each save after it still runs.
-      chain((last ?? Promise.resolve()).then(() => promise).then(ignore, ignore));
+      chain((last ?? Promise.resolve()).then(() => promise).then(apply ?? ignore).then(ignore, ignore));
     },
     get pending() {
       return run !== null;
@@ -335,6 +339,19 @@ export interface SavedDraft {
   session: number;
   from: string;
   id: string;
+}
+
+/**
+ * The record of the last save, after a save that gave `next` (EM-G3c-3
+ * review round 1).
+ *
+ * Sessions only go up, so a record of an older session never replaces the
+ * record of a newer one. Else a slow save of an ended session wrote over the
+ * draft that a pop-out handed over, and the next save of the new session made
+ * a second draft. Each write of `lastSaveRef` goes through it.
+ */
+export function recordSave(prev: SavedDraft | null, next: SavedDraft): SavedDraft {
+  return prev && prev.session > next.session ? prev : next;
 }
 
 /**

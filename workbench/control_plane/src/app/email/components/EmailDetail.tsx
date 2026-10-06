@@ -33,7 +33,8 @@ import { MessageTimelineModal } from "./MessageTimelineModal";
 import { useViewMode } from "@/components/ViewModeProvider";
 import {
   FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
-  draftToUpdate, holdPick, pickProblem, saveFailureText, sendFailureText, supersededDraft,
+  draftToUpdate, holdPick, pickProblem, recordSave, saveFailureText, sendFailureText,
+  supersededDraft,
   type DraftHandOver, type DraftStatus, type SavedDraft,
 } from "../lib/draftAutosave";
 
@@ -399,7 +400,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
           // old mailbox, and no list holds it (EM-G3c-3 item 4).
           const superseded = supersededDraft({ session, from: savingFrom }, lastSaveRef.current, saved.id);
           if (superseded && !stale.includes(superseded)) void deleteEmail(superseded);
-          lastSaveRef.current = { session, from: savingFrom, id: saved.id };
+          lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
           if (!stale.includes(saved.id)) dropDrafts(stale);
           return;
         }
@@ -412,7 +413,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
         }
         draftIdRef.current = saved.id;
         replyHasFileRef.current = saved.hasAttachments;
-        lastSaveRef.current = { session, from: savingFrom, id: saved.id };
+        lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
         // A provider draft cannot move between mailboxes (§11.6 case 7).
         dropStaleDrafts();
         setDraftStatus("saved");

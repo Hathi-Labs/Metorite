@@ -67,6 +67,7 @@ import {
   failedSaveStatus,
   holdPick,
   pickProblem,
+  recordSave,
   saveFailureText,
   sendFailureText,
   supersededDraft,
@@ -145,6 +146,15 @@ const popOutDefaults = () => between(popOut(), "openCompose({", "});");
 const popOutHandOver = () => between(popOut(), "const handOver: Promise<DraftHandOver> = drained.then(() => {", "openCompose({");
 /** The open of ComposePanel: a new session each time the window opens. */
 const composeOpen = () => between(compose, "if (!open) return;", "}, [open]);");
+/** The apply of the hand-over in the open of ComposePanel. */
+const handOverApply = () =>
+  between(composeOpen(), "autosave.after(handOver, ({ draftId, draftHasFile }) => {", "staleDraftsRef.current = [];");
+/** The write of `lastSaveRef` in a scheduled save (EM-G3c-3 review round 1). */
+const RECORD_SAVE =
+  "lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });";
+/** The write of `lastSaveRef` in the apply of the hand-over. */
+const RECORD_HANDOVER =
+  "lastSaveRef.current = recordSave(lastSaveRef.current, { session: opened, from, id: draftId });";
 
 // ── email-pick-limit ─────────────────────────────────────────────────────
 
@@ -729,7 +739,7 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
       // The cleanup runs inside the guard, before its return.
       const ended = between(scheduledRun(src), guard, "return;");
       expect(ended, name).toContain("if (!stale.includes(saved.id)) dropDrafts(stale);");
-      expect(ended, name).toContain("lastSaveRef.current = { session, from: savingFrom, id: saved.id };");
+      expect(ended, name).toContain(RECORD_SAVE);
       // The list empties in place, so no draft is deleted twice.
       expect(src, name).toContain("for (const id of list.splice(0)) void deleteEmail(id);");
     }
@@ -746,7 +756,7 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
       expect(run, name).not.toContain("draftId: draftIdRef.current ?? undefined");
       // A live save keeps the record of the draft for a later save.
       expect(run, name).toMatch(
-        /draftIdRef\.current = saved\.id;\s*\w+HasFileRef\.current = saved\.hasAttachments;\s*lastSaveRef\.current = \{ session, from: savingFrom, id: saved\.id \};/,
+        /draftIdRef\.current = saved\.id;\s*\w+HasFileRef\.current = saved\.hasAttachments;\s*lastSaveRef\.current = recordSave\(lastSaveRef\.current, \{ session, from: savingFrom, id: saved\.id \}\);/,
       );
     }
   });
@@ -810,14 +820,14 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
 
   it("updates the draft that a pop-out hands over, in the full composer", () => {
     const open = composeOpen();
-    const apply = between(open, "autosave.after(handOver.then(({ draftId, draftHasFile }) => {", "}));");
+    const apply = handOverApply();
     comesBefore(apply, "if (!draftId) return;", "draftIdRef.current = draftId;");
     expect(apply).toContain("draftHasFileRef.current = Boolean(draftHasFile);");
     // The handed-over draft counts as the last save of the session that
     // opened, so a flushed save of that session updates it.
     comesBefore(open, "sessionRef.current += 1;", "const opened = sessionRef.current;");
     expect(open).toContain("const from = defaultFromId || accountId;");
-    comesBefore(apply, "lastSaveRef.current = { session: opened, from, id: draftId };", "draftIdRef.current = draftId;");
+    comesBefore(apply, RECORD_HANDOVER, "draftIdRef.current = draftId;");
     // The seed of the open names no draft until the hand-over settles.
     comesBefore(open, "draftIdRef.current = null;", "autosave.after(");
     expect(open).not.toContain("draftIdRef.current = draftId ?? null;");
@@ -1075,7 +1085,7 @@ describe("email-switch-old-mailbox: a late save deletes the draft of the old mai
       comesBefore(
         ended,
         "const superseded = supersededDraft({ session, from: savingFrom }, lastSaveRef.current, saved.id);",
-        "lastSaveRef.current = { session, from: savingFrom, id: saved.id };",
+        RECORD_SAVE,
       );
       // A draft on the stale list goes with the list, and never twice.
       expect(ended, name).toContain("if (superseded && !stale.includes(superseded)) void deleteEmail(superseded);");
@@ -1205,21 +1215,168 @@ describe("email-popout-handover: the pop-out opens the composer at once", () => 
     comesBefore(pop, "const drained = autosave.drain(session);", "openCompose({");
   });
 
+  it("calls openCompose as a statement of the pop-out itself, in no callback (review round 1)", () => {
+    // A `.then` of the drain that calls openCompose has no `await`, and it
+    // still opens the composer after the drain. So each brace and each
+    // parenthesis before openCompose must close again before it.
+    const pop = popOut();
+    const body = pop.indexOf("=> {") + "=> {".length;
+    const open = pop.indexOf("openCompose({");
+    let braces = 0;
+    let parens = 0;
+    for (const c of pop.slice(body, open)) {
+      if (c === "{") braces += 1;
+      if (c === "}") braces -= 1;
+      if (c === "(") parens += 1;
+      if (c === ")") parens -= 1;
+    }
+    expect({ braces, parens }, "openCompose({ must be a statement of the pop-out").toEqual({ braces: 0, parens: 0 });
+    expect(pop.match(/\bopenCompose\(/g)?.length).toBe(1);
+  });
+
   it("gives the composer the hand-over, which applies it only while its session lives", () => {
     expect(codeOnly(read("lib/emailStore.ts"))).toContain("handOver?: Promise<DraftHandOver>;");
     expect(codeOnly(read("page.tsx"))).toContain("handOver={composeDefaults?.handOver}");
     const open = composeOpen();
-    comesBefore(open, "const opened = sessionRef.current;", "autosave.after(handOver.then(");
-    const apply = between(open, "autosave.after(handOver.then(({ draftId, draftHasFile }) => {", "}));");
+    comesBefore(open, "const opened = sessionRef.current;", "autosave.after(handOver, (");
+    const apply = handOverApply();
     comesBefore(apply, "if (sessionRef.current !== opened) return;", "draftIdRef.current = draftId;");
     comesBefore(apply, "if (sessionRef.current !== opened) return;", "draftHasFileRef.current = Boolean(draftHasFile);");
     // A change of From in the gap leaves the draft in the old mailbox, so it
     // goes on the stale list and is never updated from the new mailbox.
-    comesBefore(open, "liveFromRef.current = from;", "autosave.after(handOver.then(");
+    comesBefore(open, "liveFromRef.current = from;", "autosave.after(handOver, (");
     comesBefore(apply, "if (liveFromRef.current !== from) {", "draftIdRef.current = draftId;");
     expect(between(apply, "if (liveFromRef.current !== from) {", "return;")).toContain(
       "staleDraftsRef.current.push(draftId);",
     );
+  });
+});
+
+describe("email-popout-handover: the record of the hand-over (review round 1)", () => {
+  const rec = (session: number, id: string) => ({ session, from: "acct-x", id });
+
+  it("never lets a record of an older session replace a newer one", () => {
+    expect(recordSave(rec(2, "d"), rec(1, "d1"))).toEqual(rec(2, "d"));
+    expect(recordSave(rec(1, "d1"), rec(2, "d"))).toEqual(rec(2, "d"));
+    expect(recordSave(rec(2, "d"), rec(2, "d2"))).toEqual(rec(2, "d2"));
+    expect(recordSave(null, rec(1, "d1"))).toEqual(rec(1, "d1"));
+  });
+
+  /**
+   * A model of ComposePanel: one chain, one record of the last save, and a
+   * gateway that makes a draft when a save names none. Each save reads its
+   * draft when it runs, as the composer does.
+   */
+  const composer = () => {
+    const a = createAutosave();
+    const state = {
+      live: { session: 0, draftId: null as string | null },
+      last: null as ReturnType<typeof rec> | null,
+    };
+    const created: string[] = [];
+    const save = (session: number, gate?: Promise<void>) => async () => {
+      const id = draftToUpdate({ session, from: "acct-x" }, state.live, state.last);
+      if (gate) await gate;
+      let saved = id;
+      if (!saved) {
+        saved = `new${created.length + 1}`;
+        created.push(saved);
+      }
+      if (state.live.session === session) state.live.draftId = saved;
+      state.last = recordSave(state.last, rec(session, saved));
+    };
+    const handOver = (session: number) => (h: { draftId?: string }) => {
+      if (!h.draftId) return;
+      state.last = recordSave(state.last, rec(session, h.draftId));
+      if (state.live.session === session) state.live.draftId = h.draftId;
+    };
+    return { a, state, created, save, handOver };
+  };
+
+  it("keeps the hand-over when a slow save of an older session settles after it (the order of the reviewer)", async () => {
+    // New mail, and X with a slow save. Then a pop-out with draft d, X, and
+    // New. The record of the hand-over lands first, and the slow save after.
+    const { a, state, created, save, handOver } = composer();
+    const slow = deferred();
+    state.live.session = 1;
+    a.schedule(save(1, slow.promise), 1200, 1);
+    a.flush();
+    state.live = { session: 2, draftId: null };
+    const reply = Promise.resolve({ draftId: "d" });
+    a.after(reply);
+    // The order of the reviewer: the record of the hand-over comes first.
+    await reply.then(handOver(2));
+    a.schedule(save(2), 1200, 2);
+    a.flush(); // the X of session 2
+    state.live = { session: 3, draftId: null }; // New
+    slow.resolve();
+    await settle();
+    expect(created).toEqual(["new1"]);
+    expect(state.last).toEqual(rec(2, "d"));
+  });
+
+  it("applies the hand-over in the order of the chain, so a flushed save of the older session keeps its draft", async () => {
+    // Session 1 makes its draft with a slow save, and the X flushes its last
+    // edit. A pop-out then opens session 2. The edit of session 1 must update
+    // the draft of session 1, not make a second one.
+    const { a, state, created, save, handOver } = composer();
+    const slow = deferred();
+    state.live.session = 1;
+    a.schedule(save(1, slow.promise), 1200, 1);
+    a.flush();
+    a.schedule(save(1), 1200, 1);
+    a.flush(); // the X of session 1
+    state.live = { session: 2, draftId: null };
+    a.after(Promise.resolve({ draftId: "d" }), handOver(2));
+    await settle();
+    slow.resolve();
+    await settle();
+    expect(created).toEqual(["new1"]);
+    expect(state.last).toEqual(rec(2, "d"));
+    expect(state.live.draftId).toBe("d");
+  });
+
+  it("runs the apply after the save before it, and before the save after it, and not on a failure", async () => {
+    const order: string[] = [];
+    const first = deferred();
+    const a = createAutosave();
+    a.schedule(() => first.promise.then(() => order.push("S1")), 1200, 1);
+    a.flush();
+    a.after(Promise.resolve("d"), (id) => order.push(`apply ${id}`));
+    a.schedule(() => order.push("S2"), 1200, 2);
+    a.flush();
+    await settle();
+    expect(order).toEqual([]);
+    first.resolve();
+    await settle();
+    expect(order).toEqual(["S1", "apply d", "S2"]);
+    const skipped = vi.fn();
+    a.after(Promise.reject(new Error("502")), skipped);
+    await settle();
+    expect(skipped).not.toHaveBeenCalled();
+  });
+
+  it("writes lastSaveRef only through recordSave, in each composer", () => {
+    for (const [name, src, writes] of [["compose", compose, 3], ["detail", detail, 2]] as const) {
+      expect(src.match(/lastSaveRef\.current = /g)?.length, name).toBe(writes);
+      expect(src.match(/lastSaveRef\.current = recordSave\(lastSaveRef\.current, /g)?.length, name).toBe(writes);
+    }
+    // The chain applies the hand-over. A `.then` of the promise would apply
+    // it outside the order of the chain.
+    expect(composeOpen()).toContain("autosave.after(handOver, ({ draftId, draftHasFile }) => {");
+    expect(composeOpen()).not.toContain("handOver.then(");
+  });
+
+  it("records the hand-over before the guard of the session (departure 1)", () => {
+    comesBefore(handOverApply(), RECORD_HANDOVER, "if (sessionRef.current !== opened) return;");
+  });
+
+  it("changes the From of now before the wait of changeFrom", () => {
+    const change = between(compose, "const changeFrom = async", "const closeComposer");
+    comesBefore(change, "if (!next || next === fromId) return;", "liveFromRef.current = next;");
+    comesBefore(change, "liveFromRef.current = next;", "await Promise.all(");
+    // A save that settled in the wait can have put the draft on the list.
+    expect(change).toContain("if (!staleDraftsRef.current.includes(draftIdRef.current)) staleDraftsRef.current.push(draftIdRef.current);");
   });
 });
 

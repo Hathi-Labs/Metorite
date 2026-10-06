@@ -20,7 +20,8 @@ import { RecipientInput } from "./RecipientInput";
 import { ComposerQuote, AiButton } from "./ComposerAI";
 import {
   FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
-  draftToUpdate, holdPick, pickProblem, saveFailureText, sendFailureText, supersededDraft,
+  draftToUpdate, holdPick, pickProblem, recordSave, saveFailureText, sendFailureText,
+  supersededDraft,
   type DraftHandOver, type DraftStatus, type SavedDraft,
 } from "../lib/draftAutosave";
 
@@ -196,12 +197,14 @@ export function ComposePanel({
       // The From of this open. The effect that follows `fromId` runs only
       // after the next render, and the hand-over can settle before it.
       liveFromRef.current = from;
-      autosave.after(handOver.then(({ draftId, draftHasFile }) => {
+      // The chain applies the hand-over in its order, so each save before it
+      // settled first, and no older save writes over the record of this one.
+      autosave.after(handOver, ({ draftId, draftHasFile }) => {
         if (!draftId) return;
         // It counts as the last save of the session that opened, so a save
         // or a discard after that session ended finds it too (EM-G3c-2
-        // review round 2).
-        lastSaveRef.current = { session: opened, from, id: draftId };
+        // review round 2). It comes before the guard on purpose.
+        lastSaveRef.current = recordSave(lastSaveRef.current, { session: opened, from, id: draftId });
         // A compose that opened since then keeps its own draft.
         if (sessionRef.current !== opened) return;
         if (liveFromRef.current !== from) {
@@ -212,7 +215,7 @@ export function ComposePanel({
         }
         draftIdRef.current = draftId;
         draftHasFileRef.current = Boolean(draftHasFile);
-      }));
+      });
     }
     staleDraftsRef.current = [];
     // A pop-out keeps the From that the inline reply chose (EM-T8c review).
@@ -330,7 +333,7 @@ export function ComposePanel({
           // the old mailbox, and no list holds it (EM-G3c-3 item 4).
           const superseded = supersededDraft({ session, from: savingFrom }, lastSaveRef.current, saved.id);
           if (superseded && !stale.includes(superseded)) void deleteEmail(superseded);
-          lastSaveRef.current = { session, from: savingFrom, id: saved.id };
+          lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
           if (!stale.includes(saved.id)) dropDrafts(stale);
           return;
         }
@@ -344,7 +347,7 @@ export function ComposePanel({
         }
         draftIdRef.current = saved.id;
         draftHasFileRef.current = saved.hasAttachments;
-        lastSaveRef.current = { session, from: savingFrom, id: saved.id };
+        lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
         // A provider draft cannot move between mailboxes: the new mailbox
         // saved its own, so the drafts of the old one go (§11.6 case 7).
         dropStaleDrafts();
@@ -399,11 +402,16 @@ export function ComposePanel({
    *  draft moves to the new mailbox on the next save. */
   const changeFrom = async (next: string) => {
     if (!next || next === fromId) return;
+    // The From of now changes at once, before the wait for the signatures. A
+    // save or a hand-over that settles in that wait then counts its draft as
+    // stale (EM-G3c-3 review round 1).
+    liveFromRef.current = next;
     const [oldSig, newSig] = await Promise.all([
       getSignatureText(fromId), getSignatureText(next),
     ]);
     if (draftIdRef.current) {
-      staleDraftsRef.current.push(draftIdRef.current);
+      // A save that settled in the wait can have put this draft on the list.
+      if (!staleDraftsRef.current.includes(draftIdRef.current)) staleDraftsRef.current.push(draftIdRef.current);
       draftIdRef.current = null;
     }
     // The next save makes a new draft in the new mailbox, with no file.
