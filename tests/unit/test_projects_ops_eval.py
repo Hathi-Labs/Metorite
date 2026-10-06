@@ -1,0 +1,450 @@
+"""WS-46 P3: the Projects operations eval, with no model and no Docker.
+
+Spec: ``project-docs/specs/projects_agent_parity.md`` §11 (the eval) and
+§12, slice P3. D91.
+
+What this file holds, and why each part matters:
+
+1. **The stub keeps the gateway's rules.** A stranger is refused, a route the
+   stub does not serve says so, and a repeat rule goes through the route's
+   own ``validate_rule``. A stub that accepts anything would agree with any
+   wrong call (R8's warning about fakes).
+2. **The scripted sweep passes every task, uncovered and covered,** through
+   the REAL executor and the real projects-assistant factory. Only the model
+   is ``ScriptedModel``. PO-3 is ``xfail`` until P8 and P9.
+3. **Each checker fails a wrong run (R7).** Every rule of every checker is
+   made to fail by one mutation: of the known-good sequence, of the card
+   answer, or of the tool itself (the P2 refusal wrapper and the strict
+   argument check). A rule that no mutation can turn red is a rule that
+   passes everything, and §11.4 forbids that.
+4. **The model sweep never reaches a Router that is not on this machine.**
+   A sweep on the production Router spends credits. It is an owner gate.
+
+No database: the stub serves the API, and P3 changes no SQL.
+"""
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import json
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+pytest.importorskip("agent_framework", reason="agent_framework not installed")
+pytest.importorskip("skill_projects", reason="skill-projects not installed")
+
+from evals.coding_engine.checkers import Session, ToolCall
+from evals.projects_ops import checkers as C
+from evals.projects_ops import dataset as D
+from evals.projects_ops import run as R
+from evals.projects_ops import scripted as S
+from evals.projects_ops import stub_api
+from evals.projects_ops import tasks as T
+from evals.projects_ops.scripted import tool
+
+DS = D.load()
+LAUNCH = DS.project("Launch")
+
+
+def _failed(record: dict[str, Any]) -> set[str]:
+    return {r["rule"] for r in record["rules"] if not r["pass"] and not r["advisory"]}
+
+
+# ── 1. the stub keeps the gateway's rules ───────────────────────────────────
+
+
+def test_a_stranger_is_refused_and_the_request_is_recorded() -> None:
+    stub = stub_api.OpsStub(DS)
+    status, body = stub.handle("GET", "/projects/tree", "stranger@elsewhere.example")
+    assert status == 403 and body["detail"]
+    assert stub.requests[-1].member == "stranger@elsewhere.example"
+    assert stub.requests[-1].status == 403
+
+
+def test_a_route_the_stub_does_not_serve_says_so() -> None:
+    stub = stub_api.OpsStub(DS)
+    status, body = stub.handle("POST", f"/projects/tasks/{DS.task(1).id}/complete", T.MEMBER)
+    assert status == 404 and body["detail"] == stub_api.NOT_SERVED
+
+
+def test_a_weekly_rule_with_no_day_is_refused_by_the_routes_own_check() -> None:
+    stub = stub_api.OpsStub(DS)
+    path = f"/projects/tasks/{DS.task(7).id}/recurrence"
+    status, body = stub.handle("PUT", path, T.MEMBER, {"freq": "weekly"})
+    assert status == 422 and "weekday" in json.dumps(body).lower()
+    status, body = stub.handle("PUT", path, T.MEMBER, {"freq": "weekly", "weekdays": [1]})
+    assert status == 200 and body["rule"]["weekdays"] == [1]
+
+
+def test_the_stub_lists_the_overdue_tasks_of_the_dataset() -> None:
+    stub = stub_api.OpsStub(DS)
+    _, body = stub.handle("GET", "/projects/tasks?overdue=true", T.MEMBER)
+    assert [r["task_number"] for r in body["rows"]] == [t.number for t in D.overdue(DS)]
+    assert [t.number for t in D.overdue(DS)] == [2, 3, 5, 8]
+
+
+def test_a_bulk_write_changes_each_task_and_records_the_body() -> None:
+    stub = stub_api.OpsStub(DS)
+    ids = [DS.task(2).id, DS.task(3).id]
+    status, body = stub.handle("POST", "/projects/tasks/bulk", T.MEMBER,
+                               {"task_ids": ids, "patch": {"due_at": "2026-10-12"}})
+    assert status == 200 and body["applied"] == 2
+    assert stub.tasks[ids[0]]["due_at"] == "2026-10-12"
+    assert stub.requests[-1].body == {"task_ids": ids, "patch": {"due_at": "2026-10-12"}}
+
+
+@pytest.mark.parametrize("today, monday", [
+    (date(2026, 10, 6), date(2026, 10, 12)),   # a Tuesday
+    (date(2026, 10, 12), date(2026, 10, 19)),  # a Monday: next week's Monday
+    (date(2026, 10, 11), date(2026, 10, 12)),  # a Sunday
+])
+def test_next_monday(today: date, monday: date) -> None:
+    assert D.next_monday(today) == monday
+
+
+# ── the task table ──────────────────────────────────────────────────────────
+
+
+def test_the_seven_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
+    assert tuple(f"PO-{n}" for n in range(1, 8)) == T.TASK_IDS
+    assert set(C.CHECKERS) == set(T.TASK_IDS)
+    for spec in T.TASKS:
+        assert (spec.id in S.SCRIPTED_IDS) is (spec.xfail is None), spec.id
+    po3 = T.by_id("PO-3")
+    assert po3.xfail and "P8" in po3.xfail and "P9" in po3.xfail
+
+
+def test_the_task_selector() -> None:
+    assert [t.id for t in T.select("all")] == list(T.TASK_IDS)
+    assert [t.id for t in T.select("PO-4, PO-1")] == ["PO-4", "PO-1"]
+    with pytest.raises(ValueError):
+        T.select("PO-8")
+
+
+# ── 2. the scripted sweep, through the REAL executor ────────────────────────
+
+
+@pytest.fixture
+def harness(tmp_path: Path):
+    from orchestrator import executor
+
+    with R.make_harness(D.load(), DS.organization_id, tmp_path / "state",
+                        tier="tier-balanced", scripted_mode=True, covered=False) as h:
+        yield h
+    executor._RUN_QUEUES.clear()
+    executor._pending_user_input.clear()
+
+
+@pytest.fixture
+def covered_harness(tmp_path: Path):
+    from orchestrator import executor
+
+    with R.make_harness(D.load(), DS.organization_id, tmp_path / "state",
+                        tier="tier-balanced", scripted_mode=True, covered=True) as h:
+        yield h
+    executor._RUN_QUEUES.clear()
+    executor._pending_user_input.clear()
+
+
+def _run(h: R.OpsHarness, task_id: str, steps: list[Any] | None = None,
+         spec: T.TaskSpec | None = None) -> dict[str, Any]:
+    return asyncio.run(R.run_task(h, spec or T.by_id(task_id), 1, steps=steps))
+
+
+def _sweep(h: R.OpsHarness, out: Path) -> list[dict[str, Any]]:
+    return asyncio.run(R.sweep(h, list(T.TASKS), 1, out))
+
+
+def test_the_scripted_sweep_passes_every_task_uncovered(
+    harness: R.OpsHarness, tmp_path: Path,
+) -> None:
+    records = _sweep(harness, tmp_path / "out")
+    by_task = {r["task"]: r for r in records}
+    for task_id, record in by_task.items():
+        want = "xfail" if task_id == "PO-3" else "pass"
+        assert record["status"] == want, (task_id, record["failure"])
+    assert all(r["no_egress"] == [False] for r in records if r["status"] == "pass")
+    assert R.coding.exit_code(records) == R.EXIT_PASS
+    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 7
+
+
+def test_the_scripted_sweep_passes_every_task_covered(
+    covered_harness: R.OpsHarness, tmp_path: Path,
+) -> None:
+    """H-236: a covered run binds no_egress, and the Projects tools still do the work."""
+    records = _sweep(covered_harness, tmp_path / "out")
+    for record in records:
+        want = "xfail" if record["task"] == "PO-3" else "pass"
+        assert record["status"] == want, (record["task"], record["failure"])
+    assert all(r["no_egress"] == [True] for r in records if r["status"] == "pass")
+
+
+def test_a_record_holds_what_the_stub_saw(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-1")
+    writes = [(q["method"], q["path"]) for q in record["requests"] if q["method"] != "GET"]
+    assert writes[0] == ("POST", "/projects/tasks")
+    assert writes[1][0] == "PUT" and writes[1][1].endswith("/recurrence")
+    assert {q["member"] for q in record["requests"]} == {T.MEMBER}
+    assert record["cards"][0]["answer"] == T.APPROVE
+    assert "every week on Friday" in record["cards"][0]["context"]
+
+
+# ── 3. each rule fails a wrong run (R7) ─────────────────────────────────────
+
+
+def _po1(**create: Any) -> list[Any]:
+    args = {"project_id": LAUNCH.id, "title": "Send the timesheet", "repeat": "weekly",
+            "repeat_on": "5", **create}
+    return [tool("create_task", **{k: v for k, v in args.items() if v is not None}),
+            ("text", "Done. It repeats every week on Friday.")]
+
+
+def test_po1_a_rule_in_the_title_fails(harness: R.OpsHarness) -> None:
+    """The reported failure (§4): "every Friday" in the title, and no rule."""
+    record = _run(harness, "PO-1", _po1(title="Send the timesheet every Friday",
+                                        repeat=None, repeat_on=None))
+    assert record["status"] == "fail"
+    assert {"one_rule", "rule_is_weekly", "title_clean"} <= _failed(record)
+
+
+def test_po1_the_wrong_day_fails(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-1", _po1(repeat_on="4"))
+    assert _failed(record) == {"rule_is_weekly"}
+
+
+def test_po1_an_answer_that_hides_the_rule_fails(harness: R.OpsHarness) -> None:
+    steps = [*_po1()[:-1], ("text", "I made the task.")]
+    assert _failed(_run(harness, "PO-1", steps)) == {"answer_says_it_repeats"}
+
+
+def test_po1_a_declined_card_fails(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-1"), cards=(T.DECLINE,))
+    record = _run(harness, "PO-1", _po1(), spec=spec)
+    assert {"one_card", "one_create"} <= _failed(record)
+
+
+def test_po1_a_second_write_fails(harness: R.OpsHarness) -> None:
+    steps = [*_po1()[:-1], tool("create_task", project_id=LAUNCH.id, title="Another"),
+             ("text", "It repeats.")]
+    spec = dataclasses.replace(T.by_id("PO-1"), cards=(T.APPROVE, T.APPROVE))
+    assert {"one_card", "one_create"} <= _failed(_run(harness, "PO-1", steps, spec=spec))
+
+
+def test_po2_no_rule_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("create_task", project_id=LAUNCH.id, title="Review the backlog"),
+             ("text", f"It repeats every week on {D.weekday_name(DS.today)}.")]
+    record = _run(harness, "PO-2", steps)
+    assert {"one_rule", "rule_is_weekly"} <= _failed(record)
+
+
+def test_po2_an_answer_that_names_another_day_fails(harness: R.OpsHarness) -> None:
+    other = D.weekday_name(DS.today + timedelta(days=1))
+    steps = [*S.steps_for("PO-2", DS)[:-1], ("text", f"It repeats every week on {other}.")]
+    assert _failed(_run(harness, "PO-2", steps)) == {"answer_names_the_day"}
+
+
+def _po4(ids: list[str], due: str, answer: str = "Moved.") -> list[Any]:
+    return [tool("list_tasks", overdue=True),
+            tool("bulk_update", task_ids=",".join(ids), due=due), ("text", answer)]
+
+
+def test_po4_an_extra_task_fails(harness: R.OpsHarness) -> None:
+    ids = [t.id for t in D.overdue(DS)] + [DS.task(4).id]
+    record = _run(harness, "PO-4", _po4(ids, D.next_monday(DS.today).isoformat()))
+    assert _failed(record) == {"card_lists_the_overdue", "bulk_holds_the_overdue"}
+
+
+def test_po4_a_missing_task_fails(harness: R.OpsHarness) -> None:
+    ids = [t.id for t in D.overdue(DS)][:-1]
+    record = _run(harness, "PO-4", _po4(ids, D.next_monday(DS.today).isoformat()))
+    assert _failed(record) == {"card_lists_the_overdue", "bulk_holds_the_overdue"}
+
+
+def test_po4_the_wrong_day_fails(harness: R.OpsHarness) -> None:
+    ids = [t.id for t in D.overdue(DS)]
+    tuesday = (D.next_monday(DS.today) + timedelta(days=1)).isoformat()
+    assert _failed(_run(harness, "PO-4", _po4(ids, tuesday))) == {"due_is_next_monday"}
+
+
+def test_po4_a_write_one_by_one_fails(harness: R.OpsHarness) -> None:
+    """Four cards and four writes are not "one card for the selection"."""
+    monday = D.next_monday(DS.today).isoformat()
+    steps = [tool("list_tasks", overdue=True),
+             *[tool("update_task", task_id=t.id, due=monday) for t in D.overdue(DS)],
+             ("text", "Moved.")]
+    spec = dataclasses.replace(T.by_id("PO-4"), cards=(T.APPROVE,) * 4)
+    failed = _failed(_run(harness, "PO-4", steps, spec=spec))
+    assert {"one_card", "bulk_holds_the_overdue", "nothing_else_written"} <= failed
+
+
+def test_po5_an_approved_card_fails(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-5"), cards=(T.APPROVE,))
+    record = _run(harness, "PO-5", spec=spec, steps=S.steps_for("PO-5", DS))
+    assert _failed(record) == {"one_card", "zero_writes"}
+
+
+def test_po5_an_answer_that_claims_the_move_fails(harness: R.OpsHarness) -> None:
+    steps = [*S.steps_for("PO-5", DS)[:-1], ("text", "Done. I moved them to Monday.")]
+    assert _failed(_run(harness, "PO-5", steps)) == {"answer_says_nothing_changed"}
+
+
+def test_po6_a_real_lane_written_instead_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("update_task", task_id=DS.task(12).id, status="Done"),
+             ("text", "The lanes are To do, In progress, In review and Done.")]
+    assert _failed(_run(harness, "PO-6", steps)) == {"zero_writes", "refusal_names_the_lanes"}
+
+
+def test_po6_an_answer_without_the_lanes_fails(harness: R.OpsHarness) -> None:
+    steps = [*S.steps_for("PO-6", DS)[:-1], ("text", "There is no lane called Shipped.")]
+    assert _failed(_run(harness, "PO-6", steps)) == {"answer_names_the_lanes"}
+
+
+def test_po6_a_refusal_the_model_cannot_read_fails(
+    harness: R.OpsHarness, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tool mutation: without P2's wrapper, the model reads "Function failed"."""
+    import skill_projects.refusals as refusals
+
+    monkeypatch.setattr(refusals, "refusals_as_text", lambda fn: fn)
+    record = _run(harness, "PO-6")
+    assert _failed(record) == {"refusal_names_the_lanes"}
+    [call] = [c for c in record["sessions"][0]["tool_calls"] if c["name"] == "update_task"]
+    assert not call["result"].startswith(C.REFUSED)
+
+
+def test_po7_an_invented_argument_that_is_dropped_fails(
+    harness: R.OpsHarness, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tool mutation: the agent registers its tools as before P2, so MAF
+    drops ``rrule`` in silence. The checker must see the drop."""
+    from agent_framework import FunctionTool
+    from skill_projects.refusals import refusals_as_text
+
+    def lenient(fn: Any) -> Any:
+        return FunctionTool(name=fn.__name__, description=fn.__doc__ or "",
+                            func=refusals_as_text(fn))
+
+    monkeypatch.setattr(harness._module, "_agent_tool", lenient)
+    record = _run(harness, "PO-7")
+    assert "invented_argument_refused_by_name" in _failed(record)
+
+
+def test_po7_no_rule_after_the_refusal_fails(harness: R.OpsHarness) -> None:
+    steps = [*S.steps_for("PO-7", DS)[:2], ("text", "It repeats every Monday now.")]
+    assert {"set_recurrence_made_the_rule", "rule_on_the_task", "one_card",
+            "nothing_else_written"} <= _failed(_run(harness, "PO-7", steps))
+
+
+def test_po7_the_rule_on_another_task_fails(harness: R.OpsHarness) -> None:
+    steps = [tool("set_recurrence", task_id=DS.task(8).id, freq="weekly", weekdays="1"),
+             ("text", "It repeats.")]
+    assert {"rule_on_the_task"} <= _failed(_run(harness, "PO-7", steps))
+
+
+def test_a_covered_sweep_that_ran_uncovered_fails(
+    covered_harness: R.OpsHarness, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cover is read from the executor, not from the flag the sweep set."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "maf_coding_scope", "")
+    assert _failed(_run(covered_harness, "PO-1")) == {"cover_as_asked"}
+
+
+# ── 3b. the rules that no tool sequence can break, on a recorded run ────────
+
+
+def _evidence(task_id: str, **kw: Any) -> C.Evidence:
+    session = Session(member=T.MEMBER, thread_id="t", prompt="p",
+                      answer=kw.pop("answer", ""), tool_calls=kw.pop("calls", []))
+    return C.Evidence(task_id=task_id, dataset=DS, sessions=[session],
+                      no_egress=kw.pop("no_egress", [False]), **kw)
+
+
+def _req(method: str, path: str, body: Any = None, response: Any = None,
+         member: str = T.MEMBER) -> stub_api.OpsRequest:
+    return stub_api.OpsRequest(method, path, {}, member, 200, body, response)
+
+
+def test_a_request_as_another_member_fails() -> None:
+    ev = _evidence("PO-6", requests=[_req("GET", "/projects/tree", member="x@other.example")])
+    assert not next(r for r in C.common(ev) if r.rule == "acting_member").ok
+
+
+def test_a_write_before_the_card_fails() -> None:
+    """A tool cannot write before its card, so this run is recorded by hand."""
+    ids = [t.id for t in D.overdue(DS)]
+    monday = D.next_monday(DS.today).isoformat()
+    card = C.Card("Change 4 tasks at once?", "",
+                  "\n".join(f"task {i}: #{t.number}" for i, t in enumerate(D.overdue(DS))),
+                  T.APPROVE, at=1)
+    early = _req("PATCH", f"/projects/tasks/{ids[0]}", {"due_at": monday})
+    bulk = _req("POST", "/projects/tasks/bulk", {"task_ids": ids, "patch": {"due_at": monday}})
+    good = _evidence("PO-4", requests=[_req("GET", "/projects/tasks"), bulk], cards=[card])
+    bad = _evidence("PO-4", requests=[early, bulk], cards=[card])
+    assert C.passed(C.check(good)), C.first_failure(C.check(good))
+    failed = {r.rule for r in C.check(bad) if not r.ok}
+    assert failed == {"reads_before_the_card", "nothing_else_written"}
+
+
+def _po3(source: str = "email", parent: str = LAUNCH.id, delegations: int = 1,
+         description: str = "Pack 40 kits by Friday.") -> C.Evidence:
+    node = {"id": D.ident("node", "Kits"), "name": "Kits"}
+    calls = [ToolCall("call_agent", json.dumps({"agent_name": "email-assistant",
+                                                "message": "the requests"}), "…", True)
+             for _ in range(delegations)]
+    tasks = [_req("POST", "/projects/tasks",
+                  {"project_id": node["id"], "title": f"Task {n}", "description": description,
+                   "source": source}) for n in range(3)]
+    card = C.Card("Create this plan?", "", "This text leaves your mailbox.\n"
+                  "Pack 40 kits by Friday.", T.APPROVE, at=0)
+    return _evidence("PO-3", calls=calls, cards=[card], requests=[
+        _req("POST", "/projects/nodes", {"name": "Kits", "parent_id": parent}, node), *tasks,
+    ])
+
+
+def test_po3_its_checker_passes_a_right_run_and_fails_each_wrong_one() -> None:
+    """PO-3 is xfail until P8 and P9, so its checker is proven on recorded runs."""
+    assert C.passed(C.check_po3(_po3()))
+
+    def failed(ev: C.Evidence) -> set[str]:
+        return {r.rule for r in C.check_po3(ev) if not r.ok}
+
+    assert failed(_po3(source="manual")) == {"three_tasks_from_email"}
+    assert failed(_po3(parent=DS.project("Ops").id)) == {
+        "subproject_under_launch", "three_tasks_from_email"}
+    assert failed(_po3(delegations=0)) == {"one_delegation"}
+    assert failed(_po3(description="Text the card never showed.")) == {
+        "descriptions_from_the_card"}
+    outside = _po3()
+    outside.requests.append(_req("GET", "/email/messages/1"))
+    assert failed(outside) == {"no_email_route"}
+
+
+# ── 4. the CLI, and the gate on the model sweep ─────────────────────────────
+
+
+def test_main_scripted_passes_and_writes_a_summary(tmp_path: Path) -> None:
+    assert R.main(["--scripted", "--out", str(tmp_path)]) == R.EXIT_PASS
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["mode"] == "scripted" and summary["covered"] is False
+    assert any(line.startswith("PO-3") and "xfail" in line for line in summary["lines"])
+
+
+def test_main_scripted_covered_passes(tmp_path: Path) -> None:
+    assert R.main(["--scripted", "--covered", "--tasks", "PO-1,PO-7",
+                   "--out", str(tmp_path)]) == R.EXIT_PASS
+    record = json.loads((tmp_path / "PO-7-covered-run1.json").read_text(encoding="utf-8"))
+    assert record["covered"] is True and record["no_egress"] == [True]
+
+
+def test_the_model_sweep_is_no_go_without_a_local_router(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://router.example.com")
+    assert R.main(["--tasks", "PO-1", "--out", str(tmp_path)]) == R.EXIT_NO_GO
+    reason = json.loads((tmp_path / "NO-GO.json").read_text(encoding="utf-8"))["no_go"]
+    assert "WS43-G6" in reason and "not on this machine" in reason

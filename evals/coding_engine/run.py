@@ -186,6 +186,9 @@ class Harness:
     agent_dir: Path | None = None
     #: Set before each session: how the factory's client reaches a model.
     _wire: Any = None
+    #: Starts the stub of the Projects API over :attr:`dataset`. The operations
+    #: eval of WS-46 P3 (``evals/projects_ops``) passes its own stub here.
+    serve_stub: Any = stub_api.serve
 
     def __enter__(self) -> Harness:
         import gateway.routes.agent as routes_agent
@@ -196,7 +199,7 @@ class Harness:
 
         from tests.unit._native_maf_harness import load_agent_module
 
-        self.stub = stub_api.serve(self.dataset)
+        self.stub = self.serve_stub(self.dataset)
         settings = get_settings()
         self._patches.set(settings, "agents_clone_dir", str(self.state_root))
         if hasattr(settings, "maf_coding_scope"):

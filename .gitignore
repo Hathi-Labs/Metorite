@@ -153,3 +153,5 @@ dump.rdb
 
 # WS-43v: the results and the state dirs of the coding eval (evals/coding_engine/run.py)
 evals/coding_engine/results/
+# WS-46 P3: the results of the Projects operations eval (evals/projects_ops/run.py)
+evals/projects_ops/results/
