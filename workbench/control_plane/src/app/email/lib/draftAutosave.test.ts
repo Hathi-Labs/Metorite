@@ -786,6 +786,10 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
       "return { draftId: kept, draftHasFile: kept ? replyHasFileRef.current : undefined };",
     );
     expect(popOutDefaults()).toMatch(/^\s*handOver,$/m);
+    // The drafts of an old mailbox go only once the new mailbox holds the
+    // reply, so only after the drain, and only with a draft.
+    expect(handOver).toContain("if (draftId) dropDrafts(stale);");
+    expect(between(pop, "const popOutToComposer", "drained.then(() => {")).not.toContain("dropDrafts(");
     // The reply closes at once, before the wait.
     comesBefore(pop, "setReplyMode(null);", "drained.then(() => {");
     expect(codeOnly(read("page.tsx"))).toContain("handOver={composeDefaults?.handOver}");
