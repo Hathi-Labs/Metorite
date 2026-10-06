@@ -4,9 +4,57 @@
 written. Specified 2026-10-05. Board row **WS-45**, and decision **D90** is in
 `work_plan.md` §3.
 
-**S1 is built and dark** (2026-10-06, branch `ws45-s1-system-one`).
-`AI_TIER_ROUTING` ships empty, and the flag covers no agent on any box. S2 is
+**S1 is built and dark** (2026-10-06, PR #667).
+**S2 is built and dark** (2026-10-06, branch `ws45-s2-tier-policy`).
+`AI_TIER_ROUTING` ships empty, and the flag covers no agent on any box. S3 is
 next.
+
+**S2 build notes (2026-10-06).** Read these before S3 or S4.
+
+- `acb_skills/tier_policy.py` holds the table (`KIND_TIERS`), `TOOL_HINTS`,
+  the effort mapping (`choose`), the turn-kind question (`turn_kind`) and
+  `TierPolicyMiddleware`. The executor holds only the glue
+  (`_tier_policy_for_run`, `_with_tier_policy`).
+- `TOOL_HINTS` holds real names: `run_command`, `code_task` and `run_script`
+  (code), `propose_plan` and `rebalance` (plan), and `task_dataset`,
+  `analytics_outlook` and `find_conflicts` (analysis). The §4.4 names
+  `plan_with_capacity`, `analyse` and `forecast` are not tools.
+- A function middleware records each tool call. The chat middleware reads the
+  calls once, at the next request, so a hint raises that request only.
+- **Max sends no turn-kind question.** Max puts every main request on
+  `tier-powerful`, so the answer could change nothing.
+- **Thinking adds nothing to the tier today.** Every hint kind maps to
+  `tier-powerful`, so "one rung up" gives the same tier as the hint. The rule
+  is built and a test holds it. Thinking still sets `reasoning_effort` to
+  `medium` and the System-1 threshold to 0.80.
+- The turn-kind question imports its modules before its timer starts. The
+  client timeout is 1.5 seconds too. A cold import made the first question
+  time out.
+- A covered agent's default is its build-time client model, for example
+  `PROJECTS_AGENT_MODEL`. `copilot_chat_model` does not count (§8).
+- `ai_route.turn_kind` logs the kind, the source and `latency_ms`, so the
+  median that Q8 asks for can be read on a box. S2 did not measure it live.
+- With the flag unset, a dump of three projects-assistant runs (six requests
+  and every event) was byte-identical on main and on the branch.
+- **Not built in S2:** a sub-agent runs no policy of its own (§4.5, last
+  bullet). The batch path (`run_agent`) and the sub-agent path attach no
+  policy. S4 owns both.
+- **Until S4, a covered run publishes the agent's DEFAULT tier** through
+  `_active_run_model`, never the turn's tier. So a `call_agent` fan-out from a
+  code turn does not put every request of every sub-agent on
+  `tier-powerful`. Review P2 of PR #675 found this.
+- **An `ai.route` event is not output.** The Tier 1 path holds the event
+  until the step gives output. So a Tier 1 fault before any output still
+  falls back to Tier 2. On the fallback the held events go, and the policy
+  counts its requests from 1 again. Review P1 of PR #675 found this.
+- **An off-ladder default stays.** A `tier-code` or `provider/model` default
+  cannot be compared with a rung, so no kind, hint or effort moves it
+  (§4.2 rule 2).
+- **Q6 is not answered.** The box reads `ROUTER_SERVING_ENABLED=true` and
+  `DECIDE_ENABLED=true`, and `AI_TIER_ROUTING` is not set. The live
+  `tier_binding` rows were not read. `GET /catalog/models` needs an operator
+  credential. The only one on the box is the shared token, and every
+  break-glass use is an owner gate (WS-31 row).
 
 **S1 build notes (2026-10-06).** Read these before S2.
 

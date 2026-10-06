@@ -151,6 +151,7 @@ def drive_native(
     thread_id: str | None = None,
     history: list[dict[str, str]] | None = None,
     extra_payload: dict[str, Any] | None = None,
+    request_model: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[Any]]:
     """Run agent *name* (built from *rel_dir*) through ``run_agent_stream``.
 
@@ -159,6 +160,7 @@ def drive_native(
     *history* is the earlier turns, in the shape the browser sends them.
     *extra_payload* adds keys that the gateway route puts on the payload
     before the run, for example ``memory_context`` and ``system_context``.
+    *request_model* is the ``model`` of ``AgentRunRequest``, the chat's pick.
     """
     executor = pytest.importorskip(
         "orchestrator.executor", reason="orchestrator not installed",
@@ -216,6 +218,7 @@ def drive_native(
                 run_id=f"run-{name}-{think_mode or 'none'}",
                 thread_id=tid,
                 think_mode=think_mode or "auto",
+                model=request_model,
             )
         ]
 

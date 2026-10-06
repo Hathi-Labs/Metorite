@@ -77,11 +77,20 @@ clone cache.
    through `acb_llm.attribution.attributed_openai` to the gateway's `/v1`.
    It sends nothing when `acb_llm.routed.routing_is_on()` is false, so it
    never reaches a vendor directly. The 3 s limit is the client's request
-   timeout, with no retry. It logs no context, question or option.
-5b-2. tier_policy.py -- the ONE reader of `AI_TIER_ROUTING`
-   (`tier_routing_on`, fails closed) and the System-1 tier and thresholds
-   (0.70, 0.80, 0.90 by effort). S2 adds the table of §4.1 here, and nothing
-   else holds a second copy. Fence: tests/unit/test_tier_policy.py.
+   timeout, with no retry. It logs no context, question or option. A caller
+   with its own timer passes `timeout_s` and calls `warm()` first, so the
+   timer counts no import.
+5b-2. tier_policy.py -- the ONE home of the tier policy (WS-45, D90). It holds
+   the ONE reader of `AI_TIER_ROUTING` (`tier_routing_on`, fails closed), the
+   System-1 tier and thresholds (0.70, 0.80, 0.90 by effort), the table of
+   §4.1 (`KIND_TIERS`), `TOOL_HINTS` and the effort mapping (`choose`). No
+   other file holds a second copy. `turn_kind` asks System 1 the kind of a
+   turn, once, and waits at most 1.5 s. `TierPolicyProvider` adds
+   `TierPolicyMiddleware` to ONE run's view of an agent, and it sets only
+   `options["model"]` on each main request. It touches no tool, so no egress
+   class changes. `ai_route.chosen` and the `ai.route` event hold no tenant
+   text. Each `TOOL_HINTS` name must be a real tool.
+   Fence: tests/unit/test_tier_policy.py.
 5c. permission_policy.py -- the B6 risk-aware handler, plus the D85 guard
    `guard_shared_agent_shell`. The guard refuses a shell request when the
    run's artifact context does not say `host_shell_refused=False`, in every
