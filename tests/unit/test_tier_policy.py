@@ -50,7 +50,6 @@ from typing import Any, ClassVar
 import httpx
 import openai
 import pytest
-import structlog
 from acb_common import bind_run_context, clear_run_context
 from acb_common.settings import get_settings
 from acb_skills import tier_policy
@@ -414,6 +413,34 @@ class TestTurnKind:
 # ── 3. A real projects-assistant run, through the REAL executor ─────────────
 
 
+class _LogTap:
+    """Stands in for a module's structlog logger, and records each line.
+
+    The platform caches a logger on first use. When a later test calls
+    ``structlog.configure`` again, the cached logger keeps the old
+    processors, and ``structlog.testing.capture_logs`` sees nothing from it.
+    The full suite does exactly that (CI, PR #675). So this test swaps the
+    logger itself.
+    """
+
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    def __getattr__(self, level: str) -> Callable[..., None]:
+        def _log(event: str, *_a: Any, **kw: Any) -> None:
+            self.records.append({"event": event, "log_level": level, **kw})
+        return _log
+
+
+def _tap(monkeypatch) -> list[dict[str, Any]]:
+    """Record every line of the executor and of the tier policy."""
+    executor = pytest.importorskip("orchestrator.executor")
+    tap = _LogTap()
+    monkeypatch.setattr(executor, "_log", tap)
+    monkeypatch.setattr(tier_policy, "_log", tap)
+    return tap.records
+
+
 def _flags(monkeypatch, flag: str | None) -> None:
     if flag is None:
         monkeypatch.delenv("AI_TIER_ROUTING", raising=False)
@@ -446,9 +473,9 @@ class TestARealProjectsRun:
         _flags(monkeypatch, PA)
         _wire(monkeypatch, _turn_reply("chat"))
         model = ScriptedModel([text_turn("done")])
-        with structlog.testing.capture_logs() as logs:
-            events, _ = drive_native(PA, PA_DIR, monkeypatch, model,
-                                     request_model="tier-powerful")
+        logs = _tap(monkeypatch)
+        events, _ = drive_native(PA, PA_DIR, monkeypatch, model,
+                                 request_model="tier-powerful")
         _ok(events)
         assert [b["model"] for b in model.bodies] == ["tier-balanced"]
         ignored = [r for r in logs if r.get("event") == "ai_route.model_ignored"]
@@ -471,8 +498,8 @@ class TestARealProjectsRun:
         _flags(monkeypatch, PA)
         wire = _wire(monkeypatch, _turn_reply("code"))
         model = ScriptedModel([tool_turn("vocabulary", "{}"), text_turn("done")])
-        with structlog.testing.capture_logs() as logs:
-            events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message=SECRET)
+        logs = _tap(monkeypatch)
+        events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message=SECRET)
         _ok(events)
         assert len(wire.requests) == 1 and wire.bodies[0]["model"] == "tier-fast"
         assert [b["model"] for b in model.bodies] == ["tier-powerful", "tier-powerful"]
@@ -550,10 +577,10 @@ class TestARealProjectsRun:
                 tool_turn("vocabulary", "{}", call_id="call_b"),
                 text_turn("done"),
             ])
-            with structlog.testing.capture_logs() as logs:
-                events, _ = drive_native(PA, PA_DIR, monkeypatch, model,
-                                         message=SECRET, thread_id="thread-dark",
-                                         request_model="tier-powerful")
+            logs = _tap(monkeypatch)
+            events, _ = drive_native(PA, PA_DIR, monkeypatch, model,
+                                     message=SECRET, thread_id="thread-dark",
+                                     request_model="tier-powerful")
             _ok(events)
             assert not _routes(events)
             assert not [r for r in logs if str(r.get("event", "")).startswith("ai_route.")]
@@ -565,8 +592,8 @@ class TestARealProjectsRun:
         _flags(monkeypatch, PA)
         _wire(monkeypatch, _turn_reply("analysis"))
         model = ScriptedModel([text_turn("done")])
-        with structlog.testing.capture_logs() as logs:
-            events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message=SECRET)
+        logs = _tap(monkeypatch)
+        events, _ = drive_native(PA, PA_DIR, monkeypatch, model, message=SECRET)
         _ok(events)
         route_logs = [r for r in logs if str(r.get("event", "")).startswith("ai_route.")]
         assert {r["event"] for r in route_logs} == {"ai_route.turn_kind", "ai_route.chosen"}
