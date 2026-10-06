@@ -104,6 +104,17 @@ def _po7(ds: Dataset) -> list[Step]:
     ]
 
 
+def _po8(ds: Dataset) -> list[Step]:
+    monday = ds_mod.next_monday(ds.today).isoformat()
+    return [
+        tool("projects_tree"),
+        tool("create_task", project_id=ds.project("Launch").id, title="Fix the badge scanner",
+             type="Bug", start=monday, fields=json.dumps({"Customer": "Acme"})),
+        ("text", f"I made the bug «Fix the badge scanner» in Launch. It starts on Monday "
+                 f"{monday}, and its customer is Acme."),
+    ]
+
+
 _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-1": _po1,
     "PO-2": _po2,
@@ -111,6 +122,7 @@ _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-5": _po5,
     "PO-6": _po6,
     "PO-7": _po7,
+    "PO-8": _po8,
 }
 
 SCRIPTED_IDS: tuple[str, ...] = tuple(_SEQUENCES)

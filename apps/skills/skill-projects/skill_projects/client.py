@@ -320,13 +320,18 @@ async def get(path: str, params: dict[str, Any] | None = None) -> Any:
     return (await request("GET", path, params=params or {})).json()
 
 
-async def post(path: str, payload: dict[str, Any] | None = None) -> Any:
-    resp = await request("POST", path, json=payload or {})
+async def post(
+    path: str, payload: dict[str, Any] | None = None, params: dict[str, Any] | None = None
+) -> Any:
+    """A POST. ``params`` is the query string, for a route that reads a flag
+    there (``include_subtasks`` on archive and complete, WS-46 P6)."""
+    resp = await request("POST", path, json=payload or {}, params=params or {})
     return resp.json() if resp.content else {}
 
 
-async def patch(path: str, payload: dict[str, Any]) -> Any:
-    return (await request("PATCH", path, json=payload)).json()
+async def patch(path: str, payload: dict[str, Any], params: dict[str, Any] | None = None) -> Any:
+    """A PATCH. ``params`` is the query string (``include_subtasks``, WS-46 P6)."""
+    return (await request("PATCH", path, json=payload, params=params or {})).json()
 
 
 async def put(path: str, payload: dict[str, Any] | None = None) -> Any:

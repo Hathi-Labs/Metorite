@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import calendar
 import functools
+import json
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
@@ -346,6 +347,8 @@ _CLEAR_WORDS: dict[str, str] = {
     "start": "start_date",
     "description": "description",
     "estimate": "estimate_mins",
+    # WS-46 P6 (G6): the task's type.
+    "type": "type_id",
 }
 
 
@@ -405,6 +408,236 @@ def _priority_card(
     return card
 
 
+# ── WS-46 P6 — the task fields the screen sets (gaps G5 to G9) ───────────────
+#
+# Spec: ``project-docs/specs/projects_agent_parity.md`` §3.3 and slice P6.
+# The start date at the create (G5), the task type by name (G6), custom field
+# values by name (G7), the destination's required fields on a move (G8), and
+# the subtasks of a lifecycle act (G9, D-PM-38). Each one is resolved and
+# checked before the card, shown on the card, and sent on the wire. The route
+# still decides: the checks here only move a refusal in front of the card.
+
+#: D-PM-38 (``project_management_app.md`` §12.9): what each lifecycle door
+#: does with the subtasks when the member has not said. Decision 2: a
+#: complete takes this task only. Decision 4: a move and an archive take the
+#: subtree along. A mirror of ``CASCADE_DEFAULTS`` in
+#: ``workbench/control_plane/src/lib/subtaskCascade.ts``.
+#: ``tests/unit/test_projects_task_fields.py`` fails when the two drift.
+CASCADE_DEFAULTS: dict[str, bool] = {"complete": False, "move": True, "archive": True}
+
+#: The word for each door, in the question and on the card.
+_CASCADE_VERB = {"complete": "completed", "move": "moved", "archive": "archived"}
+
+#: The example the model reads when ``fields`` does not parse.
+FIELDS_FORMAT = (
+    'fields is a JSON object keyed by field NAME, for example {"Customer": "Acme", '
+    '"Cost centre": 4200}. A null value empties that field.'
+)
+
+
+def _subtasks_wanted(value: str) -> bool | None:
+    """``include_subtasks`` as the member said it: yes, no, or not said."""
+    return _yes_no(value, "include_subtasks")
+
+
+def ask_about_subtasks(task: dict[str, Any], count: int, door: str) -> str:
+    """The one question D-PM-38 asks, before any card and before any write.
+
+    The app asks it in a prompt (complete) or with a ticked box (move and
+    archive). A chat card has no box, so the tool asks first, once, and the
+    card then shows the answer. The app's own default is named, so the
+    member knows what the app would do.
+    """
+    noun = "open subtask" if door == "complete" else "subtask"
+    many = f"{count} {noun}{'' if count == 1 else 's'}"
+    them = "it" if count == 1 else "them"
+    default = "they go with it" if CASCADE_DEFAULTS[door] else "only this task"
+    return (
+        f"{_ref(task)} has {many}. Ask the member once: {door} {them} too, or only this "
+        f"task? In the app, the default is: {default}. Then call this tool again with "
+        "include_subtasks=yes or include_subtasks=no. Nothing was changed."
+    )
+
+
+async def _subtask_counts(task_id: str) -> tuple[int, int]:
+    """``(direct subtasks, the open ones)`` that the member can see."""
+    tid = uuid_of(task_id, "task_id")
+    relations = (await get(f"/projects/tasks/{tid}/relations")) or {}
+    subtasks = relations.get("subtasks") or []
+    done = int((relations.get("progress") or {}).get("done") or 0)
+    return len(subtasks), max(0, len(subtasks) - done)
+
+
+def _subtask_line(door: str, wanted: bool, count: int) -> dict[str, str]:
+    """The card's ``subtasks`` line: what the act does to them."""
+    if not wanted and not count:
+        return {}
+    noun = "open subtask" if door == "complete" else "subtask"
+    if wanted:
+        many = f"{count} {noun}{'' if count == 1 else 's'}" if count else f"every {noun}"
+        return {"subtasks": f"{many} {_CASCADE_VERB[door]} too"}
+    many = f"{count} {noun}{'' if count == 1 else 's'}"
+    return {"subtasks": f"{many} stay as they are (include_subtasks=no)"}
+
+
+def _subtask_receipt(reply: Any, key: str, door: str) -> list[str]:
+    """The receipt's line from the route's own count, when it sent one."""
+    count = reply.get(key) if isinstance(reply, dict) else None
+    if not isinstance(count, int):
+        return []
+    return [f"Subtasks {_CASCADE_VERB[door]} too: {count}."]
+
+
+async def _resolve_type(project_id: str, name: str) -> dict[str, Any]:
+    """The one task type a spoken name means, or a refusal that lists them."""
+    return _one_named(await _vocab(project_id, "types"), name, "task type")
+
+
+def _epic_refusal(row: dict[str, Any], has_parent: bool) -> str:
+    """The route's epic rule (``core.assert_epic_has_no_parent``), said first."""
+    if row.get("is_epic") and has_parent:
+        return (
+            f"{data(row.get('name'))} is an epic type, and an epic is a top-level task, "
+            "so it cannot be a subtask. Pick another type, or leave out the parent."
+        )
+    return ""
+
+
+def _date_arg(value: str, what: str) -> str:
+    """A ``YYYY-MM-DD`` argument, or ``""``. Raises the refusal for a bad one."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) != 10 or _date_of(raw) is None:
+        raise GatewayRefusal(f"{what} is a date, YYYY-MM-DD, not {data(raw)}.")
+    return raw
+
+
+def _parse_fields(raw: str) -> dict[str, Any]:
+    """``fields`` as the model sent it: a JSON object keyed by field name."""
+    try:
+        parsed = json.loads(str(raw or "").strip())
+    except ValueError:
+        raise GatewayRefusal(FIELDS_FORMAT) from None
+    if not isinstance(parsed, dict) or not parsed:
+        raise GatewayRefusal(FIELDS_FORMAT)
+    return parsed
+
+
+def _option(name: str, value: Any, options: list[str]) -> str:
+    """One choice, matched to an option without regard to case."""
+    wanted = str(value or "").strip().lower()
+    found = [o for o in options if o.strip().lower() == wanted]
+    if len(found) == 1:
+        return found[0]
+    listed = ", ".join(data(o) for o in options) or "(none)"
+    raise GatewayRefusal(f"{name} is one of {listed}, not {data(value)}.")
+
+
+def _number_value(name: str, value: Any, _options: list[str]) -> int | float:
+    if isinstance(value, bool):
+        raise GatewayRefusal(f"{name} takes a number, not {data(value)}.")
+    if isinstance(value, int | float):
+        return value
+    text = str(value or "").strip()
+    try:
+        return int(text) if re.fullmatch(r"-?\d+", text) else float(text)
+    except ValueError:
+        raise GatewayRefusal(f"{name} takes a number, not {data(value)}.") from None
+
+
+def _many_value(name: str, value: Any, options: list[str]) -> list[str]:
+    parts = value if isinstance(value, list) else _split(str(value))
+    return list(dict.fromkeys(_option(name, p, options) for p in parts))
+
+
+def _boolean_value(name: str, value: Any, _options: list[str]) -> bool:
+    answer = value if isinstance(value, bool) else _yes_no(str(value), name)
+    if answer is None:
+        raise GatewayRefusal(f"{name} is yes or no.")
+    return answer
+
+
+def _date_value(name: str, value: Any, _options: list[str]) -> str:
+    day = _date_arg(str(value), name)
+    if not day:
+        raise GatewayRefusal(f"{name} is a date, YYYY-MM-DD.")
+    return day
+
+
+def _text_value(name: str, value: Any, _options: list[str]) -> str:
+    return str(value).strip()
+
+
+def _url_value(name: str, value: Any, _options: list[str]) -> str:
+    text_value = str(value).strip()
+    if text_value and not re.match(r"^https?://\S+$", text_value):
+        raise GatewayRefusal(f"{name} takes a http(s) address, not {data(text_value)}.")
+    return text_value
+
+
+#: One shape per field type, as ``custom_fields._COERCERS`` holds one check
+#: per type. The tool turns the model's words into the wire shape (an option
+#: in its own case, ``yes`` into ``true``). The PATCH route still checks each
+#: value, so a drift here is a refusal after the card, never a bad value.
+_FIELD_SHAPES: dict[str, Callable[[str, Any, list[str]], Any]] = {
+    "select": _option,
+    "multi_select": _many_value,
+    "boolean": _boolean_value,
+    "number": _number_value,
+    "date": _date_value,
+    "text": _text_value,
+    "url": _url_value,
+}
+
+
+def _field_value(definition: dict[str, Any], value: Any) -> Any:
+    """One value in the shape the route stores, ``None`` to empty it, or the refusal."""
+    if value is None:
+        return None
+    shape = _FIELD_SHAPES.get(str(definition.get("field_type") or "text"), _text_value)
+    options = [str(o) for o in definition.get("options") or []]
+    return shape(data(definition.get("name")), value, options)
+
+
+def _shown(value: Any) -> str:
+    """A field value as the card prints it."""
+    if value is None:
+        return "(empty)"
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value) or "(empty)"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(value)
+
+
+async def field_values(
+    project_id: str, raw: str, *, current: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """``fields`` resolved against the project's own fields.
+
+    Returns ``(wire, card, before)``. ``wire`` is keyed by ``field_key``,
+    as the route takes it. ``card`` and ``before`` are keyed ``field <Name>``,
+    as the member reads them. A name the project does not define is refused
+    with the real names (``_field_of``). ``current`` is the task's stored
+    values, for an edit, so the card shows before → after.
+    """
+    given = _parse_fields(raw)
+    rows = await _vocab(project_id, "fields")
+    wire: dict[str, Any] = {}
+    card: dict[str, Any] = {}
+    before: dict[str, Any] = {}
+    for name, value in given.items():
+        definition = _field_of(rows, str(name))
+        key = str(definition.get("field_key"))
+        label = f"field {definition.get('name')}"
+        wire[key] = _field_value(definition, value)
+        card[label] = _shown(wire[key])
+        if current is not None:
+            before[label] = _shown(current.get(key))
+    return wire, card, before
+
+
 # ── Tasks ────────────────────────────────────────────────────────────────────
 
 
@@ -433,6 +666,9 @@ async def create_task(
     repeat_from: str = "",
     repeat_until: str = "",
     repeat_times: int = 0,
+    start: str = "",
+    type: str = "",
+    fields: str = "",
 ) -> str:
     """Create one task in a project. project_id is a `full_id` from
     projects_tree (a project or subproject, never a folder). status is by
@@ -452,7 +688,11 @@ async def create_task(
     for yearly. repeat_from is due (keep the schedule, the default) or
     completed. repeat_until is YYYY-MM-DD. repeat_times is the most copies.
     With no due, due becomes the first day the rule lands on. The next copy
-    appears when this one is done. set_recurrence changes or stops it."""
+    appears when this one is done. set_recurrence changes or stops it.
+    start is YYYY-MM-DD, the day the work begins. type is a task type by
+    NAME (vocabulary lists them). fields sets custom field values: a JSON
+    object keyed by field NAME, for example {"Customer": "Acme"}. A choice
+    field takes one of its options, and the card shows every value."""
     pid = uuid_of(project_id, "project_id")
     name = str(title or "").strip()
     if not name:
@@ -493,6 +733,10 @@ async def create_task(
         payload["estimate_mins"] = est
     if tags.strip():
         payload["tags"] = _split(tags)
+    extra = await _new_task_fields(
+        pid, start=start, type_name=type, fields=fields, has_parent=bool(parent_task_id.strip())
+    )
+    payload.update(extra.payload)
     if parent_task_id.strip():
         parent_id, parent = await _task(parent_task_id)
         payload["parent_task_id"] = parent_id
@@ -504,7 +748,9 @@ async def create_task(
     who = [await _resolve_assignee(a) for a in _split(assignees)]
 
     card = _priority_card(payload)
+    card.pop("type_id", None)
     card["status"] = status_label
+    card.update(extra.card)
     card.update(await _assignee_card_lines(who))
     card.update(repeating.card_lines())
     if not await _confirm(
@@ -520,17 +766,14 @@ async def create_task(
     # The task exists from here on. Each later write that fails ends in a
     # `stopped:` receipt and never in a raise: a raise reads to the model as
     # "Function failed", and a second create_task makes a second task.
-    failed = await _assign_after_create(tid, task, who)
-    saved: dict[str, Any] = {}
-    if failed is None:
-        saved, failed = await repeating.save(tid)
+    saved, failed = await _after_create(tid, task, who, extra, repeating)
     if "status_id" not in payload:
         # The receipt names the lane the row really landed in, read off the
         # created row, as `add_subtasks` does. The card was a forecast. The
         # read runs after every write, and `_lane_name` never raises.
         status_label = await _lane_name(pid, task.get("status_id")) or status_label
     lines = [*_task_line(task, status_label), *level_note(priority, task)]
-    return repeating.receipt(task, lines, saved, failed)
+    return repeating.receipt(task, lines, saved, failed, extra)
 
 
 #: A write whose connection broke may or may not have landed. Both kinds end
@@ -541,8 +784,93 @@ _WRITE_FAILED = (GatewayRefusal, httpx.TransportError)
 #: the subject, its verb, the read that checks it, and the tool that finishes it.
 _AFTER_CREATE: dict[str, tuple[str, str, str, str]] = {
     "assignees": ("assignees", "were", "task_detail", "assign"),
+    # WS-46 P6: the custom values go in a PATCH after the create.
+    "fields": ("custom field values", "were", "task_detail", "update_task with fields"),
     "rule": ("repeat rule", "was", "recurrence", "set_recurrence"),
 }
+
+
+class _NewFields:
+    """The P6 fields of a create (G5, G6, G7), resolved before the card.
+
+    ``payload`` goes in the POST: the start date and the type. ``values``
+    are the custom values, keyed by ``field_key``. They go in a PATCH after
+    the create, under the same card, because the PATCH route checks each
+    value (``custom_fields.apply_values``) and the create route stores what
+    it is given. ``card`` is what the member reads.
+    """
+
+    def __init__(self) -> None:
+        self.payload: dict[str, Any] = {}
+        self.card: dict[str, Any] = {}
+        self.values: dict[str, Any] = {}
+
+    def receipt_lines(self) -> list[str]:
+        return [f"  {k}: {v}" for k, v in self.card.items() if k.startswith("field ")]
+
+
+async def _new_task_fields(
+    project_id: str, *, start: str, type_name: str, fields: str, has_parent: bool
+) -> _NewFields:
+    """The start, the type and the custom values of a new task, or the refusal.
+
+    Every name resolves against the project's own words before the card. An
+    epic type under a parent is refused here, as the route would refuse it.
+    """
+    out = _NewFields()
+    day = _date_arg(start, "start")
+    if day:
+        out.payload["start_date"] = day
+        out.card["start"] = day
+    if str(type_name or "").strip():
+        row = await _resolve_type(project_id, type_name)
+        refused = _epic_refusal(row, has_parent)
+        if refused:
+            raise GatewayRefusal(refused)
+        out.payload["type_id"] = str(row.get("id"))
+        out.card["type"] = row.get("name")
+    if str(fields or "").strip():
+        out.values, lines, _before = await field_values(project_id, fields)
+        if any(v is None for v in out.values.values()):
+            raise GatewayRefusal(
+                "A new task has no value to empty. Leave that field out of fields."
+            )
+        out.card.update(lines)
+    return out
+
+
+async def _after_create(
+    task_id: str,
+    task: dict[str, Any],
+    who: list[str],
+    extra: _NewFields,
+    repeating: _Repeat,
+) -> tuple[dict[str, Any], tuple[str, Exception] | None]:
+    """The writes after the create, in order, under its one card.
+
+    The assignees, then the custom values (P6), then the repeat rule (P1).
+    The first one that fails stops the rest, and the receipt names it.
+    """
+    failed = await _assign_after_create(task_id, task, who)
+    if failed is None:
+        failed = await _fields_after_create(task_id, extra.values)
+    if failed is not None:
+        return {}, failed
+    return await repeating.save(task_id)
+
+
+async def _fields_after_create(
+    task_id: str, values: dict[str, Any]
+) -> tuple[str, Exception] | None:
+    """The custom values PATCH after a create, or the failure that stops the receipt."""
+    if not values:
+        return None
+    tid = uuid_of(task_id, "task_id")  # the writes fence: a canonical id
+    try:
+        await patch(f"/projects/tasks/{tid}", {"custom_fields": values})
+    except _WRITE_FAILED as exc:
+        return "fields", exc
+    return None
 
 
 async def _assign_after_create(
@@ -635,6 +963,96 @@ async def _parent_lane_label(project_id: str, parent: dict[str, Any]) -> str:
     return "the default (the parent's lane is closed or in another set)"
 
 
+class _EditFields:
+    """The P6 half of an edit (G6, G7, G9), resolved before the card.
+
+    ``payload`` joins the PATCH body. ``params`` is its query string
+    (``include_subtasks``). ``question`` is D-PM-38's question, when the
+    member has not said what the subtasks do.
+    """
+
+    def __init__(self) -> None:
+        self.payload: dict[str, Any] = {}
+        self.card: dict[str, Any] = {}
+        self.before: dict[str, Any] = {}
+        self.params: dict[str, Any] = {}
+        self.question = ""
+
+
+def _type_name(rows: list[dict[str, Any]], type_id: Any) -> str:
+    """The name of the task's current type, for the card's before value."""
+    if not type_id:
+        return "(none)"
+    found = next((r for r in rows if str(r.get("id")) == str(type_id)), None)
+    return str(found.get("name")) if found else "(a type of another project)"
+
+
+async def _edit_type(out: _EditFields, task: dict[str, Any], type_name: str, clear: bool) -> None:
+    """The type half of an edit: a type by name, or ``clear=type``."""
+    named = bool(str(type_name or "").strip())
+    if not named and not clear:
+        return
+    if named and clear:
+        raise GatewayRefusal("type is both set and cleared. Pass one or the other.")
+    rows = await _vocab(str(task.get("project_id")), "types")
+    out.before["type"] = _type_name(rows, task.get("type_id"))
+    if clear:
+        out.card["type"] = "(none)"
+        return
+    row = _one_named(rows, type_name, "task type")
+    refused = _epic_refusal(row, bool(task.get("parent_task_id")))
+    if refused:
+        raise GatewayRefusal(refused)
+    out.payload["type_id"] = str(row.get("id"))
+    out.card["type"] = row.get("name")
+
+
+async def _edit_subtasks(
+    out: _EditFields, task: dict[str, Any], lane: dict[str, Any] | None, include_subtasks: str
+) -> None:
+    """``include_subtasks`` on an edit: it means something only with a move
+    into a Done lane, where the route completes the open subtasks too."""
+    wanted = _subtasks_wanted(include_subtasks)
+    closing = lane is not None and lane.get("category") == "done"
+    if not closing:
+        if wanted is not None:
+            raise GatewayRefusal(
+                "include_subtasks goes with a status in a Done lane. Pass that status, "
+                "or use complete."
+            )
+        return
+    _total, open_count = await _subtask_counts(str(task.get("id")))
+    if wanted is None and open_count:
+        out.question = ask_about_subtasks(task, open_count, "complete")
+        return
+    if wanted:
+        out.params["include_subtasks"] = True
+    out.card.update(_subtask_line("complete", bool(wanted), open_count))
+
+
+async def _edit_task_fields(
+    task: dict[str, Any],
+    *,
+    type_name: str,
+    fields: str,
+    clear_type: bool,
+    lane: dict[str, Any] | None,
+    include_subtasks: str,
+) -> _EditFields:
+    """The type, the custom values and the subtasks of an edit, or the refusal."""
+    out = _EditFields()
+    await _edit_type(out, task, type_name, clear_type)
+    if str(fields or "").strip():
+        values, card, before = await field_values(
+            str(task.get("project_id")), fields, current=task.get("custom_fields") or {}
+        )
+        out.payload["custom_fields"] = values
+        out.card.update(card)
+        out.before.update(before)
+    await _edit_subtasks(out, task, lane, include_subtasks)
+    return out
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 @takes_priority
 async def update_task(
@@ -651,14 +1069,21 @@ async def update_task(
     important: str = "",
     leveraged: str = "",
     importance: Removed = None,
+    type: str = "",
+    fields: str = "",
+    include_subtasks: str = "",
 ) -> str:
     """Change a task's fields. Only the arguments you pass change. status is
     by NAME from the task's project. due and start are YYYY-MM-DD. tags
     REPLACES the tag list. clear is a comma-separated list of fields to
-    empty: due, start, description, estimate, important (the task is then
-    unjudged), leveraged, or priority (both flags). The card shows each
-    change as before → after, and the priority level before and after. The
-    timeline records every field change, and the app can revert one."""
+    empty: due, start, description, estimate, type, important (the task is
+    then unjudged), leveraged, or priority (both flags). type is a task type
+    by NAME (vocabulary lists them). fields sets custom field values: a JSON
+    object keyed by field NAME, for example {"Customer": "Acme"}, and a null
+    value empties one field. include_subtasks (yes or no) goes with a status
+    in a Done lane: yes completes the open subtasks too. With open subtasks
+    and no answer, the tool asks first. The card shows each change as before
+    → after, and the timeline records every change."""
     tid, task = await _task(task_id)
     flags = priority_fields(
         priority=priority,
@@ -680,16 +1105,15 @@ async def update_task(
     if description.strip():
         payload["description"] = description.strip()
         before["description"] = (task.get("description") or "")[:200]
-    status_label = ""
+    lane: dict[str, Any] | None = None
     if status.strip():
-        row = await _resolve_status(str(task.get("project_id")), status)
-        payload["status_id"] = str(row.get("id"))
-        status_label = str(row.get("name"))
+        lane = await _resolve_status(str(task.get("project_id")), status)
+        payload["status_id"] = str(lane.get("id"))
     if due.strip():
         payload["due_at"] = due.strip()
         before["due_at"] = (task.get("due_at") or "")[:10]
     if start.strip():
-        payload["start_date"] = start.strip()
+        payload["start_date"] = _date_arg(start, "start")
         before["start_date"] = (task.get("start_date") or "")[:10]
     payload.update(flags)
     est = _int_or_none(estimate_mins)
@@ -699,33 +1123,79 @@ async def update_task(
     if tags.strip():
         payload["tags"] = _split(tags)
         before["tags"] = task.get("tags")
-    cleared = _clears(clear, _CLEAR_WORDS, stated if isinstance(stated, dict) else flags)
+    extra = await _edit_task_fields(
+        task,
+        type_name=type,
+        fields=fields,
+        clear_type="type" in {w.lower() for w in _split(clear)},
+        lane=lane,
+        include_subtasks=include_subtasks,
+    )
+    if extra.question:
+        return extra.question
+    payload.update(extra.payload)
+    taken = {**(stated if isinstance(stated, dict) else flags), **extra.payload}
+    cleared = _edit_clears(clear, taken, task, before)
     if isinstance(cleared, str):
         return cleared
-    for key in cleared:
-        before[key] = task.get(key)
     # Cleared fields go FIRST in the card. The card clips its tail at 4000
     # characters, and a long description must never push "due → None" out of
     # sight: a clear is the change a member most needs to see.
     payload = {**cleared, **payload}
     if not payload:
         return "Nothing to change. Pass at least one field."
-
-    card = _priority_card(payload, before=before, task=task)
-    if status_label:
-        card["status"] = status_label
-        card.pop("status_id", None)
+    card, detail = _edit_card(payload, before, extra, lane, task)
     if not await _confirm(
-        title="Update this task?",
-        detail=_ref(task) + (f" · status → {status_label}" if status_label else ""),
-        context=_fields_block(card, before=before),
+        title="Update this task?", detail=detail, context=_fields_block(card, before=before)
     ):
         return CANCELLED
-    updated = await patch(f"/projects/tasks/{tid}", payload)
+    updated = await patch(f"/projects/tasks/{tid}", payload, params=extra.params)
     updated["assignees"] = task.get("assignees") or []
     return "\n".join(
-        ["Updated:", *_task_line(updated, status_label), *level_note(priority, updated)]
+        [
+            "Updated:",
+            *_task_line(updated, str(lane.get("name")) if lane else ""),
+            *level_note(priority, updated),
+            *_subtask_receipt(updated, "subtasks_completed", "complete"),
+        ]
     )
+
+
+def _edit_clears(
+    clear: str, taken: dict[str, Any], task: dict[str, Any], before: dict[str, Any]
+) -> dict[str, Any] | str:
+    """The fields ``clear`` empties, each with its value before, or the refusal."""
+    cleared = _clears(clear, _CLEAR_WORDS, taken)
+    if isinstance(cleared, str):
+        return cleared
+    for key in cleared:
+        before[key] = task.get(key)
+    return cleared
+
+
+def _edit_card(
+    payload: dict[str, Any],
+    before: dict[str, Any],
+    extra: _EditFields,
+    lane: dict[str, Any] | None,
+    task: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """``update_task``'s card and its detail line. *before* gains the P6 lines.
+
+    The card names a status, a type and a field by NAME, never by id, so the
+    id keys of the wire body are not shown.
+    """
+    status_label = str(lane.get("name")) if lane else ""
+    card = _priority_card(payload, before=before, task=task)
+    for key in ("status_id", "type_id", "custom_fields"):
+        card.pop(key, None)
+        before.pop(key, None)
+    if status_label:
+        card["status"] = status_label
+    card.update(extra.card)
+    before.update(extra.before)
+    detail = _ref(task) + (f" · status → {status_label}" if status_label else "")
+    return card, detail
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
@@ -898,88 +1368,263 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def move_task(
-    task_ids: str, destination_project_id: str = "", parent_task_id: str = ""
+    task_ids: str,
+    destination_project_id: str = "",
+    parent_task_id: str = "",
+    fields: str = "",
+    include_subtasks: str = "",
 ) -> str:
     """Move tasks. With destination_project_id, moves the listed tasks (all
     from ONE source project, comma-separated ids) into another project: the
     server previews what carries over and what drops, the card shows that,
     and the move applies only the drops the member saw. With
     parent_task_id alone, re-parents one task under another in the same
-    project. Moving back is the undo. The gateway also takes
-    include_subtasks, which moves the subtasks along. This tool does NOT send
-    it: subtasks stay in their own project."""
+    project. Moving back is the undo.
+    fields answers the destination's REQUIRED fields, for ONE task: a JSON
+    object keyed by field NAME, for example {"Cost centre": 4200}. When the
+    destination requires a field the task lacks, the tool names each one.
+    include_subtasks (yes or no) takes the subtasks along. When the tasks
+    have subtasks and no answer is given, the tool asks first."""
     ids = [uuid_of(t, "task_id") for t in _split(task_ids)]
     if not ids:
         return "Give at least one task id."
     if destination_project_id.strip():
-        if len(ids) > MAX_BATCH:
-            return f"That is {len(ids)} tasks. The limit for one card is {MAX_BATCH}."
-        dest = uuid_of(destination_project_id, "destination_project_id")
-        dest_node = await get(f"/projects/nodes/{dest}")
-        # The card NAMES every task it moves (class B may list many rows),
-        # so the member sees which three, not "3 tasks". Read before the
-        # card, like every other row a card names.
-        tasks = [(await _task(t))[1] for t in ids]
-        if all(str(t.get("project_id")) == dest for t in tasks):
-            return f"Those tasks are already in {data(dest_node.get('name'))}."
-        # The preview WRITES NOTHING (move.py `preview_move`). It computes
-        # the plan the apply will use, and it is the read that names what
-        # this costs. Two refusals live in the apply alone (same-project,
-        # and a status the destination lacks per task), so a 422 after the
-        # card is still possible and is relayed as the gateway's own words.
-        plan = await post(
-            "/projects/tasks/move/preview", {"task_ids": ids, "destination_project_id": dest}
+        move = await _plan_move(ids, destination_project_id, fields, include_subtasks)
+    elif fields.strip() or include_subtasks.strip():
+        return (
+            "fields and include_subtasks go with destination_project_id. They are about a "
+            "move into another project."
         )
-        drops = sorted(plan.get("drops") or [])
-        missing = plan.get("required_missing") or []
-        if missing:
+    elif parent_task_id.strip():
+        move = await _plan_reparent(ids, parent_task_id)
+    else:
+        return (
+            "Pass destination_project_id to move between projects, or parent_task_id to "
+            "re-parent."
+        )
+    if isinstance(move, str):
+        return move
+    if not await _confirm(title=move.title, detail=move.detail, context=move.context):
+        return CANCELLED
+    return await move.apply()
+
+
+class _Move:
+    """A move the member has not yet approved: its card, and the one write.
+
+    ``path`` is the route, ``body`` its JSON. ``receipt`` turns the route's
+    answer into what the member reads.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        detail: str,
+        context: str,
+        path: str,
+        body: dict[str, Any],
+        receipt: Callable[[Any], str],
+    ) -> None:
+        self.title = title
+        self.detail = detail
+        self.context = context
+        self.path = path
+        self.body = body
+        self.receipt = receipt
+
+    async def apply(self) -> str:
+        return self.receipt(await post(self.path, self.body))
+
+
+async def _plan_reparent(ids: list[str], parent_task_id: str) -> _Move | str:
+    """Make one task a subtask of another, in the same project."""
+    if len(ids) != 1:
+        return "Re-parenting takes exactly one task id."
+    tid, task = await _task(ids[0])
+    parent_id, parent = await _task(parent_task_id)
+    return _Move(
+        title="Make this a subtask?",
+        detail=f"{_ref(task)} under {_ref(parent)}",
+        context=_fields_block({"task": _ref(task), "parent": _ref(parent)}),
+        path=f"/projects/tasks/{tid}/move",
+        body={"parent_task_id": parent_id},
+        receipt=lambda row: "\n".join([f"Now a subtask of {_ref(parent)}:", *_task_line(row)]),
+    )
+
+
+def _move_subtask_refusal(plan: dict[str, Any], wanted: bool | None) -> str:
+    """Why a move that takes its subtasks cannot run, before the card.
+
+    The gateway refuses a move whose subtree holds a task hidden from the
+    member (409), and a subtask that D62 keeps out of the destination (422).
+    """
+    subtasks = plan.get("subtasks") or {}
+    if not wanted:
+        return ""
+    hidden = int(subtasks.get("hidden") or 0)
+    if hidden:
+        return (
+            f"{hidden} subtask{'' if hidden == 1 else 's'} of these tasks "
+            f"{'is' if hidden == 1 else 'are'} hidden from you, so the move cannot take "
+            "them along. Pass include_subtasks=no to move only the tasks."
+        )
+    refused = subtasks.get("refused") or []
+    if refused:
+        return f"{data(refused[0].get('reason'))} Pass include_subtasks=no to move only the tasks."
+    return ""
+
+
+async def _required_refusal(dest: str, missing: list[str], many: bool) -> str:
+    """The destination's required fields that the move does not answer.
+
+    Each one is named with its type and its options, so the member can give
+    a value in one answer, as the app's promote dialog asks for them.
+    """
+    rows = await _vocab(dest, "fields")
+    wanted = {m.strip().lower() for m in missing}
+    described = []
+    for row in rows:
+        if {str(row.get("name") or "").lower(), str(row.get("field_key") or "").lower()} & wanted:
+            kind = str(row.get("field_type") or "text")
+            options = row.get("options") or []
+            hint = f"one of {', '.join(data(o) for o in options)}" if options else kind
+            described.append(f"{data(row.get('name'))} ({hint})")
+    names = ", ".join(described) or ", ".join(data(m) for m in missing)
+    out = (
+        f"The destination requires {names}, which these tasks do not carry. Ask the member "
+        "for each value, then pass fields, for example "
+        '{"<field name>": "<value>"}. Nothing was changed.'
+    )
+    if many:
+        out += " fields takes one task, so move the tasks one at a time."
+    return out
+
+
+def _unanswered(missing: list[str], card: dict[str, Any], values: dict[str, Any]) -> list[str]:
+    """The required fields among *missing* that ``fields`` gives no value."""
+    given = {k.lower() for k, v in values.items() if v is not None}
+    given |= {
+        label.removeprefix("field ").lower()
+        for label, shown in card.items()
+        if shown != "(empty)"
+    }
+    return [m for m in missing if m.strip().lower() not in given]
+
+
+async def _plan_move(
+    ids: list[str], destination: str, fields: str, include_subtasks: str
+) -> _Move | str:
+    """The move into another project: the preview, then its card and its write."""
+    if len(ids) > MAX_BATCH:
+        return f"That is {len(ids)} tasks. The limit for one card is {MAX_BATCH}."
+    answers = bool(str(fields or "").strip())
+    if answers and len(ids) != 1:
+        return (
+            "fields takes one task, as the app asks for a destination's fields one task "
+            "at a time. Move the tasks one by one, each with its fields."
+        )
+    wanted = _subtasks_wanted(include_subtasks)
+    dest = uuid_of(destination, "destination_project_id")
+    dest_node = await get(f"/projects/nodes/{dest}")
+    # The card NAMES every task it moves (class B may list many rows),
+    # so the member sees which three, not "3 tasks". Read before the
+    # card, like every other row a card names.
+    tasks = [(await _task(t))[1] for t in ids]
+    if all(str(t.get("project_id")) == dest for t in tasks):
+        return f"Those tasks are already in {data(dest_node.get('name'))}."
+    # The preview WRITES NOTHING (move.py `preview_move`). It computes the
+    # plan the apply will use, and it is the read that names what this
+    # costs, the subtasks' cost too when they go along (D-PM-29). Two
+    # refusals live in the apply alone (same-project, and a status the
+    # destination lacks per task), so a 422 after the card is still possible.
+    ask: dict[str, Any] = {"task_ids": ids, "destination_project_id": dest}
+    if wanted:
+        ask["include_subtasks"] = True
+    plan = await post("/projects/tasks/move/preview", ask)
+    count = int((plan.get("subtasks") or {}).get("count") or 0)
+    if wanted is None and count:
+        head = tasks[0] if len(tasks) == 1 else {"title": f"This selection of {len(tasks)}"}
+        return ask_about_subtasks(head, count, "move")
+    refused = _move_subtask_refusal(plan, wanted)
+    if refused:
+        return refused
+    values: dict[str, Any] = {}
+    field_card: dict[str, Any] = {}
+    if answers:
+        if not plan.get("crosses_root"):
             return (
-                "The destination requires " + ", ".join(missing) + ", which these tasks do "
-                "not carry. Fill them in first, then move."
+                "This move stays inside one space, so the destination asks for no field. "
+                "Move without fields, then set values with update_task fields."
             )
-        card: dict[str, Any] = {
-            "tasks": plan.get("task_count", len(ids)),
-            "to": data(dest_node.get("name")),
-        }
-        for i, t in enumerate(tasks):
-            card[f"task {i + 1}"] = _ref(t)
-        if plan.get("crosses_status_set"):
-            card["statuses"] = "re-pointed to the destination's lanes by category"
-        if drops:
-            card["drops (values with no field in the destination)"] = ", ".join(drops)
-        if not await _confirm(
-            title=f"Move {card['tasks']} task{'s' if card['tasks'] != 1 else ''}?",
-            detail=f"to {card['to']}" + (f" · drops {', '.join(drops)}" if drops else ""),
-            context=_fields_block(card),
-        ):
-            return CANCELLED
-        body: dict[str, Any] = {"task_ids": ids, "destination_project_id": dest}
+        values, field_card, _before = await field_values(dest, fields)
+    missing = _unanswered(plan.get("required_missing") or [], field_card, values)
+    if missing:
+        return await _required_refusal(dest, missing, len(ids) > 1)
+    card = _move_card(plan, tasks, dest_node, field_card, bool(wanted), count)
+    drops = sorted(plan.get("drops") or [])
+    if answers:
+        # One task, with the answers: the promote door's route, which lands
+        # the values under the destination's keys and checks each required
+        # field as it lands (`tasks.move_task_in`).
+        tid = uuid_of(ids[0], "task_id")
+        path = f"/projects/tasks/{tid}/move"
+        body: dict[str, Any] = {"project_id": dest, "custom_fields": values}
+    else:
+        path = "/projects/tasks/move"
+        body = {"task_ids": ids, "destination_project_id": dest}
         if drops:
             # The member saw exactly these drops. The apply refuses with 409
             # if the destination changed and would now drop more (D-PM-29).
             body["accept_drops"] = True
             body["accepted_drops"] = drops
-        result = await post("/projects/tasks/move", body)
-        moved = result.get("moved") if isinstance(result, dict) else None
-        moved = moved if isinstance(moved, int) else len(ids)
-        out = [f"Moved {moved} task{'s' if moved != 1 else ''} to {card['to']}:"]
-        for t in tasks:
-            out.extend(_task_line({**t, "project_id": dest}))
-        return "\n".join(out)
-    if parent_task_id.strip():
-        if len(ids) != 1:
-            return "Re-parenting takes exactly one task id."
-        tid, task = await _task(ids[0])
-        parent_id, parent = await _task(parent_task_id)
-        if not await _confirm(
-            title="Make this a subtask?",
-            detail=f"{_ref(task)} under {_ref(parent)}",
-            context=_fields_block({"task": _ref(task), "parent": _ref(parent)}),
-        ):
-            return CANCELLED
-        row = await post(f"/projects/tasks/{tid}/move", {"parent_task_id": parent_id})
-        return "\n".join([f"Now a subtask of {_ref(parent)}:", *_task_line(row)])
-    return "Pass destination_project_id to move between projects, or parent_task_id to re-parent."
+    if wanted:
+        body["include_subtasks"] = True
+    return _Move(
+        title=f"Move {card['tasks']} task{'s' if card['tasks'] != 1 else ''}?",
+        detail=f"to {card['to']}" + (f" · drops {', '.join(drops)}" if drops else ""),
+        context=_fields_block(card),
+        path=path,
+        body=body,
+        receipt=lambda result: _move_receipt(result, tasks, dest, card["to"], answers),
+    )
+
+
+def _move_card(
+    plan: dict[str, Any],
+    tasks: list[dict[str, Any]],
+    dest_node: dict[str, Any],
+    field_card: dict[str, Any],
+    wanted: bool,
+    count: int,
+) -> dict[str, Any]:
+    """The move card: the tasks, what re-points, what drops, the answers given."""
+    card: dict[str, Any] = {
+        "tasks": plan.get("task_count", len(tasks)),
+        "to": data(dest_node.get("name")),
+    }
+    for i, t in enumerate(tasks):
+        card[f"task {i + 1}"] = _ref(t)
+    if plan.get("crosses_status_set"):
+        card["statuses"] = "re-pointed to the destination's lanes by category"
+    drops = sorted(plan.get("drops") or [])
+    if drops:
+        card["drops (values with no field in the destination)"] = ", ".join(drops)
+    card.update(field_card)
+    card.update(_subtask_line("move", wanted, count))
+    return card
+
+
+def _move_receipt(
+    result: Any, tasks: list[dict[str, Any]], dest: str, where: str, one: bool
+) -> str:
+    """What the member reads after the move."""
+    moved = 1 if one else (result.get("moved") if isinstance(result, dict) else None)
+    moved = moved if isinstance(moved, int) else len(tasks)
+    out = [f"Moved {moved} task{'s' if moved != 1 else ''} to {where}:"]
+    for t in tasks:
+        out.extend(_task_line({**t, "project_id": dest}))
+    out.extend(_subtask_receipt(result, "subtasks_moved", "move"))
+    return "\n".join(out)
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
@@ -1012,23 +1657,37 @@ async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
-async def complete(task_id: str) -> str:
+async def complete(task_id: str, include_subtasks: str = "") -> str:
     """Mark a task done. This moves the task's SHARED status to its
     project's done lane, for everyone. To reopen, set a status by name with
-    update_task. The gateway also takes include_subtasks, which completes the
-    open subtasks too. This tool does NOT send it: its subtasks stay open."""
+    update_task. include_subtasks (yes or no): yes completes the open
+    subtasks too, each in its own Done lane. When the task has open subtasks
+    and no answer is given, the tool asks first (D-PM-38)."""
+    wanted = _subtasks_wanted(include_subtasks)
     tid, task = await _task(task_id)
     if task.get("completed_at"):
         return f"{_ref(task)} is already done."
+    _total, open_count = await _subtask_counts(tid)
+    if wanted is None and open_count:
+        return ask_about_subtasks(task, open_count, "complete")
+    card = {"task": _ref(task), "status": "the project's done lane"}
+    card.update(_subtask_line("complete", bool(wanted), open_count))
     if not await _confirm(
         title="Mark this task done?",
         detail=_ref(task),
-        context=_fields_block({"task": _ref(task), "status": "the project's done lane"}),
+        context=_fields_block(card),
     ):
         return CANCELLED
-    row = await post(f"/projects/tasks/{tid}/complete")
+    params = {"include_subtasks": True} if wanted else None
+    row = await post(f"/projects/tasks/{tid}/complete", params=params)
     merged = {**task, **(row if isinstance(row, dict) else {})}
-    return "\n".join(["Done:", *_task_line(merged, "done")])
+    return "\n".join(
+        [
+            "Done:",
+            *_task_line(merged, "done"),
+            *_subtask_receipt(row, "subtasks_completed", "complete"),
+        ]
+    )
 
 
 #: What a defer writes on the gateway (`personal.defer_task`).
@@ -2064,16 +2723,20 @@ class _Repeat:
         lines: list[str],
         saved: dict[str, Any],
         failed: tuple[str, Exception] | None,
+        extra: _NewFields | None = None,
     ) -> str:
         """What the member reads. A failed write is named, the task stays
-        (item 6), and the rule it did not try is listed."""
+        (item 6), and each write it did not try is listed."""
+        values = bool(extra and extra.values)
         if failed is not None:
-            left = (
-                "the repeat rule. Use set_recurrence on this task to add it."
-                if self.rule and failed[0] != "rule"
-                else ""
-            )
-            return _create_stopped(task, lines, failed[0], failed[1], left)
+            left = []
+            if values and failed[0] == "assignees":
+                left.append("the custom field values. Use update_task with fields to set them.")
+            if self.rule and failed[0] != "rule":
+                left.append("the repeat rule. Use set_recurrence on this task to add it.")
+            return _create_stopped(task, lines, failed[0], failed[1], " Also ".join(left))
+        if values and extra is not None:
+            lines = [*lines, "Fields set:", *extra.receipt_lines()]
         if not self.rule:
             return "\n".join(["Created:", *lines])
         rule = saved.get("rule") or self.rule

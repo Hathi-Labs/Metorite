@@ -15,6 +15,8 @@ The facts that the tasks lean on:
   that is done is never overdue, and a task due today is not overdue
   (PO-4 and PO-5).
 * #7 in Ops has no repeat rule yet (PO-7). #12 is in Launch (PO-6).
+* Launch has the task types Bug and Chore, and one custom field, Customer,
+  a choice of Acme or Globex (PO-8, WS-46 P6).
 
 Today is the UTC date, because the tools take today as the UTC date
 (``skill_projects.writes._today`` and ``reads.legend``).
@@ -55,13 +57,41 @@ class Lane:
 
 
 @dataclass(frozen=True)
+class TaskType:
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
+class Field:
+    """A custom field, as ``GET /projects/nodes/{id}/fields`` lists it."""
+
+    id: str
+    key: str
+    name: str
+    field_type: str
+    options: tuple[str, ...] = ()
+
+    def definition(self, project_id: str) -> dict:
+        return {
+            "id": self.id, "project_id": project_id, "field_key": self.key, "name": self.name,
+            "field_type": self.field_type, "options": list(self.options), "required": False,
+        }
+
+
+@dataclass(frozen=True)
 class Project:
     id: str
     name: str
     lanes: tuple[Lane, ...]
+    types: tuple[TaskType, ...] = ()
+    fields: tuple[Field, ...] = ()
 
     def lane(self, name: str) -> Lane:
         return next(lane for lane in self.lanes if lane.name == name)
+
+    def task_type(self, name: str) -> TaskType:
+        return next(t for t in self.types if t.name == name)
 
 
 @dataclass(frozen=True)
@@ -126,6 +156,12 @@ def load(today: date | None = None) -> Dataset:
     launch = Project(ident("project", "Launch"), "Launch", _lanes(
         "Launch", ("To do", "todo"), ("In progress", "in_progress"),
         ("In review", "in_progress"), ("Done", "done"),
+    ), types=(
+        TaskType(ident("type", "Launch", "Bug"), "Bug"),
+        TaskType(ident("type", "Launch", "Chore"), "Chore"),
+    ), fields=(
+        Field(ident("field", "Launch", "customer"), "customer", "Customer", "select",
+              ("Acme", "Globex")),
     ))
     ops = Project(ident("project", "Ops"), "Ops", _lanes(
         "Ops", ("Backlog", "todo"), ("Doing", "in_progress"), ("Done", "done"),

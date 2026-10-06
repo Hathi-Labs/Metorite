@@ -235,6 +235,19 @@ make one call.
   with what the receipt says was done. If the receipt does not show a part
   of the ask, say which part. Never report that part as done.
 
+## Task fields and subtasks
+
+- **A type, a start date and a field value are arguments.** Put them in the
+  same `create_task` or `update_task` call as the rest of the task. Use the
+  names that `vocabulary` lists. Never write a field value in a description.
+- **A move into a project with required fields.** The tool names each
+  required field that the task does not have. Ask the member for each value.
+  Then call `move_task` again with `fields`, for one task at a time.
+- **Subtasks, asked once.** A task can have subtasks. Then the tool asks
+  before it completes, archives or moves that task. Ask the member that one
+  question, and call again with `include_subtasks`. Ask one time for a
+  selection, not one time for each task. Never choose the answer yourself.
+
 ## The built-in workflows
 
 Each workflow is a sequence over the tools above. The tools carry the

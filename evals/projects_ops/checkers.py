@@ -374,6 +374,46 @@ def check_po7(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-8: the type, the start date and a field, in one call (WS-46 P6) ─────
+
+
+def check_po8(ev: Evidence) -> list[Rule]:
+    launch = ev.dataset.project("Launch")
+    bug = launch.task_type("Bug").id
+    monday = ds_mod.next_monday(ev.dataset.today).isoformat()
+    posts = ev.writes_to("POST", "/projects/tasks")
+    body = posts[0].body if len(posts) == 1 and isinstance(posts[0].body, dict) else {}
+    created = str((posts[0].response or {}).get("id") or "") if len(posts) == 1 else ""
+    patches = [r for r in ev.writes() if r.method == "PATCH"]
+    on_task = [r for r in patches if r.path == f"/projects/tasks/{created}" and r.status < 400]
+    values = on_task[0].body if len(on_task) == 1 and isinstance(on_task[0].body, dict) else {}
+    words = f"{body.get('title') or ''} {body.get('description') or ''}"
+    leaked = [w for w in ("acme", "monday", monday) if w in words.lower()]
+    return [
+        _one_approved_card(ev),
+        _rule("one_create", len(posts) == 1 and posts[0].status < 400,
+              "one POST /projects/tasks", f"{len(posts)} POST /projects/tasks"),
+        _rule("type_is_bug", body.get("type_id") == bug,
+              "the create carries the type_id of Launch's Bug",
+              f"the create's type_id is {body.get('type_id')!r}, not {bug}"),
+        _rule("start_is_next_monday", body.get("start_date") == monday,
+              f"the create carries start_date {monday}",
+              f"the create's start_date is {body.get('start_date')!r}, not {monday}"),
+        _rule("values_on_the_task",
+              len(patches) == 1 and values == {"custom_fields": {"customer": "Acme"}},
+              "one PATCH on the created task sets customer to Acme",
+              f"the PATCH writes were {[(r.path, r.body, r.status) for r in patches]}"),
+        _rule("settings_not_in_text", not leaked,
+              "the title and the description hold no setting",
+              f"the title or the description carries {leaked}"),
+        _rule("nothing_else_written", len(ev.writes()) == 2,
+              "the create and the values are the only writes",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_the_customer", "acme" in ev.answer.lower(),
+              "the answer names the customer", "the answer does not name Acme"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -384,6 +424,7 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-5": check_po5,
     "PO-6": check_po6,
     "PO-7": check_po7,
+    "PO-8": check_po8,
 }
 
 

@@ -469,8 +469,10 @@ PLANNED: dict[str, str] = {
 #: issues to its own routes or to these.
 COMPOSITE: dict[str, frozenset[str]] = {
     # WS-46 P1 (D91): a repeating task is one act, so the rule is the second
-    # write under the create's one card (`PUT …/recurrence`).
-    "create_task": frozenset({"assign", "set_recurrence"}),
+    # write under the create's one card (`PUT …/recurrence`). WS-46 P6: the
+    # custom values are a PATCH after the create, under the same card,
+    # because the PATCH route checks each value and the create route does not.
+    "create_task": frozenset({"assign", "set_recurrence", "update_task"}),
     # WS-46 P1: the detail prints "Repeats:" from the `recurrence` read.
     "task_detail": frozenset({"recurrence"}),
     "add_subtasks": frozenset({"create_task"}),
@@ -568,6 +570,9 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "estimate_mins": "create_task.estimate_mins",
         "due_at": "create_task.due",
         "tags": "create_task.tags",
+        # WS-46 P6: G5 and G6.
+        "start_date": "create_task.start",
+        "type_id": "create_task.type",
     },
     ("PATCH", "/projects/tasks/{task_id}"): {
         "status_id": "update_task.status",
@@ -579,9 +584,18 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "start_date": "update_task.start",
         "due_at": "update_task.due",
         "tags": "update_task.tags",
+        # WS-46 P6: G6, G7 and G9.
+        "type_id": "update_task.type",
+        "custom_fields": "update_task.fields",
+        "include_subtasks": "update_task.include_subtasks",
     },
     ("POST", "/projects/tasks/{task_id}/move"): {
         "parent_task_id": "move_task.parent_task_id",
+        # WS-46 P6 (G8): a move WITH the destination's required fields is
+        # this route, one task at a time, as the app's promote door is.
+        "project_id": "move_task.destination_project_id",
+        "custom_fields": "move_task.fields",
+        "include_subtasks": "move_task.include_subtasks",
     },
     ("PUT", "/projects/tasks/{task_id}/assignees"): {"assignees": "assign.assignees"},
     ("POST", "/projects/tasks/{task_id}/links"): {
@@ -596,16 +610,26 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "tags_add": "bulk_update.tags_add",
         "tags_remove": "bulk_update.tags_remove",
         "action": "bulk_update.action",
+        "include_subtasks": "bulk_update.include_subtasks",
     },
     ("POST", "/projects/tasks/move/preview"): {
         "task_ids": "move_task.task_ids",
         "destination_project_id": "move_task.destination_project_id",
+        "include_subtasks": "move_task.include_subtasks",
     },
     ("POST", "/projects/tasks/move"): {
         "task_ids": "move_task.task_ids",
         "destination_project_id": "move_task.destination_project_id",
         "accept_drops": "move_task",
         "accepted_drops": "move_task",
+        "include_subtasks": "move_task.include_subtasks",
+    },
+    # WS-46 P6 (G9, D-PM-38): the two lifecycle doors read it as a query flag.
+    ("POST", "/projects/tasks/{task_id}/archive"): {
+        "include_subtasks": "archive_task.include_subtasks",
+    },
+    ("POST", "/projects/tasks/{task_id}/complete"): {
+        "include_subtasks": "complete.include_subtasks",
     },
     ("POST", "/projects/tasks/{task_id}/merge"): {"sources": "merge_tasks.source_task_ids"},
     ("GET", "/projects/search"): {"q": "find_tasks.query", "limit": "find_tasks.limit"},
@@ -864,6 +888,13 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "view_id": "The hand-arranged order of a saved view, which only the board reads.",
         "top_level": "The board's subtask toggle. Each row the chat reads names its parent.",
     },
+    ("POST", "/projects/tasks"): {
+        "custom_fields": (
+            "create_task sends the values in a PATCH after the create, under the same "
+            "card (update_task's route). The PATCH route checks each value "
+            "(custom_fields.apply_values), and the create route stores what it is given."
+        ),
+    },
     ("PATCH", "/projects/tasks/{task_id}"): {
         "If-Match": "The browser's edit guard (D-PM-20). A chat write reads the row first.",
         "project_id": "The route refuses it: a move goes through move_task.",
@@ -871,10 +902,6 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "source": "Where a task came from is a fact of its create. An edit keeps it.",
     },
     ("POST", "/projects/tasks/{task_id}/move"): {
-        "project_id": (
-            "move_task moves between projects through POST /projects/tasks/move, the "
-            "route with the preview and the drop check."
-        ),
         "assignees": (
             "Promote-and-assign is the Clarify card's one transaction. The chat "
             "assigns through assign."
@@ -979,11 +1006,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
 #: and the slice of §12 that closes each. The fence reads the spec: a gap id
 #: must be a row of the gap table, and its slice must not be marked built.
 FIELD_GAPS: dict[str, str] = {
-    "G5": "P6",
-    "G6": "P6",
-    "G7": "P6",
-    "G8": "P6",
-    "G9": "P6",
+    # G5 to G9 closed in WS-46 P6 (2026-10-06). Their rows are in SENDS.
     "G10": "P9",
     "G11": "P9",
     "G12": "P7",
@@ -998,26 +1021,8 @@ FIELD_GAPS: dict[str, str] = {
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
-    ("POST", "/projects/tasks"): {
-        "start_date": "G5",
-        "type_id": "G6",
-        "custom_fields": "G7",
-        "source": "G10",
-    },
-    ("PATCH", "/projects/tasks/{task_id}"): {
-        "type_id": "G6",
-        "custom_fields": "G7",
-        "include_subtasks": "G9",
-    },
-    ("POST", "/projects/tasks/{task_id}/move"): {
-        "custom_fields": "G8",
-        "include_subtasks": "G9",
-    },
-    ("POST", "/projects/tasks/move/preview"): {"include_subtasks": "G9"},
-    ("POST", "/projects/tasks/move"): {"include_subtasks": "G9"},
-    ("POST", "/projects/tasks/{task_id}/archive"): {"include_subtasks": "G9"},
-    ("POST", "/projects/tasks/{task_id}/complete"): {"include_subtasks": "G9"},
-    ("POST", "/projects/tasks/bulk"): {"personal": "G16", "include_subtasks": "G9"},
+    ("POST", "/projects/tasks"): {"source": "G10"},
+    ("POST", "/projects/tasks/bulk"): {"personal": "G16"},
     ("POST", "/projects/intake"): {"source": "G11", "source_ref": "G11"},
     # G12, the project settings. A create takes them as well as an edit.
     ("POST", "/projects/nodes"): {
