@@ -35,6 +35,7 @@
     "query_inbox",
     "get_important_emails",
     "read_email",
+    "read_email_attachment",
     "read_thread",
     "find_urgent",
     "find_needs_reply",

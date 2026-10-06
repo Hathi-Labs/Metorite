@@ -592,7 +592,9 @@ def test_a_covered_parent_calls_email_assistant_and_the_sub_run_sends_nothing(
     assert email.bodies, "the sub-run never reached its model"
     for body in email.bodies:
         assert not _egress_in(body), _egress_in(body)
-        assert {"query_inbox", "read_email", "read_thread", "call_agent"} <= _offered(body)
+        # EM-T11: the text of a file of a mail is a read, so it stays.
+        assert {"query_inbox", "read_email", "read_email_attachment", "read_thread",
+                "call_agent"} <= _offered(body)
         assert "save_note" not in _offered(body), "a store write is a delayed send"
     blocked = [r for b in email.bodies[1:] for r in _results(b) if _blocked(r)]
     assert len(set(blocked)) == 2, [_results(b) for b in email.bodies]

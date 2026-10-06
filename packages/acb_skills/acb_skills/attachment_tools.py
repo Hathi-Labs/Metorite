@@ -43,7 +43,14 @@ its worker really ends, so at most :data:`MAX_PARSES` parse threads live,
 and a third call gets "Another file is being read now" at once (PR #609
 fix round 2).
 
-Fence: ``tests/unit/test_read_attachment.py``.
+**A second caller** (WS-17 EM-T11). The gateway's email text route
+(``GET /email/attachments/{id}/text``) parses the file of a mail through
+:func:`parse_bounded`. The agent runtime runs in the gateway process, so the
+route and this tool share the one pool and the :data:`MAX_PARSES` slots. A
+second pool would double the bound on parse threads.
+
+Fences: ``tests/unit/test_read_attachment.py`` and
+``tests/unit/test_email_attachment_text.py``.
 """
 from __future__ import annotations
 
@@ -71,7 +78,7 @@ from acb_skills.attachment_text import (
 )
 from acb_skills.write_artifact import artifact_context
 
-__all__ = ["MAX_OUTPUT_CHARS", "MAX_PARSES", "read_attachment"]
+__all__ = ["MAX_OUTPUT_CHARS", "MAX_PARSES", "parse_bounded", "read_attachment"]
 
 _log = get_logger("acb_skills.attachment_tools")
 
@@ -256,8 +263,15 @@ def _parse_and_release(data: bytes, suffix: str, slot: _Slot) -> Extracted:
         slot.release()
 
 
-async def _parse(data: bytes, suffix: str) -> Extracted | str:
-    """The text of *data*, or a sentence that says why there is none."""
+async def parse_bounded(data: bytes, suffix: str) -> Extracted | str:
+    """The text of *data*, or a sentence that says why there is none.
+
+    The ONE bounded parse of the process. :func:`read_attachment` and the
+    gateway's email text route (WS-17 EM-T11) both call it. It never raises:
+    a refusal, a busy pool, a parse past its deadline and a bug each return
+    one sentence. The answer comes at most ``DEADLINE_SECONDS +
+    _WAIT_MARGIN`` seconds after the call, 22 s by default.
+    """
     if not _SLOTS.acquire(blocking=False):
         return "Another file is being read now. Try again in a moment."
     slot = _Slot()
@@ -342,7 +356,7 @@ async def read_attachment(name: str, offset: int = 0) -> str:
             f"No file named {where.name} was attached in this chat. "
             f"Files attached here: {held}."
         )
-    got = await _parse(found.data, where.suffix)
+    got = await parse_bounded(found.data, where.suffix)
     if isinstance(got, str):
         _log.info("attachment.refused", kind=where.suffix, size=len(found.data))
         return f"I could not read {where.name}. {got}"
