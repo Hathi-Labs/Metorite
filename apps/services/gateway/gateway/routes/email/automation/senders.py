@@ -933,24 +933,31 @@ async def unsubscribe_target(
     WS-17 EM-T13b-1 (``email_app_master_plan.md`` §10.4.15). The email
     assistant shows the host of a one-click link, or the address of a
     ``mailto:`` link, on its card. Then it posts this exact ``link``. ``kind``
-    is ``one-click``, ``mailto`` or ``block``. The route only reads."""
+    is ``one-click``, ``mailto`` or ``block``. The route only reads.
+
+    For a ``mailto:`` link it also answers the ``subject`` and the ``body``
+    that the send uses, because the sender of the list writes both (review
+    round 1, P2)."""
     async with _tenant_session() as db:
         await _assert_account_owner(db, account_id, user.email or "anonymous")
         link = await _stored_unsubscribe_link(db, account_id, email)
     kind = _unsubscribe_kind(link)
     host: str | None = None
     address: str | None = None
+    subject: str | None = None
+    body: str | None = None
     try:
         if kind == "one-click":
             host = urlparse(link or "").hostname or ""
         elif kind == "mailto":
-            address = _mailto_parts(link or "")[0]
+            address, subject, body = _mailto_parts(link or "")
     except ValueError:
         # A link that the parser cannot read names no target, so the tool
         # refuses it before its card.
         host = "" if kind == "one-click" else None
         address = "" if kind == "mailto" else None
-    return {"kind": kind, "link": link, "host": host, "address": address}
+    return {"kind": kind, "link": link, "host": host, "address": address,
+            "subject": subject, "body": body}
 
 
 @router.post("/unsubscribe")

@@ -2256,10 +2256,14 @@ def _channel_open() -> bool:
 
 # The card of a draft send (EM-T13b-1, §10.4.15). A mail body can ask the
 # model to send a draft that a rule or a reply put a hidden Bcc on. So the
-# card names each recipient that the send uses.
+# card names each recipient of the row. The tool sends them as ``expect``.
+# The route then answers 409 for a changed row, and it writes exactly those
+# lists to the provider draft before the send (review round 1, P1).
 _DRAFT_FIELDS = (("to", "To", "to_addresses"), ("cc", "Cc", "cc_addresses"),
                  ("bcc", "Bcc", "bcc_addresses"))
 _DRAFT_FOLDERS = ("drafts", "draft")
+# The longest address or host that a card shows (RFC 5321 path limit).
+_TARGET_LIMIT = 254
 
 
 def _draft_list(value: Any) -> list[str]:
@@ -2270,6 +2274,22 @@ def _draft_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(a["email"]) for a in value if isinstance(a, dict) and a.get("email")]
+
+
+def _draft_address_line(addr: str) -> str:
+    """One address as the draft card shows it (review round 1, P3).
+
+    A draft can hold an IDN address, so a non-ASCII domain is not refused. The
+    line marks it and shows the punycode form, so a look-alike letter shows."""
+    line = _card_text(addr, _TARGET_LIMIT)
+    domain = addr.rpartition("@")[2]
+    if domain.isascii():
+        return line
+    try:
+        puny = domain.encode("idna").decode("ascii")
+    except UnicodeError:
+        puny = "no punycode form"
+    return f"{line} (non-ASCII domain: {_card_text(puny, _TARGET_LIMIT)})"
 
 
 def _draft_card(
@@ -2285,7 +2305,7 @@ def _draft_card(
         f"in the list below. · Subject: {_card_text(subject or '(none)', 120)}"
     )
     lines = ["Each recipient of this draft:"]
-    lines += [f"- {head}: {_card_text(addr, 320)}"
+    lines += [f"- {head}: {_draft_address_line(addr)}"
               for key, head, _ in _DRAFT_FIELDS for addr in lists[key]]
     context = "\n".join(lines)
     return detail, ("" if len(context) > _CARD_CONTEXT_LIMIT else context)
@@ -2323,6 +2343,12 @@ async def send_draft(account_id: str, draft_id: str) -> str:
     lists = {key: _draft_list(draft.get(column)) for key, _, column in _DRAFT_FIELDS}
     if not any(lists.values()):
         return "Not sent. The draft has no recipient. Add one in the Email app."
+    if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
+        # The card never cuts an address (review round 1, P3).
+        return (
+            f"Not sent. The draft has an address longer than {_TARGET_LIMIT} "
+            "characters, so the card cannot show it. Fix it in the Email app."
+        )
     detail, context = _draft_card(sender, draft.get("subject"), lists)
     if not context:
         return (
@@ -2368,7 +2394,24 @@ _UNSUBSCRIBE_NOT_READY = (
     "Nothing changed. Unsubscribe from the chat is not ready on this server "
     "yet, so nothing was sent. The user can unsubscribe in the Email app."
 )
-_TARGET_LIMIT = 254
+# The text of a mailto unsubscribe (review round 1, P2). A real unsubscribe
+# mail needs no long text and no link. So a subject or a body over this many
+# characters, with a URL, or with a hidden character sends nothing.
+_MAILTO_TEXT_LIMIT = 200
+_URL_IN_TEXT = re.compile(r"https?:|www\.|://", re.IGNORECASE)
+
+
+def _mailto_text_problem(field: str, value: Any) -> str:
+    """Empty when the card can show the subject or the body in full."""
+    if not isinstance(value, str):
+        return f"has no {field} that the server named"
+    if len(value) > _MAILTO_TEXT_LIMIT:
+        return f"has a {field} longer than {_MAILTO_TEXT_LIMIT} characters"
+    if _URL_IN_TEXT.search(value):
+        return f"has a {field} with a URL"
+    if any(not ch.isspace() and unicodedata.category(ch)[0] == "C" for ch in value):
+        return f"has a {field} with a hidden character"
+    return ""
 
 
 async def _unsubscribe_target(account_id: str, email: str) -> dict[str, Any] | None:
@@ -2406,8 +2449,20 @@ def _unsubscribe_card(
         if problem or len(str(address)) > _TARGET_LIMIT:
             return "", "", (f"the address of the stored unsubscribe link "
                             f"{problem or 'is too long'}")
-        return (f"Sends an unsubscribe email from {sender} to mail to: {address}. "
-                f"{after}", f"- mail to: {address}", "")
+        # The sender of the list writes the subject and the body, and the send
+        # uses them. So the card shows both (review round 1, P2).
+        subject, body = target.get("subject"), target.get("body")
+        problem = (_mailto_text_problem("subject", subject)
+                   or _mailto_text_problem("body", body))
+        if problem:
+            return "", "", f"the stored unsubscribe link {problem}"
+        return (f"Sends an unsubscribe email from {sender} to mail to: {address}, "
+                f"with the subject and the body below. {after}",
+                "\n".join([
+                    f"- mail to: {address}",
+                    f"- subject: {_card_text(subject, _MAILTO_TEXT_LIMIT)}",
+                    f"- body: {_card_text(body, _MAILTO_TEXT_LIMIT)}",
+                ]), "")
     if kind == "block":
         return ("The sender has no unsubscribe link. Blocks the sender, so its "
                 "new mail is archived. Archives their mail in the inbox.",
@@ -2478,10 +2533,10 @@ async def unsubscribe_sender(
     if res.get("ok"):
         verb = ("Sent an unsubscribe email for" if res.get("method") == "mailto"
                 else "Unsubscribed from")
-        return (f"{verb} {email}; archived {archived} existing message(s). "
+        return (f"{verb} {shown}; archived {archived} existing message(s). "
                 "The sender should stop emailing you.")
     return (
-        f"Couldn't auto-unsubscribe from {email} (no one-click link), so I "
+        f"Couldn't auto-unsubscribe from {shown} (no one-click link), so I "
         f"blocked it instead — future mail is auto-archived and {archived} "
         "existing message(s) were archived."
     )

@@ -2440,7 +2440,20 @@ async def send_draft_endpoint(
                 except Exception:  # noqa: BLE001
                     pass
 
-            if signature.strip():
+            # EM-T13b-1 review round 1 (P1). The card of the email assistant
+            # showed the row, and ``expect`` checked the row. But the provider
+            # draft can hold other recipients: an Outlook reply draft keeps
+            # the Reply-To that ``createReply`` set, and a list that is None
+            # leaves a provider-only Cc or Bcc in place. So with ``expect``
+            # the update writes EXACTLY the three lists of the row, empty
+            # ones too, before the native send, signed or not.
+            exact = req.expect is not None
+            if exact:
+                send_to, send_cc, send_bcc = to, cc, bcc
+            else:
+                send_to, send_cc, send_bcc = to or None, cc or None, bcc or None
+
+            if signature.strip() or exact:
                 send_text, send_html = build_signed_bodies(
                     signature, drow.body_text or "", None)
                 try:
@@ -2450,8 +2463,8 @@ async def send_draft_endpoint(
                         # No ``attachments``: Outlook keeps the files of its
                         # draft, and Gmail reads them back from its draft.
                         signed_id = await provider.update_draft(
-                            drow.provider_message_id, to=to or None,
-                            cc=cc or None, bcc=bcc or None,
+                            drow.provider_message_id, to=send_to,
+                            cc=send_cc, bcc=send_bcc,
                             subject=drow.subject or None,
                             body_text=send_text, body_html=send_html,
                             thread_id=drow.thread_id or None,

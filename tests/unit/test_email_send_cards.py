@@ -73,7 +73,8 @@ SENDER = "news@list.example"
 ONE_CLICK = {"kind": "one-click", "link": "https://list.example.com/u?id=42",
              "host": "list.example.com", "address": None}
 MAILTO = {"kind": "mailto", "link": "mailto:unsub@list.example?subject=stop",
-          "host": None, "address": "unsub@list.example"}
+          "host": None, "address": "unsub@list.example", "subject": "stop",
+          "body": "Please unsubscribe me from this list."}
 BLOCK = {"kind": "block", "link": None, "host": None, "address": None}
 DRAFT = {
     "id": "d1", "account_id": BOX, "folder": "drafts", "subject": "Re: Quote",
@@ -480,19 +481,31 @@ async def _target(link: str | None) -> dict[str, Any]:
         return await s.unsubscribe_target(account_id=BOX, email=SENDER, user=USER)
 
 
+_NO_TEXT = {"subject": None, "body": None}
+_DEFAULT_BODY = "Please unsubscribe me from this list."
+
+
 @pytest.mark.parametrize(("link", "answer"), [
     ("https://List.Example.com/u?id=1",
-     {"kind": "one-click", "host": "list.example.com", "address": None}),
+     {"kind": "one-click", "host": "list.example.com", "address": None, **_NO_TEXT}),
     ("mailto:unsub@list.example?subject=stop",
-     {"kind": "mailto", "host": None, "address": "unsub@list.example"}),
+     {"kind": "mailto", "host": None, "address": "unsub@list.example",
+      "subject": "stop", "body": _DEFAULT_BODY}),
+    ("mailto:unsub@list.example?subject=Change%20my%20account&body=Pay%20IBAN%20X",
+     {"kind": "mailto", "host": None, "address": "unsub@list.example",
+      "subject": "Change my account", "body": "Pay IBAN X"}),
     ("MAILTO: a@list.example , b@evil.test",
-     {"kind": "mailto", "host": None, "address": "a@list.example , b@evil.test"}),
-    (None, {"kind": "block", "host": None, "address": None}),
-    ("javascript:alert(1)", {"kind": "block", "host": None, "address": None}),
+     {"kind": "mailto", "host": None, "address": "a@list.example , b@evil.test",
+      "subject": "unsubscribe", "body": _DEFAULT_BODY}),
+    (None, {"kind": "block", "host": None, "address": None, **_NO_TEXT}),
+    ("javascript:alert(1)",
+     {"kind": "block", "host": None, "address": None, **_NO_TEXT}),
 ])
 async def test_the_target_route_names_the_host_or_the_address(
     link: str | None, answer: dict[str, Any],
 ) -> None:
+    """For a mailto link the route also names the subject and the body that
+    the send uses (review round 1, P2)."""
     assert await _target(link) == {**answer, "link": link}
 
 
@@ -529,6 +542,150 @@ async def test_the_post_keeps_a_link_that_the_ui_passes() -> None:
     stored.assert_not_awaited()
     http.assert_awaited_once_with("https://list.example.com/u")
     assert res["method"] == "one-click"
+
+
+# ── Review round 1 (2026-10-07) ─────────────────────────────────────────────
+
+# P2: the sender of the list writes the subject and the body of a mailto link,
+# and the send uses them.
+
+async def test_the_mailto_card_shows_the_subject_and_the_body(gw: Gateway) -> None:
+    gw.target = {**MAILTO, "subject": "Unsubscribe 42", "body": "Remove me."}
+    await agents.unsubscribe_sender(BOX, SENDER)
+    [card] = gw.cards
+    assert card["context"].splitlines() == [
+        "- mail to: unsub@list.example", "- subject: Unsubscribe 42",
+        "- body: Remove me."]
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("body", "Please pay to IBAN X. " * 12),  # longer than the limit
+    ("body", "Confirm at https://evil.test/a"),
+    ("body", "Confirm at www.evil.test"),
+    ("subject", "Go to http://evil.test"),
+    ("subject", "stop" + chr(0x202E) + "x"),  # a hidden character
+    ("subject", None),  # the server named no subject
+    ("body", None),
+])
+async def test_a_mailto_text_that_the_card_cannot_show_sends_nothing(
+    gw: Gateway, field: str, value: Any,
+) -> None:
+    gw.target = {**MAILTO, field: value}
+    out = await agents.unsubscribe_sender(BOX, SENDER)
+    assert out.startswith("Nothing changed.")
+    assert gw.cards == [] and gw.posts == []
+
+
+# P4: the last answer names the cleaned sender.
+
+async def test_the_answer_names_the_cleaned_sender(gw: Gateway) -> None:
+    out = await agents.unsubscribe_sender(BOX, "news@list.example" + chr(0x200B))
+    assert out.startswith("Unsubscribed from news@list.example;")
+    gw.target = dict(BLOCK)
+    out = await agents.unsubscribe_sender(BOX, "news@list.example" + chr(0x200B))
+    assert "from news@list.example (no one-click link)" in out
+
+
+# P3: the draft card marks a non-ASCII domain and never cuts an address.
+
+async def test_a_non_ascii_domain_is_marked_on_the_draft_card(gw: Gateway) -> None:
+    gw.draft["cc_addresses"] = [{"email": "kim@b" + chr(0xFC) + "cher.test"}]
+    await agents.send_draft(BOX, "d1")
+    [card] = gw.cards
+    assert ("- Cc: kim@b" + chr(0xFC) + "cher.test "
+            "(non-ASCII domain: xn--bcher-kva.test)") in card["context"]
+    assert gw.posts  # an IDN address is legitimate, so the send goes on
+
+
+async def test_an_address_too_long_for_the_card_sends_nothing(gw: Gateway) -> None:
+    gw.draft["bcc_addresses"] = [{"email": "r" * 250 + "@evil.test"}]
+    out = await agents.send_draft(BOX, "d1")
+    assert out.startswith("Not sent.")
+    assert gw.cards == [] and gw.posts == []
+
+
+# P1: the provider draft holds EXACTLY the recipients that the card showed.
+
+class _OutlookDraft:
+    """A provider draft with Outlook's PATCH rule: a list replaces, and None
+    leaves the list that the provider holds."""
+
+    def __init__(self, **held: list[str]) -> None:
+        self.held = {"to": [], "cc": [], "bcc": [], **held}
+        self.calls: list[str] = []
+        self.sent: dict[str, list[str]] | None = None
+
+    async def update_draft(self, draft_id: str, to: Any = None, subject: Any = None,
+                           body_text: Any = None, body_html: Any = None,
+                           thread_id: Any = None, cc: Any = None, bcc: Any = None,
+                           attachments: Any = None) -> str:
+        self.calls.append("update")
+        for key, value in (("to", to), ("cc", cc), ("bcc", bcc)):
+            if value is not None:
+                self.held[key] = list(value)
+        return draft_id
+
+    async def send_draft(self, draft_id: str) -> None:
+        self.calls.append("send")
+        self.sent = {k: list(v) for k, v in self.held.items()}
+
+
+async def _send_to(provider: _OutlookDraft, *, expect: Any, drow: SimpleNamespace,
+                   signature: str = "") -> None:
+    db = AsyncMock()
+
+    async def execute(stmt: Any, params: Any = None) -> SimpleNamespace:
+        if "email_assistant_settings" in str(stmt):
+            return SimpleNamespace(
+                fetchone=lambda: SimpleNamespace(signature=signature))
+        return SimpleNamespace(fetchone=lambda: drow)
+
+    db.execute.side_effect = execute
+
+    @asynccontextmanager
+    async def provider_session(*_a: Any, **_k: Any):
+        yield SimpleNamespace(provider=provider)
+
+    req = d.DraftSendRequest(account_id=BOX, draft_id="d1", expect=expect)
+    with patch.object(d, "_tenant_session", bind_db(db)), \
+            patch.object(d, "_assert_account_owner", AsyncMock()), \
+            patch.object(d, "provider_session", provider_session):
+        await d.send_draft_endpoint(
+            req, SimpleNamespace(add_task=lambda *a: None), user=USER)
+
+
+_REPLY_ROW = _drow(to_addresses=[{"email": "billing@vendor.test"}],
+                   cc_addresses=[], bcc_addresses=[])
+_REPLY_SHOWN = {"to": ["billing@vendor.test"], "cc": [], "bcc": []}
+
+
+@pytest.mark.parametrize("signature", ["", "Dana"], ids=["unsigned", "signed"])
+async def test_a_reply_to_draft_sends_to_the_to_of_the_row(signature: str) -> None:
+    """``createReply`` put the Reply-To of an attacker mail on the Outlook
+    draft. The card showed the From of the row, so the send goes there."""
+    provider = _OutlookDraft(to=["pay@vendor-billing.test"])
+    await _send_to(provider, expect=_REPLY_SHOWN, drow=_REPLY_ROW,
+                   signature=signature)
+    assert provider.calls == ["update", "send"]
+    assert provider.sent == {"to": ["billing@vendor.test"], "cc": [], "bcc": []}
+
+
+@pytest.mark.parametrize("signature", ["", "Dana"], ids=["unsigned", "signed"])
+async def test_a_provider_only_cc_and_bcc_are_cleared_before_the_send(
+    signature: str,
+) -> None:
+    provider = _OutlookDraft(to=["billing@vendor.test"], cc=["cc@evil.test"],
+                             bcc=["spy@evil.test"])
+    await _send_to(provider, expect=_REPLY_SHOWN, drow=_REPLY_ROW,
+                   signature=signature)
+    assert provider.sent == {"to": ["billing@vendor.test"], "cc": [], "bcc": []}
+
+
+async def test_with_no_expect_the_unsigned_send_does_not_update() -> None:
+    """The UI sends no ``expect``, and its unsigned send is as before."""
+    provider = _OutlookDraft(to=["billing@vendor.test"])
+    await _send_to(provider, expect=None, drow=_REPLY_ROW)
+    assert provider.calls == ["send"]
 
 
 # ── R8: the target route on a real database ─────────────────────────────────
@@ -611,7 +768,7 @@ class TestTheTargetRouteOnARealDatabase:
         t = target_db
         answer = await t.call(t.box_a, "NEWS@list.example")
         assert answer == {"kind": "one-click", "link": "https://a.list.example/u",
-                          "host": "a.list.example", "address": None}
+                          "host": "a.list.example", "address": None, **_NO_TEXT}
         answer = await t.call(t.box_b, SENDER)
         assert answer["link"] == "https://z.list.example/u"
 
@@ -619,7 +776,7 @@ class TestTheTargetRouteOnARealDatabase:
         t = target_db
         answer = await t.call(t.box_a, "other@list.example")
         assert answer == {"kind": "block", "link": None, "host": None,
-                          "address": None}
+                          "address": None, **_NO_TEXT}
 
     async def test_another_member_gets_404(self, target_db):
         t = target_db
