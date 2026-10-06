@@ -1544,7 +1544,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 ✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). ✅ EM-T4b MERGED (#617, 2026-10-04, dark: cap 0, budget `log`). ✅ EM-T4a-2 PR-A MERGED (#621, 2026-10-04).
 
-✅ EM-T4a-2 PR-B1 MERGED (#661, 2026-10-06), with review round 1. 🔨 EM-T4a-2 PR-B2 built, not merged (2026-10-06). EM-T4a-2 PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+✅ EM-T4a-2 PR-B1 MERGED (#661, 2026-10-06), with review round 1. ✅ EM-T4a-2 PR-B2 MERGED (#685, 2026-10-06). EM-T4a-2 PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
 
 **Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box. The dev-phase window of CLAUDE.md §3a does NOT open `EMAIL_LLM_BUDGET_MODE=enforce`. `enforce` holds back triage and drafts from a paying mailbox. So it is a product limit, and the owner decides it.
 
@@ -1762,7 +1762,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 ##### EM-T4a-2 — the decision core
 
-**Status (2026-10-06).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. 🔨 PR-B2 built, not merged (`email-t4a2-prb2`, 2026-10-06), with review round 1. PR-B3 is not built. The PR-B1 notes follow the PR-A notes, and the PR-B2 notes follow the PR-B1 notes.
+**Status (2026-10-06).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. ✅ PR-B2 MERGED (#685, 2026-10-06), with review round 1. PR-B3 is not built. The PR-B1 notes follow the PR-A notes, and the PR-B2 notes follow the PR-B1 notes.
 
 The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The audit of 2026-10-05 read them again at `c26b67549`, and it split PR-B in three. The part adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
 
