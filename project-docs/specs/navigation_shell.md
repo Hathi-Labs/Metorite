@@ -150,6 +150,25 @@ Approvals' items reach every approver through the bell and My Day.
 Appearance is a personal preference, so it moves to every member's avatar
 menu.
 
+**The sidebar folds while you work.** Built 2026-10-06, by owner directive.
+A member opens an app from the sidebar. The first click or key press in that
+app folds the sidebar to its icon rail, so the app gets the width. The rule
+lives in `src/lib/sidebarFold.ts`:
+
+- Only a plain click on a sidebar link arms the fold. A click in the app with
+  no sidebar link first does nothing, so the sidebar never folds while a
+  member reads it.
+- The fold fires on `click`, not on the press. A fold on the press moves the
+  target before the release, and the click lands on nothing.
+- The width eases, and the expand button pulses three times in the accent. On
+  the first three folds, a tip names the button and offers "Keep it open".
+- A member who opens the sidebar again keeps it open until the next sidebar
+  link. Appearance → Sidebar turns the fold off. The folded state survives a
+  reload.
+
+Fence: `sidebarFold.test.ts` and `e2e/sidebar-fold.spec.ts`. The phone layout
+has no sidebar, so the fold does not apply there.
+
 ⚠️ **The live set does not change.** §2 of `launch_surface.md` still lists
 ten live panes, and `nav.test.ts` still counts ten. This spec changes
 WHERE a live pane renders, not WHETHER it is live. Promotion stays an owner
