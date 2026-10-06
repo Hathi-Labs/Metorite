@@ -383,12 +383,18 @@ class TestTheBatchPath:
         runs: list[str] = []
         for flag in (None, "projects-assistant"):
             _flags(monkeypatch, flag)
-            model = JsonModel([{"tool": "decide", "args": _DECIDE_ARGS}, {"text": "done"}])
+            # The run's OWN bound context, read while the model works. An
+            # uncovered run binds no `think_mode`, as on main.
+            bound: list[bool] = []
+            model = JsonModel(
+                [{"tool": "decide", "args": _DECIDE_ARGS}, {"text": "done"}],
+                on_request=lambda _i: bound.append("think_mode" in artifact_context()),
+            )
             _patch_native_load(monkeypatch, BATCH_AGENT, NATIVE[BATCH_AGENT], model)
             logs = _tap(monkeypatch)
             _batch(BATCH_AGENT, message=SECRET, model="tier-powerful")
             assert not [r for r in logs if str(r.get("event", "")).startswith("ai_route.")]
-            assert "think_mode" not in artifact_context()
+            assert bound == [False, False], bound
             runs.append(json.dumps(model.bodies, sort_keys=True))
         assert runs[0] == runs[1]
         assert [b["model"] for b in json.loads(runs[0])] == ["tier-powerful", "tier-powerful"]
