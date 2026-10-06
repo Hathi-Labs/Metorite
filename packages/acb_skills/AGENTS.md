@@ -139,6 +139,8 @@ clone cache.
    (`GET /email/attachments/{id}/text`) both call it. The agent runtime runs
    in the gateway process, so both callers share the pool and the
    `MAX_PARSES` slots. A second pool would double the bound on parse threads.
+   `attachment_text.PAGE_UNREADABLE` is the line for a PDF page that did not
+   parse. The email text route reads a PDF of only such lines as unreadable.
    Fence: tests/unit/test_email_attachment_text.py.
 5g. egress.py -- the network control on a covered run and every run under it
    (H-236, spec `maf_coding_engine.md` §16.3). It FAILS CLOSED. Such a run

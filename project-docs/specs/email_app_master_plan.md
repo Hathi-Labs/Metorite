@@ -611,7 +611,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
 | **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | ✅ **MERGED #658 (2026-10-05).** The live check (H-248) is open. **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
-| **EM-T11** | 🟢 AGENT-SAFE · security review · 🔴 live check | 🔨 **BUILT, not merged (2026-10-06), branch `email-attachment-text`.** GO-NARROWED by the audit. No migration and no flag. **A chat cannot read the files of a mail.** A text route for an attachment through the shared reader of H-229, and a `read_email_attachment` tool for the email assistant. No `.xlsx` and no HTML (EM-T11b). See §10.4.12. | See §10.4.12. |
+| **EM-T11** | 🟢 AGENT-SAFE · security review · 🔴 live check | 🔨 **BUILT, not merged (2026-10-06), branch `email-attachment-text`, with review round 1.** GO-NARROWED by the audit. No migration and no flag. **A chat cannot read the files of a mail.** A text route for an attachment through the shared reader of H-229, and a `read_email_attachment` tool for the email assistant. No `.xlsx` and no HTML (EM-T11b). See §10.4.12. | See §10.4.12. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -2031,6 +2031,10 @@ The diff now holds 563 lines that are not in a test or a document (366 added and
 2. `mailbox_owner` keeps its one discovery read (`scheduler_hooks.py:41`).
 3. Each job gets the split of EM-T4a-2 and EM-T4a-3.
 4. Lower `H2_BASELINE_ELSEWHERE` by the measured count.
+5. The owned fetch of an attachment, `transport/attachments.py::_fetch_owned_attachment` (EM-T11).
+   The download route and the text route hold one session across `authenticate()` and the
+   provider download. Split it as the jobs are split, and keep the commit that stores a rotated
+   token (EM-T4c). §10.4.12 records it as a known limit.
 
 **Non-goals.** No change to what a job does, or to its progress tracker.
 
@@ -4493,8 +4497,8 @@ waits for one sync, opens it again, and checks that To still holds everyone.
 
 #### 10.4.12 EM-T11 — the assistant reads the text of an attachment
 
-**Status.** 🔨 BUILT, not merged (2026-10-06), branch `email-attachment-text`. The text was
-verified against code on 2026-10-06. The spec-auditor gave GO-NARROWED on 2026-10-06, and this text
+**Status.** 🔨 BUILT with review round 1, not merged (2026-10-06), branch
+`email-attachment-text`. The text was verified against code on 2026-10-06. The spec-auditor gave GO-NARROWED on 2026-10-06, and this text
 holds its corrections. The "As built" notes below record the build. The owner reported the gap: a
 chat answered that it could not read the files of a mail.
 
@@ -4639,10 +4643,14 @@ cheap.
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_email_attachment_text.py tests/unit/test_email_attachment_download.py tests/unit/test_email_attachment_cache_tenancy.py tests/unit/test_email_attachment_inline.py tests/unit/test_email_attachment_dedupe.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_delegation_no_egress.py tests/unit/test_read_attachment.py tests/unit/test_own_tool_scope.py -v -rs
+uv run pytest tests/unit/test_email_attachment_text.py tests/unit/test_email_attachment_download.py tests/unit/test_email_attachment_cache_tenancy.py tests/unit/test_email_attachment_inline.py tests/unit/test_email_attachment_dedupe.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_delegation_no_egress.py tests/unit/test_read_attachment.py tests/unit/test_own_tool_scope.py tests/unit/test_email_tool_consolidation.py tests/unit/test_db_busy.py -v -rs
 uv run pytest evals/trajectories/test_tool_scope_trajectory.py -q
 uv run ruff check apps/services/gateway/gateway/routes/email/transport/attachments.py packages/acb_skills/acb_skills/attachment_tools.py apps/agents/agent-email-assistant/agents.py tests/unit/test_email_attachment_text.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
+
+The first ruff line exits 1. Main has 16 findings in these four files, and each one is older
+than EM-T11. A change must keep the count at 16 or below. The second ruff line must pass.
 
 **Board finding (not this slice).** `gateway/routes/tasks/resume_parse.py` is a second reader of a
 file, and it has no caps. Its PDF parse runs on the event loop, inside an open session
@@ -4652,7 +4660,7 @@ file, and it has no caps. Its PDF parse runs on the event loop, inside an open s
 the audit in this section) and `f5fa8dfef` (the code and the fences).
 
 - **The helper.** `transport/attachments.py::_fetch_owned_attachment` keeps the six steps of item 1
-  in that order. It takes `max_bytes` and `stop`. `stop` sees the owned row, and a reason from it
+  in that order. It takes the session of its caller, `max_bytes` and `stop`. `stop` sees the owned row, and a reason from it
   ends the fetch before the cache and the provider. The ownership query also reads `p.provider`, so
   the route can see an IMAP mailbox.
 - **The download route.** It calls the helper and streams the bytes. Its headers and its status
@@ -4673,15 +4681,19 @@ the audit in this section) and `f5fa8dfef` (the code and the fences).
 **Departures from the spec (EM-T11).**
 
 1. A third kind with no text: `unreadable`. The shared reader refused the file, for example for a
-   password, a limit, a broken file or a busy pool. The `reason` gives the sentence of the reader.
+   password, a limit, a broken file or a busy pool. Round 1 adds a PDF with no page that parsed,
+   and two reads of one member at once. The `reason` gives the sentence of the reader.
    The spec named only `unsupported` and `no_text`, and a password is neither.
 2. A file name with no suffix takes its type from five MIME types. A name with a suffix decides by
-   the suffix alone, so a `.exe` that claims `text/plain` stays unread.
+   the suffix alone, so a `.exe` that claims `text/plain` stays unread. Since review round 1 an
+   image type also does not override a suffix. The type `message/rfc822` is the one exception,
+   and it only refuses a file.
 3. `chars` counts the whole text that the reader got, before the cut. `truncated` is true at the
    cut of 20,000 characters. It is also true when the reader stopped at its own cap of pages or
    lines.
 4. The text route answers 502 when the provider fetch fails, and 404 for an id that is not a UUID.
-   The download route keeps its 500 and takes any id, so the member sees no change.
+   The download route keeps its 500 and takes any id, so the member sees no change. Since review
+   round 1 a fault of the database is never a 502 (item 1 of the round).
 5. The tool checks each id as a UUID before it puts the id in a path. The audit did not ask for
    this. It closes the path defect of `crm-assistant` for this tool only.
 6. `test_email_tool_consolidation.py` pins the count of tools, so the count moved from 42 to 43.
@@ -4732,6 +4744,75 @@ fence red.
 | X18 | The tool says `open_world=True` | `test_the_tool_is_a_registered_read` |
 | X19 | `own_tool_scope` drops the tool | `test_the_tool_is_a_registered_read` |
 | X20 | The wait of `parse_bounded` grows by 5 s | `test_a_stuck_parse_answers_within_the_bound` |
+
+**Review round 1 (2026-10-06).** The independent verifier failed the slice on one P1. The security
+reviewer approved it with findings at P2. This round fixes each finding. The branch was rebased
+onto `origin/main` first, which holds #663 (NS-11) and its 503 for a refused connect.
+
+1. **P1. The faults of a session reach `main.py` again.** The helper opened the tenant session
+   inside the `except Exception` of each route. So `TenantUnbound` and a refused connect became a
+   500 or a 502. Now each route opens its session OUTSIDE its `try`, as the download route did on
+   main. The helper takes the session of the route.
+2. **P1, the answers.** A member with no organization gets 403, and a directory that does not
+   answer gives 503. A refused connect gives the 503 "busy" of #663. The text route also raises
+   each other fault of a database library again, so the generic 500 answers it. It never names
+   the provider for a fault of the database. The download route keeps the 500 of main for a fault
+   inside its session.
+3. **P2. A suffix wins over an image type.** `notes.txt` with `image/png` reads as text, and
+   `quote.pdf` with `image/jpeg` reads as a PDF. The type `message/rfc822` still refuses a file
+   with a suffix, because Outlook names an attached mail after its subject.
+4. **P2. A PDF with no page that parsed is `unreadable`.** The reader writes the line
+   `attachment_text.PAGE_UNREADABLE` for each page that fails. A PDF of such lines only answers
+   `unreadable` with a reason. It never answers `pdf`.
+5. **P2. One cache key for each row.** The bytes cache takes the id of the row, `str(row.id)`, and
+   the query takes the canonical id. An id in braces or with `urn:uuid:` answers 404 with no
+   session.
+6. **P2. The text route parses a file once.** It caches its answer for the organization under
+   `key("email-att-text", str(row.id))`, for the TTL of the bytes cache. It caches no refusal of
+   the reader, because a busy pool and a deadline pass with time.
+7. **P2. One read at a time for each member.** A second read of the same member answers
+   `unreadable` with a busy reason, with no fetch and no parse. The guard is a set in memory,
+   because the gateway runs as one process (`acb-gateway.service` has no `--workers`).
+8. **P2. No cache write over the cap.** With a NULL `size_bytes`, the helper fetched the file and
+   cached it before the route answered 413. Now it writes no bytes over `max_bytes`.
+9. **Notes.** The tool puts the file name inside the frame, on a line `File name: ...`, also in
+   an answer with no text. `read_email` prints each file name and each type on one line.
+10. **P2. The verify block** names `test_email_tool_consolidation.py` and `test_db_busy.py`, and it
+    gives the base count of the ruff line.
+
+**Known limit of EM-T11 (review round 1).** The helper holds one pooled connection, in an open
+transaction, across `authenticate()` and the provider download. The download route on main has the
+same shape. Since #662 the async pool of a process holds 9 connections, 7 and an overflow of 2.
+EM-T4a-4 owns the split, and its list names the helper (item 5).
+
+**The fences of round 1.** `test_email_attachment_text.py` holds 68 cases in six classes now. The
+new class `TestTheSessionFaultsReachTheHandlers` mounts both routes on a bare app with the two real
+handlers of `main.py`, the idiom of `test_db_busy.py`. The R8 case also reads by an upper-case id
+through both routes. `test_email_attachment_download.py` now finds `_tenant_session(` in each route,
+and never in the helper. Its AST check fails when a route opens the session inside a `try`.
+
+**Mutations of round 1, as run (2026-10-06).** The same method as the first table. Each fix was
+committed first, and each of the 17 rows turned its fence red.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| R1-P1a | The download route opens its session inside the `try` | `TestTheSessionFaultsReachTheHandlers` |
+| R1-P1a-ast | The same change | `test_each_route_opens_its_session_outside_its_try` |
+| R1-P1b | The text route opens its session inside the `try`, with no raise of a database fault | `TestTheSessionFaultsReachTheHandlers` |
+| R1-P1c | The text route drops the raise of a database fault | `test_the_text_route_never_blames_the_provider_for_the_database` |
+| R1-P2img | An image type wins over a suffix again | `test_a_suffix_wins_over_an_image_type` |
+| R1-P2ph | A placeholder line counts as text | `test_a_pdf_whose_every_page_fails_is_unreadable` |
+| R1-P2key | The cache key takes the path text | `test_two_spellings_of_one_id_write_one_cache_key` |
+| R1-P2key-r8 | The same change | The R8 case: a download by a second spelling misses the cache |
+| R1-P2canon | The query takes the path text | `test_two_spellings_of_one_id_write_one_cache_key` |
+| R1-P2strict | `_canonical_uuid` takes each form that `uuid.UUID` takes | `test_an_id_that_is_not_a_uuid_is_404_before_a_session` |
+| R1-P2tcache | The route caches no text | `test_a_second_read_serves_the_cached_text_with_no_parse` |
+| R1-P2hold | The guard never holds | `test_one_member_runs_one_read_at_a_time` |
+| R1-P2release | The guard is never released | `test_one_member_runs_one_read_at_a_time` |
+| R1-P2fits | The helper caches bytes over the cap | `test_bytes_over_15_mb_with_no_stored_size_are_not_cached` |
+| R1-N1frame | The file name goes back to the head line | `test_the_tool_frames_the_text_as_data` |
+| R1-N2name | `read_email` prints the file name as it came | `test_read_email_prints_each_name_on_one_line` |
+| R1-N2mime | `read_email` prints the type as it came | `test_read_email_prints_each_name_on_one_line` |
 
 **The live check (🔴 OWNER-GATE).** The owner asks the Email chat, and then the Projects chat, to
 summarise a PDF that came in a mail. Each chat must quote the file.
