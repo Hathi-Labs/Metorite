@@ -9,6 +9,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+from orchestrator import _tool_injection as _ti
+from orchestrator._tool_injection import (
+    _count_agent_tools,
+    _log_agent_tools_resolved,
+    _own_tool_pools,
+)
 from orchestrator.executor import _apply_own_tool_scope, _tool_name
 
 
@@ -52,3 +59,79 @@ def test_tool_name_handles_wrappers_and_dicts():
     assert _tool_name({"function": {"name": "dict_spec"}}) == "dict_spec"
     assert _tool_name({"name": "flat_dict"}) == "flat_dict"
     assert _tool_name(object()) == ""
+
+
+# ── WS-8o: a real native MAF Agent (email_app_master_plan.md §10.4.14) ──────
+#
+# The tests above use a SimpleNamespace with ``tools``. A native MAF 1.19
+# ``Agent`` has no ``tools`` attribute: ``RawAgent.__init__`` moves the tools
+# into ``default_options["tools"]``. The filter read only ``tools`` and
+# ``_tools``, so it did nothing for a native agent, and these tests could not
+# see it. The tests below build a real ``Agent`` with no client, so no model
+# and no network.
+
+
+def _real_agent(names: list[str]):
+    agent_framework = pytest.importorskip("agent_framework")
+    return agent_framework.Agent(
+        client=None, name="email-assistant", tools=[_fn(n) for n in names],
+    )
+
+
+def _held(agent) -> list[str]:
+    return [_tool_name(t) for t in agent.default_options["tools"]]
+
+
+def test_filters_a_real_maf_agent_in_its_default_options():
+    agent = _real_agent(["read_email", "send_email", "get_digest"])
+    assert not hasattr(agent, "tools"), "MAF moved its tools: re-read the pools"
+    pool = agent.default_options["tools"]
+    _apply_own_tool_scope([agent], ["read_email", "get_digest"])
+    assert _held(agent) == ["read_email", "get_digest"]
+    # In place: each run copies THIS list, so the change holds for the run.
+    assert agent.default_options["tools"] is pool
+
+
+def test_a_real_maf_agent_fails_open_with_no_match():
+    agent = _real_agent(["read_email", "send_email"])
+    _apply_own_tool_scope([agent], ["nonexistent"])
+    assert _held(agent) == ["read_email", "send_email"]
+
+
+def test_mcp_tools_are_not_own_tools():
+    agent = _real_agent(["read_email", "send_email"])
+    marker = object()
+    agent.mcp_tools = [marker]
+    _apply_own_tool_scope([agent], ["read_email"])
+    assert agent.mcp_tools == [marker]
+
+
+def test_one_list_under_two_names_is_one_pool():
+    shared = [_fn("a"), _fn("b")]
+    agent = SimpleNamespace(name="x", tools=shared, _tools=shared)
+    assert [label for label, _ in _own_tool_pools(agent)] == ["tools"]
+    assert _count_agent_tools([agent]) == 2
+
+
+def test_the_count_reads_the_real_agent():
+    agent = _real_agent(["a", "b", "c"])
+    _apply_own_tool_scope([agent], ["a", "c"])
+    assert _count_agent_tools([agent]) == 2
+
+
+def test_the_resolved_log_names_own_and_total(monkeypatch):
+    seen: list[tuple[str, dict]] = []
+
+    class _Log:
+        def info(self, event, **kw):
+            seen.append((event, kw))
+
+    monkeypatch.setattr(_ti, "_log", _Log())
+    agent = _real_agent(["a", "b"])
+    own = _count_agent_tools([agent])
+    agent.default_options["tools"].append(_fn("call_agent"))  # an injection
+    _log_agent_tools_resolved("email-assistant", [agent], own)
+    assert seen == [(
+        "executor.agent_tools_resolved",
+        {"agent": "email-assistant", "own": 2, "total": 3},
+    )]
