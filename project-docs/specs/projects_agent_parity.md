@@ -1206,4 +1206,17 @@ as the answer. The slices build to these answers.
     does not send it".
   - The eval gains PO-8, which passes in scripted mode. Each of its rules
     fails on one mutation in `test_projects_ops_eval.py`.
-  - No gateway file changed.
+  - No gateway file changed in its logic. Review round 1 changed five
+    gateway comments that said "the chat tools move one task".
+  - Review round 1 (2026-10-06) fixed four findings:
+    - `edit_task` reads the subtasks before it draws the form. With open
+      subtasks, the form has a Subtasks choice, and "Only this task" is the
+      default. The choice goes to `update_task` as `include_subtasks`.
+      Before the fix, a form that set Done on a parent wrote nothing.
+    - The count walks every level of `/relations`, because the cascade
+      acts on every level (`cascade.load_subtree`). The walk stops at 100
+      reads, and the card then says "at least".
+    - An edit shows a cascade only for a status CHANGE into a Done lane,
+      because only then does the PATCH route cascade.
+    - A blank answer to a required field is no answer. A text field refuses
+      a list or an object.

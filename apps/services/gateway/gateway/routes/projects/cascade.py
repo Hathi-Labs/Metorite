@@ -15,8 +15,10 @@ Three acts can carry a parent's subtree with them:
 **Every door takes ``include_subtasks`` and every door defaults it to FALSE.**
 The owner's defaults are UI defaults: the complete prompt defaults to "Only
 this task", and the move and archive dialogs send ``true`` because their box
-is ticked. A server default of ``true`` would change what every old caller,
-the chat tools and the API do today, with no dialog in front of them.
+is ticked. A server default of ``true`` would change what every old caller
+and the API do today, with no dialog in front of them. The Projects chat
+tools send ``true`` only for a member's "yes", which each one asks for
+first (WS-46 P6, ``projects_agent_parity.md``).
 
 **Only what the actor can see.** Complete and archive skip a descendant the
 actor cannot see, and say nothing about it: a closed or shelved parent with an

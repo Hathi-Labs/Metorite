@@ -118,7 +118,8 @@ class BulkIn(BaseModel):
     #: With a status patch that lands a task in a `done` lane, its open
     #: descendants complete too. With `action: "archive"`, its descendants go
     #: on the shelf too. Ignored by every other verb. FALSE by default, so an
-    #: old caller and the chat tools touch only the tasks they name.
+    #: old caller touches only the tasks it names. The Projects chat's
+    #: `bulk_update` sends it for a member's "yes" (WS-46 P6).
     include_subtasks: bool = False
 
 
