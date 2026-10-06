@@ -6,9 +6,47 @@ written. Specified 2026-10-05. Board row **WS-45**, and decision **D90** is in
 
 **S1 is built and dark** (2026-10-06, PR #667).
 **S2 is built and dark** (2026-10-06, PR #675).
-**S3 is built and dark** (2026-10-06, branch `ws45-s3-picker`).
+**S3 is built and dark** (2026-10-06, PR #678).
+**S4a, the vendor-call fence, is built** (2026-10-06, branch
+`ws45-s4-tier-agents`). The rest of S4 is S4b, and it is next.
 `AI_TIER_ROUTING` ships empty, and `NEXT_PUBLIC_AI_TIER_ROUTING` ships OFF.
-Neither flag covers an agent on any box. S4 is next.
+Neither flag covers an agent on any box.
+
+**S4a build notes (2026-10-06).** Read these before S4b or S5.
+
+- S4 was too large for one PR. S4a is the fence of §10, the last row:
+  `tests/unit/test_no_direct_ai_vendor_calls.py`. It changes no runtime code,
+  so it reads no flag. S4b is the rest of the §11 S4 row.
+- The fence reads the syntax tree of each `.py` file under `apps/` and
+  `packages/`, and the root `agents.py`. A comment and a docstring do not
+  trip it. `apps/services/customer_console/` is exempt, because it is the
+  Router. A `tests` directory is exempt too.
+- It counts five kinds of finding: each use of a `litellm` verb, an
+  `openai` or `anthropic` SDK client, an MAF chat client with no
+  `async_client` and no `base_url`, a vendor AI SDK import, and a vendor AI
+  host in a string. An alias counts as the name it stands for. A litellm
+  helper that sends no request does not count. Review P1 of PR #681 found
+  that the first version counted an import once, so a second call was free.
+- **The baseline holds 13 files and 26 findings** on 2026-10-06. It keys each
+  file on the label of each finding and its count, with a reason. A count
+  above the baseline fails, and a count below it fails too. So the PR that
+  removes a call lowers the baseline in the same PR.
+- **The scan found four sites that §2.10 does not name.** They are the flag-off
+  litellm path of `acb_llm/client.py`, the flag-off path of the gateway `/v1`
+  door in `routes/v1_compat.py`, the AssemblyAI stream of
+  `meeting_bot/app/live.py`, and the AssemblyAI stream key of
+  `routes/notes/live.py`. Each is in the baseline with that reason.
+- `acb_llm/attribution.py` is a Router seam, not a baseline entry. It builds
+  the one `AsyncOpenAI` client on purpose, and every MAF agent hands it the
+  gateway `/v1`. Its entry must match exactly. A second fence holds that
+  `attributed_openai` takes `base_url` with no default.
+- **Advisory, because no static scan sees it:** a call through `getattr`, a
+  host built at run time, and a library that builds its own vendor client
+  (mem0, graphiti-core). `acb_memory/_gateway_env.py` holds both libraries on
+  the gateway.
+- **Not built in S4a (S4b owns each):** the policy for a sub-agent and for the
+  batch path (`run_agent`), the email chat's `model` and `lockModel`, the two
+  `chat_model` controls, and the per-agent proof of S2 done-when items 1 to 5.
 
 **S3 build notes (2026-10-06).** Read these before S4.
 
