@@ -19,8 +19,10 @@ import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { RecipientInput } from "./RecipientInput";
 import { ComposerQuote, AiButton } from "./ComposerAI";
 import {
-  FILES_TOO_LARGE, autosaveWait, createAutosave, draftToUpdate, failedSaveStatus,
-  pickProblem, saveFailureText, sendFailureText, type DraftStatus, type SavedDraft,
+  FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
+  draftToUpdate, holdPick, pickProblem, recordSave, saveFailureText, sendFailureText,
+  supersededDraft,
+  type DraftHandOver, type DraftStatus, type SavedDraft,
 } from "../lib/draftAutosave";
 
 interface ComposePanelProps {
@@ -54,10 +56,10 @@ interface ComposePanelProps {
    *  composer opens dirty, so its own save keeps it (EM-G3c-2 review round 1). */
   unsavedEdit?: boolean;
   /** The draft that the inline reply saved, in the mailbox of `defaultFromId`
-   *  or `accountId`. The composer updates it, and makes no second draft
-   *  (EM-G3c-2 review round 2). `draftHasFile` is its `hasAttachments`. */
-  draftId?: string;
-  draftHasFile?: boolean;
+   *  or `accountId`, when the drain of the reply settles. The composer updates
+   *  it, and makes no second draft (EM-G3c-2 review round 2). The pop-out
+   *  opens the composer at once, before the drain (EM-G3c-3 item 6). */
+  handOver?: Promise<DraftHandOver>;
   /** The quoted trailing chain — shown collapsed below the box, reattached on
    *  send, and kept OUT of the editable body so AI/edits never touch it. */
   quote?: string;
@@ -82,8 +84,7 @@ export function ComposePanel({
   defaultCc = "",
   replyToBody,
   unsavedEdit,
-  draftId,
-  draftHasFile,
+  handOver,
   quote,
   replyToMessageId,
   messageId,
@@ -144,6 +145,8 @@ export function ComposePanel({
   const lastSaveRef = useRef<SavedDraft | null>(null);
   // `hasAttachments` of the row that the last save returned (EM-G3c-2 item 12).
   const draftHasFileRef = useRef(false);
+  // The bytes of the picks that are being read (EM-G3c-3 item 5).
+  const readingRef = useRef(0);
   // Uploaded files (base64) + picked AI artifacts (resolved server-side).
   const [attachments, setAttachments] = useState<SendAttachment[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactAttachmentRef[]>([]);
@@ -182,15 +185,37 @@ export function ComposePanel({
       if (sig) setBody((prev) => appendSignature(prev, sig));
     });
     sessionRef.current += 1;
-    // A pop-out hands over the draft of the inline reply, so the composer
-    // updates it. It counts as the last save of this session, so a save or a
-    // discard after the session ended finds it too (EM-G3c-2 review round 2).
-    draftIdRef.current = draftId ?? null;
-    draftHasFileRef.current = Boolean(draftId && draftHasFile);
-    if (draftId) {
-      lastSaveRef.current = {
-        session: sessionRef.current, from: defaultFromId || accountId, id: draftId,
-      };
+    draftIdRef.current = null;
+    draftHasFileRef.current = false;
+    // A pop-out opens the composer at once, and it hands over the draft of
+    // the inline reply when the drain of the reply settles (EM-G3c-3 item 6).
+    // The hand-over goes at the head of the chain, so each save, send and
+    // discard waits for it, and then updates that draft.
+    if (handOver) {
+      const opened = sessionRef.current;
+      const from = defaultFromId || accountId;
+      // The From of this open. The effect that follows `fromId` runs only
+      // after the next render, and the hand-over can settle before it.
+      liveFromRef.current = from;
+      // The chain applies the hand-over in its order, so each save before it
+      // settled first, and no older save writes over the record of this one.
+      autosave.after(handOver, ({ draftId, draftHasFile }) => {
+        if (!draftId) return;
+        // It counts as the last save of the session that opened, so a save
+        // or a discard after that session ended finds it too (EM-G3c-2
+        // review round 2). It comes before the guard on purpose.
+        lastSaveRef.current = recordSave(lastSaveRef.current, { session: opened, from, id: draftId });
+        // A compose that opened since then keeps its own draft.
+        if (sessionRef.current !== opened) return;
+        if (liveFromRef.current !== from) {
+          // The member changed the From before the hand-over settled. The
+          // draft stays in the old mailbox, so it is stale (§11.6 case 7).
+          staleDraftsRef.current.push(draftId);
+          return;
+        }
+        draftIdRef.current = draftId;
+        draftHasFileRef.current = Boolean(draftHasFile);
+      });
     }
     staleDraftsRef.current = [];
     // A pop-out keeps the From that the inline reply chose (EM-T8c review).
@@ -243,21 +268,25 @@ export function ComposePanel({
   };
 
   /** Read picked files into base64 and append them to the attachments. A
-   *  pick that makes the files pass 7.5 MB is refused whole (EM-G3c-2 item 10). */
+   *  pick that makes the files pass 7.5 MB is refused whole (EM-G3c-2 item 10).
+   *  The limit counts the picks that are being read too (EM-G3c-3 item 5). */
   const addFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const picked = Array.from(files);
-    const problem = pickProblem(attachments, picked);
+    const problem = pickProblem(attachments, picked, readingRef.current);
     if (problem) {
       setSendError(problem);
       return;
     }
+    const release = holdPick(readingRef, picked);
     try {
       const added = await Promise.all(picked.map(fileToSendAttachment));
       setAttachments((prev) => [...prev, ...added]);
       setSendError((prev) => (prev === FILES_TOO_LARGE ? null : prev));
     } catch {
       setSendError("Couldn't read one of the attachments");
+    } finally {
+      release();
     }
   };
 
@@ -300,21 +329,26 @@ export function ComposePanel({
         // holds the message, so the drafts that its session left can go,
         // unless the save wrote one of them. It sets nothing of the new session.
         if (sessionRef.current !== session) {
-          lastSaveRef.current = { session, from: savingFrom, id: saved.id };
+          // A change of From left the draft that this session saved last in
+          // the old mailbox, and no list holds it (EM-G3c-3 item 4).
+          const superseded = supersededDraft({ session, from: savingFrom }, lastSaveRef.current, saved.id);
+          if (superseded && !stale.includes(superseded)) void deleteEmail(superseded);
+          lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
           if (!stale.includes(saved.id)) dropDrafts(stale);
           return;
         }
         if (liveFromRef.current !== savingFrom) {
           // The From changed while this save ran. Its draft belongs to the
           // old mailbox, so it is stale, and the next save starts a new one
-          // in the new mailbox (EM-T8c review).
-          staleDraftsRef.current.push(saved.id);
+          // in the new mailbox (EM-T8c review). Two saves in the wait of
+          // changeFrom can give one id, and it goes on the list once.
+          if (!staleDraftsRef.current.includes(saved.id)) staleDraftsRef.current.push(saved.id);
           setDraftStatus("idle");
           return;
         }
         draftIdRef.current = saved.id;
         draftHasFileRef.current = saved.hasAttachments;
-        lastSaveRef.current = { session, from: savingFrom, id: saved.id };
+        lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
         // A provider draft cannot move between mailboxes: the new mailbox
         // saved its own, so the drafts of the old one go (§11.6 case 7).
         dropStaleDrafts();
@@ -326,7 +360,7 @@ export function ComposePanel({
     }, autosaveWait(
       accounts.find((a) => a.id === savingFrom)?.provider,
       draftHasFileRef.current,
-    ));
+    ), session);
     // Stop the timer and keep the save, so a close can still flush it.
     return () => autosave.hold();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -369,11 +403,16 @@ export function ComposePanel({
    *  draft moves to the new mailbox on the next save. */
   const changeFrom = async (next: string) => {
     if (!next || next === fromId) return;
+    // The From of now changes at once, before the wait for the signatures. A
+    // save or a hand-over that settles in that wait then counts its draft as
+    // stale (EM-G3c-3 review round 1).
+    liveFromRef.current = next;
     const [oldSig, newSig] = await Promise.all([
       getSignatureText(fromId), getSignatureText(next),
     ]);
     if (draftIdRef.current) {
-      staleDraftsRef.current.push(draftIdRef.current);
+      // A save that settled in the wait can have put this draft on the list.
+      if (!staleDraftsRef.current.includes(draftIdRef.current)) staleDraftsRef.current.push(draftIdRef.current);
       draftIdRef.current = null;
     }
     // The next save makes a new draft in the new mailbox, with no file.
@@ -393,19 +432,23 @@ export function ComposePanel({
   /** Discard the auto-saved draft. The X keeps it instead. The window closes
    *  at once. The chain drains first, so no save that waited writes the draft
    *  again, and a first save that runs gives its id to the delete (EM-G3c-2
-   *  review round 2). */
+   *  review round 2). The delete takes each draft of the session, in each
+   *  mailbox (EM-G3c-3 item 3). */
   const discardDraft = async () => {
+    // A close does not end the session, so a create that runs settles in
+    // the live branch, and a change of From puts its draft on this list.
     const session = sessionRef.current;
-    const from = fromId;
-    const drained = autosave.drain();
+    const stale = staleDraftsRef.current;
+    const drained = autosave.drain(session);
     onClose();
     await drained;
-    const id = draftToUpdate(
-      { session, from },
+    const ids = draftsToDiscard(
+      session,
       { session: sessionRef.current, draftId: draftIdRef.current },
       lastSaveRef.current,
+      stale.splice(0),
     );
-    if (id) void deleteEmail(id);
+    for (const id of ids) void deleteEmail(id);
   };
 
   const handleSend = async () => {
@@ -418,8 +461,9 @@ export function ComposePanel({
     setSendError(null);
     // The send carries the last edit, so each queued autosave goes. A save
     // that runs settles first: a first save gives its draft id, and no older
-    // text lands after this save (EM-G3c-2 review round 2).
-    await autosave.drain();
+    // text lands after this save (EM-G3c-2 review round 2). A save of an
+    // ended session still runs (EM-G3c-3 item 1).
+    await autosave.drain(sessionRef.current);
     const toArr = to.split(",").map((s) => s.trim()).filter(Boolean);
     const ccArr = cc ? cc.split(",").map((s) => s.trim()).filter(Boolean) : [];
     const hasAttachments = attachments.length > 0 || artifacts.length > 0;

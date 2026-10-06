@@ -514,7 +514,7 @@ export function DraftCard({
     }, autosaveWait(
       accounts.find((a) => a.id === accountId)?.provider,
       draft.hasAttachments,
-    ));
+    ), 0);
     // Stop the timer and keep the save, so an unmount can still flush it.
     return () => autosave.hold();
     // An edit of the Cc or the Bcc saves too (EM-T10 item 4, EM-G3c-2-f2).
@@ -532,8 +532,9 @@ export function DraftCard({
     setSendError(null);
     // The send carries the last edit, so each queued autosave goes. A save
     // that runs settles first, so no older text lands after this save
-    // (EM-G3c-2 review round 2).
-    await autosave.drain();
+    // (EM-G3c-2 review round 2). The key gives each draft its own card, so
+    // the card has one session, 0 (EM-G3c-3 item 1).
+    await autosave.drain(0);
     try {
       // Persist the latest edits — Cc/Bcc included, now carried on the provider
       // draft — then send THIS draft natively (Drafts → Sent, no duplicate).
@@ -587,7 +588,7 @@ export function DraftCard({
     if (!confirm("Discard this draft?")) return;
     // The chain drains first, so no save that waited writes the draft again.
     // The delete waits for the save that runs (EM-G3c-2 review round 2).
-    const drained = autosave.drain();
+    const drained = autosave.drain(0);
     onDismiss?.(); // hide instantly; the provider delete is async
     await drained;
     try {

@@ -1,5 +1,7 @@
 // WS-17 EM-G3c-2 — the files and the autosave of the three email composers
 // (`project-docs/specs/email_app_master_plan.md` §12.3.3b, items 10 to 14).
+// WS-17 EM-G3c-3 closes the known limits f3, f5, f7, f8, f9 and f12 of it
+// (§12.3.3c, items 1 to 6).
 //
 // ComposePanel, the inline reply of EmailDetail and the DraftCard of
 // ConversationView share each rule here. Vitest runs with no DOM in this
@@ -34,21 +36,49 @@ export function base64Bytes(b64: string): number {
   return Math.floor((n * 3) / 4) - pad;
 }
 
+/** The bytes of the files of one pick. */
+const pickBytes = (picked: readonly { size: number }[]) =>
+  picked.reduce((sum, f) => sum + f.size, 0);
+
 /**
  * The reason to refuse a pick, or null to take it.
  *
  * `held` are the files that the mail holds already, as base64. `picked` are
- * the new files, with their size in bytes. A pick that makes the sum pass
+ * the new files, with their size in bytes. `readingBytes` are the bytes of
+ * the picks that the composer still reads, which `held` does not show yet
+ * (EM-G3c-3 item 5, EM-G3c-2-f3). A pick that makes the sum pass
  * {@link FILES_MAX_BYTES} is refused whole, as `projects/lib/importFlow.ts`
  * refuses an import that is too large.
  */
 export function pickProblem(
   held: readonly { contentB64: string }[],
   picked: readonly { size: number }[],
+  readingBytes = 0,
 ): string | null {
   const heldBytes = held.reduce((sum, f) => sum + base64Bytes(f.contentB64), 0);
-  const pickedBytes = picked.reduce((sum, f) => sum + f.size, 0);
-  return heldBytes + pickedBytes > FILES_MAX_BYTES ? FILES_TOO_LARGE : null;
+  return heldBytes + readingBytes + pickBytes(picked) > FILES_MAX_BYTES ? FILES_TOO_LARGE : null;
+}
+
+/**
+ * Count a pick as read, until its files join the mail (EM-G3c-3 item 5).
+ *
+ * It adds the bytes of `picked` to `counter`, and it gives the release. The
+ * composer calls the release in a `finally`, after it adds the files, so a
+ * read that fails frees its bytes too. A second call of the release does
+ * nothing. No session resets the counter: a read of an old reply still ends.
+ */
+export function holdPick(
+  counter: { current: number },
+  picked: readonly { size: number }[],
+): () => void {
+  const bytes = pickBytes(picked);
+  counter.current += bytes;
+  let held = true;
+  return () => {
+    if (!held) return;
+    held = false;
+    counter.current -= bytes;
+  };
 }
 
 // ── Item 12: the wait ───────────────────────────────────────────────────
@@ -154,10 +184,18 @@ const BROWSER_TIMERS: AutosaveTimers = {
  * A send, a discard and a pop-out end the draft of the composer, so they call
  * `drain` (review round 2). A close and a switch keep the draft, so they call
  * `flush`, and a save that waits still runs there.
+ *
+ * Each save carries the session of its composer (EM-G3c-3 item 1). A drain
+ * drops only the saves of its own session. So the save of a reply that the
+ * member closed still runs when a new reply sends. The DraftCard has one
+ * draft for each card, so it passes session 0.
  */
 export interface Autosave {
-  /** Start the wait again for `run`. The pending save of before is dropped. */
-  schedule(run: () => unknown, waitMs: number): void;
+  /**
+   * Start the wait again for `run`, a save of `session`. The pending save of
+   * before is dropped.
+   */
+  schedule(run: () => unknown, waitMs: number, session?: number): void;
   /** Stop the timer, and keep the pending save for a flush. */
   hold(): void;
   /**
@@ -171,15 +209,28 @@ export interface Autosave {
    */
   cancel(): void;
   /**
-   * Drop each save that did not start: the pending save, and each save that
-   * waits for the save that runs. The promise settles when the save that runs
-   * settles, and it gives true when the drain dropped a save.
+   * Drop each save of `session` that did not start: the pending save, and
+   * each save that waits for the save before it. A pending save of another
+   * session starts, as on a flush, and a save of another session that waits
+   * still runs (EM-G3c-3 item 1, EM-G3c-2-f7). The promise settles when the
+   * end of the chain settles. It gives true when the drain dropped a save of
+   * `session`.
    *
    * A send, a discard and a pop-out await it before they read the draft id.
    * So a save that runs gives its draft id first, and no older text lands
    * after the send (review round 2). A save scheduled after the drain runs.
    */
-  drain(): Promise<boolean>;
+  drain(session?: number): Promise<boolean>;
+  /**
+   * Put `promise` at the head of the chain. Each save, and each drain, that
+   * comes after waits until it settles (EM-G3c-3 item 6). A pop-out opens the
+   * full composer at once and gives it the draft of the reply later.
+   *
+   * `apply` gets the value of `promise` in the order of the chain: after each
+   * save before it settled, and before each save after it starts (review
+   * round 1). A save of an older session cannot settle after it.
+   */
+  after<T>(promise: Promise<T>, apply?: (value: T) => void): void;
   /** True while a save waits for its timer or for a flush. */
   readonly pending: boolean;
 }
@@ -188,12 +239,14 @@ const ignore = () => undefined;
 
 export function createAutosave(timers: AutosaveTimers = BROWSER_TIMERS): Autosave {
   let run: (() => unknown) | null = null;
+  let runSession = 0;
   let handle: unknown = null;
   // The last save that started or waits to start, until it settles.
   let last: Promise<void> | null = null;
-  // One token for each save that waits for the save before it. A drain
-  // empties the set, and a save whose token is gone does not start.
-  const waiting = new Set<object>();
+  // One token for each save that waits for the save before it, with the
+  // session of that save. A drain deletes the tokens of its session, and a
+  // save whose token is gone does not start.
+  const waiting = new Map<object, number>();
   const stop = () => {
     if (handle !== null) timers.clear(handle);
     handle = null;
@@ -206,30 +259,34 @@ export function createAutosave(timers: AutosaveTimers = BROWSER_TIMERS): Autosav
       return Promise.resolve();
     }
   };
-  const fire = () => {
-    const next = run;
-    run = null;
-    stop();
-    if (!next) return;
-    // With no save that runs, the save starts now and reads the state of now:
-    // a switch flushes before it clears the draft id. Else it waits.
-    let mine: Promise<void>;
-    if (last) {
-      const token = {};
-      waiting.add(token);
-      mine = last.then(() => (waiting.delete(token) ? start(next) : undefined));
-    } else {
-      mine = start(next);
-    }
+  /** Make `mine` the end of the chain, until it settles. */
+  const chain = (mine: Promise<void>) => {
     last = mine;
     void mine.then(() => {
       if (last === mine) last = null;
     });
   };
+  const fire = () => {
+    const next = run;
+    const session = runSession;
+    run = null;
+    stop();
+    if (!next) return;
+    // With no save that runs, the save starts now and reads the state of now:
+    // a switch flushes before it clears the draft id. Else it waits.
+    if (last) {
+      const token = {};
+      waiting.set(token, session);
+      chain(last.then(() => (waiting.delete(token) ? start(next) : undefined)));
+    } else {
+      chain(start(next));
+    }
+  };
   return {
-    schedule(next, waitMs) {
+    schedule(next, waitMs, session = 0) {
       stop();
       run = next;
+      runSession = session;
       handle = timers.set(fire, waitMs);
     },
     hold: stop,
@@ -238,14 +295,28 @@ export function createAutosave(timers: AutosaveTimers = BROWSER_TIMERS): Autosav
       stop();
       run = null;
     },
-    drain() {
-      const dropped = run !== null || waiting.size > 0;
-      stop();
-      run = null;
-      waiting.clear();
-      // Each save of the chain after the one that runs is dropped now, so
-      // the end of the chain settles when the save that runs settles.
+    drain(session = 0) {
+      let dropped = false;
+      if (run !== null && runSession === session) {
+        stop();
+        run = null;
+        dropped = true;
+      } else {
+        // A pending save of another session keeps its edit: it starts now.
+        fire();
+      }
+      for (const [token, owner] of waiting) {
+        if (owner !== session) continue;
+        waiting.delete(token);
+        dropped = true;
+      }
+      // A dropped save settles at once after the save before it, so the end
+      // of the chain settles when each save that still runs has settled.
       return (last ?? Promise.resolve()).then(() => dropped);
+    },
+    after(promise, apply) {
+      // The hand-over can fail, and each save after it still runs.
+      chain((last ?? Promise.resolve()).then(() => promise).then(apply ?? ignore).then(ignore, ignore));
     },
     get pending() {
       return run !== null;
@@ -253,11 +324,34 @@ export function createAutosave(timers: AutosaveTimers = BROWSER_TIMERS): Autosav
   };
 }
 
+/**
+ * What a pop-out gives the full composer when the drain of the reply settles
+ * (EM-G3c-3 item 6): the draft of the reply, and its `hasAttachments`. With
+ * no `draftId`, the composer makes its own draft.
+ */
+export interface DraftHandOver {
+  draftId?: string;
+  draftHasFile?: boolean;
+}
+
 /** The draft that the last autosave of a composer saved, and its session. */
 export interface SavedDraft {
   session: number;
   from: string;
   id: string;
+}
+
+/**
+ * The record of the last save, after a save that gave `next` (EM-G3c-3
+ * review round 1).
+ *
+ * Sessions only go up, so a record of an older session never replaces the
+ * record of a newer one. Else a slow save of an ended session wrote over the
+ * draft that a pop-out handed over, and the next save of the new session made
+ * a second draft. Each write of `lastSaveRef` goes through it.
+ */
+export function recordSave(prev: SavedDraft | null, next: SavedDraft): SavedDraft {
+  return prev && prev.session > next.session ? prev : next;
 }
 
 /**
@@ -276,4 +370,51 @@ export function draftToUpdate(
 ): string | null {
   if (save.session === live.session) return live.draftId;
   return last && last.session === save.session && last.from === save.from ? last.id : null;
+}
+
+/**
+ * The drafts that a discard deletes: each draft of its session, in each
+ * mailbox (EM-G3c-3 item 3, EM-G3c-2-f12).
+ *
+ * That is the draft of the composer while the session lives, the draft that
+ * the session saved last, and each stale draft, with no id twice. The last
+ * save counts in any mailbox. A change of From during the first save leaves
+ * that draft in the old mailbox, and a discard that read the From of now did
+ * not find it. The discard reads `session` and `stale` before its drain, and
+ * it asks after the drain.
+ */
+export function draftsToDiscard(
+  session: number,
+  live: { session: number; draftId: string | null },
+  last: SavedDraft | null,
+  stale: readonly string[],
+): string[] {
+  const ids: string[] = [];
+  const add = (id: string | null) => {
+    if (id && !ids.includes(id)) ids.push(id);
+  };
+  if (live.session === session) add(live.draftId);
+  if (last && last.session === session) add(last.id);
+  for (const id of stale) add(id);
+  return ids;
+}
+
+/**
+ * The draft of the old mailbox that a save of an ended session makes stale,
+ * or null (EM-G3c-3 item 4, EM-G3c-2-f5).
+ *
+ * The member changes the From while the first save runs, and then switches to
+ * another mail. That save ends after its session ended, so no list holds its
+ * draft. The next save of the session makes a draft in the new mailbox. Then
+ * the draft that the session saved last is in another mailbox, and it goes.
+ * The composer asks before it writes `lastSaveRef`.
+ */
+export function supersededDraft(
+  save: { session: number; from: string },
+  last: SavedDraft | null,
+  savedId: string,
+): string | null {
+  return last && last.session === save.session && last.from !== save.from && last.id !== savedId
+    ? last.id
+    : null;
 }

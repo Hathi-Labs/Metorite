@@ -10,6 +10,7 @@ import {
 } from "./searchFilters";
 import { QUICK_ACTIONS, MOCK_ACCOUNTS, MOCK_EMAILS, MOCK_FOLDERS } from "./mockData";
 import { splitQuotedText } from "./quoting";
+import type { DraftHandOver } from "./draftAutosave";
 import { disconnectFailureText, type DisconnectOutcome, type ProviderAvailability } from "./connect";
 import { nextDefaultAfter } from "./mailboxSettings";
 import {
@@ -345,9 +346,10 @@ interface EmailState {
      *  The composer opens dirty, so it saves that edit (EM-G3c-2). */
     unsavedEdit?: boolean;
     /** A pop-out hands over the draft that the inline reply saved, and its
-     *  `hasAttachments`. The composer updates that draft (EM-G3c-2). */
-    draftId?: string;
-    draftHasFile?: boolean;
+     *  `hasAttachments`. The composer updates that draft (EM-G3c-2). The
+     *  promise settles after the drain of the reply, so the composer opens
+     *  at once (EM-G3c-3 item 6). */
+    handOver?: Promise<DraftHandOver>;
     quote?: string;
     replyToMessageId?: string;
     // The LOCAL message id being replied to, so the popped-out composer's
@@ -445,7 +447,7 @@ interface EmailState {
   setSearchFilters: (filters: SearchFilter[]) => void;
   /** Drop the text AND the pills, returning to the plain folder list. */
   clearSearch: () => void;
-  openCompose: (defaults?: { accountId?: string; fromAccountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; unsavedEdit?: boolean; draftId?: string; draftHasFile?: boolean; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
+  openCompose: (defaults?: { accountId?: string; fromAccountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; unsavedEdit?: boolean; handOver?: Promise<DraftHandOver>; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
   closeCompose: () => void;
   hydrateEmail: (email: Email) => void;
   /** "Captured to Tasks" toast state (email → My Tasks inbox). */

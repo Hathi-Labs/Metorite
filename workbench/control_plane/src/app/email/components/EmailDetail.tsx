@@ -32,8 +32,10 @@ import { LabelChip } from "./LabelChip";
 import { MessageTimelineModal } from "./MessageTimelineModal";
 import { useViewMode } from "@/components/ViewModeProvider";
 import {
-  FILES_TOO_LARGE, autosaveWait, createAutosave, draftToUpdate, failedSaveStatus,
-  pickProblem, saveFailureText, sendFailureText, type DraftStatus, type SavedDraft,
+  FILES_TOO_LARGE, autosaveWait, createAutosave, draftsToDiscard, failedSaveStatus,
+  draftToUpdate, holdPick, pickProblem, recordSave, saveFailureText, sendFailureText,
+  supersededDraft,
+  type DraftHandOver, type DraftStatus, type SavedDraft,
 } from "../lib/draftAutosave";
 
 interface EmailDetailProps {
@@ -155,6 +157,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const lastSaveRef = useRef<SavedDraft | null>(null);
   // `hasAttachments` of the row that the last save returned (EM-G3c-2 item 12).
   const replyHasFileRef = useRef(false);
+  // The bytes of the picks that are being read (EM-G3c-3 item 5).
+  const readingRef = useRef(0);
   const [loadingFullBody, setLoadingFullBody] = useState(false);
   const [fullBodyText, setFullBodyText] = useState<string | null>(null);
   // Full message detail (body + attachments) fetched lazily on selection. The
@@ -392,7 +396,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
         // the message, so the drafts that its reply left can go, unless the
         // save wrote one of them. It sets nothing of the new reply.
         if (replySessionRef.current !== session) {
-          lastSaveRef.current = { session, from: savingFrom, id: saved.id };
+          // A change of From left the draft that this reply saved last in the
+          // old mailbox, and no list holds it (EM-G3c-3 item 4).
+          const superseded = supersededDraft({ session, from: savingFrom }, lastSaveRef.current, saved.id);
+          if (superseded && !stale.includes(superseded)) void deleteEmail(superseded);
+          lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
           if (!stale.includes(saved.id)) dropDrafts(stale);
           return;
         }
@@ -405,7 +413,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
         }
         draftIdRef.current = saved.id;
         replyHasFileRef.current = saved.hasAttachments;
-        lastSaveRef.current = { session, from: savingFrom, id: saved.id };
+        lastSaveRef.current = recordSave(lastSaveRef.current, { session, from: savingFrom, id: saved.id });
         // A provider draft cannot move between mailboxes (§11.6 case 7).
         dropStaleDrafts();
         setDraftStatus("saved");
@@ -416,7 +424,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     }, autosaveWait(
       accounts.find((a) => a.id === savingFrom)?.provider,
       replyHasFileRef.current,
-    ));
+    ), session);
     // Stop the timer and keep the save, so a close or a switch can flush it.
     return () => autosave.hold();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -663,21 +671,24 @@ export function EmailDetail({ email }: EmailDetailProps) {
   /** Discard the reply and its auto-saved draft. The X keeps the draft
    *  instead. The reply closes at once. The chain drains first, so no save
    *  that waited writes the draft again, and a first save that runs gives its
-   *  id to the delete (EM-G3c-2 review round 2). */
+   *  id to the delete (EM-G3c-2 review round 2). The delete takes each draft
+   *  of the reply, in each mailbox (EM-G3c-3 item 3). */
   const discardReply = async () => {
     const session = replySessionRef.current;
-    const from = fromId ?? "";
-    const drained = autosave.drain();
+    const stale = staleDraftsRef.current;
+    const drained = autosave.drain(session);
     setSendErr(null);
     resetReplySession();
     await drained;
-    // The reset ended the session, so this reads the last save of the reply.
-    const id = draftToUpdate(
-      { session, from },
+    // The reset ended the session, so this reads the last save of the reply,
+    // in the mailbox that it saved to, not the From of now.
+    const ids = draftsToDiscard(
+      session,
       { session: replySessionRef.current, draftId: draftIdRef.current },
       lastSaveRef.current,
+      stale.splice(0),
     );
-    if (id) void deleteEmail(id);
+    for (const id of ids) void deleteEmail(id);
   };
 
   /** The full outgoing body: the user's new text plus the quoted trailing chain. */
@@ -748,8 +759,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
     try {
       // The send carries the last edit, so each queued autosave goes. A save
       // that runs settles first: a first save gives its draft id, and no older
-      // text without Cc lands after this save (EM-G3c-2 review round 2).
-      await autosave.drain();
+      // text without Cc lands after this save (EM-G3c-2 review round 2). A
+      // save of a reply that the member closed still runs (EM-G3c-3 item 1).
+      await autosave.drain(replySessionRef.current);
       // Native draft-send now carries Cc/Bcc AND attachments (all stored on the
       // provider draft), so whenever there's a draft OR attachments we save the
       // draft with everything and send it natively (Drafts → Sent, no duplicate,
@@ -817,22 +829,26 @@ export function EmailDetail({ email }: EmailDetailProps) {
   };
 
   /** Read picked files into base64 and append them to the reply's attachments.
-   *  A pick that makes the files pass 7.5 MB is refused whole (EM-G3c-2 item 10). */
+   *  A pick that makes the files pass 7.5 MB is refused whole (EM-G3c-2 item 10).
+   *  The limit counts the picks that are being read too (EM-G3c-3 item 5). */
   const addReplyFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const picked = Array.from(files);
-    const problem = pickProblem(replyAttachments, picked);
+    const problem = pickProblem(replyAttachments, picked, readingRef.current);
     if (problem) {
       setSendErr(problem);
       return;
     }
     replyDirty.current = true;
+    const release = holdPick(readingRef, picked);
     try {
       const added = await Promise.all(picked.map(fileToSendAttachment));
       setReplyAttachments((prev) => [...prev, ...added]);
       setSendErr((prev) => (prev === FILES_TOO_LARGE ? null : prev));
     } catch {
       setSendErr("Couldn't read one of the attachments");
+    } finally {
+      release();
     }
   };
 
@@ -855,7 +871,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
   };
 
   /** Hand the current draft off to the full composer (Cc/Bcc, attachments). */
-  const popOutToComposer = async () => {
+  const popOutToComposer = () => {
     const session = replySessionRef.current;
     const from = fromId ?? "";
     const stale = staleDraftsRef.current;
@@ -863,22 +879,25 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // drains: no save of the reply writes the draft after the hand-over. A
     // save that runs settles first, so a first save gives its draft id. A
     // flush here would make two drafts (EM-G3c-2 review rounds 1 and 2).
-    const drained = autosave.drain();
+    const drained = autosave.drain(session);
     setReplyMode(null);
-    // True when the drain dropped an edit. The full composer opens dirty
-    // then, and its own save keeps that edit.
-    const unsavedEdit = await drained;
-    const draftId = draftToUpdate(
-      { session, from },
-      { session: replySessionRef.current, draftId: draftIdRef.current },
-      lastSaveRef.current,
-    );
-    // The new mailbox holds the reply once its own draft exists, so the
-    // drafts of an old mailbox can go. Without one they stay, as a copy.
-    if (draftId) dropDrafts(stale);
-    // The full composer has no Bcc row, so its saves would clear a Bcc. A
-    // reply with a Bcc keeps its draft, and the composer makes its own.
-    const handOver = draftId && !replyBcc.trim() ? draftId : undefined;
+    // The draft of the reply goes to the full composer when the drain
+    // settles. The composer opens now, so a New in that gap cannot take the
+    // composer first (EM-G3c-3 item 6, EM-G3c-2-f8).
+    const handOver: Promise<DraftHandOver> = drained.then(() => {
+      const draftId = draftToUpdate(
+        { session, from },
+        { session: replySessionRef.current, draftId: draftIdRef.current },
+        lastSaveRef.current,
+      );
+      // The new mailbox holds the reply once its own draft exists, so the
+      // drafts of an old mailbox can go. Without one they stay, as a copy.
+      if (draftId) dropDrafts(stale);
+      // The full composer has no Bcc row, so its saves would clear a Bcc. A
+      // reply with a Bcc keeps its draft, and the composer makes its own.
+      const kept = draftId && !replyBcc.trim() ? draftId : undefined;
+      return { draftId: kept, draftHasFile: kept ? replyHasFileRef.current : undefined };
+    });
     openCompose({
       // The pop-out opens on the mailbox of the mail (EM-T8a, MB-2), and it
       // keeps the From that the member chose (EM-T8c review). The composer
@@ -890,11 +909,14 @@ export function EmailDetail({ email }: EmailDetailProps) {
       cc: replyCc,
       subject: replySubject(),
       replyToBody: replyBody,   // the typed new text
-      unsavedEdit,
+      // The composer opens dirty in each case, so its first save writes the
+      // text that the member sees, at the cost of one save. The drain cannot
+      // tell a save that failed, and this closure cannot see `draftStatus`
+      // change (EM-G3c-3 item 2, EM-G3c-2-f9).
+      unsavedEdit: true,
       // The composer updates the draft of the reply, in the mailbox of the
       // From above, and makes no second draft (EM-G3c-2 review round 2).
-      draftId: handOver,
-      draftHasFile: handOver ? replyHasFileRef.current : undefined,
+      handOver,
       quote: replyQuote,        // the collapsed trailing chain
       replyToMessageId:
         replyMode === "forward" ? undefined : replyTarget.providerMessageId,

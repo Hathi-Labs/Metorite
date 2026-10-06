@@ -95,6 +95,24 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-255 · Check the pop-out and the discard of a reply by eye (EM-G3c-3) · [OWNER]
+- **Check:** `rg -n "EM-G3c-3 visual check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result. An agent then writes that
+  line, with the date, under §12.3.3c. Then it deletes this entry.
+- **Why.** EM-G3c-3 changed how the three composers save, pop out and discard
+  a draft. Fakes and source fences test it. Nobody looked at it with a signed-in
+  mailbox, and an agent must not use a real mailbox.
+- **Do.** In Metorite, with a connected Outlook mailbox:
+  1. Open a mail and click Reply. Type a line, click Pop out, and check that the
+     full composer holds the line. Close it, and check that Drafts holds one
+     copy of the reply.
+  2. Click Reply on a mail again. If you have two mailboxes, change the From,
+     type a line and click Discard. Check that Drafts of both mailboxes holds no
+     copy of that reply.
+  3. Do not send either draft.
+- **Authority:** `specs/email_app_master_plan.md` §12.3.3c
+- **Added:** 2026-10-06 · the EM-G3c-3 session
+
 ### H-254 · Count a task's subtasks with one gateway read, as the cascade counts them · [AGENT]
 - **Check:** `rg -n "_subtask_counts" apps/skills/skill-projects/skill_projects/writes.py`
   and read the function. A loop over `/projects/tasks/{tid}/relations` means
