@@ -7276,7 +7276,7 @@ section and the WS-17 row in the same PR (R4).
 | **EM-G8** | 🟢 AGENT-SAFE · visual review | The connect UI: availability, copy, the Workspace admin help (GM-24, GM-26, GM-27) | After EM-G7 (E-D1). Merges dark | M | §12.3.10 |
 | **EM-G9** | 🟢 AGENT-SAFE · R8 | Parity of a Gmail and Outlook pair, and the known limits | After EM-G2 and EM-G3a | S | §12.3.11 |
 | **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
-| **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | 🔨 BUILT, not merged (2026-10-06, branch `email-g3c3-composer`). Audited GO-NARROWED. The known limits f3, f5, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
+| **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #682 (2026-10-06). The visual check is H-255. Audited GO-NARROWED. The known limits f3, f5, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
 | **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
 
 **The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
@@ -8528,7 +8528,7 @@ the DraftCard had the same order. This round closes the P1 and the findings belo
 
 #### 12.3.3c EM-G3c-3 — the known limits of the composer autosave
 
-**Status.** 🔨 BUILT, not merged (2026-10-06, branch `email-g3c3-composer`). Audited 2026-10-06,
+**Status.** ✅ MERGED #682 (2026-10-06), with review round 1. Audited 2026-10-06,
 GO-NARROWED. The audit decided the shape of f8, included f5, and recorded f13. The slice takes
 the known limits that EM-G3c-2 left open (§12.3.3b), apart from f2, f6 and f10. The as-built
 notes, the departures and the mutation table are at the end of this section.
