@@ -21,7 +21,7 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 
 
@@ -31,7 +31,11 @@ class RuleActionAttachment(BaseModel):
     ``path`` is the workspace-relative path (e.g. ``agent-data/budget.pdf``)
     the file was uploaded to / picked from; ``name`` is the display name.
     ``ai_selected`` marks sources the assistant may pick from at draft time
-    rather than always attaching."""
+    rather than always attaching. An unknown key is a 422 (EM-T13a review
+    round 2): each caller sends these four keys, and the store writes only
+    these."""
+    model_config = ConfigDict(extra="forbid")
+
     path: str | None = None
     artifact_id: str | None = None
     name: str | None = None
@@ -39,6 +43,10 @@ class RuleActionAttachment(BaseModel):
 
 
 class RuleActionModel(BaseModel):
+    # An unknown key is a 422 (EM-T13a review round 2). The rules UI, the
+    # email assistant and the GET of a rule send only these fields.
+    model_config = ConfigDict(extra="forbid")
+
     id: str | None = None
     type: str
     label: str | None = None
@@ -579,6 +587,26 @@ async def create_rule(
         return next((r for r in rules if r["id"] == rule_id), {"id": rule_id})
 
 
+_GEN_TEXT_FIELDS = ("label", "to_address", "subject", "content", "url")
+
+
+class _NotText(ValueError):
+    """A field of a generated action that is not a string or a number."""
+
+
+def _gen_text(value: Any) -> str | None:
+    """A text field of a generated action, as the route saves it.
+
+    The model can answer a number where the route wants a string. So a number
+    becomes its text, and an object, a list or a bool refuses the action (EM-T13a
+    review round 1). A 422 on one spec once saved the specs before it."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise _NotText(type(value).__name__)
+    return str(value) or None
+
+
 _GEN_ACTION_TYPES = {
     "ARCHIVE", "LABEL", "MARK_READ", "STAR", "MARK_SPAM", "TRASH",
     "MOVE_FOLDER", "REPLY", "FORWARD", "DRAFT_EMAIL", "CALL_WEBHOOK",
@@ -649,14 +677,11 @@ def _normalize_generated_rules(data: Any) -> list[dict[str, Any]]:
             atype = str(a.get("type", "")).upper()
             if atype not in _GEN_ACTION_TYPES:
                 continue
-            actions.append({
-                "type": atype,
-                "label": a.get("label") or None,
-                "to_address": a.get("to_address") or None,
-                "subject": a.get("subject") or None,
-                "content": a.get("content") or None,
-                "url": a.get("url") or None,
-            })
+            try:
+                fields = {f: _gen_text(a.get(f)) for f in _GEN_TEXT_FIELDS}
+            except _NotText:
+                continue
+            actions.append({"type": atype, **fields})
         if not actions:
             continue
         op = str(spec.get("conditional_operator", "AND")).upper()
@@ -744,6 +769,45 @@ class RuleGenerateRequest(BaseModel):
     prompt: str
 
 
+class GeneratedRuleSpec(BaseModel):
+    """One rule as ``_normalize_generated_rules`` makes it, with no account."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    instructions: str | None = None
+    from_pattern: str | None = None
+    subject_pattern: str | None = None
+    conditional_operator: str = "AND"
+    actions: list[RuleActionModel]
+
+
+class RuleBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str
+    rules: list[GeneratedRuleSpec] = Field(min_length=1, max_length=50)
+
+
+async def _insert_specs(
+    db: Any, account_id: str, specs: list[dict[str, Any]],
+) -> list[str]:
+    """Insert each spec as a rule of ``account_id``. Caller commits, so the
+    caller's one session makes the list all or nothing."""
+    created_ids: list[str] = []
+    for spec in specs:
+        model = RuleModel(
+            account_id=account_id,
+            name=spec["name"],
+            instructions=spec.get("instructions"),
+            from_pattern=spec.get("from_pattern"),
+            subject_pattern=spec.get("subject_pattern"),
+            conditional_operator=spec.get("conditional_operator", "AND"),
+            actions=[RuleActionModel(**a) for a in spec["actions"]],
+        )
+        created_ids.append(await _insert_rule(db, model))
+    return created_ids
+
+
 @router.post("/rules/generate")
 async def generate_rules(
     req: RuleGenerateRequest,
@@ -761,21 +825,52 @@ async def generate_rules(
         if not specs:
             return {"created": [],
                     "error": "Couldn't turn that into a rule — try rephrasing."}
-        created_ids: list[str] = []
-        for spec in specs:
-            model = RuleModel(
-                account_id=req.account_id,
-                name=spec["name"],
-                instructions=spec.get("instructions"),
-                from_pattern=spec.get("from_pattern"),
-                subject_pattern=spec.get("subject_pattern"),
-                conditional_operator=spec.get("conditional_operator", "AND"),
-                actions=[RuleActionModel(**a) for a in spec["actions"]],
-            )
-            created_ids.append(await _insert_rule(db, model))
+        created_ids = await _insert_specs(db, req.account_id, specs)
         rules = await _load_rules(db, req.account_id)
         created = [r for r in rules if r["id"] in set(created_ids)]
         return {"created": created}
+
+
+@router.post("/rules/generate/preview")
+async def preview_generated_rules(
+    req: RuleGenerateRequest,
+    user: UserContext = Depends(get_current_user),
+):
+    """The specs of a plain-English description, and NO save (EM-T13a, §10.4.15).
+
+    The email assistant asks the member with a card when a spec sends mail
+    out, then saves the specs through ``POST /rules/batch``. This is a path of
+    its own, not a field of ``/rules/generate``: an older gateway answers 404
+    here, so the tool saves nothing, where it would ignore a field and save.
+    The model call runs with no session open."""
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+    if not (req.prompt or "").strip():
+        return {"specs": [], "error": "Describe at least one rule."}
+    specs = await _llm_generate_rules(req.prompt)
+    if not specs:
+        return {"specs": [],
+                "error": "Couldn't turn that into a rule — try rephrasing."}
+    return {"specs": specs}
+
+
+@router.post("/rules/batch")
+async def create_rules_batch(
+    req: RuleBatchRequest,
+    user: UserContext = Depends(get_current_user),
+):
+    """Create a list of rules in ONE tenant session: all of them or none.
+
+    EM-T13a review round 1. The body is checked whole before the first insert,
+    and a failed insert rolls the session back. So a retry never makes a
+    second copy of the rules before a bad one. Returns the created rules."""
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, req.account_id, user.email or "anonymous")
+        created_ids = await _insert_specs(
+            db, req.account_id, [spec.model_dump() for spec in req.rules])
+        rules = await _load_rules(db, req.account_id)
+        ids = set(created_ids)
+        return {"created": [r for r in rules if r["id"] in ids]}
 
 
 @router.patch("/rules/{rule_id}")
