@@ -1,6 +1,8 @@
 # Projects agent parity — the assistant can do everything the app can — WS-46
 
-**Status: DRAFT, for owner review. Nothing is built.** Written 2026-10-05.
+**Status: ACTIVE. D91 DECIDED by the owner on 2026-10-06, with the defaults
+of §14 as the answers to Q1 to Q6. Nothing is built. P1 is next.** Written
+2026-10-05.
 **Verified against code on 2026-10-05**, at `origin/main` `c26b67549`. Every
 anchor below carries a file and a line. Re-verify each one at dispatch,
 because the tree moves every day.
@@ -24,8 +26,8 @@ suite (email, CRM, future modules) to create or update tasks and project
 sections."
 ```
 
-**Board row:** **WS-46**. **Owning spec:** this file. **Proposes:** **D91**
-(`work_plan.md` §3).
+**Board row:** **WS-46**. **Owning spec:** this file. **Records:** **D91**,
+decided by the owner on 2026-10-06 (`work_plan.md` §3).
 
 **What this spec owns, and what it does not.** It owns the parity rule, its
 fences, the gap closure and the cross-suite context. `projects_ai_chat.md`
@@ -198,7 +200,7 @@ the chat does part of it, or does it in a way that fails in practice.
 | G19 | **A plan with subprojects** | Nodes made one at a time | `POST /projects/nodes` | `propose_plan` writes one node (`forms.py:934-940`), and W1 tells the model to use subprojects | Partial | P8 |
 | G20 | A repeat rule in a plan, an intake capture or a private capture | Not in one step | `PUT …/recurrence` after the create | None | **Missing** | P8 |
 | G21 | **Attach a file to a task** | `TaskBody.tsx:455` | `POST /projects/tasks/{id}/attachments` (multipart) | Class X, "The chat has no file input". That reason is false since H-229 | **Missing** | P10 |
-| G22 | Filter the board from the chat | The filter bar | Browser state | `set_filter` is not built (`projects_ai_chat.md` §4.2) | **Missing** | Open, Q4 |
+| G22 | Filter the board from the chat | The filter bar | Browser state | `set_filter` is not built (`projects_ai_chat.md` §4.2) | **Missing** | Not now (Q4) |
 
 **Count: 22 gaps.**
 
@@ -232,7 +234,7 @@ class X, with the reason the manifest records:
 - the personal project door, the personal batch, organize, steps and lanes
   doors, and the area writes.
 - the raw attachment bytes.
-- the nudge, until the owner answers Q3.
+- the nudge. The owner kept it out of the chat on 2026-10-06 (Q3).
 
 ### 3.4 The refusal the model never reads
 
@@ -647,8 +649,8 @@ migration and no new tool name. So the covered list (F6) and `own_tool_scope`
    `{"assign", "set_recurrence"}`.
 4. **A weekly rule with no day takes the due date's weekday.** With no due
    date, it takes today's weekday in the member's timezone. The card names
-   the day, so the member sees the guess and can decline. Q1 asks the owner
-   to confirm this default.
+   the day, so the member sees the guess and can decline. The owner
+   confirmed this default on 2026-10-06 (Q1).
 5. **A repeat with no due date sets the due date.** A rule anchored on `due`
    with no due date measures from today (`recurrence.py:243-248`). The tool
    sets `due` to the first occurrence, and the card shows it. A member who
@@ -938,7 +940,7 @@ slice updates this spec's status header in the same PR (R4).
 | **P8 · Plans that match the app** | `propose_plan` rows take a subproject group and a repeat rule · `capture_intake` and `create_personal_task` take a repeat rule | G19, G20 | AGENT-SAFE |
 | **P9 · Context from email and CRM** | §9.4 · the delegated message shape · the mailbox line on the card · `source` and `source_ref` · PO-3 | G10, G11 | AGENT-SAFE |
 | **P10 · Attach a chat file to a task** | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
-| **P11 · Filter the board** | `set_filter`, once the page's filter state has a stable shape | G22 | Waits on Q4 |
+| **P11 · Filter the board** | `set_filter`, once the page's filter state has a stable shape | G22 | Not now. The owner answered Q4 on 2026-10-06 |
 | **P12 · MCP facade for external clients** | Its own spec first (§5.3) | — | ⏸ PARKED, OWNER-GATE |
 
 **Order.** P1 first, because it is the reported failure. P2 next, because
@@ -954,10 +956,10 @@ in P3 and P9 `evals/projects_ops/`. P10 touches `client.py`. No slice
 touches the gateway, except that a slice may find a route bug. Then that bug
 is its own PR first.
 
-**No slice adds a migration.** If the owner answers Q2 with "a link back to
-the email", that answer adds `source_ref` to `pm_tasks`. Then the migration
-number is the next free number at build time (R1), and it is expand-only
-(R6).
+**No slice adds a migration.** The owner answered Q2 on 2026-10-06: no link
+from a task back to its email. If a later decision wants that link, it adds
+`source_ref` to `pm_tasks`. Then the migration number is the next free
+number at build time (R1), and it is expand-only (R6).
 
 ### 12.1 Acceptance that binds every slice
 
@@ -989,11 +991,12 @@ own. A slice that finds it must change SQL adds one.
 
 ---
 
-## 13. D91 — PROPOSED
+## 13. D91 — DECIDED (owner, 2026-10-06)
 
 **D91 — The Projects assistant reaches the app through native tools, held to
 the API and to the UI by fences. MCP is a later facade for external clients.**
-PROPOSED 2026-10-05. The owner confirms the text. Board: **WS-46**.
+Proposed 2026-10-05. The owner approved the text as written on 2026-10-06.
+Board: **WS-46**.
 
 1. **Native tools.** The Projects assistant's tools live in `skill_projects`,
    say `open_world=False`, and call the gateway as the member. No MCP server
@@ -1022,12 +1025,12 @@ that every MCP tool is egress.
 
 ---
 
-## 14. Open questions for the owner
+## 14. Questions for the owner — answered 2026-10-06
 
-Each question has a default. The slices build to the default until the owner
-answers.
+The owner approved D91 on 2026-10-06 and took the default of each question
+as the answer. The slices build to these answers.
 
-| # | Question | Default |
+| # | Question | Answer (owner, 2026-10-06) |
 |---|---|---|
 | **Q1** | A weekly repeat with no day named: take the due date's weekday, or always ask? | Take the due date's weekday, else today's, and name it on the card. The member can decline |
 | **Q2** | Should a task made from an email link back to the email? This needs `source_ref` on `pm_tasks`, which is a migration | No link in P9. `source="email"` and the line on the card only. Intake keeps its `source_ref` |
@@ -1044,3 +1047,5 @@ answers.
   Measured on `origin/main` `c26b67549`. Three read-only research passes
   covered the API and the UI, the tool surface and its root cause, and the
   egress rules and the cross-module paths.
+- 2026-10-06 — The owner approved D91 as written, and took the default of
+  each question in §14 as the answer. The spec is ACTIVE, and P1 is next.
