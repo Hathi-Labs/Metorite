@@ -4,7 +4,9 @@
 of §14 as the answers to Q1 to Q6. P1 is BUILT (2026-10-06, branch
 `ws46-p1-recurring-task`). P2 is BUILT (2026-10-06): a refusal
 reaches the model as text, and an unknown argument is refused by name.
-P3 is next.** Written 2026-10-05.
+P3 is BUILT (2026-10-06): `evals/projects_ops/` runs PO-1 to PO-7, and the
+scripted run passes six tasks in six, uncovered and covered. PO-3 is
+`xfail` until P8 and P9. P4 and P5 are next.** Written 2026-10-05.
 **P1, as built.** `create_task` takes the eight `repeat*` arguments and sets
 the rule under its one card. `task_detail` prints "Repeats:". The fence is
 `tests/unit/test_projects_recurring_task.py`. One deviation: the weekly
@@ -939,7 +941,7 @@ slice updates this spec's status header in the same PR (R4).
 |---|---|---|---|
 | **P1 · The recurring task** ✅ BUILT 2026-10-06 | `create_task` takes the rule under one card · the weekly default · `task_detail` shows the rule · §9.1 and §9.2 | G1, G2 | AGENT-SAFE |
 | **P2 · Refusals the model reads** ✅ built 2026-10-06 | `refusals_as_text` on every tool · `extra="forbid"` input models · §9.3 · F4 and F5 | G3, G4 | AGENT-SAFE |
-| **P3 · The eval harness** | `evals/projects_ops/` with PO-1, PO-2 and PO-4 to PO-7, scripted, both modes | — | AGENT-SAFE. The sweep on the production Router is OWNER-GATE |
+| **P3 · The eval harness** ✅ BUILT 2026-10-06 | `evals/projects_ops/` with PO-1, PO-2 and PO-4 to PO-7, scripted, both modes | — | AGENT-SAFE. The sweep on the production Router is OWNER-GATE |
 | **P4 · The field fence** | `SENDS`, `FIELD_EXEMPT`, `FIELD_PLANNED` and F2. Every open gap is recorded in `FIELD_PLANNED` | — | AGENT-SAFE |
 | **P5 · The UI action fence** | `UI_ACTIONS` and F3 | — | AGENT-SAFE |
 | **P6 · Task fields** | `start` on create · task type by name · custom field values by name · required fields on a move · `include_subtasks`, asked once as D-PM-38 asks | G5 to G9 | AGENT-SAFE |
@@ -1083,3 +1085,23 @@ as the answer. The slices build to these answers.
   - A declared field that the schema hides, `importance: Removed`, still
     gets the answer of its own tool.
   - The seam is per agent. Other agents keep the MAF default.
+- 2026-10-06 — P3 is built. These facts are as built:
+  - `evals/projects_ops/` imports the coding harness. The coding `Harness`
+    gains one hook, `serve_stub`, so this eval serves its own stub.
+  - The stub records each request with its body and its answer. A repeat
+    rule goes through the route's own `validate_rule`.
+  - Each checker reads the cover from `executor.run_was_no_egress`, not
+    from the flag that the sweep set.
+  - `skill-eval.yml` runs `--scripted` in both covers. The unit job runs
+    `tests/unit/test_projects_ops_eval.py`, and each rule of each checker
+    fails on one mutation there.
+  - PO-3 has no sequence, so the fence proves its checker on recorded
+    runs. The stub email agent of §11.1 item 3 is part of P9.
+  - The PO-6 refusal names the lanes on its "Refused:" line. Its "Next:"
+    line is the general one. So the checker reads the whole refusal, not
+    the "Next:" line that §11.2 names.
+  - A finding, not fixed in P3: `find_tasks` refuses a query under 3
+    characters, and the route takes 2 (`filters.MIN_QUERY`). So the tool
+    refuses "#7". The PO-7 sequence reads the task with `list_tasks`.
+  - Nobody has run the model sweep. On the production Router it is
+    OWNER-GATE (§11.3).
