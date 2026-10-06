@@ -25,6 +25,7 @@
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
 > 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
+> 📝 **§13 Insights is SPECIFIED (2026-10-07), not audited.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-42 and the slices EM-T14a to EM-T14g.
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -11773,3 +11774,667 @@ refresh token from Testing still ends after 7 days.
   `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` (measured by name, 2026-10-05). Nobody in
   this plan set them. Name its Google Cloud project, its redirect URIs and the scopes it allows. If
   it is not the mail app of §12.4, replace it at step 9 before EM-G10 (D-EM-36).
+
+---
+
+## 13. Insights — facts from mail, for the member (2026-10-07)
+
+> **Owner request, 2026-10-06, in chat.** The owner asked for two things. Both are quoted as
+> given.
+
+```text
+In the email app, we should enable analysis of attachments and of content
+within email chats. The analysis should appear in a UI/UX dashboard and cover
+project management, finance, sales, and other company-related areas, all
+accessible through the email assistant.
+```
+
+```text
+the systems that we create to ensure that we properly can handle large amounts
+of data, large Excel files, etc., without hallucinating.
+```
+
+> **Status.** 📝 SPECIFIED (2026-10-07), not audited. The orchestrator recommended this design to
+> the owner on 2026-10-06. Each anchor below was verified against the code at `d60ab0b19` on
+> 2026-10-07. Re-verify each anchor at dispatch, because the code is the fact.
+
+> **Why a section of its own.** §11 and §12 set the pattern. A feature with its own decisions and
+> several slices gets a top-level section. §10.4 holds single fixes and the tenancy work. The
+> slices here are EM-T14a to EM-T14g.
+
+**Short paths in this section.**
+
+- `automation/`, `transport/`, `core.py`, `digest.py` and `scheduler_hooks.py` live in
+  `apps/services/gateway/gateway/routes/email/`.
+- `llm_cap.py`, `post_sync.py` and `scheduler.py` live in
+  `apps/services/email_ingestion/email_ingestion/`.
+- `components/automation/`, `components/` and `lib/` live in
+  `workbench/control_plane/src/app/email/`.
+- `agents.py`, `config.json` and `instructions.md` live in `apps/agents/agent-email-assistant/`.
+
+### 13.0 The answer, in six rules
+
+1. **Extract once, in the background.** A job reads new mail and its files. It writes typed facts
+   to ONE new table, `email_insights`. A view and a tool read that table, and never the inbox.
+2. **A number comes from the text, never from the arithmetic of a model.** The model copies a
+   short quote. Code finds the quote in the source, and code parses the amount and the date from
+   it. A fact whose quote is not in the source is not written.
+3. **A sum comes from SQL.** The view and the assistant read each total from the route, one total
+   for each currency. Nothing adds two currencies.
+4. **A fact is as private as its mail.** Only the member who owns the mailbox sees its facts
+   (D-EM-4).
+5. **Insights suggests, and never acts.** A card can open the task capture of today. The member
+   confirms each write there. The job writes its own table and nothing else.
+6. **It ships dark and opt-in.** `EMAIL_INSIGHTS` is off by default. A member turns Insights on for
+   each mailbox.
+
+**What does not change.** The rules, the triage on `decide` and the digest keep their behaviour
+(D-EM-7). The import range binds (D-EM-10, D-EM-11). The storage limit binds (D-EM-14). A mailbox
+stays the boundary of the AI context (D-EM-18).
+
+### 13.1 Measured state (2026-10-07, at `d60ab0b19`)
+
+- **No fact store exists.** The digest and the Dashboard count mail, threads and labels. No table
+  holds an amount, a due date or a counterpart from a mail.
+- **The Dashboard.** `components/automation/DashboardView.tsx` (621 lines) is the view of the
+  feature key `digest`. The sidebar names it "Dashboard" (`AccountSidebar.tsx` ~:109-119). It
+  shows stat tiles, "Needs your reply", "Waiting on them", "Commitments", "By category" and the
+  noisy senders. It reads `GET /email/digest` (`digest.py` ~:652).
+- **The Analytics view.** `components/automation/AnalyticsView.tsx` (954 lines) reads
+  `GET /email/analytics/overview` (`automation/analytics.py` ~:51). It shows counts over a range
+  of 7 days to 1 year.
+- **No feature key is named "Insights".** `AutomationFeature` (`lib/types.ts` ~:243-248) holds
+  `chat`, `ai-settings`, `digest`, `unsubscribe` and `analytics`. The one "See insights" link
+  opens `analytics` (`OnboardingRulesStep.tsx` ~:405).
+- **The shared reader.** `acb_skills.attachment_text.extract_text` reads `.docx`, `.xlsx`, `.pdf`,
+  `.html`, `.htm`, `.txt`, `.md` and `.csv` (`SUPPORTED_SUFFIXES` ~:162). EM-T11b merged as #692.
+  The text route of EM-T11 cuts its answer at 20,000 characters (`MAX_TEXT_OUTPUT_CHARS`,
+  `transport/attachments.py` ~:339). It parses through `parse_bounded`, a shared pool that
+  answers "busy" when each slot is in use.
+- **Files are not stored.** `email_attachments` holds the name, the type, the size and the
+  provider id. `_fetch_owned_attachment` (`transport/attachments.py` ~:170) gets the bytes from
+  the provider, with a cache of one hour in tenant Redis. It takes a `UserContext`, so a job
+  cannot call it as it is.
+- **The cap and the budget (EM-T4b).** `llm_cap.llm_slot()` binds a call only inside
+  `automation_scope`. One counter holds the calls of a mailbox for each UTC day. It has no label
+  for each caller. `EMAIL_LLM_DAILY_CALLS` is 2000. `EMAIL_LLM_BUDGET_MODE` is `log` in
+  production, so the budget counts and stops nothing.
+- **The filters that cost no model call.** `email_messages.categories` holds the labels of the
+  rules. `CLEANUP_CATEGORIES` (`core.py` ~:567) names `Newsletter`, `Marketing`, `Receipt`,
+  `Calendar`, `Notification` and `Cold Email`. `email_cold_senders` holds a cold verdict for each
+  sender. `email_newsletters` and `email_messages.unsubscribe_link` mark bulk mail.
+- **The hooks.** `scheduler_hooks.process_new_mail` runs after a sync that wrote mail.
+  `register_email_post_sync_hooks` (~:278) adds the hooks that run each cycle, such as
+  `classify_threads`. `as_mailbox_owner` opens the member scope and `automation_scope` together.
+- **Visibility.** RLS on each `email_*` table binds the organization, and nothing more. The member
+  check is in the gateway. `_account_scope` (`core.py` ~:491) and `_assert_account_owner` (~:662)
+  read `email_accounts.user_id`.
+- **The owner-scope fence covers a new table with no edit.** `test_email_owner_scope_fence.py`
+  treats each `CREATE TABLE email_*` as a child table. So each route that reads `email_insights`
+  must prove the owner.
+- **Tasks from mail exist.** `routes/tasks/capture_email.py` drafts a task from a mail
+  (`POST /tasks/capture/from-email/preview`, ~:752). It writes only on `/create`. It also finds a
+  commitment in a sent reply, and the member confirms it in a popup. Each such task keeps
+  `origin.kind = 'email'`.
+- **The CRM already writes leads from mail.** `CRM_AUTO_LEAD`, off by default, makes a lead from an
+  unknown sender (`routes/crm/auto_lead.py`). CRM is a `preview` pane, and not on the launch
+  surface (`launch_surface.md` §2).
+- **The data toolkit is not on `main`.** `maf_coding_engine.md` §7.10 (WS-43y) is on the local
+  branch `data-toolkit` only. WS-43y1a is built, not merged. Its six tools run inside a chat run,
+  through the broker, as the member of the run. A background job has no such run.
+- **The migrations.** The highest file on `main` is `229_email_keep_separate.sql`. The branch
+  `ws43t2-sessions` holds 228, and the branch `wa-c1-webhook-tenant` holds 230. So 231 is the
+  first free number today. Take the number again at build time, and check it again at merge (R1).
+
+### 13.2 Decisions (2026-10-07)
+
+The orchestrator proposed these on 2026-10-06. D-EM-37 to D-EM-39 are defaults, and the owner may
+change each one. D-EM-40 to D-EM-42 are agent decisions, and the owner can reverse each one.
+
+| Id | Decision |
+|---|---|
+| **D-EM-37** | **Finance first, then Projects, then Sales.** EM-T14b extracts finance facts only. Projects (EM-T14e) and Sales (EM-T14f) follow. "Other company" (hiring, vendors, legal) waits for EM-T14g. *Default, owner may change.* |
+| **D-EM-38** | **Only the last 90 days of mail.** The job reads a message only when its `received_at` is less than 90 days old. The import range still binds (D-EM-10, D-EM-11). So a member who imported 1 month gets facts for 1 month. *Default, owner may change.* |
+| **D-EM-39** | **Opt-in for each mailbox.** A new column, `email_assistant_settings.insights_enabled`, is false by default. A missing settings row reads as false. The member turns it on in the Dashboard or in AI settings. *Default, owner may change.* |
+| **D-EM-40** | **The job skips the figures of a spreadsheet until the data toolkit can run with no chat.** A `.xlsx` or `.csv` file gives no fact. The member can still ask the assistant, which reads the file with `read_email_attachment`. The other choice was a fact with a lower confidence. It still shows on a card and still adds to a sum, and a wrong total is worse than a missing one. *Agent decision (orchestrator, 2026-10-07). The owner can reverse it.* |
+| **D-EM-41** | **The quote rule.** Each fact carries a quote of at most 200 characters from its source. Code checks that the quote is in the source text. Code parses the amount, the currency and the date from the quote. The number that the model gives is never stored. *Agent decision (orchestrator, 2026-10-07). The owner can reverse it.* |
+| **D-EM-42** | **Suggest, never write.** The job writes `email_insights` and two progress columns of `email_messages`, and nothing else. A task comes only from a member act, through the capture path of today. A CRM record waits for Q-IN-3. *Agent decision (orchestrator, 2026-10-06). The owner can reverse it.* |
+
+### 13.3 The fact table
+
+**ONE new table, `email_insights`.** The name starts with `email_` on purpose. The owner-scope
+fence then covers it (§13.1).
+
+| Column | Type | What it holds |
+|---|---|---|
+| `id` | `uuid PRIMARY KEY DEFAULT gen_random_uuid()` | The fact |
+| `organization_id` | `uuid NOT NULL`, references `organization (id)` on delete cascade | The tenant. FORCE RLS binds it (R5) |
+| `account_id` | `uuid NOT NULL`, references `email_accounts (id)` on delete cascade | The mailbox. The owner scope reads it |
+| `message_id` | `uuid NOT NULL`, references `email_messages (id)` on delete cascade | The source mail |
+| `attachment_id` | `uuid NULL`, references `email_attachments (id)` on delete cascade | The source file. NULL means the body |
+| `domain` | `text NOT NULL`, a CHECK on `finance`, `projects`, `sales`, `company` | The tab |
+| `fact_type` | `text NOT NULL` | One type of §13.4. The write path refuses any other. No CHECK holds the list, so a new type needs no migration |
+| `direction` | `text NULL`, a CHECK on `payable`, `receivable` | Finance only. Payable: the member's company owes. Receivable: the company is owed |
+| `title` | `text NOT NULL` | At most 120 characters |
+| `counterpart` | `text NULL` | The company or the person, at most 120 characters |
+| `counterpart_email` | `text NULL` | The sender address in lower case. It comes from the message row, never from the model |
+| `ref` | `text NULL` | An invoice, PO or quote number, at most 64 characters |
+| `amount` | `numeric(18,2) NULL` | Parsed by code from `quote` (D-EM-41) |
+| `currency` | `char(3) NULL` | An ISO 4217 code, parsed by code. NULL when the quote names no currency |
+| `due_on` | `date NULL` | Parsed by code from `quote` |
+| `quote` | `text NOT NULL` | The source span, at most 200 characters |
+| `confidence` | `real NOT NULL`, a CHECK from 0 to 1 | Set by code (§13.5 item 7), never by the model |
+| `extractor_version` | `text NOT NULL` | For example `fin-1` |
+| `dedupe_key` | `text NOT NULL` | §13.5 item 6 |
+| `state` | `text NOT NULL DEFAULT 'open'`, a CHECK on `open`, `done`, `dismissed` | The mark of the member. A new extraction keeps it |
+| `created_at`, `updated_at` | `timestamptz NOT NULL DEFAULT now()` | |
+
+**Indexes.** `UNIQUE (account_id, dedupe_key)`. `(account_id, domain, state, due_on)` for the
+tabs. `(message_id)` for the cascade and the rewrite.
+
+**Two progress columns on `email_messages`.** `insights_at timestamptz NULL` records that the job
+read the message, with facts or with none. `insights_tries smallint NOT NULL DEFAULT 0` counts the
+failures. A partial index, `(account_id, received_at DESC) WHERE insights_at IS NULL`, serves the
+batch read.
+
+**One opt-in column.** `email_assistant_settings.insights_enabled boolean NOT NULL DEFAULT false`
+(D-EM-39). It follows migration 224.
+
+**Deletes.** A disconnect deletes the mailbox, and the cascade deletes its facts. "Remove older
+mail from Metorite" (EM-T6c) deletes messages, and the cascade deletes their facts. A mailbox kept
+separate (D-EM-28) stays out of each read of All inboxes, because each read uses `_account_scope`.
+
+### 13.4 The fact types
+
+Each type has a fixed set of fields. The prompt names them, and the write path drops each other
+field.
+
+| Domain | Type | Fields |
+|---|---|---|
+| finance (EM-T14b) | `invoice` | `direction`, `counterpart`, `ref`, `amount`, `currency`, `due_on` |
+| finance | `payment_request` | A reminder or a demand to pay. `direction`, `counterpart`, `ref`, `amount`, `currency`, `due_on` |
+| finance | `purchase_order` | A PO. `direction`, `counterpart`, `ref`, `amount`, `currency`, `due_on` |
+| finance | `payment_confirmation` | A payment that was made or received. `direction`, `counterpart`, `ref`, `amount`, `currency` |
+| finance | `credit_note` | A credit or a refund. `direction`, `counterpart`, `ref`, `amount`, `currency` |
+| projects (EM-T14e) | `deadline`, `request`, `blocker`, `delivery` | `counterpart`, `ref`, `due_on` |
+| sales (EM-T14f) | `lead`, `quote`, `order`, `deal_signal` | `counterpart`, `ref`, `amount`, `currency`, `due_on` |
+| company (EM-T14g) | `hiring`, `vendor`, `legal` | `counterpart`, `ref`, `due_on` |
+
+Each type also has `title` and `quote`. EM-T14e and EM-T14f fix the meaning of their types in the
+eval set before the build.
+
+### 13.5 The extraction job, and how it stays correct on large input
+
+1. **Where it runs.** A new post-sync hook, `extract_insights`, joins `register_email_post_sync_hooks`.
+   `as_mailbox_owner` wraps it. It runs each cycle, as `classify_threads` does, so a quiet
+   mailbox drains its backlog.
+   - The flag is read before the hook starts, as `process_new_mail` reads `CRM_AUTO_LEAD`. With
+     the flag off, the hook opens no session.
+   - The account id comes from the loop. The loop reads it from `email_accounts`, never from mail.
+2. **The batch.** The job selects at most 10 messages of the mailbox, newest first. Each one has
+   `insights_at IS NULL`, `insights_tries < 3` and a `received_at` inside 90 days (D-EM-38).
+   - It reads in one tenant session. It calls the model with no session open. It writes in a
+     second session (the rule of EM-T4a).
+3. **The free filters.** A message that matches one filter is marked read with no model call:
+   - Its folder is not `inbox` or `archive`. Finance reads inbound mail only.
+   - Its sender is an address of the member (D-EM-27, `identity.SELF_ADDRESSES_SQL`).
+   - It has the label `Newsletter`, `Marketing`, `Notification`, `Calendar` or `Cold Email`.
+     `Receipt` stays in, because a receipt is a finance fact.
+   - Its sender has `AI_LABELED_COLD` in `email_cold_senders`, or a row in `email_newsletters`.
+   - It has an `unsubscribe_link` and no file.
+   - It has no stored body and no supported file. The job never fetches a body live, so the
+     storage limit holds (D-EM-14, Q3).
+4. **The model calls.** One call reads the subject, the sender, the date and the body, cut at
+   8,000 characters. One more call reads each supported file, at most 3 files for each mail.
+   - The file text comes from `extract_text` through `parse_bounded`, cut at 20,000 characters,
+     as the text route does. A "busy" answer leaves the message for the next cycle.
+   - The bytes come from a new helper, `fetch_attachment_for_account(db, attachment_id,
+     account_id)`. It shares the cache and the caps with `_fetch_owned_attachment` through one
+     inner function. It answers None for a file of another mailbox.
+   - Each call goes through `_llm_json` (`core.py` ~:742), so `llm_slot` binds it. The model is
+     the setting `email_insights_model`, and the default is `tier-fast`. EM-T14b measures two
+     tiers on the eval set, and records the choice.
+   - The prompt gives the closed list of types and fields. It puts the mail between two marker
+     lines with a random token, as data. It says: "Copy each figure exactly as the text shows it."
+5. **The checks in code.** These run on each answer before any write:
+   - The answer is JSON with a `facts` list. A field outside its type is dropped. An unknown type
+     drops the fact.
+   - The quote, with its white space folded, must be in the source text. Else the fact is dropped.
+   - `parse_amount` reads the amount and the currency from the quote. It reads `1,234.50`,
+     `1,23,456`, `₹`, `Rs.`, `INR`, `$`, `USD`, `€` and `EUR`. A quote with no amount, or with
+     two, gives no amount.
+   - `parse_due` reads the date from the quote. It reads an absolute date only. A relative date,
+     such as "next Friday", gives no date.
+   - Each text field is cut to its cap, and loses each control and format character.
+6. **The dedupe key.** The key is `type|ref|amount|currency|counterpart domain`, in lower case. A
+   fact with no `ref` and no amount uses `type|message id|quote hash`. So a reply that quotes an
+   invoice again gives no second card.
+7. **Confidence, set by code.**
+   - 0.9: the quote is in the source, and each field of the type that the quote holds parses.
+   - 0.6: the quote is in the source, and one of those fields does not parse.
+   - 0.3: the reader cut the source text (`stopped`, or past the cut of item 4).
+   - The view marks 0.3 as "Check this". The model gives no confidence.
+8. **A failure.** `LLMBudgetExhausted` ends the batch, and each row waits for the next cycle. Any
+   other error adds 1 to `insights_tries`. After 3 tries, the job marks the message read with no
+   facts, and the log says so.
+9. **The write.** One session does these steps:
+   - It checks that the message still exists and that the opt-in still holds.
+   - It deletes the facts of that message and source with an older `extractor_version`.
+   - It upserts on `(account_id, dedupe_key)`, and it keeps `state`.
+   - It sets `insights_at`.
+10. **The log line.** `email.insights.batch` holds counts only: messages read, skips for each
+    filter, calls, facts written and drops for each check. It holds no mail text and no amount.
+
+**A spreadsheet (D-EM-40).** The job reads no figure from a `.xlsx` or a `.csv` file. WS-43y can
+later give its engine an entry with no chat run. Then a later slice reads each figure with a SQL
+query, and the fact keeps the cells of the result (`source_ranges`).
+
+**Prompt injection.** Text in a mail can change only the fields of its own facts.
+
+- The job holds no tool. The model can only give the JSON of item 5.
+- The closed types and the quote rule bound each field. A mail that says "record an invoice of
+  9,99,999" gives a fact only when that figure is in the mail. The card then shows the quote.
+- A fake invoice in a real mail stays a risk (§13.10). The card shows the sender address.
+- The view shows each field as plain text. The tool puts each row between marker lines as data,
+  as `_frame_attachment_text` does.
+
+### 13.6 The cost model
+
+**For each mail.** A filter match costs 0 calls. Else the body costs 1 call, and each supported
+file costs 1 more call. The cap is 4 calls for each mail. A spreadsheet costs 0 calls (D-EM-40).
+
+**An estimate for one mailbox.** EM-T14b measures each assumption from the log line of §13.5.
+
+| Item | Estimate | Basis |
+|---|---|---|
+| Inbound mail each day | 100 | An assumption |
+| Mail that the free filters skip | 60 % | An assumption |
+| Body calls each day | 40 | 100 × 0.4 |
+| File calls each day | 10 | One in four of the mails left has a PDF, a `.docx` or an HTML file. An assumption |
+| Tokens of a body call | About 2,500 in and 400 out | 8,000 characters and the prompt |
+| Tokens of a file call | About 6,000 in and 400 out | 20,000 characters and the prompt |
+| Calls each day for new mail | About 50 | 2.5 % of `EMAIL_LLM_DAILY_CALLS` |
+| Tokens each day for new mail | About 160,000 in and 20,000 out | 40 body calls and 10 file calls |
+| The backlog of 90 days at opt-in | About 4,500 calls | 90 days at 50 calls |
+
+**The backlog throttle.** The job reads the backlog only while the count of the mailbox for the day
+is under 50 % of `EMAIL_LLM_DAILY_CALLS`. Mail of the last 24 hours always goes first. At 1,000
+calls a day, a backlog of 90 days takes about 5 days.
+
+- EM-T14b adds one read to `llm_cap.py`, `calls_today(account_id)`. It adds no second counter.
+- `EMAIL_LLM_BUDGET_MODE` is `log` in production. So this throttle is the bound that holds, and
+  the budget is not.
+
+**Who pays.** The hook runs as the owner of the mailbox (H-152), so its calls bill as the rule runs
+do. Q-IN-1 asks the owner to confirm it.
+
+### 13.7 The view
+
+**No second dashboard.** The Dashboard (feature key `digest`, `DashboardView.tsx`) gains a tab
+row: Today, Finance, Projects and Sales. Today is the view of now, with no change. A domain tab
+shows only after its slice merges.
+
+- **The Finance tab.** The totals come first, one for each currency and each direction, from the
+  route. Three groups follow: Overdue, Due in 7 days, and Later or no date.
+- **A card.** It shows the counterpart, the amount and the currency, the due date, the `ref` and the
+  quote. "Open the mail" opens the source message. A first-time sender gets a mark.
+- **The acts of a card.** Done and Dismiss set `state`. "Add a task" opens the capture popup of
+  today with the message (`/tasks/capture/from-email/preview`). The member saves the task there.
+- **One tile on Today.** "Invoices due in 7 days" shows the count and the sum in each currency.
+- **The digest.** `_generate_digest` gains the same line. It reads the same helper as the tile, as
+  the comment on the digest asks of each section (`digest.py` ~:33-40).
+- **The states.** With the flag off, the tab row does not show. With the mailbox not opted in, the
+  tab says that Insights is off, and one button sets `insights_enabled`.
+- **The look.** Follow `workbench/control_plane/DESIGN_SYSTEM.md` and the ten rules of its
+  `AGENTS.md`. No colour literal. Each control comes from `src/components/ui/`. The status hues
+  come from `src/lib/statusAccent.ts`. Each read goes through `useCachedResource`.
+- **Analytics does not change.** It counts mail over a range. Insights lists open items. A third
+  view of the same counts would be a second dashboard.
+
+### 13.8 The assistant tool and the routes
+
+**`query_insights`.** A new tool of the email assistant, so that "what invoices are due this
+week?" reads the facts and not the inbox.
+
+- Its arguments are `domain`, `fact_type=None`, `window="open"`, `counterpart=None` and
+  `limit=20`. `window` takes `overdue`, `next_7_days`, `next_30_days`, `open` or `all`.
+- It calls `GET /email/insights` through `_get`, in the scope of the chat: one mailbox or All
+  inboxes (D-EM-23).
+- Its answer holds the rows, `total_count`, `truncated` and the totals from SQL. Each row holds
+  its message id and its quote. The rows sit between marker lines with a random token.
+- It carries `@_annotate_risk(open_world=False, destructive=False)`. It joins `_TOOLS` in
+  `agents.py` and `own_tool_scope` in `config.json`, so both lists go from 43 to 44 names.
+- With the flag off, or the mailbox not opted in, it says so and suggests a search.
+
+**The text of `instructions.md`.** For a question about invoices, payments, deadlines or deals,
+call `query_insights` first. Take each sum from its totals. Never add amounts yourself, and never
+add two currencies. Name the source mail of each item.
+
+**The routes.** Both live in a new module, `automation/insights.py`, beside `analytics.py`.
+
+| Route | Input | Answer |
+|---|---|---|
+| `GET /email/insights` | `account_id` (optional), `domain`, `fact_type`, `window`, `counterpart`, `state` (default `open`), `limit` (at most 50), `offset` | `{enabled, rows, total_count, truncated, totals: [{currency, direction, amount, count}]}` |
+| `PATCH /email/insights/{id}` | `state` | The row |
+
+- The list reads through `_account_scope`, so a mailbox kept separate stays out of All inboxes.
+- The PATCH proves the owner of the account of the fact with `_assert_account_owner`. A fact of
+  another member answers 404.
+- In All inboxes, two rows with the same `dedupe_key` in two mailboxes of the member fold into
+  one row. Each sum counts it once.
+- The window is computed in UTC dates. A time zone of the member is a later change.
+
+### 13.9 Slices
+
+Each slice is one PR of about 600 lines or fewer. A slice that grows past that splits, and its
+section names the split. Each slice ships dark behind `EMAIL_INSIGHTS`. To set the flag on a box
+is gate `enforcement-flip`.
+
+| Slice | Gate | Scope | Done when |
+|---|---|---|---|
+| **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED (2026-10-07), not audited.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
+| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED (2026-10-07), not audited.** **The finance job.** The hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Two PRs: EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
+| **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED (2026-10-07), not audited.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
+| **EM-T14d** | 🟢 AGENT-SAFE · R8 · visual review | 📝 **SPECIFIED (2026-10-07), not audited.** **The view.** The tab row, the Finance tab, the tile, the digest line, the PATCH route and the opt-in. | §13.9.4 |
+| **EM-T14e** | 🟢 AGENT-SAFE · R8 | 📝 **SPECIFIED (2026-10-07), not audited.** **Projects.** The four project types, the Projects tab, and the commitments of today beside them. | §13.9.5 |
+| **EM-T14f** | 🟢 AGENT-SAFE · R8 · after Q-IN-3 | 📝 **SPECIFIED (2026-10-07), not audited.** **Sales.** The four sales types and the Sales tab. | §13.9.6 |
+| **EM-T14g** | Not scheduled | **Other company.** Hiring, vendors and legal. It waits for the owner (D-EM-37). | — |
+| **Flip** | 🔴 `enforcement-flip` | `EMAIL_INSIGHTS=true` on a box, after EM-T14a to EM-T14d merge. | The live check of §13.9.4 passes |
+
+**The order.** EM-T14a, then EM-T14b-1 and EM-T14b-2, then EM-T14c and EM-T14d in either order.
+EM-T14e and EM-T14f come after the flip, so the cost model is measured first.
+
+**The R8 idiom of each slice.** Each R8 test runs as `acb_app_h3rls`, a role with no `BYPASSRLS`.
+It imports `_DB_GATE`, `app_engine` and `promoted` from `test_h3_rls_promotion_rehearsal.py`, as
+`test_email_tenant_bind_rls.py` does. A run with 0 skipped is the proof. A green run with skips
+proves nothing (R8).
+
+#### 13.9.1 EM-T14a — the table, the migration and the write path
+
+**Status.** 📝 SPECIFIED (2026-10-07), not audited.
+
+**Gate.** 🟢 AGENT-SAFE. A migration and a new tenant table, so the slice takes the full review
+loop and a security review.
+
+**Size.** M.
+
+**Scope.**
+
+1. **One migration, `<N>_email_insights.sql`.** Take `<N>` at build time (R1). Today it is 231.
+   - It creates `email_insights` (§13.3) with the RLS block of `219_pm_import_runs.sql`: ENABLE,
+     FORCE, and the policy `email_insights_tenant_isolation` on `app.tenant_id`.
+   - It adds `insights_at` and `insights_tries` to `email_messages`, and their partial index.
+   - It adds `insights_enabled` to `email_assistant_settings`.
+   - It is expand-only (R6). Each statement is idempotent. The header holds What, Why and Depends
+     on, as `infra/postgres/README.md` asks.
+2. **The generated phases.** Run `scripts/gen_tenant_migration.py`, and keep the blocks of the new
+   table only, as the 228 commit did. `test_tenant_coverage.py` fails without them.
+3. **The flag.** `email_insights: bool = False` (`EMAIL_INSIGHTS`) in
+   `packages/acb_common/acb_common/settings.py`. Its one reader is `insights_enabled()` in
+   `automation/insights_store.py`.
+4. **The write path.** `automation/insights_store.py` holds `write_facts(db, account_id,
+   message_id, attachment_id, version, facts)`. It does steps 2 to 4 of §13.5 item 9, and the
+   dedupe key of item 6. It takes checked facts only, so it trusts no field from a model.
+5. **The opt-in.** The assistant settings model, GET and PATCH gain `insights_enabled`. A missing
+   row reads as false.
+6. **The board.** The D4 row of `work_plan.md` §6 gains `EMAIL_INSIGHTS`.
+
+**Non-goals.** No job, no route that reads facts, no UI and no model call.
+
+**Fences (R7).** In a new `tests/unit/test_email_insights_store.py`:
+
+- R8: org A writes a fact, and org B reads 0 rows. An insert with no tenant bound fails.
+- R8: two writes with one dedupe key keep one row, and the second keeps the `state` of the first.
+- R8: a write with a newer `extractor_version` deletes the older facts of that message and source.
+- R8: a delete of the message deletes its facts. A delete of the mailbox deletes its facts.
+- R8: a missing settings row reads `insights_enabled` as false.
+- `test_email_owner_scope_fence.py` passes with no new entry.
+- `test_tenant_coverage.py` and `test_migration_prefixes.py` pass.
+
+**Mutations.** M1 drops FORCE from the migration, and the org B fence fails. M2 keys the upsert on
+`message_id`, and the dedupe fence fails. M3 resets `state` on an upsert, and the state fence
+fails. M4 drops the cascade on `message_id`, and the delete fence fails. M5 drops the generated
+block, and `test_tenant_coverage.py` fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_insights_store.py -v -rs
+uv run pytest tests/unit/test_email_owner_scope_fence.py tests/unit/test_tenant_coverage.py tests/unit/test_migration_prefixes.py -q
+uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights_store.py tests/unit/test_email_insights_store.py
+```
+
+#### 13.9.2 EM-T14b — the finance job, in two PRs
+
+**Status.** 📝 SPECIFIED (2026-10-07), not audited.
+
+**Gate.** 🟢 AGENT-SAFE. The job sends mail text to a model in the background. So the slice takes
+the full review loop and a security review.
+
+**Size.** L, split in two.
+
+**EM-T14b-1 — the checks and the eval set (no database).**
+
+1. `automation/insights_extract.py` holds the closed types of §13.4 for finance, the prompt, and
+   the checks of §13.5 item 5.
+2. `parse_amount` and `parse_due` live in the same module. Their cases live in
+   `tests/fixtures/amount_cases.json`. WS-43y1a parses numbers in its engine too, so a later slice
+   points both parsers at that one file.
+3. **The eval set,** `evals/email_insights/`, in the shape of `evals/projects_ops/`. It holds 40
+   synthetic mails or more. Each mail looks real, and each one is invented. The set holds:
+   - Invoices in INR with lakh commas, in USD, and in EUR with a decimal comma.
+   - A PO, a payment reminder, a payment confirmation and a credit note.
+   - A forwarded thread with two invoices, and a reply that quotes an invoice again.
+   - A PDF invoice and a `.docx` invoice as files, and a `.xlsx` file that gives no fact.
+   - A newsletter with prices, which gives no fact.
+   - A mail that tells the model to record an invoice that is not in the text.
+   - A mail with a relative due date, which gives no date.
+4. **The scoring.** `checkers.py` compares each fact with its expected fields. The tier of record
+   must pass three bars:
+   - On 95 % of the facts or more, the stored amount equals the expected amount.
+   - The job finds 80 % of the expected facts or more.
+   - No fact has a quote that is not in its source.
+5. **Two modes.** `run.py` runs the sweep through the Router on a local stack. `--scripted` replays
+   recorded answers, so the unit job can run it with no model.
+
+**EM-T14b-2 — the job.**
+
+1. `extract_insights` joins `register_email_post_sync_hooks`, with `as_mailbox_owner`. It does
+   items 1 to 4, 8 and 10 of §13.5.
+   - `PostSyncHooks` in `post_sync.py` gains the field, because an unknown name raises.
+   - The loop in `scheduler.py` (~:1717-1731) calls it each cycle, as it calls `classify_threads`.
+2. `fetch_attachment_for_account` joins `transport/attachments.py` (§13.5 item 4).
+3. `calls_today(account_id)` joins `llm_cap.py`, and the throttle of §13.6 reads it.
+4. `email_insights_model` (default `tier-fast`) joins the settings.
+
+**Non-goals.** No route, no UI and no tool. No sent mail. No spreadsheet figure (D-EM-40).
+
+**Fences (R7).** In `tests/unit/test_email_insights_extract.py` and
+`tests/unit/test_email_insights_job.py`:
+
+- A quote that is not in the source drops its fact.
+- Each case of `amount_cases.json` parses to its expected amount and currency.
+- A relative date gives no `due_on`.
+- An unknown type and an unknown field are dropped.
+- The injection mail of the eval set gives no fact in `--scripted` mode.
+- R8: the batch read returns only rows inside 90 days with `insights_at IS NULL`, newest first.
+- R8: each free filter marks its message read, and makes no model call.
+- With the flag off, the hook opens no session.
+- With the mailbox not opted in, the job makes no model call.
+- `LLMBudgetExhausted` leaves each row with `insights_at IS NULL`.
+- Above 50 % of the daily calls, the job reads mail of the last 24 hours only.
+- A file of another mailbox answers None from `fetch_attachment_for_account`.
+- No session is open during a model call. The idiom is
+  `test_the_sweep_holds_no_session_across_set_labels` in `test_email_cleanup_sweep.py`.
+
+**Mutations.** M1 skips the quote check, and the quote fence fails. M2 stores the number of the
+model, and the amount fence fails. M3 drops the `Cold Email` filter, and the filter fence fails.
+
+M4 reads the flag inside the hook, and the no-session fence fails. M5 drops the throttle, and the
+throttle fence fails. M6 drops the account check of the fetch, and the other-mailbox fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_insights_extract.py tests/unit/test_email_insights_job.py tests/unit/test_email_insights_store.py -v -rs
+uv run pytest tests/unit/test_email_llm_cap.py tests/unit/test_background_ai_member.py -q
+uv run python -m evals.email_insights.run --scripted
+uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights_extract.py
+```
+
+**The eval with a model.** `uv run python -m evals.email_insights.run` on a local stack. Record the
+tier, the two scores and the counts of the log line in the As-built notes.
+
+#### 13.9.3 EM-T14c — `query_insights` and the list route
+
+**Status.** 📝 SPECIFIED (2026-10-07), not audited.
+
+**Gate.** 🟢 AGENT-SAFE. A new route reads a private table. So the slice takes the full review loop
+and a security review.
+
+**Size.** M.
+
+**Scope.**
+
+1. `GET /email/insights` in `automation/insights.py` (§13.8). The totals come from one SQL query,
+   grouped by currency and direction.
+2. `query_insights` in `agents.py` (§13.8), in `_TOOLS` and in `own_tool_scope`.
+3. The text of §13.8 joins `instructions.md`.
+
+**Fences (R7).**
+
+- R8: member A and member B in one organization each own a mailbox. A reads no fact of B, in one
+  mailbox or in All inboxes.
+- R8: a mailbox kept separate stays out of All inboxes.
+- R8: the totals hold one row for each currency and direction. INR and USD never add.
+- R8: two rows with one `dedupe_key` in two mailboxes of the member count once in All inboxes.
+- `test_email_owner_scope_fence.py` passes, because the route reads through `_account_scope`.
+- The tool frames its rows with a random token, and annotates `open_world=False`.
+- The tool lists of `agents.py` and `config.json` agree, with 44 names.
+
+**Mutations.** M1 reads without `_account_scope`, and the owner fence fails. M2 sums across
+currencies, and the totals fence fails. M3 drops the fold, and the All inboxes fence fails. M4
+leaves the tool out of `own_tool_scope`, and the list fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_insights_route.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_tool_consolidation.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights.py apps/agents/agent-email-assistant/agents.py
+```
+
+#### 13.9.4 EM-T14d — the view
+
+**Status.** 📝 SPECIFIED (2026-10-07), not audited.
+
+**Gate.** 🟢 AGENT-SAFE. UI, one PATCH route and one digest line. The visual review of the skill
+`visual-review` is part of the gate.
+
+**Size.** M.
+
+**Scope.** §13.7, and `PATCH /email/insights/{id}` (§13.8). The opt-in button and a toggle in AI
+settings set `insights_enabled`.
+
+**Fences (R7).**
+
+- A new `lib/insights.test.ts` and a test of the tab: with the flag off, no tab row shows. Today
+  renders as it does now.
+- The Finance tab groups by the due date, and shows the totals of the route as they come.
+- "Open the mail" opens the source message. "Add a task" opens the capture popup, and writes
+  nothing by itself.
+- R8: the PATCH of a fact of another member answers 404.
+- R8: the digest line and the tile read the same helper, and give the same count.
+- The design conformance suite passes, with no colour literal.
+
+**Mutations.** M1 sums the rows in the browser, and the totals fence fails. M2 drops the owner
+check of the PATCH, and the 404 fence fails. M3 writes a task on "Add a task", and the no-write
+fence fails.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_insights_route.py tests/unit/test_email_digest.py -v -rs
+```
+
+**The visual review.** Look at the Dashboard in light mode, at compact density and under a changed
+accent. Look at its neighbour, Analytics, too.
+
+**The live check (🔴 after the flip).** The owner opts in one mailbox. Within one day, the Finance
+tab shows a real invoice with its quote. The owner asks the chat "what invoices are due this
+week?", and the answer names the same rows and the same sum.
+
+#### 13.9.5 EM-T14e — Projects
+
+**Status.** 📝 SPECIFIED (2026-10-07), not audited. It starts after the flip.
+
+**Scope.**
+
+1. The four project types of §13.4 join the prompt and the checks, with version `prj-1`.
+2. The Projects tab lists them. Beside them it lists the open commitments of today, which
+   `_digest_commitments` (`digest.py` ~:243) already reads from the task seam. The job does not
+   extract a commitment from a sent reply again, because `capture_email.py` already does it.
+3. The eval set gains 15 project mails or more.
+
+**Fences (R7).** The fences of EM-T14b for the new types. A commitment task shows once, and not
+also as a fact. `query_insights` with `domain="projects"` returns the new types.
+
+**Verify with.** The commands of §13.9.2 and §13.9.4, with the new eval cases.
+
+#### 13.9.6 EM-T14f — Sales
+
+**Status.** 📝 SPECIFIED (2026-10-07), not audited. It starts after the flip and after Q-IN-3.
+
+**Scope.**
+
+1. The four sales types of §13.4 join the prompt and the checks, with version `sal-1`.
+2. The Sales tab lists them.
+3. The eval set gains 15 sales mails or more.
+4. A CRM act on a card waits for Q-IN-3. It never writes a CRM record by itself (D-EM-42), and it
+   never runs beside `CRM_AUTO_LEAD` as a second lead writer.
+
+**Fences (R7).** The fences of EM-T14b for the new types. No code path of the slice writes a
+`crm_*` table.
+
+**Verify with.** The commands of §13.9.2 and §13.9.4, with the new eval cases.
+
+### 13.10 Recorded risks
+
+- **A fake invoice.** A phishing mail can carry a real-looking invoice. The quote rule proves only
+  that the text is in the mail. The card shows the sender address, and a first-time sender gets a
+  mark. The cold filter removes a cold sender.
+- **A scanned PDF.** A PDF of images has no text, so it gives no fact. The reader does no OCR.
+- **A relative date.** "Due in 30 days" gives no date. The fact still shows, with confidence 0.6.
+- **A second copy of a number parser.** WS-43y1a holds one in its engine. One fixture file of
+  cases binds both (§13.9.2).
+
+### 13.11 Board findings (not this plan)
+
+- **`get_account_overview` reads an old shape.** `agents.py` ~:794-818 reads `totals` and
+  `top_senders` from `/email/analytics/overview`. The route returns neither key now. So the tool
+  always reports 0 messages and no senders.
+- **The embeddings of phase (f) run outside the cap.** `email_embeddings.py` ~:90-93 calls
+  `llm_slot`, but `scheduler._sync_account` opens no `automation_scope`. So the cap and the budget
+  do not bind those calls.
+- **EM-T11b is merged.** #692 merged it. The §10.4 table and the WS-17 row still say "built, not
+  merged".
+
+### 13.12 Owner questions
+
+- **Q-IN-1. Who pays for the model calls of the job?** The proposal: the organization of the
+  member, as for the rule runs (H-152). The backlog of 90 days costs about 4,500 calls for each
+  mailbox (§13.6). This is money, so the agent does not decide it.
+- **Q-IN-2. May the job send the text of mail and files that the member never opened to the model
+  provider?** The drafts and the digest already send mail text to an LLM tier. A background read of
+  each file is new. D-EM-9 covers the triage decisions only. This is a third-party and residency
+  call.
+- **Q-IN-3. Sales and the CRM.** CRM is a `preview` pane, and `CRM_AUTO_LEAD` already writes leads
+  from mail. Should a sales card offer a CRM act at all before CRM goes live? The proposal: no CRM
+  act in EM-T14f. The card offers "Add a task" only.
+- **Q-IN-4. A view for the company.** The request names "company-related areas". D-EM-4 keeps each
+  mailbox private, so no admin sees the facts of a member. A view across members needs a new
+  decision about consent. The proposal: no such view in this plan.
