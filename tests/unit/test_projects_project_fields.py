@@ -165,6 +165,16 @@ async def test_no_clock_read_falls_back_to_utc_and_says_so(monkeypatch) -> None:
     assert "Tuesday, today's weekday (UTC)" in asked[0]["context"]
 
 
+async def test_a_member_with_no_saved_zone_is_told_so(monkeypatch) -> None:
+    """The route answers UTC with ``stored: false``. The card must not say
+    that the member chose UTC."""
+    unsaved = {"today": "2026-10-06", "timezone": "UTC", "stored": False}
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _gateway({("GET", "/projects/my/today"): unsaved}))
+    await skill_projects.create_task(PROJECT, "Review the backlog", repeat="weekly")
+    assert "Tuesday, today's weekday (UTC, no zone saved)" in asked[0]["context"]
+
+
 async def test_a_create_with_no_rule_reads_no_clock(monkeypatch) -> None:
     """§8.2 item 5 holds: a plain create sends what it sent before P1."""
     approve(monkeypatch)

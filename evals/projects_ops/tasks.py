@@ -1,4 +1,4 @@
-"""The Projects operations tasks, PO-1 to PO-8 (WS-46 P3, and PO-8 from P6).
+"""The Projects operations tasks, PO-1 to PO-9 (WS-46 P3, PO-8 from P6, PO-9 from P7).
 
 Spec: ``project-docs/specs/projects_agent_parity.md`` §11.2. The spec gives
 each prompt in a short form. The full prompt below keeps its meaning and names
@@ -89,6 +89,14 @@ TASKS: tuple[TaskSpec, ...] = (
         "Add a bug to Launch that starts next Monday, for the customer Acme",
         "Add a bug to the Launch project: fix the badge scanner. The work starts next "
         "Monday, and the customer is Acme.",
+        cards=(APPROVE,),
+    ),
+    # WS-46 P7: a saved view with its filters and its grouping, in one call.
+    TaskSpec(
+        "PO-9", "A saved view with its filters",
+        "Save a board of the overdue work in Launch, grouped by owner",
+        "Save a board view in the Launch project called Overdue by owner. It shows the "
+        "overdue tasks, grouped by assignee.",
         cards=(APPROVE,),
     ),
 )

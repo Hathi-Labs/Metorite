@@ -499,7 +499,13 @@ def clock_of(row: Any) -> tuple[date | None, str]:
     """``(today, zone)`` from ``GET /projects/my/today``, or ``(None, "")``
     for an answer that carries neither (WS-46 P7). The one parser of the
     member's date: ``my_work`` prints it, and the write tools that guess a
-    day take it (``writes._member_clock``)."""
+    day take it (``writes._member_clock``).
+
+    The Tasks and the Calendar apps save the browser's zone when they open.
+    A member who never opened them has no saved zone, so the route answers
+    UTC with ``stored: false``. The zone then reads "UTC, no zone saved", so
+    no card claims that the member chose UTC.
+    """
     if not isinstance(row, dict):
         return None, ""
     raw = str(row.get("today") or "").strip()
@@ -508,7 +514,9 @@ def clock_of(row: Any) -> tuple[date | None, str]:
     except ValueError:
         day = None
     zone = str(row.get("timezone") or "").strip()
-    return (day, zone) if day is not None and zone else (None, "")
+    if day is None or not zone:
+        return None, ""
+    return day, zone if row.get("stored", True) else f"{zone}, no zone saved"
 
 
 async def _clock_line() -> str:

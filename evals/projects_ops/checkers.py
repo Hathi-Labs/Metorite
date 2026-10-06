@@ -413,6 +413,36 @@ def check_po8(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-9: a saved view with its filters (WS-46 P7) ──────────────────────────
+
+
+def check_po9(ev: Evidence) -> list[Rule]:
+    launch = ev.dataset.project("Launch")
+    posts = ev.writes_to("POST", f"/projects/nodes/{launch.id}/views")
+    body = posts[0].body if len(posts) == 1 and isinstance(posts[0].body, dict) else {}
+    config = body.get("config") if isinstance(body.get("config"), dict) else {}
+    stored = (posts[0].response or {}).get("config") if len(posts) == 1 else None
+    return [
+        _one_approved_card(ev),
+        _rule("one_view", len(posts) == 1 and posts[0].status < 400,
+              "one POST …/views on Launch", f"{len(posts)} POST …/views on Launch"),
+        _rule("board", body.get("view_type") == "board", "the view is a board",
+              f"the view_type is {body.get('view_type')!r}, not board"),
+        _rule("filters_saved", config.get("filters") == {"overdue": True},
+              "the view filters on the overdue tasks, in the app's key",
+              f"the filters are {config.get('filters')!r}, not {{'overdue': True}}"),
+        _rule("grouped", config.get("group_by") == "assignee", "the view groups by assignee",
+              f"the group_by is {config.get('group_by')!r}, not assignee"),
+        _rule("route_keeps_it", bool(config) and stored == config,
+              "the route's normaliser kept every key the chat sent",
+              f"the chat sent {config!r}, and the route stored {stored!r}"),
+        _rule("nothing_else_written", len(ev.writes()) == 1, "the view is the only write",
+              f"the writes were {[(r.method, r.path) for r in ev.writes()]}"),
+        _rule("answer_names_the_view", "overdue by owner" in ev.answer.lower(),
+              "the answer names the view", "the answer does not name «Overdue by owner»"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -424,6 +454,7 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-6": check_po6,
     "PO-7": check_po7,
     "PO-8": check_po8,
+    "PO-9": check_po9,
 }
 
 
