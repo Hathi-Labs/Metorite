@@ -95,6 +95,30 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-251 · Set up the Metorite WhatsApp bot number at Meta · [OWNER]
+- **Check:** on the box, `grep -c '^WHATSAPP_ASSISTANT_PHONE_NUMBER_ID=.' /opt/acb/app/.env`.
+  An output of 0 means this is open. Do not print the line, because the
+  file holds secrets.
+- **Why:** WS-47 lets a member chat with Metorite from their own WhatsApp.
+  Metorite needs ONE number of its own for that. Only the owner can create
+  the company's identity at Meta, add a payment method and put the token on
+  the box. Development does not wait for this, because WAC-1 to
+  WAC-5 run on Meta's free test number.
+- **What to do:** follow `specs/whatsapp_assistant_channel.md` §6 in order.
+  1. Buy a new prepaid SIM for the company, and keep it off every WhatsApp
+     app. Keep it recharged.
+  2. Create the Meta Business Portfolio and verify the business and the
+     `metorite.com` domain.
+  3. Create the Meta app, add WhatsApp, add the number, and set the display
+     name to "Metorite".
+  4. Create a System User with a permanent token.
+  5. Set the webhook to `https://api.metorite.com/whatsapp/webhook`, and
+     subscribe to `messages`.
+  6. Add a payment method, submit the templates of §5.8, and publish the app.
+  7. Put the four values of §5.1 in the box `.env`. Never paste them in chat.
+- **Authority:** `specs/whatsapp_assistant_channel.md` §6 · board row WS-47.
+- **Added:** 2026-10-06 · the WS-47 spec session.
+
 ### H-250 · Bring the last database connections inside the pool budget · [AGENT]
 - **Check:** `rg -n "psycopg.connect\(" packages/acb_common/acb_common/org_settings.py packages/acb_llm/acb_llm/model_config.py packages/acb_llm/acb_llm/key_store.py`.
   A hit means part 1 is open.
