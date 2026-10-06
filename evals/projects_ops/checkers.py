@@ -59,6 +59,8 @@ class Card:
     answer: str
     #: How many requests the stub had seen when the card appeared.
     at: int
+    #: The rows of a card with rows (WS-46 P13 one-card), as the tool sent them.
+    rows: tuple[dict[str, Any], ...] = ()
 
     def text(self) -> str:
         return f"{self.title}\n{self.detail}\n{self.context}"
@@ -73,8 +75,6 @@ class Evidence:
     sessions: list[Session]
     requests: list[OpsRequest] = field(default_factory=list)
     cards: list[Card] = field(default_factory=list)
-    #: WS-46 P13: each selection card the member saw, with what they submitted.
-    forms: list[dict[str, Any]] = field(default_factory=list)
     #: The cover the sweep asked for (``--covered``).
     covered: bool = False
     #: The ``no_egress`` flag each session's run bound (H-236), as the executor recorded it.
@@ -453,9 +453,7 @@ def check_po10(ev: Evidence) -> list[Rule]:
     priya = ds_mod.PRIYA.email
     batch = [c for c in ev.calls if c.name == "create_tasks"]
     single = [c for c in ev.calls if c.name == "create_task"]
-    boxes = [
-        [f for f in form.get("fields") or [] if f.get("type") == "checkbox"] for form in ev.forms
-    ]
+    rows = [len(c.rows) for c in ev.cards]
     posts = ev.writes_to("POST", "/projects/tasks")
     made = {str((p.response or {}).get("id") or "") for p in posts if p.status < 400}
     titles = {str((p.body or {}).get("title") or "").strip().lower() for p in posts}
@@ -471,9 +469,9 @@ def check_po10(ev: Evidence) -> list[Rule]:
         _rule("one_batch_call", len(batch) == 1 and not single,
               "one create_tasks call, and no create_task call",
               f"{len(batch)} create_tasks and {len(single)} create_task calls"),
-        _rule("one_selection_card", len(boxes) == 1 and len(boxes[0]) == 3,
-              "one selection card with a checkbox for each of the 3 tasks",
-              f"{len(boxes)} selection cards, with {[len(b) for b in boxes]} checkboxes"),
+        _rule("one_card_with_rows", rows == [3],
+              "one card with a checkbox for each of the 3 tasks",
+              f"the cards carried {rows} rows, not one card with 3"),
         _one_approved_card(ev),
         _rule("three_tasks_in_launch",
               len(posts) == 3 and len(made) == 3 and len(titles) == 3 and in_launch,

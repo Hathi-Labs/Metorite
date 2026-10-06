@@ -49,7 +49,7 @@ from evals.projects_ops import checkers, scripted, stub_api, tasks
 from evals.projects_ops import dataset as ds_mod
 from evals.projects_ops.checkers import Card, Evidence
 from evals.projects_ops.dataset import Dataset
-from evals.projects_ops.tasks import DECLINE, MEMBER, TaskSpec
+from evals.projects_ops.tasks import APPROVE, DECLINE, MEMBER, TaskSpec
 
 AGENT = coding.AGENT
 SESSION_TIMEOUT_S = 300.0
@@ -91,46 +91,37 @@ class OpsHarness(coding.Harness):
 class _Run:
     stream: Any
     cards: list[Card] = field(default_factory=list)
-    #: WS-46 P13: each selection card, with the member's submit.
-    forms: list[dict[str, Any]] = field(default_factory=list)
     no_egress: bool = False
+
+
+def card_answer(answer: str, rows: list[dict[str, Any]], untick: tuple[str, ...]) -> str:
+    """The respond-input answer of one card, as the chat sends it.
+
+    A card with rows (WS-46 P13 one-card) is approved as the card shows it:
+    every row the tool ticked, minus the rows in ``untick``. The answer names
+    the ticked ids, as ``approveRows`` in ``lib/confirmationQueue.ts`` does.
+    A decline, or a card with no rows, is the plain word.
+    """
+    from acb_skills.ask_tools import ROWS_ANSWER_PREFIX
+
+    if answer != APPROVE or not rows:
+        return answer
+    ticked = [str(r.get("id")) for r in rows if r.get("checked") and r.get("id") not in untick]
+    return ROWS_ANSWER_PREFIX + json.dumps({"rows": ticked})
 
 
 def _answer_card(harness: OpsHarness, run: _Run, spec: TaskSpec, value: dict[str, Any]) -> bool:
     """Answer one card as *spec* says, and record it. False when no card was waiting."""
     index = len(run.cards)
     answer = spec.cards[index] if index < len(spec.cards) else DECLINE
+    rows = [r for r in value.get("rows") or [] if isinstance(r, dict)]
     seen = len(harness.ops.requests)
-    if not coding._resolve_card(value, {"answer": answer}):
+    if not coding._resolve_card(value, {"answer": card_answer(answer, rows, spec.untick)}):
         return False
     run.cards.append(Card(
         title=str(value.get("title") or ""), detail=str(value.get("detail") or ""),
-        context=str(value.get("context") or ""), answer=answer, at=seen,
+        context=str(value.get("context") or ""), answer=answer, at=seen, rows=tuple(rows),
     ))
-    return True
-
-
-def _answer_form(run: _Run, spec: TaskSpec, value: dict[str, Any]) -> bool:
-    """Submit a SELECTION card as drawn, as a member who reads it and agrees.
-    A field in ``spec.untick`` is submitted unticked. False when no selection
-    card was waiting.
-
-    Only a ``formCard`` with checkbox fields is answered (review round 1).
-    Any other blocking card, an edit form or a plan, stays unanswered, so a
-    run that opens one it should not open still fails "run_completed"."""
-    props = value.get("props") if isinstance(value.get("props"), dict) else {}
-    data = props.get("data") if isinstance(props.get("data"), dict) else {}
-    fields = [f for f in data.get("fields") or [] if isinstance(f, dict)]
-    if props.get("name") != "formCard" or not any(f.get("type") == "checkbox" for f in fields):
-        return False
-    values = {str(f.get("name")): f.get("value") for f in fields}
-    for name in spec.untick:
-        if name in values:
-            values[name] = False
-    label = str(data.get("submitLabel") or data.get("title") or "Form")
-    if not coding._resolve_card(value, {"answer": f"{label} — {json.dumps(values)}"}):
-        return False
-    run.forms.append({"title": str(data.get("title") or ""), "fields": fields, "values": values})
     return True
 
 
@@ -151,10 +142,6 @@ async def _drive(harness: OpsHarness, session: Session, spec: TaskSpec, run: _Ru
                 value = event.get("value") or {}
                 if (event.get("type") == "CUSTOM" and event.get("name") == "confirmation_requested"
                         and isinstance(value, dict) and _answer_card(harness, run, spec, value)):
-                    continue
-                if (event.get("type") == "CUSTOM" and event.get("name") == "generative_ui"
-                        and isinstance(value, dict) and value.get("request_id")
-                        and _answer_form(run, spec, value)):
                     continue
                 coding._take(run.stream, event)
     finally:
@@ -220,7 +207,7 @@ async def run_task(
     session, ran, tap, wall = await run_session(harness, spec, steps)
     evidence = Evidence(
         task_id=spec.id, dataset=harness.dataset, sessions=[session],
-        requests=list(harness.ops.requests), cards=ran.cards, forms=ran.forms,
+        requests=list(harness.ops.requests), cards=ran.cards,
         covered=harness.covered, no_egress=[ran.no_egress],
     )
     return {**head, **_verdict(evidence), **_record(evidence, tap, wall)}
@@ -252,8 +239,8 @@ def _record(evidence: Evidence, tap: coding.ModelTap, wall: float) -> dict[str, 
         "tokens": tap.tokens(),
         "no_egress": evidence.no_egress,
         "cards": [{"title": c.title, "detail": c.detail, "context": c.context,
-                   "answer": c.answer, "at": c.at} for c in evidence.cards],
-        "forms": evidence.forms,
+                   "answer": c.answer, "at": c.at, "rows": list(c.rows)}
+                  for c in evidence.cards],
         "requests": [{"method": r.method, "path": r.path, "query": r.query, "member": r.member,
                       "status": r.status, "body": _clip(r.body)} for r in evidence.requests],
         "sessions": [{

@@ -234,8 +234,8 @@ make one call.
   Leave out a key that the member did not give.
 - **A bad row stops the batch before any card.** The refusal names the
   row. Fix that row, and call `create_tasks` once more with every row.
-- **The member can untick a row.** The first card lists each task with a
-  checkbox. The second card asks to create the tasks that stay ticked.
+- **The member can untick a row.** The one card lists each task with a
+  checkbox. The member approves once, and the tool creates the ticked tasks.
 - **Read the receipt.** It lists each task that the tool made, with its
   number. It also lists each row that failed, with the reason. Tell the
   member both. Never create a task again that the receipt lists. To try a

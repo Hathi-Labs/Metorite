@@ -40,6 +40,7 @@ from skill_projects import writes as W
 from tests.unit._projects_agent_fakes import (
     SKILL_DIR,
     approve,
+    card_answer,
     deny,
     empty_list,
     fake_gateway,
@@ -378,8 +379,6 @@ FORM_ANSWERS: dict[str, str] = {
     '"estimate_mins": 30, "tags": ""}',
     "Edit Ops": 'Review changes — {"name": "Ops v2", "description": "", "status": "paused", "lead": ""}',
     "Plan": 'Review plan — {"project": {"name": "Q4 launch"}, "tasks": ' + PLAN_TASKS + "}",
-    # WS-46 P13: the selection card of create_tasks, every row kept ticked.
-    "Add ": 'Review tasks — {"row_1": true, "row_2": true, "row_3": true}',
 }
 
 #: One or more invocations per class B tool. Together they must reach every
@@ -612,9 +611,10 @@ async def test_everything_before_the_card_is_a_read(tool: str, monkeypatch) -> N
 
     calls = fake_gateway(monkeypatch, responder)
 
-    async def marker(**kwargs: Any) -> bool:
+    async def marker(**kwargs: Any) -> Any:
         calls.append({"method": "CARD", "path": "", "headers": {}, "params": {}, "json": kwargs})
-        return True
+        # A card with rows answers with the ticked ids (WS-46 P13 one-card).
+        return card_answer(kwargs, True)
 
     monkeypatch.setattr(ask_tools, "request_confirmation", marker)
     for kwargs in _WRITES[tool]:
@@ -2309,9 +2309,10 @@ async def test_the_plan_writes_in_rule_8_order_under_exactly_one_card(monkeypatc
     form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
     calls = fake_gateway(monkeypatch, _plan_gateway())
 
-    async def marker(**kwargs: Any) -> bool:
+    async def marker(**kwargs: Any) -> Any:
         calls.append({"method": "CARD", "path": "", "headers": {}, "params": {}, "json": kwargs})
-        return True
+        # A card with rows answers with the ticked ids (WS-46 P13 one-card).
+        return card_answer(kwargs, True)
 
     monkeypatch.setattr(ask_tools, "request_confirmation", marker)
     await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))

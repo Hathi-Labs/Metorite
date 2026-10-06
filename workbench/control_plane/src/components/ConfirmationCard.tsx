@@ -27,7 +27,9 @@
 import { useEffect, useState } from "react";
 
 import Button from "@/components/ui/Button";
+import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
+import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 
 /**
  * How long a new card ignores Approve and Reject.
@@ -141,6 +143,16 @@ interface ConfirmationCardProps {
   detail?: string;
   /** The body: `key: value` rows, or free text. */
   context?: string;
+  /**
+   * WS-46 P13 one-card: one checkbox per row, ticked as the tool asks. The
+   * summary counts the ticked rows, Approve stays off with none ticked, and
+   * Approve hands the ticked ids, in the card's order, to `onApprove`. With
+   * no rows the card is as before, and `onApprove` gets no ids.
+   */
+  rows?: ConfirmationRow[];
+  /** A tick or an untick of one row. The queue keeps the ticks (`rowTicksReducer`). */
+  onToggle?: (id: string, on: boolean) => void;
+  /** Approve. For a card with rows, the queue sends the ticks it holds. */
   onApprove: () => void;
   onReject: () => void;
   /** Disable buttons after a choice is made. */
@@ -153,6 +165,8 @@ export default function ConfirmationCard({
   title,
   detail,
   context,
+  rows,
+  onToggle,
   onApprove,
   onReject,
   disabled = false,
@@ -163,10 +177,21 @@ export default function ConfirmationCard({
     const t = setTimeout(() => setArmed(true), ARM_MS);
     return () => clearTimeout(t);
   }, []);
-  const { summary, rest } = cardSummary(title, detail);
+  // The rows come ticked as the member left them (`rowsView` in the queue).
+  // The card holds no tick state and no tick logic (PR #691 review): a tick
+  // goes up through `onToggle`, and Approve sends what the queue computed.
+  const hasRows = rows !== undefined;
+  const base = cardSummary(title, detail);
+  const summary = rowsSummary(base.summary, rows);
+  const rest = base.rest;
+  const approvable = canApprove(rows);
   const body = parseCardBody(context);
   const many = position && position.total > 1;
-  const hasBody = body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
+  const hasBody =
+    hasRows || body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
+  const approve = () => {
+    if (armed && approvable) onApprove();
+  };
   return (
     <section
       aria-label={summary}
@@ -206,6 +231,37 @@ export default function ConfirmationCard({
 
       {hasBody && (
         <div className="space-y-2 px-4 py-3">
+          {hasRows && (
+            <ul className="space-y-1.5" data-confirmation-rows="" aria-label="Rows this approval covers">
+              {rows.length === 0 && (
+                <li className="text-xs text-muted-foreground">
+                  The rows of this card could not be read, so it cannot be approved.
+                </li>
+              )}
+              {rows.map((r) => (
+                <li key={r.id}>
+                  <label className="flex min-w-0 cursor-pointer items-start gap-2">
+                    <Checkbox
+                      size="sm"
+                      className="mt-0.5"
+                      checked={r.checked}
+                      disabled={disabled}
+                      onChange={(e) => onToggle?.(r.id, e.target.checked)}
+                      data-confirmation-row={r.id}
+                    />
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="break-words text-xs text-foreground">{r.label}</span>
+                      {r.hint && (
+                        <span className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+                          {r.hint}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          )}
           {body.fields.length > 0 && (
             <dl className="space-y-1">
               {body.fields.map((f, i) => (
@@ -235,8 +291,8 @@ export default function ConfirmationCard({
         <Button
           size="sm"
           icon="Check"
-          onClick={() => armed && onApprove()}
-          disabled={disabled}
+          onClick={approve}
+          disabled={disabled || !approvable}
           aria-disabled={!armed || undefined}
           data-confirmation-approve=""
         >

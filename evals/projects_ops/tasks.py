@@ -38,8 +38,8 @@ class TaskSpec:
     cards: tuple[str, ...] = ()
     #: Why the task cannot pass yet, with the slice ids. The runner skips it.
     xfail: str | None = None
-    #: WS-46 P13: the fields the member unticks on a selection card. The
-    #: member submits every other field of the card as drawn.
+    #: WS-46 P13: the row ids the member unticks on a card with rows. The
+    #: member approves every other row the card ticked.
     untick: tuple[str, ...] = ()
 
 
