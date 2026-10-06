@@ -8,7 +8,8 @@ P3 is BUILT (2026-10-06): `evals/projects_ops/` runs PO-1 to PO-7, and the
 scripted run passes six tasks in six, uncovered and covered. PO-3 is
 `xfail` until P8 and P9. P4 is BUILT (2026-10-06): the field fence F2 holds
 each of the 313 request fields of a mapped route to one decision. P5 is
-next.** Written 2026-10-05.
+BUILT (2026-10-06): the UI action fence F3 holds each of the 104 Projects
+UI client methods to one decision. P6 to P10 are open.** Written 2026-10-05.
 **P1, as built.** `create_task` takes the eight `repeat*` arguments and sets
 the rule under its one card. `task_detail` prints "Repeats:". The fence is
 `tests/unit/test_projects_recurring_task.py`. One deviation: the weekly
@@ -401,7 +402,7 @@ records the extension (§13).
 |---|---|---|
 | **F1** `tests/unit/test_projects_chat_coverage.py` | Every router route has a manifest row, and every row names a route the router serves | Exists (D-PM-37) |
 | **F2** `tests/unit/test_projects_field_parity.py` | Every field of a mapped route's body and query has a tool argument, or a recorded exemption | Exists (P4) |
-| **F3** `tests/unit/test_projects_ui_actions.py` | `UI_ACTIONS` names every UI client method, with a tool or an exemption | New, P5 |
+| **F3** `tests/unit/test_projects_ui_actions.py` | `UI_ACTIONS`, `UI_EXEMPT` and `UI_PLANNED` name every UI client method, with a tool, an exemption or a gap | Exists (P5) |
 | **F4** `tests/unit/test_projects_agent_refusals.py` | Every exported tool gives a refusal back as text, and a 422 detail reaches the model | Exists (P2) |
 | **F5** the same file | Every tool's input model refuses an argument it does not declare | Exists (P2) |
 | **F6** `tests/unit/test_delegation_no_egress.py:687-732` | A covered run holds exactly the pinned tools. A new Projects tool must join the list on purpose | Exists (H-236) |
@@ -945,7 +946,7 @@ slice updates this spec's status header in the same PR (R4).
 | **P2 · Refusals the model reads** ✅ built 2026-10-06 | `refusals_as_text` on every tool · `extra="forbid"` input models · §9.3 · F4 and F5 | G3, G4 | AGENT-SAFE |
 | **P3 · The eval harness** ✅ BUILT 2026-10-06 | `evals/projects_ops/` with PO-1, PO-2 and PO-4 to PO-7, scripted, both modes | — | AGENT-SAFE. The sweep on the production Router is OWNER-GATE |
 | **P4 · The field fence** ✅ BUILT 2026-10-06 | `SENDS`, `FIELD_EXEMPT`, `FIELD_PLANNED` and F2. `FIELD_PLANNED` holds every open gap | — | AGENT-SAFE |
-| **P5 · The UI action fence** | `UI_ACTIONS` and F3 | — | AGENT-SAFE |
+| **P5 · The UI action fence** ✅ BUILT 2026-10-06 | `UI_ACTIONS`, `UI_EXEMPT`, `UI_PLANNED` and F3 · the `calendar` tool reads the subtree | — | AGENT-SAFE |
 | **P6 · Task fields** | `start` on create · task type by name · custom field values by name · required fields on a move · `include_subtasks`, asked once as D-PM-38 asks | G5 to G9 | AGENT-SAFE |
 | **P7 · Project and personal fields** | Project settings · node order · a view with its filters · the full overlay · the overlay in bulk · `my_areas` · `untriaged` | G12 to G18 | AGENT-SAFE |
 | **P8 · Plans that match the app** | `propose_plan` rows take a subproject group and a repeat rule · `capture_intake` and `create_personal_task` take a repeat rule | G19, G20 | AGENT-SAFE |
@@ -1128,6 +1129,33 @@ as the answer. The slices build to these answers.
     and its name. A false `SENDS` claim fails on the wire.
   - A finding, not fixed in P4: `GET /projects/calendar` reads the named
     node only by default (`include_subtree` is false). So the chat's
-    calendar of a space shows no work from its subprojects.
+    calendar of a space shows no work from its subprojects. P5 fixes it.
   - A limit of F2: `GET /projects/analytics/dataset` reads its query
     string by hand. FastAPI reports no field for it, so F2 holds none.
+- 2026-10-06 — P5 is built. These facts are as built:
+  - The three tables are in `skill_projects/manifest.py`, beside the
+    tables of P4. Their names are `UI_ACTIONS`, `UI_EXEMPT` and
+    `UI_PLANNED`. The key is `object.method`, for example
+    `projectsApi.createTask`.
+  - F3 reads the client as text. It reads each method of each exported
+    object in `lib/api.ts` and `lib/importApi.ts`, and the verb and the
+    path of each gateway call. It also reads `exportPath` in
+    `lib/export.ts`, because `page.tsx` fetches that path by itself.
+  - The fence counts 104 methods. `UI_ACTIONS` holds 90, `UI_EXEMPT`
+    holds 13 and `UI_PLANNED` holds 1, the attachment upload (G21, P10).
+  - A claim must be true. The tool must reach the route that the method
+    calls, and that route must not be class X. An exemption is allowed
+    only on a class X route.
+  - A gateway call outside a client method fails by its file and line.
+    This holds each file of the Projects app, and the helpers of the
+    client files.
+  - Four mutations turn F3 red: a new method on a new route, a new
+    method on an old route, a false claim and a stray call in a
+    component.
+  - The `calendar` tool sends `include_subtree`, true by default, with a
+    project, as the app's calendar does. Its row of `FIELD_EXEMPT` moved
+    to `SENDS`. `tests/unit/test_projects_calendar_subtree.py` holds the
+    wire, and its R8 half runs the route's subtree clause on asyncpg.
+  - A limit of F3: it reads the Projects app only. The Tasks lens
+    (`app/tasks/lib/lens.ts`) and the People app also call
+    `/api/projects`, and no fence reads them.

@@ -384,6 +384,13 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
         "end": "2026-09-29",
         "mine": True,
     },
+    # WS-46 P5: the flag rides with a project, never without one.
+    ("GET", "/projects/calendar", "include_subtree"): {
+        "start": "2026-09-22",
+        "end": "2026-09-29",
+        "project_id": UUID,
+        "include_subtree": True,
+    },
     ("POST", "/projects/intake/{task_id}/duplicate", "duplicate_of_task_id"): {
         "task_id": UUID,
         "action": "duplicate",

@@ -85,11 +85,19 @@ async def project_views(project_id: str) -> str:
 
 
 @_annotate(read_only=True, idempotent=True, open_world=False)
-async def calendar(start: str, end: str, project_id: str = "", mine: bool = False) -> str:
+async def calendar(
+    start: str,
+    end: str,
+    project_id: str = "",
+    mine: bool = False,
+    include_subtree: bool = True,
+) -> str:
     """Tasks on the calendar between two dates (YYYY-MM-DD). mine=true reads
     the member's own scheduled blocks (the Calendar app's read); otherwise
     every visible task whose schedule overlaps the window, narrowed by
-    project_id. Dates are the server's."""
+    project_id. A project_id reads that node with its subprojects, as the
+    app's calendar does. include_subtree=false reads the node alone. Dates
+    are the server's."""
     frm, to = str(start or "").strip()[:10], str(end or "").strip()[:10]
     try:
         first, last = date.fromisoformat(frm), date.fromisoformat(to)
@@ -106,6 +114,11 @@ async def calendar(start: str, end: str, project_id: str = "", mine: bool = Fals
         params: dict[str, Any] = {"from": frm, "to": to}
         if project_id.strip():
             params["project_id"] = uuid_of(project_id, "project_id")
+            # WS-46 P5. The route reads the named node ALONE by default, so a
+            # space's calendar showed no subproject work. The app's calendar
+            # sends include_subtree=true (page.tsx loadMonth), and so does
+            # this read, unless the member asks for the node alone.
+            params["include_subtree"] = bool(include_subtree)
         payload = await get("/projects/calendar", params)
         title = f"Calendar {frm} to {to}"
     rows = (payload or {}).get("rows") or []
