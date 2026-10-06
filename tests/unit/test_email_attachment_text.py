@@ -19,6 +19,9 @@ R7 fences named here, each a test class:
   braced id is 404, a second read serves the cached text with no parse, one
   member runs one read at a time, and bytes over 15 MB with no stored size
   are never cached.
+  EM-T11b (§10.4.13): the route reads an ``.xlsx``, a ``.html`` and a
+  ``.htm`` file, also by type when the name has no suffix. An ``.xls``, an
+  ``.xlsm``, an ``.xlsb`` and an ``.ods`` stay ``unsupported``.
 * ``email-attachment-session-faults``
   (:class:`TestTheSessionFaultsReachTheHandlers`, review round 1, P1). Each
   route opens its session outside its ``try``. So ``TenantUnbound`` and a
@@ -87,6 +90,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from gateway.routes.email.transport import attachments as m  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
+from tests.unit import _xlsx_build as xb  # noqa: E402
 from tests.unit._tenant_ladder import tenant_engine_scope  # noqa: E402
 
 # Reuse the two-org phase-4 fixture and its DB gate (non-priv role
@@ -116,6 +120,13 @@ def _docx(paragraphs: list[str]) -> bytes:
     buf = io.BytesIO()
     d.save(buf)
     return buf.getvalue()
+
+
+def _xlsx() -> bytes:
+    """An Excel workbook, built with zipfile (WS-17 EM-T11b)."""
+    rows = xb.row(1, xb.shared_ref("A1", 0) + xb.num("B1", 4)
+                  + '<c r="C1"><f>B1*3.125</f><v>12.5</v></c>')
+    return xb.workbook([("Quote", xb.sheet(rows))], shared=xb.strings(["Nozzle"]))
 
 
 def _pdf(pages: list[str], **save: Any) -> bytes:
@@ -270,7 +281,11 @@ class TestTheTextRoute:
         ("hours.csv", lambda: b"name,hours\nPriya,12\n", "csv", "name,hours\nPriya,12"),
         ("notes.txt", lambda: b"plain line one\nline two", "txt", "plain line one\nline two"),
         ("notes.md", lambda: b"# Heading\n\n- a point", "md", "# Heading\n\n- a point"),
-    ], ids=["pdf", "docx", "csv", "txt", "md"])
+        ("quote.xlsx", lambda: _xlsx(), "xlsx", "## Sheet: Quote\nA1\tNozzle\t4\t12.5"),
+        ("receipt.html", lambda: b"<h1>Receipt</h1><script>x()</script><p>Total 50</p>",
+         "html", "Receipt\nTotal 50"),
+        ("receipt.htm", lambda: b"<p>Total 50</p>", "html", "Total 50"),
+    ], ids=["pdf", "docx", "csv", "txt", "md", "xlsx", "html", "htm"])
     async def test_a_member_reads_the_text_of_each_kind(
         self, monkeypatch, filename, make, kind, want,
     ) -> None:
@@ -335,11 +350,13 @@ class TestTheTextRoute:
 
     @pytest.mark.parametrize(("filename", "mime"), [
         ("archive.zip", "application/zip"),
-        ("sheet.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-        ("page.html", "text/html"),
+        ("old.xls", "application/vnd.ms-excel"),
+        ("macros.xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"),
+        ("binary.xlsb", "application/vnd.ms-excel.sheet.binary.macroEnabled.12"),
+        ("calc.ods", "application/vnd.oasis.opendocument.spreadsheet"),
         ("tool.exe", "text/plain"),
         ("noname", "application/octet-stream"),
-    ], ids=["zip", "xlsx", "html", "exe-claims-text", "no-type"])
+    ], ids=["zip", "xls", "xlsm", "xlsb", "ods", "exe-claims-text", "no-type"])
     async def test_an_unknown_type_gives_no_text_and_no_fetch(
         self, monkeypatch, filename, mime,
     ) -> None:
@@ -348,13 +365,33 @@ class TestTheTextRoute:
                      mime=mime)
         got = await _text()
         assert (got.kind, got.text, got.chars) == ("unsupported", "", 0)
-        assert got.reason and "I read .pdf, .docx, .txt, .md and .csv files" in got.reason
+        assert got.reason and (
+            "I read .docx, .xlsx, .pdf, .html, .htm, .txt, .md and .csv files." in got.reason
+        )
         assert h.provider_calls == 0 and h.redis.calls == []
 
     async def test_a_name_with_no_suffix_takes_the_type(self, monkeypatch) -> None:
         _Harness(monkeypatch, filename="README", payload=b"hello", mime="text/plain")
         got = await _text()
         assert (got.kind, got.text) == ("txt", "hello")
+
+    @pytest.mark.parametrize(("mime", "make", "kind"), [
+        ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+         lambda: _xlsx(), "xlsx"),
+        ("text/html; charset=utf-8", lambda: b"<p>Total 50</p>", "html"),
+    ], ids=["xlsx", "html"])
+    async def test_a_name_with_no_suffix_takes_the_excel_or_html_type(
+        self, monkeypatch, mime, make, kind,
+    ) -> None:
+        _Harness(monkeypatch, filename="statement", payload=make(), mime=mime)
+        got = await _text()
+        assert got.kind == kind and got.text
+
+    async def test_a_workbook_with_no_value_answers_no_text(self, monkeypatch) -> None:
+        empty = xb.workbook([("Blank", xb.sheet(xb.row(1, '<c r="A1"><f>B1</f></c>')))])
+        _Harness(monkeypatch, filename="blank.xlsx", payload=empty)
+        got = await _text()
+        assert (got.kind, got.text) == ("no_text", "")
 
     @pytest.mark.parametrize(("filename", "mime"), [
         ("scan.png", "image/png"),
