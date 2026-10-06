@@ -398,6 +398,11 @@ Check `src/components/` before writing a tab bar, filter pills or a page header.
 * `Tabs` — `variant="segmented"` (2–5 short labels) or `"underline"` (icons or
   longer labels). Takes icon **names**, not components.
 * `FilterPills` — rounded filter buttons with counts.
+* `ScrollStrip` — one row of chips that never wraps and never shows a
+  scrollbar. An edge with chips behind it fades, and on a desktop it gets an
+  arrow that pages by whole chips. A vertical wheel moves the row sideways. A
+  phone swipes it. `FilterPills` and the Email quick filters use it. Use it for
+  any chip row that can outgrow its pane, and do not write a second one.
 * `PageHeader` — the page's title, subtitle and whole-surface actions.
 
 ```tsx

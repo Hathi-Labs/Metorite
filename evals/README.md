@@ -8,6 +8,7 @@ Three complementary layers, from cheapest/most-deterministic to most realistic:
 | [`inspect/scenarios.py`](inspect/scenarios.py) | Skill scenarios scored on the structural contract (citations, JSON shape) via Inspect AI | mockllm smoke in CI; live model locally | blocking (smoke) |
 | [`promptfoo.yaml`](promptfoo.yaml) + per-skill `skills/**/evals/cases.yaml` | Golden-case outputs of each skill against a real model | Yes (`LITELLM_BASE_URL`) | opt-in until CI secrets are wired |
 | [`coding_engine/`](coding_engine/README.md) | WS-43v. Eight Projects coding tasks on projects-assistant, through the real executor, with a deterministic checker for each task | The sweep: yes, through the Router on a local stack. `--scripted`: no | The checkers and the harness: the unit job. The scripts in the image: `sandbox-docker.yml` |
+| [`projects_ops/`](projects_ops/README.md) | WS-46 P3. Seven Projects operations tasks (PO-1 to PO-7) on projects-assistant, through the real executor. Each checker reads the requests that a stub of the Projects API saw, and the cards | The sweep: yes, through the Router on a local stack. `--scripted`: no | `--scripted`, both covers: `skill-eval.yml`. The checkers and their mutations: the unit job |
 
 ## Golden workflow fixtures (`trajectories/workflows/*.json`)
 
@@ -40,6 +41,7 @@ evals/
   inspect/scenarios.py  Inspect AI tasks
   trajectories/         offline pytest golden trajectories (no network, no DB)
   coding_engine/        WS-43v: the Projects coding tasks, their checkers and the runner
+  projects_ops/         WS-46 P3: the Projects operations tasks, a stub with write routes, the runner
 ```
 
 ## Running locally
