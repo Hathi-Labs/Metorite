@@ -77,7 +77,6 @@ export default function AnswerDetails({ tierLabel }: { tierLabel: string }) {
         layout="inline-flex items-center"
         type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-haspopup="dialog"
         aria-expanded={open}
         aria-label="Answer details"
         title="Answer details"
@@ -91,7 +90,8 @@ export default function AnswerDetails({ tierLabel }: { tierLabel: string }) {
         open={open}
         maxHeight={160}
         className="w-56 max-w-[calc(100vw-1.5rem)] p-3"
-        panelProps={{ role: "dialog", "aria-label": "Answer details" }}
+        // A region, not a dialog: the panel holds text and never takes focus.
+        panelProps={{ role: "region", "aria-label": "Answer details" }}
       >
         <AnswerDetailsBody tierLabel={tierLabel} />
       </AnchoredPanel>

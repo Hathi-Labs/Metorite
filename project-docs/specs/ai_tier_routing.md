@@ -28,7 +28,10 @@ Neither flag covers an agent on any box. S4 is next.
   `cc-model-usage` only when the flag covers every agent in the list. The
   counts still sort the picker of an agent that the flag does not cover.
 - With the UI flag on, the composer draws no picker until the agent list
-  lands. A turn sent before then still sends its `model` field, as today.
+  lands. A turn sent before then sends `model` with the forced model or
+  `auto`, never the stored choice. The composer reads no stored choice until
+  it knows that the agent keeps its picker. Review P3 of PR #678 found that
+  this note claimed otherwise.
 - The context ring of a covered agent names no model, and it estimates on
   the `auto` window.
 - **The tier label** is in a new details menu on each answer,

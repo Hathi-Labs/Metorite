@@ -75,7 +75,11 @@ export interface ComposerModelPlan {
  * - **UI flag off:** everything as today. This is the default of the product.
  * - **UI flag on, agent list not loaded yet:** no picker and no fetch, because
  *   the agent may be covered and the picker must not flash. The `model` field
- *   still goes, as today, so a turn sent this early behaves as it always did.
+ *   still goes, but its value is the caller's forced model or "auto", NOT the
+ *   stored choice. The composer reads no stored choice before it knows the
+ *   agent keeps its picker, so a covered agent's key is never read. A turn
+ *   sent in that window runs on the agent's default, as "auto" does today.
+ *   The persist effect restores the choice once the list lands.
  * - **UI flag on, agent covered:** no picker, no fetch, no stored choice and no
  *   `model` field. The effort selector stays (§5, Q3).
  * - **UI flag on, agent not covered:** everything as today.
