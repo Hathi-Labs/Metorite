@@ -659,6 +659,10 @@ So a pull request that adds a Projects endpoint fails CI until its author
 decides what the chat does with it. The decision costs one line. The fence
 is R7's answer to "continuously update".
 
+**Extended by D91, decided 2026-10-06.** `projects_agent_parity.md` §6
+takes this rule from the route to the request field and to the UI client
+method. That spec owns the extension.
+
 ### 7.2 The persona and the instructions come from code
 
 The agent's instruction file names workflows and rules. It does not list

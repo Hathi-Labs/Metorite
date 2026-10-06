@@ -95,25 +95,29 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-246 · Approve the Caddy "updating" page, or say no · [OWNER]
-- **Check:** `rg -n "CADDY-AUTH-APPROVED 3c8217ff" .claude/OWNER_GRANTS.md`.
-  No hit means this is open.
-- **Why:** NS-10b shows "Metorite is updating" when the workbench has not
-  answered for the 30 s hold, in place of Caddy's bare 502. It adds a
-  `header` line and a `rewrite` line to the `app.metorite.com` block, inside
-  `handle_errors` only. `test_caddy_auth_gate.py` reads every such line as a
-  sign-in line, so the merge needs the owner (gate (a)).
-- **What the lines do:** serve one fixed page as a 503 when the proxy itself
-  fails. They do not change any header that names a user, and no path reaches
-  a new route.
-- **Do:** to approve, add this line to `.claude/OWNER_GRANTS.md`:
-
-      CADDY-AUTH-APPROVED 3c8217ffb4fa3fc9d049ee170ec057c7f65fee739ba9a167573a96aaba5dce21
-
-  Then an agent merges branch `update-notice-caddy` with `main`, opens the
-  PR, and watches the deploy. To refuse, delete this entry and the branch.
-- **Authority:** `specs/navigation_shell.md` NS-10b · `work_plan.md` §6 gate (a).
-- **Added:** 2026-10-05 · the NS-10 session.
+### H-250 · Bring the last database connections inside the pool budget · [AGENT]
+- **Check:** `rg -n "psycopg.connect\(" packages/acb_common/acb_common/org_settings.py packages/acb_llm/acb_llm/model_config.py packages/acb_llm/acb_llm/key_store.py`.
+  A hit means part 1 is open.
+- **Why:** Supabase's session pooler allows 15 clients for the whole
+  database. PR #662 (2026-10-06) sized both pools to fit: async 7 + 2 and
+  sync 2 + 1. The NS-11 review the same day found three more gaps.
+  1. **Bare connects outside both pools.** `org_settings` opens two per
+     full page load (appearance and branding). `model_config.load_blob` and
+     `KeyStore._execute` on a cache miss open more. During a migration, a
+     burst of page loads can still meet the cap. Route each one through the
+     sync pool, then make the fence in `test_db_engine_seam.py` refuse a bare
+     `psycopg.connect` in the gateway's import graph.
+  2. **Sync sessions on the event loop.** 14 `async def` routes take a sync
+     `get_session` or `tenant_session` with no `to_thread`, for example
+     `routes/chat.py:1152` and `orchestrator/_tool_injection.py:1738`. A wait
+     for the pool blocks the whole gateway. Move each one into
+     `asyncio.to_thread`.
+  3. **mem0's own pool.** `mem0`'s pgvector store opens a `psycopg_pool`
+     (up to 5) on the same `DATABASE_URL` when `MEM0_ENABLED` is on. Read the
+     box `.env` first. If it is on, count it in the budget.
+- **Authority:** `specs/navigation_shell.md` §7.3 and NS-11 ·
+  `acb_common/settings.py` (the budget comment).
+- **Added:** 2026-10-06 · the NS-11 session.
 
 ### H-245 · Close the four P3 edges of skill privacy that the PR #635 review left · [AGENT]
 - **Check:** run these four checks. Each one stays open until its step closes.

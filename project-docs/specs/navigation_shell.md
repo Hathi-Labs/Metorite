@@ -521,7 +521,7 @@ that crash the first time it loaded code that the new build had renamed.
 
 | Layer | When | What the member sees | Where |
 |---|---|---|---|
-| Caddy (NS-10b, waits for the owner: gate (a)) | The workbench has not answered for the whole 30 s hold | A full page, "Metorite is updating". It checks `/api/health` every 3 s and reloads by itself | `deploy/hostinger/caddy/updating/index.html`, the `handle_errors` block of `app.metorite.com` |
+| Caddy (NS-10b) | The workbench has not answered for the whole 30 s hold | A full page, "Metorite is updating". It checks `/api/health` every 3 s and reloads by itself | `deploy/hostinger/caddy/updating/index.html`, the `handle_errors` block of `app.metorite.com` |
 | The shell | A request to `/api/*` gets a 502, 503 or 504, or no answer, AND `/api/health` then says the gateway is down | The shared toast: "Metorite is updating", then "Metorite is back" with a Refresh button. "Metorite was updated" with a Reload button when the build changed. "You are offline" when the browser has no network | `lib/shell/UpdateNotice.tsx`, `lib/shell/serviceHealth.ts`, `app/api/health/route.ts` |
 | The error page | A page throws | "This page did not load" with Try again and Reload. A tab out of date after a deploy reloads itself once | `app/error.tsx`, `app/global-error.tsx`, `lib/shell/ErrorScreen.tsx`, `lib/shell/chunkReload.ts` |
 
@@ -543,6 +543,29 @@ that crash the first time it loaded code that the new build had renamed.
    answers up or down and a build id, and reads nothing private.
 6. **An app never shows its own "server unavailable" banner.** It is the
    shell's message, under D89.
+
+**A busy database (NS-11, 2026-10-06).** The owner saw "The server had an
+error (500). Nothing was saved." in Projects during a deploy, and no pop-up.
+The cause was not the restart. Supabase's session pooler allows 15 clients
+for the whole database, and one gateway could ask for 27:
+
+- the async pool of `acb_common.db`, 8 + 4.
+- the sync pool of `acb_graph.db`, on SQLAlchemy's default 5 + 10.
+
+The box logged about 590 refusals (`EMAXCONNSESSION`) in two days, during
+deploys and at busy moments. Each one became a 500, and the shell ignores a
+500 on purpose. NS-11 changes three things:
+
+1. **The budget.** PR #662 landed it the same day: async 7 + 2 and sync
+   2 + 1, so 12 for both pools. Its fence sums both pools. Three slots stay free. A migration run, the
+   backup and an operator's `psql` use them. So do a few bare
+   `psycopg.connect()` calls that are still outside both pools. H-250 moves those calls in.
+2. **The answer.** A refused connection is a 503 with `Retry-After` and the
+   code `db_busy` (`acb_common/db_busy.py`). Every other error keeps its 500.
+3. **The words.** The gateway's `/health` says `db: "busy"` for 15 s, from
+   memory. The shell shows "Metorite is busy" and then "Metorite has caught
+   up". A panel shows "Metorite is busy or updating. Wait a moment and try
+   again."
 
 **What it does not cover.** An open chat stream that a restart cuts still
 ends. NS-10 does not change how the chat reports that. A migration that holds a lock
@@ -838,19 +861,37 @@ Done when, all met:
    probe). Each was seen to fail first. `e2e/toast.spec.ts` stubs the probe
    as healthy, because CI runs no gateway.
 
-### NS-10b · Updating, not broken: the Caddy page (§7.3) — OWNER-GATE (gate (a))
+### NS-11 · A busy database is "busy", not a 500 (§7.3) — AGENT-SAFE · BUILT 2026-10-06
 
-**Built on branch `update-notice-caddy`, and NOT merged.** The page needs a
-`header` line and a `rewrite` line in the `app.metorite.com` block. The fence
-`tests/unit/test_caddy_auth_gate.py` treats every such line as a sign-in line,
-so the change needs the owner's approval (`work_plan.md` §6, gate (a)). The
-owner adds this line to `.claude/OWNER_GRANTS.md`:
+Done when, all met:
+
+1. The budget of #662 holds: 12 for both pools, async 7 + 2 and sync 2 + 1.
+   NS-11 does not change it.
+2. A refused or timed-out database connection answers 503 with `Retry-After`
+   and the code `db_busy`, and the body names no pooler. Any other exception
+   keeps the bare 500.
+3. `/health` reports `db: "busy"` for 15 s after a refusal, with no database
+   call. `/api/health` passes it on as `gateway: "busy"`.
+4. The shell shows "Metorite is busy", then "Metorite has caught up".
+5. Fences, each seen red first. `test_db_engine_seam.py` sums both pools,
+   and refuses an engine on the default pool. `tests/unit/test_db_busy.py`
+   never counts a marker in the SQL or its parameters. Also:
+   `lib/shell/serviceHealth.test.ts` and `lib/apiError.test.ts`.
+
+### NS-10b · Updating, not broken: the Caddy page (§7.3) — BUILT 2026-10-06 (gate (a) approved by the owner)
+
+The page needs a `header` line and a `rewrite` line in the
+`app.metorite.com` block. The fence `tests/unit/test_caddy_auth_gate.py`
+treats every such line as a sign-in line, so the change needed the owner's
+approval (`work_plan.md` §6, gate (a)). The owner wrote this line in
+`.claude/OWNER_GRANTS.md` by hand on 2026-10-06:
 
     CADDY-AUTH-APPROVED 3c8217ffb4fa3fc9d049ee170ec057c7f65fee739ba9a167573a96aaba5dce21
 
-HANDOFF **H-246** carries it. ⚠️ An agent must not edit `_BASELINE`, and must
-not swap in a directive the fence does not list, such as `try_files` for
-`rewrite`. Either one passes the test and defeats the gate.
+⚠️ An agent must not edit `_BASELINE`, and must not swap in a directive the
+fence does not list, such as `try_files` for `rewrite`. Either one passes the
+test and defeats the gate. A LATER change to these lines changes the hash, and
+it needs a new approval line.
 
 Done when, all met:
 

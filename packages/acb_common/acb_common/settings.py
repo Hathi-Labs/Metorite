@@ -91,8 +91,26 @@ class Settings(BaseSettings):
     # (see `db_statement_cache_size` below), and `SET LOCAL` semantics want
     # re-verifying against it. Session mode is what this deployment is
     # verified against; changing ports is its own decision, not a knob turn.
-    db_pool_size: int = 8
-    db_max_overflow: int = 4
+    #
+    # 🔴 **2026-10-06: the 12 above left out the SECOND engine.** The sync
+    # engine of `acb_graph` (the chat paths: `routes/chat.py`, `rooms.py`,
+    # `routes/agent.py`) had no pool settings, so it took SQLAlchemy's 5 + 10.
+    # One gateway process could ask the pooler for 12 + 15 = 27 clients.
+    # Production logged `EMAXCONNSESSION` 249 times in one hour on 2026-10-05,
+    # and a member of the second organization got the failures.
+    #
+    # The budget now holds BOTH engines of the one process: async 7 + 2 = 9,
+    # sync (`db_sync_*` below) 2 + 1 = 3, so 12 in all. That keeps the 3
+    # slots of headroom above for a migration, a `psql` and the backup job.
+    # Fence: `TestThePoolCeilingFitsThePoolerInFront` in
+    # `tests/unit/test_db_engine_seam.py`.
+    db_pool_size: int = 7
+    db_max_overflow: int = 2
+
+    # The pool of the sync `acb_graph` engine. It counts against the SAME
+    # pooler budget as the async pool above (see the note there).
+    db_sync_pool_size: int = 2
+    db_sync_max_overflow: int = 1
 
     # How long a caller waits for a free connection before giving up.
     #

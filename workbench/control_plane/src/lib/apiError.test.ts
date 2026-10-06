@@ -50,12 +50,16 @@ describe("readJsonBody", () => {
 });
 
 describe("describeFailure", () => {
-  it("tells a member to wait when the server is restarting", () => {
+  it("tells a member to wait when Metorite is busy or updating", () => {
     // Every deploy bounces the gateway, so this is the COMMON failure, not
-    // an exotic one. "Try again" is the whole correct answer.
+    // an exotic one. "Try again" is the whole correct answer. Since
+    // 2026-10-06 a 503 also means "the database is busy for a moment", and
+    // the same words fit both.
     for (const status of [502, 503, 504]) {
-      expect(describeFailure(status)).toMatch(/restarting/i);
+      expect(describeFailure(status)).toMatch(/busy or updating/i);
       expect(describeFailure(status)).toMatch(/try again/i);
+      // A 502 can follow a write that committed, so never promise this.
+      expect(describeFailure(status)).not.toMatch(/nothing was saved/i);
     }
   });
 
