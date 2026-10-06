@@ -4,8 +4,9 @@
  * The probe of the shell's update notice (`lib/shell/serviceHealth.ts`).
  * Spec: `navigation_shell.md` §7.3.
  *
- * - `gateway`: "up" when the gateway's own `/health` answers 200, otherwise
- *   "down". It asks ONCE, with no retry: the point is to learn NOW whether
+ * - `gateway`: "up" when the gateway's own `/health` answers 200, "busy"
+ *   when it answers and says its database refused a connection a moment ago
+ *   (`db: "busy"`, from memory, no database call), otherwise "down". It asks ONCE, with no retry: the point is to learn NOW whether
  *   the gateway is restarting, and `gatewayFetch`'s 25 s hold would hide that.
  * - `build`: the workbench's Next build id. A tab compares it with the one it
  *   loaded with, to learn that a new version is live.
@@ -39,19 +40,22 @@ const BUILD: string | null = (() => {
 })();
 
 export async function GET() {
-  let up = false;
+  let gateway: "up" | "busy" | "down" = "down";
   try {
     const res = await gatewayFetch(
       `${GATEWAY_URL}/health`,
       { cache: "no-store", signal: AbortSignal.timeout(3_000) },
       { retry: false },
     );
-    up = res.ok;
+    if (res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { db?: string };
+      gateway = body.db === "busy" ? "busy" : "up";
+    }
   } catch {
-    up = false;
+    gateway = "down";
   }
   return NextResponse.json(
-    { gateway: up ? "up" : "down", build: BUILD },
+    { gateway, build: BUILD },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

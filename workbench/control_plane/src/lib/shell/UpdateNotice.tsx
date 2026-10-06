@@ -37,6 +37,15 @@ export const COPY = {
     description:
       "This usually takes under a minute. Keep this page open. It reconnects by itself.",
   },
+  busy: {
+    title: "Metorite is busy",
+    description:
+      "It is catching up, which can happen during an update. This usually takes under a minute. Keep this page open.",
+  },
+  ready: {
+    title: "Metorite has caught up",
+    description: "If something did not save while it was busy, try it again.",
+  },
   offline: {
     title: "You are offline",
     description: "Metorite reconnects by itself when your internet connection is back.",
@@ -71,6 +80,8 @@ export default function UpdateNotice() {
       const t = toastRef.current;
       if (state === "updating") {
         t.show({ key: KEY, variant: "loading", ...COPY.updating });
+      } else if (state === "busy") {
+        t.show({ key: KEY, variant: "loading", ...COPY.busy });
       } else if (state === "offline") {
         // A spinner, not a red mark: it is reconnecting, and it is not broken.
         t.show({ key: KEY, variant: "loading", ...COPY.offline });
@@ -89,7 +100,11 @@ export default function UpdateNotice() {
         t.show({
           key: KEY,
           variant: "success",
-          ...(info.from === "offline" ? COPY.online : COPY.back),
+          ...(info.from === "offline"
+            ? COPY.online
+            : info.from === "busy"
+              ? COPY.ready
+              : COPY.back),
           action: { label: "Refresh page", onClick: reload },
           timeout: 8_000,
         });
