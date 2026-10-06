@@ -1364,8 +1364,7 @@ export default function EmailPage() {
         defaultCc={composeDefaults?.cc}
         replyToBody={composeDefaults?.replyToBody}
         unsavedEdit={composeDefaults?.unsavedEdit}
-        draftId={composeDefaults?.draftId}
-        draftHasFile={composeDefaults?.draftHasFile}
+        handOver={composeDefaults?.handOver}
         quote={composeDefaults?.quote}
         replyToMessageId={composeDefaults?.replyToMessageId}
         messageId={composeDefaults?.messageId}

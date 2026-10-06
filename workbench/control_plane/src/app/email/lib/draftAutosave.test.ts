@@ -30,6 +30,22 @@
 //     `view`, and `view` is never the last mail. One guard at the top of
 //     `handleInlineSend` stops a second send, and the Send button loads.
 //
+// WS-17 EM-G3c-3 (§12.3.3c, items 1 to 6) adds six fences:
+//   * `email-drain-own-session` (item 1, f7): a drain drops only the saves of
+//     its own session. A save of a reply that the member closed still runs.
+//     Each composer passes its session to `schedule` and `drain`.
+//   * `email-popout-unsaved` (item 2, f9): a pop-out always opens the full
+//     composer dirty, and it never reads `draftStatus`.
+//   * `email-discard-old-mailbox` (item 3, f12): a discard deletes each draft
+//     of its session, in each mailbox, through `draftsToDiscard`.
+//   * `email-switch-old-mailbox` (item 4, f5): a save of an ended session
+//     deletes the draft that a change of From left in the old mailbox.
+//   * `email-pick-in-flight` (item 5, f3): the pick limit counts the picks
+//     that are being read, and a release frees their bytes once.
+//   * `email-popout-handover` (item 6, f8): the pop-out opens the composer
+//     before its first `await`, and `after` puts the hand-over at the head of
+//     the chain of the composer.
+//
 // Vitest runs with no DOM here (`vitest.config.ts`), so the composer fences
 // read the source, as `fromRow.test.ts` does.
 import { readFileSync } from "node:fs";
@@ -46,11 +62,14 @@ import {
   base64Bytes,
   createAutosave,
   draftToUpdate,
+  draftsToDiscard,
   errorStatus,
   failedSaveStatus,
+  holdPick,
   pickProblem,
   saveFailureText,
   sendFailureText,
+  supersededDraft,
 } from "./draftAutosave";
 
 const ROOT = join(__dirname, "..");
@@ -105,6 +124,22 @@ const settle = async () => {
 /** The scheduled save of a composer: from `autosave.schedule` to its wait. */
 const scheduledRun = (src: string) => between(src, "autosave.schedule(async () => {", "}, autosaveWait(");
 
+/** The drain of the send of each composer, with its session (EM-G3c-3 item 1). */
+const SEND_DRAINS = {
+  compose: "await autosave.drain(sessionRef.current);",
+  detail: "await autosave.drain(replySessionRef.current);",
+  conversation: "await autosave.drain(0);",
+} as const;
+
+/** The pop-out of the inline reply, from its start to the command bridge. */
+const popOut = () => between(detail, "const popOutToComposer = () => {", "cmdRef.current =");
+/** The defaults that the pop-out hands to the full composer. */
+const popOutDefaults = () => between(popOut(), "openCompose({", "});");
+/** The hand-over of the pop-out, which runs when the drain settles. */
+const popOutHandOver = () => between(popOut(), "const handOver: Promise<DraftHandOver> = drained.then(() => {", "openCompose({");
+/** The open of ComposePanel: a new session each time the window opens. */
+const composeOpen = () => between(compose, "if (!open) return;", "}, [open]);");
+
 // ── email-pick-limit ─────────────────────────────────────────────────────
 
 describe("email-pick-limit: the files of one mail stay under the cut of the proxy", () => {
@@ -147,9 +182,9 @@ describe("email-pick-limit: the files of one mail stay under the cut of the prox
 
   it("is asked by both composers that pick a file, before they read it", () => {
     const pick = between(compose, "const addFiles = async", "useEffect(");
-    comesBefore(pick, "const problem = pickProblem(attachments, picked);", "fileToSendAttachment");
+    comesBefore(pick, "const problem = pickProblem(attachments, picked, readingRef.current);", "fileToSendAttachment");
     const reply = between(detail, "const addReplyFiles = async", "const changeFrom");
-    comesBefore(reply, "const problem = pickProblem(replyAttachments, picked);", "fileToSendAttachment");
+    comesBefore(reply, "const problem = pickProblem(replyAttachments, picked, readingRef.current);", "fileToSendAttachment");
   });
 });
 
@@ -608,27 +643,27 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
     comesBefore(effect, "autosave.flush();", "draftIdRef.current = null;");
   });
 
-  /** The send of each composer, up to the code after it. */
+  /** The send of each composer, up to the code after it, and its drain. */
   const SENDS = [
-    ["compose", between(compose, "const handleSend = async", "const saveFailure")],
-    ["detail", between(detail, "const handleInlineSend = async", "const addReplyFiles")],
-    ["conversation", between(conversation, "const send = async", "const discard")],
+    ["compose", between(compose, "const handleSend = async", "const saveFailure"), SEND_DRAINS.compose],
+    ["detail", between(detail, "const handleInlineSend = async", "const addReplyFiles"), SEND_DRAINS.detail],
+    ["conversation", between(conversation, "const send = async", "const discard"), SEND_DRAINS.conversation],
   ] as const;
 
   it("awaits the drain in each send, before the save before the send (review round 2)", () => {
-    for (const [name, send] of SENDS) {
-      expect(send, name).toContain("await autosave.drain();");
-      comesBefore(send, "await autosave.drain();", "await saveDraft(");
+    for (const [name, send, drain] of SENDS) {
+      expect(send, name).toContain(drain);
+      comesBefore(send, drain, "await saveDraft(");
       // A cancel keeps a save that waits, and that save lands after the send.
       expect(send, name).not.toContain("autosave.cancel()");
     }
   });
 
   it("reads the draft id of a send only after the drain (review round 2)", () => {
-    for (const [name, send] of SENDS.slice(0, 2)) {
-      const before = between(send, "async", "await autosave.drain();");
+    for (const [name, send, drain] of SENDS.slice(0, 2)) {
+      const before = between(send, "async", drain);
       expect(before, name).not.toContain("draftIdRef.current");
-      comesBefore(send, "await autosave.drain();", "if (draftIdRef.current ||");
+      comesBefore(send, drain, "if (draftIdRef.current ||");
     }
   });
 
@@ -636,23 +671,24 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
     const composeDiscard = between(compose, "const discardDraft = async", "const handleSend");
     const detailDiscard = between(detail, "const discardReply = async", "const composedReply");
     const cardDiscard = between(conversation, "const discard = async", "const runAi");
-    for (const [name, discard] of [
-      ["compose", composeDiscard],
-      ["detail", detailDiscard],
-      ["conversation", cardDiscard],
+    for (const [name, discard, drain] of [
+      ["compose", composeDiscard, "const drained = autosave.drain(session);"],
+      ["detail", detailDiscard, "const drained = autosave.drain(session);"],
+      ["conversation", cardDiscard, "const drained = autosave.drain(0);"],
     ] as const) {
-      comesBefore(discard, "const drained = autosave.drain();", "await drained;");
+      comesBefore(discard, drain, "await drained;");
       comesBefore(discard, "await drained;", "deleteEmail(");
       expect(discard, name).not.toContain("autosave.cancel()");
     }
-    // The composer and the reply ask draftToUpdate after the drain, so a
-    // first save that ran, or a session that the reset ended, names its draft.
+    // The composer and the reply ask draftsToDiscard after the drain, so a
+    // first save that ran, or a session that the reset ended, names its draft
+    // (EM-G3c-3 item 3 replaced draftToUpdate here).
     for (const [name, discard] of [["compose", composeDiscard], ["detail", detailDiscard]] as const) {
-      comesBefore(discard, "await drained;", "const id = draftToUpdate(");
-      expect(discard, name).toContain("if (id) void deleteEmail(id);");
+      comesBefore(discard, "await drained;", "const ids = draftsToDiscard(");
+      expect(discard, name).toContain("for (const id of ids) void deleteEmail(id);");
       expect(between(discard, "async", "await drained;"), name).not.toContain("deleteEmail(");
     }
-    comesBefore(cardDiscard, "const drained = autosave.drain();", "onDismiss?.()");
+    comesBefore(cardDiscard, "const drained = autosave.drain(0);", "onDismiss?.()");
     // Each Discard button calls the discard that drains.
     expect(compose).toContain("onClick={() => void discardDraft()}");
     expect(detail).toContain("onClick={() => void discardReply()}");
@@ -717,45 +753,40 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
     }
   });
 
-  /** The pop-out of the inline reply, from its start to the command bridge. */
-  const popOut = () => between(detail, "const popOutToComposer = async () => {", "cmdRef.current =");
-  /** The defaults that the pop-out hands to the full composer. */
-  const popOutDefaults = () => between(popOut(), "openCompose({", "});");
-
-  it("opens the full composer dirty when the drain of a pop-out dropped an edit", () => {
+  it("opens the full composer dirty after a pop-out", () => {
     const pop = popOut();
-    // The drain gives true when it dropped an edit (review round 2).
-    comesBefore(pop, "const drained = autosave.drain();", "const unsavedEdit = await drained;");
-    expect(popOutDefaults()).toMatch(/^\s*unsavedEdit,$/m);
+    // EM-G3c-3 item 2 replaced the result of the drain with `true`. The
+    // fence `email-popout-unsaved` holds that rule.
+    expect(pop).toContain("const drained = autosave.drain(session);");
     expect(pop).not.toContain("autosave.pending");
     // A flush here as well would make two drafts.
     expect(pop).not.toContain("autosave.flush()");
     expect(codeOnly(read("page.tsx"))).toContain("unsavedEdit={composeDefaults?.unsavedEdit}");
-    const open = between(compose, "if (!open) return;", "}, [open]);");
+    const open = composeOpen();
     expect(open).toContain("dirty.current = Boolean(unsavedEdit);");
     expect(open).not.toContain("dirty.current = false;");
   });
 
   it("hands the draft of the reply to the full composer, after the drain (F2, review round 2)", () => {
     const pop = popOut();
+    const handOver = popOutHandOver();
     // The save that runs settles first, so a first save gives its draft id.
-    comesBefore(pop, "const unsavedEdit = await drained;", "const draftId = draftToUpdate(");
-    comesBefore(pop, "const draftId = draftToUpdate(", "openCompose({");
-    expect(pop).toMatch(
+    comesBefore(pop, "const drained = autosave.drain(session);", "drained.then(() => {");
+    expect(handOver).toContain("const draftId = draftToUpdate(");
+    expect(handOver).toMatch(
       /\{ session: replySessionRef\.current, draftId: draftIdRef\.current \},\s*lastSaveRef\.current,/,
     );
-    const defaults = popOutDefaults();
-    expect(defaults).toContain("draftId: handOver,");
-    expect(defaults).toContain("draftHasFile: handOver ? replyHasFileRef.current : undefined,");
+    expect(handOver).toContain(
+      "return { draftId: kept, draftHasFile: kept ? replyHasFileRef.current : undefined };",
+    );
+    expect(popOutDefaults()).toMatch(/^\s*handOver,$/m);
     // The reply closes at once, before the wait.
-    comesBefore(pop, "setReplyMode(null);", "await drained;");
-    const page = codeOnly(read("page.tsx"));
-    expect(page).toContain("draftId={composeDefaults?.draftId}");
-    expect(page).toContain("draftHasFile={composeDefaults?.draftHasFile}");
+    comesBefore(pop, "setReplyMode(null);", "drained.then(() => {");
+    expect(codeOnly(read("page.tsx"))).toContain("handOver={composeDefaults?.handOver}");
   });
 
   it("hands over no draft of a reply with a Bcc, because the full composer has no Bcc row", () => {
-    expect(popOut()).toContain("const handOver = draftId && !replyBcc.trim() ? draftId : undefined;");
+    expect(popOutHandOver()).toContain("const kept = draftId && !replyBcc.trim() ? draftId : undefined;");
     // The day the composer gets a Bcc row, this rule can go.
     expect(compose).not.toMatch(/\bsetBcc\b|\bbcc:/);
   });
@@ -763,21 +794,23 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
   it("carries the Cc of the reply to the full composer, which saves the draft with it", () => {
     expect(popOutDefaults()).toContain("cc: replyCc,");
     expect(codeOnly(read("page.tsx"))).toContain("defaultCc={composeDefaults?.cc}");
-    const open = between(compose, "if (!open) return;", "}, [open]);");
-    expect(open).toContain("setCc(defaultCc);");
+    expect(composeOpen()).toContain("setCc(defaultCc);");
     expect(scheduledRun(compose)).toContain('cc: cc ? cc.split(",").map((s) => s.trim()).filter(Boolean) : [],');
   });
 
   it("updates the draft that a pop-out hands over, in the full composer", () => {
-    const open = between(compose, "if (!open) return;", "}, [open]);");
-    expect(open).toContain("draftIdRef.current = draftId ?? null;");
-    expect(open).toContain("draftHasFileRef.current = Boolean(draftId && draftHasFile);");
-    expect(open).not.toMatch(/draftIdRef\.current = null;/);
-    // The seeded draft counts as the last save of the new session.
-    comesBefore(open, "sessionRef.current += 1;", "draftIdRef.current = draftId ?? null;");
-    expect(open).toMatch(
-      /if \(draftId\) \{\s*lastSaveRef\.current = \{\s*session: sessionRef\.current, from: defaultFromId \|\| accountId, id: draftId,\s*\};/,
-    );
+    const open = composeOpen();
+    const apply = between(open, "autosave.after(handOver.then(({ draftId, draftHasFile }) => {", "}));");
+    comesBefore(apply, "if (!draftId) return;", "draftIdRef.current = draftId;");
+    expect(apply).toContain("draftHasFileRef.current = Boolean(draftHasFile);");
+    // The handed-over draft counts as the last save of the session that
+    // opened, so a flushed save of that session updates it.
+    comesBefore(open, "sessionRef.current += 1;", "const opened = sessionRef.current;");
+    expect(open).toContain("const from = defaultFromId || accountId;");
+    comesBefore(apply, "lastSaveRef.current = { session: opened, from, id: draftId };", "draftIdRef.current = draftId;");
+    // The seed of the open names no draft until the hand-over settles.
+    comesBefore(open, "draftIdRef.current = null;", "autosave.after(");
+    expect(open).not.toContain("draftIdRef.current = draftId ?? null;");
   });
 
   it("carries the Cc and the Bcc in each autosave of the inline reply (review round 2)", () => {
@@ -810,6 +843,373 @@ describe("email-autosave-flush: each composer flushes on a close, a switch and a
       const keyed = src.match(/<DraftCard\s+key=\{/g)?.length ?? 0;
       expect(keyed, name).toBe(all);
     }
+  });
+});
+
+// ── email-drain-own-session (EM-G3c-3 item 1) ───────────────────────────
+
+describe("email-drain-own-session: a drain drops only the saves of its own session", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps the waiting save of session 1 on a drain of session 2, runs it, and gives false", async () => {
+    const first = deferred();
+    const closed = vi.fn();
+    const a = createAutosave();
+    a.schedule(() => first.promise, 1200, 1);
+    a.flush();
+    // The member closes reply A, so the X flushes its last edit.
+    a.schedule(closed, 1200, 1);
+    a.flush();
+    let drained: boolean | null = null;
+    void a.drain(2).then((dropped) => {
+      drained = dropped;
+    });
+    first.resolve();
+    await settle();
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(drained).toBe(false);
+  });
+
+  it("drops the waiting and the pending save of its own session, and keeps the rest", async () => {
+    const first = deferred();
+    const keptA = vi.fn();
+    const droppedB = vi.fn();
+    const pendingB = vi.fn();
+    const a = createAutosave();
+    a.schedule(() => first.promise, 1200, 1);
+    a.flush();
+    a.schedule(keptA, 1200, 1);
+    a.flush();
+    a.schedule(droppedB, 1200, 2);
+    a.flush();
+    a.schedule(pendingB, 1200, 2);
+    const drained = a.drain(2);
+    first.resolve();
+    await expect(drained).resolves.toBe(true);
+    vi.advanceTimersByTime(60_000);
+    await settle();
+    expect(keptA).toHaveBeenCalledTimes(1);
+    expect(droppedB).not.toHaveBeenCalled();
+    expect(pendingB).not.toHaveBeenCalled();
+  });
+
+  it("starts a pending save of another session at once, as a flush does", async () => {
+    const other = vi.fn();
+    const a = createAutosave();
+    a.schedule(other, 1200, 1);
+    const drained = a.drain(2);
+    expect(other).toHaveBeenCalledTimes(1);
+    expect(a.pending).toBe(false);
+    await expect(drained).resolves.toBe(false);
+  });
+
+  it("settles when the end of the chain settles, so the kept save lands first", async () => {
+    const first = deferred();
+    const kept = deferred();
+    const a = createAutosave();
+    a.schedule(() => first.promise, 1200, 1);
+    a.flush();
+    a.schedule(() => kept.promise, 1200, 1);
+    a.flush();
+    let done = false;
+    void a.drain(2).then(() => {
+      done = true;
+    });
+    first.resolve();
+    await settle();
+    expect(done).toBe(false);
+    kept.resolve();
+    await settle();
+    expect(done).toBe(true);
+  });
+
+  it("runs the probe of f7: the close edit of reply A lands before the send of reply B", async () => {
+    // Reply A (session 1) creates its draft, and the save is slow. The member
+    // closes A, so its last edit waits. Then reply B (session 2) sends.
+    const issued: string[] = [];
+    const create = deferred();
+    const a = createAutosave();
+    a.schedule(() => {
+      issued.push("A1");
+      return create.promise;
+    }, 1200, 1);
+    vi.advanceTimersByTime(1200);
+    a.schedule(() => {
+      issued.push("A2");
+    }, 1200, 1);
+    a.flush();
+    a.schedule(() => {
+      issued.push("B1");
+    }, 1200, 2);
+    const send = (async () => {
+      await a.drain(2);
+      issued.push("SEND");
+    })();
+    create.resolve();
+    await send;
+    vi.advanceTimersByTime(60_000);
+    await settle();
+    expect(issued).toEqual(["A1", "A2", "SEND"]);
+  });
+
+  it("is called with a session by each composer, in each schedule and each drain", () => {
+    expect(compose).toMatch(/draftHasFileRef\.current,\s*\), session\);/);
+    expect(detail).toMatch(/replyHasFileRef\.current,\s*\), session\);/);
+    // The key gives each draft its own card, so the card has one session.
+    expect(conversation).toMatch(/draft\.hasAttachments,\s*\), 0\);/);
+    for (const [name, src] of Object.entries(COMPOSERS)) {
+      expect(src, name).not.toContain("autosave.drain()");
+      expect(src.match(/autosave\.schedule\(/g)?.length, name).toBe(1);
+    }
+    expect(compose.match(/autosave\.drain\(/g)?.length).toBe(2);
+    expect(detail.match(/autosave\.drain\(/g)?.length).toBe(3);
+    expect(conversation.match(/autosave\.drain\(0\)/g)?.length).toBe(2);
+    expect(popOut()).toContain("const drained = autosave.drain(session);");
+  });
+});
+
+// ── email-popout-unsaved (EM-G3c-3 item 2) ──────────────────────────────
+
+describe("email-popout-unsaved: a pop-out always hands over an unsaved edit", () => {
+  it("passes unsavedEdit: true in the defaults of popOutToComposer", () => {
+    const defaults = popOutDefaults();
+    expect(defaults).toMatch(/^\s*unsavedEdit: true,$/m);
+    expect(defaults).not.toMatch(/^\s*unsavedEdit,$/m);
+  });
+
+  it("does not read draftStatus or the result of the drain, because the closure is stale", () => {
+    const pop = popOut();
+    expect(pop).not.toContain("draftStatus");
+    expect(pop).not.toContain("const unsavedEdit =");
+    expect(pop).not.toContain("await drained");
+  });
+
+  it("opens the full composer dirty with it", () => {
+    expect(codeOnly(read("page.tsx"))).toContain("unsavedEdit={composeDefaults?.unsavedEdit}");
+    expect(composeOpen()).toContain("dirty.current = Boolean(unsavedEdit);");
+  });
+});
+
+// ── email-discard-old-mailbox (EM-G3c-3 item 3) ─────────────────────────
+
+describe("email-discard-old-mailbox: a discard deletes each draft of its session", () => {
+  it("gives the draft of the old mailbox and each stale draft, with no id twice", () => {
+    // EmailDetail: the reset ended session 3, and its create landed in the
+    // old mailbox after a change of From.
+    const last = { session: 3, from: "acct-a", id: "dA" };
+    expect(draftsToDiscard(3, { session: 4, draftId: null }, last, ["s1", "dA"])).toEqual(["dA", "s1"]);
+  });
+
+  it("gives the old-mailbox id from the stale list when the session lives", () => {
+    // ComposePanel: a close does not end the session, so the create settled
+    // in the live branch and put its draft on the stale list.
+    expect(draftsToDiscard(3, { session: 3, draftId: null }, null, ["dA"])).toEqual(["dA"]);
+    expect(draftsToDiscard(3, { session: 3, draftId: "dB" }, { session: 3, from: "acct-a", id: "dA" }, []))
+      .toEqual(["dB", "dA"]);
+  });
+
+  it("gives no id of another session", () => {
+    const last = { session: 2, from: "acct-a", id: "d1" };
+    expect(draftsToDiscard(3, { session: 4, draftId: "d9" }, last, [])).toEqual([]);
+    expect(draftsToDiscard(3, { session: 4, draftId: "d9" }, null, [])).toEqual([]);
+  });
+
+  it("is asked by each discard after the drain, with the session and the list of before", () => {
+    for (const [name, discard] of [
+      ["compose", between(compose, "const discardDraft = async", "const handleSend")],
+      ["detail", between(detail, "const discardReply = async", "const composedReply")],
+    ] as const) {
+      comesBefore(discard, "const stale = staleDraftsRef.current;", "const drained = autosave.drain(session);");
+      comesBefore(discard, "await drained;", "const ids = draftsToDiscard(");
+      expect(discard, name).toMatch(
+        /draftsToDiscard\(\s*session,\s*\{ session: \w*[sS]essionRef\.current, draftId: draftIdRef\.current \},\s*lastSaveRef\.current,\s*stale\.splice\(0\),\s*\);/,
+      );
+      // The discard of before read the From of now, and missed the draft of
+      // the old mailbox.
+      expect(discard, name).not.toContain("draftToUpdate(");
+      expect(discard, name).not.toContain("fromId");
+    }
+  });
+});
+
+// ── email-switch-old-mailbox (EM-G3c-3 item 4) ──────────────────────────
+
+describe("email-switch-old-mailbox: a late save deletes the draft of the old mailbox", () => {
+  const last = { session: 3, from: "acct-a", id: "dA" };
+
+  it("gives the old id for one session with two mailboxes", () => {
+    expect(supersededDraft({ session: 3, from: "acct-b" }, last, "dB")).toBe("dA");
+  });
+
+  it("gives null for another session", () => {
+    expect(supersededDraft({ session: 4, from: "acct-b" }, last, "dB")).toBeNull();
+  });
+
+  it("gives null for the same mailbox, for the draft that the save wrote, and with no last save", () => {
+    expect(supersededDraft({ session: 3, from: "acct-a" }, last, "dA2")).toBeNull();
+    expect(supersededDraft({ session: 3, from: "acct-b" }, last, "dA")).toBeNull();
+    expect(supersededDraft({ session: 3, from: "acct-b" }, null, "dB")).toBeNull();
+  });
+
+  it("is asked in the ended branch of each composer, before the branch writes lastSaveRef", () => {
+    for (const [name, src, guard] of [
+      ["compose", compose, "if (sessionRef.current !== session) {"],
+      ["detail", detail, "if (replySessionRef.current !== session) {"],
+    ] as const) {
+      const ended = between(scheduledRun(src), guard, "return;");
+      comesBefore(
+        ended,
+        "const superseded = supersededDraft({ session, from: savingFrom }, lastSaveRef.current, saved.id);",
+        "lastSaveRef.current = { session, from: savingFrom, id: saved.id };",
+      );
+      // A draft on the stale list goes with the list, and never twice.
+      expect(ended, name).toContain("if (superseded && !stale.includes(superseded)) void deleteEmail(superseded);");
+    }
+  });
+});
+
+// ── email-pick-in-flight (EM-G3c-3 item 5) ──────────────────────────────
+
+describe("email-pick-in-flight: a pick counts the picks that are being read", () => {
+  it("refuses a second pick that fits alone, but not with a pick that is being read", () => {
+    const reading = { current: 0 };
+    expect(pickProblem([], [{ size: 4_000_000 }], reading.current)).toBeNull();
+    holdPick(reading, [{ size: 4_000_000 }]);
+    expect(pickProblem([], [{ size: 4_000_000 }])).toBeNull();
+    expect(pickProblem([], [{ size: 4_000_000 }], reading.current)).toBe(FILES_TOO_LARGE);
+    expect(pickProblem([], [{ size: 3_500_000 }], reading.current)).toBeNull();
+  });
+
+  it("frees the bytes of a read that fails, once", async () => {
+    const reading = { current: 0 };
+    const other = holdPick(reading, [{ size: 1_000 }]);
+    // As each composer does it: the release runs in a finally.
+    const read = async () => {
+      const release = holdPick(reading, [{ size: 3_000_000 }, { size: 1_000_000 }]);
+      try {
+        await Promise.reject(new Error("unreadable"));
+      } catch {
+        // The composer shows its own text.
+      } finally {
+        release();
+      }
+      return release;
+    };
+    const release = await read();
+    expect(reading.current).toBe(1_000);
+    release();
+    expect(reading.current).toBe(1_000);
+    other();
+    expect(reading.current).toBe(0);
+  });
+
+  it("is used by both composers that pick a file: hold after the check, release in a finally", () => {
+    for (const [name, pick, added] of [
+      ["compose", between(compose, "const addFiles = async", "useEffect("), "setAttachments((prev) => [...prev, ...added]);"],
+      ["detail", between(detail, "const addReplyFiles = async", "const changeFrom"), "setReplyAttachments((prev) => [...prev, ...added]);"],
+    ] as const) {
+      comesBefore(pick, "if (problem) {", "const release = holdPick(readingRef, picked);");
+      comesBefore(pick, "const release = holdPick(readingRef, picked);", "fileToSendAttachment");
+      comesBefore(pick, added, "release();");
+      expect(pick, name).toMatch(/\} finally \{\s*release\(\);\s*\}/);
+    }
+    for (const [name, src] of [["compose", compose], ["detail", detail]] as const) {
+      expect(src, name).toContain("const readingRef = useRef(0);");
+      // No session resets the counter.
+      expect(src, name).not.toMatch(/readingRef\.current\s*=[^=]/);
+    }
+  });
+});
+
+// ── email-popout-handover (EM-G3c-3 item 6) ─────────────────────────────
+
+describe("email-popout-handover: the pop-out opens the composer at once", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("starts a save scheduled after after(p) only when p settles", async () => {
+    const handOver = deferred();
+    const run = vi.fn();
+    const a = createAutosave();
+    a.after(handOver.promise);
+    a.schedule(run, 1200, 1);
+    vi.advanceTimersByTime(1200);
+    await settle();
+    expect(run).not.toHaveBeenCalled();
+    handOver.resolve();
+    await settle();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes a send and a discard wait for the hand-over, and a failed hand-over frees the chain", async () => {
+    const handOver = deferred();
+    const run = vi.fn();
+    const a = createAutosave();
+    a.after(handOver.promise);
+    let drained = false;
+    void a.drain(1).then(() => {
+      drained = true;
+    });
+    await settle();
+    expect(drained).toBe(false);
+    handOver.reject(new Error("502"));
+    await settle();
+    expect(drained).toBe(true);
+    a.schedule(run, 1200, 1);
+    a.flush();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for a save that runs before it, so no save starts beside another", async () => {
+    const first = deferred();
+    const run = vi.fn();
+    const a = createAutosave();
+    a.schedule(() => first.promise, 1200, 1);
+    a.flush();
+    a.after(Promise.resolve());
+    a.schedule(run, 1200, 2);
+    a.flush();
+    await settle();
+    expect(run).not.toHaveBeenCalled();
+    first.resolve();
+    await settle();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls openCompose before the first await of popOutToComposer", () => {
+    const pop = popOut();
+    const open = pop.indexOf("openCompose({");
+    const wait = pop.indexOf("await");
+    expect(open).toBeGreaterThanOrEqual(0);
+    expect(wait === -1 || open < wait, "openCompose({ must come before the first await").toBe(true);
+    // The drain starts first, so each save of the reply that it drops is gone.
+    comesBefore(pop, "const drained = autosave.drain(session);", "openCompose({");
+  });
+
+  it("gives the composer the hand-over, which applies it only while its session lives", () => {
+    expect(codeOnly(read("lib/emailStore.ts"))).toContain("handOver?: Promise<DraftHandOver>;");
+    expect(codeOnly(read("page.tsx"))).toContain("handOver={composeDefaults?.handOver}");
+    const open = composeOpen();
+    comesBefore(open, "const opened = sessionRef.current;", "autosave.after(handOver.then(");
+    const apply = between(open, "autosave.after(handOver.then(({ draftId, draftHasFile }) => {", "}));");
+    comesBefore(apply, "if (sessionRef.current !== opened) return;", "draftIdRef.current = draftId;");
+    comesBefore(apply, "if (sessionRef.current !== opened) return;", "draftHasFileRef.current = Boolean(draftHasFile);");
+    // A change of From in the gap leaves the draft in the old mailbox, so it
+    // goes on the stale list and is never updated from the new mailbox.
+    comesBefore(open, "liveFromRef.current = from;", "autosave.after(handOver.then(");
+    comesBefore(apply, "if (liveFromRef.current !== from) {", "draftIdRef.current = draftId;");
+    expect(between(apply, "if (liveFromRef.current !== from) {", "return;")).toContain(
+      "staleDraftsRef.current.push(draftId);",
+    );
   });
 });
 
@@ -900,7 +1300,7 @@ describe("email-send-failed-shows: a failed send shows its text", () => {
     // a later "Not saved" (review round 1). ComposePanel does the same.
     const send = between(detail, "const handleInlineSend = async", "const fromAccount = ");
     comesBefore(send, "if (!email) return;", "setSendErr(null);");
-    expect(between(compose, "const handleSend = async", "await autosave.drain();")).toContain("setSendError(null);");
+    expect(between(compose, "const handleSend = async", SEND_DRAINS.compose)).toContain("setSendError(null);");
   });
 
   it("keeps the error of the inline reply out of the footer that truncates", () => {
@@ -961,8 +1361,8 @@ describe("email-draftcard-recipients: a draft card keeps the recipients of its d
     // The state starts after the last early return and before the drain.
     comesBefore(send, 'setSendErr("Add at least one recipient");', "sendingRef.current = true;");
     comesBefore(send, "sendingRef.current = true;", "setSending(true);");
-    comesBefore(send, "setSending(true);", "await autosave.drain();");
-    expect(between(send, "setSending(true);", "await autosave.drain();")).toContain("try {");
+    comesBefore(send, "setSending(true);", SEND_DRAINS.detail);
+    expect(between(send, "setSending(true);", SEND_DRAINS.detail)).toContain("try {");
     expect(send).toMatch(/\} finally \{\s*sendingRef\.current = false;\s*setSending\(false\);\s*\}/);
     expect(detail.match(/sendingRef\.current = true;/g)?.length).toBe(1);
   });
