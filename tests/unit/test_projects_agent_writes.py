@@ -330,6 +330,8 @@ def responder(call: dict) -> Any:
             "drops": ["cost"],
             "required_missing": [],
             "crosses_status_set": True,
+            # WS-46 P6: a move into another space, where answers land.
+            "crosses_root": True,
         }
     if path == "/projects/tasks/move":
         return {"moved": 1}
@@ -392,10 +394,21 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         },
         # WS-46 P1: the rule is the second write under the one card.
         {"project_id": UUID, "title": "Send the timesheet", "repeat": "weekly", "repeat_on": "5"},
+        # WS-46 P6: the start and the type in the POST, the values in a PATCH.
+        {
+            "project_id": UUID,
+            "title": "Weld the frame",
+            "start": "2026-10-05",
+            "type": "bug",
+            "fields": '{"Customer": "SMB"}',
+        },
     ],
     "update_task": [
         {"task_id": UUID, "status": "done", "due": "2026-10-01"},
         {"task_id": UUID, "clear": "due"},
+        # WS-46 P6
+        {"task_id": UUID, "type": "bug", "fields": '{"Customer": "SMB"}'},
+        {"task_id": UUID, "status": "done", "include_subtasks": "yes"},
     ],
     "assign": [{"task_id": UUID, "assignees": "priya@x.io, agent:crm-assistant"}],
     "comment": [{"task_id": UUID, "body": "Waiting on legal."}],
@@ -405,6 +418,14 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "move_task": [
         {"task_ids": UUID, "destination_project_id": OTHER},
         {"task_ids": UUID, "parent_task_id": OTHER},
+        # WS-46 P6: the destination's fields, and the subtasks along.
+        {
+            "task_ids": UUID,
+            "destination_project_id": OTHER,
+            "fields": '{"Customer": "SMB"}',
+            "include_subtasks": "yes",
+        },
+        {"task_ids": UUID, "destination_project_id": OTHER, "include_subtasks": "yes"},
     ],
     "watch": [
         {"target_id": UUID, "kind": "task"},
@@ -412,7 +433,7 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         {"target_id": UUID, "kind": "project"},
         {"target_id": UUID, "kind": "project", "stop": True},
     ],
-    "complete": [{"task_id": UUID}],
+    "complete": [{"task_id": UUID}, {"task_id": UUID, "include_subtasks": "yes"}],
     "defer": [{"task_id": UUID, "until": "2026-10-06"}],
     "unarchive_task": [{"task_id": UUID}],
     "create_project": [{"name": "Q4 launch", "parent_project_id": UUID, "lead": "Priya"}],
@@ -443,11 +464,12 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "archive_project": [{"project_id": UUID}],
     "unarchive_project": [{"project_id": ARCHIVED}],
     "move_project": [{"project_id": UUID, "parent_project_id": SALES}],
-    "archive_task": [{"task_id": LIVE}],
+    "archive_task": [{"task_id": LIVE}, {"task_id": LIVE, "include_subtasks": "yes"}],
     "merge_tasks": [{"target_task_id": UUID, "source_task_ids": OTHER}],
     "bulk_update": [
         {"task_ids": f"{UUID},{OTHER}", "status": "done", "tags_add": "q4"},
         {"task_ids": UUID, "action": "archive"},
+        {"task_ids": UUID, "action": "archive", "include_subtasks": "yes"},
     ],
     "delete_comment": [{"task_id": UUID, "comment_id": LINK}],
     "revert_activity": [{"task_id": UUID, "activity_id": CHANGE}],

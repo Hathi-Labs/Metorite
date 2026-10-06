@@ -927,19 +927,28 @@ async def test_load_subtree_binds_the_callers_visibility():
 
 
 # ── The chat tools keep the default, and say the option exists ─────────────
+#
+# WS-46 P6 (G9) gave the Projects assistant's three doors the argument: each
+# asks once, then sends the flag only for a "yes" (projects_agent_parity.md
+# slice P6). `tests/unit/test_projects_task_fields.py` is their fence now.
+# The My Tasks tool still keeps the gateway's default.
 
 
-def _tool_sources():
+def test_the_my_tasks_tool_names_include_subtasks_and_does_not_send_it():
     from skill_my_tasks import core as my_tasks
-    from skill_projects import guarded, writes
-    return [
-        my_tasks.my_tasks_complete, writes.complete, writes.move_task,
-        guarded.archive_task,
-    ]
 
-
-@pytest.mark.parametrize("tool", _tool_sources(), ids=lambda t: t.__name__)
-def test_a_chat_tool_names_include_subtasks_and_does_not_send_it(tool):
+    tool = my_tasks.my_tasks_complete
     assert "include_subtasks" in (tool.__doc__ or "")
     body = inspect.getsource(tool).split('"""')[-1]
     assert "include_subtasks" not in body
+
+
+def _projects_doors():
+    from skill_projects import guarded, writes
+    return [writes.complete, writes.move_task, guarded.archive_task]
+
+
+@pytest.mark.parametrize("tool", _projects_doors(), ids=lambda t: t.__name__)
+def test_a_projects_door_takes_include_subtasks_as_an_argument(tool):
+    assert "include_subtasks" in inspect.signature(tool).parameters
+    assert inspect.signature(tool).parameters["include_subtasks"].default == ""

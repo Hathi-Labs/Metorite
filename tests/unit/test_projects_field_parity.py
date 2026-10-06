@@ -235,11 +235,14 @@ _BASE: dict[str, dict[str, Any]] = {
     "analytics_outlook": {},
     "analytics_stuck": {},
     "analytics_throughput": {},
+    # WS-46 P6: `LIVE` is not archived, and `UUID` is not done.
+    "archive_task": {"task_id": tw.LIVE},
     "assign": {"task_id": UUID, "assignees": "priya@x.io"},
     "bulk_update": {"task_ids": f"{UUID},{OTHER}", "status": "done"},
     "calendar": {"start": "2026-09-22", "end": "2026-09-29"},
     "capture_intake": {"title": "Vendor called"},
     "comment": {"task_id": UUID, "body": "Waiting on legal."},
+    "complete": {"task_id": UUID},
     "create_field": {"project_id": UUID, "name": "Region", "field_type": "select", "options": "EU"},
     "create_personal_task": {"title": "Renew the domain"},
     "create_project": {"name": "Q4 launch"},
@@ -304,12 +307,15 @@ _SAMPLE: dict[str, Any] = {
     "epic": "yes",
     "estimate_mins": 30,
     "field_type": "select",
+    # WS-46 P6: a field and a type the fake project defines.
+    "fields": '{"Customer": "SMB"}',
     "horizon_days": 21,
     "icon": "bug",
     "ids": OTHER,
     "important": "yes",
     "include_archived": True,
     "include_done": True,
+    "include_subtasks": "yes",
     "include_subtree": False,
     "interval": 2,
     "into": "p0",
@@ -349,6 +355,7 @@ _SAMPLE: dict[str, Any] = {
     "template": "team pulse",
     "title": "Weld the frame",
     "two_minute": "yes",
+    "type": "bug",
     "unassigned": True,
     "unread_only": False,
     "until": "2026-12-31",
@@ -362,6 +369,25 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
     ("POST", "/projects/tasks/{task_id}/move", "parent_task_id"): {
         "task_ids": UUID,
         "parent_task_id": OTHER,
+    },
+    # WS-46 P6 (G8): with answers for the destination, one task moves
+    # through the promote door's route.
+    ("POST", "/projects/tasks/{task_id}/move", "project_id"): {
+        "task_ids": UUID,
+        "destination_project_id": OTHER,
+        "fields": '{"Customer": "SMB"}',
+    },
+    ("POST", "/projects/tasks/{task_id}/move", "include_subtasks"): {
+        "task_ids": UUID,
+        "destination_project_id": OTHER,
+        "fields": '{"Customer": "SMB"}',
+        "include_subtasks": "yes",
+    },
+    # WS-46 P6 (G9): the flag rides with a move into a Done lane.
+    ("PATCH", "/projects/tasks/{task_id}", "include_subtasks"): {
+        "task_id": UUID,
+        "status": "done",
+        "include_subtasks": "yes",
     },
     ("POST", "/projects/tasks/bulk", "action"): {"task_ids": UUID, "action": "archive"},
     ("POST", "/projects/tasks/bulk", "assignees_add"): {"task_ids": UUID, "assignees_add": "Priya"},
