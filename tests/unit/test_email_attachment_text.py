@@ -508,17 +508,24 @@ class TestTheTextRoute:
             await gate.wait()
             return await real(data, suffix)
 
+        async def _until(ready: Any) -> None:
+            """A bound on each wait, so a broken guard fails and never hangs."""
+            end = time.monotonic() + 5
+            while not ready():
+                assert time.monotonic() < end, "the wait timed out"
+                await asyncio.sleep(0.001)
+
         monkeypatch.setattr(m, "parse_bounded", _slow)
         first = asyncio.create_task(_text())
-        while not parses:
-            await asyncio.sleep(0)
-        again = await _text()
-        assert (again.kind, again.reason) == ("unreadable", m._BUSY_REASON)
-        assert len(parses) == 1, "the second read of one member parsed"
-        other = asyncio.create_task(_text(email=SECOND))
-        while len(parses) < 2:
-            await asyncio.sleep(0)
-        gate.set()
+        try:
+            await _until(lambda: parses)
+            again = await asyncio.wait_for(_text(), 5)
+            assert (again.kind, again.reason) == ("unreadable", m._BUSY_REASON)
+            assert len(parses) == 1, "the second read of one member parsed"
+            other = asyncio.create_task(_text(email=SECOND))
+            await _until(lambda: len(parses) == 2)
+        finally:
+            gate.set()
         assert (await first).text == "words"
         assert (await other).text == "words"
         assert not m._READING, "a hold outlived its read"
