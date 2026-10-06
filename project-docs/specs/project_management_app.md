@@ -5292,6 +5292,13 @@ feature rather than a formality:
   branch reached before the boolean one accepts both, in both directions. The coercers are
   one-per-type in a dispatch dict specifically so that ordering cannot be undone by accident.
 
+**A create checks a value as a PATCH does** (2026-10-06). The WS-46 P6 build (PR #677) found
+that `POST /projects/tasks` stored `custom_fields` with no check. Now the create calls
+`apply_values` against the definitions of the task's root. The call runs in the transaction
+of the insert, and a bad value gets the 422 of the PATCH. The create does not check a required
+field, because migration 192 makes that field a gate on the move. The fence is
+`tests/unit/test_projects_create_custom_values.py`.
+
 **The deliberate departure from Paca: deleting a definition strips its values.** Paca's
 research notes record "deleting a definition does not clean task data" as an accepted cost
 (§2.3). It is not accepted here. A key left behind in the JSONB is invisible — no definition
