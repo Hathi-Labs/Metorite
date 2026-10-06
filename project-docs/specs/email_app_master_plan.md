@@ -1762,7 +1762,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 ##### EM-T4a-2 — the decision core
 
-**Status (2026-10-06).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. 🔨 PR-B2 built, not merged (`email-t4a2-prb2`, 2026-10-06). PR-B3 is not built. The PR-B1 notes follow the PR-A notes, and the PR-B2 notes follow the PR-B1 notes.
+**Status (2026-10-06).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. 🔨 PR-B2 built, not merged (`email-t4a2-prb2`, 2026-10-06), with review round 1. PR-B3 is not built. The PR-B1 notes follow the PR-A notes, and the PR-B2 notes follow the PR-B1 notes.
 
 The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The audit of 2026-10-05 read them again at `c26b67549`, and it split PR-B in three. The part adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
 
@@ -2053,7 +2053,7 @@ The diff now holds 563 lines that are not in a test or a document (366 added and
 **PR-B2 as built (2026-10-06).**
 
 - `read_classification` (`engine.py`) reads `_thread_is_conversation` in Block R when `resolve` is True and the mode is not `on`. `ClassifyRead.conversation` holds the answer.
-- `replyzero.py` has the steps of the job status ask. `status_ask_needed` says whether the job asks. `read_job_status(db, ...)` loads `about` with `include_kb=False`, calls `resolve_self`, and then calls `read_thread_status` with the id of the row. `ask_job_status(read)` takes no `db`.
+- `replyzero.py` has the steps of the job status ask. `status_ask_needed` says whether the job asks. `read_job_status(db, ...)` tests self-only first (review round 1). For any other thread, it loads `about` with `include_kb=False`, calls `resolve_self`, and then calls `read_thread_status` with the id of the row. `ask_job_status(read)` takes no `db`.
 - `StatusRead` has `message_id` and `move_keys`. `ask_thread_status` uses `ctx.last_message_id` when `message_id` is None. `_mark_thread_replied` passes neither, so its ask does not change.
 - `JobStatus` is the carrier of item 8. Its four states are `not_asked`, `none`, `undecided` and `verdict`. `resolve_classification` and `resolve_conversation_status_matches` take it as the keyword `status`.
 - With a carrier, the resolver of `off` and `shadow` runs `_resolve_asked`. It asks no model and does not read `_thread_is_conversation` again. With no carrier, the resolver asks as before, for the request paths of item 8 of the scope.
@@ -2065,8 +2065,8 @@ The diff now holds 563 lines that are not in a test or a document (366 added and
 
 1. `_run_rules_job` was at the `C901` cap of 15, and Block S adds one `if`. So the provider build of Phase 0 moved, with no change, into `_rules_job_provider` (`runner.py`). The helper opens no block, and the ruff count of `runner.py` stays 17.
 2. Item 6 says that Block S catches an error of the read. `read_job_status` catches it, for the same cap. Block S calls the helper, so the catch is inside Block S.
-3. Block R reads `_thread_is_conversation` for each row that the job resolves outside `on`. The old resolver read it only when no match had a conversation key. The answer is the same, and Block R makes one more read.
-4. For a self-only thread, `read_job_status` reads `about` and the self addresses before the self-only test. `_determine_status_of` tests first. Both give FYI and ask no model.
+3. Block R reads `_thread_is_conversation` for each row that the job resolves outside `on`. The old resolver read it only when no match had a conversation key. So each row whose match has a conversation key, and that resolves outside `on`, now runs `_thread_is_conversation`. That is 1 statement, or 4 when the thread has no status row. The reads use the primary key and the thread index (corrected in review round 1, F3).
+4. `read_job_status` tests self-only first, as `_determine_status_of` does (review round 1). For any other thread, `read_thread_status` runs that test once more, so Block S makes one more statement.
 5. `read_job_status` sets the trigger `inbound`. The jobs write through `project_reply_status_from_matches`, so no write reads it.
 
 **A new raise site.** `_resolve_asked` raises `DecisionUnavailable` for "undecided". It runs first in Block W, before any write, so the precondition of PR-B1 holds. The fence `email-decision-core-apply-raises-no-unavailable` does not reach it from the apply.
@@ -2098,6 +2098,34 @@ The diff now holds 563 lines that are not in a test or a document (366 added and
 **Verified (2026-10-06).** A private database got `01_schema.sql` and the ladder (226 files), and each R8 file ran in a run of its own. The 14 files with no R8 case gave 330 passed. The six R8 files gave 128, 147, 73, 10, 76 and 35 passed, with 0 skipped. `test_email_automation_tenancy.py` has 26 new cases. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0.
 
 The diff holds 251 lines that are not in a test or a document (230 added and 21 removed).
+
+**Review round 1 (2026-10-06).** The verifier passed PR-B2, and the reviewer approved it. This round applies one P2 item and five P3 items, and it rebases the branch onto `6731f55c0` (#684).
+
+- **A fence for a conversation match on a new thread (reviewer P2).** The first inbound mail of a new thread can match the rule Reply while `_thread_is_conversation` is False. `main` asks the status there, and so does PR-B2, through the second term of `status_ask_needed`. No case covered that term.
+- **Item 3 is corrected (verifier F1).** Item 3 read `about` and the self addresses before the self-only test. `_determine_status_of` tests self-only first and reads nothing more. So a failed `about` read on a self-only thread gave FYI on `main` and "no status" on the branch. `read_job_status` now tests self-only first, and its read of such a thread holds no context.
+- **A fence for the conversation read in `on` (verifier F2).** In `on`, `read_classification` must not call `_thread_is_conversation`, because the plan of `status_before_match` owns that read.
+- **The cost of item 1 (F3).** Agent decision 3 above now gives the true cost.
+- **The split line (F5).** In `test_email_reply_zero.py`, two `patch.object` calls shared one line. Each one now has its own line.
+
+**A known limit (review round 1, F4).** The conversation read moved from Block W to Block R, before the rule-match ask. Another job can write a status row during that ask. An example is `_mark_thread_replied`, which writes AWAITING. Block R does not see that row.
+
+This is the same class of race as the known limit of PR-B1, over the same window. The next new message of the thread reads it again. PR-B2 adds no guard.
+
+**Fences (R7) of review round 1.** All are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-no-session-across-the-job-status-ask`: `test_a_conversation_match_asks_the_status_of_a_new_thread`, for each job in `off` and `shadow`. The match is Reply, and the thread is not a conversation. `read_job_status` must run, the ask must see zero open blocks, and Done must be the live match.
+- `email-decision-core-status-parity`: `test_a_self_only_thread_needs_no_other_read`. The `about` read, the self read and the context read fail. Both forms give FYI, and nothing logs a failure.
+- `test_the_conversation_read_stays_out_of_on`, in `on` and in `off` as the control.
+
+**Mutations of review round 1.** Each mutation ran against `test_email_automation_tenancy.py` on a new private database. After each one, `git status` was clean.
+
+| Mutation | Red |
+|---|---|
+| `status_ask_needed` drops the conversation-key term | `test_a_conversation_match_asks_the_status_of_a_new_thread` [6 cases] |
+| `read_job_status` skips its early self-only test | `test_a_self_only_thread_needs_no_other_read` |
+| `read_classification` drops the `on` term | `test_the_conversation_read_stays_out_of_on` [on] |
+
+**Verified after review round 1 (2026-10-06).** A new private database got `01_schema.sql` and the ladder (226 files), and each R8 file ran in a run of its own. The 14 files with no R8 case gave 330 passed. The six R8 files gave 137, 147, 73, 10, 76 and 35 passed, with 0 skipped. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0. The diff now holds 258 lines that are not in a test or a document (237 added and 21 removed).
 
 ##### EM-T4a-3 — the action tail on the sync path
 
