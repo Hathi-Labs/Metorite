@@ -67,7 +67,9 @@ class FakeClient:
         }
         self._calls.append(call)
         payload = self._responder(call) if callable(self._responder) else self._responder
-        return FakeResponse(payload)
+        # A responder may answer with a whole response, to refuse with a
+        # status (WS-46 P2, tests/unit/test_projects_agent_refusals.py).
+        return payload if isinstance(payload, FakeResponse) else FakeResponse(payload)
 
 
 def fake_gateway(

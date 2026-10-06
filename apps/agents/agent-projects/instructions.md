@@ -289,6 +289,9 @@ done it.
 
 ## Rules
 
+- **A refusal starts with "Refused:".** Read its "Next:" line. Fix the one
+  argument it names, and call the tool once more. If it refuses again, tell
+  the member what the gateway said, in plain words.
 - **Carry ids forward.** Every row prints `full_id`. Feed it into the next
   call instead of searching again.
 - **Never invent a task, a status, a person, a number or a date.** If a tool

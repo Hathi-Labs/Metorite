@@ -30,7 +30,9 @@ the whole mapping.
 
 from __future__ import annotations
 
+import inspect
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +62,136 @@ except ImportError:
 def _register_agent_tools() -> dict[str, Any]:
     """Tool map for the gateway's direct quick-action calls (importlib path)."""
     return {fn.__name__: fn for fn in _TOOLS}
+
+
+# ── WS-46 P2: refusals the model reads (projects_agent_parity.md §7.5, §7.6) ──
+#
+# Each exported tool joins the agent as a strict MAF tool. Two things change,
+# and no tool body changes:
+#
+# 1. Its function is `skill_projects.refusals.refusals_as_text(fn)`. A
+#    GatewayRefusal becomes the tool's text answer. MAF would give the model
+#    only "Error: Function failed.", and the model could not fix the call.
+# 2. Its input model forbids an extra key. The schema the model reads then
+#    says `additionalProperties: false`. MAF validates BEFORE the function
+#    runs and answers a failure with "Error: Argument parsing failed.", which
+#    names nothing. So `_StrictTool.invoke` checks the keys first and answers
+#    an unknown one by name. MAF used to drop it in silence, and the call
+#    then succeeded without it.
+#
+# Fences F4 and F5: tests/unit/test_projects_agent_refusals.py. The name,
+# the description, the annotation and the tool list stay the same, so
+# COVERED_PROJECTS_TOOLS (F6) and own_tool_scope (F7) do not change.
+
+
+def _strict_model(model: Any) -> Any:
+    """*model*, as a subclass that refuses a key it does not declare."""
+    from pydantic import ConfigDict
+
+    return type(
+        model.__name__,
+        (model,),
+        {"model_config": ConfigDict(extra="forbid"), "__module__": model.__module__},
+    )
+
+
+_STRICT_TOOL: Any = None
+
+
+def _strict_tool_class() -> Any:
+    """The FunctionTool subclass for this agent's tools, made once."""
+    global _STRICT_TOOL
+    if _STRICT_TOOL is not None:
+        return _STRICT_TOOL
+    from agent_framework import SKIP_PARSING, Content, FunctionTool
+    from skill_projects.refusals import unknown_argument_text
+
+    class _StrictTool(FunctionTool):
+        """A tool that answers an argument it does not declare by name."""
+
+        def unknown_arguments(self, arguments: Any) -> list[str]:
+            if not isinstance(arguments, Mapping) or self.input_model is None:
+                return []
+            declared = set(self.input_model.model_fields)
+            return sorted(str(k) for k in arguments if k not in declared)
+
+        def visible_arguments(self) -> list[str]:
+            return list((self.parameters() or {}).get("properties", {}))
+
+        def hidden_arguments(self, arguments: Any) -> list[str]:
+            """Declared keys the schema hides, such as ``importance: Removed``.
+
+            MAF checks the call against the schema too, and the schema now
+            says ``additionalProperties: false``. So MAF would refuse a
+            hidden key with "Argument parsing failed." The tool declares it
+            for one reason: to answer an old call with the words that
+            replace it (``skill_projects.priority``). So the tool answers.
+            """
+            if not isinstance(arguments, Mapping):
+                return []
+            shown = set(self.visible_arguments())
+            return [str(k) for k in arguments if k not in shown]
+
+        async def invoke(
+            self,
+            *,
+            arguments: Any = None,
+            context: Any = None,
+            tool_call_id: str | None = None,
+            skip_parsing: bool = False,
+            **kwargs: Any,
+        ) -> Any:
+            given = arguments
+            if given is None and not kwargs and context is not None:
+                given = getattr(context, "arguments", None)
+            unknown = self.unknown_arguments(given)
+            if unknown:
+                text = unknown_argument_text(self.name, unknown, self.visible_arguments())
+                if skip_parsing or self.result_parser is SKIP_PARSING:
+                    return text
+                return [Content.from_text(text)]
+            if self.hidden_arguments(given):
+                values = self.input_model.model_validate(dict(given)).model_dump(exclude_unset=True)
+                answer = self(**values)
+                if inspect.isawaitable(answer):
+                    answer = await answer
+                if skip_parsing or self.result_parser is SKIP_PARSING:
+                    return answer
+                return [Content.from_text(str(answer))]
+            return await super().invoke(
+                arguments=arguments,
+                context=context,
+                tool_call_id=tool_call_id,
+                skip_parsing=skip_parsing,
+                **kwargs,
+            )
+
+    _STRICT_TOOL = _StrictTool
+    return _STRICT_TOOL
+
+
+def _agent_tool(fn: Any) -> Any:
+    """*fn* as this agent registers it: refusals as text, strict arguments."""
+    from agent_framework import FunctionTool
+    from skill_projects.refusals import refusals_as_text
+
+    wrapped = refusals_as_text(fn)
+    name = fn.__name__
+    description = fn.__doc__ or ""
+    # MAF's own input model, from the signature, and then its strict subclass.
+    # One source, so the schema keeps every field, default and hidden field
+    # (`importance: Removed`) that MAF would build.
+    base = FunctionTool(name=name, description=description, func=wrapped).input_model
+    return _strict_tool_class()(
+        name=name,
+        description=description,
+        func=wrapped,
+        input_model=_strict_model(base),
+    )
+
+
+def _agent_tools() -> list[Any]:
+    return [_agent_tool(fn) for fn in _TOOLS]
 
 
 def _llm_provider() -> dict[str, Any]:
@@ -139,7 +271,7 @@ def build_agents() -> list[Any]:
             "project or an app in the member's page. It never deletes a "
             "project or a task."
         ),
-        tools=list(_TOOLS),
+        tools=_agent_tools(),
     )
     # WS-43d (maf_coding_engine.md §16.3, D86): the sandbox tools join THIS
     # run only, as a per-run view, and only when the broker covers this
