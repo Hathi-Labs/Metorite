@@ -398,9 +398,27 @@ class TestTheOutputIsData:
     @pytest.mark.parametrize("reason", [
         "see https://evil.example/now", "go to www.evil.example",
         "run ```rm -rf /```", "HTTP://EVIL.EXAMPLE",
+        # Review P3 (2026-10-06): each shape below passed the first filter.
+        "fetch //evil.example/x",  # scheme-relative
+        "write to mailto:boss@evil.example",
+        "click javascript:alert(1)",
+        "load data:text/html,hi",
+        "get ftp: evil.example",  # a known scheme with a space
+        "open gopher:evil",  # any other scheme with no space
+        "see evil.example/now",  # a bare domain with a path
+        "run `rm -rf /`",  # a single backtick
     ])
     def test_a_url_or_a_code_fence_drops_the_reason(self, monkeypatch, reason) -> None:
         assert self._reason(monkeypatch, reason).splitlines()[1] == "yes (confidence 0.90)"
+
+    @pytest.mark.parametrize("reason", [
+        "due: today", "the meeting at 10:30", "it names v2.5 of the plan",
+        "beta, not alpha",
+    ])
+    def test_a_plain_reason_with_a_colon_or_a_dot_stays(self, monkeypatch, reason) -> None:
+        """The filter must not drop ordinary prose, or every reason goes."""
+        out = self._reason(monkeypatch, reason).splitlines()[1]
+        assert out == f"yes (confidence 0.90) — {reason}"
 
 
 def test_the_logs_hold_no_tenant_text(monkeypatch) -> None:

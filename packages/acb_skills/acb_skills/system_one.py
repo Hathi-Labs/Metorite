@@ -108,8 +108,20 @@ RESPONSE_FORMAT: dict[str, Any] = {
     },
 }
 
-#: A reason that holds one of these is dropped (§6.7 rule 3).
-_UNSAFE_REASON = re.compile(r"https?://|www\.|```", re.IGNORECASE)
+#: A reason that holds one of these is dropped (§6.7 rule 3). It errs toward
+#: dropping, because a dropped reason costs nothing: the choice still stands.
+_UNSAFE_REASON = re.compile(
+    r"//"  # any URL, with a scheme or scheme-relative
+    r"|www\."
+    r"|`"  # inline code, and so every code fence
+    # A known scheme, with or without a space after the colon.
+    r"|\b(?:https?|ftp|ftps|file|mailto|javascript|vbscript|data|blob|tel|sms"
+    r"|ssh|git|ws|wss|about|chrome|intent)\s*:"
+    # Any other scheme, when no space follows the colon ("due: today" stays).
+    r"|\b[a-z][a-z0-9+.\-]*:[^\s\d]"
+    r"|\b[\w-]+\.[a-z]{2,}/",  # a bare domain with a path
+    re.IGNORECASE,
+)
 
 
 class SystemOneUnavailable(Exception):
