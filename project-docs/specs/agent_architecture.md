@@ -976,6 +976,13 @@ session" affordance is enabled only for an agent whose manifest returns
 (i.e. `email-assistant`, `whatsapp-assistant`) is refused, and a test asserts a `shared`
 agent is allowed.
 
+**WS-8o — the own tool scope does nothing for a native MAF agent. AGENT-SAFE.** No migration
+and no flag. `_apply_own_tool_scope` filters `tools` and `_tools`. MAF 1.19 keeps the tools in
+`default_options["tools"]`.
+
+The scope of each agent is its built tools. A narrowing is an owner decision. Scope, fences and
+verification: `email_app_master_plan.md` §10.4.14.
+
 #### B — one builder
 
 **WS-8i — migrate `task-manager` onto `build_declarative_agent`. AGENT-SAFE. ⏸ Parked by D86, 2026-10-03** (`maf_coding_engine.md` §16). The builder

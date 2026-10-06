@@ -612,7 +612,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
 | **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | ✅ **MERGED #658 (2026-10-05).** The live check (H-248) is open. **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
 | **EM-T11** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #672 (2026-10-06), with review round 1.** GO-NARROWED by the audit. No migration and no flag. **A chat cannot read the files of a mail.** A text route for an attachment through the shared reader of H-229, and a `read_email_attachment` tool for the email assistant. No `.xlsx` and no HTML (EM-T11b). See §10.4.12. | See §10.4.12. |
-| **EM-T12** | 🟢 AGENT-SAFE | 📝 **SPECIFIED (2026-10-06).** The own tool scope of an agent does nothing for a native MAF agent. Fix the filter, and make each of the four configs match its code. See §10.4.14. | See §10.4.14. |
+| **EM-T12** | 🟢 AGENT-SAFE | 📝 **SPECIFIED, GO-NARROWED by the audit (2026-10-06).** Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -4967,8 +4967,12 @@ summarise a PDF that came in a mail. Each chat must quote the file.
 
 #### 10.4.14 EM-T12 — the own tool scope of an agent works again
 
-**Status.** 📝 SPECIFIED (2026-10-06). Not audited. An exploration of the agent platform found the
-defect on 2026-10-06, before the shared data tools add more tools to each agent.
+**Status.** 📝 SPECIFIED (2026-10-06). The audit gave GO-NARROWED on 2026-10-06, and this section
+holds its edits. An exploration of the agent platform found the defect on 2026-10-06, before the
+shared data tools add more tools to each agent.
+
+**Owner.** Board row WS-8o (`agent_architecture.md` §12.2). This section holds the scope, the fences
+and the verification.
 
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. The fix changes the tools that four LIVE agents
 get, so it takes the full review loop.
@@ -4996,15 +5000,33 @@ list takes those tools away from the email assistant.
 **Scope.**
 
 1. **The filter reads each place that MAF keeps tools.** `_apply_own_tool_scope` filters
-   `default_options["tools"]` of a native `Agent`, and the old attributes for the other shapes. It
-   matches a name as `_inject_agent_tools` does.
-2. **Each config matches its code.** Each of the four `own_tool_scope` lists holds each tool that its
-   agent must keep. It holds no name that the code of the agent does not build. The audit lists each
-   change. The instructions of each agent decide which tools it must keep.
+   `agent.default_options["tools"]` in place for a native `Agent`. It also filters `tools` and
+   `_tools` for the other shapes. It matches by `_tool_name`. It does not touch `mcp_tools` or the
+   tools of a context provider.
+2. **Each config matches its code.** The email scope is the 43 tools that `build_agents()` gives.
+   Remove `search_emails`, `get_important_emails`, `find_urgent` and `find_needs_reply`. Add the 29
+   tools that the audit lists. The crm, projects and whatsapp scopes do not change. No scope removes
+   a built tool. A narrowing is an owner decision.
+   The audit lists the 29 tools to add, in five groups.
+   - Rules (10): `create_rule`, `create_rules_from_prompt`, `delete_rule`, `update_rule`,
+     `install_default_rules`, `run_rules`, `test_rule_match`, `list_rule_history`,
+     `learn_rule_pattern` and `resolve_execution`.
+   - Patterns and knowledge (5): `forget_pattern`, `list_patterns`, `save_knowledge`,
+     `list_knowledge` and `delete_knowledge`.
+   - Senders (4): `categorize_senders`, `list_senders`, `set_sender_status` and
+     `unsubscribe_sender`.
+   - Settings and style (3): `get_rules_and_settings`, `update_assistant_settings` and
+     `generate_writing_style`.
+   - Inbox (7): `auto_categorize_inbox`, `find_priority`, `mark_thread_done`,
+     `present_email_groups`, `reclassify_reply_zero`, `sync_account` and `list_artifacts`.
 3. **No tool that an instruction names goes missing.** An `instructions.md` can teach a tool name. That
    name is in the scope of the agent, or the same PR changes the instruction.
 4. **The fail-open rule stays.** With no match the full set stays, with the warning
    `executor.own_tool_scope_no_match`.
+5. **Delete `instructions.md:114` of the email assistant.** It names `save_episode`, and the email
+   assistant does not get that tool.
+6. **Log the tool count.** After `_inject_agent_tools`, each of the three sites logs
+   `executor.agent_tools_resolved` with `agent`, `own` and `total`.
 
 **Non-goals.** No change to `tool_scope`, the injected platform tools, or the permission gate. No
 new tool.
@@ -5013,10 +5035,12 @@ new tool.
 
 - `tests/unit/test_own_tool_scope.py` builds a real `agent_framework.Agent` and shows that the
   filter removes a tool outside the scope.
-- A new parity fence covers each agent with `own_tool_scope`. Each name in the scope is a tool that
-  `build_agents()` gives. Each tool name in its `instructions.md` is in its scope.
+- `tests/unit/test_own_tool_scope_parity.py` builds each agent that declares `own_tool_scope`. Its
+  scope must equal the names of the built tools. A word in its `instructions.md` that is the name
+  of a built tool must be in the scope. A word that names an injectable platform tool must be in
+  the resolved injected scope. `run_command` and `read_file` are exempt.
 - `evals/trajectories/test_tool_scope_trajectory.py` checks membership in the built tools, not an
-  `async def` in the source.
+  `async def` in the source. Delete the asserts at `test_tool_scope_trajectory.py:85` and `:88`.
 
 **Mutations.** M1 filters only `.tools` again, and the real-agent fence fails. M2 adds a name that
 does not exist to the email scope, and the parity fence fails. M3 removes a rule tool from the email
@@ -5025,12 +5049,11 @@ scope, and the instructions fence fails.
 **Verify with.**
 
 ```bash
-uv run pytest tests/unit/test_own_tool_scope.py evals/trajectories/test_tool_scope_trajectory.py -v -rs
-uv run ruff check apps/services/orchestrator/orchestrator/_tool_injection.py
+uv run pytest tests/unit/test_own_tool_scope.py tests/unit/test_own_tool_scope_parity.py evals/trajectories/test_tool_scope_trajectory.py tests/unit/test_crm_agent.py tests/unit/test_projects_agent.py tests/unit/test_whatsapp_assistant_agent.py tests/unit/test_email_attachment_text.py -v -rs
+uv run ruff check apps/services/orchestrator/orchestrator/_tool_injection.py apps/services/orchestrator/orchestrator/executor.py tests/unit/test_own_tool_scope.py tests/unit/test_own_tool_scope_parity.py
 ```
 
-**The live check.** After the deploy, the agent log of one email chat shows the tool count of the
-email assistant. It must equal the size of its scope plus the injected tools.
+**The live check.** `executor.agent_tools_resolved` for one email chat shows `own=43`.
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
