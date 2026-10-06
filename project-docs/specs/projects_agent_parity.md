@@ -1,8 +1,13 @@
 # Projects agent parity — the assistant can do everything the app can — WS-46
 
 **Status: ACTIVE. D91 DECIDED by the owner on 2026-10-06, with the defaults
-of §14 as the answers to Q1 to Q6. Nothing is built. P1 is next.** Written
-2026-10-05.
+of §14 as the answers to Q1 to Q6. P1 is BUILT (2026-10-06, branch
+`ws46-p1-recurring-task`). P2 is next.** Written 2026-10-05.
+**P1, as built.** `create_task` takes the eight `repeat*` arguments and sets
+the rule under its one card. `task_detail` prints "Repeats:". The fence is
+`tests/unit/test_projects_recurring_task.py`. One deviation: the weekly
+default takes today in UTC, not in the member's timezone, because no
+`/projects` route gives the chat that timezone. The card names the day.
 **Verified against code on 2026-10-05**, at `origin/main` `c26b67549`. Every
 anchor below carries a file and a line. Re-verify each one at dispatch,
 because the tree moves every day.
@@ -930,7 +935,7 @@ slice updates this spec's status header in the same PR (R4).
 
 | Slice | Builds | Closes | Gate |
 |---|---|---|---|
-| **P1 · The recurring task** | `create_task` takes the rule under one card · the weekly default · `task_detail` shows the rule · §9.1 and §9.2 | G1, G2 | AGENT-SAFE |
+| **P1 · The recurring task** ✅ BUILT 2026-10-06 | `create_task` takes the rule under one card · the weekly default · `task_detail` shows the rule · §9.1 and §9.2 | G1, G2 | AGENT-SAFE |
 | **P2 · Refusals the model reads** | `refusals_as_text` on every tool · `extra="forbid"` input models · §9.3 · F4 and F5 | G3, G4 | AGENT-SAFE |
 | **P3 · The eval harness** | `evals/projects_ops/` with PO-1, PO-2 and PO-4 to PO-7, scripted, both modes | — | AGENT-SAFE. The sweep on the production Router is OWNER-GATE |
 | **P4 · The field fence** | `SENDS`, `FIELD_EXEMPT`, `FIELD_PLANNED` and F2. Every open gap is recorded in `FIELD_PLANNED` | — | AGENT-SAFE |
@@ -1049,3 +1054,9 @@ as the answer. The slices build to these answers.
   egress rules and the cross-module paths.
 - 2026-10-06 — The owner approved D91 as written, and took the default of
   each question in §14 as the answer. The spec is ACTIVE, and P1 is next.
+- 2026-10-06 — P1 built. `create_task` takes the rule, and
+  `COMPOSITE["create_task"]` gains `set_recurrence`. `task_detail` reads the
+  rule, and `COMPOSITE["task_detail"]` gains `recurrence`. The rule text is
+  now one sentence with full day names. The instructions gain the section
+  "Repeating work and settings". PO-1 and PO-2 run in scripted mode in the
+  fence file until P3 builds `evals/projects_ops/`.
