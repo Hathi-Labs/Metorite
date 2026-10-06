@@ -238,6 +238,44 @@ def test_the_app_database_is_derived_from_env_and_never_excluded() -> None:
         assert f"APP_DB={expected}" in out, f"{dsn!r} -> {out!r}"
 
 
+def test_the_scratch_database_fence_runs_in_ci_and_the_silent_drop_stays_gone() -> None:
+    """🔴 Incident 2026-10-06: the deep verify's scratch drop failed every night
+    behind `>/dev/null 2>&1 || true`. 23 copies filled the managed disk and the
+    provider made the whole project read-only for about 2 hours.
+
+    The real fence is `scripts/rehearse_verify_scratch.sh`, which runs the
+    script against a real server (R8). This test keeps that fence wired into
+    CI, and it refuses the exact silent-drop shape on any executable line.
+    Mutation: put `|| true` back after a scratch drop, and this fails.
+    """
+    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
+    job = workflow[workflow.index("  backup-restore:"):]
+    job = job[: job.index("\n  migrations:")]
+    assert "bash scripts/rehearse_verify_scratch.sh" in job, (
+        "the backup-restore job no longer runs the scratch-database rehearsal"
+    )
+
+    lines = _executable_lines(_ROOT / "scripts/backup_db.sh")
+    for ln in lines:
+        if "dropdb" in ln or "DROP DATABASE" in ln or "drop_scratch" in ln:
+            assert "|| true" not in ln, f"a scratch drop is silenced: {ln.strip()!r}"
+            assert "2>/dev/null" not in ln.replace("2> /dev/null", "2>/dev/null"), (
+                f"a scratch drop discards its reason: {ln.strip()!r}"
+            )
+    assert any("WITH (FORCE)" in ln for ln in lines), "the scratch drop lost FORCE"
+    assert any(
+        "SET default_transaction_read_only = off" in ln for ln in lines
+    ), "the scratch drop no longer works on a read-only server"
+    assert any(ln.strip() == "scratch_re='^acb_verify_[0-9]+$'" for ln in lines), (
+        "the scratch pattern changed. It decides what the sweep DROPS, so it "
+        "must stay exact: ^acb_verify_[0-9]+$"
+    )
+    assert not any("like 'acb_verify_" in ln.lower() for ln in lines), (
+        "LIKE 'acb_verify_%' is back. `_` is a LIKE wildcard, so it also "
+        "matches databases that are not scratch copies"
+    )
+
+
 def test_the_manual_runbook_and_the_live_path_carry_the_same_loop() -> None:
     """deploy/hostinger/deploy.sh is the hand-run runbook and keeps its copy of
     the loop; this asserts BOTH copies stay functionally present so an edit
