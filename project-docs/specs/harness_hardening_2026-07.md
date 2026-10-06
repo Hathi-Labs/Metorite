@@ -43,6 +43,8 @@ Create `evals/` with a golden trajectory set exercising the harness itself (not 
 Verification found this shipped, contrary to the initial survey: `AgentChat.tsx` auto-compacts at 80% of the model's **real** context window (75/80 hysteresis, between turns only, re-arms per fill-up and on session/model switch), using the compact route as the engine and a Claude-Code-style checkpoint model (`activeContextSlice` in `lib/tokenCount.ts` — only [summary + recent turns] are sent/counted; full transcript stays for scrollback). Copilot-SDK-runtime agents are deliberately excluded (the SDK compacts server-side natively). No work needed here; token budgeting proper (central accounting in the executor) stays with the caching plan.
 
 ### HH-5 · Enforce tool_scope on email-assistant — mechanism shipped 2026-07-02
+⚠️ **2026-10-06:** The filter did nothing for a native MAF agent. It read `tools` and `_tools`, and MAF 1.19 keeps the tools in `default_options["tools"]`. WS-8o fixes it (`email_app_master_plan.md` §10.4.14), and makes each scope equal the built tools of its agent.
+
 The executor now supports `config.json: own_tool_scope` — the counterpart of `tool_scope` (platform-tool injection filter) for the tools an agent repo bakes itself. Applied via `_apply_own_tool_scope` before injection at all three build sites (main, streaming, sub-agent); no-match fails open with a warning, mirroring `tool_scope`. Email-assistant's actual narrowed subset is deliberately NOT set here — choosing which of the ~60 tools to drop/merge is [`archive/email_tool_consolidation.md`](archive/email_tool_consolidation.md)'s job; when that lands, declare the per-surface subsets via `own_tool_scope`.
 
 ### HH-6 · Sandbox normal agent runs (deferred — Phase 5)

@@ -82,6 +82,8 @@ from orchestrator._copilot_session import (
 from orchestrator._tool_injection import (
     _apply_own_tool_scope,
     _build_injected_tools_addendum,
+    _count_agent_tools,
+    _log_agent_tools_resolved,
     _build_registry_block,
     _gate_injected_tool,
     _host_shell_refused,
@@ -1029,6 +1031,7 @@ async def _run_sub_agent_streaming(
                 loaded.config.get("own_tool_scope") or None
                 if hasattr(loaded, "config") else None,
             )
+            _sub_own_tools = _count_agent_tools(agents)  # WS-8o
             _inject_agent_tools(
                 agents,
                 is_sub_agent=True,
@@ -1040,6 +1043,7 @@ async def _run_sub_agent_streaming(
                 # H-236: and no egress tool when its parent is covered.
                 no_egress=_sub_no_egress,
             )
+            _log_agent_tools_resolved(agent_name, agents, _sub_own_tools)
             if not agents:
                 return f"({agent_name!r} returned empty agent list)"
             agent = agents[0]
@@ -2856,6 +2860,7 @@ async def _run_agent_inner(
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
+            _own_tools = _count_agent_tools(agents)  # WS-8o
             _inject_agent_tools(
                 agents,
                 tool_scope=loaded.config.get("tool_scope") or None,
@@ -2863,6 +2868,7 @@ async def _run_agent_inner(
                 agent_config=loaded.config,  # D85: the sharing block
                 no_egress=_no_egress,  # H-236: from the parent's binding
             )  # inject call_agent / call_agent_background
+            _log_agent_tools_resolved(agent_name, agents, _own_tools)
 
             # Set write_artifact context + ensure visible workspace dirs exist.
             # H-201 (§21.16): the context is THIS run's own ContextVar value.
@@ -3643,6 +3649,7 @@ async def run_agent_stream(
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
+            _own_tools = _count_agent_tools(agents)  # WS-8o
             _inject_agent_tools(
                 agents,
                 # .agent.md's VS Code tools widen (never narrow) the scope, so a
@@ -3654,6 +3661,7 @@ async def run_agent_stream(
                 agent_config=loaded.config,  # D85: the sharing block
                 no_egress=_stream_no_egress,  # H-236
             )  # inject call_agent / call_agent_background
+            _log_agent_tools_resolved(agent_name, agents, _own_tools)
             # Inject MCP servers from the registry into every agent at runtime.
             # H-236: an MCP server reaches outside the platform, so a
             # no_egress run gets none.

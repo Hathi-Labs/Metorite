@@ -917,8 +917,7 @@ async def present_email_groups(groups_json: str) -> str:
     Pass ``groups_json``: a JSON array of groups, each an object with:
       • ``title``     (str, required) — the category name, e.g. "Finance"
       • ``email_ids`` (list[str], required) — the message ids in this group
-        (the ``id=…`` values from find_needs_reply / get_important_emails /
-        query_inbox / search_emails results)
+        (the ``id=…`` values from find_priority / query_inbox results)
       • ``note``      (str, optional) — a short caption for the group
 
     Example::
@@ -930,7 +929,7 @@ async def present_email_groups(groups_json: str) -> str:
           {"title": "R&D", "email_ids": ["g7h8", "i9j0"]}
         ]')
 
-    Gather the ids first (find_needs_reply / get_important_emails / query_inbox),
+    Gather the ids first (find_priority / query_inbox),
     decide the categories, then call this ONCE with every group. An id may appear
     in only one group; ids you don't own are skipped. Keep your prose summary
     short — this board carries the categorized list, so don't also print it as a
