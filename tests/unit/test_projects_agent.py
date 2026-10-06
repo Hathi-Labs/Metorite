@@ -146,7 +146,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "find_tasks": [{"query": "extruder"}],
     "list_tasks": [{"project_id": UUID, "status_category": "todo"}],
     "task_detail": [{"task_id": UUID}],
-    "my_work": [{"view": "inbox"}, {"view": "assigned"}],
+    # WS-46 P7: "what landed on my plate" reads the inbox with `untriaged`.
+    "my_work": [{"view": "inbox"}, {"view": "assigned"}, {"untriaged": True}],
     "people_for": [{"query": "pri"}, {"emails": "a@x.io,b@x.io"}],
     "vocabulary": [{"project_id": UUID}],
     "analytics_stuck": [{"project_id": UUID}],
@@ -177,6 +178,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "my_contexts": [{}],
     # WS-39 S6e — the projects I lead.
     "my_led_projects": [{}],
+    # WS-46 P7 (G17) — the member's own areas.
+    "my_areas": [{}, {"include_archived": True}],
     "watchers": [{"target_id": UUID, "kind": "task"}, {"target_id": UUID, "kind": "project"}],
     "intake_queue": [{"project_id": UUID}],
     "notifications": [{}],

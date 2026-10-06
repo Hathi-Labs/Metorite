@@ -270,6 +270,9 @@ MANIFEST: tuple[Route, ...] = (
     ),
     Route("GET", "/projects/my/calendar", "calendar", "A"),
     Route("GET", "/projects/my/contexts", "my_contexts", "A"),
+    # WS-46 P7 - the member's date and zone (`user_settings.timezone`). It is
+    # my_work's read, and the tools that guess a day reach it as a composite.
+    Route("GET", "/projects/my/today", "my_work", "A"),
     # WS-39 S6e — the projects I lead, with their open work and mine.
     Route("GET", "/projects/my/led", "my_led_projects", "A"),
     # WS-39 S6b — a member's own categories. The READ is on the surface,
@@ -452,8 +455,8 @@ PLANNED: dict[str, str] = {
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
     # S3 (2026-09-23) shipped the seventeen class C acts (`guarded.py`).
-    # WS-39 S6b (2026-09-23) added the personal-areas read.
-    "my_areas": "S6b",
+    # WS-39 S6b (2026-09-23) added the personal-areas read, and WS-46 P7
+    # (2026-10-06) built it (G17).
     # S4 (2026-09-23) shipped the workflows, the views and the forms. S5
     # (2026-09-23) shipped the rest: views, calendar, contexts, watchers,
     # intake, notifications, grants (`inbox.py`). Every other tool the
@@ -471,7 +474,13 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # WS-46 P1 (D91): a repeating task is one act, so the rule is the second
     # write under the create's one card (`PUT …/recurrence`). WS-46 P6 sends
     # the custom values in the create itself, which checks them (#679).
-    "create_task": frozenset({"assign", "set_recurrence"}),
+    # WS-46 P7: a weekly rule with no day takes today in the member's zone,
+    # from my_work's `GET /projects/my/today`.
+    "create_task": frozenset({"assign", "set_recurrence", "my_work"}),
+    "set_recurrence": frozenset({"my_work"}),
+    # WS-46 P7: a block time with no offset is read in the member's zone.
+    "set_my_overlay": frozenset({"my_work"}),
+    "bulk_update": frozenset({"my_work"}),
     # WS-46 P1: the detail prints "Repeats:" from the `recurrence` read.
     "task_detail": frozenset({"recurrence"}),
     "add_subtasks": frozenset({"create_task"}),
@@ -612,6 +621,8 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "tags_remove": "bulk_update.tags_remove",
         "action": "bulk_update.action",
         "include_subtasks": "bulk_update.include_subtasks",
+        # WS-46 P7 (G16): the member's own overlay on every task of a selection.
+        "personal": "bulk_update.personal",
     },
     ("POST", "/projects/tasks/move/preview"): {
         "task_ids": "move_task.task_ids",
@@ -721,15 +732,28 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "description": "update_project.description",
         "status": "update_project.status",
         "lead": "update_project.lead",
+        # WS-46 P7 (G12): Space Settings and the Lifecycle panel.
+        "icon": "update_project.icon",
+        "icon_slot": "update_project.icon_slot",
+        "archive_after_months": "update_project.archive_after_months",
+        "close_after_months": "update_project.close_after_months",
+        "timezone": "update_project.timezone",
     },
     ("POST", "/projects/nodes/{project_id}/move"): {
         "parent_project_id": "move_project.parent_project_id",
+        # WS-46 P7 (G13): the tree drag's order among the siblings.
+        "position": "move_project.place",
     },
     ("POST", "/projects/nodes/{project_id}/views"): {
         "name": "save_view.name",
         "view_type": "save_view.view_type",
+        # WS-46 P7 (G14): the filters and the grouping of the view.
+        "config": "save_view.filters",
     },
-    ("PATCH", "/projects/views/{view_id}"): {"name": "save_view.view_id"},
+    ("PATCH", "/projects/views/{view_id}"): {
+        "name": "save_view.view_id",
+        "config": "save_view.filters",
+    },
     # ── the member's own work ────────────────────────────────────────────
     ("GET", "/projects/assigned-to-me"): {
         "include_done": "my_work.include_done",
@@ -740,7 +764,11 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "include_done": "my_work.include_done",
         "page": "my_work.page",
         "page_size": "my_work",
+        # WS-46 P7 (G18): "what landed on my plate".
+        "untriaged": "my_work.untriaged",
     },
+    # WS-46 P7 (G17)
+    ("GET", "/projects/my/areas"): {"include_archived": "my_areas.include_archived"},
     ("POST", "/projects/my/tasks"): {
         "title": "create_personal_task.title",
         "next_action": "create_personal_task.next_action",
@@ -754,6 +782,17 @@ SENDS: dict[tuple[str, str], dict[str, str]] = {
         "context": "set_my_overlay.context",
         "energy": "set_my_overlay.energy",
         "is_two_minute": "set_my_overlay.two_minute",
+        # WS-46 P7 (G15): the block, the actual times, deep work and the chase.
+        "scheduled_start": "set_my_overlay.block_start",
+        "scheduled_end": "set_my_overlay.block_end",
+        "flexible": "set_my_overlay.flexible",
+        "is_hard_date": "set_my_overlay.hard_date",
+        "actual_start": "set_my_overlay.actual_start",
+        "actual_end": "set_my_overlay.actual_end",
+        "deep_work": "set_my_overlay.deep_work",
+        "waiting_on": "set_my_overlay.waiting_on",
+        "delegated_at": "set_my_overlay.waiting_since",
+        "expected_by": "set_my_overlay.expected_by",
     },
     ("POST", "/projects/tasks/{task_id}/defer"): {"until": "defer.until"},
     ("GET", "/projects/my/calendar"): {"start": "calendar.start", "end": "calendar.end"},
@@ -869,6 +908,16 @@ _SCOPE_AT_CREATE_REASON = (
     "Where a NEW row lands. The PATCH route drops it, because a row keeps its scope."
 )
 _TRIAGE_READ_REASON = "Intake rows. The chat reads them through intake_queue."
+_SETTINGS_AFTER_CREATE_REASON = (
+    "The app sets it after the create, in Space Settings or Lifecycle. "
+    "update_project sets it."
+)
+#: WS-46 P7. The gap table named the prefix, and no screen writes it: Space
+#: Settings sends a name, an icon and a slot, and no route checks a prefix.
+_TASK_PREFIX_REASON = (
+    "No screen sets it. Space Settings writes a name, an icon and a colour "
+    "(page.tsx saveSpaceSettings), and no route checks a prefix."
+)
 
 #: A field the chat does not set, and why. A reason names the tool or the
 #: rule that answers the need, so a reviewer can check the claim.
@@ -939,11 +988,25 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("PATCH", "/projects/tags/{tag_id}"): {"scope": _SCOPE_AT_CREATE_REASON},
     ("POST", "/projects/nodes"): {
         "status": "A new node starts active. update_project sets another status.",
+        # WS-46 P7: the app's create sends a name, a parent and a kind only
+        # (page.tsx `submitProject`). The settings are set after the create.
+        "icon": _SETTINGS_AFTER_CREATE_REASON,
+        "icon_slot": _SETTINGS_AFTER_CREATE_REASON,
+        "archive_after_months": _SETTINGS_AFTER_CREATE_REASON,
+        "close_after_months": _SETTINGS_AFTER_CREATE_REASON,
+        "timezone": _SETTINGS_AFTER_CREATE_REASON,
+        "task_prefix": _TASK_PREFIX_REASON,
+        "position": "A new node takes no position, as the app's create sends none. move_project sets its place.",
     },
     ("PATCH", "/projects/nodes/{project_id}"): {
         "parent_project_id": "The route refuses it: a re-parent goes through move_project.",
         "kind": "The route refuses it: a node's kind is set at its create.",
         "source": "Where a node came from is a fact of its create. An edit keeps it.",
+        "task_prefix": _TASK_PREFIX_REASON,
+        "position": (
+            "The order of the tree. move_project sets it through the move route, "
+            "as the app's tree drag does."
+        ),
     },
     ("POST", "/projects/nodes/{project_id}/views"): {"position": _ORDER_REASON},
     ("PATCH", "/projects/views/{view_id}"): {
@@ -1000,62 +1063,19 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
 #: and the slice of §12 that closes each. The fence reads the spec: a gap id
 #: must be a row of the gap table, and its slice must not be marked built.
 FIELD_GAPS: dict[str, str] = {
-    # G5 to G9 closed in WS-46 P6 (2026-10-06). Their rows are in SENDS.
+    # G5 to G9 closed in WS-46 P6 (2026-10-06), and G12 to G18 in P7
+    # (2026-10-06). Their rows are in SENDS or FIELD_EXEMPT.
     "G10": "P9",
     "G11": "P9",
-    "G12": "P7",
-    "G13": "P7",
-    "G14": "P7",
-    "G15": "P7",
-    "G16": "P7",
-    "G17": "P7",
-    "G18": "P7",
 }
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/tasks"): {"source": "G10"},
-    ("POST", "/projects/tasks/bulk"): {"personal": "G16"},
     ("POST", "/projects/intake"): {"source": "G11", "source_ref": "G11"},
-    # G12, the project settings. A create takes them as well as an edit.
-    ("POST", "/projects/nodes"): {
-        "icon": "G12",
-        "icon_slot": "G12",
-        "task_prefix": "G12",
-        "archive_after_months": "G12",
-        "close_after_months": "G12",
-        "timezone": "G12",
-        "position": "G13",
-        # G10's rule, on a node: the route takes `agent` as a source.
-        "source": "G10",
-    },
-    ("PATCH", "/projects/nodes/{project_id}"): {
-        "icon": "G12",
-        "icon_slot": "G12",
-        "task_prefix": "G12",
-        "archive_after_months": "G12",
-        "close_after_months": "G12",
-        "timezone": "G12",
-        "position": "G13",
-    },
-    ("POST", "/projects/nodes/{project_id}/move"): {"position": "G13"},
-    ("POST", "/projects/nodes/{project_id}/views"): {"config": "G14"},
-    ("PATCH", "/projects/views/{view_id}"): {"config": "G14"},
-    ("PATCH", "/projects/tasks/{task_id}/personal"): {
-        "scheduled_start": "G15",
-        "scheduled_end": "G15",
-        "flexible": "G15",
-        "is_hard_date": "G15",
-        "actual_start": "G15",
-        "actual_end": "G15",
-        "deep_work": "G15",
-        "waiting_on": "G15",
-        "delegated_at": "G15",
-        "expected_by": "G15",
-    },
-    ("GET", "/projects/my/areas"): {"include_archived": "G17"},
-    ("GET", "/projects/my/inbox"): {"untriaged": "G18"},
+    # G10's rule, on a node: the route takes `agent` as a source.
+    ("POST", "/projects/nodes"): {"source": "G10"},
 }
 
 

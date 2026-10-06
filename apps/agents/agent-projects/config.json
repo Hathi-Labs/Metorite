@@ -62,6 +62,7 @@
     "intake_queue",
     "my_contexts",
     "my_led_projects",
+    "my_areas",
     "notifications",
     "project_access",
     "project_views",

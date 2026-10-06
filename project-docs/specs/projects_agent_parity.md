@@ -10,13 +10,16 @@ scripted run passes six tasks in six, uncovered and covered. PO-3 is
 each of the 313 request fields of a mapped route to one decision. P5 is
 BUILT (2026-10-06): the UI action fence F3 holds each of the 104 Projects
 UI client methods to one decision. P6 is BUILT (2026-10-06). The chat now
-sets each task field of the screen (G5 to G9). P7 to P10 are open.** Written
+sets each task field of the screen (G5 to G9). P7 is BUILT (2026-10-06).
+The chat sets the project and personal fields of the screen (G12 to G18),
+and a guessed day is the member's own today. P8 to P10 are open.** Written
 2026-10-05.
 **P1, as built.** `create_task` takes the eight `repeat*` arguments and sets
 the rule under its one card. `task_detail` prints "Repeats:". The fence is
-`tests/unit/test_projects_recurring_task.py`. One deviation: the weekly
-default takes today in UTC, not in the member's timezone, because no
-`/projects` route gives the chat that timezone. The card names the day.
+`tests/unit/test_projects_recurring_task.py`. P1 had one deviation: the
+weekly default took today in UTC, because no `/projects` route gave the chat
+the member's timezone. **P7 removed it.** `GET /projects/my/today` gives the
+member's date and zone, and the card names both (§15).
 **Verified against code on 2026-10-05**, at `origin/main` `c26b67549`. Every
 anchor below carries a file and a line. Re-verify each one at dispatch,
 because the tree moves every day.
@@ -204,20 +207,20 @@ the chat does part of it, or does it in a way that fails in practice.
 | G9 | Close or archive the subtasks too (D-PM-38) | Asked once in the panel and the bulk bar | `include_subtasks` on `PATCH`, move and bulk (`tasks.py:467`, `bulk.py:122`) | Never sent | Closed by P6: `include_subtasks` on five tools | P6 |
 | G10 | Where a task came from | Set by the capture paths | `TaskIn.source` (`core.py:370`: `manual`, `import`, `email`, `agent`, `automation`) | Never set | Partial | P9 |
 | G11 | Intake with its source and reference | Email capture in the Tasks app | `IntakeIn.source`, `source_ref` (`intake.py:99-100`) | `capture_intake` sends neither | Partial | P9 |
-| G12 | Project settings: icon, task prefix, timezone, lifecycle months | `saveSpaceSettings` (`page.tsx:1271`), `LifecyclePolicy.tsx:53` | `PATCH /projects/nodes/{id}` (`ProjectIn`, `core.py:615-634`) | `update_project` sends name, description, status and lead only | Partial | P7 |
-| G13 | Order of a node among its siblings | Tree drag (`page.tsx:3075-3091`) | `POST …/nodes/{id}/move` `position` (`tree.py:1015`) | `move_project` re-parents only | Partial | P7 |
-| G14 | A saved view with its filters | `page.tsx:2188` | `ViewIn.config` (`views.py:59-63`) | `save_view` sends name and type only | Partial | P7 |
-| G15 | The member's overlay: waiting on, deep work, a schedule block, actual start and end | Deep work toggle (`TaskPanel.tsx:287`), My Tasks | `PATCH /projects/tasks/{id}/personal` (`PersonalIn`, `personal.py:110`) | `set_my_overlay` sends disposition, context, energy, next action and two-minute only | Partial | P7 |
-| G16 | The member's overlay over many tasks | My Tasks bulk bar | `BulkIn.personal` (`bulk.py:116`) | `bulk_update` does not send it | Partial | P7 |
-| G17 | The member's areas | My Tasks | `GET /projects/my/areas` | `my_areas` is in `PLANNED` and not built (`manifest.py:438`) | **Missing** | P7 |
-| G18 | "What landed on my plate" | My Tasks | `GET /projects/my/inbox?untriaged=true` | The manifest says `my_work` may pass it (`manifest.py:233-235`). It never does | Partial | P7 |
+| G12 | Project settings: icon, task prefix, timezone, lifecycle months | `saveSpaceSettings` (`page.tsx:1271`), `LifecyclePolicy.tsx:53` | `PATCH /projects/nodes/{id}` (`ProjectIn`, `core.py:615-634`) | `update_project` sends name, description, status and lead only | Closed by P7: `icon`, `icon_slot`, the two months and `timezone` on `update_project`. No screen sets the prefix, so it is exempt | P7 |
+| G13 | Order of a node among its siblings | Tree drag (`page.tsx:3075-3091`) | `POST …/nodes/{id}/move` `position` (`tree.py:1015`) | `move_project` re-parents only | Closed by P7: `move_project.place` | P7 |
+| G14 | A saved view with its filters | `page.tsx:2188` | `ViewIn.config` (`views.py:59-63`) | `save_view` sends name and type only | Closed by P7: `filters`, `group_by` and `subtasks` on `save_view` | P7 |
+| G15 | The member's overlay: waiting on, deep work, a schedule block, actual start and end | Deep work toggle (`TaskPanel.tsx:287`), My Tasks | `PATCH /projects/tasks/{id}/personal` (`PersonalIn`, `personal.py:110`) | `set_my_overlay` sends disposition, context, energy, next action and two-minute only | Closed by P7: ten overlay fields on `set_my_overlay` | P7 |
+| G16 | The member's overlay over many tasks | My Tasks bulk bar | `BulkIn.personal` (`bulk.py:116`) | `bulk_update` does not send it | Closed by P7: `bulk_update.personal` | P7 |
+| G17 | The member's areas | My Tasks | `GET /projects/my/areas` | `my_areas` is in `PLANNED` and not built (`manifest.py:438`) | Closed by P7: the `my_areas` read | P7 |
+| G18 | "What landed on my plate" | My Tasks | `GET /projects/my/inbox?untriaged=true` | The manifest says `my_work` may pass it (`manifest.py:233-235`). It never does | Closed by P7: `my_work.untriaged` | P7 |
 | G19 | **A plan with subprojects** | Nodes made one at a time | `POST /projects/nodes` | `propose_plan` writes one node (`forms.py:934-940`), and W1 tells the model to use subprojects | Partial | P8 |
 | G20 | A repeat rule in a plan, an intake capture or a private capture | Not in one step | `PUT …/recurrence` after the create | None | **Missing** | P8 |
 | G21 | **Attach a file to a task** | `TaskBody.tsx:455` | `POST /projects/tasks/{id}/attachments` (multipart) | Class X, "The chat has no file input". That reason is false since H-229 | **Missing** | P10 |
 | G22 | Filter the board from the chat | The filter bar | Browser state | `set_filter` is not built (`projects_ai_chat.md` §4.2) | **Missing** | Not now (Q4) |
 
 **Count: 22 gaps.** The counts below are the measure of 2026-10-05. P1, P2
-and P6 have closed G1 to G9 since then.
+and P6 have closed G1 to G9 since then, and P7 has closed G12 to G18.
 
 - 6 missing: G6, G7, G17, G20, G21 and G22.
 - 14 partial: G1, G2, G5, G8 to G16, G18 and G19.
@@ -913,6 +916,7 @@ does.
 | **PO-6** | "Set the status of #12 to Shipped", where no lane is named Shipped | No write. The answer names the real lanes, from the refusal's "Next:" line |
 | **PO-7** | "Make it repeat with a rrule" on an existing task | The model uses `set_recurrence` and gets a rule. An invented argument is refused by name, never dropped |
 | **PO-8** | "Add a bug to Launch that starts next Monday, for the customer Acme" (P6) | One card. One `POST /projects/tasks` with the type id of Bug, `start_date` next Monday and `custom_fields` `{"customer": "Acme"}`. No other write. No setting in the title or the description. The answer names Acme |
+| **PO-9** | "Save a board of the overdue work in Launch, grouped by owner" (P7) | One card. One `POST …/views` on Launch, a board, with `filters` `{"overdue": true}` and `group_by` assignee. The route's own normaliser keeps every key. No other write. The answer names the view |
 
 PO-3 needs P8 (subprojects in a plan) and P9. Until both ship, PO-3 is
 `xfail` with the slice ids, and the runner reports it as such.
@@ -952,7 +956,7 @@ slice updates this spec's status header in the same PR (R4).
 | **P4 · The field fence** ✅ BUILT 2026-10-06 | `SENDS`, `FIELD_EXEMPT`, `FIELD_PLANNED` and F2. `FIELD_PLANNED` holds every open gap | — | AGENT-SAFE |
 | **P5 · The UI action fence** ✅ BUILT 2026-10-06 | `UI_ACTIONS`, `UI_EXEMPT`, `UI_PLANNED` and F3 · the `calendar` tool reads the subtree | — | AGENT-SAFE |
 | **P6 · Task fields** ✅ BUILT 2026-10-06 | `start` on create · task type by name · custom field values by name · required fields on a move · `include_subtasks`, asked once as D-PM-38 asks | G5 to G9 | AGENT-SAFE |
-| **P7 · Project and personal fields** | Project settings · node order · a view with its filters · the full overlay · the overlay in bulk · `my_areas` · `untriaged` | G12 to G18 | AGENT-SAFE |
+| **P7 · Project and personal fields** ✅ BUILT 2026-10-06 | Project settings · node order · a view with its filters · the full overlay · the overlay in bulk · `my_areas` · `untriaged` | G12 to G18 | AGENT-SAFE |
 | **P8 · Plans that match the app** | `propose_plan` rows take a subproject group and a repeat rule · `capture_intake` and `create_personal_task` take a repeat rule | G19, G20 | AGENT-SAFE |
 | **P9 · Context from email and CRM** | §9.4 · the delegated message shape · the mailbox line on the card · `source` and `source_ref` · PO-3 | G10, G11 | AGENT-SAFE |
 | **P10 · Attach a chat file to a task** | A tool that sends a file the member uploaded in this thread to `POST …/attachments` · the manifest row moves from X to B · the client gains a multipart request | G21 | AGENT-SAFE. A reviewer checks the X-to-B move |
@@ -971,6 +975,12 @@ instructions, the config and, in P2, the registration), `tests/unit/`, and
 in P3 and P9 `evals/projects_ops/`. P10 touches `client.py`. No slice
 touches the gateway, except that a slice may find a route bug. Then that bug
 is its own PR first.
+
+**One exception, in P7.** §8.1 item 4 asks for the member's own today, and no
+`/projects` route gave it to the chat. A tool that read `/tasks/settings`
+would be a second client of that store. So P7 adds one read route,
+`GET /projects/my/today`, over the one store of the zone,
+`user_settings.timezone`. It writes nothing and adds no column (§15).
 
 **No slice adds a migration.** The owner answered Q2 on 2026-10-06: no link
 from a task back to its email. If a later decision wants that link, it adds
@@ -1003,7 +1013,8 @@ uv run ruff check apps/skills/skill-projects apps/agents/agent-projects
 The second and third lines apply from the slice that creates each file. R8:
 with no database, 843 tests skip and the run still reads green, so start the
 database first. No slice changes SQL, so no slice needs a live R8 test of its
-own. A slice that finds it must change SQL adds one.
+own. A slice that finds it must change SQL adds one. P7 adds one read, and its
+R8 half runs under FORCE RLS in `tests/unit/test_projects_project_fields.py`.
 
 ---
 
@@ -1227,3 +1238,84 @@ as the answer. The slices build to these answers.
     `/relations` hides an archived or hidden child, so the walk misses a
     visible task under one. The cascade reaches that task. The fix is one
     gateway read that counts with `cascade.load_subtree` (H-254).
+- 2026-10-06 — P7 is built. These facts are as built:
+  - **The member's own today.** `GET /projects/my/today` is a new read. It
+    reads `user_settings.timezone` and answers the date, the zone and
+    `stored`. It writes nothing, and it reads only the row of the caller.
+    `member_today` and the route share one read, `stored_zone`. This is the
+    exception that §12 records.
+  - `create_task` and `set_recurrence` take today in the member's zone, and
+    the card names the zone. So the UTC guess of P1 is gone. An end date is
+    judged against the member's date too. The Tasks and the Calendar apps
+    save the zone of the browser when they open. A member with no saved
+    zone reads "UTC, no zone saved". A gateway that does not serve the read
+    yet gives UTC.
+  - G12: `update_project` takes `icon`, `icon_slot`, the two lifecycle
+    months and `timezone`. `clear` switches a setting off. The tool says the
+    level rules of the route before the card: an icon belongs to a space,
+    and the lifecycle policy belongs to a root. `SPACE_ICONS` mirrors
+    `lib/tree.ts`, and a test holds the two lists equal.
+  - The gap table named the task prefix. No screen sets it, and no route
+    checks it. So `task_prefix` is in `FIELD_EXEMPT` with that reason. The
+    settings on `POST /projects/nodes` are exempt too, because the app sets
+    them after the create.
+  - G13: `move_project` takes `place`: first, last, or before or after a
+    sibling. With `place` alone, only the order changes. The maths is the
+    tree drag's (`lib/treeDrop.ts`). A sibling set with no order gets its
+    positions once, and the card counts the siblings it touches.
+  - G14: `save_view` takes `filters`, `group_by` and `subtasks`. The filters
+    use the keys that the app stores (`grouping.ts` `toConfig`), so the app
+    opens the view with each filter on. A change merges into the saved
+    config, because the PATCH route replaces it.
+  - G15: `set_my_overlay` takes the block, `flexible`, `hard_date`, the
+    actual times, `deep_work`, `waiting_on`, `waiting_since` and
+    `expected_by`. A time with no offset is in the member's zone. A wait
+    with no start time starts now, as the Delegate dialog of the Tasks app
+    does.
+  - G16: `bulk_update` takes `personal`, the same overlay as a JSON object,
+    with no other change. One builder serves both tools.
+  - G17: `my_areas` is a new read. It joins `__all__`, `own_tool_scope` and
+    `COVERED_PROJECTS_TOOLS`, so 88 tools and 111 pinned tools. The
+    manifest's `PLANNED` is empty. G18: `my_work` takes `untriaged`, and it
+    prints the member's date first.
+  - The manifest has 151 routes. F2 counts 313 fields: 228 in `SENDS`, 81
+    in `FIELD_EXEMPT` and 4 in `FIELD_PLANNED`, which is G10 and G11 (P9).
+  - The eval gains PO-9, a saved view with its filters. The member of the
+    dataset has a zone, and the stub answers the new read.
+  - Fences: `tests/unit/test_projects_project_fields.py` holds the checks
+    before each card, the cards, the receipts and the copies of the app's
+    and the route's vocabulary. F2 holds each new `SENDS` row on the wire.
+    29 mutations each turn a fence red. The R8 half reads the zone on
+    asyncpg, as a role that FORCE RLS binds, on the promoted catalog of the
+    H3 rehearsal. Another tenant and an unbound session read no zone.
+  - A finding, not fixed: the primary key of `user_settings` is `user_id`
+    alone. So a member of two organizations can have one settings row only
+    (H-256).
+  - Review round 1 (2026-10-06) fixed four findings:
+    - A member with no saved zone got the label "UTC, no zone saved" as a
+      zone, and a block time then failed with "Function failed". The zone
+      and the label of the card are now two values.
+    - The tree shows a node whose parent the member cannot see as a root.
+      A spread at the top level would then send `parent_project_id: null`
+      for that node and make it a space. The top level now holds the true
+      roots only. A reorder under a parent that the member cannot see is
+      refused.
+    - `place` with the node's own parent is a reorder, and the card says
+      "Reorder", not "Move".
+    - A chase of the same person keeps its start time. A new person starts
+      a new chase.
+  - A finding, not fixed: the app's tree drag has the hidden-parent defect
+    too (`treeDrop.ts` `siblingsOf`). H-257 records it.
+  - PR #683 review round 2 (2026-10-06) fixed four findings:
+    - `bulk_update` with `waiting_on` reads the overlay of each task first.
+      A task that waits on the same person keeps its start. The route
+      writes one overlay to each task of a request, so the two sets go in
+      two requests under the one card. The app's own bulk bar sends a
+      disposition only, and never a chase.
+    - A zone database directory, such as "America", is not a zone. The
+      tool refused it with "Function failed", and `GET /projects/my/today`
+      and `core.validate_lifecycle_settings` answered a 500. Each now
+      catches `OSError` too, and the lifecycle check answers a 422.
+    - `GET /projects/my/today` answers `valid: false` for a saved zone that
+      is not valid. The card then says "UTC, no valid zone saved".
+    - The working trail of the chat names `my_areas` (`toolSteps.ts`).

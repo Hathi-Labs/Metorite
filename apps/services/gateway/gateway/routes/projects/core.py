@@ -3339,7 +3339,7 @@ def validate_lifecycle_settings(values: dict[str, Any]) -> None:
 
         try:
             ZoneInfo(str(name))
-        except (ZoneInfoNotFoundError, ValueError, KeyError):
+        except (ZoneInfoNotFoundError, ValueError, KeyError, OSError):
             raise HTTPException(
                 status_code=422,
                 detail=(
