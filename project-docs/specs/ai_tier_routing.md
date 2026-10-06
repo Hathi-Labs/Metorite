@@ -27,6 +27,15 @@ next.
   batch rule. With
   `DECIDE_ENABLED` off, a covered agent's prompt does not name `decide`.
 - `test_no_direct_ai_vendor_calls.py` (§10, §12) is NOT built in S1.
+- ⚠️ **For S2 or S4: the skills catalog shows the Jev schema.**
+  `gateway/routes/integrations_skills.py:49` calls
+  `_collect_injectable_platform_tools()` with no agent name. So for an agent
+  that the flag covers, the Skills tab shows the Jev `decide` schema, and it
+  measures the Jev cost. The agent's run holds the System-1 schema. Review
+  found this on 2026-10-06. S1 does not change the catalog.
+- The reason filter drops a reason with `//`, `www.`, a backtick, a known
+  scheme such as `mailto:` or `javascript:`, any other scheme with no space
+  after the colon, or a bare domain with a path. Review P3 widened it.
 
 **Verified against code on 2026-10-05** at `origin/main` `28cfcf437`.
 **Owner:** vjvarada.
