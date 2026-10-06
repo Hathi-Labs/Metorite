@@ -82,3 +82,4 @@ ALLOW-UNTIL 2026-11-30 env-write — dev phase: write .env on the box
 ALLOW-UNTIL 2026-11-30 deploy-write — dev phase: write under deploy/
 ALLOW-UNTIL 2026-11-30 enforcement-flip — dev phase: flip feature flags
 ALLOW-UNTIL 2026-11-30 guard-write — dev phase: repair guard false positives
+CADDY-AUTH-APPROVED 3c8217ffb4fa3fc9d049ee170ec057c7f65fee739ba9a167573a96aaba5dce21
