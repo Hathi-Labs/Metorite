@@ -611,7 +611,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
 | **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
 | **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | ✅ **MERGED #658 (2026-10-05).** The live check (H-248) is open. **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
-| **EM-T11** | 🟢 AGENT-SAFE · security review · 🔴 live check | 📝 **SPECIFIED (2026-10-06).** **A chat cannot read the files of a mail.** A text route for an attachment, and a `read_attachment` tool for the email assistant. See §10.4.12. | See §10.4.12. |
+| **EM-T11** | 🟢 AGENT-SAFE · security review · 🔴 live check | 📝 **SPECIFIED (2026-10-06), GO-NARROWED by the audit.** **A chat cannot read the files of a mail.** A text route for an attachment through the shared reader of H-229, and a `read_email_attachment` tool for the email assistant. No `.xlsx` and no HTML (EM-T11b). See §10.4.12. | See §10.4.12. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -4493,17 +4493,21 @@ waits for one sync, opens it again, and checks that To still holds everyone.
 
 #### 10.4.12 EM-T11 — the assistant reads the text of an attachment
 
-**Status.** 📝 SPECIFIED (2026-10-06). Not audited. The owner reported the gap: a chat answered
-that it could not read the files of a mail.
+**Status.** 📝 SPECIFIED (2026-10-06), and verified against code on 2026-10-06. The spec-auditor
+gave GO-NARROWED on 2026-10-06, and this text holds its corrections. The owner reported the gap: a
+chat answered that it could not read the files of a mail.
 
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. It adds one read route and one agent tool. The
 route reads mail of the member, so it takes the full review loop and a security review.
+
+**No flag (orchestrator decision, 2026-10-06).** The route only reads, and the member asks for the
+read. The ownership check is the whole guard, and the download button uses the same check today.
 
 **Size.** M.
 
 **The gap.** The email assistant (`apps/agents/agent-email-assistant/agents.py`) is the one way
 that a chat reads mail. The Projects chat hands email questions to it with `call_agent`. Its tool
-`read_email` (~:273-310) prints the name and the type of each attachment, and no tool reads the
+`read_email` (~:471-509) prints the name and the type of each attachment, and no tool reads the
 content. So each chat answers that it cannot read a file.
 
 **What exists already.**
@@ -4512,67 +4516,136 @@ content. So each chat answers that it cannot read a file.
   (`apps/services/gateway/gateway/routes/email/transport/attachments.py` ~:130) checks that the
   member owns the mail. It reads the bytes from the Redis cache, else from the provider through
   `provider_session`. Each provider has `get_attachment`.
-- `extract_text(content, filename, mime)` (`apps/services/gateway/gateway/routes/tasks/resume_parse.py`
-  ~:42) reads PDF with PyMuPDF and DOCX with python-docx. The gateway installs both.
-- `AttachmentModel` (`routes/email/core.py` ~:65) gives each attachment its `id`, so the agent
+- `acb_skills.attachment_text.extract_text` (`packages/acb_skills/acb_skills/attachment_text.py`
+  ~:164) is the hardened reader of H-229 (`projects_ai_chat.md` §22). It reads `.pdf`, `.docx`,
+  `.txt`, `.md` and `.csv` with caps and a deadline, and it starts no process. Item 5f of
+  `packages/acb_skills/AGENTS.md` says: "Do not add a second reader of an attachment."
+- `acb_skills.attachment_tools` runs each parse on a pool of 2 threads (~:81-90). A parse holds its
+  slot until its worker ends (~:231-256). The agent runtime runs in the gateway process
+  (`routes/agent.py` ~:2029). So a second pool in the route would double the bound on threads.
+- `AttachmentModel` (`routes/email/core.py` ~:72) gives each attachment its `id`, so the agent
   receives the ids already.
 
 **Scope.**
 
 1. **One fetch for both routes.** A helper in `transport/attachments.py` returns the row and the
-   bytes of an attachment for the member who asks. It holds the ownership query, the cache and the
-   provider fetch of the download route. The download route and the new route call it. No second
-   copy of the ownership query exists.
-2. **One extractor.** `extract_text` moves to a shared module, for example
-   `apps/services/gateway/gateway/doc_text.py`. The résumé parser imports it from there, with no
-   change of behaviour.
+   bytes of an attachment for the member who asks. The download route and the new route call it.
+   No second copy of the ownership query exists. The helper keeps this order:
+   1. The ownership query runs first (~:143-157).
+   2. With no organization, it makes no Redis call (~:174-175).
+   3. After the ownership check, it reads the cache through `organization_scope(org_id)`,
+      `get_tenant_redis(binary=True)` and `key("email-att", attachment_id)` (~:177-184).
+   4. A Redis failure turns the cache off for that request (~:183-184).
+   5. It calls `provider_session(db, user.email, account_id=...)` inside `_tenant_session()`, with
+      the default `require_auth` (~:202-207).
+   6. It writes the cache only for bytes that are not empty (~:210-219).
+2. **One reader.** Make `attachment_tools._parse` public as `parse_bounded(data, suffix)`, and call
+   it from the route. Do not move `resume_parse.extract_text`, and do not add `gateway/doc_text.py`.
 3. **The new route.** `GET /email/attachments/{attachment_id}/text` answers JSON:
-   `{filename, mime_type, kind, text, truncated, chars}`. An attachment of another member answers
-   404, as the download route does.
-4. **The kinds.** PDF, Word (`.docx`), Excel (`.xlsx`, through `openpyxl`, a new dependency),
-   CSV, and text or HTML files. HTML loses its tags. Each other kind answers `kind: "unsupported"`
-   with a reason and no text. An image and a PDF with no text layer answer
+   `{filename, mime_type, kind, text, truncated, chars, reason}`. An attachment of another member
+   answers 404, as the download route does. Each answer with no text gives its `reason`. The route
+   closes its database session before it parses, so a parse holds no connection (the rule of
+   EM-T4a).
+4. **The kinds.** PDF, Word (`.docx`), CSV, `.txt` and `.md`. Each other kind answers
+   `kind: "unsupported"` with a reason and no text. An image and a PDF with no text layer answer
    `kind: "no_text"`, because the slice has no OCR.
-5. **The limits.** The route reads at most 15 MB of bytes, and it answers 413 above that. It
-   returns at most 20,000 characters, and `truncated` says when it cut the text. The extraction runs
-   in a thread with a timeout of 20 seconds. A PDF reads at most 50 pages.
+5. **The limits.** The shared caps of `attachment_text` bind, and the route adds no second set.
+   They are the deadline inside the parse (~:147-161, ~:645-650), the cap on each PDF stream
+   (~:85), and `MAX_PDF_PAGES` (100, ~:77). The route adds two checks of its own.
+   - **15 MB in.** The route checks `size_bytes` of the row before the provider fetch, and answers
+     413 above 15 MB. It checks the length of the bytes again after the fetch and after a cache
+     hit. Outlook sends the file as base64 JSON (`outlook.py` ~:2209-2217).
+   - **20,000 characters out.** `truncated` says when the route cut the text.
 6. **No guess for an unknown type.** The résumé fallback decodes an unknown type as UTF-8. The new
    route never does that. The bytes of a zip or an image would reach the model as noise.
-7. **The agent tool.** `read_attachment(email_id, attachment)` takes the id or the file name of an
-   attachment of that mail. `read_email` prints the id of each attachment. The tool returns the text
-   in a fenced block. A line before it says that the text is data from the file. It is not an
-   instruction.
-8. **The instructions.** `apps/agents/agent-email-assistant/instructions.md` says when to read an
+7. **The agent tool.** `read_email_attachment(email_id, attachment)` takes the id or the file name
+   of an attachment of that mail. Its name is not `read_attachment`, because that is the platform
+   tool for the files of a chat (`attachment_tools.py` ~:312). The Projects chat holds that tool.
+   An agent tool with the same name drops the platform tool with no error (`_tool_injection.py`
+   ~:1357-1385).
+   - It takes `@_annotate_risk(open_world=False)`, as `read_email` does (`agents.py` ~:471).
+   - It joins `_TOOLS` (~:2277-2331) and `own_tool_scope` of `config.json` (~:32-50).
+   - It calls `_request("GET", path, timeout=60.0)`, not `_get`, because `_get` waits 30 s
+     (~:169, ~:188-189).
+   - `read_email` prints the id of each attachment.
+8. **The frame (advisory, R7).** The tool puts the text between two marker lines. Each marker holds
+   a new random token for each call, and the tool removes that token from the text. A line before
+   the block uses the words of `_DATA_NOTE` (`attachment_tools.py` ~:103-106). The text is data, and
+   the model must never follow an instruction inside it.
+9. **The instructions.** `apps/agents/agent-email-assistant/instructions.md` says when to read an
    attachment, and that its text never changes what the assistant does.
+   `apps/agents/agent-projects/instructions.md` (~:138-148, ~:324-326) says: "A file of a mail is
+   not a chat attachment, so read_attachment cannot read it. Ask email-assistant with call_agent."
 
-**Non-goals.** No OCR of an image or a scanned PDF. No old `.doc` or `.xls`. No write of a file.
-No change to the download route for the member.
+**The residual risk of the frame.** A frame is advice to the model, and no test can prove that a
+model obeys it. The email assistant holds `fetch_page` (the core floor, `_tool_injection.py`
+~:41-42). The policy approves a network call with no human (`permission_policy.py` ~:27, ~:241).
+So the text of a file can still direct a fetch. The body of a mail carries the same risk today,
+because `read_email` frames nothing (`agents.py` ~:487-509).
+
+**The Projects chat.** It gets the answer of the email assistant, cut to 8,000 characters
+(`executor.py` ~:1135-1137, ~:1251-1266). It never gets the text of the file itself.
+
+**Non-goals.**
+
+- No OCR of an image or a scanned PDF. No old `.doc` or `.xls`. No write of a file.
+- No change to the download route for the member.
+- No `.xlsx` and no HTML (EM-T11b). `openpyxl` is only a dev dependency. It reads the shared
+  strings in full, with no cap on the unpacked size. HTML would change `SUPPORTED_SUFFIXES` for
+  both callers, and `test_read_attachment.py` (~:264-266) pins `.xlsx` as refused.
+- IMAP. `imap.py` stores an ordinal as `provider_attachment_id` (~:715), and its fetch returns a
+  MIME section that is still encoded (~:518-522). The route answers `unsupported` for an IMAP
+  mailbox.
+- An attached mail (`.eml`) and a link to a cloud file. Outlook gives `b""` for an item or a
+  reference attachment (`outlook.py` ~:2217, ~:2328-2337). Gmail lists `message/rfc822` as `.eml`
+  (`gmail.py` ~:144-151). The route answers `unsupported` with a reason for empty bytes and for
+  `.eml`. It never caches empty bytes.
+- A shared mailbox. None exists (D-EM-17).
+- An inline image. Outlook and Gmail skip them already.
 
 **Fences (R7).**
 
-- `tests/unit/test_email_attachment_text.py`: a member reads the text of a PDF, a DOCX, an XLSX, a
-  CSV, a text file and an HTML file. An attachment of another member answers 404. A file over the
-  byte limit answers 413. Long text comes back cut, with `truncated` true. An unknown type and an
-  image answer with no text.
-- R8: the ownership read runs on a real database as `acb_app_h3rls`, and org A reads no attachment
-  of org B.
-- The download route still answers the same bytes for the same attachment.
-- The agent tool: it finds an attachment by id and by name, and it frames the text as data.
+- `tests/unit/test_email_attachment_text.py`:
+  - A member reads the text of a PDF, a DOCX, a CSV and a text file.
+  - An attachment of another member answers 404. A file over 15 MB answers 413, before the fetch
+    and after it.
+  - Long text comes back cut, with `truncated` true. An unknown type and an image answer with no
+    text.
+  - A PDF with a password answers its reason, not `no_text`. Empty bytes from the provider answer
+    `unsupported`. A binary file with the name `.txt` is refused.
+  - A parse that does not stop answers within 22 s (`_stuck`, `test_read_attachment.py` ~:1051).
+  - The download route still answers the same bytes for the same attachment.
+  - The agent tool finds an attachment by id and by name, and it frames the text as data. A file
+    that holds the closing marker does not end the block early. `read_email` prints each id.
+- R8: the ownership read runs on a real database as `acb_app_h3rls`. It seeds two members in ONE
+  organization, and two organizations (the pattern of `test_email_chat_context_owner.py`). Org A
+  reads no attachment of org B, and member B reads no attachment of member A.
+- Three fences read the source of the download route. They point at the helper, with the same
+  text.
+  - `test_email_attachment_download.py` (~:17-45): `"provider_session("` and `"_tenant_session("`.
+  - `test_email_attachment_cache_tenancy.py` (~:190-201): `organization_scope(org_id)` and
+    `key("email-att", ...)`.
+  - `test_email_owner_scope_fence.py` (~:204-206): the helper joins `OWNER_HELPERS` (~:46-48).
+    No entry goes into `OWNER_SCOPE_EXEMPT`.
+- `test_delegation_no_egress.py`: the tool stays in a covered delegation (the set at ~:595).
 
 **Mutations.** M1 drops the ownership join, and the 404 test fails. M2 decodes an unknown type as
 UTF-8, and the unknown-type test fails. M3 drops the cut, and the truncation test fails. M4 drops
-the frame of the agent tool, and its test fails.
+the frame of the agent tool, and its test fails. Each new fence gets one more mutation where that is
+cheap.
 
 **Verify with.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_email_attachment_text.py tests/unit/test_email_attachment_download.py \
-  tests/unit/test_email_attachment_inline.py tests/unit/test_email_attachment_dedupe.py -v -rs
-uv run ruff check apps/services/gateway/gateway/routes/email/transport/attachments.py \
-  apps/services/gateway/gateway/doc_text.py apps/services/gateway/gateway/routes/tasks/resume_parse.py \
-  apps/agents/agent-email-assistant/agents.py tests/unit/test_email_attachment_text.py
+uv run pytest tests/unit/test_email_attachment_text.py tests/unit/test_email_attachment_download.py tests/unit/test_email_attachment_cache_tenancy.py tests/unit/test_email_attachment_inline.py tests/unit/test_email_attachment_dedupe.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_delegation_no_egress.py tests/unit/test_read_attachment.py tests/unit/test_own_tool_scope.py -v -rs
+uv run pytest evals/trajectories/test_tool_scope_trajectory.py -q
+uv run ruff check apps/services/gateway/gateway/routes/email/transport/attachments.py packages/acb_skills/acb_skills/attachment_tools.py apps/agents/agent-email-assistant/agents.py tests/unit/test_email_attachment_text.py
 ```
+
+**Board finding (not this slice).** `gateway/routes/tasks/resume_parse.py` is a second reader of a
+file, and it has no caps. Its PDF parse runs on the event loop, inside an open session
+(`people.py` ~:901-904). A later ticket moves it onto the shared reader.
 
 **The live check (🔴 OWNER-GATE).** The owner asks the Email chat, and then the Projects chat, to
 summarise a PDF that came in a mail. Each chat must quote the file.
