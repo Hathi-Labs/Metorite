@@ -28,8 +28,34 @@ export interface Hit {
   parent?: ParentFact | null;
 }
 
-/** Mirrors the gateway's `MIN_QUERY`. Below it the endpoint answers empty. */
-export const MIN_QUERY = 2;
+/**
+ * Mirrors the gateway's `MIN_QUERY` (D-PM-31): the shortest TEXT query the
+ * search route runs. Shorter text is a 422 there, so the palette never sends
+ * it. `tests/unit/test_projects_search_minimum_lockstep.py` reads this line
+ * and holds it equal to the gateway and to the chat tool.
+ */
+export const MIN_QUERY = 3;
+
+/**
+ * Is this query only a task number (`#7`, `7`, `# 7`)? Mirrors the gateway's
+ * `filters.task_number`: ASCII digits, at most 18 of them. A task number is
+ * an exact lookup, so it passes at any length (the owner's exception to
+ * D-PM-31, 2026-10-06).
+ */
+export function isTaskNumberQuery(query: string): boolean {
+  const stripped = query.trim().replace(/^#+/, "").trim();
+  return /^[0-9]{1,18}$/.test(stripped);
+}
+
+/**
+ * Is this query worth sending to `/projects/search`? Text needs `MIN_QUERY`
+ * characters, and a task number passes at any length. The ONE gate: the
+ * palette, the duplicate picker and `pagedPicker` all ask this.
+ */
+export function isSearchableQuery(query: string): boolean {
+  const term = query.trim();
+  return term.length >= MIN_QUERY || isTaskNumberQuery(term);
+}
 
 /** How long to wait after the last keystroke before asking. */
 export const DEBOUNCE_MS = 180;
@@ -59,7 +85,7 @@ export function paletteState(input: {
   error: string | null;
 }): PaletteState {
   if (input.error) return { kind: "error", message: input.error };
-  if (input.query.trim().length < MIN_QUERY) return { kind: "idle" };
+  if (!isSearchableQuery(input.query)) return { kind: "idle" };
   if (input.loading) {
     // A previous answer stays on screen while the next one loads, so the list
     // does not blank and re-fill under the cursor on every keystroke.

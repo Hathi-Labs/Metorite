@@ -92,11 +92,11 @@ def _po6(ds: Dataset) -> list[Step]:
 
 
 def _po7(ds: Dataset) -> list[Step]:
-    # Not find_tasks("#7"): the tool refuses a query under 3 characters, and
-    # the route takes 2 (``filters.MIN_QUERY``). A finding of P3, not fixed here.
+    # find_tasks("#7"): a task number passes at any length (D-PM-31's
+    # exception). P3 found the tool refusing it, and read the list instead.
     target = ds.task(7).id
     return [
-        tool("list_tasks"),
+        tool("find_tasks", query="#7"),
         tool("set_recurrence", task_id=target, rrule="FREQ=WEEKLY;BYDAY=MO"),
         tool("set_recurrence", task_id=target, freq="weekly", weekdays="1"),
         ("text", "Task #7 now repeats every week on Monday. set_recurrence takes no rrule, so "

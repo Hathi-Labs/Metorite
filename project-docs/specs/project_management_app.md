@@ -1655,6 +1655,21 @@ buried: typing two characters now returns `{"rows": []}` rather than a slow resu
 `/projects/search` and the list endpoint's `?q=` (WS-27be moved `MIN_QUERY` to `filters.py` so
 one constant governs both — that is what makes this a one-line change rather than two).
 
+**Implemented 2026-10-06, with the owner's task-number exception (exact lookup by number).**
+Owner ruling, 2026-10-06. The ruling keeps D-PM-31 and adds one exception.
+
+- `MIN_QUERY` is 3 in `filters.py`, in the chat tool (`skill_projects/reads.py`) and in the
+  browser (`app/projects/lib/search.ts`).
+- A query that is only a task number (`#7`, `7`, `#123`) passes at any length. Both endpoints
+  treat it as an exact lookup on `task_number`, and never as a text scan. The lookup keeps the
+  tenant and visibility clauses, and an index serves it.
+- `/projects/search` answers 422 for 1 or 2 characters of text, and the message says what to
+  type. The palette and the pickers check the same rule before they call. The list endpoint
+  still answers an empty list.
+- A query that is only digits no longer matches titles that contain those digits.
+- `tests/unit/test_projects_search_minimum_lockstep.py` holds the three copies equal (R7).
+  `tests/unit/test_projects_search_r8.py` runs the route on a real database (R8).
+
 ---
 
 ## 9. Tickets

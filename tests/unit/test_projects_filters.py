@@ -215,12 +215,12 @@ def test_a_whitespace_only_search_is_not_a_filter():
 # one surface with nothing capping it. These four pin the fix and both of the
 # plausible wrong fixes.
 
-@pytest.mark.parametrize("term", ["a", "#", " x "])
+@pytest.mark.parametrize("term", ["a", "#", " x ", "ab", " qa "])
 def test_a_query_below_the_minimum_runs_no_substring_scan(term):
     assert "ILIKE" not in sql(q=term)
 
 
-@pytest.mark.parametrize("term", ["a", "#", " x "])
+@pytest.mark.parametrize("term", ["a", "#", " x ", "ab", " qa "])
 def test_a_query_below_the_minimum_matches_nothing_rather_than_everything(term):
     """The wrong fix, and the reason this test exists.
 
@@ -264,12 +264,24 @@ def test_the_minimum_is_the_one_search_already_enforces():
     )
 
 
-@pytest.mark.parametrize("term", ["ab", "abc", "extruder"])
+@pytest.mark.parametrize("term", ["abc", "extruder"])
 def test_a_query_at_or_above_the_minimum_still_searches(term):
     clauses, params = build_task_filters(q=term)
     assert "(t.title ILIKE :q OR t.description ILIKE :q)" in clauses
     assert params["q"] == f"%{term}%"
-    assert len(term) >= MIN_QUERY
+    assert len(term) >= MIN_QUERY == 3
+
+
+@pytest.mark.parametrize(("term", "number"), [("#7", 7), ("7", 7), (" #42 ", 42)])
+def test_a_task_number_is_an_exact_match_at_any_length(term, number):
+    """D-PM-31's exception (owner, 2026-10-06), on the list endpoint too, so
+    the list and the search route answer ``#7`` the same way."""
+    clauses, params = build_task_filters(q=term)
+    assert "t.task_number = :q_number" in clauses
+    assert params["q_number"] == number
+    assert "FALSE" not in clauses
+    assert "ILIKE" not in " ".join(clauses)
+    assert "q" not in params
 
 
 # ── due_before ─────────────────────────────────────────────────────────────

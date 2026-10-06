@@ -1250,7 +1250,8 @@ separate concern this does not foreclose; timeboxing and `deep_work` stay person
 **D-PM-31 — the search minimum is 3, not 2.** The open state was the worst of the three: a
 2-character query is ACCEPTED and physically **unservable** by a trigram index, so the shortest
 query allowed was the longest one answered by a sequential scan (127 ms at 60k rows, measured).
-One constant governs both endpoints since WS-27be moved it to `filters.py`. 🔜 **Queued by owner
+One constant governs both endpoints since WS-27be moved it to `filters.py`. **Implemented
+2026-10-06, with the owner's task-number exception (exact lookup by number).** 🔜 **Queued by owner
 selection the same day**: D-PM-20 (the `updated_at` PATCH precondition), WS-27ar (one generic
 pins table), and **D-PM-16** (org-wide vocabularies — the expensive one, framed for a ruling
 below rather than built). (2026-08-13)

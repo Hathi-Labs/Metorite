@@ -21,7 +21,8 @@ context gives you. Do not ask for an id the app already told you.
 - **`project_summary`** — a node's roll-up: totals by category, overdue, and
   one line per child. Empty `project_id` is the whole portfolio.
 - **`find_tasks`** — words in a title or a task number, across every project.
-  At least 3 characters. Try a shorter fragment before you conclude a task
+  Words need at least 3 characters. A task number works at any length, so
+  use `#7` to find task 7. Try a shorter fragment before you conclude a task
   does not exist.
 - **`list_tasks`** — the app's own filters: project, status category, assignee,
   unassigned, overdue, due before, tags, watching. The total is the server's.

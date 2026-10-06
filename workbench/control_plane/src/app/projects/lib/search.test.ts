@@ -29,6 +29,8 @@ import {
   hitContext,
   isCurrent,
   isOpenShortcut,
+  isSearchableQuery,
+  isTaskNumberQuery,
   moveSelection,
   paletteKey,
   paletteState,
@@ -63,8 +65,15 @@ describe("paletteState", () => {
   });
 
   it("leaves idle at exactly the server's minimum", () => {
-    expect(MIN_QUERY).toBe(2);
-    expect(state({ query: "pa", hits: [] }).kind).toBe("empty");
+    expect(MIN_QUERY).toBe(3);
+    expect(state({ query: "pa", hits: [] }).kind).toBe("idle");
+    expect(state({ query: "par", hits: [] }).kind).toBe("empty");
+  });
+
+  it("leaves idle for a task number of any length (D-PM-31's exception)", () => {
+    expect(state({ query: "#7", hits: [] }).kind).toBe("empty");
+    expect(state({ query: "7", hits: [] }).kind).toBe("empty");
+    expect(state({ query: "#", hits: [] }).kind).toBe("idle");
   });
 
   it("never claims 'no results' while a request is in flight", () => {
@@ -268,5 +277,33 @@ describe("hitContext", () => {
 
   it("is empty rather than punctuation when it knows nothing", () => {
     expect(hitContext(hit({ project_name: null, task_number: null }))).toBe("");
+  });
+});
+
+// ── the minimum, and its one exception (D-PM-31) ────────────────────────────
+
+describe("isTaskNumberQuery — mirrors the gateway's filters.task_number", () => {
+  it.each(["#7", "7", " #42 ", "# 42", "##7", "1".repeat(18)])("%j is a task number", (q) => {
+    expect(isTaskNumberQuery(q)).toBe(true);
+  });
+
+  it.each(["", "#", "4.2", "-1", "42a", "²", "1".repeat(19), "#7 x"])(
+    "%j is not",
+    (q) => {
+      expect(isTaskNumberQuery(q)).toBe(false);
+    },
+  );
+});
+
+describe("isSearchableQuery — the one gate before /projects/search", () => {
+  it("needs MIN_QUERY characters of text", () => {
+    expect(isSearchableQuery("ab")).toBe(false);
+    expect(isSearchableQuery("  ab  ")).toBe(false);
+    expect(isSearchableQuery("abc")).toBe(true);
+  });
+
+  it("passes a task number at any length", () => {
+    expect(isSearchableQuery("#7")).toBe(true);
+    expect(isSearchableQuery("7")).toBe(true);
   });
 });
