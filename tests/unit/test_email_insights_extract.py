@@ -180,11 +180,16 @@ def test_a_day_and_a_month_beside_a_full_date_caps_the_confidence() -> None:
     assert (fact.due_on, fact.confidence) == (date(2026, 10, 15), X.CONF_PART)
 
 
-def test_parse_amount_is_linear_on_a_long_text() -> None:
-    """Review round 3: the split check reads a window before the number. This
-    input took 18.5 s before."""
+@pytest.mark.parametrize("text", [
+    "100 " * 25000 + "x 100 INR",
+    "1," * 25000 + "1 x 100 INR",
+], ids=["spaced_runs", "one_long_comma_run"])
+def test_parse_amount_is_linear_on_a_long_text(text: str) -> None:
+    """Review round 3: the split check reads a window of 40 characters before
+    the number. The first input took 18.5 s with the rule of round 2. With no
+    window, the second input takes about 40 s with the rule of round 3."""
     start = time.perf_counter()
-    assert X.parse_amount("100 " * 25000 + "x 100 INR").amount is not None
+    assert X.parse_amount(text).amount == Decimal("100.00")
     assert time.perf_counter() - start < 0.1
 
 

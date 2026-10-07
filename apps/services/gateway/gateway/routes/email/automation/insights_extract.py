@@ -327,9 +327,9 @@ def _joins(left: str, right: str) -> bool:
     * A last comma group of 3 digits joins a run of exactly 3 digits, as in
       ``₹5,000 000``. A full comma group never joins a run of 2 digits. So
       ``₹ 45,000 12 Oct 2026`` keeps its amount.
-    * A number with a decimal point joins nothing, as in ``USD 1,200.00 1``."""
-    if "." in left:
-        return False
+    * Any other token joins nothing. So a number that ends with decimals
+      after a point, as in ``USD 1,200.00 1``, keeps its amount. A decimal
+      comma, as in ``12,50``, reads as a comma group of 2 digits."""
     if left.isdigit():
         return len(right) >= 2
     if re.search(r",\d{2}$", left):
