@@ -86,6 +86,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "disposition": { label: "Triage", kind: "words" },
   "dropped links": { label: "Links dropped" },
   "drops (values with no field in the destination)": { label: "Values dropped" },
+  "due": { label: "Due", kind: "date" },
   "due_at": { label: "Due", kind: "date" },
   "duplicate of": { label: "Duplicate of", kind: "task" },
   "email": { label: "Email", kind: "person" },
@@ -258,6 +259,8 @@ function pythonList(side: string): string[] | null {
 /** One side of a value as its elements. */
 function itemsOf(side: string, many: boolean): ValueItem[] {
   const text = side.trim();
+  // An empty value (`«»`) reads as none, never as nothing before an arrow.
+  if (unfenced(text).trim() === "") return [{ text: "None", named: false }];
   const list = pythonList(text);
   if (list) return list.map((t) => ({ text: t, named: true }));
   const parts = splitFenced(text);

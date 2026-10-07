@@ -95,3 +95,17 @@ describe("a field stays inert", () => {
     expect(html).toContain('rel="noopener noreferrer"');
   });
 });
+
+describe("a chat answer with typed bullets", () => {
+  // Mutation caught: `typedBulletsToList` not called, so "• one • two" ran
+  // together into one paragraph.
+  it("draws a list for lines that start with •, and leaves code alone", async () => {
+    const { MarkdownBody } = await import("@/components/MarkdownMessage");
+    const { typedBulletsToList } = await import("@/lib/remarkEntityPills");
+    const html = renderToStaticMarkup(createElement(MarkdownBody, { content: "Done:\n\n• one\n• two", fences: true }));
+    expect(html).toMatch(/<ul[^>]*>[\s\S]*<li[^>]*>one<\/li>[\s\S]*<li[^>]*>two<\/li>/);
+    expect(html).not.toContain("•");
+    expect(typedBulletsToList("```\n• keep\n```\n• go")).toBe("```\n• keep\n```\n- go");
+    expect(typedBulletsToList("a • b")).toBe("a • b");
+  });
+});

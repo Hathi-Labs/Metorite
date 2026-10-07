@@ -245,6 +245,37 @@ export default function remarkEntityPills(options?: EntityPillOptions) {
   };
 }
 
+// ── A typed bullet ───────────────────────────────────────────────────────────
+
+/** A line that starts with a typed bullet character, not a Markdown marker. */
+const TYPED_BULLET = /^(\s*)[•▪‣◦●]\s+/;
+
+/**
+ * `• one` on its own line is a list item the model typed by hand (owner
+ * report, 2026-10-07). Markdown does not read `•` as a list, so the items ran
+ * together into one paragraph. Make each one a `- ` item before the parser
+ * runs. Fenced code is left alone. Exported for its test.
+ */
+export function typedBulletsToList(content: string): string {
+  if (!/[•▪‣◦●]/.test(content)) return content;
+  let fence: string | null = null;
+  return content
+    .split("\n")
+    .map((line) => {
+      const mark = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if (fence !== null) {
+        if (mark && mark[1][0] === fence[0] && mark[1].length >= fence.length) fence = null;
+        return line;
+      }
+      if (mark) {
+        fence = mark[1];
+        return line;
+      }
+      return line.replace(TYPED_BULLET, "$1- ");
+    })
+    .join("\n");
+}
+
 // ── The missing space before bold ────────────────────────────────────────────
 
 /**

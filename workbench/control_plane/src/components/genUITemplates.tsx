@@ -43,6 +43,8 @@ import {
   withAfter,
 } from "@/app/projects/lib/planCard";
 import { Checkbox } from "@/components/ui/Checkbox";
+import GenUiText from "@/components/GenUiText";
+import { fieldSpec, formatCardDate } from "@/lib/cardFields";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { ReportFileButtons } from "@/app/projects/components/ReportFileButtons";
 import { taskCell } from "@/app/projects/lib/matrix";
@@ -593,7 +595,7 @@ function RecipeCard({ data }: { data: Data }) {
           <span style={{ fontSize: 15, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Recipe")}</span>
         </div>
         {data.description != null && (
-          <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 4 }}>{str(data.description)}</div>
+          <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 4 }}><GenUiText text={str(data.description)} /></div>
         )}
         {meta.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 8 }}>
@@ -645,7 +647,7 @@ function RecipeCard({ data }: { data: Data }) {
           <div style={{ display: "flex", gap: 8, fontSize: 12, color: "var(--foreground)", padding: "8px 10px",
             borderRadius: 10, background: "color-mix(in srgb, var(--accent) 10%, transparent)" }}>
             <TIcon name="lightbulb" size={14} color="var(--accent)" />
-            <span>{str(data.tip)}</span>
+            <span><GenUiText text={str(data.tip)} /></span>
           </div>
         )}
         {tags.length > 0 && (
@@ -842,7 +844,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         </div>
       )}
       {data.description != null && (
-        <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginBottom: 10 }}>{str(data.description)}</div>
+        <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {fields.map((f, i) => {
@@ -863,7 +865,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                   </span>
                   {f.hint != null && (
                     <span className="text-[11px] text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
-                      {str(f.hint)}
+                      <GenUiText text={str(f.hint)} />
                     </span>
                   )}
                 </span>
@@ -960,7 +962,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--foreground)", marginBottom: 4 }}>{str(data.title)}</div>
       )}
       {data.description != null && (
-        <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginBottom: 10 }}>{str(data.description)}</div>
+        <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
         {options.map((o, i) => {
@@ -981,7 +983,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
               </div>
               {o.description != null && (
                 <div style={{ fontSize: 11, color: "var(--muted-foreground)", marginTop: 3, lineHeight: 1.45 }}>
-                  {str(o.description)}
+                  <GenUiText text={str(o.description)} />
                 </div>
               )}
               {o.badge != null && (
@@ -1073,15 +1075,15 @@ function Timeline({ data }: { data: Data }) {
                 <span style={{ ...CELL, fontWeight: 600 }}>{str(r.actor, "someone")}</span>
                 <span style={MUTED}>{type.replace(/_/g, " ")}</span>
                 <span style={{ ...MUTED, marginLeft: "auto", fontVariantNumeric: "tabular-nums" }}>
-                  {str(r.at).slice(0, 16).replace("T", " ")}
+                  {formatCardDate(str(r.at))}
                 </span>
               </div>
               {r.body != null && str(r.body) !== "" && (
-                <div style={{ ...CELL, whiteSpace: "pre-wrap", marginTop: 2 }}>{str(r.body)}</div>
+                <div style={{ ...CELL, whiteSpace: "pre-wrap", marginTop: 2 }}><GenUiText text={str(r.body)} /></div>
               )}
               {r.field != null && (
                 <div style={{ ...CELL, marginTop: 2 }}>
-                  <span style={MUTED}>{str(r.field)}: </span>
+                  <span style={MUTED}>{fieldSpec(str(r.field)).label}: </span>
                   <span style={{ textDecoration: "line-through", color: "var(--muted-foreground)" }}>{str(r.before, "—")}</span>
                   <span style={MUTED}> → </span>
                   <span>{str(r.after, "—")}</span>
@@ -1111,7 +1113,7 @@ function TaskChip({ t }: { t: Data }) {
   const body = (
     <div style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--secondary)",
       padding: "6px 8px", marginBottom: 6, opacity: t.done ? 0.6 : 1 }}>
-      <div style={{ ...CELL, display: "flex", gap: 6 }}>
+      <div style={{ ...CELL, display: "flex", gap: 6, alignItems: "flex-start" }}>
         {t.number != null && <span style={MUTED}>#{str(t.number)}</span>}
         <span style={{ textDecoration: t.done ? "line-through" : "none", flex: 1 }}>{str(t.title)}</span>
         {level !== "low-priority" && <PriorityChip chip={priorityChip(level)} />}
@@ -1119,7 +1121,7 @@ function TaskChip({ t }: { t: Data }) {
       {(people.length > 0 || t.due != null) && (
         <div style={{ ...MUTED, display: "flex", gap: 8, marginTop: 2, flexWrap: "wrap" }}>
           {people.length > 0 && <span>{people.join(", ")}</span>}
-          {t.due != null && str(t.due) !== "" && <span>due {str(t.due)}</span>}
+          {t.due != null && str(t.due) !== "" && <span>due {formatCardDate(str(t.due))}</span>}
         </div>
       )}
     </div>
@@ -1315,7 +1317,7 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         <TIcon name="list-todo" size={15} color="var(--primary)" />
         <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Plan")}</span>
       </div>
-      {data.description != null && <div style={{ ...MUTED, marginBottom: 10 }}>{str(data.description)}</div>}
+      {data.description != null && <div style={{ ...MUTED, marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>}
       <label style={{ ...MUTED, display: "block", marginBottom: 10 }}>
         Project name
         <input value={name} onChange={(e) => setName(e.target.value)} disabled={submitted}
@@ -1392,14 +1394,18 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         <div style={{ marginTop: 10, borderRadius: 10, padding: "8px 10px",
           background: "color-mix(in srgb, var(--warning) 12%, transparent)" }}>
           <div style={{ ...MUTED, fontWeight: 600, marginBottom: 4 }}>Order warnings</div>
-          {warnings.map((w, i) => <div key={i} style={CELL}>• {w}</div>)}
+          <ul className="ml-4 list-disc space-y-0.5 marker:text-muted-foreground" style={CELL}>
+            {warnings.map((w, i) => <li key={i}><GenUiText text={w} /></li>)}
+          </ul>
         </div>
       )}
       {risks.length > 0 && (
         <div style={{ marginTop: 10, borderRadius: 10, padding: "8px 10px",
           background: "color-mix(in srgb, var(--warning) 12%, transparent)" }}>
           <div style={{ ...MUTED, fontWeight: 600, marginBottom: 4 }}>How this plan fails</div>
-          {risks.map((r, i) => <div key={i} style={CELL}>• {r}</div>)}
+          <ul className="ml-4 list-disc space-y-0.5 marker:text-muted-foreground" style={CELL}>
+            {risks.map((r, i) => <li key={i}><GenUiText text={r} /></li>)}
+          </ul>
         </div>
       )}
       <button type="button" onClick={submit} disabled={!ctx?.onAction || submitted || !!blocked}

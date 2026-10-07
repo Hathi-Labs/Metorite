@@ -31,6 +31,7 @@ import remarkEntityPills, {
   PILL_NUMBER_ATTR,
   PILL_TEXT_ATTR,
   spaceBeforeBold,
+  typedBulletsToList,
 } from "@/lib/remarkEntityPills";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { CODE_THEME } from "@/lib/codeTheme";
@@ -502,7 +503,11 @@ export function MarkdownBody({
         },
       }}
     >
-      {entityPills ? spaceBeforeBold(content) : content}
+      {entityPills
+        ? spaceBeforeBold(typedBulletsToList(content))
+        : fences
+          ? typedBulletsToList(content)
+          : content}
     </ReactMarkdown>
   );
 }
