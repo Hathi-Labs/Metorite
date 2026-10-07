@@ -55,6 +55,8 @@ export interface PendingConfirmation {
   requestId?: string;
   /** Set only for a card with rows. A card without rows is as before. */
   rows?: ConfirmationRow[];
+  /** The card's text fences member values in «marks» (`ask_tools` `fenced`). */
+  fenced?: boolean;
 }
 
 /**
@@ -258,6 +260,7 @@ export function cardFromEvent(value: unknown): PendingConfirmation | null {
     // A rows list the card cannot read gives NO rows, so nothing can be
     // ticked and Approve stays off. A plain APPROVE would be refused anyway.
     ...(v.rows !== undefined ? { rows: rowsFromEvent(v.rows) ?? [] } : {}),
+    ...(v.fenced === true ? { fenced: true } : {}),
   };
 }
 

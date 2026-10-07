@@ -35,6 +35,8 @@
 import { createElement, useContext } from "react";
 
 import { EntityIndexContext } from "@/components/ChatEntityPill";
+import FencedText from "@/components/FencedText";
+import GenUiText from "@/components/GenUiText";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import SandboxedHtml from "@/components/SandboxedHtml";
 import Button from "@/components/ui/Button";
@@ -107,9 +109,12 @@ const s = text;
 export function GenUiMarkdown({ content }: { content: string }) {
   const index = useContext(EntityIndexContext);
   return (
-    <MarkdownBody content={content} entityPills={index !== null} entityIndex={index ?? undefined} />
+    <MarkdownBody content={content} entityPills={index !== null} entityIndex={index ?? undefined} fences />
   );
 }
+
+/** Re-exported for its test. The component lives in `GenUiText.tsx`. */
+export { GenUiText };
 
 function Node({
   node, onAction, depth = 0,
@@ -136,7 +141,7 @@ function Node({
       return (
         <div className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2">
           {props.title != null && (
-            <div className="text-sm font-semibold text-foreground">{s(props.title)}</div>
+            <div className="text-sm font-semibold text-foreground"><GenUiText text={s(props.title)} /></div>
           )}
           {renderKids()}
         </div>
@@ -149,13 +154,13 @@ function Node({
       return <div className="flex flex-wrap items-center gap-2">{renderKids()}</div>;
 
     case "heading":
-      return <div className="text-sm font-semibold text-foreground">{s(props.text)}</div>;
+      return <div className="text-sm font-semibold text-foreground"><GenUiText text={s(props.text)} /></div>;
 
     case "text":
       return (
         <p className={`text-[13px] leading-relaxed ${
           props.muted ? "text-muted-foreground" : "text-foreground"
-        }`}>{s(props.text)}</p>
+        }`}><GenUiText text={s(props.text)} /></p>
       );
 
     case "markdown":
@@ -177,7 +182,7 @@ function Node({
       if (!hue) {
         return (
           <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border border-border text-muted-foreground bg-secondary/50">
-            {s(props.text)}
+            <FencedText text={s(props.text)} />
           </span>
         );
       }
@@ -185,7 +190,7 @@ function Node({
       return (
         <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border border-transparent text-foreground ${accent.soft}`}>
           <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${accent.dot}`} />
-          {s(props.text)}
+          <FencedText text={s(props.text)} />
         </span>
       );
     }
@@ -201,8 +206,8 @@ function Node({
             const pair = (p ?? {}) as Record<string, unknown>;
             return (
               <div key={i} className="contents">
-                <dt className="text-muted-foreground">{s(pair.key)}</dt>
-                <dd className="text-foreground">{s(pair.value)}</dd>
+                <dt className="text-muted-foreground"><FencedText text={s(pair.key)} pills={false} /></dt>
+                <dd className="min-w-0 break-words text-foreground"><GenUiText text={s(pair.value)} /></dd>
               </div>
             );
           })}
@@ -233,7 +238,7 @@ function Node({
               {rows.map((r, ri) => (
                 <tr key={ri} className="border-t border-border/60">
                   {tableCells(r, cols).map((cell, ci) => (
-                    <td key={ci} className="px-2 py-1 text-foreground">{cell}</td>
+                    <td key={ci} className="px-2 py-1 text-foreground"><GenUiText text={cell} /></td>
                   ))}
                 </tr>
               ))}
@@ -251,7 +256,7 @@ function Node({
         <Tag className={`ml-5 space-y-0.5 text-[13px] text-foreground ${
           ordered ? "list-decimal" : "list-disc"
         } list-outside marker:text-muted-foreground`}>
-          {items.map((it, i) => <li key={i}>{s(it)}</li>)}
+          {items.map((it, i) => <li key={i}><GenUiText text={s(it)} /></li>)}
         </Tag>
       );
     }
@@ -302,10 +307,10 @@ function Node({
       return (
         <div className={`rounded-md border border-border border-l-2 px-3 py-2 space-y-1 ${accent.bar} ${accent.soft}`}>
           {props.title != null && (
-            <div className="text-[12px] font-semibold text-foreground">{s(props.title)}</div>
+            <div className="text-[12px] font-semibold text-foreground"><GenUiText text={s(props.title)} /></div>
           )}
           {props.text != null && (
-            <div className="text-[12px] text-muted-foreground">{s(props.text)}</div>
+            <div className="text-[12px] text-muted-foreground"><GenUiText text={s(props.text)} /></div>
           )}
           {renderKids()}
         </div>

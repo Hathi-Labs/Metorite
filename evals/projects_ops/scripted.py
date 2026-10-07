@@ -101,8 +101,8 @@ def _po7(ds: Dataset) -> list[Step]:
         tool("find_tasks", query="#7"),
         tool("set_recurrence", task_id=target, rrule="FREQ=WEEKLY;BYDAY=MO"),
         tool("set_recurrence", task_id=target, freq="weekly", weekdays="1"),
-        ("text", "Task #7 now repeats every week on Monday. set_recurrence takes no rrule, so "
-                 "I set the rule with freq and weekdays."),
+        # The member reads product words, never a tool name (owner, 2026-10-07).
+        ("text", "Task #7 now repeats every week on Monday."),
     ]
 
 
