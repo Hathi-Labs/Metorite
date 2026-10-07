@@ -112,6 +112,35 @@ def _rule(name: str, ok: bool, good: str, bad: str, *, advisory: bool = False) -
 
 # ── the rules every task shares ─────────────────────────────────────────────
 
+#: One fenced name as the chat draws it: a balanced pair on one line, with no
+#: mark inside (``workbench/control_plane/src/lib/fencedText.ts``). The
+#: assistant keeps the marks around a name, and the chat draws it as a pill.
+_FENCED_NAME = re.compile(r"«[^«»\n]{1,200}»")
+
+
+def tool_names() -> set[str]:
+    """Every Projects tool name, from the manifest. A member never reads one."""
+    from skill_projects import manifest
+
+    return {t for cls in manifest.CLASSES for t in manifest.tools_by_class(cls)}
+
+
+def named_tools(answer: str) -> list[str]:
+    """The tool names *answer* says to the member, outside a fenced name.
+
+    Owner report, 2026-10-07: an answer listed ``create_project`` and
+    ``propose_plan``. A snake_case tool name is a word nobody else uses, so a
+    match is a leak. A one-word tool name (``assign``, ``comment``) is an
+    English word too, and it is not counted.
+    """
+    words = set(re.findall(r"[a-z]+(?:_[a-z]+)+", _FENCED_NAME.sub("", answer or "")))
+    return sorted(words & {t for t in tool_names() if "_" in t})
+
+
+def stray_marks(answer: str) -> bool:
+    """True when a « or » in *answer* is not part of one drawable name."""
+    return bool(re.search(r"[«»]", _FENCED_NAME.sub("", answer or "")))
+
 
 def common(ev: Evidence) -> list[Rule]:
     errors = [s.error for s in ev.sessions if s.error]
@@ -129,6 +158,13 @@ def common(ev: Evidence) -> list[Rule]:
               f"a request acted as {strangers}"),
         _rule("routes_served", not unserved, "the stub served every route",
               f"the stub does not serve {unserved}", advisory=True),
+        # The member's words (owner report, 2026-10-07). The chat draws a
+        # balanced «name» as a pill, so only a stray mark reaches the member.
+        _rule("answer_names_no_tool", not named_tools(ev.answer),
+              "the answer names no tool", f"the answer names {named_tools(ev.answer)}"),
+        _rule("answer_marks_drawable", not stray_marks(ev.answer),
+              "every « » in the answer is one drawable name",
+              "the answer holds a « or » that no pill can draw"),
     ]
 
 

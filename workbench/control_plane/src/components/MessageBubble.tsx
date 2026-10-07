@@ -473,6 +473,7 @@ function MessageBubble({
         sessionId={sessionId}
         entityPills={pills}
         entityIndex={entityIndex ?? undefined}
+        fences
       />
       {/* Inline artifact cards — dismissable (persisted), keyed by sha/path. */}
       {(() => {

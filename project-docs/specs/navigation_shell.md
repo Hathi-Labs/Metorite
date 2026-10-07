@@ -180,6 +180,12 @@ My Profile, My access, Appearance, the colour-mode toggle and sign-out. For
 an admin it adds Organisation and Approvals. My Profile and My access describe
 the member. The member does not work in them, so they leave the sidebar.
 
+**The account switcher is in the sidebar foot today** (MT-1k slice A2,
+`saas_multitenancy.md`, built 2026-10-07, dark). It lists every account this
+browser is signed in to, with its organization, and switches with one click.
+When NS-2 builds this avatar menu, the switcher moves into it. It holds no
+second copy of the list.
+
 **My Access moved first, on 2026-10-05.** The owner moved it into the People
 app, as the ungated "My access" tab at `/people/access`, beside My profile. When
 NS-2 builds the avatar menu, the menu links to that tab. It holds no second copy

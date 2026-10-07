@@ -23,7 +23,9 @@
  */
 
 import Button from "@/components/ui/Button";
+import FencedText from "@/components/FencedText";
 import AppIcon from "@/components/Icon";
+import Readout from "@/components/projects/Readout";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ToolEvent } from "@/components/MarkdownMessage";
@@ -412,8 +414,17 @@ function withoutLegend(result: string): string {
  * lines (`full_id:`, `link:`, `<kind>_id:`, `done:`) the cards parse. None of
  * that is for the member; the other chat apps' cards show plain text
  * (visual review, 2026-09-23). Exported for its test; pure.
+ *
+ * The marks go too. A card draws `forPeopleFenced` through `FencedText`
+ * instead, so a name keeps its boundary as a quiet emphasis (owner report,
+ * 2026-10-07: a stripped receipt read "Created Fix the extruder in Ops").
  */
 export function forPeople(result: string): string {
+  return forPeopleFenced(result).replace(/[«»]/g, "");
+}
+
+/** `forPeople` with the «marks» kept, for `FencedText` to draw. Pure. */
+export function forPeopleFenced(result: string): string {
   return withoutLegend(result)
     .split("\n")
     .filter((l) => !/^\s*(?:[a-z_]+_id|link|done):/.test(l))
@@ -426,7 +437,6 @@ export function forPeople(result: string): string {
         // 2026-09-23): "· project_id <uuid>", "(activity id a1)".
         .replace(/\s*·\s*[a-z_]+_id:? [0-9a-f-]{8,}/gi, "")
         .replace(/\s*\(activity id [^)]*\)/g, "")
-        .replace(/[«»]/g, "")
         .replace(/^- /, ""),
     )
     .join("\n")
@@ -444,7 +454,7 @@ function InfoCard({
 }) {
   const router = useRouter();
   const body = withoutLegend(e.result || "");
-  const shown = forPeople(e.result || "");
+  const shown = forPeopleFenced(e.result || "");
   const failed = e.status === "error";
   const opens = failed ? undefined : OPENS_APP[e.name];
   // `open_in_app` prints `link: /projects?...`. Only an in-app link becomes
@@ -456,12 +466,16 @@ function InfoCard({
       icon={<AppIcon name={failed ? "AlertTriangle" : icon} size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div
-        className={`text-[11px] whitespace-pre-wrap max-h-80 overflow-y-auto scrollbar-thin ${
-          failed ? "text-destructive" : "text-muted-foreground"
-        }`}
-      >
-        {shown || "(no result)"}
+      {/* A read draws as UI (`Readout`): no id, no `[key]`, a status as its
+          chip. A failure stays one plain message. */}
+      <div className="max-h-80 overflow-y-auto scrollbar-thin">
+        {failed ? (
+          <div className="text-[11px] whitespace-pre-wrap text-destructive">
+            <FencedText text={shown || "(no result)"} pills={false} />
+          </div>
+        ) : (
+          <Readout result={e.result || ""} legend={LEGEND} />
+        )}
       </div>
       {link && !opens && (
         <div className="mt-2">
@@ -564,7 +578,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
-  const detail = forPeople(result);
+  const detail = forPeopleFenced(result);
   const tone = toneFor(outcome, e.name);
   const icon =
     outcome === "failed"
@@ -596,7 +610,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
           <div className="text-[11px] font-medium text-foreground">{heading}</div>
           {detail && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-4">
-              {detail}
+              <FencedText text={detail} pills={false} />
             </div>
           )}
           {(outcome === "done" || outcome === "partial") && rowId && (
@@ -648,7 +662,7 @@ export function batchNotes(result: string): string[] {
     if (/listed above exist\. Never create them again/.test(line)) continue;
     kept.push(line);
   }
-  return forPeople(kept.join(NL)).split(NL).filter((l) => l.trim());
+  return forPeopleFenced(kept.join(NL)).split(NL).filter((l) => l.trim());
 }
 
 /**
@@ -665,7 +679,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
   }, [outcome, e.id]);
   const rows = parseTaskRows(result);
-  const head = forPeople(withoutLegend(result).split(NL)[0] ?? "");
+  const head = forPeopleFenced(withoutLegend(result).split(NL)[0] ?? "");
   const notes = batchNotes(result);
   const icon =
     outcome === "failed" ? "X"
@@ -689,7 +703,9 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
         <div className="min-w-0 flex-1">
           <div className="text-[11px] font-medium text-foreground">{heading}</div>
           {head && (outcome !== "done" || rows.length === 0) && (
-            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">{head}</div>
+            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
+              <FencedText text={head} pills={false} />
+            </div>
           )}
           {rows.length > 0 && (
             <div className="mt-1 space-y-0.5 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
@@ -703,7 +719,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
               {notes.map((n, i) => (
                 <div key={i} className="text-[10px] text-muted-foreground whitespace-pre-wrap"
                   style={{ overflowWrap: "anywhere" }}>
-                  {n}
+                  <FencedText text={n} pills={false} />
                 </div>
               ))}
             </div>

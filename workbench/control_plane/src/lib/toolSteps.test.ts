@@ -152,7 +152,7 @@ function replay(events: Array<Record<string, unknown>>): ChatMessage {
 /** Every step row in the rendered turn, as `[status, text]`. */
 function rows(html: string): Array<[string, string]> {
   const out: Array<[string, string]> = [];
-  const re = /<div class="relative" data-step-status="(\w+)" data-step-kind="\w+">([\s\S]*?)<\/button>/g;
+  const re = /<div class="[^"]*" data-step-status="(\w+)" data-step-kind="\w+">([\s\S]*?)<\/button>/g;
   for (let m = re.exec(html); m; m = re.exec(html)) {
     out.push([m[1], m[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()]);
   }

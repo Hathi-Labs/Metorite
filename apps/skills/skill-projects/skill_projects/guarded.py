@@ -52,6 +52,7 @@ from skill_projects.reads import _day, _task_line
 from skill_projects.writes import (
     _REOPENING,
     CANCELLED,
+    CARD_CONTEXT_LIMIT,
     CARD_NOTE,
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
@@ -225,7 +226,7 @@ async def archive_project(project_id: str) -> str:
             {
                 "project": data(node.get("name")),
                 "tasks": "not changed; they follow their project out of view",
-                "undo": "unarchive_project restores exactly the rows this archive stamps",
+                "undo": "restoring it from the archive brings back exactly these rows",
             },
         ),
     ):
@@ -566,7 +567,7 @@ async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     else:
         tail = f"{_subtasks_phrase(count.open, 'complete', count.capped)} left on the board"
     impact = f"1 task archived from lane {lane} · {tail}"
-    rest = {"task": _ref(task), "status": lane, "undo": "unarchive_task"}
+    rest = {"task": _ref(task), "status": lane, "undo": "restore it from the archive"}
     if not await _confirm(
         title="Archive this task?",
         detail=f"{_ref(task)} · {impact}",
@@ -732,26 +733,35 @@ def _bulk_subtasks(body: dict[str, Any], include_subtasks: str) -> dict[str, str
         if archiving:
             return {"subtasks": "archived with each task"}
         return {"subtasks": "open subtasks completed too, where a task lands in a Done lane"}
-    return {"subtasks": "stay as they are (include_subtasks=yes takes them too)"}
+    return {"subtasks": "stay as they are, unless you ask for them too"}
 
 
 def _bulk_impact(body: dict[str, Any], n: int) -> str:
+    """The card's one-line impact. It names no wire key (owner report,
+    2026-10-07: the member read "tags_add → Bug"). The change itself is on
+    the card as fields, from :func:`_bulk_changes`, and the card draws each
+    one by its key: a tag as a tag, a status as a status."""
     verb = body.get("action")
     if verb:
         return f"{_plural(n, 'task')} {verb}d"
-    described: dict[str, Any] = {}
+    return f"one change across {_plural(n, 'task')}"
+
+
+def _bulk_changes(body: dict[str, Any]) -> dict[str, Any]:
+    """The change of a bulk body as card fields: ``key: value`` lines, each
+    member value fenced. The keys are the ones the card's label map knows
+    (``cardFields.ts``). A cleared field reads ``cleared``."""
+    out: dict[str, Any] = {}
     for key, value in (body.get("patch") or {}).items():
         # The flags as a member reads them, never the stored number (H-173).
         if key in ("importance", "leveraged"):
-            described.update(card_view({key: value}))
+            out.update({k: data(v) for k, v in card_view({key: value}).items()})
         else:
-            described[key] = value
+            out[key] = "cleared" if value is None else data(value)
     for key in ("assignees_add", "assignees_remove", "tags_add", "tags_remove"):
         if key in body:
-            described[key] = ", ".join(body[key])
-    return f"{_plural(n, 'task')} changed: " + ", ".join(
-        f"{k} → {'cleared' if v is None else v}" for k, v in described.items()
-    )
+            out[key] = ", ".join(data(v) for v in body[key])
+    return out
 
 
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
@@ -828,9 +838,14 @@ async def bulk_update(
     subtasks = _bulk_subtasks(body, include_subtasks)
     tasks = [(await _task(t))[1] for t in ids]
     impact = _bulk_impact(body, len(tasks))
-    rest: dict[str, Any] = dict(subtasks)
+    rest: dict[str, Any] = {**_bulk_changes(body), **subtasks}
+    # Whole titles when the card holds them, and the UI cuts a long one with
+    # its full title as the tooltip. Only a card too long for the limit clips
+    # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).
+    whole = {f"task {i + 1}": _ref(t) for i, t in enumerate(tasks)}
+    fits = len(_guard_card(impact, {**rest, **whole})) <= CARD_CONTEXT_LIMIT
     for i, t in enumerate(tasks):
-        rest[f"task {i + 1}"] = _short_ref(t)
+        rest[f"task {i + 1}"] = whole[f"task {i + 1}"] if fits else _short_ref(t)
     if not await _confirm(
         title=f"Change {_plural(len(tasks), 'task')} at once?",
         detail=impact,
@@ -856,6 +871,18 @@ async def bulk_update(
     return "\n".join(out)
 
 
+def _overlay_shown(value: Any) -> str:
+    """One overlay value on the card. A flag reads yes or no: ``data(False)``
+    is ``«»``, which the card would draw as "none" (review round 1)."""
+    if value is None:
+        return "cleared"
+    if isinstance(value, bool):
+        return data("yes" if value else "no")
+    if isinstance(value, dict):
+        return data(value.get("email"))
+    return data(value)
+
+
 async def _bulk_personal(ids: list[str], personal: str) -> str:
     """``action: personal`` (``bulk.py`` ``validate_personal``): the member's
     own overlay on every task of the selection, under one class C card."""
@@ -879,8 +906,11 @@ async def _bulk_personal(ids: list[str], personal: str) -> str:
         f"{k} → {'cleared' if v is None else (v.get('email') if isinstance(v, dict) else v)}"
         for k, v in values.items()
     )
-    impact = f"{_plural(len(tasks), 'task')}: your own overlay only · {shown}"
-    rest: dict[str, Any] = {"seen by": "you only. The board does not change"}
+    # The card names no wire key in its prose (owner, 2026-10-07). The
+    # values are fields, which the card labels and draws by kind.
+    impact = f"your own triage of {_plural(len(tasks), 'task')}"
+    rest: dict[str, Any] = {k: _overlay_shown(v) for k, v in values.items()}
+    rest["seen by"] = "you only. The board does not change"
     kept = sum(len(g) for g, v in groups if "waiting_on" in v and "delegated_at" not in v)
     if kept:
         rest["waiting since"] = (
@@ -1017,7 +1047,8 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
     aid = uuid_of(activity_id, "activity_id")
     if not await _confirm(
         title="Revert this change?",
-        detail=f"{_ref(task)} · " + ", ".join(f"{f}: {v}" for f, v in lines),
+        # The fields are rows on the card. The detail names no wire key.
+        detail=impact,
         context=_guard_card(impact, {"task": _ref(task), **dict(lines)}),
     ):
         return CANCELLED

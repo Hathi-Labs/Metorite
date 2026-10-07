@@ -23,12 +23,12 @@ import { DisconnectDialog } from "./components/DisconnectDialog";
 import { MailboxAvatar, MailboxChip } from "./components/MailboxChip";
 import { MailboxEditDialog, type MailboxEdit } from "./components/MailboxEditDialog";
 import { updateEmailAccount } from "./lib/api";
-import { FirstSyncBanner } from "./components/FirstSyncBanner";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
 import { RemoveOlderMailDialog } from "./components/RemoveOlderMailDialog";
 import { StorageNotice } from "./components/StorageNotice";
 import { StorageStep } from "./components/StorageStep";
+import { SyncBanner } from "./components/SyncBanner";
 import Modal from "@/components/ui/Modal";
 import {
   useEmailStore, isRealFolder, backfillKey, foldersInScope, scopeBusy, ALL_INBOXES,
@@ -48,7 +48,7 @@ import {
   shouldPollFirstSync,
   type ConnectProviderId,
 } from "./lib/connect";
-import { firstSyncPanels, importProgress, onboardingStage } from "./lib/onboarding";
+import { importPanelShows, importProgress, onboardingStage, syncBanners } from "./lib/onboarding";
 import { pickSettingsMailbox } from "./lib/mailboxSettings";
 import { folderLabel } from "./lib/utils";
 import {
@@ -352,10 +352,12 @@ export default function EmailPage() {
   // request, and the poll ticks once when the tab comes back. The interval
   // stops when the page unmounts.
   const firstSyncPending = shouldPollFirstSync(accounts);
-  // One panel for each mailbox whose first sync runs, the mailbox in view
-  // first. With two or more mailboxes each panel names its mailbox
-  // (EM-T8f-3, §11.6 case 19).
-  const importPanels = firstSyncPanels(accounts, viewAll ? null : selectedAccountId);
+  // The mailbox in view draws the import panel, with the detail of its first
+  // import. Each other import draws one row of the sync banner, in view or
+  // not (EM-S9, §14.4.6). The banner leaves out the mailbox of the panel.
+  const importPanelAccount =
+    !viewAll && selectedAccount && importPanelShows(selectedAccount) ? selectedAccount : null;
+  const syncRows = syncBanners(accounts, importPanelAccount?.id ?? null);
   useEffect(() => {
     if (!firstSyncPending) return;
     let cancelled = false;
@@ -1120,6 +1122,11 @@ export default function EmailPage() {
           </div>
         )}
 
+        {/* ── The sync banner (EM-S9, §14.4.6, D-EM-58) ──
+            One row for each mailbox whose import runs, with its chip and a
+            percent or a count. A row goes away when its phase ends. */}
+        <SyncBanner rows={syncRows} />
+
         {/* ── Storage notice (EM-T6e, D2 and D3) ──
             Below the reconnect banner, which wins for its own mailbox. The
             action opens the dialog for the mailbox that the notice NAMES. */}
@@ -1134,25 +1141,17 @@ export default function EmailPage() {
           />
         )}
 
-        {/* ── First sync of a new mailbox, one panel for each ──
-            The import panel draws only when the gateway reports progress
-            (`import_phase`, EM-T6b). Every other pending mailbox keeps the
-            banner: one from before EM-T6, or a gateway before EM-T6b. */}
-        {importPanels.map(({ account, surface, named }) =>
-          surface === "progress" ? (
-            <OnboardingPanel
-              key={account.id}
-              address={account.emailAddress}
-              mailbox={named ? account : undefined}
-              progress={importProgress(account, { now: new Date() })}
-            />
-          ) : (
-            <FirstSyncBanner
-              key={account.id}
-              address={account.emailAddress}
-              mailbox={named ? account : undefined}
-            />
-          ),
+        {/* ── The first import of the mailbox in view ──
+            The panel draws only when the gateway reports progress
+            (`import_phase`, EM-T6b). The sync banner names each other
+            import. */}
+        {importPanelAccount && (
+          <OnboardingPanel
+            key={importPanelAccount.id}
+            address={importPanelAccount.emailAddress}
+            mailbox={accounts.length > 1 ? importPanelAccount : undefined}
+            progress={importProgress(importPanelAccount, { now: new Date() })}
+          />
         )}
 
         {/* ── The storage step of the guided setup (EM-T6e, D6) ──

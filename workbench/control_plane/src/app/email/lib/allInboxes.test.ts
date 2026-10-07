@@ -21,9 +21,9 @@
 //     its sum over each mailbox, a failed read adds 0, and a custom folder
 //     shows no count. `allInboxesStore.test.ts` holds the store half: the
 //     reads of each mailbox, their bound, and the list that never waits.
-//   * `email-import-panel-each`: one panel for each importing mailbox, the
-//     mailbox in view first. With two or more mailboxes each panel names its
-//     mailbox with the chip.
+//   * `email-import-panel-each`: each importing mailbox is named on one
+//     surface. Since EM-S9 (§14.6.9) that is the import panel for the mailbox
+//     in view, and one row of the sync banner for each other mailbox.
 //
 // WS-17 EM-T8g-2 (§11.7.7) adds two fences here:
 //   * `email-all-skips-separate`: with one separate mailbox among three, the
@@ -53,9 +53,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { isKnownIcon } from "@/lib/icons";
 
 import { AccountSidebar, accountMenuItems } from "../components/AccountSidebar";
-import { FirstSyncBanner } from "../components/FirstSyncBanner";
 import { OnboardingPanel } from "../components/OnboardingPanel";
 import { RemoveOlderMailDialog } from "../components/RemoveOlderMailDialog";
+import { SyncBanner } from "../components/SyncBanner";
 import {
   ALL_INBOXES,
   SUMMED_FOLDERS,
@@ -78,7 +78,7 @@ import {
   separateToggle,
   storageMailbox,
 } from "./mailbox";
-import { firstSyncPanels, importProgress } from "./onboarding";
+import { importPanelShows, importProgress, syncBanners } from "./onboarding";
 import type { EmailAccount, EmailFolder } from "./types";
 
 const ROOT = join(__dirname, "..");
@@ -323,52 +323,44 @@ describe("email-import-panel-each", () => {
   });
   const done = (id: string): EmailAccount => ({ ...box(id, id.toUpperCase(), 0), initialSyncDone: true });
 
-  it("gives one panel for each importing mailbox, the mailbox in view first", () => {
-    const accounts = [importing("a"), done("b"), importing("c"), importing("d", { importPhase: null })];
-    const panels = firstSyncPanels(accounts, "c");
-    expect(panels.map((p) => [p.account.id, p.surface])).toEqual([
-      ["c", "progress"], ["a", "progress"], ["d", "banner"],
-    ]);
-    // All inboxes has no mailbox in view: the order of the list.
-    expect(firstSyncPanels(accounts, null).map((p) => p.account.id)).toEqual(["a", "c", "d"]);
+  it("names each importing mailbox once: the panel for the mailbox in view, a banner row for each other", () => {
+    const accounts = [importing("a"), done("b"), importing("c"), importing("d", { importPhase: "counting" })];
+    // Mailbox c is in view and its panel shows, so the banner leaves it out.
+    expect(importPanelShows(accounts[2])).toBe(true);
+    expect(syncBanners(accounts, "c").map((r) => r.account.id)).toEqual(["a", "d"]);
+    // All inboxes has no mailbox in view: a row for each, in the order of the list.
+    expect(syncBanners(accounts, null).map((r) => r.account.id)).toEqual(["a", "c", "d"]);
   });
 
-  it("gives no panel to an errored or paused mailbox", () => {
+  it("gives no row to an errored or paused mailbox", () => {
     const accounts = [importing("a", { syncStatus: "error" }), importing("b", { syncEnabled: false }), importing("c")];
-    expect(firstSyncPanels(accounts, "a").map((p) => p.account.id)).toEqual(["c"]);
-  });
-
-  it("names each panel with two or more mailboxes, and changes nothing for one", () => {
-    expect(firstSyncPanels([importing("a"), importing("b")], null).map((p) => p.named)).toEqual([true, true]);
-    expect(firstSyncPanels([importing("a"), done("b")], null).map((p) => p.named)).toEqual([true]);
-    expect(firstSyncPanels([importing("a")], null).map((p) => p.named)).toEqual([false]);
+    expect(syncBanners(accounts, "a").map((r) => r.account.id)).toEqual(["c"]);
   });
 
   it("draws the chip and the address of its mailbox on each surface", () => {
     const a = importing("a", { displayLabel: "Fracktal", emailAddress: "vj@fracktal.in" });
     const progress = importProgress(a, { now: new Date(2026, 9, 3) });
     const panel = renderToStaticMarkup(createElement(OnboardingPanel, { address: a.emailAddress, progress, mailbox: a }));
-    const banner = renderToStaticMarkup(createElement(FirstSyncBanner, { address: a.emailAddress, mailbox: a }));
+    const banner = renderToStaticMarkup(createElement(SyncBanner, { rows: syncBanners([a]) }));
     for (const html of [panel, banner]) {
       expect(html).toContain('aria-label="Mailbox Fracktal, vj@fracktal.in"');
-      expect(html).toContain("Connected as vj@fracktal.in");
     }
+    expect(panel).toContain("Connected as vj@fracktal.in");
     expect(panel).toContain('aria-label="Mailbox import, vj@fracktal.in"');
-    // One mailbox: no chip, the same panel as before.
+    // One mailbox: no chip on the panel, the same panel as before.
     const plain = renderToStaticMarkup(createElement(OnboardingPanel, { address: a.emailAddress, progress }));
     expect(plain).not.toContain("Mailbox Fracktal");
     expect(plain).toContain('aria-label="Mailbox import"');
-    expect(renderToStaticMarkup(createElement(FirstSyncBanner, { address: a.emailAddress }))).not.toContain("Mailbox Fracktal");
   });
 
-  it("draws each panel on the page, keyed and named by its mailbox", () => {
+  it("draws the panel of the mailbox in view on the page, named with two or more mailboxes", () => {
     const page = codeOnly(read("page.tsx"));
-    expect(page).toContain("const importPanels = firstSyncPanels(accounts, viewAll ? null : selectedAccountId);");
-    expect(page).toContain("{importPanels.map(({ account, surface, named }) =>");
-    expect(page.match(/key=\{account\.id\}/g)).toHaveLength(2);
-    expect(page.match(/mailbox=\{named \? account : undefined\}/g)).toHaveLength(2);
+    expect(page).toContain("const syncRows = syncBanners(accounts, importPanelAccount?.id ?? null);");
+    expect(page).toContain("key={importPanelAccount.id}");
+    expect(page).toContain("mailbox={accounts.length > 1 ? importPanelAccount : undefined}");
     // No single pending mailbox is left on the page.
     expect(page).not.toMatch(/\bpendingAccount\b/);
+    expect(page).not.toMatch(/\bimportPanels\b/);
   });
 });
 
@@ -832,10 +824,12 @@ describe("email-storage-mailbox (A5, A6, D3)", () => {
     expect(page.match(/setRemovingId\(/g)).toHaveLength(4);
     expect(page).toContain("const removingAccount = removalMailbox(accounts, removingId);");
     expect(page).toMatch(/<RemoveOlderMailDialog\s+account=\{removingAccount\}/);
-    // The notice sits below the reconnect banner, and above the import panels.
+    // The notice sits below the reconnect banner and the sync banner (EM-S9),
+    // and above the import panel.
     const notice = page.indexOf("<StorageNotice");
-    expect(notice).toBeGreaterThan(page.indexOf("Reconnect Outlook"));
-    expect(notice).toBeLessThan(page.indexOf("{importPanels.map("));
+    expect(notice).toBeGreaterThan(page.indexOf("{RECONNECT_LABEL[provider]}"));
+    expect(notice).toBeGreaterThan(page.indexOf("<SyncBanner"));
+    expect(notice).toBeLessThan(page.indexOf("<OnboardingPanel"));
     // An open dialog stops the page shortcuts, so "#" cannot delete the mail behind it.
     expect(page).toContain("editingMailbox || removingAccount || paletteOpen) return;");
   });

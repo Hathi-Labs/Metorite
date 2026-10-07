@@ -26,7 +26,7 @@
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
 > 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
-> 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07), not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
+> 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is 🔨 BUILT, not merged (2026-10-07). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -13370,7 +13370,9 @@ The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07. Q-IN-5 is open.
 > first insight. Part 2 lets the member choose a longer sync window when the mailbox connects. The
 > owner let the coordinator set the HTML window at 90 days.
 
-> **Status.** 📝 SPECIFIED (2026-10-07). Not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3,
+> **Status.** 📝 SPECIFIED (2026-10-07). ✅ EM-S1 is MERGED #719 (2026-10-07). ✅ EM-S9 is MERGED
+> #717 (2026-10-07). 🔨 EM-S10 is BUILT, not merged (2026-10-07). The other
+> slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3,
 > EM-S9 and EM-S10 (2026-10-07). The other slices wait for their own audit at dispatch. Each
 > slice ships dark where §14.6 says so.
 
@@ -13610,8 +13612,13 @@ owner's, except where a row says "agent decision".
      answers 404, before any cache read.
    - It reads tenant Redis with `key("email-html", <row id>)` inside `organization_scope`, as
      `transport/attachments.py:244-256` does.
-   - On a miss it calls `provider.get_message` through `provider_session`, and cuts the HTML at
-     `MAX_BODY_HTML_BYTES`.
+   - On a miss it opens no session across the provider call. Block A reads the row and the
+     credentials with the owner predicate, then closes. The provider authenticates and fetches
+     with no session open. When `credentials_dirty()` is true, Block B runs
+     `_persist_rotated_creds` in a short session. Block B runs in a `finally`, so a failed
+     fetch keeps a rotated token too.
+   - The fetch is `provider.get_message_body`, which reads the body only. Outlook selects `id`
+     and `body` and expands nothing. The route cuts the HTML at `MAX_BODY_HTML_BYTES`.
    - It writes the cache for 1 hour. It writes no HTML to `email_messages`.
    - Its answer is `{message_id, body_html, source}`. `source` is `stored`, `cache`, `provider` or
      `none`. A plain-text message gives `none`, and the cache keeps that answer too.
@@ -13625,9 +13632,10 @@ owner's, except where a row says "agent decision".
 5. **The prefetch.** The list stays still for 500 milliseconds. Then the client calls the route with
    `prefetch=1` for each visible row with `html_remote`. It asks for 6 rows at most, and 2 at
    one time. It stops at the first 503, and it skips a row that it already holds.
-6. **The known limit.** The provider call holds one pooled connection, as the owned file fetch
-   does (`transport/attachments.py:205-208`). EM-T4a-4 (H-261) owns that split. The prefetch
-   bounds of item 5 keep the cost at 2 connections for each member at most.
+6. **No pooled connection across the provider call.** The route holds no connection while the
+   provider answers (item 1). EM-T4a-4 (H-261) keeps only the owned file fetch
+   (`transport/attachments.py:205-208`), which still holds one. The prefetch bounds of item 5
+   still bound the calls of each member to the provider.
 
 #### 14.4.3 No writer stores old HTML
 
@@ -13855,7 +13863,11 @@ text.
   mailbox with an import that writes progress, in view or not, with sync on and no error.
   - The first import: `initial_sync_done` is false, and `import_phase` is `counting` or
     `importing` (EM-S9).
+  - The start of the first import: `initial_sync_done` is false, and `import_phase` is NULL.
+    The row reads "Starting sync", with no bar and no count. D-EM-58 says that a banner shows
+    while each sync runs, and the scheduler writes no phase for its first few seconds.
   - A Resync: `import_phase` is `resyncing` (EM-S9b).
+  - No row for `awaiting_range` (EM-S6), a sync error or sync off.
 - **Today a Resync writes no progress** (`scheduler.py:891-898`, `:1467`). EM-S9b adds it, so the
   same row shows during a Resync, as D-EM-58 asks.
 - **The progress.** With `import_estimate`, it shows a percent from `import_count /
@@ -13873,7 +13885,9 @@ text.
 
 - **The invitation exists.** EM-S10 adds the estimate. "Sort my imported mail" first reads
   `GET /email/rules/process-past/estimate` for the import window. It shows `will_process` as AI
-  calls. When `capped` is true, it says that one run sorts 2,000 messages, and offers the next run.
+  calls. When `capped` is true, it says how many messages one run sorts, and offers the next run.
+  It reads that number from `limit` in the estimate answer. Today the number is 1,000, because the
+  dialog sends no `limit` (`RuleProcessPastRequest.limit`). The route clamps `limit` at 2,000.
 - **The cost.** Each sorted message costs one `decide` request on `tier-decide` (D-EM-7). That is
   about 2,500 tokens in, about USD 0.0001 at the rate of §13.1.
 - **A second mailbox.** It goes through the range step and the estimate as the first mailbox does.
@@ -13885,6 +13899,9 @@ text.
   - An AI label (`label_ai`) is a prompt, so the list leaves it out.
   - From Outlook to Gmail, a `MOVE_FOLDER` to a system folder that Gmail refuses goes into
     `left_out` with the reason `folder_not_in_target`.
+  - An IMAP target makes no folder and adds no label. A rule with a `MOVE_FOLDER` or a `LABEL`
+    goes into `left_out` with the reason `not_supported_by_target`, and `will_create` is empty
+    (EM-S10 fix round 1).
 - **Tenancy and ownership.** The copy keeps both owner checks (`rule_copy.py:296-297`). The
   folder read uses the target `account_id` that the route already proved. No field comes from
   input that the route did not check (R5 (e), D-EM-4, D-EM-46).
@@ -13915,6 +13932,7 @@ section touches WhatsApp.
 | 14 | **The ceiling of the floor is 180 days for each mailbox** (`import_window.py:98-116`) | `window_policy.window_max_days(row)` sets it: the chosen window, at least 180 and at most 730 days. The floor still rolls. Each mailbox with `window_chosen_at` NULL keeps 180 days (§14.4.5 item 1) |
 | 15 | **The first import starts whenever `initial_sync_done` is false** (`scheduler.py:1455`) | The Python test also needs a phase other than `awaiting_range` (§14.4.5 item 2) |
 | 16 | **A Resync writes no progress** (`scheduler.py:891-898`, `:1467`) | EM-S9b writes `import_phase = 'resyncing'`, `import_count` and `import_estimate`, so the banner shows |
+| 17 | **§14.4.2 item 1 as first written:** the HTML route calls `provider.get_message` through `provider_session` | EM-S1 fix round 1. The route holds no session across the provider call (item 1, item 6). It calls the new `get_message_body` of the provider base, whose default reads `get_message`. Outlook overrides it with `$select=id,body` and no `$expand`, because `get_message` (`outlook.py:1013-1020`) sends `$expand=attachments` and Graph then sends the bytes of each file. The open keeps `get_message`, because it needs `has_attachments` |
 
 **What does not change.**
 
@@ -13937,7 +13955,7 @@ migration.
 
 | Slice | Gate | Dark | Scope | Done when |
 |---|---|---|---|---|
-| **EM-S1** | 🟢 AGENT-SAFE · R8 · security review | Yes, `EMAIL_HTML_FROM_PROVIDER` | `html_tier.py`, the HTML route, the cache, and `html_remote` | §14.6.1 |
+| **EM-S1** | 🟢 AGENT-SAFE · R8 · security review | Yes, `EMAIL_HTML_FROM_PROVIDER` | ✅ **MERGED #719 (2026-10-07).** `html_tier.py`, the HTML route, the cache, and `html_remote` | §14.6.1 |
 | **EM-S2** | 🟢 AGENT-SAFE · visual review | Yes, the same flag | The pane shows text, then HTML. The prefetch | §14.6.2 |
 | **EM-S3** | 🟢 AGENT-SAFE · R8 | Yes, `EMAIL_HTML_HOT_ONLY` | The four writers store no cold HTML | §14.6.3 |
 | **EM-S4** | 🟢 AGENT-SAFE · R8 · security review | Yes, `EMAIL_HTML_CLEAR` | The clear job, with its dry run | §14.6.4 |
@@ -13945,9 +13963,9 @@ migration.
 | **EM-S6** | 🟢 AGENT-SAFE · R8 · after EM-S3 merges | Yes, `EMAIL_SYNC_WINDOW_CHOICE` | The window rules, `awaiting_range`, the scheduler skip, the migration and the confirm route | §14.6.6 |
 | **EM-S7** | 🟢 AGENT-SAFE · R8 | Yes, the same flag | The estimate route | §14.6.7 |
 | **EM-S8** | 🟢 AGENT-SAFE · visual review | Yes, the same flag | The range step after the sign-in, with the estimate and the warning | §14.6.8 |
-| **EM-S9** | 🟢 AGENT-SAFE · visual review | No | The sync banner in the header, for the first import | §14.6.9 |
+| **EM-S9** | 🟢 AGENT-SAFE · visual review | No | The sync banner in the header, for the first import | §14.6.9 · ✅ MERGED #717 (2026-10-07) |
 | **EM-S9b** | 🟢 AGENT-SAFE · R8 | No | A Resync writes progress, so the banner shows during a Resync | §14.6.9b |
-| **EM-S10** | 🟢 AGENT-SAFE · R8 · visual review | No | The estimate in the rules step, and `will_create` in the copy | §14.6.10 |
+| **EM-S10** | 🟢 AGENT-SAFE · R8 · visual review · 🔨 BUILT, not merged (2026-10-07) | No | The estimate in the rules step, and `will_create` in the copy | §14.6.10 |
 | **Flip A** | 🟡 GRANT `enforcement-flip` | — | `EMAIL_HTML_FROM_PROVIDER=true`, then `EMAIL_HTML_HOT_ONLY=true` | The live check of §14.6.3 |
 | **Flip B** | 🔴 OWNER ONLY | — | `EMAIL_HTML_CLEAR=on` | The live check of §14.6.4 |
 | **Flip C** | 🔴 OWNER ONLY | — | `EMAIL_SYNC_WINDOW_CHOICE=true` | The live check of §14.6.8 |
@@ -13989,6 +14007,8 @@ skipped is the proof. A green run with skips proves nothing (R8).
 
 #### 14.6.1 EM-S1 — the hot window and the HTML route
 
+**Status.** ✅ MERGED #719 (2026-10-07), dark. Branch `email-s1-html-route`.
+
 **Scope.**
 
 1. `email_ingestion/html_tier.py` as §14.4.1 says.
@@ -14026,6 +14046,10 @@ skipped is the proof. A green run with skips proves nothing (R8).
 - The cache key holds the row id and passes through `get_tenant_redis` (R5 (c)).
 - A structural fence: no module outside `html_tier.py` holds the number 90 next to
   `received_at`, and no module outside it reads the two flags.
+- No session is open across the provider call. The fake provider fails if a session is open
+  while it authenticates or fetches.
+- A fetch with no token rotation opens exactly one session
+  (`test_a_fetch_with_no_rotation_opens_one_session`).
 
 **Mutations.** S1-M1 reads the cache before the owner check, and the 404 fence fails. S1-M2 keys
 the cache by the path text, and the spelling fence fails. S1-M3 makes `hot_only()` read one flag,
@@ -14054,6 +14078,7 @@ uv run ruff check apps/services/email_ingestion/email_ingestion/html_tier.py app
 4. With the flag off, `htmlRemote` is false, and nothing changes.
 5. **The 429.** EM-S1 turns a provider 429 into a 503 with a log line. The prefetch stops on it,
    as it stops on each 503.
+6. **The 401.** A dead token gives 401, so the prefetch also stops on the first 401.
 
 **Acceptance.**
 
@@ -14397,13 +14422,20 @@ Check 1 compares `received_at` with `synced_at`, as in §14.6.3.
 
 #### 14.6.9 EM-S9 — the sync banner in the header
 
+**Status.** ✅ MERGED #717 (2026-10-07). `components/SyncBanner.tsx` draws the rows, and
+`syncBanners` in `lib/onboarding.ts` decides them. The fence is `email-sync-banner` in
+`lib/onboarding.test.ts`.
+
 **Scope.** `syncBanners` and the header row of §14.4.6, for the first import. `FirstSyncBanner.tsx`
-goes. The poll of the first sync stays as it is. `syncBanners` already reads `resyncing`, so
-EM-S9b needs no UI change.
+goes. The poll of the first sync stays as it is. `syncBanners` already reads `resyncing`. EM-S9b
+still widens the poll (§14.6.9b item 5), because `isFirstSyncPending` does not see a Resync. Until
+then the fence `email-sync-banner-polls` marks the `resyncing` case as a known failure.
 
 **Acceptance.**
 
 - A mailbox that imports shows one row, with its chip, and a percent or a count.
+- A first import with a NULL `import_phase` shows the row "Starting sync", with no bar and no
+  count, because D-EM-58 asks for a banner while each sync runs. `awaiting_range` shows no row.
 - A mailbox out of view still shows its row.
 - The row goes away when the phase ends.
 - The row holds no colour literal, and each control comes from `src/components/ui/`.
@@ -14478,6 +14510,8 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 
 #### 14.6.10 EM-S10 — the estimate in the rules step, and the copy of a missing name
 
+**Status.** 🔨 BUILT, not merged (2026-10-07). It adds no migration and no flag. The as-built notes follow the Verify block.
+
 **Scope.**
 
 1. "Sort my imported mail" reads `process-past/estimate` first, and shows the calls. When
@@ -14505,6 +14539,20 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_rule_copy.py -v -rs
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 ```
+
+**As built (2026-10-07).**
+
+- **The estimate.** `lib/onboarding.ts::sortEstimateView` gives the words. `readSortState` reads `GET /email/rules/process-past/status` first, then `GET /email/rules/process-past/estimate` from the start of the import. The step reads both again each time it mounts.
+- **A run that is still going** (fix round 1, G2). While the status is `running`, the step shows "Sorting…" and offers nothing. It reads the status again every `SORT_POLL_MS` (5 seconds). When the run is no longer `running`, it reads the estimate again, so a capped run offers the next run.
+- **A range wider than one run** (fix round 1, G4). When the import range is longer than `PROCESS_PAST_MAX_SPAN_DAYS` (366, a mirror of `runner.py` that a test parses), the step says so and reads no count. Its action opens the dialog to choose a shorter range.
+- **The size of a run comes from the answer.** The step shows `limit` from the estimate, not "2,000". The route clamps `limit` at 2000. The dialog sends no `limit`, so a run sorts 1,000 (`RuleProcessPastRequest.limit`).
+- **A sort never starts without a count shown** (owner requirement for AI cost, fix round 1, G1). The action of the step is enabled only when a count shows. It stays disabled while the read runs and after a failed read, and a failed read offers "Count again". The Process button of the dialog (`RulesTab.tsx`, `ProcessPastEmailsDialog`) is disabled while `estimate` is null or `estimating` is true. A failed count in the dialog offers "Count again" too.
+- **`will_create`.** `rule_copy.will_create` lists each name for each copied rule, by its name in the target. A MOVE_FOLDER to a system folder (Inbox, Archive, Trash) is not in the list.
+- **The refused move.** `rule_copy.move_refuser` asks the provider's own rule (`local_folder_after_move`) through a probe. The probe holds no member credential. The deployment OAuth app config is loaded, and no network call is made. The rule is left out whole, as the forward-loop rule is.
+- **An IMAP target** (fix round 1, F2). It answers no `will_create`, and each rule with a MOVE_FOLDER or a LABEL is left out as `not_supported_by_target`.
+- ⚠️ **`email_folders` holds few rows.** Its one writer is `POST /email/accounts/{id}/folders` (`transport/folders.py:178`). The folder list reads the provider and writes nothing. So `will_create` can name a folder that the provider already holds. The step says "Metorite has no record of", and never "does not exist". Its second sentence starts "If the mailbox does not have it", so it promises no new folder.
+- ⚠️ **A nested Outlook folder can get a second copy.** This defect is older than EM-S10. `OutlookProvider._get_or_create_folder_id` (`outlook.py:920-925`) searches `/me/mailFolders` by name, and that lists the top-level folders only. So a rule that names "Receipts", which sits under the Inbox, makes a second "Receipts" at the top level. HANDOFF H-267 holds it.
+- **Fences.** `tests/unit/test_email_rule_copy.py` (65 tests, 29 of them R8, 0 skip on a private database). `lib/onboardingRules.test.ts` holds the estimate line, the count gate of the step and of the dialog, the run status, the span cap and the next run. `lib/mailboxSettings.test.ts` holds the copy report.
 
 ### 14.7 Recorded risks
 

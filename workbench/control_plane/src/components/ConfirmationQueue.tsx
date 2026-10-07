@@ -86,6 +86,7 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
       title={card.title}
       detail={card.detail}
       context={card.context}
+      fenced={card.fenced}
       rows={view.rows}
       onToggle={(id, on) => tick({ type: "toggle", card, id, on })}
       position={{

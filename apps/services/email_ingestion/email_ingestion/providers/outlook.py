@@ -1019,6 +1019,22 @@ class OutlookProvider(BaseEmailProvider):
         resp.raise_for_status()
         return self._parse_graph_message(resp.json())
 
+    async def get_message_body(self, provider_message_id: str) -> EmailMessage:
+        """The id and the body of a message, and no files (WS-17 EM-S1).
+
+        :meth:`get_message` sends ``$expand=attachments``, and Graph then sends
+        the bytes of each file in base64. The HTML route of the pane needs the
+        body only, so this read selects ``id`` and ``body`` and expands
+        nothing. Fence: ``tests/unit/test_email_html_tier.py``.
+        """
+        client = await self._get_client()
+        resp = await client.get(
+            f"/me/messages/{provider_message_id}",
+            params={"$select": "id,body"},
+        )
+        resp.raise_for_status()
+        return self._parse_graph_message(resp.json())
+
     async def send_message(
         self,
         to: list[str],
