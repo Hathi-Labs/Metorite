@@ -212,3 +212,59 @@ def test_is_db_timeout_names_only_timeouts():
     assert db_busy.is_db_timeout(
         sqlalchemy.exc.ProgrammingError("SELECT 1", {}, Exception("syntax"))
     ) is False
+
+
+# ── the shared-session fold must fail CLOSED (review round 1) ───────────────
+
+
+class _RoomSession:
+    """Session-subject lookup: the room holds one other member, Bob."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, *_a, **_k):
+        class _R:
+            def fetchall(self):
+                return [("bob@example.com",)]
+
+            def mappings(self):
+                return self
+
+        return _R()
+
+
+async def test_a_participant_timeout_caps_a_shared_run_to_nothing(monkeypatch):
+    """🔴 Found in review. ``executor._integration_authorizer`` returns
+    ``None`` (NO filter) on any exception. A participant timeout that left
+    ``resolve_session_access`` gave a shared-room run every credential.
+
+    Mutation: in ``resolve_session_access``, call ``resolve_access`` in the
+    fold loop again instead of ``_access_or_inactive``. The authorizer is
+    then ``None`` and this test fails."""
+    import acb_auth
+    import acb_auth.access as access_mod
+    from acb_auth.permissions import build_access
+    from orchestrator import executor
+
+    alice = build_access(
+        ["integrations:use:*"], [], roles=["member"], is_active=True)
+
+    async def _resolve(email, **_k):
+        if email == "alice@example.com":
+            return alice
+        raise access_mod.IdentityUnavailable("access") from _POOL_TIMEOUT
+
+    monkeypatch.setattr(access_mod, "resolve_access", _resolve)
+    monkeypatch.setattr(acb_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(
+        access_mod, "_get_session_factory", lambda: (lambda: _RoomSession()))
+
+    authz = await executor._integration_authorizer(
+        {"user_email": "alice@example.com"}, "thread-1")
+
+    assert authz is not None, "no filter at all: every credential reaches the run"
+    assert authz("zoho-crm") is False

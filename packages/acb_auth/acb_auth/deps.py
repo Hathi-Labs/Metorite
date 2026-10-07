@@ -296,7 +296,8 @@ async def _resolve_and_bind(user: UserContext) -> UserContext:
     """Attach the member's DB-resolved permission set to a UserContext.
 
     Best-effort by construction: :func:`acb_auth.access.resolve_access` never
-    raises (except :class:`IdentityUnavailable` on a pool timeout), degrading to the legacy executive/employee mapping when the access
+    raises, except :class:`IdentityUnavailable` on a pool timeout. It
+    degrades to the legacy executive/employee mapping when the access
     tables are absent and to no-access when the member is unknown. Results are
     cached for 60s, so this costs one indexed query per member per minute
     rather than one per request.

@@ -1586,7 +1586,7 @@ async def resolve_session_access(
     cap is never silent.
     """
     actor = (actor_email or "").lower().strip()
-    actor_access = await resolve_access(actor)
+    actor_access = await _access_or_inactive(actor)
     if not session_id:
         return actor_access, [actor] if actor else []
 
@@ -1667,8 +1667,24 @@ async def resolve_session_access(
 
     folded = actor_access
     for email in sorted(emails - {actor}):
-        folded = folded.intersect(await resolve_access(email))
+        folded = folded.intersect(await _access_or_inactive(email))
     return folded, sorted(emails)
+
+
+async def _access_or_inactive(email: str) -> EffectiveAccess:
+    """:func:`resolve_access`, with a pool timeout read as INACTIVE.
+
+    ⚠️ **The fold must fail CLOSED (review round 1, 2026-10-07).** A pool
+    timeout in :func:`resolve_access` raises :class:`IdentityUnavailable`.
+    Here it must not leave this function. ``executor._integration_authorizer``
+    catches any exception and returns ``None``, which means "no filter", so a
+    participant timeout gave a shared-room run every credential. Inactive
+    zeroes the intersection, which is the answer this fold gave before.
+    """
+    try:
+        return await resolve_access(email)
+    except IdentityUnavailable:
+        return EffectiveAccess(is_active=False)
 
 
 # ── Ownership bootstrap (the way back in) ───────────────────────────────────
