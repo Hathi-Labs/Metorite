@@ -36,6 +36,13 @@ const HEADING = /^(\S.*?)(?:\s*\((\d+)\))?:$/;
 /** `  status: «Done»`. The key holds no mark. */
 const FIELD = /^\s+([^:«»]{1,40}):\s(.*)$/;
 
+/**
+ * A line the read writes for the MODEL only: an instruction about when to
+ * call a tool. A member reads the data, not the agent's rules. The line
+ * stays in the tool result. Fence: `readout.test.ts`.
+ */
+const MODEL_ONLY = [/\bwhen you call the tool\b/i, /\bCall it when the member asks\b/i];
+
 /** Remove every id from one line of text. */
 export function withoutIds(line: string): string {
   return line
@@ -59,7 +66,7 @@ export function parseReadout(result: string, legend = ""): ReadoutBlock[] {
   let section = "";
   for (const raw of (result || "").split("\n")) {
     if (!raw.trim() || (legend && raw.startsWith(legend))) continue;
-    if (MACHINE.test(raw)) continue;
+    if (MACHINE.test(raw) || MODEL_ONLY.some((re) => re.test(raw))) continue;
     const line = withoutIds(raw);
     if (!line.trim()) continue;
     const item = /^\s*-\s+(.*)$/.exec(line);
