@@ -625,10 +625,14 @@ OWNER-GATE. It moves credit spend for a live org (CLAUDE.md §3a rule 3).
 - **The scope.** `narrow_and_read` is in `own_tool_scope`, or the filter takes
   it away from a run with the flag on. `test_own_tool_scope_parity.py` now
   knows a tool that a flag gates, and checks the scope with every flag on.
-- ⚠️ **READ marks each read mail as read.** The route of `read_email` sets
-  `is_read` on the row. `read_email` does the same today. A READ of 25 kept
-  mails marks 25 mails read, in the app only. The owner may want a read with
-  no effect.
+- **READ changes no read state.** An open of the route of `read_email` sets
+  `is_read`. A background read is not the member opening the mail. So
+  `GET /email/messages/{id}` gains `mark_read`, default `true`, and READ
+  sends `mark_read=false`. The app is unchanged. The R8 test is
+  `test_email_read_no_mark.py`.
+- **The review fixes.** A date-only `before` includes its day. `unread:
+  false` is no filter. A derived search drops the stop words first. A kept
+  item whose read fails reaches the model with its id, apart from the cap.
 - **The eval** is `evals/email_narrowing/`. It asks a fifth question, Q5,
   that measures the gap of Q3. Its README holds the tables.
 - **The result of the scripted run, 2026-10-07.** Recall is 1.0 on Q1 to Q4.

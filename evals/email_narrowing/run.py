@@ -302,12 +302,16 @@ def _rules(ds: Dataset, results: dict[str, dict[str, PathResult]],
     not_light = [r.params for r in searches
                  if r.params.get("light") != ["true"] or r.params.get("hybrid") != ["true"]]
     over = []
+    marked = []
     for qid, paths in results.items():
         after = paths["after"]
-        reads = [r.path.rsplit("/", 1)[-1] for r in after.requests
-                 if r.path.startswith("/email/messages/")]
-        if len(reads) > 25 or not set(reads) <= set(after.found):
+        reads = [r for r in after.requests if r.path.startswith("/email/messages/")]
+        ids = [r.path.rsplit("/", 1)[-1] for r in reads]
+        if len(ids) > 25 or not set(ids) <= set(after.found):
             over.append(qid)
+        # A background read is not the member opening the mail.
+        marked += [f"{qid}:{i}" for r, i in zip(reads, ids, strict=True)
+                   if r.params.get("mark_read") != ["false"]]
     bodies = _no_body_on_the_wire(ds, door)
     return {
         "acts_as_the_member": {"pass": members == [ds_mod.MEMBER], "detail": members},
@@ -316,7 +320,13 @@ def _rules(ds: Dataset, results: dict[str, dict[str, PathResult]],
         "narrow_is_light_and_hybrid": {"pass": bool(searches) and not not_light,
                                        "detail": not_light},
         "read_only_kept_within_cap": {"pass": not over, "detail": over},
-        "no_full_body_on_pick_wire": {"pass": not bodies, "detail": bodies},
+        "read_changes_no_read_state": {"pass": not marked, "detail": marked},
+        "no_full_body_on_pick_wire": (
+            {"pass": not bodies, "detail": bodies} if door is not None
+            # --compare sends PICK to the real door, and this rule reads the
+            # stub door's bodies. Say so; never pass with no check.
+            else {"pass": None, "detail": "not checked in --compare mode"}
+        ),
     }
 
 
@@ -466,7 +476,7 @@ def judge(raw: Raw, card: dict[str, dict[str, str]] | None = None) -> Summary:
         })
     ratio = _ratio(gated_after, gated_before)
     cost_ok = ratio is not None and Decimal(str(ratio)) <= COST_BAR
-    rules_ok = all(r["pass"] for r in rules.values())
+    rules_ok = all(r["pass"] is not False for r in rules.values())
     gated_tables = [results[q.id]["after"].table() for q in ds.questions if q.spec.gated]
     bodies = [len(m["body_text"]) for m in ds.messages]
     totals = {
@@ -507,6 +517,16 @@ def summary_lines(s: Summary) -> list[str]:
     lines = [
         f"email narrowing eval ({s.mode}), {t['date']}, {t['sha']}: "
         + ("PASS" if s.passed else "FAIL"),
+        # The gated ratio is NOT the whole story. These two lines say where
+        # it breaks, so nobody reads the gated ratio alone.
+        f"  GATED ratio {t['ratio']} (bar {t['cost_bar']}, today's path at "
+        f"{t['reads_per_turn']} reads to a request, an assumption)",
+        f"  WEAK CASE: today's path with every read in ONE request gives ratio "
+        f"{t['ratio_best_case_for_today']}"
+        + (" -- OVER the bar" if (t["ratio_best_case_for_today"] or 0) > float(t["cost_bar"])
+           else ""),
+        f"  WEAK CASE: tier-powerful at x{t['break_even_powerful_x']} of the eval "
+        f"card or more takes the saving to the bar",
         f"  mailbox: {t['messages']} messages, {t['senders']} senders, "
         f"mean body {t['mean_body_chars']} characters",
         "  q   gated  answers  before(listed/read)  after(found/read)  recall  ratio  best-case",
@@ -528,8 +548,10 @@ def summary_lines(s: Summary) -> list[str]:
         f"tier-decide x{t['break_even_decide_x']}"
     )
     for name, rule in s.rules.items():
-        if not rule["pass"]:
+        if rule["pass"] is False:
             lines.append(f"  RULE FAILED: {name}: {rule['detail']}")
+        elif rule["pass"] is None:
+            lines.append(f"  RULE NOT CHECKED: {name}: {rule['detail']}")
     lines.append("  stubbed: " + "; ".join(t["stubbed"]))
     return lines
 

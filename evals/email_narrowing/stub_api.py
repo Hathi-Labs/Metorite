@@ -23,7 +23,8 @@ Three rules of the real gateway hold here too:
 * An unknown query parameter is ignored, as FastAPI ignores it. The stub
   records its name, and the runner fails the run on it, because an ignored
   filter widens a search in silence.
-* ``GET /email/messages/{id}`` marks the mail read, as the route does.
+* ``GET /email/messages/{id}`` marks the mail read, as the route does,
+  unless the call sends ``mark_read=false``.
 
 ⚠️ **The full-text match is an approximation.** :func:`tokens` stems and drops
 stop words roughly as ``to_tsvector('english')`` does. It is not Postgres.
@@ -177,6 +178,7 @@ class MailStub:
         self.ds = ds
         self.requests: list[MailRequest] = []
         self.allowed = route_parameters()
+        self.marked_read: list[str] = []
         self._lock = threading.Lock()
 
     def _visible(self, member: str) -> list[dict[str, Any]]:
@@ -254,11 +256,14 @@ class MailStub:
         return {"emails": [self._row(m, light=False) for m in rows[:size]],
                 "total": len(rows)}
 
-    def message(self, message_id: str, member: str) -> tuple[int, dict[str, Any]]:
+    def message(self, message_id: str, member: str,
+                p: dict[str, list[str]] | None = None) -> tuple[int, dict[str, Any]]:
         m = next((x for x in self._visible(member) if x["id"] == message_id), None)
         if m is None:
             return 404, {"detail": "Message not found"}
-        m["is_read"] = True  # the route marks the mail read
+        if _flag(p or {}, "mark_read") is not False:
+            m["is_read"] = True  # the route marks the mail read
+            self.marked_read.append(message_id)
         row = self._row(m, light=False)
         row["cc_addresses"] = []
         row["attachments"] = []
@@ -280,7 +285,7 @@ class MailStub:
             status, body = 200, self.messages(params, member)
         elif method == "GET" and path.startswith("/email/messages/"):
             kind = "message"
-            status, body = self.message(path.rsplit("/", 1)[-1], member)
+            status, body = self.message(path.rsplit("/", 1)[-1], member, params)
         if isinstance(body, dict):
             if "emails" in body:
                 ids = [e["id"] for e in body["emails"]]

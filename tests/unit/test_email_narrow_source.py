@@ -31,6 +31,12 @@ Mutations this file catches (R7), each one run red before the change:
   6000 characters -> ``test_read_fetches_only_the_kept_items_within_the_caps``
   and ``test_the_adapter_reads_at_most_the_read_cap``;
 * a non-UUID id reaches a request path -> ``test_read_puts_only_a_uuid_in_a_path``;
+* READ marks the mail read -> ``test_read_asks_for_no_change_to_the_read_state``
+  (and the R8 half, ``test_email_read_no_mark.py``);
+* a date-only ``before`` leaves out its own day, or ``unread: false`` drops
+  unread mail -> ``test_each_filter_key_maps_to_its_parameter`` and
+  ``test_unread_false_is_no_filter``;
+* a failed read hides the id of its item -> ``test_a_failed_read_is_counted_not_hidden``;
 * more than 200 rows reach PICK -> ``test_at_most_200_candidates_reach_pick``;
 * a run with no acting member reaches the gateway ->
   ``test_a_run_with_no_member_makes_no_gateway_call``;
@@ -278,10 +284,12 @@ def test_the_fixed_parameters_are_light_and_hybrid() -> None:
     ({"to": "sales@narrow.test"}, {"to_addr": "sales@narrow.test"}),
     ({"after": "2026-09-01"}, {"received_after": "2026-09-01T00:00:00+00:00"}),
     ({"before": "2026-09-30T18:00:00Z"}, {"received_before": "2026-09-30T18:00:00+00:00"}),
+    # A date-only before INCLUDES its day: the route applies <= (review P1).
+    ({"before": "2026-09-30"}, {"received_before": "2026-09-30T23:59:59.999999+00:00"}),
     ({"has_attachments": True}, {"has_attachments": "true"}),
     ({"has_attachments": "false"}, {"has_attachments": "false"}),
     ({"unread": True}, {"is_read": "false"}),
-    ({"unread": False}, {"is_read": "true"}),
+
     ({"sender_category": "Marketing"}, {"sender_category": "Marketing"}),
 ])
 def test_each_filter_key_maps_to_its_parameter(
@@ -328,12 +336,23 @@ async def test_a_bad_value_is_refused_by_name_and_sends_nothing(
 
 
 def test_with_no_words_the_search_is_any_word_of_the_question() -> None:
-    assert ns.search_text(QUERY, {}) == (
-        "which OR customers OR asked OR about OR pricing OR this OR month"
+    # The stop words go first, as the route drops them (review P2).
+    assert ns.search_text(QUERY, {}) == "customers OR asked OR pricing OR month"
+    long = ("Can you look through my mail from the last few weeks and tell me which "
+            "of our suppliers said the steel delivery will be late?")
+    assert ns.search_text(long, {}) == (
+        "look OR mail OR last OR weeks OR tell OR suppliers OR said OR steel "
+        "OR delivery OR late"
     )
     # An operator word of the question never joins or negates two words.
     assert ns.search_text("Acme or Beta, and not Gamma", {}) == "acme OR beta OR gamma"
     assert ns.search_text("-- ?", {}) == ""
+
+
+def test_unread_false_is_no_filter() -> None:
+    """As ``query_inbox(unread_only=false)``: false never drops unread mail."""
+    assert "is_read" not in ns.search_params(QUERY, {"unread": False})
+    assert ns.search_params(QUERY, {"unread": True})["is_read"] == "false"
 
 
 def test_words_set_the_search_and_an_empty_words_uses_the_filters_only() -> None:
@@ -410,8 +429,30 @@ async def test_a_failed_read_is_counted_not_hidden(
     gateway.fail_read = {mid(2)}
     out = await _tool(monkeypatch, gateway)(QUERY)
     assert out.startswith("Checked 3 matches. Kept 3, dropped 0. Read 2 in full.")
-    assert "Not read in full: 1 kept items." in out
+    # A failed read is not the cap: the model gets the id and the next step.
+    assert "Not read in full" not in out
+    assert "The read failed for 1 kept items. Read them with your other tools." in out
+    assert narrowing.FAILED_LEAD in out
+    assert f"- {mid(2)} | 2026-10-01T10:00:00+00:00 | Buyer 2 <buyer2@customer.test>" in out
     assert f"--- item {mid(2)}" not in out
+
+
+async def test_read_asks_for_no_change_to_the_read_state(
+    monkeypatch: pytest.MonkeyPatch, door: Door,
+) -> None:
+    """A background read is not the member opening the mail. Each READ call
+    sends ``mark_read=false``, a real parameter of the route whose default
+    keeps the app's behaviour. The R8 half is
+    ``test_email_read_no_mark.py``."""
+    gateway = Gateway([_row(n) for n in range(1, 4)])
+    await _tool(monkeypatch, gateway)(QUERY)
+    reads = [p for path, p in gateway.calls if path.startswith("/email/messages/")]
+    assert len(reads) == 3 and all(p == {"mark_read": "false"} for p in reads)
+
+    from gateway.routes.email.transport.messages import get_message
+
+    param = inspect.signature(get_message).parameters["mark_read"]
+    assert param.default.default is True  # the app's open still marks read
 
 
 async def test_the_adapter_reads_at_most_the_read_cap() -> None:

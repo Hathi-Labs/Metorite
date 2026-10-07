@@ -67,7 +67,11 @@ question, call `narrow_and_read` one time. It comes before `query_inbox` and
 
 - Put the member's question in `query`, in the member's words.
 - Put the filters in `filters`, as one JSON object. For dates, use `after` and
-  `before`, for example `"after": "2026-09-01"`. For a sender, use `from`.
+  `before`, for example `"after": "2026-09-01"`. A date is a UTC day, and
+  `before` includes its day. For a sender, use `from`.
+- In the scope of one mailbox, put its `account_id` in `filters`. Without it,
+  the tool does not search a mailbox that the member keeps separate.
+- `"unread": true` keeps only unread mail. Leave it out for all mail.
 - The search finds an email only when the email holds a search word. Put the
   words, and the other words that a sender can use, in `words`. An example is
   `"words": "pricing OR price OR quote OR rates"`.

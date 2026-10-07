@@ -29,9 +29,10 @@ stands finds almost nothing. With no ``words`` filter, the adapter searches
 for ANY word of the question (an ``OR`` of its words). With ``words``, the
 model names the search words itself, with their synonyms.
 
-⚠️ **READ marks each read mail as read.** The READ route is the route of
-``read_email`` (§4), and that route sets ``is_read`` on the row. This is the
-same effect as ``read_email`` today, and the spec build notes record it.
+🔴 **READ changes no read state.** The READ route is the route of
+``read_email`` (§4). An open of that route marks the mail read, so READ sends
+:data:`READ_PARAMS` (``mark_read=false``). A background read is not the
+member opening the mail.
 """
 from __future__ import annotations
 
@@ -89,6 +90,9 @@ FIXED_PARAMS: dict[str, str] = {
     "page_size": str(MAX_CANDIDATES),
 }
 
+#: The parameters of every READ call: a read that leaves ``is_read`` alone.
+READ_PARAMS: dict[str, str] = {"mark_read": "false"}
+
 #: The folder scope when the filters name none: every folder but junk and
 #: trash, sent mail included (``core.folder_scope``).
 DEFAULT_FOLDER = "all"
@@ -99,6 +103,21 @@ READ_IN_FLIGHT = 5
 #: The words that the search grammar reads as an operator. A question word
 #: "or" must not join two words, so the adapter drops these from an ``OR``.
 _OPERATORS = frozenset({"or", "and", "not"})
+#: The Postgres ``english`` stop words. The route drops them, so a derived
+#: search leaves them out BEFORE it counts to :data:`MAX_QUERY_WORDS`.
+#: Otherwise "can you look through my mail ..." fills the limit with words
+#: that match nothing (review, WS-48 N2).
+STOP_WORDS = frozenset("""
+a about above after again against all am an and any are as at be because been
+before being below between both but by can could did do does doing don down
+during each few for from further had has have having he her here hers herself
+him himself his how i if in into is it its itself just me more most my myself
+no nor not now of off on once only or other our ours ourselves out over own
+same she should so some such than that the their theirs them themselves then
+there these they this those through to too under until up very was we were
+what when where which while who whom why will with would you your yours
+yourself yourselves
+""".split())
 #: The most words of the question that one derived search holds.
 MAX_QUERY_WORDS = 16
 #: The longest value of ``words``, ``from``, ``to`` and the other texts.
@@ -134,14 +153,20 @@ def _moment(key: str, value: Any) -> str:
     """A date or a date and time, as ISO 8601 with an explicit offset.
 
     The route drops a value that it cannot parse, with no error. So a bad
-    value here is refused, and never sent.
+    value here is refused, and never sent. A date with no time is a UTC day.
+    ``after`` starts at the start of that day. ``before`` INCLUDES that day:
+    the route applies ``received_at <= before``, so a date-only ``before``
+    goes out as the last moment of the day (review P1, WS-48 N2).
     """
     if not isinstance(value, str) or not value.strip():
         raise FilterRefused(f"the filter {key} must be a date, for example 2026-09-01.")
     raw = value.strip()
     try:
         if len(raw) == 10:
-            moment = datetime.combine(date.fromisoformat(raw), datetime.min.time())
+            day = date.fromisoformat(raw)
+            moment = datetime.combine(day, datetime.min.time())
+            if key == "before":
+                moment = datetime.combine(day, datetime.max.time())
         else:
             moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
@@ -185,7 +210,7 @@ def search_text(query: str, filters: Mapping[str, Any]) -> str:
     seen: list[str] = []
     for word in _WORD.findall(query or ""):
         low = word.lower()
-        if low in _OPERATORS or len(low) < 2 or low in seen:
+        if low in _OPERATORS or low in STOP_WORDS or len(low) < 2 or low in seen:
             continue
         seen.append(low)
         if len(seen) == MAX_QUERY_WORDS:
@@ -213,8 +238,11 @@ def search_params(query: str, filters: Mapping[str, Any]) -> dict[str, Any]:
         elif key == "has_attachments":
             params[target] = "true" if _flag(key, value) else "false"
         elif key == "unread":
-            # unread=true is is_read=false, and unread=false is is_read=true.
-            params[target] = "false" if _flag(key, value) else "true"
+            # unread=true is is_read=false. unread=false is NO filter, as
+            # ``query_inbox(unread_only=false)`` is: read mail only would drop
+            # every unread answer with no word to the model (review P2).
+            if _flag(key, value):
+                params[target] = "false"
         else:
             params[target] = _text(key, value, 200)
     text = search_text(query, filters)
@@ -304,7 +332,8 @@ class EmailNarrowSource:
         async def _one(message_id: str) -> FullItem | None:
             async with gate:
                 try:
-                    message = await self._get(MESSAGE_PATH.format(id=message_id), None)
+                    message = await self._get(
+                        MESSAGE_PATH.format(id=message_id), dict(READ_PARAMS))
                 except Exception as exc:  # one failed read is not a failed call
                     _log.warning(
                         "narrow_source.read_failed",
@@ -339,6 +368,7 @@ __all__ = [
     "FIXED_PARAMS",
     "MESSAGE_PATH",
     "PARAMS",
+    "READ_PARAMS",
     "SEARCH_PATH",
     "WORDS",
     "EmailNarrowSource",
