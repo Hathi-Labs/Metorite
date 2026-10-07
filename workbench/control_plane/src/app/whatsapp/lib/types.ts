@@ -21,6 +21,15 @@ export type WaAccount = {
   /** 'cloud' (Meta Cloud API) or 'whatsmeow' (QR-paired personal bridge).
    *  Voice calling exists only on the bridge transport. */
   provider?: string;
+  /** WS-20 WA-C3: the coexistence history import. null for an account that
+   *  is not coexistence. Else pending | requested | failed | declined |
+   *  complete. */
+  history_sync_state?: string | null;
+  history_sync_error?: string | null;
+  /** Meta's progress, 0 to 100, of the highest phase seen. */
+  history_import_progress?: number | null;
+  /** ISO time when Meta's 24-hour window for the sync closes. */
+  history_sync_deadline?: string | null;
 };
 
 /** One voice call as the bridge reports it. Mirrors callInfo in calls.go. */
@@ -97,6 +106,14 @@ export type WaEmbeddedResult = {
   display_name: string;
   phone_number: string;
   subscribed: boolean;
+  /** WS-20 WA-C3: null for a plain Cloud connect. */
+  history_sync?: "requested" | "failed" | "pending" | null;
+};
+
+/** `POST /whatsapp/accounts/{id}/history-sync` (WS-20 WA-C3 P4). */
+export type WaHistorySyncResult = {
+  history_sync: "requested" | "failed";
+  history_sync_error: string | null;
 };
 
 export type WaVerifyResult = {
