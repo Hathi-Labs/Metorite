@@ -5955,6 +5955,10 @@ One more mutation removed the `sni_hostname` extension. The real TLS test failed
    **The fences.** `test_one_budget_covers_the_lookup_and_the_request` and `test_one_budget_covers_the_whole_unsubscribe`. In each one, every step alone fits the budget, and all of them together do not.
 5. **P3, the text.** The module docstring now names `csv_export.py`, as AGENTS.md 0g does. A refusal cuts the host at 100 characters. The log line now keeps 160 characters, the same as `action_errors`. So a host of 253 characters keeps its reason. The fence is `test_a_long_host_keeps_its_reason_in_the_record`.
 
+**The SSRF re-check of round 1 (EM-T13b-2, 2026-10-07): APPROVE.** The reviewer found no P0, P1 or P2. On the box, its own IPv4 and IPv6 addresses now answer `local`, and the IPv6 forms that carry an IPv4 address answer `not public`. Two P3 items are fixed. Only EAFNOSUPPORT now reads as "not local", so a full descriptor table fails closed. The deprecated site-local range `fec0::/10` is refused.
+
+**Known limits (re-check).** If `ip_nonlocal_bind` is set to 1, each public address reads as `local`, so each webhook fails closed. A subnet-router anycast address of the box is a blind spot of the bind test. It needs IPv6 forwarding, which is off on the box. A move of the gateway into a container needs a new review of this check.
+
 **The board finding, corrected.** The finding above said that the guard does not unwrap a 6to4, Teredo or NAT64 address. That was wrong in two ways. 6to4 (`2002::/16`) and Teredo (`2001::/32`) were already refused, because `is_global` is False for them. NAT64 is refused now, by name, with the IPv4-compatible and IPv4-translated ranges.
 
 **Mutations (review round 1).** Each mutation changed one file and ran `test_email_webhook_guard.py` and `test_email_unsubscribe.py`. Then `git checkout` put the file back, and `git status` was clean. The runner ran W1 to W6 again on the code of round 1, and each one is still red.
