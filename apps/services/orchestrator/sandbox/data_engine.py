@@ -16,8 +16,9 @@ clock (``_isolated``). So a query that eats memory or time ends as an answer
 with ``error``, and the engine always writes an answer. A load streams the
 file: its memory does not grow with the rows.
 
-This slice reads ``.csv`` and ``.tsv``. It refuses ``.xlsx`` and ``.xlsm``
-until WS-43y1b, and ``.xls``, ``.xlsb`` and ``.ods`` always.
+The engine reads ``.csv`` and ``.tsv`` (WS-43y1a), and ``.xlsx`` and
+``.xlsm`` (WS-43y1b, the section "Reading an .xlsx or .xlsm workbook"). It
+refuses ``.xls``, ``.xlsb`` and ``.ods`` always.
 
 Only this file imports ``duckdb``. tests/unit/test_data_engine.py (WS43-F26)
 fails when another module under ``apps/`` or ``packages/`` does.
