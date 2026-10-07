@@ -234,14 +234,14 @@ _SCALE = (r"(?i:k|m(?!/s\b)|b|l|(?:mn|mm|bn|lac|lakh|lkh|cr|crore|hundred|thousa
 _SCALED = re.compile(rf"{_MARK}[{_GAP}]?{_SIGN}{_NUM}[\s\-]*{_SCALE}"
                      rf"|{_FREE}{_SIGN}{_NUM}[\s\-]*{_SCALE}\s*{_MARK}")
 #: White space that groups the digits of ONE number, as in ``₹5 000``. A
-#: space, a no-break space or a line break can do it. Review round 2
-#: narrowed the rule, so a digit after an amount does not refuse it. The
-#: split needs a plain run of 1 to 3 digits, or a trailing comma as in
-#: ``1,23,``. Then each next run holds exactly 3 digits.
-_PLAIN = re.compile(r"\d{1,3}")
-_SPLIT_AFTER = re.compile(r"(?P<comma>,?)(?:\s+\d{3})+(?!\d)")
-_SPLIT_BEFORE = re.compile(r"(?:(?<![\d.,])\d{1,3}(?:\s+\d{3})*|\d,)\s+$")
-_THREE_FIRST = re.compile(r"\d{3}(?!\d)")
+#: space, a no-break space or a line break can do it. :func:`_joins` says
+#: when a gap joins two digit tokens (review rounds 2 and 3). Code reads
+#: only a window of 40 characters before a number, so the search stays
+#: linear (review round 3).
+_SPLIT_WINDOW = 40
+_GAP_DIGITS = re.compile(r"(?P<comma>,?)\s+(?P<run>\d+)")
+_BEFORE_RUN = re.compile(r"(?P<run>[\d.,]*\d)(?P<comma>,?)\s+$")
+_LEAD_RUN = re.compile(r"\d+")
 #: A number on the other side of the mark, as in ``2041 USD 5,000``.
 _DIGIT_AFTER = re.compile(rf"\s*{_SIGN}\d")
 _DIGIT_BEFORE = re.compile(r"\d[.,]?\s*$")
@@ -300,17 +300,41 @@ def _blocked(text: str, match: re.Match[str]) -> str | None:
     cannot say which number it marks. ``spaced_number``: white space joins
     the number to more digits, so the match holds only a part of it."""
     if match.group("m1"):
-        if _DIGIT_BEFORE.search(text, 0, match.start("m1")):
+        mark = match.start("m1")
+        if _DIGIT_BEFORE.search(text, max(0, mark - _SPLIT_WINDOW), mark):
             return "ambiguous"
-        split = _SPLIT_AFTER.match(text, match.end("n1"))
-        if split and (split["comma"] or _PLAIN.fullmatch(match["n1"])):
+        nxt = _GAP_DIGITS.match(text, match.end("n1"))
+        if nxt and (nxt["comma"] or _joins(match["n1"], nxt["run"])):
             return "spaced_number"
         return None
     if _DIGIT_AFTER.match(text, match.end("m2")):
         return "ambiguous"
-    if _THREE_FIRST.match(match["n2"]) and _SPLIT_BEFORE.search(text, 0, match.start()):
+    start = match.start()
+    prev = _BEFORE_RUN.search(text[max(0, start - _SPLIT_WINDOW):start])
+    lead = _LEAD_RUN.match(match["n2"])
+    if prev and lead and (prev["comma"] or _joins(prev["run"], lead.group())):
         return "spaced_number"
     return None
+
+
+def _joins(left: str, right: str) -> bool:
+    """True when a gap between the token ``left`` and the digit run ``right``
+    can group the digits of ONE number (review round 3).
+
+    * A plain integer joins a run of 2 digits or more. So ``₹ 1 23 456``,
+      ``₹5 000`` and ``₹ 98450 12345`` give no amount.
+    * A last comma group of 2 digits joins any run, as in ``₹1,23 456``.
+    * A last comma group of 3 digits joins a run of exactly 3 digits, as in
+      ``₹5,000 000``. A full comma group never joins a run of 2 digits. So
+      ``₹ 45,000 12 Oct 2026`` keeps its amount.
+    * A number with a decimal point joins nothing, as in ``USD 1,200.00 1``."""
+    if "." in left:
+        return False
+    if left.isdigit():
+        return len(right) >= 2
+    if re.search(r",\d{2}$", left):
+        return True
+    return bool(re.search(r",\d{3}$", left)) and len(right) == 3
 
 
 def parse_amount(text: str) -> AmountParse:
@@ -368,6 +392,11 @@ _RELATIVE = re.compile(
     r"|(?:with)?in \d+ days|net \d+|(?:next |this |coming )?"
     r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b")
 _PARTIAL = re.compile(rf"{_MONTH}|(?<!\d)\d{{1,2}}[./-]\d{{1,2}}(?![\d])")
+#: A day and a month with no year, beside a full date (review round 3). It
+#: does not refuse the date, because it is also a street, such as "1 May
+#: Road". It caps the confidence at 0.6, because it can be the due date.
+_DAY_AND_MONTH = re.compile(
+    rf"(?<!\d)\d{{1,2}}{_ORD}[ \-/.]*(?:of )?{_MONTH}|{_MONTH}\.?[ ]*\d{{1,2}}(?!\d)")
 _WEEKDAY = r"(?:mon|tues|wednes|thurs|fri|satur|sun)day"
 #: A weekday right next to a full date is a part of that date. Code looks
 #: for it only in a short window before the date, so the search stays
@@ -378,10 +407,12 @@ _WEEKDAY_AFTER = re.compile(rf"(?i),?\s*\(?{_WEEKDAY}\b\)?")
 
 
 class DueParse(NamedTuple):
-    """The date of a quote, or None with the ``reason``."""
+    """The date of a quote, or None with the ``reason``. ``doubt`` is True
+    when the text also holds a day and a month with no year."""
 
     due: date | None
     reason: str | None = None
+    doubt: bool = False
 
 
 def _make(y: str, m: int, d: str) -> date | None:
@@ -480,9 +511,10 @@ def parse_due(text: str) -> DueParse:
     found += numeric
     dates = {d for d in found if d is not None}
     if len(dates) == 1 and None not in found:
-        if ambiguous or _second_date(_rest(text, taken.spans)):
+        rest = _rest(text, taken.spans)
+        if ambiguous or _second_date(rest):
             return DueParse(None, "two_dates")
-        return DueParse(dates.pop())
+        return DueParse(dates.pop(), doubt=bool(_DAY_AND_MONTH.search(rest)))
     if found:
         return DueParse(None, "two_dates" if len(found) > 1 else "invalid_date")
     if ambiguous:
@@ -549,13 +581,15 @@ def _values(quote: str, item: dict[str, Any], fields: frozenset[str]) -> tuple[d
             partial = True
     claim = item.get("due_on")
     if "due_on" in fields and _claimed(claim):
-        due = parse_due(quote).due
+        parsed_due = parse_due(quote)
+        due = parsed_due.due
         # A claim longer than a quote never reaches the parser (review round 2).
         if due is not None and (not isinstance(claim, str) or len(claim) > CAPS["quote"]
                                 or parse_due(claim).due != due):
             due = None
         out["due_on"] = due
-        partial = partial or due is None
+        # A day and a month with no year beside the date caps it at 0.6 (round 3).
+        partial = partial or due is None or parsed_due.doubt
     return out, partial
 
 

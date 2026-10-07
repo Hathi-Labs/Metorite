@@ -148,16 +148,44 @@ def test_the_claim_check_stops_the_invoice_date(quote: str, claim: str) -> None:
     assert fact.confidence == X.CONF_PART
 
 
-def test_a_claim_of_the_invoice_date_itself_is_a_known_limit() -> None:
+@pytest.mark.parametrize("quote", [
+    "Invoice Date: 01 Oct 2026. Due: Nov 15",
+    "Invoice Date: 01 Oct 2026. Total ₹5,000. Due: Nov 15",
+    "Invoice Date: 01 Oct 2026. Total ₹5,000. Due: 15th Nov",
+])
+def test_a_claim_of_the_invoice_date_itself_is_a_known_limit(quote: str) -> None:
     """Review round 2 records this limit. When the model claims the invoice
     date as the due date, and the quote holds a due date with no year, code
-    stores the invoice date. The quote shows both dates on the card."""
-    quote = "Invoice Date: 01 Oct 2026. Due: Nov 15"
+    stores the invoice date. The quote shows both dates on the card. Review
+    round 3 caps the confidence at 0.6, so the view marks it."""
     source = X.body_source("Bill", "a@b.example", "d", quote)
     (fact,) = X.check_answer({"facts": [_fact(
         quote=quote, ref=None, counterpart=None, amount=None, due_on="01 Oct 2026")]},
         source).facts
     assert fact.due_on == date(2026, 10, 1)
+    assert fact.confidence == X.CONF_PART
+
+
+def test_a_day_and_a_month_beside_a_full_date_caps_the_confidence() -> None:
+    """Review round 3: "1 May Road" keeps the date, at 0.6. A full date alone
+    keeps 0.9."""
+    assert X.parse_due("Due 15 Oct 2026, 1 May Road") == X.DueParse(
+        date(2026, 10, 15), doubt=True)
+    assert X.parse_due("due 15 October 2026").doubt is False
+    quote = "Due 15 Oct 2026, 1 May Road"
+    source = X.body_source("Bill", "a@b.example", "d", quote)
+    (fact,) = X.check_answer({"facts": [_fact(
+        quote=quote, ref=None, counterpart=None, amount=None, due_on="15 Oct 2026")]},
+        source).facts
+    assert (fact.due_on, fact.confidence) == (date(2026, 10, 15), X.CONF_PART)
+
+
+def test_parse_amount_is_linear_on_a_long_text() -> None:
+    """Review round 3: the split check reads a window before the number. This
+    input took 18.5 s before."""
+    start = time.perf_counter()
+    assert X.parse_amount("100 " * 25000 + "x 100 INR").amount is not None
+    assert time.perf_counter() - start < 0.1
 
 
 def test_a_long_claim_never_reaches_the_parser() -> None:
