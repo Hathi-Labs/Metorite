@@ -2362,6 +2362,13 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
         return None
 
     try:
+        from acb_auth.access import IdentityUnavailable
+    except ImportError:
+        # The orchestrator does not declare acb_auth. Without it, keep the
+        # prior answer: the broad catch below gave None.
+        return None
+
+    try:
         from acb_auth import (
             integration_use_permission,
             resolve_access,
@@ -2399,10 +2406,19 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
             pass
 
         return lambda service: access.has(integration_use_permission(service))
+    except IdentityUnavailable:
+        # 🔴 A pool or connect timeout (2026-10-07). It is NOT "no member",
+        # so it must not reach the `None` below, which means NO filter and
+        # gives the run every credential. The likely case is a background
+        # email-automation run while the database is starved of IO. Deny
+        # every credential for this run. The next run resolves again.
+        _log.warning("executor.integration_authorizer_unavailable")
+        return lambda _service: False
     except Exception as exc:
-        # resolve_access is documented never to raise, so reaching here is a
-        # bug rather than a misconfiguration. Preserve the prior behaviour
-        # rather than failing every integration on a transient fault.
+        # resolve_access raises only IdentityUnavailable, caught above, so
+        # reaching here is a bug rather than a misconfiguration. Preserve the
+        # prior behaviour rather than failing every integration on a
+        # transient fault.
         _log.warning("executor.integration_authorizer_failed", error=str(exc))
         return None
 

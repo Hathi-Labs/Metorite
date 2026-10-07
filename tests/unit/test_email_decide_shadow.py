@@ -230,7 +230,9 @@ SITES = {
 
 async def test_every_mode_is_off_by_default() -> None:
     assert dict(df.DEFAULT_MODES) == {f: "off" for f in df.FEATURES}
-    assert set(df.FEATURES) == set(SITES)
+    # EM-T14b-0: the Insights screen is in the registry, and it is not a
+    # triage site. `test_email_insights_screen.py` fences it.
+    assert set(df.FEATURES) == set(SITES) | {"email.insights_screen"}
 
 
 @pytest.mark.parametrize("feature", list(SITES))

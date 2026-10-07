@@ -130,6 +130,35 @@ def is_db_unavailable(exc: BaseException) -> bool:
     return False
 
 
+#: The pool queue or the connect ran out of time. Matched by module and name,
+#: so this module imports no driver. `builtins.TimeoutError` is also
+#: `asyncio.TimeoutError` on Python 3.11 and later. asyncpg raises it when a
+#: connect or a command passes its timeout.
+_TIMEOUT_CLASSES = frozenset({
+    ("sqlalchemy", "TimeoutError"),  # QueuePool limit ... connection timed out
+    ("psycopg_pool", "PoolTimeout"),
+    ("builtins", "TimeoutError"),
+    ("asyncio", "TimeoutError"),  # Python before 3.11
+})
+
+
+def is_db_timeout(exc: BaseException) -> bool:
+    """True when ``exc`` means "no connection came in time" (2026-10-07).
+
+    NARROWER than :func:`is_db_unavailable`. It names only the pool queue and
+    the connect running out of time. The caller is the identity read
+    (``acb_auth.access``), which must answer a retryable 503 for exactly this
+    case and keep every other failure as it was.
+
+    ⚠️ ``builtins.TimeoutError`` is matched on any module, so call this ONLY on
+    an exception from a block that does nothing but database I/O.
+    """
+    for e in _chain(exc):
+        if (_library(e), type(e).__name__) in _TIMEOUT_CLASSES:
+            return True
+    return False
+
+
 def mark(now: float | None = None) -> None:
     """Record that the database refused a connection just now."""
     global _busy_until

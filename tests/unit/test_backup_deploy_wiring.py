@@ -17,6 +17,8 @@ from __future__ import annotations
 import pathlib
 import re
 
+import pytest
+
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 _APPLY = _ROOT / "scripts/vps_apply.sh"
 _MANUAL = _ROOT / "deploy/hostinger/deploy.sh"
@@ -351,3 +353,437 @@ def test_every_stdin_attaching_psql_call_supplies_its_own_input() -> None:
             f"line {i + 1} runs `docker exec -i` with the caller's stdin "
             f"attached:\n{window}"
         )
+
+
+# ── The deep verify restores OFF the cluster (incident, 2026-10-07) ─────────
+#
+# The verify used to `createdb` and `pg_restore` INTO the production Supabase
+# cluster every night. On a small compute size that write burst used up the
+# disk I/O budget: checkpoints went from 270 s to over 900 s, and statements
+# timed out across the instance for hours. It now restores into a throwaway
+# container on the box. These pin the two halves of that: the static shape
+# (no restore target but the container), and the behaviour when Docker is
+# absent or broken (fail loudly, never fall back to the cluster).
+#
+# The executing cases run the REAL script with every external tool replaced
+# by an exported bash function. Each stub writes its argv to a calls log, so
+# the test sees exactly what the script asked the live cluster to do.
+
+_BACKUP = _ROOT / "scripts/backup_db.sh"
+
+
+def _joined_executable_lines(path: pathlib.Path) -> list[str]:
+    """Executable lines with `\\` continuations joined, so a command split
+    over three lines is checked as the one command it is."""
+    out: list[str] = []
+    buf = ""
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        if not buf and (not ln.strip() or ln.strip().startswith("#")):
+            continue
+        if ln.rstrip().endswith("\\"):
+            buf += ln.rstrip()[:-1] + " "
+            continue
+        out.append(buf + ln)
+        buf = ""
+    return out
+
+
+def test_the_verify_never_restores_into_the_live_cluster() -> None:
+    """🔴 Static half. No `createdb` and no CREATE DATABASE anywhere, and the
+    only `pg_restore` with a target database runs INSIDE the verify container.
+    Mutation: put back `pg createdb` or `pgi pg_restore ... -d "$SCRATCH"`,
+    and this fails."""
+    lines = _joined_executable_lines(_BACKUP)
+    for ln in lines:
+        assert "createdb" not in ln, f"backup_db.sh creates a database: {ln.strip()!r}"
+        assert "CREATE DATABASE" not in ln.upper(), (
+            f"backup_db.sh creates a database: {ln.strip()!r}"
+        )
+    restores = [ln for ln in lines if re.search(r"\bpg_restore\b", ln)]
+    targeted = [ln for ln in restores if re.search(r"(?:\s-d\s|--dbname)", ln)]
+    assert targeted, "no pg_restore with a target database: where does the verify restore?"
+    for ln in targeted:
+        assert 'docker exec -i "$verify_ctr" pg_restore' in ln, (
+            "a pg_restore with a target database runs outside the verify "
+            f"container, so it can reach the live cluster: {ln.strip()!r}"
+        )
+    for ln in restores:
+        if re.search(r"\bpgi? pg_restore\b", ln):
+            assert "--list" in ln, (
+                f"the pg seam may only LIST an archive, never restore one: {ln.strip()!r}"
+            )
+    run = next(ln for ln in lines if "docker run" in ln)
+    assert "--network none" in run, "the verify container must have no network"
+    assert '--memory "$verify_memory"' in run, "the verify container must be capped"
+    assert "POSTGRES_PASSWORD=" not in run.split("docker run", 1)[1], (
+        "the throwaway password must reach docker run through the environment, "
+        "never as an argument (argv is visible to every user on the box)"
+    )
+
+
+_STUBS = r"""
+set -u
+W="$(mktemp -d)"
+export W
+mkdir -p "$W/app" "$W/backups"
+printf 'POSTGRES_USER=acb\n' > "$W/app/.env"
+CALLS="$W/calls.log"
+: > "$CALLS"
+export CALLS
+psql() {
+  printf 'psql %s\n' "$*" >> "$CALLS"
+  # First match wins. The table count goes first: it holds `select 1` too.
+  case "$*" in
+    *"from pg_class c"*)
+      # COUNT_RC set: the live count query fails the way psql does when it
+      # loses its connection (exit 2).
+      if [ -n "${COUNT_RC:-}" ]; then
+        echo "psql: error: server closed the connection unexpectedly" >&2
+        return "$COUNT_RC"
+      fi
+      echo 7 ;;
+    *"select 1"*) echo 1 ;;
+    *"server_version_num"*) echo 17 ;;
+    *"show server_version"*) echo 17.6 ;;
+    *"datistemplate"*) echo acb ;;
+    *"count(*) from pg_database"*) echo 0 ;;
+  esac
+  return 0
+}
+pg_dumpall() { printf 'pg_dumpall %s\n' "$*" >> "$CALLS"; echo "-- globals"; }
+pg_dump() { printf 'pg_dump %s\n' "$*" >> "$CALLS"; echo "DUMP"; }
+pg_restore() { printf 'pg_restore %s\n' "$*" >> "$CALLS"; cat > /dev/null; }
+createdb() { printf 'createdb %s\n' "$*" >> "$CALLS"; }
+dropdb() { printf 'dropdb %s\n' "$*" >> "$CALLS"; }
+export -f psql pg_dumpall pg_dump pg_restore createdb dropdb
+"""
+
+_DOCKER = {
+    # `command -v docker` fails, and so does any call that slips past it.
+    "missing": r"""
+command() {
+  if [ "${1:-}" = "-v" ] && [ "${2:-}" = "docker" ]; then return 1; fi
+  builtin command "$@"
+}
+docker() { printf 'docker %s\n' "$*" >> "$CALLS"; echo "docker: not found" >&2; return 127; }
+export -f command docker
+""",
+    # Docker is on PATH, and its daemon refuses every call.
+    "broken": r"""
+docker() {
+  printf 'docker %s\n' "$*" >> "$CALLS"
+  echo "Cannot connect to the Docker daemon. Is the docker daemon running?" >&2
+  return 1
+}
+export -f docker
+""",
+    # A daemon that runs the container and answers like Postgres inside it.
+    "works": r"""
+docker() {
+  printf 'docker %s\n' "$*" >> "$CALLS"
+  case "$1" in
+    run) echo cid ;;
+    rm)
+      # RM_FAILS set: the daemon refuses to remove the container.
+      if [ -n "${RM_FAILS:-}" ]; then
+        echo "Error response from daemon: removal in progress" >&2
+        return 1
+      fi
+      touch "$W/ctr_removed" ;;
+    container)
+      [ -f "$W/ctr_removed" ] && return 1
+      echo true ;;
+    exec)
+      shift
+      local stdin=0
+      if [ "$1" = "-i" ]; then stdin=1; shift; fi
+      shift
+      case "$*" in
+        *"from pg_class c"*) echo 7 ;;
+        *"pg_available_extensions"*) echo vector ;;
+      esac
+      if [ "$stdin" = "1" ]; then cat > /dev/null; fi
+      # RESTORE_FAILS set: the restore inside the container fails.
+      case "$*" in
+        pg_restore*)
+          if [ -n "${RESTORE_FAILS:-}" ]; then
+            echo "pg_restore: error: could not execute query: ERROR:  boom"
+            return 1
+          fi ;;
+      esac ;;
+  esac
+  return 0
+}
+export -f docker
+""",
+}
+
+
+def _run_backup_verify(docker_mode: str, env: str = "") -> tuple[int, str, str, str]:
+    """Run the REAL backup_db.sh --verify-restore with stubbed tools. `env` is
+    a prefix of NAME=value pairs for the script.
+    Returns (exit code, stdout, stderr, calls log)."""
+    import subprocess
+
+    prog = (
+        _STUBS
+        + _DOCKER[docker_mode]
+        + env
+        + ' PG_MODE=local APP_DIR="$W/app" BACKUP_DIR="$W/backups" '
+        + "bash scripts/backup_db.sh --verify-restore < /dev/null\n"
+        + "rc=$?\n"
+        + 'ls "$W"/backups/*/acb.dump >/dev/null 2>&1 && echo "DUMP-ON-DISK" >&2\n'
+        + 'ls "$W"/backups/*/customer_console.dump >/dev/null 2>&1 '
+        + '&& echo "CONSOLE-DUMP-ON-DISK" >&2\n'
+        + 'printf "\\n===CALLS===\\n" >&2\n'
+        + 'cat "$CALLS" >&2\n'
+        + 'rm -rf "$W"\n'
+        + "exit $rc\n"
+    )
+    # cwd=_ROOT and a RELATIVE script path: a python-made Windows path does
+    # not survive into every bash on PATH (see the APP_DB test above).
+    run = subprocess.run(
+        ["bash"], input=prog.encode(), capture_output=True, timeout=60, cwd=_ROOT
+    )
+    err = run.stderr.decode(errors="replace")
+    err, _, calls = err.partition("\n===CALLS===\n")
+    return run.returncode, run.stdout.decode(errors="replace"), err, calls
+
+
+def _assert_nothing_reached_the_cluster(calls: str) -> None:
+    for ln in calls.splitlines():
+        assert not ln.startswith(("createdb", "dropdb")), f"the cluster got: {ln}"
+        if ln.startswith("pg_restore"):
+            assert "--list" in ln and " -d " not in ln, (
+                f"a restore reached the live cluster: {ln}"
+            )
+        if ln.startswith("psql"):
+            assert "CREATE DATABASE" not in ln.upper(), f"the cluster got: {ln}"
+
+
+def test_a_missing_docker_fails_the_verify_and_keeps_the_dump() -> None:
+    """🔴 No Docker means no verify, LOUDLY, and never a restore into the
+    cluster instead. Mutation: make the docker check fall back to the old
+    in-cluster restore, and the calls log shows it."""
+    rc, out, err, calls = _run_backup_verify("missing")
+    assert rc != 0, f"a verify with no Docker exited 0:\n{out}\n{err}"
+    assert "needs Docker" in err, err
+    assert "DUMP-ON-DISK" in err, "the dump must be on disk before the verify fails"
+    assert "restore verified" not in out
+    assert not any(ln.startswith("docker run") for ln in calls.splitlines())
+    _assert_nothing_reached_the_cluster(calls)
+
+
+def test_a_container_that_will_not_start_fails_the_verify() -> None:
+    rc, out, err, calls = _run_backup_verify("broken")
+    assert rc != 0, f"a verify whose container never started exited 0:\n{out}\n{err}"
+    assert "the verify container did not start" in err, err
+    assert "Cannot connect to the Docker daemon" in err, "the reason was swallowed"
+    assert "DUMP-ON-DISK" in err
+    assert "restore verified" not in out
+    _assert_nothing_reached_the_cluster(calls)
+
+
+_CONSOLE_ENV = "CUSTOMER_CONSOLE_DATABASE_URL=postgresql://cc:pw@cc.example:5432/postgres"
+
+
+@pytest.mark.parametrize(
+    ("docker_mode", "env", "why"),
+    [
+        ("missing", "", "needs Docker"),
+        ("broken", "", "the verify container did not start"),
+        ("works", "RESTORE_FAILS=1", "pg_restore FAILED in the verify container"),
+        # Fix round 2: psql exits 2 on a lost connection. Exit 2 once meant
+        # "container not removed", so this read as a good dump.
+        ("works", "COUNT_RC=2", "server closed the connection unexpectedly"),
+    ],
+)
+def test_a_failed_verify_still_backs_up_the_console(docker_mode: str, env: str, why: str) -> None:
+    """🔴 Fix round 1. A verify that fails must not cost the Console its
+    backup (H-98: Console data was lost once with no backup). The run goes on
+    to the Console dump, the off-box step and retention, and exits non-zero
+    at the END. Mutation: make a failed verify `exit 1` on the spot again,
+    and the Console dump and the retention line both go missing."""
+    rc, out, err, calls = _run_backup_verify(docker_mode, f"{_CONSOLE_ENV} {env}")
+    assert rc != 0, f"a failed verify exited 0:\n{out}\n{err}"
+    assert why in err, err
+    assert "DUMP-ON-DISK" in err
+    assert "CONSOLE-DUMP-ON-DISK" in err, (
+        f"the verify failed ({docker_mode}) and the Console database was not backed up"
+    )
+    assert any(
+        ln.startswith("pg_dump -d postgresql://cc:pw@cc.example") for ln in calls.splitlines()
+    ), "the Console dump never ran"
+    assert "Retention (keeping" in out, "retention did not run after a failed verify"
+    assert "the deep verify FAILED" in err, "the closing ERROR is missing"
+    assert "restore verified" not in out
+    assert "verify container could not be removed" not in err, (
+        "a failed verify was reported as a container that would not go away"
+    )
+    _assert_nothing_reached_the_cluster(calls)
+
+
+def test_a_container_that_will_not_go_is_reported_on_its_own() -> None:
+    """The verify PASSED and the daemon refused to remove the container. That
+    is its own ERROR and a non-zero exit, and it is NOT a failed verify. The
+    subshell reports it through a marker file, never through its exit code."""
+    rc, out, err, _calls = _run_backup_verify("works", "RM_FAILS=1")
+    assert rc != 0, f"a container that would not go exited 0:\n{out}\n{err}"
+    assert "restore verified" in out, out
+    assert "could not remove the verify container" in err, err
+    assert "the verify container could not be removed" in err, "no closing ERROR"
+    assert "the deep verify FAILED" not in err, (
+        "a passed verify was reported as failed because its container stayed"
+    )
+
+
+def test_a_working_docker_verifies_in_the_container_only() -> None:
+    """The happy path, executed: the restore goes to `docker exec -i
+    acb-verify-...`, the cluster sees only reads, and the container is removed
+    with its volume."""
+    rc, out, err, calls = _run_backup_verify("works")
+    assert rc == 0, f"exit {rc}:\n{out}\n{err}"
+    assert "public tables: live=7 restored=7" in out, out
+    assert "restore verified" in out, out
+    lines = calls.splitlines()
+    run = next(ln for ln in lines if ln.startswith("docker run"))
+    assert "--network none" in run and "--memory 1g" in run, run
+    assert "pgvector/pgvector:pg17" in run, "the image must follow the live major"
+    assert "POSTGRES_PASSWORD=" not in run, "the password reached docker's argv"
+    assert any(
+        ln.startswith("docker exec -i acb-verify-") and " pg_restore " in ln
+        and "-d verify" in ln and "--schema=public" in ln
+        for ln in lines
+    ), "the restore did not go to the verify container"
+    assert any(ln.startswith("docker rm -f -v acb-verify-") for ln in lines), (
+        "the verify container was not removed with its volume"
+    )
+    _assert_nothing_reached_the_cluster(calls)
+
+
+# ── The pre-migration backup runs only when something is pending ────────────
+#
+# Seven deploys on 2026-10-07 each took a full pg_dump of the production
+# cluster with no migration pending. These run the REAL apply_migrations.sh
+# against a stubbed psql and a stubbed backup script.
+
+_MIGR_STUBS = r"""
+set -u
+W="$(mktemp -d)"
+export W
+mkdir -p "$W/app/scripts" "$W/m"
+printf -- '-- MARKER_A\nselect 1;\n' > "$W/m/02_a.sql"
+printf -- '-- MARKER_B\nselect 2;\n' > "$W/m/03_b.sql"
+printf -- '-- init only\n' > "$W/m/01_schema.sql"
+cat > "$W/app/scripts/backup_db.sh" <<'SH'
+echo "BACKUP-RAN" >> "$W/calls.log"
+echo "-- BACKUP-RAN" >> "$W/applied.sql"
+exit "${BACKUP_RC:-0}"
+SH
+: > "$W/calls.log"
+: > "$W/applied.sql"
+: > "$W/ledger"
+psql() {
+  printf 'psql %s\n' "$*" >> "$W/calls.log"
+  case "$*" in
+    *"FROM schema_migrations"*) cat "$W/ledger" ;;
+    *) cat >> "$W/applied.sql" ;;
+  esac
+  return 0
+}
+export -f psql
+sum() { sha256sum "$1" | cut -d" " -f1; }
+"""
+
+
+def _run_apply(ledger_setup: str, backup_rc: int = 0) -> tuple[int, str, str, str, str]:
+    """Run the REAL apply_migrations.sh. Returns (exit code, stdout, stderr,
+    calls log, the SQL psql received)."""
+    import subprocess
+
+    prog = (
+        _MIGR_STUBS
+        + ledger_setup
+        + f"BACKUP_RC={backup_rc} PG_MODE=local APP_DIR=\"$W/app\" MIGRATIONS_DIR=\"$W/m\" "
+        + "bash scripts/apply_migrations.sh < /dev/null\n"
+        + "rc=$?\n"
+        + 'printf "\\n===CALLS===\\n" >&2\n'
+        + 'cat "$W/calls.log" >&2\n'
+        + 'printf "\\n===SQL===\\n" >&2\n'
+        + 'cat "$W/applied.sql" >&2\n'
+        + 'rm -rf "$W"\n'
+        + "exit $rc\n"
+    )
+    run = subprocess.run(
+        ["bash"], input=prog.encode(), capture_output=True, timeout=60, cwd=_ROOT
+    )
+    err = run.stderr.decode(errors="replace")
+    err, _, rest = err.partition("\n===CALLS===\n")
+    calls, _, sql = rest.partition("\n===SQL===\n")
+    return run.returncode, run.stdout.decode(errors="replace"), err, calls, sql
+
+
+_ALL_RECORDED = (
+    'printf "02_a.sql %s\\n03_b.sql %s\\n" "$(sum "$W/m/02_a.sql")" '
+    '"$(sum "$W/m/03_b.sql")" > "$W/ledger"\n'
+)
+_ONE_PENDING = 'printf "02_a.sql %s\\n" "$(sum "$W/m/02_a.sql")" > "$W/ledger"\n'
+_ONE_CHANGED = (
+    'printf "02_a.sql %s\\n03_b.sql deadbeef\\n" "$(sum "$W/m/02_a.sql")" > "$W/ledger"\n'
+)
+
+
+def test_zero_pending_skips_the_pre_migration_backup() -> None:
+    rc, out, err, calls, sql = _run_apply(_ALL_RECORDED)
+    assert rc == 0, f"exit {rc}:\n{out}\n{err}"
+    assert "No pending migrations — skipping the pre-migration backup" in out, out
+    # pr-check.yml's ladder job greps this exact shape on its second run.
+    assert "(0 applied, 2 already recorded)" in out, out
+    assert "BACKUP-RAN" not in calls, "a backup ran with nothing pending"
+    assert "MARKER_A" not in sql and "MARKER_B" not in sql
+
+
+def test_a_pending_migration_still_requires_the_backup() -> None:
+    rc, out, err, calls, sql = _run_apply(_ONE_PENDING)
+    assert rc == 0, f"exit {rc}:\n{out}\n{err}"
+    assert "BACKUP-RAN" in calls, "a migration was pending and no backup ran"
+    assert sql.index("BACKUP-RAN") < sql.index("MARKER_B"), (
+        "the backup must run BEFORE the migration"
+    )
+    assert "MARKER_B" in sql and "MARKER_A" not in sql
+    assert "(1 applied, 1 already recorded)" in out, out
+
+
+def test_a_changed_migration_counts_as_pending() -> None:
+    """`changed` is pending too: the loop re-applies it, so the gate must
+    back up first. One definition of pending, asked twice."""
+    rc, out, err, calls, sql = _run_apply(_ONE_CHANGED)
+    assert rc == 0, f"exit {rc}:\n{out}\n{err}"
+    assert "BACKUP-RAN" in calls
+    assert "MARKER_B" in sql
+
+
+def test_a_failed_backup_still_blocks_a_pending_migration() -> None:
+    """🔴 CLAUDE.md §3a rule 1: a production migration needs a completed
+    pre-migration backup. The skip must never weaken the pending case."""
+    rc, _out, err, calls, sql = _run_apply(_ONE_PENDING, backup_rc=1)
+    assert rc != 0, "the backup failed and the migrations ran anyway"
+    assert "BACKUP-RAN" in calls, "the backup was never attempted"
+    assert "refusing to apply migrations" in err, err
+    assert "MARKER_B" not in sql, "a migration reached psql after a failed backup"
+
+
+def test_the_pending_count_and_the_apply_loop_share_one_definition() -> None:
+    """No second definition of pending: both the count and the loop call
+    `migration_state`, and only it calls `ledger_state`."""
+    text = _MIGRATE.read_text(encoding="utf-8")
+    code = [ln for ln in text.splitlines() if not ln.strip().startswith("#")]
+    calls_ledger = [ln for ln in code if "ledger_state " in ln and "()" not in ln]
+    assert len(calls_ledger) == 1 and "migration_state" not in calls_ledger[0], (
+        f"ledger_state is asked outside migration_state: {calls_ledger}"
+    )
+    callers = [ln for ln in code if '"$(migration_state "$f")"' in ln]
+    assert len(callers) == 2, f"expected the count and the loop to ask it: {callers}"
+    assert text.index("No pending migrations") < text.index('BACKUP_SCRIPT="$APP_DIR'), (
+        "the pending count must come BEFORE the backup"
+    )

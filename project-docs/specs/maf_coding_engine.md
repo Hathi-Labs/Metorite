@@ -29,8 +29,11 @@ closed. The owner accepts its named residual at the flip.
 (§16.4).** WS-43y1 to WS-43y4 and WS-43x1 are spec only, and not audited.
 WS-43x2 is the owner flip of the Email track.
 
-Board row **WS-43**. This spec records **D82**, **D83**, **D84**, **D85**
-and **D86**.
+Board row **WS-43**. This spec records **D82**, **D83**, **D84**, **D85**,
+**D86** and **D92**.
+
+**Amended 2026-10-07 by D92** (§17): every agent runs on MAF. The slices
+that D86 parked are open again, and each removal merge stays an owner gate.
 
 Verified against code on 2026-10-03 at `main` `e5e1d258`. Fix round 1 of
 PR #584 applied three reviews on the same day. **Amended 2026-10-03 by D84**
@@ -2504,7 +2507,7 @@ uv run pytest tests/unit/test_sandbox_egress_proxy.py \
 **Gate.** AGENT-SAFE. It ships dark. The flip, the production allowlist and
 the firewall install are WS43-G1 and WS43-G4.
 
-### WS-43h — app-builder on the MAF harness 🔲 ⏸ **Parked by D86, 2026-10-03**
+### WS-43h — app-builder on the MAF harness 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.**
 
@@ -2565,7 +2568,7 @@ uv run python -m evals.coding_engine.run --engine copilot --tier <chosen> --task
 
 **Gate.** AGENT-SAFE on a local stack. The flips are WS43-G3 and WS43-G4.
 
-### WS-43j — Retire the Copilot `code_task` path 🔲 ⏸ **Parked by D86, 2026-10-03**
+### WS-43j — Retire the Copilot `code_task` path 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** Remove `run_copilot_code_session`, `copilot_sandbox.py`,
 `Dockerfile.copilot-sandbox`, the `copilot_sandbox_*` settings,
@@ -2632,7 +2635,7 @@ uv run pytest tests/unit/test_no_copilot_sdk.py -q
 
 **Gate.** AGENT-SAFE.
 
-### WS-43l — Self-mutation on a MAF harness agent in the mutation container 🔲 ⏸ **Parked by D86, 2026-10-03**
+### WS-43l — Self-mutation on a MAF harness agent in the mutation container 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** `apps/services/orchestrator/mutation_runner.py`,
 `apps/services/orchestrator/Dockerfile.mutation`, the container environment
@@ -2667,7 +2670,7 @@ uv run pytest tests/unit/test_mutation_runner_maf.py \
 **Gate.** AGENT-SAFE. It ships dark. Setting `mutation:*` on production is
 WS43-G3.
 
-### WS-43m — The root `metorite` agent on MAF 🔲 ⏸ **Parked by D86, 2026-10-03**
+### WS-43m — The root `metorite` agent on MAF 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** The root `agents.py` and `config.json`, and fence WS43-F17.
 §15.4 is the design.
@@ -2698,7 +2701,7 @@ uv run pytest tests/unit/test_root_agent_maf.py \
 
 **Gate.** AGENT-SAFE. It ships dark.
 
-### WS-43n — Agents from a repo default to MAF 🔲 ⏸ **Parked by D86, 2026-10-03**
+### WS-43n — Agents from a repo default to MAF 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** `gateway/routes/agent.py` (`:1279-1284` and `:1589`), the loader's
 check of a built agent in `acb_skills/loader.py`, and fence WS43-F18. §15.5 is
@@ -2728,7 +2731,7 @@ uv run pytest tests/unit/test_agent_runtime_default.py -q -rs
 
 **Gate.** AGENT-SAFE. The external repo change is WS43-G11.
 
-### WS-43o — The model list from the Router 🔲 ⏸ **Parked by D86, 2026-10-03**
+### WS-43o — The model list from the Router 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** `gateway/main.py` (the warm-up at `:113-140`, `/health/runtime`
 at `:1650`, `/copilot/models` at `:1791`), `gateway/routes/settings.py`
@@ -2756,7 +2759,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 
 **Gate.** AGENT-SAFE.
 
-### WS-43p — Retire the Copilot mutation runner 🔲 ⏸ **Parked by D86, 2026-10-03**
+### WS-43p — Retire the Copilot mutation runner 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** Remove the Copilot branch of `mutation_runner.py`, the SDK and the
 CLI download from `Dockerfile.mutation`, `COPILOT_GITHUB_TOKEN`, and the
@@ -2779,7 +2782,7 @@ uv run pytest tests/unit/test_no_copilot_sdk.py \
 
 **Gate.** **OWNER-GATE** to merge (WS43-G9).
 
-### WS-43q — Remove the Copilot runtime from the executor, the gateway and the settings 🔲 ⏸ **Parked by D86, 2026-10-03**
+### WS-43q — Remove the Copilot runtime from the executor, the gateway and the settings 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** The removal list of §15.2, rows 4 to 9 and row 7a, and the
 Copilot tests listed below. Shrink the WS43-F15 allowlist to
@@ -2829,7 +2832,7 @@ uv run pytest tests/unit/test_no_copilot_sdk.py \
 
 **Gate.** **OWNER-GATE** to merge (WS43-G9).
 
-### WS-43r — Remove the packages and the CLI prefetch 🔲 ⏸ **Parked by D86, 2026-10-03**
+### WS-43r — Remove the packages and the CLI prefetch 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** `apps/services/orchestrator/pyproject.toml`, `uv.lock`, the CLI
 prefetch in `scripts/vps_apply.sh` (`:743-755`), the `COPILOT_CHAT_MODEL`
@@ -2855,7 +2858,7 @@ uv run pytest tests/unit/test_no_copilot_sdk.py \
 **Gate.** **OWNER-GATE** to merge (WS43-G9). The edit of
 `scripts/vps_apply.sh` is WS43-G12.
 
-### WS-43s — Drop `chat_session.service_session_id` 🔲 ⏸ **Parked by D86, 2026-10-03**
+### WS-43s — Drop `chat_session.service_session_id` 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
 
 **Scope.** One migration, with the next free number at build time (R1). It
 drops the column that `infra/postgres/10_service_session_id.sql` added.
@@ -4651,10 +4654,10 @@ assistants for now.
 | WS-43t1 | ✅ Kept. Built, dark |
 | WS-43c | Kept. PR #591 |
 | D85 | Kept. PR #598 |
-| WS-8i | ⏸ Parked by D86. The task-manager move |
-| WS-43h | ⏸ Parked by D86. app-builder |
-| WS-43j, WS-43l to WS-43s | ⏸ Parked by D86. The Copilot removal and the older agents |
-| WS-43t2 | ⏸ Parked by D86, paused mid-build. Its branch `ws43t2-sessions` is kept |
+| WS-8i | ⏸ Parked by D86. The task-manager move. ▶ Restarted by D92, 2026-10-07 (§17) |
+| WS-43h | ⏸ Parked by D86. app-builder. ▶ Restarted by D92, 2026-10-07 (§17) |
+| WS-43j, WS-43l to WS-43s | ⏸ Parked by D86. The Copilot removal and the older agents. ▶ Restarted by D92, 2026-10-07 (§17) |
+| WS-43t2 | ⏸ Parked by D86, paused mid-build. Its branch `ws43t2-sessions` is kept. ▶ Restarted by D92, 2026-10-07 (§17) |
 | WS-43a, WS-43e, WS-43f, WS-43g, WS-43i | Not in the Projects track, and with no order yet. WS-43v takes the place of WS-43a here |
 
 **The soak of §15.9.8 is parked with WS-43t2.** The Projects track does not
@@ -5190,3 +5193,103 @@ Projects API does in WS-43v.
 | WS43-E19 | "How many orders shipped in March?" The dates are serial numbers with no date format | The answer equals the checker's count, and it says how it read the date column |
 | WS43-E20 | "Which region has the highest revenue?" The fixture is a CSV with `;` and decimal commas | The region and the value match the checker |
 | WS43-E21 | Any task above | `data_provenance.checked` reports no unsourced number. A data tool of that run gave each number in the answer |
+
+---
+
+## 17. D92 — every agent runs on MAF
+
+### 17.1 The decision
+
+On 2026-10-07, in chat, the owner decided that Metorite stops using Copilot
+SDK agents, and that every agent runs on Microsoft Agent Framework.
+`work_plan.md` §3 records it as **D92**.
+
+- **It amends D84.** D84 said: "Every use of the Copilot SDK moves to MAF".
+  It named seven uses: `code_task`, app-builder, self-mutation, the root
+  `metorite` agent, the repo agents, the model list and the session store.
+  D86 then deferred it. D92 ends the deferral.
+- **It amends D86.** The slices that D86 parked are open again (§17.2). D86's
+  order of the Projects track and the Email track does not change.
+- **The new reason.** An SDK agent cannot change its tier inside a run
+  (`ai_tier_routing.md` §4.5). So it cannot follow the D90 policy. Two
+  runtimes are also two seams (CLAUDE.md §4).
+
+### 17.2 The slices that D92 restarts
+
+| Slice | Under D86 | Under D92 |
+|---|---|---|
+| WS-43t2 | Parked, paused mid-build, branch `ws43t2-sessions` kept | ▶ Open. It comes first, because WS-8i and WS-43q wait on its soak (WS43-G13) |
+| WS-8i | Parked. The task-manager move | ▶ Open, after the soak of WS-43t2 |
+| WS-43h | Parked. app-builder | ▶ Open |
+| WS-43l, WS-43m, WS-43n, WS-43o | Parked. Self-mutation, the root agent, the repo agents, the model list | ▶ Open |
+| WS-43j, WS-43p, WS-43q, WS-43r, WS-43s | Parked. The removal | ▶ Open. Each merge stays an owner gate (WS43-G7, WS43-G9) |
+
+Each slice keeps its text, its done-when and its gate. Its heading now says
+"Restarted by D92".
+
+### 17.3 The agents, measured at `main` `82d09830b`
+
+| Agent | How it builds today | Its runtime label | Slice |
+|---|---|---|---|
+| task-manager | `GitHubCopilotAgent` (`apps/agents/agent-task-manager/agents.py:37`) | `"maf"` in its `config.json`, and `"github-copilot"` in `_AGENT_REGISTRY` (`gateway/routes/agent.py:439`) | WS-8i |
+| app-builder | `GitHubCopilotAgent` (`apps/agents/agent-app-builder/agents.py:18`) | `"maf"` in its `config.json`, and `"github-copilot"` in `_AGENT_REGISTRY` (`:496`) | WS-43h |
+| `metorite` (root) | `GitHubCopilotAgent` (root `agents.py:104-108`) | `"github-copilot"` in the root `config.json` | WS-43m |
+| agent-sales-assistant | Loaded from its repo | `"github-copilot"` in `gateway/agents.json:11` | WS-43n |
+
+⚠️ **The `config.json` label of the first two agents is wrong.** The executor
+takes the Copilot path for an agent when the label says `github-copilot`, or
+when the object has `_default_options` (`executor.py:3821-3824`). So a fence
+that reads only `config.json` passes today.
+
+### 17.4 Expand and contract (R6)
+
+Each port follows four steps. No step deletes code that a live path still
+runs.
+
+1. **Port behind a flag.** The MAF factory builds the agent only for an org
+   that the flag names. Every other org keeps the Copilot agent. WS-43h uses
+   the target `app_builder:<org>` of `MAF_CODING_SCOPE`. WS-8i uses a new
+   target, `task_manager:<org>`, of the same setting (agent default). WS-43m
+   uses `metorite`, which takes `*` only (D84).
+2. **Prove parity.** WS-8i: the tool list of the MAF agent equals the
+   pre-port list (`test_declarative_builder.py`), and the live two-turn probe
+   passes. WS-43h: WS43-E8 passes on the MAF path. WS-43m: WS43-E1 to
+   WS43-E9 pass in WS-43i.
+3. **Flip.** An owner act names the org in the flag on production.
+4. **Delete.** WS-43j and WS-43p to WS-43s remove the Copilot path, after
+   each port is live. Each merge is an owner gate.
+
+### 17.5 What retires with the SDK
+
+| Item | Where, measured at `82d09830b` | Removed by |
+|---|---|---|
+| `copilot_chat_model` and its route `POST /settings/llm/copilot-model` | `acb_common/settings.py:735`, `gateway/routes/settings.py:933` | WS-43q item 5, then WS-43r |
+| The `.agent.md` model resolution for an SDK agent | `_model_resolution.py:69-85`, `_agent_default_tier` (`executor.py:6222-6235`) | WS-43q |
+| The BYOK provider injection | `_byok_default_model` (`_model_resolution.py:35`, called at `executor.py:1177` and `:3896`), and the block that logs `executor.copilot_maf_byok_early` (`executor.py:3911-3938`) | WS-43q |
+| The Copilot CLI fetch | `scripts/vps_apply.sh:743-755` | WS-43r (WS43-G12) |
+
+⚠️ **`copilot_chat_model` is not a Copilot-only setting today.** The stream
+path reads it for every agent that `AI_TIER_ROUTING` does not cover
+(`executor.py:3871-3874`). So WS-43q item 5 stays: the setting becomes
+`default_chat_model` for one release. It goes in WS-43r only when the flag
+covers every agent, or when the owner accepts the change.
+
+### 17.6 Fences
+
+- **WS43-F15**, `tests/unit/test_no_copilot_sdk.py`, is the fence of record.
+  It reads the syntax tree of every `.py` file, so it sees all four agents.
+  Its allowlist shrinks to zero at WS-43r.
+- **WS43-F31**, `tests/unit/test_agent_config_runtime.py` (new, built in
+  WS-43n). It fails when an agent's runtime label names `github-copilot`. It
+  reads four places: each agent `config.json`, the root `config.json`,
+  `gateway/agents.json` and `_AGENT_REGISTRY`. Its allowlist holds the four
+  labels of §17.3, each with the slice that removes it. An entry with no
+  label also fails, so the list only shrinks.
+- **WS43-F18**, `tests/unit/test_agent_runtime_default.py`, keeps its job: a
+  repo agent defaults to MAF.
+
+### 17.7 Open question
+
+| # | Question | Agent default |
+|---|---|---|
+| WS43-Q10 | Do the D92 ports go before WS-43x (the Email track), or beside it? | Beside it. WS-43t2 starts now, and the Email track keeps its order |

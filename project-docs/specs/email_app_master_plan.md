@@ -4055,12 +4055,13 @@ The R8 cases must show PASSED, not SKIPPED.
 2. Delete the old LLM body of each site and the four email calls to `shadow`. Delete `_STATUS_MODEL`, `_STATUS_MODEL_ESCALATION` and each prompt helper that nothing reads.
 3. The startup check runs whenever email sync is on.
 4. A pair in `DECIDE_FEATURE_MODES` for an email feature is now unknown, so it logs `decide.mode_refused`.
+5. ⚠️ **Keep `email.insights_screen`** (EM-T14b-0, 2026-10-07, §13.9.2 item 4). It is the Insights screen, not a triage site, and it has no old path. Items 1 and 4 do not apply to it. It keeps its name in `FEATURES` and `ON_FEATURES`, and its mode in `DECIDE_FEATURE_MODES`. The other choice is to hardcode it too. The owner of WS-17 makes that choice in this slice.
 
 **Gate.** The merge waits for the owner's "go". The evidence is 7 days of `on`, with `decide.unavailable` on fewer than 1% of decisions. After this merge, a revert is the only way back.
 
 **Done when.**
 
-- `FEATURES` holds no name that starts with `email.`.
+- `FEATURES` holds none of the four triage features. It keeps `email.insights_screen` (item 5).
 - An AST fence finds no `_llm_json` or `acompletion` call in the four decision functions. A companion test proves that the fence can fail.
 - With `decide_enabled` false, a run decides no email and stamps nothing. The startup check logs at error level.
 - The suites of EM-T5b-2 pass, less the email shadow cases.
@@ -12029,7 +12030,8 @@ of data, large Excel files, etc., without hallucinating.
 > dark. EM-T14e and EM-T14f wait for the flip. EM-T14g is not specified. The audit text is in
 > each slice below.
 
-> **Build state (2026-10-07).** EM-T14a is built and not merged (§13.9.1).
+> **Build state (2026-10-07).** EM-T14a merged as #700 (§13.9.1). EM-T14b-0 merged as #702.
+> EM-T14b-1 is built and not merged (§13.9.2).
 
 > **The owner answers (2026-10-07).** The owner answered Q-IN-1 to Q-IN-4 (§13.12). D-EM-43 to
 > D-EM-46 record them. Q-IN-1 made the job two stages: a cheap screen on `decide`, then the
@@ -12448,7 +12450,7 @@ behind `EMAIL_INSIGHTS`. The flip is an act of the owner only (the Flip row).
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | ✅ **MERGED #700 (2026-10-07). Migration 231.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
-| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
+| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | ✅ **EM-T14b-0 MERGED #702 (2026-10-07).** 🔨 **EM-T14b-1 BUILT, not merged (2026-10-07).** 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
 | **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
 | **EM-T14d** | 🟢 AGENT-SAFE · R8 · visual review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The view.** Two PRs: EM-T14d-1 (the PATCH, the shared helper, the tile and the digest line) and EM-T14d-2 (the UI). | §13.9.4 |
 | **EM-T14e** | 🟢 AGENT-SAFE · R8 · after the flip | 📝 **SPECIFIED (2026-10-07). It waits for the flip.** **Projects.** The four project types, the Projects tab, and the commitments of today beside them. | §13.9.5 |
@@ -12658,12 +12660,17 @@ only. The agent fixed P3-a and recorded P3-b, P3-c and P3-d in §13.10 and in §
 EM-T14b-1 and EM-T14b-2. The orchestrator added EM-T14b-0 after the owner answered Q-IN-1. Its
 first audit happens at dispatch.
 
+**Build state.** EM-T14b-1 is 🔨 BUILT, not merged (2026-10-07).
+
 **Gate.** 🟢 AGENT-SAFE. The job sends mail text to a model in the background. So the slice takes
 the full review loop and a security review.
 
 **Size.** L, split in three.
 
 **EM-T14b-0 — the screen (stage 1, no database).** It builds stage 1 of D-EM-43.
+
+**Status of EM-T14b-0.** ✅ MERGED #702 (2026-10-07). It ships
+dark. "As built (EM-T14b-0)" below holds the departures and the mutation table.
 
 1. **No Router and no Console change.** The `decide` task takes any `boolean`, `choice` or `score`
    question, 16 or fewer for each request (`customer_console.md` §6A.14). So the screen needs no
@@ -12696,6 +12703,91 @@ the full review loop and a security review.
 B0-M2 treats None as a pass, and the undecided fence fails. B0-M3 asks one `choice` for all
 domains, and the question fence fails.
 
+**As built (EM-T14b-0, 2026-10-07).**
+
+- `decide_features.py`: `email.insights_screen` joins `FEATURES` and `ON_FEATURES`. Its default
+  mode is `off`. No other feature changes.
+- `automation/insights_screen.py` holds `screen()` and `screen_state()`. It imports no database
+  module, and nothing calls it yet.
+- `screen_state()` builds the state of §13.5 item 3a. It cuts the body at 8,000 characters. It
+  keeps 3 files or fewer, and it cuts each file at 2,000 characters. Each cut goes through
+  `decide_features.clip_fact`, as the rule match does.
+- `screen()` sends one request through `decide_features.ask`. The request holds one `boolean`
+  question `d_<domain>` for each enabled domain. Only `finance` has a question (D-EM-37).
+- A domain passes at `PASS_THRESHOLD`, 0.3 or more. A probability that is not a finite number
+  gives no decision.
+- The screen returns None for a mode other than `on`, for no known domain, and for no decision
+  from `ask`. Each case logs `email.insights.screen_skip` with a reason and no mail text.
+- **Prompt injection.** The mail text goes into the state as data, as in the rule match. The
+  instructions and the criteria are constant text, and they name a field by its path.
+  `_named_state` copies the named fields and drops each other key.
+- **Fences.** `tests/unit/test_email_insights_screen.py` holds 44 tests. Three registry fences
+  in `test_email_decide_shadow.py`, `test_email_decide_questions.py` and
+  `test_email_decide_on.py` now name the screen.
+
+**Departures of EM-T14b-0.**
+
+1. **`screen()` also takes `member`, as a keyword.** The spec names four arguments. `ask` takes
+   the mailbox owner as a proven member, so EM-T14b-2 can send it. None keeps the member of the
+   run context.
+2. **`shadow` asks nothing.** The spec names `off` only. The screen has no old answer to
+   compare, so it reads `shadow` as `off`. It logs the reason `mode_shadow`.
+3. **The screen does not ask a domain with no question.** It logs
+   `email.insights.screen_unknown_domain` with a count. With no known domain, it asks nothing
+   and returns None.
+4. **`screen_state()` is new.** The spec names the fields of the state, and not the function
+   that builds them. EM-T14b-2 builds the state with it.
+5. **Three triage fences changed.** Three tests said that `FEATURES` holds the four triage
+   features only. Each one now names the screen too. `ALL_ON` in `test_email_decide_on.py`
+   keeps the four triage features, because that is the value on the box.
+6. **The fence for "no database access" is an AST check.** It refuses an import of
+   `sqlalchemy`, `gateway.db`, `acb_common.db`, the email `core`, `redis` or `email_ingestion`.
+   It also refuses a `db` argument.
+
+**Mutations of EM-T14b-0, as run (2026-10-07).** Each mutation ran against
+`tests/unit/test_email_insights_screen.py`. After each one, the script restored the file,
+and `git status` was clean.
+
+| Id | Mutation | Result |
+|---|---|---|
+| B0-M1 | Leave the name out of `ON_FEATURES` | 17 failed, the `on` fence among them |
+| B0-M2 | Treat None from `ask` as a pass | 8 failed, the undecided fences among them |
+| B0-M3 | Ask one `choice` for all domains | 9 failed, the question fence among them |
+| M4 | A probability that is not a number counts as yes | 2 failed, `nan` and `inf` |
+| M5 | The bar goes from 0.3 to 0.0 | 4 failed, the 0.29 case among them |
+| M6 | The state goes out as the caller gave it | 1 failed, the named-fields fence |
+| M7 | `shadow` asks | 1 failed, the `shadow` case |
+
+**Review (2026-10-07): APPROVE.** The reviewer approved the slice at `3ec351518`, with P3
+findings only. Fix round 1 made these changes:
+
+1. **Bad `domains`.** None, a bare `str` and a value that is not a set of names ask nothing.
+   The screen logs `email.insights.screen_bad_domains` at warning level, with the type name,
+   and returns None. Before the fix, None raised `TypeError`. A bare `"finance"` became a set of
+   letters, so the screen skipped each mail with no word. The screen refuses a `str`, and it
+   does not read it as one domain.
+2. **Files.** `_named_state` accepts each sequence that is not text, a list or a tuple. It
+   drops a value of another type, and each entry that is not an object. A drop logs
+   `email.insights.screen_files_dropped` at warning level, with a count.
+3. **The log.** `decide.decided` holds each probability unrounded, and `threshold` beside it.
+   Before the fix, 0.2999999 logged as 0.3 with `passed=[]`.
+4. **The sender.** The data guidance names `email.sender` too, because an outside sender sets
+   its own display name.
+5. **The docstring** of `decide_features.py` now says five email features.
+6. **EM-T14b-2 item 5** now holds the member rule, with its fence.
+
+**Mutations of fix round 1, as run (2026-10-07).** The implementer committed the fix before the mutations.
+
+| Id | Mutation | Result |
+|---|---|---|
+| R1 | A bare `str` reads as a set of letters | 2 failed, `str` and `bytes` |
+| R2 | The check for None goes, and the `try` stays | 0 failed. The `try` also catches None, so this mutant does the same thing |
+| R2c | The check for None and the `try` go | 3 failed: None, 42 and a list of lists |
+| R3 | The screen accepts only a `list` of files | 1 failed, the tuple case |
+| R4 | An entry that is not an object drops with no log | 1 failed |
+| R5 | The log rounds the probability to 4 places | 1 failed |
+| R6 | The data guidance leaves out `email.sender` | 1 failed |
+
 **EM-T14b-1 — the checks and the eval set (no database).**
 
 1. `automation/insights_extract.py` holds the closed types of §13.4 for finance, the prompt, and
@@ -12708,10 +12800,34 @@ domains, and the question fence fails.
      amount. One marked number gives an amount. Zero or two give none.
    - A comma before exactly two final digits, with no other separator, is a decimal comma. Any
      other mixed pattern gives no amount. Parentheses or a minus sign give no amount in `fin-1`.
+   - Three more patterns give no amount (review round 1). A scale word after the number, as in
+     `₹5 lakh` or `$2.5M`, gives none. Code never multiplies. A number that white space splits,
+     as in `₹5 000`, gives none. A mark with a number on each side, as in `2041 USD 5,000`,
+     gives none.
+   - Review round 2 widened the scale words and narrowed the split. A plural, a hyphen and the
+     words from `hundred` to `tsd` give no amount, and so does an apostrophe as in `₹5'000`. A
+     split needs a plain run of 1 to 3 digits or a trailing comma, then runs of exactly 3 digits.
+     So `Amount ₹5,000 2 days late` gives 5000.00.
+   - Review round 3 replaced the split with one join rule, `_joins`, for both sides of a number.
+     A plain integer joins a gap and a run of 2 digits or more. A last comma group of 2 digits
+     joins any run. A last comma group of 3 digits joins a run of exactly 3 digits. So
+     `₹ 1 23 456`, `₹5,000 000` and `₹ 98450 12345` give none.
+   - **The choice of round 3.** A full comma group never joins a run of 2 digits. So
+     `₹ 45,000 12 Oct 2026` keeps its amount. This rule needs no month list and no date form. A
+     plain integer joins any run of 2 digits or more, not only after 1 to 5 digits.
    - With no currency, `amount` stays NULL and confidence is 0.6.
    - **`parse_due`.** A date needs a day, a month and a year. A numeric date with both parts at 12
      or less gives no date. Do not use `dateutil` fuzzy parsing, because it fills the missing parts
      from today.
+   - A full date beside a second date signal gives no date (review round 1). The signal is an
+     ambiguous numeric date or a relative date. In "Invoice Date: 01 Oct 2026. Net 30" the full
+     date is the date of the invoice.
+   - Review round 2 removed two signals, a day and a month with no year, and a numeric pair. They
+     refused honest dates beside a ref, such as `PO 4/12` or `1 May Road`. The claim check of
+     departure 1 stops the case they were for.
+   - Code refuses a `due_on` claim longer than a quote before it parses it (review round 2).
+   - A day and a month with no year beside the full date keep the date, at 0.6 (review round 3).
+     `DueParse.doubt` carries this to the check.
    - **The answer check.** The answer must be an object with a `facts` list. Code keeps at most 10
      facts for each call. `ref` and `counterpart` must each be in the folded source, or code drops
      them.
@@ -12735,6 +12851,143 @@ domains, and the question fence fails.
 5. **Two modes.** `run.py` runs the sweep through the Router on a local stack. `--scripted` replays
    recorded answers, so the unit job can run it with no model.
 6. **Size.** Fixture data does not count toward the 600 lines.
+
+**Status of EM-T14b-1.** 🔨 BUILT, not merged (2026-10-07). The agent fixed each finding of review rounds 1 to 3. It
+adds no job, no hook, no model call and no SQL.
+
+**As built (EM-T14b-1, 2026-10-07).**
+
+- **The module** is `routes/email/automation/insights_extract.py`. It imports `FACT_FIELDS`,
+  `CAPS`, `Fact` and `clean_text` from `insights_store.py`, and keeps no copy.
+- **The source.** `body_source` and `file_source` make the one text of a call. The prompt frames
+  that text, and the checks read the same text.
+- **The prompt.** `build_prompt` lists the finance types with their keys from `FACT_FIELDS`. It
+  puts the source between two marker lines with a random token, and removes the token from the
+  text first.
+- **The checks.** `check_answer` returns the checked facts and a count of drops for each check.
+  The job of EM-T14b-2 writes those counts to the log line of §13.5 item 10.
+- **The parsers.** `parse_amount` and `parse_due` each name a reason when they give no value. 112
+  amount cases live in `tests/fixtures/amount_cases.json`, and 43 date cases live in the test.
+  Six more cases send an invoice date through `check_answer` with the claim of a model.
+- **The speed of `parse_due`.** The weekday search reads a window of 20 characters, and a mask of
+  one byte for each character checks the overlap of two dates. A text of 100k characters with
+  9000 dates took 4.2 s, and now takes about 0.06 s.
+- **The speed of `parse_amount`** (review round 3). The split check reads a window of 40
+  characters before a number. `"100 " * 25000 + "x 100 INR"` took 18.5 s, and now takes about
+  0.055 s on the dev box. Each timing test of a 100k-character input has a limit of 0.5 s, so
+  a slow CI runner does not fail it. A quadratic search takes 18 to 40 s.
+- **The eval set** is `evals/email_insights/`: 43 mails, 31 expected facts and a `--scripted` run.
+  The run finds 31 facts of 31. Each amount and each due date is correct.
+- **The fence** is `tests/unit/test_email_insights_extract.py`, with 235 tests.
+
+**Departures (EM-T14b-1).**
+
+1. **The claim of the model gates the due date.** A quote can hold the date of the invoice. So
+   code stores a date only when the model gives `due_on`. The value still comes from the quote.
+   Code also parses the claim, and keeps the date only when the claim gives the same date. Code
+   only compares the claim, and never stores it (review round 1).
+   **A known limit (review round 2).** In "Invoice Date: 01 Oct 2026. Due: Nov 15", a model can
+   claim "01 Oct 2026" as the due date. Code then stores the invoice date at 0.6, and never at
+   0.9 (review round 3). The card shows the quote with both dates.
+   `test_a_claim_of_the_invoice_date_itself_is_a_known_limit` records it.
+2. **The claim of the model marks a missing amount.** When the model gives an amount and the quote
+   gives none, the confidence is 0.6. Code never reads the claim as a value.
+3. **Code drops a quote of more than 200 characters, and never cuts it.** A cut can split a
+   number.
+4. **A match needs a whole token.** `ref`, `counterpart` and the quote must not continue a word or
+   a figure of the source. So `INV-204` is not in `INV-2041`, and `₹5,000` is not in `₹5,000,000`.
+5. **The fold also removes each control and format character**, as `clean_text` does. It turns
+   each white space character into a space first, so it never deletes white space.
+6. **Two dates give no date**, as two amounts give no amount. A short year, such as `15/11/26`,
+   gives no date.
+7. **Parentheses around a marked number give no amount**, also when they hold an aside, such as
+   `(USD 980)`.
+8. **The eval adds a fourth bar, `no_fact`.** A mail that expects no fact gives no fact. Without
+   it, the injection mail could give a fact and the run would still pass.
+9. **An agent wrote the scripted answers by hand**, because no model ran. Some hold a mistake of a
+   model on purpose. EM-T14b-2 records real answers.
+10. **The scripted run uses the expected screen answer of each mail.** The screen of EM-T14b-0
+    (#702) asks `decide`, and a scripted run calls no model. Without `--scripted`, `run.py` exits
+    with code 2. EM-T14b-2 adds the real screen and the model sweep.
+11. **The date cases live in the test.** `amount_cases.json` holds amounts only, so WS-43y1a can
+    share it as item 2 says.
+12. **The eval fences live in `test_email_insights_extract.py`.** `test_email_insights_job.py`
+    comes with EM-T14b-2.
+13. **The slice is larger than the guide of §13.9.** The module holds 678 lines. 188 of them are
+    comments, and 104 are blank. The eval code holds 354 lines, and the test file holds 684 lines.
+    The fixture data does not count.
+14. **A scripted run is exact** (review round 1). Its `amount` bar needs no wrong amount, and a
+    fifth bar, `due`, needs each found fact to have its expected due date. The 95 % bar is for the
+    model sweep only.
+15. **The runner checks two honest quotes with the screen open** (review round 1). The newsletter
+    then gives an invoice of INR 39999.00 at 0.6. The injection mail gives an invoice `VX-1` with
+    no amount and no date at 0.6. The quote rule cannot stop an honest quote. The screen and the
+    card stop it (§13.5, §13.10). No bar reads this result.
+
+**Mutations (EM-T14b-1, 2026-10-07).** The agent committed the code first. Then it ran each
+mutation and restored the file after each run. `git status` was clean after each restore.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | Skip the quote check | `test_a_quote_not_in_the_source_drops_the_fact`, `test_the_injection_mail_gives_no_fact_in_scripted_mode`, `test_the_scripted_sweep_passes_every_bar` and three more. The `--scripted` run exits with 1 |
+| M2 | Parse the amount of the model, and not the quote | `test_the_model_number_is_never_stored`, `test_a_model_amount_given_as_a_number_is_not_stored`, `test_the_scripted_sweep_passes_every_bar` and three more. The `--scripted` run exits with 1 |
+| E1 | Fold with no space step, so a lone `\r` goes | `test_folding_collapses_white_space_and_never_deletes_it` |
+| E2 | Remove the cap for a quote found twice | `test_a_quote_found_twice_caps_confidence_at_0_6` |
+| E3 | Keep each fact of an answer | `test_code_keeps_at_most_ten_facts` |
+| E4 | Accept a numeric date with both parts at 12 or less | two cases of `test_each_due_case`, and `test_a_due_date_that_does_not_parse_names_its_reason` |
+| E5 | Remove the source check of `ref` and `counterpart` | `test_ref_and_counterpart_must_be_in_the_folded_source` |
+| E6 | Read a comma before three digits as a decimal comma | ten tests, with `test_each_amount_case_parses_to_its_amount_and_currency` and `test_the_scripted_sweep_passes_every_bar` |
+| E7 | Send a spreadsheet to the model | `test_a_spreadsheet_is_never_sent_to_a_model`, `test_the_spreadsheet_and_the_newsletter_give_no_fact`, `test_the_scripted_sweep_passes_every_bar` and one more |
+| E8 | Take the title of the model | `test_code_writes_the_title` |
+| E9 | Make the `no_fact` bar pass each run | `test_each_bar_fails_a_wrong_run` |
+| F1 | The tail of a number lets the regex back off | 1 amount case, `Total ₹5.5x` |
+| F2 | Remove the scale check | 17 amount cases |
+| F3 | Remove the split check after a number. Round 2 ran it again | 10 amount cases |
+| F3b | Remove the split check before a number. Round 2 ran it again | 5 amount cases |
+| F4 | Remove the check for a number after the mark | 3 amount cases |
+| F4b | Remove the check for a number before the mark | 1 amount case, `Ref No.2041 USD 5,000` |
+| F5 | Remove the check for a second date signal. Round 2 ran it again, with two signals left | 6 tests, with `test_the_date_of_the_invoice_is_not_the_due_date` and 4 date cases |
+| F6 | Remove the comparison with the claimed date | 5 tests, with `test_the_model_number_is_never_stored` |
+| F7 | The scripted `amount` bar falls back to 95 % | `test_each_bar_fails_a_wrong_run` |
+| F8 | The `due` bar passes each run | `test_each_bar_fails_a_wrong_run` |
+| F9 | A weekday next to a date counts as a second date | 1 date case, `Friday, 13 March 2026` |
+| G1 | Remove the plural `s` of the scale words | 5 amount cases |
+| G1c | A single scale letter takes a plural | 1 amount case, `Pay $500 Ms. Rao` |
+| G2 | No hyphen between the number and the scale word | 3 amount cases |
+| G3 | Remove the scale words from `mil` to `tsd` | 5 amount cases |
+| G4 | No apostrophe in the end of a number | 2 amount cases |
+| G5 | The broad split rule of round 1 | 6 amount cases |
+| G6 | No cap on the claim | `test_a_claim_longer_than_a_quote_stores_no_date` |
+| G7 | No weekday window | 2 cases of `test_parse_due_is_linear_on_a_long_text`. The run took 33 s |
+| G8 | The overlap check scans the span list, as in round 1 | 1 case of `test_parse_due_is_linear_on_a_long_text` |
+| G9 | A day and a month with no year count as a second date again | 1 date case, `Due 15 Oct 2026, 1 May Road` |
+
+In round 2, the first run let three mutants survive. Two of them removed a plural rule. Each
+scale word had two plural rules, so removing one changed nothing. The agent kept one rule, and a
+single letter now takes no plural.
+
+G6 survived because the timing test passed with no cap. Now
+`test_a_claim_longer_than_a_quote_stores_no_date` proves the cap. G1 and G6 then failed.
+
+Review round 3 added these rows. F3, F3b and G5 tested the split rule of round 2. `_joins`
+replaced that rule, and H6 and H8 now cover it.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| H1 | No cap at 0.6 for a day and a month beside the date | 4 tests, with `test_a_claim_of_the_invoice_date_itself_is_a_known_limit` |
+| H2 | A plain integer joins only a run of 3 digits | 3 amount cases, with `₹ 1 23 456` |
+| H3 | A last comma group of 2 digits joins nothing | 2 amount cases, `₹1,23 456` and `₹5,00\n0` |
+| H4 | A full comma group joins a run of 2 digits | 2 amount cases, with `Amount: ₹ 45,000 12 Oct 2026` |
+| H6 | No join check before a number | 6 amount cases, with `1,234 567 INR` |
+| H7 | No window before a number | `test_parse_amount_is_linear_on_a_long_text[one_long_comma_run]`. The run took 42 s |
+| H8 | No join check after a number | 16 amount cases |
+
+In round 3, the first run let two mutants survive. H5 removed a guard for a decimal point, and
+no test failed. The guard was dead code, because a token with decimals after a point never ends
+in a comma group. The agent removed it.
+
+H7 survived because the regex of round 3 stays linear on the first timing input. One long comma
+run takes about 40 s with no window, so it is now a second timing case. H7 then failed.
 
 **EM-T14b-2 — the job.**
 
@@ -12771,6 +13024,15 @@ domains, and the question fence fails.
    - **A kept fact is lost (P3-d).** `write_facts` stores no fact that it counts in `kept`. If the
      row that owns the key goes later, nothing writes that fact again. A later pass that reads such
      messages again must clear `insights_at` for them.
+7. 🔴 **The job MUST send the proven mailbox owner to the screen** (review of EM-T14b-0,
+   2026-10-07). It calls `screen(..., member=owner)`. It reads `owner` with
+   `engine._decide_member(db, account_id, insights_screen.FEATURE)`, in its read session.
+   - **Why.** A deployment Router key refuses a `decide` call with no proven member. It answers
+     403 (`customer_console/auth.py` ~:698-705).
+   - That 403 starts `REFUSAL_COOLDOWN_S`, 15 minutes, for the whole organization. For that time
+     the triage rule match also leaves each mail undecided.
+   - **Fence.** In `tests/unit/test_email_insights_job.py`, the screen call of the job names the
+     owner as a proven member.
 
 **Non-goals.** No route, no UI and no tool. No sent mail. No spreadsheet figure (D-EM-40).
 

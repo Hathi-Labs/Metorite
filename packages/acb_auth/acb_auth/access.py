@@ -19,7 +19,7 @@ import os
 import time
 from contextvars import ContextVar
 
-from acb_common import get_logger
+from acb_common import db_busy, get_logger
 
 # The one shared pool (BO-10) — see the Engine section below. `get_session_factory`
 # is re-exported under the private name this module has always used
@@ -79,6 +79,33 @@ def identity_read_failed() -> bool:
     member of any organization").
     """
     return _identity_read_failed.get()
+
+
+class IdentityUnavailable(RuntimeError):
+    """The identity read got no database connection in time (2026-10-07).
+
+    🔴 **Measured on production, 2026-10-07.** The email sync starved the IO
+    budget of the database. The pool queue then timed out, and the two
+    resolvers below swallowed it. ``resolve_access`` returned NO ACCESS and
+    ``resolve_identity`` returned ``(None, None)``, so a live member signed in
+    as "nobody in no org". ``/auth/me`` answered 200 with that.
+
+    So a pool or connect TIMEOUT now raises this, and
+    ``deps._with_resolved_access`` turns it into a retryable 503. Only the
+    timeout case. A missing table, a SQL error and "no such member" keep the
+    answers they had. ``acb_common.db_busy.is_db_timeout`` decides.
+
+    Fence: ``tests/unit/test_identity_pool_timeout.py``.
+    """
+
+
+def _raise_if_pool_timeout(exc: BaseException, leg: str) -> None:
+    """Raise :class:`IdentityUnavailable` when *exc* is a pool or connect timeout."""
+    if db_busy.is_db_timeout(exc):
+        db_busy.mark()
+        _log.warning("auth.identity_pool_timeout", leg=leg,
+                     error=type(exc).__name__)
+        raise IdentityUnavailable(leg) from exc
 
 
 #: Short enough that a revocation lands within a minute, long enough that a
@@ -1116,6 +1143,9 @@ async def resolve_access(
                 await session.execute(text(_ACCESS_SQL), {"email": key})
             ).mappings().first()
     except Exception as exc:  # noqa: BLE001
+        # A pool or connect TIMEOUT is not "no access". It raises, and the
+        # auth dependency answers 503 (2026-10-07, see IdentityUnavailable).
+        _raise_if_pool_timeout(exc, "access")
         # Distinguish "migration hasn't run" (degrade to legacy, permanently)
         # from a transient DB blip (degrade for this request only).
         message = str(exc).lower()
@@ -1217,12 +1247,14 @@ _IDENTITY_LEG_SQL = """
 async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
     """Return ``(user_id, organization_id)`` for an email, or ``(None, None)``.
 
-    ⚠️ **``(None, None)`` means "the read worked and nobody matched".** A read
-    that FAILED raises :class:`IdentityUnavailable` instead, because the two
+    ⚠️ **``(None, None)`` means "the read worked and nobody matched", or that
+    the read failed and** :func:`identity_read_failed` **says so.** The two
     have opposite meanings to the person waiting: one is "an administrator has
     to add you", the other is "try again in a moment". They were the same
     return value until 2026-09-20, and the second was being reported as the
-    first — see the ``except`` block for the measurement.
+    first — see the ``except`` block for the measurement. A read that timed
+    out waiting for a connection raises :class:`IdentityUnavailable` instead
+    (2026-10-07).
 
     ⚠️ **H6 slice 3b — the read cutover, DARK behind ``IDENTITY_CUTOVER``.** This
     is the tenant-DISCOVERY read on the sign-in path
@@ -1283,7 +1315,11 @@ async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
                     {"email": key},
                 )
             ).mappings().first()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # A pool or connect TIMEOUT raises (2026-10-07). Every route then
+        # answers 503, not only a tenant-scoped one, so `/auth/me` cannot
+        # report "no org" for it. See IdentityUnavailable.
+        _raise_if_pool_timeout(exc, "identity")
         # 🔴 **THE OUTAGE THAT BECAME AN ACCUSATION. It happened.**
         #
         # This block used to log and `return None, None`. Its own comment said
@@ -1550,7 +1586,7 @@ async def resolve_session_access(
     cap is never silent.
     """
     actor = (actor_email or "").lower().strip()
-    actor_access = await resolve_access(actor)
+    actor_access = await _access_or_inactive(actor)
     if not session_id:
         return actor_access, [actor] if actor else []
 
@@ -1631,8 +1667,24 @@ async def resolve_session_access(
 
     folded = actor_access
     for email in sorted(emails - {actor}):
-        folded = folded.intersect(await resolve_access(email))
+        folded = folded.intersect(await _access_or_inactive(email))
     return folded, sorted(emails)
+
+
+async def _access_or_inactive(email: str) -> EffectiveAccess:
+    """:func:`resolve_access`, with a pool timeout read as INACTIVE.
+
+    ⚠️ **The fold must fail CLOSED (review round 1, 2026-10-07).** A pool
+    timeout in :func:`resolve_access` raises :class:`IdentityUnavailable`.
+    Here it must not leave this function. ``executor._integration_authorizer``
+    catches any exception and returns ``None``, which means "no filter", so a
+    participant timeout gave a shared-room run every credential. Inactive
+    zeroes the intersection, which is the answer this fold gave before.
+    """
+    try:
+        return await resolve_access(email)
+    except IdentityUnavailable:
+        return EffectiveAccess(is_active=False)
 
 
 # ── Ownership bootstrap (the way back in) ───────────────────────────────────

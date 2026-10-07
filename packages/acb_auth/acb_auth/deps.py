@@ -76,6 +76,7 @@ from fastapi import Depends, Header, HTTPException, Request
 
 from acb_auth.access import (
     SERVICE_ACCESS,
+    IdentityUnavailable,
     identity_cutover_enabled,
     resolve_access,
     resolve_identity,
@@ -262,11 +263,41 @@ def _trust_unverified_sso_headers() -> bool:
 
 
 
+#: The body of the 503 for an identity read that timed out (2026-10-07).
+IDENTITY_UNAVAILABLE_DETAIL = (
+    "We could not reach the directory that says which organization you"
+    " belong to. This is a fault on our side and your account is fine."
+    " Try again in a moment."
+)
+
+
 async def _with_resolved_access(user: UserContext) -> UserContext:
+    """Attach the member's DB-resolved access, or answer 503 on a timeout.
+
+    🔴 **A pool or connect timeout is a 503, never "nobody" (2026-10-07).**
+    The two resolvers raise :class:`IdentityUnavailable` for exactly that
+    case. Before, they returned NO ACCESS and no org, and a live member
+    signed in as nobody in no org while the database was starved of IO.
+    Every other failure keeps the answer it had.
+
+    Fence: ``tests/unit/test_identity_pool_timeout.py``.
+    """
+    try:
+        return await _resolve_and_bind(user)
+    except IdentityUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=IDENTITY_UNAVAILABLE_DETAIL,
+            headers={"Retry-After": "2"},
+        ) from exc
+
+
+async def _resolve_and_bind(user: UserContext) -> UserContext:
     """Attach the member's DB-resolved permission set to a UserContext.
 
     Best-effort by construction: :func:`acb_auth.access.resolve_access` never
-    raises, degrading to the legacy executive/employee mapping when the access
+    raises, except :class:`IdentityUnavailable` on a pool timeout. It
+    degrades to the legacy executive/employee mapping when the access
     tables are absent and to no-access when the member is unknown. Results are
     cached for 60s, so this costs one indexed query per member per minute
     rather than one per request.
