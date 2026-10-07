@@ -27,6 +27,7 @@ inbound.py         — aiosmtpd inbound SMTP receiver (persists to email_message
 scheduler.py       — Background sync scheduler (per-account asyncio tasks)
 import_window.py   — the import floor: the ceiling, the range and the floor (EM-T6a)
 storage.py         — the storage meter, the limit, and the removal of older mail (EM-T6c)
+html_tier.py       — the HTML hot window and its two flags (EM-S1)
 llm_cap.py         — the cap and the daily budget of the email model calls (EM-T4b)
 ```
 
@@ -376,6 +377,17 @@ All providers implement the `BaseEmailProvider` abstract interface:
       Each other caller keeps the default, so a Reply-To stays. The fence
       counts the callers in `drafting.py`, `actions.py`, `followups.py` and
       `notes/dispatch.py`. A new caller there fails it.
+
+18. **The HTML hot window (WS-17 EM-S1, D-EM-49).** `html_tier.py` is the one
+    owner of the window. Fence: `tests/unit/test_email_html_tier.py`.
+    - A message older than `HTML_HOT_DAYS` (90) is cold. A message with no
+      `received_at` is never cold. Every time is in UTC.
+    - `from_provider()` reads `EMAIL_HTML_FROM_PROVIDER`. `hot_only()` is
+      true only when `EMAIL_HTML_HOT_ONLY` is true too. No other module reads
+      the two flags, and no other module writes the number 90 next to
+      `received_at`. The fence fails on each.
+    - `import_window.py` owns the sync window. Neither module imports the
+      other (D-EM-53).
 
 ## Inbound SMTP Server
 
