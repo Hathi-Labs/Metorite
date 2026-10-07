@@ -12545,6 +12545,24 @@ asked for one P1 and three P2 changes, and found the tenancy sound.
 | R1-M4 | Remove `idx_email_insights_attachment` | `test_the_cascading_file_key_has_an_index`, `test_a_delete_of_a_file_deletes_its_facts_through_an_index` |
 | R1-M5 | Clean the facts after the checks, as before round 1 | `test_every_fact_is_cleaned_before_any_sql` |
 
+**Review round 1 re-check (2026-10-07): APPROVE.** The reviewer approved round 1 with P3 findings
+only. The agent fixed P3-a and recorded P3-b, P3-c and P3-d in §13.10 and in §13.9.2 item 6.
+
+- **P3-a, values that raised after the DELETE.** A Python `$` also matches before a final
+  newline. So `"INR\n"` reached the `char(3)` column, and `"fin-2\n"` passed the version check.
+  A confidence of `1e-50` underflows the REAL column.
+- **The fix.** `_CURRENCY` and `_VERSION` go through `fullmatch`, and no other regex is in the
+  module. Code rounds a confidence to two places. The comment of step 0 names what makes each
+  value fit its column.
+- **A limit of the R8 fence.** asyncpg encodes a REAL parameter on the client, so `1e-50` reaches
+  Postgres as 0. Postgres raises "value out of range: underflow" for the same value as text. So
+  the hermetic fence is the fence for the rounding.
+
+| Id | Mutation of the re-check | The fence that failed |
+|---|---|---|
+| R1b-M1 | Go back to `match` with `^...$` | `test_a_currency_that_is_not_exactly_three_letters_is_dropped[INR\n]`, `test_a_version_with_a_newline_raises[fin-2\n]`, `test_values_that_raised_in_the_database_now_write` |
+| R1b-M2 | Remove the rounding of the confidence | four cases of `test_a_confidence_is_rounded_to_two_places` |
+
 #### 13.9.2 EM-T14b — the finance job, in three PRs
 
 **Status.** 📝 SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark. The audit cleared
@@ -12656,6 +12674,14 @@ domains, and the question fence fails.
    - The partial index `idx_email_messages_insights_pending` holds each row with `insights_at`
      NULL. While no mailbox opts in, that is every row of `email_messages`, and each insert of
      mail writes to it. Measure its size at the flip, and record the result here.
+6. **Two more rules from the round 1 re-check (2026-10-07).**
+   - **Key squatting (P3-b).** With a `ref`, the key holds the sender domain. The backlog read takes
+     the newest mail first. So a later mail of the same domain, `ref`, amount and currency can own
+     the key, and the real invoice then gets no card. The effect is a missing card, never a changed
+     field (§13.10). Read the backlog oldest first, or let a refine of the older mail take the key.
+   - **A kept fact is lost (P3-d).** `write_facts` stores no fact that it counts in `kept`. If the
+     row that owns the key goes later, nothing writes that fact again. A later pass that reads such
+     messages again must clear `insights_at` for them.
 
 **Non-goals.** No route, no UI and no tool. No sent mail. No spreadsheet figure (D-EM-40).
 
@@ -12851,6 +12877,16 @@ week?", and the answer names the same rows and the same sum.
   asks again. The bar of 0.3 and the recall bar of 95 % on the eval set bound this risk.
 - **A second copy of a number parser.** WS-43y1a holds one in its engine. One fixture file of
   cases binds both (§13.9.2).
+- **Key squatting (EM-T14a re-check, P3-b).** A later mail can have the same domain, `ref`,
+  amount and currency as a real invoice. The job reads the newest mail of the backlog first, so
+  the later mail can own the key. The real invoice then gets no card. No field of a card changes. During live sync the
+  real invoice arrives first and owns the key. §13.9.2 item 5 holds the rule for EM-T14b-2.
+- **An old quote with a new date (P3-c).** A refine of the same source takes a new `due_on` and
+  keeps the old `quote`. So the quote of a card can miss its date. The audit text of EM-T14a binds
+  the upsert to keep the first quote. A refresh of `quote` on a refine of the same source needs a
+  spec change, and is a later decision.
+- **A kept fact is lost (P3-d).** A fact that a conflict keeps out is never stored. If the row that
+  owns the key goes, nothing brings the fact back (§13.9.2 item 5).
 
 ### 13.11 Board findings (not this plan)
 
