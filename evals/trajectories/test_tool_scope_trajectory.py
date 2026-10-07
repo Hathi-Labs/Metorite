@@ -74,14 +74,24 @@ def test_previously_unscoped_agents_now_declare_valid_tool_scope():
         assert "ask_questions" in scope, f"{agent_dir} must keep ask_questions (HITL)"
 
 
-def test_email_assistant_own_tool_scope_names_are_all_built_tools(monkeypatch):
+def test_email_assistant_own_tool_scope_names_are_all_built_tools(monkeypatch, request):
     """Each own_tool_scope name is a tool that build_agents() gives (WS-8o).
 
     An ``async def`` in ``agents.py`` is not enough: a function that the agent
     never registers passes that check and still drops from the scope.
     """
     pytest.importorskip("agent_framework")
+    from acb_common.settings import get_settings
+
     monkeypatch.setenv("OPENAI_API_KEY", "sk-ws8o-dummy")
+    # WS-48 N2: narrow_and_read is in the scope and is built only when
+    # NARROWING_AGENTS names the agent. Turn the flag on, so this check stays
+    # strict: every scoped name must be built. The flag-off case is held by
+    # tests/unit/test_own_tool_scope_parity.py (FLAG_GATED).
+    monkeypatch.setenv("NARROWING_AGENTS", "*")
+    get_settings.cache_clear()
+    # Clear again after the test, so the cached flag does not reach the next one.
+    request.addfinalizer(get_settings.cache_clear)
     cfg = _cfg("agent-email-assistant")
     scope = cfg.get("own_tool_scope")
     assert scope, "email-assistant must declare own_tool_scope"

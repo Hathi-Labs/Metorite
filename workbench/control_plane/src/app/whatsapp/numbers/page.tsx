@@ -6,15 +6,29 @@
 // WhatsApp app itself (via the shared nav's "Numbers" tab).
 
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { disconnectAccount, fetchAccounts } from "../lib/api";
+import {
+  disconnectAccount,
+  fetchAccounts,
+  startHistoryImport,
+} from "../lib/api";
+import { accountHistoryLine, type HistoryTone } from "../lib/historySync";
 import type { WaAccount } from "../lib/types";
+
+/** The token class of each history tone. No new colour (WS-20 WA-C3 P12). */
+const HISTORY_TONE: Record<HistoryTone, string> = {
+  muted: "text-muted-foreground",
+  success: "text-success",
+  destructive: "text-destructive",
+};
 
 export default function NumbersPage() {
   const [accounts, setAccounts] = useState<WaAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [starting, setStarting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -42,6 +56,20 @@ export default function NumbersPage() {
       setBusy(null);
       if (res.ok) await load();
       else setError(res.error ?? "Couldn't disconnect that number.");
+    },
+    [load]
+  );
+
+  // WS-20 WA-C3 P4: start the coexistence history import again, inside
+  // Meta's 24-hour window. The server decides, and the list reloads.
+  const onStartHistory = useCallback(
+    async (a: WaAccount) => {
+      setStarting(a.id);
+      setError(null);
+      const res = await startHistoryImport(a.id);
+      setStarting(null);
+      if (!res.ok) setError(res.error ?? "Couldn't start the history import.");
+      await load();
     },
     [load]
   );
@@ -112,6 +140,11 @@ export default function NumbersPage() {
                   <span aria-hidden>·</span>
                   <SyncBadge status={a.sync_status} />
                 </div>
+                <HistoryLine
+                  account={a}
+                  starting={starting === a.id}
+                  onStart={() => void onStartHistory(a)}
+                />
               </div>
               <button
                 onClick={() => void onDisconnect(a)}
@@ -136,6 +169,35 @@ export default function NumbersPage() {
             <Icon name="Plus" className="h-3.5 w-3.5" /> Connect another number
           </Link>
         </div>
+      )}
+    </div>
+  );
+}
+
+function HistoryLine({
+  account,
+  starting,
+  onStart,
+}: {
+  account: WaAccount;
+  starting: boolean;
+  onStart: () => void;
+}) {
+  const line = accountHistoryLine(account, new Date());
+  if (!line) return null;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px]">
+      <span className={HISTORY_TONE[line.tone]}>{line.text}</span>
+      {line.canStart && (
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="History"
+          loading={starting}
+          onClick={onStart}
+        >
+          Start history import
+        </Button>
       )}
     </div>
   );

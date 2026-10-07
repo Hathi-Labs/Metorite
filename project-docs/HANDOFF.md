@@ -118,6 +118,28 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-07 · branch `email-s10-rules-estimate` (WS-17 EM-S10
   fix round 1). PR #719 added H-266.
 
+### H-268 · Measure the email narrowing saving on a real run · [OWNER]
+- **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
+  No line with a measured recall and a date under §9 N2 means this is open.
+- **Why.** WS-48 N2 done-when item 6 wants the before and after numbers from a
+  real Router. The PR has only the scripted run. Its verdicts, tokens and
+  credits are stub numbers. Production already serves `tier-decide`:
+  `DECIDE_ENABLED=true`, and the Console answered 341 `POST /v1/decide`
+  requests with 200 in the 24 hours to 2026-10-07 (email rule matching).
+- **Do.**
+  1. The owner approves the run, because it spends credits and turns on a
+     flag. Then set `NARROWING_AGENTS=email-assistant` on the box, and
+     optionally `SYSTEM_ONE_ON_DECIDE`.
+  2. Ask the email assistant one broad question over many emails. Then ask
+     the same question with the flag off.
+  3. Join each run's `request_id` values to `usage_event`. Compare the
+     requests, tokens and credits per tier.
+  4. Write the recall, the credits, the date and the SHA under §9 N2, with the
+     words "compare run". Turn the flag off again if the saving does not hold.
+- **Authority:** `data_narrowing_pipeline.md` §7.2, §9 N2 and §11 · D93
+- **Added:** 2026-10-07 · branch `ws48-n2-email` (WS-48 N2). Renumbered from
+  H-267 at merge, because main took H-267.
+
 ### H-266 · Redis has no maxmemory policy, and the email HTML and attachment caches are bounded only by TTL · [AGENT]
 - **Check:** run `grep -rn "maxmemory" infra/ deploy/`. No `maxmemory` with a
   `maxmemory-policy` for the Redis of the gateway means this is open.

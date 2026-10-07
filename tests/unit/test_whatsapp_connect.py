@@ -311,11 +311,15 @@ class _GraphResp:
 class _MetaGraph:
     """A fake Graph API. It answers by path and records every request."""
 
-    def __init__(self, numbers, subscribe_error=None, refuse_biz_field=False):
+    def __init__(self, numbers, subscribe_error=None, refuse_biz_field=False,
+                 sync_errors=None):
         self.numbers = numbers
         self.subscribe_error = subscribe_error
         self.refuse_biz_field = refuse_biz_field
+        # WA-C3: the `sync_type` values whose `smb_app_data` call Meta refuses.
+        self.sync_errors = dict(sync_errors or {})
         self.calls: list[tuple[str, str, dict]] = []
+        self.headers: list[dict] = []
 
     def client(self):
         graph = self
@@ -331,11 +335,13 @@ class _MetaGraph:
                 return False
 
             async def get(self, url, headers=None, params=None):
+                graph.headers.append(dict(headers or {}))
                 return graph.answer("GET", url, params)
 
             async def post(self, url, headers=None, params=None, json=None,
                            data=None):
-                return graph.answer("POST", url, params or data)
+                graph.headers.append(dict(headers or {}))
+                return graph.answer("POST", url, params or data or json)
 
         return _Client
 
@@ -352,6 +358,12 @@ class _MetaGraph:
                 return _GraphResp(_META_UNKNOWN_FIELD, 400)
             return _GraphResp({"data": self.numbers, "paging": {
                 "cursors": {"before": "QVFIUk5", "after": "QVFIUmF"}}})
+        if path.endswith("/smb_app_data"):
+            sync_type = (params or {}).get("sync_type")
+            if sync_type in self.sync_errors:
+                return _GraphResp(self.sync_errors[sync_type], 400)
+            return _GraphResp({"messaging_product": "whatsapp",
+                               "request_id": f"req-{sync_type}"})
         if path.endswith("/subscribed_apps"):
             if self.subscribe_error is not None:
                 return _GraphResp(self.subscribe_error, 400)
@@ -1036,3 +1048,316 @@ def test_the_provider_refuses_a_non_digit_phone_number_id(bad) -> None:
 
     with pytest.raises(ValueError):
         WhatsAppCloudProvider({"access_token": "t", "phone_number_id": bad})
+
+
+# ── WS-20 WA-C3: the history sync call after a coexistence connect ───────────
+#
+# Spec §12.4.1 P1, P3 and P4. Meta, "Onboard WhatsApp Business app users":
+# `POST /<VER>/<PHONE_NUMBER_ID>/smb_app_data`, contacts first, then history,
+# within 24 hours of the connect. Each answer is `{messaging_product,
+# request_id}`.
+
+class _StateDB:
+    """A session that records the history-sync state writes."""
+
+    def __init__(self, writes: list[dict]):
+        self.writes = writes
+
+    async def execute(self, statement, params=None):
+        sql = str(statement)
+        if "history_sync_state" in sql and sql.lstrip().startswith("UPDATE"):
+            self.writes.append(dict(params or {}))
+        return _Result(row=None)
+
+    async def commit(self):
+        return None
+
+
+def _history_route(monkeypatch, graph: _MetaGraph, *, flag: str | None):
+    """`_embedded_route`, plus a session that records the state writes."""
+    from contextlib import asynccontextmanager
+
+    persisted = _embedded_route(monkeypatch, graph)
+    if flag is None:
+        monkeypatch.delenv("WHATSAPP_HISTORY_SYNC", raising=False)
+    else:
+        monkeypatch.setenv("WHATSAPP_HISTORY_SYNC", flag)
+    writes: list[dict] = []
+
+    @asynccontextmanager
+    async def _tenant_session(organization_id=None):
+        yield _StateDB(writes)
+
+    monkeypatch.setattr(connect, "_tenant_session", _tenant_session)
+    return persisted, writes
+
+
+def _sync_calls(graph: _MetaGraph) -> list[tuple[str, dict]]:
+    return [(p, body) for _, p, body in graph.calls if p.endswith("/smb_app_data")]
+
+
+async def test_flag_on_a_coexistence_connect_syncs_contacts_then_history(
+    monkeypatch,
+) -> None:
+    graph = _MetaGraph([_meta_number(_ES_PNID)])
+    persisted, writes = _history_route(monkeypatch, graph, flag="1")
+
+    out = await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+
+    assert _sync_calls(graph) == [
+        (f"/v21.0/{_ES_PNID}/smb_app_data",
+         {"messaging_product": "whatsapp", "sync_type": "smb_app_state_sync"}),
+        (f"/v21.0/{_ES_PNID}/smb_app_data",
+         {"messaging_product": "whatsapp", "sync_type": "history"}),
+    ]
+    # The two calls come after the subscribe, so after the save of P3.
+    paths = [p for _, p, _ in graph.calls]
+    assert paths.index(f"/v21.0/{_ES_WABA}/subscribed_apps") < paths.index(
+        f"/v21.0/{_ES_PNID}/smb_app_data")
+    # The token travels in the Authorization header, never in the URL.
+    assert graph.headers[-1] == {"Authorization": "Bearer BUSINESS-TOKEN"}
+    assert persisted[0]["history_sync_state"] == "pending"
+    assert out.history_sync == "requested"
+    assert [(w["state"], w["error"]) for w in writes] == [("requested", None)]
+
+
+async def test_flag_on_a_failed_history_call_keeps_the_account_and_says_failed(
+    monkeypatch,
+) -> None:
+    graph = _MetaGraph(
+        [_meta_number(_ES_PNID)],
+        sync_errors={"history": {"error": {
+            "message": "History sync is not available", "code": 131000}}})
+    persisted, writes = _history_route(monkeypatch, graph, flag="true")
+
+    out = await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+
+    assert out.account_id == "acc-1", "the connect failed on the sync step"
+    assert len(persisted) == 1
+    assert out.history_sync == "failed"
+    assert [(w["state"], w["error"]) for w in writes] == [
+        ("failed", "History sync is not available (Meta code 131000)")]
+
+
+async def test_a_failed_contacts_call_skips_the_history_call(monkeypatch) -> None:
+    graph = _MetaGraph(
+        [_meta_number(_ES_PNID)],
+        sync_errors={"smb_app_state_sync": {"error": {"message": "No", "code": 10}}})
+    _, writes = _history_route(monkeypatch, graph, flag="1")
+
+    out = await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+
+    assert [b["sync_type"] for _, b in _sync_calls(graph)] == ["smb_app_state_sync"]
+    assert out.history_sync == "failed"
+    assert writes[0]["state"] == "failed"
+
+
+async def test_flag_off_makes_no_smb_app_data_call(monkeypatch) -> None:
+    graph = _MetaGraph([_meta_number(_ES_PNID)])
+    persisted, writes = _history_route(monkeypatch, graph, flag=None)
+
+    out = await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+
+    assert _sync_calls(graph) == []
+    assert out.history_sync == "pending"
+    assert persisted[0]["history_sync_state"] == "pending"
+    assert writes == []
+
+
+async def test_a_plain_cloud_connect_has_no_history_sync(monkeypatch) -> None:
+    graph = _MetaGraph([_meta_number(_ES_PNID)])
+    persisted, _ = _history_route(monkeypatch, graph, flag="1")
+
+    out = await _connect(waba_id=_ES_WABA, phone_number_id=_ES_PNID)
+
+    assert _sync_calls(graph) == []
+    assert out.history_sync is None
+    assert persisted[0]["history_sync_state"] is None
+
+
+def test_the_flag_reads_true_only_for_a_yes_value() -> None:
+    on = connect.history_sync_enabled
+    assert on({"WHATSAPP_HISTORY_SYNC": "1"}) and on({"WHATSAPP_HISTORY_SYNC": " On "})
+    assert not on({}) and not on({"WHATSAPP_HISTORY_SYNC": "0"})
+    assert not on({"WHATSAPP_HISTORY_SYNC": "off"})
+
+
+# ── P4: the retry route ──────────────────────────────────────────────────────
+
+class _RetryDB:
+    """Answers the ownership check and the account read of the retry route."""
+
+    def __init__(self, row, writes: list[dict], owned: bool = True):
+        self.row, self.writes, self.owned = row, writes, owned
+
+    async def execute(self, statement, params=None):
+        sql = str(statement)
+        if sql.lstrip().startswith("UPDATE"):
+            self.writes.append(dict(params or {}))
+            return _Result(row=None)
+        if "SELECT 1 FROM wa_accounts" in sql:
+            return _Result(row=object() if self.owned else None)
+        return _Result(row=self.row)
+
+    async def commit(self):
+        return None
+
+
+def _retry_route(monkeypatch, *, state, age_hours, flag="1", owned=True):
+    from contextlib import asynccontextmanager
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    import httpx
+    from acb_llm import key_store
+
+    graph = _MetaGraph([_meta_number(_ES_PNID)])
+    if flag is None:
+        monkeypatch.delenv("WHATSAPP_HISTORY_SYNC", raising=False)
+    else:
+        monkeypatch.setenv("WHATSAPP_HISTORY_SYNC", flag)
+    monkeypatch.delenv("WHATSAPP_GRAPH_VERSION", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", graph.client())
+    row = SimpleNamespace(
+        history_sync_state=state, phone_number_id=_ES_PNID,
+        created_at=datetime.now(UTC) - timedelta(hours=age_hours),
+        credentials_encrypted="enc")
+    writes: list[dict] = []
+
+    @asynccontextmanager
+    async def _tenant_session(organization_id=None):
+        yield _RetryDB(row, writes, owned)
+
+    class _Store:
+        def decrypt(self, raw):
+            return json.dumps({"access_token": "STORED-TOKEN"})
+
+    monkeypatch.setattr(connect, "_tenant_session", _tenant_session)
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+    return graph, writes
+
+
+async def _retry():
+    from types import SimpleNamespace
+
+    return await connect.retry_history_sync(
+        "acc-1", user=SimpleNamespace(email="u@x"))
+
+
+@pytest.mark.parametrize("state", ["pending", "failed"])
+async def test_the_retry_route_runs_the_sync_again(monkeypatch, state) -> None:
+    graph, writes = _retry_route(monkeypatch, state=state, age_hours=2)
+
+    out = await _retry()
+
+    assert [b["sync_type"] for _, b in _sync_calls(graph)] == [
+        "smb_app_state_sync", "history"]
+    assert graph.headers[-1] == {"Authorization": "Bearer STORED-TOKEN"}
+    assert out.history_sync == "requested"
+    assert writes[0]["state"] == "requested"
+
+
+@pytest.mark.parametrize("state", ["requested", "complete", "declined", None])
+async def test_the_retry_route_answers_409_in_a_wrong_state(monkeypatch, state) -> None:
+    from fastapi import HTTPException
+
+    graph, writes = _retry_route(monkeypatch, state=state, age_hours=2)
+    with pytest.raises(HTTPException) as exc:
+        await _retry()
+    assert exc.value.status_code == 409
+    assert _sync_calls(graph) == [] and writes == []
+
+
+async def test_the_retry_route_answers_409_after_24_hours(monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    graph, writes = _retry_route(monkeypatch, state="failed", age_hours=25)
+    with pytest.raises(HTTPException) as exc:
+        await _retry()
+    assert exc.value.status_code == 409
+    assert "disconnect" in exc.value.detail.lower()
+    assert "connect it again" in exc.value.detail.lower()
+    assert _sync_calls(graph) == [] and writes == []
+
+
+async def test_the_retry_route_answers_400_with_the_flag_off(monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    graph, _ = _retry_route(monkeypatch, state="pending", age_hours=1, flag=None)
+    with pytest.raises(HTTPException) as exc:
+        await _retry()
+    assert exc.value.status_code == 400
+    assert _sync_calls(graph) == []
+
+
+async def test_the_retry_route_answers_404_for_an_account_of_another_member(
+    monkeypatch,
+) -> None:
+    from fastapi import HTTPException
+
+    graph, _ = _retry_route(monkeypatch, state="pending", age_hours=1, owned=False)
+    with pytest.raises(HTTPException) as exc:
+        await _retry()
+    assert exc.value.status_code == 404
+    assert _sync_calls(graph) == []
+
+
+def test_the_retry_route_is_registered() -> None:
+    from gateway.routes.whatsapp.core import router
+
+    assert any(
+        getattr(r, "path", "") == "/whatsapp/accounts/{account_id}/history-sync"
+        and "POST" in getattr(r, "methods", set())
+        for r in router.routes)
+
+
+# ── WA-C3 fix round: the account model says what the server can do ──────────
+
+def _account_row(**over):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    base = dict(
+        id="acc-1", phone_number="+1", phone_number_id=_ES_PNID, waba_id=None,
+        display_name="A", avatar_color=None, sync_status="live", sync_error=None,
+        history_import_phase=0, quality_rating=None, last_synced_at=None,
+        is_default=True, provider="cloud_api", history_sync_state="pending",
+        history_sync_error=None, history_import_progress=None,
+        created_at=datetime(2026, 10, 7, 9, 30, tzinfo=UTC))
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize(("flag", "want"), [("1", True), (None, False), ("0", False)])
+def test_the_account_model_says_whether_the_import_is_on(monkeypatch, flag, want) -> None:
+    """P2-1: the UI offers a start, or reconnect advice, only when the server
+    runs the sync calls."""
+    from gateway.routes.whatsapp.transport.accounts import _account_model
+
+    if flag is None:
+        monkeypatch.delenv("WHATSAPP_HISTORY_SYNC", raising=False)
+    else:
+        monkeypatch.setenv("WHATSAPP_HISTORY_SYNC", flag)
+    assert _account_model(_account_row()).history_sync_available is want
+
+
+def test_the_deadline_is_created_at_plus_24_hours() -> None:
+    from datetime import UTC, datetime
+
+    from gateway.routes.whatsapp.transport.accounts import history_sync_deadline
+
+    assert history_sync_deadline(datetime(2026, 10, 7, 9, 30, tzinfo=UTC)) == (
+        datetime(2026, 10, 8, 9, 30, tzinfo=UTC))
+    # A naive time is read as UTC, and a missing one gives no deadline.
+    assert history_sync_deadline(datetime(2026, 10, 7, 9, 30)) == (
+        datetime(2026, 10, 8, 9, 30, tzinfo=UTC))
+    assert history_sync_deadline(None) is None
+
+
+def test_the_model_carries_the_deadline_only_with_a_state() -> None:
+    from gateway.routes.whatsapp.transport.accounts import _account_model
+
+    with_state = _account_model(_account_row(history_sync_state="failed"))
+    assert with_state.history_sync_deadline == "2026-10-08T09:30:00+00:00"
+    without = _account_model(_account_row(history_sync_state=None))
+    assert without.history_sync_deadline is None

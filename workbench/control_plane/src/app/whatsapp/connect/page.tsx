@@ -18,7 +18,15 @@ import {
   startBridgeSession,
   verifyConnection,
 } from "../lib/api";
-import type { WaConnectionInfo, WaVerifyResult } from "../lib/types";
+import {
+  connectHistoryCopy,
+  type ConnectHistorySync,
+} from "../lib/historySync";
+import type {
+  WaConnectionInfo,
+  WaEmbeddedResult,
+  WaVerifyResult,
+} from "../lib/types";
 import {
   COEXISTENCE_LIMITS,
   SIGNUP_EXTRAS,
@@ -42,6 +50,9 @@ export default function ConnectPage() {
   const [info, setInfo] = useState<WaConnectionInfo | null>(null);
   const [mode, setMode] = useState<ConnectMode>("loading");
   const [step, setStep] = useState(0);
+  // WS-20 WA-C3: what the Embedded Signup answered about the history import.
+  // null for every other path, which imports no history.
+  const [historySync, setHistorySync] = useState<ConnectHistorySync>(null);
 
   useEffect(() => {
     fetchConnectionInfo().then((i) => {
@@ -107,7 +118,10 @@ export default function ConnectPage() {
             setStep(0);
             setMode("manual");
           }}
-          onDone={() => setMode("done")}
+          onDone={(result) => {
+            setHistorySync(result?.history_sync ?? null);
+            setMode("done");
+          }}
         />
       )}
 
@@ -140,7 +154,7 @@ export default function ConnectPage() {
 
       {mode === "done" && (
         <div className="mt-6">
-          <StepDone onGo={goInbox} />
+          <StepDone onGo={goInbox} historySync={historySync} />
         </div>
       )}
     </div>
@@ -396,7 +410,7 @@ function ChooseConnect({
 }: {
   info: WaConnectionInfo;
   onManual: () => void;
-  onDone: () => void;
+  onDone: (result: WaEmbeddedResult | null) => void;
 }) {
   return (
     <Card>
@@ -451,7 +465,7 @@ function EmbeddedSignupButton({
   onDone,
 }: {
   info: WaConnectionInfo;
-  onDone: () => void;
+  onDone: (result: WaEmbeddedResult | null) => void;
 }) {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -513,7 +527,7 @@ function EmbeddedSignupButton({
     setBusy(true);
     embeddedSignup(step.request).then((res) => {
       setBusy(false);
-      if (res.ok) onDone();
+      if (res.ok) onDone(res.data);
       else
         setError(
           typeof res.error === "string" ? res.error : "Couldn't finish connecting."
@@ -940,7 +954,13 @@ function StepCredentials({
 
 // ── Step 4: done ──────────────────────────────────────────────────────────────
 
-function StepDone({ onGo }: { onGo: () => void }) {
+function StepDone({
+  onGo,
+  historySync,
+}: {
+  onGo: () => void;
+  historySync: ConnectHistorySync;
+}) {
   return (
     <Card>
       <div className="flex flex-col items-center py-4 text-center">
@@ -949,9 +969,7 @@ function StepDone({ onGo }: { onGo: () => void }) {
         </span>
         <h2 className="text-[15px] font-semibold">You&apos;re connected 🎉</h2>
         <p className="mx-auto mt-1.5 max-w-sm text-[12.5px] text-muted-foreground">
-          New messages will land in your triage queue as they arrive. Older chats
-          aren&apos;t imported yet — coexistence history sync comes later — so your
-          inbox starts fresh from now.
+          {connectHistoryCopy(historySync)}
         </p>
         <PrimaryButton onClick={onGo} className="mt-5">
           Go to inbox <Icon name="ArrowRight" className="h-3.5 w-3.5" />
