@@ -7,8 +7,9 @@
 **D93** are in `work_plan.md` §3.
 
 **N1 is built and dark** (2026-10-07, PR #711). **N3 is built and dark**
-(2026-10-07, branch `ws48-n3-decide-tier`). `NARROWING_AGENTS` ships empty,
-and `SYSTEM_ONE_ON_DECIDE` ships OFF. The N3 build notes are under §9 N3.
+(2026-10-07, branch `ws48-n3-decide-tier`). **N2 is built and dark**
+(2026-10-07, branch `ws48-n2-email`). `NARROWING_AGENTS` ships empty, and
+`SYSTEM_ONE_ON_DECIDE` ships OFF. The N2 and N3 build notes are under §9.
 
 Verified against code on 2026-10-07 at `main` `82d09830b`. Every file path
 and line in this spec was read at that commit. Re-verify each anchor at
@@ -225,6 +226,14 @@ the kept items follow in full, each one framed as data.
 If NARROW finds more than 200 matches, the count line says so. The calling
 model can then narrow the filters and call again.
 
+*(Amended by WS-48 N2, 2026-10-07. Item 2 said "with `query` as its text".
+The route ANDs bare words, so a question as it stands finds almost no mail.
+The email adapter searches for ANY word of `query`, joined with `OR`.)*
+
+*(Also by WS-48 N2. A filter key `words` lets the model name the search
+words itself, with their synonyms. `words` set to `""` searches on the
+filters only. PICK still gets the member's question as `query`.)*
+
 ### 3.3 PICK — `tier-decide`
 
 1. The tool cuts the candidates into batches of 16.
@@ -353,13 +362,18 @@ class SourceAdapter(Protocol):
 
 | Adapter | NARROW route | READ route | Filter keys |
 |---|---|---|---|
-| email (N2) | `GET /email/search`, `light=true`, `hybrid=true` | the route of `read_email` | `account_id`, `folder`, `labels`, `from`, `to`, `after`, `before`, `has_attachments`, `sender_category` |
+| email (N2) | `GET /email/search`, `light=true`, `hybrid=true` | the route of `read_email` | `account_id`, `folder`, `labels`, `from`, `to`, `after`, `before`, `has_attachments`, `sender_category`, `unread`, `words` |
 | whatsapp (N4) | `GET /whatsapp/search`, `hybrid=true` | the route of `read_whatsapp_chat` | `account_id`, `chat_id`, `after`, `before` |
 | crm (N5) | the route of `search_crm` | the routes of `get_record` and `get_timeline` | `entity`, `owner`, `stage` |
 | projects (N5) | the route of `task_dataset` | the task read route of `skill_projects` | `project_id`, `assignee`, `status`, `after`, `before` |
 
 The N4 and N5 rows are a plan. Each slice re-reads the routes at dispatch,
 and it may change a filter key to match its route.
+
+*(Amended by WS-48 N2, 2026-10-07. The email row gains `unread`, which sets
+`is_read`, and `words`, which sets `q` (§3.2). An adapter refuses a bad value
+by name through `narrowing.FilterRefused`, because the route drops a date
+that it cannot parse with no error.)*
 
 ---
 
@@ -598,6 +612,39 @@ itself, and a change to `query_inbox`.
 
 **Gate:** to put `email-assistant` in `NARROWING_AGENTS` on production is
 OWNER-GATE. It moves credit spend for a live org (CLAUDE.md §3a rule 3).
+
+**Build notes (2026-10-07, branch `ws48-n2-email`).**
+
+- **The adapter** is `narrow_source.py`. It takes ONE callable, the agent's
+  own `_get`, so it adds no client and opens no session. `agents.py` loads it
+  by path under a name of its own. A bare import would take another agent's
+  adapter, because the loader puts each agent dir on `sys.path`.
+- **The instructions.** `instructions.md` holds the block of the tool between
+  two marker lines. A build with no tool cuts the block out, so the prompt
+  never names a tool that the agent does not hold.
+- **The scope.** `narrow_and_read` is in `own_tool_scope`, or the filter takes
+  it away from a run with the flag on. `test_own_tool_scope_parity.py` now
+  knows a tool that a flag gates, and checks the scope with every flag on.
+- ⚠️ **READ marks each read mail as read.** The route of `read_email` sets
+  `is_read` on the row. `read_email` does the same today. A READ of 25 kept
+  mails marks 25 mails read, in the app only. The owner may want a read with
+  no effect.
+- **The eval** is `evals/email_narrowing/`. It asks a fifth question, Q5,
+  that measures the gap of Q3. Its README holds the tables.
+- **The result of the scripted run, 2026-10-07.** Recall is 1.0 on Q1 to Q4.
+  The cost ratio on Q1 to Q4 is 0.33, under the bar of 0.40. Q5 has a recall
+  of 0.6, as expected: two answers share no word with any search.
+- ⚠️ **The ratio rests on assumptions, and the PR names them.** Each request
+  carries about 14,000 tokens of instructions and tool schemas. So the number
+  of requests carries most of the saving, and PICK alone saves about 2
+  points. The before path reads 5 mails in one request. With every read in
+  ONE request, the ratio is 0.69, over the bar. The break-even factor of
+  `tier-powerful` is 1.4: if it costs 1.4 times `tier-balanced` or more, the
+  hint to `tier-powerful` takes the whole saving.
+- **Not done: done-when item 6.** No box has a bound `tier-decide`, so no
+  run measured the real verdicts or the real credits. `--compare` is built,
+  and it refuses a door that is not on the machine. HANDOFF H-267 holds the
+  step.
 
 ### N3 · System 1 sends a typed question to `tier-decide` (D93) — AGENT-SAFE
 

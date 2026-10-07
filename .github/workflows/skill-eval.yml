@@ -21,6 +21,8 @@ on:
       # these tools and this agent, so a change to either re-runs it.
       - "apps/skills/skill-projects/**"
       - "apps/agents/agent-projects/**"
+      # WS-48 N2: the email narrowing eval runs this agent's tools.
+      - "apps/agents/agent-email-assistant/**"
       - ".github/workflows/skill-eval.yml"
   workflow_dispatch:
 
@@ -57,6 +59,12 @@ jobs:
         run: |
           uv run python -m evals.projects_ops.run --scripted --out "$RUNNER_TEMP/po-uncovered"
           uv run python -m evals.projects_ops.run --scripted --covered --out "$RUNNER_TEMP/po-covered"
+
+      # WS-48 N2 (data_narrowing_pipeline.md §7.2): five questions of
+      # email-assistant, today's path and narrow_and_read, on a synthetic
+      # mailbox. Recall 100% and cost <= 40%. No model, no Router.
+      - name: Email narrowing eval (scripted)
+        run: uv run python -m evals.email_narrowing.run --scripted --out "$RUNNER_TEMP/email-narrowing"
 
   inspect:
     name: "Inspect AI scenario harness (smoke)"

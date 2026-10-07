@@ -95,6 +95,26 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-267 · Run the email narrowing eval against a real `tier-decide` · [AGENT]
+- **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
+  No line with a measured recall and a date under §9 N2 means this is open.
+- **Why.** WS-48 N2 done-when item 6 wants the before and after tables from a
+  dev box with the Router. No box has a bound `tier-decide`, so the PR has
+  only the scripted run. Its verdicts, tokens and credits are stub numbers.
+- **Do.**
+  1. On a dev box, bind `tier-decide`, turn on `DECIDE_ENABLED`, and price
+     `tier-decide`, `tier-balanced` and `tier-powerful` on the Console.
+  2. Set `CUSTOMER_CONSOLE_URL` to the Console on that box. Then run
+     `uv run python -m evals.email_narrowing.run --compare --out <dir>`.
+  3. Join each `request_id` of the summary to `usage_event` for the real
+     credits of PICK.
+  4. Write the recall of each question, the PICK credits, the date and the
+     SHA under §9 N2, with the words "compare run".
+- **Do not** put `email-assistant` in `NARROWING_AGENTS` on production. That
+  is OWNER-GATE (spec §11), and a dev-box run does not open it.
+- **Authority:** `data_narrowing_pipeline.md` §7.2 and §9 N2 · D93
+- **Added:** 2026-10-07 · branch `ws48-n2-email` (WS-48 N2)
+
 ### H-266 · Redis has no maxmemory policy, and the email HTML and attachment caches are bounded only by TTL · [AGENT]
 - **Check:** run `grep -rn "maxmemory" infra/ deploy/`. No `maxmemory` with a
   `maxmemory-policy` for the Redis of the gateway means this is open.
