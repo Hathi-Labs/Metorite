@@ -2432,8 +2432,51 @@ claim as a filter.
   employees are single-org), and building it early would put churn on the live
   auth path for a case that does not yet exist.
 
-**Anti-scope:** hostnames never participate (D51); no second grant vocabulary —
-the chooser lists organizations, never roles (D12).
+**Anti-scope:** hostnames never participate (D51). There is no second grant
+vocabulary: the chooser lists organizations, never roles (D12).
+
+- **Slice A2 — several ACCOUNTS in one browser, the Gmail model (BUILT
+  2026-10-07, ships dark).** Owner ask, 2026-10-07: *"build a switcher to
+  quickly toggle between multiple organizations signed into Metorite, similar
+  to how Google Mail handles it."* The owner's own case is two EMAILS in two
+  organizations, and one email is one organization today (slice C). So this
+  slice switches between signed-in accounts, and slice B stays unbuilt.
+
+  **How it works.** Auth.js holds one session cookie, and a new sign-in
+  overwrites it (`@auth/core` `callback/index.js:71-77` builds a fresh token).
+  So the browser keeps each other account's OWN session token, unchanged, in a
+  slot cookie (`mt-acct-0` to `mt-acct-3`, `httpOnly`, `Secure`, `SameSite=Lax`).
+  A switch SWAPS the active token and a slot token. The server never mints a
+  token: each one came out of a completed sign-in, through the `signIn` gate.
+
+  **What the gateway sees does not change.** One email per request, from the
+  active session. The tenant binding (R11) is untouched. A switch changes which
+  verified identity is active. It never chooses an organization.
+
+  **The rules, each with its fence:**
+
+  1. A slot is used only if it decodes with the session secret and has not
+     expired. A rotated `AUTH_SECRET` drops every slot.
+     Fence: `accountSlots.test.ts`.
+  2. Every write is a same-origin `POST`, from a request with a valid active
+     session. Fence: `app/api/accounts/route.test.ts`.
+  3. A switch reloads the page at `/`, and first clears the browser state that
+     belongs to one organization: the logo cache, the org density, and the
+     Email mailbox choice. Fence: `accountSwitch.test.ts`, which also fails if
+     a listed key is renamed.
+  4. "Sign out of all accounts" clears every slot, and every account's chat
+     namespace (`projects_ai_chat.md` "Replace the pointer when the switcher
+     lands"). Fence: `accountSwitch.test.ts`.
+  5. At most four other accounts. A fifth replaces the oldest.
+
+  **Where it shows.** Desktop: the sidebar footer is an account button, and the
+  folded rail has an avatar at its foot. Both open one menu: the active account
+  and its organization, the other accounts, "Add another account", and "Sign
+  out of all accounts". Phone: the same list unfolds in the drawer footer.
+
+  **Flag.** `ACCOUNT_SWITCHER_ENABLED=true` on the workbench, read at request
+  time. Off, `/api/accounts` answers `enabled: false`, and the footer is
+  unchanged.
 
 #### MT-1g · Blobs out of Postgres · 🟢 AGENT-SAFE
 **Owner:** §1.6 · **Anchor:** `71_agent_blob_store.sql:30` (`content BYTEA`)

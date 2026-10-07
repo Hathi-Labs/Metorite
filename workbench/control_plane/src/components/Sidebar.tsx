@@ -23,6 +23,7 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import ThemeToggle from "@/components/ThemeToggle";
+import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 
 /** Mirrors gateway/routes/apps/pins.py's PinnedApp — GET /api/apps/pins. */
 type PinnedApp = { slug: string; name: string; icon?: string };
@@ -68,6 +69,9 @@ export default function Sidebar() {
     if (isPlainNavClick(e)) armedRef.current = true;
   }, []);
   const { data: session } = useSession();
+  // The account switcher (MT-1k A2). Off, `accounts.enabled` is false and the
+  // footer below is the one this sidebar always had.
+  const { accounts, reload: reloadAccounts } = useAccounts();
   const [agentUpdateCount, setAgentUpdateCount] = useState(0);
   const [pinnedApps, setPinnedApps] = useState<PinnedApp[]>([]);
   // Org access control (spec §5, seam 5): the sidebar shows only what this
@@ -351,7 +355,8 @@ export default function Sidebar() {
       </nav>
 
       {/* User / sign-out footer */}
-      {!collapsed && (
+      <SidebarAccountFooter collapsed={collapsed} accounts={accounts} reload={reloadAccounts} />
+      {!accounts.enabled && !collapsed && (
         <div className="border-t border-sidebar-border px-4 py-3">
           {session?.user ? (
             <div className="flex items-center justify-between">

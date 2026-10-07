@@ -15,6 +15,9 @@ function Form({ providers }: { providers: ConfiguredProvider[] }) {
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callbackUrl") ?? "/";
   const errorMessage = signInErrorMessage(searchParams.get("error"));
+  // MT-1k A2: "Add another account" from the account switcher. The account
+  // that was active waits in a slot, so this page offers a way back to it.
+  const adding = searchParams.get("add") === "1";
   const [pending, setPending] = useState<string | null>(null);
   // CP-2d: the address the email-OTP provider sends the code to. It is USER
   // INPUT here on purpose and that is not an R11 breach — it is not trusted as
@@ -25,9 +28,11 @@ function Form({ providers }: { providers: ConfiguredProvider[] }) {
   return (
     <div className="flex min-h-screen items-center justify-center p-10">
       <div className="w-full max-w-sm rounded-lg border border-border bg-card p-8 text-center">
-        <h1 className="text-xl font-semibold">Metorite</h1>
+        <h1 className="text-xl font-semibold">{adding ? "Add another account" : "Metorite"}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Sign in with your work account.
+          {adding
+            ? "Sign in with another work account. Your other accounts stay signed in."
+            : "Sign in with your work account."}
         </p>
 
         {errorMessage && (
@@ -107,7 +112,10 @@ function Form({ providers }: { providers: ConfiguredProvider[] }) {
                   disabled={pending !== null}
                   onClick={() => {
                     setPending(p.id);
-                    signIn(p.id, { callbackUrl });
+                    // ⚠️ Adding: ask the provider for its account picker.
+                    // Google and Microsoft otherwise sign the browser's
+                    // current account straight back in, and nothing is added.
+                    signIn(p.id, { callbackUrl }, adding ? { prompt: "select_account" } : undefined);
                   }}
                 >
                   {p.label}
@@ -115,6 +123,14 @@ function Form({ providers }: { providers: ConfiguredProvider[] }) {
               ),
             )}
           </div>
+        )}
+
+        {adding && (
+          // A full load, not a client route: the session cookie never changed,
+          // and the shell should start clean in the account it returns to.
+          <a href="/" className="mt-4 inline-block text-sm text-primary hover:underline">
+            Cancel, and go back
+          </a>
         )}
 
         {/* D51 / WS-35 — the join-vs-create fork, stated at the first door.
