@@ -12718,7 +12718,7 @@ domains, and the question fence fails.
 - **Prompt injection.** The mail text goes into the state as data, as in the rule match. The
   instructions and the criteria are constant text, and they name a field by its path.
   `_named_state` copies the named fields and drops each other key.
-- **Fences.** `tests/unit/test_email_insights_screen.py` holds 29 tests. Three registry fences
+- **Fences.** `tests/unit/test_email_insights_screen.py` holds 44 tests. Three registry fences
   in `test_email_decide_shadow.py`, `test_email_decide_questions.py` and
   `test_email_decide_on.py` now name the screen.
 
@@ -12754,6 +12754,36 @@ and `git status` was clean.
 | M5 | The bar goes from 0.3 to 0.0 | 4 failed, the 0.29 case among them |
 | M6 | The state goes out as the caller gave it | 1 failed, the named-fields fence |
 | M7 | `shadow` asks | 1 failed, the `shadow` case |
+
+**Review (2026-10-07): APPROVE.** The reviewer approved the slice at `3ec351518`, with P3
+findings only. Fix round 1 made these changes:
+
+1. **Bad `domains`.** None, a bare `str` and a value that is not a set of names ask nothing.
+   The screen logs `email.insights.screen_bad_domains` at warning level, with the type name,
+   and returns None. Before the fix, None raised `TypeError`. A bare `"finance"` became a set of
+   letters, so the screen skipped each mail with no word. The screen refuses a `str`, and it
+   does not read it as one domain.
+2. **Files.** `_named_state` accepts each sequence that is not text, a list or a tuple. It
+   drops a value of another type, and each entry that is not an object. A drop logs
+   `email.insights.screen_files_dropped` at warning level, with a count.
+3. **The log.** `decide.decided` holds each probability unrounded, and `threshold` beside it.
+   Before the fix, 0.2999999 logged as 0.3 with `passed=[]`.
+4. **The sender.** The data guidance names `email.sender` too, because an outside sender sets
+   its own display name.
+5. **The docstring** of `decide_features.py` now says five email features.
+6. **EM-T14b-2 item 5** now holds the member rule, with its fence.
+
+**Mutations of fix round 1, as run (2026-10-07).** The implementer committed the fix before the mutations.
+
+| Id | Mutation | Result |
+|---|---|---|
+| R1 | A bare `str` reads as a set of letters | 2 failed, `str` and `bytes` |
+| R2 | The check for None goes, and the `try` stays | 0 failed. The `try` also catches None, so this mutant does the same thing |
+| R2c | The check for None and the `try` go | 3 failed: None, 42 and a list of lists |
+| R3 | The screen accepts only a `list` of files | 1 failed, the tuple case |
+| R4 | An entry that is not an object drops with no log | 1 failed |
+| R5 | The log rounds the probability to 4 places | 1 failed |
+| R6 | The data guidance leaves out `email.sender` | 1 failed |
 
 **EM-T14b-1 — the checks and the eval set (no database).**
 
@@ -12830,6 +12860,15 @@ and `git status` was clean.
    - **A kept fact is lost (P3-d).** `write_facts` stores no fact that it counts in `kept`. If the
      row that owns the key goes later, nothing writes that fact again. A later pass that reads such
      messages again must clear `insights_at` for them.
+7. 🔴 **The job MUST send the proven mailbox owner to the screen** (review of EM-T14b-0,
+   2026-10-07). It calls `screen(..., member=owner)`. It reads `owner` with
+   `engine._decide_member(db, account_id, insights_screen.FEATURE)`, in its read session.
+   - **Why.** A deployment Router key refuses a `decide` call with no proven member. It answers
+     403 (`customer_console/auth.py` ~:698-705).
+   - That 403 starts `REFUSAL_COOLDOWN_S`, 15 minutes, for the whole organization. For that time
+     the triage rule match also leaves each mail undecided.
+   - **Fence.** In `tests/unit/test_email_insights_job.py`, the screen call of the job names the
+     owner as a proven member.
 
 **Non-goals.** No route, no UI and no tool. No sent mail. No spreadsheet figure (D-EM-40).
 
