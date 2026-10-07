@@ -21,8 +21,8 @@
  *   • Tier 4 — `react` node: an agent-authored React COMPONENT, bundled
  *     server-side (SandboxedReact) and run in that same isolated frame. Real
  *     state/hooks/effects for immersive artifacts, same zero authority.
- * There is NO in-tree raw-markup injection: an unknown `type` renders as an inert
- * labelled fallback, and neither the `html` nor `react` tier's code ever touches
+ * There is NO in-tree raw-markup injection: an unknown `type` renders its words
+ * as plain text (`GenUIFallback`), and neither the `html` nor `react` tier's code ever touches
  * our DOM/origin.
  *
  * Interactivity: `button` nodes carry an `action` string; clicking one calls
@@ -40,6 +40,8 @@ import SandboxedHtml from "@/components/SandboxedHtml";
 import Button from "@/components/ui/Button";
 import SandboxedReact from "@/components/SandboxedReact";
 import { renderTemplate } from "@/components/genUITemplates";
+import GenUIFallback from "@/components/GenUIFallback";
+import { isEmptyNode } from "@/lib/genUiFallback";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
 import { type AccentHue, accentForHue } from "@/lib/statusAccent";
@@ -53,7 +55,9 @@ export interface GenUINode {
   children?: GenUINode[];
 }
 
-/** The whitelisted component kinds. Extend deliberately — each is inert data. */
+/** The whitelisted component kinds. Extend deliberately — each is inert data.
+ *  `GENUI_NODE_TYPES` in `write_artifact.py` is the copy the tool refuses
+ *  against, and `test_genui_catalog_lockstep.py` fails when the two differ. */
 const KNOWN_TYPES = new Set([
   "card", "stack", "row", "heading", "text", "markdown", "badge",
   "divider", "keyValue", "table", "list", "code", "link", "button", "callout",
@@ -117,6 +121,9 @@ function Node({
   // Depth guard — a pathological/looping tree can't blow the stack.
   if (depth > 20) return null;
   if (!node || typeof node !== "object") return null;
+  // A node that holds nothing draws nothing: no frame, no gap, no bar
+  // (`lib/genUiFallback.ts`). An empty callout drew a lone accent bar.
+  if (isEmptyNode(node)) return null;
   const type = s(node.type);
   const props = (node.props ?? {}) as Record<string, unknown>;
   const kids = Array.isArray(node.children) ? node.children : [];
@@ -374,14 +381,11 @@ function Node({
     }
 
     default:
-      // Unknown type → inert, labelled fallback. NEVER render raw props/markup.
-      if (!KNOWN_TYPES.has(type)) {
-        return (
-          <div className="rounded border border-dashed border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
-            unsupported UI element{type ? `: ${type}` : ""}
-          </div>
-        );
-      }
+      // Unknown type → its words as text, never raw props or markup, and
+      // never "unsupported UI element" (`GenUIFallback.tsx`). The tool
+      // refuses an unknown type now (`genui_refusal`), so this draws the
+      // rows saved before that.
+      if (!KNOWN_TYPES.has(type)) return <GenUIFallback node={node} />;
       return null;
   }
 }
