@@ -95,6 +95,61 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-263 · Start `acb-pull.timer` again on the box, and prove that #702 serves · [AGENT]
+- **Check:** run `ssh metorite 'systemctl is-active acb-pull.timer'`. Any
+  output other than `active` means this is open. Then run
+  `curl -fsS https://api.metorite.com/version` and read `sha` and
+  `applied_sha`. For each, run `git merge-base --is-ancestor 82d09830b <sha>`.
+  A non-zero exit means #702 does not serve, and this is open.
+- **Why.** The response to the incident of 2026-10-07 stopped
+  `acb-pull.timer`, so that no deploy reached a slow cluster. #702
+  (`82d09830b`) merged in that window. So the box can still serve an older
+  build, and no pull brings it forward.
+- **Do.** Run the Check first, because the coordinator can have done this
+  already. If the timer is not active, run
+  `sudo systemctl enable --now acb-pull.timer`. Wait one pull cycle of five
+  minutes, and read `/version` again. Name the served SHA in the same message
+  (CLAUDE.md §3a rule 2).
+- **Authority:** CLAUDE.md §3a, gate `deploy` (granted until 2026-11-30) ·
+  the incident note in `scripts/backup_db.sh`, "Scratch databases"
+- **Added:** 2026-10-07 · branch `ops-backup-io` (the backup I/O fix)
+
+### H-262 · Decide if the Supabase compute size is large enough · [OWNER]
+- **Check:** `rg -n "H-262" project-docs/work_plan.md project-docs/specs/backup_and_restore.md`
+  → no hit means the owner has not recorded a decision, and this is open.
+- **Why.** At about 02:55 UTC on 2026-10-07, the production Supabase
+  project used up its disk I/O budget. Checkpoint write time went from a
+  normal 270 s to between 905 s and 1015 s. Sync time went from 0.04 s to
+  9 s. Statements timed out across the instance, and the gateway pool timed
+  out. At 04:20 the project was still slow.
+- **What made the load.** The nightly verify restored a full copy into the
+  cluster from 02:32 to 02:36 UTC. Also, seven deploys that day each took a
+  full `pg_dump` with no migration pending. Branch `ops-backup-io` removes
+  both loads.
+- **The decision.** With both loads gone, decide if the current compute size
+  gives enough headroom. A larger size costs money each month, so only the
+  owner decides (CLAUDE.md §3a rule 3). Read the checkpoint numbers above,
+  and the I/O graph of the project for the week after the fix.
+- **Authority:** CLAUDE.md §3a rule 3 · `deploy/hostinger/acb-backup.service`
+- **Added:** 2026-10-07 · branch `ops-backup-io` (the backup I/O fix)
+
+### H-261 · Stop the email sync from holding a transaction open while it waits on the provider (EM-T4a-4) · [AGENT]
+- **Check:** `rg -n "EM-T4a-4 MERGED" project-docs/specs/email_app_master_plan.md`
+  → no hit means this is open. On the box, this query shows the symptom:
+  `SELECT pid, now() - state_change AS age, query FROM pg_stat_activity WHERE state = 'idle in transaction' AND wait_event = 'ClientRead' ORDER BY age DESC;`
+  A row older than a few seconds is a session that holds a transaction
+  across I/O.
+- **Why.** During the incident of 2026-10-07, the cluster showed sessions
+  `idle in transaction` with the wait event `ClientRead`. The email sync
+  keeps a database session open while it waits on Gmail or Graph. Each such
+  session holds a pool connection and its locks. On a slow cluster, a slow
+  provider call then becomes a gateway pool timeout.
+- **Do.** Build EM-T4a-4 as §10.4.6 of the email master plan defines it.
+  EM-T4a-2 PR-B3 and EM-T4a-3 come first. Then run the query above on the
+  box again, and record the result.
+- **Authority:** `project-docs/specs/email_app_master_plan.md` §10.4.6, EM-T4a-4
+- **Added:** 2026-10-07 · branch `ops-backup-io` (the incident record)
+
 ### H-260 · Bind the gateway to 127.0.0.1, so the box cannot reach it on a public address · [AGENT]
 - **Check:** `rg -n "\-\-host 0.0.0.0" deploy/hostinger/acb-gateway.service`
   → a hit means this is open.

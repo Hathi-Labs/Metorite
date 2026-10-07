@@ -13,6 +13,9 @@ Wants=network-online.target
 # A hard `Requires` makes the nightly backup fail on a box that no longer runs
 # a database container, which is a backup lost to a dependency it does not use.
 # The docker path still orders correctly behind `After=`.
+# Since 2026-10-07 the deep verify runs in a container (see ExecStart below),
+# so it needs Docker even on a managed box. It stays `Wants`: without Docker
+# the dump still lands, and the verify fails loudly on its own.
 Wants=docker.service
 
 [Service]
@@ -38,9 +41,18 @@ EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
 # acb-health-watchdog.service.
 #
 # `--verify-restore` is the whole point of the unit rather than a bare dump:
-# it restores the fresh dump into a scratch database and counts rows, so a
-# backup that cannot be restored fails LOUDLY every night instead of being
-# discovered during an incident. That is this ticket's own rule — a backup
-# nobody has restored is not a backup.
+# it restores the `public` schema of the fresh dump and compares its table
+# count with live, so a backup that cannot be restored fails LOUDLY every night
+# instead of being discovered during an incident. That is this ticket's own
+# rule — a backup nobody has restored is not a backup.
+#
+# 🔴 **WHERE it restores changed on 2026-10-07.** It used to `createdb` and
+# `pg_restore` INTO THE PRODUCTION CLUSTER. On the managed cluster that write
+# burst used up the disk I/O budget, and the instance stayed degraded for hours.
+# It now restores into a throwaway `pgvector/pgvector:pg<live major>` container
+# on THIS box: no network, capped at 1g of memory, removed on exit. The cluster
+# gets reads only. So the verify NEEDS Docker on the box (the `Wants=` above).
+# Without Docker the verify fails with exit 1, after the dump is on disk. It
+# never falls back to the cluster.
 ExecStart=/bin/bash /opt/acb/app/scripts/backup_db.sh --verify-restore
 TimeoutStartSec=1800

@@ -3,6 +3,11 @@
 **Status:** scripts SHIPPED · **scheduling CLOSED 2026-08-05** (timer installed,
 enabled, and proven by a real run) · **off-box copy still OWNER-GATE and now the
 largest remaining hole**
+**2026-10-07, after an I/O incident on the managed cluster:** `--verify-restore`
+now restores into a throwaway container on the box, and never into the live
+cluster. The pre-migration backup runs only when the ledger shows a migration
+to apply.
+Branch `ops-backup-io`. The verify on the box is not yet measured.
 **Owner row:** FOUNDATION_BUILDOUT_CHECKLIST.md §BO-23
 **Last measured:** 2026-08-05 against the live VPS (srv1747539); §1's recovery
 position was measured 2026-08-03 and is unchanged
@@ -67,8 +72,13 @@ never disagree about which cluster is "the" database.
   or half-written file fails at backup time rather than during an incident.
   This is the difference between having a backup and believing you have one.
 - **`--verify-restore` proves a different claim.** The cheap check proves the
-  file is *readable*; the deep check restores it into a scratch database and
-  compares `public` table counts against live, proving it is *restorable*.
+  file is *readable*. The deep check restores it and compares the `public`
+  table count with live, which proves it is *restorable*.
+  **Since 2026-10-07, the restore goes into a throwaway container on the box.**
+  The image is `pgvector/pgvector:pg<live major>`, with no network and a 1g
+  memory cap. The verify restores `public` only, and any error fails it. The
+  old restore into the managed cluster used up its disk I/O budget. Without
+  Docker the verify fails, and it never falls back to the cluster.
   ~20s on a 193 MB database.
 - **Restore defaults to safe.** With no flags it builds `acb_restored_<ts>` and
   touches nothing live. Overwriting live needs `--target acb --force`, takes an

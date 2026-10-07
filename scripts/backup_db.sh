@@ -26,13 +26,17 @@
 #
 # Usage:
 #   scripts/backup_db.sh                  # dump + cheap integrity check
-#   scripts/backup_db.sh --verify-restore # ALSO restore into a scratch DB
+#   scripts/backup_db.sh --verify-restore # ALSO restore into a throwaway
+#                                         # LOCAL container (needs Docker)
 #
 # Env:
 #   BACKUP_DIR      (default /opt/acb/backups)
 #   PG_CONTAINER    (default acb-postgres)
 #   APP_DIR         (default /opt/acb/app)
 #   KEEP_DAILY      (default 14)
+#   BACKUP_VERIFY_IMAGE   image of the verify container. Default
+#                   pgvector/pgvector:pg<live major>. Set it to pin a digest.
+#   BACKUP_VERIFY_MEMORY  memory cap of the verify container (default 1g)
 #   BACKUP_REMOTE   optional rsync destination for an off-box copy, e.g.
 #                   user@host:/srv/cc-backups . UNSET BY DEFAULT, and the
 #                   script says so loudly — see "Off-box" below.
@@ -120,8 +124,18 @@ require_postgres
 # Supabase then put the whole project into read-only mode, so every write
 # failed for about 2 hours, and deploys hung in the pre-migration backup.
 #
-# The rules that replace the silent drop. The fence for all of them is
-# `scripts/rehearse_verify_scratch.sh`, which CI runs against a real server.
+# 🔴 **Incident, 2026-10-07. The verify NO LONGER restores into the cluster.**
+# The deep verify did `createdb` and a full `pg_restore` on the production
+# Supabase cluster every night. On a small compute size that write burst used
+# up the disk I/O budget: checkpoints went from 270 s to over 900 s, and
+# statements timed out across the instance for hours. The verify now restores
+# into a throwaway container on THIS box (see "Optional deep verify" below),
+# and it only READS the cluster: a few catalog queries and one table count.
+#
+# So no run makes a scratch database any more. The sweep below stays, to clear
+# copies that older runs left behind. The rules for it. The fence for all of
+# them is `scripts/rehearse_verify_scratch.sh`, which CI runs against a real
+# server.
 #
 #   1. The drop uses FORCE. An open connection to the scratch database (the
 #      pooler keeps one) no longer blocks it.
@@ -130,9 +144,9 @@ require_postgres
 #      disk filled can still be given the space back.
 #   3. A failed drop prints an ERROR with the reason, and the backup exits 1
 #      AFTER the dump and the manifest are complete. A good dump stays on disk.
-#   4. A run sweeps stale scratch databases before it makes a new one.
-#   5. If two or more are still there after the sweep, the run makes no new
-#      one. So a drop that keeps failing cannot pile copies up again.
+#   4. A verify run sweeps stale scratch databases.
+#   (5. was the cap: with two copies left, make no new one. It went on
+#       2026-10-07, because the verify makes no copy on the cluster at all.)
 #
 # ⚠️ **The one pattern.** A scratch database matches `^acb_verify_[0-9]+$` and
 # NOTHING else. `LIKE 'acb_verify_%'` is wrong, because `_` is a LIKE
@@ -146,6 +160,9 @@ scratch_re='^acb_verify_[0-9]+$'
 # far longer than one verify takes, so a concurrent run keeps its own copy.
 scratch_stale_seconds=21600
 scratch_drop_failures=0
+# Set to 1 when the verify container could not be removed after a passed
+# verify. Checked LAST, beside the scratch drops, for the same reason.
+verify_ctr_failures=0
 
 # psql and libpq can echo a connection string, password included, into an
 # error. Apply this to every error text before it reaches a log. It is the
@@ -194,7 +211,7 @@ if ! [[ "$scratch_count" =~ ^[0-9]+$ ]]; then
   warn "WARNING (advisory): could not count the scratch databases."
 elif [ "$scratch_count" -gt 2 ]; then
   warn "WARNING (advisory): $scratch_count scratch databases ($scratch_re) exist on this"
-  warn "cluster. A run leaves at most one, so earlier drops failed. Each is a full"
+  warn "cluster. No run makes one since 2026-10-07, so older drops failed. Each is a full"
   warn "copy of the app database. On a managed provider they fill the disk, and a"
   warn "full disk makes the project read-only (2026-10-06)."
 fi
@@ -296,8 +313,21 @@ cat "$DEST/MANIFEST.txt" | sed 's/^/    /'
 # --- Optional deep verify ----------------------------------------------------
 # The cheap check proves the file is READABLE. This proves it is RESTORABLE,
 # which is a different claim — and the one everybody assumes without testing.
+#
+# 🔴 **WHERE it restores (incident, 2026-10-07).** Into a throwaway Postgres
+# container on THIS box, and never into the cluster the dump came from. The old
+# `createdb` and full `pg_restore` on the managed cluster used up its disk I/O
+# budget every night (see "Scratch databases" above). The cluster gets READS
+# only in this section: a few catalog queries and one table count.
+#
+# 🔴 **No Docker, no verify, and the exit code says so.** There is NO fallback
+# to a restore into the cluster. A missing Docker, an image that will not pull,
+# or a container that will not start fails the run with exit 1, AFTER the dump
+# and the manifest are on disk. `tests/unit/test_backup_deploy_wiring.py`
+# executes both paths, and `scripts/rehearse_verify_scratch.sh` scene B proves
+# that a read-only cluster still verifies (R8).
 if [ "$VERIFY_RESTORE" = "1" ]; then
-  say "Deep verify — restoring $APP_DB.dump into a scratch database"
+  say "Deep verify — restoring $APP_DB.dump into a throwaway local container"
 
   # The sweep (rule 4). The age comes from the epoch in the NAME, compared with
   # the server's clock. `substring(... from '[0-9]+$')` is NULL for a name
@@ -316,35 +346,177 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
     fi
   done
 
-  # 🔴 **The cap (rule 5).** A drop can fail for a reason that FORCE and the SET
-  # do not cure, and the first cause of the incident was never seen. So after
-  # the sweep, count again. Two or more left means drops keep failing. Then
-  # this run makes NO new copy, and the pile stops at two whatever the cause.
-  # The verify is lost for that night, and the exit code says so.
-  left="$(pg psql -U "$PG_USER" -d postgres -tAc \
-    "select count(*) from pg_database where datname ~ '$scratch_re'")"
-  if [ "$left" -ge 2 ]; then
-    echo "ERROR: $left scratch databases ($scratch_re) are still on the cluster after" >&2
-    echo "       the sweep. The deep verify is SKIPPED, so that no new copy is made." >&2
-    scratch_drop_failures=$((scratch_drop_failures + 1))
-    VERIFY_RESTORE=0
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "ERROR: the deep verify needs Docker, and 'docker' is not on PATH." >&2
+    echo "       The dump at $DEST is complete. The verify did NOT run, and it" >&2
+    echo "       never falls back to a restore into the live cluster." >&2
+    exit 1
   fi
-fi
 
-if [ "$VERIFY_RESTORE" = "1" ]; then
-  SCRATCH="acb_verify_$(date -u +%s)"
-  pg createdb -U "$PG_USER" "$SCRATCH"
-  # Trap so a failure part-way through cannot leave a stray multi-hundred-MB
-  # database behind on a box with finite disk. Every exit while it is armed is
-  # already a failure, so a failed drop here keeps the exit code non-zero.
-  on_exit_drop_scratch() {
+  # ── The image ──────────────────────────────────────────────────────────────
+  # ⚠️ The SAME major version as the live server, read from the server and not
+  # written here, so an upgrade of the cluster moves the image with it. Then
+  # the pg_restore and the server in the container are of the dump's release.
+  # ⚠️ pgvector, not stock postgres: public tables carry `vector` columns, and a
+  # stock image fails each of them every night. infra/docker-compose.yml and
+  # scripts/dev_db.sh use the same image family.
+  # TODO(digest): the default is pinned by TAG only, and a tag moves when the
+  # upstream rebuilds it. To pin by digest, set BACKUP_VERIFY_IMAGE in the env
+  # file to pgvector/pgvector:pg<N>@sha256:<digest>.
+  live_major="$(pg psql -U "$PG_USER" -d postgres -tAc \
+    "select current_setting('server_version_num')::int / 10000" | tr -d '[:space:]')"
+  if ! [[ "$live_major" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: could not read the major version of the live server." >&2
+    exit 1
+  fi
+  verify_image="${BACKUP_VERIFY_IMAGE:-pgvector/pgvector:pg$live_major}"
+  # ⚠️ 1g, on purpose. The box has 7 GB, and the gateway, the workbench and
+  # Redis share it. A restore of a ~200 MB database needs far less. The same
+  # value for --memory-swap stops the container from swapping instead.
+  verify_memory="${BACKUP_VERIFY_MEMORY:-1g}"
+  verify_ctr="acb-verify-$(date -u +%s)-$$"
+  verify_log="$DEST/verify_restore.log"
+  prep_log="$DEST/verify_prepare.log"
+
+  # A run killed by SIGKILL fires no trap, so its container stays. Remove each
+  # verify container older than the stale age. The age comes from the epoch in
+  # the NAME, as for the scratch databases, so a concurrent run keeps its own.
+  for old_ctr in $(docker ps -a --filter label=acb.backup-verify=1 \
+                     --format '{{.Names}}' 2>/dev/null || true); do
+    old_epoch="${old_ctr#acb-verify-}"
+    old_epoch="${old_epoch%%-*}"
+    if [[ "$old_epoch" =~ ^[0-9]+$ ]] \
+       && [ "$old_epoch" -lt $(( $(date -u +%s) - scratch_stale_seconds )) ]; then
+      if docker rm -f -v "$old_ctr" >/dev/null 2>&1; then
+        echo "    removed stale verify container $old_ctr"
+      else
+        warn "could not remove the stale verify container $old_ctr"
+      fi
+    fi
+  done
+
+  # Removed on EVERY exit while the trap is armed. `-v` removes the anonymous
+  # data volume too. INT, TERM and HUP become an exit, so a stop from systemd
+  # runs it. SIGKILL runs nothing, and the sweep above is for that case. Every
+  # exit while it is armed is already a failure, so a failed removal here
+  # keeps the exit code non-zero.
+  remove_verify_ctr() {
+    local err
+    docker container inspect "$verify_ctr" >/dev/null 2>&1 || return 0
+    if err="$(docker rm -f -v "$verify_ctr" 2>&1 >/dev/null)"; then
+      return 0
+    fi
+    echo "ERROR: could not remove the verify container $verify_ctr. Reason:" >&2
+    printf '%s\n' "${err:-<docker gave no reason>}" | redact | sed 's/^/    /' >&2
+    return 1
+  }
+  on_exit_remove_verify() {
     local rc=$?
-    if ! drop_scratch "$SCRATCH"; then
+    if ! remove_verify_ctr; then
       [ "$rc" = "0" ] && rc=1
     fi
     exit "$rc"
   }
-  trap on_exit_drop_scratch EXIT
+  trap on_exit_remove_verify EXIT
+  trap 'exit 1' INT TERM HUP
+
+  # ── Start it ───────────────────────────────────────────────────────────────
+  # The password is random and thrown away. initdb needs one. It reaches
+  # `docker run` through the environment (`-e NAME` with no value), so no argv
+  # and no log holds it. Every connection below is local, inside the container.
+  #   --network none  no port and no route. Nothing reaches this server, and it
+  #                   reaches nothing. psql and pg_restore run INSIDE it.
+  #   no -v           the image declares an anonymous volume for the data, and
+  #                   `rm -v` removes it. A tmpfs would charge the data to the
+  #                   memory cap.
+  #   fsync=off ...   the data is thrown away, so durability buys nothing and
+  #                   costs this box disk I/O.
+  verify_pw="$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+  if ! err="$(POSTGRES_PASSWORD="$verify_pw" docker run -d --rm \
+        --name "$verify_ctr" --label acb.backup-verify=1 \
+        --network none --memory "$verify_memory" --memory-swap "$verify_memory" \
+        --cpus 1 -e POSTGRES_PASSWORD -e POSTGRES_DB=verify \
+        "$verify_image" \
+        -c fsync=off -c synchronous_commit=off -c full_page_writes=off \
+        -c max_parallel_maintenance_workers=0 -c max_parallel_workers_per_gather=0 \
+        2>&1 >/dev/null)"; then
+    echo "ERROR: the verify container did not start (image $verify_image). Reason:" >&2
+    printf '%s\n' "${err:-<docker gave no reason>}" | redact | sed 's/^/    /' >&2
+    echo "       The dump at $DEST is complete. The verify did NOT run." >&2
+    exit 1
+  fi
+  unset verify_pw
+
+  # Ready means the FINAL server. The image's entrypoint first runs a server
+  # for initdb that listens on the socket only, so a probe of the socket can
+  # pass during init and then lose its server. This probe uses TCP on the
+  # loopback inside the container, which only the final server opens.
+  ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$verify_ctr" pg_isready -q -h 127.0.0.1 -U postgres >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    [ "$(docker container inspect -f '{{.State.Running}}' "$verify_ctr" 2>/dev/null || true)" = "true" ] \
+      || break
+    sleep 1
+  done
+  if [ "$ready" != "1" ]; then
+    echo "ERROR: the verify container $verify_ctr never accepted connections. Its log:" >&2
+    docker logs --tail 20 "$verify_ctr" 2>&1 | redact | sed 's/^/    /' >&2 || true
+    exit 1
+  fi
+
+  # psql in the container, as its superuser. `vsql_in` takes stdin (-i), and
+  # each call to it is fed by a pipe or a file, never by the caller's stdin.
+  vsql()    { docker exec "$verify_ctr" psql -X -q -U postgres -d verify "$@"; }
+  vsql_in() { docker exec -i "$verify_ctr" psql -X -q -U postgres -d verify "$@"; }
+
+  # ── Make the container look like the cluster, OUTSIDE public ──────────────
+  # The restore below takes `public` only, the schema we own. The provider's
+  # schemas (auth, storage, vault, realtime, graphql ...) and most of its
+  # extensions do not exist in a stock image, and they are not ours to judge.
+  # Three things outside public can still be NAMED by a public object, so they
+  # are made here first, from the live catalog:
+  #   roles         a policy `TO authenticated`
+  #   extensions    a `vector` column, a `gin_trgm_ops` index, a default that
+  #                 calls extensions.uuid_generate_v4()
+  #   publications  `ALTER PUBLICATION supabase_realtime ADD TABLE public.x`
+  # 🔴 A failure HERE is not judged, and that is safe. If a public object needs
+  # the thing that failed, the restore of public fails below, and THAT fails the
+  # run. So a provider extension that the image lacks costs nothing, and one
+  # that our tables need cannot hide.
+  : > "$prep_log"
+  pg psql -U "$PG_USER" -d postgres -tAc \
+    "select format('CREATE ROLE %I NOLOGIN;', rolname) from pg_roles
+      where rolname !~ '^pg_' and rolname <> 'postgres' order by 1" \
+    | vsql_in -v ON_ERROR_STOP=0 >>"$prep_log" 2>&1 || true
+  available="$(vsql -tAc "select name from pg_available_extensions" < /dev/null || true)"
+  live_ext="$(pg psql -U "$PG_USER" -d "$APP_DB" -tAc \
+    "select e.extname, format('CREATE SCHEMA IF NOT EXISTS %I; CREATE EXTENSION IF NOT EXISTS %I WITH SCHEMA %I CASCADE;', n.nspname, e.extname, n.nspname)
+       from pg_extension e join pg_namespace n on n.oid = e.extnamespace
+      where e.extname <> 'plpgsql' order by e.extname" || true)"
+  not_in_image=""
+  while IFS='|' read -r ext stmt; do
+    [ -n "$ext" ] || continue
+    if ! printf '%s\n' "$available" | grep -qxF "$ext"; then
+      not_in_image="$not_in_image $ext"
+      continue
+    fi
+    printf '%s\n' "$stmt" | vsql_in -v ON_ERROR_STOP=1 >>"$prep_log" 2>&1 \
+      || warn "could not create extension $ext in the verify container (see $prep_log)"
+  done <<< "$live_ext"
+  if [ -n "$not_in_image" ]; then
+    echo "    extensions not in the verify image, so not restored:$not_in_image"
+  fi
+  pg psql -U "$PG_USER" -d "$APP_DB" -tAc \
+    "select format('CREATE PUBLICATION %I;', pubname) from pg_publication order by 1" \
+    | vsql_in -v ON_ERROR_STOP=0 >>"$prep_log" 2>&1 || true
+
+  # ── The restore ────────────────────────────────────────────────────────────
+  #   --schema=public         ours, and nothing else (see above)
+  #   --no-owner --no-acl     owners and grants name roles. They decide who may
+  #                           read a table, not whether the table restores.
   # The log goes in $DEST, NOT /tmp. Two reasons, one of which already bit us:
   # `fs.protected_regular=2` (Ubuntu default) forbids opening an existing file
   # in a sticky world-writable dir owned by another user — and that applies to
@@ -353,50 +525,39 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
   # failed at the verify step. Keeping it beside the dump also means the
   # evidence for a backup travels with that backup instead of being overwritten
   # by the next run.
-  # ⚠️ **A MANAGED cluster dumps schemas we may not restore, and that is not a
-  # broken backup.** Measured 2026-09-19 on Supabase: the restore raised
-  # exactly two errors — `permission denied to set parameter log_min_messages`
-  # and `permission denied for table vault.secrets`. Both are the provider's
-  # own internals. Our `public` schema restored completely.
   #
-  # 🔴 **So a non-zero exit is NOT the assertion.** The assertion is, and always
-  # was, the line below: the restored copy has the same public tables as the
-  # live database. Failing the whole backup on the provider's vault would mean
-  # nightly red on a backup that is in fact good, and a unit that is red every
-  # night is a unit nobody reads.
-  #
-  # ⚠️ **Matched on PERMISSION DENIED, not on schema names.** A first attempt
-  # grepped for `vault` and failed: pg_restore's error line reads
-  # `permission denied for table secrets` and names no schema at all — the
-  # schema appears only on the following `Command was: COPY vault.secrets` line.
-  # A rule that reads one line cannot see it.
-  #
-  # 🔴 **Why a permission denial is safe to tolerate HERE and nowhere else.**
-  # The scratch database was created moments ago by this same role, so every
-  # object we own in it is owned by us. A denial can therefore only be a
-  # provider object the dump carried along. Any OTHER error — a syntax failure,
-  # a missing type, a constraint violation — still fails the backup.
+  # 🔴 **Every error fails the run now.** Until 2026-10-07 a `permission denied`
+  # was tolerated. The restore ran ON SUPABASE then, as a role that may not set
+  # `log_min_messages` or read `vault.secrets` (measured 2026-09-19), so a
+  # denial was the provider's own internals. Here the restore runs as the
+  # container's superuser, into public only. A denial cannot be a provider
+  # object any more, and no error of any kind is somebody else's.
   restore_rc=0
-  pgi pg_restore -U "$PG_USER" -d "$SCRATCH" --no-owner --no-acl \
-     < "$DEST/$APP_DB.dump" > "$DEST/verify_restore.log" 2>&1 || restore_rc=$?
-
-  if [ "$restore_rc" != "0" ]; then
-    OURS_FAILED="$(grep -E '^pg_restore: error' "$DEST/verify_restore.log" \
-                   | grep -Ev 'permission denied' || true)"
-    if [ -n "$OURS_FAILED" ]; then
-      warn "pg_restore FAILED on objects we own — see $DEST/verify_restore.log"
-      printf '%s\n' "$OURS_FAILED" | head -20 >&2
-      exit 1
-    fi
-    say "Restore raised only provider-managed errors — continuing to the table check"
-    grep -cE '^pg_restore: error' "$DEST/verify_restore.log" \
-      | sed 's/^/    provider-managed errors ignored: /'
+  docker exec -i "$verify_ctr" pg_restore -U postgres -d verify \
+     --no-owner --no-acl --schema=public \
+     < "$DEST/$APP_DB.dump" > "$verify_log" 2>&1 || restore_rc=$?
+  restore_errors="$(grep -E '^pg_restore: error' "$verify_log" || true)"
+  if [ "$restore_rc" != "0" ] || [ -n "$restore_errors" ]; then
+    warn "pg_restore FAILED in the verify container (exit $restore_rc) — see $verify_log"
+    printf '%s\n' "${restore_errors:-<no error line, read the log>}" | head -20 >&2
+    exit 1
   fi
 
-  live="$(pg psql -U "$PG_USER" -d "$APP_DB" -tAc \
-          "select count(*) from information_schema.tables where table_schema='public'")"
-  rest="$(pg psql -U "$PG_USER" -d "$SCRATCH" -tAc \
-          "select count(*) from information_schema.tables where table_schema='public'")"
+  # ── The assertion ──────────────────────────────────────────────────────────
+  # The restored copy has the same public tables as the live database. Counted
+  # from pg_class, not information_schema, for two reasons. information_schema
+  # hides a table the live role has no grant on, and the container's superuser
+  # sees all of them, so the two sides would count different things. And a
+  # table that an EXTENSION owns (deptype 'e') is not ours: a provider
+  # extension the image lacks would otherwise read as a lost table.
+  public_tables_sql="select count(*) from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public' and c.relkind in ('r', 'p', 'v', 'm', 'f')
+       and not exists (select 1 from pg_depend d
+                        where d.classid = 'pg_class'::regclass
+                          and d.objid = c.oid and d.deptype = 'e')"
+  live="$(pg psql -U "$PG_USER" -d "$APP_DB" -tAc "$public_tables_sql" | tr -d '[:space:]')"
+  rest="$(vsql -tAc "$public_tables_sql" < /dev/null | tr -d '[:space:]')"
   echo "    public tables: live=$live restored=$rest"
   # 🔴 Zero on BOTH sides is not agreement, it is two failures matching. A
   # restore that produced no tables at all would otherwise pass this check.
@@ -409,12 +570,12 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
     exit 1
   fi
   echo "    restore verified"
-  # Disarm the trap FIRST, so a failed drop is counted once, here.
-  trap - EXIT
-  if drop_scratch "$SCRATCH"; then
-    echo "    scratch database $SCRATCH dropped"
+  # Disarm the trap FIRST, so a failed removal is counted once, here.
+  trap - EXIT INT TERM HUP
+  if remove_verify_ctr; then
+    echo "    verify container $verify_ctr removed"
   else
-    scratch_drop_failures=$((scratch_drop_failures + 1))
+    verify_ctr_failures=1
   fi
 fi
 
@@ -509,6 +670,16 @@ if [ "$scratch_drop_failures" -gt 0 ]; then
   echo "ERROR: $scratch_drop_failures scratch database(s) could not be dropped. See the" >&2
   echo "       ERROR lines above for each name and reason. The dump at $DEST IS" >&2
   echo "       complete and good. Drop the scratch databases before the disk fills." >&2
+  exit 1
+fi
+
+# --- A verify container that would not go ----------------------------------
+# Checked LAST, for the reason above. It holds memory and disk on THIS box,
+# not on the cluster, so the dump is still good. Red is still right.
+if [ "$verify_ctr_failures" -gt 0 ]; then
+  echo "ERROR: the verify container could not be removed. See the ERROR line above." >&2
+  echo "       The dump at $DEST IS complete and good. Remove it by hand:" >&2
+  echo "       docker rm -f -v \$(docker ps -aq --filter label=acb.backup-verify=1)" >&2
   exit 1
 fi
 
