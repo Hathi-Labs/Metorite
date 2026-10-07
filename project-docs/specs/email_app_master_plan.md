@@ -5895,9 +5895,9 @@ uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gate
 **As built (EM-T13b-2, 2026-10-07).** 🔨 BUILT, not merged. No migration, no flag and no SQL change.
 
 1. **The seam.** `gateway/outbound_guard.py` holds the check, the pin and the caps. `senders.py` imports `_host_is_public` and `_is_safe_external_url` again. `CALL_WEBHOOK` calls `outbound_guard.request`. `_http_unsubscribe` calls `check_url` once, then `send` for the POST and for the GET.
-2. **The check.** `check_url` refuses a backslash, a URL with no host, and a user name or a password. It also refuses a scheme other than `http` or `https`. It resolves the host once through `_resolve`. `_address_refusal` unwraps an IPv4-mapped address. It refuses the URL when any address is multicast or is not `is_global`.
+2. **The check.** `check_url` refuses a backslash, a URL with no host, and a user name or a password. It also refuses a scheme other than `http` or `https`. It resolves the host once through `_resolve`. `_address_refusal` unwraps an IPv4-mapped address. It refuses the URL when any address is multicast, reserved or not `is_global`. It also refuses a range that carries IPv4, and an address of the box (review round 1).
 3. **The pin.** `send` puts the first resolved address in the URL. It keeps the `Host` header of the URL, with the port. For `https` it sets the `sni_hostname` extension. The client has `trust_env=False` and `follow_redirects=False`.
-4. **A 3xx and the time cap.** A 3xx raises `OutboundRefused` with the reason `redirect <code>`. A run longer than 10 seconds raises it with the reason `timeout`. The connect timeout is 3 seconds.
+4. **A 3xx and the time cap.** A 3xx raises `OutboundRefused` with the reason `redirect <code>`. A run longer than 10 seconds raises it with the reason `timeout`. One `deadline()` covers the lookup and each request of one call (review round 1). The connect timeout is 3 seconds.
 5. **The answer cap.** `_read_capped` reads raw bytes from the wire and stops at 64 KiB. So a compressed answer cannot grow past the cap.
 6. **The record.** For an `OutboundRefused`, the `except` of `_apply_rule_actions` writes `webhook refused: <host> <reason>` to `action_errors`. The log line `email.rule_action_failed` holds the same text. The reasons are `scheme`, `no host`, `user name`, `backslash`, `bad url`, `unresolvable`, `not public`, `redirect <code>` and `timeout`. No reason names an address, a path or a query.
 
@@ -5936,7 +5936,46 @@ uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gate
 
 One more mutation removed the `sni_hostname` extension. The real TLS test failed with "certificate is not valid for '127.0.0.1'", and 4 tests failed in total.
 
-**Board findings (EM-T13b-2).** The two IP-check copies in `email/transport/attachments.py` and `workflows/tools.py` stay, as the non-goals say. A later ticket can move them onto `outbound_guard`. The reasons `unresolvable` and `not public` tell a member whether a host name resolves on the box. The guard unwraps only an IPv4-mapped address, and not a 6to4, Teredo or NAT64 address. The webhook post still runs while the tenant session of `_apply_rule_actions` is open.
+**Board findings (EM-T13b-2).** The two IP-check copies in `email/transport/attachments.py` and `workflows/tools.py` stay, as the non-goals say. A later ticket can move them onto `outbound_guard`. The reasons `unresolvable` and `not public` tell a member whether a host name resolves on the box. Review round 1 below corrects the IPv6 part of this finding, and names the real classes. The webhook post still runs while the tenant session of `_apply_rule_actions` is open.
+
+**Review round 1 (EM-T13b-2, 2026-10-07).** The verifier passed, and the SSRF review approved. Both found the same P2. The review found a second P2 and three P3 items. Each finding has a fix and a fence below.
+
+1. **P2, reserved IPv6 classes passed.** The rule was "multicast or not `is_global`". The old `_host_is_public` also refused `is_reserved`. So NAT64 (`64:ff9b::/96`), IPv4-compatible (`::/96`), IPv4-translated (`::ffff:0:0:0/96`) and `5f00::1` passed on this branch, and `main` refused them.
+   **The fix.** `_address_refusal` refuses `is_reserved` again. It also refuses four ranges by name, in `_IPV4_CARRIERS`: `64:ff9b::/96`, `64:ff9b:1::/48`, `::/96` and `::ffff:0:0:0/96`. Each range carries an IPv4 address. The names do not depend on the `is_reserved` table of Python.
+   **The fences.** `test_a_reserved_ipv6_literal_is_refused` and `test_a_reserved_ipv6_aaaa_answer_is_refused` (9 addresses each), and `test_a_range_that_carries_ipv4_is_refused_by_name` (4 cases, with `is_reserved` patched off).
+2. **P2, an address of the box passed.** The public address of the box is `is_global`. On the box, a request to it goes over `lo`, and ufw accepts everything on `lo`. So a webhook got to uvicorn on `0.0.0.0:8080`, past ufw and past the `/internal/*` 404 of Caddy.
+   **The fix.** `_is_local_address` binds a UDP socket to the address and closes it at once. Only EADDRNOTAVAIL means "not local". Any other bind failure counts as local, so the check fails closed. A local address gives the reason `local`. `0.0.0.0` and `::` stay refused as `not public`.
+   **The fences.** `test_an_address_of_this_host_is_local` uses the real LAN address of the test host. `test_the_local_check_reads_only_eaddrnotavail_as_not_local` (3 cases) and `test_a_public_address_of_this_host_is_refused_as_local` mock the bind.
+   **The follow-up.** `deploy/hostinger/acb-gateway.service:13` binds uvicorn to `0.0.0.0:8080`, and Caddy proxies to `127.0.0.1:8080`. HANDOFF H-260 holds the change to `127.0.0.1`, as a slice of its own.
+3. **P3, no fence held "check once".** A second `check_url` before the unsubscribe GET kept every test green.
+   **The fence.** `test_the_unsubscribe_post_and_get_share_one_lookup` counts one lookup for the POST and the GET together. The fallback GET test in `test_email_unsubscribe.py` now also checks that both requests go to the pinned address. So departure 2 is true.
+4. **P3, the time budget.** `check_url` had its own 10 seconds before the 10 seconds of `send`. So a webhook could run for about 20 seconds, and an unsubscribe for about 30 seconds.
+   **The fix.** `deadline()` is one `asyncio.timeout(TOTAL_TIMEOUT_S)`. `request()` holds the lookup and the request inside it. `_http_unsubscribe` holds the lookup, the POST and the GET inside it. A run past the budget gives the detail `timeout`.
+   **Known limit.** A lookup that runs past the budget keeps its worker thread until `getaddrinfo` returns, because Python cannot cancel a thread.
+   **The fences.** `test_one_budget_covers_the_lookup_and_the_request` and `test_one_budget_covers_the_whole_unsubscribe`. In each one, every step alone fits the budget, and all of them together do not.
+5. **P3, the text.** The module docstring now names `csv_export.py`, as AGENTS.md 0g does. A refusal cuts the host at 100 characters. The log line now keeps 160 characters, the same as `action_errors`. So a host of 253 characters keeps its reason. The fence is `test_a_long_host_keeps_its_reason_in_the_record`.
+
+**The board finding, corrected.** The finding above said that the guard does not unwrap a 6to4, Teredo or NAT64 address. That was wrong in two ways. 6to4 (`2002::/16`) and Teredo (`2001::/32`) were already refused, because `is_global` is False for them. NAT64 is refused now, by name, with the IPv4-compatible and IPv4-translated ranges.
+
+**Mutations (review round 1).** Each mutation changed one file and ran `test_email_webhook_guard.py` and `test_email_unsubscribe.py`. Then `git checkout` put the file back, and `git status` was clean. The runner ran W1 to W6 again on the code of round 1, and each one is still red.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| W1 | The webhook posts with a plain `httpx` client and no guard | the webhook and record fences | red, 25 failed |
+| W2 | `is_private` in place of `is_global` | the `100.64.0.1` cases | red, 4 failed |
+| W3 | `send` connects to the URL host, with no pin | the pin fences | red, 11 failed |
+| W4 | `follow_redirects=True` | the redirect fences | red, 3 failed |
+| W5 | `resp.aread()` reads the whole answer | the cap fence | red, 1 failed |
+| W6 | The error holds the URL | the record fences | red, 24 failed |
+| W7 | The rule of round 0: no `is_reserved` and no named ranges | the reserved IPv6 fences | red, 16 failed |
+| W8 | No `is_reserved` | the `5f00::1` cases | red, 2 failed |
+| W9 | No named ranges | the by-name fence | red, 4 failed |
+| W10 | No local check | the local fence | red, 1 failed |
+| W11 | Every bind failure reads as not local | the EADDRNOTAVAIL fence | red, 1 failed |
+| W12 | The unsubscribe checks the URL again before the GET | the one-lookup fence | red, 1 failed |
+| W13 | `request()` has no `deadline()` | the request budget fence | red, 1 failed |
+| W14 | `_http_unsubscribe` has no `deadline()` | the unsubscribe budget fence | red, 1 failed |
+| W15 | The refusal does not cut the host | the long host fence | red, 1 failed |
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
