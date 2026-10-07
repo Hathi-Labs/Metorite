@@ -66,7 +66,8 @@ target, in ``will_create`` (EM-S10, D-EM-60). The copy still copies the rule.
 When the mailbox does not have the name, the provider makes it on first use.
 When it has it, the provider uses it. ``email_folders`` has one writer only
 (``transport/folders.py``), so a name in the list can exist at the provider.
-An IMAP target answers an empty list. The compare reads
+An IMAP target answers an empty list, because rule 6 copies no rule that
+names a folder there. The compare reads
 ``email_folders`` of the TARGET only, without case, over the ``account_id``
 that the owner check proved. An AI label (``label_ai``) is a prompt and not a
 name, so the list leaves it out. A MOVE_FOLDER to a system folder (Inbox,
@@ -452,8 +453,9 @@ async def copy_rules(
                 continue
             reply_held = reply_held or is_reply
             copied.append(name)
-            if has_folders:
-                to_create.extend(will_create(rule, name, folders))
+            # An IMAP target copies no rule with a MOVE_FOLDER or a LABEL
+            # (rule 6), so its list stays empty with no second check here.
+            to_create.extend(will_create(rule, name, folders))
             if name != rule["name"]:
                 renamed.append(RuleCopyRename(name=rule["name"], copied_as=name))
     _log.info("email.rules.copied", from_account_id=src, to_account_id=dst,
