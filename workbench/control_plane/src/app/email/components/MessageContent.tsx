@@ -6,8 +6,8 @@ import DOMPurify from "dompurify";
 import { splitQuotedHtml, splitQuotedText } from "../lib/quoting";
 import { UNTRUSTED_FORBID_ATTR, UNTRUSTED_FORBID_TAGS } from "@/lib/untrustedHtml";
 import { useCachedResource } from "@/lib/useCachedResource";
-import { fetchMessageHtml, messageHtmlKey } from "../lib/api";
-import { HTML_HOLD_MS } from "../lib/htmlPrefetch";
+import { messageHtmlKey } from "../lib/api";
+import { HTML_HOLD_MS, openMessageHtml } from "../lib/htmlPrefetch";
 
 interface MessageContentProps {
   /** Raw HTML body from the provider (preferred when present). */
@@ -17,7 +17,7 @@ interface MessageContentProps {
   /**
    * The id of a message whose HTML the provider holds (`htmlRemote`, WS-17
    * EM-S2). Give it with `remoteHtmlId(email)`. With no `html`, the text
-   * shows at once, and the HTML of `fetchMessageHtml` replaces it when it
+   * shows at once, and the HTML of `openMessageHtml` replaces it when it
    * arrives. Null or absent: no request, and the body draws as before.
    */
   remoteId?: string | null;
@@ -364,7 +364,7 @@ function useRemoteHtml(remoteId: string | null): { html: string | null; loading:
   const key = remoteId ? messageHtmlKey(remoteId) : null;
   const res = useCachedResource<string | null>(
     key,
-    () => fetchMessageHtml(remoteId as string).then((r) => r.bodyHtml),
+    () => openMessageHtml(remoteId as string),
     // The HTML of a message does not change. A refocus of the tab asks for
     // nothing, and the gateway caches it for one hour too.
     { ttl: HTML_HOLD_MS, revalidateOnFocus: false },

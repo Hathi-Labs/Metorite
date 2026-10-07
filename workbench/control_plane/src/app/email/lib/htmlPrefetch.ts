@@ -8,30 +8,38 @@
  *
  * The bounds, and each one is a fence in `htmlPrefetch.test.ts`:
  *
- * - At most {@link PREFETCH_MAX_ROWS} rows in one run, and at most
- *   {@link PREFETCH_PARALLEL} requests at one time.
+ * - At most {@link PREFETCH_MAX_ROWS} rows in one run.
+ * - At most {@link PREFETCH_PARALLEL} prefetch requests in flight, for ALL
+ *   runs together. A new run fills only the free slots, and its rows replace
+ *   the rows that an older run still waits to ask for.
+ * - One id is never asked twice while a request for it is in flight. The pane
+ *   joins a request in flight through {@link openMessageHtml}, so an open
+ *   during a prefetch makes one request.
  * - Only a row with `htmlRemote: true`. With `EMAIL_HTML_FROM_PROVIDER` off
  *   the gateway sends no such row, so the prefetch asks for nothing.
- * - A row that the cache already holds is skipped.
- * - The first 503 stops the prefetch until the next list load, and no run
- *   starts before its `Retry-After` ends. EM-S1 turns a provider 429 into
- *   that 503, so a 429 stops it too.
- * - The first 401 stops the prefetch until the next list load. A dead token
- *   answers 401 for each row, so asking again only adds load.
- * - Any other failure skips its row. The pane keeps the text of that row and
- *   shows no error.
+ * - A row that the cache holds is skipped. A row that failed is not asked
+ *   again while the list stays the same.
+ * - The first 503 stops the prefetch until the list changes, and no request
+ *   goes before its `Retry-After` ends. EM-S1 turns a provider 429 into that
+ *   503, so a 429 stops it too. The first 401 stops it until the list changes.
  *
- * The decisions are pure and take their effects as {@link PrefetchDeps}, so
- * the fence drives them with no DOM and no network. `EmailList` holds one
- * prefetcher and wires it to `fetchMessageHtml` and `dataCache`.
+ * "The list changes" means another list key: another mailbox, folder, label or
+ * search ({@link prefetchListKey}). A soft refresh of the same list gives a new
+ * array of rows, and it clears nothing.
+ *
+ * ⚠️ The state lives at module scope ({@link sharedHtmlPrefetcher}), not in a
+ * component. On a phone each open of a message unmounts the list, and a stop
+ * held in component state was lost on each remount. The state belongs to the
+ * signed-in member, so `dataCache.clearAll` (and so `bindIdentity`) drops it.
  */
-import { peek, put } from "@/lib/dataCache";
+import { coalesce } from "@/lib/useCachedResource";
+import { identity, onClear, peek, put } from "@/lib/dataCache";
 
 import { fetchMessageHtml, messageHtmlKey } from "./api";
 
 /** The most rows that one run asks for. */
 export const PREFETCH_MAX_ROWS = 6;
-/** The most requests in flight at one time. */
+/** The most prefetch requests in flight at one time, for all runs together. */
 export const PREFETCH_PARALLEL = 2;
 /** How long the list stays still before a run starts. */
 export const PREFETCH_STILL_MS = 500;
@@ -68,8 +76,60 @@ export type PrefetchStop = "busy" | "auth";
 export interface PrefetchOutcome {
   /** The ids that the run asked for, in the order the requests started. */
   asked: string[];
-  /** Set when a 503 or a 401 stopped the run, or a stop held it back. */
+  /** Set when a 503 or a 401 stopped the prefetch, or a stop held it back. */
   stopped: PrefetchStop | null;
+}
+
+/** One run, while its requests settle. */
+interface RunTracker {
+  generation: number;
+  asked: string[];
+  pending: number;
+  done: boolean;
+  resolve: (out: PrefetchOutcome) => void;
+}
+
+/**
+ * The memory of the prefetch of one member. Every run of every prefetcher
+ * that shares it shares its slots, its in-flight ids, its stop and its wait.
+ */
+export interface PrefetchState {
+  /** The member it belongs to, from `dataCache.identity()`. */
+  owner: string | null;
+  /** True after a clear. A late answer of a retired state keeps nothing. */
+  retired: boolean;
+  /** The list that the stop and the failed ids belong to. */
+  listKey: string | null;
+  stop: PrefetchStop | null;
+  /** No request before this time, in milliseconds. A list change never clears it. */
+  waitUntil: number;
+  /** The rows of this list that failed for a reason other than 503 or 401. */
+  failed: Set<string>;
+  /** Each id with a request in flight, prefetch or open, and its answer. */
+  inFlight: Map<string, Promise<string | null>>;
+  /** The prefetch requests in flight. The bound is {@link PREFETCH_PARALLEL}. */
+  active: number;
+  /** The rows that the newest run still waits to ask for. */
+  queue: string[];
+  generation: number;
+  current: RunTracker | null;
+}
+
+/** A new, empty state for `owner`. */
+export function newPrefetchState(owner: string | null = null): PrefetchState {
+  return {
+    owner,
+    retired: false,
+    listKey: null,
+    stop: null,
+    waitUntil: 0,
+    failed: new Set(),
+    inFlight: new Map(),
+    active: 0,
+    queue: [],
+    generation: 0,
+    current: null,
+  };
 }
 
 /** The status and the `Retry-After` of a failed fetch, as `api.ts` sets them. */
@@ -85,19 +145,19 @@ function failure(err: unknown): { status?: number; retryAfter?: number } {
 }
 
 /**
- * The rows that one run asks for: the rows with `htmlRemote: true` that the
- * cache does not hold, in the order of the list, and at most
+ * The rows that one run asks for: the rows with `htmlRemote: true` that
+ * `skip` does not refuse, in the order of the list, and at most
  * {@link PREFETCH_MAX_ROWS} of them.
  */
 export function prefetchTargets(
   rows: readonly PrefetchRow[],
-  held: (id: string) => boolean
+  skip: (id: string) => boolean
 ): string[] {
   const out: string[] = [];
   for (const row of rows) {
     if (out.length >= PREFETCH_MAX_ROWS) break;
     if (row.htmlRemote !== true) continue;
-    if (!row.id || out.includes(row.id) || held(row.id)) continue;
+    if (!row.id || out.includes(row.id) || skip(row.id)) continue;
     out.push(row.id);
   }
   return out;
@@ -122,59 +182,135 @@ export function visibleRowIds(
   return boxes.filter((b) => b.bottom > viewTop && b.top < viewBottom).map((b) => b.id);
 }
 
-/** The prefetcher of one list. */
+/** What makes one list: the mailbox or All inboxes, the folder, the label and the search. */
+export interface ListIdentity {
+  viewAll: boolean;
+  accountId: string | null;
+  folder: string;
+  label: string | null;
+  query: string;
+}
+
+/** The key of one list. A soft refresh of the same list keeps the same key. */
+export function prefetchListKey(list: ListIdentity): string {
+  const box = list.viewAll ? "all" : list.accountId ?? "";
+  return JSON.stringify([box, list.folder, list.label ?? "", list.query.trim()]);
+}
+
+/** The prefetcher, over one {@link PrefetchState}. */
 export interface HtmlPrefetcher {
-  /** A new list load. It clears a stop, but never a `Retry-After` wait. */
-  listLoaded: () => void;
-  /** Ask for the HTML of `rows`. A newer run makes an older run stop. */
+  /**
+   * The list on screen. The same key is a soft refresh and clears nothing.
+   * Another key clears the stop and the failed ids, but never the wait of
+   * `Retry-After`.
+   */
+  listLoaded: (listKey: string) => void;
+  /** Ask for the HTML of `rows`. Its rows replace the rows an older run still waits to ask for. */
   run: (rows: readonly PrefetchRow[]) => Promise<PrefetchOutcome>;
 }
 
-/** Make the prefetcher of one list. */
-export function createHtmlPrefetcher(deps: PrefetchDeps): HtmlPrefetcher {
-  let stopped: PrefetchStop | null = null;
-  let waitUntil = 0;
-  let generation = 0;
+/** Make a prefetcher over `state`. Two prefetchers over one state share every bound. */
+export function createHtmlPrefetcher(
+  deps: PrefetchDeps,
+  state: PrefetchState = newPrefetchState()
+): HtmlPrefetcher {
+  const settleIfDone = (run: RunTracker) => {
+    if (run.done) return;
+    const superseded = run.generation !== state.generation;
+    const drained = superseded || state.queue.length === 0 || state.stop !== null;
+    if (!drained || run.pending > 0) return;
+    run.done = true;
+    if (state.current === run) state.current = null;
+    run.resolve({ asked: run.asked, stopped: state.stop });
+  };
 
-  return {
-    listLoaded() {
-      stopped = null;
-    },
+  const skip = (id: string) => deps.held(id) || state.inFlight.has(id) || state.failed.has(id);
 
-    async run(rows) {
-      if (stopped) return { asked: [], stopped };
-      if (deps.now() < waitUntil) return { asked: [], stopped: "busy" };
-      generation += 1;
-      const mine = generation;
-      const queue = prefetchTargets(rows, deps.held);
-      const asked: string[] = [];
-
-      const worker = async () => {
-        while (queue.length > 0) {
-          // A stop, or a newer run, ends this run. A request in flight
-          // settles, and no new one starts.
-          if (stopped || mine !== generation) return;
-          const id = queue.shift() as string;
-          if (deps.held(id)) continue;
-          asked.push(id);
-          try {
-            deps.keep(id, await deps.fetchHtml(id));
-          } catch (err) {
-            const { status, retryAfter } = failure(err);
-            if (status === 503) {
-              stopped = "busy";
-              const wait = retryAfter && retryAfter > 0 ? retryAfter : PREFETCH_DEFAULT_WAIT_S;
-              waitUntil = Math.max(waitUntil, deps.now() + wait * 1000);
-            } else if (status === 401) {
-              stopped = "auth";
-            }
-            // Each other failure skips the row. The pane keeps its text.
+  const start = (id: string, run: RunTracker) => {
+    state.active += 1;
+    run.pending += 1;
+    run.asked.push(id);
+    let request: Promise<string | null>;
+    try {
+      request = deps.fetchHtml(id);
+    } catch (err) {
+      request = Promise.reject(err);
+    }
+    state.inFlight.set(id, request);
+    request
+      .then(
+        (html) => {
+          if (!state.retired) deps.keep(id, html);
+        },
+        (err: unknown) => {
+          const { status, retryAfter } = failure(err);
+          if (status === 503) {
+            state.stop = "busy";
+            const wait = retryAfter && retryAfter > 0 ? retryAfter : PREFETCH_DEFAULT_WAIT_S;
+            state.waitUntil = Math.max(state.waitUntil, deps.now() + wait * 1000);
+            state.queue = [];
+          } else if (status === 401) {
+            state.stop = "auth";
+            state.queue = [];
+          } else {
+            // Each other failure skips the row for this list. The pane keeps its text.
+            state.failed.add(id);
           }
         }
-      };
+      )
+      .finally(() => {
+        state.active -= 1;
+        run.pending -= 1;
+        if (state.inFlight.get(id) === request) state.inFlight.delete(id);
+        pump();
+        settleIfDone(run);
+      });
+  };
 
-      await Promise.all(Array.from({ length: PREFETCH_PARALLEL }, () => worker()));
-      return { asked, stopped };
+  /** Fill the free slots from the queue of the newest run. */
+  const pump = () => {
+    const run = state.current;
+    if (!run) return;
+    while (state.active < PREFETCH_PARALLEL && state.queue.length > 0) {
+      if (state.stop || deps.now() < state.waitUntil) {
+        state.queue = [];
+        break;
+      }
+      const id = state.queue.shift() as string;
+      if (skip(id)) continue;
+      start(id, run);
+    }
+    settleIfDone(run);
+  };
+
+  return {
+    listLoaded(listKey) {
+      if (listKey === state.listKey) return;
+      state.listKey = listKey;
+      state.stop = null;
+      state.failed.clear();
+      state.queue = [];
+      if (state.current) settleIfDone(state.current);
+    },
+
+    run(rows) {
+      if (state.stop) return Promise.resolve({ asked: [], stopped: state.stop });
+      if (deps.now() < state.waitUntil) {
+        return Promise.resolve({ asked: [], stopped: "busy" as const });
+      }
+      state.generation += 1;
+      state.queue = prefetchTargets(rows, skip);
+      return new Promise<PrefetchOutcome>((resolve) => {
+        const run: RunTracker = {
+          generation: state.generation, asked: [], pending: 0, done: false, resolve,
+        };
+        // The older run asks for nothing more. Its requests in flight settle
+        // and keep their answers, and its promise resolves when they do.
+        const older = state.current;
+        state.current = run;
+        if (older) settleIfDone(older);
+        pump();
+      });
     },
   };
 }
@@ -186,6 +322,79 @@ export function defaultPrefetchDeps(): PrefetchDeps {
     held: (id) => peek(messageHtmlKey(id)) !== undefined,
     keep: (id, html) => put(messageHtmlKey(id), html),
     now: () => Date.now(),
+  };
+}
+
+// ── The one state of the signed-in member ────────────────────────────────
+
+let shared: PrefetchState | null = null;
+
+onClear(() => {
+  if (shared) shared.retired = true;
+  shared = null;
+});
+
+/**
+ * The prefetch state of the signed-in member. It survives a remount of the
+ * list. A change of member, or a `clearAll`, gives a new one.
+ */
+export function sharedPrefetchState(): PrefetchState {
+  const who = identity();
+  if (!shared || shared.owner !== who) {
+    if (shared) shared.retired = true;
+    shared = newPrefetchState(who);
+  }
+  return shared;
+}
+
+/** The prefetcher of the list. Get it when you use it. Never hold it across renders. */
+export function sharedHtmlPrefetcher(): HtmlPrefetcher {
+  return createHtmlPrefetcher(defaultPrefetchDeps(), sharedPrefetchState());
+}
+
+/**
+ * The HTML for the pane, which `MessageContent` reads through `dataCache`.
+ * It joins a request for the same id that is in flight, so an open during a
+ * prefetch makes one request. A joined prefetch that fails, a 503 under load
+ * for instance, gives way to an open of its own, because the gateway never
+ * refuses an open.
+ */
+export function openMessageHtml(
+  id: string,
+  state: PrefetchState = sharedPrefetchState()
+): Promise<string | null> {
+  const own = () => {
+    const request = fetchMessageHtml(id).then((r) => r.bodyHtml);
+    state.inFlight.set(id, request);
+    const forget = () => {
+      if (state.inFlight.get(id) === request) state.inFlight.delete(id);
+    };
+    request.then(forget, forget);
+    return request;
+  };
+  const running = state.inFlight.get(id);
+  return running ? running.catch(own) : own();
+}
+
+/**
+ * The wait of a still list: many schedules in {@link PREFETCH_STILL_MS} run
+ * once, after the last one, and the run of the last schedule is the one that
+ * runs. A schedule with no remote row cancels the wait and starts none, so
+ * with the flag off no timer runs.
+ */
+export function createPrefetchSchedule(): {
+  schedule: (anyRemote: boolean, run: () => void) => void;
+  cancel: () => void;
+} {
+  let latest: (() => void) | null = null;
+  const still = coalesce(() => latest?.(), PREFETCH_STILL_MS);
+  return {
+    schedule(anyRemote, run) {
+      still.cancel();
+      latest = run;
+      if (anyRemote) still.trigger();
+    },
+    cancel: () => still.cancel(),
   };
 }
 

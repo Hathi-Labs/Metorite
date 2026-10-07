@@ -281,3 +281,91 @@ test("a footnote link stays in the tab and still jumps; ids carry the prefix", a
     await expect(page.getByRole("link", { name })).toHaveAttribute("rel", /noopener/);
   }
 });
+
+// ─── The reading pane: the HTML of an old message (WS-17 EM-S2) ─────────────
+
+/**
+ * The real `MessageContent`, bundled with esbuild and mounted on the app's
+ * origin, reads the HTML of an old message from `GET /api/email/messages/{id}/html`.
+ * The route answers with a body that carries a script, an event handler and a
+ * remote image on the attacker host. The body must reach the frame only
+ * through `sanitizeEmailHtml`, in a sandbox with no `allow-scripts`.
+ */
+const PANE_ENTRY = `
+import { createElement as h } from "react";
+import { createRoot } from "react-dom/client";
+import { MessageContent } from "@/app/email/components/MessageContent";
+createRoot(document.getElementById("root")).render(
+  h(MessageContent, { text: "Hi Priya. Delivery takes three weeks.", remoteId: "m-old" }),
+);
+`;
+
+const PANE_ATTACK =
+  "<p>The quote for the <b>40 printers</b> is attached.</p>" +
+  "<script>parent.__paneProbe='script'</script>" +
+  '<img src="x" onerror="parent.__paneProbe=\'onerror\'">' +
+  '<img src="https://attacker.example/pixel.png?u=1" alt="pixel">' +
+  '<a href="javascript:parent.__paneProbe=\'link\'">Open</a>';
+
+test("the reading pane keeps a script of a fetched body out of the frame", async ({ page }) => {
+  test.setTimeout(120_000);
+  const hits = await recordAttacker(page);
+  const asked: string[] = [];
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  await page.route(/\/api\/email\/messages\/[^/]+\/html(\?.*)?$/, async (r) => {
+    asked.push(r.request().url());
+    await held;
+    await r.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ message_id: "m-old", body_html: PANE_ATTACK, source: "provider" }),
+    });
+  });
+
+  const bundle = await build({
+    stdin: { contents: PANE_ENTRY, resolveDir: path.join(ROOT, "src"), loader: "tsx" },
+    bundle: true,
+    write: false,
+    format: "iife",
+    platform: "browser",
+    jsx: "automatic",
+    alias: { "@": path.join(ROOT, "src") },
+    define: { "process.env.NODE_ENV": '"production"' },
+    logLevel: "silent",
+  });
+  await page.route("**/__email-pane-probe", (r) =>
+    r.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: '<!doctype html><html><body><div id="root"></div></body></html>',
+    }),
+  );
+  await page.goto("/__email-pane-probe");
+  await page.addScriptTag({ content: bundle.outputFiles[0].text });
+
+  // The first paint: the text, and a named loading line, before the HTML.
+  await expect(page.getByText("Delivery takes three weeks.")).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("Getting the formatted message");
+  release();
+
+  const frame = page.locator('iframe[title="Email content"]');
+  await expect(frame).toHaveCount(1, { timeout: 30_000 });
+  await expect(page.getByText("Delivery takes three weeks.")).toHaveCount(0);
+  const srcdoc = (await frame.getAttribute("srcdoc")) ?? "";
+  expect(srcdoc).toContain("40 printers");
+  expect(srcdoc).not.toMatch(/<script/i);
+  expect(srcdoc).not.toMatch(/\son[a-z]+\s*=/i);
+  expect(srcdoc).not.toMatch(/javascript:/i);
+  expect(srcdoc).toContain("script-src 'none'");
+  expect((await frame.getAttribute("sandbox")) ?? "").not.toContain("allow-scripts");
+  // The remote image is blocked by the frame's policy, and the pane says so.
+  await expect(page.getByText("Remote images are blocked to protect your privacy.")).toBeVisible();
+
+  await page.waitForTimeout(1500);
+  expect(await page.evaluate(() => (window as unknown as { __paneProbe?: string }).__paneProbe ?? null)).toBeNull();
+  expect(hits).toEqual([]);
+  expect(asked).toEqual([expect.stringMatching(/\/api\/email\/messages\/m-old\/html$/)]);
+});

@@ -12,7 +12,7 @@ import { presetForLabel } from "../lib/labelColors";
 import { FixDialog } from "./automation/ai-settings/fixDialog";
 import { useViewMode } from "@/components/ViewModeProvider";
 import {
-  PREFETCH_STILL_MS, createHtmlPrefetcher, defaultPrefetchDeps, visibleRowIds,
+  createPrefetchSchedule, prefetchListKey, sharedHtmlPrefetcher, visibleRowIds,
   type PrefetchRow, type RowBox,
 } from "../lib/htmlPrefetch";
 
@@ -161,7 +161,7 @@ export function EmailList({
     selectedIds, toggleEmailSelected, setSelectedEmails, clearEmailSelection,
     bulkUpdateSelected, bulkDeleteSelected, captureEmailToTasks,
     runTestOnMessage, testRunningIds, snoozeEmail,
-    viewAll, accounts,
+    viewAll, accounts, searchQuery,
   } = useEmailStore();
   // In All inboxes each row names its mailbox (EM-T8d, D-EM-22, §11.4).
   const mailboxOfRow = (accountId: string) =>
@@ -323,9 +323,14 @@ export function EmailList({
   // When the list stays still for PREFETCH_STILL_MS, ask for the HTML of the
   // visible rows with `htmlRemote`. `lib/htmlPrefetch.ts` owns each bound.
   // With the flag off no row is remote, so no timer starts and no request goes.
-  const [prefetcher] = useState(() => createHtmlPrefetcher(defaultPrefetchDeps()));
+  // The state of the prefetch (its slots, its stop, its wait) lives at module
+  // scope in `lib/htmlPrefetch.ts`, so a remount of this list keeps it. On a
+  // phone each open of a message unmounts the list.
+  const listKey = prefetchListKey({
+    viewAll, accountId: selectedAccountId, folder: selectedFolder,
+    label: selectedLabel, query: searchQuery,
+  });
   const anyRemote = emails.some((e) => e.htmlRemote === true);
-  const stillTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const visibleRows = useCallback((): PrefetchRow[] => {
     const box = scrollRef.current;
     if (!box) return [];
@@ -338,24 +343,19 @@ export function EmailList({
     const shown = new Set(visibleRowIds(boxes, view.top, view.bottom));
     return emails.filter((e) => shown.has(e.id));
   }, [emails]);
-  const schedulePrefetch = useCallback(() => {
-    if (stillTimer.current) clearTimeout(stillTimer.current);
-    stillTimer.current = null;
-    if (!anyRemote) return;
-    stillTimer.current = setTimeout(() => {
-      stillTimer.current = null;
-      void prefetcher.run(visibleRows());
-    }, PREFETCH_STILL_MS);
-  }, [anyRemote, prefetcher, visibleRows]);
-  // A new list is a list load: it clears a stop, and starts the wait again.
+  const [still] = useState(() => createPrefetchSchedule());
+  const schedulePrefetch = useCallback(
+    () => still.schedule(anyRemote, () => void sharedHtmlPrefetcher().run(visibleRows())),
+    [still, anyRemote, visibleRows]
+  );
+  // Each new array of rows starts the wait of a still list again. Only a new
+  // list key (another mailbox, folder, label or search) clears a stop. A soft
+  // refresh of the same list keeps it.
   useEffect(() => {
-    prefetcher.listLoaded();
+    sharedHtmlPrefetcher().listLoaded(listKey);
     schedulePrefetch();
-    return () => {
-      if (stillTimer.current) clearTimeout(stillTimer.current);
-      stillTimer.current = null;
-    };
-  }, [emails, prefetcher, schedulePrefetch]);
+    return () => still.cancel();
+  }, [emails, listKey, schedulePrefetch, still]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
