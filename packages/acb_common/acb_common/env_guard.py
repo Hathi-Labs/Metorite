@@ -134,6 +134,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-45 (D90): the agents that the tier policy covers. It moves what an
     # organization pays, so only the operator writes it (ai_tier_routing.md).
     "AI_TIER_ROUTING",
+    # WS-43y1a: the fault hook of the data engine (exit, kill, sleep, grow).
+    # Only its tests set it. A tenant that set it would break each verb.
+    "DATA_ENGINE_FAULT",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
     # Deploy, backup and watchdog scripts (variables they read).
