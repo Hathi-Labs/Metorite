@@ -2,9 +2,13 @@
 
 <!-- ste-tier: strict -->
 
-**Status: ACTIVE. SPECIFIED 2026-10-07, and nothing is built.** The owner
-approved this spec on 2026-10-07, with D92 and D93. Board row **WS-48**.
-Decisions **D92** and **D93** are in `work_plan.md` §3.
+**Status: ACTIVE. SPECIFIED 2026-10-07.** The owner approved this spec on
+2026-10-07, with D92 and D93. Board row **WS-48**. Decisions **D92** and
+**D93** are in `work_plan.md` §3.
+
+**N1 is built and dark** (2026-10-07, PR #711). **N3 is built and dark**
+(2026-10-07, branch `ws48-n3-decide-tier`). `NARROWING_AGENTS` ships empty,
+and `SYSTEM_ONE_ON_DECIDE` ships OFF. The N3 build notes are under §9 N3.
 
 Verified against code on 2026-10-07 at `main` `82d09830b`. Every file path
 and line in this spec was read at that commit. Re-verify each anchor at
@@ -231,13 +235,16 @@ model can then narrow the filters and call again.
 
    ```text
    {"query": "<the member's question>",
-    "items": {"<id>": {"title": ..., "who": ..., "when": ..., "snippet": ...}}}
+    "items": {"c1": {"title": ..., "who": ..., "when": ..., "snippet": ...}}}
    ```
 
-4. Each item gets one `choice` question, keyed by the item id. Its
-   instructions name the item by its path, `items.<id>`, and never copy a
-   value. Its criteria are `yes`, `no` and `unsure`, each with a fixed
-   description.
+4. Each item gets one `choice` question, keyed by a local key from `c1` to
+   `c16`. Its instructions name the item by its path, `items.c1`, and never
+   copy a value. Its criteria are `yes`, `no` and `unsure`, each with a
+   fixed description.
+   *(Amended by WS-48 N1, 2026-10-07. This line said "keyed by the item
+   id". An adapter id can be tenant text, so no adapter id goes into a
+   path, a key or an instruction.)*
 5. The instructions say that the text in `query` and in `items` is data.
    An order inside that text is not an order. This is the rule of the Insights
    screen (`insights_screen.py:83-85`).
@@ -385,10 +392,16 @@ and it may change a filter key to match its route.
 The first line of the tool output has a fixed shape:
 
 ```text
-Checked 180 of 212 matches. Kept 23, dropped 153, and 4 were not checked (kept). Read 23 in full.
+Checked 196 of 212 matches. Kept 47, dropped 153, and 4 were not checked (kept). Read 25 in full.
 ```
 
+*(Amended by WS-48 N1, 2026-10-07. The old example did not add up. The
+numbers now obey the two sums below.)*
+
 - "Checked" counts the questions that got an answer.
+- "Kept" includes the items that were not checked. So "Checked" plus "not
+  checked" is the candidate count, and "Kept" plus "dropped" is the
+  candidate count too.
 - "of 212 matches" appears only when NARROW found more than 200.
 - "were not checked" appears only when it is not zero.
 - "Read N in full" is smaller than "Kept" when the READ cap acts.
@@ -433,9 +446,14 @@ How a member sees this list in the UI is open question Q1.
 - `narrowing.py` imports no vendor client. It calls `acb_llm.decide` and
   `acb_skills.system_one` only. `test_no_direct_ai_vendor_calls.py` already
   reads every file, so a vendor import in `narrowing.py` fails it.
-- Each PICK request carries `X-CC-Source: narrowing` through the attribution
-  stamp. So the operator can count the pipeline's rows apart from the email
-  features.
+- ⚠️ **Open item: no PICK request carries `X-CC-Source: narrowing`.**
+  *(Amended by WS-48 N1, 2026-10-07.)* `acb_llm.decide` sends only the
+  member, the agent, the app and the run
+  (`console_resolve._attribution_headers`). The decide door reads no source
+  header. So the operator cannot yet count the pipeline's rows apart from
+  the email features. A fix changes the facade, the Console client and the
+  door together. HANDOFF holds the item. Until then, the `narrowing.done`
+  log line holds the request ids of each call.
 
 ### 7.2 The measure
 
@@ -629,6 +647,44 @@ egress class.
 
 **Gate:** to turn on `SYSTEM_ONE_ON_DECIDE` on production is OWNER-GATE.
 It moves spend to another sub-processor (D75.8).
+
+**Build notes (2026-10-07, branch `ws48-n3-decide-tier`).** Read these
+before N1 uses the decide door.
+
+- **The shape helpers are in `acb_llm/decide_shape.py`.** `split_questions`
+  cuts a batch into requests of 16. `shape_refusal` gives the reason code of
+  the rule that the door would break for one question. N1's `narrowing.py`
+  reads its batch size from `MAX_QUESTIONS` there, so it keeps no copy of
+  the limit. The facade `acb_llm/decide.py` still holds no
+  limit, and `test_acb_llm_decide.py` fences that. The same file pins each
+  copy to `customer_console/decide.py`.
+- **An item that the door would refuse goes to `tier-fast` with no
+  request.** A choice of more than 255 options is one case. A context past
+  the window of 32000 tokens is another. The tool logs the code at `info`.
+  So the `error` line of a 400 stays the signal of a real caller bug.
+- **The fallback merges.** The failed items of all requests and each
+  refused item go out in ONE `tier-fast` request, in their order. A whole
+  outage sends the same bytes as the flag off, and a test proves it.
+- **A partial answer.** When some items have a decide answer and the
+  fallback also fails, each other item reads as `unsure`. When no item has
+  an answer, the tool says `UNAVAILABLE`, as before.
+- **The bound of one request is 10 s** (§3.5). The Console client has its
+  own bound of 10 s, and the tool holds the whole await.
+- **`DECIDE_ENABLED` still binds.** With it off, every item falls back with
+  the reason `disabled`, and no request goes out.
+- **The calling agent.** The request takes `run_attribution()`, and the run
+  binding names the agent, as `system_one` does (§6.5 of
+  `ai_tier_routing.md`).
+- **A reason is a code.** The Console client gives a sentence for some
+  refusals, and a transport message for an outage. The fallback line logs
+  each of those as `unavailable`.
+- **The deployment-key arm.** Only a member that the gateway verified goes
+  out as proven. A claimed member gets the local refusal of the client, with
+  no request, and the item goes to `tier-fast`. A test holds each case.
+- **The tenant cannot set the flag.** `SYSTEM_ONE_ON_DECIDE` is in
+  `env_guard.PLATFORM_ENV_NAMES`.
+- **Not measured yet:** the agreement of the two engines. No box has a
+  bound `tier-decide`. HANDOFF H-265 holds the step.
 
 ### N4 · The WhatsApp adapter — AGENT-SAFE
 

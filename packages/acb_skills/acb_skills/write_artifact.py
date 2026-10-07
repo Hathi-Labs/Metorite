@@ -1215,14 +1215,78 @@ async def _notify(
 
 # ── Generative UI ───────────────────────────────────────────────────────────
 
-# The component types the frontend GenerativeUINode renderer whitelists. Kept in
-# sync with GenerativeUINode.tsx KNOWN_TYPES so the tool's docstring can steer
-# the model toward valid trees (and we can reject obviously-wrong ones early).
-_GEN_UI_TYPES = {
+#: The node kinds the renderer draws: ``KNOWN_TYPES`` in
+#: ``GenerativeUINode.tsx``. ``emit_generative_ui`` refuses any other kind
+#: (``genui_refusal``), so the model can retry. Until 2026-10-07 this set
+#: existed and nothing read it, and a ``tree`` node reached a member as
+#: "unsupported UI element: tree". Fence: ``test_genui_catalog_lockstep.py``.
+GENUI_NODE_TYPES: frozenset[str] = frozenset({
     "card", "stack", "row", "heading", "text", "markdown", "badge",
     "divider", "keyValue", "table", "list", "code", "link", "button", "callout",
     "template", "html", "react", "icon",
-}
+})
+
+#: The template names the renderer draws: ``TEMPLATE_CATALOG`` in
+#: ``genUITemplates.tsx``. Same fence.
+GENUI_TEMPLATES: frozenset[str] = frozenset({
+    "weatherCard", "statDashboard", "barChart", "sparkTrend", "comparison",
+    "progressTracker", "recipeCard", "flightStatus", "trainStatus", "formCard",
+    "optionPicker", "timeline", "taskBoard", "dataGrid", "reportCard",
+    "planCard",
+})
+
+#: The renderer drops a node deeper than this (``Node``'s depth guard).
+_GENUI_MAX_DEPTH = 20
+
+
+def genui_refusal(spec: dict) -> str | None:
+    """Why the renderer cannot draw ``spec``, or ``None`` when it can.
+
+    The check costs no schema tokens: ``ui`` is one JSON string, so the
+    schema cannot hold an enum, and the docstring sits at its ceiling in
+    ``test_tool_schema_diet.py``. So the refusal names the allowed kinds,
+    and the model reads them in the tool result and emits again.
+
+    It walks the tree the way the renderer does: ``root`` or ``view`` when
+    present, then ``children``. A child that is not an object, or a node
+    below the depth guard, draws nothing and is not refused.
+    """
+    root = spec.get("root")
+    if root is None:
+        root = spec.get("view")
+    if root is None:
+        root = spec
+
+    def walk(node: object, where: str, depth: int) -> str | None:
+        if depth > _GENUI_MAX_DEPTH or not isinstance(node, dict):
+            return None
+        kind = node.get("type")
+        # A list or an object is unhashable, and the set lookup would raise.
+        if not isinstance(kind, str) or kind not in GENUI_NODE_TYPES:
+            return (
+                f"{where}: the renderer has no {kind!r} type. Use one of: "
+                f"{', '.join(sorted(GENUI_NODE_TYPES))}. For a hierarchy, use "
+                "a markdown node with a nested list."
+            )
+        if kind == "template":
+            props = node.get("props")
+            name = props.get("name") if isinstance(props, dict) else None
+            if not isinstance(name, str) or name not in GENUI_TEMPLATES:
+                return (
+                    f"{where}: the renderer has no {name!r} template. Use one "
+                    f"of: {', '.join(sorted(GENUI_TEMPLATES))}."
+                )
+        kids = node.get("children")
+        if isinstance(kids, list):
+            for i, kid in enumerate(kids):
+                found = walk(kid, f"{where}.children[{i}]", depth + 1)
+                if found:
+                    return found
+        return None
+
+    if not isinstance(root, dict):
+        return "ui: the root must be a JSON object (a component node)."
+    return walk(root, "ui", 0)
 
 
 def _warn_fields(warnings: list[str]) -> dict:
@@ -1283,7 +1347,7 @@ async def emit_generative_ui(ui: str) -> dict:
       set. Without it, clicks arrive as a NEW chat message instead.
 
     It supports FOUR modes; prefer them in this order
-    (template → tree → react → html):
+    (template → component tree → react → html):
 
     1. NAMED TEMPLATE — pre-designed, animated, on-brand components. You supply
        ONLY data; the design is fixed and looks great every time. Use first when
@@ -1426,7 +1490,7 @@ async def emit_generative_ui(ui: str) -> dict:
            actually receives what they chose. This is the key to real two-way UI.
 
     Returns ``{"ok": true}`` on emit. Additive — also say in prose what you're
-    showing. Keep template/tree/html discriminated by the top-level ``type``.
+    showing. A ``type`` not named above is refused.
 
     Example (template — the preferred mode)::
 
@@ -1442,6 +1506,11 @@ async def emit_generative_ui(ui: str) -> dict:
         return {"ok": False, "error": f"ui must be valid JSON: {exc}"}
     if not isinstance(spec, dict):
         return {"ok": False, "error": "ui must be a JSON object (a component node)"}
+    # Refuse a kind the renderer cannot draw BEFORE anything is parked or
+    # pushed, so a refused HITL card never waits for an answer.
+    refusal = genui_refusal(spec)
+    if refusal:
+        return {"ok": False, "error": refusal}
 
     # Advisory lint for the custom-HTML tier — the sandbox swallows these errors
     # silently, so report them back with the emit result. Inline cards are not

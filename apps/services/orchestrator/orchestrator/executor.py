@@ -3883,7 +3883,20 @@ async def run_agent_stream(
                     if _agent_md_spec is not None else ""
                 ),
                 is_copilot=_is_copilot_sdk,
+                # The member's own turn: read the effort from their words.
+                effort_from_text=True,
             )
+            # Owner, 2026-10-07: a covered chat sends `think_mode` "auto", and
+            # the member's words may raise it to `thinking`. The run then
+            # takes that effort everywhere `think_mode` reaches: the reasoning
+            # effort below, and the bound context that the System-1 threshold
+            # and a sub-agent read. None, or the same effort, changes nothing.
+            if _tier_run is not None:
+                from acb_skills.tier_policy import normalise_effort as _norm_effort
+
+                if _tier_run.effort != _norm_effort(think_mode):
+                    think_mode = _tier_run.effort
+                    _derive_ctx(think_mode=think_mode)
             _requested_model_early = (model or "").strip()
             _configured_model_early = (
                 getattr(settings, "copilot_chat_model", "") or ""
@@ -4585,6 +4598,10 @@ async def run_agent_stream(
                 # _create_session() retries without the option if the model
                 # rejects it, so unsupported models degrade gracefully.
                 _think_mode = event_payload.get("think_mode") or "auto"
+                # A covered run takes the policy's effort, which the member's
+                # words may have raised (owner, 2026-10-07).
+                if _tier_run is not None:
+                    _think_mode = _tier_run.effort
                 try:
                     _opts = agent.default_options
                     if isinstance(_opts, dict):
@@ -6291,6 +6308,7 @@ async def _tier_policy_for_run(
     agent_md_model: str,
     is_copilot: bool,
     emit: bool = True,
+    effort_from_text: bool = False,
 ) -> Any:
     """The run's `RunTierPolicy`, or None when the flag does not cover the agent.
 
@@ -6302,6 +6320,14 @@ async def _tier_policy_for_run(
     *emit* False sends no `ai.route` event. The batch path and a sub-agent
     pass it (S4). `resolve_run_queue` reads the PARENT's queue first, so a
     sub-agent's events would join the parent's answer label.
+
+    *effort_from_text* (owner, 2026-10-07): the member chooses no effort in
+    the chat. The stream path passes it for the member's own turn, so the
+    turn-kind request also asks whether the member's words explicitly ask for
+    deep work. A yes raises an `auto` run to `thinking`, never to `max`, and
+    logs `ai_route.effort_from_text`. The batch path and a sub-agent leave it
+    off: their message is a model's words, and they inherit the parent's
+    effort through `think_mode` in the bound context.
     """
     if not _tier_policy_covers(agent_name):
         return None
@@ -6323,17 +6349,25 @@ async def _tier_policy_for_run(
         )
     turn = await tier_policy.turn_kind(
         message, _agent_tool_names(agent), think_mode,
+        read_effort=effort_from_text,
     )
     _log.info(
         "ai_route.turn_kind", agent=agent_name, run_id=run_id, kind=turn.kind,
         source=turn.source, latency_ms=turn.latency_ms,
     )
+    effort = tier_policy.normalise_effort(think_mode)
+    if effort_from_text and turn.effort and effort == "auto":
+        effort = tier_policy.normalise_effort(turn.effort)
+        _log.info(
+            "ai_route.effort_from_text", agent=agent_name, run_id=run_id,
+            effort=effort, source=turn.effort_source,
+        )
     return tier_policy.RunTierPolicy(
         agent=agent_name,
         run_id=run_id,
         default=default,
         kind=turn.kind,
-        effort=tier_policy.normalise_effort(think_mode),
+        effort=effort,
         emit=None if (is_copilot or not emit) else _emit_to_run(thread_id),
     )
 

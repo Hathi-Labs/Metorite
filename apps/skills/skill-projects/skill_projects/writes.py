@@ -66,6 +66,7 @@ from skill_projects.priority import (
     takes_priority,
 )
 from skill_projects.reads import WEEKDAYS, _number, _rule_text, _task_line, clock_of
+from skill_projects.refusals import REFUSED
 
 try:
     from acb_skills.tool_annotations import annotate as _annotate
@@ -2278,6 +2279,13 @@ async def report_save(
 # consent, never authority. An org-wide row (WS-27bj) is minted only when the
 # member says `org_wide=true`, and the route refuses it without the
 # organization settings permission.
+#
+# Owner directive 2026-10-07 (`projects_agent_parity.md` §16): the tool never
+# decides a permission. It calls the write, and the server allows or refuses
+# it. The ONE check before a card is :func:`status_edit_refusal`, and it reads
+# the server's own answer (`may_edit` and `edit_refusal` on the status-set
+# read, from `core.can_manage_settings`, the write's predicate). Nothing here
+# infers a permission from a role, an owner node or where a row lives.
 
 STATUS_CATEGORIES = ("backlog", "todo", "in_progress", "done", "cancelled", "triage")
 FIELD_TYPES = ("text", "number", "date", "select", "multi_select", "boolean", "url")
@@ -2285,6 +2293,34 @@ FREQS = ("daily", "weekly", "monthly", "yearly")
 ANCHORS = ("due", "completed")
 DISPOSITIONS = ("INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT", "REFERENCE", "DONE", "TRASH")
 ENERGIES = ("low", "medium", "high")
+
+
+def status_edit_refusal(status_set: dict[str, Any], node_name: Any) -> str:
+    """The server's "no" before a status card, or ``""`` to go on.
+
+    *status_set* is ``GET /projects/nodes/{id}/status-set``. Its ``may_edit``
+    is ``core.can_manage_settings``, the predicate the status write checks,
+    and its ``edit_refusal`` is the write's own 403 words. So a member is not
+    shown a card that the write will refuse, and the words are the server's.
+
+    ⚠️ Only an explicit ``False`` stops the tool. A read that does not carry
+    the flag (an older gateway) lets the tool go on to the card, and the
+    write then decides. Fence: ``tests/unit/test_projects_agent_grants.py``.
+    """
+    if status_set.get("may_edit") is not False:
+        return ""
+    said = str(status_set.get("edit_refusal") or "").strip()
+    lines = [
+        f"{REFUSED} The server says that this member may not edit the statuses "
+        f"of {data(node_name)}. Nothing was done."
+    ]
+    if said:
+        lines.append(f"Gateway said: {data(said)}")
+    lines.append(
+        "Next: Tell the member what the gateway said. Do not try again, and do "
+        "not try another tool for the same act."
+    )
+    return "\n".join(lines)
 
 
 async def _node(project_id: str) -> tuple[str, dict[str, Any]]:
@@ -2369,6 +2405,9 @@ async def create_status(project_id: str, name: str, category: str = "todo", colo
     if cat not in STATUS_CATEGORIES:
         return f"category is one of {', '.join(STATUS_CATEGORIES)}."
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
+    refused = status_edit_refusal(owner, node.get("name"))
+    if refused:
+        return refused
     rows = await _vocab(pid, "statuses")
     if _matches_by_name(rows, label):
         return f"{data(label)} already exists here. The statuses are: {_names(rows)}."
@@ -2402,6 +2441,11 @@ async def update_status(
     the project's set. Only the arguments you pass change. A rename changes
     what every task in the lane reads. The card shows before → after."""
     pid, node = await _node(project_id)
+    refused = status_edit_refusal(
+        (await get(f"/projects/nodes/{pid}/status-set")) or {}, node.get("name")
+    )
+    if refused:
+        return refused
     row = await _resolve_status(pid, status)
     sid = uuid_of(str(row.get("id")), "status_id")
     payload: dict[str, Any] = {}
@@ -2448,9 +2492,9 @@ async def create_type(
 ) -> str:
     """Add a task type to the project's root. is_default makes new tasks
     start as it. is_epic makes it a top level in the hierarchy rule.
-    org_wide=true mints it for every project (needs the organization
-    settings permission, and cannot be the default). Deleting a type is a
-    guarded act; tasks keep existing, untyped."""
+    org_wide=true mints it for every project, and the server decides
+    whether the member may. An org-wide type cannot be the default.
+    Deleting a type is a guarded act; tasks keep existing, untyped."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:

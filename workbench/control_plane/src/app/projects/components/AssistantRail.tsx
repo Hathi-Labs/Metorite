@@ -29,8 +29,6 @@ import AgentChat from "@/components/AgentChat";
 import { useAgentSessions } from "@/hooks/useChatSessions";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
-import { useAccess } from "@/components/AccessProvider";
-import { hasCapability } from "@/lib/access";
 import { fetchTaskSettings } from "@/app/tasks/lib/api";
 import {
   buildProjectsAssistantPersona,
@@ -56,9 +54,6 @@ import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 export { PROJECTS_AGENT };
 import { useTierRouted } from "@/hooks/useTierRouted";
 import { governedModelProps, readsChatModel } from "@/lib/tierRouting";
-
-/** The permission the vocabulary writes need (`routes/projects/core.py`). */
-const SETTINGS_WRITE = "projects:settings:write";
 
 /**
  * The four prompts the empty chat suggests. They render as the shared chat's
@@ -99,7 +94,6 @@ export function AssistantRail({
 }: AssistantRailProps) {
   const { data: nextAuthSession } = useSession();
   const userId: string = nextAuthSession?.user?.email ?? "dev@fracktal.in";
-  const { access } = useAccess();
 
   const activeRunIds = useActiveSessions();
 
@@ -189,11 +183,10 @@ export function AssistantRail({
       filterSummary: filters ? describeFilters(filters) : "",
       openTask: openTask ?? null,
       selectedTaskIds,
-      canManageSettings: hasCapability(access, SETTINGS_WRITE),
       today: `${yyyy}-${mm}-${dd}`,
       timezone,
     });
-  }, [focusNode, view, filters, openTask, selectedTaskIds, access]);
+  }, [focusNode, view, filters, openTask, selectedTaskIds]);
 
   // WS-27bm S8 (spec §14). The side panel beside the board shows THIS
   // conversation's files only, so a tab left open by `/chat` or by another
