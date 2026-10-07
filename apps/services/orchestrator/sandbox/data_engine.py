@@ -805,6 +805,12 @@ MAX_TABLES = 200
 MAX_MERGES = 100_000
 #: Excel itself holds at most 64,000 cell styles.
 MAX_STYLES = 65_536
+#: The limits of Excel itself. Only a crafted file holds a longer sheet name or
+#: number format code. A long name would go into each range and each cell
+#: reference of an answer, and a long code costs openpyxl's date rule more than
+#: linear time.
+SHEET_NAME_CHARS = 31
+FORMAT_CODE_CHARS = 255
 EXCEL_MAX_COLUMN = 16_384
 #: A block of rows of one cell each waits for a wider row this long. Past it,
 #: the rows are a table of one column.
@@ -1071,6 +1077,26 @@ class _Workbook(_Part):
             hidden = attrs.get("state", "").lower() in ("hidden", "veryhidden")
             self.sheets.append((attrs.get("name") or f"Sheet{len(self.sheets) + 1}", hidden, part))
 
+    def cut_names(self) -> None:
+        """Cut each name past Excel's 31 characters to 31 characters.
+
+        Excel compares sheet names with no regard to case, so a cut name that
+        meets another name ends in ``~2``, ``~3`` and on until it is unique. One
+        count serves all the cut names, so the loop runs in linear time.
+        """
+        taken = {n.casefold() for n, _, _ in self.sheets if len(n) <= SHEET_NAME_CHARS}
+        count, kept = 1, []
+        for name, hidden, part in self.sheets:
+            if len(name) > SHEET_NAME_CHARS:
+                cut = name[:SHEET_NAME_CHARS]
+                while cut.casefold() in taken:
+                    count += 1
+                    cut = name[: SHEET_NAME_CHARS - len(f"~{count}")] + f"~{count}"
+                taken.add(cut.casefold())
+                name = cut
+            kept.append((name, hidden, part))
+        self.sheets = kept
+
 
 class _Strings(_Part):
     """The shared strings, packed: each 4,096 strings are one text and an array
@@ -1154,7 +1180,14 @@ class _Styles(_Part):
 
 def _date_kind(fid: int, code: str | None) -> str | None:
     """``date``, ``time``, ``datetime`` or ``duration`` for a number format,
-    else None. openpyxl's rules decide a date format."""
+    else None. openpyxl's rules decide a date format.
+
+    A code past Excel's 255 characters is no date format, and its number
+    stays a number. The engine skips other bad style data in the same way,
+    as a ``numFmtId`` that is not a number. A style changes only how a number
+    reads, so it is no cause to refuse the whole file. openpyxl's rules cost
+    more than linear time on a long code, and this check stops that cost.
+    """
     from openpyxl.styles.numbers import (  # type: ignore[import-untyped]
         BUILTIN_FORMATS,
         STRIP_RE,
@@ -1165,6 +1198,8 @@ def _date_kind(fid: int, code: str | None) -> str | None:
     code = code if code is not None else BUILTIN_FORMATS.get(fid)
     if code is None:
         return "date" if fid in _EAST_ASIAN_DATES else "time" if fid in _EAST_ASIAN_TIMES else None
+    if len(code) > FORMAT_CODE_CHARS:
+        return None
     if is_timedelta_format(code):
         return "duration"
     if not is_date_format(code):
@@ -1926,6 +1961,7 @@ def _book_parts(book: zipfile.ZipFile, deadline: float) -> tuple[_Workbook, str 
     others = {main, *named.values()}
     workbook = _Workbook({rid: p for rid, p in sheets.items() if p not in others})
     _parse_part(book, main, workbook, deadline, XML_SMALL_PART_BYTES)
+    workbook.cut_names()
     return workbook, named.get("sharedStrings"), named.get("styles")
 
 

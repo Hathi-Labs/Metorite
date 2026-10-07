@@ -1371,6 +1371,50 @@ def test_the_caps_of_a_workbook_hold(dirs: Any) -> None:
     assert padded["error"] == "bad_file" and "too wide for its size" in padded["message"]
 
 
+def test_a_long_sheet_name_is_cut_to_31_characters_and_stays_unique(dirs: Any) -> None:
+    """Security review P3-1. A name past Excel's 31 characters is cut, so it
+    cannot swell each range and cell reference of an answer. Two long names
+    with one prefix stay unique, and a cut name passes a real name."""
+    prefix = "Sales " + "x" * 25
+    assert len(prefix) == E.SHEET_NAME_CHARS
+    table = xb.sheet(_rows((1, inline("A1", "a")), (2, num("A2", 1)), (3, num("A3", 2))))
+    real = prefix[:29].upper() + "~2"  # A real name that the second cut name meets
+    sheets = [(prefix + "y" * 1_000_000, table), (prefix + "z" * 50, table), (real, table)]
+    answer = _ok(_load(dirs, "l.xlsx", _book(sheets)))
+    names = [s["name"] for s in answer["sheets"]]
+    assert names == [prefix, prefix[:29] + "~3", real]
+    assert len({n.casefold() for n in names}) == 3
+    assert len(json.dumps(answer)) < 20_000
+    ds = answer["dataset_id"]
+    first = next(t for t in answer["tables"] if t["sheet"] == prefix)
+    assert first["range"] == f"'{prefix}'!A2:A3"
+    preview = _ok(_call(dirs, "preview", dataset_id=ds, table=first["name"]))
+    assert preview["cells"] == [f"'{prefix}'!A2:A2", f"'{prefix}'!A3:A3"]
+    picked = _ok(_load(dirs, "l.xlsx", _book(sheets), sheet=prefix[:29] + "~3"))
+    assert [s["name"] for s in picked["sheets"]] == [prefix[:29] + "~3"]
+
+
+def test_a_number_format_past_255_characters_is_no_date_and_reads_quickly(dirs: Any) -> None:
+    """Security review P3-2. openpyxl's date rule costs more than linear time
+    on a long crafted code. The engine skips a code past Excel's 255
+    characters, and its number stays a number."""
+    crafted = "[h" * 50_000
+    assert E._date_kind(14, None) == "date"  # The first call imports openpyxl. Time the next.
+    began = time.perf_counter()
+    assert E._date_kind(164, crafted) is None
+    assert time.perf_counter() - began < 0.1
+    edge = "yyyy-mm-dd" + '"' + "x" * (E.FORMAT_CODE_CHARS - 12) + '"'
+    assert len(edge) == E.FORMAT_CODE_CHARS and E._date_kind(164, edge) == "date"
+    assert E._date_kind(164, edge + " ") is None
+    styles = _STYLES.replace(b"dd/mm/yyyy hh:mm", crafted.encode())
+    rows = _rows((1, inline("A1", "When")), (2, _date("A2", 45658, 2)), (3, _date("A3", 45659, 2)))
+    began = time.perf_counter()
+    data = _book([("D", xb.sheet(rows))], extra={"xl/styles.xml": styles})
+    cols = _columns(dirs, _ok(_load(dirs, "d.xlsx", data))["dataset_id"])
+    assert time.perf_counter() - began < 5
+    assert cols["When"]["type"] == "integer"
+
+
 # --------------------------------------------------------------------------
 # Fences: done-when 7, the pins and the image.
 # --------------------------------------------------------------------------

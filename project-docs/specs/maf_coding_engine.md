@@ -3634,7 +3634,7 @@ A file of 1,000 columns and 2,000 rows still loads in the image.
   columns. Pass 2 streams the rows through the nine rules.
 - Each table goes to a clean CSV copy, as a CSV file does. So the type rules
   of WS-43y1a run unchanged, and a workbook gets the same types.
-- `tests/unit/test_data_engine.py` (WS43-F26) now has 149 host tests and 3
+- `tests/unit/test_data_engine.py` (WS43-F26) now has 151 host tests and 3
   Docker tests. Two of the Docker tests read a workbook.
 - The export guard and the SQL lock did not change.
 
@@ -3675,6 +3675,16 @@ text `1900-02-29`. The 1904 system counts from 1 January 1904.
 At the parse, a part must be UTF-8. The parser refuses a DTD and an entity
 at the first event. The XML nests at most 64 deep, and a cell holds at most
 1,048,576 characters.
+
+Two limits of Excel itself also hold. The security review found both as P3.
+
+1. **A sheet name.** The engine cuts a name to 31 characters at the load. A
+   cut name that meets another name ends in `~2`, `~3` and on. A long name
+   would go into each range and each cell reference of an answer.
+2. **A number format code.** A code of more than 255 characters is no date
+   format, and its number stays a number. The engine skips a bad `numFmtId`
+   in the same way, because a style only changes how a number reads.
+   openpyxl's date rule costs more than linear time on a long code.
 
 **The image under `--memory 1g`.** The peak is the largest resident set of
 the verb.
