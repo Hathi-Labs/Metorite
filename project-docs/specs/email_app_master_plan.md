@@ -12950,7 +12950,9 @@ mutation and restored the file after each run. `git status` was clean after each
 
 In round 2, the first run let three mutants survive. Two of them removed a plural rule. Each
 scale word had two plural rules, so removing one changed nothing. The agent kept one rule, and a
-single letter now takes no plural. G6 survived because the timing test passed with no cap. Now
+single letter now takes no plural.
+
+G6 survived because the timing test passed with no cap. Now
 `test_a_claim_longer_than_a_quote_stores_no_date` proves the cap. G1 and G6 then failed.
 
 **EM-T14b-2 — the job.**
