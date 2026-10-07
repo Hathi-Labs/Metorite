@@ -107,5 +107,19 @@ describe("a chat answer with typed bullets", () => {
     expect(html).not.toContain("•");
     expect(typedBulletsToList("```\n• keep\n```\n• go")).toBe("```\n• keep\n```\n- go");
     expect(typedBulletsToList("a • b")).toBe("a • b");
+    // Review round 1: an indented code line is code, and Copy copies it.
+    expect(typedBulletsToList("    • code line")).toBe("    • code line");
+  });
+});
+
+describe("an answer quotes in French", () => {
+  // Review round 1. Mutation caught: the remark plugin drops a padded pair.
+  it("keeps « Bonjour » with its marks in a fenced answer", async () => {
+    const { MarkdownBody } = await import("@/components/MarkdownMessage");
+    const html = renderToStaticMarkup(
+      createElement(MarkdownBody, { content: "Il a dit « Bonjour » hier, about «Ops».", fences: true }),
+    );
+    expect(html).toContain("« Bonjour »");
+    expect(html).toMatch(/data-fenced-name[^>]*>Ops<\/span>/);
   });
 });

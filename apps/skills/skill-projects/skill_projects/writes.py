@@ -151,9 +151,13 @@ async def _confirm(
     """
     from acb_skills.ask_tools import request_confirmation
 
+    # `fenced`: every member value on these cards is in «marks» (`data()`),
+    # so the client draws each one as a token and never shows the marks.
     if rows is None:
-        return await request_confirmation(title=title, detail=detail, context=context)
-    return await request_confirmation(title=title, detail=detail, context=context, rows=rows)
+        return await request_confirmation(title=title, detail=detail, context=context, fenced=True)
+    return await request_confirmation(
+        title=title, detail=detail, context=context, rows=rows, fenced=True
+    )
 
 
 CANCELLED = "Cancelled — nothing was changed."

@@ -35,7 +35,7 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export function ValueElement({ item, kind }: { item: ValueItem; kind: FieldKind }) {
   const text = item.text;
   if (!item.named) {
-    if (kind === "date") return <>{formatCardDate(formatPlain(text))}</>;
+    if (kind === "date") return <>{formatPlain(text)}</>;
     if (kind === "minutes") return <>{formatMinutes(text)}</>;
     if (kind === "flag") return <>{formatPlain(text)}</>;
     const plain = formatPlain(text);
@@ -109,11 +109,15 @@ export default function CardFieldValue({
   value,
   kind = "text",
   many = false,
+  fenced = true,
 }: {
   value: string;
   kind?: FieldKind;
   many?: boolean;
+  /** False: the server did not fence this card, so the value is drawn as sent. */
+  fenced?: boolean;
 }) {
+  if (!fenced) return <span className="min-w-0 break-words">{value}</span>;
   const parsed = parseFieldValue(value, many);
   return (
     <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1" title={parsed.plain}>

@@ -19,7 +19,10 @@
  *    mark inside. `#5 «X»` is one task name that carries its number.
  * 2. **A stray mark never shows.** An unclosed «, a lone », the outer pair of a
  *    nested «a «b» c» and an empty «» are all dropped.
- * 3. **The output is data, never markup.** The parts are strings, and React
+ * 3. **A quotation keeps its marks.** French typography pads the marks with
+ *    a space (`« Bonjour »`), and `data()` never does, so a padded pair is a
+ *    quotation and stays text as written (review round 1).
+ * 4. **The output is data, never markup.** The parts are strings, and React
  *    escapes them. Nothing here builds HTML.
  *
  * Pure and framework-free, so the node-env vitest holds it.
@@ -28,6 +31,9 @@
 
 /** The pattern of one fenced name, with an optional `#n ` before it. */
 export const FENCE_SOURCE = String.raw`(?:(#\d+)\s+)?«([^«»\n]{1,200})»`;
+
+/** A quotation: a pair padded with white space inside. Kept as written. */
+export const QUOTE_SOURCE = String.raw`«\s[^«»\n]{0,200}?\s»`;
 
 /** One part of a fenced text. */
 export type FencedPart =
@@ -40,21 +46,25 @@ const STRAY = /[«»]/g;
 export function splitFenced(value: string): FencedPart[] {
   const source = String(value ?? "");
   const out: FencedPart[] = [];
-  const push = (text: string) => {
-    const clean = text.replace(STRAY, "");
+  const push = (text: string, keep = false) => {
+    const clean = keep ? text : text.replace(STRAY, "");
     if (!clean) return;
     const last = out[out.length - 1];
     if (last?.kind === "text") last.text += clean;
     else out.push({ kind: "text", text: clean });
   };
   let last = 0;
-  for (const m of source.matchAll(new RegExp(FENCE_SOURCE, "g"))) {
+  for (const m of source.matchAll(new RegExp(`(${QUOTE_SOURCE})|${FENCE_SOURCE}`, "g"))) {
     const start = m.index ?? 0;
     push(source.slice(last, start));
-    const name = m[2].trim();
-    if (name) out.push(m[1] ? { kind: "name", text: name, number: m[1] } : { kind: "name", text: name });
-    else if (m[1]) push(`${m[1]} `);
     last = start + m[0].length;
+    if (m[1] !== undefined) {
+      push(m[1], true);
+      continue;
+    }
+    const name = m[3].trim();
+    if (name) out.push(m[2] ? { kind: "name", text: name, number: m[2] } : { kind: "name", text: name });
+    else if (m[2]) push(`${m[2]} `);
   }
   push(source.slice(last));
   return out;

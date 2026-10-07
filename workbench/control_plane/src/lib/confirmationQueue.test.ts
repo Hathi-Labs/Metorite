@@ -344,6 +344,7 @@ describe("a card with rows", () => {
         detail: event.detail,
         context: "project: «Ops»\ntasks: 3",
         rows,
+        fenced: true,
         onApprove: () => {},
         onReject: () => {},
       }),

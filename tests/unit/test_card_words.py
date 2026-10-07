@@ -84,3 +84,23 @@ def test_a_clip_lands_before_the_fence() -> None:
     ref = _short_ref({"title": "x" * (TITLE_CLIP + 20), "task_number": 9})
     assert ref.startswith("#9 «") and ref.endswith("…»")
     assert ref.count("«") == 1 and ref.count("»") == 1
+
+
+async def test_every_projects_card_says_it_is_fenced(monkeypatch) -> None:
+    """The client draws «marks» as tokens only on a card the server fenced.
+    Mutation caught: ``_confirm`` that drops ``fenced=True``."""
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.bulk_update(UUID, tags_add="Bug")
+    assert asked[0]["fenced"] is True
+
+
+async def test_a_flag_turned_off_reads_no_on_the_personal_card(monkeypatch) -> None:
+    """Review round 1: ``data(False)`` is ``«»``, which the card drew as
+    "none". Mutation caught: ``_overlay_shown`` that fences a bool as is."""
+    from skill_projects.guarded import _overlay_shown
+
+    assert _overlay_shown(False) == "«no»"
+    assert _overlay_shown(True) == "«yes»"
+    assert _overlay_shown(None) == "cleared"
+    assert _overlay_shown({"email": "p@x.io"}) == "«p@x.io»"

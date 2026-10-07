@@ -15,7 +15,7 @@
  * member and that is not Markdown — a confirmation card, a receipt, a
  * generative-UI field. Markdown has its own path (`remarkEntityPills`).
  *
- * Fence: `src/components/fencedText.render.test.ts`.
+ * Fence: `src/lib/fencedText.test.ts`.
  */
 
 import { Fragment, useContext } from "react";

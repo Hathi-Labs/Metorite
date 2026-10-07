@@ -855,6 +855,18 @@ async def bulk_update(
     return "\n".join(out)
 
 
+def _overlay_shown(value: Any) -> str:
+    """One overlay value on the card. A flag reads yes or no: ``data(False)``
+    is ``«»``, which the card would draw as "none" (review round 1)."""
+    if value is None:
+        return "cleared"
+    if isinstance(value, bool):
+        return data("yes" if value else "no")
+    if isinstance(value, dict):
+        return data(value.get("email"))
+    return data(value)
+
+
 async def _bulk_personal(ids: list[str], personal: str) -> str:
     """``action: personal`` (``bulk.py`` ``validate_personal``): the member's
     own overlay on every task of the selection, under one class C card."""
@@ -881,12 +893,7 @@ async def _bulk_personal(ids: list[str], personal: str) -> str:
     # The card names no wire key in its prose (owner, 2026-10-07). The
     # values are fields, which the card labels and draws by kind.
     impact = f"your own triage of {_plural(len(tasks), 'task')}"
-    rest: dict[str, Any] = {
-        k: "cleared"
-        if v is None
-        else data(v.get("email") if isinstance(v, dict) else v)
-        for k, v in values.items()
-    }
+    rest: dict[str, Any] = {k: _overlay_shown(v) for k, v in values.items()}
     rest["seen by"] = "you only. The board does not change"
     kept = sum(len(g) for g, v in groups if "waiting_on" in v and "delegated_at" not in v)
     if kept:

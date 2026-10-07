@@ -20,8 +20,10 @@
  * does not reach the card), so the card cannot tell a send from a create.
  * Do not guess it from the title.
  *
- * The words (owner report, 2026-10-07). No text on the card shows a «mark»:
- * the title, the detail, the notes and the rows draw through `FencedText`.
+ * The words (owner report, 2026-10-07). On a card the server fenced
+ * (`fenced`), no text shows a «mark»: the title, the detail, the notes and
+ * the rows draw through `FencedText`. A free-text body (an email) is always
+ * drawn exactly as it will be sent.
  * A field's key reads in product words, and its value draws by its kind
  * (`lib/cardFields.ts`, `CardFieldValue.tsx`): a tag pill, a status chip, a
  * task pill, a person, a date. Numbered keys (`task 1`, `task 2`) are one
@@ -102,6 +104,20 @@ export function withoutRepeats(fields: CardField[], shown: (string | undefined)[
   return fields.filter((f) => f.values !== undefined || !repeatsLine(f.value, shown));
 }
 
+/**
+ * The run a numbered key belongs to: `task 3` → `task`. Only a word then a
+ * number makes a run, and a custom field never does: `field Q3 target`
+ * after `field Budget` are two fields, each with its own label (review
+ * round 1: they merged into one row and the Budget label was lost).
+ * Exported for its test.
+ */
+export function runKey(key: string): string {
+  const k = key.trim();
+  if (/^field\s/i.test(k)) return "";
+  const m = /^([a-z][a-z ]*?)\s+\d+$/i.exec(k);
+  return m ? m[1].toLowerCase() : "";
+}
+
 /** The plural of a numbered field's label: "Task" → "Tasks". */
 function plural(label: string): string {
   return /s$/.test(label) ? label : `${label}s`;
@@ -132,9 +148,9 @@ export function parseCardBody(context: string | undefined): CardBody {
     if (isHiddenField(m[1], m[2])) continue;
     const key = m[1].trim();
     const value = m[2].trim();
-    const numbered = /\d/.test(key) ? cardKey(key) : "";
+    const numbered = runKey(key);
     const last = fields[fields.length - 1];
-    if (numbered && last && cardKey(last.key) === numbered) {
+    if (numbered && last && runKey(last.key) === numbered) {
       last.values = [...(last.values ?? [last.value]), value];
       last.label = plural(fieldSpec(key).label);
       continue;
@@ -190,6 +206,18 @@ interface ConfirmationCardProps {
   disabled?: boolean;
   /** Where this card sits in the queue, when more than one is waiting. */
   position?: CardPosition;
+  /**
+   * The server fenced member values in «marks» (`ask_tools` `fenced`). Only
+   * then does the card draw them as tokens. Any other card (an email to
+   * send) shows its text exactly as it will be sent, marks included
+   * (review round 1: a body's « oui » lost its quotes on the consent card).
+   */
+  fenced?: boolean;
+}
+
+/** A line of card text: fenced names as tokens, or the text as sent. */
+function CardText({ text, fenced }: { text: string; fenced: boolean }) {
+  return fenced ? <FencedText text={text} pills={false} /> : <>{text}</>;
 }
 
 export default function ConfirmationCard({
@@ -202,6 +230,7 @@ export default function ConfirmationCard({
   onReject,
   disabled = false,
   position,
+  fenced = false,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -228,7 +257,7 @@ export default function ConfirmationCard({
   };
   return (
     <section
-      aria-label={unfenced(summary)}
+      aria-label={fenced ? unfenced(summary) : summary}
       data-confirmation-card=""
       className="my-3 rounded-xl border border-border bg-card overflow-hidden"
     >
@@ -236,11 +265,11 @@ export default function ConfirmationCard({
         <Icon name="ShieldCheck" size={14} className="mt-0.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-foreground break-words">
-            <FencedText text={summary} pills={false} />
+            <CardText text={summary} fenced={fenced} />
           </p>
           {rest && (
             <p className="mt-0.5 text-xs text-muted-foreground break-words">
-              <FencedText text={rest} pills={false} />
+              <CardText text={rest} fenced={fenced} />
             </p>
           )}
         </div>
@@ -291,11 +320,11 @@ export default function ConfirmationCard({
                     />
                     <span className="flex min-w-0 flex-col gap-0.5">
                       <span className="break-words text-xs text-foreground">
-                        <FencedText text={r.label} pills={false} />
+                        <CardText text={r.label} fenced={fenced} />
                       </span>
                       {r.hint && (
                         <span className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
-                          <FencedText text={r.hint} pills={false} />
+                          <CardText text={r.hint} fenced={fenced} />
                         </span>
                       )}
                     </span>
@@ -316,12 +345,12 @@ export default function ConfirmationCard({
                         <ul className="space-y-1">
                           {f.values.map((v, k) => (
                             <li key={k} className="min-w-0">
-                              <CardFieldValue value={v} kind={spec.kind} many={spec.many} />
+                              <CardFieldValue value={v} kind={spec.kind} many={spec.many} fenced={fenced} />
                             </li>
                           ))}
                         </ul>
                       ) : (
-                        <CardFieldValue value={f.value} kind={spec.kind} many={spec.many} />
+                        <CardFieldValue value={f.value} kind={spec.kind} many={spec.many} fenced={fenced} />
                       )}
                     </dd>
                   </div>
@@ -331,12 +360,12 @@ export default function ConfirmationCard({
           )}
           {body.text && (
             <p className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs text-foreground">
-              <FencedText text={body.text} pills={false} />
+              {body.text}
             </p>
           )}
           {[...body.notes, ...body.trailing].map((note, i) => (
             <p key={i} className="text-[11px] text-muted-foreground">
-              <FencedText text={note} pills={false} />
+              <CardText text={note} fenced={fenced} />
             </p>
           ))}
         </div>

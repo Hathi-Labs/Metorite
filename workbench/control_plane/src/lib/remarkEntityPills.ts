@@ -29,7 +29,7 @@
  * mode of an answer that draws no pills (`MarkdownBody` `fences`).
  */
 
-import { FENCE_SOURCE } from "@/lib/fencedText";
+import { FENCE_SOURCE, QUOTE_SOURCE } from "@/lib/fencedText";
 
 /** The smallest shape of an mdast node this plugin reads and writes. */
 export interface MdNode {
@@ -56,12 +56,12 @@ const EMAIL_SOURCE = String.raw`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]
  * email. The fenced arm comes first, so an email inside «» is one pill.
  */
 const PILL = new RegExp(
-  String.raw`${FENCE_SOURCE}|(?<![\w.@+-])(${EMAIL_SOURCE})(?![\w@-])`,
+  String.raw`(${QUOTE_SOURCE})|${FENCE_SOURCE}|(?<![\w.@+-])(${EMAIL_SOURCE})(?![\w@-])`,
   "g",
 );
 
 /** The fenced names only: the mode with no email pills. */
-const FENCE_ONLY = new RegExp(FENCE_SOURCE, "g");
+const FENCE_ONLY = new RegExp(`(${QUOTE_SOURCE})|${FENCE_SOURCE}`, "g");
 
 /** A whole run that is one fenced name, for the bold unwrap. */
 const ONE_PILL = /^\s*(?:#\d+\s+)?«[^«»\n]{1,200}»\s*$/;
@@ -138,25 +138,35 @@ function normalise(children: MdNode[], emails: boolean): MdNode[] {
 export function splitText(value: string, emails = true): MdNode[] {
   const out: MdNode[] = [];
   let last = 0;
+  // A stray guillemet — an unclosed mark, an empty pair — never shows. A
+  // padded quotation (`« oui »`) is kept as written (`fencedText.ts` rule 3).
+  const text = (v: string, keep = false) => {
+    const clean = keep ? v : v.replace(/[«»]/g, "");
+    if (clean) out.push({ type: "text", value: clean });
+  };
   for (const m of value.matchAll(emails ? PILL : FENCE_ONLY)) {
     const start = m.index ?? 0;
-    if (start > last) out.push({ type: "text", value: value.slice(last, start) });
-    if (m[2] !== undefined) {
-      const name = m[2].trim();
-      if (name) out.push(pillNode(name, m[1]));
-      else if (m[1]) out.push({ type: "text", value: `${m[1]} ` });
-    } else {
-      out.push(pillNode(m[3]));
-    }
+    if (start > last) text(value.slice(last, start));
     last = start + m[0].length;
+    if (m[1] !== undefined) {
+      text(m[1], true);
+    } else if (m[3] !== undefined) {
+      const name = m[3].trim();
+      if (name) out.push(pillNode(name, m[2]));
+      else if (m[2]) text(`${m[2]} `);
+    } else {
+      out.push(pillNode(m[4]));
+    }
   }
-  if (last < value.length) out.push({ type: "text", value: value.slice(last) });
-  // A stray guillemet — an unclosed mark, an empty pair — never shows.
-  return glueTrailingPunctuation(
-    out
-      .map((n) => (n.type === "text" ? { ...n, value: (n.value ?? "").replace(/[«»]/g, "") } : n))
-      .filter((n) => n.type !== "text" || n.value !== ""),
-  );
+  if (last < value.length) text(value.slice(last));
+  // Merge the runs the scan split, so the punctuation glue sees one text.
+  const merged: MdNode[] = [];
+  for (const n of out) {
+    const prev = merged[merged.length - 1];
+    if (n.type === "text" && prev?.type === "text") prev.value = (prev.value ?? "") + (n.value ?? "");
+    else merged.push(n);
+  }
+  return glueTrailingPunctuation(merged);
 }
 
 /** The class of the span that keeps a pill and its punctuation together. */
@@ -271,6 +281,8 @@ export function typedBulletsToList(content: string): string {
         fence = mark[1];
         return line;
       }
+      // A line indented four spaces or a tab can be code: leave it alone.
+      if (/^(?: {4}|\t)/.test(line)) return line;
       return line.replace(TYPED_BULLET, "$1- ");
     })
     .join("\n");

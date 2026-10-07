@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
-import ConfirmationCard from "@/components/ConfirmationCard";
+import ConfirmationCard, { parseCardBody, runKey } from "@/components/ConfirmationCard";
 import {
   CARD_FIELDS,
   cardKey,
@@ -26,7 +26,7 @@ const visible = (html: string) => html.replace(/<[^>]*>/g, " ");
 
 const card = (props: Record<string, unknown>) =>
   renderToStaticMarkup(
-    createElement(ConfirmationCard, { title: "", onApprove: () => {}, onReject: () => {}, ...props } as never),
+    createElement(ConfirmationCard, { title: "", fenced: true, onApprove: () => {}, onReject: () => {}, ...props } as never),
   );
 
 describe("the map", () => {
@@ -136,5 +136,37 @@ describe("the bulk card (owner's second screenshot)", () => {
     expect(html).toContain("#28");
     expect(html).toContain(LONG);
     expect(html).not.toContain("«");
+  });
+});
+
+describe("review round 1", () => {
+  // Mutation caught: grouping every key with a digit (the Budget label was lost).
+  it("keeps two custom fields apart, and groups only a word then a number", () => {
+    const body = parseCardBody(
+      "This change is recorded as yours.\nfield Budget: «10000»\nfield Q3 target: «2026-12-31»\nfield Phase 2: «yes»",
+    );
+    expect(body.fields.map((f) => f.label)).toEqual(["Budget", "Q3 target", "Phase 2"]);
+    expect(body.fields.every((f) => f.values === undefined)).toBe(true);
+    expect(runKey("task 12")).toBe("task");
+    expect(runKey("source 2")).toBe("source");
+    expect(runKey("field Q3 target")).toBe("");
+  });
+
+  // Mutation caught: drawing an unfenced card (an email) through FencedText.
+  it("shows a card the server did not fence exactly as it will be sent", () => {
+    const html = card({
+      fenced: false,
+      title: "Send this email?",
+      detail: "To a@b.io · Subject: «Devis» final",
+      context: "Il a dit « oui ».\nMerci",
+    });
+    expect(html).toContain("«Devis»");
+    expect(html).toContain("Il a dit « oui ».");
+    expect(html).not.toContain("data-fenced-name");
+  });
+
+  it("keeps an unfenced date as written", () => {
+    const html = card({ fenced: false, title: "Log this?", context: "due: 2026-10-08\nstage: Won" });
+    expect(html).toContain("2026-10-08");
   });
 });

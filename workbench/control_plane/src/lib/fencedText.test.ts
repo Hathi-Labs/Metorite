@@ -46,6 +46,16 @@ describe("splitFenced", () => {
     ]);
   });
 
+  // Review round 1. Mutation caught: dropping QUOTE_SOURCE, so a French
+  // quotation lost its marks in every answer.
+  it("keeps a padded quotation as written", () => {
+    expect(unfenced("Il a dit « Bonjour » hier.")).toBe("Il a dit « Bonjour » hier.");
+    expect(splitFenced("« oui » and «Ops»")).toEqual([
+      { kind: "text", text: "« oui » and " },
+      { kind: "name", text: "Ops" },
+    ]);
+  });
+
   it("reads the whole value as one name only when it is one", () => {
     expect(soleName("«Done»")).toEqual({ text: "Done" });
     expect(soleName(" #7 «Ship it» ")).toEqual({ text: "Ship it", number: "#7" });
