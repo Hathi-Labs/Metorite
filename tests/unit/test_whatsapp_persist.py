@@ -101,7 +101,8 @@ async def test_persist_sync_result_fans_out_contacts_chats_messages() -> None:
         ],
     )
     counts = await persist.persist_sync_result(db, "acc", result)
-    assert counts == {"messages": 2, "chats": 1}   # both messages, one shared chat
+    # Both messages, one shared chat, and no history (WA-C3 P8).
+    assert counts == {"messages": 2, "chats": 1, "history_messages": 0}
     sql = db.statements()
     assert "INSERT INTO wa_contacts" in sql
     assert "INSERT INTO wa_chats" in sql
@@ -155,3 +156,78 @@ def test_is_transcribable_predicate() -> None:
     assert persist.is_transcribable("document", "audio/mpeg") is True  # by mime
     assert persist.is_transcribable("image", "image/jpeg") is False
     assert persist.is_transcribable("text", None) is False
+
+
+# ── WS-20 WA-C3: history, echoes and statuses (spec §12.4.1) ─────────────────
+
+def _history(wamid: str, direction: str, **kw) -> WhatsAppMessage:
+    return WhatsAppMessage(
+        wa_message_id=wamid, wa_chat_id="16505551234", direction=direction,
+        sender_wa_id="16505551234", body_text="hi", sent_at=_SENT,
+        from_history=True, **kw)
+
+
+async def test_a_history_message_opens_no_service_window() -> None:
+    """P7: a history message is old by construction. Even an inbound one
+    must not open the free-form window."""
+    db = FakeDB()
+    await persist.upsert_chat(db, "acc", _history("wamid.h", "in"), direction="in")
+    assert db.calls[-1][1]["window_expires"] is None
+
+
+def test_a_history_row_and_an_echo_store_no_send_regime() -> None:
+    """P9: Metorite did not send these, so no regime is known."""
+    out_history = _history("wamid.ho", "out")
+    echo = WhatsAppMessage(wa_message_id="wamid.e", wa_chat_id="1650",
+                           direction="out", is_echo=True, sent_at=_SENT)
+    for msg in (out_history, echo):
+        p = persist._message_params("acc", "chat-uuid-1", msg, "out")
+        assert p["send_regime"] is None, msg.wa_message_id
+
+
+def test_a_history_row_carries_its_flag_and_status() -> None:
+    p = persist._message_params(
+        "acc", "chat-uuid-1", _history("wamid.h", "in", delivery_status="read"),
+        "in")
+    assert p["from_history"] is True
+    assert p["delivery_status"] == "read"
+    sql = persist._MESSAGE_INSERT
+    # P8: the watermarks are set at insert, and only for a history row.
+    assert "rules_processed_at" in sql and "commitment_checked_at" in sql
+
+
+async def test_history_media_lands_skipped_not_pending() -> None:
+    db = FakeDB()
+    voice = _history("wamid.hv", "in", kind="voice",
+                     media=WhatsAppMedia(wa_media_id="V9", mime_type="audio/ogg"))
+    await persist.upsert_message(db, "acc", "chat-uuid-1", voice, direction="in")
+    media_call = next(c for c in db.calls if "INSERT INTO wa_media" in c[0])
+    assert media_call[1]["transcription_status"] == "skipped"
+
+
+async def test_history_counts_apart_and_an_echo_counts_as_live() -> None:
+    """P8: a batch of history alone must not fire `on_new_messages`, so it
+    counts in its own key. An echo is live, so its promise still counts."""
+    db = FakeDB()
+    echo = WhatsAppMessage(wa_message_id="wamid.e", wa_chat_id="1650",
+                           direction="out", is_echo=True, sent_at=_SENT)
+    result = SyncResult(messages=[_history("wamid.h1", "in"),
+                                  _history("wamid.h2", "out"), echo])
+    counts = await persist.persist_sync_result(db, "acc", result)
+    assert counts["history_messages"] == 2
+    assert counts["messages"] == 1
+
+
+def test_a_status_only_moves_forward() -> None:
+    fwd = persist.status_moves_forward
+    assert fwd(None, "sent") and fwd("sent", "delivered") and fwd("delivered", "read")
+    assert fwd("read", "played") and fwd("pending", "sent")
+    assert not fwd("read", "delivered")
+    assert not fwd("delivered", "sent")
+    assert not fwd("read", "read")
+    # `failed` applies unless the row is read or played.
+    assert fwd("sent", "failed") and fwd("delivered", "failed") and fwd(None, "failed")
+    assert not fwd("read", "failed") and not fwd("played", "failed")
+    # After a failure only proof of delivery moves the row.
+    assert fwd("failed", "delivered") and not fwd("failed", "sent")
+    assert not fwd("sent", None) and not fwd("sent", "deleted")

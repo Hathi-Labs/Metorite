@@ -12,6 +12,8 @@ from datetime import UTC
 
 from whatsapp_ingestion.providers.webhook import parse_webhook
 
+from tests.unit import _whatsapp_meta_samples as samples
+
 
 def _wrap(value: dict) -> dict:
     """Wrap a change ``value`` in the full entry/changes envelope Meta sends."""
@@ -157,3 +159,104 @@ def test_non_dict_payload_returns_error_not_raise() -> None:
     result = parse_webhook([])  # type: ignore[arg-type]
     assert result.messages == []
     assert result.errors and "not an object" in result.errors[0]
+
+
+# ── WS-20 WA-C3: the three coexistence fields (spec §12.4.1 P5, P6) ──────────
+
+
+def test_a_history_chunk_gives_in_and_out_rows_in_the_thread_chat() -> None:
+    result = parse_webhook(samples.history_body(
+        "PN1", inbound_id="wamid.H1", outbound_id="wamid.H2"))
+    assert result.errors == []
+    inbound, outbound = result.messages
+    assert inbound.wa_chat_id == outbound.wa_chat_id == samples.CUSTOMER
+    assert (inbound.direction, outbound.direction) == ("in", "out")
+    assert inbound.from_history and outbound.from_history
+    assert not inbound.is_echo and not outbound.is_echo
+    assert (inbound.delivery_status, outbound.delivery_status) == (
+        "read", "delivered")
+    assert inbound.sender_wa_id == samples.CUSTOMER
+    assert outbound.sender_wa_id == samples.BUSINESS_NUMBER
+    assert outbound.sender_name == ""
+    assert outbound.body_text.startswith("Yes, I will send")
+    assert [(p.phase, p.chunk_order, p.progress)
+            for p in result.history_progress] == [(0, 1, 55)]
+    assert result.history_declined is False
+
+
+def test_a_history_message_from_the_business_number_is_out_with_no_to() -> None:
+    """The digits of `from` equal the business number, so the row is ours
+    even when Meta leaves `to` out."""
+    body = samples.history_body("PN1", inbound_id="wamid.A", outbound_id="wamid.B")
+    out = body["entry"][0]["changes"][0]["value"]["history"][0]["threads"][0][
+        "messages"][1]
+    out.pop("to")
+    out["from"] = "+1 555-078-3881"
+    msg = parse_webhook(body).messages[1]
+    assert msg.direction == "out"
+    assert msg.wa_chat_id == samples.CUSTOMER
+
+
+def test_an_echo_is_out_in_the_chat_of_its_to_number() -> None:
+    result = parse_webhook(samples.echo_body(
+        "PN1", message_id="wamid.E1", to="+1 (650) 555-1234"))
+    [echo] = result.messages
+    assert echo.direction == "out"
+    assert echo.is_echo is True and echo.from_history is False
+    assert echo.wa_chat_id == samples.CUSTOMER        # digits only
+    assert echo.sender_wa_id == samples.BUSINESS_NUMBER
+    assert echo.sender_name == ""
+    assert echo.body_text == "I will send the invoice today"
+
+
+def test_a_state_sync_add_and_remove_become_contact_changes() -> None:
+    add = parse_webhook(samples.state_sync_body("PN1", action="add"))
+    remove = parse_webhook(samples.state_sync_body("PN1", action="remove"))
+    [a] = add.contact_changes
+    [r] = remove.contact_changes
+    assert (a.action, a.phone_number, a.full_name, a.first_name) == (
+        "add", samples.CUSTOMER, "Pablo Morales", "Pablo")
+    assert (r.action, r.phone_number, r.full_name) == (
+        "remove", samples.CUSTOMER, "")
+    assert add.messages == [] and add.contacts == []
+
+
+def test_an_unknown_field_is_ignored_with_no_error() -> None:
+    body = samples.echo_body("PN1", message_id="wamid.U")
+    body["entry"][0]["changes"][0]["field"] = "account_update"
+    result = parse_webhook(body)
+    assert result.messages == [] and result.errors == []
+    assert result.phone_number_id == "PN1"
+
+
+def test_a_missing_field_reads_as_messages() -> None:
+    body = samples.live_message_body("PN1", message_id="wamid.M")
+    del body["entry"][0]["changes"][0]["field"]
+    [msg] = parse_webhook(body).messages
+    assert (msg.direction, msg.from_history, msg.is_echo) == ("in", False, False)
+
+
+def test_the_decline_code_is_read_from_value_errors() -> None:
+    result = parse_webhook(samples.history_declined_body("PN1", where="value"))
+    assert result.history_declined is True
+    assert result.errors == []
+
+
+def test_the_decline_code_is_read_from_a_history_item() -> None:
+    result = parse_webhook(samples.history_declined_body("PN1", where="item"))
+    assert result.history_declined is True
+
+
+def test_a_progress_outside_0_to_100_is_clamped() -> None:
+    result = parse_webhook(samples.history_progress_body("PN1", phase=2, progress=140))
+    assert [(p.phase, p.progress) for p in result.history_progress] == [(2, 100)]
+
+
+def test_the_status_vocabulary_maps_both_spellings() -> None:
+    from whatsapp_ingestion.providers.webhook import normalize_delivery_status
+
+    assert [normalize_delivery_status(s) for s in (
+        "SENT", "DELIVERED", "READ", "PLAYED", "PENDING", "ERROR",
+        "sent", "delivered", "read", "failed", "deleted", None, "")] == [
+        "sent", "delivered", "read", "played", "pending", "failed",
+        "sent", "delivered", "read", "failed", None, None, None]
