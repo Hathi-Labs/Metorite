@@ -12449,7 +12449,7 @@ behind `EMAIL_INSIGHTS`. The flip is an act of the owner only (the Flip row).
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | ✅ **MERGED #700 (2026-10-07). Migration 231.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
-| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | 🔨 **EM-T14b-0 BUILT, not merged (2026-10-07).** 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
+| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | ✅ **EM-T14b-0 MERGED #702 (2026-10-07).** 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
 | **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
 | **EM-T14d** | 🟢 AGENT-SAFE · R8 · visual review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The view.** Two PRs: EM-T14d-1 (the PATCH, the shared helper, the tile and the digest line) and EM-T14d-2 (the UI). | §13.9.4 |
 | **EM-T14e** | 🟢 AGENT-SAFE · R8 · after the flip | 📝 **SPECIFIED (2026-10-07). It waits for the flip.** **Projects.** The four project types, the Projects tab, and the commitments of today beside them. | §13.9.5 |
@@ -12666,7 +12666,7 @@ the full review loop and a security review.
 
 **EM-T14b-0 — the screen (stage 1, no database).** It builds stage 1 of D-EM-43.
 
-**Status of EM-T14b-0.** 🔨 BUILT, not merged (2026-10-07), on the branch `email-t14b0`. It ships
+**Status of EM-T14b-0.** ✅ MERGED #702 (2026-10-07). It ships
 dark. "As built (EM-T14b-0)" below holds the departures and the mutation table.
 
 1. **No Router and no Console change.** The `decide` task takes any `boolean`, `choice` or `score`
