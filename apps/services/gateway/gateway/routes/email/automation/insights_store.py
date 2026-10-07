@@ -64,6 +64,7 @@ from sqlalchemy import text
 __all__ = [
     "ALL_ORGS",
     "CAPS",
+    "DIRECTIONS",
     "DOMAINS",
     "DOMAIN_OF",
     "FACT_FIELDS",
@@ -121,7 +122,8 @@ CAPS: MappingProxyType[str, int] = MappingProxyType({
     "title": 120, "counterpart": 120, "ref": 64, "quote": 200,
 })
 
-_DIRECTIONS = frozenset({"payable", "receivable"})
+#: The two values of ``direction``.
+DIRECTIONS = frozenset({"payable", "receivable"})
 # ⚠️ Both patterns go through ``fullmatch``, never ``match``. A Python ``$``
 # also matches before a final newline, so ``match`` let ``"INR\n"`` reach the
 # ``char(3)`` column and raise after the DELETE (review round 1 re-check).
@@ -250,7 +252,7 @@ def _clean(fact: Fact) -> dict[str, Any] | None:
         "direction": None, "counterpart": None, "ref": None,
         "amount": None, "currency": None, "due_on": None,
     }
-    if "direction" in fields and fact.direction in _DIRECTIONS:
+    if "direction" in fields and fact.direction in DIRECTIONS:
         row["direction"] = fact.direction
     if "counterpart" in fields:
         row["counterpart"] = clean_text(fact.counterpart, CAPS["counterpart"])

@@ -985,7 +985,7 @@ verification: `email_app_master_plan.md` §10.4.14. ✅ Merged #688 (2026-10-06)
 
 #### B — one builder
 
-**WS-8i — migrate `task-manager` onto `build_declarative_agent`. AGENT-SAFE. ⏸ Parked by D86, 2026-10-03** (`maf_coding_engine.md` §16). The builder
+**WS-8i — migrate `task-manager` onto `build_declarative_agent`. AGENT-SAFE. ⏸ Parked by D86, 2026-10-03, and ▶ restarted by D92, 2026-10-07** (`maf_coding_engine.md` §16, §17). The builder
 already exists (`orchestrator/declarative.py`) and
 `tests/unit/test_declarative_builder.py` already asserts the 29 callables `skill-task-gtd`
 exports are exactly the 29 tools `agent-task-manager/agents.py` assembles by hand. **Do not

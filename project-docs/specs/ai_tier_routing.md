@@ -13,6 +13,10 @@ written. Specified 2026-10-05. Board row **WS-45**, and decision **D90** is in
 `AI_TIER_ROUTING` ships empty, and `NEXT_PUBLIC_AI_TIER_ROUTING` ships OFF.
 Neither flag covers an agent on any box.
 
+**Amended by D93 (2026-10-07).** A typed System-1 question goes to
+`tier-decide`, with `tier-fast` as its fallback. §5 and §6.1 carry the
+amendment, and WS-48 N3 (`data_narrowing_pipeline.md`) builds it.
+
 **S4b build notes (2026-10-06).** Read these before S5, or before an agent
 joins the flag on a box.
 
@@ -632,6 +636,17 @@ nudges the policy, and it sets the reasoning effort as today.
 - **A decision stays on `tier-fast` in every mode.** The owner put System 1 on
   the fast tier. A higher threshold makes the tool hand more decisions back to
   the main model, and that is how effort reaches a decision.
+
+> **Amended by D93, 2026-10-07 (owner).** The sentence "A decision stays on
+> `tier-fast` in every mode. The owner put System 1 on the fast tier." changes.
+> A typed decision (a `yes_no`, a `choice` or a `score`) now goes to
+> `tier-decide`, through `POST /v1/decide` and `acb_llm.decide`. `tier-fast` is
+> its fallback, and the tool logs each fallback. The turn-kind question
+> (§4.3) and a free-form question stay on `tier-fast`. A `no_egress` run stays
+> on `tier-fast` too, so §6.6 does not change. The tier still does not change
+> with the effort. The thresholds of the table above apply to both engines
+> until the measure of WS-48 N3 says otherwise. The text above stays as the
+> record of D90. Owning slice: `data_narrowing_pipeline.md` §9 N3.
 - **Max costs more credits.** Every main request bills at the Powerful rate.
   The selector shows no price (D88's rule for the bar applies here too).
 - **The Copilot stream path sends `low` for Auto** (`executor.py:4251-4268`).
@@ -657,6 +672,19 @@ nudges the policy, and it sets the reasoning effort as today.
   fixed instructions, and a client on `tier-fast`. It is built in
   `acb_skills/system_one.py`. It is not in `_AGENT_REGISTRY`, so no member
   can chat with it and the orchestrator cannot delegate to it.
+
+> **Amended by D93, 2026-10-07 (owner).** For an agent that the flag covers,
+> the System-1 `decide` sends each typed item to `tier-decide` through
+> `acb_llm.decide`, when `SYSTEM_ONE_ON_DECIDE` is on. The `system-one` agent
+> on `tier-fast` stays as the fallback engine and as the engine of the
+> turn-kind question. In a `no_egress` run, every item stays on `tier-fast`,
+> so the egress class of §6.6 holds.
+
+> **D93, the cost.** A decide request holds at most 16 questions, so a batch of 17 to 20 items
+> goes out as 2 requests. Each decide request is one `usage_event` row on
+> `tier-decide`, and each fallback is one row on `tier-fast` (§6.5). The text
+> above stays as the record of D90. Owning slice:
+> `data_narrowing_pipeline.md` §9 N3.
 
 ### 6.2 Why a typed wrapper, and not `Agent.as_tool()` as it stands
 

@@ -88,37 +88,71 @@ _INSERT = """INSERT INTO email_messages
 # rules never re-apply. Only a provider that genuinely round-trips labels sets
 # ``categories_authoritative``, and only then does an empty array mean "the user
 # cleared them". See EmailMessage.categories_authoritative.
-_ON_CONFLICT_UPDATE = """
-   ON CONFLICT (account_id, provider_message_id) DO UPDATE SET
-     internet_message_id = COALESCE(EXCLUDED.internet_message_id,
-                                    email_messages.internet_message_id),
-     thread_id = EXCLUDED.thread_id,
-     folder = EXCLUDED.folder,
-     labels = EXCLUDED.labels,
-     categories = CASE WHEN :categories_authoritative
-                       THEN EXCLUDED.categories
-                       ELSE email_messages.categories END,
-     importance = EXCLUDED.importance,
-     from_address = EXCLUDED.from_address,
-     to_addresses = EXCLUDED.to_addresses,
-     cc_addresses = EXCLUDED.cc_addresses,
-     bcc_addresses = EXCLUDED.bcc_addresses,
-     subject = EXCLUDED.subject,
-     body_text = COALESCE(NULLIF(EXCLUDED.body_text, ''),
-                          email_messages.body_text),
-     body_html = COALESCE(NULLIF(EXCLUDED.body_html, ''),
-                          email_messages.body_html),
-     snippet = COALESCE(NULLIF(EXCLUDED.snippet, ''),
-                        email_messages.snippet),
-     has_attachments = EXCLUDED.has_attachments,
-     is_read = EXCLUDED.is_read,
-     is_starred = EXCLUDED.is_starred,
-     is_flagged = EXCLUDED.is_flagged,
-     unsubscribe_link = COALESCE(EXCLUDED.unsubscribe_link,
-                                 email_messages.unsubscribe_link),
-     received_at = EXCLUDED.received_at,
-     updated_at = now()
-"""
+#
+#: The columns a re-sync refreshes, each with the value the SET writes. ONE
+#: list feeds both the SET and the "changed?" guard below, so a column added to
+#: one cannot be left out of the other.
+_SYNCED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("internet_message_id",
+     "COALESCE(EXCLUDED.internet_message_id, email_messages.internet_message_id)"),
+    ("thread_id", "EXCLUDED.thread_id"),
+    ("folder", "EXCLUDED.folder"),
+    ("labels", "EXCLUDED.labels"),
+    ("categories", "CASE WHEN :categories_authoritative "
+                   "THEN EXCLUDED.categories "
+                   "ELSE email_messages.categories END"),
+    ("importance", "EXCLUDED.importance"),
+    ("from_address", "EXCLUDED.from_address"),
+    ("to_addresses", "EXCLUDED.to_addresses"),
+    ("cc_addresses", "EXCLUDED.cc_addresses"),
+    ("bcc_addresses", "EXCLUDED.bcc_addresses"),
+    ("subject", "EXCLUDED.subject"),
+    ("body_text", "COALESCE(NULLIF(EXCLUDED.body_text, ''), email_messages.body_text)"),
+    ("body_html", "COALESCE(NULLIF(EXCLUDED.body_html, ''), email_messages.body_html)"),
+    ("snippet", "COALESCE(NULLIF(EXCLUDED.snippet, ''), email_messages.snippet)"),
+    ("has_attachments", "EXCLUDED.has_attachments"),
+    ("is_read", "EXCLUDED.is_read"),
+    ("is_starred", "EXCLUDED.is_starred"),
+    ("is_flagged", "EXCLUDED.is_flagged"),
+    ("unsubscribe_link",
+     "COALESCE(EXCLUDED.unsubscribe_link, email_messages.unsubscribe_link)"),
+    ("received_at", "EXCLUDED.received_at"),
+)
+
+# 🔴 **The "changed?" guard. Measured on production, 2026-10-07.** Without it
+# the sync rewrote EVERY listed message on EVERY pass: 915,108 upserts in one
+# day, 2.92 M updates and 874 autovacuums on `email_messages` for 39.7 k live
+# rows, and 312 MB of a 351 MB database. Each rewrite made a new row version,
+# new index entries, and a new TOAST copy of the body. The WAL from that
+# starved the IO budget of the instance, and then sign-in timed out.
+#
+# So the UPDATE runs only when a value the SET would write differs from the
+# stored one. The guard compares the stored row with the SAME expressions the
+# SET writes, not with raw EXCLUDED values. Outlook lists headers only, so
+# `EXCLUDED.body_text` is '' on each tick, and a raw compare would see a change
+# on every row and guard nothing.
+#
+# ⚠️ `updated_at` is NOT in the guard. The SET always writes now() to it, so
+# with it in the compare every row differs and the guard does nothing. It now
+# moves only when the provider changed the message. Its readers want exactly
+# that: `reconcile.py` skips rows written after a sweep started, and the
+# drafts lens orders by it. Nothing reads it as "last seen". `synced_at` is
+# written on INSERT only, as before.
+#
+# A skipped row is still LOCKED by ON CONFLICT, so it costs a small WAL lock
+# record. It makes no new row version, no dead tuple and no index write.
+#
+# Fence: tests/unit/test_email_upsert_guard.py (R8, `xmin` on a real database).
+_ON_CONFLICT_UPDATE = "".join((
+    "\n   ON CONFLICT (account_id, provider_message_id) DO UPDATE SET\n     ",
+    ",\n     ".join(f"{col} = {expr}" for col, expr in _SYNCED_COLUMNS),
+    ",\n     updated_at = now()",
+    "\n   WHERE (",
+    ", ".join(f"email_messages.{col}" for col, _ in _SYNCED_COLUMNS),
+    ")\n     IS DISTINCT FROM (",
+    ", ".join(expr for _, expr in _SYNCED_COLUMNS),
+    ")\n",
+))
 
 # Insert-only: never touch an existing row (inbound SMTP/webhook — the message is
 # authoritative on first arrival and later reconciled by the sync paths).
