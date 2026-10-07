@@ -327,7 +327,7 @@ def test_the_predicate_answers_from_the_members_grants() -> None:
 CLAIM = re.compile(
     r"admin can|you cannot|can't (?:create|add|edit|change)|doesn'?t grant|does not grant"
     r"|organi[sz]ation admin|only an admin|may not edit|(?-i:may NOT)|settings:write"
-    r"|canManageSettings",
+    r"|canManageSettings|settings permission",
     re.IGNORECASE,
 )
 
@@ -340,11 +340,18 @@ ALLOWED_CLAIMS: dict[str, str] = {
     "an admin can see capacity": "server-hidden: analytics_capacity.py HR tier",
     "an admin can see fit": "server-hidden: candidates.py HR tier",
     "an admin can see them": "server-hidden: rebalance, conflicts, dataset HR tier",
+    "an admin can see it": "server-hidden: analytics_dataset.py HR tier",
     # A capability of the run, not a permission: no tool makes a PDF.
     "You cannot make a PDF yourself": "no PDF tool without run_command (spec §14)",
+    # The server's own answer: `may_edit` on the status-set read, which is
+    # `core.can_manage_settings`, the status write's predicate.
+    "may not edit the statuses": "server answer: writes.status_edit_refusal",
+    "the server says you may not edit it": "server answer: reads.vocabulary",
+    # Visibility, not a permission claim: the server filters the rows.
+    "rows you cannot see": "server-filtered: guarded.move_project subtree count",
 }
 #: ``len(ALLOWED_CLAIMS)`` on 2026-10-07. Lower it with each removal.
-CLAIM_CEILING = 4
+CLAIM_CEILING = 8
 
 
 def _md_text(path: Path) -> str:
@@ -366,6 +373,16 @@ def _py_strings(path: Path) -> str:
         n.value
         for n in ast.walk(tree)
         if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs
+    ]
+    return " ".join(" ".join(parts).split())
+
+
+def _py_all_strings(path: Path) -> str:
+    """Every string literal of a tool module, docstrings INCLUDED: the model
+    reads a tool's docstring as its description, and its return text."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    parts = [
+        n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
     ]
     return " ".join(" ".join(parts).split())
 
@@ -393,6 +410,14 @@ SOURCES = {
     "refusals.py": lambda: _py_strings(REFUSALS),
     "assistantPersona.ts": lambda: _ts_code(PERSONA),
     "AssistantRail.tsx": lambda: _ts_code(RAIL),
+    # Review round 1: every tool module, so a tool's return text or its
+    # docstring cannot bring a claim back (the old "It needs the settings
+    # permission." in guarded.py is the case this catches).
+    **{
+        f"skill_projects/{p.name}": (lambda p=p: _py_all_strings(p))
+        for p in sorted(REFUSALS.parent.glob("*.py"))
+        if p.name != "refusals.py"
+    },
 }
 
 
@@ -493,6 +518,7 @@ def space(promoted):  # noqa: F811
     with promoted.admin_engine.begin() as c:
         c.execute(text("DELETE FROM pm_tags WHERE organization_id = CAST(:o AS uuid)"), {"o": org})
         c.execute(text("DELETE FROM pm_projects WHERE id = CAST(:p AS uuid)"), {"p": pid})
+        c.execute(text("DELETE FROM app_user WHERE email = ANY(:e)"), {"e": [R8_OWNER, R8_MEMBER]})
 
 
 def _gateway_app():

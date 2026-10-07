@@ -2492,9 +2492,9 @@ async def create_type(
 ) -> str:
     """Add a task type to the project's root. is_default makes new tasks
     start as it. is_epic makes it a top level in the hierarchy rule.
-    org_wide=true mints it for every project (needs the organization
-    settings permission, and cannot be the default). Deleting a type is a
-    guarded act; tasks keep existing, untyped."""
+    org_wide=true mints it for every project, and the server decides
+    whether the member may. An org-wide type cannot be the default.
+    Deleting a type is a guarded act; tasks keep existing, untyped."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:

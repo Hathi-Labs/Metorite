@@ -1622,9 +1622,10 @@ is "an organization admin can" add or change the vocabulary. The second is
   server. Mutation: `status_edit_refusal` returns `""`, and four cases fail.
 - `grants-one-predicate`: the status-set read and the status write call
   `can_manage_settings`.
-- `grants-no-claim`: no string in the instructions, `refusals.py`, the
-  persona or the rail claims a permission without a server check. The
-  allowlist holds 4 entries and only shrinks (`CLAIM_CEILING`).
+- `grants-no-claim`: no string in the instructions, the persona, the rail
+  or any `skill_projects` module claims a permission without a server
+  check. The scan reads each tool's return text and its docstring. The
+  allowlist holds 8 entries and only shrinks (`CLAIM_CEILING`).
 - `grants-r8`: on a private ladder database, the real routes run as the
   app role. An owner creates a tag. A member's org-wide tag is refused with
   the route's words in the receipt. The flag-off answer reaches the owner
