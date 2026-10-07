@@ -28,7 +28,8 @@ Mutations this file catches (R7), each one run red before the change:
 * the search ANDs the words of the question, or keeps an operator word ->
   ``test_with_no_words_the_search_is_any_word_of_the_question``;
 * READ reads an item that was dropped, more than 25 items, or a body past
-  6000 characters -> ``test_read_fetches_only_the_kept_items_within_the_caps``;
+  6000 characters -> ``test_read_fetches_only_the_kept_items_within_the_caps``
+  and ``test_the_adapter_reads_at_most_the_read_cap``;
 * a non-UUID id reaches a request path -> ``test_read_puts_only_a_uuid_in_a_path``;
 * more than 200 rows reach PICK -> ``test_at_most_200_candidates_reach_pick``;
 * a run with no acting member reaches the gateway ->
@@ -411,6 +412,16 @@ async def test_a_failed_read_is_counted_not_hidden(
     assert out.startswith("Checked 3 matches. Kept 3, dropped 0. Read 2 in full.")
     assert "Not read in full: 1 kept items." in out
     assert f"--- item {mid(2)}" not in out
+
+
+async def test_the_adapter_reads_at_most_the_read_cap() -> None:
+    """The tool passes at most 25 ids. The adapter holds the cap too."""
+    gateway = Gateway([_row(n) for n in range(1, 41)])
+    source = ns.EmailNarrowSource(get=gateway.get)
+    got = await source.read([mid(n) for n in range(1, 41)])
+    assert gateway.reads == [mid(n) for n in range(1, narrowing.READ_CAP + 1)]
+    assert [i.id for i in got] == gateway.reads
+    assert all(len(i.text) == narrowing.BODY_CLIP for i in got)
 
 
 async def test_read_puts_only_a_uuid_in_a_path() -> None:
