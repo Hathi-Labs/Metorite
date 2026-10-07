@@ -27,7 +27,8 @@ from the bound tenant, never from the request (R5, R11).
   member fold into one row, and each total counts it once.
 * The totals come from ONE SQL query, grouped by currency and direction. A
   row with a NULL currency or a NULL amount adds to no total, and nothing adds
-  two currencies (§13.0 rule 3).
+  two currencies (§13.0 rule 3). A dismissed fact adds to no total, also when
+  ``state=all`` lists it (review round 1).
 * Each amount is a decimal string, so no float rounds it on the way out.
 * The window uses UTC dates. A time zone of the member is a later change.
 
@@ -211,12 +212,15 @@ async def list_insights(
             {**params, "limit": limit, "offset": offset})).fetchall()
         # The totals: ONE query, by currency and direction. A row with no
         # currency or no amount adds to no total, and no sum spans two
-        # currencies (§13.0 rule 3).
+        # currencies (§13.0 rule 3). A dismissed fact adds to no total, also
+        # with ``state=all``: the member said that it is not real (review
+        # round 1). The rows still list it.
         totals = (await db.execute(text(
             f"WITH folded AS ({folded}) "
             "SELECT f.currency, f.direction, sum(f.amount) AS amount, "
             "count(*) AS count FROM folded f "
             "WHERE f.currency IS NOT NULL AND f.amount IS NOT NULL "
+            "AND f.state <> 'dismissed' "
             "GROUP BY f.currency, f.direction "
             "ORDER BY f.currency, f.direction NULLS LAST"), params)).fetchall()
 

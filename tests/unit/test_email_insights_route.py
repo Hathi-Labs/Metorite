@@ -12,9 +12,9 @@ R7 fences named here:
   stays out of All inboxes. Its own ``account_id`` still reads it.
 * ``email-insights-totals`` (R8): the totals hold one row for each currency
   and direction. INR and USD never add. A row with a NULL currency adds to no
-  total.
+  total, and a dismissed fact adds to no total (review round 1).
 * ``email-insights-fold`` (R8): two rows with one ``dedupe_key`` in two
-  mailboxes of the member count once in All inboxes.
+  mailboxes of the member count once in All inboxes. The oldest row wins.
 * ``email-insights-dark``: with the flag off the route answers
   ``available: false`` and opens no session.
 * ``email-insights-tool``: the tool frames its rows with a random token, a row
@@ -245,16 +245,61 @@ class TestTheTool:
         assert "• USD payable: 99.99 (1 facts)" in out
         assert "never add two currencies" in out
 
-    async def test_the_flag_off_says_so_and_suggests_a_search(self, gw):
+    async def test_the_flag_off_names_no_dark_feature(self, gw):
+        """Review round 1, P2: with the flag off the text sends the model to a
+        search, and never names a feature that no member can see."""
         gw.answer = _answer(available=False, enabled=False, rows=[], totals=[])
         out = await agents.query_insights("finance")
-        assert "not available" in out and "query_inbox" in out
-        assert "<<<" not in out
+        assert out == agents._INSIGHTS_UNAVAILABLE
+        assert "insights" not in out.lower()
+        assert "query_inbox" in out and "<<<" not in out
 
     async def test_a_mailbox_not_opted_in_says_so(self, gw):
         gw.answer = _answer(enabled=False, rows=[], totals=[])
+        out = await agents.query_insights("finance", account_id=AID)
+        assert out.startswith("Insights is off for this mailbox.")
+        assert "query_inbox" in out
+
+    async def test_all_inboxes_with_no_opt_in_does_not_say_this_mailbox(self, gw):
+        """Review round 1: in All inboxes the text names All inboxes."""
+        gw.answer = _answer(enabled=False, rows=[], totals=[])
         out = await agents.query_insights("finance")
-        assert "Insights is off for this mailbox" in out and "query_inbox" in out
+        assert out.startswith("No mailbox in All inboxes has Insights on.")
+        assert "this mailbox" not in out
+
+    async def test_rows_that_the_route_returned_still_show(self, gw):
+        """Review round 1: ``enabled: false`` never hides a row."""
+        gw.answer = _answer(enabled=False)
+        out = await agents.query_insights("finance")
+        assert out.startswith("No mailbox in All inboxes has Insights on.")
+        assert f"email_id {MID}" in out and "• INR payable: 350.50" in out
+
+    @pytest.mark.parametrize(("fact_type", "domain"), [
+        ("bribe", "finance"), ("deadline", "finance"), ("invoice", "sales"),
+    ], ids=["unknown", "other-domain", "other-domain-2"])
+    async def test_a_fact_type_outside_the_domain_asks(self, gw, fact_type, domain):
+        """Review round 1 (verifier): the tool checks the type, so the route
+        never answers 422 and the tool never raises."""
+        out = await agents.query_insights(domain, fact_type=fact_type)
+        assert out.startswith(f"Give a fact_type of the domain {domain}")
+        assert gw.calls == []
+
+    @pytest.mark.parametrize(("limit", "want"), [
+        ("abc", "20"), (None, "20"), ("7", "7"), (0, "1"), (-3, "1"), (99, "50"),
+    ])
+    async def test_a_limit_that_is_not_a_number_is_20(self, gw, limit, want):
+        await agents.query_insights("finance", limit=limit)
+        assert gw.calls[0][1]["limit"] == want
+
+    def test_the_types_of_the_tool_are_the_types_of_the_store(self):
+        """The agent cannot import the gateway, so it keeps a list. This fence
+        keeps the list and ``FACT_FIELDS`` as one fact."""
+        from gateway.routes.email.automation.insights_store import FACT_FIELDS
+        want: dict[str, set[str]] = {}
+        for fact_type, (domain, _fields) in FACT_FIELDS.items():
+            want.setdefault(domain, set()).add(fact_type)
+        got = {d: set(t) for d, t in agents._INSIGHT_TYPES.items()}
+        assert got == want
 
     async def test_a_cut_list_says_so(self, gw):
         gw.answer = _answer(total_count=80, truncated=True)
@@ -316,7 +361,7 @@ def _mailbox(admin, *, org: str, owner: str, label: str,
 def _fact(admin, box: str, *, org: str, key: str, currency: str | None = "INR",
           amount: str | None = "100.00", direction: str | None = "payable",
           due_in: int | None = None, state: str = "open",
-          counterpart: str = "Acme") -> str:
+          counterpart: str = "Acme", age_days: int = 0) -> str:
     aid, mid = box.split("|")
     due = (datetime.now(UTC).date() + timedelta(days=due_in)
            if due_in is not None else None)
@@ -325,13 +370,15 @@ def _fact(admin, box: str, *, org: str, key: str, currency: str | None = "INR",
             "INSERT INTO email_insights (organization_id, account_id, "
             "message_id, domain, fact_type, direction, title, counterpart, "
             "counterpart_email, amount, currency, due_on, quote, confidence, "
-            "extractor_version, dedupe_key, state) VALUES (CAST(:o AS uuid), "
+            "extractor_version, dedupe_key, state, created_at) VALUES "
+            "(CAST(:o AS uuid), "
             "CAST(:a AS uuid), CAST(:m AS uuid), 'finance', 'invoice', :dir, "
             "'Invoice', :cp, 'billing@acme.test', CAST(:amt AS numeric), :cur, "
-            ":due, 'Invoice for INR 100', 0.9, 'fin-1', :k, :st) RETURNING id"),
+            ":due, 'Invoice for INR 100', 0.9, 'fin-1', :k, :st, "
+            "now() - make_interval(days => :age)) RETURNING id"),
             {"o": org, "a": aid, "m": mid, "dir": direction, "cp": counterpart,
              "amt": amount, "cur": currency, "due": due, "k": key,
-             "st": state}).scalar_one())
+             "st": state, "age": age_days}).scalar_one())
 
 
 def _aid(box: str) -> str:
@@ -484,6 +531,34 @@ class TestTheTotals:
 
 
 @_DB_GATE
+class TestTheDismissedFacts:
+    """Review round 1, P3: a dismissed fact adds to no total."""
+
+    async def test_a_dismissed_fact_is_listed_and_adds_to_no_total(
+        self, promoted, app_engine, flag_on,  # noqa: F811
+    ):
+        p, tag = promoted, uuid.uuid4().hex[:8]
+        owner = f"a-{tag}{_SUFFIX}"
+        box = _mailbox(p.admin_engine, org=p.org_a, owner=owner, label="a")
+        _fact(p.admin_engine, box, org=p.org_a, key="real", amount="100.00")
+        _fact(p.admin_engine, box, org=p.org_a, key="paid", amount="20.00",
+              state="done")
+        fake = _fact(p.admin_engine, box, org=p.org_a, key="fake",
+                     amount="9999.00", state="dismissed")
+        me = SimpleNamespace(email=owner)
+        try:
+            async with _as_member(p, p.org_a):
+                every = await _list(me, window="all", state="all")
+                gone = await _list(me, state="dismissed")
+            assert every["total_count"] == 3 and fake in _ids(every)
+            assert every["totals"] == [{"currency": "INR", "direction": "payable",
+                                        "amount": "120.00", "count": 2}]
+            assert _ids(gone) == {fake} and gone["totals"] == []
+        finally:
+            _purge(p.admin_engine, tag)
+
+
+@_DB_GATE
 class TestTheFold:
     """``email-insights-fold``."""
 
@@ -506,6 +581,35 @@ class TestTheFold:
             assert pooled["totals"] == [{"currency": "INR", "direction": "payable",
                                          "amount": "100.00", "count": 1}]
             assert one["total_count"] == two["total_count"] == 1
+        finally:
+            _purge(p.admin_engine, tag)
+
+    async def test_the_oldest_row_of_a_key_wins_the_fold(
+        self, promoted, app_engine, flag_on,  # noqa: F811
+    ):
+        """Review round 1 (verifier). Eight keys, each in two mailboxes. The
+        OLDER row goes in second, so neither the insert order nor a random
+        pick passes: a coin for each key passes all eight 1 time in 256."""
+        p, tag = promoted, uuid.uuid4().hex[:8]
+        owner = f"a-{tag}{_SUFFIX}"
+        home = _mailbox(p.admin_engine, org=p.org_a, owner=owner, label="home")
+        work = _mailbox(p.admin_engine, org=p.org_a, owner=owner, label="work")
+        older: dict[str, str] = {}
+        for n in range(8):
+            key = f"invoice|inv-{n}|100.00|inr|acme.test"
+            box_new, box_old = (home, work) if n % 2 else (work, home)
+            _fact(p.admin_engine, box_new, org=p.org_a, key=key, age_days=1)
+            older[_fact(p.admin_engine, box_old, org=p.org_a, key=key,
+                        age_days=3)] = box_old
+        me = SimpleNamespace(email=owner)
+        try:
+            async with _as_member(p, p.org_a):
+                pooled = await _list(me)
+            assert pooled["total_count"] == 8
+            assert _ids(pooled) == set(older)
+            for row in pooled["rows"]:
+                aid, mid = older[row["id"]].split("|")
+                assert (row["account_id"], row["message_id"]) == (aid, mid)
         finally:
             _purge(p.admin_engine, tag)
 

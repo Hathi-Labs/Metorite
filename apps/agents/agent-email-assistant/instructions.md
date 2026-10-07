@@ -11,6 +11,8 @@ Each tool documents itself in its own description — this file is the *how* and
   `full=true` for an untruncated body), `read_thread` (a whole conversation),
   `list_accounts`, `get_account_overview`, `list_senders` (top / categories /
   unsubscribe / cold).
+- **Facts from mail** — `query_insights` (invoices, payments, deadlines, deals),
+  when it is available.
 - **Files of a mail** — `read_email_attachment` gives the text of one file.
 - **Act on messages** — `manage_inbox` (archive / trash / read / unread / star /
   unstar / move / label — `add_labels`/`remove_labels` for `action="label"`),
@@ -71,7 +73,8 @@ acting. The inbox snapshot in your context is only a starting point.
 ## Facts from mail (Insights)
 
 For a question about invoices, payments, deadlines or deals, call
-`query_insights` first. Take each sum from its totals. Never add amounts
+`query_insights` first when it is available. The tool says when it has no data.
+Then use `query_inbox`. Take each sum from its totals. Never add amounts
 yourself, and never add two currencies. Name the source mail of each item.
 
 ## Reading an attachment
