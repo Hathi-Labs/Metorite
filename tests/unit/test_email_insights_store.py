@@ -496,10 +496,15 @@ class TestTheTenantBoundary:
                 _raw_insert(app_engine, org=p.org_a, account_id=box.aid,
                             message_id=mid, key="k2")
         finally:
+            # A move of the owner moves the privileges of the old owner too, so
+            # the app role loses its grant when the table moves back.
             with p.admin_engine.begin() as c:
                 c.execute(text("ALTER TABLE email_insights OWNER TO CURRENT_USER"))
                 c.execute(text(
                     "ALTER TABLE email_insights FORCE ROW LEVEL SECURITY"))
+                c.execute(text(
+                    "GRANT SELECT, INSERT, UPDATE, DELETE ON email_insights "
+                    f"TO {role}"))
             _purge(p.admin_engine, f"%-{tag}@t14a.test")
 
 
