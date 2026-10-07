@@ -12029,6 +12029,8 @@ of data, large Excel files, etc., without hallucinating.
 > dark. EM-T14e and EM-T14f wait for the flip. EM-T14g is not specified. The audit text is in
 > each slice below.
 
+> **Build state (2026-10-07).** EM-T14a is built and not merged (§13.9.1).
+
 > **The owner answers (2026-10-07).** The owner answered Q-IN-1 to Q-IN-4 (§13.12). D-EM-43 to
 > D-EM-46 record them. Q-IN-1 made the job two stages: a cheap screen on `decide`, then the
 > extraction. The flip stays an act of the owner.
@@ -12288,6 +12290,10 @@ eval set before the build.
 6. **The dedupe key.** The key is `type|ref|amount|currency|counterpart domain`, in lower case. A
    fact with no `ref` and no amount uses `type|message id|quote hash`. So a reply that quotes an
    invoice again gives no second card.
+   - **Amended (orchestrator decision, 2026-10-07, EM-T14a review round 1).** With no `ref`, the
+     last part is the FULL sender address. Two people at one free mail domain who each send an
+     invoice of INR 5000 then stay two cards. With a `ref`, the last part stays the domain. So one
+     vendor that bills from `billing@` and `ar@` with one invoice number stays one card.
 7. **Confidence, set by code.**
    - 0.9: the quote is in the source, and each field of the type that the quote holds parses.
    - 0.6: the quote is in the source, and one of those fields does not parse.
@@ -12441,7 +12447,7 @@ behind `EMAIL_INSIGHTS`. The flip is an act of the owner only (the Flip row).
 
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
-| **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
+| **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | ✅ **MERGED #700 (2026-10-07). Migration 231.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
 | **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
 | **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
 | **EM-T14d** | 🟢 AGENT-SAFE · R8 · visual review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The view.** Two PRs: EM-T14d-1 (the PATCH, the shared helper, the tile and the digest line) and EM-T14d-2 (the UI). | §13.9.4 |
@@ -12461,7 +12467,8 @@ proves nothing (R8).
 
 #### 13.9.1 EM-T14a — the table, the migration and the write path
 
-**Status.** 📝 SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.
+**Status.** ✅ MERGED #700 (2026-10-07). Dark. The audit was GO-NARROWED. It
+ships dark: no job, no route that reads facts, no UI and no tool.
 
 **Gate.** 🟢 AGENT-SAFE. A migration and a new tenant table, so the slice takes the full review
 loop and a security review.
@@ -12531,6 +12538,119 @@ uv run pytest tests/unit/test_email_insights_store.py -v -rs
 uv run pytest tests/unit/test_email_owner_scope_fence.py tests/unit/test_tenant_coverage.py tests/unit/test_migration_prefixes.py tests/unit/test_email_auto_draft_defaults.py -q
 uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights_store.py tests/unit/test_email_insights_store.py
 ```
+
+**As built (EM-T14a, 2026-10-07).**
+
+- **The migration** is `infra/postgres/231_email_insights.sql`. R1: the highest file on `main` was
+  230 at `229d22a09`. No remote branch, local branch or open PR held 231.
+- It creates `email_insights` with the RLS block of 219, the three indexes of §13.3, an index on
+  `attachment_id` and four CHECKs. It adds `insights_at`, `insights_tries` and their partial index to `email_messages`. It
+  adds `insights_enabled` to `email_assistant_settings`.
+- **The generated phases.** The four files in `infra/postgres/generated/` get the `email_insights`
+  blocks and nothing else. A full run of the generator also renames and moves other blocks. So the
+  agent copied the blocks by hand, as #497 did.
+- **The flag** is `email_insights` and `email_insights_orgs` in `acb_common/settings.py`. Both are
+  off by default.
+- **The write path** is `routes/email/automation/insights_store.py`. It holds
+  `insights_enabled()`, `FACT_FIELDS`, `clean_text`, `dedupe_key` and `write_facts`.
+- **The opt-in.** `AssistantSettingsModel` and the GET and the PUT of `/email/assistant/settings`
+  have `insights_enabled`. The fixture holds `insights_enabled: false`.
+- **The board.** Row D4 of `work_plan.md` §6 names the two flags as owner-only.
+
+**Departures.**
+
+1. **PUT, not PATCH.** The settings route has no PATCH. The opt-in uses the PUT of
+   `/email/assistant/settings`, as each other setting does.
+2. **"Older" means the same extractor and a lower number.** A version must be `<name>-<n>`, for
+   example `fin-1`. When `fin-2` writes, a `prj-1` fact of the same message stays. One message can
+   hold facts of two domains, and a delete of each other version removes the other domain.
+3. **The delete keeps a key that the new write sends again.** The upsert then keeps the `state` of
+   the member (§13.3). Without this, each new version resets each mark of the member.
+4. **The conflict arm also keeps `attachment_id`.** It keeps `message_id`, so the source of the
+   row stays one pair.
+5. **A fact has no `domain` field.** `write_facts` reads the domain from the type, so the two
+   cannot disagree.
+6. **`write_facts` returns a `WriteResult`.** It holds `written`, `deleted`, `dropped`, `kept`
+   and `refused`. `kept` counts the facts whose key a row of another source holds. `refused` names
+   the check that stopped the write. With no tenant, it raises `TenantUnbound`. For a bad version,
+   it raises `ValueError`.
+7. **`write_facts` reads no flag.** It checks the opt-in only, as §13.5 item 9 says. The job of
+   EM-T14b-2 reads `insights_enabled()` before it opens a session.
+8. **The FORCE fence runs the migration again.** The promoted catalog also gets FORCE from
+   `generated/04_policies.sql`. FORCE binds only the owner of a table, and `acb_app_h3rls` is not
+   the owner. So the test removes FORCE, runs the migration body, and makes `acb_app_h3rls` the
+   owner. Then it reads as org B.
+9. **M2 changes the key, not the conflict target.** No unique index exists on `message_id`. So
+   `ON CONFLICT (message_id)` stops every write with an error, and that proves nothing about the
+   dedupe. M2 puts the message id into the dedupe key.
+10. **The slice is larger than the guide of §13.9.** It holds about 640 lines of code and SQL,
+    and a test file of more than 700 lines. The guide is about 600 lines for each PR.
+
+**A raw INSERT and the foreign keys (review round 1, F2).** The check of a foreign key bypasses
+row level security. So a raw INSERT bound to org A can name a message, a mailbox or a file of org
+B, and the check accepts it. The policy still stamps the row as org A.
+
+`write_facts` closes this path. Its message check reads `email_messages` under RLS, with the mailbox in the predicate. So a
+message of another organization, or of another mailbox, writes nothing. No other code writes the
+table.
+
+**Two findings for later slices.**
+
+- `write_facts` sets `insights_at` at each call. So EM-T14b-2 must write the body of a message
+  last. If not, a failed file leaves the message marked as read. §13.9.2 item 5 records this rule.
+- EM-T14b-1 imports `FACT_FIELDS` and `clean_text` from `insights_store.py`. It must not keep a
+  copy.
+
+**Mutations (2026-10-07).** Each one ran against the real database, and the agent restored the
+file after each run. The results below are of the run after review round 1.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | Remove FORCE from the migration | `test_the_migration_alone_binds_the_table_owner`: the owner, bound to org B, read 1 row of org A. Also `test_it_forces_rls_with_a_check` |
+| M2 | Put the message id into the dedupe key | `test_two_writes_with_one_key_keep_the_first_row`, `test_one_vendor_with_two_addresses_and_one_ref_is_one_card`, `test_two_freemail_senders_with_no_ref_stay_two_cards` and two key tests |
+| M3 | Set `state = 'open'` in the conflict arm | `test_the_same_source_refines_its_own_fact` and `test_a_newer_version_deletes_the_older_facts_of_its_source` |
+| M4 | Remove the cascade on `message_id` | `test_a_delete_of_the_message_deletes_its_facts` |
+| M5 | Remove the `email_insights` block from `generated/04_policies.sql` | `test_tenant_coverage.py::test_the_generated_set_on_disk_matches_the_tables_that_exist` |
+| M6 | Remove the mailbox predicate from the message check | `test_a_message_of_another_mailbox_writes_nothing` |
+
+**Review round 1 (2026-10-07).** The verifier passed the slice with P3 findings only. The reviewer
+asked for one P1 and three P2 changes, and found the tenancy sound.
+
+| Finding | The fix | The fence |
+|---|---|---|
+| P1: a fact of another message with the same key rewrote `title`, `direction`, `due_on`, `counterpart` and `confidence` of the first row | The conflict arm has `WHERE email_insights.message_id = EXCLUDED.message_id AND email_insights.attachment_id IS NOT DISTINCT FROM EXCLUDED.attachment_id`. A conflict from another source changes nothing, and counts in `kept` | `test_two_writes_with_one_key_keep_the_first_row` (no field changes), `test_the_same_source_refines_its_own_fact` |
+| P2: two free mail senders with no `ref` and one amount got one key | The orchestrator amended §13.5 item 6. With no `ref`, the key holds the full sender address | `test_no_ref_uses_the_full_sender_address`, `test_two_freemail_senders_with_no_ref_stay_two_cards`, `test_one_vendor_with_two_addresses_and_one_ref_is_one_card` |
+| P2: `clean_text` kept a lone surrogate, which raised after the DELETE | `clean_text` removes the categories `Cs`, `Co` and `Cn` too. `write_facts` cleans each fact before any SQL. The sender has a cap of 320 characters | `test_clean_text_keeps_only_text_that_encodes`, `test_every_text_field_of_a_clean_row_encodes`, `test_every_fact_is_cleaned_before_any_sql`, `test_a_lone_surrogate_from_a_model_writes_clean_text` |
+| P2: the cascade on `attachment_id` had no index | Migration 231 adds `idx_email_insights_attachment`, partial on `attachment_id IS NOT NULL`. The generator writes only the index on `organization_id`, so `generated/` does not change | `test_the_cascading_file_key_has_an_index`, `test_a_delete_of_a_file_deletes_its_facts_through_an_index` |
+| F3: the header named the wrong lock | The header says that the `ADD COLUMN` holds ACCESS EXCLUSIVE until COMMIT, so reads wait during the index build | — |
+| F2 and F4 | The note above on a raw INSERT, and departure 10 | — |
+| H-249 and the partial index | §13.9.2 item 5 records three rules for EM-T14b-2 | — |
+
+| Id | Mutation of round 1 | The fence that failed |
+|---|---|---|
+| R1-M1 | Remove the WHERE of the conflict arm | `test_two_writes_with_one_key_keep_the_first_row` |
+| R1-M2 | Use the domain also when `ref` is NULL | `test_no_ref_uses_the_full_sender_address`, `test_two_freemail_senders_with_no_ref_stay_two_cards` |
+| R1-M3 | Keep `Cs` in `clean_text` | three cases of `test_clean_text_keeps_only_text_that_encodes`, `test_every_text_field_of_a_clean_row_encodes`, `test_a_lone_surrogate_from_a_model_writes_clean_text` |
+| R1-M4 | Remove `idx_email_insights_attachment` | `test_the_cascading_file_key_has_an_index`, `test_a_delete_of_a_file_deletes_its_facts_through_an_index` |
+| R1-M5 | Clean the facts after the checks, as before round 1 | `test_every_fact_is_cleaned_before_any_sql` |
+
+**Review round 1 re-check (2026-10-07): APPROVE.** The reviewer approved round 1 with P3 findings
+only. The agent fixed P3-a and recorded P3-b, P3-c and P3-d in §13.10 and in §13.9.2 item 6.
+
+- **P3-a, values that raised after the DELETE.** A Python `$` also matches before a final
+  newline. So `"INR\n"` reached the `char(3)` column, and `"fin-2\n"` passed the version check.
+  A confidence of `1e-50` underflows the REAL column.
+- **The fix.** `_CURRENCY` and `_VERSION` go through `fullmatch`, and no other regex is in the
+  module. Code rounds a confidence to two places. The comment of step 0 names what makes each
+  value fit its column.
+- **A limit of the R8 fence.** asyncpg encodes a REAL parameter on the client, so `1e-50` reaches
+  Postgres as 0. Postgres raises "value out of range: underflow" for the same value as text. So
+  the hermetic fence is the fence for the rounding.
+
+| Id | Mutation of the re-check | The fence that failed |
+|---|---|---|
+| R1b-M1 | Go back to `match` with `^...$` | `test_a_currency_that_is_not_exactly_three_letters_is_dropped[INR\n]`, `test_a_version_with_a_newline_raises[fin-2\n]`, `test_values_that_raised_in_the_database_now_write` |
+| R1b-M2 | Remove the rounding of the confidence | four cases of `test_a_confidence_is_rounded_to_two_places` |
 
 #### 13.9.2 EM-T14b — the finance job, in three PRs
 
@@ -12635,6 +12755,22 @@ domains, and the question fence fails.
    - At 100 % of `EMAIL_LLM_DAILY_CALLS` it makes no call.
 4. `email_insights_model` (default `tier-fast`) joins the settings. `email_insights_model` is an
    environment setting, not a column.
+5. **Three rules from EM-T14a review round 1 (2026-10-07).**
+   - Do not catch an error of `write_facts` inside a session and then commit that session
+     (H-249). A failed statement aborts the transaction. Open a new session for the next message.
+   - Write the body of a message LAST. `write_facts` sets `insights_at` at each call, so a file
+     that fails after the body leaves the message marked as read.
+   - The partial index `idx_email_messages_insights_pending` holds each row with `insights_at`
+     NULL. While no mailbox opts in, that is every row of `email_messages`, and each insert of
+     mail writes to it. Measure its size at the flip, and record the result here.
+6. **Two more rules from the round 1 re-check (2026-10-07).**
+   - **Key squatting (P3-b).** With a `ref`, the key holds the sender domain. The backlog read takes
+     the newest mail first. So a later mail of the same domain, `ref`, amount and currency can own
+     the key, and the real invoice then gets no card. The effect is a missing card, never a changed
+     field (§13.10). Read the backlog oldest first, or let a refine of the older mail take the key.
+   - **A kept fact is lost (P3-d).** `write_facts` stores no fact that it counts in `kept`. If the
+     row that owns the key goes later, nothing writes that fact again. A later pass that reads such
+     messages again must clear `insights_at` for them.
 
 **Non-goals.** No route, no UI and no tool. No sent mail. No spreadsheet figure (D-EM-40).
 
@@ -12830,6 +12966,16 @@ week?", and the answer names the same rows and the same sum.
   asks again. The bar of 0.3 and the recall bar of 95 % on the eval set bound this risk.
 - **A second copy of a number parser.** WS-43y1a holds one in its engine. One fixture file of
   cases binds both (§13.9.2).
+- **Key squatting (EM-T14a re-check, P3-b).** A later mail can have the same domain, `ref`,
+  amount and currency as a real invoice. The job reads the newest mail of the backlog first, so
+  the later mail can own the key. The real invoice then gets no card. No field of a card changes. During live sync the
+  real invoice arrives first and owns the key. §13.9.2 item 5 holds the rule for EM-T14b-2.
+- **An old quote with a new date (P3-c).** A refine of the same source takes a new `due_on` and
+  keeps the old `quote`. So the quote of a card can miss its date. The audit text of EM-T14a binds
+  the upsert to keep the first quote. A refresh of `quote` on a refine of the same source needs a
+  spec change, and is a later decision.
+- **A kept fact is lost (P3-d).** A fact that a conflict keeps out is never stored. If the row that
+  owns the key goes, nothing brings the fact back (§13.9.2 item 5).
 
 ### 13.11 Board findings (not this plan)
 

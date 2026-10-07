@@ -6,7 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 138
+-- Tables in this phase: 139
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -165,6 +165,9 @@ UPDATE email_executed_rules SET organization_id = (SELECT id FROM organization W
  WHERE organization_id IS NULL;
 
 UPDATE email_folders SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE email_insights SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE email_knowledge SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

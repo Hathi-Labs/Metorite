@@ -512,6 +512,28 @@ class Settings(BaseSettings):
     # tests/unit/test_email_gmail_connect.py.
     email_gmail_connect_members: str = ""
 
+    # ── Email Insights (WS-17 EM-T14a, 2026-10-07) ──────────────────────────
+    #
+    # `email_insights` is the switch of the whole feature. False is the
+    # default, so the feature ships dark. `email_insights_orgs` lists the
+    # organization ids that may run it, with a comma between ids, or `*` for
+    # every organization. An empty list allows no organization, as
+    # `decide_feature_orgs` does. The one reader of both is `insights_enabled()`
+    # in `gateway/routes/email/automation/insights_store.py`. It reads the
+    # organization from `current_tenant()`, never from request input.
+    #
+    # A member also turns Insights on for each mailbox
+    # (`email_assistant_settings.insights_enabled`, D-EM-39). The job sends
+    # mail text to a model only for a mailbox with both (D-EM-44).
+    #
+    # 🔴 OWNER ONLY. The §3a window does NOT open it. The job sends unread
+    # mail to a model provider and costs money, so CLAUDE.md §3a rule 3
+    # binds. Registry: work_plan.md §6, row D4. Spec:
+    # email_app_master_plan.md §13.9, the Flip row. Fence:
+    # tests/unit/test_email_insights_store.py.
+    email_insights: bool = False
+    email_insights_orgs: str = ""
+
     # Dynamic Agent Loader (v2 — ADR-013)
     # Repos are cloned ONCE into agents_clone_dir/repos/ and refreshed with
     # git pull on each event (no full re-clone per run).

@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 138
+-- Tables in this phase: 139
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -586,6 +586,18 @@ ALTER TABLE email_folders ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE email_folders ADD CONSTRAINT email_folders_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS email_folders_org_idx ON email_folders (organization_id);
+
+-- email_insights
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM email_insights WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: email_insights still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE email_insights ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE email_insights ADD CONSTRAINT email_insights_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS email_insights_org_idx ON email_insights (organization_id);
 
 -- email_knowledge
 DO $$
