@@ -616,7 +616,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T11b** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #692 (2026-10-06).** GO-NARROWED by the audit. The shared reader reads `.xlsx` and HTML, with the hardened zip and XML path of a `.docx`. No migration, no flag and no new dependency. See §10.4.13. | See §10.4.13. |
 | **EM-T12** | 🟢 AGENT-SAFE | ✅ **MERGED #688 (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
 | **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
-| **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** 🔨 **EM-T13b-2 BUILT, not merged (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
+| **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -5525,7 +5525,7 @@ findings.
 #### 10.4.15 EM-T13 — a rule that sends mail out asks the member first
 
 **Status.** ✅ EM-T13a MERGED (#690, 2026-10-06), with review
-rounds 1 and 2. EM-T13b-1 is ✅ MERGED (#698, 2026-10-07). EM-T13b-2 is 🔨 BUILT, not merged (2026-10-07).
+rounds 1 and 2. EM-T13b-1 is ✅ MERGED (#698, 2026-10-07). EM-T13b-2 is ✅ MERGED (#701, 2026-10-07).
 
 **The audit.** 📝 SPECIFIED (2026-10-06). Audited 2026-10-06, GO-NARROWED. The rule tools are not
 in `own_tool_scope`. But the filter of `own_tool_scope` does nothing for a native MAF agent today
@@ -5751,7 +5751,7 @@ database. Then `git checkout` put the file back, and `git status` was clean.
 
 ##### EM-T13b — the unsubscribe and draft cards name the target, and a webhook refuses a private host
 
-**Status.** EM-T13b-1 is ✅ MERGED (#698, 2026-10-07). EM-T13b-2 is 🔨 BUILT, not merged (2026-10-07). Audited 2026-10-07, GO-NARROWED. Two PRs: EM-T13b-1 (the cards) and EM-T13b-2 (the webhook guard).
+**Status.** EM-T13b-1 is ✅ MERGED (#698, 2026-10-07). EM-T13b-2 is ✅ MERGED (#701, 2026-10-07). Audited 2026-10-07, GO-NARROWED. Two PRs: EM-T13b-1 (the cards) and EM-T13b-2 (the webhook guard).
 
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. Both PRs change LIVE paths, so each takes the full review loop and a security review. The owner does the live check of a real send.
 
@@ -5818,7 +5818,7 @@ uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gate
 
 **Board findings.** The `send_email` card can hide a Bcc after 500 characters, and that is a candidate for EM-T13c. The webhook post runs while the tenant session of `_apply_rule_actions` is open. Two IP-check copies remain, in `attachments.py` and `workflows/tools.py`. A `send_draft` from the UI with no signature sends the recipients that the provider holds, and those can differ from the row. Review round 1 of EM-T13b-1 closed this gap for the chat.
 
-**As built (EM-T13b-1, 2026-10-07).** 🔨 BUILT, not merged. No migration and no flag.
+**As built (EM-T13b-1, 2026-10-07).** ✅ Merged as #698. No migration and no flag.
 
 1. **The target route.** `GET /email/unsubscribe/target` is in `senders.py`. `_stored_unsubscribe_link` is the one read of the stored link. `POST /email/unsubscribe` calls it when the UI sends no link. `_unsubscribe_kind` is the one rule of the kind, and the POST uses it too. `_mailto_parts` is the one parse of a `mailto:` link, so the card names the address that the send uses.
 2. **The tool.** `unsubscribe_sender` has no `unsubscribe_link` parameter. MAF drops that argument when the model sends it. The tool posts the `link` of the target route.
@@ -5892,7 +5892,7 @@ uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gate
 | N14 | The unsigned path skips the provider compare | the unsigned fences | red, 5 failed |
 | N15 | A failed provider read goes on to the send | the read failure fence | red, 1 failed |
 
-**As built (EM-T13b-2, 2026-10-07).** 🔨 BUILT, not merged. No migration, no flag and no SQL change.
+**As built (EM-T13b-2, 2026-10-07).** ✅ Merged as #701. No migration, no flag and no SQL change.
 
 1. **The seam.** `gateway/outbound_guard.py` holds the check, the pin and the caps. `senders.py` imports `_host_is_public` and `_is_safe_external_url` again. `CALL_WEBHOOK` calls `outbound_guard.request`. `_http_unsubscribe` calls `check_url` once, then `send` for the POST and for the GET.
 2. **The check.** `check_url` refuses a backslash, a URL with no host, and a user name or a password. It also refuses a scheme other than `http` or `https`. It resolves the host once through `_resolve`. `_address_refusal` unwraps an IPv4-mapped address. It refuses the URL when any address is multicast, reserved or not `is_global`. It also refuses a range that carries IPv4, and an address of the box (review round 1).
