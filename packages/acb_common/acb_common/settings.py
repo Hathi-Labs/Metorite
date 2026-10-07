@@ -347,6 +347,22 @@ class Settings(BaseSettings):
     # organization pays (spec §13.1). Fence: tests/unit/test_tier_policy.py.
     ai_tier_routing: str = ""
 
+    # ── System 1 on the decision model (WS-48 N3, D93) ──────────────────────
+    #
+    # ON: the System-1 `decide` of a covered agent sends each typed item to
+    # `tier-decide` through `acb_llm.decide`, 16 to a request. A failure falls
+    # back to `tier-fast` and logs `decide_tool.system_one_fallback`. A
+    # `no_egress` run and the turn-kind question stay on `tier-fast`. The
+    # facade still needs `decide_enabled`, so with that switch off every item
+    # falls back. OFF: every item goes to `tier-fast`, as before. The one
+    # reader is `acb_skills.decide_tools._on_decide`, and it fails closed.
+    # Spec: data_narrowing_pipeline.md §9 N3.
+    #
+    # 🔴 OWNER-GATE on production: it sends chat content to the
+    # `tier-decide` vendor, a separate sub-processor (D75.8), and it moves
+    # credit spend (spec §11). Fence: tests/unit/test_system_one_tool.py.
+    system_one_on_decide: bool = False
+
     # ── The cap and the budget of the email model calls (WS-17 EM-T4b) ─────
     #
     # They bind the model calls of the email automation only, the calls

@@ -450,3 +450,68 @@ async def test_a_bool_or_a_non_number_score_is_unavailable(monkeypatch, bad):
     fake.answers(200, body)
     with pytest.raises(DecideUnavailable):
         await decide("state", QUESTIONS)
+
+
+# ── The shape helpers, for a caller that splits or routes (WS-48 N3) ────────
+
+
+def test_the_shape_copies_match_the_console() -> None:
+    """``acb_llm`` may not import ``customer_console``
+    (``test_console_dependency_boundary.py``). A TEST may, so this pins each
+    copy to the source of record. The facade itself still holds none
+    (``test_the_facade_does_not_import_the_console_service``)."""
+    import acb_llm.decide_shape as shape
+    from customer_console import decide as door
+
+    for name in (
+        "MAX_QUESTIONS", "MAX_CHOICE_OPTIONS", "MIN_SCORE_LEVELS", "MAX_SCORE_LEVELS",
+        "MAX_INSTRUCTIONS_CHARS", "MAX_CRITERION_KEY_CHARS", "MAX_CRITERION_CHARS",
+        "MAX_STATE_TOKENS", "_CHARS_PER_TOKEN",
+    ):
+        assert getattr(shape, name) == getattr(door, name), name
+
+
+@pytest.mark.parametrize(("n", "sizes"), [(0, []), (1, [1]), (16, [16]), (17, [16, 1]),
+                                          (20, [16, 4]), (33, [16, 16, 1])])
+def test_split_questions_keeps_the_order_and_sixteen_at_most(n, sizes) -> None:
+    from acb_llm import split_questions
+
+    questions = {f"q{k}": BooleanQuestion(f"Q{k}?") for k in range(n)}
+    parts = split_questions(questions)
+    assert [len(p) for p in parts] == sizes
+    assert [qid for p in parts for qid in p] == list(questions)
+
+
+def _door_refuses(state: Any, question: Any) -> bool:
+    from customer_console.decide import DecideRequest, decide_refusal
+
+    req = DecideRequest(tier="tier-decide", state=state, questions={"q": {
+        "type": question.type, "instructions": question.instructions,
+        "criteria": dict(question.criteria),
+    }})
+    return decide_refusal(req) is not None
+
+
+_SHAPES = [
+    ("choice 255", "s", ChoiceQuestion("Q?", {f"o{n}": "x" for n in range(255)})),
+    ("choice 256", "s", ChoiceQuestion("Q?", {f"o{n}": "x" for n in range(256)})),
+    ("score 1", "s", ScoreQuestion("Q?", {"a": "a"})),
+    ("score 10", "s", ScoreQuestion("Q?", {f"l{n}": "x" for n in range(10)})),
+    ("score 11", "s", ScoreQuestion("Q?", {f"l{n}": "x" for n in range(11)})),
+    ("instructions 4000", "s", BooleanQuestion("x" * 4000)),
+    ("instructions 4001", "s", BooleanQuestion("x" * 4001)),
+    ("key 200", "s", ChoiceQuestion("Q?", {"k" * 200: "a", "b": "b"})),
+    ("key 201", "s", ChoiceQuestion("Q?", {"k" * 201: "a", "b": "b"})),
+    ("criterion 4001", "s", ChoiceQuestion("Q?", {"a": "x" * 4001, "b": "b"})),
+    ("window at", "x" * (128_000 - 2), BooleanQuestion("Q?")),
+    ("window past", "x" * (128_000 - 1), BooleanQuestion("Q?")),
+    ("object window", {"t": "x" * 128_000}, BooleanQuestion("Q?")),
+]
+
+
+@pytest.mark.parametrize(("name", "state", "question"), _SHAPES, ids=[s[0] for s in _SHAPES])
+def test_shape_refusal_agrees_with_the_door(name, state, question) -> None:
+    """Each code is the door's own verdict, on each side of each limit."""
+    from acb_llm import shape_refusal
+
+    assert (shape_refusal(state, question) is not None) is _door_refuses(state, question), name

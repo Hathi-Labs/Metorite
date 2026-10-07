@@ -52,10 +52,36 @@ name. So the System-1 callable sets ``__tool_risk__`` itself.
 The System-1 engine carries the attribution of the run's own requests (the
 ``X-CC-*`` stamp of ``acb_llm.attribution``), not the no-member rule above.
 It adds no new trust in request input, and it inherits the open R11 item.
+
+## System 1 on the decision model (WS-48 N3, D93)
+
+``data_narrowing_pipeline.md`` §9 N3, and the D93 boxes of
+``ai_tier_routing.md`` §5 and §6.1. With ``SYSTEM_ONE_ON_DECIDE`` on, the
+System-1 engine sends each typed item to ``tier-decide`` through the one
+facade, :func:`acb_llm.decide`, with ``acb_llm.routed.run_attribution()``:
+
+* ``yes_no`` goes out as a ``boolean`` question, and ``choice`` and ``score``
+  keep their kind. Each option is a criterion key, and its text too;
+* one request holds ONE state (the context) and at most 16 questions, so a
+  batch of 17 to 20 items is 2 requests, and they run at the same time;
+* an item the door would refuse (:func:`acb_llm.shape_refusal`) goes to
+  ``tier-fast`` with no decide request;
+* a failed request sends ITS items to System 1 on ``tier-fast``, and logs
+  ``decide_tool.system_one_fallback`` with the reason code. A 400 or a 422
+  is a caller bug, so that line logs at ``error``. Every failed item and
+  every refused item goes out in ONE ``tier-fast`` request;
+* a ``no_egress`` run sends no decide request (Q4 of that spec), and the
+  turn-kind question of ``tier_policy`` never comes here.
+
+The calling model reads the same lead and the same line. A decide answer has
+no reason, so its line ends after the confidence. The thresholds of §5 apply
+to both engines. With the flag off, nothing here runs.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -386,7 +412,7 @@ async def system_one_decide(
         log_kind = kind
 
     try:
-        answers = await system_one.ask(context or "", asked)
+        answers = await _answers_of(context or "", asked, log_kind)
     except system_one.SystemOneUnavailable as exc:
         # A reason CODE only. Never the context, a question or an option.
         _log.warning(
@@ -408,6 +434,223 @@ async def system_one_decide(
         items=len(asked), confidences=[a.confidence for a in answers],
     )
     return "\n".join([SYSTEM_ONE_LEAD, *lines])
+
+
+# ── D93: a typed item goes to `tier-decide` (WS-48 N3) ───────────────────────
+
+#: The log event of each fallback to ``tier-fast`` (N3 done-when 4).
+FALLBACK_EVENT = "decide_tool.system_one_fallback"
+
+#: The longest that one decide request may take, end to end
+#: (``data_narrowing_pipeline.md`` §3.5). The Console client has its own
+#: bound of the same length, and this one holds the whole await.
+DECIDE_TIMEOUT_S = 10.0
+
+
+def _on_decide() -> bool:
+    """Whether this call sends its typed items to ``tier-decide``. ONE reader.
+
+    ``SYSTEM_ONE_ON_DECIDE`` on, and a run that may send data off the
+    platform. ``no_egress_for_this_run`` fails closed, so a frame with no run
+    binding stays on ``tier-fast``. Any error reads as off.
+    """
+    try:
+        from acb_common import get_settings
+
+        if not get_settings().system_one_on_decide:
+            return False
+        from acb_skills.egress import no_egress_for_this_run
+
+        return not no_egress_for_this_run()
+    except Exception:  # a broken read must not move the engine
+        return False
+
+
+async def _answers_of(context: str, asked: list[Any], log_kind: str) -> list[Any]:
+    """The answers of *asked*, from the engine that this call uses."""
+    from acb_skills import system_one
+
+    if not _on_decide():
+        return await system_one.ask(context, asked)
+    return await _ask_on_decide(context, asked, log_kind)
+
+
+def _decide_question(item: Any) -> Any:
+    """One System-1 item as the door's typed question."""
+    from acb_llm import BooleanQuestion, ChoiceQuestion, ScoreQuestion
+
+    if item.kind == "yes_no":
+        return BooleanQuestion(item.question)
+    criteria = {option: option for option in item.options}
+    if item.kind == "choice":
+        return ChoiceQuestion(item.question, criteria)
+    return ScoreQuestion(item.question, criteria)
+
+
+def _probability(value: Any) -> float | None:
+    """*value* when it is a number from 0 to 1, else ``None``."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    return number if 0.0 <= number <= 1.0 else None
+
+
+def _level_of(item: Any, raw: Any) -> str | None:
+    """The level that a decide ``score`` answer names, or ``None``."""
+    from acb_skills.system_one import _match
+
+    level = _match(getattr(raw, "level", None), item.options)
+    if level is not None:
+        return level
+    position = getattr(raw, "score", None)
+    if isinstance(position, str):
+        return _match(position, item.options)
+    if isinstance(position, bool) or not isinstance(position, int | float):
+        return None
+    if not math.isfinite(position):
+        return None
+    index = math.floor(position + 0.5)
+    return item.options[index] if 0 <= index < len(item.options) else None
+
+
+def _decide_answer(item: Any, raw: Any) -> Any:
+    """A decide answer in System 1's shape, checked against the item's options.
+
+    No reason: the door gives none. A choice outside the options, or a
+    confidence that is not a probability, reads as ``unsure``, exactly as a
+    System-1 answer does.
+    """
+    from acb_skills.system_one import Answer, _match
+
+    try:
+        if item.kind == "yes_no":
+            p_yes = _probability(getattr(raw, "probability", None))
+            if p_yes is None:
+                return Answer(item.id, None, None, "")
+            if p_yes >= 0.5:
+                return Answer(item.id, "yes", p_yes, "")
+            return Answer(item.id, "no", round(1.0 - p_yes, 6), "")
+        if item.kind == "choice":
+            choice = _match(getattr(raw, "choice", None), item.options)
+        else:
+            choice = _level_of(item, raw)
+        confidence = getattr(raw, "confidence", None)
+        if confidence is None and choice is not None:
+            confidence = dict(getattr(raw, "probabilities", None) or {}).get(choice)
+        return Answer(item.id, choice, _probability(confidence), "")
+    except Exception:  # an odd answer is unsure, never a crash
+        return Answer(item.id, None, None, "")
+
+
+def _decide_attribution() -> dict[str, Any]:
+    """``run_attribution()``, with the CALLING agent from the run binding.
+
+    The run binding names this run's own agent, where a delegated run's log
+    context can still name its parent (§6.5, as ``system_one`` does).
+    """
+    from acb_llm.routed import run_attribution
+
+    from acb_skills.system_one import _calling_agent
+
+    out = dict(run_attribution())
+    calling = _calling_agent()
+    if calling:
+        out["agent"] = calling
+    return out
+
+
+async def _one_decide(
+    context: str,
+    questions: dict[str, Any],
+    attribution: dict[str, Any],
+    number: int,
+    log_kind: str,
+) -> Any:
+    """ONE decide request, or ``None`` when it failed. Never raises.
+
+    Each failure logs :data:`FALLBACK_EVENT` with a reason CODE, the request
+    number and the item count. It logs no tenant text.
+    """
+    from acb_llm import DecideRequestInvalid, DecideUnavailable
+    from acb_llm import decide as facade
+
+    where = {"request": number, "items": len(questions), "decide_kind": log_kind}
+    try:
+        return await asyncio.wait_for(
+            facade(context, questions, **attribution), timeout=DECIDE_TIMEOUT_S,
+        )
+    except DecideRequestInvalid as exc:
+        # A caller bug (`acb_llm/decide.py`). The fallback answers, and this
+        # line keeps the bug loud.
+        _log.error(
+            FALLBACK_EVENT, reason="request_invalid", decide_status=exc.status,
+            decide_reason=exc.reason, **where,
+        )
+    except DecideUnavailable as exc:
+        _log.warning(
+            FALLBACK_EVENT, reason=str(exc.reason)[:80], decide_status=exc.status,
+            **where,
+        )
+    except TimeoutError:
+        _log.warning(FALLBACK_EVENT, reason="timeout", **where)
+    except Exception as exc:  # never break the agent loop
+        _log.warning(FALLBACK_EVENT, reason=type(exc).__name__, **where)
+    return None
+
+
+async def _ask_on_decide(context: str, asked: list[Any], log_kind: str) -> list[Any]:
+    """Ask *asked* on ``tier-decide``, and the rest on ``tier-fast``. In order.
+
+    Raises :class:`~acb_skills.system_one.SystemOneUnavailable` only when no
+    item got an answer from either engine, so the tool says ``UNAVAILABLE``
+    as before. When some items got an answer, an item with none reads as
+    ``unsure``.
+    """
+    from acb_llm import shape_refusal, split_questions
+
+    from acb_skills import system_one
+
+    sendable: dict[str, Any] = {}
+    for item in asked:
+        question = _decide_question(item)
+        code = shape_refusal(context, question)
+        if code is None:
+            sendable[item.id] = question
+        else:
+            _log.info(FALLBACK_EVENT, reason=code, request=0, items=1, decide_kind=log_kind)
+
+    parts = split_questions(sendable)
+    attribution = _decide_attribution() if parts else {}
+    decisions = await asyncio.gather(*(
+        _one_decide(context, part, attribution, n, log_kind)
+        for n, part in enumerate(parts, start=1)
+    ))
+    by_id = {item.id: item for item in asked}
+    got: dict[str, Any] = {}
+    for part, decision in zip(parts, decisions, strict=True):
+        if decision is not None:
+            for qid in part:
+                got[qid] = _decide_answer(by_id[qid], decision[qid])
+
+    rest = [item for item in asked if item.id not in got]
+    if rest:
+        try:
+            fast = await system_one.ask(context, rest)
+        except Exception as exc:
+            if not got:
+                raise
+            _log.warning(
+                "decide_tool.system_one_fallback_failed",
+                error_type=type(exc).__name__, items=len(rest),
+            )
+            fast = [system_one.Answer(i.id, None, None, "") for i in rest]
+        got.update({a.id: a for a in fast})
+    _log.info(
+        "decide_tool.system_one_engines", decide_kind=log_kind,
+        decide_items=len(asked) - len(rest), fast_items=len(rest),
+        decide_requests=len(parts),
+    )
+    return [got[item.id] for item in asked]
 
 
 # The tool name is `decide`, the ONE name (§6.1). The risk sits on the
