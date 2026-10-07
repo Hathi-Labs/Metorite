@@ -28,8 +28,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import errno
 import ipaddress
+import socket
 import ssl
+import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -84,12 +87,15 @@ class _Net:
 class _Resolver:
     """Stands in for DNS, and counts each lookup."""
 
-    def __init__(self, table: dict[str, list[str]]) -> None:
+    def __init__(self, table: dict[str, list[str]], delay: float = 0.0) -> None:
         self.table = table
+        self.delay = delay
         self.calls: list[str] = []
 
     def __call__(self, host: str, port: int) -> list[str]:
         self.calls.append(host)
+        if self.delay:
+            time.sleep(self.delay)  # the guard runs this in a worker thread
         if host not in self.table:
             raise OSError("no such host")
         return list(self.table[host])
@@ -125,6 +131,21 @@ _NOT_PUBLIC_LITERALS = [
     "http://224.0.0.1/hook",
     "https://0.0.0.0/hook",
     "http://[fe80::1]/hook",
+    "http://[::]/hook",
+]
+
+#: IPv6 classes that main refused through ``is_reserved`` (review round 1).
+#: Each one can carry an IPv4 address, or is not allocated at all.
+_RESERVED_V6 = [
+    "64:ff9b::a9fe:a9fe",    # NAT64 of 169.254.169.254
+    "64:ff9b::7f00:1",       # NAT64 of 127.0.0.1
+    "64:ff9b:1::a9fe:a9fe",  # local NAT64
+    "::a9fe:a9fe",           # IPv4-compatible
+    "::7f00:1",              # IPv4-compatible
+    "::ffff:0:7f00:1",       # IPv4-translated (SIIT)
+    "5f00::1",               # not allocated
+    "2002:7f00:1::1",        # 6to4 of 127.0.0.1
+    "2001::1",               # Teredo
 ]
 
 
@@ -567,6 +588,183 @@ async def test_a_refused_form_names_no_path_either(net: _Net) -> None:
     assert done == []
     assert errors == [{"type": "CALL_WEBHOOK",
                        "error": "webhook refused: hook.example scheme"}]
+
+
+@pytest.mark.parametrize("addr", _RESERVED_V6)
+async def test_a_reserved_ipv6_literal_is_refused(net: _Net, addr: str) -> None:
+    done, errors = await _webhook(f"http://[{addr}]/hook")
+    assert done == [] and net.requests == []
+    assert errors[0]["error"].endswith(" not public")
+    with pytest.raises(g.OutboundRefused) as err:
+        await g.request("GET", f"https://[{addr}]/hook")
+    assert err.value.reason == "not public"
+
+
+@pytest.mark.parametrize("addr", _RESERVED_V6)
+async def test_a_reserved_ipv6_aaaa_answer_is_refused(
+        net: _Net, monkeypatch: pytest.MonkeyPatch, addr: str) -> None:
+    _Resolver({"hook.example": [addr]}).install(monkeypatch)
+    with pytest.raises(g.OutboundRefused) as err:
+        await g.request("POST", "https://hook.example/in")
+    assert err.value.reason == "not public"
+    assert net.requests == []
+
+
+@pytest.mark.parametrize("addr", [
+    "64:ff9b::a9fe:a9fe", "64:ff9b:1::1", "::7f00:1", "::ffff:0:7f00:1"])
+def test_a_range_that_carries_ipv4_is_refused_by_name(
+        monkeypatch: pytest.MonkeyPatch, addr: str) -> None:
+    """The named ranges hold even if ``is_reserved`` changes in Python."""
+    monkeypatch.setattr(ipaddress.IPv6Address, "is_reserved",
+                        property(lambda _self: False))
+    monkeypatch.setattr(ipaddress.IPv6Address, "is_global",
+                        property(lambda _self: True))
+    assert g._address_refusal([addr]) == "not public"
+
+
+# -- The check: an address of this host ---------------------------------------
+
+
+def _this_host_lan_ip() -> str | None:
+    """The address that this host uses for its default route, or None.
+
+    A UDP ``connect`` picks the address and sends nothing."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("192.0.2.1", 9))
+            return sock.getsockname()[0]
+    except OSError:
+        return None
+
+
+def test_an_address_of_this_host_is_local() -> None:
+    assert g._is_local_address("127.0.0.1") is True
+    assert g._is_local_address("0.0.0.0") is True
+    assert g._is_local_address("192.0.2.1") is False  # TEST-NET-1
+    assert g._is_local_address("93.184.216.34") is False
+    lan = _this_host_lan_ip()
+    if lan is None or lan == "0.0.0.0":
+        pytest.skip("this host has no default route to find its address")
+    assert g._is_local_address(lan) is True
+
+
+class _FakeSocket:
+    """A socket whose bind answers with a set error, or succeeds."""
+
+    bind_error: int | None = None
+
+    def __init__(self, *_: object) -> None:
+        pass
+
+    def __enter__(self) -> _FakeSocket:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def bind(self, _addr: object) -> None:
+        if self.bind_error is not None:
+            raise OSError(self.bind_error, "bind")
+
+
+@pytest.mark.parametrize(("bind_error", "local"), [
+    (None, True),                  # the bind works: the address is ours
+    (errno.EADDRNOTAVAIL, False),  # the only answer that means "not ours"
+    (errno.EACCES, True),          # any other failure fails closed
+])
+def test_the_local_check_reads_only_eaddrnotavail_as_not_local(
+        monkeypatch: pytest.MonkeyPatch, bind_error: int | None,
+        local: bool) -> None:
+    fake = type("_S", (_FakeSocket,), {"bind_error": bind_error})
+    monkeypatch.setattr(g.socket, "socket", fake)
+    assert g._is_local_address(PUBLIC_IP) is local
+
+
+async def test_a_public_address_of_this_host_is_refused_as_local(
+        net: _Net, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The box's own public address passes ``is_global``, so the bind decides.
+
+    CI cannot know a public address of its own host, so the check is mocked
+    for one public address. The test of ``_is_local_address`` above uses a
+    real address of this host."""
+    _Resolver({"hook.example": [PUBLIC_IP], PUBLIC_IP: [PUBLIC_IP]}).install(monkeypatch)
+    monkeypatch.setattr(g, "_is_local_address", lambda a: a == PUBLIC_IP)
+    with pytest.raises(g.OutboundRefused) as err:
+        await g.request("POST", "https://hook.example:8080/in")
+    assert (err.value.host, err.value.reason) == ("hook.example", "local")
+    assert net.requests == []
+    done, errors = await _webhook(f"http://{PUBLIC_IP}:8080/hook")
+    assert done == [] and net.requests == []
+    assert errors == [{"type": "CALL_WEBHOOK",
+                       "error": f"webhook refused: {PUBLIC_IP} local"}]
+
+
+# -- One lookup and one time budget for each call -----------------------------
+
+
+async def test_the_unsubscribe_post_and_get_share_one_lookup(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    from gateway.routes.email.automation import senders
+
+    def _answer(request: httpx.Request) -> httpx.Response:
+        status = 405 if request.method == "POST" else 200
+        return httpx.Response(status, stream=httpx.ByteStream(b""))
+
+    net = _Net(_answer).install(monkeypatch)
+    dns = _Resolver({"list.example": [PUBLIC_IP]}).install(monkeypatch)
+    assert await senders._http_unsubscribe("https://list.example/u") == (
+        True, "get")
+    assert dns.calls == ["list.example"]
+    assert [(r.method, r.url.host) for r in net.requests] == [
+        ("POST", PUBLIC_IP), ("GET", PUBLIC_IP)]
+
+
+async def test_one_budget_covers_the_lookup_and_the_request(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each step alone fits the budget. Together they do not."""
+    async def _answer(_r: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.35)
+        return httpx.Response(200, stream=httpx.ByteStream(b""))
+
+    _Net(_answer).install(monkeypatch)
+    _Resolver({"hook.example": [PUBLIC_IP]}, delay=0.35).install(monkeypatch)
+    monkeypatch.setattr(g, "TOTAL_TIMEOUT_S", 0.5)
+    with pytest.raises(g.OutboundRefused) as err:
+        await g.request("POST", "https://hook.example/in?token=abc")
+    assert (err.value.host, err.value.reason) == ("hook.example", "timeout")
+
+
+async def test_one_budget_covers_the_whole_unsubscribe(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lookup, the POST and the GET each fit. All three do not."""
+    from gateway.routes.email.automation import senders
+
+    async def _answer(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.3)
+        status = 405 if request.method == "POST" else 200
+        return httpx.Response(status, stream=httpx.ByteStream(b""))
+
+    _Net(_answer).install(monkeypatch)
+    _Resolver({"list.example": [PUBLIC_IP]}, delay=0.1).install(monkeypatch)
+    monkeypatch.setattr(g, "TOTAL_TIMEOUT_S", 0.5)
+    assert await senders._http_unsubscribe("https://list.example/u") == (
+        False, "timeout")
+
+
+# -- The record of a long host ------------------------------------------------
+
+
+async def test_a_long_host_keeps_its_reason_in_the_record(
+        net: _Net, monkeypatch: pytest.MonkeyPatch) -> None:
+    host = ".".join(["a" * 63] * 3 + ["b" * 61])  # 253 characters
+    assert len(host) == 253
+    _Resolver({host: ["10.0.0.5"]}).install(monkeypatch)
+    log = MagicMock()
+    monkeypatch.setattr(actions, "_log", log)
+    done, errors = await _webhook(f"https://{host}/secret?token=abc")
+    assert done == []
+    assert errors[0]["error"] == f"webhook refused: {host[:100]} not public"
+    assert log.warning.call_args.kwargs["error"].endswith(" not public")
 
 
 def test_the_address_rule_reads_is_global_and_multicast() -> None:

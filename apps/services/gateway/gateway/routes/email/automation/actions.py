@@ -686,7 +686,7 @@ async def _apply_rule_actions(
             err = (f"webhook refused: {exc}"
                    if isinstance(exc, outbound_guard.OutboundRefused)
                    else str(exc))
-            _log.warning("email.rule_action_failed", action=t, error=err[:120])
+            _log.warning("email.rule_action_failed", action=t, error=err[:160])
             if errors_out is not None:
                 errors_out.append({"type": t or "?", "error": err[:160]})
     return done

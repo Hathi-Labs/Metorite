@@ -116,6 +116,7 @@ async def test_http_unsubscribe_falls_back_to_get(
     ok, detail = await s._http_unsubscribe("https://list.example/u")
     assert ok is True and detail == "get"
     assert server.calls == ["POST", "GET"]
+    assert server.hosts == ["93.184.216.34"] * 2  # both pinned
 
 
 async def test_http_unsubscribe_rejects_unsafe_url_without_network(

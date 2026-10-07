@@ -3,17 +3,19 @@
 WS-17 EM-T13b-2, spec ``project-docs/specs/email_app_master_plan.md``
 §10.4.15. Two callers use it: the one-click unsubscribe
 (``routes/email/automation/senders.py::_http_unsubscribe``) and the rule action
-``CALL_WEBHOOK`` (``routes/email/automation/actions.py``). It lives beside
-``gateway/db.py`` because it belongs to neither caller, and a security control
-with two copies misses the next fix.
+``CALL_WEBHOOK`` (``routes/email/automation/actions.py``). It is a leaf module
+beside ``csv_export.py``, for that file's reason: it belongs to neither caller,
+and a security control with two copies misses the next fix.
 
 The rules, in order:
 
 1. **The check.** The URL uses ``http`` or ``https`` and has a host. It has no
    user name, no password and no backslash. The guard resolves the host ONCE.
    It unwraps an IPv4-mapped IPv6 address. It refuses the URL when any address
-   is multicast or is not ``is_global``. So one private address in a list of
-   public ones is enough to refuse.
+   is multicast, reserved or not ``is_global``, or is in a range that carries
+   an IPv4 address (NAT64, IPv4-compatible, IPv4-translated). It also refuses
+   an address that is local to this host (review round 1). So one bad address
+   in a list of public ones is enough to refuse.
 2. **The pin.** The request goes to the FIRST resolved address, with the
    ``Host`` header of the URL. For ``https`` the ``sni_hostname`` extension
    carries the name, so TLS checks the certificate against the name and not
@@ -21,8 +23,11 @@ The rules, in order:
    ``trust_env=False``, so no proxy from the environment sees the request.
 3. **No redirect.** ``follow_redirects=False``, and a 3xx raises
    :class:`OutboundRefused`. A redirect target never passed the check.
-4. **Caps.** 3 seconds to connect and 10 seconds in total. The guard streams
-   the answer and keeps at most 64 KiB of it.
+4. **Caps.** 3 seconds to connect and 10 seconds in total. The total covers
+   the lookup and every request of one call (:func:`deadline`). The guard
+   streams the answer and keeps at most 64 KiB of it. A lookup that runs past
+   the total keeps its worker thread until ``getaddrinfo`` returns, because a
+   thread cannot be cancelled. That is a known limit.
 
 A refusal raises :class:`OutboundRefused`, which names the host and a short
 reason. It never holds the path or the query of the URL.
@@ -36,6 +41,7 @@ Fence: ``tests/unit/test_email_webhook_guard.py``.
 from __future__ import annotations
 
 import asyncio
+import errno
 import ipaddress
 import socket
 from dataclasses import dataclass
@@ -52,6 +58,22 @@ MAX_ANSWER_BYTES = 64 * 1024
 
 _SCHEMES = ("http", "https")
 
+#: IPv6 ranges that carry an IPv4 address in their low bits. A host can reach
+#: the IPv4 address through each one, so the guard refuses the whole range by
+#: name, and does not depend on ``is_reserved`` (review round 1). The mapped
+#: range ``::ffff:0:0/96`` is unwrapped instead, and its IPv4 address is
+#: checked.
+_IPV4_CARRIERS = tuple(ipaddress.IPv6Network(n) for n in (
+    "64:ff9b::/96",      # NAT64, RFC 6052
+    "64:ff9b:1::/48",    # local NAT64, RFC 8215
+    "::/96",             # IPv4-compatible, deprecated
+    "::ffff:0:0:0/96",   # IPv4-translated (SIIT), RFC 2765
+))
+
+#: The longest host that a refusal names. A host name can be 253 characters,
+#: so the guard cuts it and the reason always stays in the record.
+_HOST_IN_MESSAGE = 100
+
 
 class OutboundRefused(Exception):  # the spec names this class
     """The guard refused a URL, or a 3xx answer, or a run past the time cap.
@@ -62,7 +84,8 @@ class OutboundRefused(Exception):  # the spec names this class
     def __init__(self, host: str, reason: str) -> None:
         self.host = host
         self.reason = reason
-        super().__init__(" ".join(p for p in (host, reason) if p))
+        shown = host[:_HOST_IN_MESSAGE]
+        super().__init__(" ".join(p for p in (shown, reason) if p))
 
 
 @dataclass(frozen=True)
@@ -101,6 +124,33 @@ def _resolve(host: str, port: int) -> list[str]:
     return seen
 
 
+def _is_local_address(addr: str) -> bool:
+    """True when ``addr`` is an address of this host.
+
+    A socket can bind only to an address of this host. Any other address fails
+    with EADDRNOTAVAIL. Any other bind failure counts as local, so the check
+    fails closed. A host with no stack for the family (no IPv6, for example)
+    cannot open the socket, and it cannot reach the address either. The socket
+    opens no connection and sends nothing."""
+    ip = ipaddress.ip_address(addr)
+    family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+    try:
+        sock = socket.socket(family, socket.SOCK_DGRAM)
+    except OSError:
+        return False
+    with sock:
+        try:
+            sock.bind((addr, 0))
+        except OSError as exc:
+            return exc.errno not in _NOT_LOCAL_ERRNOS
+    return True
+
+
+_NOT_LOCAL_ERRNOS = frozenset(
+    e for e in (errno.EADDRNOTAVAIL, getattr(errno, "WSAEADDRNOTAVAIL", None))
+    if e is not None)
+
+
 def _address_refusal(addresses: list[str]) -> str | None:
     """A reason to refuse ``addresses``, or None when each one is public."""
     if not addresses:
@@ -112,8 +162,12 @@ def _address_refusal(addresses: list[str]) -> str | None:
             return "unresolvable"
         if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
             ip = ip.ipv4_mapped
-        if ip.is_multicast or not ip.is_global:
+        if (ip.is_multicast or ip.is_reserved or not ip.is_global
+                or any(ip in net for net in _IPV4_CARRIERS)):
             return "not public"
+    for addr in addresses:
+        if _is_local_address(addr):
+            return "local"
     return None
 
 
@@ -161,6 +215,22 @@ async def check_url(url: str) -> Target:
     if reason is not None:
         raise OutboundRefused(host, reason)
     return Target(url=parsed, host=host, ip=addresses[0])
+
+
+def deadline() -> asyncio.Timeout:
+    """ONE time budget of :data:`TOTAL_TIMEOUT_S` for a whole call.
+
+    A caller that checks once and sends twice puts all three under one
+    ``async with deadline():``. Each step also keeps its own cap."""
+    return asyncio.timeout(TOTAL_TIMEOUT_S)
+
+
+def _host_of(url: str) -> str:
+    """The host of ``url`` for a refusal, or an empty string."""
+    try:
+        return httpx.URL(url).raw_host.decode("ascii")
+    except Exception:  # any URL that does not parse names no host
+        return ""
 
 
 async def _is_safe_external_url(url: str) -> bool:
@@ -227,9 +297,16 @@ async def request(
     content: bytes | None = None,
     json: Any = None,
 ) -> Answer:
-    """:func:`check_url`, then :func:`send`, for one request."""
-    target = await check_url(url)
-    return await send(target, method, headers=headers, content=content, json=json)
+    """:func:`check_url`, then :func:`send`, for one request.
+
+    One :func:`deadline` covers the lookup and the request together."""
+    try:
+        async with deadline():
+            target = await check_url(url)
+            return await send(
+                target, method, headers=headers, content=content, json=json)
+    except TimeoutError:
+        raise OutboundRefused(_host_of(url), "timeout") from None
 
 
 __all__ = [
@@ -240,6 +317,7 @@ __all__ = [
     "OutboundRefused",
     "Target",
     "check_url",
+    "deadline",
     "request",
     "send",
 ]

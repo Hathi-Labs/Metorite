@@ -741,7 +741,18 @@ async def _http_unsubscribe(url: str) -> tuple[bool, str]:
 
     Both requests go through ``gateway.outbound_guard`` (EM-T13b-2). The host
     resolves once, and both requests go to that one checked address. The guard
-    follows no redirect, because a redirect target never passed the check."""
+    follows no redirect, because a redirect target never passed the check.
+    ONE ``deadline()`` covers the lookup, the POST and the GET (review
+    round 1)."""
+    try:
+        async with outbound_guard.deadline():
+            return await _http_unsubscribe_steps(url)
+    except TimeoutError:
+        return False, "timeout"
+
+
+async def _http_unsubscribe_steps(url: str) -> tuple[bool, str]:
+    """The check, the POST and the GET of :func:`_http_unsubscribe`."""
     try:
         target = await outbound_guard.check_url(url)
     except outbound_guard.OutboundRefused:
