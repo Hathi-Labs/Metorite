@@ -12875,6 +12875,9 @@ call and no SQL.
     share it as item 2 says.
 12. **The eval fences live in `test_email_insights_extract.py`.** `test_email_insights_job.py`
     comes with EM-T14b-2.
+13. **The slice is larger than the guide of §13.9.** The module holds 521 lines. 122 of them are
+    comments, and 86 are blank. The eval code holds 302 lines, and the test file holds 459 lines. The
+    fixture data does not count.
 
 **Mutations (EM-T14b-1, 2026-10-07).** The agent committed the code first. Then it ran each
 mutation and restored the file after each run. `git status` was clean after each restore.
