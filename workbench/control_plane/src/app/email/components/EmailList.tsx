@@ -11,6 +11,7 @@ import { LabelChip, ColorSwatch, LabelColorGrid } from "./LabelChip";
 import { presetForLabel } from "../lib/labelColors";
 import { FixDialog } from "./automation/ai-settings/fixDialog";
 import { useViewMode } from "@/components/ViewModeProvider";
+import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 
 interface EmailListProps {
   emails: Email[];
@@ -157,7 +158,7 @@ export function EmailList({
     selectedIds, toggleEmailSelected, setSelectedEmails, clearEmailSelection,
     bulkUpdateSelected, bulkDeleteSelected, captureEmailToTasks,
     runTestOnMessage, testRunningIds, snoozeEmail,
-    viewAll, accounts,
+    viewAll, accounts, searchQuery,
   } = useEmailStore();
   // In All inboxes each row names its mailbox (EM-T8d, D-EM-22, §11.4).
   const mailboxOfRow = (accountId: string) =>
@@ -441,6 +442,21 @@ export function EmailList({
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">
             <AppIcon name="MailOpen" size={24} className="opacity-40" />
             <p className="text-xs">No emails to show</p>
+            {/* §6.7 rule 3: a filter that finds nothing offers the one search. */}
+            {shellBarOn() && searchQuery.trim() ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="Sparkles"
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent(OPEN_COMMAND_BAR, { detail: { query: searchQuery.trim() } }),
+                  )
+                }
+              >
+                Search everywhere for “{searchQuery.trim()}”
+              </Button>
+            ) : null}
           </div>
         ) : (
           <>

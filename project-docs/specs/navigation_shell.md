@@ -399,8 +399,12 @@ Nobody edits navigation, and no team gets a separate home.
 
 ### 6.1 Place and keys
 
-The command bar is always visible in the shell bar. `Ctrl K`, `⌘K` and `/`
-focus it from any surface. The shell holds the only listener (§5.2 rule 2).
+The command bar is always visible in the shell bar. `Ctrl K` and `⌘K` focus it
+from any surface. The shell holds the only listener (§5.2 rule 2).
+
+**`/` focuses the page's own filter when the page has one, and the command bar
+when it does not.** Owner decision, 2026-10-07. Gmail and GitHub use `/` this
+way, so a member who knows either already knows it. `⌘K` is never a filter.
 
 ### 6.2 What it returns
 
@@ -481,6 +485,38 @@ flip. NS-4b builds tier 2 dark, and it stays dark until both are done.
 An `answer` reads data only through the read tools that the app's agent
 already holds, such as the `skill-projects` reads. Tier 2 adds no data path.
 NS-4b ships `job` and `handoff`. NS-4c adds `answer` and `workflow_draft`.
+
+### 6.7 One bar searches. An app's bar only filters
+
+Owner decision, 2026-10-07. A member must never meet two boxes that both say
+"search", and wonder which one to use. So there are two kinds of box, and only
+two:
+
+| | The command bar (one, in the shell bar) | A list filter (an app may have one) |
+|---|---|---|
+| Its job | Find, go, do or ask, anywhere | Narrow the list on this page |
+| Where | The shell bar, in the centre, on every page | Inside the app, above its list |
+| Its words | ✦ "Search or ask anything" and `⌘K` | "Filter Inbox", "Filter tasks", with pills such as `from:alice` |
+| Its results | A panel of results from every app | The list itself changes. No panel opens |
+| AI | It answers, or hands off to the dock | Never |
+
+**Five rules:**
+
+1. **An app may have a filter. It never has a second search box, a palette or
+   a `⌘K` of its own** (§5.2 rule 2, D89). `seams.test.ts` fences the palette
+   and the key.
+2. **A filter says "Filter", never "Search".** Its placeholder names the list,
+   such as "Filter Inbox". The word "Search" belongs to the command bar.
+3. **They hand off. They never compete.** Inside an app, the command bar shows
+   the "in Email" token (§6.4 rule 3). Its last row is "Show all in your
+   Inbox", which puts the words into the app's filter. A filter that finds
+   nothing offers "Search everywhere for …", which opens the command bar with
+   the same words.
+4. **Asking happens in one place.** Only the command bar answers a question. A
+   longer talk goes to the dock, with the question and the answer carried over.
+5. **Plain words, for every member.** Each result says what it is and where it
+   opens: "Task · Projects", "Email · Inbox", "Open My Tasks". A result never
+   shows an id, a route or a field name.
 
 ---
 
@@ -700,7 +736,46 @@ surface renders as it does today, because a merge to `main` is a deploy. Each
 flag stays off in production until the owner turns it on (§13). To build is
 AGENT-SAFE. To turn any flag on in production is OWNER-GATE.
 
-### NS-1 · The shell bar and the one ⌘K listener — AGENT-SAFE
+### NS-1 · The shell bar and the one ⌘K listener — AGENT-SAFE · slice 1 BUILT 2026-10-08, dark
+
+**Built in slice 1:**
+
+- `lib/shell/ShellBar.tsx` holds the bar, its two slots and the ONE key
+  listener. `⌘K` is taken in the capture phase and stopped, so the three app
+  listeners never fire while the flag is on. `/` follows §6.1.
+- `AppTopBar` portals its contents into the slots, so Projects and My Tasks
+  changed nothing and lost no height. A page with no `AppTopBar` shows its
+  app's name and icon in the left slot.
+- `lib/shell/CommandBar.tsx` has Do, Go to, "In this page" (§6.7 rule 3) and
+  Ask. The Ask row opens `/chat?q=`, and Chat types the words in and does not
+  send them. NS-4b makes Ask answer in place.
+- `lib/shell/pageFilter.ts` reaches a page's filter for every page: `/`
+  focuses it, and "Show all in …" types into it as a keystroke does. A closed
+  filter (`data-page-filter-opener`) opens first. A page that needs more,
+  such as Email's pills, takes the words itself.
+- `lib/shell/registry.ts` holds the jobs and the ranking. It reads a sentence:
+  "new email to priya" finds Write an email. `lib/shell/doJob.tsx` is the job
+  door: a link `?do=<id>&fill.<field>=…` opens the app's form once.
+- Email's box, My Tasks' two boxes and Chat's conversation box say "Filter"
+  and carry `data-page-filter` (§6.7 rule 2). Email's old `⌘K` button hides.
+- The phone has no row. The Menu drawer opens the same bar (§9).
+- A dev or test build may turn the bar on per browser
+  (`localStorage["cc-shell-bar"]`), so `e2e/shell-bar.spec.ts` runs both
+  sides. A production build drops that branch.
+
+**Still open in NS-1:** Calendar keeps its own header (done-when 2). Email
+keeps its toolbar row below the bar, on purpose: it holds the list filter,
+which §6.7 places above the list.
+
+⚠️ **Do not turn the flag on before NS-4a.** With the flag on, three old
+searches go, and their records come back only in the bar's Find group:
+
+- the Projects palette and its Search button
+- the My Tasks palette and its Search button, on desktop and on the phone
+- the Email palette and its `⌘K` button
+
+Until NS-4a ships, the bar cannot find a task, an email or a person by its
+words.
 
 Flag `NEXT_PUBLIC_SHELL_BAR`. Files: `src/components/AppShell.tsx`,
 `src/components/AppTopBar.tsx`, a new `src/lib/shell/`, and the pages of
