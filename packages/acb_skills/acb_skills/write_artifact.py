@@ -1261,7 +1261,8 @@ def genui_refusal(spec: dict) -> str | None:
         if depth > _GENUI_MAX_DEPTH or not isinstance(node, dict):
             return None
         kind = node.get("type")
-        if kind not in GENUI_NODE_TYPES:
+        # A list or an object is unhashable, and the set lookup would raise.
+        if not isinstance(kind, str) or kind not in GENUI_NODE_TYPES:
             return (
                 f"{where}: the renderer has no {kind!r} type. Use one of: "
                 f"{', '.join(sorted(GENUI_NODE_TYPES))}. For a hierarchy, use "
@@ -1270,7 +1271,7 @@ def genui_refusal(spec: dict) -> str | None:
         if kind == "template":
             props = node.get("props")
             name = props.get("name") if isinstance(props, dict) else None
-            if name not in GENUI_TEMPLATES:
+            if not isinstance(name, str) or name not in GENUI_TEMPLATES:
                 return (
                     f"{where}: the renderer has no {name!r} template. Use one "
                     f"of: {', '.join(sorted(GENUI_TEMPLATES))}."

@@ -161,3 +161,16 @@ def test_a_known_tree_is_not_refused() -> None:
     ok = '{"type":"card","children":[{"type":"template","props":{"name":"planCard"}}]}'
     assert wa.genui_refusal(__import__("json").loads(ok)) is None
     assert _emit(ok)["error"] == "no active run stream to render into"
+
+
+def test_a_type_or_a_template_name_that_is_not_a_string_is_refused_not_raised() -> None:
+    """Review round 1. A list or an object is unhashable: the set lookup
+    raised a TypeError where the tool must return a refusal."""
+    for ui in (
+        '{"type":["card"]}',
+        '{"type":"card","children":[{"type":{"k":1}}]}',
+        '{"type":"template","props":{"name":{"id":"planCard"}}}',
+    ):
+        res = _emit(ui)
+        assert res["ok"] is False, ui
+        assert "Use one of" in res["error"], ui

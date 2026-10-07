@@ -18,7 +18,7 @@
  * Fence: `src/lib/genUiFallback.test.ts`.
  */
 
-import { text } from "@/lib/genUiText";
+import { tableColumns, text } from "@/lib/genUiText";
 
 /** A node as the renderer reads it. Mirrors `GenUINode`, without the import
  *  cycle back into the component. */
@@ -77,8 +77,10 @@ export function isEmptyNode(node: unknown, depth = 0): boolean {
     case "keyValue":
       return !(Array.isArray(props.pairs) && props.pairs.length > 0);
     case "table":
+      // The renderer's own column reader, so a `{header}` column counts: a
+      // "no results" table still draws its header row.
       return !(Array.isArray(props.rows) && props.rows.length > 0)
-        && !(Array.isArray(props.columns) && props.columns.some((c) => !blank(c)));
+        && !tableColumns(props.columns, []).some((c) => c.label.trim());
     case "card":
       return blank(props.title) && kidsEmpty;
     case "callout":

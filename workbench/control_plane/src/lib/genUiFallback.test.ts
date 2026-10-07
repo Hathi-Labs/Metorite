@@ -52,6 +52,8 @@ describe("isEmptyNode", () => {
     { type: "callout", props: { text: "Heads up" } },
     { type: "stack", children: [{ type: "divider" }] },
     { type: "table", props: { rows: [["a"]] } },
+    // Review round 1: a "no results" table with `{header}` columns.
+    { type: "table", props: { columns: [{ key: "title", header: "Task" }], rows: [] } },
     { type: "template", props: { name: "planCard" } },
     { type: "gauge", props: { title: "Velocity" } },
   ])("%j is not empty", (node) => {
