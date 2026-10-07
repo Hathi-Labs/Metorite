@@ -212,3 +212,21 @@ def test_router_registers_expected_paths() -> None:
         "/whatsapp/webhook",
     ):
         assert expected in paths, f"missing route {expected}"
+
+
+# ── WS-20 WA-C3 fix round P2-2: when the webhook defers the chat sweep ───────
+
+@pytest.mark.parametrize(("counts", "has_progress", "deferred"), [
+    ({"messages": 0, "history_messages": 40, "history_complete": 0}, True, True),
+    ({"messages": 0, "history_messages": 0, "history_complete": 0}, True, True),
+    ({"messages": 0, "history_messages": 40, "history_complete": 1}, True, False),
+    ({"messages": 2, "history_messages": 40, "history_complete": 0}, True, False),
+    ({"messages": 0, "history_messages": 0, "history_complete": 0}, False, False),
+    ({"messages": 1, "chats": 1}, False, False),
+])
+def test_only_a_history_batch_of_an_open_import_defers_the_sweep(
+    counts, has_progress, deferred,
+) -> None:
+    from gateway.routes.whatsapp.transport.webhook import defer_chat_sweep
+
+    assert defer_chat_sweep(counts, has_progress=has_progress) is deferred

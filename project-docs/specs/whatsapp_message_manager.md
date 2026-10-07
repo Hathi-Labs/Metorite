@@ -912,7 +912,7 @@ Each slice is one PR. Each one ships dark where it changes behaviour.
 | **WA-C1** | **Bind the tenant on the webhook POST path.** Migration (next free number at build time, R1): a partial unique index on `wa_accounts(phone_number_id) WHERE provider = 'cloud_api'`, with a DO-block pre-check that raises with the duplicate count. One SECURITY DEFINER function in the shape of `222_chat_session_exists.sql` returns `(account_id, organization_id)` for a `cloud_api` `phone_number_id`. Only `acb_app` may execute it. It returns an org id, which goes past the one-bit rule of 222, and the reason is that the gateway can already bind any tenant. The POST reads through it, binds the org, runs `persist_sync_result` in `_tenant_session()`, fires the hooks, and releases the tenant in `finally` (the pattern of `routes/email/transport/sync.py:328-352`). The two hooks on that path (`replyzero.py:142`, `intent.py:120`) take `_tenant_session()`. F8: with `WHATSAPP_APP_SECRET` unset and `ACB_ENV` not `dev`, the POST answers 403, and `verify_signature` stays pure. A second connect of a connected number answers 409, not 500. `H2_WHATSAPP_EXEMPT_SITES` in `test_db_engine_seam.py` shrinks to the sites that remain | AGENT-SAFE | An R8 test on the `promoted` fixture, as a NOBYPASSRLS non-owner role. A signed webhook for a connected number writes its message, chat status and intent rows under that org, and a member of another org sees none. An unknown number answers 200 and writes nothing. With no app secret outside dev, the POST answers 403. It is red before the fix. **BUILT 2026-10-07** (migration 230). Each number in a batch binds its own tenant. Meta confirms a number at the server's Graph version before a manual connect inserts it. R8 `test_whatsapp_webhook_under_rls.py` is 14 passed, red first. The review rounds found a batch of two orgs (P0) and an unproven connect (P1), and both are fixed |
 | **WA-C1b** | **Bind the tenant on the other service paths.** The enrichment scheduler (`scheduler.py:60,77`, `groups.py:201`, `transcription.py:153`) loops per org in the shape of `email_ingestion/scheduler.py:396-434`, with no DEFINER. The GET verify fallback (`webhook.py:64`) is removed, because a Tech Provider app has one verify token, `WHATSAPP_VERIFY_TOKEN`. The broadcast handler (`outbound.py:72`) takes the org from the account row of its proposal | AGENT-SAFE | With live accounts in two orgs, one enrichment cycle reads and writes each account's rows under its own org (R8). The GET answers 403 for any token but the env token. A broadcast writes under its account's org (R8) |
 | **WA-C2** | **Coexistence in Embedded Signup.** `featureType: "whatsapp_business_app_onboarding"`. A listener that reads `event` (FINISH, FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING, CANCEL, ERROR). No phone `/register` for a coexistence number. The WABA subscribe is a hard step. `sync_status` moves to `live`, and an error shows as an error. **P1:** the coexistence event returns no `phone_number_id`, so the backend reads the WABA numbers (`list_waba_phone_numbers`) and selects one. Coexistence picks the number with `is_on_biz_app`. `verify_cloud_number` then confirms it. **P2:** no migration. `onboarding` (`cloud` or `coexistence`) goes in the encrypted credentials, and `provider` stays `cloud_api`. **P3:** the order is exchange, find and confirm, subscribe, then save. A failed subscribe answers 400 and saves no row | AGENT-SAFE | A hermetic test per event type. A subscribe failure shows an error and saves no live account. The connect screen names the limits of §12.2. **BUILT 2026-10-07** |
-| **WA-C3** | **History and contacts.** Call `smb_app_data` for `smb_app_state_sync` and `history` right after connect, and record the phase. Parse the `history`, `smb_app_state_sync` and `smb_message_echoes` fields. An echo is `direction="out"`, and its chat is the `to` number. Save statuses. The picks P1 to P12 bind the build, and §12.4.1 holds them with the out-of-scope list | AGENT-SAFE. The production flip of `WHATSAPP_HISTORY_SYNC` waits on Q1 and WA-C0 | Meta's sample payload for each field persists the right rows (R8). A history batch is idempotent on `wa_message_id`. An echo threads into the right chat. The nine acceptance tests of §12.4.1 pass. **BUILT 2026-10-07** (migration 232). The R8 suite `test_whatsapp_history_under_rls.py` is 14 passed, and eight mutations of the persist rules each turn it red |
+| **WA-C3** | **History and contacts.** Call `smb_app_data` for `smb_app_state_sync` and `history` right after connect, and record the phase. Parse the `history`, `smb_app_state_sync` and `smb_message_echoes` fields. An echo is `direction="out"`, and its chat is the `to` number. Save statuses. The picks P1 to P12 bind the build, and §12.4.1 holds them with the out-of-scope list | AGENT-SAFE. The production flip of `WHATSAPP_HISTORY_SYNC` waits on WA-C0 only (Q1 answered 2026-10-07: triage normally) | Meta's sample payload for each field persists the right rows (R8). A history batch is idempotent on `wa_message_id`. An echo threads into the right chat. The nine acceptance tests of §12.4.1 pass. **BUILT 2026-10-07** (migration 232). The R8 suite `test_whatsapp_history_under_rls.py` is 14 passed, and eight mutations of the persist rules each turn it red |
 | **WA-C4** | The Graph version comes from one setting, at the current version. Keep `expires_in`. Mark an account `reauth_needed` when Meta refuses its token | AGENT-SAFE | One constant, read by all four sites. A 190 error from Meta moves the account to `reauth_needed`, and the UI offers Reconnect |
 | **WA-C5** | **Chat over the messages** inside `/whatsapp`, through the one shared chat rail that Projects uses. No second chat seam | AGENT-SAFE | A member asks "who is waiting on me" in the rail, and the WhatsApp assistant answers from their own chats only |
 | **WA-C0** | **Meta Tech Provider setup** (§12.5) | **OWNER-GATE** | The app ID, the app secret, the Embedded Signup configuration ID and the verify token are on the box. The owner's own number connects through the popup |
@@ -1062,9 +1062,10 @@ and that is the design, not a gap. The production flip of
 
 **Build notes (2026-10-07).** WA-C3 took migration 232.
 
-- The migration sets the comment of `history_import_phase` with `COMMENT ON
-  COLUMN`. It does not edit `102_whatsapp.sql`, because the deploy runs a
-  changed migration file again, and it takes a backup before it does.
+- Migration 232 writes the comment of `history_import_phase`, with
+  `COMMENT ON COLUMN`.
+- It does not edit `102_whatsapp.sql`. The deploy runs a changed migration
+  file again, and it takes a backup before it does.
 - The media insert is now idempotent. Before WA-C3 a redelivered batch added a
   second `wa_media` row, because each row got a new id.
 - A live inbound chat id is now digits only, so it matches the chat of an
@@ -1072,6 +1073,18 @@ and that is the design, not a gap. The production flip of
 - The fences: `test_whatsapp_history_under_rls.py` (R8), and the WA-C3 tests
   in `test_whatsapp_webhook_parser.py`, `test_whatsapp_persist.py`,
   `test_whatsapp_connect.py` and `historySync.test.ts`.
+- Fix round (2026-10-07). The account model carries
+  `history_sync_available`, the value of `WHATSAPP_HISTORY_SYNC`. While it is
+  false, Numbers shows "History import is not on yet." and no button. The
+  connect answers `pending` only in that state, so its last step gives no
+  retry advice either.
+- Fix round. A batch with history and no live message runs no post-sync hook
+  while the import is open. The batch that completes the import, and any
+  history batch after it, runs `classify_chats` once. This is the backfill
+  rule of `bridge.py`, and it keeps a large import inside Meta's timeout.
+- Fix round. A history copy of a live message keeps the live sender. The
+  parser reads a `state_sync[]` item with a `contact` and no `type`, and the
+  decline code as an int or a string.
 - Still open: the embedding pass reads history rows when `WHATSAPP_ENRICHMENT`
   is on. Transcription skips them.
 

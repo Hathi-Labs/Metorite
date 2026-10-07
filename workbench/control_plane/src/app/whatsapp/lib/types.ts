@@ -30,6 +30,9 @@ export type WaAccount = {
   history_import_progress?: number | null;
   /** ISO time when Meta's 24-hour window for the sync closes. */
   history_sync_deadline?: string | null;
+  /** True when this server runs the history sync (`WHATSAPP_HISTORY_SYNC`).
+   *  While false, the UI offers no start and no reconnect advice. */
+  history_sync_available?: boolean;
 };
 
 /** One voice call as the bridge reports it. Mirrors callInfo in calls.go. */

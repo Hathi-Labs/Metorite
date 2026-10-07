@@ -238,7 +238,9 @@ def _scan_errors(errors: Any, result: SyncResult) -> None:
     for err in errors if isinstance(errors, list) else []:
         if not isinstance(err, dict):
             continue
-        if err.get("code") == HISTORY_DECLINED_CODE:
+        # Meta does not confirm the type of `code`, so an int and a
+        # string both match (WA-C3 fix round, before WA-C0 proves it).
+        if str(err.get("code")).strip() == str(HISTORY_DECLINED_CODE):
             result.history_declined = True
         else:
             title = str(err.get("title") or "")[:120]
@@ -325,7 +327,15 @@ def _parse_echoes_change(
 def _parse_state_sync_change(value: dict[str, Any], result: SyncResult) -> None:
     """The ``smb_app_state_sync`` field: address-book adds and removes."""
     for item in value.get("state_sync", []) or []:
-        if not isinstance(item, dict) or item.get("type") != "contact":
+        if not isinstance(item, dict):
+            continue
+        # A `contact` object is enough. Only a `type` that is present and
+        # names something else is skipped, because WA-C0 has not yet shown
+        # that Meta always sends `type` (WA-C3 fix round).
+        kind = item.get("type")
+        if kind is not None and kind != "contact":
+            continue
+        if not isinstance(item.get("contact"), dict):
             continue
         action = item.get("action")
         contact = item.get("contact") or {}

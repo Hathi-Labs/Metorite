@@ -4,6 +4,10 @@
 
 import type { WaAccount } from "./types";
 
+/** The neutral line while the server runs no history sync (P2-1). It gives
+ *  no start and no reconnect advice, because neither would import anything. */
+export const HISTORY_NOT_ON = "History import is not on yet.";
+
 /** What `POST /whatsapp/connect/embedded` answers in `history_sync`. */
 export type ConnectHistorySync = "requested" | "failed" | "pending" | null;
 
@@ -25,10 +29,11 @@ export function connectHistoryCopy(state: ConnectHistorySync | undefined): strin
         "from now on."
       );
     case "pending":
+      // The connect answers `pending` only when the server runs no sync
+      // call, so a retry or a reconnect would change nothing (P2-1).
       return (
-        "Your number is connected. The history import has not started, so " +
-        "your inbox starts from now. New messages land in your triage queue " +
-        "as they arrive."
+        `${HISTORY_NOT_ON} Your inbox starts from now, and new messages land ` +
+        "in your triage queue as they arrive."
       );
     default:
       return (
@@ -53,6 +58,7 @@ type HistoryFields = Pick<
   | "history_sync_error"
   | "history_import_progress"
   | "history_sync_deadline"
+  | "history_sync_available"
 >;
 
 /** True when Meta's 24-hour window has closed, or when no deadline is
@@ -76,6 +82,11 @@ const WINDOW_PASSED =
 export function accountHistoryLine(a: HistoryFields, now: Date): HistoryLine | null {
   const state = a.history_sync_state ?? null;
   if (state === null) return null;
+  // With the import off on the server, a start answers 400 and a reconnect
+  // imports nothing. A field that is missing reads as off (P2-1).
+  if ((state === "pending" || state === "failed") && a.history_sync_available !== true) {
+    return { text: HISTORY_NOT_ON, tone: "muted", canStart: false };
+  }
   const passed = historyDeadlinePassed(a.history_sync_deadline, now);
   switch (state) {
     case "complete":

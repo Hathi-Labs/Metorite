@@ -102,7 +102,8 @@ async def test_persist_sync_result_fans_out_contacts_chats_messages() -> None:
     )
     counts = await persist.persist_sync_result(db, "acc", result)
     # Both messages, one shared chat, and no history (WA-C3 P8).
-    assert counts == {"messages": 2, "chats": 1, "history_messages": 0}
+    assert counts == {"messages": 2, "chats": 1, "history_messages": 0,
+                      "history_complete": 0}
     sql = db.statements()
     assert "INSERT INTO wa_contacts" in sql
     assert "INSERT INTO wa_chats" in sql

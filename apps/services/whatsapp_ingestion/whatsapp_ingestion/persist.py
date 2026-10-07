@@ -280,7 +280,15 @@ _MESSAGE_INSERT = f"""INSERT INTO wa_messages
     -- categories guard.
     body_text = COALESCE(NULLIF(EXCLUDED.body_text, ''), wa_messages.body_text),
     kind = EXCLUDED.kind,
-    sender = EXCLUDED.sender,
+    -- A history copy of a message that already came live carries no profile
+    -- name, so it must not wipe the live row's sender. An incoming sender
+    -- with no name keeps the stored one too (WA-C3 fix round).
+    sender = CASE
+        WHEN CAST(:from_history AS boolean)
+             OR COALESCE(EXCLUDED.sender->>'name', '') = ''
+        THEN wa_messages.sender
+        ELSE EXCLUDED.sender
+    END,
     -- A status only moves forward (WA-C3 P6).
     delivery_status = CASE
         WHEN EXCLUDED.delivery_status IS NOT NULL
@@ -420,6 +428,8 @@ _PROGRESS_UPDATE = """UPDATE wa_accounts SET
   WHERE id = :account_id
 """
 
+_HISTORY_STATE = """SELECT history_sync_state FROM wa_accounts WHERE id = :account_id"""
+
 _DECLINE_UPDATE = """UPDATE wa_accounts
   SET history_sync_state = 'declined', history_sync_error = :error,
       updated_at = now()
@@ -444,10 +454,13 @@ async def persist_sync_result(
     """Persist a parsed webhook/import batch: contacts, then each message's chat
     then the message itself, then statuses and the history progress.
 
-    Returns ``{"messages": n, "chats": m, "history_messages": h}``. A history
-    row counts in ``history_messages`` and never in ``messages``, so a batch of
-    history alone does not fire ``on_new_messages`` (WA-C3 P8). An echo is
-    live, so it counts in ``messages``.
+    Returns ``{"messages": n, "chats": m, "history_messages": h,
+    "history_complete": c}``. A history row counts in ``history_messages`` and
+    never in ``messages``, so a batch of history alone does not fire
+    ``on_new_messages`` (WA-C3 P8). An echo is live, so it counts in
+    ``messages``. ``history_complete`` is 1 when the account's import reads
+    ``complete`` after a batch that carried history, else 0. The webhook runs
+    the chat sweep for a history-only batch only then (WA-C3 fix round P2-2).
 
     The caller owns the transaction, so every write here lands in the one
     bound session. ``direction`` comes from each message (the parser sets
@@ -484,5 +497,13 @@ async def persist_sync_result(
             "account_id": account_id, "error": HISTORY_DECLINED_ERROR,
         })
 
+    history_complete = 0
+    if history_messages or result.history_progress:
+        row = (await db.execute(
+            text(_HISTORY_STATE), {"account_id": account_id})).fetchone()
+        if getattr(row, "history_sync_state", None) == "complete":
+            history_complete = 1
+
     return {"messages": messages, "chats": len(chats_seen),
-            "history_messages": history_messages}
+            "history_messages": history_messages,
+            "history_complete": history_complete}

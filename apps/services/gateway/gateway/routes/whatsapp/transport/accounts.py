@@ -87,6 +87,8 @@ def history_sync_deadline(created_at: Any) -> datetime | None:
 
 
 def _account_model(row: Any) -> WhatsAppAccountModel:
+    from gateway.routes.whatsapp.transport.connect import history_sync_enabled
+
     state = getattr(row, "history_sync_state", None)
     deadline = history_sync_deadline(getattr(row, "created_at", None))
     progress = getattr(row, "history_import_progress", None)
@@ -109,6 +111,7 @@ def _account_model(row: Any) -> WhatsAppAccountModel:
         history_import_progress=int(progress) if progress is not None else None,
         history_sync_deadline=(
             deadline.isoformat() if state is not None and deadline else None),
+        history_sync_available=history_sync_enabled(),
     )
 
 

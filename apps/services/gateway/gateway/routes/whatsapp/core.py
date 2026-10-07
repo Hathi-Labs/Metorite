@@ -106,6 +106,10 @@ class WhatsAppAccountModel(BaseModel):
     history_sync_error: str | None = None
     history_import_progress: int | None = None
     history_sync_deadline: str | None = None
+    # The value of `WHATSAPP_HISTORY_SYNC` on this server (fix round P2-1).
+    # While it is false, the UI offers no start and no reconnect advice,
+    # because the retry route answers 400 and a reconnect imports nothing.
+    history_sync_available: bool = False
 
 
 class WhatsAppChatModel(BaseModel):
