@@ -909,3 +909,12 @@ class TestTheTargetRouteOnARealDatabase:
         with pytest.raises(HTTPException) as exc:
             await t.call(t.box_a, SENDER, member="mallory@em-t13b.test")
         assert exc.value.status_code == 404
+
+
+def test_a_subject_with_a_line_break_is_refused() -> None:
+    """A CR or LF in a mailto subject could start a header (review round 2)."""
+    fn = agents._mailto_text_problem
+    assert fn("subject", "unsub\r\nBcc: attacker@evil.com") == (
+        "has a subject with a line break")
+    assert fn("subject", "unsub\nBcc: x@y.z") == "has a subject with a line break"
+    assert fn("subject", "unsubscribe") == ""

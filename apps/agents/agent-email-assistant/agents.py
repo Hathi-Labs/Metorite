@@ -2409,6 +2409,10 @@ def _mailto_text_problem(field: str, value: Any) -> str:
         return f"has a {field} longer than {_MAILTO_TEXT_LIMIT} characters"
     if _URL_IN_TEXT.search(value):
         return f"has a {field} with a URL"
+    # A line break in a subject reads as a space on the card, but it can
+    # start a new mail header (EM-T13b-1 review round 2).
+    if field == "subject" and any(ch in value for ch in "\r\n"):
+        return "has a subject with a line break"
     if any(not ch.isspace() and unicodedata.category(ch)[0] == "C" for ch in value):
         return f"has a {field} with a hidden character"
     return ""
