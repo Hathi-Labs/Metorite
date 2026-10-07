@@ -181,11 +181,12 @@ class TestTheFlag:
             _ROOT / "apps/services/gateway/gateway/routes/email/automation/"
                     "insights_store.py",
         }
-        # A read of either setting: the attribute, or its name as a string.
-        # The table name inside SQL text matches neither.
+        # A read of either setting: the attribute, its env name, or a
+        # getattr by name. The table name, in SQL text or in a list of
+        # tables such as the member purge map, matches none of these.
         reads = re.compile(
             r"email_insights_orgs|[\"']EMAIL_INSIGHTS(_ORGS)?[\"']"
-            r"|\.email_insights\b|[\"']email_insights[\"']")
+            r"|\.email_insights\b|getattr\([^)]*[\"']email_insights[\"']")
         readers = set()
         for root in (_ROOT / "apps", _ROOT / "packages"):
             for path in root.rglob("*.py"):
