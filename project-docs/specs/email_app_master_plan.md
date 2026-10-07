@@ -13651,12 +13651,22 @@ writer behaves as today.
    - The guard compares the same expressions (`persist.py:146-155`). So a re-sync of a cleared
      message writes no row. This is the rule that stops the sync from fighting the clear job.
    - The INSERT and the inbound path take the same params, so a new cold message stores no HTML.
-2. **The body backfill** (`body_backfill.py:152-155`). A cold message gets its text, and
-   `body_html = None`.
+   - *Fix round 1 (2026-10-08).* A text made from the HTML never replaces a stored text that is
+     not empty. `_message_params` binds `body_text_derived`, and the SET and the guard read it. A
+     text that the provider sent replaces the stored text, as before.
+2. **The body backfill** (`body_backfill.py:152-155`). A cold message gets its text, and keeps
+   the HTML that the row holds. A row with no HTML keeps NULL. *As built, 2026-10-08.* This text
+   said `body_html = None`. The code keeps a stored value, which is the safer rule, because EM-S4
+   owns each clear.
 3. **The open** (`transport/messages.py:698-712`). A cold message stores its text only. The open
    still returns the HTML that it fetched, and writes it to the cache of §14.4.2.
 4. **`hydrate_message_body`** (`core.py:410-423`). A cold message stores its text only.
-5. **The meter.** No change. `storage.py:98` measures what is stored, so it falls after a clear.
+5. **The text of an HTML-only message** *(fix round 1, 2026-10-08)*. The open and
+   `hydrate_message_body` fill an empty text from the HTML, with `body_backfill._html_to_text`, as
+   the upsert does. Without the fill, a cold Outlook message stores no body. Then each open fetches
+   it again, and the AI reads no text. `_html_to_text` stops at 2 MiB of input and runs in linear
+   time, because the sync calls it inside its transaction.
+6. **The meter.** No change. `storage.py:98` measures what is stored, so it falls after a clear.
 
 #### 14.4.4 The clear job
 
@@ -14116,7 +14126,11 @@ accent (CLAUDE.md §4).
 **Acceptance.**
 
 - With `hot_only()` true, an INSERT of a cold message stores `body_html` NULL.
-- A cold HTML-only message stores a `body_text` made from its HTML.
+- A cold HTML-only message stores a `body_text` made from its HTML. This applies to the upsert, the
+  open and `hydrate_message_body` (fix round 1). After one open or one hydrate, a second one makes
+  no provider call and writes no row.
+- A text made from the HTML never replaces a stored text that is not empty, and that re-sync
+  writes no row (fix round 1).
 - A re-sync of a cleared cold message that carries HTML writes no row: `xmin` does not move.
 - A re-sync of a cold row that still holds HTML keeps it, and writes no row.
 - A hot message stores its HTML as today.
@@ -14132,7 +14146,9 @@ accent (CLAUDE.md §4).
   the HTML.
 
 **Mutations.** S3-M1 binds the HTML of a cold message, and the `xmin` fence fails. S3-M2 skips the
-text fill, and the HTML-only fence fails.
+text fill, and the HTML-only fence fails. Fix round 1 adds one mutation for each fill of the open
+and the hydrate, one that lets a made text replace a stored text, and one that puts back the old
+`<[^>]+>` pass.
 
 **Verify with.**
 

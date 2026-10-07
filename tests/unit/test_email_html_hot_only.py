@@ -134,6 +134,7 @@ class TestTheUpsertParams:
         assert p["body_html"] is None
         assert p["body_text"] == body_backfill._html_to_text(HTML)
         assert "Hello there" in p["body_text"]
+        assert p["body_text_derived"] is True
 
     def test_a_blank_text_counts_as_empty(self) -> None:
         p = persist._message_params(
@@ -144,6 +145,7 @@ class TestTheUpsertParams:
         p = persist._message_params(
             "acc", _Msg(received_at=COLD, body_text="plain part", body_html=HTML))
         assert p["body_text"] == "plain part"
+        assert p["body_text_derived"] is False, "a provider text replaces, as before"
 
     def test_a_hot_message_binds_its_html(self) -> None:
         p = persist._message_params("acc", _Msg(received_at=HOT, body_html=HTML))
@@ -194,6 +196,84 @@ class TestTheHelpers:
         assert term.startswith("body_html = CASE WHEN received_at < :html_cold_before")
         assert "THEN NULLIF(body_html, '')" in term
         assert term.endswith("ELSE :bh END")
+
+
+# ── 2b. The shared text maker (fix round 1, P2) ─────────────────────────────
+
+
+def _old_html_to_text(s: str) -> str:
+    """The function before fix round 1, kept as the reference of its output."""
+    import html as _html
+
+    s = re.sub(r"(?i)<\s*br\s*/?>", "\n", s or "")
+    s = re.sub(r"(?i)</\s*(p|div|tr|li|h[1-6]|table)\s*>", "\n", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = _html.unescape(s)
+    s = re.sub(r"[ \t]+\n", "\n", s)
+    return re.sub(r"\n{3,}", "\n\n", s).strip()
+
+
+_PIECES = ["<", ">", " ", "\t", "\n", "\r", "\xa0", "a", "br", "<br>", "<BR />",
+           "< br/>", "</p>", "</ div >", "</H2>", "&amp;", "&nbsp;", "/", "<>",
+           "<b>", "</table>", "<a href='x'>", "tr", "</li"]
+
+
+class TestTheHtmlToText:
+    """``body_backfill._html_to_text`` runs in linear time, and its output did
+    not change. The sync calls it inside its transaction."""
+
+    @pytest.mark.parametrize("case", [
+        HTML,
+        "<p>One</p><p>Two</p><br/>Three",
+        "Line one   \n\n\n\n<div>Line two\t</div>",
+        "<table><tr><td>a</td></tr></table>&amp; more &nbsp;x",
+        "a < b and c > d",
+        "<<a>> <> < unclosed",
+        "",
+    ])
+    def test_a_known_case_gives_the_same_text(self, case: str) -> None:
+        assert body_backfill._html_to_text(case) == _old_html_to_text(case)
+
+    def test_random_input_gives_the_same_text(self) -> None:
+        import random
+
+        rnd = random.Random(7)
+        for _ in range(20_000):
+            s = "".join(rnd.choice(_PIECES) for _ in range(rnd.randint(0, 24)))
+            assert body_backfill._html_to_text(s) == _old_html_to_text(s), repr(s)
+
+    @pytest.mark.parametrize("hostile", [
+        " " * 1_000_000 + "x",
+        "\t " * 500_000 + "<p>",
+        "<" * 1_000_000,
+        "<a " * 333_334,
+        "< " * 500_000,
+        "<br" + " " * 1_000_000,
+        "</" + " " * 1_000_000,
+    ], ids=["spaces", "tabs", "lt-run", "unclosed-tags", "lt-space", "br-space",
+            "close-space"])
+    def test_one_megabyte_of_hostile_input_takes_under_half_a_second(
+        self, hostile: str,
+    ) -> None:
+        import time
+
+        start = time.perf_counter()
+        body_backfill._html_to_text(hostile)
+        assert time.perf_counter() - start < 0.5
+
+    def test_the_input_stops_at_its_cap(self) -> None:
+        cap = body_backfill.HTML_TEXT_INPUT_CAP
+        text_out = body_backfill._html_to_text("a" * cap + "TAIL")
+        assert len(text_out) == cap and "TAIL" not in text_out
+
+    def test_each_writer_fills_the_text_with_the_same_helper(self) -> None:
+        import inspect
+
+        for fn in (persist._bodies, m.get_message, core.hydrate_message_body):
+            assert "_html_to_text(" in inspect.getsource(fn), fn.__qualname__
+        assert persist._html_to_text is body_backfill._html_to_text
+        assert m._html_to_text is body_backfill._html_to_text
+        assert core._html_to_text is body_backfill._html_to_text
 
 
 # ── 3. The open, hermetic ───────────────────────────────────────────────────
@@ -717,6 +797,68 @@ class TestTheWritersOnARealDatabase:
                             received_at=COLD)
         await self._hydrate(world, mid)
         assert _bodies(world.admin, mid) == ("the text", HTML)
+
+    # Fix round 1, P1: an HTML-only mail, the usual Outlook case. The provider
+    # sends HTML and no text (`world.state["text"]` is "").
+
+    async def test_an_html_only_open_stores_a_text_and_the_next_open_is_free(
+        self, world,
+    ) -> None:
+        mid = _seed_message(world.admin, org=world.org, account=world.account,
+                            received_at=COLD)
+        user = _user(world.owner, world.org)
+        async with tenant_engine_scope(world.dsn):
+            with _bound(world.org):
+                first = await m.get_message(mid, user=user)
+        body_text, body_html = _bodies(world.admin, mid)
+        assert body_html is None
+        assert body_text == body_backfill._html_to_text(HTML)
+        assert "Hello there" in body_text
+        assert first.body_html == HTML, "the open still answers the HTML"
+        assert world.state["calls"] == 1
+        before = _xmin(world.admin, mid)
+
+        async with tenant_engine_scope(world.dsn):
+            with _bound(world.org):
+                again = await m.get_message(mid, user=user)
+        assert world.state["calls"] == 1, "the second open called the provider"
+        assert _xmin(world.admin, mid) == before, "the second open wrote the row"
+        assert again.body_text == body_text
+
+    async def test_an_html_only_hydrate_stores_a_text_and_the_next_call_is_free(
+        self, world,
+    ) -> None:
+        mid = _seed_message(world.admin, org=world.org, account=world.account,
+                            received_at=COLD)
+        got = await self._hydrate(world, mid)
+        body_text, body_html = _bodies(world.admin, mid)
+        assert body_html is None
+        assert "Hello there" in body_text
+        assert got == body_text, "the drafter reads the text"
+        assert world.state["calls"] == 1
+        before = _xmin(world.admin, mid)
+
+        assert await self._hydrate(world, mid) == body_text
+        assert world.state["calls"] == 1, "the second call reached the provider"
+        assert _xmin(world.admin, mid) == before, "the second call wrote the row"
+
+    async def test_an_html_only_hot_open_stores_the_html_and_no_made_text(
+        self, world,
+    ) -> None:
+        """The fill runs only when the HTML goes. A hot mail keeps today's row."""
+        mid = _seed_message(world.admin, org=world.org, account=world.account,
+                            received_at=HOT)
+        async with tenant_engine_scope(world.dsn):
+            with _bound(world.org):
+                await m.get_message(mid, user=_user(world.owner, world.org))
+        assert _bodies(world.admin, mid) == ("", HTML)
+
+
+def _xmin(admin, message_id: str) -> str:
+    with admin.connect() as c:
+        return c.execute(text(
+            "SELECT xmin::text FROM email_messages WHERE id = CAST(:m AS uuid)"),
+            {"m": message_id}).scalar_one()
 
 
 def test_replace_keeps_the_message_shape() -> None:

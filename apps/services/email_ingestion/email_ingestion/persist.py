@@ -110,7 +110,14 @@ _SYNCED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("cc_addresses", "EXCLUDED.cc_addresses"),
     ("bcc_addresses", "EXCLUDED.bcc_addresses"),
     ("subject", "EXCLUDED.subject"),
-    ("body_text", "COALESCE(NULLIF(EXCLUDED.body_text, ''), email_messages.body_text)"),
+    # A text that `_bodies` made from the HTML (EM-S3) never replaces a stored
+    # text that is not empty. A text that the provider sent replaces it, as
+    # before. The guard compares this same CASE, so it sees no change.
+    ("body_text", "CASE WHEN :body_text_derived "
+                  "THEN COALESCE(NULLIF(email_messages.body_text, ''), "
+                  "NULLIF(EXCLUDED.body_text, ''), email_messages.body_text) "
+                  "ELSE COALESCE(NULLIF(EXCLUDED.body_text, ''), "
+                  "email_messages.body_text) END"),
     ("body_html", "COALESCE(NULLIF(EXCLUDED.body_html, ''), email_messages.body_html)"),
     ("snippet", "COALESCE(NULLIF(EXCLUDED.snippet, ''), email_messages.snippet)"),
     ("has_attachments", "EXCLUDED.has_attachments"),
@@ -193,8 +200,8 @@ def _canon_categories(cats: Any) -> list:
     ]
 
 
-def _bodies(msg: Any) -> tuple[str | None, str | None]:
-    """``(body_text, body_html)`` to bind, each cut to its cap.
+def _bodies(msg: Any) -> tuple[str | None, str | None, bool]:
+    """``(body_text, body_html, text_derived)`` to bind, each body cut to its cap.
 
     🔴 **No cold HTML (WS-17 EM-S3, §14.4.3 item 1).** When
     ``html_tier.drops_html`` is true for the message, the HTML binds as
@@ -202,23 +209,28 @@ def _bodies(msg: Any) -> tuple[str | None, str | None]:
     through its ``COALESCE``, so a re-sync never writes HTML back, and the
     guard of #709 sees no change. This never clears stored HTML. EM-S4 does.
     Before the HTML goes, an empty text is filled from it, so the AI and
-    search still read the body (D-EM-48).
+    search still read the body (D-EM-48). ``text_derived`` is then true, and
+    the SET keeps a stored text that is not empty (fix round 1).
     """
     body_text = truncate_body(msg.body_text, MAX_BODY_TEXT_BYTES)
     body_html = truncate_body(msg.body_html, MAX_BODY_HTML_BYTES)
+    derived = False
     if body_html and html_tier.drops_html(msg.received_at):
         if not (body_text or "").strip():
             body_text = truncate_body(_html_to_text(msg.body_html), MAX_BODY_TEXT_BYTES)
+            derived = True
         body_html = None
-    return body_text, body_html
+    return body_text, body_html, derived
 
 
 def _message_params(account_id: str, msg: Any) -> dict[str, Any]:
     """Bind params for one message row. Attribute access is duck-typed so both the
     provider :class:`EmailMessage` dataclass and the gateway's message model work;
     ``getattr`` guards the fields older/inbound messages may omit."""
-    body_text, body_html = _bodies(msg)
+    body_text, body_html, text_derived = _bodies(msg)
     return {
+        # Bound for the insert-only path too, as `categories_authoritative` is.
+        "body_text_derived": text_derived,
         "id": str(uuid4()),
         "account_id": account_id,
         "provider_id": msg.provider_message_id,

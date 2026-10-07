@@ -395,6 +395,57 @@ class TestColdHtml:
         assert second.is_read is True
         assert _html_of(private_db, msg.provider_message_id) is None
 
+    async def test_a_cold_html_only_message_resynced_twice_writes_nothing(
+        self, private_db, monkeypatch,
+    ) -> None:
+        """Fix round 1, review note. The text made from the HTML must be the
+        same on each sync, or each sync writes the row again."""
+        msg = _Msg(provider_message_id=_pmid(), received_at=_COLD,
+                   body_text="", body_html="<p>only <b>html</b></p>")
+        _hot_only(monkeypatch, True)
+        await _upsert(private_db, msg)
+        first = _row(private_db, msg.provider_message_id)
+        assert first.body_text == "only html"
+
+        await _upsert(private_db, msg)
+        await _upsert(private_db, msg)
+        second = _row(private_db, msg.provider_message_id)
+
+        assert second.xmin == first.xmin
+        assert _html_of(private_db, msg.provider_message_id) is None
+
+    async def test_a_made_text_never_replaces_a_stored_text(
+        self, private_db, monkeypatch,
+    ) -> None:
+        """Fix round 1, item 3. The row holds a text. An HTML-only re-sync
+        makes another text from the HTML, and the SET keeps the stored one."""
+        msg = _Msg(provider_message_id=_pmid(), received_at=_COLD,
+                   body_text="the text the provider sent")
+        _hot_only(monkeypatch, True)
+        await _upsert(private_db, msg)
+        first = _row(private_db, msg.provider_message_id)
+
+        await _upsert(private_db, replace(
+            msg, body_text="", body_html="<p>a different body</p>"))
+        second = _row(private_db, msg.provider_message_id)
+
+        assert second.xmin == first.xmin
+        assert second.body_text == "the text the provider sent"
+
+    async def test_a_provider_text_still_replaces_a_stored_text(
+        self, private_db, monkeypatch,
+    ) -> None:
+        msg = _Msg(provider_message_id=_pmid(), received_at=_COLD, body_text="old")
+        _hot_only(monkeypatch, True)
+        await _upsert(private_db, msg)
+        first = _row(private_db, msg.provider_message_id)
+
+        await _upsert(private_db, replace(msg, body_text="new"))
+        second = _row(private_db, msg.provider_message_id)
+
+        assert second.xmin != first.xmin
+        assert second.body_text == "new"
+
     async def test_with_the_flag_off_a_cleared_row_gets_its_html_back(
         self, private_db, monkeypatch,
     ) -> None:

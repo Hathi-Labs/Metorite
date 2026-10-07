@@ -19,6 +19,7 @@ from uuid import UUID
 from acb_common import get_logger
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
+from email_ingestion.body_backfill import _html_to_text
 from fastapi import APIRouter, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
@@ -393,7 +394,8 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
     """
     row = (await db.execute(
         text(
-            """SELECT em.body_text, em.body_html, em.snippet, ea.stored_bytes
+            """SELECT em.body_text, em.body_html, em.snippet, em.received_at,
+                      ea.stored_bytes
                  FROM email_messages em
                  LEFT JOIN email_accounts ea ON ea.id = em.account_id
                 WHERE em.id = :id"""
@@ -422,7 +424,13 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
             )
             # 🔴 No cold HTML (WS-17 EM-S3, §14.4.3 item 4). With
             # `html_tier.hot_only()` true, a cold row stores its text only,
-            # and keeps the HTML that it holds.
+            # and keeps the HTML that it holds. An HTML-only mail gets a text
+            # made from its HTML first, as the upsert does, so the drafter
+            # reads a body and the next call fetches nothing (fix round 1).
+            if (full.body_html and not body_text.strip()
+                    and html_tier.drops_html(getattr(row, "received_at", None))):
+                body_text = _truncate_body(
+                    _html_to_text(full.body_html), MAX_BODY_TEXT_BYTES)
             if store_body:
                 await db.execute(
                     text(

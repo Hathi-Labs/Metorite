@@ -46,7 +46,42 @@ from email_ingestion import html_tier
 
 logger = logging.getLogger(__name__)
 
-_TAG_RE = re.compile(r"<[^>]+>")
+#: The most characters of HTML that :func:`_html_to_text` reads. The text cap
+#: is 500 KB, so 2 MiB of HTML is enough, and it bounds the time of each call
+#: (WS-17 EM-S3 fix round 1).
+HTML_TEXT_INPUT_CAP = 2 * 1024 * 1024
+
+# Possessive quantifiers (`*+`) never backtrack. The whitespace runs end at a
+# letter, a `/` or a `>`, which are not whitespace, so each one matches the
+# same text as the greedy form did.
+_BR_RE = re.compile(r"(?i)<\s*+br\s*+/?>")
+_BLOCK_END_RE = re.compile(r"(?i)</\s*+(p|div|tr|li|h[1-6]|table)\s*+>")
+
+
+def _strip_tags(s: str) -> str:
+    """Remove each ``<...>`` with one or more characters inside.
+
+    It removes the same text as ``re.sub(r"<[^>]+>", "", s)``, in one pass.
+    The regex tried each ``<`` to the end of the text when no ``>`` followed,
+    so a run of ``<`` cost quadratic time.
+    """
+    out: list[str] = []
+    pos = 0
+    while True:
+        start = s.find("<", pos)
+        if start < 0:
+            break
+        end = s.find(">", start + 1)
+        if end < 0:
+            break  # no ``>`` after this ``<``, so no later ``<`` closes either
+        if end == start + 1:  # ``<>`` holds no character, so it stays
+            out.append(s[pos:end])
+            pos = end
+            continue
+        out.append(s[pos:start])
+        pos = end + 1
+    out.append(s[pos:])
+    return "".join(out)
 
 
 def _html_to_text(s: str) -> str:
@@ -54,12 +89,21 @@ def _html_to_text(s: str) -> str:
     unescape entities). Mirrors gateway.routes.email.signature.html_to_text;
     inlined here so the ingestion package needs no gateway import. Used to
     populate body_text from body_html when a provider returns HTML only — so
-    full-text search (which indexes body_text) can match it."""
-    s = re.sub(r"(?i)<\s*br\s*/?>", "\n", s or "")
-    s = re.sub(r"(?i)</\s*(p|div|tr|li|h[1-6]|table)\s*>", "\n", s)
-    s = _TAG_RE.sub("", s)
+    full-text search (which indexes body_text) can match it.
+
+    ⚠️ **Linear time (WS-17 EM-S3 fix round 1).** The sync calls it inside
+    its transaction. The input stops at :data:`HTML_TEXT_INPUT_CAP`, and no
+    step backtracks. The old patterns ``<[^>]+>`` and ``[ \\t]+\\n`` took
+    31 s on 80 KB of hostile input. Fence:
+    ``tests/unit/test_email_html_hot_only.py::TestTheHtmlToText``."""
+    s = (s or "")[:HTML_TEXT_INPUT_CAP]
+    s = _BR_RE.sub("\n", s)
+    s = _BLOCK_END_RE.sub("\n", s)
+    s = _strip_tags(s)
     s = _html.unescape(s)
-    s = re.sub(r"[ \t]+\n", "\n", s)
+    # Remove the spaces and tabs at the end of each line, as `[ \t]+\n` did.
+    # The last line keeps none either, and the strip below removes them anyway.
+    s = "\n".join(line.rstrip(" \t") for line in s.split("\n"))
     return re.sub(r"\n{3,}", "\n\n", s).strip()
 
 # How many bodies to hydrate per sync tick. Small enough that the extra

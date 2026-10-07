@@ -11,6 +11,7 @@ from acb_common import db_busy
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
+from email_ingestion.body_backfill import _html_to_text
 from email_ingestion.providers.base import ProviderRateLimited, local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.core import (
@@ -719,6 +720,13 @@ async def get_message(
                     # `html_tier.hot_only()` true, a cold row stores its text
                     # only. The answer below still carries the HTML, and the
                     # cache of the HTML route keeps it for the next open.
+                    # An HTML-only mail gets a text made from its HTML first,
+                    # as the upsert does. Else the row stays empty, and each
+                    # open fetches it again (fix round 1).
+                    cold = html_tier.drops_html(row.received_at)
+                    if cold and full.body_html and not body_text.strip():
+                        body_text = _truncate_body(
+                            _html_to_text(full.body_html), MAX_BODY_TEXT_BYTES)
                     if store_body:
                         await db.execute(
                             text(
@@ -738,7 +746,7 @@ async def get_message(
                     else:
                         _log.info("get_message.body_not_stored_at_limit",
                                   message_id=message_id)
-                    if html_tier.drops_html(row.received_at):
+                    if cold:
                         await _remember_html(user.organization_id, row.id, body_html)
                     # Persist attachment metadata fetched with the full message.
                     for att in full.attachments:
