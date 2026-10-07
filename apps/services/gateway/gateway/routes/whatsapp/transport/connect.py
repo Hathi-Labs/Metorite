@@ -33,24 +33,57 @@ _DEFAULT_GRAPH_VERSION = "v21.0"
 _TIMEOUT = httpx.Timeout(30.0)
 
 
+class MetaAnswerError(RuntimeError):
+    """A Meta answer that this module could not use. Its text is a fixed
+    sentence written here, so it is safe to show and to log."""
+
+
+def _meta_error(exc: Exception) -> dict[str, Any]:
+    """Meta's ``error`` object of a failed Graph call, or an empty dict."""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return {}
+    try:
+        body = resp.json()
+    except Exception:  # non-JSON error body
+        return {}
+    err = body.get("error") if isinstance(body, dict) else None
+    return err if isinstance(err, dict) else {}
+
+
 def friendly_meta_error(exc: Exception) -> str:
     """Extract Meta's Graph error message from an httpx failure, or a short
-    fallback. Pure/testable — the wizard shows this verbatim."""
+    fallback. Pure/testable — the wizard shows this verbatim.
+
+    Never ``str(exc)`` (WS-20 WA-C2 review P1). The text of an httpx error
+    holds the request URL, and a URL can hold a secret. So an error with no
+    response gets a fixed sentence."""
+    err = _meta_error(exc)
+    if err.get("message"):
+        code = err.get("code")
+        msg = str(err["message"])
+        return f"{msg} (Meta code {code})" if code else msg
     resp = getattr(exc, "response", None)
-    if resp is not None:
-        try:
-            body = resp.json()
-            err = body.get("error") if isinstance(body, dict) else None
-            if isinstance(err, dict) and err.get("message"):
-                code = err.get("code")
-                msg = str(err["message"])
-                return f"{msg} (Meta code {code})" if code else msg
-        except Exception:  # non-JSON error body
-            pass
-        status = getattr(resp, "status_code", None)
-        if status:
-            return f"Meta returned HTTP {status}."
-    return str(exc)[:200] or "Could not reach Meta."
+    status = getattr(resp, "status_code", None) if resp is not None else None
+    if status:
+        return f"Meta returned HTTP {status}."
+    if isinstance(exc, MetaAnswerError):
+        return str(exc)
+    return "Could not reach Meta."
+
+
+def meta_error_fields(exc: Exception) -> dict[str, Any]:
+    """The fields that a log line may carry for a failed Graph call: the
+    error class, the HTTP status and Meta's ``code`` and ``type``. Never the
+    exception text, which can hold a URL with a secret in it (WA-C2 P1)."""
+    resp = getattr(exc, "response", None)
+    err = _meta_error(exc)
+    return {
+        "error_class": type(exc).__name__,
+        "status": getattr(resp, "status_code", None) if resp is not None else None,
+        "meta_code": err.get("code"),
+        "meta_type": err.get("type"),
+    }
 
 
 class VerifyRequest(BaseModel):
@@ -84,9 +117,14 @@ async def verify_account(
         creds["graph_version"] = req.graph_version.strip()
     try:
         provider = _instantiate_provider("cloud_api", creds)
+    except ValueError:
+        return VerifyResponse(
+            ok=False,
+            error="Phone number ID must be the numeric id that Meta shows.")
+    try:
         profile = await provider.get_phone_number_profile()
     except Exception as exc:
-        _log.info("whatsapp.verify.failed", error=str(exc)[:200])
+        _log.info("whatsapp.verify.failed", **meta_error_fields(exc))
         return VerifyResponse(ok=False, error=friendly_meta_error(exc))
     return VerifyResponse(
         ok=True,
@@ -143,18 +181,22 @@ async def exchange_code_for_token(
 ) -> str:
     """Exchange the Embedded Signup authorization code for a business access
     token (server-side, so the App Secret never touches the browser). Raises on a
-    Meta error or a missing token."""
+    Meta error or a missing token.
+
+    A POST with a form body, never query parameters (WS-20 WA-C2 review P1).
+    A URL goes into the httpx request log and into the text of an httpx
+    error, so the App Secret and the code must never be in one."""
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        resp = await client.get(
+        resp = await client.post(
             f"{_GRAPH_BASE}/{graph_version}/oauth/access_token",
-            params={"client_id": app_id, "client_secret": app_secret,
-                    "code": code},
+            data={"client_id": app_id, "client_secret": app_secret,
+                  "code": code},
         )
         resp.raise_for_status()
         data = resp.json()
     token = data.get("access_token") if isinstance(data, dict) else None
     if not token:
-        raise RuntimeError(f"no access_token in exchange response: {data!r}")
+        raise MetaAnswerError("Meta returned no access token for this code.")
     return str(token)
 
 
@@ -171,9 +213,33 @@ async def subscribe_app_to_waba(
         resp.raise_for_status()
 
 
-#: The fields of a WABA's number list that the connect reads.
-_PHONE_NUMBER_FIELDS = (
+#: The fields of a WABA's number list that the connect always reads.
+_BASE_PHONE_NUMBER_FIELDS = (
     "id,display_phone_number,verified_name,quality_rating,platform_type")
+#: Plus ``is_on_biz_app``: true for a number that is also active on the
+#: WhatsApp Business app, which is coexistence (Meta, "Onboard WhatsApp
+#: Business app users"). It picks the number of a coexistence connect.
+_PHONE_NUMBER_FIELDS = f"{_BASE_PHONE_NUMBER_FIELDS},is_on_biz_app"
+#: Graph's code for an invalid parameter, such as a field the node lacks.
+_GRAPH_INVALID_PARAMETER = 100
+
+
+async def _read_phone_numbers(
+    waba_id: str, token: str, graph_version: str, fields: str,
+) -> list[dict[str, Any]]:
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.get(
+            f"{_GRAPH_BASE}/{graph_version}/{waba_id}/phone_numbers",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"fields": fields},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    rows = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise MetaAnswerError(
+            "Meta returned no phone number list for this WABA.")
+    return [r for r in rows if isinstance(r, dict)]
 
 
 async def list_waba_phone_numbers(
@@ -185,29 +251,41 @@ async def list_waba_phone_numbers(
     the ``waba_id`` (WS-20 WA-C2 P1). So the backend reads the number here.
     The caller must check that ``waba_id`` is digits first, because it goes
     into the URL path. Raises on a Meta error or on a body with no list.
+
+    If Meta refuses the read with code 100, the cause can be
+    ``is_on_biz_app`` on a Graph version without it. So the read runs once
+    more without that field (WA-C2 review P2). The rows then carry no flag.
     """
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        resp = await client.get(
-            f"{_GRAPH_BASE}/{graph_version}/{waba_id}/phone_numbers",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"fields": _PHONE_NUMBER_FIELDS},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    rows = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(rows, list):
-        raise RuntimeError("Meta returned no phone number list for this WABA.")
-    return [r for r in rows if isinstance(r, dict)]
+    try:
+        return await _read_phone_numbers(
+            waba_id, token, graph_version, _PHONE_NUMBER_FIELDS)
+    except Exception as exc:
+        if _meta_error(exc).get("code") != _GRAPH_INVALID_PARAMETER:
+            raise
+        _log.info("whatsapp.embedded.list_field_refused", **meta_error_fields(exc))
+    return await _read_phone_numbers(
+        waba_id, token, graph_version, _BASE_PHONE_NUMBER_FIELDS)
+
+
+#: The 400 of a coexistence connect whose WABA has several numbers, when Meta
+#: flags none or more than one of them as on the app. A retry reads the same
+#: list, so the text names the cause and does not ask for a new selection.
+COEXISTENCE_CANNOT_TELL = (
+    "This WhatsApp Business account has several numbers, and Metorite cannot "
+    "tell which one you linked from the app. Contact support.")
 
 
 def select_phone_number_id(
     numbers: list[dict[str, Any]], requested: str | None,
+    onboarding: str = "cloud",
 ) -> str:
     """Pick the number to connect from the WABA's list (WS-20 WA-C2 P1).
 
     The browser's ``requested`` id is a claim, and the list is the fact. So a
-    requested id must be in the list. With no requested id, the WABA must
-    hold exactly one number. Every other case answers 400 and names why.
+    requested id must be in the list. With no requested id, a WABA with one
+    number gives that number. For a coexistence connect with several
+    numbers, the one number with ``is_on_biz_app`` true is the pick (review
+    P2). Every other case answers 400 and names why.
     """
     ids = [str(n["id"]) for n in numbers if isinstance(n.get("id"), str | int)]
     if not ids:
@@ -220,6 +298,12 @@ def select_phone_number_id(
         raise HTTPException(
             status_code=400,
             detail="The selected number is not in this WhatsApp Business account.")
+    if len(ids) > 1 and onboarding == "coexistence":
+        on_app = [str(n["id"]) for n in numbers
+                  if str(n.get("id")) in ids and n.get("is_on_biz_app") is True]
+        if len(on_app) == 1:
+            return on_app[0]
+        raise HTTPException(status_code=400, detail=COEXISTENCE_CANNOT_TELL)
     if len(ids) > 1:
         raise HTTPException(
             status_code=400,
@@ -303,7 +387,7 @@ async def embedded_signup(
     try:
         token = await exchange_code_for_token(code, app_id, app_secret, gv)
     except Exception as exc:
-        _log.info("whatsapp.embedded.exchange_failed", error=str(exc)[:200])
+        _log.info("whatsapp.embedded.exchange_failed", **meta_error_fields(exc))
         raise HTTPException(status_code=400, detail=friendly_meta_error(exc)) \
             from exc
 
@@ -311,10 +395,10 @@ async def embedded_signup(
     try:
         numbers = await list_waba_phone_numbers(waba_id, token, gv)
     except Exception as exc:
-        _log.info("whatsapp.embedded.list_failed", error=str(exc)[:200])
+        _log.info("whatsapp.embedded.list_failed", **meta_error_fields(exc))
         raise HTTPException(status_code=400, detail=friendly_meta_error(exc)) \
             from exc
-    phone_number_id = select_phone_number_id(numbers, requested)
+    phone_number_id = select_phone_number_id(numbers, requested, req.onboarding)
 
     # 3. Meta confirms the token for this number: the digit check, the
     # server's version and the profile `id` check of the manual path.
@@ -326,7 +410,7 @@ async def embedded_signup(
         await subscribe_app_to_waba(waba_id, token, gv)
     except Exception as exc:
         _log.warning("whatsapp.embedded.subscribe_failed",
-                     waba_id=waba_id, error=str(exc)[:200])
+                     waba_id=waba_id, **meta_error_fields(exc))
         raise HTTPException(status_code=400, detail=friendly_meta_error(exc)) \
             from exc
 
