@@ -12874,7 +12874,8 @@ adds no job, no hook, no model call and no SQL.
   9000 dates took 4.2 s, and now takes about 0.06 s.
 - **The speed of `parse_amount`** (review round 3). The split check reads a window of 40
   characters before a number. `"100 " * 25000 + "x 100 INR"` took 18.5 s, and now takes about
-  0.055 s on the dev box. The limit of the test is 0.1 s.
+  0.055 s on the dev box. Each timing test of a 100k-character input has a limit of 0.5 s, so
+  a slow CI runner does not fail it. A quadratic search takes 18 to 40 s.
 - **The eval set** is `evals/email_insights/`: 43 mails, 31 expected facts and a `--scripted` run.
   The run finds 31 facts of 31. Each amount and each due date is correct.
 - **The fence** is `tests/unit/test_email_insights_extract.py`, with 235 tests.

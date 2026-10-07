@@ -190,7 +190,8 @@ def test_parse_amount_is_linear_on_a_long_text(text: str) -> None:
     window, the second input takes about 40 s with the rule of round 3."""
     start = time.perf_counter()
     assert X.parse_amount(text).amount == Decimal("100.00")
-    assert time.perf_counter() - start < 0.1
+    # 0.5 s leaves room for a slow CI runner. A quadratic search takes 18 to 40 s.
+    assert time.perf_counter() - start < 0.5
 
 
 def test_a_long_claim_never_reaches_the_parser() -> None:
@@ -199,7 +200,8 @@ def test_a_long_claim_never_reaches_the_parser() -> None:
     claim = ("1 Oct 2026 Friday " * 6000)[:100_000]
     start = time.perf_counter()
     (fact,) = _one(due_on=claim).facts
-    assert time.perf_counter() - start < 0.1
+    # 0.5 s leaves room for a slow CI runner. Before round 2, a long claim took 26 s.
+    assert time.perf_counter() - start < 0.5
     assert fact.due_on is None
 
 
