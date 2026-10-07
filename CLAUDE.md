@@ -351,7 +351,7 @@ Rules that make it work:
 
 ## 5. What not to do
 
-- **Do not re-litigate decisions.** **D1–D89** are taken *(this read "D1–D31" until 2026-08-26, "D1–D54" until 2026-08-31, and "D1–D69" until 2026-10-05)*. If one looks wrong, say so
+- **Do not re-litigate decisions.** **D1–D93** are taken *(this read "D1–D31" until 2026-08-26, "D1–D54" until 2026-08-31, "D1–D69" until 2026-10-05, and "D1–D89" until 2026-10-07)*. If one looks wrong, say so
   and stop — do not build against your own alternative.
 - **Do not refactor the tree to conform** to R6/R7/R8. Those bind *new and
   changed* work. Existing violations are findings for the board.
