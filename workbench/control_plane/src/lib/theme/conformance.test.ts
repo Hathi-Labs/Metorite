@@ -451,7 +451,8 @@ describe("no raw Tailwind palette colours", () => {
     // PriorityChip. 16 since H-193 took the amber out of the Weight toggle and
     // the schedule suggestion. What is left is the other toggles and delegate.
     "app/tasks/components/PriorityControls.tsx": 16,
-    "app/whatsapp/connect/page.tsx": 10,
+    // 8 since WS-20 WA-C2: the Embedded Signup error is `text-destructive`.
+    "app/whatsapp/connect/page.tsx": 8,
     "app/whatsapp/numbers/page.tsx": 4,
     "app/whatsapp/page.tsx": 4,
     "app/whatsapp/settings/categories/page.tsx": 2,

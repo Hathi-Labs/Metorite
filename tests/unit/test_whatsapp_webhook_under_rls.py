@@ -489,6 +489,49 @@ async def test_a_second_connect_from_another_org_answers_409(
     assert n == 1
 
 
+async def test_an_embedded_connect_row_reads_back_live_under_its_org(
+    granted, app_engine, monkeypatch,  # noqa: F811
+):
+    """WS-20 WA-C2 P3. The Embedded Signup path inserts ``sync_status='live'``.
+    The row reads back ``live`` for its own org under FORCE RLS, and another
+    org sees no row."""
+    from acb_common.db import tenant_session
+    from acb_llm import key_store
+    from gateway.routes.whatsapp.transport.accounts import persist_account
+
+    p = granted
+    pnid = str(uuid.uuid4().int)[:15]
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+
+    async with (
+        tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+        tenant_session(p.org_a) as db,
+    ):
+        row = await persist_account(
+            db, user_id="alice@wa-c2-a.test", phone_number="+910000000000",
+            phone_number_id=pnid, waba_id="102290129340398",
+            display_name="A", webhook_verify_token=None,
+            credentials={"access_token": "t", "onboarding": "coexistence"},
+            verified_profile={"id": pnid}, sync_status="live",
+        )
+    assert row.sync_status == "live"
+
+    def _status_as(org: str):
+        eng = create_engine(p.app_url, future=True)
+        try:
+            with eng.connect() as c, c.begin():
+                c.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                          {"o": org})
+                return c.execute(text(
+                    "SELECT sync_status FROM wa_accounts "
+                    "WHERE phone_number_id = :p"), {"p": pnid}).scalars().all()
+        finally:
+            eng.dispose()
+
+    assert _status_as(p.org_a) == ["live"]
+    assert _status_as(p.org_b) == []
+
+
 # ── The migration ───────────────────────────────────────────────────────────
 
 def test_the_precheck_refuses_a_duplicate_cloud_number(granted):

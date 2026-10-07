@@ -44,8 +44,13 @@ def test_non_json_error_falls_back_to_status() -> None:
     assert friendly_meta_error(exc) == "Meta returned HTTP 401."
 
 
-def test_no_response_falls_back_to_str() -> None:
-    assert "boom" in friendly_meta_error(RuntimeError("boom"))
+def test_no_response_never_echoes_the_exception_text() -> None:
+    """An httpx error text can hold the request URL, and a URL can hold a
+    secret (WA-C2 review P1). So a failure with no response gets a fixed
+    text, never ``str(exc)``."""
+    leak = RuntimeError("for url 'https://graph.facebook.com/x?client_secret=S3CR3T'")
+    assert friendly_meta_error(leak) == "Could not reach Meta."
+    assert "S3CR3T" not in friendly_meta_error(leak)
 
 
 # ── verify route ──────────────────────────────────────────────────────────────
@@ -147,12 +152,18 @@ async def test_embedded_signup_400_when_unconfigured(monkeypatch) -> None:
     monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
     try:
         await connect.embedded_signup(
-            connect.EmbeddedSignupRequest(code="c", phone_number_id="p"),
+            connect.EmbeddedSignupRequest(code="c", waba_id="1"),
             user=None)
         raise AssertionError("expected HTTPException")
     except HTTPException as exc:
         assert exc.status_code == 400
         assert "Embedded Signup" in exc.detail
+
+
+#: Meta's example ids from the Graph reference for a WABA's phone numbers.
+_ES_WABA = "102290129340398"
+_ES_PNID = "1906385232743451"
+_ES_PNID_2 = "1913623884432103"
 
 
 class _FakeDB:
@@ -166,10 +177,13 @@ class _FakeDB:
 
 
 async def test_embedded_signup_happy_path(monkeypatch) -> None:
+    """A plain FINISH: the browser sends the number, and the backend still
+    finds it in the WABA list before Meta confirms it (WA-C2 P1, P2)."""
     from types import SimpleNamespace
 
     monkeypatch.setenv("WHATSAPP_APP_ID", "app")
     monkeypatch.setenv("WHATSAPP_APP_SECRET", "secret")
+    monkeypatch.delenv("WHATSAPP_GRAPH_VERSION", raising=False)
 
     async def _exchange(code, app_id, app_secret, gv):
         return "TOKEN"
@@ -178,6 +192,10 @@ async def test_embedded_signup_happy_path(monkeypatch) -> None:
 
     async def _subscribe(waba_id, token, gv):
         subscribed_calls.append(waba_id)
+
+    async def _list(waba_id, token, gv):
+        return [{"id": _ES_PNID, "display_phone_number": "+91 98765 43210",
+                 "verified_name": "Fracktal Works"}]
 
     from contextlib import asynccontextmanager
 
@@ -196,7 +214,9 @@ async def test_embedded_signup_happy_path(monkeypatch) -> None:
         persisted.update(kw)
         return "ROW"
 
-    profile = {"display_phone_number": "+91 98765 43210",
+    # A node read on Graph always returns the node's `id`. The check of
+    # `verify_cloud_number` refuses a profile without it.
+    profile = {"id": _ES_PNID, "display_phone_number": "+91 98765 43210",
                "verified_name": "Fracktal Works"}
     meta_calls: list[dict] = []
 
@@ -206,13 +226,12 @@ async def test_embedded_signup_happy_path(monkeypatch) -> None:
 
     monkeypatch.setattr(connect, "exchange_code_for_token", _exchange)
     monkeypatch.setattr(connect, "subscribe_app_to_waba", _subscribe)
+    monkeypatch.setattr(connect, "list_waba_phone_numbers", _list)
     monkeypatch.setattr(connect, "_tenant_session", _tenant_session)
-    monkeypatch.setattr(connect, "_instantiate_provider", _provider)
-    # The Embedded Signup path verified the number in step 2. It must not
-    # call Meta a second time through the manual-route check.
+    # The number is checked once, through the one check of the manual route.
     monkeypatch.setattr(
         "gateway.routes.whatsapp.transport.accounts._instantiate_provider",
-        lambda name, creds: (_ for _ in ()).throw(AssertionError("Meta twice")))
+        _provider)
     monkeypatch.setattr(
         "gateway.routes.whatsapp.transport.accounts.persist_account", _persist)
     monkeypatch.setattr(
@@ -223,18 +242,468 @@ async def test_embedded_signup_happy_path(monkeypatch) -> None:
 
     out = await connect.embedded_signup(
         connect.EmbeddedSignupRequest(
-            code="auth-code", phone_number_id="pn-1", waba_id="waba-1"),
+            code="auth-code", phone_number_id=_ES_PNID, waba_id=_ES_WABA),
         user=SimpleNamespace(email="u@x"))
     assert out.account_id == "acc-1"
     assert out.subscribed is True
-    assert subscribed_calls == ["waba-1"]
+    assert subscribed_calls == [_ES_WABA]
     # One transaction, committed by the tenant-session wrapper on clean exit.
     assert db.committed == 1
-    # Meta checked the exchanged token for this number once, and the profile
-    # it returned is the proof that persist_account requires (WA-C1 P1).
-    assert [(c["phone_number_id"], c["access_token"]) for c in meta_calls] == [
-        ("pn-1", "TOKEN")]
+    # Meta checked the exchanged token for this number once, at the server's
+    # version, and the profile it returned is the proof that persist_account
+    # requires (WA-C1 P1).
+    assert meta_calls == [{"access_token": "TOKEN", "phone_number_id": _ES_PNID,
+                           "graph_version": "v21.0"}]
     assert persisted["verified_profile"] is profile
+    assert persisted["phone_number_id"] == _ES_PNID
+    assert persisted["sync_status"] == "live"
+    assert persisted["credentials"]["onboarding"] == "cloud"
+
+
+# ── WA-C2: coexistence in Embedded Signup (spec §12.4) ────────────────────────
+#
+# The fixtures below quote the shapes in Meta's Graph reference. They stand in
+# for `httpx.AsyncClient`, so the REAL exchange, list, check and subscribe run.
+
+#: `GET /oauth/access_token` (Embedded Signup, "exchange the token code").
+_META_TOKEN_EXCHANGE = {"access_token": "BUSINESS-TOKEN", "token_type": "bearer"}
+
+
+def _meta_number(pnid: str, name: str = "Jasper's Market",
+                 on_biz_app: bool | None = None) -> dict:
+    """One row of `GET /<WABA_ID>/phone_numbers` (Graph reference).
+
+    `is_on_biz_app` is true for a number that is also active on the WhatsApp
+    Business app, which is coexistence (Meta, "Onboard WhatsApp Business app
+    users"). None leaves the field out of the row."""
+    row = {"verified_name": name, "display_phone_number": "+1 631-555-5555",
+           "id": pnid, "quality_rating": "GREEN", "platform_type": "CLOUD_API"}
+    if on_biz_app is not None:
+        row["is_on_biz_app"] = on_biz_app
+    return row
+
+
+#: Meta's answer to a field the node does not know (Graph error code 100).
+_META_UNKNOWN_FIELD = {"error": {
+    "message": "(#100) Tried accessing nonexisting field (is_on_biz_app) on node "
+               "type (WhatsAppBusinessPhoneNumber)",
+    "type": "OAuthException", "code": 100, "fbtrace_id": "AbCdEf"}}
+
+
+class _GraphError(Exception):
+    def __init__(self, resp):
+        self.response = resp
+        super().__init__(f"Meta returned HTTP {resp.status_code}")
+
+
+class _GraphResp:
+    def __init__(self, body, status=200):
+        self._body, self.status_code = body, status
+
+    def json(self):
+        return self._body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise _GraphError(self)
+
+
+class _MetaGraph:
+    """A fake Graph API. It answers by path and records every request."""
+
+    def __init__(self, numbers, subscribe_error=None, refuse_biz_field=False):
+        self.numbers = numbers
+        self.subscribe_error = subscribe_error
+        self.refuse_biz_field = refuse_biz_field
+        self.calls: list[tuple[str, str, dict]] = []
+
+    def client(self):
+        graph = self
+
+        class _Client:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get(self, url, headers=None, params=None):
+                return graph.answer("GET", url, params)
+
+            async def post(self, url, headers=None, params=None, json=None,
+                           data=None):
+                return graph.answer("POST", url, params or data)
+
+        return _Client
+
+    def answer(self, method, url, params):
+        import httpx
+
+        path = httpx.URL(url).path
+        self.calls.append((method, path, dict(params or {})))
+        if path.endswith("/oauth/access_token"):
+            return _GraphResp(_META_TOKEN_EXCHANGE)
+        if path.endswith("/phone_numbers"):
+            fields = (params or {}).get("fields", "")
+            if self.refuse_biz_field and "is_on_biz_app" in fields:
+                return _GraphResp(_META_UNKNOWN_FIELD, 400)
+            return _GraphResp({"data": self.numbers, "paging": {
+                "cursors": {"before": "QVFIUk5", "after": "QVFIUmF"}}})
+        if path.endswith("/subscribed_apps"):
+            if self.subscribe_error is not None:
+                return _GraphResp(self.subscribe_error, 400)
+            return _GraphResp({"success": True})
+        node = path.rsplit("/", 1)[-1]
+        for n in self.numbers:
+            if n["id"] == node:
+                return _GraphResp({**n, "code_verification_status": "VERIFIED"})
+        return _GraphResp({"error": {"message": "Unsupported get request.",
+                                     "code": 100}}, 400)
+
+
+def _embedded_route(monkeypatch, graph: _MetaGraph):
+    """Patch only the edges of the Embedded Signup route: Meta, the session
+    and the insert. Returns what `persist_account` received."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import httpx
+
+    monkeypatch.setenv("WHATSAPP_APP_ID", "app")
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", "secret")
+    monkeypatch.delenv("WHATSAPP_GRAPH_VERSION", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", graph.client())
+
+    @asynccontextmanager
+    async def _tenant_session(organization_id=None):
+        yield _FakeDB()
+
+    persisted: list[dict] = []
+
+    async def _persist(db, **kw):
+        persisted.append(kw)
+        return "ROW"
+
+    monkeypatch.setattr(connect, "_tenant_session", _tenant_session)
+    monkeypatch.setattr(
+        "gateway.routes.whatsapp.transport.accounts.persist_account", _persist)
+    monkeypatch.setattr(
+        "gateway.routes.whatsapp.transport.accounts._account_model",
+        lambda row: SimpleNamespace(id="acc-1", display_name="Jasper's Market",
+                                    phone_number="+1 631-555-5555"))
+    return persisted
+
+
+async def _connect(**body):
+    from types import SimpleNamespace
+
+    return await connect.embedded_signup(
+        connect.EmbeddedSignupRequest(code="auth-code", **body),
+        user=SimpleNamespace(email="u@x"))
+
+
+async def test_coexistence_with_only_a_waba_id_lists_checks_subscribes_and_goes_live(
+    monkeypatch,
+) -> None:
+    """FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING returns `waba_id` and no
+    `phone_number_id`. The backend finds the number, and Meta confirms it."""
+    graph = _MetaGraph([_meta_number(_ES_PNID)])
+    persisted = _embedded_route(monkeypatch, graph)
+
+    out = await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+
+    assert out.subscribed is True
+    assert [(m, p) for m, p, _ in graph.calls] == [
+        ("POST", "/v21.0/oauth/access_token"),
+        ("GET", f"/v21.0/{_ES_WABA}/phone_numbers"),
+        ("GET", f"/v21.0/{_ES_PNID}"),
+        ("POST", f"/v21.0/{_ES_WABA}/subscribed_apps"),
+    ]
+    assert graph.calls[1][2] == {
+        "fields": "id,display_phone_number,verified_name,quality_rating,"
+                  "platform_type,is_on_biz_app"}
+    # P4: the number is on the phone app, so it is registered already.
+    assert not [p for _, p, _ in graph.calls if p.endswith("/register")]
+    [row] = persisted
+    assert row["phone_number_id"] == _ES_PNID
+    assert row["waba_id"] == _ES_WABA
+    assert row["sync_status"] == "live"
+    assert row["credentials"] == {"access_token": "BUSINESS-TOKEN",
+                                  "waba_id": _ES_WABA, "onboarding": "coexistence"}
+    assert row["verified_profile"]["id"] == _ES_PNID
+    assert row["phone_number"] == "+1 631-555-5555"
+
+
+async def test_a_subscribe_failure_answers_400_and_persists_nothing(monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    graph = _MetaGraph(
+        [_meta_number(_ES_PNID)],
+        subscribe_error={"error": {"message": "Permissions error", "code": 200}})
+    persisted = _embedded_route(monkeypatch, graph)
+
+    with pytest.raises(HTTPException) as exc:
+        await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Permissions error (Meta code 200)"
+    assert persisted == [], "a failed subscribe saved an account"
+
+
+async def test_a_waba_with_no_number_answers_400(monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    graph = _MetaGraph([])
+    persisted = _embedded_route(monkeypatch, graph)
+    with pytest.raises(HTTPException) as exc:
+        await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+    assert exc.value.status_code == 400
+    assert "no phone number" in exc.value.detail
+    assert persisted == []
+    assert not [p for _, p, _ in graph.calls if p.endswith("/subscribed_apps")]
+
+
+@pytest.mark.parametrize(("sent", "says"), [
+    (None, "more than one"), ("1111111111", "not in")])
+async def test_a_plain_finish_with_two_numbers_and_no_matching_id_answers_400(
+    monkeypatch, sent, says,
+) -> None:
+    """A plain FINISH names its number. Without a listed id, the backend
+    cannot choose, even when Meta flags a number as on the app."""
+    from fastapi import HTTPException
+
+    graph = _MetaGraph([_meta_number(_ES_PNID, on_biz_app=True),
+                        _meta_number(_ES_PNID_2, "B", on_biz_app=False)])
+    persisted = _embedded_route(monkeypatch, graph)
+    with pytest.raises(HTTPException) as exc:
+        await _connect(waba_id=_ES_WABA, phone_number_id=sent)
+    assert exc.value.status_code == 400
+    assert says in exc.value.detail
+    assert persisted == []
+
+
+#: The 400 of a coexistence connect that cannot tell the numbers apart.
+_CANNOT_TELL = (
+    "This WhatsApp Business account has several numbers, and Metorite cannot "
+    "tell which one you linked from the app. Contact support.")
+
+
+async def test_coexistence_with_two_numbers_picks_the_one_on_the_app(
+    monkeypatch,
+) -> None:
+    """WA-C2 review P2. The coexistence event names no number. Meta flags the
+    number that is also on the WhatsApp Business app with `is_on_biz_app`."""
+    graph = _MetaGraph([_meta_number(_ES_PNID, on_biz_app=False),
+                        _meta_number(_ES_PNID_2, "B", on_biz_app=True)])
+    persisted = _embedded_route(monkeypatch, graph)
+    await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+    [row] = persisted
+    assert row["phone_number_id"] == _ES_PNID_2
+    assert row["credentials"]["onboarding"] == "coexistence"
+
+
+@pytest.mark.parametrize("flags", [(False, False), (None, None), (True, True)])
+async def test_coexistence_that_cannot_tell_the_numbers_apart_answers_400(
+    monkeypatch, flags,
+) -> None:
+    """None or two numbers flagged. A retry gets the same list, so the text
+    names the real cause and does not ask the member to select a number."""
+    from fastapi import HTTPException
+
+    graph = _MetaGraph([_meta_number(_ES_PNID, on_biz_app=flags[0]),
+                        _meta_number(_ES_PNID_2, "B", on_biz_app=flags[1])])
+    persisted = _embedded_route(monkeypatch, graph)
+    with pytest.raises(HTTPException) as exc:
+        await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+    assert exc.value.status_code == 400
+    assert exc.value.detail == _CANNOT_TELL
+    assert "select" not in exc.value.detail.lower()
+    assert persisted == []
+
+
+async def test_a_list_read_that_refuses_the_field_retries_without_it(
+    monkeypatch,
+) -> None:
+    """If Meta answers code 100 for `is_on_biz_app`, the list is read once
+    more without it, and the rules for one number still hold."""
+    graph = _MetaGraph([_meta_number(_ES_PNID)], refuse_biz_field=True)
+    persisted = _embedded_route(monkeypatch, graph)
+    await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+    reads = [prm["fields"] for _, p, prm in graph.calls
+             if p.endswith("/phone_numbers")]
+    assert reads == [
+        "id,display_phone_number,verified_name,quality_rating,platform_type,"
+        "is_on_biz_app",
+        "id,display_phone_number,verified_name,quality_rating,platform_type",
+    ]
+    assert persisted[0]["phone_number_id"] == _ES_PNID
+
+
+async def test_after_the_field_fallback_two_numbers_still_answer_the_real_cause(
+    monkeypatch,
+) -> None:
+    from fastapi import HTTPException
+
+    graph = _MetaGraph([_meta_number(_ES_PNID), _meta_number(_ES_PNID_2, "B")],
+                       refuse_biz_field=True)
+    persisted = _embedded_route(monkeypatch, graph)
+    with pytest.raises(HTTPException) as exc:
+        await _connect(waba_id=_ES_WABA, onboarding="coexistence")
+    assert exc.value.detail == _CANNOT_TELL
+    assert persisted == []
+
+
+# ── WA-C2 review P1: a refused exchange leaks no secret ──────────────────────
+
+_APP_SECRET = "0123456789abcdef0123456789abcdef"
+_AUTH_CODE = "AQD-one-time-auth-code-XYZ"
+
+#: Meta's answer to a bad or used code (Graph `/oauth/access_token`).
+_META_BAD_CODE = {"error": {
+    "message": "Error validating verification code. Please make sure your "
+               "redirect_uri is identical to the one you used in the OAuth "
+               "dialog request",
+    "type": "OAuthException", "code": 100, "error_subcode": 36008,
+    "fbtrace_id": "AbCdEf"}}
+
+
+class _RecordingLog:
+    """Stands in for the module's structlog logger and keeps every call."""
+
+    def __init__(self):
+        self.lines: list[str] = []
+
+    def __getattr__(self, level):
+        def _log(event, *args, **kw):
+            self.lines.append(f"{level} {event} {args!r} {kw!r}")
+        return _log
+
+
+async def test_a_refused_exchange_logs_and_returns_no_secret(
+    monkeypatch, caplog,
+) -> None:
+    """A REAL httpx client over a mock transport, so the error text is the
+    one that httpx writes, with the full request URL in it."""
+    import logging
+
+    import httpx
+    from fastapi import HTTPException
+
+    seen: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(400, json=_META_BAD_CODE)
+
+    real_client = httpx.AsyncClient
+
+    def _client(*a, **kw):
+        kw["transport"] = httpx.MockTransport(_handler)
+        return real_client(*a, **kw)
+
+    monkeypatch.setenv("WHATSAPP_APP_ID", "app")
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", _APP_SECRET)
+    monkeypatch.delenv("WHATSAPP_GRAPH_VERSION", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", _client)
+    log = _RecordingLog()
+    monkeypatch.setattr(connect, "_log", log)
+    caplog.set_level(logging.DEBUG)
+
+    with pytest.raises(HTTPException) as exc:
+        await connect.embedded_signup(
+            connect.EmbeddedSignupRequest(code=_AUTH_CODE, waba_id=_ES_WABA),
+            user=None)
+
+    assert exc.value.status_code == 400
+    [req] = seen
+    assert req.method == "POST"
+    assert "client_secret" not in str(req.url)
+    assert _APP_SECRET not in str(req.url) and _AUTH_CODE not in str(req.url)
+    # The secret travels in the form body, and only there.
+    assert f"client_secret={_APP_SECRET}" in req.content.decode()
+    written = "\n".join([*log.lines, caplog.text, str(exc.value.detail)])
+    assert log.lines, "the refusal was not logged at all"
+    for secret in (_APP_SECRET, _AUTH_CODE):
+        assert secret not in written, f"{secret!r} reached the log or the answer"
+    assert "status=400" in log.lines[0] or "'status': 400" in log.lines[0]
+
+
+async def test_two_numbers_use_the_id_the_browser_sent_when_it_is_listed(
+    monkeypatch,
+) -> None:
+    graph = _MetaGraph([_meta_number(_ES_PNID), _meta_number(_ES_PNID_2, "B")])
+    persisted = _embedded_route(monkeypatch, graph)
+    await _connect(waba_id=_ES_WABA, phone_number_id=_ES_PNID_2)
+    assert persisted[0]["phone_number_id"] == _ES_PNID_2
+    assert persisted[0]["credentials"]["onboarding"] == "cloud"
+
+
+async def test_a_plain_finish_for_a_number_outside_the_waba_answers_400(
+    monkeypatch,
+) -> None:
+    """The browser's id is a claim. The WABA list is the fact."""
+    from fastapi import HTTPException
+
+    graph = _MetaGraph([_meta_number(_ES_PNID)])
+    persisted = _embedded_route(monkeypatch, graph)
+    with pytest.raises(HTTPException) as exc:
+        await _connect(waba_id=_ES_WABA, phone_number_id="1111111111")
+    assert exc.value.status_code == 400
+    assert persisted == []
+
+
+@pytest.mark.parametrize("bad", ["waba-1", "123/phone_numbers", "1?x=", "1#", " 1",
+                                 "", "١٢٣"])
+async def test_a_non_digit_waba_id_answers_400_before_any_graph_call(
+    monkeypatch, bad,
+) -> None:
+    from fastapi import HTTPException
+
+    graph = _MetaGraph([_meta_number(_ES_PNID)])
+    persisted = _embedded_route(monkeypatch, graph)
+    with pytest.raises(HTTPException) as exc:
+        await _connect(waba_id=bad, onboarding="coexistence")
+    assert exc.value.status_code == 400
+    assert graph.calls == [], "a bad waba_id reached Meta"
+    assert persisted == []
+
+
+def test_a_request_with_no_waba_id_answers_422(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    graph = _MetaGraph([_meta_number(_ES_PNID)])
+    _embedded_route(monkeypatch, graph)
+    app = FastAPI()
+    app.post("/whatsapp/connect/embedded")(connect.embedded_signup)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(email="u@x")
+    resp = TestClient(app).post("/whatsapp/connect/embedded",
+                                json={"code": "auth-code",
+                                      "phone_number_id": _ES_PNID})
+    assert resp.status_code == 422
+    assert any(e["loc"][-1] == "waba_id" for e in resp.json()["detail"])
+    assert graph.calls == []
+
+
+def test_an_unknown_onboarding_type_answers_422(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from acb_auth import get_current_user
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    _embedded_route(monkeypatch, _MetaGraph([]))
+    app = FastAPI()
+    app.post("/whatsapp/connect/embedded")(connect.embedded_signup)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(email="u@x")
+    resp = TestClient(app).post("/whatsapp/connect/embedded", json={
+        "code": "c", "waba_id": _ES_WABA, "onboarding": "whatsmeow"})
+    assert resp.status_code == 422
 
 
 # ── the manual create route verifies with Meta first (WA-C1 review P1) ────────
@@ -255,18 +724,20 @@ class _AccountsDB:
 
     def __init__(self):
         self.sql: list[str] = []
+        self.params: list[dict] = []
 
     async def execute(self, statement, params=None):
         from types import SimpleNamespace
 
         sql = str(statement)
         self.sql.append(sql)
+        self.params.append(dict(params or {}))
         if "INSERT INTO wa_accounts" in sql:
             return _Result(row=SimpleNamespace(
                 id=params["id"], phone_number=params["phone"],
                 phone_number_id=params["pnid"], waba_id=params["waba"],
                 display_name=params["name"], avatar_color=None,
-                sync_status="importing", sync_error=None,
+                sync_status=params["sync_status"], sync_error=None,
                 history_import_phase=0, quality_rating=None,
                 last_synced_at=None, is_default=params["is_default"]))
         if "COUNT(*)" in sql:
@@ -371,6 +842,40 @@ async def test_manual_create_confirmed_by_meta_inserts(monkeypatch) -> None:
     assert out.phone_number_id == _PNID
     assert opened == [1]
     assert any("INSERT INTO wa_accounts" in s for s in db.sql)
+
+
+async def test_the_manual_route_still_writes_importing(monkeypatch) -> None:
+    """WA-C2 moves only the Embedded Signup path to `live`. The manual path
+    keeps `importing` until a later slice (spec §12.3 F6)."""
+    from types import SimpleNamespace
+
+    accounts, db, _opened, _ = _manual_route(
+        monkeypatch, _FakeProvider(profile={"id": _PNID}))
+    out = await accounts.create_account(
+        _create_req(accounts), user=SimpleNamespace(email="alice@a"))
+    assert out.sync_status == "importing"
+    assert [q["sync_status"] for q in db.params if "sync_status" in q] == [
+        "importing"]
+
+
+async def test_persist_account_binds_the_sync_status_it_is_given(monkeypatch) -> None:
+    from acb_llm import key_store
+    from gateway.routes.whatsapp.transport.accounts import persist_account
+
+    class _Store:
+        def encrypt(self, raw):
+            return "enc"
+
+    monkeypatch.setattr(key_store, "get_key_store", lambda: _Store())
+    db = _AccountsDB()
+    row = await persist_account(
+        db, user_id="u", phone_number="+91", phone_number_id=_PNID,
+        waba_id=_ES_WABA, display_name="", credentials={"access_token": "t"},
+        webhook_verify_token=None, verified_profile={"id": _PNID},
+        sync_status="live")
+    assert row.sync_status == "live"
+    [insert] = [s for s in db.sql if "INSERT INTO wa_accounts" in s]
+    assert ":sync_status" in insert and "'importing'" not in insert
 
 
 async def test_persist_account_cannot_run_without_a_verified_profile() -> None:

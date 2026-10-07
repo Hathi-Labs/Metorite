@@ -19,6 +19,13 @@ import {
   verifyConnection,
 } from "../lib/api";
 import type { WaConnectionInfo, WaVerifyResult } from "../lib/types";
+import {
+  COEXISTENCE_LIMITS,
+  SIGNUP_EXTRAS,
+  nextSignupStep,
+  parseSignupMessage,
+  type SignupEvent,
+} from "./signupSession";
 
 const STEPS = ["Prerequisites", "Webhook", "Credentials", "Done"];
 
@@ -395,10 +402,12 @@ function ChooseConnect({
     <Card>
       <h2 className="text-[14px] font-semibold">Connect in one click</h2>
       <p className="mt-1 text-[12.5px] text-muted-foreground">
-        Log in with Facebook, pick your WhatsApp Business number, and you&apos;re
-        done — no copy-pasting IDs or tokens. We finish the setup (token exchange
-        and webhook subscription) for you.
+        Log in with Facebook, pick your WhatsApp Business number, and scan the
+        QR code in the WhatsApp Business app on your phone. The number stays on
+        your phone, and no copy-pasting of IDs or tokens is needed. We finish
+        the setup (token exchange and webhook subscription) for you.
       </p>
+      <CoexistenceLimits />
       <div className="mt-4">
         <EmbeddedSignupButton info={info} onDone={onDone} />
       </div>
@@ -416,6 +425,27 @@ function ChooseConnect({
   );
 }
 
+// What a WhatsApp Business app number does not bring in (spec §12.2). The
+// member reads it before the popup opens (WS-20 WA-C2).
+function CoexistenceLimits() {
+  return (
+    <div className="mt-3 rounded-lg border border-warning/30 bg-warning/10 p-3">
+      <p className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+        <Icon name="Info" className="h-3.5 w-3.5 text-warning" />
+        What a WhatsApp Business app number does not bring in
+      </p>
+      <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
+        {COEXISTENCE_LIMITS.map((limit) => (
+          <li key={limit}>{limit}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** How long the page waits for Meta's session message after the callback. */
+const SESSION_MESSAGE_WAIT_MS = 10_000;
+
 function EmbeddedSignupButton({
   info,
   onDone,
@@ -426,7 +456,14 @@ function EmbeddedSignupButton({
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const sessionInfo = useRef<{ phone_number_id?: string; waba_id?: string }>({});
+  // The two halves of one signup (WS-20 WA-C2). The FB.login callback gives
+  // the code, and Meta's message gives the result. Either can come first.
+  // `code` is undefined before the callback, and null for a callback with
+  // no code.
+  const code = useRef<string | null | undefined>(undefined);
+  const session = useRef<SignupEvent | null>(null);
+  const settled = useRef(true);
+  const waitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load + init the Facebook JS SDK once.
   useEffect(() => {
@@ -457,62 +494,79 @@ function EmbeddedSignupButton({
     }
   }, [info.fb_app_id, info.graph_version]);
 
-  // Capture the WABA + phone number the user picks in the popup.
+  const clearWait = () => {
+    if (waitTimer.current) clearTimeout(waitTimer.current);
+    waitTimer.current = null;
+  };
+
+  // Act once both halves are present, or as soon as one of them fails.
+  const advance = useCallback(() => {
+    if (settled.current) return;
+    const step = nextSignupStep(code.current, session.current);
+    if (step.action === "wait") return;
+    settled.current = true;
+    clearWait();
+    if (step.action === "fail") {
+      setError(step.message);
+      return;
+    }
+    setBusy(true);
+    embeddedSignup(step.request).then((res) => {
+      setBusy(false);
+      if (res.ok) onDone();
+      else
+        setError(
+          typeof res.error === "string" ? res.error : "Couldn't finish connecting."
+        );
+    });
+  }, [onDone]);
+
+  // Read Meta's session message: FINISH, the coexistence FINISH, CANCEL or
+  // ERROR. A message from any origin but facebook.com is dropped.
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
-      try {
-        if (!/facebook\.com$/.test(new URL(ev.origin).hostname)) return;
-      } catch {
-        return;
-      }
-      try {
-        const data =
-          typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data;
-        if (data?.type === "WA_EMBEDDED_SIGNUP" && data?.data) {
-          sessionInfo.current = {
-            phone_number_id: data.data.phone_number_id,
-            waba_id: data.data.waba_id,
-          };
-        }
-      } catch {
-        /* not our message */
-      }
+      const parsed = parseSignupMessage(ev.origin, ev.data);
+      if (!parsed) return;
+      session.current = parsed;
+      advance();
     };
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, []);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      clearWait();
+    };
+  }, [advance]);
 
   const launch = useCallback(() => {
     const w = window as unknown as FbWindow;
     if (!w.FB || busy) return;
     setError(null);
+    code.current = undefined;
+    session.current = null;
+    settled.current = false;
+    clearWait();
     w.FB.login(
       (resp: FbLoginResponse) => {
-        const code = resp?.authResponse?.code;
-        const si = sessionInfo.current;
-        if (!code || !si.phone_number_id) {
-          setError("Signup was cancelled, or no number was selected.");
-          return;
+        code.current = resp?.authResponse?.code ?? null;
+        advance();
+        // The message can arrive after the callback. Wait for it, but not
+        // for ever.
+        if (!settled.current) {
+          waitTimer.current = setTimeout(() => {
+            if (settled.current) return;
+            settled.current = true;
+            setError("Meta did not say which account you selected. Connect again.");
+          }, SESSION_MESSAGE_WAIT_MS);
         }
-        setBusy(true);
-        embeddedSignup({
-          code,
-          phone_number_id: si.phone_number_id,
-          waba_id: si.waba_id ?? null,
-        }).then((res) => {
-          setBusy(false);
-          if (res.ok) onDone();
-          else setError(res.error ?? "Couldn't finish connecting.");
-        });
       },
       {
         config_id: info.es_config_id,
         response_type: "code",
         override_default_response_type: true,
-        extras: { setup: {}, featureType: "", sessionInfoVersion: "3" },
+        extras: SIGNUP_EXTRAS,
       }
     );
-  }, [busy, info.es_config_id, onDone]);
+  }, [advance, busy, info.es_config_id]);
 
   return (
     <div>
@@ -534,7 +588,10 @@ function EmbeddedSignupButton({
         </p>
       )}
       {error && (
-        <div className="mt-2 rounded-md bg-red-500/10 px-3 py-1.5 text-[11px] text-red-500">
+        <div
+          role="alert"
+          className="mt-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive"
+        >
           {error}
         </div>
       )}

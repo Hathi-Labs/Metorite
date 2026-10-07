@@ -113,12 +113,14 @@ export function fetchConnectionInfo(): Promise<WaConnectionInfo> {
   });
 }
 
-// Complete Embedded Signup: exchange the FB.login code + selected number for a
-// connected account (W12).
+// Complete Embedded Signup: exchange the FB.login code for a connected account
+// (W12). `waba_id` is required. A coexistence connect (WS-20 WA-C2) sends no
+// `phone_number_id`, and the backend reads the number from the WABA.
 export function embeddedSignup(input: {
   code: string;
-  phone_number_id: string;
-  waba_id?: string | null;
+  waba_id: string;
+  phone_number_id?: string;
+  onboarding: "cloud" | "coexistence";
   display_name?: string;
 }) {
   return postJSON<WaEmbeddedResult>("connect/embedded", input);
