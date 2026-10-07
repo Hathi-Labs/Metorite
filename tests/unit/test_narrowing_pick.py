@@ -265,7 +265,7 @@ class TestKeep:
 
     def test_the_drop_threshold_is_the_auto_threshold(self) -> None:
         assert narrowing.DROP_THRESHOLD == 0.70
-        assert narrowing.DROP_THRESHOLD == tier_policy.SYSTEM_ONE_THRESHOLDS["auto"]
+        assert tier_policy.SYSTEM_ONE_THRESHOLDS["auto"] == narrowing.DROP_THRESHOLD
 
     def test_a_threshold_argument_moves_the_line(self) -> None:
         assert narrowing.keep(Verdict("no", 0.85), threshold=0.90) is True
