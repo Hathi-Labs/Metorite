@@ -136,8 +136,10 @@ def _is_local_address(addr: str) -> bool:
     family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
     try:
         sock = socket.socket(family, socket.SOCK_DGRAM)
-    except OSError:
-        return False
+    except OSError as exc:
+        # Only a missing stack for the family means "cannot be ours". A full
+        # descriptor table, or any other fault, fails closed (re-check P3).
+        return exc.errno not in _NO_FAMILY_ERRNOS
     with sock:
         try:
             sock.bind((addr, 0))
@@ -148,6 +150,10 @@ def _is_local_address(addr: str) -> bool:
 
 _NOT_LOCAL_ERRNOS = frozenset(
     e for e in (errno.EADDRNOTAVAIL, getattr(errno, "WSAEADDRNOTAVAIL", None))
+    if e is not None)
+
+_NO_FAMILY_ERRNOS = frozenset(
+    e for e in (errno.EAFNOSUPPORT, getattr(errno, "WSAEAFNOSUPPORT", None))
     if e is not None)
 
 
@@ -162,7 +168,8 @@ def _address_refusal(addresses: list[str]) -> str | None:
             return "unresolvable"
         if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
             ip = ip.ipv4_mapped
-        if (ip.is_multicast or ip.is_reserved or not ip.is_global
+        site_local = isinstance(ip, ipaddress.IPv6Address) and ip.is_site_local
+        if (ip.is_multicast or ip.is_reserved or not ip.is_global or site_local
                 or any(ip in net for net in _IPV4_CARRIERS)):
             return "not public"
     for addr in addresses:

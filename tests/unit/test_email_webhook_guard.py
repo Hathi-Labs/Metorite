@@ -777,3 +777,25 @@ def test_the_address_rule_reads_is_global_and_multicast() -> None:
         assert g._address_refusal([addr]) == "not public", addr
     # The shared range 100.64.0.0/10 is not private, so only is_global sees it.
     assert ipaddress.ip_address("100.64.0.1").is_private is False
+
+
+def test_a_socket_fault_other_than_no_family_reads_as_local(monkeypatch) -> None:
+    """A full descriptor table must not let the box address pass (re-check P3)."""
+    def boom(*_a, **_k):
+        raise OSError(errno.EMFILE, "too many open files")
+
+    monkeypatch.setattr(g.socket, "socket", boom)
+    assert g._is_local_address("93.184.216.34") is True
+
+
+def test_no_stack_for_the_family_reads_as_not_local(monkeypatch) -> None:
+    def no_family(*_a, **_k):
+        raise OSError(errno.EAFNOSUPPORT, "address family not supported")
+
+    monkeypatch.setattr(g.socket, "socket", no_family)
+    assert g._is_local_address("2001:db8::1") is False
+
+
+def test_a_site_local_ipv6_address_is_refused() -> None:
+    """fec0::/10 is deprecated site-local. Python calls it global (re-check P3)."""
+    assert g._address_refusal(["fec0::1"]) == "not public"
