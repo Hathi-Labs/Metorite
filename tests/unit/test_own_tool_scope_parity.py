@@ -22,6 +22,12 @@ and asserts four things:
    in the resolved injected scope of the agent. ``run_command`` and
    ``read_file`` are exempt: an instruction names them to say when the agent
    does NOT hold them.
+
+A tool behind a flag (:data:`FLAG_GATED`) is in the scope and is built only
+when its flag names the agent. Item 1 then holds twice: with the flag off,
+the scope is the built tools plus the gated names, and with the flag on for
+every agent, the scope is exactly the built tools. The scope must name the
+gated tool, or the real filter takes it away from a run that has the flag on.
 """
 
 from __future__ import annotations
@@ -40,6 +46,13 @@ AGENTS_DIR = REPO / "apps" / "agents"
 
 #: An instruction names these to say when the agent does NOT hold them.
 _EXEMPT_PLATFORM_WORDS = frozenset({"run_command", "read_file"})
+
+#: Own tools that an agent builds only when a flag names it, and the env
+#: that turns each one on for every agent. WS-48 N2: ``narrow_and_read``
+#: needs ``NARROWING_AGENTS`` (``data_narrowing_pipeline.md`` §9 N2).
+FLAG_GATED: dict[str, tuple[str, str]] = {
+    "narrow_and_read": ("NARROWING_AGENTS", "*"),
+}
 
 
 def _scoped_agent_dirs() -> list[Path]:
@@ -85,7 +98,22 @@ def _instruction_words(agent_dir: Path) -> set[str]:
 
 @pytest.fixture(autouse=True)
 def _dummy_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_common.settings import get_settings
+
     monkeypatch.setenv("OPENAI_API_KEY", "sk-ws8o-dummy")
+    for env, _value in FLAG_GATED.values():
+        monkeypatch.delenv(env, raising=False)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def _flags_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_common.settings import get_settings
+
+    for env, value in FLAG_GATED.values():
+        monkeypatch.setenv(env, value)
+    get_settings.cache_clear()
 
 
 def test_the_four_live_agents_declare_a_scope() -> None:
@@ -103,7 +131,10 @@ def test_the_scope_equals_the_built_tools(agent_dir: Path) -> None:
     built = _built_names(_build(agent_dir))
     assert built, f"{agent_dir.name} built no tool"
     assert len(scope) == len(set(scope)), f"{agent_dir.name}: a name repeats"
-    not_built = sorted(set(scope) - set(built))
+    assert not set(FLAG_GATED) & set(built), (
+        f"{agent_dir.name} built a flag-gated tool with its flag off"
+    )
+    not_built = sorted(set(scope) - set(built) - set(FLAG_GATED))
     not_scoped = sorted(set(built) - set(scope))
     assert not not_built, (
         f"{agent_dir.name}: own_tool_scope names tools that build_agents() "
@@ -113,6 +144,24 @@ def test_the_scope_equals_the_built_tools(agent_dir: Path) -> None:
         f"{agent_dir.name}: own_tool_scope removes built tools: {not_scoped}. "
         "A narrowing is an owner decision (§10.4.14)."
     )
+
+
+@pytest.mark.parametrize("agent_dir", SCOPED, ids=lambda d: d.name)
+def test_with_every_flag_on_the_scope_equals_the_built_tools(
+    agent_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gated name in the scope must be a tool that the flag builds, and a
+    gated tool that the flag builds must be in the scope (or the filter takes
+    it away)."""
+    _flags_on(monkeypatch)
+    scope = set(_config(agent_dir)["own_tool_scope"])
+    agents = _build(agent_dir)
+    built = set(_built_names(agents))
+    assert scope - built == set(), f"{agent_dir.name}: scoped, not built: {sorted(scope - built)}"
+    assert built - scope == set(), f"{agent_dir.name}: built, not scoped: {sorted(built - scope)}"
+    before = _built_names(agents)
+    ti._apply_own_tool_scope(agents, sorted(scope))
+    assert _built_names(agents) == before
 
 
 @pytest.mark.parametrize("agent_dir", SCOPED, ids=lambda d: d.name)

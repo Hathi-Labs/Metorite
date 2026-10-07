@@ -72,6 +72,7 @@ __all__ = [
     "READ_CAP",
     "TOOL_NAME",
     "Candidate",
+    "FilterRefused",
     "FullItem",
     "Narrowed",
     "SourceAdapter",
@@ -220,6 +221,17 @@ class FullItem:
     who: str = ""
     when: str = ""
     text: str = ""
+
+
+class FilterRefused(ValueError):
+    """An adapter refuses a filter VALUE by name (D91.3, WS-48 N2).
+
+    The parse of :func:`_parse_filters` checks the keys. Only the adapter
+    knows the type of a value, for example a date or a flag. It raises this
+    error with a fixed text that names the key, and the tool returns that
+    text to the model. So a bad value is never dropped in silence, and it
+    never reads as "could not search". The text must hold no tenant content.
+    """
 
 
 @runtime_checkable
@@ -743,6 +755,8 @@ async def _narrow_and_read(adapter: SourceAdapter, query: str, filters: str) -> 
     source = _one_line(getattr(adapter, "name", "") or "the source", 40)
     try:
         narrowed = await adapter.candidates(query, parsed)
+    except FilterRefused as exc:  # a bad value is refused by name (D91.3)
+        return f"narrow_and_read: {_one_line(str(exc), 300)}"
     except Exception as exc:  # an adapter fault is not a crash
         _log.warning("narrowing.narrow_failed", source=source, error_type=type(exc).__name__)
         return SEARCH_FAILED.format(source=source)
