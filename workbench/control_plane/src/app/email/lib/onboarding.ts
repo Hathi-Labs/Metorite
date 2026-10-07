@@ -100,8 +100,11 @@ export function importPanelShows(account: StageFields & Pick<EmailAccount, "impo
 
 /** The phases that draw a row. `starting` is a first sync with no phase yet:
  *  the seconds after the sign-in, before the scheduler writes `counting`.
- *  EM-S9b writes `resyncing`. This module reads it already, so EM-S9b needs
- *  no UI change. */
+ *  EM-S9b writes `resyncing`. This module reads it already, but EM-S9b still
+ *  widens the poll of the page (§14.6.9b item 5). `isFirstSyncPending` in
+ *  `connect.ts` needs `initialSyncDone` false, and a Resync keeps it true, so
+ *  until then a `resyncing` row does not refresh. The fence is
+ *  `email-sync-banner-polls` in `onboarding.test.ts`. */
 export type SyncBannerPhase = "starting" | "counting" | "importing" | "resyncing";
 
 /** The words of each phase. Each one says that the sync still runs. */

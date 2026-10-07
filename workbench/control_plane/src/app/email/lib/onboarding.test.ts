@@ -19,6 +19,7 @@ import { isKnownIcon } from "@/lib/icons";
 
 import { OnboardingPanel } from "../components/OnboardingPanel";
 import { SyncBanner } from "../components/SyncBanner";
+import { shouldPollFirstSync } from "./connect";
 import {
   AWAITING_RANGE_PHASE,
   IMPORT_PHASE_LINES,
@@ -34,6 +35,7 @@ import {
   rangeDonePercent,
   shortDate,
   syncBanners,
+  type SyncBannerPhase,
 } from "./onboarding";
 import type { EmailAccount } from "./types";
 
@@ -567,6 +569,52 @@ describe("email-sync-banner: syncBanners", () => {
   });
 });
 
+describe("email-sync-banner-polls: every row keeps the page polling", () => {
+  // A row that the poll does not refresh freezes on screen. The page polls
+  // while `shouldPollFirstSync(accounts)` is true, so each account that
+  // `syncBanners` gives a row for must make it true.
+  const running: Partial<EmailAccount> = {
+    ...IMPORTING,
+    syncEnabled: true,
+    importCount: 10,
+    importEstimate: 100,
+  };
+  const FIRST_IMPORT: ReadonlyArray<readonly [SyncBannerPhase, Partial<EmailAccount>]> = [
+    ["starting", { ...running, importPhase: null }],
+    ["counting", { ...running, importPhase: "counting" }],
+    ["importing", { ...running, importPhase: "importing" }],
+  ];
+  const RESYNC: Partial<EmailAccount> = { ...running, initialSyncDone: true, importPhase: "resyncing" };
+
+  const rowPhase = (account: Partial<EmailAccount>) => syncBanners([{ ...account, id: "a" }])[0]?.phase;
+
+  it("the page gates its poll on shouldPollFirstSync", () => {
+    const PAGE = codeOnly(read("page.tsx"));
+    expect(PAGE).toContain("const firstSyncPending = shouldPollFirstSync(accounts);");
+    expect(PAGE).toMatch(/if \(!firstSyncPending\) return;/);
+  });
+
+  it("names a case for every phase that gives a row", () => {
+    const covered = [...FIRST_IMPORT.map(([p]) => p), rowPhase(RESYNC)].sort();
+    expect(covered).toEqual(Object.keys(SYNC_BANNER_LINES).sort());
+  });
+
+  it.each(FIRST_IMPORT)("a first import in the phase %s gives a row and polls", (phase, account) => {
+    expect(rowPhase(account)).toBe(phase);
+    expect(shouldPollFirstSync([account])).toBe(true);
+  });
+
+  // ⚠️ A KNOWN GAP, not a skip. `isFirstSyncPending` needs `initialSyncDone`
+  // false, and a Resync keeps it true, so a `resyncing` row does not refresh.
+  // EM-S9b widens the poll to "a row shows" (§14.6.9b item 5). `it.fails`
+  // runs the test and passes only while it fails. When EM-S9b widens the
+  // poll, this goes red, and EM-S9b changes `it.fails` to `it`.
+  it.fails("a Resync gives a row and polls (fails until EM-S9b, §14.6.9b item 5)", () => {
+    expect(rowPhase(RESYNC)).toBe("resyncing");
+    expect(shouldPollFirstSync([RESYNC])).toBe(true);
+  });
+});
+
 describe("email-sync-banner: the row on screen", () => {
   type Row = Pick<EmailAccount, "id" | "emailAddress"> & Partial<EmailAccount>;
   const a: Row = {
@@ -605,8 +653,18 @@ describe("email-sync-banner: the row on screen", () => {
 
   it("only the phase line of each row is a status region, so a poll does not speak each count", () => {
     const out = draw([a, b]);
-    const live = [...out.matchAll(/<[^>]*role="status"[^>]*>([^<]*)</g)].map((m) => m[1]);
-    expect(live).toEqual([SYNC_BANNER_LINES.importing, SYNC_BANNER_LINES.importing]);
+    // The whole text of each status element, its hidden address included.
+    const regions = [...out.matchAll(/<p\b[^>]*role="status"[^>]*>([\s\S]*?)<\/p>/g)].map((m) => m[1]);
+    const live = regions.map((html) => html.replace(/<[^>]+>/g, ""));
+    // A screen reader hears the mailbox, then the phase, and never the count.
+    expect(live).toEqual([
+      `vj@fracktal.in: ${SYNC_BANNER_LINES.importing}`,
+      `ravi@contoso.test: ${SYNC_BANNER_LINES.importing}`,
+    ]);
+    for (const text of live) expect(text).not.toMatch(/\d{2,}|messages|%/);
+    // The address is hidden from the eye with the design system's own utility.
+    expect(regions[0]).toContain('<span class="sr-only">vj@fracktal.in: </span>');
+    expect(out.match(/role="status"/g)).toHaveLength(2);
   });
 
   it("draws nothing when no import runs", () => {

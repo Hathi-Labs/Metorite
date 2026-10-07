@@ -16,7 +16,9 @@
  *
  * ⚠️ Only the phase line of each row is a live region (`role="status"`).
  * The count changes at each poll, and a live region over it would speak
- * every five seconds. `OnboardingPanel` keeps the same rule.
+ * every five seconds. `OnboardingPanel` keeps the same rule. The line holds
+ * the address of its mailbox in an `sr-only` span, so the announcement names
+ * the mailbox.
  *
  * ⚠️ `bg-card`, not a `bg-primary/5` tint. In light mode the empty track of
  * the bar (`bg-muted`) vanishes on that tint (visual review, 2026-10-02).
@@ -46,7 +48,11 @@ export function SyncBanner<A extends Mailbox>({ rows }: { rows: ReadonlyArray<Sy
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <Icon name="RefreshCw" size={12} className="flex-shrink-0 animate-spin text-primary" aria-hidden />
             <MailboxChip account={account} />
+            {/* The address is in the live text, hidden from the eye, so a
+                screen reader hears "<address>: Importing mail". The chip
+                beside it shows the mailbox to the eye. */}
             <p role="status" className="truncate text-xs font-medium text-foreground">
+              <span className="sr-only">{account.emailAddress}: </span>
               {line}
             </p>
           </div>

@@ -14406,8 +14406,9 @@ Check 1 compares `received_at` with `synced_at`, as in §14.6.3.
 `lib/onboarding.test.ts`.
 
 **Scope.** `syncBanners` and the header row of §14.4.6, for the first import. `FirstSyncBanner.tsx`
-goes. The poll of the first sync stays as it is. `syncBanners` already reads `resyncing`, so
-EM-S9b needs no UI change.
+goes. The poll of the first sync stays as it is. `syncBanners` already reads `resyncing`. EM-S9b
+still widens the poll (§14.6.9b item 5), because `isFirstSyncPending` does not see a Resync. Until
+then the fence `email-sync-banner-polls` marks the `resyncing` case as a known failure.
 
 **Acceptance.**
 
