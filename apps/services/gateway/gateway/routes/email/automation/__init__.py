@@ -15,6 +15,7 @@ from gateway.routes.email.automation import (
     drafting,
     engine,
     followups,
+    insights,  # noqa: F401 -- imported only so that its route registers
     learning,
     replyzero,
     rule_copy,
@@ -34,3 +35,5 @@ for _mod in (assistant, drafting, engine, replyzero, chat, followups,
         if not _k.startswith("__"):
             globals()[_k] = _v
 del _mod, _k, _v
+
+# `insights` (WS-17 EM-T14c) is not flattened. Its names stay in its module.

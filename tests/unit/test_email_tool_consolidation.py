@@ -101,8 +101,9 @@ def test_surface_shrank_and_merged_names_gone() -> None:
     # 41 after the consolidation pass, +1 for auto_categorize_inbox (the
     # uncategorized-inbox sweep — categorize_senders only re-projects existing
     # rule labels and cannot categorize mail the rules never reached), +1 for
-    # read_email_attachment (WS-17 EM-T11, the text of a file of a mail).
-    assert len(tools) == 43
+    # read_email_attachment (WS-17 EM-T11, the text of a file of a mail),
+    # +1 for query_insights (WS-17 EM-T14c, the facts of Insights).
+    assert len(tools) == 44
     for gone in ("search_emails", "get_important_emails", "find_urgent",
                  "find_needs_reply", "get_full_body_email", "update_rule_state",
                  "approve_execution", "reject_execution", "undo_execution",
@@ -120,7 +121,7 @@ def test_surface_shrank_and_merged_names_gone() -> None:
         assert gone not in tools
     for new in ("find_priority", "resolve_execution", "digest", "save_knowledge",
                 "list_patterns", "forget_pattern", "set_sender_status", "run_rules",
-                "read_email_attachment"):
+                "read_email_attachment", "query_insights"):
         assert new in tools
     # Quick-action helpers stay importable even though they're unregistered.
     assert callable(agents.search_emails) and callable(agents.find_urgent)
