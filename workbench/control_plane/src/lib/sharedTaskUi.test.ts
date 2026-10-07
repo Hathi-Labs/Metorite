@@ -710,7 +710,9 @@ describe("one filter row", () => {
     const src = code(TOOLBAR);
     expect(src).toMatch(/const searching = searchOpen\(\{ opened, draft: filters\.query \}\);/);
     expect(src).toMatch(
-      /\{searching \? \([\s\S]*?<Input[\s\S]*?aria-label="Search tasks"[\s\S]*?\) : \([\s\S]*?<Button[\s\S]*?icon="Search"[\s\S]*?onClick=\{\(\) => setOpened\(true\)\}/,
+      // The label is "Filter tasks" with the shell bar on, "Search tasks" off
+      // (`navigation_shell.md` §6.7 rule 2, `filterWord()`).
+      /\{searching \? \([\s\S]*?<Input[\s\S]*?aria-label=\{`\$\{filterWord\(\)\} tasks`\}[\s\S]*?\) : \([\s\S]*?<Button[\s\S]*?icon="Search"[\s\S]*?onClick=\{\(\) => setOpened\(true\)\}/,
     );
   });
 

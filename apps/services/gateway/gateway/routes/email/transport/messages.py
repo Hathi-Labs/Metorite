@@ -646,8 +646,20 @@ async def message_summaries(
 async def get_message(
     message_id: str,
     user: UserContext = Depends(get_current_user),
+    mark_read: bool = Query(
+        True,
+        description="False reads the mail with no change to its read state. "
+                    "A background read (WS-48 N2, narrow_and_read) is not the "
+                    "member opening the mail."),
 ):
-    """Get full email detail."""
+    """Get full email detail.
+
+    An open marks the mail read. ``mark_read=false`` leaves ``is_read`` as it
+    is (WS-48 N2). It changes nothing else: the owner scope, the body
+    hydration and the response are the same. The default keeps the app's
+    behaviour. ``is not False`` holds that default for a direct Python call,
+    where the ``Query`` default does not resolve.
+    """
     async with _tenant_session() as db:
         result = await db.execute(
             text(
@@ -674,14 +686,15 @@ async def get_message(
         # (WS-17 EM-T6c, owner answer Q4). A reopen loads it live again.
         store_body = not ingest_storage.at_limit(getattr(row, "stored_bytes", None))
 
-        # Mark as read
-        await db.execute(
-            text(
-                """UPDATE email_messages SET is_read = true, updated_at = now()
-                   WHERE id = :id AND is_read = false"""
-            ),
-            {"id": message_id},
-        )
+        # Mark as read, unless the caller asked for a read with no effect.
+        if mark_read is not False:
+            await db.execute(
+                text(
+                    """UPDATE email_messages SET is_read = true, updated_at = now()
+                       WHERE id = :id AND is_read = false"""
+                ),
+                {"id": message_id},
+            )
 
         msg = _row_to_message(row)
 

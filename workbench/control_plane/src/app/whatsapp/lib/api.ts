@@ -14,6 +14,7 @@ import type {
   WaChatContext,
   WaConnectionInfo,
   WaEmbeddedResult,
+  WaHistorySyncResult,
   WaLabel,
   WaMessage,
   WaPulse,
@@ -96,6 +97,15 @@ export function pickDefaultAccount<T extends { id: string; is_default?: boolean 
  *  messages sync until it's reconnected. */
 export function disconnectAccount(id: string) {
   return deleteJSON(`accounts/${id}`);
+}
+
+/** Start the coexistence history import again (WS-20 WA-C3 P4). The server
+ *  answers 409 after Meta's 24-hour window, and 400 when the import is off. */
+export function startHistoryImport(id: string) {
+  return postJSON<WaHistorySyncResult>(
+    `accounts/${encodeURIComponent(id)}/history-sync`,
+    {}
+  );
 }
 
 // ── Connect wizard (W11) ─────────────────────────────────────────────────────
