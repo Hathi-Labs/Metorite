@@ -29,13 +29,23 @@ vi.mock("@/auth", () => ({
 
 import { proxy } from "@/proxy";
 
-function request(pathname: string) {
+function request(pathname: string, cookies: Record<string, string> = {}) {
   const url = `https://app.example.test${pathname}`;
   return {
     nextUrl: new URL(url),
     url,
     headers: new Headers({ host: "app.example.test" }),
+    cookies: { getAll: () => Object.entries(cookies).map(([name, value]) => ({ name, value })) },
   } as unknown as Parameters<typeof proxy>[0];
+}
+
+/** The cookies a response deletes (an empty value with Max-Age=0). */
+function deleted(res: Response): string[] {
+  return res.headers
+    .getSetCookie()
+    .filter((l) => /Max-Age=0/i.test(l))
+    .map((l) => l.slice(0, l.indexOf("=")))
+    .sort();
 }
 
 /** `NextResponse.next()` carries this header. A refusal does not. */
@@ -101,5 +111,31 @@ describe("proxy — the admin-consent return (EM-T3c)", () => {
     const res = await proxy(request("/oauth/approved/x"));
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/signin");
+  });
+});
+
+describe("proxy — the account switcher's slots end with the session (MT-1k A2, rule 4)", () => {
+  const SLOTS = { "__Host-mt-acct-0": "a", "__Host-mt-acct-2": "b", "mt-acct-1": "c", other: "keep" };
+
+  it("deletes every slot when no session is live, on a public page too", async () => {
+    // The sign-in page is where a plain signOut() lands, so the sweep must run
+    // before the public-page early return.
+    for (const path of ["/signin", "/projects", "/api/tasks"]) {
+      const res = await proxy(request(path, SLOTS));
+      expect(deleted(res)).toEqual(["__Host-mt-acct-0", "__Host-mt-acct-2", "mt-acct-1"]);
+    }
+  });
+
+  it("keeps the slots while a session is live, on every step of Add another account", async () => {
+    // The stashed account A stays in the jar until the callback replaces it.
+    posture.session = { user: { email: "a@one.test" } };
+    for (const path of ["/projects", "/signin", "/api/auth/signin/google", "/api/auth/callback/google", "/signin/code"]) {
+      expect(deleted(await proxy(request(path, SLOTS)))).toEqual([]);
+    }
+  });
+
+  it("asks for no session when the browser holds no slot", async () => {
+    await proxy(request("/signin", { other: "x" }));
+    expect(posture.authCalls).toBe(0);
   });
 });

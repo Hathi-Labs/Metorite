@@ -29,6 +29,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { auth, isAuthEnabled, isAuthConfigured } from "@/auth";
+import { isSlotCookieName } from "@/lib/accountSlots";
 
 /** NextAuth's own endpoints, which must stay reachable to sign anybody in. */
 const AUTH_ROUTES = "/api/auth";
@@ -74,7 +75,40 @@ const PUBLIC_API_PATHS = new Set([
   "/api/health",
 ]);
 
+/**
+ * The account switcher's slots end with the session (MT-1k slice A2, rule 4).
+ *
+ * ⚠️ Enforced HERE, on every request, and not beside each sign-out button.
+ * Four paths end a session: the switcher's "Sign out of all accounts", a plain
+ * `signOut()` (the sign-up page, the old footer), Auth.js's own sign-out page,
+ * and an expiry. Only the first cleared the slots, so after the other three the
+ * next person at that computer could switch into the accounts left behind
+ * (security review, 2026-10-07). A request that carries slot cookies and no
+ * live session now gets them deleted, whichever way the session ended.
+ *
+ * `auth()` runs only when a slot cookie is present, so a browser that never
+ * used the switcher pays nothing. Fence: `proxy.test.ts`.
+ */
+async function sweepOrphanSlots(req: NextRequest, res: NextResponse): Promise<NextResponse> {
+  const slots = (req.cookies?.getAll?.() ?? []).filter((c) => isSlotCookieName(c.name));
+  if (slots.length === 0 || (await auth())) return res;
+  for (const c of slots) {
+    res.cookies.set(c.name, "", {
+      httpOnly: true,
+      secure: c.name.startsWith("__Host-"),
+      sameSite: "lax",
+      path: "/",
+      maxAge: 0,
+    });
+  }
+  return res;
+}
+
 export async function proxy(req: NextRequest) {
+  return sweepOrphanSlots(req, await gate(req));
+}
+
+async function gate(req: NextRequest): Promise<NextResponse> {
   // The laptop case, and ONLY the laptop case, runs open. This used to be
   // `!isAuthEnabled` where that merely meant "no client id configured", so a
   // production box whose auth env went missing served every route to anyone
