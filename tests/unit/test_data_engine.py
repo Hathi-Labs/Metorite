@@ -1270,6 +1270,22 @@ def test_too_many_zip_entries_are_refused_before_the_directory_is_read(
     assert made == []
 
 
+def test_the_entry_count_reads_a_zip64_end_record(tmp_path: Path) -> None:
+    """Past 65,535 entries, the end record says 0xFFFF, and the zip64 end
+    record holds the count. A file with no end record is no workbook."""
+    path = tmp_path / "many.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as zf:
+        for i in range(65_536):
+            zf.writestr(f"p{i}", b"")
+    assert E._zip_entries(path) == 65_536
+    plain = tmp_path / "plain.zip"
+    plain.write_bytes(xb.package({"a": b"1", "b": b"2"}))
+    assert E._zip_entries(plain) == 2
+    (tmp_path / "x.xlsx").write_bytes(b"not a zip at all")
+    with pytest.raises(E.Refused):
+        E._zip_entries(tmp_path / "x.xlsx")
+
+
 _LAUGHS = (
     '<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "lol">'
     '<!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">]>'
