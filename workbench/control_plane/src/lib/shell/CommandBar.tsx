@@ -80,13 +80,20 @@ export function CommandBar({
 
   // A fresh start on every open: the words it was opened with, and the token
   // of the app the member is in.
+  // ⚠️ Only at the moment it OPENS. It reset whenever `here` changed too, and
+  // `here` changes when access finishes loading after the bar opened, which
+  // wiped what the member had already typed (a 1-in-5 flake that was a real
+  // bug on a slow load).
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (!open) return;
-    setQuery(seed);
-    setToken(here);
-    setActive(0);
-    setRecent(readRecent(email));
-    setFilterName(pageFilterName());
+    if (open && !wasOpen.current) {
+      setQuery(seed);
+      setToken(here);
+      setActive(0);
+      setRecent(readRecent(email));
+      setFilterName(pageFilterName());
+    }
+    wasOpen.current = open;
   }, [open, seed, here, email]);
 
   const items = useMemo(() => buildItems(panes), [panes]);
@@ -95,7 +102,16 @@ export function CommandBar({
     const go = (item: BarItem) => () => {
       rememberRecent(email, item.key);
       onClose();
-      router.push(item.href);
+      // ⚠️ On the SAME page, change the address directly. A router push of a
+      // new query asks the server to render the page again first, and the job
+      // opened seconds late, or after the test gave up. Next follows the
+      // browser's own history, so `useSearchParams` still sees the job.
+      const url = new URL(item.href, window.location.origin);
+      if (url.pathname === window.location.pathname) {
+        window.history.pushState(null, "", `${url.pathname}${url.search}`);
+      } else {
+        router.push(item.href);
+      }
     };
     const ranked = rank({ items, query, context: token?.href ?? null, recent });
     const out: Row[] = [];

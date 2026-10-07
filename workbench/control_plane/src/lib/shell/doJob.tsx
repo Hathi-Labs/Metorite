@@ -23,7 +23,7 @@
  * Fence: `doJob.test.ts`.
  */
 import { Suspense, useEffect, useRef } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { shellBarOn } from "./registry";
 
 /** The `fill.<name>` parameters of a job link, as a plain record. */
@@ -64,7 +64,6 @@ export function ShellJob(props: ShellJobProps) {
 
 function Listen({ id, onOpen: open, ready = true }: ShellJobProps): null {
   const params = useSearchParams();
-  const router = useRouter();
   const pathname = usePathname();
   const asked = params?.get("do") === id;
   // The opener can change on every render. The effect reads the newest.
@@ -87,8 +86,10 @@ function Listen({ id, onOpen: open, ready = true }: ShellJobProps): null {
     if (doneFor.current === link) return;
     doneFor.current = link;
     const fields = jobFields(new URLSearchParams(params.toString()));
-    router.replace(withoutJob(pathname ?? "/", new URLSearchParams(params.toString())), { scroll: false });
+    // The browser's own history, not a router replace: the router asks the
+    // server to render the page again, which a job does not need.
+    window.history.replaceState(null, "", withoutJob(pathname ?? "/", new URLSearchParams(params.toString())));
     openRef.current(fields);
-  }, [asked, ready, params, pathname, router]);
+  }, [asked, ready, params, pathname]);
   return null;
 }
