@@ -268,3 +268,31 @@ async def test_a_participant_timeout_caps_a_shared_run_to_nothing(monkeypatch):
 
     assert authz is not None, "no filter at all: every credential reaches the run"
     assert authz("zoho-crm") is False
+
+
+async def test_an_actor_timeout_denies_every_credential(monkeypatch):
+    """🔴 Found in the security check of #708 (it predates the PR). The
+    ACTOR's own ``resolve_access`` timed out, and the broad catch in
+    ``executor._integration_authorizer`` returned ``None``: no filter, so the
+    run got every credential. A background email-automation run during IO
+    starvation is the likely case.
+
+    Mutation: delete the ``except IdentityUnavailable`` clause in
+    ``_integration_authorizer``. The authorizer is then ``None`` and this
+    test fails."""
+    import acb_auth
+    import acb_auth.access as access_mod
+    from orchestrator import executor
+
+    async def _resolve(email, **_k):
+        raise access_mod.IdentityUnavailable("access") from _POOL_TIMEOUT
+
+    monkeypatch.setattr(access_mod, "resolve_access", _resolve)
+    monkeypatch.setattr(acb_auth, "resolve_access", _resolve)
+
+    for thread_id in (None, "thread-1"):
+        authz = await executor._integration_authorizer(
+            {"user_email": "alice@example.com"}, thread_id)
+        assert authz is not None, "no filter at all: every credential reaches the run"
+        for service in ("zoho-crm", "gmail", "slack", "github"):
+            assert authz(service) is False
