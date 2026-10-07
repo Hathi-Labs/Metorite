@@ -6,6 +6,7 @@ import { Email } from "../lib/types";
 import { getEmail } from "../lib/api";
 import { fullDateLabel } from "../lib/utils";
 import { MessageContent } from "./MessageContent";
+import { remoteHtmlId } from "../lib/htmlPrefetch";
 
 /**
  * A lightweight, closable email preview. Fetches the full message by id and
@@ -98,7 +99,7 @@ export function EmailPreviewModal({
           ) : err ? (
             <div className="text-xs text-destructive">{err}</div>
           ) : e && (e.bodyHtml || e.bodyText) ? (
-            <MessageContent html={e.bodyHtml} text={e.bodyText} />
+            <MessageContent html={e.bodyHtml} text={e.bodyText} remoteId={remoteHtmlId(e)} />
           ) : (
             <div className="text-xs text-muted-foreground italic py-2">
               No preview text.

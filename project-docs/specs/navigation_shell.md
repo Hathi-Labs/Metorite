@@ -425,11 +425,19 @@ six example questions.
 | Tier | Budget | Where it runs | What it costs |
 |---|---|---|---|
 | **0 — the registry** | 50 ms | In the browser | Nothing. No server call |
-| **1 — record search** | 300 ms | One gateway route, `GET /shell/search`, which calls each provider in turn on the request's session | Nothing. No model |
+| **1 — record search** | 300 ms typical, 1.5 s ceiling | One gateway route, `GET /shell/search`, which calls each provider in turn on the request's session | Nothing. No model |
 | **2 — AI intent** | 1.5 s | `POST /shell/intent`, through the Router | Credits, metered (§6.5) |
 
 Each tier adds results under the ones already shown. A tier never moves a
-result that the member can already see.
+result that the member can already see. The two hand-off rows, "Show all in"
+and "Ask", are not results. They stay last, so Find arrives above them and
+pushes them down. The bar holds the highlight by its row, not by its place, so
+a late answer never changes what `Enter` runs.
+
+**The tier 1 ceiling.** The providers run one after another, so the route
+holds one total deadline of 1.5 s (`TOTAL_BUDGET_S`) and gives each provider
+what is left. The browser's abort reaches the gateway too, so a request whose
+words the member changed stops at once.
 
 **Tier 2 runs only when one of these is true:**
 
@@ -767,15 +775,16 @@ AGENT-SAFE. To turn any flag on in production is OWNER-GATE.
 keeps its toolbar row below the bar, on purpose: it holds the list filter,
 which §6.7 places above the list.
 
-⚠️ **Do not turn the flag on before NS-4a.** With the flag on, three old
-searches go, and their records come back only in the bar's Find group:
+✅ **NS-4a is built (2026-10-08), so the bar's Find group now holds what the
+three old searches found.** With the flag on, these searches go:
 
 - the Projects palette and its Search button
 - the My Tasks palette and its Search button, on desktop and on the phone
 - the Email palette and its `⌘K` button
 
-Until NS-4a ships, the bar cannot find a task, an email or a person by its
-words.
+Find covers task titles, email subjects and senders, and colleagues by name,
+title or department. The old Projects palette also ran its own commands, such
+as view switches. Those live on the Projects page itself.
 
 Flag `NEXT_PUBLIC_SHELL_BAR`. Files: `src/components/AppShell.tsx`,
 `src/components/AppTopBar.tsx`, a new `src/lib/shell/`, and the pages of
@@ -837,7 +846,41 @@ Done when:
    request.
 5. With the flag off, `/` renders "Welcome back" as it does today.
 
-### NS-4a · Tier 1, record search — AGENT-SAFE
+### NS-4a · Tier 1, record search — AGENT-SAFE · BUILT 2026-10-08, dark
+
+**Built.** `gateway/routes/shell/search.py` serves `GET /shell/search`. It has
+three providers, and each calls its app's own function on the member:
+
+| Provider | Feature | Function |
+|---|---|---|
+| Tasks | `projects` | `search_tasks` |
+| Email | `email` | `search_messages` |
+| People | `people` | `list_directory` |
+
+⚠️ Each app checks its feature on its ROUTER, so a direct call skips that
+check. Each provider therefore checks the feature itself first. The providers
+run one after another. Each has a time limit of one second, and all of them
+share one deadline of 1.5 s (§6.3). A provider that fails is left out.
+
+The command bar's **Find** group shows the records under the rows already
+shown. The bar holds the highlighted row by its key, so a late answer never
+moves the member's choice.
+
+Fences:
+
+- `tests/unit/test_shell_search.py`: a negative case per provider, the member
+  passed unchanged, one provider at a time, and the email call in step with
+  its route.
+- `tests/unit/test_shell_search_r8.py`: R8 for tasks. Org B's task never
+  returns to a member of org A.
+- `tests/unit/test_shell_search_email_r8.py`: R8 for email, as the
+  non-privileged role with RLS forced. Another member's message and the
+  member's own separate mailbox never return.
+- `tests/unit/test_shell_search_people.py`: the people provider never matches
+  a colleague by a skill for a member without HR read.
+- Both R8 files ran on 2026-10-08 against a private ladder database, because
+  the shared one hits H-172.
+- `e2e/shell-bar.spec.ts`: the Find group.
 
 Flag `NEXT_PUBLIC_SHELL_BAR`. Files: `gateway/routes/shell/search.py` and one
 provider per app that has search today.

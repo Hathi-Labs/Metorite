@@ -1362,6 +1362,17 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # NS-4a — the command bar's "Find" (navigation_shell.md §6.3). One route
+    # that calls each app's OWN search on the member, behind that app's own
+    # feature check. No router-level feature gate: the member's apps decide
+    # which groups come back, and an app they lack is left out, not refused.
+    from gateway.routes.shell import router as _shell_router
+
+    app.include_router(_shell_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     from gateway.routes.settings import router as _settings_router
 
     app.include_router(_settings_router)

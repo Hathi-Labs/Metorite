@@ -216,6 +216,67 @@ test.describe("desktop", () => {
   });
 });
 
+test.describe("Find (NS-4a)", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  const GROUPS = {
+    groups: [
+      { app: "tasks", label: "Tasks", items: [{ kind: "task", title: "Calibrate the extruder", hint: "Task · Hardware", href: "/projects?task=t-1" }] },
+      { app: "people", label: "People", items: [{ kind: "person", title: "Priya Rao", hint: "Person · Firmware lead", href: "/people/p-1" }] },
+    ],
+  };
+
+  test("records from the member's apps arrive under the rows already shown", async ({ page }) => {
+    await shellOn(page);
+    await stub(page);
+    const asked: string[] = [];
+    await page.route(/\/api\/shell\/search\?.*/, (r) => {
+      asked.push(new URL(r.request().url()).searchParams.get("q") ?? "");
+      return r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(GROUPS) });
+    });
+    await page.goto("/settings/appearance");
+    await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
+    await field(page).fill("priya");
+    const find = commandBar(page).getByRole("group", { name: "Find" });
+    await expect(find.getByRole("option")).toHaveCount(2);
+    await expect(find).toContainText("Person · Firmware lead");
+    // One request for the words, not one per key.
+    expect(asked).toEqual(["priya"]);
+    await find.getByRole("option", { name: /Priya Rao/ }).click();
+    await page.waitForURL((u) => u.pathname === "/people/p-1");
+  });
+
+  test("a row the member highlighted stays highlighted when Find arrives late", async ({ page }) => {
+    await shellOn(page);
+    await stub(page);
+    await page.route(/\/api\/shell\/search\?.*/, async (r) => {
+      await new Promise((res) => setTimeout(res, 900));
+      return r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(GROUPS) });
+    });
+    await page.goto("/settings/appearance");
+    await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
+    await field(page).fill("who is free friday");
+    // The last row is Ask. Highlight it before Find answers.
+    await page.keyboard.press("ArrowUp");
+    await expect(commandBar(page).getByRole("option", { selected: true })).toContainText("Ask the assistant");
+    await expect(commandBar(page).getByRole("group", { name: "Find" })).toBeVisible();
+    await expect(commandBar(page).getByRole("option", { selected: true })).toContainText("Ask the assistant");
+    await page.keyboard.press("Enter");
+    await page.waitForURL((u) => u.pathname === "/chat");
+  });
+
+  test("a gateway that is away leaves the other groups working", async ({ page }) => {
+    await shellOn(page);
+    await stub(page);
+    await page.route(/\/api\/shell\/search\?.*/, (r) => r.fulfill({ status: 502, body: "" }));
+    await page.goto("/settings/appearance");
+    await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
+    await field(page).fill("email");
+    await expect(commandBar(page).getByRole("option").first()).toContainText("Write an email");
+    await expect(commandBar(page).getByRole("group", { name: "Find" })).toHaveCount(0);
+  });
+});
+
 test.describe("phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 

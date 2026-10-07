@@ -22,6 +22,7 @@ import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { ComposerQuote, AiButton } from "./ComposerAI";
 import { DraftAssistant } from "./DraftAssistant";
 import { MessageContent } from "./MessageContent";
+import { remoteHtmlId } from "../lib/htmlPrefetch";
 import { AttachmentList } from "./AttachmentList";
 import { getSignatureText, seededBody, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
@@ -1274,7 +1275,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
             </button>
           </div>
         ) : (
-          <MessageContent html={view.bodyHtml} text={view.bodyText} />
+          <MessageContent
+            html={view.bodyHtml}
+            text={view.bodyText}
+            remoteId={remoteHtmlId(view)}
+          />
         )}
 
         {/* "Load full message" button — appears when body was truncated at sync */}

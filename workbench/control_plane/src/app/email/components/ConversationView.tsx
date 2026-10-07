@@ -12,6 +12,7 @@ import { useEmailStore } from "../lib/emailStore";
 import { ComposerQuote, AiButton } from "./ComposerAI";
 import { DraftAssistant } from "./DraftAssistant";
 import { MessageContent } from "./MessageContent";
+import { remoteHtmlId } from "../lib/htmlPrefetch";
 import { AttachmentList } from "./AttachmentList";
 import { getSignatureText, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
@@ -260,7 +261,11 @@ export function ConversationView({
                   )}
                 </div>
                 {view.bodyHtml || view.bodyText ? (
-                  <MessageContent html={view.bodyHtml} text={view.bodyText} />
+                  <MessageContent
+                    html={view.bodyHtml}
+                    text={view.bodyText}
+                    remoteId={remoteHtmlId(view)}
+                  />
                 ) : (
                   <div className="text-xs text-muted-foreground italic py-2">
                     No preview text.
