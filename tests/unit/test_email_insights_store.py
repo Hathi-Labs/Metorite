@@ -308,6 +308,32 @@ class TestTheDedupeKey:
         assert key.startswith("invoice|m-1|") and key == same
 
 
+class TestTheValuesFitTheirColumns:
+    """Review round 1 re-check (P3-a). Each value that ``_clean`` and the
+    version check pass fits its column, so nothing raises after the DELETE."""
+
+    @pytest.mark.parametrize("currency", ["INR\n", "INR ", "\nINR", "IN", "INRR"])
+    def test_a_currency_that_is_not_exactly_three_letters_is_dropped(self, currency):
+        row = store._clean(_invoice(currency=currency))
+        assert row is not None and row["currency"] is None
+
+    @pytest.mark.parametrize("version", ["fin-2\n", "fin-2 ", "\nfin-2"])
+    async def test_a_version_with_a_newline_raises(self, version):
+        token = bind_tenant(str(uuid.uuid4()))
+        try:
+            with pytest.raises(ValueError):
+                await store.write_facts(None, "a", "m", None, version, [])
+        finally:
+            release_tenant(token)
+
+    @pytest.mark.parametrize(("conf", "want"), [
+        (1e-50, 0.0), (0.004, 0.0), (0.006, 0.01), (0.899999, 0.9), (1, 1.0),
+    ])
+    def test_a_confidence_is_rounded_to_two_places(self, conf, want):
+        row = store._clean(_invoice(confidence=conf))
+        assert row is not None and row["confidence"] == want
+
+
 class TestTheGuardsBeforeTheDatabase:
     async def test_no_tenant_raises_before_any_sql(self):
         with pytest.raises(TenantUnbound):
@@ -694,6 +720,24 @@ class TestTheDedupe:
             (row,) = _facts(p.admin_engine, account_id=box.aid)
             assert row["dedupe_key"] == "invoice|inv-77|100.00|inr|vendor.test"
             assert str(row["message_id"]) == billing
+        finally:
+            _purge(p.admin_engine, f"%-{tag}@t14a.test")
+
+    async def test_values_that_raised_in_the_database_now_write(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Review round 1 re-check (P3-a): ``"INR\\n"`` raised "value too long
+        for type character(3)", and ``1e-50`` raised "underflow" on the REAL
+        column, both after the DELETE."""
+        p, tag = promoted, uuid.uuid4().hex[:8]
+        box = _mailbox(p, p.org_b, tag)
+        mail = _message(p.admin_engine, org=p.org_b, account_id=box.aid)
+        try:
+            res = await _write(p, p.org_b, box.aid, mail, None, "fin-1", [
+                _invoice(currency="INR\n", confidence=1e-50)])
+            assert res.written == 1
+            (row,) = _facts(p.admin_engine, account_id=box.aid)
+            assert (row["currency"], row["confidence"]) == (None, 0.0)
         finally:
             _purge(p.admin_engine, f"%-{tag}@t14a.test")
 

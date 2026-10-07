@@ -122,9 +122,15 @@ CAPS: MappingProxyType[str, int] = MappingProxyType({
 })
 
 _DIRECTIONS = frozenset({"payable", "receivable"})
-_CURRENCY = re.compile(r"^[A-Z]{3}$")
+# ⚠️ Both patterns go through ``fullmatch``, never ``match``. A Python ``$``
+# also matches before a final newline, so ``match`` let ``"INR\n"`` reach the
+# ``char(3)`` column and raise after the DELETE (review round 1 re-check).
+_CURRENCY = re.compile(r"[A-Z]{3}")
 #: ``<extractor>-<n>``, for example ``fin-1``. The number orders the versions.
-_VERSION = re.compile(r"^([a-z]+)-([0-9]{1,6})$")
+_VERSION = re.compile(r"([a-z]+)-([0-9]{1,6})")
+#: Code rounds a confidence to this many places. A REAL column raises
+#: "underflow" for a value such as ``1e-50``.
+_CONFIDENCE_PLACES = 2
 #: An amount fits ``numeric(18,2)`` below this bound.
 _AMOUNT_BOUND = Decimal("1e16")
 _CENT = Decimal("0.01")
@@ -239,7 +245,8 @@ def _clean(fact: Fact) -> dict[str, Any] | None:
         return None
     row: dict[str, Any] = {
         "domain": domain, "fact_type": fact.fact_type, "title": title,
-        "quote": quote, "confidence": float(conf),
+        "quote": quote,
+        "confidence": round(float(conf), _CONFIDENCE_PLACES),
         "direction": None, "counterpart": None, "ref": None,
         "amount": None, "currency": None, "due_on": None,
     }
@@ -252,7 +259,7 @@ def _clean(fact: Fact) -> dict[str, Any] | None:
     if "amount" in fields:
         row["amount"] = _clean_amount(fact.amount)
     if ("currency" in fields and isinstance(fact.currency, str)
-            and _CURRENCY.match(fact.currency)):
+            and _CURRENCY.fullmatch(fact.currency)):
         row["currency"] = fact.currency
     if "due_on" in fields:
         row["due_on"] = _clean_due(fact.due_on)
@@ -381,7 +388,7 @@ async def write_facts(
     org = current_tenant()
     if not org:
         raise TenantUnbound("write_facts needs the tenant of the mailbox")
-    match = _VERSION.match(version or "")
+    match = _VERSION.fullmatch(version or "")
     if not match:
         raise ValueError(f"extractor version {version!r} is not <name>-<n>")
     family, num = match.group(1), int(match.group(2))
@@ -392,9 +399,13 @@ async def write_facts(
         return _refuse("bad_id")
     ids = {"account_id": aid, "message_id": mid, "attachment_id": att}
 
-    # 0. Clean every fact BEFORE any SQL runs (review round 1, P2). A value
-    #    that cannot reach the database must fail here, never after the
-    #    DELETE below has run in the caller's session (H-249).
+    # 0. Clean every fact BEFORE any SQL runs (review round 1, P2). After
+    #    ``_clean`` each value fits its column: each text encodes and has no
+    #    NUL, ``currency`` is exactly three letters, ``amount`` fits
+    #    ``numeric(18,2)``, ``confidence`` is rounded to two places (no REAL
+    #    underflow), and ``version`` matched above with ``fullmatch``. So no
+    #    value can raise after the DELETE below has run in the caller's
+    #    session (H-249). Fence: ``TestTheValuesFitTheirColumns``.
     rows: list[dict[str, Any]] = []
     dropped = 0
     for fact in facts:
