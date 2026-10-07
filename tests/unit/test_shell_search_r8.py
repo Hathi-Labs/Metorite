@@ -15,11 +15,11 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from gateway.routes.projects import search as projects_route  # noqa: E402
-from gateway.routes.shell import search as shell  # noqa: E402
+from gateway.routes.projects import search as projects_route
+from gateway.routes.shell import search as shell
 
 # The seed, its URL guard and its helpers, shared rather than copied.
-from tests.unit.test_projects_search_r8 import (  # noqa: E402,F401
+from tests.unit.test_projects_search_r8 import (  # noqa: F401
     ACTOR,
     _async_url,
     _visibility,
@@ -28,7 +28,10 @@ from tests.unit.test_projects_search_r8 import (  # noqa: E402,F401
 )
 
 
-async def _shell(seeded, monkeypatch, q: str) -> dict:
+async def _shell(seeded, monkeypatch, q: str) -> dict:  # noqa: F811
+    # Room for a cold database. The log checks prove the provider finished.
+    monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 30.0)
+    monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 60.0)
     from contextlib import asynccontextmanager
 
     from acb_auth import UserContext, UserRole, build_access
@@ -56,7 +59,7 @@ async def _shell(seeded, monkeypatch, q: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_the_bar_finds_this_orgs_task_by_its_words(seeded, monkeypatch):
+async def test_the_bar_finds_this_orgs_task_by_its_words(seeded, monkeypatch):  # noqa: F811
     body = await _shell(seeded, monkeypatch, "extruder")
     groups = {g["app"]: g for g in body["groups"]}
     assert list(groups) == ["tasks"], "only the app the member holds answers"
@@ -68,12 +71,12 @@ async def test_the_bar_finds_this_orgs_task_by_its_words(seeded, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_bar_never_returns_another_orgs_task(seeded, monkeypatch, caplog):
+async def test_the_bar_never_returns_another_orgs_task(seeded, monkeypatch, caplog):  # noqa: F811
     # ⚠️ A provider that FAILED also returns no group, so an empty answer
     # alone would pass on a broken build. The log says whether it ran clean.
     import logging
 
-    with caplog.at_level(logging.WARNING, logger=shell.__name__):
+    with caplog.at_level(logging.INFO, logger=shell.__name__):
         body = await _shell(seeded, monkeypatch, "Beta secret")
     assert body["groups"] == []
     assert not [r for r in caplog.records if "provider failed" in r.getMessage()]

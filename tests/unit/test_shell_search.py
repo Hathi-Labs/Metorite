@@ -26,7 +26,7 @@ import pytest
 from acb_auth.permissions import EffectiveAccess
 from acb_auth.roles import UserContext, UserRole
 from fastapi import HTTPException
-
+from gateway.routes.email.transport.search import search_messages as _real_search_messages
 from gateway.routes.shell import search as shell
 
 
@@ -176,8 +176,7 @@ class TestTheAnswer:
         assert len(answer["query"]) == 200
 
 
-# Read at import time, before any fixture swaps the function.
-from gateway.routes.email.transport.search import search_messages as _real_search_messages  # noqa: E402
+# The REAL route signature, read at import time, before any fixture swaps it.
 
 REAL_EMAIL_PARAMS = frozenset(inspect.signature(_real_search_messages).parameters)
 
@@ -196,12 +195,11 @@ class TestTheRouteIsMounted:
         # `main.py` mounts every router inside `try/except: pass`, so an import
         # error would hide the route. This finds it.
         monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "test-internal-token")
-        from gateway.main import app
-
         # ⚠️ Not `app.routes`. Since FastAPI 0.137 a router's routes are not
         # copied into its parent, so a mounted router's paths are not there.
         # `iter_route_contexts` is how `acb_auth.deps` reads them too.
         from fastapi.routing import iter_route_contexts
+        from gateway.main import app
 
         paths = {getattr(c, "path", None) for c in iter_route_contexts(app.routes)}
         assert "/shell/search" in paths

@@ -9,8 +9,8 @@
  *   • **Go to** — the apps this member holds.
  *   • **Find** — records from each app the member holds: tasks, emails and
  *     people (NS-4a, `GET /api/shell/search`). They arrive a moment later,
- *     UNDER the rows already shown, so nothing the member can see moves
- *     (§6.3).
+ *     under the Do and Go to results, which never move. The two hand-off
+ *     rows below them move down, and the highlight follows its row (§6.3).
  *   • **In this page** — "Show all in your Inbox", which hands the words to the
  *     page's own filter (§6.7 rule 3). Only when the page has a filter.
  *   • **Ask** — "Ask the assistant", which opens the assistant with the words
