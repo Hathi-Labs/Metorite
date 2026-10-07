@@ -56,7 +56,12 @@ def test_shared_helper_persists_unsubscribe_link():
         "persist.upsert_message no longer binds unsubscribe_link — a "
         "background/webhook-synced email would lose one-click unsubscribe."
     )
-    assert "unsubscribe_link = COALESCE(EXCLUDED.unsubscribe_link" in src, (
+    # The SET is built from one column list since 2026-10-07 (the "changed?"
+    # guard), so read the rendered SQL and not the source text.
+    from email_ingestion.persist import _ON_CONFLICT_UPDATE
+
+    assert ("unsubscribe_link = COALESCE(EXCLUDED.unsubscribe_link"
+            in _ON_CONFLICT_UPDATE), (
         "the shared upsert must PRESERVE an already-parsed unsubscribe link when "
         "a later sync re-sends the row without one (COALESCE), not clobber it."
     )
