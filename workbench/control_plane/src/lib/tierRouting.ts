@@ -81,7 +81,7 @@ export interface ComposerModelPlan {
  *   sent in that window runs on the agent's default, as "auto" does today.
  *   The persist effect restores the choice once the list lands.
  * - **UI flag on, agent covered:** no picker, no fetch, no stored choice and no
- *   `model` field. The effort selector stays (§5, Q3).
+ *   `model` field. `composerControls` decides the effort selector.
  * - **UI flag on, agent not covered:** everything as today.
  */
 export function composerModelPlan(input: {
@@ -95,6 +95,140 @@ export function composerModelPlan(input: {
   const covered = input.agentsKnown && agentTierRouted(input.entry);
   const live = input.agentsKnown && !covered;
   return { covered, showPicker: live, fetchModels: live, rememberModel: live, sendModel: !covered };
+}
+
+// ── No effort and no agent for the member (owner, 2026-10-07) ───────────────
+
+/** The three effort states. The server keeps all three (§5). */
+export type ThinkMode = "auto" | "thinking" | "max";
+
+/** The other controls of the composer's bar, for the agent in view. */
+export interface ComposerControls {
+  /** Draw the effort selector (Auto, Thinking, Max). */
+  showEffort: boolean;
+  /** Draw the composer's agent selector. Only the orchestrator has one. */
+  showAgentSwitch: boolean;
+}
+
+/**
+ * The composer's effort selector and agent selector (amendment of D90 §5 and
+ * §7, owner 2026-10-07). The chat is a multi-agent, multi-model system, so the
+ * member chooses neither the effort nor the agent.
+ *
+ * - **UI flag off:** both as today. The agent selector is the orchestrator's.
+ * - **UI flag on, agent covered:** neither. The run sends `think_mode` "auto"
+ *   (`sentThinkMode`), and the executor reads the effort from the member's
+ *   words. The orchestrator routes to the right agent (`call_agent`).
+ * - **UI flag on, agent list not loaded yet:** neither, so a control does not
+ *   draw and then leave. The same rule as the model picker.
+ * - **UI flag on, agent not covered:** both as today.
+ */
+export function composerControls(input: {
+  uiOn: boolean;
+  agentsKnown: boolean;
+  entry: TierRoutedEntry | null | undefined;
+  isOrchestrator: boolean;
+}): ComposerControls {
+  const live = !input.uiOn || (input.agentsKnown && !agentTierRouted(input.entry));
+  return { showEffort: live, showAgentSwitch: input.isOrchestrator && live };
+}
+
+/**
+ * The `think_mode` the run sends. A covered agent always sends "auto", also
+ * when the member chose Thinking or Max on an agent that was not covered and
+ * then switched (owner, 2026-10-07).
+ */
+export function sentThinkMode(covered: boolean, mode: ThinkMode): ThinkMode {
+  return covered ? "auto" : mode;
+}
+
+// ── Which agent a `/chat` conversation talks to (owner, 2026-10-07) ─────────
+
+/** The agent of every new `/chat` conversation when the member does not choose. */
+export const CHAT_AGENT = "orchestrator";
+
+/**
+ * Who picks the agent of a NEW `/chat` conversation.
+ *
+ * - `member`: the "New session" picker, as today. UI flag off, or the
+ *   orchestrator is not covered.
+ * - `orchestrator`: no picker. A new conversation talks to the orchestrator,
+ *   which routes to the right agent.
+ * - `pending`: UI flag on, and the agent list has not answered. The picker
+ *   does not draw yet, so it cannot flash.
+ *
+ * It decides NEW conversations only. An existing conversation always opens
+ * with its own agent (`initialChatOpen`), so no history breaks.
+ */
+export type ChatAgentChoice = "member" | "orchestrator" | "pending";
+
+export function chatAgentChoice(input: {
+  uiOn: boolean;
+  agentsKnown: boolean;
+  entries: readonly TierRoutedEntry[];
+}): ChatAgentChoice {
+  if (!input.uiOn) return "member";
+  if (!input.agentsKnown) return "pending";
+  const orchestrator = input.entries.find((a) => a.name === CHAT_AGENT);
+  return agentTierRouted(orchestrator) ? "orchestrator" : "member";
+}
+
+/**
+ * What "+ New conversation" does. `create` starts an orchestrator chat with no
+ * picker. `picker` opens the picker, as today. `wait` remembers the press until
+ * the agent list answers.
+ */
+export function newChatAction(choice: ChatAgentChoice): "create" | "picker" | "wait" {
+  if (choice === "orchestrator") return "create";
+  return choice === "pending" ? "wait" : "picker";
+}
+
+/**
+ * True when the "New session" picker draws. A conversation whose agent is not
+ * known (`isUnresolvedAgent`) still draws it, with any choice. The picker then
+ * names the agent of a conversation that exists, so its history keeps the
+ * right agent.
+ */
+export function agentPickerShows(input: {
+  requested: boolean;
+  choice: ChatAgentChoice;
+  repairing: boolean;
+}): boolean {
+  if (!input.requested) return false;
+  return input.repairing || input.choice === "member";
+}
+
+/** The part of a stored `/chat` session that `initialChatOpen` reads. */
+export interface ChatSessionRef {
+  id: string;
+  agentName: string;
+}
+
+/**
+ * Which conversation `/chat` opens when it loads, and with which agent.
+ *
+ * - `?agent=<name>` opens that agent's latest conversation, or creates one.
+ *   The `/agents` page links to `/chat` this way, so it stays with either
+ *   choice.
+ * - Else the latest conversation opens, with ITS agent. A conversation on
+ *   another agent continues with that agent, also when the orchestrator is
+ *   covered. Its history never moves to a second agent.
+ * - No conversation: none opens. `/chat` then asks for a new one.
+ */
+export type InitialChatOpen =
+  | { kind: "open"; id: string }
+  | { kind: "create"; agent: string }
+  | { kind: "none" };
+
+export function initialChatOpen(input: {
+  sessions: readonly ChatSessionRef[];
+  agentParam: string | null | undefined;
+}): InitialChatOpen {
+  if (input.agentParam) {
+    const match = input.sessions.find((s) => s.agentName === input.agentParam);
+    return match ? { kind: "open", id: match.id } : { kind: "create", agent: input.agentParam };
+  }
+  return input.sessions.length > 0 ? { kind: "open", id: input.sessions[0].id } : { kind: "none" };
 }
 
 /**

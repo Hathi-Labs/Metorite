@@ -8,6 +8,14 @@ S1 built two parts of this module:
   names the agents that the policy covers. It fails closed.
 * The System-1 tier and its threshold per effort (§5, Q7).
 
+The amendment of 2026-10-07 (owner) adds one part:
+
+* The member chooses no effort in the chat. The turn-kind question also asks
+  whether the member explicitly asks for deep, careful or thorough work, in
+  the SAME request. A yes at or above the threshold makes the run's effort
+  ``thinking``, never ``max``. A short message makes no request, and a cheap
+  keyword check (:func:`asks_for_depth`) reads it instead.
+
 S2 adds the rest:
 
 * The table of §4.1 (:data:`KIND_TIERS`), the tool hints of §4.4
@@ -34,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -141,6 +150,63 @@ TURN_QUESTION = (
     "plan: plan many steps, schedule or rebalance work. "
     "analysis: a hard analysis, a forecast or a conflict read with many parts."
 )
+
+# ── The effort from the member's words (owner, 2026-10-07) ───────────────────
+
+#: The effort that an explicit request for deep work gives. The existing
+#: ``thinking`` state, NEVER ``max``: the member's words raise the effort one
+#: step, and no words make a turn cost the Max rate.
+TEXT_EFFORT = "thinking"
+
+#: The second item of the turn-kind request. It goes in the SAME request as
+#: :data:`TURN_QUESTION`, because one ``system_one.ask`` call is one request.
+EFFORT_QUESTION = (
+    "Does the member explicitly ask for deep, careful or thorough work, for "
+    "example 'think hard', 'be thorough', 'take your time' or 'a detailed "
+    "analysis'? Answer no when the message only asks for something, however "
+    "large."
+)
+
+#: The explicit phrases that the keyword check finds in a SHORT message, with
+#: no model. A short message sends no request, so this is all it gets. A bare
+#: "thoroughly" does not count ("I thoroughly enjoyed it"). It counts after a
+#: verb of work.
+DEPTH_PHRASES = re.compile(
+    r"\b(?:"
+    r"think(?:ing)?\s+(?:hard|harder|deeply|deeper|carefully|it\s+through)"
+    r"|be\s+(?:very\s+|extra\s+|really\s+)?(?:thorough|careful|meticulous)"
+    r"|(?:check|review|read|test|analy[sz]e|examine|investigate|go\s+through)"
+    r"\s+(?:\w+\s+){0,3}?thoroughly"
+    r"|an?\s+(?:very\s+)?thorough"
+    r"|take\s+your\s+time"
+    r"|detailed\s+analysis"
+    r"|in[-\s]depth"
+    r"|deep\s+dive"
+    r")\b",
+    re.IGNORECASE,
+)
+
+#: The words before a phrase that turn it into its opposite ("no need to be
+#: thorough", "do not think hard"). They count within two words of it.
+_NEGATION = re.compile(
+    r"\b(?:no\s+need\s+to|needn'?t|don'?t|do\s+not|not|never|without)"
+    r"\s+(?:\w+\s+){0,2}$",
+    re.IGNORECASE,
+)
+
+
+def asks_for_depth(message: str | None) -> bool:
+    """True when *message* holds an explicit request for deep work.
+
+    The cheap check, with no model, for a message too short for the turn-kind
+    request. It reads the first :data:`TURN_MESSAGE_MAX` characters only. A
+    phrase right after a negation does not count.
+    """
+    text = str(message or "")[:TURN_MESSAGE_MAX]
+    for match in DEPTH_PHRASES.finditer(text):
+        if not _NEGATION.search(text[max(0, match.start() - 40):match.start()]):
+            return True
+    return False
 
 #: The ``ai.route`` AG-UI custom event (§7.2). S3 folds these into a label.
 ROUTE_EVENT = "ai.route"
@@ -302,11 +368,17 @@ class TurnKind:
     ``source`` is ``system_one``, ``short``, ``max``, ``unsure``,
     ``timeout``, ``unavailable`` or ``error``. ``latency_ms`` is the time of
     the System-1 question, or ``None`` when no question went out.
+
+    ``effort`` is :data:`TEXT_EFFORT` when the member's words explicitly ask
+    for deep work, else ``None`` (the run keeps its effort). ``effort_source``
+    is ``system_one`` or ``keyword``, or ``None`` with no effort.
     """
 
     kind: str
     source: str
     latency_ms: int | None = None
+    effort: str | None = None
+    effort_source: str | None = None
 
 
 def _turn_context(message: str, tools: Iterable[str]) -> str:
@@ -317,7 +389,13 @@ def _turn_context(message: str, tools: Iterable[str]) -> str:
     )
 
 
-async def turn_kind(message: str, tools: Iterable[str], effort: str | None) -> TurnKind:
+async def turn_kind(
+    message: str,
+    tools: Iterable[str],
+    effort: str | None,
+    *,
+    read_effort: bool = False,
+) -> TurnKind:
     """Ask System 1 the kind of this turn. ONE ``tier-fast`` request, or none.
 
     The question sends the member's last message and the names of the tools
@@ -329,17 +407,35 @@ async def turn_kind(message: str, tools: Iterable[str], effort: str | None) -> T
       question.
     * A confidence under the threshold of the effort, a timeout of
       :data:`TURN_KIND_TIMEOUT_S` and a System-1 failure are ``chat``.
+
+    *read_effort* (owner, 2026-10-07): the executor passes it for the
+    member's own turn. Under ``auto``, the same request then holds a second
+    item, :data:`EFFORT_QUESTION`. A ``yes`` at or above the threshold sets
+    ``effort`` to :data:`TEXT_EFFORT`. A short message sends no request, and
+    :func:`asks_for_depth` reads it instead. A timeout or a failure reads as
+    no effort.
     """
     mode = normalise_effort(effort)
     if mode == "max":
         return TurnKind("chat", "max")
+    # The member's words can only raise ``auto``. Thinking is already there.
+    wants_effort = read_effort and mode == "auto"
     if len(str(message or "").split()) < SHORT_MESSAGE_WORDS:
+        if wants_effort and asks_for_depth(message):
+            return TurnKind("chat", "short", effort=TEXT_EFFORT, effort_source="keyword")
         return TurnKind("chat", "short")
     from acb_skills import system_one
 
     item = system_one.Item(
         id="turn", question=TURN_QUESTION, kind="choice", options=TURN_KINDS,
     )
+    # One request holds both items: ``ask`` sends a batch as ONE request.
+    items = [item]
+    if wants_effort:
+        items.append(system_one.Item(
+            id="effort", question=EFFORT_QUESTION, kind="yes_no",
+            options=system_one.YES_NO,
+        ))
     # So the 1.5 s counts the exchange, not an import. An import fault reads
     # as no answer, below.
     with contextlib.suppress(Exception):
@@ -352,7 +448,7 @@ async def turn_kind(message: str, tools: Iterable[str], effort: str | None) -> T
     try:
         answers = await asyncio.wait_for(
             system_one.ask(
-                _turn_context(message, tools), [item],
+                _turn_context(message, tools), items,
                 timeout_s=TURN_KIND_TIMEOUT_S,
             ),
             timeout=TURN_KIND_TIMEOUT_S,
@@ -364,15 +460,25 @@ async def turn_kind(message: str, tools: Iterable[str], effort: str | None) -> T
     except Exception as exc:  # the question never breaks a turn
         _log.warning("tier_policy.turn_kind_failed", error_type=type(exc).__name__)
         return TurnKind("chat", "error", _ms())
-    answer = answers[0] if answers else None
+    threshold = system_one_threshold(mode)
+    by_id = {a.id: a for a in answers or []}
+    answer = by_id.get("turn")
+    deep = by_id.get("effort")
+    # The two items stand alone: an unsure kind keeps a sure effort.
+    text_effort: dict[str, str] = {}
+    if (
+        wants_effort and deep is not None and deep.choice == "yes"
+        and deep.confidence is not None and deep.confidence >= threshold
+    ):
+        text_effort = {"effort": TEXT_EFFORT, "effort_source": "system_one"}
     if (
         answer is None
         or answer.choice not in TURN_KINDS
         or answer.confidence is None
-        or answer.confidence < system_one_threshold(mode)
+        or answer.confidence < threshold
     ):
-        return TurnKind("chat", "unsure", _ms())
-    return TurnKind(answer.choice, "system_one", _ms())
+        return TurnKind("chat", "unsure", _ms(), **text_effort)
+    return TurnKind(answer.choice, "system_one", _ms(), **text_effort)
 
 
 # ── The per-run policy and its middleware (§4.5) ────────────────────────────
