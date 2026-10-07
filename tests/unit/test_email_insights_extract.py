@@ -6,13 +6,16 @@ Spec: ``project-docs/specs/email_app_master_plan.md`` §13.4, §13.5 items 4,
 R7 fences named here:
 
 * ``insights-quote``: a fact whose quote is not in the folded source is
-  dropped. The injection mail of the eval set gives no fact in ``--scripted``
-  mode.
+  dropped. The fabricated quote of the injection mail gives no fact. An
+  honest quote of the same mail still gives a fact, with no amount and no
+  date, so the screen and the card are the guards there.
 * ``insights-amount``: each case of ``tests/fixtures/amount_cases.json``
   parses to its amount and currency. The amount, the currency and the date
   that a model gives are never stored (D-EM-41).
 * ``insights-due``: a date needs a day, a month and a year. A numeric date
-  with both parts at 12 or less, and a relative date, give no date.
+  with both parts at 12 or less, and a relative date, give no date. A full
+  date beside a second date signal gives no date. The date of the quote is
+  kept only when the claim of the model parses to the same date.
 * ``insights-answer``: the answer must be an object with a ``facts`` list,
   and code keeps at most 10 facts. An unknown type, a type of another domain
   and a key outside the type are dropped. ``ref`` and ``counterpart`` must
@@ -21,7 +24,7 @@ R7 fences named here:
   from ``insights_store`` and keeps no copy.
 * ``insights-eval``: the set holds 40 mails or more with each case of
   §13.9.2 item 3, the scripted sweep passes each bar, and each bar fails a
-  wrong run.
+  wrong run. A scripted run must have no wrong amount and no wrong due date.
 
 No database, no model and no network.
 """
@@ -46,7 +49,7 @@ from gateway.routes.email.automation import insights_store as store
 
 from evals.email_insights import checkers
 from evals.email_insights import run as eval_run
-from evals.email_insights.dataset import BODY, load_answers, load_mails
+from evals.email_insights.dataset import BODY, load_answers, load_mails, load_screen_open
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES = json.loads((ROOT / "tests/fixtures/amount_cases.json").read_text(encoding="utf-8"))
@@ -95,12 +98,39 @@ def test_the_amount_cases_cover_each_rule_of_the_spec() -> None:
 
 def test_the_model_number_is_never_stored() -> None:
     """D-EM-41: the model says 4,520 and USD and 1 November. The quote holds
-    ₹1,23,456.50 and 15 October 2026, and only the quote is read."""
+    ₹1,23,456.50 and 15 October 2026, and only the quote is read. A claimed
+    date that differs from the quote stores no date, and never the claim."""
     result = _one(amount="US$ 4,520.00", currency="USD", due_on="1 November 2026")
     (fact,) = result.facts
     assert fact.amount == Decimal("123456.50")
     assert fact.currency == "INR"
+    assert fact.due_on is None
+    assert fact.confidence == X.CONF_PART
+
+
+@pytest.mark.parametrize("claim", ["15 October 2026", "15th of October, 2026", "2026-10-15"])
+def test_a_claimed_date_that_parses_to_the_quote_date_keeps_the_quote_date(claim: str) -> None:
+    (fact,) = _one(due_on=claim).facts
     assert fact.due_on == date(2026, 10, 15)
+    assert fact.confidence == X.CONF_FULL
+
+
+@pytest.mark.parametrize("claim", ["15 Oct", "next week", 20261015, ["15 October 2026"]])
+def test_a_claimed_date_that_does_not_parse_to_the_quote_date_stores_none(claim: Any) -> None:
+    (fact,) = _one(due_on=claim).facts
+    assert fact.due_on is None
+    assert fact.confidence == X.CONF_PART
+
+
+def test_the_date_of_the_invoice_is_not_the_due_date() -> None:
+    """Review round 1 (P1-e): the one full date of this quote is the date of
+    the invoice. The due date is "within 30 days", so code stores no date."""
+    quote = "Invoice Date: 01 Oct 2026 Payment Terms: within 30 days"
+    source = X.body_source("Bill", "a@b.example", "d", f"{quote}\nTotal ₹5,000")
+    (fact,) = X.check_answer({"facts": [_fact(
+        quote=quote, ref=None, counterpart=None, amount=None, due_on="01 Oct 2026")]},
+        source).facts
+    assert fact.due_on is None
 
 
 def test_a_model_amount_given_as_a_number_is_not_stored() -> None:
@@ -112,7 +142,7 @@ def test_no_currency_gives_no_amount_and_confidence_0_6() -> None:
     source = X.body_source("Bill", "a@b.example", "d", "Amount due: 45,000\nDue on 25 October 2026.")
     (fact,) = X.check_answer({"facts": [_fact(
         quote="Amount due: 45,000 Due on 25 October 2026.", ref=None, counterpart=None,
-        amount="45,000")]}, source).facts
+        amount="45,000", due_on="25 October 2026")]}, source).facts
     assert (fact.amount, fact.currency) == (None, None)
     assert fact.due_on == date(2026, 10, 25)
     assert fact.confidence == X.CONF_PART
@@ -144,6 +174,20 @@ DUE_CASES = [
     ("invoice of 1 March 2026, due 31 March 2026", None),
     ("13/13/2026", None),
     ("no date here", None),
+    # Review round 1 (P1-e): a full date beside a second date signal.
+    ("Invoice Date: 01 Oct 2026 Payment Terms: within 30 days", None),
+    ("Invoice Date: 01 Oct 2026. Due: 05/11/2026", None),
+    ("Invoice Date: 01 Oct 2026. Due: Nov 15", None),
+    ("Invoice Date: 01 Oct 2026. Net 30", None),
+    ("Invoice Date: 01 Oct 2026, due 15/11/26", None),
+    ("Invoice Date: 01 Oct 2026, due 15.11", None),
+    ("Invoice Date: 01 Oct 2026, due next Friday", None),
+    # A weekday next to the date, an amount and a name are no second date.
+    ("13 March 2026 (Friday)", date(2026, 3, 13)),
+    ("Pay Rs. 12.50 by 15 October 2026", date(2026, 10, 15)),
+    ("You may pay by 15 October 2026", date(2026, 10, 15)),
+    ("Invoice from Jan Novak, due 15 Oct 2026", date(2026, 10, 15)),
+    ("Total payable: ₹1,23,456.50 Due date: 15 October 2026", date(2026, 10, 15)),
 ]
 
 
@@ -155,6 +199,7 @@ def test_each_due_case(text: str, expected: date | None) -> None:
 @pytest.mark.parametrize(("text", "reason"), [
     ("by 08/11/2026", "ambiguous"), ("due next Friday", "relative"),
     ("due 15 March", "partial"), ("a 1 March 2026 and 2 March 2026", "two_dates"),
+    ("Invoice Date: 01 Oct 2026. Net 30", "two_dates"),
 ])
 def test_a_due_date_that_does_not_parse_names_its_reason(text: str, reason: str) -> None:
     assert X.parse_due(text) == X.DueParse(None, reason)
@@ -327,6 +372,8 @@ def test_the_prompt_lists_the_finance_types_with_their_keys_from_the_store() -> 
     for name in finance:
         line = next(ln for ln in system.splitlines() if ln.startswith(f"- {name}:"))
         assert ("due_on" in line) == ("due_on" in store.FACT_FIELDS[name][1])
+        # The rules define no currency key, and code reads the currency.
+        assert "currency" not in line
     for other in ("deadline", "lead", "hiring"):
         assert f"- {other}:" not in system
 
@@ -393,25 +440,69 @@ def test_each_scripted_answer_names_a_mail_and_a_source() -> None:
 
 
 def test_the_scripted_sweep_passes_every_bar() -> None:
+    """A scripted run is exact: no wrong amount and no wrong due date. The
+    95 % amount bar is for the model sweep only (review round 1)."""
     mails = load_mails()
     produced, drops = eval_run.run_scripted(mails, load_answers())
-    score = checkers.score(mails, produced)
-    assert score.bars() == {"amount": True, "recall": True, "quote": True, "no_fact": True}
-    assert score.found == score.expected >= 30
+    score = checkers.score(mails, produced, scripted=True)
+    assert score.bars() == {"amount": True, "recall": True, "quote": True, "no_fact": True,
+                            "due": True}
+    assert score.wrong_amounts == []
+    assert score.due_ok == score.found == score.expected >= 30
     assert drops["quote_not_in_source"] >= 1
 
 
-def test_the_injection_mail_gives_no_fact_in_scripted_mode() -> None:
+def test_the_fabricated_quote_of_the_injection_mail_gives_no_fact() -> None:
     mails = [m for m in load_mails() if m.id == "injection"]
     produced, drops = eval_run.run_scripted(mails, load_answers())
     assert produced.get("injection", []) == []
     assert drops["quote_not_in_source"] == 1
 
 
-def test_the_spreadsheet_and_the_newsletter_give_no_fact() -> None:
+def test_the_spreadsheet_gives_no_source_and_the_closed_screen_gives_no_fact() -> None:
+    """The spreadsheet gives no source (D-EM-40). The screen closes the
+    newsletter, so its answer never reaches the checks."""
     mails = [m for m in load_mails() if m.id in {"xlsx-statement", "newsletter-prices"}]
     produced, _drops = eval_run.run_scripted(mails, load_answers())
     assert all(rows == [] for rows in produced.values())
+    newsletter = next(m for m in mails if m.id == "newsletter-prices")
+    assert newsletter.screen["finance"] is False
+
+
+def _screen_open() -> dict[str, list[Any]]:
+    return eval_run.run_screen_open(load_mails(), load_screen_open())
+
+
+def test_the_honest_newsletter_quote_gives_a_fact_when_the_screen_is_forced_open() -> None:
+    """Review round 1 (P2-g). The quote rule does not stop an honest quote.
+    The newsletter price is in the mail, so the checks keep it. Only the
+    screen stops this fact. The subject holds the quote too, so 0.6."""
+    ((key, fact),) = _screen_open()["newsletter-prices"]
+    assert key == BODY and fact.fact_type == "invoice"
+    assert (fact.amount, fact.currency, fact.due_on) == (Decimal("39999.00"), "INR", None)
+    assert fact.confidence == X.CONF_PART
+
+
+def test_the_honest_injection_quote_gives_a_fact_with_no_amount_and_no_date() -> None:
+    """Review round 1 (P2-g). An honest quote of the injection text keeps a
+    fact, because each word is in the mail. Code reads no figure from
+    "nine lakh rupees" and no date from "tomorrow", so the card holds no
+    amount and no date at 0.6. The card shows the quote and the sender."""
+    ((key, fact),) = _screen_open()["injection"]
+    assert key == BODY
+    assert (fact.fact_type, fact.ref, fact.counterpart) == ("invoice", "VX-1", "Vortex Ltd")
+    assert (fact.amount, fact.currency, fact.due_on) == (None, None, None)
+    assert fact.confidence == X.CONF_PART
+
+
+def test_the_report_shows_the_screen_open_facts_outside_the_bars(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert eval_run.main(["--scripted"]) == eval_run.EXIT_PASS
+    report = json.loads(capsys.readouterr().out)
+    assert report["screen_open"]["newsletter-prices"][0]["amount"] == "39999.00"
+    assert report["screen_open"]["injection"][0]["amount"] is None
+    assert set(report["bars"]) == {"amount", "recall", "quote", "no_fact", "due"}
 
 
 def test_the_confidence_of_the_hard_cases() -> None:
@@ -442,6 +533,24 @@ def test_each_bar_fails_a_wrong_run() -> None:
                              currency=f.currency)) for key, f in rows]
              for k, rows in good.items()}
     assert not checkers.score(mails, wrong).bars()["amount"]
+
+    # One wrong amount of 31 passes the 95 % bar of the model sweep, and
+    # fails the exact bar of a scripted run.
+    first = next(k for k, rows in good.items() if rows and rows[0][1].amount is not None)
+    key0, f0 = good[first][0]
+    one_wrong = dict(good)
+    one_wrong[first] = [(key0, _fake(f0.quote, "1.00", ref=f0.ref, fact_type=f0.fact_type,
+                                     currency=f0.currency, due_on=f0.due_on)),
+                        *good[first][1:]]
+    assert checkers.score(mails, one_wrong).bars()["amount"]
+    assert not checkers.score(mails, one_wrong, scripted=True).bars()["amount"]
+
+    one_late = dict(good)
+    one_late[first] = [(key0, _fake(f0.quote, str(f0.amount), ref=f0.ref,
+                                    fact_type=f0.fact_type, currency=f0.currency,
+                                    due_on=date(2030, 1, 1))), *good[first][1:]]
+    assert checkers.score(mails, one_late, scripted=True).bars()["amount"]
+    assert not checkers.score(mails, one_late, scripted=True).bars()["due"]
 
     fabricated = dict(good)
     fabricated["inv-inr-lakh"] = [(BODY, _fake("Total payable: ₹9,99,999"))]

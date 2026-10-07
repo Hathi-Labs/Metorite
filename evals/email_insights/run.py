@@ -13,6 +13,12 @@ its place: a mail whose ``screen.finance`` is false gets no extraction. EM-T14b-
 here, and adds the model sweep through the Router on a local stack. Without
 ``--scripted`` the runner says so and exits with code 2.
 
+So a mail that the screen closes never reaches the checks. ``screen_open``
+in ``scripted_answers.json`` holds an honest answer for the newsletter and
+for the injection mail. :func:`run_screen_open` checks them with the screen
+forced open, and the report shows the result outside the bars (review
+round 1).
+
 Exit codes: 0 every bar passed, 1 a bar failed, 2 the run cannot start.
 """
 from __future__ import annotations
@@ -26,7 +32,7 @@ from typing import Any
 from gateway.routes.email.automation import insights_extract as extract
 
 from evals.email_insights import checkers
-from evals.email_insights.dataset import Mail, load_answers, load_mails
+from evals.email_insights.dataset import Mail, load_answers, load_mails, load_screen_open
 
 EXIT_PASS, EXIT_FAIL, EXIT_NO_GO = 0, 1, 2
 NO_ANSWER: dict[str, Any] = {"facts": []}
@@ -52,6 +58,33 @@ def run_scripted(
     return produced, drops
 
 
+def run_screen_open(
+    mails: list[Mail], answers: dict[str, dict[str, Any]],
+) -> checkers.Produced:
+    """Each fact that the checks keep for each mail of *answers*, with the
+    screen forced open. No bar reads this. It shows what the quote rule
+    alone lets through."""
+    produced: checkers.Produced = {}
+    for mail in mails:
+        if mail.id not in answers:
+            continue
+        for key, source in mail.sources().items():
+            result = extract.check_answer(answers[mail.id].get(key, NO_ANSWER), source)
+            produced.setdefault(mail.id, []).extend((key, fact) for fact in result.facts)
+    return produced
+
+
+def _shown(produced: checkers.Produced) -> dict[str, list[dict[str, Any]]]:
+    return {
+        mail_id: [{"source": key, "type": f.fact_type, "ref": f.ref,
+                   "amount": None if f.amount is None else str(f.amount),
+                   "currency": f.currency,
+                   "due_on": None if f.due_on is None else f.due_on.isoformat(),
+                   "confidence": f.confidence} for key, f in rows]
+        for mail_id, rows in produced.items()
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m evals.email_insights.run",
                                 description=__doc__.splitlines()[0])
@@ -68,9 +101,10 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_NO_GO
     mails = load_mails()
     produced, drops = run_scripted(mails, load_answers())
-    score = checkers.score(mails, produced)
+    score = checkers.score(mails, produced, scripted=True)
     report = {"mode": "scripted", "extractor_version": extract.VERSION,
-              "mails": len(mails), **score.summary(), "drops": dict(sorted(drops.items()))}
+              "mails": len(mails), **score.summary(), "drops": dict(sorted(drops.items())),
+              "screen_open": _shown(run_screen_open(mails, load_screen_open()))}
     sys.stdout.write(json.dumps(report, indent=2, ensure_ascii=True) + "\n")
     return EXIT_PASS if score.passed() else EXIT_FAIL
 

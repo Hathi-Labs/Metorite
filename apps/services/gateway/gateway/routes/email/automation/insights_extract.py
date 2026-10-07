@@ -42,8 +42,8 @@ from typing import Any, NamedTuple
 
 from acb_skills.attachment_text import SUPPORTED_SUFFIXES
 from gateway.routes.email.automation.insights_store import (
-    _DIRECTIONS,
     CAPS,
+    DIRECTIONS,
     FACT_FIELDS,
     Fact,
     clean_text,
@@ -93,6 +93,9 @@ _TYPE_NOTES = {
 #: The keys of a fact in the answer that hold a value of a type.
 _VALUE_KEYS = ("direction", "counterpart", "ref", "amount", "currency", "due_on")
 _ANSWER_KEYS = frozenset({"type", "quote", "title", *_VALUE_KEYS})
+#: The keys that the prompt lists for each type. ``_RULES`` defines no
+#: ``currency`` key, because code reads the currency from the quote.
+_PROMPT_KEYS = tuple(k for k in _VALUE_KEYS if k != "currency")
 
 
 # ── the source ──────────────────────────────────────────────────────────────
@@ -184,7 +187,7 @@ def build_prompt(
     token = token or secrets.token_hex(8)
     lines = [
         f"- {name}: {_TYPE_NOTES.get(name, '')} Keys: "
-        f"{', '.join(k for k in _VALUE_KEYS if k in fields)}."
+        f"{', '.join(k for k in _PROMPT_KEYS if k in fields)}."
         for name, (domain, fields) in FACT_FIELDS.items() if domain in domains
     ]
     system = _RULES.format(domains=" and ".join(domains), max_facts=MAX_FACTS,
@@ -203,16 +206,35 @@ _MARK = (r"(?:US\$|(?<![A-Za-z])Rs\.|(?<![A-Za-z])(?:INR|USD|EUR)(?![A-Za-z])"
 _CODE = {"US$": "USD", "Rs.": "INR", "INR": "INR", "USD": "USD", "EUR": "EUR",
          "₹": "INR", "€": "EUR", "$": "USD"}
 _NUM = r"\d(?:[\d.,]*\d)?"
+#: The end of a number. No letter or digit follows it, also after one
+#: separator. Without this tail the regex backs off to a shorter number, so
+#: ``$2.5M`` read as 2.00 (review round 1).
+_END = r"(?![.,]?\w)"
 #: A hyphen and the minus sign U+2212, and the no-break space U+00A0. Code
 #: builds them with ``chr`` so that no source line holds a look-alike.
 _MINUS = "-" + chr(0x2212)
 _GAP = " " + chr(0xA0)
 _MINUS_CLASS = re.escape(_MINUS)
 _SIGN = f"[{_MINUS_CLASS}]?"
+_FREE = rf"(?<![\w.,/{_MINUS_CLASS}])"
 _MARKED = re.compile(
-    rf"(?P<m1>{_MARK})[{_GAP}]?(?P<s1>{_SIGN})(?P<n1>{_NUM})(?!\w)"
-    rf"|(?<![\w.,/{_MINUS_CLASS}])(?P<s2>{_SIGN})(?P<n2>{_NUM})[{_GAP}]?(?P<m2>{_MARK})")
+    rf"(?P<m1>{_MARK})[{_GAP}]?(?P<s1>{_SIGN})(?P<n1>{_NUM}){_END}"
+    rf"|{_FREE}(?P<s2>{_SIGN})(?P<n2>{_NUM})[{_GAP}]?(?P<m2>{_MARK})")
 _ANY_MARK = re.compile(_MARK)
+#: A scale word after a number, as a whole word. fin-1 never multiplies, so
+#: a scaled amount gives no amount. ``M/s`` (Messrs) is a name, not a scale.
+_SCALE = (r"(?i:k|m(?!/s\b)|mn|mm|b|bn|l|lacs?|lakhs?|cr|crores?|thousand|million"
+          r"|billion|mio|mrd)(?!\w)")
+_SCALED = re.compile(rf"{_MARK}[{_GAP}]?{_SIGN}{_NUM}\s*{_SCALE}"
+                     rf"|{_FREE}{_SIGN}{_NUM}\s*{_SCALE}\s*{_MARK}")
+#: White space between two digit runs. A space, a no-break space or a line
+#: break can group the digits of ONE number, as in ``₹5 000``. A trailing
+#: comma, as in ``1,23,`` and a line break, counts too.
+_SPLIT_AFTER = re.compile(r",?\s+\d")
+_SPLIT_BEFORE = re.compile(r"\d[.,]?\s+$")
+#: A number on the other side of the mark, as in ``2041 USD 5,000``.
+_DIGIT_AFTER = re.compile(rf"\s*{_SIGN}\d")
+_DIGIT_BEFORE = re.compile(r"\d[.,]?\s*$")
 #: A number that looks like money with no mark: grouped, or with two decimals.
 _MONEY_LIKE = re.compile(r"(?<![\d.,])(?:\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?"
                          r"|\d+\.\d{2})(?![\d.,]\d)")
@@ -261,13 +283,38 @@ def _negative(text: str, match: re.Match[str]) -> bool:
     return (before != "" and before in _MINUS) or (before == "(" and after == ")")
 
 
+def _blocked(text: str, match: re.Match[str]) -> str | None:
+    """Why one marked number is not one clean amount, or None.
+
+    ``ambiguous``: the mark has a number on its other side too, so code
+    cannot say which number it marks. ``spaced_number``: white space joins
+    the number to more digits, so the match holds only a part of it."""
+    if match.group("m1"):
+        if _DIGIT_BEFORE.search(text, 0, match.start("m1")):
+            return "ambiguous"
+        if _SPLIT_AFTER.match(text, match.end("n1")):
+            return "spaced_number"
+        return None
+    if _DIGIT_AFTER.match(text, match.end("m2")):
+        return "ambiguous"
+    if _SPLIT_BEFORE.search(text, 0, match.start()):
+        return "spaced_number"
+    return None
+
+
 def parse_amount(text: str) -> AmountParse:
     """The amount and the currency that ``text`` holds.
 
     An amount is a number next to a currency mark: ``₹``, ``Rs.``, ``INR``,
     ``US$``, a ``$`` with no letter before it, ``USD``, ``€`` or ``EUR``. A
     bare number gives no amount. One marked number gives an amount. Zero or
-    two give none. A minus sign or parentheses give none in fin-1."""
+    two give none. A minus sign or parentheses give none in fin-1.
+
+    Each of these also gives none (review round 1): a scale word after the
+    number (``₹5 lakh``, ``$2.5M``), a number that white space splits
+    (``₹5 000``), and a mark with a number on each side (``2041 USD 5,000``)."""
+    if _SCALED.search(text):
+        return AmountParse(None, None, "scale")
     matches = list(_MARKED.finditer(text))
     if not matches:
         if _ANY_MARK.search(text):
@@ -276,6 +323,9 @@ def parse_amount(text: str) -> AmountParse:
     if len(matches) > 1:
         return AmountParse(None, None, "two_amounts")
     match = matches[0]
+    blocked = _blocked(text, match)
+    if blocked:
+        return AmountParse(None, None, blocked)
     if _negative(text, match):
         return AmountParse(None, None, "negative")
     value = _number(match.group("n1") or match.group("n2"))
@@ -307,6 +357,18 @@ _RELATIVE = re.compile(
     r"|(?:with)?in \d+ days|net \d+|(?:next |this |coming )?"
     r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b")
 _PARTIAL = re.compile(rf"{_MONTH}|(?<!\d)\d{{1,2}}[./-]\d{{1,2}}(?![\d])")
+#: The signals of a SECOND date beside a full date (review round 1). A day
+#: and a month with no year, and a numeric day-month pair, with or without
+#: a short year. A month name alone does not count, because Jan, May and
+#: June are also names and words.
+_DAY_AND_MONTH = re.compile(
+    rf"(?<!\d)\d{{1,2}}{_ORD}[ \-/.]*(?:of )?{_MONTH}|{_MONTH}\.?[ ]*\d{{1,2}}(?!\d)")
+_PAIR = re.compile(r"(?<![\w.,/-])(?P<a>\d{1,2})(?P<s>[./-])(?P<b>\d{1,2})(?:(?P=s)\d{2})?"
+                   r"(?![\w/-]|[.,]\d)")
+_WEEKDAY = r"(?:mon|tues|wednes|thurs|fri|satur|sun)day"
+#: A weekday right next to a full date is a part of that date.
+_WEEKDAY_BEFORE = re.compile(rf"(?i)\b{_WEEKDAY},?\s*$")
+_WEEKDAY_AFTER = re.compile(rf"(?i),?\s*\(?{_WEEKDAY}\b\)?")
 
 
 class DueParse(NamedTuple):
@@ -350,8 +412,32 @@ def _numeric_dates(text: str, taken: list[tuple[int, int]]) -> tuple[list[date |
             ambiguous = True
             continue
         day, month = (a, b) if a > 12 else (b, a)
+        taken.append(m.span())
         found.append(_make(m["y"], month, str(day)))
     return found, ambiguous
+
+
+def _rest(text: str, taken: list[tuple[int, int]]) -> str:
+    """``text`` with each full date blanked, and a weekday next to it too."""
+    chars = list(text)
+    for start, end in taken:
+        lead = _WEEKDAY_BEFORE.search(text, 0, start)
+        trail = _WEEKDAY_AFTER.match(text, end)
+        start, end = (lead.start() if lead else start), (trail.end() if trail else end)
+        chars[start:end] = " " * (end - start)
+    return "".join(chars)
+
+
+def _second_date(rest: str) -> bool:
+    """True when ``rest`` holds a relative date, a day and a month with no
+    year, or a numeric day-month pair."""
+    if _RELATIVE.search(rest) or _DAY_AND_MONTH.search(rest):
+        return True
+    for m in _PAIR.finditer(rest):
+        low, high = sorted((int(m["a"]), int(m["b"])))
+        if 1 <= low <= 12 and high <= 31:
+            return True
+    return False
 
 
 def parse_due(text: str) -> DueParse:
@@ -359,13 +445,20 @@ def parse_due(text: str) -> DueParse:
 
     A numeric date with both parts at 12 or less gives no date. A relative
     date, such as "next Friday", gives no date. Two dates give no date. No
-    part is ever filled from today, so this uses no fuzzy parser."""
+    part is ever filled from today, so this uses no fuzzy parser.
+
+    A full date beside a second date signal also gives no date (review
+    round 1). The signal is an ambiguous numeric date, a relative date or a
+    date with no year. In "Invoice Date: 01 Oct 2026. Net 30" the one full
+    date is the date of the invoice, not the due date."""
     taken: list[tuple[int, int]] = []
     found = _named_dates(text, taken)
     numeric, ambiguous = _numeric_dates(text, taken)
     found += numeric
     dates = {d for d in found if d is not None}
     if len(dates) == 1 and None not in found:
+        if ambiguous or _second_date(_rest(text, taken)):
+            return DueParse(None, "two_dates")
         return DueParse(dates.pop())
     if found:
         return DueParse(None, "two_dates" if len(found) > 1 else "invalid_date")
@@ -420,7 +513,9 @@ def _values(quote: str, item: dict[str, Any], fields: frozenset[str]) -> tuple[d
     claim of the model only marks a field that the quote should hold, so a
     claim that does not parse lowers the confidence. The due date is taken
     only when the model claims one, because a quote can also hold the date
-    of the invoice. Returns the values and True when a field did not parse."""
+    of the invoice. Code also parses the claim, and keeps the date only when
+    the claim gives the same date. That is a comparison only, and the claim
+    is never stored. Returns the values and True when a field did not parse."""
     out: dict[str, Any] = {"amount": None, "currency": None, "due_on": None}
     partial = False
     if "amount" in fields:
@@ -429,8 +524,11 @@ def _values(quote: str, item: dict[str, Any], fields: frozenset[str]) -> tuple[d
             out["amount"], out["currency"] = parsed.amount, parsed.currency
         elif parsed.reason != "no_number" or _claimed(item.get("amount")):
             partial = True
-    if "due_on" in fields and _claimed(item.get("due_on")):
+    claim = item.get("due_on")
+    if "due_on" in fields and _claimed(claim):
         due = parse_due(quote).due
+        if due is not None and (not isinstance(claim, str) or parse_due(claim).due != due):
+            due = None
         out["due_on"] = due
         partial = partial or due is None
     return out, partial
@@ -482,7 +580,7 @@ def _check_fact(
             drops[f"{key}_not_in_source"] += 1
     values, partial = _values(quote, item, fields)
     direction = item.get("direction")
-    if "direction" not in fields or not isinstance(direction, str) or direction not in _DIRECTIONS:
+    if "direction" not in fields or not isinstance(direction, str) or direction not in DIRECTIONS:
         direction = None
     # §13.5 item 7: 0.6 caps a field that did not parse and a quote that the
     # source holds twice. A cut source is 0.3, below both.

@@ -104,3 +104,9 @@ def load_mails(path: Path = MAILS) -> list[Mail]:
 def load_answers(path: Path = ANSWERS) -> dict[str, dict[str, Any]]:
     """The scripted answers: ``{mail id: {source key: answer}}``."""
     return json.loads(path.read_text(encoding="utf-8"))["answers"]
+
+
+def load_screen_open(path: Path = ANSWERS) -> dict[str, dict[str, Any]]:
+    """The honest answers that the runner checks with the screen forced
+    open, in the shape of :func:`load_answers`."""
+    return json.loads(path.read_text(encoding="utf-8"))["screen_open"]
