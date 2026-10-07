@@ -544,6 +544,27 @@ ORG_READ = "data:org:read"
 #: category — an administrative act wearing an editor's clothes.
 SETTINGS_WRITE = "projects:settings:write"
 
+#: The words of the 403 a settings write answers. ``describe_status_set``
+#: returns the same words as ``edit_refusal``, so a chat tool that checks
+#: before its card quotes the server and never writes its own (owner
+#: directive 2026-10-07, ``projects_agent_parity.md`` §16).
+SETTINGS_REFUSAL = (
+    "Changing a project's settings needs the "
+    f"'{SETTINGS_WRITE}' permission. Ask an organization admin to "
+    "grant it to your role."
+)
+
+
+def can_manage_settings(user: UserContext | None) -> bool:
+    """May *user* change a project's settings? THE one predicate.
+
+    :func:`assert_can_manage_settings` (the write) and ``may_edit`` on
+    ``GET /nodes/{id}/status-set`` (the read a tool asks before its card)
+    both call this, so the answer before the card is the answer of the write.
+    Fence: ``tests/unit/test_projects_agent_grants.py`` (R8, both ways).
+    """
+    return user is not None and user.has_permission(SETTINGS_WRITE)
+
 
 def assert_can_manage_settings(user: UserContext) -> None:
     """Refuse a settings write to a caller without :data:`SETTINGS_WRITE`.
@@ -553,16 +574,9 @@ def assert_can_manage_settings(user: UserContext) -> None:
     hiding the endpoint would only tell them the same thing less clearly.
     Naming the permission is what lets them ask their admin for it by name.
     """
-    if user is not None and user.has_permission(SETTINGS_WRITE):
+    if can_manage_settings(user):
         return
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            "Changing a project's settings needs the "
-            f"'{SETTINGS_WRITE}' permission. Ask an organization admin to "
-            "grant it to your role."
-        ),
-    )
+    raise HTTPException(status_code=403, detail=SETTINGS_REFUSAL)
 
 
 #: What a caller whose email the directory does not know is told when they try

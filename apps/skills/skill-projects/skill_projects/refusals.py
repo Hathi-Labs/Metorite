@@ -69,7 +69,12 @@ _BY_STATUS: dict[int, tuple[str, str]] = {
     ),
     403: (
         "Not permitted (403).",
-        "The member may not do this. Tell the member, and do not try again.",
+        # Owner directive 2026-10-07 (projects_agent_parity.md §16): the
+        # server checked the member's grants and said no. Relay ITS words.
+        # The model names no role and no permission of its own.
+        "The server refused this for the member. Tell the member what the "
+        "gateway said. Name no role or permission that the gateway did not "
+        "name, and do not try again.",
     ),
     404: (
         "Not found, or not visible to you (404).",

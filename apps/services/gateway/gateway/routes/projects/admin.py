@@ -28,7 +28,7 @@ from gateway.routes.projects.core import (
     COMPLETED_CATEGORY,
     EPIC_TYPE_NAME,
     LAST_DONE_REFUSAL,
-    SETTINGS_WRITE,
+    SETTINGS_REFUSAL,
     STATUS_CATEGORIES,
     TRIAGE_CATEGORY,
     StatusModel,
@@ -36,6 +36,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     assert_can_manage_settings,
+    can_manage_settings,
     clean_payload,
     count_where,
     is_org_wide,
@@ -660,6 +661,7 @@ async def describe_status_set(
         dormant = [] if getattr(node, "owns_statuses", False) else await _lanes_of(
             db, project_id,
         )
+        may_edit = can_manage_settings(user)
         return {
             "project_id": project_id,
             "owns": bool(getattr(node, "owns_statuses", False)),
@@ -678,7 +680,11 @@ async def describe_status_set(
             # it — an absent option reads as a missing feature.
             "can_inherit": node.parent_project_id is not None,
             "has_dormant_set": bool(dormant),
-            "may_edit": bool(user is not None and user.has_permission(SETTINGS_WRITE)),
+            # The write's own predicate (`core.can_manage_settings`), and the
+            # write's own words when it says no. A chat tool reads both before
+            # its card and quotes them (owner directive 2026-10-07).
+            "may_edit": may_edit,
+            "edit_refusal": "" if may_edit else SETTINGS_REFUSAL,
         }
 
 

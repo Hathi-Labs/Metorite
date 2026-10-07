@@ -16,6 +16,11 @@ and a guessed day is the member's own today. P13 is BUILT (2026-10-06):
 `create_tasks` makes several new tasks in one project as one batch. P8 to
 P10 are open.** Written
 2026-10-05.
+
+**§16, owner directive 2026-10-07.** The server decides each write from
+the member's own grants, and the chat never claims a permission. BUILT on
+branch `projects-agent-grants`.
+
 **P1, as built.** `create_task` takes the eight `repeat*` arguments and sets
 the rule under its one card. `task_detail` prints "Repeats:". The fence is
 `tests/unit/test_projects_recurring_task.py`. P1 had one deviation: the
@@ -1448,3 +1453,194 @@ as the answer. The slices build to these answers.
     - A card with rows shows no project, count or note under its rows. The
       title names the project and the count, and the count changes as the
       member unticks.
+- 2026-10-07 — The owner's rule on grants is recorded as §16. The chat
+  now calls the tool for each write, and the server decides. Measured on
+  `origin/main` `2aafad958`.
+
+---
+
+## 16. Owner directive 2026-10-07 — the member's grants decide
+
+**Status: BUILT 2026-10-07, branch `projects-agent-grants`.** No flag
+changes. No migration.
+
+### 16.1 The rule
+
+The owner gave this rule on 2026-10-07, after a screenshot from
+production. It binds every write tool of the Projects assistant.
+
+1. The server decides what the chat may change. It checks the member's own
+   grants, in the same way that it checks them for the app's screens.
+2. The approval card is the member's consent. It is never authority.
+3. The assistant never decides a permission itself. It never claims a
+   permission that it did not check.
+
+### 16.2 The incident
+
+The org owner asked the assistant to create new tags. The trail shows one
+read and no write. The assistant then said that a tag write needs
+`projects:settings:write`, and that "an organization admin" must register
+the tags. An earlier vocabulary read said "Status set owned by Metorite ·
+you may edit it". The two answers disagreed.
+
+### 16.3 The root cause
+
+The persona told every member that they may not edit the vocabulary. The
+model obeyed the persona and did not call the tool.
+
+| Fact | Anchor (at `2aafad958`) |
+|---|---|
+| The persona said "may NOT edit … (no projects:settings:write). If they ask for that, say who can: an organization admin." | `workbench/control_plane/src/app/projects/lib/assistantPersona.ts:142-148` |
+| The rail set the flag from `hasCapability(access, "projects:settings:write")` | `workbench/control_plane/src/app/projects/components/AssistantRail.tsx:60-61`, `:192` |
+| `access.capabilities` holds only the slugs of `CAPABILITIES` | `apps/services/gateway/gateway/routes/admin/me.py:224-226` |
+| `CAPABILITIES` does not hold `projects:settings:write` | `packages/acb_auth/acb_auth/permissions.py:126-163` |
+
+So the flag was false for every member, the owner too. The persona then
+gave the false refusal on each turn.
+
+The tag write did not need that permission at all. A tag of one tree needs
+only visibility of the project (`tags.py` `create_tag` and `_root_for`).
+The status writes need `projects:settings:write`, and the owner holds `*`.
+
+**The vocabulary read was right.** `may_edit` on
+`GET /nodes/{id}/status-set` is the server's answer, from the same check as
+the status write. The read gave no line for tags, types and fields, and the
+model filled that gap with the persona's claim. The instructions and
+`refusals.py` held no vocabulary claim of their own.
+
+### 16.4 The flag
+
+`PROJECTS_ORG_VOCABULARIES` is OFF by default in the code
+(`core.org_vocabularies_enabled`, read at call time). It gates one act: the
+create of an organization-wide row (`scope: "org"`), through
+`core.require_org_vocabulary_write`. It does not gate a tag of one tree. It
+does not gate a rename, merge or delete of a row that exists already. So
+the flag was not the blocker in the incident.
+
+The board records the flag ON on `srv1914284` since 2026-10-01 (WS-42
+PS-3b). This slice did not read the production environment, and it flips
+nothing.
+
+### 16.5 What changed
+
+- **The persona states no permission.** `canManageSettings` is gone from
+  `PersonaInput` and from the rail. `assistantPersona.test.ts` fails on any
+  permission sentence.
+- **The instructions carry the rule.** A new section, "Who decides what
+  the member may change", tells the model to call the tool. The model says
+  no only after a refusal, and it names only what the server names.
+- **A 403 names nothing new.** The 403 "Next:" line in `refusals.py` tells
+  the model to relay the gateway's words, and to name no role or
+  permission of its own.
+- **One predicate for the read and the write.** `core.can_manage_settings`
+  answers `assert_can_manage_settings` and `may_edit` both. The read also
+  returns `edit_refusal`, which holds the words of the write's 403.
+- **The one check before a card is the server's answer.**
+  `writes.status_edit_refusal` reads `may_edit` and `edit_refusal`. It stops
+  the tool only on an explicit `false`, and it quotes the server. The four
+  status tools use it. `create_status` and `update_status` are new users.
+- **The vocabulary read quotes the server.** It says "the server says you
+  may edit it" or "may not", with the server's words. For types, tags and
+  fields, it says that the server checks each change when the tool runs.
+- **A product rule names no permission.** The chat does not delete or
+  merge a shared entry, for any member (§16.7). The text now says that, and
+  it says where the app does the act.
+
+**The card payload is unchanged.** No `request_confirmation` argument
+changed. The text that the `vocabulary` read returns changed in two places:
+the status-set line, and one new line after it. The card builder can parse
+these, if it draws them:
+
+```text
+Status set owned by <owner> · the server says you may edit it
+Status set owned by <owner> · the server says you may not edit it
+  Gateway said: «<the 403 words>»
+Types, tags and fields: the server checks each change when you call the tool. Call it when the member asks.
+```
+
+A status tool that the server refuses returns this text before any card:
+
+```text
+Refused: The server says that this member may not edit the statuses of «<node>». Nothing was done.
+Gateway said: «<the 403 words>»
+Next: Tell the member what the gateway said. Do not try again, and do not try another tool for the same act.
+```
+
+### 16.6 The audit — each write tool, its server check, and what changed
+
+"Visibility" is `load_visible_project` or `load_visible_task` under the D12
+grants. Within a project that the member sees, visibility is the authority,
+as for the app's screens.
+
+| Tool | The server check | Client-side guess |
+|---|---|---|
+| `create_task`, `create_tasks`, `add_subtasks`, `propose_plan` | Visibility of the project and the parent, the lane in the project, the epic rule | None |
+| `update_task`, `edit_task` | Visibility of the task, `If-Match` | None |
+| `assign` | Visibility, `assert_assignable_here` | H-236 agent-assignee rule, kept (an egress decision) |
+| `comment`, `link_tasks`, `unlink_tasks`, `watch`, `complete`, `defer`, `set_recurrence`, `unarchive_task` | Visibility of the task | None |
+| `edit_comment`, `delete_comment` | `_load_own_comment`: the author only, with no admin override | Kept: the tool compares the row's `created_by` with the acting member. That is the server's own rule, and no grant is involved |
+| `move_task` | Visibility of the task and the target, the lane, the required fields | None |
+| `archive_task`, `merge_tasks`, `bulk_update`, `revert_activity`, `delete_attachment` | Visibility of each task | None |
+| `create_personal_task`, `set_my_overlay` | The member's own personal project, or overlay row | None |
+| `create_project`, `update_project`, `edit_project` | `require_organization`, visibility of the parent, node grammar, run state | The level rules before the card mirror the route's own 422 (G12). Kept |
+| `move_project`, `archive_project`, `unarchive_project` | Visibility, no cycle, privacy kept, a Done lane | None |
+| `create_status`, `update_status`, `delete_status`, `set_status_set` | `assert_can_manage_settings` (`projects:settings:write`), then visibility | The pre-check now quotes the server's `may_edit` and `edit_refusal`. The old text "It needs the settings permission" is gone |
+| `create_type`, `create_field`, `create_tag` | One tree: visibility. Org-wide: the flag, then `admin:settings:manage` | None. An org-wide default type is refused before the card, as the route refuses it (422) |
+| `update_type`, `update_field`, `update_tag` | One tree: visibility. Org-wide: `admin:settings:manage`, and the rescope rule | `update_type` refuses an org-wide change other than the name. That mirrors `refuse_org_wide_rescope` (409). Kept |
+| `delete_type`, `delete_field`, `delete_tag`, `merge_tags` | One tree: visibility. Org-wide: `admin:settings:manage` (H-205) | Org-wide: refused for every member, as a product rule (§16.7). Reworded, and it names no permission |
+| `save_view`, `delete_view` | Visibility of the project | None |
+| `report_save`, `report_delete` | `_visible_report`: the author or an admin | The pre-check reads the server's `can_edit` and `can_delete`, and quotes the server's words. Kept |
+| `capture_intake`, `triage_intake` | Visibility, the queue state | None |
+| `mark_notifications_read` | The member's own bell | None |
+| Grants (who may see a project) | Class X in the manifest | No tool (D-PM-40) |
+| Hard delete of a project or a task | Class X in the manifest | No tool (D-PM-35) |
+
+### 16.7 The rules that stay
+
+| Rule | Owner | Kind |
+|---|---|---|
+| The chat never hard-deletes a project or a task. Archive is the remove verb | D-PM-35 | Product decision |
+| The chat does not write grants | D-PM-40 | Product decision |
+| A guarded act is one card for each act, with the counts first | `projects_ai_chat.md` §3.3 | Product decision |
+| An agent assignee in a run that may not send is refused | H-236 | Product decision (egress) |
+| A comment is edited or deleted by its author only | `activities.py` `_load_own_comment` | Server rule, mirrored before the card |
+| An org-wide type is never the default, and only its name changes | `refuse_org_wide_rescope`, `admin.create_type` | Server rule, mirrored before the card |
+| The chat does not delete or merge a shared entry | The manifest's class X row for `GET /projects/vocabulary/{kind}/{row_id}/impact` | A chat-scope choice of WS-42 PS-3, not an owner decision. It is stale since H-205. See §16.9 |
+| "Only the author of this report or an admin may change it" | `reports.CHANGE_REFUSED` and `DELETE_REFUSED`, behind `can_edit` | The server's words, quoted |
+
+Two claims were the assistant's own guesses, and both are gone. The first
+is "an organization admin can" add or change the vocabulary. The second is
+"the root that owns this tree's vocabulary" as a reason for a refusal.
+
+### 16.8 Fences (R7)
+
+`tests/unit/test_projects_agent_grants.py`, each with its mutation:
+
+- `grants-attempt`: an owner's new tag shows a card and posts the route.
+- `grants-quote`: a refused write quotes the server in the receipt.
+- `grants-precheck`: the check before a card is `may_edit` from the
+  server. Mutation: `status_edit_refusal` returns `""`, and four cases fail.
+- `grants-one-predicate`: the status-set read and the status write call
+  `can_manage_settings`.
+- `grants-no-claim`: no string in the instructions, `refusals.py`, the
+  persona or the rail claims a permission without a server check. The
+  allowlist holds 4 entries and only shrinks (`CLAIM_CEILING`).
+- `grants-r8`: on a private ladder database, the real routes run as the
+  app role. An owner creates a tag. A member's org-wide tag is refused with
+  the route's words in the receipt. The flag-off answer reaches the owner
+  as the route's words. The status pre-check agrees with the status write
+  for a member and for the owner.
+
+The frontend twin is `assistantPersona.test.ts`, "states no permission".
+
+### 16.9 For the owner
+
+- **No flag flip is needed for the incident.** A tag of one tree needs no
+  flag. Org-wide creates need `PROJECTS_ORG_VOCABULARIES`, which the board
+  records ON in production.
+- **The chat does not delete or merge a shared entry.** Since H-205, the
+  app lets a member with organization settings permission do it, after the
+  count. Parity needs the count read on the chat surface. That is a
+  manifest change and a new card. Decide whether the chat gets it.
+- **A tag, type or field of one tree needs only visibility** (board H-4).
+  The chat follows the server. A narrower rule is a server change first.
