@@ -1608,6 +1608,10 @@ function mapRuleCopyResult(raw: Record<string, unknown>): RuleCopyResult {
     leftOut: entries(raw.left_out)
       .map((e) => ({ name: text(e.name), reason: text(e.reason) }))
       .filter((e) => e.name),
+    // EM-S10 (D-EM-60): each name that the provider makes on first use.
+    willCreate: entries(raw.will_create)
+      .map((e) => ({ rule: text(e.rule), action: text(e.action), name: text(e.name) }))
+      .filter((e) => e.name),
   };
 }
 

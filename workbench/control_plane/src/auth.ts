@@ -128,6 +128,14 @@ if (process.env.AUTH_GOOGLE_ID) {
  */
 const AUTH_SECRET = process.env.AUTH_SECRET ?? "dev-local-insecure-change-me";
 
+/**
+ * The same secret, for the one other reader: the account switcher decodes the
+ * session tokens it holds in slot cookies (`lib/accountSlots.ts`, MT-1k slice
+ * A2). Exported rather than read again from the environment, so there is one
+ * answer to "what the secret is" (see the note above).
+ */
+export const SESSION_SECRET = AUTH_SECRET;
+
 // ── CP-2d · passwordless email OTP via Resend — ships DARK ──────────────────
 //
 // Registered ONLY when `isEmailOtpProviderReady` — env configured

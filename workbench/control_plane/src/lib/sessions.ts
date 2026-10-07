@@ -281,6 +281,32 @@ export function clearSignedOutAccount(): void {
 }
 
 /**
+ * "Sign out of all accounts" (MT-1k slice A2): clear every namespace of each
+ * of these emails, all their orgs, and the last-scope pointer.
+ *
+ * ⚠️ `clearSignedOutAccount` knows only the LAST bound account, so it would
+ * leave the other accounts' chats behind on a shared computer. The switcher
+ * names every account it held, and this clears them all.
+ */
+export function clearAccountNamespaces(emails: readonly string[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    // Both spellings: a token keeps the case the provider sent, and the scope
+    // takes the email the gateway answered with.
+    for (const email of new Set(emails.flatMap((e) => [e, e.toLowerCase()]))) {
+      const prefix = accountPrefix(email);
+      removeKeys(keysWhere((k) => k.startsWith(prefix)));
+    }
+    localStorage.removeItem(LAST_SCOPE_KEY);
+  } catch {
+    /* storage unavailable: nothing is stored */
+  }
+  boundScope = null;
+  lastIdentity = null;
+  lastMemberScope = null;
+}
+
+/**
  * True when the browser signed out, by any path: a sign-out button, an
  * expired session, the middleware redirect, the NextAuth sign-out page.
  *

@@ -378,7 +378,7 @@ async def _skip_for_paired_mailbox(
 
 #: The canonical keys of the system folders. A move to one is never a user
 #: folder that the provider could not find.
-_SYSTEM_FOLDER_KEYS = frozenset(
+SYSTEM_FOLDER_KEYS = frozenset(
     {"inbox", "sent", "drafts", "trash", "junk", "archive"})
 
 
@@ -436,7 +436,7 @@ async def _move_folder_action(
         # Outlook /move re-keys the message — keep follow-up actions valid.
         await db.execute(text("UPDATE email_messages SET provider_message_id=:pid WHERE id=:id"), {"id": message_id, "pid": new_pid})
         return new_pid
-    if canon not in _SYSTEM_FOLDER_KEYS and _move_can_be_a_noop(provider):
+    if canon not in SYSTEM_FOLDER_KEYS and _move_can_be_a_noop(provider):
         # A user folder that produced no move id usually means the
         # provider couldn't resolve/create it — surface it.
         _log.info("email.move_folder_noop", account_id=account_id, folder=canon)
