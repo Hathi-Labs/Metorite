@@ -1122,3 +1122,98 @@ class TestTheDecidePathIsData:
         assert logs
         text = json.dumps(logs, default=str)
         assert SECRET_CONTEXT not in text and SECRET_OPTION not in text
+
+
+class TestTheDeploymentKeyArm:
+    """Review P2 (2026-10-07). On a deployment-key box the member SELECTS the
+    tenant, so only a member the gateway verified may go out (H-73, R11). The
+    old Jev engine sends no member. This path sends ``run_attribution()``."""
+
+    @pytest.fixture
+    def deployment_box(self, monkeypatch, on_decide):
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ORG_KEY", "")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_DEPLOYMENT_KEY", "cc_depl_fixture_notarealsecret")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY", "true")
+        get_settings.cache_clear()
+
+    def test_a_verified_member_goes_out_as_proven(self, monkeypatch, deployment_box) -> None:
+        clear_run_context()
+        bind_run_context(run_id="run-s1", agent=PA, user="member@example.com",
+                         source="chat", member_verified=True)
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        _wire(monkeypatch, _fast_ok)
+        _ask(question="Is it?", context="x")
+        headers = door.requests[0].headers
+        assert headers["authorization"] == "Bearer cc_depl_fixture_notarealsecret"
+        assert headers["x-cc-member"] == "member@example.com"
+        assert headers["x-cc-member-proven"] == "1"
+
+    def test_a_claimed_member_sends_no_decide_request(self, monkeypatch, deployment_box) -> None:
+        """A member from request input is not proven. The client refuses it
+        locally, and the item goes to ``tier-fast``."""
+        clear_run_context()
+        bind_run_context(run_id="run-s1", agent=PA, user="claimed@example.com", source="chat")
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        with structlog.testing.capture_logs() as logs:
+            out = _ask(question="Is it?", context="x")
+        assert door.requests == []
+        assert len(wire.requests) == 1
+        assert out == f"{LEAD}\nyes (confidence 0.75) — fast"
+        # A reason CODE, never the client's sentence (review P3).
+        assert _levels(logs) == [("warning", "unavailable")]
+
+
+def test_two_decide_requests_run_at_the_same_time(monkeypatch, on_decide) -> None:
+    live = {"now": 0, "most": 0}
+
+    async def reply(b: dict[str, Any]) -> httpx.Response:
+        live["now"] += 1
+        live["most"] = max(live["most"], live["now"])
+        await asyncio.sleep(0.05)
+        live["now"] -= 1
+        return _verdict(b)
+
+    door = _door(monkeypatch, reply)
+    _wire(monkeypatch, _fast_ok)
+    _ask(question="batch", context="x", items=_items(20))
+    assert len(door.requests) == 2
+    assert live["most"] == 2, "the two requests ran one after the other"
+
+
+@pytest.mark.parametrize(("position", "level"), [(-3, "low"), (0.49, "low"), (0.5, "mid"),
+                                                 (1.6, "high"), (9, "high")])
+def test_a_score_position_is_clamped_to_the_scale(monkeypatch, on_decide, position, level) -> None:
+    """Review P3: the Console clamps a position to the end levels."""
+    _door(monkeypatch, lambda b: httpx.Response(200, json={"answers": {"q": {
+        "type": "score", "score": position, "confidence": 0.9,
+    }}}))
+    _wire(monkeypatch, _fast_ok)
+    out = _ask(question="How severe?", context="x", kind="score", options="low\nmid\nhigh")
+    assert out == f"{LEAD}\n{level} (confidence 0.90)"
+
+
+def test_a_fault_while_building_the_requests_falls_back(monkeypatch, on_decide) -> None:
+    """Noted in review: a broken shape check sends the batch to ``tier-fast``,
+    and the tool does not say ``UNAVAILABLE``."""
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("shape check broke")
+
+    monkeypatch.setattr(decide_tools, "_decide_question", boom)
+    door = _door(monkeypatch, lambda b: _verdict(b))
+    wire = _wire(monkeypatch, _fast_ok)
+    with structlog.testing.capture_logs() as logs:
+        out = _ask(question="Is it?", context="x")
+    assert door.requests == [] and len(wire.requests) == 1
+    assert out == f"{LEAD}\nyes (confidence 0.75) — fast"
+    assert _levels(logs) == [("warning", "RuntimeError")]
+
+
+@pytest.mark.parametrize(("raw", "code"), [
+    ("disabled", "disabled"), ("unwired", "unwired"), ("tier_unknown", "tier_unknown"),
+    ("HTTP 503", "HTTP 503"), ("unreadable answer: an answer is missing", "unreadable"),
+    ("[Errno 11001] getaddrinfo failed", "unavailable"),
+    ("this box presents a deployment key, and the acting member is not proven", "unavailable"),
+])
+def test_a_fallback_reason_is_a_code(raw, code) -> None:
+    assert decide_tools._reason_code(raw) == code

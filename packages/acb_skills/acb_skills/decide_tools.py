@@ -82,6 +82,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -509,8 +510,9 @@ def _level_of(item: Any, raw: Any) -> str | None:
         return None
     if not math.isfinite(position):
         return None
-    index = math.floor(position + 0.5)
-    return item.options[index] if 0 <= index < len(item.options) else None
+    # The nearest level, clamped to the scale, as the Console reads it.
+    index = min(max(math.floor(position + 0.5), 0), len(item.options) - 1)
+    return item.options[index] if item.options else None
 
 
 def _decide_answer(item: Any, raw: Any) -> Any:
@@ -559,6 +561,25 @@ def _decide_attribution() -> dict[str, Any]:
     return out
 
 
+#: A ``DecideUnavailable`` reason that is already a code: a word such as
+#: ``disabled``, ``unwired`` or ``tier_unknown``, or ``HTTP 503``.
+_REASON_CODE = re.compile(r"[a-z][a-z_]{0,39}|HTTP \d{3}")
+
+
+def _reason_code(reason: Any) -> str:
+    """A ``DecideUnavailable`` reason as a code. Never a sentence.
+
+    The Console client gives a sentence for some refusals (a deployment key
+    with no proven member) and a transport message for an outage. Both read
+    as ``unavailable``, so a count of fallbacks by reason stays a count of
+    codes.
+    """
+    text = str(reason or "")
+    if text.startswith("unreadable answer"):
+        return "unreadable"
+    return text if _REASON_CODE.fullmatch(text) else "unavailable"
+
+
 async def _one_decide(
     context: str,
     questions: dict[str, Any],
@@ -588,7 +609,7 @@ async def _one_decide(
         )
     except DecideUnavailable as exc:
         _log.warning(
-            FALLBACK_EVENT, reason=str(exc.reason)[:80], decide_status=exc.status,
+            FALLBACK_EVENT, reason=_reason_code(exc.reason), decide_status=exc.status,
             **where,
         )
     except TimeoutError:
@@ -606,21 +627,27 @@ async def _ask_on_decide(context: str, asked: list[Any], log_kind: str) -> list[
     as before. When some items got an answer, an item with none reads as
     ``unsure``.
     """
-    from acb_llm import shape_refusal, split_questions
-
     from acb_skills import system_one
 
-    sendable: dict[str, Any] = {}
-    for item in asked:
-        question = _decide_question(item)
-        code = shape_refusal(context, question)
-        if code is None:
-            sendable[item.id] = question
-        else:
-            _log.info(FALLBACK_EVENT, reason=code, request=0, items=1, decide_kind=log_kind)
+    try:
+        from acb_llm import shape_refusal, split_questions
 
-    parts = split_questions(sendable)
-    attribution = _decide_attribution() if parts else {}
+        sendable: dict[str, Any] = {}
+        for item in asked:
+            question = _decide_question(item)
+            code = shape_refusal(context, question)
+            if code is None:
+                sendable[item.id] = question
+            else:
+                _log.info(FALLBACK_EVENT, reason=code, request=0, items=1, decide_kind=log_kind)
+        parts = split_questions(sendable)
+        attribution = _decide_attribution() if parts else {}
+    except Exception as exc:  # a fault here sends the batch to tier-fast
+        _log.warning(
+            FALLBACK_EVENT, reason=type(exc).__name__, request=0, items=len(asked),
+            decide_kind=log_kind,
+        )
+        parts, attribution = [], {}
     decisions = await asyncio.gather(*(
         _one_decide(context, part, attribution, n, log_kind)
         for n, part in enumerate(parts, start=1)
