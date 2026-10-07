@@ -38,6 +38,8 @@ Mutations this file catches (R7), each one run red before the change:
   ``test_unread_false_is_no_filter``;
 * a failed read hides the id of its item -> ``test_a_failed_read_is_counted_not_hidden``;
 * more than 200 rows reach PICK -> ``test_at_most_200_candidates_reach_pick``;
+* PICK gets the head of the mail when the route has a highlight of the
+  match -> ``test_a_deep_match_reaches_the_pick_state``;
 * a run with no acting member reaches the gateway ->
   ``test_a_run_with_no_member_makes_no_gateway_call``;
 * the tool exists with the flag off, or for another agent ->
@@ -388,6 +390,24 @@ def test_a_summary_reads_no_body_field() -> None:
     assert c.who == "Buyer 3 <buyer3@customer.test>"
     for field in (c.id, c.title, c.who, c.when, c.snippet):
         assert BODY_CANARY not in field and HTML_CANARY not in field
+
+
+async def test_a_deep_match_reaches_the_pick_state(
+    monkeypatch: pytest.MonkeyPatch, door: Door,
+) -> None:
+    """The subject is generic and the provider snippet is the head of the
+    mail. The match is in the third paragraph, so only the route's highlight
+    shows it. PICK must see the highlight (review P2)."""
+    deep = _row(1, subject="Catch-up 1", snippet="Hello, thanks for the visit last week.",
+                highlight="could you share your <mark>pricing</mark> for 200 units "
+                          "… before <mark>pricing</mark> closes")
+    gateway = Gateway([deep, _row(2, highlight="")])
+    await _tool(monkeypatch, gateway)(QUERY)
+    items = [i for b in door.bodies for i in b["state"]["items"].values()]
+    assert "could you share your pricing for 200 units" in items[0]["snippet"]
+    assert "<mark>" not in items[0]["snippet"]
+    # With no highlight, the provider snippet stays.
+    assert items[1]["snippet"] == "Could you send pricing for item 2"
 
 
 async def test_at_most_200_candidates_reach_pick(

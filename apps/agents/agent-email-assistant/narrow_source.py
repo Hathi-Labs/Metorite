@@ -274,8 +274,16 @@ def _canonical(value: Any) -> str | None:
 
 
 def candidate_of(row: Mapping[str, Any]) -> Candidate:
-    """One search row as a short summary. It reads no body field."""
-    snippet = row.get("snippet") or _TAG.sub("", str(row.get("highlight") or ""))
+    """One search row as a short summary. It reads no body field.
+
+    The snippet is the route's ``highlight`` when it has one: the passages
+    that matched the search (``ts_headline``, at most two short fragments,
+    computed with ``light=true`` too). The provider ``snippet`` is the head
+    of the mail, so a match deep in the body would not reach PICK, and a
+    confident ``no`` could drop the mail (review P2, WS-48 N2).
+    """
+    highlight = " ".join(_TAG.sub("", str(row.get("highlight") or "")).split())
+    snippet = highlight or row.get("snippet") or ""
     return Candidate(
         id=str(row.get("id") or ""),
         title=str(row.get("subject") or "(no subject)"),
