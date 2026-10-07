@@ -1310,6 +1310,28 @@ class GmailProvider(BaseEmailProvider):
         self._draft_ids.pop(draft_id, None)
         return (resp.json() or {}).get("id")
 
+    async def get_draft_recipients(self, draft_id: str) -> dict[str, list[str]]:
+        """The To, Cc and Bcc headers of a Gmail draft (``format=metadata``).
+
+        WS-17 EM-T13b-1 review round 2. ``draft_id`` is the MESSAGE id of the
+        draft, as the local row holds it. Gmail keeps the Bcc header on a
+        draft. Each header of a name counts, so a second To header cannot
+        hide an address."""
+        client = await self._get_client()
+        resp = await client.get(
+            f"/users/me/messages/{draft_id}",
+            params={"format": "metadata", "metadataHeaders": ["To", "Cc", "Bcc"]},
+        )
+        resp.raise_for_status()
+        headers = ((resp.json() or {}).get("payload") or {}).get("headers") or []
+        out: dict[str, list[str]] = {"to": [], "cc": [], "bcc": []}
+        for h in headers:
+            key = str(h.get("name", "")).lower()
+            if key in out:
+                out[key] += [a.email for a in self._parse_address_list(
+                    str(h.get("value", ""))) if a.email]
+        return out
+
     async def _reply_headers(
         self, reply_to_message_id: str | None, thread_id: str | None,
     ) -> dict[str, str]:

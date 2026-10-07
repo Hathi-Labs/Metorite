@@ -392,6 +392,10 @@ def chat(monkeypatch):
         if path == "/email/messages/m1":
             return {"account_id": "box-a", "subject": "Hello",
                     "from_address": {"name": "Ravi", "email": "ravi@contoso.test"}}
+        if path == "/email/messages/d1":
+            # EM-T13b-1: ``send_draft`` reads the draft before its card.
+            return {"account_id": "box-b", "folder": "drafts", "subject": "Hi",
+                    "to_addresses": [{"email": "kim@contoso.test"}]}
         return {}
 
     async def fake_post(path, body):
@@ -460,7 +464,9 @@ async def test_the_draft_send_card_names_its_mailbox(chat) -> None:
     await agents.send_draft("box-b", "d1")
     [card] = chat.cards
     assert card["detail"].startswith("From Personal · dana@outlook.com")
-    assert chat.posts == [("/email/drafts/send", {"account_id": "box-b", "draft_id": "d1"})]
+    assert chat.posts == [("/email/drafts/send", {
+        "account_id": "box-b", "draft_id": "d1",
+        "expect": {"to": ["kim@contoso.test"], "cc": [], "bcc": []}})]
 
 
 async def test_a_chat_draft_is_made_in_the_mailbox_of_the_mail(chat) -> None:

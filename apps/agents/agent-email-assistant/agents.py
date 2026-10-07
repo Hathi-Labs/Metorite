@@ -2248,10 +2248,76 @@ async def list_artifacts(agent_name: str = "email-assistant") -> str:
     return "\n".join(lines)
 
 
+def _channel_open() -> bool:
+    """True when a "no" on the card came from a member in a live chat."""
+    from acb_skills.ask_tools import confirmation_channel_open
+    return confirmation_channel_open()
+
+
+# The card of a draft send (EM-T13b-1, §10.4.15). A mail body can ask the
+# model to send a draft that a rule or a reply put a hidden Bcc on. So the
+# card names each recipient of the row. The tool sends them as ``expect``.
+# The route then answers 409 for a changed row, and it writes exactly those
+# lists to the provider draft before the send (review round 1, P1).
+_DRAFT_FIELDS = (("to", "To", "to_addresses"), ("cc", "Cc", "cc_addresses"),
+                 ("bcc", "Bcc", "bcc_addresses"))
+_DRAFT_FOLDERS = ("drafts", "draft")
+# The longest address or host that a card shows (RFC 5321 path limit).
+_TARGET_LIMIT = 254
+
+
+def _draft_list(value: Any) -> list[str]:
+    """Each address of one address list of ``GET /email/messages/{id}``.
+
+    The same read as ``_draft_addresses`` in ``drafting.py``, which the send
+    uses."""
+    if not isinstance(value, list):
+        return []
+    return [str(a["email"]) for a in value if isinstance(a, dict) and a.get("email")]
+
+
+def _draft_address_line(addr: str) -> str:
+    """One address as the draft card shows it (review round 1, P3).
+
+    A draft can hold an IDN address, so a non-ASCII domain is not refused. The
+    line marks it and shows the punycode form, so a look-alike letter shows."""
+    line = _card_text(addr, _TARGET_LIMIT)
+    domain = addr.rpartition("@")[2]
+    if domain.isascii():
+        return line
+    try:
+        puny = domain.encode("idna").decode("ascii")
+    except UnicodeError:
+        puny = "no punycode form"
+    return f"{line} (non-ASCII domain: {_card_text(puny, _TARGET_LIMIT)})"
+
+
+def _draft_card(
+    sender: str, subject: Any, lists: dict[str, list[str]],
+) -> tuple[str, str]:
+    """``(detail, context)`` of the draft card. ``context`` is empty when the
+    list does not fit on the card, and then the tool sends nothing."""
+    total = sum(len(v) for v in lists.values())
+    noun = "recipient" if total == 1 else "recipients"
+    counts = ", ".join(f"{len(lists[key])} {head}" for key, head, _ in _DRAFT_FIELDS)
+    detail = (
+        f"From {sender} · Sends to {total} {noun}: {counts}. Each address is "
+        f"in the list below. · Subject: {_card_text(subject or '(none)', 120)}"
+    )
+    lines = ["Each recipient of this draft:"]
+    lines += [f"- {head}: {_draft_address_line(addr)}"
+              for key, head, _ in _DRAFT_FIELDS for addr in lists[key]]
+    context = "\n".join(lines)
+    return detail, ("" if len(context) > _CARD_CONTEXT_LIMIT else context)
+
+
 @_annotate_risk(destructive=True, open_world=True)
 async def send_draft(account_id: str, draft_id: str) -> str:
     """Send an existing draft natively (Drafts → Sent, no duplicate). Shows a
-    confirmation card before sending."""
+    confirmation card before sending.
+
+    The card names each To, Cc and Bcc address of the draft. The send fails,
+    and sends nothing, when the draft changed after the card."""
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     sender = await _mailbox_name(account_id)
     if sender is None:
@@ -2259,15 +2325,54 @@ async def send_draft(account_id: str, draft_id: str) -> str:
             f"Not sent. No connected mailbox has the id {account_id}. Call "
             "list_accounts and use the mailbox that holds the draft."
         )
+    try:
+        draft = await _get(f"/email/messages/{draft_id}") or {}
+    except GatewayError as exc:
+        if exc.status != 404:
+            raise
+        draft = {}
+    if not isinstance(draft, dict) or not draft:
+        return f"Not sent. No draft of this member has the id {draft_id}."
+    if str(draft.get("account_id") or "") != str(account_id):
+        return (
+            f"Not sent. The message {draft_id} is not in the mailbox {sender}. "
+            "Send a draft from the mailbox that holds it."
+        )
+    if str(draft.get("folder") or "").lower() not in _DRAFT_FOLDERS:
+        return f"Not sent. The message {draft_id} is not a draft."
+    lists = {key: _draft_list(draft.get(column)) for key, _, column in _DRAFT_FIELDS}
+    if not any(lists.values()):
+        return "Not sent. The draft has no recipient. Add one in the Email app."
+    if any(len(a) > _TARGET_LIMIT for v in lists.values() for a in v):
+        # The card never cuts an address (review round 1, P3).
+        return (
+            f"Not sent. The draft has an address longer than {_TARGET_LIMIT} "
+            "characters, so the card cannot show it. Fix it in the Email app."
+        )
+    detail, context = _draft_card(sender, draft.get("subject"), lists)
+    if not context:
+        return (
+            "Not sent. The draft has too many recipients to show on one card. "
+            "Send it from the Email app."
+        )
     if not await request_confirmation(
-        title="Send this draft?",
-        detail=f"From {sender} · Send the saved draft now? (Drafts → Sent)",
+        title="Send this draft?", detail=detail, context=context,
     ):
-        return "Send cancelled — the draft was not sent."
-    await _post(
-        "/email/drafts/send",
-        {"account_id": account_id, "draft_id": draft_id},
-    )
+        if _channel_open():
+            return "Send cancelled — the draft was not sent."
+        return "Not sent. This needs the member's approval in a live chat."
+    try:
+        await _post(
+            "/email/drafts/send",
+            {"account_id": account_id, "draft_id": draft_id, "expect": lists},
+        )
+    except GatewayError as exc:
+        if exc.status != 409:
+            raise
+        return (
+            "Not sent. The draft changed after the card showed it. Read the "
+            "draft again, and ask the user before you send it."
+        )
     return "Draft sent."
 
 
@@ -2282,12 +2387,98 @@ async def delete_knowledge(account_id: str, knowledge_id: str) -> str:
 
 # ── Unsubscribe / cold senders ───────────────────────────────────────────────
 
+# The unsubscribe card (EM-T13b-1, §10.4.15). The model never chooses the
+# link. The tool reads the stored link from ``GET /email/unsubscribe/target``,
+# shows its host or its address, and posts that exact link.
+_UNSUBSCRIBE_NOT_READY = (
+    "Nothing changed. Unsubscribe from the chat is not ready on this server "
+    "yet, so nothing was sent. The user can unsubscribe in the Email app."
+)
+# The text of a mailto unsubscribe (review round 1, P2). A real unsubscribe
+# mail needs no long text and no link. So a subject or a body over this many
+# characters, with a URL, or with a hidden character sends nothing.
+_MAILTO_TEXT_LIMIT = 200
+_URL_IN_TEXT = re.compile(r"https?:|www\.|://", re.IGNORECASE)
+
+
+def _mailto_text_problem(field: str, value: Any) -> str:
+    """Empty when the card can show the subject or the body in full."""
+    if not isinstance(value, str):
+        return f"has no {field} that the server named"
+    if len(value) > _MAILTO_TEXT_LIMIT:
+        return f"has a {field} longer than {_MAILTO_TEXT_LIMIT} characters"
+    if _URL_IN_TEXT.search(value):
+        return f"has a {field} with a URL"
+    # A line break in a subject reads as a space on the card, but it can
+    # start a new mail header (EM-T13b-1 review round 2).
+    if field == "subject" and any(ch in value for ch in "\r\n"):
+        return "has a subject with a line break"
+    if any(not ch.isspace() and unicodedata.category(ch)[0] == "C" for ch in value):
+        return f"has a {field} with a hidden character"
+    return ""
+
+
+async def _unsubscribe_target(account_id: str, email: str) -> dict[str, Any] | None:
+    """The answer of the target route. None when the gateway is older and does
+    not serve it (404 or 405), so the tool sends nothing."""
+    try:
+        target = await _get(
+            "/email/unsubscribe/target", {"account_id": account_id, "email": email})
+    except GatewayError as exc:
+        if exc.status == 405 or (
+                exc.status == 404 and "Account not found" not in str(exc)):
+            return None
+        raise
+    return target if isinstance(target, dict) else {}
+
+
+def _unsubscribe_card(
+    target: dict[str, Any], sender: str,
+) -> tuple[str, str, str]:
+    """``(detail, context, refusal)`` of the unsubscribe card.
+
+    The refusal is empty when the card can show the target plainly. Else the
+    tool sends nothing and answers it."""
+    kind = target.get("kind")
+    after = "If that fails, it blocks the sender. It archives their mail in the inbox."
+    if kind == "one-click":
+        host, problem = _url_problem(target.get("link"))
+        if problem or len(host) > _TARGET_LIMIT:
+            return "", "", f"the stored unsubscribe link {problem or 'is too long'}"
+        return (f"Sends a one-click unsubscribe request to host: {host}. {after}",
+                f"- one-click: host: {host}", "")
+    if kind == "mailto":
+        address = target.get("address")
+        problem = _address_problem(address)
+        if problem or len(str(address)) > _TARGET_LIMIT:
+            return "", "", (f"the address of the stored unsubscribe link "
+                            f"{problem or 'is too long'}")
+        # The sender of the list writes the subject and the body, and the send
+        # uses them. So the card shows both (review round 1, P2).
+        subject, body = target.get("subject"), target.get("body")
+        problem = (_mailto_text_problem("subject", subject)
+                   or _mailto_text_problem("body", body))
+        if problem:
+            return "", "", f"the stored unsubscribe link {problem}"
+        return (f"Sends an unsubscribe email from {sender} to mail to: {address}, "
+                f"with the subject and the body below. {after}",
+                "\n".join([
+                    f"- mail to: {address}",
+                    f"- subject: {_card_text(subject, _MAILTO_TEXT_LIMIT)}",
+                    f"- body: {_card_text(body, _MAILTO_TEXT_LIMIT)}",
+                ]), "")
+    if kind == "block":
+        return ("The sender has no unsubscribe link. Blocks the sender, so its "
+                "new mail is archived. Archives their mail in the inbox.",
+                "- block: the sender has no unsubscribe link", "")
+    return "", "", "the server named no known unsubscribe target"
+
+
 @_annotate_risk(destructive=True, open_world=True)
 async def unsubscribe_sender(
     account_id: str,
     email: str,
     name: str | None = None,
-    unsubscribe_link: str | None = None,
 ) -> str:
     """Actually unsubscribe from a sender and archive its existing mail.
 
@@ -2295,29 +2486,61 @@ async def unsubscribe_sender(
     List-Unsubscribe target, or sends the unsubscribe email for a mailto: one.
     If there's no usable link or the request fails, the sender is blocked
     instead (future mail auto-archived via a provider filter). Use after
-    suggest_unsubscribes once the user confirms."""
+    suggest_unsubscribes once the user confirms.
+
+    The tool uses the link that the mailbox stored for the sender, and the
+    card names its host or its address. You cannot pass a link."""
+    shown = _card_text(email, 200)
+    sender = await _mailbox_name(account_id)
+    if sender is None:
+        return (
+            f"Nothing changed. No connected mailbox has the id {account_id}. "
+            "Call list_accounts and ask the user which mailbox to use."
+        )
+    target = await _unsubscribe_target(account_id, email)
+    if target is None:
+        return _UNSUBSCRIBE_NOT_READY
+    detail, context, refusal = _unsubscribe_card(target, sender)
+    if refusal:
+        return (
+            f"Nothing changed. For {shown}, {refusal}, so nothing was sent. "
+            "The user can block the sender in the Email app."
+        )
     # Outward-facing: it fires a real one-click request or SENDS an unsubscribe
     # email, and archives existing mail. Confirm, fail-closed.
     if not await _confirm_destructive(
-        title=f"Unsubscribe from {email}?",
-        detail="Sends a real unsubscribe request (or blocks the sender) and "
-               "archives their existing mail.",
+        title=f"Unsubscribe from {shown}?", detail=detail, context=context,
     ):
-        return f"Cancelled — still subscribed to {email}."
-    res = await _post("/email/unsubscribe", {
-        "account_id": account_id,
-        "email": email,
-        "name": name,
-        "unsubscribe_link": unsubscribe_link,
-    })
+        if _channel_open():
+            return f"Cancelled — still subscribed to {shown}."
+        return (
+            "Nothing changed. This needs the member's approval in a live chat, "
+            "so nothing was sent."
+        )
+    if target.get("kind") == "block":
+        # No link to use. ``POST /unsubscribe`` with no link reads the stored
+        # link again, and a new mail can store one that the card did not show.
+        # So the tool blocks through the newsletter route, which reads no link.
+        res = await _post("/email/newsletters", {
+            "account_id": account_id, "email": email, "name": name,
+            "status": "AUTO_ARCHIVED",
+        })
+        res = {"ok": False, "archived": res.get("archived", 0)}
+    else:
+        res = await _post("/email/unsubscribe", {
+            "account_id": account_id,
+            "email": email,
+            "name": name,
+            "unsubscribe_link": target.get("link"),
+        })
     archived = res.get("archived", 0)
     if res.get("ok"):
         verb = ("Sent an unsubscribe email for" if res.get("method") == "mailto"
                 else "Unsubscribed from")
-        return (f"{verb} {email}; archived {archived} existing message(s). "
+        return (f"{verb} {shown}; archived {archived} existing message(s). "
                 "The sender should stop emailing you.")
     return (
-        f"Couldn't auto-unsubscribe from {email} (no one-click link), so I "
+        f"Couldn't auto-unsubscribe from {shown} (no one-click link), so I "
         f"blocked it instead — future mail is auto-archived and {archived} "
         "existing message(s) were archived."
     )

@@ -1244,6 +1244,27 @@ class OutlookProvider(BaseEmailProvider):
         resp.raise_for_status()
         return None
 
+    async def get_draft_recipients(self, draft_id: str) -> dict[str, list[str]]:
+        """The To, Cc and Bcc of a Graph draft, read with one ``$select``.
+
+        WS-17 EM-T13b-1 review round 2. A reply draft holds the To that
+        ``createReply`` set, which is the Reply-To of the mail."""
+        client = await self._get_client()
+        resp = await client.get(
+            f"/me/messages/{draft_id}",
+            params={"$select": "toRecipients,ccRecipients,bccRecipients"},
+        )
+        resp.raise_for_status()
+        raw = resp.json() or {}
+        return {
+            key: [
+                str((r.get("emailAddress") or {}).get("address") or "")
+                for r in (raw.get(f"{key}Recipients") or [])
+                if (r.get("emailAddress") or {}).get("address")
+            ]
+            for key in ("to", "cc", "bcc")
+        }
+
     @staticmethod
     async def _attach_files(
         client: httpx.AsyncClient, draft_id: str,

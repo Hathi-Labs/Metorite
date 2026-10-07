@@ -791,17 +791,25 @@ async def _http_unsubscribe(url: str) -> tuple[bool, str]:
         return False, str(exc)[:120]
 
 
+def _mailto_parts(mailto: str) -> tuple[str, str, str]:
+    """``(address, subject, body)`` of a ``mailto:`` link (RFC 2369).
+
+    The target route and the send both read the link here, so the chat card
+    names the address that the send uses (EM-T13b-1)."""
+    parsed = urlparse(mailto)
+    qs = parse_qs(parsed.query)
+    subject = (qs.get("subject") or ["unsubscribe"])[0]
+    body = (qs.get("body") or ["Please unsubscribe me from this list."])[0]
+    return parsed.path.strip(), subject, body
+
+
 async def _mailto_unsubscribe(provider: Any, mailto: str) -> tuple[bool, str]:
     """Send the unsubscribe email a ``mailto:`` List-Unsubscribe target asks for
     (RFC 2369), using the account's own send path."""
     try:
-        parsed = urlparse(mailto)
-        to_addr = parsed.path.strip()
+        to_addr, subject, body = _mailto_parts(mailto)
         if not to_addr:
             return False, "no-address"
-        qs = parse_qs(parsed.query)
-        subject = (qs.get("subject") or ["unsubscribe"])[0]
-        body = (qs.get("body") or ["Please unsubscribe me from this list."])[0]
         await provider.send_message(to=[to_addr], subject=subject, body_text=body)
         return True, "mailto"
     except Exception as exc:  # noqa: BLE001
@@ -888,6 +896,70 @@ class UnsubscribeRequest(BaseModel):
     unsubscribe_link: str | None = None
 
 
+async def _stored_unsubscribe_link(
+    db: Any, account_id: str, email: str,
+) -> str | None:
+    """The stored unsubscribe link of one sender in ONE mailbox (EM-T13b-1).
+
+    ``GET /unsubscribe/target`` and ``POST /unsubscribe`` both read it here,
+    so the chat card shows the link that the POST uses."""
+    row = (await db.execute(text(
+        """SELECT MAX(unsubscribe_link) AS link FROM email_messages
+           WHERE account_id = :aid
+             AND LOWER(from_address->>'email') = LOWER(:email)
+             AND unsubscribe_link IS NOT NULL"""
+    ), {"aid": account_id, "email": email})).fetchone()
+    return row.link if row else None
+
+
+def _unsubscribe_kind(link: str | None) -> str:
+    """``one-click``, ``mailto`` or ``block``: the act of the POST for a link."""
+    low = (link or "").lower()
+    if low.startswith("http"):
+        return "one-click"
+    if low.startswith("mailto:"):
+        return "mailto"
+    return "block"
+
+
+@router.get("/unsubscribe/target")
+async def unsubscribe_target(
+    account_id: str = Query(...),
+    email: str = Query(...),
+    user: UserContext = Depends(get_current_user),
+):
+    """What ``POST /unsubscribe`` does for a sender, before it does it.
+
+    WS-17 EM-T13b-1 (``email_app_master_plan.md`` §10.4.15). The email
+    assistant shows the host of a one-click link, or the address of a
+    ``mailto:`` link, on its card. Then it posts this exact ``link``. ``kind``
+    is ``one-click``, ``mailto`` or ``block``. The route only reads.
+
+    For a ``mailto:`` link it also answers the ``subject`` and the ``body``
+    that the send uses, because the sender of the list writes both (review
+    round 1, P2)."""
+    async with _tenant_session() as db:
+        await _assert_account_owner(db, account_id, user.email or "anonymous")
+        link = await _stored_unsubscribe_link(db, account_id, email)
+    kind = _unsubscribe_kind(link)
+    host: str | None = None
+    address: str | None = None
+    subject: str | None = None
+    body: str | None = None
+    try:
+        if kind == "one-click":
+            host = urlparse(link or "").hostname or ""
+        elif kind == "mailto":
+            address, subject, body = _mailto_parts(link or "")
+    except ValueError:
+        # A link that the parser cannot read names no target, so the tool
+        # refuses it before its card.
+        host = "" if kind == "one-click" else None
+        address = "" if kind == "mailto" else None
+    return {"kind": kind, "link": link, "host": host, "address": address,
+            "subject": subject, "body": body}
+
+
 @router.post("/unsubscribe")
 async def unsubscribe_sender(
     req: UnsubscribeRequest,
@@ -909,22 +981,16 @@ async def unsubscribe_sender(
         # Use the link the UI passed; otherwise recover the best one we stored.
         link = req.unsubscribe_link
         if not link:
-            row = (await db.execute(text(
-                """SELECT MAX(unsubscribe_link) AS link FROM email_messages
-                   WHERE account_id = :aid
-                     AND LOWER(from_address->>'email') = LOWER(:email)
-                     AND unsubscribe_link IS NOT NULL"""
-            ), {"aid": req.account_id, "email": req.email})).fetchone()
-            link = row.link if row else None
+            link = await _stored_unsubscribe_link(db, req.account_id, req.email)
 
         ok = False
         method = "none"
         detail = "no-link"
-        low = (link or "").lower()
-        if low.startswith("http"):
+        kind = _unsubscribe_kind(link)
+        if kind == "one-click":
             method = "one-click"
             ok, detail = await _http_unsubscribe(link)
-        elif low.startswith("mailto:"):
+        elif kind == "mailto":
             method = "mailto"
             async with provider_session(
                 db, user.email or "anonymous",

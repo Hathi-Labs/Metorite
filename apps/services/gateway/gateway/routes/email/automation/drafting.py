@@ -2339,9 +2339,76 @@ async def upsert_draft(
         return await _fetch_message_dict(db, local_id)
 
 
+class DraftExpect(BaseModel):
+    """The recipients that the chat card showed (WS-17 EM-T13b-1)."""
+
+    to: list[str] = []
+    cc: list[str] = []
+    bcc: list[str] = []
+
+
 class DraftSendRequest(BaseModel):
     account_id: str
     draft_id: str  # local email_messages id of the draft to send
+    # The email assistant sends what its card showed. None (the UI, and an
+    # older agent) checks nothing, as before.
+    expect: DraftExpect | None = None
+
+
+#: The answer when the row no longer holds the recipients of the card.
+DRAFT_RECIPIENTS_CHANGED_DETAIL = (
+    "The recipients of this draft changed. Nothing was sent.")
+
+
+def _same_recipients(expect: DraftExpect, held: dict[str, list[str]]) -> bool:
+    """True when each set of ``held`` equals the set of the card.
+
+    The compare is in lower case, and the order does not count (EM-T13b-1)."""
+    shown = {"to": expect.to, "cc": expect.cc, "bcc": expect.bcc}
+    return all(
+        {a.lower() for a in shown[key]} == {a.lower() for a in held.get(key) or []}
+        for key in ("to", "cc", "bcc")
+    )
+
+
+def _draft_matches(drow: Any, expect: DraftExpect) -> bool:
+    """True when each address set of the row equals the set of the card."""
+    return _same_recipients(expect, {
+        "to": _draft_addresses(drow.to_addresses),
+        "cc": _draft_addresses(drow.cc_addresses),
+        "bcc": _draft_addresses(drow.bcc_addresses),
+    })
+
+
+#: The answer when the PROVIDER draft holds other recipients than the card.
+DRAFT_PROVIDER_CHANGED_DETAIL = (
+    "The recipients of this draft changed in your mail app. Nothing was sent.")
+#: The answer when the provider did not give the recipients of the draft.
+DRAFT_PROVIDER_READ_FAILED_DETAIL = (
+    "The mail provider did not give the recipients of this draft. "
+    "Nothing was sent.")
+
+
+async def _check_provider_recipients(
+    provider: Any, provider_id: str, expect: DraftExpect,
+) -> None:
+    """Raise unless the provider draft holds exactly the recipients of the card.
+
+    WS-17 EM-T13b-1 review round 2. An unsigned send does not rewrite the
+    draft, so its body and its format stay. It reads the To, Cc and Bcc that
+    the provider holds, and a difference answers 409 before ``send_draft``.
+    A failed read answers 502. Neither one sends. NotImplementedError passes
+    through: such a provider has no native ``send_draft``, and the caller
+    sends the row through ``send_message``."""
+    try:
+        held = await provider.get_draft_recipients(provider_id)
+    except NotImplementedError:
+        raise
+    except Exception as exc:  # any failed read sends nothing
+        raise HTTPException(
+            status_code=502, detail=DRAFT_PROVIDER_READ_FAILED_DETAIL) from exc
+    if not isinstance(held, dict) or not _same_recipients(expect, held):
+        raise HTTPException(status_code=409, detail=DRAFT_PROVIDER_CHANGED_DETAIL)
 
 
 @router.post("/drafts/send")
@@ -2363,6 +2430,11 @@ async def send_draft_endpoint(
         ), {"id": req.draft_id, "aid": req.account_id})).fetchone()
         if not drow:
             raise HTTPException(status_code=404, detail="Draft not found")
+        # Send only what the card of the email assistant showed. A changed
+        # row answers 409 before any provider call (EM-T13b-1).
+        if req.expect is not None and not _draft_matches(drow, req.expect):
+            raise HTTPException(
+                status_code=409, detail=DRAFT_RECIPIENTS_CHANGED_DETAIL)
         async with provider_session(
             db, user.email or "anonymous", account_id=req.account_id,
         ) as sess:
@@ -2407,6 +2479,20 @@ async def send_draft_endpoint(
                 except Exception:  # noqa: BLE001
                     pass
 
+            # EM-T13b-1 review rounds 1 and 2 (P1). The card of the email
+            # assistant showed the row, and ``expect`` checked the row. But
+            # the provider draft can hold other recipients: an Outlook reply
+            # draft keeps the Reply-To that ``createReply`` set, and the mail
+            # app can add a Bcc. The signed path rewrites the draft anyway, so
+            # with ``expect`` it writes EXACTLY the three lists of the row,
+            # empty ones too. The unsigned path does not rewrite the draft. It
+            # compares the recipients of the provider draft with the card.
+            exact = req.expect is not None
+            if exact:
+                send_to, send_cc, send_bcc = to, cc, bcc
+            else:
+                send_to, send_cc, send_bcc = to or None, cc or None, bcc or None
+
             if signature.strip():
                 send_text, send_html = build_signed_bodies(
                     signature, drow.body_text or "", None)
@@ -2417,8 +2503,8 @@ async def send_draft_endpoint(
                         # No ``attachments``: Outlook keeps the files of its
                         # draft, and Gmail reads them back from its draft.
                         signed_id = await provider.update_draft(
-                            drow.provider_message_id, to=to or None,
-                            cc=cc or None, bcc=bcc or None,
+                            drow.provider_message_id, to=send_to,
+                            cc=send_cc, bcc=send_bcc,
                             subject=drow.subject or None,
                             body_text=send_text, body_html=send_html,
                             thread_id=drow.thread_id or None,
@@ -2437,6 +2523,9 @@ async def send_draft_endpoint(
                     await _send_new_and_trash()
             else:
                 try:
+                    if req.expect is not None:
+                        await _check_provider_recipients(
+                            provider, drow.provider_message_id, req.expect)
                     with _draft_changed_upstream():
                         await provider.send_draft(drow.provider_message_id)
                 except NotImplementedError:

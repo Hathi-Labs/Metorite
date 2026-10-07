@@ -120,6 +120,10 @@ THREAD = [
      "from_address": {"name": "Kim", "email": "kim@contoso.test"},
      "received_at": "2026-10-02", "body_text": "Lunch?"},
 ]
+# A draft in A. EM-T13b-1: ``send_draft`` reads it before its card.
+DRAFT_D1 = {"id": "d1", "account_id": BOX_A, "thread_id": "t1", "folder": "drafts",
+            "subject": "Re: Quote",
+            "to_addresses": [{"name": "Ravi", "email": "ravi@contoso.test"}]}
 
 
 class Gateway:
@@ -143,6 +147,8 @@ class Gateway:
             return self.accounts
         if path == "/email/contacts/sent-from":
             return self.sent_from
+        if path == "/email/messages/d1":
+            return dict(DRAFT_D1)
         if path.startswith("/email/messages/"):
             mid = path.rsplit("/", 1)[1]
             return next((dict(m) for m in THREAD if m["id"] == mid), {})
