@@ -479,16 +479,25 @@ describe("email-html-prefetch-stops", () => {
 
   it("after a sign-out, the old state starts no new request", async () => {
     const h = harness(undefined, { manual: true });
-    const p = createHtmlPrefetcher(h.deps, sharedPrefetchState());
+    const old = sharedPrefetchState();
+    const p = createHtmlPrefetcher(h.deps, old);
     p.listLoaded(INBOX);
     const run = p.run(rowsOf("a", "b", "c", "d", "e", "f"));
     await tick();
     expect(h.asked).toEqual(["a", "b"]);
     clearAll();
+    // The clear empties the queue of the old state at once.
+    expect(old.retired).toBe(true);
+    expect(old.queue).toEqual([]);
     await h.drain();
     // a and b settle. c to f never go with the next session.
     expect(h.asked).toEqual(["a", "b"]);
     expect((await run).asked).toEqual(["a", "b"]);
+    // A handle that still holds the old state starts nothing either.
+    const late = await p.run(rowsOf("g", "h"));
+    await h.drain();
+    expect(late.asked).toEqual([]);
+    expect(h.asked).toEqual(["a", "b"]);
   });
 
   it("a throw from keep counts the row as failed, with no unhandled rejection", async () => {
