@@ -16,8 +16,9 @@ clock (``_isolated``). So a query that eats memory or time ends as an answer
 with ``error``, and the engine always writes an answer. A load streams the
 file: its memory does not grow with the rows.
 
-This slice reads ``.csv`` and ``.tsv``. It refuses ``.xlsx`` and ``.xlsm``
-until WS-43y1b, and ``.xls``, ``.xlsb`` and ``.ods`` always.
+The engine reads ``.csv`` and ``.tsv`` (WS-43y1a), and ``.xlsx`` and
+``.xlsm`` (WS-43y1b, the section "Reading an .xlsx or .xlsm workbook"). It
+refuses ``.xls``, ``.xlsb`` and ``.ods`` always.
 
 Only this file imports ``duckdb``. tests/unit/test_data_engine.py (WS43-F26)
 fails when another module under ``apps/`` or ``packages/`` does.
@@ -32,6 +33,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import re
 import shutil
 import signal
@@ -41,13 +43,18 @@ import sys
 import tempfile
 import threading
 import time
+import zipfile
+import zlib
+from array import array
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import date, datetime
-from decimal import Decimal
+from datetime import date, datetime, timedelta
+from decimal import Context, Decimal
+from itertools import accumulate
 from pathlib import Path
 from typing import Any
+from xml.parsers import expat
 
 # DuckDB may import numpy, and numpy's OpenBLAS starts a thread and a buffer
 # for each core. In the child of ``_isolated`` they would fill its address space.
@@ -108,11 +115,9 @@ PAD_FACTOR = 4
 _ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _DATASET_RE = re.compile(r"ds_[0-9a-f]{32}")
 _EXPORT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,80}")
-_LATER = "The engine reads {} files from WS-43y1b. Until then, ask for a CSV copy."
 _NEVER = "The engine does not read {} files. Save the file as .xlsx or .csv."
+_KINDS = (".csv", ".tsv", ".xlsx", ".xlsm")
 _REFUSED_KINDS = {
-    ".xlsx": _LATER.format(".xlsx"),
-    ".xlsm": _LATER.format(".xlsm"),
     ".xls": _NEVER.format("old .xls"),
     ".xlsb": _NEVER.format(".xlsb"),
     ".ods": _NEVER.format(".ods"),
@@ -239,6 +244,11 @@ def _budget() -> int:
 # --------------------------------------------------------------------------
 
 
+def _too_many_rows(max_rows: int) -> Refused:
+    message = f"The file has more than {max_rows} rows, the cap of one dataset."
+    return Refused("too_many_rows", message + " Split the file, or filter it before loading.")
+
+
 def _check_time(deadline: float) -> None:
     if time.monotonic() > deadline:
         raise Refused("time", "The load passed its time cap.")
@@ -340,10 +350,7 @@ def _prepare(
                 continue
             rows += 1
             if rows > max_rows:
-                message = f"The file has more than {max_rows} rows, the cap of one dataset."
-                raise Refused(
-                    "too_many_rows", message + " Split the file, or filter it before loading."
-                )
+                raise _too_many_rows(max_rows)
             if sum(map(len, cells)) > MAX_ROW_CHARS:
                 raise Refused(
                     "bad_file", f"Row {number} holds more than {MAX_ROW_CHARS} characters."
@@ -484,6 +491,10 @@ def _decimal_comma(
     return False
 
 
+#: The places of the counts in ``_column_stats``. The others are a minimum or a maximum.
+_COUNTS = frozenset({0, 1, 2, 3, 4, 5, 8, 11, 12})
+
+
 def _column_stats(j: int, m: str) -> list[str]:
     """Twelve counts of column ``c{j}`` in mode *m*, in the order that ``_types`` reads them."""
     v, k = f"v{m}{j}", f"k{m}{j}"
@@ -574,7 +585,12 @@ def _types(
         found += _one_row(
             con, f"SELECT {', '.join(stats)} FROM {_parts(source, js, (mode,))}", deadline
         )
-    counts = [found[i : i + 13] for i in range(0, len(found), 13)]
+    # Over a column with no value, DuckDB gives NULL for a count_if, and a
+    # count is a number (WS-43y1b: an empty column failed the load before).
+    counts = [
+        tuple(0 if v is None and k in _COUNTS else v for k, v in enumerate(found[i : i + 13]))
+        for i in range(0, len(found), 13)
+    ]
     fits = _date_formats(con, source, counts, deadline)
     cols, casts = [], []
     for j, (s, name) in enumerate(zip(counts, seen["names"], strict=True), 1):
@@ -635,6 +651,34 @@ def _parquet_options(width: int) -> str:
     )
 
 
+def _load_connection(stage: Path) -> duckdb.DuckDBPyConnection:
+    """The DuckDB connection that types the tables of one load."""
+    con = duckdb.connect(":memory:", config={"threads": "1"})
+    con.execute(f"SET memory_limit = '{_duckdb_memory_mb()}MB'")
+    con.execute("SET threads = 1")
+    con.execute(f"SET temp_directory = {_lit((stage / 'spill').as_posix())}")
+    return con
+
+
+def _table_name(con: duckdb.DuckDBPyConnection, text: str, taken: set[str]) -> str:
+    """A table name from *text*: lower case, digits and ``_``, and no reserved word.
+
+    A second table of the same name gets ``_2``. No name holds ``__``, so the
+    side table ``<table>__totals`` never meets another name.
+    """
+    table = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:60] or "data"
+    table = "t_" + table if table[0].isdigit() else table
+    keyword = "SELECT count(*) FROM duckdb_keywords() WHERE keyword_name = ?"
+    keyword += " AND keyword_category <> 'unreserved'"
+    table += "_data" if con.execute(keyword, [table]).fetchone() != (0,) else ""
+    name, n = table, 1
+    while name in taken:
+        n += 1
+        name = f"{table}_{n}"
+    taken.add(name)
+    return name
+
+
 def _write_dataset(
     stage: Path,
     raw: Path,
@@ -645,15 +689,40 @@ def _write_dataset(
     deadline: float,
 ) -> dict[str, Any]:
     """DuckDB types the rows of *raw* and writes them as one Parquet file."""
-    con = duckdb.connect(":memory:", config={"threads": "1"})
-    con.execute(f"SET memory_limit = '{_duckdb_memory_mb()}MB'")
-    con.execute("SET threads = 1")
-    con.execute(f"SET temp_directory = {_lit((stage / 'spill').as_posix())}")
-    table = re.sub(r"[^a-z0-9]+", "_", Path(label).stem.lower()).strip("_")[:60] or "data"
-    table = "t_" + table if table[0].isdigit() else table
-    keyword = "SELECT count(*) FROM duckdb_keywords() WHERE keyword_name = ?"
-    keyword += " AND keyword_category <> 'unreserved'"
-    table += "_data" if con.execute(keyword, [table]).fetchone() != (0,) else ""
+    con = _load_connection(stage)
+    table = _table_name(con, Path(label).stem, set())
+    dc, cols = _typed(con, stage, raw, table, seen, delim == ";", deadline)
+    con.close()
+    width = len(seen["names"])
+    last, header = _letter(width - 1), seen["header"]
+    left_out: list[dict[str, Any]] = [
+        {"what": "header rows", "range": f"{table}!A{header[0]}:{last}{header[-1]}"}
+    ]
+    if seen["blank"]:
+        left_out.append({"what": "empty rows", "count": seen["blank"], "rows": seen["empty_rows"]})
+    return {
+        "dataset_id": ds_id, "source": label, "delimiter": delim,
+        "findings": ["decimal_comma"] if dc else [],
+        "tables": [{"name": table, "sheet": table, "file": f"{table}.parquet", "rows": seen["rows"],
+                    "range": f"{table}!A{seen['first']}:{last}{seen['last']}", "columns": cols,
+                    "left_out": left_out}],
+    }  # fmt: skip
+
+
+def _typed(
+    con: duckdb.DuckDBPyConnection,
+    stage: Path,
+    raw: Path,
+    table: str,
+    seen: dict[str, Any],
+    semicolon: bool,
+    deadline: float,
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Type the rows of *raw* and write them as ``<table>.parquet``.
+
+    Return the decimal comma and the manifest entry of each column. A CSV
+    file and a workbook both come here, so both get the same types.
+    """
     width = len(seen["names"])
     types = ", ".join(f"'c{j}': 'VARCHAR'" for j in range(width + 1))
     source = (
@@ -669,7 +738,7 @@ def _write_dataset(
     _one_row(con, f"COPY (SELECT * FROM {source}) TO {_lit(staged)} {options}", deadline)
     raw.unlink()
     source = f"read_parquet({_lit(staged)})"
-    dc, cols, casts = _types(con, source, seen, delim == ";", deadline)
+    dc, cols, casts = _types(con, source, seen, semicolon, deadline)
     parquet = (stage / f"{table}.parquet").as_posix()
     # Each batch of columns writes its own typed file, and one positional join
     # then makes the dataset's file. One cast of every column at once took
@@ -706,20 +775,1333 @@ def _write_dataset(
     for j, col in enumerate(cols):
         if found[2 * j] is not None:
             col["min"], col["max"] = _cell(found[2 * j])[0], _cell(found[2 * j + 1])[0]
-    con.close()
-    last, header = _letter(width - 1), seen["header"]
-    left_out: list[dict[str, Any]] = [
-        {"what": "header rows", "range": f"{table}!A{header[0]}:{last}{header[-1]}"}
+    return dc, cols
+
+
+# --------------------------------------------------------------------------
+# Reading an .xlsx or .xlsm workbook (WS-43y1b, §7.10 "Reading a messy file").
+# zipfile and expat stream each part, a chunk at a time, and openpyxl never
+# opens the file: the engine takes only its rules for a date format. Pass 1 of
+# a sheet finds its used columns, its merged ranges and its hidden columns.
+# Pass 2 streams the rows through the layout rules. Each table goes to its own
+# clean CSV copy, so the type rules of a CSV file then run unchanged.
+# --------------------------------------------------------------------------
+
+#: The checks of a workbook's zip (§7.10 "Isolation"). The shared reader of
+#: EM-T11b (``acb_skills/attachment_text.py``) holds checks of the same kind.
+#: The image cannot import that package, so this file copies its rules and
+#: not its code. The numbers are those of §7.10, because this engine reads
+#: every row of a sheet, and that reader stops at 5,000.
+ZIP_MAX_ENTRIES = 10_000
+ZIP_MAX_PART_BYTES = 200 * 2**20
+ZIP_MAX_RATIO = 100
+#: A part smaller than this cannot be a bomb, so the ratio skips it.
+ZIP_RATIO_FLOOR = 2**20
+#: The workbook part, a rels part and the styles part.
+XML_SMALL_PART_BYTES = 20 * 2**20
+XML_MAX_DEPTH = 64
+MAX_SHEETS = 50
+MAX_TABLES = 200
+MAX_MERGES = 100_000
+#: Excel itself holds at most 64,000 cell styles.
+MAX_STYLES = 65_536
+#: The limits of Excel itself. Only a crafted file holds a longer sheet name or
+#: number format code. A long name would go into each range and each cell
+#: reference of an answer, and a long code costs openpyxl's date rule more than
+#: linear time.
+SHEET_NAME_CHARS = 31
+FORMAT_CODE_CHARS = 255
+EXCEL_MAX_COLUMN = 16_384
+#: A block of rows of one cell each waits for a wider row this long. Past it,
+#: the rows are a table of one column.
+TEXT_BLOCK_ROWS = 50
+_XML_CHUNK = 2**20
+_STRINGS_CHUNK = 4096
+_NOT_BOOK = "The file is not a readable .xlsx workbook. If it has a password, remove it."
+_NO_DTD = "A part of the workbook declares a DTD or an entity, so the engine does not read it."
+_DEEP = "A part of the workbook nests its XML too deeply."
+_OUTSIDE = "The workbook names a part outside xl/, so the engine does not read it."
+#: Rule 4: the first text cell of a total row.
+_TOTAL_RE = re.compile(r"\s*(?:grand\s+total|sub-?\s?total|total|sum)s?\s*(?::|$|\s)", re.I)
+_ESCAPE_RE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+_ENCODING_RE = re.compile(rb"""encoding\s*=\s*["']([^"']*)["']""")
+#: Excel keeps 15 significant digits, and a cell shows no more.
+_EXCEL_DIGITS = Context(prec=15)
+#: A number as ``_excel_number`` writes it: no zero first, and no zero last after the point.
+_PLAIN = re.compile(r"-?(?:0|[1-9]\d*)(?:\.\d*[1-9])?")
+#: The built-in date formats of an East Asian locale. openpyxl does not list them.
+_EAST_ASIAN_DATES = frozenset([*range(27, 32), *range(34, 37), *range(50, 59)])
+_EAST_ASIAN_TIMES = frozenset({32, 33})
+_EPOCH_1900 = datetime(1899, 12, 30)
+_EPOCH_1904 = datetime(1904, 1, 1)
+#: The first day past 9999-12-31 in the 1900 system.
+_SERIAL_END = 2_958_466
+
+#: One row of a sheet: its number, whether it is hidden, and its cells as
+#: ``{column: (kind, text)}``. ``_Rows`` names the kinds.
+_Row = tuple[int, bool, dict[int, tuple[str, str]]]
+
+
+class _Stop(Exception):
+    """A handler ends the parse of a part early. It is no error."""
+
+
+def _zip_entries(path: Path) -> int:
+    """The entries that the end record of the zip names.
+
+    The engine reads the count before zipfile reads the directory. zipfile
+    makes an object for each entry first, so a directory of 500,000 entries
+    would cost it hundreds of MB before ``infolist()`` could count them.
+    """
+    with open(path, "rb") as fh:
+        fh.seek(max(0, path.stat().st_size - 22 - 65_535))
+        tail = fh.read()
+        at = tail.rfind(b"PK\x05\x06")
+        if at < 0 or len(tail) - at < 22:
+            raise Refused("bad_file", _NOT_BOOK)
+        count = int.from_bytes(tail[at + 10 : at + 12], "little")
+        if count != 0xFFFF:
+            return count
+        # A zip64 file names its count in the zip64 end record.
+        locator = tail.rfind(b"PK\x06\x07", 0, at)
+        if locator < 0:
+            raise Refused("bad_file", _NOT_BOOK)
+        fh.seek(int.from_bytes(tail[locator + 8 : locator + 16], "little"))
+        record = fh.read(56)
+    if record[:4] != b"PK\x06\x06" or len(record) < 40:
+        raise Refused("bad_file", _NOT_BOOK)
+    return int.from_bytes(record[32:40], "little")
+
+
+def _open_book(path: Path) -> zipfile.ZipFile:
+    """Open the zip of a workbook after the checks of §7.10. It unpacks no part."""
+    too_many = f"The workbook holds more than {ZIP_MAX_ENTRIES} zip entries."
+    if _zip_entries(path) > ZIP_MAX_ENTRIES:
+        raise Refused("bad_file", too_many)
+    try:
+        book = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError, ValueError, EOFError) as exc:
+        raise Refused("bad_file", _NOT_BOOK) from exc
+    try:
+        if len(book.infolist()) > ZIP_MAX_ENTRIES:
+            raise Refused("bad_file", too_many)
+        for info in book.infolist():
+            _check_entry(info)
+    except Refused:
+        book.close()
+        raise
+    return book
+
+
+def _check_entry(info: zipfile.ZipInfo) -> None:
+    """One entry of the zip: no password, no part over its cap and no bomb."""
+    if info.flag_bits & 0x1:
+        raise Refused("bad_file", _NOT_BOOK)
+    if info.file_size > ZIP_MAX_PART_BYTES:
+        mb = ZIP_MAX_PART_BYTES // 2**20
+        raise Refused("too_large", f"A part of the workbook unpacks to more than {mb} MB.")
+    if info.file_size > ZIP_RATIO_FLOOR and info.file_size > ZIP_MAX_RATIO * max(
+        1, info.compress_size
+    ):
+        message = f"A part of the workbook unpacks to more than {ZIP_MAX_RATIO} times its size"
+        raise Refused("bad_file", message + " in the zip. A real workbook does not.")
+
+
+def _require_utf8(head: bytes) -> None:
+    """A part is UTF-8 (the rule of EM-T11b). A UTF-16 part could hide a DTD
+    from a byte search, so any other encoding is refused before the parse."""
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\x00" in head[:4]:
+        raise Refused("bad_file", _NOT_BOOK)
+    body = head[3:] if head.startswith(codecs.BOM_UTF8) else head
+    if body.startswith(b"<?xml"):
+        end = body.find(b"?>", 0, 512)
+        found = _ENCODING_RE.search(body[: end if end != -1 else 512])
+        if found and found.group(1).strip().lower() not in (b"utf-8", b"utf8"):
+            raise Refused("bad_file", _NOT_BOOK)
+
+
+def _no_dtd(*_args: Any) -> None:
+    raise Refused("bad_file", _NO_DTD)
+
+
+def _parse_part(
+    book: zipfile.ZipFile, name: str, handler: Any, deadline: float, cap: int = ZIP_MAX_PART_BYTES
+) -> None:
+    """Stream one part through expat, a chunk at a time. The part is never whole in memory.
+
+    The parser refuses a DTD and an entity declaration at the first event, so
+    no entity is ever expanded. Each handler caps the depth of the XML.
+    """
+    try:
+        info = book.getinfo(name)
+    except KeyError:
+        raise Refused("bad_file", _NOT_BOOK) from None
+    too_large = f"A part of the workbook unpacks to more than {cap // 2**20} MB."
+    if info.file_size > cap:
+        raise Refused("too_large", too_large)
+    parser = expat.ParserCreate(encoding="UTF-8")
+    parser.StartDoctypeDeclHandler = _no_dtd
+    parser.EntityDeclHandler = _no_dtd
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    parser.buffer_text, parser.buffer_size = True, 2**16
+    parser.StartElementHandler, parser.EndElementHandler = handler.start, handler.end
+    if hasattr(handler, "text"):
+        parser.CharacterDataHandler = handler.text
+    read = 0
+    try:
+        with book.open(info) as fh:
+            while chunk := fh.read(_XML_CHUNK):
+                _check_time(deadline)
+                if not read:
+                    _require_utf8(chunk)
+                read += len(chunk)
+                if read > cap:
+                    raise Refused("too_large", too_large)
+                parser.Parse(chunk, False)
+            parser.Parse(b"", True)
+    except _Stop:
+        return
+    except expat.ExpatError as exc:
+        message = f"A part of the workbook is not well-formed XML: {expat.ErrorString(exc.code)}."
+        raise Refused("bad_file", message) from None
+    except (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError) as exc:
+        raise Refused("bad_file", _NOT_BOOK) from exc
+
+
+#: Caches of the two parses of a sheet, where each cell costs a handler call.
+#: Each holds at most ``_CACHE`` keys, so a file of odd names cannot grow it.
+_CACHE = 20_000
+_LOCAL_NAMES: dict[str, str] = {}
+_COLUMNS: dict[str, int] = {}
+
+
+def _local(name: str) -> str:
+    """An element name without its prefix: ``x:row`` is ``row``."""
+    local = _LOCAL_NAMES.get(name)
+    if local is None:
+        local = name[name.rfind(":") + 1 :]
+        if len(_LOCAL_NAMES) < _CACHE:
+            _LOCAL_NAMES[name] = local
+    return local
+
+
+def _attr(attrs: dict[str, str], local: str) -> str:
+    """The attribute *local*, matched by its local name, such as ``r:id``."""
+    return next((v for k, v in attrs.items() if _local(k) == local), "")
+
+
+def _digits(text: str, most: int) -> int | None:
+    """*text* as a whole number of at most *most* ASCII digits, else None."""
+    return int(text) if text.isascii() and text.isdigit() and len(text) <= most else None
+
+
+def _column(ref: str) -> int:
+    """The column of a reference such as ``AB12``: 28. 0 for a bad reference."""
+    letters = ref.rstrip("0123456789")
+    col = _COLUMNS.get(letters)
+    if col is None:
+        col = 0
+        if 0 < len(letters) <= 3 and letters.isascii() and letters.isalpha():
+            for ch in letters:
+                col = col * 26 + (ord(ch) & 31)
+        col = col if col <= EXCEL_MAX_COLUMN else 0
+        if len(_COLUMNS) < _CACHE:
+            _COLUMNS[letters] = col
+    return col
+
+
+def _ref(ref: str) -> tuple[int, int] | None:
+    """``(column, row)`` of a reference such as ``B3``, else None."""
+    col = _column(ref)
+    row = _digits(ref[len(ref.rstrip("0123456789")) :], 7)
+    return (col, row) if col and row else None
+
+
+class _Part:
+    """A handler of a small part. Each element counts toward the depth cap."""
+
+    depth = 0
+
+    def start(self, name: str, attrs: dict[str, str]) -> None:
+        self.depth += 1
+        if self.depth > XML_MAX_DEPTH:
+            raise Refused("bad_file", _DEEP)
+        self.on_start(_local(name), attrs)
+
+    def end(self, name: str) -> None:
+        self.depth -= 1
+        self.on_end(_local(name))
+
+    def on_start(self, local: str, attrs: dict[str, str]) -> None:
+        return None
+
+    def on_end(self, local: str) -> None:
+        return None
+
+
+class _Rels(_Part):
+    """The relationships of a rels part: ``(Id, type, Target)``. An external
+    target is never a part, so it is skipped."""
+
+    def __init__(self) -> None:
+        self.found: list[tuple[str, str, str]] = []
+
+    def on_start(self, local: str, attrs: dict[str, str]) -> None:
+        if local != "Relationship" or attrs.get("TargetMode", "").lower() == "external":
+            return
+        if len(self.found) >= ZIP_MAX_ENTRIES:
+            raise Refused("bad_file", _NOT_BOOK)
+        kind = attrs.get("Type", "").rsplit("/", 1)[-1]
+        self.found.append((attrs.get("Id", ""), kind, attrs.get("Target", "")))
+
+
+class _Workbook(_Part):
+    """The sheets of ``workbook.xml`` in order, and its date system.
+
+    It keeps an entry only when its rel id names a worksheet part, and only
+    the first entry for each part, so no part is read twice.
+    """
+
+    def __init__(self, parts: dict[str, str]) -> None:
+        self.parts = parts
+        self.sheets: list[tuple[str, bool, str]] = []
+        self.date1904 = False
+
+    def on_start(self, local: str, attrs: dict[str, str]) -> None:
+        if local == "workbookPr":
+            self.date1904 = attrs.get("date1904", "").lower() in ("1", "true")
+        elif local == "sheet":
+            part = self.parts.pop(_attr(attrs, "id"), None)
+            if part is None or any(part == p for _, _, p in self.sheets):
+                return
+            hidden = attrs.get("state", "").lower() in ("hidden", "veryhidden")
+            self.sheets.append((attrs.get("name") or f"Sheet{len(self.sheets) + 1}", hidden, part))
+
+    def cut_names(self) -> None:
+        """Cut each name past Excel's 31 characters to 31 characters.
+
+        Excel compares sheet names with no regard to case, so a cut name that
+        meets another name ends in ``~2``, ``~3`` and on until it is unique. One
+        count serves all the cut names, so the loop runs in linear time.
+        """
+        taken = {n.casefold() for n, _, _ in self.sheets if len(n) <= SHEET_NAME_CHARS}
+        count, kept = 1, []
+        for name, hidden, part in self.sheets:
+            if len(name) > SHEET_NAME_CHARS:
+                cut = name[:SHEET_NAME_CHARS]
+                while cut.casefold() in taken:
+                    count += 1
+                    cut = name[: SHEET_NAME_CHARS - len(f"~{count}")] + f"~{count}"
+                taken.add(cut.casefold())
+                name = cut
+            kept.append((name, hidden, part))
+        self.sheets = kept
+
+
+class _Strings(_Part):
+    """The shared strings, packed: each 4,096 strings are one text and an array
+    of ends. So a string costs its characters and 4 bytes, and not the 50
+    bytes or more of a Python string. A phonetic run (``rPh``) is no text."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self.ends: list[array[int]] = []
+        self.buf: list[str] = []
+        self.parts: list[str] | None = None
+        self.in_t = False
+        self.phonetic = self.size = 0
+
+    def on_start(self, local: str, attrs: dict[str, str]) -> None:
+        if local == "si":
+            self.parts, self.size = [], 0
+        elif local == "rPh":
+            self.phonetic += 1
+        elif local == "t":
+            self.in_t = self.parts is not None and not self.phonetic
+
+    def text(self, data: str) -> None:
+        if self.in_t and self.parts is not None:
+            self.parts.append(data)
+            self.size += len(data)
+            if self.size > MAX_ROW_CHARS:
+                raise Refused("bad_file", f"A cell holds more than {MAX_ROW_CHARS} characters.")
+
+    def on_end(self, local: str) -> None:
+        if local == "t":
+            self.in_t = False
+        elif local == "rPh":
+            self.phonetic = max(0, self.phonetic - 1)
+        elif local == "si" and self.parts is not None:
+            self.buf.append(_unescape("".join(self.parts)).strip())
+            self.parts = None
+            if len(self.buf) == _STRINGS_CHUNK:
+                self.texts.append("".join(self.buf))
+                self.ends.append(array("I", accumulate(map(len, self.buf))))
+                self.buf = []
+
+    def get(self, index: int) -> str:
+        chunk, at = divmod(index, _STRINGS_CHUNK)
+        if chunk < len(self.texts):
+            ends = self.ends[chunk]
+            return self.texts[chunk][ends[at - 1] if at else 0 : ends[at]]
+        return self.buf[at] if chunk == len(self.texts) and at < len(self.buf) else ""
+
+
+class _Styles(_Part):
+    """The number format of each cell style, from ``cellXfs``."""
+
+    def __init__(self) -> None:
+        self.formats: dict[int, str] = {}
+        self.xfs: list[int] = []
+        self.in_xfs = False
+
+    def on_start(self, local: str, attrs: dict[str, str]) -> None:
+        fid = _digits(attrs.get("numFmtId", ""), 6)
+        if local == "numFmt" and fid is not None and len(self.formats) < ZIP_MAX_ENTRIES:
+            self.formats[fid] = attrs.get("formatCode", "")
+        elif local == "cellXfs":
+            self.in_xfs = True
+        elif local == "xf" and self.in_xfs:
+            if len(self.xfs) >= MAX_STYLES:
+                raise Refused("bad_file", "The workbook holds too many cell styles.")
+            self.xfs.append(fid or 0)
+
+    def on_end(self, local: str) -> None:
+        if local == "cellXfs":
+            self.in_xfs = False
+
+    def kinds(self) -> list[str | None]:
+        """The date kind of each style (``_date_kind``)."""
+        known: dict[int, str | None] = {}
+        for fid in set(self.xfs):
+            known[fid] = _date_kind(fid, self.formats.get(fid))
+        return [known[fid] for fid in self.xfs]
+
+
+def _date_kind(fid: int, code: str | None) -> str | None:
+    """``date``, ``time``, ``datetime`` or ``duration`` for a number format,
+    else None. openpyxl's rules decide a date format.
+
+    A code past Excel's 255 characters is no date format, and its number
+    stays a number. The engine skips other bad style data in the same way,
+    as a ``numFmtId`` that is not a number. A style changes only how a number
+    reads, so it is no cause to refuse the whole file. openpyxl's rules cost
+    more than linear time on a long code, and this check stops that cost.
+    """
+    from openpyxl.styles.numbers import (  # type: ignore[import-untyped]
+        BUILTIN_FORMATS,
+        STRIP_RE,
+        is_date_format,
+        is_timedelta_format,
+    )
+
+    code = code if code is not None else BUILTIN_FORMATS.get(fid)
+    if code is None:
+        return "date" if fid in _EAST_ASIAN_DATES else "time" if fid in _EAST_ASIAN_TIMES else None
+    if len(code) > FORMAT_CODE_CHARS:
+        return None
+    if is_timedelta_format(code):
+        return "duration"
+    if not is_date_format(code):
+        return None
+    bare = re.sub(r"[_\\].", "", STRIP_RE.sub("", code.split(";")[0])).lower()
+    clock = any(c in bare for c in "hs")
+    day = any(c in bare for c in "dy") or ("m" in bare and not clock)
+    return "datetime" if day and clock else "date" if day else "time"
+
+
+def _unescape(text: str) -> str:
+    """OOXML writes a control character in a string as ``_x000D_``."""
+    if "_x" not in text:
+        return text
+    return _ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
+
+
+def _excel_date(serial: float, kind: str, date1904: bool) -> str | None:
+    """The text of an Excel serial date, or None when it names no date.
+
+    The 1900 system keeps Excel's leap-year bug. Excel counts 29 February
+    1900, a day that did not exist, as serial 60. So serials 1 to 59 count
+    from 31 December 1899, serial 60 reads as the text ``1900-02-29``, and
+    later serials count from 30 December 1899. A serial under 1 is a time
+    of day. The 1904 system counts from 1 January 1904, with no such day.
+    A date format keeps a time that its cell holds, so no part of the value
+    is lost.
+    """
+    if not 0 <= serial < _SERIAL_END:
+        return None
+    days = int(serial)
+    seconds = round((serial - days) * 86_400)
+    if seconds == 86_400:
+        days, seconds = days + 1, 0
+    clock = f"{seconds // 3600:02d}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
+    if kind == "time" or (days == 0 and not date1904):
+        return clock
+    if date1904:
+        text = (_EPOCH_1904 + timedelta(days=days)).date().isoformat()
+    elif days == 60:
+        text = "1900-02-29"
+    else:
+        text = (_EPOCH_1900 + timedelta(days=days + (days < 60))).date().isoformat()
+    return text if kind == "date" and not seconds else f"{text} {clock}"
+
+
+def _excel_number(raw: str, kind: str | None, date1904: bool) -> tuple[str, str] | None:
+    """A number cell as ``(kind, text)``. A date style makes it a date (§7.10
+    "Excel dates"). A number keeps 15 significant digits, as Excel shows it."""
+    raw = raw.strip()
+    if kind is None and len(raw) <= 15 and raw != "-0" and _PLAIN.fullmatch(raw):
+        return "n", raw  # Most cells: no rounding and no trailing zero to drop.
+    try:
+        value = _EXCEL_DIGITS.create_decimal(raw)
+    except (ArithmeticError, ValueError):
+        return ("t", raw) if raw else None
+    if not value.is_finite() or not -30 <= value.adjusted() <= 30:
+        return "t", raw
+    if kind in ("date", "time", "datetime"):
+        text = _excel_date(float(value), kind, date1904)
+        if text:
+            return "d", text
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return "n", "0" if text == "-0" else text
+
+
+def _iso_cell(raw: str) -> tuple[str, str] | None:
+    """A cell of type ``d``: an ISO 8601 date, with or without a time."""
+    text = raw.strip().replace("T", " ").removesuffix("Z").split(".")[0]
+    return ("d", text[:19]) if text else None
+
+
+class _Survey:
+    """Pass 1 of a sheet: its used columns, its merged ranges and its hidden columns.
+
+    A column is used when a cell in it holds a value, an inline string or a
+    formula. ``<mergeCells>`` comes after the rows, so pass 2 needs this pass.
+    """
+
+    def __init__(self) -> None:
+        self.depth = self.col = self.merged = self.cols = 0
+        self.used = bytearray(EXCEL_MAX_COLUMN + 2)
+        self.hidden = bytearray(EXCEL_MAX_COLUMN + 2)
+        self.merges: dict[int, list[tuple[int, int, int, int]]] = {}
+
+    def start(self, name: str, attrs: dict[str, str]) -> None:
+        self.depth += 1
+        if self.depth > XML_MAX_DEPTH:
+            raise Refused("bad_file", _DEEP)
+        local = _LOCAL_NAMES.get(name) or _local(name)
+        if local == "c":
+            ref = attrs.get("r")
+            self.col = _column(ref) if ref else self.col + 1
+        elif local in ("v", "f", "is"):
+            if 0 < self.col <= EXCEL_MAX_COLUMN:
+                self.used[self.col] = 1
+        elif local == "row":
+            self.col = 0
+        elif local == "mergeCell":
+            self._merge(attrs.get("ref", ""))
+        elif local == "col" and attrs.get("hidden", "") in ("1", "true"):
+            self._hide(attrs)
+
+    def end(self, _name: str) -> None:
+        self.depth -= 1
+
+    def _merge(self, ref: str) -> None:
+        first, _, last = ref.partition(":")
+        a, b = _ref(first), _ref(last)
+        if not (a and b) or a == b:
+            return
+        self.merged += 1
+        if self.merged > MAX_MERGES:
+            raise Refused("bad_file", f"The sheet holds more than {MAX_MERGES} merged ranges.")
+        (c1, r1), (c2, r2) = a, b
+        top = min(r1, r2)
+        self.merges.setdefault(top, []).append((top, min(c1, c2), max(r1, r2), max(c1, c2)))
+
+    def _hide(self, attrs: dict[str, str]) -> None:
+        self.cols += 1
+        lo, hi = _digits(attrs.get("min", ""), 5), _digits(attrs.get("max", ""), 5)
+        if self.cols <= EXCEL_MAX_COLUMN and lo and hi:
+            lo, hi = max(1, lo), min(EXCEL_MAX_COLUMN, hi)
+            if lo <= hi:
+                self.hidden[lo : hi + 1] = b"\x01" * (hi - lo + 1)
+
+
+class _Rows:
+    """Pass 2 of a sheet: each row as ``{column: (kind, text)}``, one row at a time.
+
+    A kind is ``t`` (text), ``n`` (a number), ``d`` (a date or a time), ``b``
+    (a boolean), ``e`` (an error value) or ``f`` (a formula with no cached
+    value). ``e`` and ``f`` hold no text: they read as empty, and the table
+    counts them (rule 8). A formula gives its cached value, ``<v>``, and
+    never its text, ``<f>``. A cell that does not come after the cell before
+    it in its row is dropped.
+    """
+
+    def __init__(
+        self,
+        strings: _Strings,
+        kinds: list[str | None],
+        date1904: bool,
+        on_row: Callable[[int, bool, dict[int, tuple[str, str]]], None],
+        deadline: float,
+    ) -> None:
+        self.strings, self.kinds, self.date1904 = strings, kinds, date1904
+        self.on_row, self.deadline = on_row, deadline
+        self.depth = self.num = self.col = self.last = self.size = self.count = 0
+        self.in_is = self.phonetic = 0
+        self.hidden = self.in_v = self.in_t = self.has_f = self.take = False
+        self.kind = self.style = ""
+        self.buf: list[str] = []
+        self.cells: dict[int, tuple[str, str]] = {}
+        self.styles: dict[str, Any] = {}
+
+    def start(self, name: str, attrs: dict[str, str]) -> None:
+        self.depth += 1
+        if self.depth > XML_MAX_DEPTH:
+            raise Refused("bad_file", _DEEP)
+        local = _LOCAL_NAMES.get(name) or _local(name)
+        if local == "c":
+            ref = attrs.get("r")
+            self.col = col = _column(ref) if ref else self.col + 1
+            self.take = self.last < col <= EXCEL_MAX_COLUMN
+            self.kind, self.style = attrs.get("t", "n"), attrs.get("s", "")
+            self.buf, self.size, self.has_f = [], 0, False
+        elif local == "v":
+            self.in_v = True
+        elif local == "f":
+            self.has_f = True
+        elif local == "row":
+            self._row(attrs)
+        elif local == "is":
+            self.in_is += 1
+        elif local == "t":
+            self.in_t = self.in_is > 0 and not self.phonetic
+        elif local == "rPh":
+            self.phonetic += 1
+
+    def text(self, data: str) -> None:
+        if self.in_v or self.in_t:
+            self.buf.append(data)
+            self.size += len(data)
+            if self.size > MAX_ROW_CHARS:
+                raise Refused("bad_file", f"A cell holds more than {MAX_ROW_CHARS} characters.")
+
+    def end(self, name: str) -> None:
+        self.depth -= 1
+        local = _LOCAL_NAMES.get(name) or _local(name)
+        if local == "c":
+            if self.take:
+                self.last = self.col
+                value = self._value()
+                if value is not None:
+                    self.cells[self.col] = value
+        elif local == "v":
+            self.in_v = False
+        elif local == "t":
+            self.in_t = False
+        elif local == "is":
+            self.in_is = max(0, self.in_is - 1)
+        elif local == "rPh":
+            self.phonetic = max(0, self.phonetic - 1)
+        elif local == "row":
+            self._emit()
+        elif local == "sheetData":
+            raise _Stop
+
+    def _row(self, attrs: dict[str, str]) -> None:
+        num = _digits(attrs.get("r", ""), 7) or self.num + 1
+        if num <= self.num:
+            raise Refused("bad_file", "The rows of a sheet are out of order.")
+        self.num, self.hidden = num, attrs.get("hidden", "") in ("1", "true")
+        self.cells, self.col, self.last = {}, 0, 0
+
+    def _emit(self) -> None:
+        self.count += 1
+        if self.count % 4096 == 0:
+            _check_time(self.deadline)
+        if sum(len(text) for _, text in self.cells.values()) > MAX_ROW_CHARS:
+            raise Refused("bad_file", f"Row {self.num} holds more than {MAX_ROW_CHARS} characters.")
+        if self.cells:
+            self.on_row(self.num, self.hidden, self.cells)
+
+    def _value(self) -> tuple[str, str] | None:
+        kind, raw = self.kind, "".join(self.buf)
+        if kind != "inlineStr" and not raw.strip():
+            # No cached value: openpyxl writes a formula with ``<v></v>`` or none.
+            return ("f", "") if self.has_f else None
+        if kind == "s":
+            index = _digits(raw.strip(), 9)
+            text = self.strings.get(index) if index is not None else ""
+            return ("t", text) if text else None
+        if kind in ("str", "inlineStr"):
+            text = _unescape(raw).strip()
+            return ("t", text) if text else None
+        if kind == "b":
+            return "b", "true" if raw.strip().lower() in ("1", "true") else "false"
+        if kind == "e":
+            return "e", ""
+        if kind == "d":
+            return _iso_cell(raw)
+        date = self.styles.get(self.style, False)
+        if date is False:
+            style = _digits(self.style, 6)
+            date = self.kinds[style] if style is not None and style < len(self.kinds) else None
+            if len(self.styles) < _CACHE:
+                self.styles[self.style] = date
+        return _excel_number(raw, date, self.date1904)
+
+
+def _header_like(row: _Row) -> bool:
+    """Every filled cell of the row is text."""
+    return all(kind == "t" for kind, text in row[2].values() if text)
+
+
+def _filled(row: _Row) -> list[int]:
+    return [col for col, (_, text) in row[2].items() if text]
+
+
+def _is_sum(entry: tuple[float, int] | None, value: float) -> bool:
+    """*value* is the sum of two numbers or more of a column."""
+    return (
+        entry is not None and entry[1] >= 2 and abs(entry[0] - value) <= 1e-9 * max(1.0, abs(value))
+    )
+
+
+class _Book:
+    """What the sheets of one load share: the stage, the caps and each table found."""
+
+    def __init__(self, stage: Path, header_rows: int | None, caps: tuple[int, int, float]) -> None:
+        self.stage, self.header_rows = stage, header_rows
+        self.max_rows, self.budget, self.deadline = caps
+        self.found: list[dict[str, Any]] = []
+        self.sheets: list[_Sheet] = []
+        self.outs: list[_Out] = []
+        self.tables = self.rows = self.staged = 0
+
+    def add_row(self) -> None:
+        self.rows += 1
+        if self.rows > self.max_rows:
+            raise _too_many_rows(self.max_rows)
+
+    def add_bytes(self, size: int) -> None:
+        """The padded stage has the budget of a CSV file (round 3)."""
+        self.staged += size
+        if self.staged > self.budget:
+            raise Refused("bad_file", _TOO_WIDE)
+
+    def close(self) -> None:
+        for out in self.outs:
+            out.fh.close()
+
+
+class _Out:
+    """The clean CSV copy of a table's rows, as ``_prepare`` writes one for a
+    CSV file: each row its source row number, then one field a column."""
+
+    def __init__(self, book: _Book, path: Path, lo: int, width: int) -> None:
+        self.book, self.path, self.lo, self.width = book, path, lo, width
+        self.fh = open(path, "w", encoding="utf-8", newline="")  # noqa: SIM115 — _Book.close shuts it
+        book.outs.append(self)
+        self.writer = csv.writer(self.fh, lineterminator="\n")
+        self.rows = self.first = self.last = self.hidden_count = 0
+        self.hidden: list[int] = []
+        self.numbers: list[int] = []
+        self.samples: list[list[str]] = [[] for _ in range(width)]
+        self.used = bytearray(width)
+        self.uncached: Counter[int] = Counter()
+        self.errors: Counter[int] = Counter()
+
+    def write(self, row: _Row) -> None:
+        num, hidden, cells = row
+        values, size = [""] * self.width, 0
+        for col, (kind, text) in cells.items():
+            j = col - self.lo
+            if text:
+                values[j], self.used[j] = text, 1
+                size += len(text)
+                if len(self.samples[j]) < 3 and text not in self.samples[j]:
+                    self.samples[j].append(text)
+            elif kind == "f":
+                self.uncached[j] += 1
+            elif kind == "e":
+                self.errors[j] += 1
+        self.writer.writerow([num, *values])
+        self.book.add_row()
+        self.book.add_bytes(len(str(num)) + size + self.width + 1)
+        self.rows, self.first, self.last = self.rows + 1, self.first or num, num
+        self.numbers += [num] if len(self.numbers) < 20 else []
+        if hidden:
+            self.hidden_count += 1
+            self.hidden += [num] if len(self.hidden) < 20 else []
+
+
+class _Table:
+    """One table of a sheet as it streams: its header, its rows and its totals.
+
+    Rules 1 to 6 and 8 of §7.10 work here. A total row goes to the side table
+    ``<table>__totals``. A row of column sums waits one row: when a data row
+    follows it, it was data.
+    """
+
+    def __init__(self, sheet: _Sheet, lo: int, hi: int, titles: list[_Row]) -> None:
+        book = sheet.book
+        book.tables += 1
+        if book.tables > MAX_TABLES:
+            message = f"The workbook holds more than {MAX_TABLES} tables. Name one sheet."
+            raise Refused("too_many_tables", message)
+        self.sheet, self.book, self.lo, self.hi = sheet, book, lo, hi
+        self.titles = titles
+        self.head_rows: list[_Row] = []
+        self.names: list[str] = []
+        self.out = _Out(book, book.stage / f"t{book.tables}.csv", lo, hi - lo + 1)
+        self.totals: _Out | None = None
+        self.held: _Row | None = None
+        self.since: dict[int, tuple[float, int]] = {}
+        self.above: dict[int, tuple[float, int]] = {}
+        self.blank = 0
+        self.empty_rows: list[int] = []
+        self.notes: list[str] = []
+        self.ext = (hi + 1, lo - 1)
+
+    def head(self, row: _Row) -> None:
+        self.head_rows.append(row)
+        self._extent(row)
+
+    def _extent(self, row: _Row) -> None:
+        cols = _filled(row)
+        if cols:
+            self.ext = (min(self.ext[0], *cols), max(self.ext[1], *cols))
+
+    def wants_header(self, row: _Row) -> bool:
+        """Rule 2: the next row is a header row too. The request can name the
+        count. Else a header row of text continues under a merged cell that
+        spans columns or reaches down, up to three rows."""
+        if self.book.header_rows is not None:
+            return len(self.head_rows) < self.book.header_rows
+        if len(self.head_rows) >= 3 or not _header_like(row):
+            return False
+        last = self.head_rows[-1][0]
+        merges = [m for num, _, _ in self.head_rows for m in self.sheet.merges.get(num, ())]
+        return any(
+            r1 <= last <= r2 and (c2 > c1 or r2 > last) and c1 <= self.hi and c2 >= self.lo
+            for r1, c1, r2, c2 in merges
+        )
+
+    def end_header(self) -> None:
+        """Rule 2: a merged header cell fills each column under it, and the
+        levels join with `` / ``. A level that repeats the level above it is
+        that cell, merged down, so it counts once."""
+        if self.names:
+            return
+        lo, width = self.lo, self.hi - self.lo + 1
+        grid = [[""] * width for _ in self.head_rows]
+        top = self.head_rows[0][0] if self.head_rows else 0
+        for i, (num, _, cells) in enumerate(self.head_rows):
+            for col, (_, text) in cells.items():
+                grid[i][col - lo] = text
+            for _, c1, _, c2 in self.sheet.merges.get(num, ()):
+                if lo <= c1 <= self.hi:
+                    grid[num - top][c1 - lo + 1 : min(c2, self.hi) - lo + 1] = [
+                        grid[num - top][c1 - lo]
+                    ] * (min(c2, self.hi) - c1)
+        for i in range(len(grid) - 1, 0, -1):
+            grid[i] = ["" if v == up else v for v, up in zip(grid[i], grid[i - 1], strict=True)]
+        self.names = _names(grid, width)
+
+    def continues(self, row: _Row) -> bool:
+        """After an empty gap, a data row inside the table's columns continues it."""
+        cols = _filled(row)
+        return not _header_like(row) and self.ext[0] <= min(cols) and max(cols) <= self.ext[1]
+
+    def data(self, row: _Row) -> None:
+        self.end_header()
+        cells = row[2]
+        first = min((c for c, (kind, text) in cells.items() if kind == "t" and text), default=0)
+        keyword = bool(first) and _TOTAL_RE.match(cells[first][1]) is not None
+        if self.held is not None:
+            held, self.held = self.held, None
+            if keyword:
+                self._total(held)
+            else:
+                self._write(held)
+        if keyword:
+            self._total(row)
+        elif self._sums(cells):
+            self.held = row
+        else:
+            self._write(row)
+
+    def _sums(self, cells: dict[int, tuple[str, str]]) -> bool:
+        """Rule 4: a row of column sums holds no text, and each of its numbers
+        is the sum of its column since the last total row, or since the top.
+        One sum is not zero."""
+        numbers = []
+        for col, (kind, text) in cells.items():
+            if kind == "n":
+                numbers.append((col, float(text)))
+            elif text:
+                return False
+        return any(v for _, v in numbers) and all(
+            _is_sum(self.since.get(c), v) or _is_sum(self.above.get(c), v) for c, v in numbers
+        )
+
+    def _write(self, row: _Row) -> None:
+        self.out.write(row)
+        self._extent(row)
+        for col, (kind, text) in row[2].items():
+            if kind == "n":
+                value = float(text)
+                for sums in (self.since, self.above):
+                    total, count = sums.get(col, (0.0, 0))
+                    sums[col] = (total + value, count + 1)
+
+    def _total(self, row: _Row) -> None:
+        """Rule 5: a total row leaves the table, so a sum never counts it twice."""
+        if self.totals is None:
+            path = self.out.path.with_name(self.out.path.stem + "_totals.csv")
+            self.totals = _Out(self.book, path, self.lo, self.hi - self.lo + 1)
+        self.totals.write(row)
+        self._extent(row)
+        self.since = {}
+
+    def end_run(self) -> None:
+        """A held row of sums with no data row after it is a total row."""
+        if self.held is not None:
+            held, self.held = self.held, None
+            self._total(held)
+
+    def gap(self, count: int, rows: list[int]) -> None:
+        self.end_run()
+        self.blank += count
+        self.empty_rows += rows[: 20 - len(self.empty_rows)]
+
+    def note(self, rows: list[_Row]) -> None:
+        """Rule 6: text under the table after an empty gap is left out."""
+        self.end_run()
+        self.notes.append(self.sheet.range_of(rows))
+
+    def feed(self, rows: list[_Row]) -> str:
+        """Feed rows with no gap. Return the mode of the group after them."""
+        for row in rows:
+            if not self.head_rows or (not self.names and self.wants_header(row)):
+                self.head(row)
+            else:
+                self.data(row)
+        return "data" if self.names else "header"
+
+    def close(self) -> dict[str, Any] | None:
+        """The table as ``_load_workbook`` types it, or None when no data row came."""
+        self.end_run()
+        self.end_header()
+        for out in (self.out, self.totals):
+            if out is not None:
+                out.fh.close()
+        if not self.out.rows:
+            self.out.path.unlink(missing_ok=True)
+            if self.totals is not None:
+                self.totals.path.unlink(missing_ok=True)
+            self.sheet.text([*self.titles, *self.head_rows], "rows with no data under them")
+            return None
+        used = {j for j, u in enumerate(self.out.used) if u}
+        used |= {c - self.lo for row in self.head_rows for c in _filled(row)}
+        if self.totals is not None:
+            used |= {j for j, u in enumerate(self.totals.used) if u}
+        return self._found(min(used), max(used))
+
+    def _found(self, a: int, b: int) -> dict[str, Any]:
+        """Keep the columns *a* to *b*, and drop the empty columns at each edge."""
+        outs = [o for o in (self.out, self.totals) if o is not None]
+        if (a, b) != (0, self.hi - self.lo):
+            for out in outs:
+                _keep_columns(out.path, a, b, self.book.deadline)
+        sheet, lo = self.sheet, self.lo + a
+        head = [r[0] for r in self.head_rows]
+        left_out = []
+        if self.titles:
+            left_out.append({"what": "title rows", "range": sheet.range_of(self.titles)})
+        left_out.append({"what": "header rows", "range": sheet.span(lo, lo + b - a, head)})
+        if self.blank:
+            left_out.append({"what": "empty rows", "count": self.blank, "rows": self.empty_rows})
+        left_out += [{"what": "notes", "range": r} for r in self.notes[:20]]
+        found = {
+            "sheet": sheet, "first_col": lo, "names": self.names[a : b + 1],
+            "left_out": left_out, "outs": [(o, o.samples[a : b + 1]) for o in outs],
+            "uncached": [self.out.uncached[j] for j in range(a, b + 1)],
+            "errors": [self.out.errors[j] for j in range(a, b + 1)],
+        }  # fmt: skip
+        return found
+
+
+def _keep_columns(path: Path, a: int, b: int, deadline: float) -> None:
+    """Keep the source row number and the columns *a* to *b* of a clean copy."""
+    kept = path.with_suffix(".kept")
+    with open(kept, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh, lineterminator="\n")
+        for _, cells in _records(path, ",", deadline):
+            writer.writerow([cells[0], *cells[a + 1 : b + 2]])
+    os.replace(kept, path)
+
+
+class _Group:
+    """The rows of one run of used columns, where each table of rule 7 forms.
+
+    A block is the rows between two empty gaps. Rows of one cell each wait in
+    ``block`` until a wider row decides them. Above a header, they are title
+    rows (rule 1). Under a table, after a gap, they are notes (rule 6). A
+    wider row after a gap continues the table above it when it is a data row
+    inside the table's columns, so a blank separator row splits no table.
+    Any other wider row starts a new table (rule 7).
+    """
+
+    def __init__(self, sheet: _Sheet, lo: int, hi: int) -> None:
+        self.sheet, self.lo, self.hi = sheet, lo, hi
+        self.table: _Table | None = None
+        self.mode = "text"  # What the current block feeds: text, header or data.
+        self.block: list[_Row] = []
+        self.loose: list[list[_Row]] = []  # Earlier blocks of text, not placed yet.
+        self.next = 1
+        self.gap = self.gap_total = 0
+        self.gap_rows: list[int] = []
+
+    def row(self, row: _Row) -> None:
+        num = row[0]
+        if num > self.next:
+            self._empty(self.next, num - 1)
+        self.next = num + 1
+        filled = len(_filled(row))
+        if not filled and not (self.mode == "data" and not self.gap):
+            self._empty(num, num)
+            return
+        self.gap = 0
+        table = self.table
+        if self.mode == "data" and table is not None:
+            table.data(row)
+        elif self.mode == "header" and table is not None:
+            if table.wants_header(row):
+                table.head(row)
+            else:
+                self.mode = "data"
+                table.data(row)
+        elif filled < 2:
+            self.block.append(row)
+            if len(self.block) > TEXT_BLOCK_ROWS:
+                self._long_block()
+        elif table is not None and table.continues(row):
+            self._continue([*self.block, row])
+        else:
+            self._new_table(row)
+
+    def _empty(self, a: int, b: int) -> None:
+        if not self.gap:
+            self._end_block()
+        self.gap += b - a + 1
+        self.gap_total += b - a + 1
+        self.gap_rows += range(a, min(b + 1, a + max(0, 20 - len(self.gap_rows))))
+
+    def _end_block(self) -> None:
+        if self.table is not None and self.mode == "header":
+            self.table.end_header()
+        elif self.table is not None and self.mode == "data":
+            self.table.end_run()
+        elif self.block:
+            self.loose.append(self.block)
+            self.block = []
+            while sum(map(len, self.loose)) > TEXT_BLOCK_ROWS:
+                self._place(self.loose.pop(0))
+        self.mode = "text"
+
+    def _place(self, block: list[_Row]) -> None:
+        """A block of text that no table above it takes is left out."""
+        if self.table is not None:
+            self.table.note(block)
+        else:
+            self.sheet.text(block, "text outside a table")
+
+    def _continue(self, rows: list[_Row]) -> None:
+        table = self.table
+        assert table is not None
+        for block in self.loose:
+            table.note(block)
+        table.gap(self.gap_total, self.gap_rows)
+        self.loose, self.block, self.gap_total, self.gap_rows = [], [], 0, []
+        self.mode = table.feed(rows)
+
+    def _new_table(self, row: _Row) -> None:
+        """Rule 7: a new table. The text just above it is its title rows."""
+        if self.table is None:
+            titles = [r for block in self.loose for r in block] + self.block
+        else:
+            notes = self.loose if self.block else self.loose[:-1]
+            titles = self.block or (self.loose[-1] if self.loose else [])
+            for block in notes:
+                self.table.note(block)
+            self.sheet.close(self.table)
+        self.table = _Table(self.sheet, self.lo, self.hi, titles)
+        self.loose, self.block, self.gap_total, self.gap_rows = [], [], 0, []
+        self.mode = self.table.feed([row])
+
+    def _long_block(self) -> None:
+        """A long block of rows of one cell each: the rows of the table above
+        it, or else a table of one column."""
+        rows, self.block = self.block, []
+        if self.table is not None:
+            self._continue(rows)
+        else:
+            self._one_column(self.loose, rows, [])
+
+    def _one_column(
+        self, before: list[list[_Row]], rows: list[_Row], after: list[list[_Row]]
+    ) -> None:
+        self.table = _Table(self.sheet, self.lo, self.hi, [r for block in before for r in block])
+        self.loose, self.gap_total, self.gap_rows = [], 0, []
+        self.mode = self.table.feed(rows)
+        for block in after:
+            self.table.note(block)
+
+    def finish(self) -> None:
+        self._end_block()
+        if self.table is None and self.loose:
+            # No wider row came. The last block of two rows or more is a table of one column.
+            tall = [i for i, block in enumerate(self.loose) if len(block) >= 2]
+            if not tall:
+                for block in self.loose:
+                    self.sheet.text(block, "text outside a table")
+                return
+            i, loose = tall[-1], self.loose
+            self._one_column(loose[:i], loose[i], loose[i + 1 :])
+        if self.table is not None:
+            for block in self.loose:
+                self.table.note(block)
+            self.sheet.close(self.table)
+
+
+class _Sheet:
+    """One sheet. Its used columns split it into groups, and each group finds
+    its own tables (rule 7). Hidden rows, columns and sheets are read, and
+    the manifest marks them (rule 9)."""
+
+    def __init__(self, book: _Book, name: str, hidden: bool, survey: _Survey) -> None:
+        self.book, self.name, self.hidden = book, name, hidden
+        self.ref = _sheet_ref(name)
+        self.merges, self.hidden_cols = survey.merges, survey.hidden
+        self.left_out: list[dict[str, Any]] = []
+        self.table_names: list[str] = []
+        self.groups: list[_Group] = []
+        self.group_of = array("i", [-1]) * (EXCEL_MAX_COLUMN + 2)
+        used, col = survey.used, 1
+        while (lo := used.find(1, col)) != -1:
+            hi = used.find(0, lo) - 1
+            if hi - lo + 1 > MAX_COLUMNS:
+                raise Refused("too_many_columns", f"A table has more than {MAX_COLUMNS} columns.")
+            self.group_of[lo : hi + 1] = array("i", [len(self.groups)]) * (hi - lo + 1)
+            self.groups.append(_Group(self, lo, hi))
+            col = hi + 1
+
+    def row(self, num: int, hidden: bool, cells: dict[int, tuple[str, str]]) -> None:
+        if len(self.groups) == 1:
+            self.groups[0].row((num, hidden, cells))
+            return
+        parts: dict[int, dict[int, tuple[str, str]]] = {}
+        for col, value in cells.items():
+            at = self.group_of[col]
+            if at >= 0:
+                parts.setdefault(at, {})[col] = value
+        for at, part in parts.items():
+            self.groups[at].row((num, hidden, part))
+
+    def finish(self) -> None:
+        for group in self.groups:
+            group.finish()
+
+    def close(self, table: _Table) -> None:
+        found = table.close()
+        if found is not None:
+            self.book.found.append(found)
+
+    def span(self, lo: int, hi: int, rows: list[int]) -> str:
+        return f"{self.ref}!{_letter(lo - 1)}{rows[0]}:{_letter(hi - 1)}{rows[-1]}"
+
+    def range_of(self, rows: list[_Row]) -> str:
+        cols = [c for row in rows for c in _filled(row)] or [1]
+        return self.span(min(cols), max(cols), [rows[0][0], rows[-1][0]])
+
+    def text(self, rows: list[_Row], what: str) -> None:
+        if rows and len(self.left_out) < 20:
+            self.left_out.append({"what": what, "range": self.range_of(rows)})
+
+
+def _book_parts(book: zipfile.ZipFile, deadline: float) -> tuple[_Workbook, str | None, str | None]:
+    """The workbook part, with its sheets, and the parts of the shared strings
+    and the styles. Each part must be a normal path inside ``xl/``."""
+    main = "xl/workbook.xml"
+    if _has(book, "_rels/.rels"):
+        rels = _Rels()
+        _parse_part(book, "_rels/.rels", rels, deadline, XML_SMALL_PART_BYTES)
+        main = next((t.lstrip("/") for _, k, t in rels.found if k == "officeDocument"), main)
+    main = _xl_part(main)
+    folder = posixpath.dirname(main)
+    links = _Rels()
+    rels_name = posixpath.join(folder, "_rels", posixpath.basename(main) + ".rels")
+    if _has(book, rels_name):
+        _parse_part(book, rels_name, links, deadline, XML_SMALL_PART_BYTES)
+    sheets: dict[str, str] = {}
+    named: dict[str, str] = {}
+    for rid, kind, target in links.found:
+        if kind == "worksheet":
+            sheets.setdefault(rid, _target(folder, target))
+        elif kind in ("sharedStrings", "styles"):
+            named.setdefault(kind, _target(folder, target))
+    for kind, default in (("sharedStrings", "xl/sharedStrings.xml"), ("styles", "xl/styles.xml")):
+        if kind not in named and _has(book, default):
+            named[kind] = default
+    # No sheet part is the workbook part, the strings or the styles.
+    others = {main, *named.values()}
+    workbook = _Workbook({rid: p for rid, p in sheets.items() if p not in others})
+    _parse_part(book, main, workbook, deadline, XML_SMALL_PART_BYTES)
+    workbook.cut_names()
+    return workbook, named.get("sharedStrings"), named.get("styles")
+
+
+def _has(book: zipfile.ZipFile, name: str) -> bool:
+    try:
+        book.getinfo(name)
+    except KeyError:
+        return False
+    return True
+
+
+def _xl_part(name: str) -> str:
+    """*name* when it is a normal path inside ``xl/``, else a refusal (the rule of EM-T11b)."""
+    norm = posixpath.normpath(name)
+    if norm != name or not norm.startswith("xl/"):
+        raise Refused("bad_file", _OUTSIDE)
+    return norm
+
+
+def _target(folder: str, target: str) -> str:
+    """The part that a relationship names. A target that starts with ``/``
+    starts at the root of the zip, and any other at the workbook's folder."""
+    joined = target.lstrip("/") if target.startswith("/") else posixpath.join(folder, target)
+    return _xl_part(posixpath.normpath(joined))
+
+
+def _pick_sheets(
+    sheets: list[tuple[str, bool, str]], wanted: str | None
+) -> list[tuple[str, bool, str]]:
+    if wanted is None:
+        if len(sheets) > MAX_SHEETS:
+            message = f"The workbook has more than {MAX_SHEETS} sheets. Name one sheet to load."
+            raise Refused("too_many_sheets", message)
+        return sheets
+    found = [s for s in sheets if s[0] == wanted] or [
+        s for s in sheets if s[0].casefold() == wanted.casefold()
     ]
-    if seen["blank"]:
-        left_out.append({"what": "empty rows", "count": seen["blank"], "rows": seen["empty_rows"]})
+    if not found:
+        names = ", ".join(_short(s[0]) for s in sheets[:MAX_SHEETS])
+        raise Refused("not_found", f"The workbook has no sheet of that name. Its sheets: {names}")
+    return found[:1]
+
+
+def _load_workbook(
+    path: Path,
+    stage: Path,
+    ds_id: str,
+    label: str,
+    options: dict[str, Any],
+    caps: tuple[int, int, float],
+) -> dict[str, Any]:
+    """Load each table of each sheet of a workbook (WS-43y1b)."""
+    deadline = caps[2]
+    header_rows = options["header_rows"] if options["header_rows"] != "auto" else None
+    book = _Book(stage, header_rows, caps)
+    try:
+        with _open_book(path) as zf:
+            workbook, strings_part, styles_part = _book_parts(zf, deadline)
+            sheets = _pick_sheets(workbook.sheets, options["sheet"])
+            strings, styles = _Strings(), _Styles()
+            if strings_part:
+                _parse_part(zf, strings_part, strings, deadline)
+            if styles_part:
+                _parse_part(zf, styles_part, styles, deadline, XML_SMALL_PART_BYTES)
+            kinds = styles.kinds()
+            for name, hidden, part in sheets:
+                survey = _Survey()
+                _parse_part(zf, part, survey, deadline)
+                sheet = _Sheet(book, name, hidden, survey)
+                book.sheets.append(sheet)
+                _parse_part(
+                    zf,
+                    part,
+                    _Rows(strings, kinds, workbook.date1904, sheet.row, deadline),
+                    deadline,
+                )
+                sheet.finish()
+            del strings
+    finally:
+        book.close()
+    if not book.found:
+        raise Refused("empty", "The workbook holds no table with data rows under a header.")
+    tables = _type_tables(book, stage, deadline)
+    sheet_list = [
+        {"name": s.name, "hidden": s.hidden, "tables": s.table_names, "left_out": s.left_out}
+        for s in book.sheets
+    ]
     return {
-        "dataset_id": ds_id, "source": label, "delimiter": delim,
-        "findings": ["decimal_comma"] if dc else [],
-        "tables": [{"name": table, "sheet": table, "file": f"{table}.parquet", "rows": seen["rows"],
-                    "range": f"{table}!A{seen['first']}:{last}{seen['last']}", "columns": cols,
-                    "left_out": left_out}],
+        "dataset_id": ds_id, "source": label, "findings": [], "tables": tables,
+        "sheets": sheet_list, "date_system": 1904 if workbook.date1904 else 1900,
     }  # fmt: skip
+
+
+def _type_tables(book: _Book, stage: Path, deadline: float) -> list[dict[str, Any]]:
+    """Type each table and its side table of totals, as a CSV file's table is typed."""
+    con = _load_connection(stage)
+    taken: set[str] = set()
+    tables: list[dict[str, Any]] = []
+    for found in book.found:
+        sheet: _Sheet = found["sheet"]
+        name = _table_name(con, sheet.name, taken)
+        for k, (out, samples) in enumerate(found["outs"]):
+            table = name if k == 0 else f"{name}__totals"
+            taken.add(table)
+            seen = {"names": found["names"], "samples": samples, "rows": out.rows}
+            _, cols = _typed(con, stage, out.path, table, seen, False, deadline)
+            entry = _table_entry(found, out, table, cols)
+            if k == 0:
+                sheet.table_names.append(table)
+                tables.append(entry)
+                continue
+            entry["totals_of"] = name
+            total_rows = {"what": "total rows", "table": table, "count": out.rows}
+            tables[-1]["left_out"].append(total_rows | {"rows": out.numbers})
+            tables.append(entry)
+    con.close()
+    return tables
+
+
+def _table_entry(
+    found: dict[str, Any], out: _Out, table: str, cols: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The manifest entry of one table of a workbook."""
+    sheet: _Sheet = found["sheet"]
+    lo, main = found["first_col"], not table.endswith("__totals")
+    for j, col in enumerate(cols):
+        if sheet.hidden_cols[lo + j]:
+            col["hidden"] = True
+        if main and found["uncached"][j]:
+            col["uncached_formulas"] = found["uncached"][j]
+        if main and found["errors"][j]:
+            col["error_values"] = found["errors"][j]
+    entry: dict[str, Any] = {
+        "name": table, "sheet": sheet.name, "file": f"{table}.parquet", "rows": out.rows,
+        "range": sheet.span(lo, lo + len(cols) - 1, [out.first, out.last]), "columns": cols,
+        "left_out": found["left_out"] if main else [], "first_col": lo, "hidden": sheet.hidden,
+    }  # fmt: skip
+    if out.hidden_count:
+        entry["hidden_rows"] = {"count": out.hidden_count, "rows": out.hidden}
+    return entry
 
 
 # --------------------------------------------------------------------------
@@ -738,9 +2120,10 @@ def _load(dirs: Dirs, req: dict[str, Any], rid: str) -> dict[str, Any]:
     ext = Path(label).suffix.lower()
     if ext in _REFUSED_KINDS:
         raise Refused("unsupported_kind", _REFUSED_KINDS[ext])
-    if ext not in (".csv", ".tsv"):
-        raise Refused("unsupported_kind", f"The engine reads .csv and .tsv, not {ext or 'this'}.")
-    max_bytes, header_rows = _limit(req, "max_file_bytes"), _limit(req, "header_rows")
+    if ext not in _KINDS:
+        message = f"The engine reads .csv, .tsv, .xlsx and .xlsm, not {ext or 'this'}."
+        raise Refused("unsupported_kind", message)
+    max_bytes, options = _limit(req, "max_file_bytes"), _load_options(req, ext)
     if path.stat().st_size > max_bytes:
         raise Refused("too_large", f"The file is larger than {max_bytes // 2**20} MB.")
     deadline = time.monotonic() + _timeout(req, "load")
@@ -749,22 +2132,19 @@ def _load(dirs: Dirs, req: dict[str, Any], rid: str) -> dict[str, Any]:
     with open(path, "rb") as fh:
         while chunk := fh.read(2**20):
             digest.update(chunk)
-    digest.update(b"\0" + json.dumps({"header_rows": header_rows}, sort_keys=True).encode())
+    digest.update(b"\0" + json.dumps(options, sort_keys=True).encode())
     ds_id = "ds_" + digest.hexdigest()[:32]
     if (dirs.data / ds_id / "manifest.json").is_file():
         return {"reused": True, **_summary(_manifest(dirs, ds_id))}
     dirs.data.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".stage-{rid}-", dir=dirs.data))
+    caps = (_limit(req, "max_rows"), PAD_FACTOR * max_bytes, deadline)
     try:
-        text, raw = stage / "source.csv", stage / "rows.csv"
-        encoding = _transcode(path, text, deadline)
-        with open(text, encoding="utf-8", newline="") as fh:
-            delim = _delimiter(fh.read(2**16), ext)
-        budget = PAD_FACTOR * max_bytes
-        seen = _prepare(text, raw, delim, header_rows, _limit(req, "max_rows"), budget, deadline)
-        text.unlink()
-        manifest = _write_dataset(stage, raw, ds_id, label, delim, seen, deadline)
-        manifest.update(encoding=encoding, kind=ext[1:], header_rows=header_rows)
+        if ext in (".xlsx", ".xlsm"):
+            manifest = _load_workbook(path, stage, ds_id, label, options, caps)
+        else:
+            manifest = _load_csv(path, stage, ds_id, label, options["header_rows"], caps)
+        manifest.update(kind=ext[1:], header_rows=options["header_rows"])
         (stage / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
         )
@@ -780,6 +2160,49 @@ def _load(dirs: Dirs, req: dict[str, Any], rid: str) -> dict[str, Any]:
     return {"reused": False, **_summary(manifest)}
 
 
+def _load_options(req: dict[str, Any], ext: str) -> dict[str, Any]:
+    """The options of a load, which its id hashes. A CSV file keeps the one
+    option of WS-43y1a, so its id does not change.
+
+    A workbook finds its header rows itself (``auto``) unless the request
+    names them, and it reads every sheet unless the request names one.
+    """
+    sheet = req.get("sheet")
+    if ext not in (".xlsx", ".xlsm"):
+        if sheet is not None:
+            raise Refused(
+                "bad_request", "sheet names a sheet of a workbook, and not of a CSV file."
+            )
+        return {"header_rows": _limit(req, "header_rows")}
+    if sheet is not None and not (isinstance(sheet, str) and 0 < len(sheet) <= MAX_NAME_CHARS):
+        raise Refused(
+            "bad_request", f"sheet must be a sheet name of 1 to {MAX_NAME_CHARS} characters."
+        )
+    named = req.get("header_rows") is not None
+    return {"header_rows": _limit(req, "header_rows") if named else "auto", "sheet": sheet}
+
+
+def _load_csv(
+    path: Path,
+    stage: Path,
+    ds_id: str,
+    label: str,
+    header_rows: int,
+    caps: tuple[int, int, float],
+) -> dict[str, Any]:
+    """Load a CSV or TSV file (WS-43y1a)."""
+    max_rows, budget, deadline = caps
+    text, raw = stage / "source.csv", stage / "rows.csv"
+    encoding = _transcode(path, text, deadline)
+    with open(text, encoding="utf-8", newline="") as fh:
+        delim = _delimiter(fh.read(2**16), Path(label).suffix.lower())
+    seen = _prepare(text, raw, delim, header_rows, max_rows, budget, deadline)
+    text.unlink()
+    manifest = _write_dataset(stage, raw, ds_id, label, delim, seen, deadline)
+    manifest["encoding"] = encoding
+    return manifest
+
+
 def _remove(path: Path) -> None:
     if path.exists():
         path.chmod(stat.S_IRWXU)
@@ -788,17 +2211,24 @@ def _remove(path: Path) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+#: The keys of a table that a load answer carries. A workbook adds the last four.
+_SUMMARY_KEYS = ("name", "rows", "range", "left_out", "sheet", "hidden", "hidden_rows", "totals_of")
+
+
 def _summary(manifest: dict[str, Any]) -> dict[str, Any]:
     tables = [
-        {key: t[key] for key in ("name", "rows", "range", "left_out")}
+        {key: t[key] for key in _SUMMARY_KEYS if key in t}
         | {"columns": [{"name": _short(c["name"]), "type": c["type"]} for c in t["columns"]]}
         for t in manifest["tables"]
     ]
-    return {
+    answer = {
         "dataset_id": manifest["dataset_id"],
         "findings": manifest["findings"],
         "tables": tables,
     }
+    if "sheets" in manifest:
+        answer["sheets"] = manifest["sheets"]
+    return answer
 
 
 def _manifest(dirs: Dirs, ds_id: Any) -> dict[str, Any]:
@@ -1015,10 +2445,22 @@ def _envelope(
     tables, names = {t["name"]: t for t in manifest["tables"]}, [d[0] for d in desc]
     only = table or (next(iter(scanned)) if len(scanned) == 1 else None)
     if "_src_row" in names and only:
-        # A row that carries its source row gets its cell reference.
-        last, at = _letter(len(tables[only]["columns"]) - 1), names.index("_src_row")
-        answer["cells"] = [f"{tables[only]['sheet']}!A{r[at]}:{last}{r[at]}" for r in rows[:cap]]
+        # A row that carries its source row gets its cell reference. A table of a
+        # workbook can start in any column, and the CSV tables start in A.
+        t, at = tables[only], names.index("_src_row")
+        lo = t.get("first_col", 1) - 1
+        first, last = _letter(lo), _letter(lo + len(t["columns"]) - 1)
+        sheet = _sheet_ref(t["sheet"])
+        answer["cells"] = [f"{sheet}!{first}{r[at]}:{last}{r[at]}" for r in rows[:cap]]
     return answer
+
+
+def _sheet_ref(name: str) -> str:
+    """A sheet name as a cell reference writes it: quoted when it holds more
+    than letters, digits and ``_``, as ``'Q1 Sales'!A3``."""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        return name
+    return "'" + name.replace("'", "''") + "'"
 
 
 def _table(manifest: dict[str, Any], name: Any) -> dict[str, Any]:
