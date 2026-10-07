@@ -6,11 +6,11 @@
 //     flight for ALL runs together, one id never asked twice while it is in
 //     flight, an open during a prefetch makes one request, no fetch for a row
 //     with `htmlRemote` false or a row the cache holds, and the 500 ms wait.
-//   * `email-html-prefetch-stops`: the first 503 stops the prefetch until the
-//     list changes, and no request goes before `Retry-After` ends. The first
+//   * `email-html-prefetch-stops`: the first 503 stops the prefetch until its
+//     `Retry-After` ends, and then the same list may prefetch again. The first
 //     401 stops it until the list changes. A failed row is not asked again for
-//     the same list. A soft refresh of the same list clears nothing, and a
-//     remount of the list keeps the stop and the wait.
+//     the same list. A soft refresh clears no stop and no wait, and a remount
+//     of the list keeps them.
 //   * `email-html-pane`: the first paint shows the text, then the HTML goes
 //     through the one render path of stored HTML. A failed fetch keeps the
 //     text, with no error state. The browser proof that a `<script>` does not
@@ -335,7 +335,7 @@ describe("email-html-prefetch-stops", () => {
     expect(h.asked).not.toContain("m3");
   });
 
-  it("a soft refresh of the same list clears neither the 503 stop nor the wait", async () => {
+  it("a soft refresh of the same list does not lift the 503 stop inside the wait, and the prefetch resumes after it", async () => {
     let busy = true;
     const h = harness(() => {
       if (busy) throw httpError(503, 40);
@@ -343,11 +343,23 @@ describe("email-html-prefetch-stops", () => {
     });
     const p = prefetcher(h);
     await p.run(rowsOf("a"));
+    const sent = h.asked.length;
     busy = false;
-    h.advance(60_000);
-    // The wait is over, but the list is the same list.
+    // Inside the wait: soft refreshes of the same list send nothing.
+    for (const step of [1_000, 20_000, 18_999]) {
+      h.advance(step);
+      p.listLoaded(INBOX);
+      const out = await p.run(rowsOf("b"));
+      expect(out.asked).toEqual([]);
+      expect(out.stopped).toBe("busy");
+    }
+    expect(h.asked).toHaveLength(sent);
+    // The wait of 40 s ends. The same list prefetches again.
+    h.advance(1);
     p.listLoaded(INBOX);
-    expect((await p.run(rowsOf("b"))).asked).toEqual([]);
+    const after = await p.run(rowsOf("b"));
+    expect(after.stopped).toBeNull();
+    expect(after.asked).toEqual(["b"]);
   });
 
   it("a list change inside the wait of Retry-After starts nothing, and after it, the prefetch goes on", async () => {

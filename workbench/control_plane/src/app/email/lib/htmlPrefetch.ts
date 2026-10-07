@@ -19,9 +19,10 @@
  *   the gateway sends no such row, so the prefetch asks for nothing.
  * - A row that the cache holds is skipped. A row that failed is not asked
  *   again while the list stays the same.
- * - The first 503 stops the prefetch until the list changes, and no request
- *   goes before its `Retry-After` ends. EM-S1 turns a provider 429 into that
- *   503, so a 429 stops it too. The first 401 stops it until the list changes.
+ * - The first 503 stops the prefetch until its `Retry-After` ends, on any
+ *   list. After that, the next run may prefetch again. EM-S1 turns a provider
+ *   429 into that 503, so a 429 stops it too. The first 401 stops it until the
+ *   list changes.
  *
  * "The list changes" means another list key: another mailbox, folder, label or
  * search ({@link prefetchListKey}). A soft refresh of the same list gives a new
@@ -294,6 +295,10 @@ export function createHtmlPrefetcher(
     },
 
     run(rows) {
+      // A 503 means the provider is busy for `Retry-After` seconds, not "stop
+      // for good". Once the wait ends, the same list may prefetch again. A 401
+      // stays until the list changes.
+      if (state.stop === "busy" && deps.now() >= state.waitUntil) state.stop = null;
       if (state.stop) return Promise.resolve({ asked: [], stopped: state.stop });
       if (deps.now() < state.waitUntil) {
         return Promise.resolve({ asked: [], stopped: "busy" as const });
