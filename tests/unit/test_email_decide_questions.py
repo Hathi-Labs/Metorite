@@ -305,9 +305,10 @@ async def test_every_mode_off_makes_zero_calls_on_all_four_features(
     for site in SITES:
         await site(monkeypatch)
     assert fake.calls == []
+    # EM-T14b-0 added the Insights screen, which is not a triage site.
     assert set(df.FEATURES) == {
         "email.cold_check", "email.sender_pin", "email.thread_status",
-        "email.rule_match"}
+        "email.rule_match", "email.insights_screen"}
 
 
 # ── Done when: the old name resolves to off and is refused ──────────────────
