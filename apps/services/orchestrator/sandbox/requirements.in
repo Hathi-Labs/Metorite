@@ -45,3 +45,7 @@ networkx
 beautifulsoup4
 lxml
 jinja2
+
+# The data toolkit (WS-43y1a, maf_coding_engine.md §7.10): the SQL engine of
+# sandbox/data_engine.py. Nothing outside that file imports it.
+duckdb
