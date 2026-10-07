@@ -8,7 +8,13 @@
 # failed silently every night since 2026-09-19 (`>/dev/null 2>&1 || true`).
 # 22 scratch copies (923 MB) filled the disk, and the provider stopped every write.
 #
-# This runs the REAL `backup_db.sh` against a REAL Postgres (R8), in four
+# On 2026-10-07 the verify moved OFF the cluster. It had restored into the
+# production cluster every night, and that write burst used up the disk I/O
+# budget of the managed instance. It now restores into a throwaway container
+# on the box, so no run makes a scratch database any more. The sweep stays,
+# for the copies that older runs left.
+#
+# This runs the REAL `backup_db.sh` against a REAL Postgres (R8), in six
 # scenes. Each scene names the mutation it catches (R7):
 #
 #   A. Sweep. Stale scratch databases go, even with a connection open on one.
@@ -17,15 +23,20 @@
 #        mutation: widen `$scratch_re`   -> a decoy is dropped
 #   B. Read-only server. The sweep still drops a stale scratch database while
 #      `default_transaction_read_only = on` comes from the configuration file.
+#      And the verify PASSES, because it writes nothing to the cluster.
 #        mutation: drop the `SET default_transaction_read_only = off`
+#        mutation: restore into the cluster again -> CREATE DATABASE fails
 #   C. A failed drop. The backup exits non-zero, AFTER the dump and the
 #      manifest exist, and the reason is printed with no password in it.
 #        mutation: put back `|| true`    -> the exit code goes green
 #        mutation: drop `redact`         -> the shim's password reaches the log
 #   D. The advisory guard prints a WARNING with the count (no exit code).
-#   E. The cap. With a drop that keeps failing, the third night makes no new
-#      copy, so the pile stops at two.
-#        mutation: remove the post-sweep count -> a third copy is made
+#   E. No copy on the cluster. With a drop that keeps failing, two more nights
+#      add no scratch database, and each one still verifies.
+#        mutation: restore into the cluster again -> the count grows
+#   F. Docker that will not start a container. The verify fails LOUDLY, the
+#      dump is kept, and nothing is restored into the cluster instead.
+#        mutation: fall back to the cluster -> exit 0, or a new scratch copy
 #
 # ⚠️ **Run it against a THROWAWAY server only.** It drops every database it
 # creates, it toggles a server setting with ALTER SYSTEM, and the sweep in
@@ -36,7 +47,8 @@
 #   scripts/rehearse_verify_scratch.sh     # against $PGHOST or localhost:5432
 #
 # Env: PGHOST/PGPORT/PGUSER/PGPASSWORD (libpq). PGUSER must be a superuser,
-# because scene B uses ALTER SYSTEM.
+# because scene B uses ALTER SYSTEM. Docker must answer too, because the
+# verify runs in a container (it pulls pgvector/pgvector:pg<server major>).
 set -euo pipefail
 
 export PG_MODE=local
@@ -66,6 +78,7 @@ mk()     { psql -X -q -d postgres -c "CREATE DATABASE \"$1\""; }
 rmdb()   { psql -X -q -d postgres -c "DROP DATABASE IF EXISTS \"$1\" WITH (FORCE)" >/dev/null 2>&1 || true; }
 
 command -v psql >/dev/null || die "psql not on PATH"
+command -v docker >/dev/null || die "docker not on PATH (the verify runs in a container)"
 q 'select 1' >/dev/null 2>&1 || die "no Postgres answers as '$PGUSER' (set PGHOST/PGPORT/PGPASSWORD)"
 [ "$(q 'select rolsuper from pg_roles where rolname = current_user')" = "t" ] \
   || die "PGUSER must be a superuser (scene B uses ALTER SYSTEM)"
@@ -83,9 +96,16 @@ cleanup() {
   for db in "$LIVE_DB" "$OLD1" "$OLD2" "$FRESH" "${DECOYS[@]}"; do rmdb "$db"; done
   q "select datname from pg_database where datname ~ '^acb_verify_[0-9]+\$'" 2>/dev/null \
     | while read -r db; do [ -n "$db" ] && rmdb "$db"; done
+  docker ps -aq --filter label=acb.backup-verify=1 2>/dev/null \
+    | while read -r c; do [ -n "$c" ] && docker rm -f -v "$c" >/dev/null 2>&1; done || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+
+# The scratch databases on the cluster, counted.
+scratch_count() { q "select count(*) from pg_database where datname ~ '^acb_verify_[0-9]+\$'"; }
+# The verify containers on this Docker, counted. Every run must remove its own.
+verify_ctrs() { docker ps -aq --filter label=acb.backup-verify=1 | wc -l | tr -d ' '; }
 
 # The scripts read POSTGRES_USER from $APP_DIR/.env. A temp dir means a
 # rehearsal can never pick up a real deployment's settings by accident.
@@ -144,9 +164,13 @@ for db in "${DECOYS[@]}"; do
 done
 pass "each decoy is in the backup"
 ls "$DEST" | grep -qE '^acb_verify_[0-9]+\.dump$' && die "A: a scratch database was dumped"
-[ "$(q "select count(*) from pg_database where datname ~ '^acb_verify_[0-9]+\$'")" = "1" ] \
-  || { show_log; die "A: the run left its own scratch database behind"; }
-pass "the run dropped its own scratch database"
+[ "$(scratch_count)" = "1" ] \
+  || { show_log; die "A: the run made a scratch database on the cluster"; }
+pass "the run made no scratch database of its own (only $FRESH is left)"
+grep -q "restore verified" "$LOG" || { show_log; die "A: the verify did not pass"; }
+grep -qE "public tables: live=1 restored=1" "$LOG" || { show_log; die "A: the table count is wrong"; }
+[ "$(verify_ctrs)" = "0" ] || { show_log; die "A: the verify container was left behind"; }
+pass "the verify passed in a container, and the container is gone"
 kill "$HOLDER_PID" 2>/dev/null || true
 HOLDER_PID=""
 # The fresh copy has done its job. Scene E counts copies, so it must not stay.
@@ -171,15 +195,20 @@ set_read_only off
 exists "$OLD1" && { show_log; die "B: the sweep could not drop $OLD1 on a read-only server"; }
 grep -q "swept stale scratch database $OLD1" "$LOG" || { show_log; die "B: no sweep log line"; }
 pass "the sweep dropped $OLD1 on a read-only server"
-# CREATE DATABASE must still refuse on a read-only server, and loudly.
-[ "$RC" != "0" ] || { show_log; die "B: a read-only server cannot give a verify, yet the run exited 0"; }
+# The proof that the verify writes NOTHING to the cluster. Until
+# 2026-10-07 this run had to fail, because CREATE DATABASE refuses on a
+# read-only server. Now it must pass: the restore happens in the container.
+[ "$RC" = "0" ] || { show_log; die "B: the verify failed on a read-only cluster (exit $RC). Does it write there again?"; }
+grep -q "restore verified" "$LOG" || { show_log; die "B: no 'restore verified' on a read-only cluster"; }
 [ -s "$DEST/$LIVE_DB.dump" ] && [ -s "$DEST/MANIFEST.txt" ] || { show_log; die "B: no dump"; }
-pass "the verify failed loudly (exit $RC), and the dump was kept"
+pass "the verify passed on a read-only cluster, so it wrote nothing there"
 
 # ── C. A drop that fails ────────────────────────────────────────────────────
 # A psql shim refuses every DROP DATABASE and echoes a connection string with
 # a password, the way libpq does. Everything else reaches the real server.
 say "C. A scratch drop that fails"
+# A stale copy, as an older run left it. The sweep must try to drop it.
+mk "$OLD1"
 REAL_PSQL="$(command -v psql)"
 SHIM="$WORK/shim"
 mkdir -p "$SHIM"
@@ -209,21 +238,54 @@ grep -q 's3cr3t-shim-pw' "$LOG" && die "C: a password reached the log"
 grep -q 'scratch database(s) could not be dropped' "$LOG" || die "C: no closing ERROR"
 pass "the ERROR names the database, gives the reason, and shows no password"
 grep -q "restore verified" "$LOG" || die "C: the verify itself did not pass first"
-pass "the failure came after a passed verify, so it is the drop alone"
+pass "the verify passed, so the red exit is the drop alone"
 
-# ── E. The cap: a drop that keeps failing cannot pile copies up ─────────────
-# Scene C left one copy. Two more nights with the same broken drop: the first
-# leaves a second copy, and the next one must refuse to make a third.
-say "E. The cap: two more nights with a drop that keeps failing"
+# ── E. No copy on the cluster, night after night ────────────────────────────
+# Scene C left $OLD1, and its drop still fails. Two more nights: the count of
+# scratch databases must not move, and each night must still verify.
+say "E. No copy on the cluster: two more nights with a drop that keeps failing"
+before="$(scratch_count)"
 run_backup E1 "$SHIM"
 run_backup E2 "$SHIM"
-left="$(q "select count(*) from pg_database where datname ~ '^acb_verify_[0-9]+\$'")"
-[ "$left" -le 2 ] || die "E: $left scratch copies after three failed nights — the pile grows"
-grep -q "The deep verify is SKIPPED" "$LOG" || { show_log; die "E: the third night did not skip the verify"; }
-grep -q "restore verified" "$WORK/E1.log" || { show_log; die "E: the second night should still verify (one copy left)"; }
-grep -q "restore verified" "$LOG" && { show_log; die "E: the third night made a new copy"; }
-[ "$RC" != "0" ] || { show_log; die "E: a skipped verify exited 0"; }
-[ -s "$DEST/$LIVE_DB.dump" ] || die "E: no dump on the night the verify was skipped"
-pass "$left copies after three failed nights, and the third night skipped the verify loudly"
+after="$(scratch_count)"
+[ "$after" = "$before" ] || die "E: $before scratch copies became $after — a run made a copy on the cluster"
+for night in E1 E2; do
+  grep -q "restore verified" "$WORK/$night.log" || { show_log; die "E: night $night did not verify"; }
+done
+[ "$RC" != "0" ] || { show_log; die "E: the drop of $OLD1 failed, yet the run exited 0"; }
+[ -s "$DEST/$LIVE_DB.dump" ] || die "E: no dump"
+pass "$after scratch copy after two more failed nights, and both nights verified"
+rmdb "$OLD1"
+
+# ── F. Docker that will not start a container ───────────────────────────────
+# A docker shim that fails every call, the way a stopped daemon does. The
+# verify must fail loudly, keep the dump, and make no copy on the cluster.
+say "F. Docker that will not start a container"
+DSHIM="$WORK/dshim"
+mkdir -p "$DSHIM"
+cat > "$DSHIM/docker" <<'SH'
+#!/usr/bin/env bash
+echo 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' >&2
+exit 1
+SH
+chmod +x "$DSHIM/docker"
+before="$(scratch_count)"
+# Read-only, as in scene B (fix round 2). A fallback that writes to the
+# cluster, even into an EXISTING database, then fails with a read-only error
+# that the grep below finds. The scratch count alone sees only a NEW database.
+set_read_only on
+run_backup F "$DSHIM"
+set_read_only off
+grep -q "read-only transaction" "$LOG" && { show_log; die "F: the run tried to write to the cluster"; }
+[ "$RC" != "0" ] || { show_log; die "F: Docker failed, yet the verify exited 0"; }
+grep -q "the verify container did not start" "$LOG" || { show_log; die "F: no ERROR that names the container"; }
+grep -q "restore verified" "$LOG" && { show_log; die "F: a verify passed without a container. Where did it restore?"; }
+[ "$(scratch_count)" = "$before" ] || { show_log; die "F: the run fell back to a copy on the cluster"; }
+[ -s "$DEST/$LIVE_DB.dump" ] && [ -s "$DEST/MANIFEST.txt" ] || { show_log; die "F: no dump"; }
+pass "exit $RC, the dump is kept, and nothing was restored into the cluster"
+# A failed verify must not stop the rest of the run (fix round 1, H-98).
+grep -q "Retention (keeping" "$LOG" || { show_log; die "F: retention did not run after the failed verify"; }
+grep -q "the deep verify FAILED" "$LOG" || { show_log; die "F: no closing ERROR for the verify"; }
+pass "the run went on past the failed verify, and named it at the end"
 
 printf "\n==> SCRATCH-DATABASE REHEARSAL PASSED\n"

@@ -517,6 +517,9 @@ jobs:
       # spares the decoys, and fails loudly when a drop fails. It needs this
       # job's private server, because it uses ALTER SYSTEM and the sweep drops
       # every stale `acb_verify_<digits>` database on the cluster.
+      # Since 2026-10-07 both steps also need the runner's Docker: the verify
+      # restores into a throwaway pgvector/pgvector:pg16 container, and scene
+      # B proves that it writes nothing to this job's server.
       - name: Rehearse the scratch-database drop and sweep
         env:
           PGHOST: localhost
