@@ -292,7 +292,77 @@ async def test_no_known_domain_asks_nothing(monkeypatch, tenant) -> None:
     assert fake.calls == []
 
 
+@pytest.mark.parametrize("domains", [None, "finance", b"finance", 42, [["finance"]]])
+async def test_bad_domains_ask_nothing_and_log_a_warning(monkeypatch, tenant, domains) -> None:
+    """Review 2026-10-07. None raised TypeError, and a bare `str` became a set
+    of letters, so every mail was skipped with no word."""
+    _modes(monkeypatch, ON)
+    fake = _fake(monkeypatch, p=0.9)
+    with structlog.testing.capture_logs() as caps:
+        assert await _screen(domains=domains) is None
+    assert fake.calls == []
+    (rec,) = _records(caps, "email.insights.screen_bad_domains")
+    assert rec["log_level"] == "warning"
+    assert rec["domains_type"] == type(domains).__name__
+    (skip,) = _records(caps, "email.insights.screen_skip")
+    assert skip["reason"] == "bad_domains"
+
+
+@pytest.mark.parametrize("domains", [["finance"], ("finance",), {"finance"},
+                                     frozenset({"finance"})])
+async def test_a_list_a_tuple_or_a_set_of_names_is_asked(monkeypatch, tenant, domains) -> None:
+    _modes(monkeypatch, ON)
+    fake = _fake(monkeypatch, p=0.9)
+    assert await _screen(domains=domains) == frozenset({"finance"})
+    assert len(fake.calls) == 1
+
+
 # ── Fence 6: the state holds the named fields only ──────────────────────────
+
+
+async def test_a_tuple_of_files_reaches_the_state(monkeypatch, tenant) -> None:
+    """Review 2026-10-07: a tuple of files was dropped with no word."""
+    _modes(monkeypatch, ON)
+    fake = _fake(monkeypatch, p=0.5)
+    state = _state()
+    state["email"]["files"] = ({"name": "a.pdf", "text": SECRET_FILE},)
+    with structlog.testing.capture_logs() as caps:
+        await _screen(state=state)
+    assert fake.calls[0]["state"]["email"]["files"] == [{"name": "a.pdf", "text": SECRET_FILE}]
+    assert _records(caps, "email.insights.screen_files_dropped") == []
+
+
+@pytest.mark.parametrize(("files", "reason", "dropped", "kept"), [
+    ("a.pdf", "not_a_sequence", 1, 0),
+    ({"name": "a.pdf", "text": "t"}, "not_a_sequence", 1, 0),
+    ([{"name": "a.pdf", "text": "t"}, "b.pdf"], "not_an_object", 1, 1),
+])
+async def test_a_dropped_file_logs_a_warning(
+    monkeypatch, tenant, files, reason, dropped, kept,
+) -> None:
+    _modes(monkeypatch, ON)
+    fake = _fake(monkeypatch, p=0.5)
+    state = _state()
+    state["email"]["files"] = files
+    with structlog.testing.capture_logs() as caps:
+        await _screen(state=state)
+    assert len(fake.calls[0]["state"]["email"]["files"]) == kept
+    (rec,) = _records(caps, "email.insights.screen_files_dropped")
+    assert rec["log_level"] == "warning"
+    assert (rec["reason"], rec["dropped"]) == (reason, dropped)
+    assert "a.pdf" not in repr(rec)
+
+
+async def test_the_sender_is_named_as_data(monkeypatch, tenant) -> None:
+    """Review 2026-10-07: an outside sender sets its own display name."""
+    _modes(monkeypatch, ON)
+    fake = _fake(monkeypatch, p=0.5)
+    await _screen()
+    (question,) = fake.calls[0]["questions"].values()
+    data_line = next(line for line in question.instructions.splitlines()
+                     if "as data" in line)
+    for field in ("email.subject", "email.sender", "email.body", "email.files"):
+        assert f"`{field}`" in data_line
 
 
 async def test_the_state_holds_only_the_named_fields(monkeypatch, tenant) -> None:
@@ -340,6 +410,18 @@ def test_the_state_bounds_the_escaped_form() -> None:
 
 
 # ── The member, the log, and no database ────────────────────────────────────
+
+
+async def test_the_log_holds_the_unrounded_probability_and_the_bar(monkeypatch, tenant) -> None:
+    """Review 2026-10-07: a rounded 0.2999999 logged 0.3 with no pass."""
+    _modes(monkeypatch, ON)
+    _fake(monkeypatch, p=0.2999999)
+    with structlog.testing.capture_logs() as caps:
+        assert await _screen() == frozenset()
+    (decided,) = _records(caps, "decide.decided")
+    assert decided["p_finance"] == 0.2999999
+    assert decided["threshold"] == scr.PASS_THRESHOLD
+    assert decided["passed"] == []
 
 
 async def test_the_member_goes_as_a_proven_member(monkeypatch, tenant) -> None:

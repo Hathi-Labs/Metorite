@@ -14,10 +14,11 @@ Each feature that may ask ``acb_llm.decide`` has ONE mode here: ``off``,
   other than ``off``. An empty list allows no organization, and ``*`` allows
   every organization (EM-T5b-2, owner decision (b) of 2026-10-02).
 
-🔴 **``on`` is accepted for the four email features** (EM-T5b-2 in full,
-2026-10-02, after the narrowed slice opened it for ``email.rule_match``
-only). In ``on`` the ``decide`` answer DECIDES (:func:`ask`), and the old LLM
-call is not made. With no answer the email stays undecided (D-EM-8). For a
+🔴 **``on`` is accepted for the five email features**: the four triage
+features (EM-T5b-2 in full, 2026-10-02, after the narrowed slice opened it
+for ``email.rule_match`` only), and the Insights screen
+``email.insights_screen`` (EM-T14b-0, 2026-10-07). In ``on`` the ``decide``
+answer DECIDES (:func:`ask`), and the old LLM call is not made. With no answer the email stays undecided (D-EM-8). For a
 feature outside :data:`ON_FEATURES` ``on`` resolves to ``off`` and logs
 ``decide.mode_refused``. So does an unknown feature or an unknown mode.
 
