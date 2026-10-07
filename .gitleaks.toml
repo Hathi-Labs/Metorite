@@ -18,6 +18,7 @@ useDefault = true
 description = "Documented dev defaults + fixtures that are not real secrets"
 paths = [
     '''(^|/)tests?/''',            # unit-test fixtures / mock tokens
+    '''^evals/[^/]+/fixtures/''',  # synthetic eval data (WS-48 N2 mailbox: a fixture "key" field)
     '''\.env\.example$''',         # documented placeholder values
     '''package-lock\.json$''',
     '''uv\.lock$''',

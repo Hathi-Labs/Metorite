@@ -533,7 +533,7 @@ def _message(
     body = _body(sender, topic, rng)
     acct = ACCOUNTS[account]
     return {
-        "key": key,
+        "slug": key,
         "id": ident("message", key),
         "account_id": acct["id"],
         "folder": folder,

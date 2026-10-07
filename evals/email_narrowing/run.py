@@ -286,7 +286,7 @@ def _no_body_on_the_wire(ds: Dataset, door: StubDoor | None) -> list[str]:
     for m in ds.messages + ds.stranger_messages:
         body = " ".join(m["body_text"].split())
         if len(body) > 420 and body[160:360] in flat:
-            bad.append(m["key"])
+            bad.append(m["slug"])
     return bad
 
 

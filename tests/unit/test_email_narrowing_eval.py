@@ -232,7 +232,7 @@ def test_the_wire_rule_finds_a_body() -> None:
         bodies: ClassVar[list[dict[str, Any]]] = [{"state": {"items": {"c1": {"title": "t", "who": "w", "when": "x",
                                                "snippet": m["body_text"]}}}}]
 
-    assert m["key"] in run._no_body_on_the_wire(ds, Door())  # type: ignore[arg-type]
+    assert m["slug"] in run._no_body_on_the_wire(ds, Door())  # type: ignore[arg-type]
     Door.bodies[0]["state"]["items"]["c1"]["snippet"] = m["snippet"]
     assert run._no_body_on_the_wire(ds, Door()) == []  # type: ignore[arg-type]
 
