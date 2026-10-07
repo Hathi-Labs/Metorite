@@ -11,14 +11,17 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
+import pytest
 from email_ingestion.providers.base import (
     best_unsubscribe_link,
     find_unsubscribe_link_in_html,
 )
 from email_ingestion.providers.gmail import GmailProvider
+from gateway import outbound_guard
 from gateway.routes.email.automation import senders as s
-from tests.unit._email_fakes import bind_db
 
+from tests.unit._email_fakes import bind_db
 
 # ── HTML-body scraping + best-link selection ────────────────────────────────
 
@@ -70,57 +73,60 @@ async def test_is_safe_external_url_rejects_bad_scheme_and_internal() -> None:
 
 # ── One-click engine (POST → GET fallback) ──────────────────────────────────
 
-class _Resp:
-    def __init__(self, status: int) -> None:
-        self.status_code = status
-        self.is_success = 200 <= status < 300
+class _Server:
+    """A fake list server behind the outbound guard (EM-T13b-2).
 
+    The guard resolves ``list.example`` to one public address and sends each
+    request to it, so the fake sees the pinned request."""
 
-class _FakeClient:
-    """Minimal httpx.AsyncClient stand-in recording calls."""
-
-    def __init__(self, post_status: int, get_status: int = 200, **_: object) -> None:
-        self._post_status = post_status
-        self._get_status = get_status
+    def __init__(self, post_status: int, get_status: int = 200) -> None:
+        self._status = {"POST": post_status, "GET": get_status}
         self.calls: list[str] = []
+        self.hosts: list[str] = []
 
-    async def __aenter__(self) -> "_FakeClient":
-        return self
-
-    async def __aexit__(self, *_: object) -> bool:
-        return False
-
-    async def post(self, url: str, **_: object) -> _Resp:
-        self.calls.append("POST")
-        return _Resp(self._post_status)
-
-    async def get(self, url: str, **_: object) -> _Resp:
-        self.calls.append("GET")
-        return _Resp(self._get_status)
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(request.method)
+        self.hosts.append(request.url.host)
+        return httpx.Response(self._status[request.method],
+                              stream=httpx.ByteStream(b""))
 
 
-async def test_http_unsubscribe_one_click_post_succeeds() -> None:
-    fake = _FakeClient(post_status=200)
-    with patch.object(s, "_is_safe_external_url", AsyncMock(return_value=True)), \
-            patch.object(s.httpx, "AsyncClient", lambda **kw: fake):
-        ok, detail = await s._http_unsubscribe("https://list.example/u")
+def _serve(monkeypatch: pytest.MonkeyPatch, server: _Server) -> None:
+    real = httpx.AsyncClient
+    monkeypatch.setattr(outbound_guard, "_resolve",
+                        lambda host, port: ["93.184.216.34"])
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(
+        transport=httpx.MockTransport(server.handle), **kw))
+
+
+async def test_http_unsubscribe_one_click_post_succeeds(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    server = _Server(post_status=200)
+    _serve(monkeypatch, server)
+    ok, detail = await s._http_unsubscribe("https://list.example/u")
     assert ok is True and detail == "one-click-post"
-    assert fake.calls == ["POST"]  # no GET needed
+    assert server.calls == ["POST"]  # no GET needed
+    assert server.hosts == ["93.184.216.34"]  # the pinned address
 
 
-async def test_http_unsubscribe_falls_back_to_get() -> None:
-    fake = _FakeClient(post_status=405, get_status=200)
-    with patch.object(s, "_is_safe_external_url", AsyncMock(return_value=True)), \
-            patch.object(s.httpx, "AsyncClient", lambda **kw: fake):
-        ok, detail = await s._http_unsubscribe("https://list.example/u")
+async def test_http_unsubscribe_falls_back_to_get(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    server = _Server(post_status=405, get_status=200)
+    _serve(monkeypatch, server)
+    ok, detail = await s._http_unsubscribe("https://list.example/u")
     assert ok is True and detail == "get"
-    assert fake.calls == ["POST", "GET"]
+    assert server.calls == ["POST", "GET"]
 
 
-async def test_http_unsubscribe_rejects_unsafe_url_without_network() -> None:
-    with patch.object(s, "_is_safe_external_url", AsyncMock(return_value=False)):
-        ok, detail = await s._http_unsubscribe("http://127.0.0.1/u")
+async def test_http_unsubscribe_rejects_unsafe_url_without_network(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    server = _Server(post_status=200)
+    _serve(monkeypatch, server)
+    monkeypatch.setattr(outbound_guard, "_resolve",
+                        lambda host, port: ["127.0.0.1"])
+    ok, detail = await s._http_unsubscribe("http://list.example/u")
     assert ok is False and detail == "unsafe-url"
+    assert server.calls == []
 
 
 # ── mailto: unsubscribe send ─────────────────────────────────────────────────
