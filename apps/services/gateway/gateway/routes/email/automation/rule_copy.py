@@ -1,7 +1,8 @@
 """Automation · the copy of rules from one mailbox to another (WS-17 EM-T8f-1).
 
 Spec: ``project-docs/specs/email_app_master_plan.md`` §11.7.6, EM-T8f-1 item
-1, and D-EM-6, D-EM-18, D-EM-24 and D-EM-29 in §11.2.
+1, and D-EM-6, D-EM-18, D-EM-24 and D-EM-29 in §11.2. ``will_create`` and
+rule 5 are WS-17 EM-S10 (§14.4.7, §14.6.10, D-EM-60).
 
 ``POST /email/rules/copy`` copies the ENABLED rules of one mailbox of the
 member to another mailbox of the same member. A copy is made once, and after
@@ -21,7 +22,7 @@ What a copy does not take: a disabled rule, a rule pattern, rule guidance, a
 learned pattern, an assistant setting, the voice profile or knowledge. A
 mailbox is the boundary of the AI context (D-EM-18).
 
-Four rules change what arrives:
+Five rules change what arrives:
 
 1. A name that the target holds, in any case, gets " (copy)", then
    " (copy 2)", and so on. The INSERT also has ``ON CONFLICT (account_id,
@@ -48,6 +49,20 @@ Four rules change what arrives:
    guard, such a forward can send mail around in a loop. A copy without the
    FORWARD would keep the other actions of the rule, for example an ARCHIVE,
    and would hide mail that the member meant to forward.
+5. A rule with a MOVE_FOLDER that the provider of the target refuses is left
+   out whole, as ``folder_not_in_target`` (EM-S10). Gmail refuses a move to
+   Sent, Drafts and a system label. The check is ``local_folder_after_move``
+   over a provider of the target's kind that holds no credentials. So it makes
+   no network call, and each provider keeps its one rule. A copy without the
+   move would keep the other actions, and would not file the mail.
+
+The answer names each folder or label that the target does not hold, in
+``will_create`` (EM-S10, D-EM-60). The copy still copies the rule, because the
+provider makes a missing folder or label on first use. The compare reads
+``email_folders`` of the TARGET only, without case, over the ``account_id``
+that the owner check proved. An AI label (``label_ai``) is a prompt and not a
+name, so the list leaves it out. A MOVE_FOLDER to a system folder (Inbox,
+Archive) is never in the list, because each mailbox holds one.
 
 A new column of ``email_rules`` or ``email_actions`` must join a tuple below.
 ``tests/unit/test_email_rule_copy.py`` reads ``information_schema`` and fails
@@ -57,11 +72,15 @@ when a column is in no tuple.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID, uuid4
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion.providers.base import canonical_folder, local_folder_after_move
+from email_ingestion.providers.factory import build_provider
 from fastapi import Depends, HTTPException
+from gateway.routes.email.automation.actions import _SYSTEM_FOLDER_KEYS
 from gateway.routes.email.automation.rules import (
     _is_reply_rule,
     _load_rules,
@@ -107,6 +126,10 @@ _ADDRESS = re.compile(r"[^\s<>,;\"'()]+@[^\s<>,;\"'()]+")
 LEFT_OUT_DISABLED = "disabled"
 LEFT_OUT_FORWARD_LOOP = "forward_to_own_address"
 LEFT_OUT_REPLY_EXISTS = "reply_rule_exists"
+LEFT_OUT_FOLDER_NOT_IN_TARGET = "folder_not_in_target"
+
+#: The action types whose ``label`` names a folder or a label (EM-S10).
+_NAMED_ACTIONS = frozenset({"MOVE_FOLDER", "LABEL"})
 
 #: The most names one rule tries. Each try that fails means that a row with
 #: that name exists, so a real copy never gets near it. When the source rule
@@ -160,11 +183,24 @@ class RuleCopyLeftOut(BaseModel):
     reason: str
 
 
+class RuleCopyWillCreate(BaseModel):
+    """A folder or label name that a copied rule uses and the target lacks.
+
+    ``rule`` is the name of the rule in the target. ``action`` is
+    ``MOVE_FOLDER`` or ``LABEL``. ``name`` is the name as the rule holds it.
+    """
+    rule: str
+    action: str
+    name: str
+
+
 class RuleCopyResult(BaseModel):
-    """What arrived: the names in the target, the renames and the rules left out."""
+    """What arrived: the names in the target, the renames, the rules left out,
+    and each folder or label name that the provider makes on first use."""
     copied: list[str]
     renamed: list[RuleCopyRename]
     left_out: list[RuleCopyLeftOut]
+    will_create: list[RuleCopyWillCreate] = []
 
 
 def copy_name(name: str, taken: set[str]) -> str:
@@ -224,14 +260,84 @@ async def _target_rules(db: Any, account_id: str) -> list[dict[str, Any]]:
     return [{"name": r.name or "", "system_type": r.system_type} for r in rows]
 
 
+async def _target_folders(db: Any, account_id: str) -> set[str]:
+    """The lower-case, trimmed name of each folder of the target in
+    ``email_folders``. The caller passes the ``account_id`` that its owner
+    check proved, and nothing else (R5, D-EM-4)."""
+    rows = (await db.execute(text(
+        "SELECT name FROM email_folders WHERE account_id = CAST(:aid AS uuid)"
+    ), {"aid": account_id})).fetchall()
+    return {(r.name or "").strip().lower() for r in rows if r.name}
+
+
+async def _target_provider(db: Any, account_id: str, owner: str) -> str:
+    """The provider of the target. The owner predicate stays in the read."""
+    row = (await db.execute(text(
+        "SELECT provider FROM email_accounts "
+        "WHERE id = CAST(:aid AS uuid) AND user_id = :uid"
+    ), {"aid": account_id, "uid": owner})).fetchone()
+    return (row.provider or "") if row else ""
+
+
+def move_refuser(provider_name: str) -> Callable[[str], bool]:
+    """A check that is true when a provider of this kind refuses a move to
+    the folder name. The probe holds no credentials and makes no network
+    call. An unknown provider refuses nothing."""
+    try:
+        probe = build_provider(provider_name, {})
+    except ValueError:
+        return lambda _name: False
+    return lambda name: local_folder_after_move(probe, (name or "").strip()) is None
+
+
+def refuses_a_move(rule: dict[str, Any], refuses: Callable[[str], bool]) -> bool:
+    """True when a MOVE_FOLDER of the rule names a folder that the target
+    refuses (rule 5)."""
+    return any(
+        (a.get("type") or "").upper() == "MOVE_FOLDER"
+        and bool((a.get("label") or "").strip())
+        and refuses(a.get("label") or "")
+        for a in rule.get("actions") or []
+    )
+
+
+def will_create(
+    rule: dict[str, Any], copied_as: str, folders: set[str],
+) -> list[RuleCopyWillCreate]:
+    """Each MOVE_FOLDER or LABEL name of the rule that ``folders`` lacks.
+
+    ``folders`` holds lower-case, trimmed names, so the compare has no case.
+    An AI label is left out, and so is a move to a system folder. A name that
+    two actions of one type share is listed once.
+    """
+    out: list[RuleCopyWillCreate] = []
+    seen: set[tuple[str, str]] = set()
+    for a in rule.get("actions") or []:
+        kind = (a.get("type") or "").upper()
+        name = (a.get("label") or "").strip()
+        if kind not in _NAMED_ACTIONS or not name or a.get("label_ai"):
+            continue
+        if kind == "MOVE_FOLDER" and canonical_folder(name) in _SYSTEM_FOLDER_KEYS:
+            continue
+        key = (kind, name.lower())
+        if name.lower() in folders or key in seen:
+            continue
+        seen.add(key)
+        out.append(RuleCopyWillCreate(rule=copied_as, action=kind, name=name))
+    return out
+
+
 def _left_out_reason(
     rule: dict[str, Any], own: set[str], reply_held: bool,
+    refuses: Callable[[str], bool] = lambda _name: False,
 ) -> str | None:
     """Why the copy leaves out this source rule, or ``None`` to copy it."""
     if not rule["enabled"]:
         return LEFT_OUT_DISABLED
     if forwards_to_own_address(rule, own):
         return LEFT_OUT_FORWARD_LOOP
+    if refuses_a_move(rule, refuses):
+        return LEFT_OUT_FOLDER_NOT_IN_TARGET
     if reply_held and _is_reply_rule(rule):
         return LEFT_OUT_REPLY_EXISTS
     return None
@@ -292,6 +398,7 @@ async def copy_rules(
     copied: list[str] = []
     renamed: list[RuleCopyRename] = []
     left_out: list[RuleCopyLeftOut] = []
+    to_create: list[RuleCopyWillCreate] = []
     async with _tenant_session() as db:
         await _assert_account_owner(db, src, owner)
         await _assert_account_owner(db, dst, owner)
@@ -301,8 +408,11 @@ async def copy_rules(
         reply_held = any(_is_reply_rule(r) for r in target)
         target_drafts = await stored_draft_replies(db, dst)
         own = await _own_addresses(db, owner)
+        # EM-S10: both reads use ``dst``, which the owner check above proved.
+        folders = await _target_folders(db, dst)
+        refuses = move_refuser(await _target_provider(db, dst, owner))
         for rule in source_rules:
-            reason = _left_out_reason(rule, own, reply_held)
+            reason = _left_out_reason(rule, own, reply_held, refuses)
             if reason is not None:
                 left_out.append(RuleCopyLeftOut(name=rule["name"], reason=reason))
                 continue
@@ -316,8 +426,11 @@ async def copy_rules(
                 continue
             reply_held = reply_held or is_reply
             copied.append(name)
+            to_create.extend(will_create(rule, name, folders))
             if name != rule["name"]:
                 renamed.append(RuleCopyRename(name=rule["name"], copied_as=name))
     _log.info("email.rules.copied", from_account_id=src, to_account_id=dst,
-              copied=len(copied), renamed=len(renamed), left_out=len(left_out))
-    return RuleCopyResult(copied=copied, renamed=renamed, left_out=left_out)
+              copied=len(copied), renamed=len(renamed), left_out=len(left_out),
+              will_create=len(to_create))
+    return RuleCopyResult(copied=copied, renamed=renamed, left_out=left_out,
+                          will_create=to_create)

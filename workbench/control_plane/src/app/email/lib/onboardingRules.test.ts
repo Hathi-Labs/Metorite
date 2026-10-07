@@ -37,9 +37,12 @@ import {
   onboardingStage,
   processPastFrom,
   readDraftSwitch,
+  readSortEstimate,
   rulesStepPhase,
   setDraftReplies,
+  sortEstimateView,
   type RulesStepApi,
+  type SortEstimate,
 } from "./onboarding";
 import type { AssistantSettings, EmailAccount } from "./types";
 
@@ -187,9 +190,26 @@ function fakeApi(settings: AssistantSettings) {
       calls.push(["copyRules", [from, to]]);
       return { copied: [], renamed: [], leftOut: [] };
     },
+    // EM-S10: the count before the sort.
+    estimateSort: async (id, from) => {
+      calls.push(["estimateSort", [id, from]]);
+      return { ...ESTIMATE };
+    },
   };
   return { api, calls };
 }
+
+/** An estimate of 340 messages, all of them in one run (EM-S10). */
+const ESTIMATE = {
+  in_range: 400,
+  eligible: 340,
+  already_processed: 60,
+  held_back: 0,
+  will_process: 340,
+  capped: false,
+  limit: 1000,
+  max_span_days: 366,
+};
 
 const SETTINGS = {
   account_id: "acc-1",
@@ -317,6 +337,7 @@ function view(over: Partial<RulesStepViewProps>): string {
     draft: { state: "ready", on: false },
     draftBusy: false,
     pastFrom: "2026-07-05",
+    sort: { state: "ready", estimate: ESTIMATE },
     onRecommended: noop,
     onChooseOwn: noop,
     onSkip: noop,
@@ -425,7 +446,8 @@ describe("the handlers of the view", () => {
     expect(find("COPY.recommended")[0]).toContain("onClick={p.onRecommended}");
     expect(find("COPY.chooseOwn")[0]).toContain("onClick={p.onChooseOwn}");
     expect(find("COPY.skipForNow")[0]).toContain("onClick={p.onSkip}");
-    expect(find("COPY.processPast")[0]).toContain("onClick={p.onProcessPast}");
+    // EM-S10: the sort action's text comes from the estimate view.
+    expect(find("sort.action")[0]).toContain("onClick={p.onProcessPast}");
     expect(find("COPY.insights")[0]).toContain("onClick={p.onInsights}");
     expect(find("COPY.done")[0]).toContain("onClick={p.onDone}");
     expect(find("aria-label={COPY.skipSetup}")[0]).toContain("onClick={p.onSkip}");
@@ -625,5 +647,104 @@ describe("no sort action when nothing was imported (fix round 1, item 7)", () =>
 
   it("before EM-T6b (no phase): only the one-day rule applies", () => {
     expect(processPastFrom({ importSince: since }, NOW)).toBe("2026-07-05");
+  });
+});
+
+// ── EM-S10: the count before the sort (§14.4.7, §14.6.10, D-EM-59) ─────────
+
+describe("the estimate line before the sort (EM-S10)", () => {
+  const ready = (over: Partial<typeof ESTIMATE> = {}): SortEstimate => ({
+    state: "ready",
+    estimate: { ...ESTIMATE, ...over },
+  });
+  const sortButton = (out: string) =>
+    buttons(out).find((b) => b.text === "Sort my imported mail" || b.text.startsWith("Sort the next"));
+
+  it("shows the count of AI calls with the sort action", () => {
+    const out = view({ phase: "ready", sort: ready() });
+    expect(out).toContain("Sorting it takes 340 AI calls, one for each message.");
+    expect(sortButton(out)!.attrs).not.toMatch(DISABLED);
+    expect(sortEstimateView(ready({ will_process: 1, eligible: 1 })).line).toBe("Sorting it takes 1 AI call.");
+  });
+
+  it("the member sees the count before any sort starts: the action waits for the read", () => {
+    const out = view({ phase: "ready", sort: { state: "loading" } });
+    expect(out).toContain(RULES_STEP_COPY.sortCounting);
+    expect(sortButton(out)!.attrs).toMatch(DISABLED);
+    expect(out).not.toMatch(/AI calls?,/);
+    // The container reads the estimate for the import range, and the button
+    // is disabled while the read runs.
+    const src = codeOnly(read("components/OnboardingRulesStep.tsx"));
+    expect(src).toContain("readSortEstimate(RULES_API, account.id, pastFrom)");
+    expect(src).toContain("estimateSort: (accountId, startDate) => processPastEstimate({ accountId, startDate })");
+    expect(src).toContain("disabled={locked || !sort.enabled}");
+    expect(src).toMatch(/useEffect\(\(\) => \{\s*if \(phase !== "ready" \|\| !pastFrom\) return;/);
+  });
+
+  it("reads the estimate from the start of the import, and a failed read keeps the action", async () => {
+    const { api, calls } = fakeApi(SETTINGS);
+    expect(await readSortEstimate(api, "acc-1", "2026-07-05")).toEqual({ state: "ready", estimate: ESTIMATE });
+    expect(calls).toEqual([["estimateSort", ["acc-1", "2026-07-05"]]]);
+    const failing = { estimateSort: async () => Promise.reject(new Error("503")) };
+    expect(await readSortEstimate(failing, "acc-1", "2026-07-05")).toEqual({ state: "failed" });
+    const out = view({ phase: "ready", sort: { state: "failed" } });
+    expect(out).toContain(RULES_STEP_COPY.sortCountFailed);
+    expect(sortButton(out)!.attrs).not.toMatch(DISABLED);
+  });
+
+  it("capped: says what one run sorts, and offers the next run", () => {
+    const capped = ready({ eligible: 2500, will_process: 1000, capped: true, limit: 1000 });
+    const v = sortEstimateView(capped, "en-US");
+    expect(v.line).toBe("Sorting it takes 1,000 AI calls, one for each message.");
+    expect(v.capLine).toBe(
+      "One run sorts 1,000 messages, the oldest first. " +
+        "1,500 more wait for the next run, and this step offers it when this run ends.",
+    );
+    expect(v.action).toBe("Sort the next 1,000 messages");
+    const out = view({ phase: "ready", sort: capped });
+    expect(out).toContain("One run sorts");
+    const b = buttons(out).find((x) => x.text.startsWith("Sort the next"));
+    expect(b).toBeDefined();
+    expect(b!.attrs).not.toMatch(DISABLED);
+  });
+
+  it("after a capped run, the next read offers the rest", () => {
+    // The step mounts again after AI Settings closes, and reads again.
+    const after = sortEstimateView(ready({ eligible: 1500, will_process: 1000, capped: true, limit: 1000 }), "en-US");
+    expect(after.action).toBe("Sort the next 1,000 messages");
+    expect(after.capLine).toContain("500 more wait for the next run");
+    const last = sortEstimateView(ready({ eligible: 500, will_process: 500, capped: false }), "en-US");
+    expect(last.action).toBe(RULES_STEP_COPY.processPast);
+    expect(last.capLine).toBeNull();
+  });
+
+  it("the size of a run comes from the answer, never from a constant", () => {
+    const v = sortEstimateView(ready({ eligible: 3000, will_process: 2000, capped: true, limit: 2000 }), "en-US");
+    expect(v.capLine).toContain("One run sorts 2,000 messages");
+    expect(v.capLine).toContain("1,000 more wait");
+  });
+
+  it("nothing left to sort: no sort action, and a plain line", () => {
+    const done = view({ phase: "ready", sort: ready({ eligible: 0, will_process: 0 }) });
+    expect(sortButton(done)).toBeUndefined();
+    expect(done).toContain(RULES_STEP_COPY.sortDone);
+    const none = view({ phase: "ready", sort: ready({ in_range: 0, eligible: 0, will_process: 0 }) });
+    expect(none).toContain(RULES_STEP_COPY.sortNothing);
+  });
+
+  it("no estimate line without imported mail, and no word names a model", () => {
+    const out = view({ phase: "ready", pastFrom: null, sort: { state: "loading" } });
+    expect(out).not.toContain(RULES_STEP_COPY.sortCounting);
+    const states: SortEstimate[] = [
+      { state: "loading" },
+      { state: "failed" },
+      ready(),
+      ready({ capped: true, eligible: 5000, will_process: 1000 }),
+      ready({ eligible: 0, will_process: 0 }),
+    ];
+    for (const s of states) {
+      const v = sortEstimateView(s);
+      expect([v.line, v.capLine, v.action].join(" ")).not.toMatch(/model/i);
+    }
   });
 });

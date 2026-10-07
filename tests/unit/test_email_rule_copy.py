@@ -29,6 +29,16 @@ R7 fences named here:
   left out and named.
 * ``email-rule-copy-409``: a copy that cannot land answers 409 and writes
   nothing.
+* ``email-rule-copy-will-create`` (WS-17 EM-S10, §14.6.10, D-EM-60): the
+  answer lists each MOVE_FOLDER or LABEL name that ``email_folders`` of the
+  TARGET lacks, compared without case, and the copy still copies the rule. A
+  folder of the source, or of a mailbox of another member, does not count. An
+  AI label and a system folder are never in the list.
+* ``email-rule-copy-refused-move`` (EM-S10): a copy to Gmail leaves out a
+  rule whose MOVE_FOLDER names Sent, Drafts or a system label, as
+  ``folder_not_in_target``.
+* ``email-rule-copy-owner-em-s10``: with the folder read in place, a target
+  of another member still answers 404, and no rule and no folder name leaks.
 
 **R8.** The real SQL against the phase-4-promoted two-org catalog of
 ``test_h3_rls_promotion_rehearsal``, as the role ``acb_app_h3rls``
@@ -126,6 +136,85 @@ class TestTheLeftOutReason:
         assert reason(self._rule(), own, False) is None
         assert reason(self._rule(name="Vendors"), own, True) is None
 
+    def test_a_move_that_the_target_refuses(self):
+        """EM-S10: a MOVE_FOLDER that the target refuses leaves the rule out,
+        before the reply check."""
+        refuses = rule_copy.move_refuser("gmail")
+        sent = self._rule(name="Filed", actions=[{"type": "MOVE_FOLDER", "label": "Sent"}])
+        assert rule_copy._left_out_reason(sent, set(), False, refuses) == (
+            rule_copy.LEFT_OUT_FOLDER_NOT_IN_TARGET)
+        assert rule_copy._left_out_reason(sent, set(), False) is None
+        user = self._rule(name="Filed", actions=[{"type": "MOVE_FOLDER", "label": "Cold Email"}])
+        assert rule_copy._left_out_reason(user, set(), False, refuses) is None
+        label = self._rule(name="Filed", actions=[{"type": "LABEL", "label": "Sent"}])
+        assert rule_copy._left_out_reason(label, set(), False, refuses) is None
+
+
+class TestTheMoveRefuser:
+    """EM-S10: the provider's own rule, through a probe with no credentials."""
+
+    @pytest.mark.parametrize("provider,name,refused", [
+        ("gmail", "Sent", True),
+        ("gmail", "sent items", True),
+        ("gmail", "Drafts", True),
+        ("gmail", "STARRED", True),
+        ("gmail", "CATEGORY_PROMOTIONS", True),
+        ("gmail", "Cold Email", False),
+        ("gmail", "Archive", False),
+        ("gmail", "Inbox", False),
+        ("microsoft", "Sent", False),
+        ("microsoft", "Cold Email", False),
+        ("imap", "Sent", False),
+        ("no-such-provider", "Sent", False),
+    ])
+    def test_each_case(self, provider, name, refused):
+        assert rule_copy.move_refuser(provider)(name) is refused
+
+
+class TestTheNameCompare:
+    """EM-S10: ``will_create`` compares without case and trims each side."""
+
+    def _rule(self, *actions: dict[str, Any]) -> dict[str, Any]:
+        return {"name": "R", "actions": list(actions)}
+
+    def _names(self, rule: dict[str, Any], folders: set[str]) -> list[tuple[str, str]]:
+        return [(w.action, w.name) for w in rule_copy.will_create(rule, "R (copy)", folders)]
+
+    def test_a_name_in_another_case_is_held(self):
+        rule = self._rule({"type": "MOVE_FOLDER", "label": "COLD email"},
+                          {"type": "label", "label": " Receipts "})
+        assert self._names(rule, {"cold email", "receipts"}) == []
+        assert self._names(rule, {"cold email"}) == [("LABEL", "Receipts")]
+        assert self._names(rule, set()) == [
+            ("MOVE_FOLDER", "COLD email"), ("LABEL", "Receipts")]
+
+    def test_the_rule_carries_its_name_in_the_target(self):
+        [w] = rule_copy.will_create(
+            self._rule({"type": "MOVE_FOLDER", "label": "Cold Email"}), "R (copy)", set())
+        assert (w.rule, w.action, w.name) == ("R (copy)", "MOVE_FOLDER", "Cold Email")
+
+    def test_an_ai_label_a_system_folder_and_other_actions_are_left_out(self):
+        rule = self._rule(
+            {"type": "LABEL", "label": "{{vendor}}", "label_ai": True},
+            {"type": "MOVE_FOLDER", "label": "Archive"},
+            {"type": "MOVE_FOLDER", "label": "deleted items"},
+            {"type": "MOVE_FOLDER", "label": ""},
+            {"type": "LABEL", "label": None},
+            {"type": "ARCHIVE", "label": "Cold Email"},
+            {"type": "FORWARD", "label": "Cold Email"},
+        )
+        assert self._names(rule, set()) == []
+
+    def test_one_name_of_one_type_is_listed_once(self):
+        rule = self._rule({"type": "LABEL", "label": "Vendor"},
+                          {"type": "LABEL", "label": "VENDOR"},
+                          {"type": "MOVE_FOLDER", "label": "Vendor"})
+        assert self._names(rule, set()) == [("LABEL", "Vendor"), ("MOVE_FOLDER", "Vendor")]
+
+    def test_the_answer_carries_the_field_and_an_old_shape_reads_empty(self):
+        assert rule_copy.RuleCopyResult(copied=[], renamed=[], left_out=[]).will_create == []
+        assert "will_create" in rule_copy.RuleCopyResult.model_fields
+
 
 class TestTheRoute:
 
@@ -162,14 +251,25 @@ def _assert_non_priv(app_eng) -> None:
     )
 
 
-def _account(admin, *, org: str, owner: str, address: str | None = None) -> str:
+def _account(admin, *, org: str, owner: str, address: str | None = None,
+             provider: str = "microsoft") -> str:
     with admin.begin() as c:
         return str(c.execute(text(
             "INSERT INTO email_accounts (user_id, provider, email_address, "
             "credentials_encrypted, organization_id) "
-            "VALUES (:u, 'microsoft', :m, 'x', CAST(:o AS uuid)) RETURNING id"),
-            {"u": owner, "m": address or f"box-{uuid.uuid4().hex[:8]}@em-t8f.test",
+            "VALUES (:u, :p, :m, 'x', CAST(:o AS uuid)) RETURNING id"),
+            {"u": owner, "p": provider,
+             "m": address or f"box-{uuid.uuid4().hex[:8]}@em-t8f.test",
              "o": org}).scalar_one())
+
+
+def _folder(admin, *, org: str, account: str, name: str) -> None:
+    with admin.begin() as c:
+        c.execute(text(
+            "INSERT INTO email_folders (account_id, provider_folder_id, name, "
+            "type, organization_id) VALUES (CAST(:a AS uuid), :pid, :n, 'user', "
+            "CAST(:o AS uuid))"),
+            {"a": account, "pid": f"f-{uuid.uuid4().hex[:8]}", "n": name, "o": org})
 
 
 #: A value other than the default in every column, so a column that the copy
@@ -266,9 +366,10 @@ class _Member:
         self.user = UserContext(email=self.email, role=UserRole.EMPLOYEE,
                                 organization_id=p.org_b)
 
-    def box(self, address: str | None = None, org: str | None = None) -> str:
+    def box(self, address: str | None = None, org: str | None = None,
+            provider: str = "microsoft") -> str:
         return _account(self.p.admin_engine, org=org or self.p.org_b,
-                        owner=self.email, address=address)
+                        owner=self.email, address=address, provider=provider)
 
     async def copy(self, src: str, dst: str, org: str | None = None):
         app_dsn = self.p.app_url.render_as_string(hide_password=False)
@@ -721,3 +822,128 @@ class TestAForwardToAnOwnAddress:
         [forward] = _actions_of(p.admin_engine, after["To partner"]["id"])
         assert (forward["type"], forward["to_address"]) == (
             "FORWARD", "partner@outside.test")
+
+
+# ── R8: email-rule-copy-will-create, email-rule-copy-refused-move (EM-S10) ──
+
+
+@_DB_GATE
+class TestTheNamesThatTheTargetLacks:
+
+    async def test_will_create_reads_the_folders_of_the_target_only(
+        self, member, promoted,  # noqa: F811
+    ):
+        """A copy to a mailbox that lacks "Cold Email" lists it, and copies
+        the rule (§14.6.10). The source holds the folder, and so does a
+        mailbox of another member. Neither counts."""
+        p = promoted
+        src, dst = member.box(), member.box()
+        stranger = f"stranger-{uuid.uuid4().hex[:8]}@em-t8f.test"
+        theirs = _account(p.admin_engine, org=p.org_b, owner=stranger)
+        try:
+            _folder(p.admin_engine, org=p.org_b, account=src, name="Cold Email")
+            _folder(p.admin_engine, org=p.org_b, account=theirs, name="Cold Email")
+            _folder(p.admin_engine, org=p.org_b, account=dst, name="RECEIPTS")
+            cold = _rule(p.admin_engine, org=p.org_b, account=src, name="Cold Email")
+            _action(p.admin_engine, org=p.org_b, rule=cold, type_="MOVE_FOLDER",
+                    label="Cold Email")
+            _action(p.admin_engine, org=p.org_b, rule=cold, type_="LABEL",
+                    label="{{sender_company}}", label_ai=True)
+            receipts = _rule(p.admin_engine, org=p.org_b, account=src, name="Receipts")
+            _action(p.admin_engine, org=p.org_b, rule=receipts, type_="LABEL",
+                    label="receipts")
+            _action(p.admin_engine, org=p.org_b, rule=receipts, type_="MOVE_FOLDER",
+                    label="Archive")
+
+            out = await member.copy(src, dst)
+
+            assert sorted(out.copied) == ["Cold Email", "Receipts"]
+            assert out.left_out == []
+            assert [(w.rule, w.action, w.name) for w in out.will_create] == [
+                ("Cold Email", "MOVE_FOLDER", "Cold Email")]
+            after = _rules_of(p.admin_engine, dst)
+            [move, ai] = _actions_of(p.admin_engine, after["Cold Email"]["id"])
+            assert (move["type"], move["label"]) == ("MOVE_FOLDER", "Cold Email")
+            assert (ai["label"], ai["label_ai"]) == ("{{sender_company}}", True)
+        finally:
+            _purge(p.admin_engine, stranger)
+
+    async def test_a_held_folder_empties_the_list(self, member, promoted):  # noqa: F811
+        p = promoted
+        src, dst = member.box(), member.box()
+        _folder(p.admin_engine, org=p.org_b, account=dst, name="cold email")
+        cold = _rule(p.admin_engine, org=p.org_b, account=src, name="Cold Email")
+        _action(p.admin_engine, org=p.org_b, rule=cold, type_="MOVE_FOLDER",
+                label="Cold Email")
+        out = await member.copy(src, dst)
+        assert out.copied == ["Cold Email"]
+        assert out.will_create == []
+
+    async def test_a_renamed_rule_is_named_by_its_new_name(self, member, promoted):  # noqa: F811
+        p = promoted
+        src, dst = member.box(), member.box()
+        _rule(p.admin_engine, org=p.org_b, account=dst, name="Cold Email")
+        cold = _rule(p.admin_engine, org=p.org_b, account=src, name="Cold Email")
+        _action(p.admin_engine, org=p.org_b, rule=cold, type_="MOVE_FOLDER",
+                label="Cold Email")
+        out = await member.copy(src, dst)
+        assert [(w.rule, w.name) for w in out.will_create] == [
+            ("Cold Email (copy)", "Cold Email")]
+
+    async def test_a_target_of_another_member_answers_404_and_names_nothing(
+        self, member, promoted,  # noqa: F811
+    ):
+        p = promoted
+        mine = member.box()
+        cold = _rule(p.admin_engine, org=p.org_b, account=mine, name="Cold Email")
+        _action(p.admin_engine, org=p.org_b, rule=cold, type_="MOVE_FOLDER",
+                label="Cold Email")
+        stranger = f"stranger-{uuid.uuid4().hex[:8]}@em-t8f.test"
+        theirs = _account(p.admin_engine, org=p.org_b, owner=stranger)
+        try:
+            _folder(p.admin_engine, org=p.org_b, account=theirs, name="Secret Project")
+            with pytest.raises(HTTPException) as err:
+                await member.copy(mine, theirs)
+            assert err.value.status_code == 404
+            assert "Secret" not in str(err.value.detail)
+            assert _rules_of(p.admin_engine, theirs) == {}
+        finally:
+            _purge(p.admin_engine, stranger)
+
+
+@_DB_GATE
+class TestAMoveThatGmailRefuses:
+
+    async def test_outlook_to_gmail_leaves_out_a_move_to_sent(
+        self, member, promoted,  # noqa: F811
+    ):
+        p = promoted
+        src = member.box()
+        dst = member.box(provider="gmail")
+        sent = _rule(p.admin_engine, org=p.org_b, account=src, name="File as sent")
+        _action(p.admin_engine, org=p.org_b, rule=sent, type_="LABEL", label="Done")
+        _action(p.admin_engine, org=p.org_b, rule=sent, type_="MOVE_FOLDER",
+                label="Sent Items")
+        cold = _rule(p.admin_engine, org=p.org_b, account=src, name="Cold Email")
+        _action(p.admin_engine, org=p.org_b, rule=cold, type_="MOVE_FOLDER",
+                label="Cold Email")
+
+        out = await member.copy(src, dst)
+
+        assert out.copied == ["Cold Email"]
+        assert [(x.name, x.reason) for x in out.left_out] == [
+            ("File as sent", rule_copy.LEFT_OUT_FOLDER_NOT_IN_TARGET)]
+        assert [w.name for w in out.will_create] == ["Cold Email"]
+        assert set(_rules_of(p.admin_engine, dst)) == {"Cold Email"}
+
+    async def test_outlook_to_outlook_copies_the_same_rule(
+        self, member, promoted,  # noqa: F811
+    ):
+        p = promoted
+        src, dst = member.box(), member.box()
+        sent = _rule(p.admin_engine, org=p.org_b, account=src, name="File as sent")
+        _action(p.admin_engine, org=p.org_b, rule=sent, type_="MOVE_FOLDER",
+                label="Sent Items")
+        out = await member.copy(src, dst)
+        assert out.copied == ["File as sent"]
+        assert out.left_out == [] and out.will_create == []

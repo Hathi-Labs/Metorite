@@ -26,7 +26,7 @@
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
 > 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
-> 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07), not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
+> 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07), not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10). EM-S10 is 🔨 BUILT, not merged (2026-10-07).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -13947,7 +13947,7 @@ migration.
 | **EM-S8** | 🟢 AGENT-SAFE · visual review | Yes, the same flag | The range step after the sign-in, with the estimate and the warning | §14.6.8 |
 | **EM-S9** | 🟢 AGENT-SAFE · visual review | No | The sync banner in the header, for the first import | §14.6.9 |
 | **EM-S9b** | 🟢 AGENT-SAFE · R8 | No | A Resync writes progress, so the banner shows during a Resync | §14.6.9b |
-| **EM-S10** | 🟢 AGENT-SAFE · R8 · visual review | No | The estimate in the rules step, and `will_create` in the copy | §14.6.10 |
+| **EM-S10** | 🟢 AGENT-SAFE · R8 · visual review · 🔨 BUILT, not merged (2026-10-07) | No | The estimate in the rules step, and `will_create` in the copy | §14.6.10 |
 | **Flip A** | 🟡 GRANT `enforcement-flip` | — | `EMAIL_HTML_FROM_PROVIDER=true`, then `EMAIL_HTML_HOT_ONLY=true` | The live check of §14.6.3 |
 | **Flip B** | 🔴 OWNER ONLY | — | `EMAIL_HTML_CLEAR=on` | The live check of §14.6.4 |
 | **Flip C** | 🔴 OWNER ONLY | — | `EMAIL_SYNC_WINDOW_CHOICE=true` | The live check of §14.6.8 |
@@ -14478,6 +14478,8 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 
 #### 14.6.10 EM-S10 — the estimate in the rules step, and the copy of a missing name
 
+**Status.** 🔨 BUILT, not merged (2026-10-07). It adds no migration and no flag. The as-built notes follow the Verify block.
+
 **Scope.**
 
 1. "Sort my imported mail" reads `process-past/estimate` first, and shows the calls. When
@@ -14505,6 +14507,16 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_rule_copy.py -v -rs
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 ```
+
+**As built (2026-10-07).**
+
+- **The estimate.** `lib/onboarding.ts::sortEstimateView` gives the words, and `readSortEstimate` reads `GET /email/rules/process-past/estimate` from the start of the import. The step reads it again each time it mounts. So after a capped run it offers the rest.
+- **The size of a run comes from the answer.** The step shows `limit` from the estimate, not "2,000". The route clamps `limit` at 2000. The dialog sends no `limit`, so a run sorts 1,000 (`RuleProcessPastRequest.limit`).
+- **The sort action waits for the count.** It stays disabled while the read runs. A failed read keeps the action, because the dialog counts again before it sorts.
+- **`will_create`.** `rule_copy.will_create` lists each name for each copied rule, by its name in the target. A MOVE_FOLDER to a system folder (Inbox, Archive, Trash) is not in the list.
+- **The refused move.** `rule_copy.move_refuser` asks the provider's own rule (`local_folder_after_move`) through a probe with no credentials. The rule is left out whole, as the forward-loop rule is.
+- ⚠️ **`email_folders` holds few rows.** Its one writer is `POST /email/accounts/{id}/folders` (`transport/folders.py:178`). The folder list reads the provider and writes nothing. So `will_create` can name a folder that the provider already holds. The step says "Metorite did not find", and never "does not exist". The provider uses the folder that it holds, so no second folder occurs.
+- **Fences.** `tests/unit/test_email_rule_copy.py` (63 tests, 28 of them R8, 0 skip on a private database). `lib/onboardingRules.test.ts` and `lib/mailboxSettings.test.ts` hold the estimate line, the next run and the copy report.
 
 ### 14.7 Recorded risks
 

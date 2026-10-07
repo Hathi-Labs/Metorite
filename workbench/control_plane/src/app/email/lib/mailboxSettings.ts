@@ -212,22 +212,52 @@ export const LEFT_OUT_WORDS: Readonly<Record<string, (source: string) => string>
   forward_to_own_address: () =>
     "It forwards mail to one of your own mailboxes, and that can send mail around in a loop.",
   reply_rule_exists: () => "This mailbox has a reply rule already, and a mailbox keeps only one.",
+  // EM-S10: Gmail cannot move mail to Sent, Drafts or a system label.
+  folder_not_in_target: () => "This mailbox cannot move mail to the folder that the rule names.",
 };
 
 /** The words for a reason that this UI does not know. */
 export const LEFT_OUT_UNKNOWN = "Metorite did not copy it.";
 
+/**
+ * The line for `willCreate` (EM-S10, D-EM-60). Metorite knows only the
+ * folders in its own record of the mailbox, so the line says "did not find"
+ * and never "does not exist".
+ */
+export function willCreateLine(names: ReadonlyArray<string>): string | null {
+  if (names.length === 0) return null;
+  const listed = names.map((n) => `"${n}"`).join(", ");
+  return names.length === 1
+    ? `Metorite did not find the folder or label ${listed} in this mailbox. The mailbox makes it the first time a rule uses it.`
+    : `Metorite did not find these folders and labels in this mailbox: ${listed}. The mailbox makes each one the first time a rule uses it.`;
+}
+
+/** Each name of `willCreate` once, without case, in the order of the answer. */
+export function willCreateNames(result: Pick<RuleCopyResult, "willCreate">): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const w of result.willCreate ?? []) {
+    const key = w.name.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    names.push(w.name.trim());
+  }
+  return names;
+}
+
 /** The answer of a copy, in plain words. */
 export interface CopyReport {
   summary: string;
-  /** One line for the copied names, then each rename, then each rule left out. */
+  /** One line for the copied names, then each rename, then each rule left
+   *  out, then the names that the mailbox makes on first use (EM-S10). */
   lines: string[];
 }
 
 /**
  * The answer of `POST /email/rules/copy` in plain words: the copied rules,
- * each new name and each rule left out with its reason. `source` is the label
- * of the mailbox the rules came from.
+ * each new name, each rule left out with its reason, and last the folders and
+ * labels that the target makes on first use. `source` is the label of the
+ * mailbox the rules came from.
  */
 export function copyReport(result: RuleCopyResult, source: string): CopyReport {
   const n = result.copied.length;
@@ -246,6 +276,8 @@ export function copyReport(result: RuleCopyResult, source: string): CopyReport {
     const words = LEFT_OUT_WORDS[r.reason];
     lines.push(`Not copied: "${r.name}". ${words ? words(source) : LEFT_OUT_UNKNOWN}`);
   }
+  const created = willCreateLine(willCreateNames(result));
+  if (created) lines.push(created);
   return { summary, lines };
 }
 

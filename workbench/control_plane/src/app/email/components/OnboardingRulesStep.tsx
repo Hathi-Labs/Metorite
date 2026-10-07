@@ -21,6 +21,12 @@
  *   (owner decision (d), #576), so the imported mail needs one run of
  *   "Process past emails". The action opens that dialog on the import range.
  *   The dialog counts the mail before it spends a model call.
+ * - Before that action, the step reads `process-past/estimate` for the import
+ *   range and shows the count of AI calls (EM-S10, D-EM-59). The action stays
+ *   disabled until the read returns. When one run cannot sort all of it, the
+ *   step says how many wait and offers the next run. It reads the estimate
+ *   each time it draws, so after a run it offers the rest. `sortEstimateView`
+ *   decides the words.
  * - "Draft replies for me" shows only with an enabled reply rule, because a
  *   draft is an action on that rule. It shows the STORED value, read when the
  *   step is ready, and stays disabled until the read returns or when it fails
@@ -33,7 +39,8 @@
  *   "Copy the rules of <label>" for each other mailbox, beside the presets
  *   (EM-T8f-2, D-EM-24). `ruleCopier` guards the copy: one copy at a time,
  *   and one copy of each mailbox. A second copy would add each rule again as
- *   "(copy)". The answer shows the copied, renamed and left-out rules.
+ *   "(copy)". The answer shows the copied, renamed and left-out rules, and
+ *   last each folder or label that the mailbox makes on first use (EM-S10).
  */
 
 import { useEffect, useState } from "react";
@@ -44,6 +51,7 @@ import {
   getAssistantSettings,
   installPresetRules,
   listRules,
+  processPastEstimate,
   saveAssistantSettings,
   updateEmailAccount,
 } from "../lib/api";
@@ -63,11 +71,14 @@ import {
   installedLine,
   processPastFrom,
   readDraftSwitch,
+  readSortEstimate,
   rulesStepPhase,
   setDraftReplies,
+  sortEstimateView,
   type DraftSwitch,
   type RulesStepApi,
   type RulesStepPhase,
+  type SortEstimate,
 } from "../lib/onboarding";
 import { mailboxLabel } from "../lib/mailbox";
 import type { AutomationFeature, AutomationRule, EmailAccount } from "../lib/types";
@@ -82,6 +93,8 @@ const RULES_API: RulesStepApi = {
   saveAssistantSettings,
   finishOnboarding: (accountId) => updateEmailAccount(accountId, { onboardingDone: true }),
   copyRules,
+  // The same read, with the same defaults, as the Process past emails dialog.
+  estimateSort: (accountId, startDate) => processPastEstimate({ accountId, startDate }),
 };
 
 type StepMailbox = Pick<EmailAccount, "id" | "emailAddress" | "displayLabel" | "colorSlot">;
@@ -100,6 +113,8 @@ export interface RulesStepViewProps {
   draftBusy: boolean;
   /** The start of the import range, or null when nothing was imported. */
   pastFrom: string | null;
+  /** The count before the sort (EM-S10). Read only with `pastFrom`. */
+  sort: SortEstimate;
   onRecommended: () => void;
   onChooseOwn: () => void;
   onSkip: () => void;
@@ -126,6 +141,7 @@ export function RulesStepView(p: RulesStepViewProps) {
     .filter(Boolean)
     .join(" ");
   const draftOn = p.draft.state === "ready" && p.draft.on;
+  const sort = sortEstimateView(p.sort);
   return (
     <section
       aria-label="Mailbox setup"
@@ -188,9 +204,16 @@ export function RulesStepView(p: RulesStepViewProps) {
         {ready && (
           <>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
-              {p.pastFrom && (
-                <Button variant="primary" size="sm" icon="History" disabled={locked} onClick={p.onProcessPast}>
-                  {COPY.processPast}
+              {p.pastFrom && sort.action && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon="History"
+                  loading={!sort.enabled}
+                  disabled={locked || !sort.enabled}
+                  onClick={p.onProcessPast}
+                >
+                  {sort.action}
                 </Button>
               )}
               {p.replyRule && (
@@ -216,6 +239,12 @@ export function RulesStepView(p: RulesStepViewProps) {
                 {COPY.done}
               </Button>
             </div>
+            {p.pastFrom && (
+              <div role="status" aria-label={COPY.sortStatusLabel} className="mt-1 text-[11px] text-muted-foreground">
+                <p>{sort.line}</p>
+                {sort.capLine && <p>{sort.capLine}</p>}
+              </div>
+            )}
             <p className="mt-1 text-[11px] text-muted-foreground">
               {!p.replyRule
                 ? COPY.draftNeedsReplyRule
@@ -290,7 +319,22 @@ export function OnboardingRulesStep({
   const [draft, setDraft] = useState<DraftSwitch>({ state: "loading" });
   const [draftBusy, setDraftBusy] = useState(false);
   const [finished, setFinished] = useState(false);
+  const [sort, setSort] = useState<SortEstimate>({ state: "loading" });
   const phase = rulesStepPhase(rules);
+  const pastFrom = processPastFrom(account, new Date());
+
+  // The count of AI calls, read before the member can start a sort (EM-S10).
+  // The step mounts again when the member comes back from AI Settings, so a
+  // capped run reads the rest and the step offers the next run.
+  useEffect(() => {
+    if (phase !== "ready" || !pastFrom) return;
+    let live = true;
+    setSort({ state: "loading" });
+    void readSortEstimate(RULES_API, account.id, pastFrom).then((s) => live && setSort(s));
+    return () => {
+      live = false;
+    };
+  }, [phase, account.id, pastFrom]);
 
   // A rule may exist already: the member can make one during the import, or
   // come back from "Choose my own". A failed read shows the choices.
@@ -385,7 +429,6 @@ export function OnboardingRulesStep({
 
   if (finished) return null;
 
-  const pastFrom = processPastFrom(account, new Date());
   return (
     <RulesStepView
       phase={phase}
@@ -397,6 +440,7 @@ export function OnboardingRulesStep({
       draft={draft}
       draftBusy={draftBusy}
       pastFrom={pastFrom}
+      sort={sort}
       onRecommended={() => void recommended()}
       onChooseOwn={() => onOpenAutomation("ai-settings")}
       onSkip={() => void finish()}

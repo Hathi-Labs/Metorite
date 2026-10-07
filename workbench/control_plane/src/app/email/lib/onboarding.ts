@@ -19,6 +19,7 @@
  * Fence: `onboarding.test.ts`.
  */
 
+import type { ProcessPastEstimate } from "./api";
 import { autoDraftRepliesOn } from "./assistantSettings";
 import { isFirstSyncPending } from "./connect";
 import { atStorageLimit } from "./storage";
@@ -264,7 +265,100 @@ export const RULES_STEP_COPY = {
   insights: "See insights",
   done: "Done",
   failed: "Metorite could not save that. Try again.",
+  // EM-S10 (§14.4.7, D-EM-59): the count before the sort.
+  sortCounting: "Metorite is counting your imported mail.",
+  sortCountFailed:
+    "Metorite could not count your imported mail. Process past emails counts it before it sorts.",
+  sortDone: "Your imported mail is sorted.",
+  sortNothing: "Metorite found no imported mail to sort.",
+  sortStatusLabel: "AI calls to sort your imported mail",
 } as const;
+
+// ── The estimate before the sort (EM-S10, §14.4.7, D-EM-59) ────────────────
+
+/**
+ * What the step knows about the cost of "Sort my imported mail". `loading`
+ * keeps the action disabled, so the member sees the count before any sort.
+ * `failed` keeps the action, because Process past emails counts again before
+ * it spends a call.
+ */
+export type SortEstimate =
+  | { state: "loading" }
+  | { state: "ready"; estimate: Pick<ProcessPastEstimate, "in_range" | "eligible" | "will_process" | "capped" | "limit"> }
+  | { state: "failed" };
+
+/** What the step draws for the sort. `action` null draws no sort action. */
+export interface SortEstimateView {
+  /** The line under the actions: the AI calls, or why there is no number. */
+  line: string;
+  /** When one run cannot sort all of it: the size of a run, and what waits. */
+  capLine: string | null;
+  /** The text of the sort action, or null when nothing waits. */
+  action: string | null;
+  /** False while the count is read. */
+  enabled: boolean;
+}
+
+/**
+ * The words for the estimate (EM-S10 item 1). Each sorted message is one AI
+ * call (D-EM-7), so `will_process` is the count of calls. When `capped` is
+ * true, one run sorts `limit` messages, the oldest first, and the step offers
+ * the next run: it reads the estimate again each time it draws, so after a
+ * run the same action sorts what waits.
+ *
+ * ⚠️ `limit` comes from the answer, never from a constant here. The route
+ * clamps it at 2000 (`runner.py`), and Process past emails runs with the
+ * request default, 1000. A fixed "2,000" here would name a run that the
+ * dialog never starts.
+ */
+export function sortEstimateView(sort: SortEstimate, locale?: string): SortEstimateView {
+  if (sort.state === "loading") {
+    return { line: RULES_STEP_COPY.sortCounting, capLine: null, action: RULES_STEP_COPY.processPast, enabled: false };
+  }
+  if (sort.state === "failed") {
+    return { line: RULES_STEP_COPY.sortCountFailed, capLine: null, action: RULES_STEP_COPY.processPast, enabled: true };
+  }
+  const e = sort.estimate;
+  if (e.eligible <= 0 || e.will_process <= 0) {
+    return {
+      line: e.in_range > 0 ? RULES_STEP_COPY.sortDone : RULES_STEP_COPY.sortNothing,
+      capLine: null,
+      action: null,
+      enabled: false,
+    };
+  }
+  const fmt = new Intl.NumberFormat(locale);
+  const calls = e.will_process;
+  const line =
+    calls === 1
+      ? "Sorting it takes 1 AI call."
+      : `Sorting it takes ${fmt.format(calls)} AI calls, one for each message.`;
+  if (!e.capped) {
+    return { line, capLine: null, action: RULES_STEP_COPY.processPast, enabled: true };
+  }
+  const rest = Math.max(0, e.eligible - calls);
+  return {
+    line,
+    capLine:
+      `One run sorts ${fmt.format(e.limit)} messages, the oldest first. ` +
+      `${fmt.format(rest)} more wait for the next run, and this step offers it when this run ends.`,
+    action: `Sort the next ${fmt.format(calls)} messages`,
+    enabled: true,
+  };
+}
+
+/** Reads the estimate for the import range. A failed read is `failed`. */
+export async function readSortEstimate(
+  api: Pick<RulesStepApi, "estimateSort">,
+  accountId: string,
+  from: string,
+): Promise<SortEstimate> {
+  try {
+    return { state: "ready", estimate: await api.estimateSort(accountId, from) };
+  } catch {
+    return { state: "failed" };
+  }
+}
 
 /** "Metorite added 10 rules." for the presets that the install added. */
 export function installedLine(installed: number): string | null {
@@ -352,6 +446,9 @@ export interface RulesStepApi {
   /** "Copy the rules of <label>" (EM-T8f-2, D-EM-24): `POST /email/rules/copy`.
    *  The step guards it with `ruleCopier` in `lib/mailboxSettings.ts`. */
   copyRules(fromAccountId: string, toAccountId: string): Promise<RuleCopyResult>;
+  /** The count before "Sort my imported mail" (EM-S10):
+   *  `GET /email/rules/process-past/estimate` from the start of the import. */
+  estimateSort(accountId: string, startDate: string): Promise<ProcessPastEstimate>;
 }
 
 /**
