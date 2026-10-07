@@ -95,6 +95,44 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-265 · Measure the agreement of the two System-1 engines before `SYSTEM_ONE_ON_DECIDE` goes on · [AGENT]
+- **Check:** run `rg -n "engine agreement" project-docs/specs/data_narrowing_pipeline.md`.
+  No line with a measured percent under §9 N3 means this is open.
+- **Why.** D75.7 says that a caller reports the agreement of the two engines
+  before the owner turns the decide engine on. WS-48 N3 built the engine
+  dark, and no box has a bound `tier-decide` with `DECIDE_ENABLED` on. So
+  the PR could not measure it.
+- **Do.**
+  1. On a dev box with `DECIDE_ENABLED` on and `tier-decide` bound, ask the
+     50 Projects questions of WS-45 S1 to both engines. Use the same context
+     for each engine.
+  2. Count the items where both engines give the same choice above the Auto
+     threshold of 0.70. Count each `unsure` too.
+  3. Write the percent, the count of `unsure` for each engine and the date
+     under §9 N3, with the words "engine agreement".
+- **Do not** turn on `SYSTEM_ONE_ON_DECIDE` on production. That is
+  OWNER-GATE (spec §11), and a dev-box measure does not open it.
+- **Authority:** `data_narrowing_pipeline.md` §9 N3 "Measured, not in CI" ·
+  D75.7 · D93
+- **Added:** 2026-10-07 · branch `ws48-n3-decide-tier` (WS-48 N3). It was
+  H-264, and it moved to H-265 because N1 (#711) merged first with H-264.
+
+### H-264 · Let a decide request say that the narrowing pipeline sent it · [AGENT]
+
+- **Check:** run
+  `grep -n "X-CC-Source" packages/acb_auth/acb_auth/console_resolve.py`.
+  No match in `_attribution_headers` means this is open.
+- **Why.** `data_narrowing_pipeline.md` §7.1 wants each PICK request to
+  carry `X-CC-Source: narrowing`, so that the operator can count the rows of
+  the pipeline apart from the email features. `acb_llm.decide` sends only the
+  member, the agent, the app and the run. The decide door reads no source
+  header. WS-48 N1 could not meet the line, and it amended §7.1 to say so.
+- **Do.** Add an optional `source` to `acb_llm.decide` and to
+  `console_resolve.decide_on_console`. Send it as `X-CC-Source`, and make the
+  door record it on the `usage_event` row. Prove the row with an R8 test.
+  Then pass `source="narrowing"` from `acb_skills/narrowing.py`.
+- Added: 2026-10-07, WS-48 N1.
+
 ### H-263 · Start `acb-pull.timer` again on the box, and prove that #702 serves · [AGENT]
 - **Check:** run `ssh metorite 'systemctl is-active acb-pull.timer'`. Any
   output other than `active` means this is open. Then run

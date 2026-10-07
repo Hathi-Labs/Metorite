@@ -77,6 +77,7 @@ from skill_projects.writes import (
     _vocab,
     agent_assignee_refusal_as_text,
     ask_about_subtasks,
+    status_edit_refusal,
 )
 
 try:
@@ -96,6 +97,21 @@ ONE_ACT = "takes ONE id. A guarded act is one card per row. Ask again for each o
 #: WS-27bn R5d (§9 Q12). The words of the server's 403, in
 #: ``reports.DELETE_REFUSED``. A test pins the two as one sentence.
 REPORT_DELETE_REFUSED = "Only the author of this report or an admin may delete it."
+
+
+#: A product rule, not a permission (owner directive 2026-10-07,
+#: ``projects_agent_parity.md`` §16). Since H-205 (2026-10-01) the routes let
+#: a member with organization settings permission delete a shared tag, field
+#: or type, and merge two shared tags, after the count. The chat has no tool
+#: for that count (``GET /projects/vocabulary/{kind}/{id}/impact`` is class X
+#: in the manifest), so the chat does not do the act for ANY member, the
+#: owner too. The text says where the act lives and names no permission.
+def _shared_entry_text(row: dict[str, Any], verb: str) -> str:
+    return (
+        f"{data(row.get('name'))} is an organization-wide entry. The chat does not "
+        f"{verb} a shared entry, for any member. In the app, Projects settings, "
+        "Shared vocabulary does it and shows the count first."
+    )
 
 
 def _many(value: str) -> bool:
@@ -1083,8 +1099,9 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
             "or Cancelled lane first."
         )
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    if owner.get("may_edit") is False:
-        return "You may not edit this project's statuses. It needs the settings permission."
+    refused = status_edit_refusal(owner, node.get("name"))
+    if refused:
+        return refused
     in_use = int(counts.get(sid) or 0)
     target: dict[str, Any] | None = None
     if move_to.strip():
@@ -1136,8 +1153,9 @@ async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str
         return "mode is inherit or own."
     pid, node = await _node(project_id)
     current = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    if current.get("may_edit") is False:
-        return "You may not edit this project's statuses. It needs the settings permission."
+    refused = status_edit_refusal(current, node.get("name"))
+    if refused:
+        return refused
     if which == "inherit" and not current.get("can_inherit"):
         return f"{data(node.get('name'))} is a space. It has nothing to inherit from."
     if which == "inherit" and not current.get("owns"):
@@ -1188,7 +1206,7 @@ async def delete_type(project_id: str, type_name: str) -> str:
     pid, node = await _node(project_id)
     row = _one_named(await _vocab(pid, "types"), type_name, "type")
     if _org_wide(row):
-        return f"{data(row.get('name'))} is organization-wide. It is not deleted from a project."
+        return _shared_entry_text(row, "delete")
     if row.get("is_system"):
         return f"{data(row.get('name'))} is a system type and cannot be deleted."
     kid = uuid_of(str(row.get("id")), "type_id")
@@ -1220,7 +1238,7 @@ async def delete_field(project_id: str, field: str) -> str:
     pid, node = await _node(project_id)
     row = _field_of(await _vocab(pid, "fields"), field)
     if _org_wide(row):
-        return f"{data(row.get('name'))} is organization-wide. It is not deleted from a project."
+        return _shared_entry_text(row, "delete")
     fid = uuid_of(str(row.get("id")), "field_id")
     impact = (
         f"1 field deleted · every value under key {data(row.get('field_key'))} in "
@@ -1252,7 +1270,7 @@ async def delete_tag(project_id: str, tag: str) -> str:
     pid, node = await _node(project_id)
     row = _one_named(await _vocab(pid, "tags"), tag, "tag")
     if _org_wide(row):
-        return f"{data(row.get('name'))} is organization-wide. It is not deleted from a project."
+        return _shared_entry_text(row, "delete")
     gid = uuid_of(str(row.get("id")), "tag_id")
     hit = (await get(f"/projects/tags/{gid}/impact")) or {}
     tasks = int(hit.get("tasks") or 0)
@@ -1282,7 +1300,7 @@ async def merge_tags(project_id: str, tag: str, into: str) -> str:
     if source.get("id") == target.get("id"):
         return "A tag cannot be merged into itself."
     if _org_wide(source) or _org_wide(target):
-        return "An organization-wide tag is not merged from a project."
+        return _shared_entry_text(source if _org_wide(source) else target, "merge")
     sid = uuid_of(str(source.get("id")), "tag_id")
     tid = uuid_of(str(target.get("id")), "into")
     # The list's `task_count` excludes archived tasks; the merge's rewrite

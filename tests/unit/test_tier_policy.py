@@ -173,7 +173,26 @@ def _tool_registry_names() -> set[str]:
     for tool in _collect_injectable_platform_tools():
         names.add(getattr(tool, "name", None) or getattr(tool, "__name__", ""))
     names.add(sandbox_tools.run_command.__name__)
+    names.add(_narrow_tool_name())
     return names
+
+
+def _narrow_tool_name() -> str:
+    """The name that ``make_narrow_tool`` gives the WS-48 tool. Each data
+    agent builds its own tool, so no registry above holds it."""
+    from acb_skills import narrowing
+
+    class _Probe:
+        name = "probe"
+        filter_keys: frozenset[str] = frozenset()
+
+        async def candidates(self, query: str, filters: Any) -> Any:  # pragma: no cover
+            return narrowing.Narrowed(candidates=[], total=0)
+
+        async def read(self, ids: Any) -> list[Any]:  # pragma: no cover
+            return []
+
+    return narrowing.make_narrow_tool(_Probe()).__name__
 
 
 def test_every_hint_names_a_real_tool() -> None:

@@ -1806,7 +1806,7 @@ until its PR merges.
 | WS-43w | ▶ Projects track step 4: the owner flip for Fracktal | WS-43v, PR #591, PR #598 | **OWNER-GATE** (WS43-G1, WS43-G2, WS43-G3) |
 | WS-43x | The Email track (§16.4): WS-43x1 and WS-43x2 | WS-43y3 | See the two steps |
 | WS-43y1a | ✅ MERGED #697 (2026-10-07), with review rounds 1 to 3. Dark until WS43-G2. The data engine and the image (§7.10): the image change, the CSV and TSV reader, the type rules, the SQL rule and the five verbs | WS-43b | AGENT-SAFE. The box build is WS43-G2 |
-| WS-43y1b | 🔨 BUILT, not merged (2026-10-07), on branch `data-toolkit-y1b`. Dark until WS43-G2. The `.xlsx` reader, the nine layout rules, Excel dates and the zip and XML checks | WS-43y1a | AGENT-SAFE |
+| WS-43y1b | ✅ MERGED #703 (2026-10-07). Dark until WS43-G2. The `.xlsx` reader, the nine layout rules, Excel dates and the zip and XML checks | WS-43y1a | AGENT-SAFE |
 | WS-43y2a | 📝 The dataset dir: its mount point, its mount, its lifetime, the quota and the purge | WS-43y1a, WS-43c | AGENT-SAFE |
 | WS-43y2b | 📝 The six data tools, the sources and the envelope | WS-43y2a | AGENT-SAFE |
 | WS-43y3 | 📝 The `data` skill family, the injection and the instructions | WS-43y2b | AGENT-SAFE |
@@ -3269,8 +3269,8 @@ lines.
 
 **Status.** 📝 SPECIFIED (2026-10-06). Audited GO-NARROWED 2026-10-06.
 WS-43y1a ✅ MERGED #697 (2026-10-07), with review rounds 1 to 3. It is
-dark until the owner's WS43-G2 act. WS-43y1b 🔨 BUILT, not merged
-(2026-10-07), on branch `data-toolkit-y1b`, dark.
+dark until the owner's WS43-G2 act. WS-43y1b ✅ MERGED #703
+(2026-10-07), dark until WS43-G2.
 
 **Gate.** AGENT-SAFE. It ships dark, because no tool calls the engine yet.
 To build the new image on the box is WS43-G2.
@@ -3627,8 +3627,8 @@ A file of 1,000 columns and 2,000 rows still loads in the image.
 3. **`test_data_engine.py` takes about 160 s on Linux.** Each verb that a test
    runs through `main` starts a fresh interpreter.
 
-**As built (WS-43y1b, 2026-10-07).** 🔨 BUILT, not merged, on branch
-`data-toolkit-y1b`. It ships dark, because no tool calls the engine yet.
+**As built (WS-43y1b, 2026-10-07).** ✅ MERGED #703, squash commit `ef2715a4c`, deployed
+2026-10-07. It ships dark, because no tool calls the engine yet.
 
 - `data_engine.py` reads `.xlsx` and `.xlsm`. zipfile and expat stream each
   part, 1 MB at a time. openpyxl never opens the file. The engine takes

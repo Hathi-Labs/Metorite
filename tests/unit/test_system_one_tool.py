@@ -29,6 +29,37 @@ Mutations this file catches (R7), each run red before the change:
 * the tool logs tenant text -> ``test_the_logs_hold_no_tenant_text``;
 * the injection gives the System-1 engine to an agent the flag does not cover,
   or changes the chain with the flag unset -> ``TestTheInjectionChain``.
+
+WS-48 N3 (D93, WS48-F6), ``data_narrowing_pipeline.md`` §9 N3. Each mutation
+below was run red on 2026-10-07, then taken back out:
+
+* ``yes_no`` goes out as a choice, or ``choice`` as a score ->
+  ``TestEachKindIsMapped``;
+* the split is 20 and not 16 -> ``TestTheSplit``;
+* a 400 or a 422 logs at ``warning`` -> ``test_a_failure_falls_back_and_logs[400]``;
+* the tool bound goes, or the timeout loses its reason ->
+  ``test_the_tool_bound_holds_a_hung_request``;
+* one failed request sends the whole batch to ``tier-fast`` ->
+  ``test_one_failed_request_sends_only_its_items_to_tier_fast``;
+* a partial answer with a failed fallback reads as ``UNAVAILABLE`` ->
+  ``test_a_partial_answer_with_a_failed_fallback_is_unsure``;
+* the shape check goes, or a copied limit drifts ->
+  ``test_a_choice_over_255_options`` (and ``test_acb_llm_decide.py``);
+* ``no_egress`` is ignored -> ``test_a_no_egress_run_sends_no_decide_request``;
+* the flag is ignored -> ``test_with_the_flag_off_every_item_goes_to_tier_fast``;
+* the turn-kind question goes to ``tier-decide`` ->
+  ``test_the_turn_kind_question_stays_on_tier_fast``;
+* a decide answer carries a reason, or the decide path drops the lead ->
+  ``TestEachKindIsMapped``;
+* the request names the stale agent of the run context ->
+  ``test_the_request_carries_the_run_attribution``.
+
+Review round 1 (2026-10-07), each run red the same way:
+
+* a claimed member goes out as proven, or a fallback logs the client's
+  sentence -> ``TestTheDeploymentKeyArm``;
+* a score position is not clamped -> ``test_a_score_position_is_clamped_to_the_scale``;
+* the two requests run in turn -> ``test_two_decide_requests_run_at_the_same_time``.
 """
 from __future__ import annotations
 
@@ -41,9 +72,10 @@ import httpx
 import openai
 import pytest
 import structlog
+from acb_auth import console_resolve
 from acb_common import bind_run_context, clear_run_context
 from acb_common.settings import get_settings
-from acb_skills import decide_tools, system_one
+from acb_skills import decide_tools, system_one, tier_policy
 from acb_skills.decide_tools import UNAVAILABLE, system_one_decide
 from acb_skills.write_artifact import bind_artifact_context
 
@@ -615,3 +647,580 @@ class TestARealProjectsRun:
         assert set(off) == set(on)
         assert {n for n in off if off[n] != on[n]} == {"decide"}
         assert "items" in on["decide"]["function"]["parameters"]["properties"]
+
+
+# ── 8. D93: a typed item goes to `tier-decide` (WS-48 N3, WS48-F6) ──────────
+#
+# `data_narrowing_pipeline.md` §9 N3. The decide door is driven through the
+# REAL facade (`acb_llm.decide`) and the REAL Console client
+# (`console_resolve.decide_on_console`). Only the HTTP transport under the
+# Console client is a script, so the body a test reads is the body the
+# Router's `POST /v1/decide` would receive.
+
+
+FALLBACK = "decide_tool.system_one_fallback"
+
+
+class Door:
+    """The HTTP transport under the Console client. Records each request."""
+
+    def __init__(self, reply: Callable[[dict[str, Any]], Any]) -> None:
+        self.reply = reply
+        self.requests: list[httpx.Request] = []
+
+    @property
+    def bodies(self) -> list[dict[str, Any]]:
+        return [json.loads(r.content or b"{}") for r in self.requests]
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        out = self.reply(json.loads(request.content or b"{}"))
+        if asyncio.iscoroutine(out):
+            out = await out
+        return out
+
+    def client(self, timeout: Any = None) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(self), timeout=5.0)
+
+
+def _door(monkeypatch, reply: Callable[[dict[str, Any]], Any]) -> Door:
+    door = Door(reply)
+    monkeypatch.setattr(console_resolve, "_new_http_client", door.client)
+    return door
+
+
+def _verdict(body: dict[str, Any], **by_type: dict[str, Any]) -> httpx.Response:
+    """A 200 that answers every question of *body*, one answer per type."""
+    defaults = {
+        "boolean": {"probability": 0.9},
+        "choice": {"choice": None, "confidence": 0.85},
+        "score": {"level": None, "score": 0, "confidence": 0.8},
+    }
+    answers: dict[str, Any] = {}
+    for qid, q in body["questions"].items():
+        raw = dict(defaults[q["type"]], **by_type.get(q["type"], {}))
+        if q["type"] == "choice" and raw["choice"] is None:
+            raw["choice"] = next(iter(q["criteria"]))
+        if q["type"] == "score" and raw["level"] is None:
+            raw["level"] = list(q["criteria"])[-1]
+        answers[qid] = {"type": q["type"], **raw}
+    return httpx.Response(200, json={"answers": answers, "request_id": "req-n3"})
+
+
+def _fast_ok(body: dict[str, Any]) -> httpx.Response:
+    """System 1's reply on `tier-fast`: the first option, at 0.75."""
+    items = json.loads(body["messages"][-1]["content"])["items"]
+    return _answers(*[
+        {"id": i["id"], "choice": i["options"][0], "confidence": 0.75, "reason": "fast"}
+        for i in items
+    ])
+
+
+@pytest.fixture
+def on_decide(monkeypatch):
+    """``SYSTEM_ONE_ON_DECIDE`` and ``DECIDE_ENABLED`` on, an org-key box."""
+    monkeypatch.setenv("SYSTEM_ONE_ON_DECIDE", "true")
+    monkeypatch.setenv("DECIDE_ENABLED", "true")
+    monkeypatch.delenv("CUSTOMER_CONSOLE_DEPLOYMENT_KEY", raising=False)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY", "false")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def _items(n: int, kind: str = "yes_no") -> str:
+    options = {"yes_no": None, "choice": ["alpha", "beta"], "score": ["low", "mid", "high"]}
+    return json.dumps([
+        {"id": f"i{k}", "question": f"Question {k}?", "kind": kind,
+         **({"options": options[kind]} if options[kind] else {})}
+        for k in range(1, n + 1)
+    ])
+
+
+def test_the_flag_ships_off() -> None:
+    from acb_common.settings import Settings
+
+    assert Settings.model_fields["system_one_on_decide"].default is False
+
+
+class TestEachKindIsMapped:
+    """N3 done-when 1 and 7: the kind, the tier, the facade, the line."""
+
+    def test_yes_no_goes_out_as_a_boolean(self, monkeypatch, on_decide) -> None:
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        out = _ask(question="Is it urgent?", context="due today")
+        assert wire.requests == [], "a typed item went to tier-fast"
+        assert len(door.requests) == 1
+        assert str(door.requests[0].url).endswith("/v1/decide")
+        body = door.bodies[0]
+        assert body["tier"] == "tier-decide"
+        assert body["state"] == "due today"
+        assert body["questions"] == {
+            "q": {"type": "boolean", "instructions": "Is it urgent?", "criteria": {}},
+        }
+        # A decide answer has no reason, so the line ends after the confidence.
+        assert out == f"{LEAD}\nyes (confidence 0.90)"
+
+    def test_a_low_yes_probability_reads_as_no(self, monkeypatch, on_decide) -> None:
+        _door(monkeypatch, lambda b: _verdict(b, boolean={"probability": 0.2}))
+        _wire(monkeypatch, _fast_ok)
+        assert _ask(question="Is it?", context="x") == f"{LEAD}\nno (confidence 0.80)"
+
+    def test_a_choice_keeps_its_kind_and_its_options(self, monkeypatch, on_decide) -> None:
+        door = _door(monkeypatch, lambda b: _verdict(
+            b, choice={"choice": "beta", "confidence": 0.77},
+        ))
+        _wire(monkeypatch, _fast_ok)
+        out = _ask(question="Which project?", context="the beta launch",
+                   kind="choice", options="alpha\nbeta")
+        q = door.bodies[0]["questions"]["q"]
+        assert q == {"type": "choice", "instructions": "Which project?",
+                     "criteria": {"alpha": "alpha", "beta": "beta"}}
+        assert out == f"{LEAD}\nbeta (confidence 0.77)"
+
+    def test_a_score_keeps_its_kind_and_its_order(self, monkeypatch, on_decide) -> None:
+        door = _door(monkeypatch, lambda b: _verdict(
+            b, score={"level": "high", "score": 2, "confidence": 0.82},
+        ))
+        _wire(monkeypatch, _fast_ok)
+        out = _ask(question="How severe?", context="x", kind="score",
+                   options="low\nmid\nhigh")
+        q = door.bodies[0]["questions"]["q"]
+        assert q["type"] == "score"
+        assert list(q["criteria"]) == ["low", "mid", "high"]
+        assert out == f"{LEAD}\nhigh (confidence 0.82)"
+
+    def test_a_score_with_only_a_position_names_the_nearest_level(
+        self, monkeypatch, on_decide,
+    ) -> None:
+        _door(monkeypatch, lambda b: httpx.Response(200, json={"answers": {"q": {
+            "type": "score", "score": 1.4, "probabilities": {"mid": 0.7},
+        }}}))
+        _wire(monkeypatch, _fast_ok)
+        out = _ask(question="How severe?", context="x", kind="score",
+                   options="low\nmid\nhigh")
+        assert out == f"{LEAD}\nmid (confidence 0.70)"
+
+    def test_the_confidence_falls_back_to_the_probability_of_the_choice(
+        self, monkeypatch, on_decide,
+    ) -> None:
+        _door(monkeypatch, lambda b: httpx.Response(200, json={"answers": {"q": {
+            "type": "choice", "choice": "alpha",
+            "probabilities": {"alpha": 0.72, "beta": 0.28},
+        }}}))
+        _wire(monkeypatch, _fast_ok)
+        out = _ask(question="Which?", context="x", kind="choice", options="alpha|beta")
+        assert out == f"{LEAD}\nalpha (confidence 0.72)"
+
+    def test_the_threshold_of_the_effort_binds_a_decide_answer(
+        self, monkeypatch, on_decide,
+    ) -> None:
+        """The thresholds of §5 apply to both engines (D93)."""
+        bind_artifact_context(agent_name=PA, run_id="run-s1", think_mode="max")
+        _door(monkeypatch, lambda b: _verdict(b, boolean={"probability": 0.85}))
+        _wire(monkeypatch, _fast_ok)
+        out = _ask(question="Is it?", context="x")
+        assert out == f"{LEAD}\nunsure (confidence 0.85) — decide this yourself"
+
+    def test_a_choice_outside_the_options_is_unsure(self, monkeypatch, on_decide) -> None:
+        _door(monkeypatch, lambda b: _verdict(
+            b, choice={"choice": "delete everything", "confidence": 0.99},
+        ))
+        _wire(monkeypatch, _fast_ok)
+        out = _ask(question="Which?", context="x", kind="choice", options="alpha|beta")
+        assert out == f"{LEAD}\nunsure (confidence 0.99) — decide this yourself"
+
+    def test_the_request_carries_the_run_attribution(self, monkeypatch, on_decide) -> None:
+        """``run_attribution()``, with the CALLING agent of the run binding."""
+        clear_run_context()
+        bind_run_context(run_id="run-s1", agent="orchestrator",
+                         user="member@example.com", source="chat")
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        _wire(monkeypatch, _fast_ok)
+        _ask(question="Is it urgent?", context="due today")
+        headers = door.requests[0].headers
+        assert headers["X-CC-Agent"] == PA
+        assert headers["X-CC-Run"] == "run-s1"
+        assert headers["X-CC-Member"] == "member@example.com"
+
+    def test_it_goes_through_the_one_facade(self, monkeypatch, on_decide) -> None:
+        """A second decide client would be a defect (CLAUDE.md §4)."""
+        import acb_llm
+
+        seen: list[dict[str, Any]] = []
+        real = acb_llm.decide
+
+        async def spy(state, questions, **kw):
+            seen.append({"state": state, "questions": dict(questions), **kw})
+            return await real(state, questions, **kw)
+
+        monkeypatch.setattr(acb_llm, "decide", spy)
+        _door(monkeypatch, lambda b: _verdict(b))
+        _wire(monkeypatch, _fast_ok)
+        _ask(question="Is it?", context="x")
+        assert len(seen) == 1
+        assert set(seen[0]) >= {"member", "member_proven", "agent", "module_slug", "run_id"}
+
+
+class TestTheSplit:
+    """N3 done-when 2: ONE state for each request, and 16 questions at most."""
+
+    @pytest.mark.parametrize(("n", "sizes"), [(1, [1]), (16, [16]), (17, [16, 1]), (20, [16, 4])])
+    def test_a_batch_splits_at_sixteen(self, monkeypatch, on_decide, n, sizes) -> None:
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        out = _ask(question="batch", context="the shared context", items=_items(n))
+        assert wire.requests == []
+        assert sorted(len(b["questions"]) for b in door.bodies) == sorted(sizes)
+        assert {b["state"] for b in door.bodies} == {"the shared context"}
+        sent = [qid for b in door.bodies for qid in b["questions"]]
+        assert sorted(sent) == sorted(f"i{k}" for k in range(1, n + 1))
+        assert out.splitlines() == [LEAD, *[f"i{k}: yes (confidence 0.90)" for k in range(1, n + 1)]]
+
+
+def _levels(logs: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return [(e["log_level"], e.get("reason", "")) for e in logs if e["event"] == FALLBACK]
+
+
+#: (name, door reply, the log level, the reason code)
+_FAILURES = [
+    ("tier_unknown", lambda _b: httpx.Response(
+        400, json={"detail": {"reason": "tier_unknown"}}), "warning", "tier_unknown"),
+    ("402", lambda _b: httpx.Response(402, json={"detail": "credits"}),
+     "warning", "insufficient_credits"),
+    ("403", lambda _b: httpx.Response(403, json={"detail": "no"}), "warning", "forbidden"),
+    ("404", lambda _b: httpx.Response(404, json={}), "warning", "HTTP 404"),
+    ("503", lambda _b: httpx.Response(503, json={"detail": "down"}), "warning", "HTTP 503"),
+    ("500", lambda _b: httpx.Response(500, json={}), "warning", "HTTP 500"),
+    ("400", lambda _b: httpx.Response(
+        400, json={"detail": {"reason": "too_many_questions"}}), "error", "request_invalid"),
+    ("422", lambda _b: httpx.Response(422, json={"detail": [{"loc": ["x"]}]}),
+     "error", "request_invalid"),
+]
+
+
+class TestEachFailureFallsBackToTierFast:
+    """N3 done-when 4: each failure class of §3.5 goes to `system_one.ask`."""
+
+    @pytest.mark.parametrize(
+        ("name", "reply", "level", "reason"), _FAILURES, ids=[c[0] for c in _FAILURES],
+    )
+    def test_a_failure_falls_back_and_logs(
+        self, monkeypatch, on_decide, name, reply, level, reason,
+    ) -> None:
+        door = _door(monkeypatch, reply)
+        wire = _wire(monkeypatch, _fast_ok)
+        with structlog.testing.capture_logs() as logs:
+            out = _ask(question="Which?", context="x", kind="choice", options="alpha|beta")
+        assert len(door.requests) == 1
+        assert len(wire.requests) == 1
+        assert wire.bodies[0]["model"] == "tier-fast"
+        assert out == f"{LEAD}\nalpha (confidence 0.75) — fast"
+        assert _levels(logs) == [(level, reason)], logs
+
+    def test_a_transport_timeout_falls_back(self, monkeypatch, on_decide) -> None:
+        def slow(_b: dict[str, Any]) -> httpx.Response:
+            raise httpx.ReadTimeout("the Console took too long")
+
+        door = _door(monkeypatch, slow)
+        wire = _wire(monkeypatch, _fast_ok)
+        with structlog.testing.capture_logs() as logs:
+            out = _ask(question="Is it?", context="x")
+        assert len(door.requests) == 1, "a timeout must not be retried"
+        assert len(wire.requests) == 1
+        assert out == f"{LEAD}\nyes (confidence 0.75) — fast"
+        assert [lvl for lvl, _r in _levels(logs)] == ["warning"]
+
+    def test_the_tool_bound_holds_a_hung_request(self, monkeypatch, on_decide) -> None:
+        async def hang(_b: dict[str, Any]) -> httpx.Response:
+            await asyncio.sleep(5)
+            return httpx.Response(200, json={})
+
+        monkeypatch.setattr(decide_tools, "DECIDE_TIMEOUT_S", 0.05)
+        _door(monkeypatch, hang)
+        wire = _wire(monkeypatch, _fast_ok)
+        with structlog.testing.capture_logs() as logs:
+            out = _ask(question="Is it?", context="x")
+        assert len(wire.requests) == 1
+        assert out == f"{LEAD}\nyes (confidence 0.75) — fast"
+        assert _levels(logs) == [("warning", "timeout")]
+
+    def test_the_master_switch_off_falls_back_with_no_request(
+        self, monkeypatch, on_decide,
+    ) -> None:
+        monkeypatch.setenv("DECIDE_ENABLED", "false")
+        get_settings.cache_clear()
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        with structlog.testing.capture_logs() as logs:
+            _ask(question="Is it?", context="x")
+        assert door.requests == []
+        assert len(wire.requests) == 1
+        assert _levels(logs) == [("warning", "disabled")]
+
+    def test_one_failed_request_sends_only_its_items_to_tier_fast(
+        self, monkeypatch, on_decide,
+    ) -> None:
+        """The fallback acts on one request, never on the whole batch."""
+        door = _door(monkeypatch, lambda b: (
+            _verdict(b) if len(b["questions"]) == 16
+            else httpx.Response(503, json={})
+        ))
+        wire = _wire(monkeypatch, _fast_ok)
+        out = _ask(question="batch", context="x", items=_items(20))
+        assert len(door.requests) == 2
+        assert len(wire.requests) == 1
+        fast_ids = [i["id"] for i in json.loads(wire.bodies[0]["messages"][-1]["content"])["items"]]
+        decided = {qid for b in door.bodies if len(b["questions"]) == 16 for qid in b["questions"]}
+        assert len(fast_ids) == 4 and not decided & set(fast_ids)
+        lines = out.splitlines()[1:]
+        assert len(lines) == 20
+        for k, line in enumerate(lines, start=1):
+            tail = "yes (confidence 0.75) — fast" if f"i{k}" in fast_ids else "yes (confidence 0.90)"
+            assert line == f"i{k}: {tail}"
+
+    def test_both_engines_failing_is_unavailable(self, monkeypatch, on_decide) -> None:
+        _door(monkeypatch, lambda _b: httpx.Response(503, json={}))
+        _wire(monkeypatch, lambda _b: httpx.Response(503, json={}))
+        assert _ask(question="Is it?", context="x") == UNAVAILABLE
+
+    def test_a_partial_answer_with_a_failed_fallback_is_unsure(
+        self, monkeypatch, on_decide,
+    ) -> None:
+        _door(monkeypatch, lambda b: (
+            _verdict(b) if len(b["questions"]) == 16 else httpx.Response(503, json={})
+        ))
+        _wire(monkeypatch, lambda _b: httpx.Response(503, json={}))
+        lines = _ask(question="batch", context="x", items=_items(17)).splitlines()
+        assert lines[0] == LEAD
+        assert sum(line.endswith("yes (confidence 0.90)") for line in lines) == 16
+        unsure = [line for line in lines if "unsure" in line]
+        assert len(unsure) == 1
+        assert unsure[0].endswith("unsure (confidence ?) — decide this yourself")
+
+
+class TestAnItemTheDoorWouldRefuse:
+    """N3 done-when 3: it goes to `tier-fast`, with no decide request."""
+
+    def test_a_choice_over_255_options(self, monkeypatch, on_decide) -> None:
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        items = json.dumps([
+            {"id": "big", "question": "Which?", "kind": "choice",
+             "options": [f"o{n}" for n in range(256)]},
+            {"id": "small", "question": "Is it?"},
+        ])
+        with structlog.testing.capture_logs() as logs:
+            out = _ask(question="batch", context="x", items=items)
+        assert [list(b["questions"]) for b in door.bodies] == [["small"]]
+        assert [i["id"] for i in json.loads(wire.bodies[0]["messages"][-1]["content"])["items"]] == ["big"]
+        assert out.splitlines() == [LEAD, "big: o0 (confidence 0.75) — fast",
+                                    "small: yes (confidence 0.90)"]
+        assert _levels(logs) == [("info", "too_many_options")]
+
+    def test_a_choice_of_255_options_goes_to_the_door(self, monkeypatch, on_decide) -> None:
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        _ask(question="Which?", context="x", kind="choice",
+             options=json.dumps([f"o{n}" for n in range(255)]))
+        assert len(door.requests) == 1 and wire.requests == []
+
+    def test_a_context_past_the_window(self, monkeypatch, on_decide) -> None:
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        with structlog.testing.capture_logs() as logs:
+            _ask(question="Is it?", context="x" * 128_001)
+        assert door.requests == [] and len(wire.requests) == 1
+        assert _levels(logs) == [("info", "window_too_large")]
+
+
+class TestWhatStaysOnTierFast:
+    """N3 done-when 5, 6 and 8."""
+
+    def test_a_no_egress_run_sends_no_decide_request(self, monkeypatch, on_decide) -> None:
+        bind_artifact_context(agent_name=PA, run_id="run-s1", think_mode="auto", no_egress=True)
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        out = _ask(question="batch", context="x", items=_items(20))
+        assert door.requests == []
+        assert len(wire.requests) == 1 and wire.bodies[0]["model"] == "tier-fast"
+        assert out.splitlines()[1] == "i1: yes (confidence 0.75) — fast"
+
+    def test_a_frame_with_no_run_binding_reads_as_no_egress(self, monkeypatch, on_decide) -> None:
+        bind_artifact_context()
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        _ask(question="Is it?", context="x")
+        assert door.requests == [] and len(wire.requests) == 1
+
+    def test_the_turn_kind_question_stays_on_tier_fast(self, monkeypatch, on_decide) -> None:
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, lambda _b: _answers(
+            {"id": "turn", "choice": "code", "confidence": 0.95, "reason": ""},
+        ))
+        message = "please write a python script that reads the log files and plots each error by hour"
+        kind = asyncio.run(tier_policy.turn_kind(message, ["decide"], "auto"))
+        assert kind.source == "system_one"
+        assert door.requests == []
+        assert len(wire.requests) == 1 and wire.bodies[0]["model"] == "tier-fast"
+
+    @pytest.mark.parametrize("flag", [None, "false", "0"])
+    def test_with_the_flag_off_every_item_goes_to_tier_fast(self, monkeypatch, flag) -> None:
+        if flag is None:
+            monkeypatch.delenv("SYSTEM_ONE_ON_DECIDE", raising=False)
+        else:
+            monkeypatch.setenv("SYSTEM_ONE_ON_DECIDE", flag)
+        monkeypatch.setenv("DECIDE_ENABLED", "true")
+        get_settings.cache_clear()
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        with structlog.testing.capture_logs() as logs:
+            _ask(question="batch", context="x", items=_items(20))
+        assert door.requests == []
+        assert len(wire.requests) == 1
+        assert not [e for e in logs if e["event"].startswith(
+            (FALLBACK, "decide_tool.system_one_engines"))]
+
+    def test_flag_off_is_byte_identical_to_a_whole_fallback(self, monkeypatch) -> None:
+        """The System-1 request and the answer, byte for byte: the flag off,
+        a ``no_egress`` run with the flag on, and a decide outage with the
+        flag on. The last two take the old path for the whole batch."""
+        sent: list[tuple[bytes, dict[str, str], str]] = []
+        for case in ("off", "no_egress", "outage"):
+            monkeypatch.setenv("SYSTEM_ONE_ON_DECIDE", "false" if case == "off" else "true")
+            monkeypatch.setenv("DECIDE_ENABLED", "true")
+            get_settings.cache_clear()
+            bind_artifact_context(agent_name=PA, run_id="run-s1", think_mode="auto",
+                                  **({"no_egress": True} if case == "no_egress" else {}))
+            _door(monkeypatch, lambda _b: httpx.Response(503, json={}))
+            wire = _wire(monkeypatch, _fast_ok)
+            out = _ask(question="batch", context="the context", items=_items(20, "choice"))
+            assert len(wire.requests) == 1, case
+            request = wire.requests[0]
+            stamp = {k: v for k, v in request.headers.items() if k.lower().startswith("x-cc-")}
+            sent.append((request.content, stamp, out))
+        assert sent[0] == sent[1] == sent[2]
+
+
+class TestTheDecidePathIsData:
+    """§6.7: the same lead, and no tenant text in a log."""
+
+    def test_the_answer_follows_the_fixed_lead(self, monkeypatch, on_decide) -> None:
+        _door(monkeypatch, lambda b: _verdict(b))
+        _wire(monkeypatch, _fast_ok)
+        out = _ask(question="batch", context="x", items=_items(3, "score"))
+        assert out.splitlines()[0] == LEAD == decide_tools.SYSTEM_ONE_LEAD
+        assert out.splitlines()[1:] == [f"i{k}: high (confidence 0.80)" for k in (1, 2, 3)]
+
+    @pytest.mark.parametrize("status", [200, 400, 503])
+    def test_the_logs_hold_no_tenant_text(self, monkeypatch, on_decide, status) -> None:
+        def reply(b: dict[str, Any]) -> httpx.Response:
+            if status == 200:
+                return _verdict(b)
+            return httpx.Response(status, json={"detail": {
+                "reason": "bad", "quote": SECRET_CONTEXT}})
+
+        _door(monkeypatch, reply)
+        _wire(monkeypatch, _fast_ok)
+        with structlog.testing.capture_logs() as logs:
+            _ask(question=f"Is {SECRET_OPTION} late?", context=SECRET_CONTEXT,
+                 kind="choice", options=f"{SECRET_OPTION}|other")
+        assert logs
+        text = json.dumps(logs, default=str)
+        assert SECRET_CONTEXT not in text and SECRET_OPTION not in text
+
+
+class TestTheDeploymentKeyArm:
+    """Review P2 (2026-10-07). On a deployment-key box the member SELECTS the
+    tenant, so only a member the gateway verified may go out (H-73, R11). The
+    old Jev engine sends no member. This path sends ``run_attribution()``."""
+
+    @pytest.fixture
+    def deployment_box(self, monkeypatch, on_decide):
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ORG_KEY", "")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_DEPLOYMENT_KEY", "cc_depl_fixture_notarealsecret")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY", "true")
+        get_settings.cache_clear()
+
+    def test_a_verified_member_goes_out_as_proven(self, monkeypatch, deployment_box) -> None:
+        clear_run_context()
+        bind_run_context(run_id="run-s1", agent=PA, user="member@example.com",
+                         source="chat", member_verified=True)
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        _wire(monkeypatch, _fast_ok)
+        _ask(question="Is it?", context="x")
+        headers = door.requests[0].headers
+        assert headers["authorization"] == "Bearer cc_depl_fixture_notarealsecret"
+        assert headers["x-cc-member"] == "member@example.com"
+        assert headers["x-cc-member-proven"] == "1"
+
+    def test_a_claimed_member_sends_no_decide_request(self, monkeypatch, deployment_box) -> None:
+        """A member from request input is not proven. The client refuses it
+        locally, and the item goes to ``tier-fast``."""
+        clear_run_context()
+        bind_run_context(run_id="run-s1", agent=PA, user="claimed@example.com", source="chat")
+        door = _door(monkeypatch, lambda b: _verdict(b))
+        wire = _wire(monkeypatch, _fast_ok)
+        with structlog.testing.capture_logs() as logs:
+            out = _ask(question="Is it?", context="x")
+        assert door.requests == []
+        assert len(wire.requests) == 1
+        assert out == f"{LEAD}\nyes (confidence 0.75) — fast"
+        # A reason CODE, never the client's sentence (review P3).
+        assert _levels(logs) == [("warning", "unavailable")]
+
+
+def test_two_decide_requests_run_at_the_same_time(monkeypatch, on_decide) -> None:
+    live = {"now": 0, "most": 0}
+
+    async def reply(b: dict[str, Any]) -> httpx.Response:
+        live["now"] += 1
+        live["most"] = max(live["most"], live["now"])
+        await asyncio.sleep(0.05)
+        live["now"] -= 1
+        return _verdict(b)
+
+    door = _door(monkeypatch, reply)
+    _wire(monkeypatch, _fast_ok)
+    _ask(question="batch", context="x", items=_items(20))
+    assert len(door.requests) == 2
+    assert live["most"] == 2, "the two requests ran one after the other"
+
+
+@pytest.mark.parametrize(("position", "level"), [(-3, "low"), (0.49, "low"), (0.5, "mid"),
+                                                 (1.6, "high"), (9, "high")])
+def test_a_score_position_is_clamped_to_the_scale(monkeypatch, on_decide, position, level) -> None:
+    """Review P3: the Console clamps a position to the end levels."""
+    _door(monkeypatch, lambda b: httpx.Response(200, json={"answers": {"q": {
+        "type": "score", "score": position, "confidence": 0.9,
+    }}}))
+    _wire(monkeypatch, _fast_ok)
+    out = _ask(question="How severe?", context="x", kind="score", options="low\nmid\nhigh")
+    assert out == f"{LEAD}\n{level} (confidence 0.90)"
+
+
+def test_a_fault_while_building_the_requests_falls_back(monkeypatch, on_decide) -> None:
+    """Noted in review: a broken shape check sends the batch to ``tier-fast``,
+    and the tool does not say ``UNAVAILABLE``."""
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("shape check broke")
+
+    monkeypatch.setattr(decide_tools, "_decide_question", boom)
+    door = _door(monkeypatch, lambda b: _verdict(b))
+    wire = _wire(monkeypatch, _fast_ok)
+    with structlog.testing.capture_logs() as logs:
+        out = _ask(question="Is it?", context="x")
+    assert door.requests == [] and len(wire.requests) == 1
+    assert out == f"{LEAD}\nyes (confidence 0.75) — fast"
+    assert _levels(logs) == [("warning", "RuntimeError")]
+
+
+@pytest.mark.parametrize(("raw", "code"), [
+    ("disabled", "disabled"), ("unwired", "unwired"), ("tier_unknown", "tier_unknown"),
+    ("HTTP 503", "HTTP 503"), ("unreadable answer: an answer is missing", "unreadable"),
+    ("[Errno 11001] getaddrinfo failed", "unavailable"),
+    ("this box presents a deployment key, and the acting member is not proven", "unavailable"),
+])
+def test_a_fallback_reason_is_a_code(raw, code) -> None:
+    assert decide_tools._reason_code(raw) == code
