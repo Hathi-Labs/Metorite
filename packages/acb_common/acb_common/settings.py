@@ -347,6 +347,18 @@ class Settings(BaseSettings):
     # organization pays (spec §13.1). Fence: tests/unit/test_tier_policy.py.
     ai_tier_routing: str = ""
 
+    # ── The data narrowing pipeline (WS-48, D93) ────────────────────────────
+    #
+    # The agents that hold the `narrow_and_read` tool. A comma list of agent
+    # names, or `*` for every agent. Empty means OFF, so no agent holds the
+    # tool and the pipeline ships dark. The one reader is
+    # `acb_skills.narrowing.narrowing_on`, and it fails closed. Spec:
+    # data_narrowing_pipeline.md §9 N1.
+    #
+    # 🔴 OWNER-GATE on production: to add an agent changes what a live
+    # organization pays (spec §11). Fence: tests/unit/test_narrowing_pick.py.
+    narrowing_agents: str = ""
+
     # ── System 1 on the decision model (WS-48 N3, D93) ──────────────────────
     #
     # ON: the System-1 `decide` of a covered agent sends each typed item to
