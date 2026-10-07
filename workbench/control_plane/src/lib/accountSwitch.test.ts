@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-auth/react", () => ({ signOut: vi.fn(async () => undefined) }));
 
-import { ORG_SCOPED_KEYS, addAccount, clearOrgScopedStorage, signOutAll, switchTo } from "./accountSwitch";
+import { ORG_SCOPED_KEYS, addAccount, clearOrgScopedStorage, shouldReloadFor, signOutAll, switchTo } from "./accountSwitch";
 import { clearAccountNamespaces } from "./sessions";
 
 /**
@@ -111,5 +111,19 @@ describe("rule 4: sign out of all accounts", () => {
   it("clearAccountNamespaces uses the chat key shape that sessions.ts writes", () => {
     expect(read("lib/sessions.ts")).toContain('"cc-chat::"');
     clearAccountNamespaces([]);
+  });
+});
+
+describe("other tabs follow the cookie", () => {
+  it("reloads a tab that hears another account, in any case", () => {
+    expect(shouldReloadFor("a@one.test", "b@two.test")).toBe(true);
+    expect(shouldReloadFor("a@one.test", "A@One.test")).toBe(false);
+  });
+
+  it("ignores a tab with no account, and a message with none", () => {
+    expect(shouldReloadFor(null, "b@two.test")).toBe(false);
+    expect(shouldReloadFor("a@one.test", undefined)).toBe(false);
+    expect(shouldReloadFor("a@one.test", "")).toBe(false);
+    expect(shouldReloadFor("a@one.test", 42)).toBe(false);
   });
 });

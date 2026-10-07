@@ -21,8 +21,21 @@ export const SLOT_COUNT = 4;
 export const SESSION_COOKIE_SECURE = "__Secure-authjs.session-token";
 export const SESSION_COOKIE_PLAIN = "authjs.session-token";
 
+/**
+ * `__Host-`, not `__Secure-`. A sibling subdomain (`metorite.com`,
+ * `operator.metorite.com`) can set a `__Secure-` cookie with
+ * `Domain=.metorite.com`, and so could plant its own account in the list. The
+ * browser refuses a `__Host-` cookie that names a domain (security review
+ * 2026-10-07, P3). The options here (Secure, `Path=/`, no Domain) already
+ * meet the prefix.
+ */
 export function slotCookieName(index: number, secure: boolean): string {
-  return `${secure ? "__Secure-" : ""}mt-acct-${index}`;
+  return `${secure ? "__Host-" : ""}mt-acct-${index}`;
+}
+
+/** A slot cookie of either form, for the proxy's sweep. */
+export function isSlotCookieName(name: string): boolean {
+  return /^(__Host-)?mt-acct-\d$/.test(name);
 }
 
 /** The part of a cookie store this file reads. NextRequest's `cookies` fits. */

@@ -39,6 +39,7 @@ import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
 import { DrawerAccountSection } from "@/components/AccountSwitcher";
+import { useAccountTabSync } from "@/lib/accountSwitch";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
 // in the SHELL so the running timer stays visible across every app in the
 // control plane; renders nothing when no focus session is active.
@@ -101,6 +102,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     bindIdentity(signedInAs);
   }, [signedInAs]);
+  // ⚠️ A switch (or a sign-in as someone else) in ANOTHER tab changes the
+  // cookie under this one. This reloads the tab, so it never writes as an
+  // account it does not show (`lib/accountSwitch.ts`).
+  useAccountTabSync(signedInAs);
   // The chat caches follow the same rule (PR #652): one namespace per account.
   // `useChatScope` binds the member's namespace, and a switch deletes nothing.
   // `useChatSignOutClear` clears the namespace of an account that signed out,

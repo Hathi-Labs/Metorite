@@ -10,6 +10,8 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   3. Picking an account POSTs the switch for ITS slot, then loads `/`.
  *   4. The folded rail keeps an avatar that opens the same menu.
  *   5. Phone: the drawer's account row unfolds the other accounts.
+ *   6. Two tabs: a tab that loads as another account sends the old tab to /.
+ *      Without it, the old tab writes as an account it does not show.
  */
 
 const SESSION = {
@@ -26,11 +28,11 @@ const ACCOUNTS = {
   ],
 };
 
-async function stub(page: Page, accounts: unknown, calls: string[] = []) {
+async function stub(page: Page, accounts: unknown, calls: string[] = [], session: unknown = SESSION) {
   const json = (r: Route, body: unknown) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   await page.route("**/api/health", (r) => json(r, { gateway: "up" }));
-  await page.route("**/api/auth/session", (r) => json(r, SESSION));
+  await page.route("**/api/auth/session", (r) => json(r, session));
   await page.route(/\/api\/accounts(\?.*)?$/, (r) => json(r, accounts));
   await page.route(/\/api\/accounts\/[a-z-]+$/, async (r) => {
     calls.push(`${new URL(r.request().url()).pathname} ${r.request().postData() ?? ""}`);
@@ -86,6 +88,23 @@ test.describe("desktop", () => {
     await footerButton(page).focus();
     await page.keyboard.press("Enter");
     await expect(page.getByRole("dialog", { name: "Accounts" }).getByRole("listitem")).toHaveCount(2);
+  });
+});
+
+test.describe("two tabs", () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+
+  test("a tab that loads as another account sends the old tab to /", async ({ context }) => {
+    const tabA = await context.newPage();
+    await stub(tabA, ACCOUNTS);
+    await tabA.goto("/settings/appearance");
+    await expect(footerButton(tabA)).toBeVisible();
+
+    const tabB = await context.newPage();
+    await stub(tabB, ACCOUNTS, [], { ...SESSION, user: { email: "vjvarada@fracktal.in", name: "Vijay" } });
+    await tabB.goto("/settings/appearance");
+
+    await tabA.waitForURL((u) => u.pathname === "/");
   });
 });
 

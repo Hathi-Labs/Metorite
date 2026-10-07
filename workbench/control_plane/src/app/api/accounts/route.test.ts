@@ -122,7 +122,7 @@ describe("stash, list and switch", () => {
     const a = await token("a@one.test");
     const res = await post("stash", { [SESSION]: a });
     expect(res.status).toBe(200);
-    expect(setCookies(res)).toEqual({ "__Secure-mt-acct-0": a });
+    expect(setCookies(res)).toEqual({ "__Host-mt-acct-0": a });
     const line = res.headers.getSetCookie()[0];
     expect(line).toMatch(/HttpOnly/i);
     expect(line).toMatch(/Secure/i);
@@ -134,7 +134,7 @@ describe("stash, list and switch", () => {
     const a = await token("a@one.test");
     const b = await token("b@two.test");
     const res = await GET(
-      request("/api/accounts?orgs=1", { [SESSION]: a, "__Secure-mt-acct-0": a, "__Secure-mt-acct-2": b }),
+      request("/api/accounts?orgs=1", { [SESSION]: a, "__Host-mt-acct-0": a, "__Host-mt-acct-2": b }),
     );
     expect(await res.json()).toEqual({
       enabled: true,
@@ -154,21 +154,21 @@ describe("stash, list and switch", () => {
     const b = await token("b@two.test");
     const res = await post(
       "switch",
-      { [SESSION]: a, "__Secure-mt-acct-0": a, "__Secure-mt-acct-1": b },
+      { [SESSION]: a, "__Host-mt-acct-0": a, "__Host-mt-acct-1": b },
       { body: { slot: 1 } },
     );
     expect(await res.json()).toEqual({ ok: true, email: "b@two.test" });
     expect(setCookies(res)).toEqual({
       [SESSION]: b,
-      "__Secure-mt-acct-1": a,
-      "__Secure-mt-acct-0": "",
+      "__Host-mt-acct-1": a,
+      "__Host-mt-acct-0": "",
     });
   });
 
   it("switch refuses an empty slot, an expired one, and a slot out of range", async () => {
     const a = await token("a@one.test");
     const old = await token("c@three.test", -60);
-    const cookies = { [SESSION]: a, "__Secure-mt-acct-1": old };
+    const cookies = { [SESSION]: a, "__Host-mt-acct-1": old };
     expect((await post("switch", cookies, { body: { slot: 0 } })).status).toBe(409);
     expect((await post("switch", cookies, { body: { slot: 1 } })).status).toBe(409);
     expect((await post("switch", cookies, { body: { slot: 9 } })).status).toBe(409);
@@ -178,10 +178,10 @@ describe("stash, list and switch", () => {
   it("signout-all clears every slot and names every account it held", async () => {
     const a = await token("a@one.test");
     const b = await token("b@two.test");
-    const res = await post("signout-all", { [SESSION]: a, "__Secure-mt-acct-3": b });
+    const res = await post("signout-all", { [SESSION]: a, "__Host-mt-acct-3": b });
     expect(await res.json()).toEqual({ ok: true, emails: ["a@one.test", "b@two.test"] });
     const set = setCookies(res);
-    for (let i = 0; i < 4; i++) expect(set[`__Secure-mt-acct-${i}`]).toBe("");
+    for (let i = 0; i < 4; i++) expect(set[`__Host-mt-acct-${i}`]).toBe("");
     expect(set[SESSION]).toBeUndefined();
   });
 });

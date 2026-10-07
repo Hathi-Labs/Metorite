@@ -6,6 +6,7 @@ import {
   SLOT_COUNT,
   activeSessionCookie,
   decodeAccount,
+  isSlotCookieName,
   otherAccounts,
   readSlots,
   slotCookieName,
@@ -54,8 +55,16 @@ describe("activeSessionCookie", () => {
     expect(activeSessionCookie(jar({ [`${SESSION_COOKIE_SECURE}.0`]: "a" }))).toBeNull();
   });
 
+  it("recognises only slot cookies, in either form, for the proxy's sweep", () => {
+    expect(isSlotCookieName("__Host-mt-acct-0")).toBe(true);
+    expect(isSlotCookieName("mt-acct-3")).toBe(true);
+    expect(isSlotCookieName("__Secure-authjs.session-token")).toBe(false);
+    expect(isSlotCookieName("mt-acct-10")).toBe(false);
+    expect(isSlotCookieName("x-mt-acct-1")).toBe(false);
+  });
+
   it("names the slots with the same prefix rule", () => {
-    expect(slotCookieName(0, true)).toBe("__Secure-mt-acct-0");
+    expect(slotCookieName(0, true)).toBe("__Host-mt-acct-0");
     expect(slotCookieName(3, false)).toBe("mt-acct-3");
   });
 });
@@ -69,6 +78,16 @@ describe("decodeAccount (rule 1)", () => {
   it("drops an expired token", async () => {
     const t = await token("a@one.test", NOW - 60_000);
     expect(await decodeAccount(t, SESSION_COOKIE_SECURE, SECRET, NOW)).toBeNull();
+  });
+
+  it("drops a token by OUR expiry check, not only the library's", async () => {
+    // jose already refuses a token past its exp (with 15 s of tolerance), so
+    // an already-expired token cannot tell whether this file checks at all.
+    // Here the library accepts the token, because it is valid by the real
+    // clock, and only decodeAccount's own check, against `nowMs`, refuses it.
+    const t = await token("a@one.test", NOW + 3600_000);
+    expect(await decodeAccount(t, SESSION_COOKIE_SECURE, SECRET, NOW + 2 * 3600_000)).toBeNull();
+    expect(await decodeAccount(t, SESSION_COOKIE_SECURE, SECRET, NOW)).not.toBeNull();
   });
 
   it("drops a token made with another secret, as after a rotation", async () => {

@@ -13,6 +13,7 @@
  *
  * Fence: `accountSwitch.test.ts`.
  */
+import { useEffect } from "react";
 import { signOut } from "next-auth/react";
 import { clearAccountNamespaces } from "@/lib/sessions";
 
@@ -109,4 +110,47 @@ export async function signOutAll(): Promise<void> {
   }
   clearOrgScopedStorage();
   await signOut({ callbackUrl: "/signin" });
+}
+
+/**
+ * Keep every open tab on the account the cookie names (security review
+ * 2026-10-07, P1).
+ *
+ * ⚠️ The session cookie belongs to the browser, not the tab. After a switch in
+ * one tab, every other tab still shows the old account, while each of its
+ * fetches and writes now goes as the new one. A task typed "in org A" would be
+ * created in org B. So each tab announces its account when it loads, and a tab
+ * that hears another account reloads at `/`.
+ *
+ * Only a tab that has just LOADED announces, so it always names the cookie's
+ * current account. A stale tab hears, and never speaks first. Fence:
+ * `accountSwitch.test.ts` (the rule) and `e2e/account-switcher.spec.ts` (two
+ * tabs).
+ */
+export const ACCOUNT_CHANNEL = "mt-active-account";
+
+export function shouldReloadFor(mine: string | null, announced: unknown): boolean {
+  return (
+    !!mine &&
+    typeof announced === "string" &&
+    announced.trim() !== "" &&
+    announced.toLowerCase() !== mine.toLowerCase()
+  );
+}
+
+export function useAccountTabSync(email: string | null): void {
+  useEffect(() => {
+    if (!email || typeof BroadcastChannel === "undefined") return;
+    let channel: BroadcastChannel;
+    try {
+      channel = new BroadcastChannel(ACCOUNT_CHANNEL);
+    } catch {
+      return;
+    }
+    channel.onmessage = (e: MessageEvent<{ email?: unknown }>) => {
+      if (shouldReloadFor(email, e.data?.email)) window.location.assign("/");
+    };
+    channel.postMessage({ email });
+    return () => channel.close();
+  }, [email]);
 }
