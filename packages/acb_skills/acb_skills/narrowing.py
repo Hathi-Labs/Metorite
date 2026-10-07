@@ -9,7 +9,7 @@ matter. The ONE tool, ``narrow_and_read``, does three steps:
    filters and the existing search. It gives at most :data:`MAX_CANDIDATES`
    short summaries (§3.2).
 2. **PICK, on ``tier-decide``.** One ``choice`` question for each candidate,
-   :data:`BATCH` to a request, through the ONE facade ``acb_llm.decide``.
+   ``acb_llm.decide_shape.MAX_QUESTIONS`` (16) to a request, through the ONE facade ``acb_llm.decide``.
    At most :data:`MAX_IN_FLIGHT` requests run at one time, inside one bound
    of :data:`PICK_BOUND_S` (§3.3). The state is the query and the summaries,
    never a full body.
@@ -65,7 +65,6 @@ from acb_common import get_logger
 _log = get_logger("acb_skills.narrowing")
 
 __all__ = [
-    "BATCH",
     "DROP_THRESHOLD",
     "MAX_CANDIDATES",
     "MAX_IN_FLIGHT",
@@ -91,9 +90,11 @@ TOOL_NAME = "narrow_and_read"
 #: The most candidates NARROW gives the PICK step (§3.2, Q5).
 MAX_CANDIDATES = 200
 
-#: The questions in one decide request. The door's own ceiling
-#: (``customer_console/decide.py`` ``MAX_QUESTIONS``) is 16 too.
-BATCH = 16
+#: The questions in one decide request are NOT a constant here. The one
+#: tenant-side copy of the door's ceiling is
+#: ``acb_llm.decide_shape.MAX_QUESTIONS`` (16), and a test pins it to
+#: ``customer_console/decide.py``. :func:`_pick` reads it at call time, so
+#: importing this module does not import ``acb_llm``.
 
 #: The most PICK requests that run at one time (Q2, agent default).
 MAX_IN_FLIGHT = 4
@@ -533,9 +534,13 @@ class _Picked:
 
 async def _pick(query: str, candidates: Sequence[Candidate]) -> _Picked:
     """The PICK step over every candidate (§3.3). Never raises."""
+    from acb_llm.decide_shape import MAX_QUESTIONS as per_request
+
     from acb_skills.egress import no_egress_for_this_run
 
-    batches = [list(candidates[i:i + BATCH]) for i in range(0, len(candidates), BATCH)]
+    batches = [
+        list(candidates[i:i + per_request]) for i in range(0, len(candidates), per_request)
+    ]
     # 🔴 Q4: a `no_egress` run sends no decide request. The reader fails
     # closed, so a frame with no run binding asks System 1 only.
     use_decide = not no_egress_for_this_run()

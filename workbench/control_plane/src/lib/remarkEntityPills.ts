@@ -22,7 +22,14 @@
  * `entityIndex.ts` decides what the pill resolves to.
  *
  * Pure and framework-free, so the node-env vitest can hold it.
+ *
+ * The fence pattern is `FENCE_SOURCE` in `fencedText.ts`, the one parser of
+ * the marks. A surface that is not Markdown draws them with `FencedText`.
+ * With `{ emails: false }` the plugin marks only the fenced names: that is the
+ * mode of an answer that draws no pills (`MarkdownBody` `fences`).
  */
+
+import { FENCE_SOURCE, QUOTE_SOURCE } from "@/lib/fencedText";
 
 /** The smallest shape of an mdast node this plugin reads and writes. */
 export interface MdNode {
@@ -49,9 +56,12 @@ const EMAIL_SOURCE = String.raw`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]
  * email. The fenced arm comes first, so an email inside «» is one pill.
  */
 const PILL = new RegExp(
-  String.raw`(?:(#\d+)\s+)?«([^«»\n]{1,200})»|(?<![\w.@+-])(${EMAIL_SOURCE})(?![\w@-])`,
+  String.raw`(${QUOTE_SOURCE})|${FENCE_SOURCE}|(?<![\w.@+-])(${EMAIL_SOURCE})(?![\w@-])`,
   "g",
 );
+
+/** The fenced names only: the mode with no email pills. */
+const FENCE_ONLY = new RegExp(`(${QUOTE_SOURCE})|${FENCE_SOURCE}`, "g");
 
 /** A whole run that is one fenced name, for the bold unwrap. */
 const ONE_PILL = /^\s*(?:#\d+\s+)?«[^«»\n]{1,200}»\s*$/;
@@ -96,7 +106,7 @@ function textOf(nodes: MdNode[]): string | null {
  * fenced name, turn a mailto autolink back into text, and merge adjacent
  * text, so a name split across nodes by the parser is one run again.
  */
-function normalise(children: MdNode[]): MdNode[] {
+function normalise(children: MdNode[], emails: boolean): MdNode[] {
   const flat: MdNode[] = [];
   for (const child of children) {
     if ((child.type === "strong" || child.type === "emphasis") && child.children) {
@@ -106,7 +116,7 @@ function normalise(children: MdNode[]): MdNode[] {
         continue;
       }
     }
-    if (isMailtoAutolink(child)) {
+    if (emails && isMailtoAutolink(child)) {
       flat.push({ type: "text", value: child.children?.[0].value ?? "" });
       continue;
     }
@@ -125,28 +135,38 @@ function normalise(children: MdNode[]): MdNode[] {
 }
 
 /** Split one text value into text and pill nodes. */
-export function splitText(value: string): MdNode[] {
+export function splitText(value: string, emails = true): MdNode[] {
   const out: MdNode[] = [];
   let last = 0;
-  for (const m of value.matchAll(PILL)) {
+  // A stray guillemet — an unclosed mark, an empty pair — never shows. A
+  // padded quotation (`« oui »`) is kept as written (`fencedText.ts` rule 3).
+  const text = (v: string, keep = false) => {
+    const clean = keep ? v : v.replace(/[«»]/g, "");
+    if (clean) out.push({ type: "text", value: clean });
+  };
+  for (const m of value.matchAll(emails ? PILL : FENCE_ONLY)) {
     const start = m.index ?? 0;
-    if (start > last) out.push({ type: "text", value: value.slice(last, start) });
-    if (m[2] !== undefined) {
-      const name = m[2].trim();
-      if (name) out.push(pillNode(name, m[1]));
-      else if (m[1]) out.push({ type: "text", value: `${m[1]} ` });
-    } else {
-      out.push(pillNode(m[3]));
-    }
+    if (start > last) text(value.slice(last, start));
     last = start + m[0].length;
+    if (m[1] !== undefined) {
+      text(m[1], true);
+    } else if (m[3] !== undefined) {
+      const name = m[3].trim();
+      if (name) out.push(pillNode(name, m[2]));
+      else if (m[2]) text(`${m[2]} `);
+    } else {
+      out.push(pillNode(m[4]));
+    }
   }
-  if (last < value.length) out.push({ type: "text", value: value.slice(last) });
-  // A stray guillemet — an unclosed mark, an empty pair — never shows.
-  return glueTrailingPunctuation(
-    out
-      .map((n) => (n.type === "text" ? { ...n, value: (n.value ?? "").replace(/[«»]/g, "") } : n))
-      .filter((n) => n.type !== "text" || n.value !== ""),
-  );
+  if (last < value.length) text(value.slice(last));
+  // Merge the runs the scan split, so the punctuation glue sees one text.
+  const merged: MdNode[] = [];
+  for (const n of out) {
+    const prev = merged[merged.length - 1];
+    if (n.type === "text" && prev?.type === "text") prev.value = (prev.value ?? "") + (n.value ?? "");
+    else merged.push(n);
+  }
+  return glueTrailingPunctuation(merged);
 }
 
 /** The class of the span that keeps a pill and its punctuation together. */
@@ -202,9 +222,9 @@ function glueTrailingPunctuation(nodes: MdNode[]): MdNode[] {
   return out;
 }
 
-function walk(node: MdNode, insideLink: boolean): void {
+function walk(node: MdNode, insideLink: boolean, emails: boolean): void {
   if (!node.children || SKIP.has(node.type)) return;
-  const kids = insideLink ? node.children : normalise(node.children);
+  const kids = insideLink ? node.children : normalise(node.children, emails);
   const next: MdNode[] = [];
   for (const child of kids) {
     if (child.type === "text") {
@@ -212,21 +232,60 @@ function walk(node: MdNode, insideLink: boolean): void {
         // No pill inside a link (a control inside a control), and no marks.
         next.push({ ...child, value: (child.value ?? "").replace(/[«»]/g, "") });
       } else {
-        next.push(...splitText(child.value ?? ""));
+        next.push(...splitText(child.value ?? "", emails));
       }
       continue;
     }
-    walk(child, insideLink || child.type === "link");
+    walk(child, insideLink || child.type === "link", emails);
     next.push(child);
   }
   node.children = next;
 }
 
+/** The plugin's options. `emails: false` marks only the fenced names. */
+export interface EntityPillOptions {
+  emails?: boolean;
+}
+
 /** The plugin. `remarkPlugins={[remarkGfm, remarkEntityPills]}`. */
-export default function remarkEntityPills() {
+export default function remarkEntityPills(options?: EntityPillOptions) {
+  const emails = options?.emails !== false;
   return (tree: MdNode) => {
-    walk(tree, false);
+    walk(tree, false, emails);
   };
+}
+
+// ── A typed bullet ───────────────────────────────────────────────────────────
+
+/** A line that starts with a typed bullet character, not a Markdown marker. */
+const TYPED_BULLET = /^(\s*)[•▪‣◦●]\s+/;
+
+/**
+ * `• one` on its own line is a list item the model typed by hand (owner
+ * report, 2026-10-07). Markdown does not read `•` as a list, so the items ran
+ * together into one paragraph. Make each one a `- ` item before the parser
+ * runs. Fenced code is left alone. Exported for its test.
+ */
+export function typedBulletsToList(content: string): string {
+  if (!/[•▪‣◦●]/.test(content)) return content;
+  let fence: string | null = null;
+  return content
+    .split("\n")
+    .map((line) => {
+      const mark = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if (fence !== null) {
+        if (mark && mark[1][0] === fence[0] && mark[1].length >= fence.length) fence = null;
+        return line;
+      }
+      if (mark) {
+        fence = mark[1];
+        return line;
+      }
+      // A line indented four spaces or a tab can be code: leave it alone.
+      if (/^(?: {4}|\t)/.test(line)) return line;
+      return line.replace(TYPED_BULLET, "$1- ");
+    })
+    .join("\n");
 }
 
 // ── The missing space before bold ────────────────────────────────────────────

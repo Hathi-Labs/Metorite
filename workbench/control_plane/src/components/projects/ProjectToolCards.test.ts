@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { unfenced } from "@/lib/fencedText";
 
 import {
   VIEW_TOOLS,
@@ -309,12 +310,15 @@ describe("WS-46 P13: the receipt of a batch of new tasks", () => {
     expect(UNKNOWN_LINE.test(dropped)).toBe(true);
     expect(classifyActionResult(dropped, "done", "create_tasks")).toBe("partial");
     expect(toneFor("partial", "create_tasks")).toContain("warning");
-    expect(batchNotes(dropped)[0]).toMatch(/^unknown: row 1 Book the caterer lost its connection/);
+    expect(unfenced(batchNotes(dropped)[0])).toMatch(/^unknown: row 1 Book the caterer lost its connection/);
   });
 
-  it("keeps the lines about the rows, without the rows, the ids or the fence", () => {
+  // The notes keep the marks, and the card draws them through `FencedText`,
+  // so a name keeps its boundary and no mark shows (owner, 2026-10-07).
+  it("keeps the lines about the rows, without the rows or the ids", () => {
     const notes = batchNotes(partial);
-    expect(notes).toEqual([
+    expect(notes[0]).toContain("«Print the badges»");
+    expect(notes.map(unfenced)).toEqual([
       "failed: row 2 Print the badges refused (422): That type is not in this project.",
       "stopped: 1 of 3 rows failed and 0 follow-up writes did not land.",
       "left out: row 4 Order the banners, unticked on the card.",

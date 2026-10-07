@@ -130,6 +130,8 @@ export interface EntityPillProps {
   accent?: StatusAccent;
   /** A person's address: the seed of their initials, and the tooltip. */
   email?: string;
+  /** Fill the column, not 16rem: a card's value column. */
+  fit?: boolean;
 }
 
 /**
@@ -143,7 +145,17 @@ export interface EntityPillProps {
  * (`0.82em`). In rem it followed the density scale while the chat body,
  * sized in px, did not, so at compact density the pills shrank alone.
  */
-const SHAPE = "max-w-64 px-1 py-px text-[0.9em] leading-snug align-middle font-normal";
+const SHAPE = "px-1 py-px text-[0.9em] leading-snug align-middle font-normal";
+
+/**
+ * The widest a pill grows. In running text it stops at 16rem. With `fit` (a
+ * confirmation card's value column) it fills its column and no more, so a
+ * long title truncates at 390px wide too, with the whole title as the
+ * tooltip (owner report, 2026-10-07: a cut landed inside the marks).
+ */
+function widthOf(fit: boolean | undefined): string {
+  return fit ? "min-w-0 max-w-full" : "max-w-64";
+}
 
 /**
  * A linked pill's ink (S9 visual review). The label is foreground ink, so a
@@ -208,7 +220,7 @@ function LinkedPill(props: EntityPillProps & { href: string }) {
       onActivate={() => router.push(props.href)}
       aria-label={pillLinkName(props.kind, props.label, props.number, props.statusName)}
       title={tooltip(props)}
-      className={`${BADGE_BASE} ${toneOf(props, true)} ${SHAPE} no-underline`}
+      className={`${BADGE_BASE} ${toneOf(props, true)} ${SHAPE} ${widthOf(props.fit)} no-underline`}
     >
       <PillBody {...props} linked />
     </ControlLink>
@@ -223,7 +235,7 @@ export default function EntityPill(props: EntityPillProps) {
   return (
     // `BADGE_SHAPE`, not `BADGE_BASE`: a chip that does not click must not
     // wear the hover layer that says it does.
-    <span title={tooltip(props)} className={`${BADGE_SHAPE} ${toneOf(props, false)} ${SHAPE}`}>
+    <span title={tooltip(props)} className={`${BADGE_SHAPE} ${toneOf(props, false)} ${SHAPE} ${widthOf(props.fit)}`}>
       <PillBody {...props} />
     </span>
   );

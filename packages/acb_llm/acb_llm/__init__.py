@@ -24,6 +24,7 @@ from acb_llm.decide import (
     ScoreQuestion,
     decide,
 )
+from acb_llm.decide_shape import shape_refusal, split_questions
 from acb_llm.message_compress import compress_message_content
 from acb_llm.tool_output import compress_tool_output, is_compressible_tool
 
@@ -51,4 +52,6 @@ __all__ = [
     "fit_messages_to_context",
     "is_compressible_tool",
     "resolve_underlying_model",
+    "shape_refusal",
+    "split_questions",
 ]

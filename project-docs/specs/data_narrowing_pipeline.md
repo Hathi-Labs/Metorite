@@ -2,9 +2,13 @@
 
 <!-- ste-tier: strict -->
 
-**Status: ACTIVE. SPECIFIED 2026-10-07, and nothing is built.** The owner
-approved this spec on 2026-10-07, with D92 and D93. Board row **WS-48**.
-Decisions **D92** and **D93** are in `work_plan.md` §3.
+**Status: ACTIVE. SPECIFIED 2026-10-07.** The owner approved this spec on
+2026-10-07, with D92 and D93. Board row **WS-48**. Decisions **D92** and
+**D93** are in `work_plan.md` §3.
+
+**N1 is built and dark** (2026-10-07, PR #711). **N3 is built and dark**
+(2026-10-07, branch `ws48-n3-decide-tier`). `NARROWING_AGENTS` ships empty,
+and `SYSTEM_ONE_ON_DECIDE` ships OFF. The N3 build notes are under §9 N3.
 
 Verified against code on 2026-10-07 at `main` `82d09830b`. Every file path
 and line in this spec was read at that commit. Re-verify each anchor at
@@ -643,6 +647,44 @@ egress class.
 
 **Gate:** to turn on `SYSTEM_ONE_ON_DECIDE` on production is OWNER-GATE.
 It moves spend to another sub-processor (D75.8).
+
+**Build notes (2026-10-07, branch `ws48-n3-decide-tier`).** Read these
+before N1 uses the decide door.
+
+- **The shape helpers are in `acb_llm/decide_shape.py`.** `split_questions`
+  cuts a batch into requests of 16. `shape_refusal` gives the reason code of
+  the rule that the door would break for one question. N1's `narrowing.py`
+  reads its batch size from `MAX_QUESTIONS` there, so it keeps no copy of
+  the limit. The facade `acb_llm/decide.py` still holds no
+  limit, and `test_acb_llm_decide.py` fences that. The same file pins each
+  copy to `customer_console/decide.py`.
+- **An item that the door would refuse goes to `tier-fast` with no
+  request.** A choice of more than 255 options is one case. A context past
+  the window of 32000 tokens is another. The tool logs the code at `info`.
+  So the `error` line of a 400 stays the signal of a real caller bug.
+- **The fallback merges.** The failed items of all requests and each
+  refused item go out in ONE `tier-fast` request, in their order. A whole
+  outage sends the same bytes as the flag off, and a test proves it.
+- **A partial answer.** When some items have a decide answer and the
+  fallback also fails, each other item reads as `unsure`. When no item has
+  an answer, the tool says `UNAVAILABLE`, as before.
+- **The bound of one request is 10 s** (§3.5). The Console client has its
+  own bound of 10 s, and the tool holds the whole await.
+- **`DECIDE_ENABLED` still binds.** With it off, every item falls back with
+  the reason `disabled`, and no request goes out.
+- **The calling agent.** The request takes `run_attribution()`, and the run
+  binding names the agent, as `system_one` does (§6.5 of
+  `ai_tier_routing.md`).
+- **A reason is a code.** The Console client gives a sentence for some
+  refusals, and a transport message for an outage. The fallback line logs
+  each of those as `unavailable`.
+- **The deployment-key arm.** Only a member that the gateway verified goes
+  out as proven. A claimed member gets the local refusal of the client, with
+  no request, and the item goes to `tier-fast`. A test holds each case.
+- **The tenant cannot set the flag.** `SYSTEM_ONE_ON_DECIDE` is in
+  `env_guard.PLATFORM_ENV_NAMES`.
+- **Not measured yet:** the agreement of the two engines. No box has a
+  bound `tier-decide`. HANDOFF H-265 holds the step.
 
 ### N4 · The WhatsApp adapter — AGENT-SAFE
 
