@@ -1,0 +1,9 @@
+{
+  "_note": "AN EVAL CARD, NOT THE PRODUCTION CARD. Credits for each million tokens. The production card lives in the Console database, and the seed ships it unpriced (002_seed_catalog.sql). The seed points tier-balanced and tier-powerful at one model (deepseek-v4-pro), so this card gives them one price. tier-fast is deepseek-chat. tier-decide has no price yet (033_decide_task.sql), so this card gives it the price of tier-fast. Each value is an assumption. The summary reports the break-even multiplier of tier-powerful and of tier-decide, so a reader can apply any other card.",
+  "tiers": {
+    "tier-fast": {"input_per_1m": "0.54", "output_per_1m": "2.20"},
+    "tier-decide": {"input_per_1m": "0.54", "output_per_1m": "2.20"},
+    "tier-balanced": {"input_per_1m": "1.10", "output_per_1m": "4.40"},
+    "tier-powerful": {"input_per_1m": "1.10", "output_per_1m": "4.40"}
+  }
+}

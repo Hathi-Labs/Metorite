@@ -62,12 +62,38 @@ async def _confirm_destructive(title: str, detail: str, context: str = "") -> bo
 
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
-INSTRUCTIONS = (
+_INSTRUCTIONS_TEXT = (
     _INSTRUCTIONS_FILE.read_text(encoding="utf-8")
     if _INSTRUCTIONS_FILE.exists()
     else "You are the Email Assistant. Help the user check, categorize, and "
     "reply to their email using the provided tools."
 )
+
+#: The name this agent runs under, and the name ``NARROWING_AGENTS`` lists.
+AGENT_NAME = "email-assistant"
+
+#: WS-48 N2: the block of ``instructions.md`` that teaches ``narrow_and_read``.
+#: Only a build that holds the tool keeps it (:func:`_instructions`), so the
+#: prompt never names a tool that the agent does not hold.
+_NARROW_START = "<!-- narrowing:start -->"
+_NARROW_END = "<!-- narrowing:end -->"
+
+
+def _instructions(with_narrowing: bool) -> str:
+    """The instructions, with the narrowing block only when the tool is held."""
+    text = _INSTRUCTIONS_TEXT
+    start = text.find(_NARROW_START)
+    end = text.find(_NARROW_END, start + 1) if start != -1 else -1
+    if start == -1 or end == -1:
+        return text
+    tail = text[end + len(_NARROW_END):]
+    if with_narrowing:
+        return text[:start] + text[start + len(_NARROW_START):end] + tail
+    return text[:start].rstrip("\n") + "\n\n" + tail.lstrip("\n")
+
+
+#: The instructions of a build with no ``narrow_and_read`` (the flag off).
+INSTRUCTIONS = _instructions(False)
 
 
 # ── Gateway access (user-scoped) ─────────────────────────────────────────────
@@ -3214,6 +3240,53 @@ _TOOLS = [
 ]
 
 
+# ── WS-48 N2: narrow, pick, read (data_narrowing_pipeline.md §9 N2) ─────────
+
+
+def _narrow_source() -> Any:
+    """The email adapter of ``narrow_source.py``, on THIS module's ``_get``.
+
+    It is loaded by path under a name of its own. A bare ``import
+    narrow_source`` would take whichever agent's adapter loaded first, because
+    each agent dir that holds one goes on ``sys.path`` (``acb_skills.loader``).
+    The getter reads ``_get`` at each call, so it is the one client of this
+    agent (``_request`` and ``_headers``), and no second one exists.
+    """
+    import importlib.util
+
+    path = Path(__file__).with_name("narrow_source.py")
+    spec = importlib.util.spec_from_file_location("agent_email_assistant_narrow_source", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"no narrow_source.py beside {__file__}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    async def _get_for_adapter(path: str, params: dict[str, Any] | None = None) -> Any:
+        return await _get(path, params)
+
+    return module.EmailNarrowSource(get=_get_for_adapter)
+
+
+def _narrow_tool() -> Any | None:
+    """``narrow_and_read`` when ``NARROWING_AGENTS`` names this agent, else ``None``.
+
+    ``narrow_tool_for`` is the ONE door (WS48-F4). It reads the flag, and the
+    tool reads it again at each call. A fault here builds no tool, so the
+    agent keeps every other tool.
+    """
+    try:
+        from acb_skills.narrowing import narrow_tool_for, narrowing_on
+    except ImportError:  # an older platform with no narrowing seam
+        return None
+    if not narrowing_on(AGENT_NAME):
+        return None
+    try:
+        return narrow_tool_for(AGENT_NAME, _narrow_source())
+    except Exception as exc:  # never break the agent build
+        _log.warning("email_assistant.narrow_tool_failed", error_type=type(exc).__name__)
+        return None
+
+
 def _register_agent_tools() -> dict[str, Any]:
     """Tool map for the gateway's direct quick-action calls (importlib path)."""
     return {fn.__name__: fn for fn in _TOOLS}
@@ -3280,16 +3353,18 @@ def build_agents() -> list[Any]:
             default_headers={"X-CC-Agent": "email-assistant", "X-CC-Source": "chat"},
         ),
     )
+    narrow = _narrow_tool()
+    tools = [*_TOOLS, narrow] if narrow is not None else list(_TOOLS)
     return [
         Agent(
             client=client,
-            instructions=INSTRUCTIONS,
-            name="email-assistant",
+            instructions=_instructions(narrow is not None),
+            name=AGENT_NAME,
             description=(
                 "Reads, triages, categorizes, automates, and drafts email; "
                 "manages rules, follow-ups, and the knowledge base."
             ),
-            tools=list(_TOOLS),
+            tools=tools,
         )
     ]
 
