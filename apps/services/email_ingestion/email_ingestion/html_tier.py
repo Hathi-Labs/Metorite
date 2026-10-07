@@ -14,6 +14,13 @@ This module is the ONE owner of the HTML hot window. Do not copy its rules:
   only when ``EMAIL_HTML_HOT_ONLY`` is true too. So a writer never drops HTML
   that the pane cannot get again. This module is the one reader of both flags.
 
+* **The four writers (EM-S3, §14.4.3).** With :func:`hot_only` true, no
+  writer stores ``body_html`` for a cold message. The upsert of ``persist.py``
+  reads :func:`drops_html`. ``body_backfill.write_bodies``, the open of
+  ``transport/messages.py`` and ``core.hydrate_message_body`` write
+  :data:`COLD_SAFE_HTML_SET`. No writer clears HTML that a row holds. EM-S4
+  does that. Fence: ``tests/unit/test_email_html_hot_only.py``.
+
 The sync window is a different window, and ``import_window.py`` owns it
 (D-EM-53). Neither module imports the other. Every time here is in UTC.
 
@@ -27,7 +34,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 __all__ = [
+    "COLD_SAFE_HTML_SET",
     "HTML_HOT_DAYS",
+    "cold_before",
+    "drops_html",
     "from_provider",
     "hot_cutoff",
     "hot_only",
@@ -80,9 +90,42 @@ def hot_only() -> bool:
 
     True only when ``EMAIL_HTML_FROM_PROVIDER`` and ``EMAIL_HTML_HOT_ONLY``
     are both true. With the first one false, the pane cannot get the HTML
-    again, so each writer keeps it. EM-S3 adds the writers that read this.
+    again, so each writer keeps it. The four writers of EM-S3 read it through
+    :func:`drops_html` and :func:`cold_before`.
     """
     from acb_common.settings import get_settings
 
     settings = get_settings()
     return bool(settings.email_html_from_provider) and bool(settings.email_html_hot_only)
+
+
+def drops_html(received_at: datetime | None, now: datetime | None = None) -> bool:
+    """True when a writer stores no ``body_html`` for this message (EM-S3).
+
+    True only when :func:`hot_only` is true and the message is cold. The
+    upsert and the open read it, because each one holds ``received_at``.
+    """
+    return hot_only() and is_cold(received_at, now)
+
+
+def cold_before(now: datetime | None = None) -> datetime | None:
+    """The value that a writer binds to ``:html_cold_before`` (EM-S3).
+
+    It is :func:`hot_cutoff` while :func:`hot_only` is true, else ``None``.
+    ``received_at < NULL`` is never true in SQL, so with ``None`` each row
+    is hot and the writer stores the HTML as before.
+    """
+    return hot_cutoff(now) if hot_only() else None
+
+
+#: The SET term of a writer that fetched a body and updates one row (EM-S3).
+#: Bind ``:html_cold_before`` to :func:`cold_before` and ``:bh`` to the
+#: fetched HTML. The term never writes fetched HTML into a cold row, and a
+#: cold row keeps the HTML that it holds. EM-S4 clears stored HTML, and this
+#: term does not. A row with ``received_at`` NULL is never cold, as in
+#: :func:`is_cold`. ``NULLIF`` turns an empty stored value into NULL, so
+#: ``html_remote`` sees that the row holds no HTML.
+COLD_SAFE_HTML_SET = (
+    "body_html = CASE WHEN received_at < :html_cold_before "
+    "THEN NULLIF(body_html, '') ELSE :bh END"
+)

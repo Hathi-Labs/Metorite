@@ -26,7 +26,7 @@
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
 > 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
-> 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is 🔨 BUILT, not merged (2026-10-07). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
+> 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -13371,9 +13371,9 @@ The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07. Q-IN-5 is open.
 > owner let the coordinator set the HTML window at 90 days.
 
 > **Status.** 📝 SPECIFIED (2026-10-07). ✅ EM-S1 is MERGED #719 (2026-10-07). ✅ EM-S9 is MERGED
-> #717 (2026-10-07). ✅ EM-S10 is MERGED #721 (2026-10-07).
-> 🔨 EM-S2 is BUILT, not merged (2026-10-07). The other
-> slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3,
+> #717 (2026-10-07). ✅ EM-S10 is MERGED #721 (2026-10-07). ✅ EM-S2 is MERGED #724
+> (2026-10-08). EM-S3 is 🔨 BUILT, not merged (2026-10-08). The other slices are not built.
+> Audited twice, GO-NARROWED for EM-S1 to EM-S3,
 > EM-S9 and EM-S10 (2026-10-07). The other slices wait for their own audit at dispatch. Each
 > slice ships dark where §14.6 says so.
 
@@ -13652,12 +13652,22 @@ writer behaves as today.
    - The guard compares the same expressions (`persist.py:146-155`). So a re-sync of a cleared
      message writes no row. This is the rule that stops the sync from fighting the clear job.
    - The INSERT and the inbound path take the same params, so a new cold message stores no HTML.
-2. **The body backfill** (`body_backfill.py:152-155`). A cold message gets its text, and
-   `body_html = None`.
+   - *Fix round 1 (2026-10-08).* A text made from the HTML never replaces a stored text that is
+     not empty. `_message_params` binds `body_text_derived`, and the SET and the guard read it. A
+     text that the provider sent replaces the stored text, as before.
+2. **The body backfill** (`body_backfill.py:152-155`). A cold message gets its text, and keeps
+   the HTML that the row holds. A row with no HTML keeps NULL. *As built, 2026-10-08.* This text
+   said `body_html = None`. The code keeps a stored value, which is the safer rule, because EM-S4
+   owns each clear.
 3. **The open** (`transport/messages.py:698-712`). A cold message stores its text only. The open
    still returns the HTML that it fetched, and writes it to the cache of §14.4.2.
 4. **`hydrate_message_body`** (`core.py:410-423`). A cold message stores its text only.
-5. **The meter.** No change. `storage.py:98` measures what is stored, so it falls after a clear.
+5. **The text of an HTML-only message** *(fix round 1, 2026-10-08)*. The open and
+   `hydrate_message_body` fill an empty text from the HTML, with `body_backfill._html_to_text`, as
+   the upsert does. Without the fill, a cold Outlook message stores no body. Then each open fetches
+   it again, and the AI reads no text. `_html_to_text` stops at 2 MiB of input and runs in linear
+   time, because the sync calls it inside its transaction.
+6. **The meter.** No change. `storage.py:98` measures what is stored, so it falls after a clear.
 
 #### 14.4.4 The clear job
 
@@ -13957,8 +13967,8 @@ migration.
 | Slice | Gate | Dark | Scope | Done when |
 |---|---|---|---|---|
 | **EM-S1** | 🟢 AGENT-SAFE · R8 · security review | Yes, `EMAIL_HTML_FROM_PROVIDER` | ✅ **MERGED #719 (2026-10-07).** `html_tier.py`, the HTML route, the cache, and `html_remote` | §14.6.1 |
-| **EM-S2** | 🟢 AGENT-SAFE · visual review | Yes, the same flag | 🔨 **BUILT, not merged (2026-10-07).** The pane shows text, then HTML. The prefetch | §14.6.2 |
-| **EM-S3** | 🟢 AGENT-SAFE · R8 | Yes, `EMAIL_HTML_HOT_ONLY` | The four writers store no cold HTML | §14.6.3 |
+| **EM-S2** | 🟢 AGENT-SAFE · visual review | Yes, the same flag | ✅ **MERGED #724 (2026-10-08).** The pane shows text, then HTML. The prefetch | §14.6.2 |
+| **EM-S3** | 🟢 AGENT-SAFE · R8 | Yes, `EMAIL_HTML_HOT_ONLY` | 🔨 **BUILT, not merged (2026-10-08).** The four writers store no cold HTML | §14.6.3 |
 | **EM-S4** | 🟢 AGENT-SAFE · R8 · security review | Yes, `EMAIL_HTML_CLEAR` | The clear job, with its dry run | §14.6.4 |
 | **EM-S5** | 🟢 AGENT-SAFE, the read-only measure only · not scheduled | — | Quote stripping, measured first | §14.6.5 |
 | **EM-S6** | 🟢 AGENT-SAFE · R8 · after EM-S3 merges | Yes, `EMAIL_SYNC_WINDOW_CHOICE` | The window rules, `awaiting_range`, the scheduler skip, the migration and the confirm route | §14.6.6 |
@@ -14070,7 +14080,7 @@ uv run ruff check apps/services/email_ingestion/email_ingestion/html_tier.py app
 
 #### 14.6.2 EM-S2 — the pane and the prefetch
 
-**Status.** 🔨 BUILT, not merged (2026-10-07). Branch `email-s2-reading-pane`.
+**Status.** ✅ MERGED #724 (2026-10-08). Branch `email-s2-reading-pane`.
 
 **Scope.**
 
@@ -14111,6 +14121,8 @@ accent (CLAUDE.md §4).
 
 #### 14.6.3 EM-S3 — no writer stores old HTML
 
+**Status.** 🔨 BUILT, not merged (2026-10-08). Branch `email-s3-hot-only-writers`.
+
 **Scope.** The four writers of §14.4.3. Each one reads `html_tier.hot_only()` and
 `html_tier.is_cold()`.
 
@@ -14119,7 +14131,11 @@ accent (CLAUDE.md §4).
 **Acceptance.**
 
 - With `hot_only()` true, an INSERT of a cold message stores `body_html` NULL.
-- A cold HTML-only message stores a `body_text` made from its HTML.
+- A cold HTML-only message stores a `body_text` made from its HTML. This applies to the upsert, the
+  open and `hydrate_message_body` (fix round 1). After one open or one hydrate, a second one makes
+  no provider call and writes no row.
+- A text made from the HTML never replaces a stored text that is not empty, and that re-sync
+  writes no row (fix round 1).
 - A re-sync of a cleared cold message that carries HTML writes no row: `xmin` does not move.
 - A re-sync of a cold row that still holds HTML keeps it, and writes no row.
 - A hot message stores its HTML as today.
@@ -14135,7 +14151,9 @@ accent (CLAUDE.md §4).
   the HTML.
 
 **Mutations.** S3-M1 binds the HTML of a cold message, and the `xmin` fence fails. S3-M2 skips the
-text fill, and the HTML-only fence fails.
+text fill, and the HTML-only fence fails. Fix round 1 adds one mutation for each fill of the open
+and the hydrate, one that lets a made text replace a stored text, and one that puts back the old
+`<[^>]+>` pass.
 
 **Verify with.**
 

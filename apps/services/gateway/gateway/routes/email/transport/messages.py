@@ -11,6 +11,7 @@ from acb_common import db_busy
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
+from email_ingestion.body_backfill import _html_to_text
 from email_ingestion.providers.base import ProviderRateLimited, local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.core import (
@@ -715,11 +716,22 @@ async def get_message(
                         _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
                         if full.body_html else None
                     )
+                    # 🔴 No cold HTML (WS-17 EM-S3, §14.4.3 item 3). With
+                    # `html_tier.hot_only()` true, a cold row stores its text
+                    # only. The answer below still carries the HTML, and the
+                    # cache of the HTML route keeps it for the next open.
+                    # An HTML-only mail gets a text made from its HTML first,
+                    # as the upsert does. Else the row stays empty, and each
+                    # open fetches it again (fix round 1).
+                    cold = html_tier.drops_html(row.received_at)
+                    if cold and full.body_html and not body_text.strip():
+                        body_text = _truncate_body(
+                            _html_to_text(full.body_html), MAX_BODY_TEXT_BYTES)
                     if store_body:
                         await db.execute(
                             text(
-                                """UPDATE email_messages
-                                   SET body_text = :bt, body_html = :bh,
+                                f"""UPDATE email_messages
+                                   SET body_text = :bt, {html_tier.COLD_SAFE_HTML_SET},
                                        has_attachments = :ha, updated_at = now()
                                    WHERE id = :id"""
                             ),
@@ -727,12 +739,15 @@ async def get_message(
                                 "id": message_id,
                                 "bt": body_text,
                                 "bh": body_html,
+                                "html_cold_before": html_tier.cold_before(),
                                 "ha": full.has_attachments,
                             },
                         )
                     else:
                         _log.info("get_message.body_not_stored_at_limit",
                                   message_id=message_id)
+                    if cold:
+                        await _remember_html(user.organization_id, row.id, body_html)
                     # Persist attachment metadata fetched with the full message.
                     for att in full.attachments:
                         await db.execute(
@@ -757,9 +772,10 @@ async def get_message(
                     msg.body_text = body_text
                     msg.body_html = body_html
                     msg.has_attachments = full.has_attachments
-                    # The row now answers with HTML, so it is not remote
+                    # The answer now holds the HTML, so it is not remote
                     # (EM-S1 fix round 1). `_row_to_message` read the row
-                    # before the fetch.
+                    # before the fetch. Under EM-S3 a cold row stores no HTML,
+                    # and this answer still carries the HTML that it fetched.
                     msg.html_remote = _html_remote(msg.body_html, row.received_at)
             except HTTPException:
                 raise

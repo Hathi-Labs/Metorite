@@ -388,6 +388,20 @@ All providers implement the `BaseEmailProvider` abstract interface:
       `received_at`. The fence fails on each.
     - `import_window.py` owns the sync window. Neither module imports the
       other (D-EM-53).
+    - **No writer stores cold HTML (WS-17 EM-S3, §14.4.3).** With
+      `hot_only()` true, four writers store no `body_html` for a cold
+      message. The upsert of `persist.py` reads `drops_html`, binds NULL,
+      and fills an empty text from the HTML. `body_backfill.write_bodies`,
+      the open and `hydrate_message_body` write `COLD_SAFE_HTML_SET`. No
+      writer clears HTML that a row holds, because EM-S4 owns the clear.
+      The open and the hydrate fill an empty text from the HTML too. A text
+      made from the HTML never replaces a stored text that is not empty
+      (`body_text_derived` in the SET and the guard). `_html_to_text` is
+      the one text maker. It stops at `HTML_TEXT_INPUT_CAP` and runs in
+      linear time, so do not put back a pattern that can backtrack.
+      Each other SQL text that writes `body_html` fails the fence. A new
+      writer must use the same rule and join `ALLOWED_HTML_WRITERS`. Fence:
+      `tests/unit/test_email_html_hot_only.py`.
 
 ## Inbound SMTP Server
 
