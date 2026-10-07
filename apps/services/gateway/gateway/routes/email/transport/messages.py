@@ -11,7 +11,7 @@ from acb_common import db_busy
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
-from email_ingestion.providers.base import local_folder_after_move
+from email_ingestion.providers.base import ProviderRateLimited, local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
@@ -1137,6 +1137,51 @@ HTML_CACHE_NAMESPACE = "email-html"
 HTML_CACHE_TTL_SECS = ATTACHMENT_CACHE_TTL_SECS
 #: The wait that a refused prefetch asks for (§14.4.2 item 2).
 PREFETCH_RETRY_AFTER_SECS = 30
+#: The longest ``Retry-After`` of a provider 429 that the route passes on.
+#: A longer or unreadable value gives :data:`PREFETCH_RETRY_AFTER_SECS`.
+PROVIDER_RETRY_AFTER_MAX_SECS = 300
+
+
+def _provider_429_response(exc: BaseException) -> Any:
+    """The HTTP answer of a provider 429 in the chain of *exc*, else None.
+
+    A ``ProviderRateLimited`` counts with or without an answer, because a
+    provider raises it when its own tries are spent (``GmailRateLimited``).
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen and len(seen) < 8:
+        seen.add(id(cur))
+        response = getattr(cur, "response", None)
+        if getattr(response, "status_code", None) == 429:
+            return response
+        if isinstance(cur, ProviderRateLimited):
+            return response if response is not None else True
+        cur = cur.__cause__
+    return None
+
+
+def _is_provider_429(exc: BaseException) -> bool:
+    """True when the provider refused the fetch for a rate limit."""
+    return _provider_429_response(exc) is not None
+
+
+def _provider_retry_after(exc: BaseException) -> int:
+    """The ``Retry-After`` that the route sends for a provider 429.
+
+    The seconds of the provider's own header, from 1 to
+    :data:`PROVIDER_RETRY_AFTER_MAX_SECS`. Else :data:`PREFETCH_RETRY_AFTER_SECS`.
+    """
+    response = _provider_429_response(exc)
+    headers = getattr(response, "headers", None)
+    raw = headers.get("Retry-After") if headers is not None else None
+    try:
+        wait = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return PREFETCH_RETRY_AFTER_SECS
+    if 1 <= wait <= PROVIDER_RETRY_AFTER_MAX_SECS:
+        return wait
+    return PREFETCH_RETRY_AFTER_SECS
 
 
 class MessageHtmlModel(BaseModel):
@@ -1216,6 +1261,8 @@ async def get_message_html(
     6. On a miss, the provider, with the member's own token. The HTML is cut
        at ``MAX_BODY_HTML_BYTES``, and the answer goes into the cache for one
        hour. A message with no HTML answers ``none``, and the cache keeps it.
+    7. A provider 429 answers 503 with ``Retry-After``, and logs one
+       ``email.html.provider_429`` line with the mailbox id and no mail text.
 
     ⚠️ **No session is open across the provider call.** Block A reads the
     row and the credentials, and closes. The provider authenticates and
@@ -1290,6 +1337,17 @@ async def get_message_html(
             except Exception as exc:  # never fail the read on it
                 _log.warning("email.html.creds_persist_failed",
                              message_id=row_id, error=type(exc).__name__)
+    if fetch_error is not None and _is_provider_429(fetch_error):
+        # The provider refused for a rate limit. The prefetch of the pane
+        # stops on a 503, as it stops on a busy database (§14.6.1, EM-S2).
+        # The line holds the mailbox id and the wait, and no mail text.
+        wait = _provider_retry_after(fetch_error)
+        _log.warning("email.html.provider_429", account_id=account_id, retry_after=wait)
+        raise HTTPException(
+            status_code=503,
+            detail="The mail provider asked for a pause. Try again later.",
+            headers={"Retry-After": str(wait)},
+        )
     if fetch_error is not None:
         _log.warning("email.html.fetch_failed",
                      message_id=row_id, error=type(fetch_error).__name__)

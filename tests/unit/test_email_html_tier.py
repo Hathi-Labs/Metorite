@@ -19,6 +19,9 @@ R7 fences named here, each a test class:
   answers 503 while ``recently_busy()`` is true, and an open does not. No
   path writes ``email_messages``, and no session is open across the provider
   call.
+* ``email-html-provider-429`` (:class:`TestTheProvider429`). A provider 429
+  answers 503 with ``Retry-After``, and gives one ``email.html.provider_429``
+  line that holds the mailbox id and no mail text.
 * ``email-html-remote`` (:class:`TestHtmlRemote`). ``html_remote`` is true
   only with the flag on, ``body_html`` NULL and a cold message.
 * ``email-html-one-owner`` (:class:`TestTheOneOwner`). No module outside
@@ -50,6 +53,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from acb_auth.roles import UserContext, UserRole
 from acb_common import db_busy
@@ -58,6 +62,7 @@ from acb_common.db import bind_tenant, release_tenant
 from acb_common.settings import Settings, get_settings
 from acb_common.tenant_redis import TenantRedis
 from email_ingestion import html_tier
+from email_ingestion.providers.base import ProviderRateLimited
 from fastapi import HTTPException
 from gateway.routes.email import core
 from gateway.routes.email.transport import messages as m
@@ -497,6 +502,99 @@ class TestTheRoute:
         source = inspect.getsource(m.get_message_html)
         assert not _MESSAGE_WRITE.search(source)
         assert "ea.user_id = :user_id" in source
+
+
+# ── 3b. The provider 429 ────────────────────────────────────────────────────
+
+
+class _LogSpy:
+    """Records each call of the route's logger: the event and its fields."""
+
+    def __init__(self) -> None:
+        self.lines: list[tuple[str, str, dict[str, Any]]] = []
+
+    def __getattr__(self, level: str) -> Any:
+        def _record(event: str, **fields: Any) -> None:
+            self.lines.append((level, event, fields))
+        return _record
+
+    def events(self, name: str) -> list[dict[str, Any]]:
+        return [fields for _lvl, event, fields in self.lines if event == name]
+
+
+def _http_429(retry_after: str | None) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://graph.microsoft.com/v1.0/me/messages/prov-msg")
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+    response = httpx.Response(429, headers=headers, request=request)
+    return httpx.HTTPStatusError("429 Too Many Requests", request=request, response=response)
+
+
+class _SpentRateLimit(ProviderRateLimited):
+    """A provider that spent its own tries, with no answer to read."""
+
+
+class TestTheProvider429:
+
+    @pytest.mark.parametrize(("error", "wait"), [
+        (_http_429("12"), "12"),
+        (_http_429(None), "30"),
+        (_http_429("86400"), "30"),
+        (_http_429("Wed, 21 Oct 2026 07:28:00 GMT"), "30"),
+        (_SpentRateLimit("spent"), "30"),
+    ], ids=["seconds", "no-header", "too-long", "a-date", "provider-rate-limited"])
+    async def test_a_429_is_a_503_with_retry_after_and_one_log_line(
+        self, monkeypatch, error: BaseException, wait: str,
+    ) -> None:
+        h = _Harness(monkeypatch, html="<p>the secret body</p>")
+        spy = _LogSpy()
+        monkeypatch.setattr(m, "_log", spy)
+        h.on_provider = error
+        with pytest.raises(HTTPException) as err:
+            await _html(prefetch=True)
+        assert err.value.status_code == 503
+        assert err.value.headers == {"Retry-After": wait}
+        lines = spy.events("email.html.provider_429")
+        assert lines == [{"account_id": "acct-1", "retry_after": int(wait)}]
+        assert spy.events("email.html.fetch_failed") == []
+        assert h.redis.store == {}, "a 429 was cached"
+
+    async def test_the_log_line_holds_no_mail_text(self, monkeypatch) -> None:
+        h = _Harness(monkeypatch, html="<p>the secret body</p>")
+        spy = _LogSpy()
+        monkeypatch.setattr(m, "_log", spy)
+        h.on_provider = _http_429("5")
+        with pytest.raises(HTTPException):
+            await _html()
+        logged = repr(spy.lines)
+        for text_of_mail in ("secret body", "old text", "prov-msg", "graph.microsoft.com"):
+            assert text_of_mail not in logged, text_of_mail
+
+    async def test_a_429_in_the_cause_chain_counts(self, monkeypatch) -> None:
+        h = _Harness(monkeypatch)
+        wrapped = RuntimeError("the fetch failed")
+        wrapped.__cause__ = _http_429("7")
+        h.on_provider = wrapped
+        with pytest.raises(HTTPException) as err:
+            await _html()
+        assert (err.value.status_code, err.value.headers) == (503, {"Retry-After": "7"})
+
+    async def test_another_provider_status_stays_502(self, monkeypatch) -> None:
+        h = _Harness(monkeypatch)
+        request = httpx.Request("GET", "https://graph.microsoft.com/x")
+        h.on_provider = httpx.HTTPStatusError(
+            "500", request=request, response=httpx.Response(500, request=request))
+        with pytest.raises(HTTPException) as err:
+            await _html()
+        assert err.value.status_code == 502
+
+    async def test_a_429_keeps_a_rotated_token(self, monkeypatch) -> None:
+        h = _Harness(monkeypatch)
+        h.rotate = True
+        h.on_provider = _http_429("3")
+        with pytest.raises(HTTPException):
+            await _html()
+        assert any("UPDATE email_accounts" in s for s in h.sql)
+        assert h.message_writes() == []
 
 
 # ── 4. html_remote ──────────────────────────────────────────────────────────
