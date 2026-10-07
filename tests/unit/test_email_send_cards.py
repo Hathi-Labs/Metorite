@@ -604,16 +604,31 @@ async def test_an_address_too_long_for_the_card_sends_nothing(gw: Gateway) -> No
     assert gw.cards == [] and gw.posts == []
 
 
-# P1: the provider draft holds EXACTLY the recipients that the card showed.
+# P1 (review rounds 1 and 2): the send never reaches a recipient that the
+# card did not show. The signed path writes the exact lists of the row. The
+# unsigned path keeps the draft as it is, and it compares the recipients that
+# the provider holds with the card.
 
 class _OutlookDraft:
     """A provider draft with Outlook's PATCH rule: a list replaces, and None
-    leaves the list that the provider holds."""
+    leaves the list that the provider holds. ``read`` is what
+    ``get_draft_recipients`` does: ``"ok"``, ``"fail"`` or ``"none"`` (a
+    provider with no read and no native send, as IMAP)."""
 
-    def __init__(self, **held: list[str]) -> None:
+    def __init__(self, read: str = "ok", **held: list[str]) -> None:
         self.held = {"to": [], "cc": [], "bcc": [], **held}
+        self.read = read
         self.calls: list[str] = []
         self.sent: dict[str, list[str]] | None = None
+        self.sent_new: dict[str, Any] | None = None
+
+    async def get_draft_recipients(self, draft_id: str) -> dict[str, list[str]]:
+        self.calls.append("read")
+        if self.read == "fail":
+            raise RuntimeError("Graph answered 503")
+        if self.read == "none":
+            raise NotImplementedError
+        return {k: list(v) for k, v in self.held.items()}
 
     async def update_draft(self, draft_id: str, to: Any = None, subject: Any = None,
                            body_text: Any = None, body_html: Any = None,
@@ -626,8 +641,19 @@ class _OutlookDraft:
         return draft_id
 
     async def send_draft(self, draft_id: str) -> None:
+        if self.read == "none":
+            raise NotImplementedError
         self.calls.append("send")
         self.sent = {k: list(v) for k, v in self.held.items()}
+
+    async def send_message(self, *, to: Any, cc: Any = None, bcc: Any = None,
+                           **_kw: Any) -> str:
+        self.calls.append("send_message")
+        self.sent_new = {"to": list(to), "cc": list(cc or []), "bcc": list(bcc or [])}
+        return "new-1"
+
+    async def trash_message(self, provider_id: str) -> None:
+        self.calls.append("trash")
 
 
 async def _send_to(provider: _OutlookDraft, *, expect: Any, drow: SimpleNamespace,
@@ -659,33 +685,133 @@ _REPLY_ROW = _drow(to_addresses=[{"email": "billing@vendor.test"}],
 _REPLY_SHOWN = {"to": ["billing@vendor.test"], "cc": [], "bcc": []}
 
 
-@pytest.mark.parametrize("signature", ["", "Dana"], ids=["unsigned", "signed"])
-async def test_a_reply_to_draft_sends_to_the_to_of_the_row(signature: str) -> None:
+async def test_an_unsigned_reply_to_draft_answers_409_and_sends_nothing() -> None:
     """``createReply`` put the Reply-To of an attacker mail on the Outlook
-    draft. The card showed the From of the row, so the send goes there."""
+    draft. The card showed the From of the row, so nothing goes out."""
     provider = _OutlookDraft(to=["pay@vendor-billing.test"])
-    await _send_to(provider, expect=_REPLY_SHOWN, drow=_REPLY_ROW,
-                   signature=signature)
+    with pytest.raises(HTTPException) as exc:
+        await _send_to(provider, expect=_REPLY_SHOWN, drow=_REPLY_ROW)
+    assert exc.value.status_code == 409
+    assert exc.value.detail == d.DRAFT_PROVIDER_CHANGED_DETAIL
+    assert provider.calls == ["read"] and provider.sent is None
+
+
+@pytest.mark.parametrize("extra", [{"bcc": ["spy@evil.test"]}, {"cc": ["cc@evil.test"]}],
+                         ids=["bcc", "cc"])
+async def test_an_unsigned_draft_with_an_external_recipient_answers_409(
+    extra: dict[str, list[str]],
+) -> None:
+    """A Bcc or a Cc that only the provider holds, as the mail app adds it."""
+    provider = _OutlookDraft(to=["billing@vendor.test"], **extra)
+    with pytest.raises(HTTPException) as exc:
+        await _send_to(provider, expect=_REPLY_SHOWN, drow=_REPLY_ROW)
+    assert exc.value.status_code == 409
+    assert provider.sent is None
+
+
+async def test_a_matching_unsigned_draft_sends_with_no_update() -> None:
+    """The draft is not rewritten, so its body and its format stay. The
+    compare is in lower case."""
+    provider = _OutlookDraft(to=["Billing@Vendor.test"])
+    await _send_to(provider, expect=_REPLY_SHOWN, drow=_REPLY_ROW)
+    assert provider.calls == ["read", "send"]
+    assert "update" not in provider.calls
+
+
+async def test_a_failed_provider_read_sends_nothing() -> None:
+    provider = _OutlookDraft(read="fail", to=["billing@vendor.test"])
+    with pytest.raises(HTTPException) as exc:
+        await _send_to(provider, expect=_REPLY_SHOWN, drow=_REPLY_ROW)
+    assert exc.value.status_code == 502
+    assert exc.value.detail == d.DRAFT_PROVIDER_READ_FAILED_DETAIL
+    assert provider.sent is None and "send_message" not in provider.calls
+
+
+async def test_a_provider_with_no_read_sends_the_row_and_never_its_draft() -> None:
+    """IMAP has no read and no native send. Its fallback sends a new mail to
+    the lists of the row, which the card showed, and never the draft."""
+    provider = _OutlookDraft(read="none", to=["pay@vendor-billing.test"])
+    await _send_to(provider, expect=_REPLY_SHOWN, drow=_REPLY_ROW)
+    assert provider.sent is None
+    assert provider.sent_new == _REPLY_SHOWN
+
+
+@pytest.mark.parametrize("held", [
+    {"to": ["pay@vendor-billing.test"]},
+    {"to": ["billing@vendor.test"], "cc": ["cc@evil.test"], "bcc": ["spy@evil.test"]},
+], ids=["reply-to", "provider-only-cc-bcc"])
+async def test_the_signed_path_writes_the_exact_lists_of_the_row(
+    held: dict[str, list[str]],
+) -> None:
+    """The signed path rewrites the draft for the signature anyway, so it
+    writes the lists of the row, empty ones too, before the send."""
+    provider = _OutlookDraft(**held)
+    await _send_to(provider, expect=_REPLY_SHOWN, drow=_REPLY_ROW, signature="Dana")
     assert provider.calls == ["update", "send"]
     assert provider.sent == {"to": ["billing@vendor.test"], "cc": [], "bcc": []}
 
 
-@pytest.mark.parametrize("signature", ["", "Dana"], ids=["unsigned", "signed"])
-async def test_a_provider_only_cc_and_bcc_are_cleared_before_the_send(
-    signature: str,
-) -> None:
-    provider = _OutlookDraft(to=["billing@vendor.test"], cc=["cc@evil.test"],
-                             bcc=["spy@evil.test"])
-    await _send_to(provider, expect=_REPLY_SHOWN, drow=_REPLY_ROW,
-                   signature=signature)
-    assert provider.sent == {"to": ["billing@vendor.test"], "cc": [], "bcc": []}
-
-
-async def test_with_no_expect_the_unsigned_send_does_not_update() -> None:
+async def test_with_no_expect_the_unsigned_send_reads_and_updates_nothing() -> None:
     """The UI sends no ``expect``, and its unsigned send is as before."""
     provider = _OutlookDraft(to=["billing@vendor.test"])
     await _send_to(provider, expect=None, drow=_REPLY_ROW)
     assert provider.calls == ["send"]
+
+
+# The provider read of the recipients (one seam, two providers).
+
+async def test_outlook_reads_the_recipients_of_a_draft() -> None:
+    from email_ingestion.providers.outlook import OutlookProvider
+    seen: dict[str, Any] = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"toRecipients": [{"emailAddress": {"address": "pay@x.test"}}],
+                    "ccRecipients": [],
+                    "bccRecipients": [{"emailAddress": {"address": "spy@x.test"}},
+                                      {"emailAddress": {}}]}
+
+    class _Client:
+        async def get(self, path: str, params: dict[str, Any]) -> _Resp:
+            seen.update(path=path, params=params)
+            return _Resp()
+
+    prov = OutlookProvider({"access_token": "x", "refresh_token": "y"})
+    with patch.object(prov, "_get_client", AsyncMock(return_value=_Client())):
+        held = await prov.get_draft_recipients("m-1")
+    assert held == {"to": ["pay@x.test"], "cc": [], "bcc": ["spy@x.test"]}
+    assert seen == {"path": "/me/messages/m-1",
+                    "params": {"$select": "toRecipients,ccRecipients,bccRecipients"}}
+
+
+async def test_gmail_reads_each_to_cc_and_bcc_header_of_a_draft() -> None:
+    from email_ingestion.providers.gmail import GmailProvider
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"payload": {"headers": [
+                {"name": "To", "value": "Ravi <ravi@x.test>"},
+                {"name": "to", "value": "second@x.test"},
+                {"name": "Bcc", "value": "spy@x.test"},
+                {"name": "Subject", "value": "Hi"}]}}
+
+    class _Client:
+        async def get(self, path: str, params: dict[str, Any]) -> _Resp:
+            assert path == "/users/me/messages/m-1"
+            assert params["format"] == "metadata"
+            return _Resp()
+
+    prov = GmailProvider({"access_token": "x"})
+    with patch.object(prov, "_get_client", AsyncMock(return_value=_Client())):
+        held = await prov.get_draft_recipients("m-1")
+    assert held == {"to": ["ravi@x.test", "second@x.test"], "cc": [],
+                    "bcc": ["spy@x.test"]}
 
 
 # ── R8: the target route on a real database ─────────────────────────────────

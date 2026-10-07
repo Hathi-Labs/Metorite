@@ -851,6 +851,23 @@ class BaseEmailProvider(ABC):
             f"{self.__class__.__name__} does not support sending drafts"
         )
 
+    async def get_draft_recipients(self, draft_id: str) -> dict[str, list[str]]:
+        """The To, Cc and Bcc that the PROVIDER draft holds now.
+
+        Keys ``to``, ``cc`` and ``bcc``, each a list of addresses. WS-17
+        EM-T13b-1 review round 2: an unsigned draft send of the email
+        assistant compares them with the card before ``send_draft``. The
+        provider draft can differ from the local row: ``createReply`` sets a
+        Reply-To, and a member can add a Bcc in the mail app. A read that
+        fails raises, and the caller sends nothing.
+
+        Default raises NotImplementedError. A provider without it (IMAP) has
+        no native ``send_draft`` either, so its caller sends from the row.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not read draft recipients"
+        )
+
     async def seed_cursor(self) -> str | None:
         """The cursor of the mailbox at this moment, or None.
 
