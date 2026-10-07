@@ -30,6 +30,7 @@ import {
 } from "../lib/priority";
 import { CELL_ICON } from "../lib/priorityIcons";
 import { contextAccent } from "../lib/contextColors";
+import { filterWord } from "@/lib/shell/registry";
 
 // The unified filter + sort + group bar (Jira/Linear-style). One row:
 //   [Search icon]  [Filter (N)] [chips…]        [Group by]  [Sort] [⇅]
@@ -189,8 +190,9 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
             inputSize="sm"
             value={filters.query}
             onChange={(e) => setFilters({ query: e.target.value })}
-            aria-label="Search tasks"
-            placeholder="Search tasks…"
+            aria-label={`${filterWord()} tasks`}
+            placeholder={`${filterWord()} tasks…`}
+            data-page-filter="tasks"
             onKeyDown={(e) => {
               if (e.key === "Escape") setOpened(false);
             }}

@@ -14,6 +14,7 @@ import {
 import { chipColors } from "../lib/labelColors";
 import { folderLabel } from "../lib/utils";
 import { EMAIL_CATEGORIES } from "../lib/types";
+import { FILL_PAGE_FILTER, shellBarOn } from "@/lib/shell/registry";
 
 /**
  * SearchBar — the email app's search surface, centred in the top bar.
@@ -82,6 +83,21 @@ export function SearchBar() {
       apply(filters);
     }
   };
+
+  // §6.7 rule 3: "Show all in Inbox" in the command bar puts its words here,
+  // and lifts any `from:` or `tag:` in them into pills, as Enter does.
+  useEffect(() => {
+    const onFill = (e: Event) => {
+      const words = (e as CustomEvent<{ query?: string }>).detail?.query?.trim();
+      if (!words) return;
+      const { filters, text } = parseQuery(words, searchFilters);
+      setSearchQuery(text);
+      apply(filters);
+      inputRef.current?.focus();
+    };
+    window.addEventListener(FILL_PAGE_FILTER, onFill);
+    return () => window.removeEventListener(FILL_PAGE_FILTER, onFill);
+  });
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
@@ -191,7 +207,11 @@ export function SearchBar() {
             ref={inputRef}
             type="text"
             value={searchQuery}
-            placeholder={searchFilters.length ? "" : `Search ${scopeName}`}
+            // §6.7 rule 2: with the shell bar on, this box is the page's
+            // FILTER. "Search" is the command bar's word, and `/` lands here.
+            placeholder={searchFilters.length ? "" : `${shellBarOn() ? "Filter" : "Search"} ${scopeName}`}
+            data-page-filter={scopeName}
+            aria-label={`${shellBarOn() ? "Filter" : "Search"} ${scopeName}`}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={onKeyDown}
             onFocus={() => setFocused(true)}

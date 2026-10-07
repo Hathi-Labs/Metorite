@@ -49,6 +49,7 @@ import {
 } from "@/lib/tierRouting";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
+import { filterWord } from "@/lib/shell/registry";
 
 // Agent names that receive the Metorite persona (general-purpose brain).
 // All agents get persistent Mem0 memory — conversations are saved to Mem0
@@ -414,7 +415,9 @@ function SessionList({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search conversations…"
+          placeholder={`${filterWord()} conversations…`}
+          aria-label={`${filterWord()} conversations`}
+          data-page-filter="conversations"
           className="w-full rounded-md border border-border bg-background/60 py-1.5 pl-8 pr-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none tech-transition"
         />
       </div>
@@ -595,6 +598,18 @@ function ChatPageInner() {
   const chatScopeId = useChatScope();
   const [restoredId, setRestoredId] = useState<string | null>(null);
   const [recoveredInput, setRecoveredInput] = useState<string | undefined>();
+  // NS-1: the command bar's "Ask the assistant" arrives as `?q=`. The words
+  // land in the message box for the member to check and send. Nothing sends
+  // by itself (§6.4 rule 2). `q` then leaves the address, so a reload does
+  // not type it again.
+  const askParam = searchParams?.get("q") ?? null;
+  useEffect(() => {
+    if (!askParam?.trim()) return;
+    setRecoveredInput(askParam.trim().slice(0, 2000));
+    const url = new URL(window.location.href);
+    url.searchParams.delete("q");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }, [askParam]);
   const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   // Cross-conversation memory (load + 30s poll) — injected into AgentChat for
   // continuity; managed in the full memory manager at /memory, not here.

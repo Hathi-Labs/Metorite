@@ -9,6 +9,8 @@ import { AccountSidebar } from "./components/AccountSidebar";
 import { EmailList } from "./components/EmailList";
 import { EmailToolbar } from "./components/EmailToolbar";
 import { QuickFilters } from "./components/QuickFilters";
+import { ShellJob } from "@/lib/shell/doJob";
+import { shellBarOn } from "@/lib/shell/registry";
 import { SearchBar } from "./components/SearchBar";
 import { MailboxActions } from "./components/MailboxActions";
 import { EmailDetail } from "./components/EmailDetail";
@@ -810,6 +812,14 @@ export default function EmailPage() {
 
   return (
     <div className="flex h-full w-full bg-background overflow-hidden select-none">
+      {/* NS-1: the command bar's "Write an email" opens a new message, once
+          the mailboxes it sends from have loaded. A filled job (NS-4b) brings
+          its fields; the member checks them and sends. */}
+      <ShellJob
+        id="compose"
+        ready={accounts.length > 0}
+        onOpen={(f) => openCompose({ to: f.to ?? "", subject: f.subject ?? "" })}
+      />
       {/* Loading overlay */}
       {surface === "loading" && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
@@ -1007,12 +1017,18 @@ export default function EmailPage() {
 
             <div className="flex items-center gap-1 flex-1 basis-0 justify-end min-w-fit">
               <MailboxActions selectedEmail={selectedEmail} />
-              <div className="w-px h-4 bg-border" />
-              <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl/Cmd+K)" className="gap-1 px-2 py-1 rounded">
-                <span className="text-[10px] border border-border rounded px-1 leading-tight">
-                  ⌘K
-                </span>
-              </Button>
+              {/* With the shell bar on, ⌘K is the command bar's, and this
+                  button would open a second palette (§6.7 rule 1). */}
+              {shellBarOn() ? null : (
+                <>
+                  <div className="w-px h-4 bg-border" />
+                  <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl/Cmd+K)" className="gap-1 px-2 py-1 rounded">
+                    <span className="text-[10px] border border-border rounded px-1 leading-tight">
+                      ⌘K
+                    </span>
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         )}

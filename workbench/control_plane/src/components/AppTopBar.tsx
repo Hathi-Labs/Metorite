@@ -27,11 +27,21 @@
  * Fences: `AppTopBar.test.ts` (the markup), `pageHeading.test.ts` (the one
  * `<h1>`) and `sharedTaskUi.test.ts` (both apps reach this file, and nobody
  * declares a second one).
+ *
+ * **With the shell bar on (NS-1, `NEXT_PUBLIC_SHELL_BAR`), the desktop bar
+ * draws no row of its own.** It portals the same contents into the shell
+ * bar's slots: the rail toggle, the title and the actions on the left, the
+ * tools on the right. The shell owns the middle, where the command bar is. So
+ * an app keeps calling this component exactly as before, and loses no height
+ * (`navigation_shell.md` §3.1). The phone bar (`compact`) is unchanged.
  */
 
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import Button from "@/components/ui/Button";
+import { useShellSlots } from "@/lib/shell/ShellBar";
+import { shellBarOn } from "@/lib/shell/registry";
 
 export interface AppTopBarRail {
   open: boolean;
@@ -63,6 +73,10 @@ export function AppTopBar({
   tools,
   compact = false,
 }: AppTopBarProps) {
+  const slots = useShellSlots();
+  const inShell = !!slots && !compact;
+  useEffect(() => (inShell ? slots!.claim() : undefined), [inShell, slots]);
+
   if (compact) {
     return (
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-2">
@@ -79,8 +93,10 @@ export function AppTopBar({
     );
   }
 
-  return (
-    <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card px-2">
+  // The desktop contents, ONE spelling, drawn either in this component's own
+  // row or in the shell bar's left slot.
+  const left = (
+    <>
       {rail ? (
         <>
           <Button
@@ -97,9 +113,26 @@ export function AppTopBar({
       ) : null}
       <h1 className="shrink-0 text-xs font-medium text-muted-foreground">{title}</h1>
       {subtitle ? (
-        <span className="min-w-0 truncate text-xs text-muted-foreground">{subtitle}</span>
+        <span className={`min-w-0 truncate text-xs text-muted-foreground ${inShell ? "hidden xl:inline" : ""}`}>
+          {subtitle}
+        </span>
       ) : null}
       {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
+    </>
+  );
+
+  if (inShell) {
+    return (
+      <>
+        {slots!.left ? createPortal(left, slots!.left) : null}
+        {slots!.right && tools ? createPortal(tools, slots!.right) : null}
+      </>
+    );
+  }
+
+  return (
+    <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card px-2">
+      {left}
       {tools ? (
         <div className="ml-auto flex shrink-0 items-center gap-1">{tools}</div>
       ) : null}
@@ -122,6 +155,9 @@ export function AppSearchButton({
   title?: string;
   disabled?: boolean;
 }) {
+  // The command bar is the one search (§6.7 rule 1). With the shell bar on,
+  // an app's own search button would be a second box that says "Search".
+  if (shellBarOn()) return null;
   return (
     <Button
       variant="ghost"
