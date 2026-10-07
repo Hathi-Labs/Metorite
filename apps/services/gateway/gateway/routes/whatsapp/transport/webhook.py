@@ -243,12 +243,16 @@ async def _ingest_number(phone_number_id: str, sub_payload: dict[str, Any]) -> N
             counts = await persist_sync_result(db, account_id, result)
 
         # Fire the shared post-sync pipeline (same brain the whatsmeow bridge uses).
+        # A batch of history alone counts no `messages`, so it does not fire
+        # `on_new_messages` (WS-20 WA-C3 P8). `classify_chats` runs always.
         await fire_post_sync_hooks(account_id, counts)
 
         _log.info(
             "whatsapp.webhook.ingested",
             account_id=account_id, messages=counts["messages"],
+            history_messages=counts.get("history_messages", 0),
             statuses=len(result.statuses),
+            contact_changes=len(result.contact_changes),
         )
     finally:
         release_tenant(token)

@@ -99,6 +99,13 @@ class WhatsAppAccountModel(BaseModel):
     # 'cloud' (Meta Cloud API) or 'whatsmeow' (the QR-paired personal bridge).
     # The dialer needs it: voice calling only exists on the bridge transport.
     provider: str = "cloud"
+    # WS-20 WA-C3 (spec §12.4.1 P11). The coexistence history import. The
+    # state is None for an account that is not coexistence. The deadline is
+    # `created_at` plus 24 hours, the window that Meta gives for the sync.
+    history_sync_state: str | None = None
+    history_sync_error: str | None = None
+    history_import_progress: int | None = None
+    history_sync_deadline: str | None = None
 
 
 class WhatsAppChatModel(BaseModel):

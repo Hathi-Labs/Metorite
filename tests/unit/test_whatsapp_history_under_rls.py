@@ -434,9 +434,10 @@ def test_the_migration_replays_twice_on_the_promoted_shape(granted):  # noqa: F8
             with c.connection.dbapi_connection.cursor() as cur:
                 cur.execute(sql)
             c.connection.dbapi_connection.commit()
-    cols = {(r.t, r.c): (r.n, r.d) for r in _rows(granted.admin_engine, """
-        SELECT table_name AS t, column_name AS c, is_nullable AS n,
-               column_default AS d
+    # Not `AS t`: `Row.t` is a SQLAlchemy property, the typed tuple.
+    cols = {(r.tbl, r.col): (r.nul, r.dflt) for r in _rows(granted.admin_engine, """
+        SELECT table_name AS tbl, column_name AS col, is_nullable AS nul,
+               column_default AS dflt
         FROM information_schema.columns
         WHERE table_schema = 'public' AND (table_name, column_name) IN (
           ('wa_accounts', 'history_sync_state'),
@@ -445,6 +446,6 @@ def test_the_migration_replays_twice_on_the_promoted_shape(granted):  # noqa: F8
           ('wa_messages', 'delivery_status'),
           ('wa_messages', 'from_history'),
           ('wa_contacts', 'in_address_book'))""")}
-    assert len(cols) == 6
+    assert len(cols) == 6, cols
     assert all(n == "YES" for n, _ in cols.values()), "a WA-C3 column is NOT NULL"
     assert cols[("wa_messages", "from_history")][1] == "false"

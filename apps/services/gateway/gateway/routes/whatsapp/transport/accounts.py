@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -63,7 +64,32 @@ class CreateAccountRequest(BaseModel):
     credentials: dict[str, Any]     # {access_token, graph_version?}
 
 
+#: Meta allows the coexistence history sync for 24 hours after the connect
+#: (Meta, "Onboard WhatsApp Business app users"). WS-20 WA-C3 P4, P11.
+HISTORY_SYNC_WINDOW = timedelta(hours=24)
+
+#: The columns that every account read returns, so the list, the insert and
+#: the model cannot disagree.
+_ACCOUNT_COLUMNS = """id, phone_number, phone_number_id, waba_id,
+                      display_name, avatar_color, sync_status, sync_error,
+                      history_import_phase, quality_rating, last_synced_at,
+                      is_default, provider, history_sync_state,
+                      history_sync_error, history_import_progress, created_at"""
+
+
+def history_sync_deadline(created_at: Any) -> datetime | None:
+    """When the history sync window of an account closes, or None. Pure."""
+    if not isinstance(created_at, datetime):
+        return None
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    return created_at + HISTORY_SYNC_WINDOW
+
+
 def _account_model(row: Any) -> WhatsAppAccountModel:
+    state = getattr(row, "history_sync_state", None)
+    deadline = history_sync_deadline(getattr(row, "created_at", None))
+    progress = getattr(row, "history_import_progress", None)
     return WhatsAppAccountModel(
         id=str(row.id),
         phone_number=row.phone_number,
@@ -78,6 +104,11 @@ def _account_model(row: Any) -> WhatsAppAccountModel:
         last_synced_at=row.last_synced_at.isoformat() if row.last_synced_at else None,
         is_default=bool(row.is_default),
         provider=getattr(row, "provider", None) or "cloud",
+        history_sync_state=state,
+        history_sync_error=getattr(row, "history_sync_error", None),
+        history_import_progress=int(progress) if progress is not None else None,
+        history_sync_deadline=(
+            deadline.isoformat() if state is not None and deadline else None),
     )
 
 
@@ -86,10 +117,7 @@ async def list_accounts(user: UserContext = Depends(get_current_user)):
     """List the WhatsApp Business numbers connected by the current user."""
     async with _tenant_session() as db:
         rows = (await db.execute(
-            text("""SELECT id, phone_number, phone_number_id, waba_id,
-                           display_name, avatar_color, sync_status, sync_error,
-                           history_import_phase, quality_rating, last_synced_at,
-                           is_default, provider
+            text(f"""SELECT {_ACCOUNT_COLUMNS}
                     FROM wa_accounts WHERE user_id = :uid
                     ORDER BY is_default DESC, created_at"""),
             {"uid": user.email or "anonymous"},
@@ -168,6 +196,7 @@ async def persist_account(
     webhook_verify_token: str | None,
     verified_profile: dict[str, Any],
     sync_status: str = "importing",
+    history_sync_state: str | None = None,
 ) -> Any:
     """Encrypt the credentials + insert a wa_account, returning the row. Shared by
     the manual create route AND the Embedded Signup flow (W12) so both write the
@@ -182,6 +211,9 @@ async def persist_account(
     ``sync_status`` is the first status of the row. The Embedded Signup path
     passes ``'live'``, because it subscribed the app to the WABA before it
     calls this. The manual path keeps the default (WS-20 WA-C2 P3).
+
+    ``history_sync_state`` is ``'pending'`` for a coexistence row, and None
+    for every other row (WS-20 WA-C3 P3). The sync call runs after this.
 
     The read-first check below sees only this member's rows in this tenant.
     Under FORCE RLS a row of another member or another org is invisible to it.
@@ -228,22 +260,19 @@ async def persist_account(
 
     try:
         inserted = await db.execute(
-            text("""INSERT INTO wa_accounts
+            text(f"""INSERT INTO wa_accounts
                       (id, user_id, phone_number, phone_number_id, waba_id,
                        display_name, credentials_encrypted, webhook_verify_token,
-                       sync_status, is_default)
+                       sync_status, is_default, history_sync_state)
                     VALUES
                       (:id, :uid, :phone, :pnid, :waba, :name, :creds, :verify,
-                       :sync_status, :is_default)
-                    RETURNING id, phone_number, phone_number_id, waba_id,
-                              display_name, avatar_color, sync_status, sync_error,
-                              history_import_phase, quality_rating, last_synced_at,
-                              is_default"""),
+                       :sync_status, :is_default, :history_sync_state)
+                    RETURNING {_ACCOUNT_COLUMNS}"""),
             {"id": str(uuid4()), "uid": user_id,
              "phone": phone_number, "pnid": phone_number_id,
              "waba": waba_id, "name": display_name, "creds": encrypted,
              "verify": webhook_verify_token, "sync_status": sync_status,
-             "is_default": is_first},
+             "is_default": is_first, "history_sync_state": history_sync_state},
         )
     except IntegrityError as exc:
         if _is_unique_violation(exc):
