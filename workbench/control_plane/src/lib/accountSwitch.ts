@@ -82,6 +82,10 @@ export async function switchTo(slot: number, go: (url: string) => void = (u) => 
   // already changed under them. Waiting for this tab's reload to announce
   // leaves them writing as the new account for a few seconds, or for good
   // if this tab closes first. The announcement on mount stays as the backstop.
+  // ⚠️ Mark this tab as leaving FIRST. Its own `useAccountTabSync` listener is
+  // a second BroadcastChannel object, so it hears this announcement too, and
+  // it started a second navigation that aborted this one (CI, 2026-10-07).
+  leaving = true;
   try {
     const { email } = (await res.json()) as { email?: string };
     if (email) announceAccount(email);
@@ -139,8 +143,17 @@ export async function signOutAll(): Promise<void> {
  */
 export const ACCOUNT_CHANNEL = "mt-active-account";
 
+/** True once this tab has switched and is on its way to `/`. */
+let leaving = false;
+
+/** For tests: forget that this tab switched. */
+export function resetLeaving(): void {
+  leaving = false;
+}
+
 export function shouldReloadFor(mine: string | null, announced: unknown): boolean {
   return (
+    !leaving &&
     !!mine &&
     typeof announced === "string" &&
     announced.trim() !== "" &&

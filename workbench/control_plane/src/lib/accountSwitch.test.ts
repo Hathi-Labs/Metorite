@@ -4,7 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-auth/react", () => ({ signOut: vi.fn(async () => undefined) }));
 
-import { ORG_SCOPED_KEYS, addAccount, clearOrgScopedStorage, shouldReloadFor, signOutAll, switchTo } from "./accountSwitch";
+import {
+  ORG_SCOPED_KEYS,
+  addAccount,
+  clearOrgScopedStorage,
+  resetLeaving,
+  shouldReloadFor,
+  signOutAll,
+  switchTo,
+} from "./accountSwitch";
 import { clearAccountNamespaces } from "./sessions";
 
 /**
@@ -35,6 +43,7 @@ beforeEach(() => {
   g.window = globalThis;
 });
 afterEach(() => {
+  resetLeaving();
   delete g.localStorage;
   delete g.window;
   vi.unstubAllGlobals();
@@ -87,6 +96,9 @@ describe("rule 3: the org-scoped keys", () => {
     expect(await switchTo(1, go)).toBe(true);
     expect(posted).toEqual([["mt-active-account", { email: "b@two.test" }]]);
     expect(go).toHaveBeenCalledWith("/");
+    // This tab hears its own announcement on its second channel object. It
+    // must not start a second navigation, which aborts the first.
+    expect(shouldReloadFor("a@one.test", "b@two.test")).toBe(false);
   });
 
   it("Add another account keeps this one first, then opens sign-in", async () => {
