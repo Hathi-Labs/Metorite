@@ -7,9 +7,9 @@ REAL checks of :mod:`gateway.routes.email.automation.insights_extract`, and
 scores the facts with :mod:`evals.email_insights.checkers`. It calls no model,
 no Router and no database.
 
-Stage 1, the screen (EM-T14b-0), is not on ``main`` yet. So this runner takes
-the expected screen answer of each mail in its place: a mail whose
-``screen.finance`` is false gets no extraction. EM-T14b-2 puts the real screen
+Stage 1, the screen (EM-T14b-0, #702), asks ``decide``, and a scripted run
+calls no model. So this runner takes the expected screen answer of each mail in
+its place: a mail whose ``screen.finance`` is false gets no extraction. EM-T14b-2 puts the real screen
 here, and adds the model sweep through the Router on a local stack. Without
 ``--scripted`` the runner says so and exits with code 2.
 

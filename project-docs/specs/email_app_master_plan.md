@@ -12030,7 +12030,8 @@ of data, large Excel files, etc., without hallucinating.
 > dark. EM-T14e and EM-T14f wait for the flip. EM-T14g is not specified. The audit text is in
 > each slice below.
 
-> **Build state (2026-10-07).** EM-T14a is built and not merged (§13.9.1).
+> **Build state (2026-10-07).** EM-T14a merged as #700 (§13.9.1). EM-T14b-0 merged as #702.
+> EM-T14b-1 is built and not merged (§13.9.2).
 
 > **The owner answers (2026-10-07).** The owner answered Q-IN-1 to Q-IN-4 (§13.12). D-EM-43 to
 > D-EM-46 record them. Q-IN-1 made the job two stages: a cheap screen on `decide`, then the
@@ -12449,7 +12450,7 @@ behind `EMAIL_INSIGHTS`. The flip is an act of the owner only (the Flip row).
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | ✅ **MERGED #700 (2026-10-07). Migration 231.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
-| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | ✅ **EM-T14b-0 MERGED #702 (2026-10-07).** 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
+| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | ✅ **EM-T14b-0 MERGED #702 (2026-10-07).** 🔨 **EM-T14b-1 BUILT, not merged (2026-10-07).** 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
 | **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
 | **EM-T14d** | 🟢 AGENT-SAFE · R8 · visual review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The view.** Two PRs: EM-T14d-1 (the PATCH, the shared helper, the tile and the digest line) and EM-T14d-2 (the UI). | §13.9.4 |
 | **EM-T14e** | 🟢 AGENT-SAFE · R8 · after the flip | 📝 **SPECIFIED (2026-10-07). It waits for the flip.** **Projects.** The four project types, the Projects tab, and the commitments of today beside them. | §13.9.5 |
@@ -12659,6 +12660,8 @@ only. The agent fixed P3-a and recorded P3-b, P3-c and P3-d in §13.10 and in §
 EM-T14b-1 and EM-T14b-2. The orchestrator added EM-T14b-0 after the owner answered Q-IN-1. Its
 first audit happens at dispatch.
 
+**Build state.** EM-T14b-1 is 🔨 BUILT, not merged (2026-10-07).
+
 **Gate.** 🟢 AGENT-SAFE. The job sends mail text to a model in the background. So the slice takes
 the full review loop and a security review.
 
@@ -12824,6 +12827,71 @@ findings only. Fix round 1 made these changes:
 5. **Two modes.** `run.py` runs the sweep through the Router on a local stack. `--scripted` replays
    recorded answers, so the unit job can run it with no model.
 6. **Size.** Fixture data does not count toward the 600 lines.
+
+**Status of EM-T14b-1.** 🔨 BUILT, not merged (2026-10-07). It adds no job, no hook, no model
+call and no SQL.
+
+**As built (EM-T14b-1, 2026-10-07).**
+
+- **The module** is `routes/email/automation/insights_extract.py`. It imports `FACT_FIELDS`,
+  `CAPS`, `Fact` and `clean_text` from `insights_store.py`, and keeps no copy.
+- **The source.** `body_source` and `file_source` make the one text of a call. The prompt frames
+  that text, and the checks read the same text.
+- **The prompt.** `build_prompt` lists the finance types with their keys from `FACT_FIELDS`. It
+  puts the source between two marker lines with a random token, and removes the token from the
+  text first.
+- **The checks.** `check_answer` returns the checked facts and a count of drops for each check.
+  The job of EM-T14b-2 writes those counts to the log line of §13.5 item 10.
+- **The parsers.** `parse_amount` and `parse_due` each name a reason when they give no value. 39
+  amount cases live in `tests/fixtures/amount_cases.json`, and 23 date cases live in the test.
+- **The eval set** is `evals/email_insights/`: 43 mails, 31 expected facts and a `--scripted` run.
+  The run finds 31 facts of 31, and each amount is correct.
+- **The fence** is `tests/unit/test_email_insights_extract.py`, with 113 tests.
+
+**Departures (EM-T14b-1).**
+
+1. **The claim of the model gates the due date.** A quote can hold the date of the invoice. So
+   code stores a date only when the model gives `due_on`. The value still comes from the quote.
+2. **The claim of the model marks a missing amount.** When the model gives an amount and the quote
+   gives none, the confidence is 0.6. Code never reads the claim as a value.
+3. **Code drops a quote of more than 200 characters, and never cuts it.** A cut can split a
+   number.
+4. **A match needs a whole token.** `ref`, `counterpart` and the quote must not continue a word or
+   a figure of the source. So `INV-204` is not in `INV-2041`, and `₹5,000` is not in `₹5,000,000`.
+5. **The fold also removes each control and format character**, as `clean_text` does. It turns
+   each white space character into a space first, so it never deletes white space.
+6. **Two dates give no date**, as two amounts give no amount. A short year, such as `15/11/26`,
+   gives no date.
+7. **Parentheses around a marked number give no amount**, also when they hold an aside, such as
+   `(USD 980)`.
+8. **The eval adds a fourth bar, `no_fact`.** A mail that expects no fact gives no fact. Without
+   it, the injection mail could give a fact and the run would still pass.
+9. **An agent wrote the scripted answers by hand**, because no model ran. Some hold a mistake of a
+   model on purpose. EM-T14b-2 records real answers.
+10. **The scripted run uses the expected screen answer of each mail.** The screen of EM-T14b-0
+    (#702) asks `decide`, and a scripted run calls no model. Without `--scripted`, `run.py` exits
+    with code 2. EM-T14b-2 adds the real screen and the model sweep.
+11. **The date cases live in the test.** `amount_cases.json` holds amounts only, so WS-43y1a can
+    share it as item 2 says.
+12. **The eval fences live in `test_email_insights_extract.py`.** `test_email_insights_job.py`
+    comes with EM-T14b-2.
+
+**Mutations (EM-T14b-1, 2026-10-07).** The agent committed the code first. Then it ran each
+mutation and restored the file after each run. `git status` was clean after each restore.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | Skip the quote check | `test_a_quote_not_in_the_source_drops_the_fact`, `test_the_injection_mail_gives_no_fact_in_scripted_mode`, `test_the_scripted_sweep_passes_every_bar` and three more. The `--scripted` run exits with 1 |
+| M2 | Parse the amount of the model, and not the quote | `test_the_model_number_is_never_stored`, `test_a_model_amount_given_as_a_number_is_not_stored`, `test_the_scripted_sweep_passes_every_bar` and three more. The `--scripted` run exits with 1 |
+| E1 | Fold with no space step, so a lone `\r` goes | `test_folding_collapses_white_space_and_never_deletes_it` |
+| E2 | Remove the cap for a quote found twice | `test_a_quote_found_twice_caps_confidence_at_0_6` |
+| E3 | Keep each fact of an answer | `test_code_keeps_at_most_ten_facts` |
+| E4 | Accept a numeric date with both parts at 12 or less | two cases of `test_each_due_case`, and `test_a_due_date_that_does_not_parse_names_its_reason` |
+| E5 | Remove the source check of `ref` and `counterpart` | `test_ref_and_counterpart_must_be_in_the_folded_source` |
+| E6 | Read a comma before three digits as a decimal comma | ten tests, with `test_each_amount_case_parses_to_its_amount_and_currency` and `test_the_scripted_sweep_passes_every_bar` |
+| E7 | Send a spreadsheet to the model | `test_a_spreadsheet_is_never_sent_to_a_model`, `test_the_spreadsheet_and_the_newsletter_give_no_fact`, `test_the_scripted_sweep_passes_every_bar` and one more |
+| E8 | Take the title of the model | `test_code_writes_the_title` |
+| E9 | Make the `no_fact` bar pass each run | `test_each_bar_fails_a_wrong_run` |
 
 **EM-T14b-2 — the job.**
 
