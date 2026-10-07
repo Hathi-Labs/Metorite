@@ -11,10 +11,14 @@
     "  workbench/control_plane/src/app/email/lib/assistantSettings.test.ts runs",
     "  assistantSettings.ts::autoDraftRepliesOn over the same body, which is the value the",
     "  'Auto draft replies' toggle in SettingsTab.tsx draws.",
-    "Neither side may restate these values in its own source (tests/fixtures/README.md rule 2)."
+    "Neither side may restate these values in its own source (tests/fixtures/README.md rule 2).",
+    "",
+    "WS-17 EM-T14a, D-EM-39 (§13.2 and §13.9.1): Insights is OFF for a new mailbox. Only the",
+    "gateway test reads `insights_enabled`, because no UI draws it yet."
   ],
   "get_without_settings_row": {
     "draft_replies": false,
-    "follow_up_auto_draft": false
+    "follow_up_auto_draft": false,
+    "insights_enabled": false
   }
 }
