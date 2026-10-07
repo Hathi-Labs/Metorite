@@ -95,25 +95,50 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-267 · Run the email narrowing eval against a real `tier-decide` · [AGENT]
+### H-267 · Stop an Outlook rule move from making a second copy of a nested folder · [AGENT]
+- **Check:** run `rg -n "mailFolders" apps/services/email_ingestion/email_ingestion/providers/outlook.py`.
+  If `_get_or_create_folder_id` still searches only `/me/mailFolders` with a
+  `displayName` filter, this is open.
+- **Why.** `OutlookProvider._get_or_create_folder_id` (`outlook.py:920-925`)
+  asks Graph for `/me/mailFolders` with `displayName eq '<name>'`. That call
+  lists the top-level folders only. So when a rule names "Receipts", and
+  "Receipts" sits under the Inbox, the lookup finds nothing, and the provider
+  makes a second "Receipts" at the top level. The rule then files mail there.
+  The defect is older than EM-S10. EM-S10 made it easier to reach, because a
+  rule copy now names folders that the target may hold at any depth.
+- **Do.**
+  1. Make the lookup find a folder at any depth. `list_folders` already walks
+     the child folders (`_descend`), so reuse that walk, or the same Graph
+     calls. Do not add a second folder walk beside it.
+  2. Decide which folder wins when two folders at two depths have one name.
+     Record the rule in `email_app_master_plan.md` §14.6.10.
+  3. Add a test with a fake Graph that holds "Inbox/Receipts". A move to
+     "Receipts" must reach that folder and make no new folder.
+- **Authority:** `email_app_master_plan.md` §14.6.10 "As built" · D-EM-60
+- **Added:** 2026-10-07 · branch `email-s10-rules-estimate` (WS-17 EM-S10
+  fix round 1). PR #719 added H-266.
+
+### H-268 · Measure the email narrowing saving on a real run · [OWNER]
 - **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
   No line with a measured recall and a date under §9 N2 means this is open.
-- **Why.** WS-48 N2 done-when item 6 wants the before and after tables from a
-  dev box with the Router. No box has a bound `tier-decide`, so the PR has
-  only the scripted run. Its verdicts, tokens and credits are stub numbers.
+- **Why.** WS-48 N2 done-when item 6 wants the before and after numbers from a
+  real Router. The PR has only the scripted run. Its verdicts, tokens and
+  credits are stub numbers. Production already serves `tier-decide`:
+  `DECIDE_ENABLED=true`, and the Console answered 341 `POST /v1/decide`
+  requests with 200 in the 24 hours to 2026-10-07 (email rule matching).
 - **Do.**
-  1. On a dev box, bind `tier-decide`, turn on `DECIDE_ENABLED`, and price
-     `tier-decide`, `tier-balanced` and `tier-powerful` on the Console.
-  2. Set `CUSTOMER_CONSOLE_URL` to the Console on that box. Then run
-     `uv run python -m evals.email_narrowing.run --compare --out <dir>`.
-  3. Join each `request_id` of the summary to `usage_event` for the real
-     credits of PICK.
-  4. Write the recall of each question, the PICK credits, the date and the
-     SHA under §9 N2, with the words "compare run".
-- **Do not** put `email-assistant` in `NARROWING_AGENTS` on production. That
-  is OWNER-GATE (spec §11), and a dev-box run does not open it.
-- **Authority:** `data_narrowing_pipeline.md` §7.2 and §9 N2 · D93
-- **Added:** 2026-10-07 · branch `ws48-n2-email` (WS-48 N2)
+  1. The owner approves the run, because it spends credits and turns on a
+     flag. Then set `NARROWING_AGENTS=email-assistant` on the box, and
+     optionally `SYSTEM_ONE_ON_DECIDE`.
+  2. Ask the email assistant one broad question over many emails. Then ask
+     the same question with the flag off.
+  3. Join each run's `request_id` values to `usage_event`. Compare the
+     requests, tokens and credits per tier.
+  4. Write the recall, the credits, the date and the SHA under §9 N2, with the
+     words "compare run". Turn the flag off again if the saving does not hold.
+- **Authority:** `data_narrowing_pipeline.md` §7.2, §9 N2 and §11 · D93
+- **Added:** 2026-10-07 · branch `ws48-n2-email` (WS-48 N2). Renumbered from
+  H-267 at merge, because main took H-267.
 
 ### H-266 · Redis has no maxmemory policy, and the email HTML and attachment caches are bounded only by TTL · [AGENT]
 - **Check:** run `grep -rn "maxmemory" infra/ deploy/`. No `maxmemory` with a

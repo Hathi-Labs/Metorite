@@ -7,7 +7,7 @@ The owning spec is `project-docs/specs/data_narrowing_pipeline.md`, §7.2 and
 slice N2 of §9.
 
 **Status.** Built on 2026-10-07. The scripted run passes. Nobody has run
-`--compare`, because no box has a bound `tier-decide` yet (HANDOFF H-267).
+`--compare`, because the live run needs owner approval (HANDOFF H-268).
 
 ⚠️ **Do not read the gated ratio alone.** The gated ratio is 0.335, under the
 bar of 0.40. It rests on an assumption: today's path reads 5 emails in one

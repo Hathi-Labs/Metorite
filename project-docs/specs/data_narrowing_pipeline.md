@@ -647,7 +647,7 @@ OWNER-GATE. It moves credit spend for a live org (CLAUDE.md §3a rule 3).
   hint to `tier-powerful` takes the whole saving.
 - **Not done: done-when item 6.** No box has a bound `tier-decide`, so no
   run measured the real verdicts or the real credits. `--compare` is built,
-  and it refuses a door that is not on the machine. HANDOFF H-267 holds the
+  and it refuses a door that is not on the machine. HANDOFF H-268 holds the
   step.
 
 ### N3 · System 1 sends a typed question to `tier-decide` (D93) — AGENT-SAFE

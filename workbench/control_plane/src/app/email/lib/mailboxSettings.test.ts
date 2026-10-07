@@ -47,6 +47,8 @@ import {
   COPY_STEP,
   LEFT_OUT_UNKNOWN,
   LEFT_OUT_WORDS,
+  willCreateLine,
+  willCreateNames,
   byElectionOrder,
   copyReport,
   disconnectNames,
@@ -326,6 +328,7 @@ function stepView(over: Partial<RulesStepViewProps>): string {
     draft: { state: "ready", on: false },
     draftBusy: false,
     pastFrom: "2026-07-05",
+    sort: { state: "ready", estimate: { in_range: 40, eligible: 40, will_process: 40, capped: false, limit: 1000 } },
     onRecommended: noop,
     onChooseOwn: noop,
     onSkip: noop,
@@ -354,6 +357,8 @@ const RESULT: RuleCopyResult = {
     { name: "Send to home", reason: "forward_to_own_address" },
     { name: "Needs Reply", reason: "reply_rule_exists" },
   ],
+  // EM-S10: the gateway answers `will_create`, and an empty list maps to [].
+  willCreate: [],
 };
 
 describe("email-rules-step-copy", () => {
@@ -496,6 +501,86 @@ describe("email-rules-step-copy", () => {
     expect(await copyRules("work", "home")).toEqual(RESULT);
     expect(calls).toEqual([
       { url: "/api/email/rules/copy", method: "POST", body: { from_account_id: "work", to_account_id: "home" } },
+    ]);
+  });
+
+  // ── EM-S10 (§14.6.10, D-EM-60): the names that the target makes ──────────
+
+  it("copyRules maps will_create, and drops an entry with no name", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            copied: ["Cold Email"],
+            renamed: [],
+            left_out: [{ name: "File as sent", reason: "folder_not_in_target" }],
+            will_create: [
+              { rule: "Cold Email", action: "MOVE_FOLDER", name: "Cold Email" },
+              { rule: "Cold Email", action: "LABEL", name: "" },
+              "junk",
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    expect(await copyRules("work", "home")).toEqual({
+      copied: ["Cold Email"],
+      renamed: [],
+      leftOut: [{ name: "File as sent", reason: "folder_not_in_target" }],
+      willCreate: [{ rule: "Cold Email", action: "MOVE_FOLDER", name: "Cold Email" }],
+    });
+  });
+
+  it("the report lists each name that the mailbox makes, once and last", () => {
+    const result: RuleCopyResult = {
+      copied: ["Cold Email", "Vendors"],
+      renamed: [],
+      leftOut: [{ name: "File as sent", reason: "folder_not_in_target" }],
+      willCreate: [
+        { rule: "Cold Email", action: "MOVE_FOLDER", name: "Cold Email" },
+        { rule: "Vendors", action: "LABEL", name: "cold email" },
+        { rule: "Vendors", action: "MOVE_FOLDER", name: "Vendors" },
+      ],
+    };
+    expect(willCreateNames(result)).toEqual(["Cold Email", "Vendors"]);
+    const report = copyReport(result, "Fracktal");
+    expect(report.lines).toEqual([
+      "Copied: Cold Email, Vendors.",
+      'Not copied: "File as sent". This mailbox cannot move mail to the folder that the rule names.',
+      'Metorite has no record of these folders and labels in this mailbox: "Cold Email", "Vendors". ' +
+        "If the mailbox does not have one, the mailbox makes it the first time a rule uses it.",
+    ]);
+    expect(willCreateLine(["Cold Email"])).toBe(
+      'Metorite has no record of the folder or label "Cold Email" in this mailbox. ' +
+        "If the mailbox does not have it, the mailbox makes it the first time a rule uses it.",
+    );
+    expect(willCreateLine([])).toBeNull();
+    // Fix round 1 (F2): the provider uses a folder it has, so no line claims
+    // that a folder is made, and none claims that it does not exist.
+    for (const line of [willCreateLine(["A"]), willCreateLine(["A", "B"])]) {
+      expect(line).not.toMatch(/does not exist|did not find|will make|makes each one the first/);
+      expect(line).toMatch(/^Metorite has no record of /);
+      expect(line).toMatch(/If the mailbox does not have (it|one), /);
+    }
+    // An answer of a gateway before EM-S10 has no field, and adds no line.
+    expect(copyReport({ copied: ["A"], renamed: [], leftOut: [] }, "F").lines).toEqual(["Copied: A."]);
+    // The rules step draws the line under the copy report.
+    const drawn = stepView({ phase: "ready", copyReport: report });
+    const status = drawn.slice(drawn.indexOf('role="status"'));
+    expect(status).toContain("Metorite has no record of these folders and labels in this mailbox");
+    expect(status.indexOf("Copied: Cold Email")).toBeLessThan(status.indexOf("has no record"));
+  });
+
+  it("an IMAP target names the rules it cannot take (fix round 1, F2)", () => {
+    const report = copyReport(
+      { copied: ["Archive old"], renamed: [], leftOut: [{ name: "Cold Email", reason: "not_supported_by_target" }], willCreate: [] },
+      "Fracktal",
+    );
+    expect(report.lines).toEqual([
+      "Copied: Archive old.",
+      'Not copied: "Cold Email". It moves mail to a folder or adds a label, and Metorite cannot do that in this mailbox.',
     ]);
   });
 
