@@ -513,12 +513,18 @@ export interface UnsubscribeResult {
  * The answer of `POST /email/rules/copy` (EM-T8f-1). `copied` holds the names
  * in the target. `renamed` holds each rule whose name the target held.
  * `leftOut` holds each rule the copy did not take, with the reason the
- * gateway gives: `disabled`, `forward_to_own_address` or `reply_rule_exists`.
+ * gateway gives: `disabled`, `forward_to_own_address`, `reply_rule_exists` or
+ * `folder_not_in_target` (EM-S10).
+ *
+ * `willCreate` (EM-S10, D-EM-60) holds each folder or label name that a copied
+ * rule uses and the target does not hold. The provider makes it on first use.
+ * `rule` is the name in the target. A gateway before EM-S10 sends none.
  */
 export interface RuleCopyResult {
   copied: string[];
   renamed: Array<{ name: string; copiedAs: string }>;
   leftOut: Array<{ name: string; reason: string }>;
+  willCreate?: Array<{ rule: string; action: string; name: string }>;
 }
 
 export type RuleActionType =
