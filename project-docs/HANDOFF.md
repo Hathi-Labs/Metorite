@@ -95,6 +95,22 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-264 · Let a decide request say that the narrowing pipeline sent it · [AGENT]
+
+- **Check:** run
+  `grep -n "X-CC-Source" packages/acb_auth/acb_auth/console_resolve.py`.
+  No match in `_attribution_headers` means this is open.
+- **Why.** `data_narrowing_pipeline.md` §7.1 wants each PICK request to
+  carry `X-CC-Source: narrowing`, so that the operator can count the rows of
+  the pipeline apart from the email features. `acb_llm.decide` sends only the
+  member, the agent, the app and the run. The decide door reads no source
+  header. WS-48 N1 could not meet the line, and it amended §7.1 to say so.
+- **Do.** Add an optional `source` to `acb_llm.decide` and to
+  `console_resolve.decide_on_console`. Send it as `X-CC-Source`, and make the
+  door record it on the `usage_event` row. Prove the row with an R8 test.
+  Then pass `source="narrowing"` from `acb_skills/narrowing.py`.
+- Added: 2026-10-07, WS-48 N1.
+
 ### H-263 · Start `acb-pull.timer` again on the box, and prove that #702 serves · [AGENT]
 - **Check:** run `ssh metorite 'systemctl is-active acb-pull.timer'`. Any
   output other than `active` means this is open. Then run

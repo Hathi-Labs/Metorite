@@ -111,6 +111,9 @@ TOOL_HINTS: dict[str, str] = {
     "task_dataset": "analysis",
     "analytics_outlook": "analysis",
     "find_conflicts": "analysis",
+    # WS-48 N1 (data_narrowing_pipeline.md §3.6): the READ step. The next
+    # request reads the kept items in full and writes the answer.
+    "narrow_and_read": "analysis",
 }
 
 #: Why a request got its tier. ``ai_route.chosen`` carries one of these.
