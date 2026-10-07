@@ -32,6 +32,7 @@
   "own_tool_scope": [
     "list_accounts",
     "query_inbox",
+    "query_insights",
     "read_email",
     "read_email_attachment",
     "read_thread",

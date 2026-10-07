@@ -12032,7 +12032,7 @@ of data, large Excel files, etc., without hallucinating.
 > each slice below.
 
 > **Build state (2026-10-07).** EM-T14a merged as #700 (§13.9.1). EM-T14b-0 merged as #702.
-> EM-T14b-1 is built and not merged (§13.9.2).
+> EM-T14b-1 is built and not merged (§13.9.2). EM-T14c is built and not merged (§13.9.3).
 
 > **The owner answers (2026-10-07).** The owner answered Q-IN-1 to Q-IN-4 (§13.12). D-EM-43 to
 > D-EM-46 record them. Q-IN-1 made the job two stages: a cheap screen on `decide`, then the
@@ -12457,7 +12457,7 @@ behind `EMAIL_INSIGHTS`. The flip is an act of the owner only (the Flip row).
 |---|---|---|---|
 | **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | ✅ **MERGED #700 (2026-10-07). Migration 231.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
 | **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | ✅ **EM-T14b-0 MERGED #702 (2026-10-07).** 🔨 **EM-T14b-1 BUILT, not merged (2026-10-07).** 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
-| **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
+| **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | 🔨 **BUILT, not merged (2026-10-07). Dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
 | **EM-T14d** | 🟢 AGENT-SAFE · R8 · visual review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The view.** Two PRs: EM-T14d-1 (the PATCH, the shared helper, the tile and the digest line) and EM-T14d-2 (the UI). | §13.9.4 |
 | **EM-T14e** | 🟢 AGENT-SAFE · R8 · after the flip | 📝 **SPECIFIED (2026-10-07). It waits for the flip.** **Projects.** The four project types, the Projects tab, and the commitments of today beside them. | §13.9.5 |
 | **EM-T14f** | 🟢 AGENT-SAFE · R8 · after the flip | 📝 **SPECIFIED (2026-10-07). It waits for the flip.** **Sales.** The four sales types and the Sales tab, with no CRM act (D-EM-45). | §13.9.6 |
@@ -13094,7 +13094,7 @@ stages. Record the tier, the scores and the counts of the log line in the As-bui
 
 #### 13.9.3 EM-T14c — `query_insights` and the list route
 
-**Status.** 📝 SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.
+**Status.** 🔨 BUILT, not merged (2026-10-07). Dark. The audit was GO-NARROWED.
 
 **Gate.** 🟢 AGENT-SAFE. A new route reads a private table. So the slice takes the full review loop
 and a security review.
@@ -13137,6 +13137,89 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_insights_route.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_tool_consolidation.py tests/unit/test_own_tool_scope_parity.py -v -rs
 uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights.py apps/agents/agent-email-assistant/agents.py
 ```
+
+**As built (EM-T14c, 2026-10-07).**
+
+- **The route** is `GET /email/insights` in `routes/email/automation/insights.py`. The package
+  `automation/__init__.py` imports the module so that its route registers, and does not flatten
+  its names.
+- **The owner scope.** Each read goes through `_account_scope(account_id or None, params,
+  pooled_only=True)`, with `email_insights` aliased as `em`. The member comes from
+  `get_current_user`, and the organization comes from the bound tenant.
+- **The fold.** One CTE selects `DISTINCT ON (em.dedupe_key)`, and the oldest row of a key wins.
+  The count, the page and the totals read that CTE, so each sum counts a key once.
+- **The totals** are ONE query, grouped by currency and direction. It leaves out each row with a
+  NULL currency or a NULL amount, and each dismissed fact (review round 1).
+- **Dark.** While `insights_enabled()` is false, the route opens no session. It answers
+  `available: false`, `enabled: false` and no rows.
+- **The tool** is `query_insights` in `agents.py`, with `@_annotate_risk(open_world=False,
+  destructive=False)`. It joins `_TOOLS` and `own_tool_scope`, so both lists hold 44 names. It
+  prints the totals of the route as they come. The rows sit between two marker lines that hold a
+  random token, and each field of a row loses each copy of the token.
+- **`instructions.md`** holds the text of §13.8, in a section of its own.
+- **The fences.** `tests/unit/test_email_insights_route.py` holds 42 tests after review round 1,
+  and 8 of them are R8.
+  `test_email_owner_scope_fence.py` passes with no new entry. `test_email_tool_consolidation.py`
+  counts 44.
+
+**Departures.**
+
+1. **`window` bounds only the due date.** `open` and `all` put no bound on it. The route keeps
+   `state` as its own input, as §13.8 lists it. The tool sends `state=all` with `window=all`, so
+   the window `all` of the tool also lists done and dismissed facts.
+2. **`state` takes a fourth value, `all`.** It lists each mark of the member.
+3. **The totals also leave out a row with a NULL amount.** Such a row adds nothing to a sum. It
+   would make the `count` of a total larger than the rows that the sum holds.
+4. **`domain` is optional on the route.** With none, the route reads each domain. The tool still
+   needs it, as §13.8 says.
+5. **`enabled` in All inboxes.** It is true when one mailbox in the scope is opted in. §13.8 does
+   not say what it means for more than one mailbox.
+6. **Each amount is a decimal string**, for example `"350.50"`. A JSON float can change the cents.
+7. **An `account_id` that is not a UUID answers 422.** An `account_id` of another member answers
+   no rows and `enabled: false`, not 404. That answer tells the caller nothing about the mailbox.
+8. **The tool marks a fact under 0.5 "check this".** §13.5 item 7 makes the view mark 0.3.
+9. **Four more mutations.** The orchestrator asked for M5 and M6. M7 and M8 cost a line each.
+
+**A finding for EM-T14d.** The filters run before the fold. So when the member dismisses a fact
+in one mailbox, the same key in a second mailbox still shows while it is open there. The PATCH of
+EM-T14d can mark each row of the key, or the fold can read the state of each row.
+
+**Mutations (2026-10-07).** Each one ran against a private ladder database, as the role
+`acb_app_h3rls`. The agent restored the file after each run, and `git status` was clean each time.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | Read without `_account_scope`, with a scope by `account_id` alone | `test_every_handler_has_a_proof_or_an_exemption` of the owner-scope fence, `test_the_handler_reads_through_the_owner_scope`, `test_another_member_of_the_org_reads_no_fact` and `test_a_separate_mailbox_stays_out_of_all_inboxes` |
+| M2 | Sum across currencies: group by direction only | `test_one_total_for_each_currency_and_direction` |
+| M3 | Remove the fold (`DISTINCT ON`) | `test_one_key_in_two_mailboxes_counts_once` |
+| M4 | Leave the tool out of `own_tool_scope` | Three tests of `test_own_tool_scope_parity.py`, and `test_the_two_tool_lists_agree_with_44_names` |
+| M5 | Remove the owner check: call `_account_scope`, and leave its fragment out of the WHERE | The owner-scope fence PASSES, because it does not follow data. `test_another_member_of_the_org_reads_no_fact` and `test_a_separate_mailbox_stays_out_of_all_inboxes` fail |
+| M6 | Count the rows with a NULL currency in the totals | `test_one_total_for_each_currency_and_direction` |
+| M7 | Remove `pooled_only` | `test_the_handler_reads_through_the_owner_scope` and `test_a_separate_mailbox_stays_out_of_all_inboxes` |
+| M8 | Keep the token in a field of a row of the tool | `test_a_row_cannot_close_the_frame` |
+
+**Review round 1 (2026-10-07).** The verifier passed the slice and the reviewer approved it, with
+one P2 and five P3 findings. The agent first rebased the branch onto #702 (EM-T14b-0).
+
+| Finding | The fix | The fence |
+|---|---|---|
+| P2: with the flag off, the instructions and the tool named a feature that no member can see, and each finance question cost one more tool call | With `available: false`, the tool says only that it has no data, and that the model must use `query_inbox` and not call it again. `instructions.md` calls `query_insights` first "when it is available" | `test_the_flag_off_names_no_dark_feature`: the text holds no "insights" |
+| P3: with `window=all`, a dismissed fake invoice added to the payable total | The totals query of the route leaves out each row with `state = 'dismissed'`. The rows still list it. This is simpler than a total for each state | `test_a_dismissed_fact_is_listed_and_adds_to_no_total` (R8) |
+| P3: in All inboxes, `enabled: false` said "this mailbox", and it hid the rows of the route | In All inboxes the text says "No mailbox in All inboxes has Insights on". A row that the route returns always shows | `test_all_inboxes_with_no_opt_in_does_not_say_this_mailbox`, `test_rows_that_the_route_returned_still_show` |
+| P3 (verifier): no fence held the winner of the fold | Eight keys, each in two mailboxes. The older row goes in second. The test checks its `id`, `account_id` and `message_id` | `test_the_oldest_row_of_a_key_wins_the_fold` (R8) |
+| P3 (verifier): the tool did not check `fact_type`, and a `limit` that is not a number raised | The tool checks the type against the types of the domain, and answers with the list. A `limit` that is not a number reads as 20. The agent keeps the list of types, because it cannot import the gateway | `test_a_fact_type_outside_the_domain_asks`, `test_a_limit_that_is_not_a_number_is_20`, `test_the_types_of_the_tool_are_the_types_of_the_store` (the list equals `FACT_FIELDS`) |
+| Note: the tool families at the top of `instructions.md` did not name the tool | A line "Facts from mail" names `query_insights` | `test_own_tool_scope_parity.py` |
+
+| Id | Mutation of round 1 | The fence that failed |
+|---|---|---|
+| R1-M1 | Name Insights in the answer of the flag off | `test_the_flag_off_names_no_dark_feature` |
+| R1-M2 | Remove `state <> 'dismissed'` from the totals | `test_a_dismissed_fact_is_listed_and_adds_to_no_total` |
+| R1-M3 | Order the fold by `random()` | `test_the_oldest_row_of_a_key_wins_the_fold` |
+| R1-M4 | Treat All inboxes as one mailbox in the text | `test_all_inboxes_with_no_opt_in_does_not_say_this_mailbox`, `test_rows_that_the_route_returned_still_show` |
+| R1-M5 | Hide the rows when `enabled` is false | `test_rows_that_the_route_returned_still_show` |
+| R1-M6 | Remove the check of `fact_type` | three cases of `test_a_fact_type_outside_the_domain_asks` |
+| R1-M7 | Go back to `int(limit or 20)` | `test_a_limit_that_is_not_a_number_is_20[abc-20]` and `[0-1]` |
+| R1-M8 | Remove `credit_note` from the list of the tool | `test_the_types_of_the_tool_are_the_types_of_the_store` |
 
 #### 13.9.4 EM-T14d — the view, in two PRs
 

@@ -1744,7 +1744,7 @@ a full disk. The reaper stops idle containers.
 | WS43-F22 | `tests/unit/test_run_data_hygiene.py` | §16.3. A run-data dir lies under the tenant dir, shows in the container of another thread, outlives its run, reaches the blob store, `agent-data/` or `skills/`, or survives the startup sweep. Or a member of the same organization, with another session or another thread, can list or read the sandbox output folder of a thread, through the workspace routes or from that thread's container |
 | WS43-F23 | `tests/unit/test_shared_agent_shell_tools.py` | §7.9, D85. A shared agent gets a `SHELL_TOOLS` member with no cover, or a shell tool goes from a personal agent. A cover in one organization reaches another, or a run with no org gets a cover. The addendum or the skill bodies name a withheld tool, or the no-match fallback restores one. An executor call site passes no `agent_config`. The Copilot permission handler approves a shell request of a shared agent in any mode, with any factory handler, or under a cover, or refuses one of a personal agent. A frame with no flag allows the shell, or an artifact-context site binds no `shell_tools_withheld` or `host_shell_refused`. A sub-agent takes its parent's answer. Tier 2 drops `--deny-tool shell`. A CLI write or read outside the workspace is approved. A Metorite session loads file hooks. The task-manager probe refuses a `my_tasks_*` tool |
 | WS43-F24 | `tests/unit/test_delegation_no_egress.py` | §16.3, H-236. A run that a covered run delegates to, at any depth, gets an egress tool in its request or runs one, on the MAF path or the Copilot path. A child, its payload or a bad value clears `no_egress`. A health probe clears it. The delegation of an uncovered parent changes at all. A real egress tool loses `open_world`, or a new one joins with no review. A run site binds no `no_egress`, or a run boundary passes no answer to the injection. The follow-up: a tool of another repo that borrows a delegation name stays or runs, the control trusts a foreign wrapper of a platform tool, or a chain tool loses its trust. A module outside `acb_skills` and `orchestrator` registers a platform callable. The unmount save has its own fence, `workbench/control_plane/src/lib/chatMemorySave.test.ts` |
-| WS43-F26 | `tests/unit/test_data_engine.py` | §7.10, WS-43y1. On the host Python, the engine misses a header, total or type rule on its fixture. It accepts a second statement, or a query that reads a file, attaches, copies, installs, loads or sets. A cap fails to set `truncated`, or a zip or XML bomb reaches openpyxl. The DuckDB pin of the host lock and the image lock differ. Its `sandbox_docker` half runs each verb in the image as uid 1000, with no network |
+| WS43-F26 | `tests/unit/test_data_engine.py` | §7.10, WS-43y1. On the host Python, the engine misses a header, total or type rule on its fixture. It accepts a second statement, or a query that reads a file, attaches, copies, installs, loads or sets. A cap fails to set `truncated`, or a zip or XML bomb reaches the parse. The DuckDB pin of the host lock and the image lock differ. Its `sandbox_docker` half runs each verb in the image as uid 1000, with no network |
 | WS43-F27 | `tests/unit/test_data_tools.py` | §7.10, WS-43y2. A tool runs with no cover, puts text from the model in the command, stages bytes outside the run-data dir, or reads an attachment of another member. A dataset id of another thread resolves. An answer lacks a field of the envelope or its token markers, or passes 16,000 characters. A dataset outlives its lifetime or its chat, or a restart deletes one inside its lifetime |
 | WS43-F28 | `tests/unit/test_data_tools_injection.py` | §7.10, WS-43y3. An agent with no `tool_scope` gets a data tool on any path. A scoped agent gets one in an uncovered run. Of two runs of two organizations in one process, the uncovered one holds a data tool. The no-match fallback restores one. A `no_egress` run loses one. The addendum or the native MAF text names a data tool that the run does not hold |
 | WS43-F29 | `tests/unit/test_email_data_tools.py` | §16.4, WS-43x1. A covered email run holds `code_task`, `run_script` or `install_dependency`, or holds no data tool. An uncovered email run loses a tool. A covered email run binds `no_egress` while WS43-Q7 has its default answer. The email container mounts `/workspace` read-write, or holds a mail token. The hand-off line shows in an uncovered run |
@@ -1806,7 +1806,7 @@ until its PR merges.
 | WS-43w | ▶ Projects track step 4: the owner flip for Fracktal | WS-43v, PR #591, PR #598 | **OWNER-GATE** (WS43-G1, WS43-G2, WS43-G3) |
 | WS-43x | The Email track (§16.4): WS-43x1 and WS-43x2 | WS-43y3 | See the two steps |
 | WS-43y1a | ✅ MERGED #697 (2026-10-07), with review rounds 1 to 3. Dark until WS43-G2. The data engine and the image (§7.10): the image change, the CSV and TSV reader, the type rules, the SQL rule and the five verbs | WS-43b | AGENT-SAFE. The box build is WS43-G2 |
-| WS-43y1b | 📝 The `.xlsx` reader, the nine layout rules, Excel dates and the zip and XML checks | WS-43y1a | AGENT-SAFE |
+| WS-43y1b | 🔨 BUILT, not merged (2026-10-07), on branch `data-toolkit-y1b`. Dark until WS43-G2. The `.xlsx` reader, the nine layout rules, Excel dates and the zip and XML checks | WS-43y1a | AGENT-SAFE |
 | WS-43y2a | 📝 The dataset dir: its mount point, its mount, its lifetime, the quota and the purge | WS-43y1a, WS-43c | AGENT-SAFE |
 | WS-43y2b | 📝 The six data tools, the sources and the envelope | WS-43y2a | AGENT-SAFE |
 | WS-43y3 | 📝 The `data` skill family, the injection and the instructions | WS-43y2b | AGENT-SAFE |
@@ -3269,7 +3269,8 @@ lines.
 
 **Status.** 📝 SPECIFIED (2026-10-06). Audited GO-NARROWED 2026-10-06.
 WS-43y1a ✅ MERGED #697 (2026-10-07), with review rounds 1 to 3. It is
-dark until the owner's WS43-G2 act. WS-43y1b 🔲.
+dark until the owner's WS43-G2 act. WS-43y1b 🔨 BUILT, not merged
+(2026-10-07), on branch `data-toolkit-y1b`, dark.
 
 **Gate.** AGENT-SAFE. It ships dark, because no tool calls the engine yet.
 To build the new image on the box is WS43-G2.
@@ -3625,6 +3626,163 @@ A file of 1,000 columns and 2,000 rows still loads in the image.
    since round 2, and no fence holds it.
 3. **`test_data_engine.py` takes about 160 s on Linux.** Each verb that a test
    runs through `main` starts a fresh interpreter.
+
+**As built (WS-43y1b, 2026-10-07).** 🔨 BUILT, not merged, on branch
+`data-toolkit-y1b`. It ships dark, because no tool calls the engine yet.
+
+- `data_engine.py` reads `.xlsx` and `.xlsm`. zipfile and expat stream each
+  part, 1 MB at a time. openpyxl never opens the file. The engine takes
+  only the rules of openpyxl that find a date format.
+- Pass 1 of a sheet finds its used columns, its merged ranges and its hidden
+  columns. Pass 2 streams the rows through the nine rules.
+- Each table goes to a clean CSV copy, as a CSV file does. So the type rules
+  of WS-43y1a run unchanged, and a workbook gets the same types.
+- `tests/unit/test_data_engine.py` (WS43-F26) now has 151 host tests and 3
+  Docker tests. Two of the Docker tests read a workbook.
+- The export guard and the SQL lock did not change.
+
+**The nine rules, as built.**
+
+| Rule | What the engine does |
+|---|---|
+| 1. Title rows | A block of rows with one filled cell each, above the first wider row, is title rows. A merged title holds one value, so it is one filled cell |
+| 2. Headers | A header row of text continues while a merged cell spans columns or reaches down, for at most three rows. `header_rows` names the count |
+| 2. Merged header cells | A merged cell fills each column of its range in its top row. A level that repeats the level above it counts once. The levels join with ` / ` |
+| 3. Merged ranges | Pass 1 reads `<mergeCells>`, which comes after the rows of the sheet |
+| 4. Total rows | The first text cell is `Total`, `Grand total`, `Subtotal` or `Sum`. Or the row holds no text, and each number is the sum of its column |
+| 4. A row of sums | Each column of the sum holds two numbers or more, and one sum is not zero. A data row after it makes it data |
+| 5. The side table | A total row goes to `<table>__totals`. The left-out list of the table names the side table and the row numbers |
+| 6. Notes | Rows of one cell each, after a gap under a table, are notes. The engine leaves them out and gives their range |
+| 7. More tables | An empty column across the sheet splits it. A header row after a gap starts a new table |
+| 7. Blank separator rows | A data row after a gap, inside the columns of the table above it, continues that table. The empty rows are left out |
+| 8. Formulas | The engine reads `<v>`, the cached value, and never `<f>`. A formula with no cached value and an error value read as empty |
+| 8. The counts | The column counts them as `uncached_formulas` and `error_values` |
+| 9. Hidden parts | The engine reads them. A table of a hidden sheet and a hidden column get `hidden: true`. A table counts its hidden rows |
+
+**Excel dates.** A cell with a date format becomes a date, a date and time,
+or a time. The 1900 system keeps the leap-year bug of Excel. Serials 1 to 59
+count from 31 December 1899, and later serials count from 30 December 1899.
+Serial 60 is 29 February 1900, a day that did not exist, so it reads as the
+text `1900-02-29`. The 1904 system counts from 1 January 1904.
+
+**The zip and XML checks.** Before any parse, the engine:
+
+1. Reads the count of entries from the end record of the zip, and refuses
+   more than 10,000. Only then does zipfile read the directory.
+2. Refuses an entry with a password, or one that unpacks to more than 200 MB.
+3. Refuses an entry of more than 1 MB that unpacks to more than 100 times
+   its size in the zip.
+4. Refuses a part outside `xl/`. Each part that it reads must be a normal
+   path there.
+
+At the parse, a part must be UTF-8. The parser refuses a DTD and an entity
+at the first event. The XML nests at most 64 deep, and a cell holds at most
+1,048,576 characters.
+
+Two limits of Excel itself also hold. The security review found both as P3.
+
+1. **A sheet name.** The engine cuts a name to 31 characters at the load. A
+   cut name that meets another name ends in `~2`, `~3` and on. A long name
+   would go into each range and each cell reference of an answer.
+2. **A number format code.** A code of more than 255 characters is no date
+   format, and its number stays a number. The engine skips a bad `numFmtId`
+   in the same way, because a style only changes how a number reads.
+   openpyxl's date rule costs more than linear time on a long code.
+
+**The image under `--memory 1g`.** The peak is the largest resident set of
+the verb.
+
+| Case | Result |
+|---|---|
+| A workbook of 800,000 rows and five columns, 19.9 MB | Loads in 53.2 s, with a peak of 201 MB |
+| The same rows with a shared string each, 23.4 MB | Loads in 54.4 s, with a peak of 208 MB |
+| A zip bomb: a part of 201 MB in a file of 206 KB | `too_large` in 0.3 s, with a peak of 70 MB |
+| openpyxl's read-only mode on the 19.9 MB workbook | Only reads the rows, in 54.5 s, with a peak of 320 MB |
+
+On the host, 60,000 more rows with a shared string each cost Python about
+1 MB more (`tracemalloc`). That is about 17 bytes a string.
+
+**The departures.**
+
+1. **openpyxl never opens the file.** §7.10 says that the engine checks a
+   zip before openpyxl opens it. The engine parses each part with expat
+   instead, so one parse makes the checks and reads the rows. The table
+   above shows the cost of openpyxl. It also gives no merged ranges. The
+   fence row WS43-F26 now says "reaches the parse".
+2. **The rules are a copy, and the code is not.** The shared reader of
+   EM-T11b (`acb_skills/attachment_text.py`) holds checks of the same kind.
+   The engine runs in the sandbox image, and the image holds no gateway
+   package. So the engine copies these rules. It uses zipfile and expat, and
+   UTF-8 only, with no DTD. It keeps the `xl/` path rule, and reads each part
+   once.
+3. **The numbers are those of §7.10.** The engine reads every row, and the
+   shared reader stops at 5,000 rows. So the shared reader has smaller caps:
+   5,000 entries and 20 MB for a part.
+4. **The end record gives the count of entries.** zipfile makes an object
+   for each entry at open. A directory of 500,000 entries would cost hundreds
+   of MB before a count could refuse it.
+5. **The ratio skips a small part.** A part of less than 1 MB cannot be a
+   bomb.
+6. **`header_rows` corrects rule 2 only.** §7.10 says that it corrects rules
+   1 and 2. With `header_rows`, the engine still skips the title rows. In
+   this slice, no option turns rule 1 off. Without `header_rows`, the
+   manifest says `auto`.
+7. **A merged cell in a data row fills nothing.** Rule 2 fills a merged
+   header cell only.
+8. **Serial 60 stays text**, so its column gets the type text.
+9. **A date format keeps its time.** When a cell with a date format also
+   holds a time, the engine keeps the time. Its column can then become text,
+   with `mixed_date_formats`.
+10. **A time and a duration.** A time format gives the text `HH:MM:SS`. A
+    duration format, such as `[h]:mm:ss`, keeps the number of days.
+11. **A number keeps 15 significant digits**, as Excel shows it. A cached
+    `0.30000000000000004` reads as `0.3`.
+12. **More than 50 sheets need a name.** The load refuses with
+    `too_many_sheets` until the request names one sheet. A workbook holds at
+    most 200 tables. A sheet holds at most 100,000 merged ranges.
+13. **The load answer names the sheets.** It adds `sheets`, with the text
+    that is in no table. Each table adds `sheet`, `hidden`, `hidden_rows` and
+    `totals_of`. The manifest adds `first_col` for the cell references.
+14. **The shared strings stay in memory, packed.** Each 4,096 strings are
+    one text and an array of ends. The cap of 200 MB for a part bounds them.
+15. **A bug of WS-43y1a.** A column with no value failed the type step with
+    `engine_error`, also in a CSV file. DuckDB gives NULL for a `count_if`
+    over it. The engine now reads that NULL as 0.
+16. **The size.** The engine is 2,832 lines, and the workbook reader is
+    about 1,300 of them.
+
+**What the reader does not do.**
+
+- A load reads about 75,000 cells a second in the image. So a workbook of
+  more than about 9 million cells passes the time cap of 120 s.
+- A table of text only, after a gap, starts a new table. Its first row
+  becomes a header. The model can ask for the sheet with `header_rows`.
+- A sheet of one column a table, with an empty column between each pair,
+  splits into tables of one column, as rule 7 says.
+
+**The mutations.** Each one ran red, and `git checkout` then restored the
+file. `git status` was clean after each one.
+
+| # | Mutation | Red tests |
+|---|---|---|
+| M1 | No total-row rule | The layout test, the sums test and the `.xlsm` test |
+| M4 | The formula in place of its cached value | The formula test and the layout test |
+| Z1 | No cap of 200 MB on an unpacked part | `test_a_zip_bomb_is_refused_before_any_part_is_unpacked` |
+| Z2 | No ratio check | `test_a_zip_bomb_is_refused_before_any_part_is_unpacked` |
+| E1 | No count of the entries before zipfile reads the directory | `test_too_many_zip_entries_are_refused_before_the_directory_is_read` |
+| P1 | No path rule, so a part outside `xl/` is read | Both cases of `test_a_part_outside_xl_is_refused` |
+| X1 | No refusal of a DTD or an entity | Four cases of `test_an_xml_bomb_is_refused_at_its_first_event` |
+| U1 | No UTF-8 check before the parse | The `utf-16` case of the XML bomb test |
+| D1 | No leap-year bug | The serial dates 1 and 59 |
+| L1 | An empty gap never splits a table | `test_several_tables_on_one_sheet_and_a_blank_separator_row` |
+| L2 | A merged header cell fills no column | The layout test |
+| S1 | The shared strings as a plain list | `test_a_workbook_load_streams` |
+| C1 | The NULL counts of an empty column stay NULL | The formula test |
+| Z64 | The zip64 end record gives a count of 0 | `test_the_entry_count_reads_a_zip64_end_record` |
+
+A first run of Z1 found a fault in the fence. The bomb took its size from
+the cap of the engine, so a larger cap built a larger bomb. Commit
+`6d31cf41d` gives the bomb a fixed size.
 
 ### WS-43y2 — The data tools, the envelope and the dataset dir 🔲 📝 **Specified 2026-10-06**
 

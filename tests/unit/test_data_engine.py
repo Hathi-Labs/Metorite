@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import csv
 import importlib.util
+import io
 import json
 import os
 import re
@@ -31,6 +32,7 @@ import tempfile
 import time
 import tracemalloc
 import uuid
+import zipfile
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
@@ -39,6 +41,9 @@ from typing import Any
 import duckdb
 import pytest
 
+from tests.unit import _xlsx_build as xb
+from tests.unit._xlsx_build import inline, num
+from tests.unit._xlsx_build import row as xrow
 from tests.unit.test_coding_sandbox_image import (  # noqa: F401 — a fixture, used by name
     _DOCKERFILE,
     _RUN_FLAGS,
@@ -223,8 +228,8 @@ def test_a_second_load_reads_nothing_and_the_options_change_the_id(dirs: Any) ->
 
 @pytest.mark.parametrize(
     ("name", "says"),
-    [("a.xlsx", "WS-43y1b"), ("a.xlsm", "WS-43y1b"), ("a.xls", "old .xls"), ("a.xlsb", ".xlsb"),
-     ("a.ods", ".ods"), ("a.txt", ".csv and .tsv")],
+    [("a.xls", "old .xls"), ("a.xlsb", ".xlsb"), ("a.ods", ".ods"),
+     ("a.txt", ".csv, .tsv, .xlsx and .xlsm")],
 )  # fmt: skip
 def test_the_engine_refuses_a_kind_it_does_not_read_with_a_reason(
     dirs: Any, name: str, says: str
@@ -831,6 +836,586 @@ def test_a_nul_byte_reads_as_a_replacement_mark(dirs: Any) -> None:
 
 
 # --------------------------------------------------------------------------
+# WS-43y1b: the .xlsx reader, the nine layout rules of §7.10, Excel dates, and
+# the zip and XML checks. Each workbook is built in code with zipfile, by the
+# builder of EM-T11b (tests/unit/_xlsx_build.py), so a test can make any part
+# hostile. One test reads a workbook that openpyxl wrote.
+# --------------------------------------------------------------------------
+
+#: Cell styles: 0 General, 1 a date (14), 2 a date and time (164), 3 a time
+#: (20) and 4 a duration (46).
+_STYLES = (
+    f'<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="{xb.MAIN}">'
+    '<numFmts count="1"><numFmt numFmtId="164" formatCode="dd/mm/yyyy hh:mm"/></numFmts>'
+    '<cellXfs count="5"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="164"/>'
+    '<xf numFmtId="20"/><xf numFmtId="46"/></cellXfs></styleSheet>'
+).encode()
+
+
+def _f(ref: str, formula: str, cached: object | None = None, kind: str = "") -> str:
+    """A formula cell, with its cached value when one is given."""
+    t = f' t="{kind}"' if kind else ""
+    v = f"<v>{cached}</v>" if cached is not None else ""
+    return f'<c r="{ref}"{t}><f>{formula}</f>{v}</c>'
+
+
+def _date(ref: str, serial: object, style: int = 1) -> str:
+    return f'<c r="{ref}" s="{style}"><v>{serial}</v></c>'
+
+
+def _book(
+    sheets: list[tuple[str, bytes]],
+    *,
+    hidden: frozenset[str] = frozenset(),
+    date1904: bool = False,
+    extra: dict[str, bytes] | None = None,
+) -> bytes:
+    """A workbook of *sheets*, with ``_STYLES`` at the usual name."""
+    files = xb.parts(sheets, hidden=hidden)
+    if date1904:
+        files["xl/workbook.xml"] = files["xl/workbook.xml"].replace(
+            b"<sheets>", b'<workbookPr date1904="1"/><sheets>'
+        )
+    files["xl/styles.xml"] = _STYLES
+    files.update(extra or {})
+    return xb.package(files)
+
+
+def _rows(*rows: tuple[int, str]) -> str:
+    return "".join(xrow(n, cells) for n, cells in rows)
+
+
+def _tables(dirs: Any, ds_id: str) -> dict[str, dict[str, Any]]:
+    manifest = json.loads((dirs.data / ds_id / "manifest.json").read_text(encoding="utf-8"))
+    return {t["name"]: t for t in manifest["tables"]}
+
+
+def _sql(dirs: Any, ds_id: str, sql: str) -> list[list[Any]]:
+    return list(_ok(_call(dirs, "query", dataset_id=ds_id, sql=sql))["rows"])
+
+
+#: Rules 1 to 6: a title row, a header of two rows under two merged cells, a
+#: total row named "Total", and a note under the table after a gap.
+_REPORT = _rows(
+    (1, inline("A1", "Sales report 2026")),
+    (3, inline("A3", "Region") + inline("B3", "Sales") + inline("D3", "Cost")),
+    (4, inline("B4", "Q1") + inline("C4", "Q2") + inline("D4", "Q1")),
+    (5, inline("A5", "North") + num("B5", 10) + num("C5", 20) + num("D5", 5)),
+    (6, inline("A6", "South") + num("B6", 30) + num("C6", 40) + num("D6", 6)),
+    (7, inline("A7", "Total") + _f("B7", "SUM(B5:B6)", 40) + num("C7", 60) + num("D7", 11)),
+    (9, inline("A9", "Source: finance")),
+)
+_REPORT_MERGES = (
+    '<mergeCells count="3"><mergeCell ref="A1:D1"/><mergeCell ref="A3:A4"/>'
+    '<mergeCell ref="B3:C3"/></mergeCells>'
+)
+
+
+def test_a_workbook_follows_the_layout_rules(dirs: Any) -> None:
+    """Rules 1 to 6 of §7.10, and a cell reference of a sheet name with a space."""
+    data = _book([("Q1 Sales", xb.sheet(_REPORT, after=_REPORT_MERGES))])
+    answer = _ok(_load(dirs, "r.xlsx", data))
+    ds = answer["dataset_id"]
+    table = _tables(dirs, ds)["q1_sales"]
+    assert [c["name"] for c in table["columns"]] == [
+        "Region",
+        "Sales / Q1",
+        "Sales / Q2",
+        "Cost / Q1",
+    ]
+    assert table["rows"] == 2 and table["range"] == "'Q1 Sales'!A5:D6"
+    assert table["left_out"] == [
+        {"what": "title rows", "range": "'Q1 Sales'!A1:A1"},
+        {"what": "header rows", "range": "'Q1 Sales'!A3:D4"},
+        {"what": "notes", "range": "'Q1 Sales'!A9:A9"},
+        {"what": "total rows", "table": "q1_sales__totals", "count": 1, "rows": [7]},
+    ]
+    # Rule 5: the sum never counts the total row, and the side table keeps it.
+    assert _sql(dirs, ds, 'SELECT sum("Sales / Q1"), sum("Cost / Q1") FROM q1_sales') == [[40, 11]]
+    assert _sql(dirs, ds, 'SELECT "Sales / Q1" FROM q1_sales__totals') == [[40]]
+    preview = _ok(_call(dirs, "preview", dataset_id=ds, table="q1_sales"))
+    assert preview["cells"] == ["'Q1 Sales'!A5:D5", "'Q1 Sales'!A6:D6"]
+    assert answer["sheets"] == [
+        {"name": "Q1 Sales", "hidden": False, "tables": ["q1_sales"], "left_out": []}
+    ]
+
+
+def test_a_row_of_column_sums_is_a_total_row(dirs: Any) -> None:
+    """Rule 4 with no word: a last row of sums with no text is a total row. A
+    row that equals a sum and has a data row after it is data, and so is a
+    row of sums with text in it."""
+    head = inline("A1", "Item") + inline("B1", "Qty") + inline("C1", "Amount")
+
+    def item(n: int, name: str | None, qty: int, amount: int) -> tuple[int, str]:
+        label = inline(f"A{n}", name) if name else ""
+        return n, label + num(f"B{n}", qty) + num(f"C{n}", amount)
+
+    sums = _rows((1, head), item(2, "a", 1, 10), item(3, "b", 1, 20), item(4, "c", 2, 30),
+                 (5, _f("B5", "SUM(B2:B4)", 4) + _f("C5", "SUM(C2:C4)", 60)))  # fmt: skip
+    mid = _rows((1, head), item(2, "x", 1, 1), item(3, "y", 1, 1), item(4, None, 2, 2),
+                item(5, "z", 5, 5))  # fmt: skip
+    ds = _ok(_load(dirs, "s.xlsx", _book([("Sums", xb.sheet(sums)), ("Mid", xb.sheet(mid))])))[
+        "dataset_id"
+    ]
+    tables = _tables(dirs, ds)
+    assert tables["sums"]["rows"] == 3 and tables["sums__totals"]["rows"] == 1
+    assert _sql(dirs, ds, "SELECT sum(Amount), sum(Qty) FROM sums") == [[60, 4]]
+    assert _sql(dirs, ds, "SELECT Amount FROM sums__totals") == [[60]]
+    assert tables["mid"]["rows"] == 4 and "mid__totals" not in tables
+    assert _sql(dirs, ds, "SELECT sum(Amount) FROM mid") == [[9]]
+
+
+def test_a_formula_gives_its_cached_value_and_never_its_text(dirs: Any) -> None:
+    """Rule 8. A formula with no cached value, or an error value, reads as
+    empty, and its column counts it."""
+    sheet = _rows(
+        (1, inline("A1", "Qty") + inline("B1", "Double") + inline("C1", "Tag") + inline("D1", "Now")),
+        (2, num("A2", 3) + _f("B2", "A2*2", 6) + _f("C2", '"x"&amp;"y"', "xy", "str")
+         + _f("D2", "1/0", "#DIV/0!", "e")),
+        (3, num("A3", 4) + _f("B3", "A3*2", 8) + _f("C3", '"z"', "z", "str") + _f("D3", "NOW()")),
+    )  # fmt: skip
+    ds = _ok(_load(dirs, "f.xlsx", _book([("F", xb.sheet(sheet))])))["dataset_id"]
+    rows = _sql(dirs, ds, "SELECT Qty, Double, Tag, Now FROM f ORDER BY Qty")
+    assert rows == [[3, 6, "xy", None], [4, 8, "z", None]]
+    cols = {c["name"]: c for c in _tables(dirs, ds)["f"]["columns"]}
+    assert cols["Double"]["type"] == "integer"
+    assert cols["Now"]["uncached_formulas"] == 1 and cols["Now"]["error_values"] == 1
+    assert "A2*2" not in (dirs.data / ds / "manifest.json").read_text(encoding="utf-8")
+
+
+def test_several_tables_on_one_sheet_and_a_blank_separator_row(dirs: Any) -> None:
+    """Rule 7: an empty row before a new header, or an empty column, splits a
+    sheet. An empty row before a data row splits no table."""
+    two = _rows(
+        (1, inline("A1", "Name") + inline("B1", "Qty") + inline("E1", "Code") + inline("F1", "Value")),
+        (2, inline("A2", "a") + num("B2", 1) + inline("E2", "k1") + num("F2", 100)),
+        (3, inline("A3", "b") + num("B3", 2) + inline("E3", "k2") + num("F3", 200)),
+        (5, inline("A5", "City") + inline("B5", "Pop")),
+        (6, inline("A6", "Pune") + num("B6", 7)),
+        (7, inline("A7", "Goa") + num("B7", 2)),
+    )  # fmt: skip
+    gap = _rows(
+        (1, inline("A1", "Name") + inline("B1", "Qty")),
+        (2, inline("A2", "a") + num("B2", 1)),
+        (3, inline("A3", "b") + num("B3", 2)),
+        (5, inline("A5", "c") + num("B5", 3)),
+    )
+    ds = _ok(_load(dirs, "t.xlsx", _book([("Two", xb.sheet(two)), ("Gap", xb.sheet(gap))])))[
+        "dataset_id"
+    ]
+    tables = _tables(dirs, ds)
+    ranges = {t["range"]: [c["name"] for c in t["columns"]] for t in tables.values()}
+    assert ranges == {
+        "Two!A2:B3": ["Name", "Qty"], "Two!A6:B7": ["City", "Pop"],
+        "Two!E2:F3": ["Code", "Value"], "Gap!A2:B5": ["Name", "Qty"],
+    }  # fmt: skip
+    assert tables["gap"]["rows"] == 3
+    assert {"what": "empty rows", "count": 1, "rows": [4]} in tables["gap"]["left_out"]
+    side = next(t for t in tables.values() if t["range"] == "Two!E2:F3")
+    rows = _ok(_call(dirs, "preview", dataset_id=ds, table=side["name"]))["cells"]
+    assert rows == ["Two!E2:F2", "Two!E3:F3"]
+
+
+def test_hidden_sheets_rows_and_columns_are_read_and_marked(dirs: Any) -> None:
+    """Rule 9."""
+    cols = '<cols><col min="2" max="2" width="0" hidden="1"/></cols>'
+    open_sheet = (
+        '<row r="1"><c r="A1" t="inlineStr"><is><t>Item</t></is></c>'
+        '<c r="B1" t="inlineStr"><is><t>Cost</t></is></c></row>'
+        '<row r="2"><c r="A2" t="inlineStr"><is><t>a</t></is></c><c r="B2"><v>5</v></c></row>'
+        '<row r="3" hidden="1"><c r="A3" t="inlineStr"><is><t>b</t></is></c><c r="B3"><v>7</v></c></row>'
+    )
+    rates = _rows(
+        (1, inline("A1", "Rate") + inline("B1", "Code")), (2, num("A2", 9) + inline("B2", "x"))
+    )
+    data = _book([("Open", xb.sheet(open_sheet, before=cols)), ("Rates", xb.sheet(rates))],
+                 hidden=frozenset({"Rates"}))  # fmt: skip
+    ds = _ok(_load(dirs, "h.xlsx", data))["dataset_id"]
+    tables = _tables(dirs, ds)
+    assert tables["rates"]["hidden"] is True and tables["open"]["hidden"] is False
+    assert tables["open"]["hidden_rows"] == {"count": 1, "rows": [3]}
+    assert [c.get("hidden", False) for c in tables["open"]["columns"]] == [False, True]
+    assert _sql(dirs, ds, "SELECT sum(Cost) FROM open") == [[12]]
+
+
+@pytest.mark.parametrize(
+    ("serial", "kind", "date1904", "text"),
+    [
+        (1, "date", False, "1900-01-01"),
+        (59, "date", False, "1900-02-28"),
+        (60, "date", False, "1900-02-29"),  # Excel's leap-year bug: a day that did not exist
+        (61, "date", False, "1900-03-01"),
+        (45658, "date", False, "2025-01-01"),
+        (45658.5, "date", False, "2025-01-01 12:00:00"),  # a date format keeps its time
+        (45658.25, "datetime", False, "2025-01-01 06:00:00"),
+        (45658, "datetime", False, "2025-01-01 00:00:00"),
+        (0.4375, "time", False, "10:30:00"),
+        (0, "date", True, "1904-01-01"),
+        (44196, "date", True, "2025-01-01"),
+        (-1, "date", False, None),
+        (2_958_466, "date", False, None),
+    ],
+)  # fmt: skip
+def test_an_excel_serial_date(serial: float, kind: str, date1904: bool, text: str | None) -> None:
+    assert E._excel_date(serial, kind, date1904) == text
+
+
+def test_excel_dates_load_with_their_types(dirs: Any) -> None:
+    """A cell with a date format is a date. A number with no date format stays
+    a number, and a date header gives it the finding of a serial date."""
+    head = "".join(inline(f"{c}1", n) for c, n in zip("ABCDEF", ["When", "At", "Clock", "Spent",
+                                                                  "Order date", "Day"], strict=True))  # fmt: skip
+    rows = _rows(
+        (1, head),
+        (2, _date("A2", 45658) + _date("B2", 45658.25, 2) + _date("C2", 0.5, 3)
+         + _date("D2", 1.5, 4) + num("E2", 45700) + '<c r="F2" t="d"><v>2026-01-05</v></c>'),
+        (3, _date("A3", 45700) + _date("B3", 45700, 2) + _date("C3", 0.25, 3)
+         + _date("D3", 2, 4) + num("E3", 45701) + '<c r="F3" t="d"><v>2026-01-06</v></c>'),
+    )  # fmt: skip
+    ds = _ok(_load(dirs, "d.xlsx", _book([("D", xb.sheet(rows))])))["dataset_id"]
+    cols = {c["name"]: c for c in _tables(dirs, ds)["d"]["columns"]}
+    types = {name: c["type"] for name, c in cols.items()}
+    assert types == {"When": "date", "At": "datetime", "Clock": "text", "Spent": "decimal",
+                     "Order date": "integer", "Day": "date"}  # fmt: skip
+    assert cols["When"]["min"] == "2025-01-01" and cols["At"]["min"] == "2025-01-01T06:00:00"
+    assert cols["Clock"]["samples"] == ["12:00:00", "06:00:00"]
+    assert cols["Order date"]["findings"] == ["possible_excel_serial_date"]
+    old = _book([("D", xb.sheet(_rows((1, inline("A1", "When")), (2, _date("A2", 44196)))))],
+                date1904=True)  # fmt: skip
+    cols = _columns(dirs, _ok(_load(dirs, "o.xlsx", old))["dataset_id"])
+    assert cols["When"]["type"] == "date" and cols["When"]["min"] == "2025-01-01"
+
+
+def test_the_request_names_the_header_rows_and_the_sheet(dirs: Any) -> None:
+    two = _rows(
+        (1, inline("A1", "Sales") + inline("B1", "Sales")),
+        (2, inline("A2", "Q1") + inline("B2", "Q2")),
+        (3, num("A3", 1) + num("B3", 2)),
+    )
+    other = _rows((1, inline("A1", "x") + inline("B1", "y")), (2, num("A2", 1) + num("B2", 2)))
+    data = _book([("First", xb.sheet(two)), ("Second", xb.sheet(other))])
+    auto = _ok(_load(dirs, "a.xlsx", data))
+    assert [c["name"] for c in auto["tables"][0]["columns"]] == ["Sales", "Sales_2"]
+    named = _ok(_load(dirs, "a.xlsx", data, header_rows=2, sheet="first"))
+    assert [t["name"] for t in named["tables"]] == ["first"]
+    assert [c["name"] for c in named["tables"][0]["columns"]] == ["Sales / Q1", "Sales / Q2"]
+    assert named["dataset_id"] != auto["dataset_id"]
+    missing = _load(dirs, "a.xlsx", data, sheet="Third")
+    assert missing["error"] == "not_found" and "First, Second" in missing["message"]
+    assert _load(dirs, "c.csv", "a\n1\n", sheet="First")["error"] == "bad_request"
+    many = _book([(f"S{i}", xb.sheet(xrow(1, inline("A1", "x")))) for i in range(E.MAX_SHEETS + 1)])
+    assert _load(dirs, "m.xlsx", many)["error"] == "too_many_sheets"
+
+
+def test_a_column_of_text_rows_and_a_sheet_of_titles(dirs: Any) -> None:
+    """With no wider row, the rows of one cell each are a table of one column.
+    A workbook with no data row under a header is refused."""
+    names = _rows((1, inline("A1", "Name")), (2, inline("A2", "Alice")), (3, inline("A3", "Bob")))
+    ds = _ok(_load(dirs, "n.xlsx", _book([("N", xb.sheet(names))])))["dataset_id"]
+    assert _sql(dirs, ds, "SELECT Name FROM n ORDER BY Name") == [["Alice"], ["Bob"]]
+    title = _book([("T", xb.sheet(_rows((1, inline("A1", "Only a title")))))])
+    assert _load(dirs, "t.xlsx", title)["error"] == "empty"
+
+
+def test_an_xlsm_file_loads_its_values_and_runs_no_macro(dirs: Any) -> None:
+    data = _book([("Q1 Sales", xb.sheet(_REPORT, after=_REPORT_MERGES))],
+                 extra={"xl/vbaProject.bin": b"\xd0\xcf\x11\xe0 macro bytes"})  # fmt: skip
+    ds = _ok(_load(dirs, "r.xlsm", data))["dataset_id"]
+    assert _sql(dirs, ds, 'SELECT sum("Sales / Q1") FROM q1_sales') == [[40]]
+
+
+def test_a_workbook_that_openpyxl_wrote_loads(dirs: Any, tmp_path: Path) -> None:
+    """A real writer: shared strings, styles, a merged header and a formula
+    with no cached value, which openpyxl never writes."""
+    from datetime import date as day
+
+    from openpyxl import Workbook
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Orders"
+    sheet.append(["Orders of March"])
+    sheet.append([])
+    sheet.append(["Order", "Placed", "Amount", "Tax"])
+    sheet.append(["O-1", day(2026, 3, 1), 120.5, "=C4*0.18"])
+    sheet.append(["O-2", day(2026, 3, 9), 80, "=C5*0.18"])
+    sheet.merge_cells("A1:D1")
+    book.create_sheet("Notes").sheet_state = "hidden"
+    path = tmp_path / "o.xlsx"
+    book.save(path)
+    ds = _ok(_load(dirs, "o.xlsx", path.read_bytes()))["dataset_id"]
+    cols = _columns(dirs, ds)
+    assert cols["Placed"]["type"] == "date" and cols["Placed"]["max"] == "2026-03-09"
+    assert cols["Amount"]["type"] == "decimal" and cols["Tax"]["uncached_formulas"] == 2
+    assert _sql(dirs, ds, "SELECT sum(Amount) FROM orders") == [["200.5"]]
+
+
+def _python_peak(dirs: Any, rows: int) -> int:
+    """The Python peak (``tracemalloc``) of a load of *rows* rows, each with its own shared string."""
+    parts = xb.parts([("Big", b"")], shared=b"")
+    strings = "".join(f"<si><t>Customer {i:06d}</t></si>" for i in range(rows))
+    parts["xl/sharedStrings.xml"] = f'<sst xmlns="{xb.MAIN}">{strings}</sst>'.encode()
+    body = "".join(
+        xrow(i, num(f"A{i}", i) + f'<c r="B{i}" t="s"><v>{i - 2}</v></c>' + num(f"C{i}", f"{i}.5"))
+        for i in range(2, rows + 2)
+    )
+    head = xrow(1, inline("A1", "id") + inline("B1", "who") + inline("C1", "amount"))
+    parts["xl/worksheets/sheet1.xml"] = xb.sheet(head + body)
+    (dirs.run / "src").mkdir(parents=True, exist_ok=True)
+    (dirs.run / "src" / f"big{rows}.xlsx").write_bytes(xb.package(parts))
+    del parts, body, strings
+    tracemalloc.start()
+    try:
+        answer = E._load(dirs, {"source": f"src/big{rows}.xlsx"}, f"rid{rows}")
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert answer["tables"][0]["rows"] == rows
+    return int(peak)
+
+
+def test_a_workbook_load_streams(dirs: Any, monkeypatch: Any) -> None:
+    """The load holds one row at a time, and the shared strings are packed.
+
+    A chunk of 64 KB keeps the buffers of the parse small, so the peak shows
+    what grows with the file. 60,000 more rows, each with its own shared
+    string, cost Python less than 2 MB more: about 17 bytes a string. A list
+    of the strings would cost about 4 MB, and a list of the rows far more.
+    The memory of the image is the Docker half below.
+    """
+    monkeypatch.setattr(E, "_XML_CHUNK", 2**16)
+    small, large = _python_peak(dirs, 20_000), _python_peak(dirs, 80_000)
+    assert small < 4 * 2**20, f"{small / 2**20:.1f} MB"
+    assert large - small < 2 * 2**20, f"{small / 2**20:.1f} MB, then {large / 2**20:.1f} MB"
+
+
+# The zip and XML checks (§7.10 "Isolation"). Each refusal comes before any
+# part is parsed, or at the first event of the part.
+
+
+def _stream_part(files: dict[str, bytes], name: str, size: int, fill: bytes = b"A") -> bytes:
+    """A package whose part *name* holds *size* bytes of *fill* in one inline string."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for part, data in files.items():
+            if part != name:
+                zf.writestr(part, data)
+        with zf.open(name, "w", force_zip64=True) as fh:
+            fh.write(
+                f'<worksheet xmlns="{xb.MAIN}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>'.encode()
+            )
+            chunk = fill * 2**20
+            for _ in range(size // 2**20):
+                fh.write(chunk)
+            fh.write(b"</t></is></c></row></sheetData></worksheet>")
+    return buf.getvalue()
+
+
+def _spy_open(monkeypatch: Any) -> list[str]:
+    """Record each part that the engine unpacks."""
+    opened: list[str] = []
+    real = zipfile.ZipFile.open
+
+    def spy(self: Any, name: Any, *args: Any, **kwargs: Any) -> Any:
+        opened.append(getattr(name, "filename", name))
+        return real(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", spy)
+    return opened
+
+
+def _serve_book(dirs: Any, data: bytes, name: str = "b.xlsx") -> dict[str, Any]:
+    (dirs.run / "src").mkdir(parents=True, exist_ok=True)
+    (dirs.run / "src" / name).write_bytes(data)
+    return _serve(dirs, "load", source=f"src/{name}", max_file_bytes=50 * 2**20)
+
+
+def test_a_zip_bomb_is_refused_before_any_part_is_unpacked(dirs: Any, monkeypatch: Any) -> None:
+    """A part over 200 MB unpacked, and a part over 100 times its packed size.
+
+    The sizes are numbers, and not the engine's caps, so a changed cap fails
+    here and builds no larger bomb.
+    """
+    files = xb.parts([("S", b"")])
+    big = _stream_part(files, "xl/worksheets/sheet1.xml", 201 * 2**20)
+    dense = _stream_part(files, "xl/worksheets/sheet1.xml", 8 * 2**20)
+    assert len(big) < 2**20 and len(dense) < 2**20
+    opened = _spy_open(monkeypatch)
+    answer = _serve_book(dirs, big)
+    assert answer["error"] == "too_large" and "200 MB" in answer["message"], answer
+    ratio = _serve_book(dirs, dense, "d.xlsx")
+    assert ratio["error"] == "bad_file" and "100 times" in ratio["message"], ratio
+    assert opened == []
+
+
+def test_a_part_that_hides_its_size_is_refused(dirs: Any) -> None:
+    """zipfile stops at the declared size and checks the CRC there."""
+    from tests.unit.test_attachment_xlsx import _lie_about_size
+
+    data = _book([("Q1 Sales", xb.sheet(_REPORT, after=_REPORT_MERGES))])
+    answer = _serve_book(dirs, _lie_about_size(data, b"xl/worksheets/sheet1.xml", 60))
+    assert answer["error"] == "bad_file", answer
+
+
+def test_too_many_zip_entries_are_refused_before_the_directory_is_read(
+    dirs: Any, monkeypatch: Any
+) -> None:
+    files = xb.parts([("S", xb.sheet(_REPORT))])
+    files |= {f"docProps/x{i}.xml": b"" for i in range(E.ZIP_MAX_ENTRIES)}
+    data = xb.package(files)
+    made: list[Any] = []
+    monkeypatch.setattr(E.zipfile, "ZipFile", lambda *a, **k: made.append(a))
+    answer = _serve_book(dirs, data)
+    assert answer["error"] == "bad_file" and "zip entries" in answer["message"], answer
+    assert made == []
+
+
+def test_the_entry_count_reads_a_zip64_end_record(tmp_path: Path) -> None:
+    """Past 65,535 entries, the end record says 0xFFFF, and the zip64 end
+    record holds the count. A file with no end record is no workbook."""
+    path = tmp_path / "many.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as zf:
+        for i in range(65_536):
+            zf.writestr(f"p{i}", b"")
+    assert E._zip_entries(path) == 65_536
+    plain = tmp_path / "plain.zip"
+    plain.write_bytes(xb.package({"a": b"1", "b": b"2"}))
+    assert E._zip_entries(plain) == 2
+    (tmp_path / "x.xlsx").write_bytes(b"not a zip at all")
+    with pytest.raises(E.Refused):
+        E._zip_entries(tmp_path / "x.xlsx")
+
+
+_LAUGHS = (
+    '<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "lol">'
+    '<!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">]>'
+)
+
+
+@pytest.mark.parametrize(
+    ("part", "body", "says"),
+    [
+        pytest.param("xl/worksheets/sheet1.xml",
+                     _LAUGHS + f'<worksheet xmlns="{xb.MAIN}"><sheetData/></worksheet>', "DTD",
+                     id="sheet-billion-laughs"),
+        pytest.param("xl/sharedStrings.xml",
+                     _LAUGHS + f'<sst xmlns="{xb.MAIN}"><si><t>&lol2;</t></si></sst>', "DTD",
+                     id="strings-entity"),
+        pytest.param("xl/workbook.xml",
+                     '<?xml version="1.0"?><!DOCTYPE w SYSTEM "http://x/w.dtd"><workbook/>', "DTD",
+                     id="workbook-external-dtd"),
+        pytest.param("xl/styles.xml",
+                     '<!DOCTYPE s [<!ENTITY % p SYSTEM "file:///etc/passwd"> %p;]><styleSheet/>',
+                     "DTD", id="styles-parameter-entity"),
+        pytest.param("xl/worksheets/sheet1.xml",
+                     "<a>" * 100 + "</a>" * 100, "too deeply", id="deep-nesting"),
+        pytest.param("xl/worksheets/sheet1.xml",
+                     '<?xml version="1.0" encoding="UTF-16"?><worksheet/>'.encode("utf-16"),
+                     "readable", id="utf-16"),
+    ],
+)  # fmt: skip
+def test_an_xml_bomb_is_refused_at_its_first_event(
+    dirs: Any, part: str, body: str | bytes, says: str
+) -> None:
+    files = xb.parts([("S", xb.sheet(_REPORT))], shared=xb.strings(["x"]))
+    files["xl/styles.xml"] = _STYLES
+    files[part] = body.encode() if isinstance(body, str) else body
+    answer = _serve_book(dirs, xb.package(files))
+    assert answer["error"] == "bad_file" and says in answer["message"], answer
+
+
+@pytest.mark.parametrize(
+    ("rels_part", "target"),
+    [("xl/_rels/workbook.xml.rels", "../../evil.xml"), ("_rels/.rels", "docs/workbook.xml")],
+)
+def test_a_part_outside_xl_is_refused(dirs: Any, rels_part: str, target: str) -> None:
+    files = xb.parts([("S", xb.sheet(_REPORT))])
+    kind = xb.WORKSHEET if rels_part.startswith("xl/") else xb.OFFICE_DOCUMENT
+    files[rels_part] = xb.rels([("rId1", kind, target)])
+    files[target.lstrip("./")] = xb.sheet(_REPORT)
+    answer = _serve_book(dirs, xb.package(files))
+    assert answer["error"] == "bad_file" and "outside xl/" in answer["message"], answer
+
+
+def test_a_password_a_broken_zip_and_rows_out_of_order_are_refused(dirs: Any) -> None:
+    good = _book([("S", xb.sheet(_REPORT))])
+    locked = bytearray(good)
+    at = locked.find(b"PK\x01\x02")
+    while at != -1:  # Set the "encrypted" bit of each entry in the directory.
+        locked[at + 8] |= 1
+        at = locked.find(b"PK\x01\x02", at + 4)
+    assert _serve_book(dirs, bytes(locked))["error"] == "bad_file"
+    assert (
+        _serve_book(dirs, b"\xd0\xcf\x11\xe0 an OLE file, as Excel encrypts")["error"] == "bad_file"
+    )
+    backwards = _rows((5, inline("A5", "a") + inline("B5", "b")), (3, num("A3", 1) + num("B3", 2)))
+    answer = _serve_book(dirs, _book([("S", xb.sheet(backwards))]))
+    assert answer["error"] == "bad_file" and "out of order" in answer["message"]
+
+
+def test_the_caps_of_a_workbook_hold(dirs: Any) -> None:
+    """The rows of a dataset, the width of a table and the padded stage (round 3)."""
+    rows = [(1, inline("A1", "a") + inline("B1", "b"))]
+    rows += [(i, num(f"A{i}", i) + num(f"B{i}", i)) for i in range(2, 30)]
+    (dirs.run / "src").mkdir(parents=True)
+    (dirs.run / "src" / "r.xlsx").write_bytes(_book([("R", xb.sheet(_rows(*rows)))]))
+    capped = _serve(dirs, "load", source="src/r.xlsx", max_rows=10)
+    assert capped["error"] == "too_many_rows"
+    wide_head = "".join(inline(f"{E._letter(j)}1", f"h{j}") for j in range(E.MAX_COLUMNS + 1))
+    wide = _serve_book(dirs, _book([("W", xb.sheet(xrow(1, wide_head) + xrow(2, num("A2", 1))))]))
+    assert wide["error"] == "too_many_columns"
+    head = "".join(inline(f"{E._letter(j)}1", f"h{j}") for j in range(900))
+    tall = xrow(1, head) + "".join(xrow(i, num(f"A{i}", 1)) for i in range(2, 6000))
+    (dirs.run / "src" / "p.xlsx").write_bytes(_book([("P", xb.sheet(tall))]))
+    padded = _serve(dirs, "load", source="src/p.xlsx", max_file_bytes=2**20)
+    assert padded["error"] == "bad_file" and "too wide for its size" in padded["message"]
+
+
+def test_a_long_sheet_name_is_cut_to_31_characters_and_stays_unique(dirs: Any) -> None:
+    """Security review P3-1. A name past Excel's 31 characters is cut, so it
+    cannot swell each range and cell reference of an answer. Two long names
+    with one prefix stay unique, and a cut name passes a real name."""
+    prefix = "Sales " + "x" * 25
+    assert len(prefix) == E.SHEET_NAME_CHARS
+    table = xb.sheet(_rows((1, inline("A1", "a")), (2, num("A2", 1)), (3, num("A3", 2))))
+    real = prefix[:29].upper() + "~2"  # A real name that the second cut name meets
+    sheets = [(prefix + "y" * 1_000_000, table), (prefix + "z" * 50, table), (real, table)]
+    answer = _ok(_load(dirs, "l.xlsx", _book(sheets)))
+    names = [s["name"] for s in answer["sheets"]]
+    assert names == [prefix, prefix[:29] + "~3", real]
+    assert len({n.casefold() for n in names}) == 3
+    assert len(json.dumps(answer)) < 20_000
+    ds = answer["dataset_id"]
+    first = next(t for t in answer["tables"] if t["sheet"] == prefix)
+    assert first["range"] == f"'{prefix}'!A2:A3"
+    preview = _ok(_call(dirs, "preview", dataset_id=ds, table=first["name"]))
+    assert preview["cells"] == [f"'{prefix}'!A2:A2", f"'{prefix}'!A3:A3"]
+    picked = _ok(_load(dirs, "l.xlsx", _book(sheets), sheet=prefix[:29] + "~3"))
+    assert [s["name"] for s in picked["sheets"]] == [prefix[:29] + "~3"]
+
+
+def test_a_number_format_past_255_characters_is_no_date_and_reads_quickly(dirs: Any) -> None:
+    """Security review P3-2. openpyxl's date rule costs more than linear time
+    on a long crafted code. The engine skips a code past Excel's 255
+    characters, and its number stays a number."""
+    crafted = "[h" * 50_000
+    assert E._date_kind(14, None) == "date"  # The first call imports openpyxl. Time the next.
+    began = time.perf_counter()
+    assert E._date_kind(164, crafted) is None
+    assert time.perf_counter() - began < 0.1
+    edge = "yyyy-mm-dd" + '"' + "x" * (E.FORMAT_CODE_CHARS - 12) + '"'
+    assert len(edge) == E.FORMAT_CODE_CHARS and E._date_kind(164, edge) == "date"
+    assert E._date_kind(164, edge + " ") is None
+    styles = _STYLES.replace(b"dd/mm/yyyy hh:mm", crafted.encode())
+    rows = _rows((1, inline("A1", "When")), (2, _date("A2", 45658, 2)), (3, _date("A3", 45659, 2)))
+    began = time.perf_counter()
+    data = _book([("D", xb.sheet(rows))], extra={"xl/styles.xml": styles})
+    cols = _columns(dirs, _ok(_load(dirs, "d.xlsx", data))["dataset_id"])
+    assert time.perf_counter() - began < 5
+    assert cols["When"]["type"] == "integer"
+
+
+# --------------------------------------------------------------------------
 # Fences: done-when 7, the pins and the image.
 # --------------------------------------------------------------------------
 
@@ -948,6 +1533,32 @@ def cgroup_peak_mb():
         except OSError:
             pass
     return None
+MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+def big_book(path, rows, bomb_mb=0):
+    # A workbook of raw XML, streamed: id, amount, flag, a shared string and a date.
+    # With bomb_mb, the sheet is that many MB of one inline string instead.
+    import zipfile
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("_rels/.rels", f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        zf.writestr("xl/workbook.xml", f'<workbook xmlns="{MAIN}" xmlns:r="{REL}"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        zf.writestr("xl/_rels/workbook.xml.rels", f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="{REL}/sharedStrings" Target="sharedStrings.xml"/></Relationships>')
+        zf.writestr("xl/styles.xml", f'<styleSheet xmlns="{MAIN}"><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs></styleSheet>')
+        zf.writestr("xl/sharedStrings.xml", f'<sst xmlns="{MAIN}">' + "".join(f"<si><t>C{i}</t></si>" for i in range(50)) + "</sst>")
+        with zf.open("xl/worksheets/sheet1.xml", "w", force_zip64=True) as fh:
+            fh.write(f'<worksheet xmlns="{MAIN}"><sheetData>'.encode())
+            if bomb_mb:
+                fh.write(b'<row r="1"><c r="A1" t="inlineStr"><is><t>')
+                for _ in range(bomb_mb):
+                    fh.write(b"A" * 2**20)
+                fh.write(b"</t></is></c></row>")
+            else:
+                fh.write(b'<row r="1"><c r="A1" t="inlineStr"><is><t>id</t></is></c><c r="B1" t="inlineStr"><is><t>amount</t></is></c><c r="C1" t="inlineStr"><is><t>flag</t></is></c><c r="D1" t="inlineStr"><is><t>who</t></is></c><c r="E1" t="inlineStr"><is><t>when</t></is></c></row>')
+                for start in range(2, rows + 2, 5000):
+                    fh.write("".join(
+                        f'<row r="{i}"><c r="A{i}"><v>{i}</v></c><c r="B{i}"><v>{i % 997}.5</v></c><c r="C{i}" t="b"><v>{i % 2}</v></c><c r="D{i}" t="s"><v>{i % 50}</v></c><c r="E{i}" s="1"><v>{45000 + i % 365}</v></c></row>'
+                        for i in range(start, min(start + 5000, rows + 2))).encode())
+            fh.write(b"</sheetData></worksheet>")
 """
 
 _DOCKER_SCRIPT = r"""
@@ -967,7 +1578,16 @@ out["query"] = call("query", dataset_id=ds, sql='SELECT sum("Amount") FROM invoi
 out["preview"] = call("preview", dataset_id=ds, table="invoices", limit=1)["cells"]
 out["profile"] = call("profile", dataset_id=ds, table="invoices", column="Amount")["ok"]
 out["export"] = call("export", dataset_id=ds, sql="SELECT 1 AS a", format="xlsx")["file"]
-out["xlsx"] = call("load", source="src/Invoices.csv", name="a.xlsx")["error"]
+from openpyxl import Workbook
+book = Workbook()
+sheet = book.active
+sheet.title = "Q1 Sales"
+for line in (["Sales report"], [], ["Region", "Amount"], ["North", 10], ["South", 30], ["Total", 40]):
+    sheet.append(line)
+book.save(run / "src" / "r.xlsx")
+loaded = call("load", source="src/r.xlsx")
+out["xlsx"] = [t["name"] for t in loaded.get("tables", [])] or loaded
+out["xlsx sum"] = call("query", dataset_id=loaded.get("dataset_id"), sql="SELECT sum(Amount) FROM q1_sales").get("rows")
 out["two"] = call("query", dataset_id=ds, sql="SELECT 1; SELECT 2")["error"]
 spec = importlib.util.spec_from_file_location("data_engine", "/opt/sandbox/data_engine.py")
 engine = importlib.util.module_from_spec(spec)
@@ -1044,7 +1664,9 @@ def test_each_verb_and_each_lock_case_runs_in_the_image_as_uid_1000(
     assert out["load"] is True and out["query"] == [[AMOUNT_SUM]]
     assert out["preview"] == ["invoices!A3:G3"] and out["profile"] is True
     assert out["export"] == "outputs/export.xlsx"
-    assert out["xlsx"] == "unsupported_kind" and out["two"] == "one_select"
+    # WS-43y1b: a workbook that openpyxl wrote, with a title row and a total row.
+    assert out["xlsx"] == ["q1_sales", "q1_sales__totals"], out["xlsx"]
+    assert out["xlsx sum"] == [[40]] and out["two"] == "one_select"
     assert out["lock_allowed"] == [], out
     assert out["dataset_same"] is True
     ds = next(m.split()[0] for m in out["modes"] if m.startswith("ds_"))
@@ -1121,6 +1743,19 @@ pad_header = ",".join(f"c{i}" for i in range(1000)) + "\n"
 stage_peak("pad wide header", "pw.csv", pad_header + "1\n" * 2_000_000)
 stage_peak("pad late wide row", "pl.csv", "a\n" + "1\n" * 1_999_998 + ",".join(["9"] * 1000) + "\n")
 out["mixed sum"] = ds and call("query", dataset_id=ds, sql="SELECT count(*), sum(amount) FROM mixed", timeout_seconds=60).get("rows")
+# WS-43y1b: a large workbook streams, and a zip bomb stops before its part unpacks.
+for p in (run / "src").iterdir():
+    p.unlink()
+big_book(run / "src" / "big.xlsx", 800_000)
+out["xlsx bytes"] = (run / "src" / "big.xlsx").stat().st_size
+a = call("load", source="src/big.xlsx", timeout_seconds=300)
+out["big.xlsx"] = {k: a.get(k) for k in ("ok", "error", "message", "_rc", "_peak_mb", "_s")}
+out["big.xlsx"]["rows"] = a["tables"][0]["rows"] if a.get("ok") else None
+out["big.xlsx"]["types"] = [c["type"] for c in a["tables"][0]["columns"]] if a.get("ok") else None
+out["big.xlsx sum"] = a.get("ok") and call("query", dataset_id=a["dataset_id"], sql="SELECT count(*), sum(amount) FROM data", timeout_seconds=60).get("rows")
+big_book(run / "src" / "bomb.xlsx", 0, bomb_mb=201)
+out["bomb bytes"] = (run / "src" / "bomb.xlsx").stat().st_size
+out["bomb"] = {k: v for k, v in call("load", source="src/bomb.xlsx").items() if k in ("error", "_rc", "_peak_mb", "_s")}
 out["cgroup_peak_mb"] = cgroup_peak_mb()
 print("RESULT " + json.dumps(out))
 PY
@@ -1164,6 +1799,15 @@ def test_the_engine_answers_under_a_1_gib_container(
         pad = out[label]
         assert pad["error"] == "bad_file" and pad["_rc"] == 0, (label, pad)
         assert pad["stage_peak_mb"] < 200 and pad["_s"] < 60, (label, pad)
+    # WS-43y1b: 800,000 rows of a workbook load inside the load's time cap and
+    # the container. A zip bomb answers at once, and unpacks nothing.
+    book = out["big.xlsx"]
+    assert book["ok"] and book["rows"] == 800_000 and book["_rc"] == 0, book
+    assert book["types"] == ["integer", "decimal", "boolean", "text", "date"], book
+    assert book["_peak_mb"] < 768 and book["_s"] < E.LOAD_TIMEOUT_SECONDS, book
+    assert out["big.xlsx sum"][0][0] == 800_000
+    bomb = out["bomb"]
+    assert bomb["error"] == "too_large" and bomb["_s"] < 10 and bomb["_peak_mb"] < 200, bomb
 
 
 _GROW_SCRIPT = r"""
