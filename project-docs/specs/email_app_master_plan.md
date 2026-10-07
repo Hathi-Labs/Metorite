@@ -12032,7 +12032,8 @@ of data, large Excel files, etc., without hallucinating.
 > each slice below.
 
 > **Build state (2026-10-07).** EM-T14a merged as #700 (§13.9.1). EM-T14b-0 merged as #702.
-> EM-T14b-1 is built and not merged (§13.9.2). EM-T14c is built and not merged (§13.9.3).
+> EM-T14b-1 merged as #706 (§13.9.2). EM-T14c merged as #704 (§13.9.3). Both deployed on
+> 2026-10-07, dark.
 
 > **The owner answers (2026-10-07).** The owner answered Q-IN-1 to Q-IN-4 (§13.12). D-EM-43 to
 > D-EM-46 record them. Q-IN-1 made the job two stages: a cheap screen on `decide`, then the
@@ -12456,8 +12457,8 @@ behind `EMAIL_INSIGHTS`. The flip is an act of the owner only (the Flip row).
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | ✅ **MERGED #700 (2026-10-07). Migration 231.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
-| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | ✅ **EM-T14b-0 MERGED #702 (2026-10-07).** 🔨 **EM-T14b-1 BUILT, not merged (2026-10-07).** 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
-| **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | 🔨 **BUILT, not merged (2026-10-07). Dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
+| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | ✅ **EM-T14b-0 MERGED #702 (2026-10-07).** ✅ **EM-T14b-1 MERGED #706 (2026-10-07).** 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
+| **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | ✅ **MERGED #704 (2026-10-07). Dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
 | **EM-T14d** | 🟢 AGENT-SAFE · R8 · visual review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The view.** Two PRs: EM-T14d-1 (the PATCH, the shared helper, the tile and the digest line) and EM-T14d-2 (the UI). | §13.9.4 |
 | **EM-T14e** | 🟢 AGENT-SAFE · R8 · after the flip | 📝 **SPECIFIED (2026-10-07). It waits for the flip.** **Projects.** The four project types, the Projects tab, and the commitments of today beside them. | §13.9.5 |
 | **EM-T14f** | 🟢 AGENT-SAFE · R8 · after the flip | 📝 **SPECIFIED (2026-10-07). It waits for the flip.** **Sales.** The four sales types and the Sales tab, with no CRM act (D-EM-45). | §13.9.6 |
@@ -12666,7 +12667,8 @@ only. The agent fixed P3-a and recorded P3-b, P3-c and P3-d in §13.10 and in §
 EM-T14b-1 and EM-T14b-2. The orchestrator added EM-T14b-0 after the owner answered Q-IN-1. Its
 first audit happens at dispatch.
 
-**Build state.** EM-T14b-1 is 🔨 BUILT, not merged (2026-10-07).
+**Build state.** EM-T14b-1 is ✅ MERGED #706 (2026-10-07), squash commit `444c36893`, deployed
+2026-10-07.
 
 **Gate.** 🟢 AGENT-SAFE. The job sends mail text to a model in the background. So the slice takes
 the full review loop and a security review.
@@ -12858,7 +12860,7 @@ findings only. Fix round 1 made these changes:
    recorded answers, so the unit job can run it with no model.
 6. **Size.** Fixture data does not count toward the 600 lines.
 
-**Status of EM-T14b-1.** 🔨 BUILT, not merged (2026-10-07). The agent fixed each finding of review rounds 1 to 3. It
+**Status of EM-T14b-1.** ✅ MERGED #706 (2026-10-07), squash commit `444c36893`, deployed 2026-10-07. The agent fixed each finding of review rounds 1 to 3. It
 adds no job, no hook, no model call and no SQL.
 
 **As built (EM-T14b-1, 2026-10-07).**
@@ -13094,7 +13096,8 @@ stages. Record the tier, the scores and the counts of the log line in the As-bui
 
 #### 13.9.3 EM-T14c — `query_insights` and the list route
 
-**Status.** 🔨 BUILT, not merged (2026-10-07). Dark. The audit was GO-NARROWED.
+**Status.** ✅ MERGED #704 (2026-10-07), squash commit `2aafad958`, deployed 2026-10-07. Dark. The
+audit was GO-NARROWED.
 
 **Gate.** 🟢 AGENT-SAFE. A new route reads a private table. So the slice takes the full review loop
 and a security review.
@@ -13138,7 +13141,7 @@ uv run pytest tests/unit/test_email_insights_route.py tests/unit/test_email_owne
 uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights.py apps/agents/agent-email-assistant/agents.py
 ```
 
-**As built (EM-T14c, 2026-10-07).**
+**As built (EM-T14c, MERGED #704, 2026-10-07).**
 
 - **The route** is `GET /email/insights` in `routes/email/automation/insights.py`. The package
   `automation/__init__.py` imports the module so that its route registers, and does not flatten
