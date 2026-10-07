@@ -260,3 +260,27 @@ def test_the_status_vocabulary_maps_both_spellings() -> None:
         "sent", "delivered", "read", "failed", "deleted", None, "")] == [
         "sent", "delivered", "read", "played", "pending", "failed",
         "sent", "delivered", "read", "failed", None, None, None]
+
+
+# ── WA-C3 fix round: tolerate the real payload before WA-C0 proves it ────────
+
+def test_a_state_sync_item_with_a_contact_and_no_type_is_read() -> None:
+    body = samples.state_sync_body("PN1", action="add")
+    del body["entry"][0]["changes"][0]["value"]["state_sync"][0]["type"]
+    [change] = parse_webhook(body).contact_changes
+    assert (change.action, change.phone_number) == ("add", samples.CUSTOMER)
+
+
+def test_a_state_sync_item_of_another_type_is_ignored() -> None:
+    body = samples.state_sync_body("PN1", action="add")
+    body["entry"][0]["changes"][0]["value"]["state_sync"][0]["type"] = "label"
+    result = parse_webhook(body)
+    assert result.contact_changes == [] and result.errors == []
+
+
+def test_the_decline_code_matches_as_a_string_too() -> None:
+    body = samples.history_declined_body("PN1", where="value")
+    body["entry"][0]["changes"][0]["value"]["errors"][0]["code"] = "2593109"
+    result = parse_webhook(body)
+    assert result.history_declined is True
+    assert result.errors == []

@@ -17,6 +17,7 @@ const account = (over: Record<string, unknown>) => ({
   history_sync_error: null,
   history_import_progress: null,
   history_sync_deadline: LATER,
+  history_sync_available: true,
   ...over,
 });
 
@@ -31,8 +32,11 @@ describe("connectHistoryCopy", () => {
     expect(connectHistoryCopy("failed")).toContain("Start it again from Numbers");
   });
 
-  it("says a pending import has not started", () => {
-    expect(connectHistoryCopy("pending")).toContain("has not started");
+  it("says a pending import is not on yet, with no reconnect advice", () => {
+    // `pending` at connect time means the server runs no sync call.
+    const copy = connectHistoryCopy("pending");
+    expect(copy).toContain("History import is not on yet.");
+    expect(copy).not.toMatch(/connect (it )?again|Start it again/);
   });
 
   it("keeps the old promise only where nothing is imported", () => {
@@ -113,5 +117,49 @@ describe("accountHistoryLine", () => {
       expect(line?.canStart).toBe(false);
       expect(line?.text).toContain("connect it again");
     }
+  });
+});
+
+describe("accountHistoryLine with the history import off on the server", () => {
+  for (const state of ["pending", "failed"]) {
+    for (const deadline of [LATER, EARLIER]) {
+      it(`shows a neutral line for ${state}, deadline ${deadline === LATER ? "open" : "passed"}`, () => {
+        const line = accountHistoryLine(
+          account({
+            history_sync_state: state,
+            history_sync_error: "Meta said no",
+            history_sync_deadline: deadline,
+            history_sync_available: false,
+          }),
+          NOW
+        );
+        expect(line).toEqual({
+          text: "History import is not on yet.",
+          tone: "muted",
+          canStart: false,
+        });
+      });
+    }
+  }
+
+  it("still shows an import that runs or ended", () => {
+    const off = { history_sync_available: false };
+    expect(
+      accountHistoryLine(account({ ...off, history_sync_state: "complete" }), NOW)?.text
+    ).toBe("History imported");
+    expect(
+      accountHistoryLine(
+        account({ ...off, history_sync_state: "requested", history_import_progress: 30 }),
+        NOW
+      )?.text
+    ).toBe("Importing history · 30%");
+  });
+
+  it("reads a missing field as off, so an older server offers no button", () => {
+    const line = accountHistoryLine(
+      account({ history_sync_state: "pending", history_sync_available: undefined }),
+      NOW
+    );
+    expect(line?.canStart).toBe(false);
   });
 });

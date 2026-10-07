@@ -1309,3 +1309,55 @@ def test_the_retry_route_is_registered() -> None:
         getattr(r, "path", "") == "/whatsapp/accounts/{account_id}/history-sync"
         and "POST" in getattr(r, "methods", set())
         for r in router.routes)
+
+
+# ── WA-C3 fix round: the account model says what the server can do ──────────
+
+def _account_row(**over):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    base = dict(
+        id="acc-1", phone_number="+1", phone_number_id=_ES_PNID, waba_id=None,
+        display_name="A", avatar_color=None, sync_status="live", sync_error=None,
+        history_import_phase=0, quality_rating=None, last_synced_at=None,
+        is_default=True, provider="cloud_api", history_sync_state="pending",
+        history_sync_error=None, history_import_progress=None,
+        created_at=datetime(2026, 10, 7, 9, 30, tzinfo=UTC))
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize(("flag", "want"), [("1", True), (None, False), ("0", False)])
+def test_the_account_model_says_whether_the_import_is_on(monkeypatch, flag, want) -> None:
+    """P2-1: the UI offers a start, or reconnect advice, only when the server
+    runs the sync calls."""
+    from gateway.routes.whatsapp.transport.accounts import _account_model
+
+    if flag is None:
+        monkeypatch.delenv("WHATSAPP_HISTORY_SYNC", raising=False)
+    else:
+        monkeypatch.setenv("WHATSAPP_HISTORY_SYNC", flag)
+    assert _account_model(_account_row()).history_sync_available is want
+
+
+def test_the_deadline_is_created_at_plus_24_hours() -> None:
+    from datetime import UTC, datetime
+
+    from gateway.routes.whatsapp.transport.accounts import history_sync_deadline
+
+    assert history_sync_deadline(datetime(2026, 10, 7, 9, 30, tzinfo=UTC)) == (
+        datetime(2026, 10, 8, 9, 30, tzinfo=UTC))
+    # A naive time is read as UTC, and a missing one gives no deadline.
+    assert history_sync_deadline(datetime(2026, 10, 7, 9, 30)) == (
+        datetime(2026, 10, 8, 9, 30, tzinfo=UTC))
+    assert history_sync_deadline(None) is None
+
+
+def test_the_model_carries_the_deadline_only_with_a_state() -> None:
+    from gateway.routes.whatsapp.transport.accounts import _account_model
+
+    with_state = _account_model(_account_row(history_sync_state="failed"))
+    assert with_state.history_sync_deadline == "2026-10-08T09:30:00+00:00"
+    without = _account_model(_account_row(history_sync_state=None))
+    assert without.history_sync_deadline is None

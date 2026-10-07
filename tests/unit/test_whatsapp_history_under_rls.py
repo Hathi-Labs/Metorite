@@ -308,7 +308,7 @@ async def test_a_read_then_a_delivered_leaves_read(
     granted, app_engine, real_hooks,  # noqa: F811
 ):
     p = granted
-    pnid, _ = _seed(p.admin_engine, org=p.org_a)
+    pnid, acct = _seed(p.admin_engine, org=p.org_a)
     w_echo = _wamid()
     await _send(p, samples.echo_body(pnid, message_id=w_echo, body="ok"))
 
@@ -325,6 +325,8 @@ async def test_a_read_then_a_delivered_leaves_read(
     assert _admin_one(p.admin_engine,
                       "SELECT delivery_status FROM wa_messages "
                       "WHERE wa_message_id = :w", w=w_echo).delivery_status == "read"
+    assert _count_as(p.app_url, p.org_a, "wa_messages", acct) == 1
+    _org_b_sees_none(p, acct, "wa_messages", "wa_chats")
 
 
 async def test_a_status_for_an_unknown_message_creates_no_row(
@@ -347,7 +349,7 @@ async def test_a_sent_then_failed_moves_to_failed(
     granted, app_engine, real_hooks,  # noqa: F811
 ):
     p = granted
-    pnid, _ = _seed(p.admin_engine, org=p.org_a)
+    pnid, acct = _seed(p.admin_engine, org=p.org_a)
     w_echo = _wamid()
     await _send(p, samples.echo_body(pnid, message_id=w_echo, body="ok"))
     for status in ("sent", "failed", "sent"):
@@ -356,6 +358,100 @@ async def test_a_sent_then_failed_moves_to_failed(
     assert _admin_one(p.admin_engine,
                       "SELECT delivery_status FROM wa_messages "
                       "WHERE wa_message_id = :w", w=w_echo).delivery_status == "failed"
+    assert _count_as(p.app_url, p.org_a, "wa_messages", acct) == 1
+    _org_b_sees_none(p, acct, "wa_messages", "wa_chats")
+
+
+# ── wa-history-keeps-the-live-sender (fix round note) ───────────────────────
+
+async def test_a_history_copy_keeps_the_sender_of_the_live_row(
+    granted, app_engine, real_hooks,  # noqa: F811
+):
+    """Meta's history can carry a message that already came live. The live
+    row has the profile name, and the history copy has none. The copy must
+    not wipe it."""
+    p = granted
+    pnid, acct = _seed(p.admin_engine, org=p.org_a)
+    w_live = _wamid()
+    await _send(p, samples.live_message_body(pnid, message_id=w_live,
+                                             name="Pablo M"))
+
+    await _send(p, samples.history_body(pnid, inbound_id=w_live,
+                                        outbound_id=_wamid()))
+
+    row = _admin_one(p.admin_engine,
+                     "SELECT sender->>'name' AS name, from_history "
+                     "FROM wa_messages WHERE wa_message_id = :w", w=w_live)
+    assert row.name == "Pablo M", "the history copy wiped the live sender"
+    assert row.from_history is False
+    _org_b_sees_none(p, acct, "wa_messages")
+
+
+# ── wa-history-defers-the-sweep (fix round P2-2) ────────────────────────────
+
+@pytest.fixture()
+def counted_hooks(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The real hooks, with each `classify_chats` call recorded."""
+    from gateway.routes.whatsapp.automation.intent import process_new_messages
+    from gateway.routes.whatsapp.automation.replyzero import classify_chats
+    from whatsapp_ingestion.post_sync import hooks
+
+    calls: list[str] = []
+
+    async def _counting(account_id: str) -> None:
+        calls.append(account_id)
+        await classify_chats(account_id)
+
+    monkeypatch.setattr(hooks, "on_new_messages", process_new_messages)
+    monkeypatch.setattr(hooks, "classify_chats", _counting)
+    return calls
+
+
+async def test_a_history_only_chunk_does_not_sweep_the_chats(
+    granted, app_engine, counted_hooks,  # noqa: F811
+):
+    p = granted
+    pnid, acct = _seed(p.admin_engine, org=p.org_a)
+
+    await _send(p, samples.history_body(pnid, inbound_id=_wamid(),
+                                        outbound_id=_wamid(), progress=40))
+
+    assert counted_hooks == [], "a history chunk swept every chat"
+    assert _count_as(p.app_url, p.org_a, "wa_chat_status", acct) == 0
+
+
+async def test_the_chunk_that_completes_the_import_sweeps_once(
+    granted, app_engine, counted_hooks,  # noqa: F811
+):
+    p = granted
+    pnid, acct = _seed(p.admin_engine, org=p.org_a)
+    await _send(p, samples.history_body(pnid, inbound_id=_wamid(),
+                                        outbound_id=_wamid(), progress=40))
+
+    await _send(p, samples.history_body(pnid, inbound_id=_wamid(),
+                                        outbound_id=_wamid(), phase=2,
+                                        progress=100, customer="16505559999"))
+
+    assert counted_hooks == [acct]
+    assert _progress(p, acct).st == "complete"
+    # Every chat of the import has its reply state now (Q1: triage normally).
+    assert _count_as(p.app_url, p.org_a, "wa_chat_status", acct) == 2
+    _org_b_sees_none(p, acct, "wa_chat_status")
+
+
+async def test_a_mixed_batch_still_sweeps(
+    granted, app_engine, counted_hooks,  # noqa: F811
+):
+    p = granted
+    pnid, acct = _seed(p.admin_engine, org=p.org_a)
+    history = samples.history_body(pnid, inbound_id=_wamid(), outbound_id=_wamid())
+    live = samples.live_message_body(pnid, message_id=_wamid(),
+                                     sender="16505550000")
+    history["entry"][0]["changes"].extend(live["entry"][0]["changes"])
+
+    await _send(p, history)
+
+    assert counted_hooks == [acct]
 
 
 # ── wa-history-progress ─────────────────────────────────────────────────────
