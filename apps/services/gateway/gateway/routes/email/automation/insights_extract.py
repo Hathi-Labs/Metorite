@@ -223,14 +223,14 @@ _MARKED = re.compile(
     rf"(?P<m1>{_MARK})[{_GAP}]?(?P<s1>{_SIGN})(?P<n1>{_NUM}){_END}"
     rf"|{_FREE}(?P<s2>{_SIGN})(?P<n2>{_NUM})[{_GAP}]?(?P<m2>{_MARK})")
 _ANY_MARK = re.compile(_MARK)
-#: A scale word after a number, as a whole word, with an optional plural
-#: ``s``. White space or a hyphen may sit between the two. fin-1 never
-#: multiplies, so a scaled amount gives no amount. ``M/s`` (Messrs) is a
-#: name, not a scale. Review round 2 added the plurals, the hyphen and the
-#: words from hundred to tsd.
-_SCALE = (r"(?i:(?:k|m(?!/s\b)|mn|mm|b|bn|l|lacs?|lakhs?|lkhs?|crs?|crores?|hundreds?"
-          r"|thousands?|millions?|billions?|trillions?|mils?|mlns?|blns?|mios?|mrds?"
-          r"|grand|tsd)s?)(?!\w)")
+#: A scale word after a number, as a whole word. Each word of two letters or
+#: more takes an optional plural ``s``. A single letter takes none, so
+#: ``Ms.`` is not a scale. White space or a hyphen may sit between the
+#: number and the word. fin-1 never multiplies, so a scaled amount gives no
+#: amount. ``M/s`` (Messrs) is a name, not a scale. Review round 2 added the
+#: plurals, the hyphen and the words from hundred to tsd.
+_SCALE = (r"(?i:k|m(?!/s\b)|b|l|(?:mn|mm|bn|lac|lakh|lkh|cr|crore|hundred|thousand"
+          r"|million|billion|trillion|mil|mln|bln|mio|mrd|grand|tsd)s?)(?!\w)")
 _SCALED = re.compile(rf"{_MARK}[{_GAP}]?{_SIGN}{_NUM}[\s\-]*{_SCALE}"
                      rf"|{_FREE}{_SIGN}{_NUM}[\s\-]*{_SCALE}\s*{_MARK}")
 #: White space that groups the digits of ONE number, as in ``₹5 000``. A

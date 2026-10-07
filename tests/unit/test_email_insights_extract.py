@@ -170,6 +170,16 @@ def test_a_long_claim_never_reaches_the_parser() -> None:
     assert fact.due_on is None
 
 
+def test_a_claim_longer_than_a_quote_stores_no_date() -> None:
+    """Review round 2 (P3): this claim parses to the date of the quote. It is
+    longer than the cap of a quote, so code refuses it before the parser."""
+    claim = "15 October 2026" + " " * X.CAPS["quote"]
+    assert X.parse_due(claim).due == date(2026, 10, 15)
+    (fact,) = _one(due_on=claim).facts
+    assert fact.due_on is None
+    assert fact.confidence == X.CONF_PART
+
+
 @pytest.mark.parametrize("text", [
     ("1 Oct 2026 " * 9100)[:100_000],
     "Friday" + " " * 100_000 + "15 October 2026",

@@ -55,6 +55,7 @@
     {"text": "Add $500 more", "amount": "500.00", "currency": "USD", "note": "review round 1: more is not m"},
     {"text": "USD 5,000 lump sum", "amount": "5000.00", "currency": "USD", "note": "review round 1: lump is not l"},
     {"text": "Pay ₹5,000 M/s Shreeram", "amount": "5000.00", "currency": "INR", "note": "M/s is a name, not a scale"},
+    {"text": "Pay $500 Ms. Rao", "amount": "500.00", "currency": "USD", "note": "review round 2: a single scale letter takes no plural, so Ms. is a name"},
     {"text": "US$ 5 000", "amount": null, "currency": null, "reason": "spaced_number", "note": "review round 1: a space groups the digits"},
     {"text": "₹ 5 000", "amount": null, "currency": null, "reason": "spaced_number", "note": "review round 1: a space groups the digits"},
     {"text": "INR 5 000 000", "amount": null, "currency": null, "reason": "spaced_number", "note": "review round 1: two spaces group the digits"},
