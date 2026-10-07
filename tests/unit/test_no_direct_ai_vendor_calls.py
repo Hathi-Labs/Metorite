@@ -24,11 +24,15 @@ What counts as a direct vendor call
   ``OpenAI(...)`` or ``AsyncAnthropic(...)``, also through an alias,
 * an MAF chat client with no ``async_client`` and no ``base_url``, because
   its default address is the vendor,
-* an import of a vendor AI SDK, such as ``anthropic`` or ``deepgram``,
+* an import of a vendor AI SDK, such as ``openai``, ``litellm``,
+  ``anthropic`` or ``deepgram``. Both forms count, also through an alias or
+  a submodule: ``import openai.types``, ``from litellm import completion``
+  and ``from google import genai``. The import counts BESIDE the verb or the
+  client it brings, so a helper import such as ``model_cost`` counts too,
 * the host of a vendor AI API in a string, such as ``api.openai.com``.
 
-A litellm helper that makes no request (``model_cost``, ``token_counter``,
-``ModelResponse``) does not count.
+A USE of a litellm helper that makes no request (``model_cost``,
+``token_counter``, ``ModelResponse``) does not count. Its import does.
 
 The ratchet
 -----------
@@ -103,10 +107,14 @@ _MAF_CLIENTS = frozenset({
 })
 _MAF_ADDRESS_ARGS = frozenset({"async_client", "base_url"})
 
-#: The vendor AI SDKs. An import of one is a direct call in waiting. The
-#: ``openai`` SDK is not here, because the seam imports it to reach OUR
-#: gateway. Its client construction counts instead.
+#: The vendor AI SDKs. An import of one is a direct call in waiting, so each
+#: import is a finding of its own, beside the verb or the client it brings.
+#: ``openai`` and ``litellm`` are here too. Until 2026-10-07 they were not,
+#: so a new file with a bare ``import openai`` passed the fence (found by
+#: WS-48 N1, PR #711). The Router seam imports ``openai`` on purpose, and
+#: ``_ROUTER_SEAMS`` holds that import.
 _VENDOR_SDKS = (
+    "openai", "litellm",
     "anthropic", "agent_framework_anthropic", "agent_framework.anthropic",
     "deepgram", "assemblyai", "mistralai", "cohere", "groq", "elevenlabs",
     "google.generativeai", "google.genai", "replicate", "together", "fireworks",
@@ -142,28 +150,31 @@ _BASELINE: dict[str, _Entry] = {
     # ── Embeddings (§2.10 row 1 and 2). S5 step 2 moves them. The Router
     # serves no embeddings door yet, so each needs one first (D61.1).
     "apps/services/gateway/gateway/main.py": _Entry(
-        {"client OpenAI": 1, "litellm verb acompletion": 1},
+        {
+            "client OpenAI": 1, "litellm verb acompletion": 1,
+            "sdk openai": 1, "sdk litellm": 1,
+        },
         "The /v1/embeddings door calls OpenAI with OPENAI_API_KEY (S5 step 2). "
         "The prompt-cache warm-up calls litellm, behind PROMPT_CACHE_PREWARM",
     ),
     "apps/services/email_ingestion/email_ingestion/email_embeddings.py": _Entry(
-        {"litellm verb aembedding": 1},
+        {"litellm verb aembedding": 1, "sdk litellm": 1},
         "Email embeddings go to the gateway /v1/embeddings door, which skips "
         "the Router (S5 step 2)",
     ),
     "apps/services/whatsapp_ingestion/whatsapp_ingestion/wa_embeddings.py": _Entry(
-        {"litellm verb aembedding": 1},
+        {"litellm verb aembedding": 1, "sdk litellm": 1},
         "WhatsApp embeddings go to the gateway /v1/embeddings door, which "
         "skips the Router (S5 step 2)",
     ),
     "apps/services/gateway/gateway/routes/tasks/capability.py": _Entry(
-        {"litellm verb aembedding": 1},
+        {"litellm verb aembedding": 1, "sdk litellm": 1},
         "Capability embeddings go to the gateway /v1/embeddings door, which "
         "skips the Router (S5 step 2)",
     ),
     # ── Transcription (§2.10 rows 3 and 4). S5 steps 1 and 4.
     "packages/acb_stt/acb_stt/litellm_provider.py": _Entry(
-        {"litellm verb atranscription": 1},
+        {"litellm verb atranscription": 1, "sdk litellm": 1},
         "Transcription through litellm. S5 step 1 moves it to the Router's "
         "/v1/audio/transcriptions on tier-stt",
     ),
@@ -184,25 +195,29 @@ _BASELINE: dict[str, _Entry] = {
     ),
     # ── Chat that skips the Router (§2.10 rows 5 to 7).
     "apps/services/gateway/gateway/routes/integrations.py": _Entry(
-        {"litellm verb acompletion": 1},
+        {"litellm verb acompletion": 1, "sdk litellm": 1},
         "POST /integrations/discover calls litellm for an API schema. A later "
         "slice moves it to acb_llm.routed",
     ),
     "packages/acb_llm/acb_llm/context.py": _Entry(
-        {"litellm verb acompletion": 2},
+        {"litellm verb acompletion": 2, "sdk litellm": 5},
         "acompletion_with_fallback calls litellm when ROUTER_SERVING_ENABLED "
         "is off (H-171). acompletion_stream_text has no routed branch, so it "
-        "calls litellm whatever the flag says",
+        "calls litellm whatever the flag says. Each of the two calls imports "
+        "litellm and the verb, and token_counter is the fifth import",
     ),
     "packages/acb_llm/acb_llm/client.py": _Entry(
-        {"litellm verb acompletion": 2},
+        {"litellm verb acompletion": 2, "sdk litellm": 8},
         "complete and complete_with_tools call litellm when "
-        "ROUTER_SERVING_ENABLED is off (H-171). Not in §2.10, found 2026-10-06",
+        "ROUTER_SERVING_ENABLED is off (H-171). Not in §2.10, found 2026-10-06. "
+        "The eight litellm imports serve those calls, the prompt cache and the "
+        "cost lookups (model_cost, completion_cost, cost_per_token)",
     ),
     "apps/services/gateway/gateway/routes/v1_compat.py": _Entry(
-        {"litellm verb acompletion": 2},
+        {"litellm verb acompletion": 2, "sdk litellm": 3},
         "The gateway /v1 door calls litellm when its Router hop is off "
-        "(ROUTER_SERVING_ENABLED). Not in §2.10, found 2026-10-06",
+        "(ROUTER_SERVING_ENABLED). Not in §2.10, found 2026-10-06. The third "
+        "litellm import is stream_chunk_builder, for that same stream",
     ),
     # ── Not AI work (§2.10, the last paragraph). They stay.
     "apps/services/gateway/gateway/routes/settings.py": _Entry(
@@ -216,16 +231,38 @@ _BASELINE: dict[str, _Entry] = {
         "The provider key tests and model lists. They move no tenant content, "
         "so they are not AI work (§2.10)",
     ),
+    # ── Imports of a litellm helper that makes no request. The import rule
+    # took in ``litellm`` on 2026-10-07 and found them. They were in the
+    # tree before that date, so they enter the baseline once. Each import
+    # stays a finding, because the next line in the file can be a call.
+    "packages/acb_llm/acb_llm/routed.py": _Entry(
+        {"sdk litellm": 1},
+        "routed_acompletion rebuilds the Router's reply as litellm's "
+        "ModelResponse, the type the call sites already hold. It sends no "
+        "request",
+    ),
+    "packages/acb_llm/acb_llm/model_limits.py": _Entry(
+        {"sdk litellm": 1},
+        "_litellm_info reads litellm's model_cost registry for token limits. "
+        "It sends no request",
+    ),
+    "packages/acb_llm/acb_llm/key_store.py": _Entry(
+        {"sdk litellm": 1},
+        "configure_litellm loads the stored provider keys into litellm's "
+        "module config, for the litellm calls that ROUTER_SERVING_ENABLED "
+        "turns off (H-171). It sends no request",
+    ),
 }
 
 #: The files that build an OpenAI SDK client ON PURPOSE, to reach OUR
 #: gateway. Not a ratchet: each entry must match exactly.
 _ROUTER_SEAMS: dict[str, _Entry] = {
     "packages/acb_llm/acb_llm/attribution.py": _Entry(
-        {"client AsyncOpenAI": 1},
+        {"client AsyncOpenAI": 1, "sdk openai": 1},
         "attributed_openai builds the AsyncOpenAI client that every MAF agent "
         "hands to OpenAIChatCompletionClient. Its base_url is a required "
-        "argument, and every caller passes the gateway /v1",
+        "argument, and every caller passes the gateway /v1. The one "
+        "import openai serves that client",
     ),
 }
 
@@ -330,11 +367,17 @@ class _VendorFinder(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        """One finding for each vendor SDK that the statement imports.
+
+        ``from google import genai`` names the SDK in the module AND the
+        name, so the rule reads ``google.genai`` too. A relative import is
+        our own module, never a vendor.
+        """
         module = node.module or ""
         if node.level == 0 and module:
-            sdk = _is_module(module, _VENDOR_SDKS)
-            if sdk:
-                self.hits.append(f"sdk {sdk}")
+            sdks = {_is_module(module, _VENDOR_SDKS)}
+            sdks |= {_is_module(f"{module}.{a.name}", _VENDOR_SDKS) for a in node.names}
+            self.hits.extend(f"sdk {sdk}" for sdk in sorted(s for s in sdks if s))
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -467,9 +510,13 @@ def test_the_router_is_the_one_exempt_tree() -> None:
     assert (_REPO / _EXEMPT_PREFIXES[0]).is_dir(), "the Router moved, so the exemption is stale"
 
 
+def _off_the_baseline(calls: dict[str, Counter[str]]) -> dict[str, Counter[str]]:
+    """The files with a finding that no list names."""
+    return {p: c for p, c in sorted(calls.items()) if p not in _allowed()}
+
+
 def test_no_direct_vendor_call_off_the_baseline() -> None:
-    calls = _calls_or_fail()
-    new = {p: c for p, c in sorted(calls.items()) if p not in _allowed()}
+    new = _off_the_baseline(_calls_or_fail())
     assert not new, (
         "D90 clause 3: every AI call goes through OUR Router (ai_tier_routing.md "
         "§3.1). These files call an AI vendor directly:\n  "
@@ -582,20 +629,79 @@ def test_the_finder_catches_a_direct_call(source: str, label: str) -> None:
         "# litellm.acompletion and https://api.openai.com in a comment\n",
         '"""Call litellm.acompletion at https://api.openai.com."""\n',
         "def f():\n    'from litellm import acompletion, api.openai.com'\n",
-        "import litellm\nlitellm.drop_params = True\ncost = litellm.model_cost\n",
-        "from litellm import ModelResponse, token_counter, model_cost\n",
-        "from litellm import acompletion  # imported and never used\n",
-        "import openai\nh = openai.DefaultAsyncHttpxClient()\n",
         "c = OpenAIChatCompletionClient(model='tier-fast', async_client=ac)\n",
         "c = OpenAIChatCompletionClient(model='m', base_url=gateway)\n",
         "other.acompletion(model='x')\n",
         "URL = 'https://gmail.googleapis.com/gmail/v1'\n",
         "from .anthropic import helper\n",
+        "from .openai import helper\nfrom . import litellm\n",
         "label = 'anthropic'\nslug = 'openai/gpt-4o'\n",
+        "from google import auth\nfrom google.cloud import storage\n",
+        "from agent_framework import ChatAgent\n",
+        "import openai_compat_shim\nimport litellm_helpers\n",
     ],
 )
 def test_the_finder_ignores_text_and_routed_calls(source: str) -> None:
     assert not _vendor_calls(source), f"the fence flagged a non-call: {source!r}"
+
+
+# ── The import rule (2026-10-07). WS-48 N1 (PR #711) found that a bare
+# ``import openai`` passed. ``openai`` and ``litellm`` were off the module
+# list, and ``from google import genai`` read only the module ``google``.
+
+#: Each import form, and the one finding it must give. A helper import such
+#: as ``model_cost`` is here too: its import counts, and its use does not.
+_IMPORT_FORMS = [
+    ("import openai\n", "sdk openai"),
+    ("import openai as oa\n", "sdk openai"),
+    ("import openai.types\n", "sdk openai"),
+    ("from openai import OpenAI\n", "sdk openai"),
+    ("from openai.types.chat import ChatCompletion as C\n", "sdk openai"),
+    ("import openai\nh = openai.DefaultAsyncHttpxClient()\n", "sdk openai"),
+    ("import litellm\n", "sdk litellm"),
+    ("import litellm as _l\n", "sdk litellm"),
+    ("def f():\n    import litellm.caching\n", "sdk litellm"),
+    ("from litellm import completion  # imported and never used\n", "sdk litellm"),
+    ("from litellm.caching.caching import Cache\n", "sdk litellm"),
+    ("from litellm import ModelResponse, token_counter, model_cost\n", "sdk litellm"),
+    ("import litellm\nlitellm.drop_params = True\ncost = litellm.model_cost\n", "sdk litellm"),
+    ("from google import genai\n", "sdk google.genai"),
+    ("from google import generativeai as g\n", "sdk google.generativeai"),
+    ("from agent_framework import anthropic\n", "sdk agent_framework.anthropic"),
+]
+
+
+@pytest.mark.parametrize(("source", "label"), _IMPORT_FORMS)
+def test_each_vendor_import_form_is_one_finding(source: str, label: str) -> None:
+    assert _vendor_calls(source) == Counter({label: 1}), (
+        f"the fence must count {label!r} once, and nothing else, in: {source!r}"
+    )
+
+
+@pytest.mark.parametrize(("source", "label"), _IMPORT_FORMS)
+def test_a_planted_vendor_import_fails_the_fence(
+    tmp_path: Path, source: str, label: str,
+) -> None:
+    """R7: a NEW product file that only imports a vendor SDK is off the baseline."""
+    rel = "apps/services/probe/probe/new_feature.py"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    path.write_text(source, encoding="utf-8")
+    scan = _scan_files([path], rel=lambda p: p.relative_to(tmp_path).as_posix())
+    assert not scan.parse_errors
+    assert _off_the_baseline(scan.calls) == {rel: Counter({label: 1})}
+
+
+def test_one_statement_counts_each_sdk_it_imports() -> None:
+    assert _vendor_calls("import openai, litellm\n") == Counter(
+        {"sdk openai": 1, "sdk litellm": 1},
+    )
+    assert _vendor_calls("from google import genai, generativeai\n") == Counter(
+        {"sdk google.genai": 1, "sdk google.generativeai": 1},
+    )
+    assert _vendor_calls("from openai import OpenAI, AsyncOpenAI\n") == Counter(
+        {"sdk openai": 1},
+    )
 
 
 def test_each_use_of_an_imported_verb_counts() -> None:
