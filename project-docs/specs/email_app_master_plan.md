@@ -12804,13 +12804,21 @@ findings only. Fix round 1 made these changes:
      `₹5 lakh` or `$2.5M`, gives none. Code never multiplies. A number that white space splits,
      as in `₹5 000`, gives none. A mark with a number on each side, as in `2041 USD 5,000`,
      gives none.
+   - Review round 2 widened the scale words and narrowed the split. A plural, a hyphen and the
+     words from `hundred` to `tsd` give no amount, and so does an apostrophe as in `₹5'000`. A
+     split needs a plain run of 1 to 3 digits or a trailing comma, then runs of exactly 3 digits.
+     So `Amount ₹5,000 2 days late` gives 5000.00.
    - With no currency, `amount` stays NULL and confidence is 0.6.
    - **`parse_due`.** A date needs a day, a month and a year. A numeric date with both parts at 12
      or less gives no date. Do not use `dateutil` fuzzy parsing, because it fills the missing parts
      from today.
    - A full date beside a second date signal gives no date (review round 1). The signal is an
-     ambiguous numeric date, a relative date, or a day and a month with no year. In
-     "Invoice Date: 01 Oct 2026. Net 30" the full date is the date of the invoice.
+     ambiguous numeric date or a relative date. In "Invoice Date: 01 Oct 2026. Net 30" the full
+     date is the date of the invoice.
+   - Review round 2 removed two signals, a day and a month with no year, and a numeric pair. They
+     refused honest dates beside a ref, such as `PO 4/12` or `1 May Road`. The claim check of
+     departure 1 stops the case they were for.
+   - Code refuses a `due_on` claim longer than a quote before it parses it (review round 2).
    - **The answer check.** The answer must be an object with a `facts` list. Code keeps at most 10
      facts for each call. `ref` and `counterpart` must each be in the folded source, or code drops
      them.
@@ -12835,8 +12843,8 @@ findings only. Fix round 1 made these changes:
    recorded answers, so the unit job can run it with no model.
 6. **Size.** Fixture data does not count toward the 600 lines.
 
-**Status of EM-T14b-1.** 🔨 BUILT, not merged (2026-10-07). The agent fixed each finding of review round 1. It adds no
-job, no hook, no model call and no SQL.
+**Status of EM-T14b-1.** 🔨 BUILT, not merged (2026-10-07). The agent fixed each finding of review rounds 1 and 2. It
+adds no job, no hook, no model call and no SQL.
 
 **As built (EM-T14b-1, 2026-10-07).**
 
@@ -12849,11 +12857,15 @@ job, no hook, no model call and no SQL.
   text first.
 - **The checks.** `check_answer` returns the checked facts and a count of drops for each check.
   The job of EM-T14b-2 writes those counts to the log line of §13.5 item 10.
-- **The parsers.** `parse_amount` and `parse_due` each name a reason when they give no value. 72
-  amount cases live in `tests/fixtures/amount_cases.json`, and 35 date cases live in the test.
+- **The parsers.** `parse_amount` and `parse_due` each name a reason when they give no value. 105
+  amount cases live in `tests/fixtures/amount_cases.json`, and 43 date cases live in the test.
+  Six more cases send an invoice date through `check_answer` with the claim of a model.
+- **The speed of `parse_due`.** The weekday search reads a window of 20 characters, and a mask of
+  one byte for each character checks the overlap of two dates. A text of 100k characters with
+  9000 dates took 4.2 s, and now takes about 0.06 s.
 - **The eval set** is `evals/email_insights/`: 43 mails, 31 expected facts and a `--scripted` run.
   The run finds 31 facts of 31. Each amount and each due date is correct.
-- **The fence** is `tests/unit/test_email_insights_extract.py`, with 170 tests.
+- **The fence** is `tests/unit/test_email_insights_extract.py`, with 223 tests.
 
 **Departures (EM-T14b-1).**
 
@@ -12861,6 +12873,9 @@ job, no hook, no model call and no SQL.
    code stores a date only when the model gives `due_on`. The value still comes from the quote.
    Code also parses the claim, and keeps the date only when the claim gives the same date. Code
    only compares the claim, and never stores it (review round 1).
+   **A known limit (review round 2).** In "Invoice Date: 01 Oct 2026. Due: Nov 15", a model can
+   claim "01 Oct 2026" as the due date. Code then stores the invoice date. The card shows the
+   quote with both dates. `test_a_claim_of_the_invoice_date_itself_is_a_known_limit` records it.
 2. **The claim of the model marks a missing amount.** When the model gives an amount and the quote
    gives none, the confidence is 0.6. Code never reads the claim as a value.
 3. **Code drops a quote of more than 200 characters, and never cuts it.** A cut can split a
@@ -12884,9 +12899,9 @@ job, no hook, no model call and no SQL.
     share it as item 2 says.
 12. **The eval fences live in `test_email_insights_extract.py`.** `test_email_insights_job.py`
     comes with EM-T14b-2.
-13. **The slice is larger than the guide of §13.9.** The module holds 619 lines. 157 of them are
-    comments, and 95 are blank. The eval code holds 354 lines, and the test file holds 568 lines. The
-    fixture data does not count.
+13. **The slice is larger than the guide of §13.9.** The module holds 644 lines. 171 of them are
+    comments, and 101 are blank. The eval code holds 354 lines, and the test file holds 651 lines.
+    The fixture data does not count.
 14. **A scripted run is exact** (review round 1). Its `amount` bar needs no wrong amount, and a
     fifth bar, `due`, needs each found fact to have its expected due date. The 95 % bar is for the
     model sweep only.
@@ -12913,15 +12928,30 @@ mutation and restored the file after each run. `git status` was clean after each
 | E9 | Make the `no_fact` bar pass each run | `test_each_bar_fails_a_wrong_run` |
 | F1 | The tail of a number lets the regex back off | 1 amount case, `Total ₹5.5x` |
 | F2 | Remove the scale check | 17 amount cases |
-| F3 | Remove the split check after a number | 5 amount cases |
-| F3b | Remove the split check before a number | 3 amount cases |
+| F3 | Remove the split check after a number. Round 2 ran it again | 10 amount cases |
+| F3b | Remove the split check before a number. Round 2 ran it again | 5 amount cases |
 | F4 | Remove the check for a number after the mark | 3 amount cases |
 | F4b | Remove the check for a number before the mark | 1 amount case, `Ref No.2041 USD 5,000` |
-| F5 | Remove the check for a second date signal | 9 tests, with `test_the_date_of_the_invoice_is_not_the_due_date` |
+| F5 | Remove the check for a second date signal. Round 2 ran it again, with two signals left | 6 tests, with `test_the_date_of_the_invoice_is_not_the_due_date` and 4 date cases |
 | F6 | Remove the comparison with the claimed date | 5 tests, with `test_the_model_number_is_never_stored` |
 | F7 | The scripted `amount` bar falls back to 95 % | `test_each_bar_fails_a_wrong_run` |
 | F8 | The `due` bar passes each run | `test_each_bar_fails_a_wrong_run` |
 | F9 | A weekday next to a date counts as a second date | 1 date case, `Friday, 13 March 2026` |
+| G1 | Remove the plural `s` of the scale words | 5 amount cases |
+| G1c | A single scale letter takes a plural | 1 amount case, `Pay $500 Ms. Rao` |
+| G2 | No hyphen between the number and the scale word | 3 amount cases |
+| G3 | Remove the scale words from `mil` to `tsd` | 5 amount cases |
+| G4 | No apostrophe in the end of a number | 2 amount cases |
+| G5 | The broad split rule of round 1 | 6 amount cases |
+| G6 | No cap on the claim | `test_a_claim_longer_than_a_quote_stores_no_date` |
+| G7 | No weekday window | 2 cases of `test_parse_due_is_linear_on_a_long_text`. The run took 33 s |
+| G8 | The overlap check scans the span list, as in round 1 | 1 case of `test_parse_due_is_linear_on_a_long_text` |
+| G9 | A day and a month with no year count as a second date again | 1 date case, `Due 15 Oct 2026, 1 May Road` |
+
+In round 2, the first run let three mutants survive. Two of them removed a plural rule. Each
+scale word had two plural rules, so removing one changed nothing. The agent kept one rule, and a
+single letter now takes no plural. G6 survived because the timing test passed with no cap. Now
+`test_a_claim_longer_than_a_quote_stores_no_date` proves the cap. G1 and G6 then failed.
 
 **EM-T14b-2 — the job.**
 
