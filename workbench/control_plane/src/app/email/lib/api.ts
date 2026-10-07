@@ -42,8 +42,13 @@ async function gatewayFetch<T>(
     const body = await res.json().catch(() => ({}));
     const err = new Error(body.detail || `Gateway error ${res.status}`) as Error & {
       status?: number;
+      retryAfter?: number;
     };
     err.status = res.status;
+    // The seconds of `Retry-After`, when the answer sends a number. The
+    // prefetch of the pane waits that long after a 503 (WS-17 EM-S2).
+    const wait = Number(res.headers?.get?.("Retry-After"));
+    if (Number.isFinite(wait) && wait > 0) err.retryAfter = wait;
     throw err;
   }
 
@@ -150,6 +155,9 @@ function mapEmail(raw: Record<string, unknown>): Email {
     subject: String(raw.subject ?? ""),
     bodyText: String(raw.body_text ?? raw.bodyText ?? ""),
     bodyHtml: (raw.body_html as string) ?? (raw.bodyHtml as string) ?? undefined,
+    // WS-17 EM-S2. Only an explicit true. A gateway with the flag off, or
+    // before EM-S1, sends false or nothing, and the pane behaves as before.
+    htmlRemote: raw.html_remote === true,
     bodyTruncated: Boolean(raw.body_truncated ?? raw.bodyTruncated ?? false),
     snippet: String(raw.snippet ?? ""),
     hasAttachments: Boolean(raw.has_attachments ?? raw.hasAttachments ?? false),
@@ -953,6 +961,54 @@ export interface FullBodyResponse {
 
 export async function fetchFullBody(id: string): Promise<FullBodyResponse> {
   return gatewayFetch<FullBodyResponse>(`/email/messages/${id}/full-body`);
+}
+
+// ── The HTML that the provider holds (WS-17 EM-S2, §14.4.2) ───────────────
+
+/** Where the HTML came from, as the gateway says it. */
+export type MessageHtmlSource = "stored" | "cache" | "provider" | "none";
+
+export interface MessageHtml {
+  messageId: string;
+  /** The raw HTML. Null for a plain-text message (`source: "none"`). */
+  bodyHtml: string | null;
+  source: MessageHtmlSource;
+}
+
+/**
+ * The cache key of the HTML of one message in `dataCache`. The open of the
+ * pane and the prefetch of the list both use it, so a row that the prefetch
+ * holds paints its HTML at once. The key has no `prefetch` part on purpose:
+ * one message has one HTML.
+ */
+export function messageHtmlKey(id: string): string {
+  return `/email/messages/${encodeURIComponent(id)}/html`;
+}
+
+/**
+ * The HTML of one message, from `GET /email/messages/{id}/html` (EM-S1). The
+ * ONE fetch of that route in the app. The pane calls it with no option, and
+ * the prefetch of the list calls it with `prefetch: true`, which the gateway
+ * may refuse with a 503 and `Retry-After` under load. An error carries
+ * `status`, and `retryAfter` in seconds when the gateway sent one. The caller
+ * renders the HTML through `MessageContent`, never by itself.
+ */
+export async function fetchMessageHtml(
+  id: string,
+  opts: { prefetch?: boolean } = {}
+): Promise<MessageHtml> {
+  const path = messageHtmlKey(id) + (opts.prefetch ? "?prefetch=1" : "");
+  const raw = await gatewayFetch<Record<string, unknown>>(path);
+  const html = typeof raw?.body_html === "string" && raw.body_html ? raw.body_html : null;
+  const source = raw?.source;
+  return {
+    messageId: String(raw?.message_id ?? id),
+    bodyHtml: html,
+    source:
+      source === "stored" || source === "cache" || source === "provider"
+        ? source
+        : "none",
+  };
 }
 
 export async function updateEmail(

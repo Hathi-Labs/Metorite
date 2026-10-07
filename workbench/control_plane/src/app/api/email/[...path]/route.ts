@@ -78,7 +78,13 @@ export async function GET(
       return new NextResponse(res.body, { status: res.status, headers });
     }
     const body = await res.json().catch(() => ({}));
-    return NextResponse.json(body, { status: res.status });
+    // A 503 of the HTML prefetch carries `Retry-After`, and the pane waits
+    // that long (WS-17 EM-S2, §14.4.2 item 2). Pass it on.
+    const retryAfter = res.headers.get("retry-after");
+    return NextResponse.json(body, {
+      status: res.status,
+      ...(retryAfter ? { headers: { "retry-after": retryAfter } } : {}),
+    });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 502 });
   }

@@ -95,6 +95,31 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-269 · Make the long-header test of the data engine pass on a busy CI runner · [AGENT]
+- **Check:** run `gh run list --workflow pr-check.yml --limit 50 --json databaseId,conclusion`,
+  then search the logs of the failed runs for
+  `test_a_long_header_keeps_each_answer_under_1_mb`. Each new failure with `error: memory` means
+  this is open. If the test still loads 400 header names of 5000 characters with no change to
+  the memory cap of the engine, this is open too.
+- **Why.** `tests/unit/test_data_engine.py::test_a_long_header_keeps_each_answer_under_1_mb`
+  failed in the run 37648131027 of PR #721. The engine hit its memory cap and answered
+  `error: memory`. A rerun passed with no change, so the cause is the load of the runner and not
+  the code. A flaky test teaches people to rerun until green, and then a real failure gets
+  rerun too.
+- **Do.**
+  1. Measure the peak memory of the test on a quiet machine. Compare it with the cap.
+  2. Make the test fit with a clear margin. Use a smaller header that still proves the cut, or
+     a cap for this test that a test fixture sets. Do not raise the cap for production.
+  3. Run the test 20 times under load, for example beside a full `pytest` run, and record that
+     no run failed.
+- **Also: port 3101 is one port for each worktree.** `workbench/control_plane/playwright.config.ts`
+  starts `next dev -p 3101`, with `reuseExistingServer: false`. So two worktrees that run the
+  local e2e suite at one time fight over that port, and one run fails or drives the other
+  server. Run one local e2e suite at a time. A fix lets an environment value choose the port.
+- **Authority:** `project-docs/specs/engineering_practice.md` (testing) · board WS-17
+- **Added:** 2026-10-08 · branch `email-s2-reading-pane` (WS-17 EM-S2 fix round 2). PR #722
+  added H-268.
+
 ### H-267 · Stop an Outlook rule move from making a second copy of a nested folder · [AGENT]
 - **Check:** run `rg -n "mailFolders" apps/services/email_ingestion/email_ingestion/providers/outlook.py`.
   If `_get_or_create_folder_id` still searches only `/me/mailFolders` with a
