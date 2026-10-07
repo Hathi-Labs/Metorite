@@ -12,7 +12,8 @@
  *
  * An agent triggers a template with a generative_ui node:
  *   { "type": "template", "props": { "name": "weatherCard", "data": { ... } } }
- * Unknown names fall back to an inert card (same safety posture as Tier 1).
+ * Unknown names fall back to the neutral card of `GenUIFallback` (same safety
+ * posture as Tier 1). The tool refuses an unknown name (`genui_refusal`).
  *
  * SOURCE OF TRUTH: TEMPLATE_CATALOG below lists every template + its data shape.
  * The backend emit_generative_ui docstring MUST mirror this list, or agents will
@@ -25,6 +26,7 @@
 
 import { createElement, useEffect, useRef, useState } from "react";
 
+import GenUIFallback from "@/components/GenUIFallback";
 import { resolveIcon } from "@/lib/icons";
 import { hasMoreToTheRight } from "@/lib/scrollCue";
 import {
@@ -1460,11 +1462,9 @@ export function renderTemplate(
   const renderer = TEMPLATE_REGISTRY[name];
   const safeData = (data && typeof data === "object" ? data : {}) as Data;
   if (!renderer) {
-    return (
-      <div className="rounded border border-dashed border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
-        unknown template{name ? `: ${name}` : ""}
-      </div>
-    );
+    // Not "unknown template: X". The member sees the words the data holds,
+    // in the neutral fallback (`GenUIFallback.tsx`), or nothing.
+    return <GenUIFallback node={{ type: name, props: safeData }} />;
   }
   return renderer(safeData, ctx);
 }

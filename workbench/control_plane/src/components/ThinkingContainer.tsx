@@ -30,6 +30,8 @@ import remarkGfm from "remark-gfm";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import MarkdownImage from "@/components/MarkdownImage";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
+import rehypeStreamCaret from "@/lib/streamCaret";
+import { TRAIL_AXIS, TRAIL_ICON_CELL, trailBodySize } from "@/lib/trailLayout";
 import {
   COMMAND_CAP,
   capOutput,
@@ -135,15 +137,22 @@ export function ProseTimelineEntry({
   iconClass: string;
 }) {
   return (
-    <div className="relative">
-      <div className="absolute left-[6px] top-[5px] z-10">
-        <Icon className={iconClass} size={13} strokeWidth={1.5} />
-      </div>
-      <div className="ml-8 mr-3 text-[11.5px] text-muted-foreground leading-relaxed">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform} components={PROSE_MD_COMPONENTS}>
+    <div className="relative flex min-w-0">
+      {/* The trail's one icon column (`lib/trailLayout.ts`). */}
+      <span data-trail-icon="" className={`${TRAIL_ICON_CELL} relative z-10 mt-[0.3rem]`}>
+        <Icon className={iconClass} size={14} strokeWidth={1.5} />
+      </span>
+      <div className="flex-1 min-w-0 mr-3 text-[11.5px] text-muted-foreground leading-relaxed">
+        {/* The caret goes inside the last line of words (`lib/streamCaret.ts`).
+            A span after the Markdown started a line of its own: a lone "|". */}
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={live ? [rehypeStreamCaret] : []}
+          urlTransform={markdownUrlTransform}
+          components={PROSE_MD_COMPONENTS}
+        >
           {text}
         </ReactMarkdown>
-        {live && <span className="inline-block w-[2px] h-[1em] bg-muted-foreground/50 animate-pulse ml-0.5 align-middle rounded-full" />}
       </div>
     </div>
   );
@@ -318,7 +327,7 @@ function ArgsDetail({ event, dur }: { event: ToolEvent; dur?: number }) {
     <div className="rounded-md border-l-2 border-border bg-card/40 px-2.5 py-1.5 min-w-0">
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className="text-[10px] text-muted-foreground font-mono truncate">{event.name}</span>
-        {dur !== undefined && <span className="text-[10px] text-muted-foreground font-mono ml-auto shrink-0">{dur}ms</span>}
+        {dur !== undefined && <span className="text-[10px] text-muted-foreground tabular-nums ml-auto shrink-0">{dur}ms</span>}
       </div>
       {event.args && Object.keys(event.args).length > 0 && (
         <div className="text-[10px] text-muted-foreground font-mono mt-1 break-all">
@@ -420,16 +429,18 @@ export function ToolStepRow({
   const dur = event.endedAt && event.startedAt ? event.endedAt - event.startedAt : undefined;
   const hasSubAgent = !!(event.subAgentName && (event.subAgentTools?.length || event.subAgentText));
   return (
-    <div className="relative" data-step-status={step.status} data-step-kind={step.kind}>
-      {/* The icon on the axis: what the step does, inked by where it is. */}
-      <div className="absolute left-[5px] top-[5px] z-10">
+    <div className="relative flex min-w-0" data-step-status={step.status} data-step-kind={step.kind}>
+      {/* The icon on the axis: what the step does, inked by where it is. It
+          sits in the trail's one icon column, the same cell as the header's
+          (`lib/trailLayout.ts`), so the two cannot drift apart. */}
+      <span data-trail-icon="" className={`${TRAIL_ICON_CELL} relative z-10 mt-[0.3rem]`}>
         <TimelineIcon
           iconKey={KIND_ICON[step.kind]}
           className={running ? `${STATUS_INK.running} drop-shadow-[0_0_4px_currentColor]` : STATUS_INK[step.status]}
         />
-      </div>
+      </span>
 
-      <div className="ml-8 mr-3 min-w-0">
+      <div className="flex-1 mr-3 min-w-0">
         <button
           type="button"
           onClick={onToggle}
@@ -453,7 +464,7 @@ export function ToolStepRow({
           <span className="sr-only">{STATUS_WORD[step.status]}</span>
           {failed && <span className="text-destructive text-[10px] shrink-0">failed</span>}
           {dur !== undefined && dur > 1000 && (
-            <span className="text-[10px] text-muted-foreground font-mono shrink-0">{(dur / 1000).toFixed(1)}s</span>
+            <span data-step-duration="" className="text-[10px] text-muted-foreground tabular-nums shrink-0">{(dur / 1000).toFixed(1)}s</span>
           )}
           <span className="ml-auto shrink-0 text-muted-foreground text-[10px] opacity-0 group-hover/tool:opacity-100 transition-opacity">
             {open ? "▴" : "▾"}
@@ -631,9 +642,12 @@ export default function ThinkingContainer({
         onClick={() => { userToggledRef.current = true; setExpanded((o) => !o); }}
         disabled={!hasContent}
         aria-expanded={hasContent ? expanded : undefined}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-secondary/40 transition-colors disabled:cursor-default min-w-0"
+        data-trail-head=""
+        className="w-full flex items-center pr-3 py-2 text-left hover:bg-secondary/40 transition-colors disabled:cursor-default min-w-0"
       >
-        <span className="shrink-0 flex items-center justify-center w-4">
+        {/* The trail's one icon column: the same cell as every step's, so
+            the header icon sits on the axis (`lib/trailLayout.ts`). */}
+        <span data-trail-icon="" className={TRAIL_ICON_CELL}>
           {hasError ? (
             <AppIcon name="X" className="text-destructive" size={14} strokeWidth={2} />
           ) : isActive ? (
@@ -642,6 +656,7 @@ export default function ThinkingContainer({
             <AppIcon name="Check" className="text-success" size={14} strokeWidth={2} />
           )}
         </span>
+        <span className="flex flex-1 items-center gap-2 min-w-0">
         <span title={title} className={`text-xs font-medium min-w-0 truncate ${isActive ? "chat-shimmer-text" : "text-muted-foreground"}`}>
           {title}
         </span>
@@ -651,11 +666,12 @@ export default function ThinkingContainer({
           </span>
         )}
         {totalMs !== null && (
-          <span className="shrink-0 text-[10px] text-muted-foreground font-mono">
+          <span data-step-duration="" className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
             {totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`}
           </span>
         )}
         {hasContent && <span className="ml-auto shrink-0 text-muted-foreground text-[10px]">{expanded ? "▲" : "▼"}</span>}
+        </span>
       </button>
 
       {/* ── Pre-content working indicator ──────────────────────────────
@@ -667,20 +683,19 @@ export default function ThinkingContainer({
       {expanded && hasContent && (
         <div
           ref={bodyRef}
+          data-trail-body=""
           className={`border-t border-border/40 chat-fade-in overflow-y-auto ${
-            // While streaming, use a FIXED-height window (not max-height) so the
-            // live "consciousness" stream scrolls INTERNALLY (auto-followed to the
-            // newest line) instead of growing and pushing the whole chat down.
-            // When the user manually expands a finished turn to review, allow it
-            // to grow up to a larger cap.
-            isActive ? "h-56" : "max-h-[32rem]"
+            // A cap, never a height (`lib/trailLayout.ts`). A fixed `h-56`
+            // here drew ~10rem of empty border under two steps for the whole
+            // run. Over the cap, the trail scrolls inside itself, and the
+            // effect above follows it to the newest step.
+            trailBodySize(isActive)
           }`}
         >
-          {/* Container with NO left padding — all items position relative to this.
-              Content is indented via ml-8.  Line and dots share the same x=12px axis. */}
+          {/* NO left padding: every row starts with the icon column, and the
+              line runs down the centre of it (`lib/trailLayout.ts`). */}
           <div className="relative py-2.5">
-            {/* Vertical line at x=12px */}
-            <div className="absolute left-[12px] top-2 bottom-2 w-px bg-secondary/60" />
+            <div className={`absolute ${TRAIL_AXIS} top-2 bottom-2 w-px bg-secondary/60`} aria-hidden="true" />
 
             <div className="space-y-1.5">
               {/* Chronologically interleaved reasoning + tool timeline
