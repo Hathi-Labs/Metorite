@@ -5,12 +5,22 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { splitQuotedHtml, splitQuotedText } from "../lib/quoting";
 import { UNTRUSTED_FORBID_ATTR, UNTRUSTED_FORBID_TAGS } from "@/lib/untrustedHtml";
+import { useCachedResource } from "@/lib/useCachedResource";
+import { fetchMessageHtml, messageHtmlKey } from "../lib/api";
+import { HTML_HOLD_MS } from "../lib/htmlPrefetch";
 
 interface MessageContentProps {
   /** Raw HTML body from the provider (preferred when present). */
   html?: string | null;
   /** Plain-text body (fallback when there is no HTML). */
   text: string;
+  /**
+   * The id of a message whose HTML the provider holds (`htmlRemote`, WS-17
+   * EM-S2). Give it with `remoteHtmlId(email)`. With no `html`, the text
+   * shows at once, and the HTML of `fetchMessageHtml` replaces it when it
+   * arrives. Null or absent: no request, and the body draws as before.
+   */
+  remoteId?: string | null;
 }
 
 /** Matches a remote (http/https) URL inside src/srcset/poster/background or CSS url(). */
@@ -327,13 +337,74 @@ function TextMessage({ text }: { text: string }) {
   );
 }
 
+/** The state of the read of a remote HTML, as `useCachedResource` gives it. */
+export interface RemoteHtmlRead {
+  data?: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+/**
+ * What the pane draws from the read of a remote HTML (WS-17 EM-S2). Null
+ * means no read: the message has no `remoteId`. A failed read gives no HTML
+ * and no loading line, so the text stays with no error state.
+ */
+export function remoteBody(read: RemoteHtmlRead | null): { html: string | null; loading: boolean } {
+  if (!read) return { html: null, loading: false };
+  const html = typeof read.data === "string" && read.data.trim().length > 0 ? read.data : null;
+  return { html, loading: html === null && read.loading && !read.error };
+}
+
+/**
+ * The HTML that the provider holds for `remoteId` (WS-17 EM-S2). It reads
+ * through `dataCache`, under the same key as the prefetch of the list, so a
+ * prefetched row paints its HTML on the first frame.
+ */
+function useRemoteHtml(remoteId: string | null): { html: string | null; loading: boolean } {
+  const key = remoteId ? messageHtmlKey(remoteId) : null;
+  const res = useCachedResource<string | null>(
+    key,
+    () => fetchMessageHtml(remoteId as string).then((r) => r.bodyHtml),
+    // The HTML of a message does not change. A refocus of the tab asks for
+    // nothing, and the gateway caches it for one hour too.
+    { ttl: HTML_HOLD_MS, revalidateOnFocus: false },
+  );
+  return remoteBody(key ? res : null);
+}
+
+/** The quiet line above the text while the HTML of an old message loads. */
+function RemoteHtmlStatus() {
+  return (
+    <p
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-1.5 mb-2 text-[11px] text-muted-foreground"
+    >
+      <Icon name="Loader2" size={12} className="animate-spin" aria-hidden />
+      Getting the formatted message from the mail provider…
+    </p>
+  );
+}
+
 /**
  * Renders an email body. HTML emails render in a sandboxed iframe; plain-text
  * falls back to a pre-wrapped block. In both cases the quoted trailing
  * conversation is collapsed behind a "•••" toggle (Outlook-style).
+ *
+ * The HTML of an old message (`remoteId`, WS-17 EM-S2) goes through the SAME
+ * path as a stored body: `HtmlMessage`, `HtmlFrame`, `sanitizeEmailHtml` and
+ * the sandboxed iframe. There is no second render path.
  */
-export function MessageContent({ html, text }: MessageContentProps) {
+export function MessageContent({ html, text, remoteId = null }: MessageContentProps) {
   const hasHtml = !!html && html.trim().length > 0;
+  const remote = useRemoteHtml(hasHtml ? null : remoteId);
   if (hasHtml) return <HtmlMessage html={html as string} />;
-  return <TextMessage text={text} />;
+  if (remote.html) return <HtmlMessage html={remote.html} />;
+  if (!remote.loading) return <TextMessage text={text} />;
+  return (
+    <div className="w-full">
+      <RemoteHtmlStatus />
+      <TextMessage text={text} />
+    </div>
+  );
 }

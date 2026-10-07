@@ -11,6 +11,10 @@ import { LabelChip, ColorSwatch, LabelColorGrid } from "./LabelChip";
 import { presetForLabel } from "../lib/labelColors";
 import { FixDialog } from "./automation/ai-settings/fixDialog";
 import { useViewMode } from "@/components/ViewModeProvider";
+import {
+  PREFETCH_STILL_MS, createHtmlPrefetcher, defaultPrefetchDeps, visibleRowIds,
+  type PrefetchRow, type RowBox,
+} from "../lib/htmlPrefetch";
 
 interface EmailListProps {
   emails: Email[];
@@ -315,6 +319,44 @@ export function EmailList({
     return () => observer.disconnect();
   }, [handleAutoLoad]);
 
+  // ── The prefetch of old HTML (WS-17 EM-S2, §14.4.2 item 5) ──
+  // When the list stays still for PREFETCH_STILL_MS, ask for the HTML of the
+  // visible rows with `htmlRemote`. `lib/htmlPrefetch.ts` owns each bound.
+  // With the flag off no row is remote, so no timer starts and no request goes.
+  const [prefetcher] = useState(() => createHtmlPrefetcher(defaultPrefetchDeps()));
+  const anyRemote = emails.some((e) => e.htmlRemote === true);
+  const stillTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const visibleRows = useCallback((): PrefetchRow[] => {
+    const box = scrollRef.current;
+    if (!box) return [];
+    const view = box.getBoundingClientRect();
+    const boxes: RowBox[] = [];
+    box.querySelectorAll<HTMLElement>("[data-email-row]").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      boxes.push({ id: el.dataset.emailRow ?? "", top: r.top, bottom: r.bottom });
+    });
+    const shown = new Set(visibleRowIds(boxes, view.top, view.bottom));
+    return emails.filter((e) => shown.has(e.id));
+  }, [emails]);
+  const schedulePrefetch = useCallback(() => {
+    if (stillTimer.current) clearTimeout(stillTimer.current);
+    stillTimer.current = null;
+    if (!anyRemote) return;
+    stillTimer.current = setTimeout(() => {
+      stillTimer.current = null;
+      void prefetcher.run(visibleRows());
+    }, PREFETCH_STILL_MS);
+  }, [anyRemote, prefetcher, visibleRows]);
+  // A new list is a list load: it clears a stop, and starts the wait again.
+  useEffect(() => {
+    prefetcher.listLoaded();
+    schedulePrefetch();
+    return () => {
+      if (stillTimer.current) clearTimeout(stillTimer.current);
+      stillTimer.current = null;
+    };
+  }, [emails, prefetcher, schedulePrefetch]);
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Contextual toolbar row — MOBILE ONLY. On desktop the single
@@ -414,6 +456,7 @@ export function EmailList({
       <div
         ref={scrollRef}
         className="flex-1 overflow-y-auto scrollbar-hide"
+        onScroll={schedulePrefetch}
         onTouchStart={onPullStart}
         onTouchMove={onPullMove}
         onTouchEnd={onPullEnd}
@@ -449,6 +492,7 @@ export function EmailList({
               return (
               <div
                 key={email.id}
+                data-email-row={email.id}
                 className={`group flex items-stretch border-b border-border ${
                   isSel ? "bg-primary/5" : ""
                 }`}

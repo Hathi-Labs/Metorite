@@ -25,6 +25,13 @@ export interface Email {
   subject: string;
   bodyText: string;
   bodyHtml?: string;
+  /**
+   * True when the provider holds the HTML of this message and Metorite holds
+   * none (WS-17 EM-S2, §14.4.2 item 3). The pane shows `bodyText` at once and
+   * then the HTML of `fetchMessageHtml`. With `EMAIL_HTML_FROM_PROVIDER` off,
+   * the gateway never sends true, and an absent field is false.
+   */
+  htmlRemote?: boolean;
   bodyTruncated: boolean;
   snippet: string;
   hasAttachments: boolean;
