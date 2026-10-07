@@ -13855,7 +13855,11 @@ text.
   mailbox with an import that writes progress, in view or not, with sync on and no error.
   - The first import: `initial_sync_done` is false, and `import_phase` is `counting` or
     `importing` (EM-S9).
+  - The start of the first import: `initial_sync_done` is false, and `import_phase` is NULL.
+    The row reads "Starting sync", with no bar and no count. D-EM-58 says that a banner shows
+    while each sync runs, and the scheduler writes no phase for its first few seconds.
   - A Resync: `import_phase` is `resyncing` (EM-S9b).
+  - No row for `awaiting_range` (EM-S6), a sync error or sync off.
 - **Today a Resync writes no progress** (`scheduler.py:891-898`, `:1467`). EM-S9b adds it, so the
   same row shows during a Resync, as D-EM-58 asks.
 - **The progress.** With `import_estimate`, it shows a percent from `import_count /
@@ -14408,6 +14412,8 @@ EM-S9b needs no UI change.
 **Acceptance.**
 
 - A mailbox that imports shows one row, with its chip, and a percent or a count.
+- A first import with a NULL `import_phase` shows the row "Starting sync", with no bar and no
+  count, because D-EM-58 asks for a banner while each sync runs. `awaiting_range` shows no row.
 - A mailbox out of view still shows its row.
 - The row goes away when the phase ends.
 - The row holds no colour literal, and each control comes from `src/components/ui/`.

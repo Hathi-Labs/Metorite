@@ -6,7 +6,8 @@
  *
  * One row for each mailbox whose import writes progress, in view or not. Each
  * row names its mailbox with `MailboxChip`, says that the sync still runs, and
- * shows a percent (`ProgressBar`) or a count. A row goes away when its phase
+ * shows a percent (`ProgressBar`) or a count. Before the first phase it reads
+ * "Starting sync", with no bar and no count. A row goes away when its phase
  * ends. It replaces `FirstSyncBanner`.
  *
  * `syncBanners` in `lib/onboarding.ts` decides each row, and this file only
@@ -50,7 +51,8 @@ export function SyncBanner<A extends Mailbox>({ rows }: { rows: ReadonlyArray<Sy
             </p>
           </div>
           {percent === null ? (
-            <p className="text-[11px] text-muted-foreground">{detail}</p>
+            // "Starting sync" has no count yet, so it draws no detail.
+            detail !== "" && <p className="text-[11px] text-muted-foreground">{detail}</p>
           ) : (
             <div className="w-full sm:w-64">
               <ProgressBar percent={percent} label={`${SYNC_BANNER_LABEL}, ${account.emailAddress}`} detail={detail} />

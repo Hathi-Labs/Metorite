@@ -468,8 +468,14 @@ describe("email-sync-banner: syncBanners", () => {
     ["an import that ended", { importPhase: "done", initialSyncDone: true }, null],
     ["an import that the limit stopped", { importPhase: "limit", initialSyncDone: true }, null],
     ["a stale phase after the end", { importPhase: "importing", initialSyncDone: true }, null],
-    ["a first sync with no phase yet", { importPhase: null }, null],
-    ["a phase this UI does not know", { importPhase: "awaiting_range" }, null],
+    ["a first sync with a NULL phase, before the scheduler writes one (D-EM-58)", { importPhase: null }, "starting"],
+    ["a first sync with no phase field", { importPhase: undefined }, "starting"],
+    ["a first sync of a mailbox from before EM-T6", { importPhase: null, importSince: null }, "starting"],
+    ["a mailbox that waits for its range (EM-S6)", { importPhase: "awaiting_range" }, null],
+    ["a phase this UI does not know", { importPhase: "something-new" }, null],
+    ["a NULL phase with a sync error", { importPhase: null, syncStatus: "error" }, null],
+    ["a NULL phase with sync off", { importPhase: null, syncEnabled: false }, null],
+    ["a NULL phase after the end", { importPhase: null, initialSyncDone: true }, null],
     ["a sync error, which the reconnect banner owns", { syncStatus: "error" }, null],
     ["a Resync with a sync error", { importPhase: "resyncing", initialSyncDone: true, syncStatus: "error" }, null],
     ["sync off", { syncEnabled: false }, null],
@@ -480,6 +486,14 @@ describe("email-sync-banner: syncBanners", () => {
     } else {
       expect(rows.map((r) => [r.account.id, r.phase, r.line])).toEqual([["a", phase, SYNC_BANNER_LINES[phase]]]);
     }
+  });
+
+  it("reads 'Starting sync' with no bar and no count before the first phase", () => {
+    // The fixture carries a count and an estimate. With no phase, neither is true yet.
+    const [row] = rowsOf([box("a", { importPhase: null })]);
+    expect(row.line).toBe("Starting sync");
+    expect(row.percent).toBeNull();
+    expect(row.detail).toBe("");
   });
 
   it("shows the percent of the estimate, with the count in the detail", () => {
@@ -581,6 +595,15 @@ describe("email-sync-banner: the row on screen", () => {
 
   it("draws nothing when no import runs", () => {
     expect(draw([{ ...a, initialSyncDone: true, importPhase: "done" }])).toBe("");
+  });
+
+  it("draws 'Starting sync' with the chip, and no bar and no count, before the first phase", () => {
+    const out = draw([{ ...a, importPhase: null }]);
+    expect(out.match(/data-sync-row="/g)).toHaveLength(1);
+    expect(out).toContain('aria-label="Mailbox Fracktal, vj@fracktal.in"');
+    expect(out).toContain(">Starting sync<");
+    expect(progressbars(out)).toEqual([]);
+    expect(out).not.toMatch(/messages|%/);
   });
 
   it("uses the primitives and the tokens, and no colour of its own", () => {

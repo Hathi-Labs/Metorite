@@ -98,16 +98,23 @@ export function importPanelShows(account: StageFields & Pick<EmailAccount, "impo
 
 // ── The sync banner in the header (EM-S9, §14.4.6, D-EM-58) ────────────────
 
-/** The phases that write progress, and so draw a row. EM-S9b writes
- *  `resyncing`. This module reads it already, so EM-S9b needs no UI change. */
-export type SyncBannerPhase = "counting" | "importing" | "resyncing";
+/** The phases that draw a row. `starting` is a first sync with no phase yet:
+ *  the seconds after the sign-in, before the scheduler writes `counting`.
+ *  EM-S9b writes `resyncing`. This module reads it already, so EM-S9b needs
+ *  no UI change. */
+export type SyncBannerPhase = "starting" | "counting" | "importing" | "resyncing";
 
 /** The words of each phase. Each one says that the sync still runs. */
 export const SYNC_BANNER_LINES: Record<SyncBannerPhase, string> = {
+  starting: "Starting sync",
   counting: "Counting mail to import",
   importing: "Importing mail",
   resyncing: "Resyncing mail",
 };
+
+/** The phase that EM-S6 adds: the mailbox waits for the member to choose a
+ *  range, so no sync runs and no row draws. */
+export const AWAITING_RANGE_PHASE = "awaiting_range";
 
 /** What the progress label of each row names, for assistive technology. */
 export const SYNC_BANNER_LABEL = "Mailbox sync progress";
@@ -127,7 +134,8 @@ export interface SyncBannerRow<A> {
   line: string;
   /** 0 to 99 with an estimate. `null` with none: the row draws the count. */
   percent: number | null;
-  /** "1,240 of about 3,100 messages", "1,240 messages so far" or "Starting". */
+  /** "1,240 of about 3,100 messages", "1,240 messages so far" or "Starting".
+   *  Empty for the phase `starting`, which shows no bar and no count. */
   detail: string;
 }
 
@@ -144,8 +152,13 @@ function bannerPhase(account: BannerFields): SyncBannerPhase | null {
   if (account.syncStatus === "error") return null;
   if (account.syncEnabled === false) return null;
   const phase = account.importPhase;
+  if (phase === AWAITING_RANGE_PHASE) return null;
   if (phase === "resyncing") return "resyncing";
-  if (account.initialSyncDone === false && (phase === "counting" || phase === "importing")) return phase;
+  if (account.initialSyncDone !== false) return null;
+  // D-EM-58: a banner always shows while a sync runs, so the seconds before
+  // the scheduler writes the first phase draw a row too.
+  if (phase === null || phase === undefined) return "starting";
+  if (phase === "counting" || phase === "importing") return phase;
   return null;
 }
 
@@ -155,8 +168,12 @@ function bannerPhase(account: BannerFields): SyncBannerPhase | null {
  *
  * - The first import: `initialSyncDone` is false, and `importPhase` is
  *   `counting` or `importing` (EM-S9).
+ * - The start of the first import: `initialSyncDone` is false, and
+ *   `importPhase` is null or absent. The row reads "Starting sync", with no
+ *   bar and no count (D-EM-58).
  * - A Resync: `importPhase` is `resyncing` (EM-S9b).
- * - No row for a sync error (the reconnect banner owns it), or for sync off.
+ * - No row for a sync error (the reconnect banner owns it), for sync off, or
+ *   for `awaiting_range` (EM-S6).
  * - A mailbox out of view still draws its row.
  * - One surface, not two. The mailbox in view (`inView`) draws no row while
  *   its `OnboardingPanel` shows (`importPanelShows`).
@@ -180,7 +197,10 @@ export function syncBanners<A extends BannerFields & StageFields>(
       typeof account.importCount === "number" && account.importCount > 0 ? account.importCount : 0;
     const estimate = account.importEstimate;
     const line = SYNC_BANNER_LINES[phase];
-    if (typeof estimate === "number" && estimate > 0) {
+    if (phase === "starting") {
+      // No phase yet, so no number is true: no bar and no count.
+      rows.push({ account, phase, line, percent: null, detail: "" });
+    } else if (typeof estimate === "number" && estimate > 0) {
       rows.push({
         account,
         phase,
