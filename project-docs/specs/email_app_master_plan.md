@@ -550,8 +550,8 @@ or API client to create a pattern by hand.
 | **D-EM-7** | **Every email triage decision goes through the `decide` task on `tier-decide`, and no member can change it** (owner, 2026-10-02). The decisions are the rule match (one rule and multi-rule), the thread status, the cold check and the sender pin. Settings and the email agent lose the rules-model choice. Text work stays on the LLM tiers: drafts, compose, the digest brief, the voice profile, template fill, rule generation and chat. |
 | **D-EM-8** | **No fallback model** (owner, 2026-10-02, revised the same day). When `decide` gives no answer, the email stays undecided. No rule applies, `rules_processed_at` stays NULL, and the next cycle asks again. The log line is `decide.unavailable` with the reason. Resilience is a backup step in the Router chain of `tier-decide`, which an operator binds. For email, this replaces adoption rules 2 and 3 of `customer_console.md` §6A.14. |
 | **D-EM-9** | **The owner approves residency for email triage** (owner, 2026-10-02). Tenant mail content may go to TypeSafe and to AI/ML API for the D-EM-7 decisions. This answers H-166 item 3 for email, and for no other app. `DECIDE_ENABLED` stays an owner act (`work_plan.md` §6.1 WS-31 (i)). |
-| **D-EM-10** | **The import never reaches back more than 6 months.** No sync path writes a message older than 6 months. The code counts a month as 30 days, so the ceiling is 180 days. (Owner, 2026-10-02.) |
-| **D-EM-11** | **The member chooses the import range at the first connect.** The choices are 0 to 6 months, and the default is 1 month. A choice of 0 imports no old mail, only the mail that arrives after the connect. (Owner, 2026-10-02.) |
+| **D-EM-10** | **The import never reaches back more than 6 months.** No sync path writes a message older than 6 months. The code counts a month as 30 days, so the ceiling is 180 days. (Owner, 2026-10-02.) **Amended by D-EM-54 and D-EM-55 (2026-10-07).** §14.4.5 holds the window of each mailbox, at most 24 months. |
+| **D-EM-11** | **The member chooses the import range at the first connect.** The choices are 0 to 6 months, and the default is 1 month. A choice of 0 imports no old mail, only the mail that arrives after the connect. (Owner, 2026-10-02.) **Amended by D-EM-54 and D-EM-55 (2026-10-07).** The choices are 1, 3, 6 or 12 months or a custom start date, and the default is 3 (§14.4.5). |
 | **D-EM-12** | **The import goes from the newest mail to the oldest, across all folders.** When the storage limit stops it, the newest mail is present and the gap is at the old end. (Owner, 2026-10-02.) |
 | **D-EM-13** | **A sync after a pause continues from the last sync point.** A pause is sync turned off, a token that failed, or a reconnect. The next sync gets the mail since the last sync point. It does not import the range again. (Owner, 2026-10-02.) |
 | **D-EM-14** | **Each mailbox has a storage limit of 500 MB.** The meter measures the copy that Metorite keeps: message rows, bodies, attachment records and embeddings. At the limit, the import stops going back, and Metorite asks the member to remove older mail from Metorite. A removal deletes the copy in Metorite only. Metorite never deletes or changes mail in the Outlook mailbox of the member. (Owner, 2026-10-02. The answers to three checks follow this table.) |
@@ -12160,7 +12160,7 @@ each one. D-EM-43 to D-EM-46 record the answers of the owner to Q-IN-1 to Q-IN-4
 | Id | Decision |
 |---|---|
 | **D-EM-37** | **Finance first, then Projects, then Sales.** EM-T14b extracts finance facts only. Projects (EM-T14e) and Sales (EM-T14f) follow. "Other company" (hiring, vendors, legal) waits for EM-T14g. *Default, owner may change.* |
-| **D-EM-38** | **Only the last 90 days of mail.** The job reads a message only when its `received_at` is less than 90 days old. The import range still binds (D-EM-10, D-EM-11). So a member who imported 1 month gets facts for 1 month. *Default, owner may change.* |
+| **D-EM-38** | **Only the last 90 days of mail.** The job reads a message only when its `received_at` is less than 90 days old. The import range still binds (D-EM-10, D-EM-11). So a member who imported 1 month gets facts for 1 month. *Default, owner may change.* **Amended by D-EM-50 (2026-10-07).** The job reads each stored message at or after the sync floor of the mailbox, newest first. The bound of 90 days goes. EM-T14b-2 builds the sync window, not 90 days. |
 | **D-EM-39** | **Opt-in for each mailbox.** A new column, `email_assistant_settings.insights_enabled`, is false by default. A missing settings row reads as false. The member turns it on in the Dashboard or in AI settings. *Default, owner may change.* |
 | **D-EM-40** | **The job skips the figures of a spreadsheet until the data toolkit can run with no chat.** A `.xlsx` or `.csv` file gives no fact. The member can still ask the assistant, which reads the file with `read_email_attachment`. The other choice was a fact with a lower confidence. It still shows on a card and still adds to a sum, and a wrong total is worse than a missing one. *Agent decision (orchestrator, 2026-10-07). The owner can reverse it.* |
 | **D-EM-41** | **The quote rule.** Each fact carries a quote of at most 200 characters from its source. Code checks that the quote is in the source text. Code parses the amount, the currency and the date from the quote. The number that the model gives is never stored. *Agent decision (orchestrator, 2026-10-07). The owner can reverse it.* |
@@ -12242,7 +12242,9 @@ eval set before the build.
      ~:38). With the flag off, the hook opens no session.
    - The account id comes from the loop. The loop reads it from `email_accounts`, never from mail.
 2. **The batch.** The job selects at most 10 messages of the mailbox, newest first. Each one has
-   `insights_at IS NULL`, `insights_tries < 3` and a `received_at` inside 90 days (D-EM-38).
+   `insights_at IS NULL`, `insights_tries < 3` and a `received_at` at or after the sync floor of
+   the mailbox (`import_window.sync_floor`). *Amended by D-EM-50, 2026-10-07.* D-EM-38 read
+   "inside 90 days".
    - Each one also has `rules_processed_at IS NOT NULL`, so its labels and its cold verdict exist.
    - It reads in one tenant session. It calls the model with no session open. It writes in a
      second session (the rule of EM-T4a).
@@ -12359,6 +12361,7 @@ line of §13.5.
 | Screen tokens each day | About 100,000 in, about USD 0.004 | 40 requests |
 | The backlog of 90 days at opt-in | About 4,400 counted calls | About 3,600 screen requests and 810 `tier-fast` calls |
 | Backlog tokens | About 9 M screen tokens (USD 0.38), and about 3 M in and 0.3 M out on `tier-fast` | 90 days of the rows above |
+| The backlog of 12 months at opt-in (*amended by D-EM-50, 2026-10-07*) | About 17,600 counted calls | 4 times the row of 90 days. The backlog is now the whole sync window |
 
 **What the screen saves.** Without it, the same mailbox makes about 50 `tier-fast` calls each day,
 with about 160,000 tokens in and 20,000 out. With it, `tier-fast` gets about 80 % fewer tokens.
@@ -12370,7 +12373,8 @@ makes about 21 calls each day. EM-T14e and EM-T14f measure it again.
 
 **The backlog throttle.** The job reads the backlog only while the count of the mailbox for the day
 is under 50 % of `EMAIL_LLM_DAILY_CALLS`. Mail of the last 24 hours always goes first. At 1,000
-calls a day, a backlog of 90 days takes about 5 days.
+calls a day, a backlog of 90 days takes about 5 days. *Amended by D-EM-50, 2026-10-07:* the
+backlog is the whole sync window, so a window of 12 months takes about 20 days.
 
 - EM-T14b-2 adds one read to `llm_cap.py`, `calls_today(account_id)`. It adds no second counter.
 - When `calls_today` is None, or the budget mode is `off`, the job reads no backlog.
@@ -13045,7 +13049,8 @@ run takes about 40 s with no window, so it is now a second timing case. H7 then 
 - A relative date gives no `due_on`.
 - An unknown type and an unknown field are dropped.
 - The injection mail of the eval set gives no fact in `--scripted` mode.
-- R8: the batch read returns only rows inside 90 days with `insights_at IS NULL`, newest first.
+- R8: the batch read returns only rows at or after the sync floor with `insights_at IS NULL`,
+  newest first. *Amended by D-EM-50, 2026-10-07.* D-EM-38 read "inside 90 days".
 - R8: each free filter marks its message read, and makes no model call.
 - With the flag off, the hook opens no session.
 - With the mailbox not opted in, the job makes no model call.
@@ -13490,7 +13495,7 @@ owner's, except where a row says "agent decision".
 | **D-EM-55** | **The default is 3 months.** Three reasons. A window of 3 months (90 days, because the code counts a month as 30 days) equals the HTML hot window, so a default connect stores no HTML that the clear job must remove later. The first insight does not wait on the window, because the import and Insights read newest first. Insights reads the 90-day backlog in about 5 days at the throttle of §13.6. *Agent decision (orchestrator, 2026-10-07), from the code. The owner can change it.* |
 | **D-EM-56** | **A custom window is a start date, and its end is always now.** New mail always syncs (D-EM-13, Q2 of D-EM-14), so an end date in the past has no meaning. The start date is at most 24 months back. A custom window, and each window over 12 months, shows a warning that a longer window can cost more AI compute. *The bound of 24 months is an agent decision (orchestrator, 2026-10-07). The owner can change it.* §14.4.5 gives the reason. |
 | **D-EM-57** | **Before the member confirms, the step shows an estimate.** It shows the count of mail in the window from the provider, and the AI calls that the count implies. It shows a figure in credits only after AI credit metering lands (D-EM-43). So the range step moves after the sign-in, because the count needs the token of the mailbox. (Owner, 2026-10-07. The order is an agent decision.) |
-| **D-EM-58** | **A banner in the header of the email app shows each mailbox that syncs.** It names the mailbox, shows the progress as a count or a percent, and says that the sync still runs. It goes away when the sync ends. It shows for each import, not only the first one. It uses the one design system. (Owner, 2026-10-07.) |
+| **D-EM-58** | **A banner in the header of the email app shows each mailbox whose first import runs.** It names the mailbox, shows the progress as a count or a percent, and says that the import still runs. It shows for a mailbox in view and for a mailbox out of view. It goes away when the import ends. A Resync and the deep sync of a member act write no progress, so they show no banner (`scheduler.py:891-898`, `:1455`). It uses the one design system. (Owner, 2026-10-07. The narrowing to the first import is an agent decision, from the code.) |
 | **D-EM-59** | **After the first import, the setup invites the member to set up AI rules, when the mailbox has none.** It happens on the first connect of a mailbox only. A sort of the imported mail costs AI compute, so it stays opt-in, and the step shows its estimate first. (Owner, 2026-10-07.) |
 | **D-EM-60** | **A second mailbox goes through the same flow, plus one choice.** The member copies the rules of a mailbox that they pick, or sets up new rules. The copy keeps each folder and label name. The answer names each name that the new mailbox does not hold, and the provider makes it on first use. (Owner, 2026-10-07. The rule for a missing name is an agent decision.) |
 
@@ -13596,18 +13601,49 @@ compute. So each number below is small on purpose. *Agent decision (orchestrator
 - `db_busy.recently_busy()` is true.
 - `get_engine().pool.checkedout()` is at or over half of `db_pool_size`.
 - A batch fails, or times out.
+- Two batches in one night take more than 2 s each.
 - The clock leaves the window.
 - The count for the night reaches 5,000.
+- Redis fails, so the job cannot read or write the count for the night.
 
-**How it walks.** A loop in the gateway wakes every 15 minutes, as `projects/import_sweep.py` does.
-It acts only inside the window.
+**How it walks.** A loop in the gateway wakes every 15 minutes, and acts only inside the window.
+It starts and stops in `main.py` as `projects/import_sweep.py` does. That sweep wakes every 12
+hours (`import_sweep.py:31`), so the clear job keeps its own interval.
 
 1. It reads the organizations with `scheduler._list_organizations()` (`scheduler.py:396`).
 2. It opens `tenant_session(org)` for each read and each batch. It binds no tenant from input.
 3. It walks one mailbox at a time, newest cold row first, with a keyset cursor on
    `(received_at, id)`. It uses the index on `(account_id, received_at DESC)`
    (`infra/postgres/17_email_accounts.sql:73`).
-4. It commits each batch, then pauses.
+4. **Each batch READS 200 index rows at most**, and clears the rows of those that qualify, 100
+   at most. So a run of cleared rows costs one bounded read, and never a long scan.
+5. It commits each batch, then pauses.
+
+**The cursor of each mailbox (agent decision, orchestrator, 2026-10-07).** One tenant Redis key
+for each mailbox, `key("email-html-clear", <account id>)`, holds three values:
+
+- `oldest_done`: the oldest `received_at` that the walk reached.
+- `backlog_done`: true when the walk found no older row.
+- `night_done`: the UTC date of the last night that this mailbox finished.
+
+- **While `backlog_done` is false,** the walk resumes below `oldest_done`.
+- **After the backlog clears,** each night walks only `[cutoff - 2 days, cutoff)`. That band
+  holds the mail that turned cold since the last run, plus one day for a missed night.
+- **A finished mailbox** gets `night_done` for the date, and the loop skips it until the next
+  night.
+- **A lost key costs a walk, not a fault.** The walk then starts again at the cutoff, and the
+  read cap of item 4 bounds each batch.
+
+**The count for the night survives a restart (agent decision, orchestrator, 2026-10-07).** The
+count lives in tenant Redis, one key for each organization and UTC date,
+`key("email-html-clear-night", <date>)`, with a time to live of 48 hours. A loop that starts
+sums the key of each organization, and adds each batch to the key of its own organization. So a
+restart reads the same count, and the bound of 5,000 for the box holds.
+
+- This keeps each key inside the tenant wrapper (R5 (c)), so it needs no unscoped key and no
+  one-row table outside RLS.
+- With 2 organizations, the sum costs 2 reads for each loop.
+- When Redis fails, the job stops for the night. It never runs with a count that it cannot read.
 
 **The dry run.** In `dry_run`, the job reads one count for each mailbox inside the window:
 `count(*)` and `sum(pg_column_size(body_html))` of the rows that the UPDATE would clear. It
@@ -13621,28 +13657,58 @@ text.
 
 1. **The window rules stay in `import_window.py`.** It gains the choices `1, 3, 6, 12`, a custom
    start date, `DEFAULT_IMPORT_MONTHS = 3` and `MAX_WINDOW_DAYS = 730`.
-   - The floor of a mailbox is its `import_since`, bounded by `now - 730 days`.
-   - A mailbox with `import_since` NULL keeps the ceiling of 180 days (D-EM-54).
+   - `sync_floor` gains an argument, `max_days`. The floor is the later of `import_since` and
+     `now - max_days`. Today `max_days` is always 180.
+   - `import_window.py` does not import `html_tier.py`, and `html_tier.py` does not import
+     `import_window.py` (§14.4.1). The CALLER picks `max_days`.
+   - The scheduler and the confirm pass 730 only when `html_tier.hot_only()` is true AND the
+     mailbox has `window_chosen_at`. Else they pass 180.
    - The choice "Only new mail" leaves the list, because the owner named the choices. A custom
      start date of today gives the same result.
+   - **Which mailboxes keep the rolling ceiling (D8).** Today the floor rolls:
+     `max(import_since, now - 180 days)`. A mailbox whose `window_chosen_at` is NULL keeps that
+     rule. That is each mailbox that connected before Flip C, and each one with `import_since`
+     NULL (D-EM-54).
+   - A mailbox that chose through the confirm gets `window_chosen_at`. Its floor is then fixed at
+     `import_since`, until the ceiling of 730 days passes it.
 2. **The range step moves after the sign-in.** The callback writes
-   `import_phase = 'awaiting_range'` and `import_since = now()`. The sync then gets new mail only,
-   and the import waits. `import_phase` is text with no CHECK, so this needs no migration
-   (`225_email_import_onboarding.sql:24`).
+   `import_phase = 'awaiting_range'` and `import_since = now()`. `import_phase` is text with no
+   CHECK, so the phase needs no migration (`225_email_import_onboarding.sql:24`).
+   - **The scheduler skips the first import in `awaiting_range`.** Today `scheduler.py:1455`
+     starts the first import whenever `initial_sync_done` is false. At the end it writes
+     `import_phase = 'done'` (`_IMPORT_DONE`, `scheduler.py:290-294`), which would overwrite
+     `awaiting_range`. So `first_import` also needs `import_phase <> 'awaiting_range'`.
+   - The recurring sweep still runs, so new mail syncs (Q2 of D-EM-14).
+   - **A member who never confirms.** The mailbox stays in `awaiting_range`, and syncs new mail
+     only. The setup shows the range step until the member confirms or closes the setup.
+   - "Skip setup" confirms `{since: <the stored import_since>}`. That window holds no old mail,
+     so the import ends at once with `import_phase = 'done'`. No second path exists.
 3. **The estimate.** `GET /email/accounts/{id}/import/estimate` answers for each choice:
-   - `messages`: the count from the provider. Outlook sums `$count` over
-     `SWEEP_SYSTEM_FOLDERS`, with `$top=1`, `$select=id`, a `receivedDateTime ge` filter and
+   - `messages`: the count from the provider. Outlook sums `$count` over the folders of the
+     import: `SWEEP_SYSTEM_FOLDERS` plus `_user_sweep_folders()` (`outlook.py:2068-2069`). Each
+     request holds `$top=1`, `$select=id`, a `receivedDateTime ge` filter and
      `ConsistencyLevel: eventual` (`outlook.py:2196-2224`). Gmail reads `resultSizeEstimate` of
      `users.messages.list` with `q=after:<epoch>` and `maxResults=1` (`gmail.py:581-584`).
    - `rules_calls`: one `decide` request for each message, when the member sorts the import.
    - `insights_calls`: the screen and the extraction of §13.6, only when Insights is on for the
      mailbox.
    - `exact: false` for Gmail, because `resultSizeEstimate` is rough. The step then says "about".
-   - The estimate makes one provider call for each folder and each choice, so about 30 calls for
-     Outlook and 5 for Gmail. The answer stays in tenant Redis for 10 minutes.
+   - The estimate makes one provider call for each folder and each choice. Outlook reads the
+     folder list once, then `4 x (6 + U)` counts for the four presets, where U is the count of
+     user folders. A mailbox with 20 user folders makes about 105 calls. Gmail makes 4 calls.
+   - A custom date adds one more set of counts. The answer stays in tenant Redis for 10 minutes.
+   - **While `hot_only()` is false, the answer leaves out each choice over 6 months**, and the
+     step does not show it. A custom date older than 180 days is then refused too.
 4. **The confirm.** `POST /email/accounts/{id}/import/range` takes `{months}` or `{since}`. It
-   checks the owner, the choice and the bound. It writes `import_since`, and sets `import_phase`
-   to the value that starts the import of today (EM-T6b).
+   checks the owner, the choice and the bound. A window over 180 days answers 409 while
+   `html_tier.hot_only()` is false. It accepts a mailbox in `awaiting_range` only, else 409. It
+   writes these columns in one UPDATE, and no other:
+   - `import_since` = the chosen start
+   - `window_chosen_at` = `now()`
+   - `import_phase` = NULL
+   - `initial_sync_done` = false
+
+   The next scheduler tick then starts the first import of today (EM-T6b), newest first.
 5. **Why 24 months, and not more.** Three bounds already hold, and 24 months stays inside each:
    - The meter of 500 MB for each mailbox stops the import at the old end (D-EM-14). Without old
      HTML, 500 MB holds about 100,000 messages.
@@ -13654,8 +13720,10 @@ text.
 #### 14.4.6 The sync banner
 
 - **One helper decides.** `lib/onboarding.ts` gains `syncBanners(accounts)`. It returns each
-  mailbox with an import that runs, in any mailbox, in view or not. "Runs" means `import_phase` is
-  `counting` or `importing`, with sync on and no error.
+  mailbox whose first import runs, in view or not. "Runs" means `initial_sync_done` is false and
+  `import_phase` is `counting` or `importing`, with sync on and no error.
+- **A Resync shows no row.** A Resync and the deep sync of a member act write no progress column
+  (`scheduler.py:891-898`, `:1455`), so the helper has nothing to show.
 - **The progress.** With `import_estimate`, it shows a percent from `import_count /
   import_estimate`, capped at 99 % until the phase ends. With no estimate, it shows the count.
 - **The surface.** One row under the header of the email page. It draws `ProgressBar` and
@@ -13664,11 +13732,12 @@ text.
 - **One surface, not two.** For the mailbox in view, `OnboardingPanel` keeps the detail of the
   first import. The header row leaves that mailbox out while the panel shows. `FirstSyncBanner`
   goes, because the header row covers it.
-- **The poll.** It reuses the poll of the first sync, and widens its condition to "a banner shows".
+- **The poll.** It reuses the poll of the first sync (`app/email/page.tsx:358-374`), which already
+  runs while any first sync is pending.
 
 #### 14.4.7 The rules step, and a second mailbox
 
-- **The invitation exists.** EM-S9 adds the estimate. "Sort my imported mail" first reads
+- **The invitation exists.** EM-S10 adds the estimate. "Sort my imported mail" first reads
   `GET /email/rules/process-past/estimate` for the import window. It shows `will_process` as AI
   calls. When `capped` is true, it says that one run sorts 2,000 messages, and offers the next run.
 - **The cost.** Each sorted message costs one `decide` request on `tier-decide` (D-EM-7). That is
@@ -13706,7 +13775,9 @@ section touches WhatsApp.
 | 8 | **The open** (`transport/messages.py:686-712`) fetches only when both bodies are empty, and stores the HTML | A cold message stores no HTML. A new route gets old HTML (§14.4.2) |
 | 9 | **`hydrate_message_body`** (`core.py:410-423`) writes `body_html` | A cold message stores its text only |
 | 10 | **The rule copy** (`rule_copy.py:92-96`) takes a folder name with no check | The answer names each name that the target lacks (D-EM-60) |
-| 11 | **The first-sync surfaces** (`lib/onboarding.ts:119-129`) draw for a first sync only | The header row draws for each import (D-EM-58) |
+| 11 | **The first-sync surfaces** (`lib/onboarding.ts:119-129`) draw in the mail pane, and `FirstSyncBanner` shows no count | One header row shows each first import with its progress, in view or not (D-EM-58). It stays a first-import surface |
+| 14 | **The floor rolls** (`import_window.py:98-116`): `max(import_since, now - 180 days)` | A mailbox that chose through the confirm gets a fixed floor at `import_since`, bounded by 730 days. Each mailbox with `window_chosen_at` NULL keeps the rolling ceiling of 180 days (§14.4.5 item 1) |
+| 15 | **The first import starts whenever `initial_sync_done` is false** (`scheduler.py:1455`) | It also needs `import_phase <> 'awaiting_range'` (§14.4.5 item 2) |
 | 12 | **The client mirror of the range** (`lib/connect.ts:176`, `:240`) and the check of the OAuth state (`transport/signing.py:127-134`) | They follow `import_window.py`. The OAuth state keeps reading `import_months` from an old state |
 | 13 | **WhatsApp W10** (`wa_embeddings.py:1-12`) embeds each message | D-EM-51: embed summaries. WS-20 owns it |
 
@@ -13718,14 +13789,16 @@ section touches WhatsApp.
   item 3) reads the text. Only its window changes (departure 1).
 - **The reply and the forward** quote `body_text` (§14.2).
 - **`read_email(full=True)`** reads the provider through `/full-body`.
-- **The storage limit** (D-EM-14) binds. The clear lowers the meter, so a mailbox that stopped at
-  the limit can import older mail again on its next sync.
+- **The storage limit** (D-EM-14) binds as today. The clear lowers the meter, and changes nothing
+  else about the limit.
 
 ### 14.6 Slices
 
 Each slice is one PR of about 600 lines or fewer. A slice that grows past that splits, and its
-section names the split. No slice needs a migration today. If a slice finds that it needs one, it
-takes the number at build time (R1). 232 is the first free number at `444c36893`.
+section names the split. EM-S6 takes one migration, which adds
+`email_accounts.window_chosen_at timestamptz NULL`. It is expand-only (R6). The slice takes the
+number at build time (R1). 232 is the first free number at `444c36893`. No other slice needs a
+migration.
 
 | Slice | Gate | Dark | Scope | Done when |
 |---|---|---|---|---|
@@ -13733,8 +13806,8 @@ takes the number at build time (R1). 232 is the first free number at `444c36893`
 | **EM-S2** | 🟢 AGENT-SAFE · visual review | Yes, the same flag | The pane shows text, then HTML. The prefetch | §14.6.2 |
 | **EM-S3** | 🟢 AGENT-SAFE · R8 | Yes, `EMAIL_HTML_HOT_ONLY` | The four writers store no cold HTML | §14.6.3 |
 | **EM-S4** | 🟢 AGENT-SAFE · R8 · security review | Yes, `EMAIL_HTML_CLEAR` | The clear job, with its dry run | §14.6.4 |
-| **EM-S5** | Not scheduled | — | Quote stripping, measured first | §14.6.5 |
-| **EM-S6** | 🟢 AGENT-SAFE · R8 | Yes, `EMAIL_SYNC_WINDOW_CHOICE` | The window rules, `awaiting_range` and the confirm route | §14.6.6 |
+| **EM-S5** | 🟢 AGENT-SAFE, the read-only measure only · not scheduled | — | Quote stripping, measured first | §14.6.5 |
+| **EM-S6** | 🟢 AGENT-SAFE · R8 · after EM-S3 merges | Yes, `EMAIL_SYNC_WINDOW_CHOICE` | The window rules, `awaiting_range`, the scheduler skip, the migration and the confirm route | §14.6.6 |
 | **EM-S7** | 🟢 AGENT-SAFE · R8 | Yes, the same flag | The estimate route | §14.6.7 |
 | **EM-S8** | 🟢 AGENT-SAFE · visual review | Yes, the same flag | The range step after the sign-in, with the estimate and the warning | §14.6.8 |
 | **EM-S9** | 🟢 AGENT-SAFE · visual review | No | The sync banner in the header | §14.6.9 |
@@ -13747,10 +13820,20 @@ takes the number at build time (R1). 232 is the first free number at `444c36893`
 
 1. EM-S1, then EM-S2, then EM-S3. Then Flip A.
 2. EM-S4. Its `dry_run` may run after Flip A. Flip B comes after the dry run.
-3. EM-S6, EM-S7 and EM-S8. Flip C needs Flip A first. A code check holds that order.
-   `import_window` offers a window over 6 months only when `html_tier.hot_only()` is true.
-4. EM-S9 and EM-S10 at any time. EM-S9 helps most before Flip C, because a longer import runs
+3. **EM-S6 dispatches only after EM-S3 merges.** Then EM-S7 and EM-S8.
+4. Flip C needs Flip A first. The callers of `sync_floor`, the confirm and the estimate hold
+   that order in code. Each one allows a window over 180 days only when `html_tier.hot_only()`
+   is true (§14.4.5).
+5. EM-S9 and EM-S10 at any time. EM-S9 helps most before Flip C, because a longer import runs
    longer.
+
+**Why EM-S9 and EM-S10 ship with no flag.** Each one changes a surface that is live today and
+adds no new write.
+
+- EM-S9 is UI only. It moves the first-sync row into the header, and adds a count.
+- EM-S10 adds a read before a sort, and one read-only field to the copy answer.
+- The precedent: EM-T6d parts 1 and 2 (#579, #581) and EM-T6e (#619) shipped UI of the setup
+  with no flag. EM-T8f-1 (#605) shipped the copy route with no flag.
 
 **Why the flips have two gates.**
 
@@ -13777,7 +13860,8 @@ skipped is the proof. A green run with skips proves nothing (R8).
 3. `GET /email/messages/{id}/html` in `transport/messages.py`, as §14.4.2 items 1 and 2 say.
    With the flag off, it answers 404.
 4. `html_remote` on `EmailMessageModel` and on each list row. With the flag off, it is false.
-5. The row D4 of `work_plan.md` §6 names the two flags, with the gate `enforcement-flip`.
+5. The row D4 of `work_plan.md` §6 already names the two flags, with the gate
+   `enforcement-flip`. The doc PR of §14 added them. Keep the row true if a name changes.
 
 **Non-goals.** No UI. No writer changes. No job.
 
@@ -13825,6 +13909,9 @@ uv run ruff check apps/services/email_ingestion/email_ingestion/html_tier.py app
    for a message with `htmlRemote`. Then they show the HTML when it arrives.
 3. A prefetch helper in `lib/` with the bounds of §14.4.2 item 5.
 4. With the flag off, `htmlRemote` is false, and nothing changes.
+5. **The 429 log.** When the provider answers 429, the route of EM-S1 answers 503 with
+   `Retry-After`, and logs `email.html.provider_429` with the mailbox id and no mail text. The
+   prefetch stops on it, as it stops on each 503.
 
 **Acceptance.**
 
@@ -13832,9 +13919,14 @@ uv run ruff check apps/services/email_ingestion/email_ingestion/html_tier.py app
 - The prefetch asks for 6 rows at most, and 2 at one time.
 - The first 503 stops the prefetch until the next list load.
 - A failed fetch leaves the text in place, with no error state.
+- The fetched HTML goes through the one render path of stored HTML: `sanitizeEmailHtml`, then the
+  sandboxed iframe (`components/MessageContent.tsx:37`, `:110`). No second render path exists.
+- A provider 429 gives one `email.html.provider_429` line, and the prefetch stops.
 
 **Fences (R7).** `lib/htmlPrefetch.test.ts`: the bound of 6, the bound of 2, the stop at 503, and
-no fetch for a row with `htmlRemote` false. The design-system conformance suite passes.
+no fetch for a row with `htmlRemote` false. A test renders a fetched body through
+`MessageContent`, and checks that a `<script>` in it does not reach the frame. The design-system
+conformance suite passes.
 
 **Verify with.**
 
@@ -13881,15 +13973,32 @@ uv run pytest tests/unit/test_email_html_hot_only.py tests/unit/test_email_upser
 uv run pytest tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_import_floor.py -q
 ```
 
-**The live check of Flip A.** After the flip, read the count of rows older than 90 days that got
-HTML since the flip. It must stay 0 for 24 hours:
+**The live check of Flip A.** Two checks. Each one must read 0 for 24 hours after the flip.
+`updated_at` is not a fit for either one. The open of a message moves it
+(`transport/messages.py:671-677`), and so does each provider change, while the cold HTML stays.
 
-```sql
-SELECT count(*) FROM email_messages
- WHERE received_at < now() - interval '90 days'
-   AND body_html IS NOT NULL
-   AND updated_at > :flip_time;
-```
+1. **No new INSERT stores cold HTML.** The upsert writes `synced_at` on INSERT only (`persist.py:139-140`).
+
+   ```sql
+   SELECT count(*) FROM email_messages
+    WHERE synced_at > :flip_time
+      AND received_at < now() - interval '90 days'
+      AND body_html IS NOT NULL;
+   ```
+
+2. **No cold row without HTML gains HTML.** At the flip, save the ids of the cohort to a file on
+   the box. After 24 hours, count the ids of that file that now hold HTML.
+
+   ```sql
+   -- At the flip: the cohort.
+   SELECT id FROM email_messages
+    WHERE body_html IS NULL
+      AND received_at < now() - interval '90 days';
+   -- After 24 hours:
+   SELECT count(*) FROM email_messages
+    WHERE id = ANY(:cohort_ids)
+      AND body_html IS NOT NULL;
+   ```
 
 #### 14.6.4 EM-S4 — the clear job
 
@@ -13899,16 +14008,20 @@ SELECT count(*) FROM email_messages
 2. The settings of §14.4.4, in `acb_common/settings.py`.
 3. The dry run, and `on`. `on` runs only when `html_tier.hot_only()` is true. With it false, the
    job logs one refusal and does nothing.
-4. The row D4 of `work_plan.md` §6 names `EMAIL_HTML_CLEAR` as owner-only for `on`, and as
-   `enforcement-flip` for `dry_run`.
+4. The row D4 of `work_plan.md` §6 already names `EMAIL_HTML_CLEAR` as owner-only for `on`, and as
+   `enforcement-flip` for `dry_run`. The doc PR of §14 added it.
+5. The cursor of each mailbox, and the count for the night in tenant Redis (§14.4.4).
 
 **Non-goals.** No `VACUUM FULL`, no `pg_repack`, no shrink of the files. No clear of `body_text`,
 of a file, or of a message.
 
 **Acceptance.**
 
-- A batch clears 100 rows at most, in one transaction.
+- A batch clears 100 rows at most, and reads 200 index rows at most, in one transaction.
 - The job does nothing outside the window.
+- After two batches of more than 2 s each, the job stops for the night.
+- After the backlog of a mailbox clears, a night reads only `[cutoff - 2 days, cutoff)`.
+- A restart in the window reads the count for the night again, and does not reset it.
 - The job stops on each stop condition of §14.4.4.
 - A cold row with an empty text keeps its HTML.
 - A hot row keeps its HTML.
@@ -13925,10 +14038,18 @@ of a file, or of a message.
 - The window `20:30-23:30` does not overlap `OnCalendar` of `deploy/hostinger/acb-backup.timer`.
   The test reads the timer file, so a later move of the backup fails it.
 - `dry_run` makes no UPDATE.
+- Two slow batches stop the run, and one slow batch does not.
+- A second start of the loop on the same date reads the count that the first one wrote.
+- With `backlog_done` true, the batch read names no row older than `cutoff - 2 days`.
+- A batch reads 200 rows at most, also when no row of the 200 qualifies.
 
 **Mutations.** S4-M1 drops the text predicate, and the no-text fence fails. S4-M2 writes
 `updated_at = now()`, and its fence fails. S4-M3 ignores `recently_busy()`, and the stop fence
 fails.
+
+S4-M4 resets the slow-batch count after each batch, and the slow-batch fence fails. S4-M5 keeps
+the count in memory only, and the restart fence fails. S4-M6 drops the read cap, and the read
+fence fails.
 
 **Verify with.**
 
@@ -13959,30 +14080,52 @@ stops there. Else a later spec decides where the quote goes, because the Insight
 
 **Scope.**
 
-1. `import_window.py` gains the rules of §14.4.5 item 1. It stays the one owner.
+1. `import_window.py` gains the rules of §14.4.5 item 1, and `sync_floor` gains `max_days`. It
+   stays the one owner of the window, and imports nothing from `html_tier.py`.
 2. `email_sync_window_choice: bool = False` (`EMAIL_SYNC_WINDOW_CHOICE`) in `settings.py`. With it
    off, each rule of today holds.
-3. With the flag on, the callback (`transport/oauth.py:776`) writes `awaiting_range`, and the
-   import waits.
-4. `POST /email/accounts/{id}/import/range`, as §14.4.5 item 4 says.
-5. A window over 6 months needs `html_tier.hot_only()`. With it false, the route answers 409.
-6. The OAuth state keeps reading `import_months` from a state that the gateway signed before.
+3. With the flag on, the callback (`transport/oauth.py:776`) writes `awaiting_range`.
+4. **`scheduler.py`.** `first_import` (`scheduler.py:1455`) also needs
+   `import_phase <> 'awaiting_range'`. The recurring sweep still runs. The scheduler passes
+   `max_days` to `sync_floor` by the rule of §14.4.5 item 1.
+5. `POST /email/accounts/{id}/import/range`, with the writes of §14.4.5 item 4.
+6. One migration: `email_accounts.window_chosen_at timestamptz NULL`. Expand-only (R6), with
+   the number taken at build time (R1).
+7. The OAuth state keeps reading `import_months` from a state that the gateway signed before.
 
 **Acceptance.**
 
 - With the flag off, a connect behaves as today.
 - With the flag on, a connect imports no old mail until the confirm.
 - New mail syncs while the range waits.
+- A scheduler tick in `awaiting_range` writes no import progress: `import_phase`,
+  `import_count`, `import_estimate` and `initial_sync_done` keep their values.
+- The confirm writes `import_since`, `window_chosen_at`, `import_phase = NULL` and
+  `initial_sync_done = false`, and no other column. The next tick starts the import.
+- A confirm of a mailbox that is not in `awaiting_range` answers 409.
+- "Skip setup" ends the import at once, with `import_phase = 'done'`.
 - A start date more than 730 days back answers 422.
+- With `hot_only()` false, a 12-month confirm answers 409, and a custom date older than 180
+  days answers 409.
 - A member who does not own the mailbox gets 404.
-- A mailbox with `import_since` NULL keeps the floor of 180 days.
+- A mailbox with `window_chosen_at` NULL keeps the rolling floor of 180 days.
 
 **Fences (R7).**
 
-- `tests/unit/test_email_import_floor.py` gains four cases: the new choices, the bound, the custom
-  date and the NULL floor.
+- `tests/unit/test_email_import_floor.py` gains these cases: the new choices, the bound, the custom
+  date and the rolling floor of a mailbox with `window_chosen_at` NULL.
+- `sync_floor` with `max_days=180` clamps a 12-month `import_since` to 180 days.
+- The caller passes 180 while `hot_only()` is false, and passes 730 only with both
+  `hot_only()` and `window_chosen_at`.
+- R8: a scheduler tick in `awaiting_range` writes no import progress.
+- R8: a 12-month confirm with `hot_only()` false answers 409, and writes nothing.
+- R8: a custom date older than 180 days with `hot_only()` false answers 409.
 - R8: the confirm of org A cannot write a mailbox of org B.
+- A structural fence: `import_window.py` does not import `html_tier.py`, and the reverse.
 - A mirror test fails when `lib/connect.ts` and `import_window.py` name another default or bound.
+
+**Mutations.** S6-M1 drops the `awaiting_range` test from `first_import`, and the tick fence
+fails. S6-M2 passes 730 with `hot_only()` false, and the clamp fence fails.
 
 **Verify with.**
 
@@ -14009,10 +14152,13 @@ uv run pytest tests/unit/test_email_import_floor.py tests/unit/test_email_schedu
 - A provider failure gives `messages: null` for that choice, and the step still shows the choice.
 - A second call within 10 minutes makes no provider call.
 - `insights_calls` is 0 when Insights is off for the mailbox.
+- While `hot_only()` is false, the answer holds no choice over 6 months.
+- The Outlook count covers `SWEEP_SYSTEM_FOLDERS` and `_user_sweep_folders()`.
 
 **Fences (R7).** In a new `tests/unit/test_email_import_estimate.py`: the Graph request holds
 `$count=true`, `$top=1` and `ConsistencyLevel: eventual`. The Gmail request holds `maxResults=1`.
-The cache key goes through the tenant wrapper. R8: a member of org B gets 404.
+The cache key goes through the tenant wrapper. R8: a member of org B gets 404. The Outlook count
+reads each user folder. With `hot_only()` false, no choice over 6 months is in the answer.
 
 **Verify with.**
 
@@ -14041,6 +14187,8 @@ uv run pytest tests/unit/test_email_import_estimate.py -v -rs
 - The default is 3 months.
 - The member cannot confirm a custom date older than 24 months.
 - The warning shows for "Custom", and for no preset.
+- The step shows only the choices that the estimate returns. While `hot_only()` is false, it
+  shows no choice over 6 months, and the custom date stops at 180 days.
 - A second mailbox shows the same step.
 
 **Fences (R7).** `lib/connect.test.ts` and `lib/onboarding.test.ts`: the default, the bound, the
@@ -14053,20 +14201,19 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 ```
 
 **The live check of Flip C.** The owner connects a test mailbox, sees the counts, chooses 12
-months, and sees the import run newest first. No row older than 90 days gets HTML (the query of
-§14.6.3).
+months, and sees the import run newest first. Then both checks of Flip A (§14.6.3) read 0 for
+24 hours, with `:flip_time` set to the time of Flip C and a new cohort taken at that time.
 
 #### 14.6.9 EM-S9 — the sync banner in the header
 
-**Scope.** `syncBanners` and the header row of §14.4.6. `FirstSyncBanner.tsx` goes. The poll
-widens to each running import.
+**Scope.** `syncBanners` and the header row of §14.4.6. `FirstSyncBanner.tsx` goes. The poll of
+the first sync stays as it is.
 
 **Acceptance.**
 
 - A mailbox that imports shows one row, with its chip, and a percent or a count.
 - A mailbox out of view still shows its row.
 - The row goes away when the phase ends.
-- A Resync of a mailbox shows the row too.
 - The row holds no colour literal, and each control comes from `src/components/ui/`.
 
 **Fences (R7).** `lib/onboarding.test.ts`: each phase case of `syncBanners`, the cap at 99 %, and
@@ -14121,6 +14268,10 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 - **The prefetch costs provider quota.** Gmail and Graph limit calls for each mailbox. The bound
   of 6 rows and the cache of 1 hour keep the cost small. EM-S2 logs each 429.
 - **The disk does not shrink** without a rewrite (§14.1).
+- **A night of clears leaves dead TOAST rows.** Each cleared value leaves its TOAST chunks dead.
+  Autovacuum of the TOAST table of `email_messages` then runs after the window, and writes I/O
+  of its own. The cap of 5,000 rows each night bounds that work. EM-S4 reads `n_dead_tup` and
+  `last_autovacuum` of that TOAST table in `pg_stat_all_tables` after the first night.
 - **Gmail counts are rough.** `resultSizeEstimate` can be far from the real count. The step says
   "about".
 - **A long window raises the Insights backlog.** The throttle of §13.6 bounds the calls each day.
@@ -14134,6 +14285,8 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
   (H-261) owns the split of the request jobs.
 - **Process past emails sorts oldest first, and caps a run at 2,000 messages** (`runner.py:907`).
   A window of 12 months can need several runs.
+- **For WS-37 (advisory).** The clear job is a retention by age of `body_html`. A retention
+  policy of WS-37 must list it. Nothing in this section binds WS-37.
 
 ### 14.9 Owner questions
 
