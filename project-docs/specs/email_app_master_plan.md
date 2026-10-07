@@ -5863,6 +5863,10 @@ uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gate
 | N5 | The card has no Bcc line | the draft card fence | red, 4 failed |
 | N6 | The read of the stored link has no mailbox filter | the R8 fence | red, 1 failed |
 
+**The security re-check of rounds 1 and 2 (EM-T13b-1, 2026-10-07): APPROVE.** The reviewer found no P0, P1 or P2. The Reply-To draft answers 409, and no Bcc survives on either provider. One P3 is fixed: a CR or LF in a mailto subject now sends nothing, because it can start a new mail header.
+
+**Known limit (P3).** The non-ASCII mark uses the `idna` codec of Python, which follows IDNA2003. So for a character such as `ß`, the mark can name a domain that differs from the one the provider uses. The line still shows the character.
+
 **Review round 1 (EM-T13b-1, 2026-10-07).** The verifier passed with P2 and P3 items. The security review asked for changes on one P1. Each finding has a fix and a fence below.
 
 1. **P1, the Reply-To.** `draft_reply` and the rule `DRAFT_EMAIL` path write the From of the mail to the row. Outlook's `createReply` keeps the Reply-To on the provider draft. So the card showed `billing@vendor.com`, and the unsigned send went to `pay@vendor-billing.co`. Also, on the signed path, `cc or None` and `bcc or None` kept a Cc or a Bcc that only the provider held.
