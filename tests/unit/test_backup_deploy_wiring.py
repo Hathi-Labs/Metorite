@@ -434,7 +434,14 @@ psql() {
   printf 'psql %s\n' "$*" >> "$CALLS"
   # First match wins. The table count goes first: it holds `select 1` too.
   case "$*" in
-    *"from pg_class c"*) echo 7 ;;
+    *"from pg_class c"*)
+      # COUNT_RC set: the live count query fails the way psql does when it
+      # loses its connection (exit 2).
+      if [ -n "${COUNT_RC:-}" ]; then
+        echo "psql: error: server closed the connection unexpectedly" >&2
+        return "$COUNT_RC"
+      fi
+      echo 7 ;;
     *"select 1"*) echo 1 ;;
     *"server_version_num"*) echo 17 ;;
     *"show server_version"*) echo 17.6 ;;
@@ -476,7 +483,13 @@ docker() {
   printf 'docker %s\n' "$*" >> "$CALLS"
   case "$1" in
     run) echo cid ;;
-    rm) touch "$W/ctr_removed" ;;
+    rm)
+      # RM_FAILS set: the daemon refuses to remove the container.
+      if [ -n "${RM_FAILS:-}" ]; then
+        echo "Error response from daemon: removal in progress" >&2
+        return 1
+      fi
+      touch "$W/ctr_removed" ;;
     container)
       [ -f "$W/ctr_removed" ] && return 1
       echo true ;;
@@ -580,6 +593,9 @@ _CONSOLE_ENV = "CUSTOMER_CONSOLE_DATABASE_URL=postgresql://cc:pw@cc.example:5432
         ("missing", "", "needs Docker"),
         ("broken", "", "the verify container did not start"),
         ("works", "RESTORE_FAILS=1", "pg_restore FAILED in the verify container"),
+        # Fix round 2: psql exits 2 on a lost connection. Exit 2 once meant
+        # "container not removed", so this read as a good dump.
+        ("works", "COUNT_RC=2", "server closed the connection unexpectedly"),
     ],
 )
 def test_a_failed_verify_still_backs_up_the_console(docker_mode: str, env: str, why: str) -> None:
@@ -601,7 +617,24 @@ def test_a_failed_verify_still_backs_up_the_console(docker_mode: str, env: str, 
     assert "Retention (keeping" in out, "retention did not run after a failed verify"
     assert "the deep verify FAILED" in err, "the closing ERROR is missing"
     assert "restore verified" not in out
+    assert "verify container could not be removed" not in err, (
+        "a failed verify was reported as a container that would not go away"
+    )
     _assert_nothing_reached_the_cluster(calls)
+
+
+def test_a_container_that_will_not_go_is_reported_on_its_own() -> None:
+    """The verify PASSED and the daemon refused to remove the container. That
+    is its own ERROR and a non-zero exit, and it is NOT a failed verify. The
+    subshell reports it through a marker file, never through its exit code."""
+    rc, out, err, _calls = _run_backup_verify("works", "RM_FAILS=1")
+    assert rc != 0, f"a container that would not go exited 0:\n{out}\n{err}"
+    assert "restore verified" in out, out
+    assert "could not remove the verify container" in err, err
+    assert "the verify container could not be removed" in err, "no closing ERROR"
+    assert "the deep verify FAILED" not in err, (
+        "a passed verify was reported as failed because its container stayed"
+    )
 
 
 def test_a_working_docker_verifies_in_the_container_only() -> None:

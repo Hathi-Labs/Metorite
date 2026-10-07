@@ -127,9 +127,9 @@ line — never reclaim a number by deleting the other entry.
   → no hit means the owner has not recorded a decision, and this is open.
 - **Why.** At about 02:55 UTC on 2026-10-07, the production Supabase
   project used up its disk I/O budget. Checkpoint write time went from a
-  normal 270 s to between 905 s and 1015 s. Sync time went from 0.04 s to
-  9 s. Statements timed out across the instance, and the gateway pool timed
-  out. At 04:20 the project was still slow.
+  normal 270 seconds to between 905 and 1015 seconds. Sync time went from
+  0.04 to 9 seconds. Statements timed out across the instance. The gateway
+  pool timed out too. At 04:20 the project was still slow.
 - **What made the load.** The nightly verify restored a full copy into the
   cluster from 02:32 to 02:36 UTC. Also, seven deploys that day each took a
   full `pg_dump` with no migration pending. Branch `ops-backup-io` removes

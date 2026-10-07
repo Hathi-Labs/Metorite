@@ -270,7 +270,13 @@ exit 1
 SH
 chmod +x "$DSHIM/docker"
 before="$(scratch_count)"
+# Read-only, as in scene B (fix round 2). A fallback that writes to the
+# cluster, even into an EXISTING database, then fails with a read-only error
+# that the grep below finds. The scratch count alone sees only a NEW database.
+set_read_only on
 run_backup F "$DSHIM"
+set_read_only off
+grep -q "read-only transaction" "$LOG" && { show_log; die "F: the run tried to write to the cluster"; }
 [ "$RC" != "0" ] || { show_log; die "F: Docker failed, yet the verify exited 0"; }
 grep -q "the verify container did not start" "$LOG" || { show_log; die "F: no ERROR that names the container"; }
 grep -q "restore verified" "$LOG" && { show_log; die "F: a verify passed without a container. Where did it restore?"; }

@@ -160,8 +160,9 @@ scratch_re='^acb_verify_[0-9]+$'
 # far longer than one verify takes, so a concurrent run keeps its own copy.
 scratch_stale_seconds=21600
 scratch_drop_failures=0
-# Set to 1 when the verify container could not be removed after a passed
-# verify. Checked LAST, beside the scratch drops, for the same reason.
+# Set to 1 when the verify container could not be removed, whether the verify
+# passed or not. The verify subshell reports it through a marker file, never
+# through its exit code. Checked LAST, beside the scratch drops.
 verify_ctr_failures=0
 # Set to 1 when the deep verify failed for ANY reason: no Docker, a pull, a
 # start, a readiness wait, the restore or the count. Checked LAST too, so a
@@ -363,7 +364,13 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
   # turns errexit off inside any command that is the test of an `if` or part
   # of a `||` list, and that reaches into the subshell. The verify would then
   # go on past a failed command. Run plainly, the subshell keeps `set -e`.
-  # Exit 2 means the verify PASSED and its container would not go away.
+  # ⚠️ **The exit code carries ONE thing: did the verify pass.** Any non-zero
+  # code is a failed verify. A container that would not go away is reported
+  # through a marker FILE, never through a code. Fix round 2 found why: this
+  # used exit 2 for it, and psql exits 2 when it loses its connection, so a
+  # lost count query read as "dump complete and good" and no verify ERROR.
+  verify_ctr_marker="$DEST/.verify_container_not_removed"
+  rm -f "$verify_ctr_marker"
   set +e
   (
     set -e
@@ -429,6 +436,8 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
       fi
       echo "ERROR: could not remove the verify container $verify_ctr. Reason:" >&2
       printf '%s\n' "${err:-<docker gave no reason>}" | redact | sed 's/^/    /' >&2
+      # The parent cannot see this function's variables, so it reads a FILE.
+      : > "$verify_ctr_marker"
       return 1
     }
     on_exit_remove_verify() {
@@ -593,21 +602,22 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
     echo "    restore verified"
     # Disarm the trap FIRST, so a failed removal is counted once, here.
     trap - EXIT INT TERM HUP
+    # A failed removal writes the marker. The verify itself passed.
     if remove_verify_ctr; then
       echo "    verify container $verify_ctr removed"
-    else
-      exit 2
     fi
     exit 0
   )
   verify_rc=$?
   set -e
-  case "$verify_rc" in
-    0) ;;
-    2) verify_ctr_failures=1 ;;
-    *) verify_failed=1
-       warn "the deep verify FAILED (exit $verify_rc). The backup goes on, and exits 1 at the end." ;;
-  esac
+  if [ "$verify_rc" != "0" ]; then
+    verify_failed=1
+    warn "the deep verify FAILED (exit $verify_rc). The backup goes on, and exits 1 at the end."
+  fi
+  if [ -e "$verify_ctr_marker" ]; then
+    verify_ctr_failures=1
+    rm -f "$verify_ctr_marker"
+  fi
 fi
 
 # --- The Customer Console's own cluster (H-98) -------------------------------
@@ -721,7 +731,7 @@ fi
 # not on the cluster, so the dump is still good. Red is still right.
 if [ "$verify_ctr_failures" -gt 0 ]; then
   echo "ERROR: the verify container could not be removed. See the ERROR line above." >&2
-  echo "       The dump at $DEST IS complete and good. Remove it by hand:" >&2
+  echo "       The dump at $DEST IS complete. Remove the container by hand:" >&2
   echo "       docker rm -f -v \$(docker ps -aq --filter label=acb.backup-verify=1)" >&2
   final_rc=1
 fi
