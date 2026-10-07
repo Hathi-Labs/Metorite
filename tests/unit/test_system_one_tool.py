@@ -29,6 +29,30 @@ Mutations this file catches (R7), each run red before the change:
 * the tool logs tenant text -> ``test_the_logs_hold_no_tenant_text``;
 * the injection gives the System-1 engine to an agent the flag does not cover,
   or changes the chain with the flag unset -> ``TestTheInjectionChain``.
+
+WS-48 N3 (D93, WS48-F6), ``data_narrowing_pipeline.md`` §9 N3. Each mutation
+below was run red on 2026-10-07, then taken back out:
+
+* ``yes_no`` goes out as a choice, or ``choice`` as a score ->
+  ``TestEachKindIsMapped``;
+* the split is 20 and not 16 -> ``TestTheSplit``;
+* a 400 or a 422 logs at ``warning`` -> ``test_a_failure_falls_back_and_logs[400]``;
+* the tool bound goes, or the timeout loses its reason ->
+  ``test_the_tool_bound_holds_a_hung_request``;
+* one failed request sends the whole batch to ``tier-fast`` ->
+  ``test_one_failed_request_sends_only_its_items_to_tier_fast``;
+* a partial answer with a failed fallback reads as ``UNAVAILABLE`` ->
+  ``test_a_partial_answer_with_a_failed_fallback_is_unsure``;
+* the shape check goes, or a copied limit drifts ->
+  ``test_a_choice_over_255_options`` (and ``test_acb_llm_decide.py``);
+* ``no_egress`` is ignored -> ``test_a_no_egress_run_sends_no_decide_request``;
+* the flag is ignored -> ``test_with_the_flag_off_every_item_goes_to_tier_fast``;
+* the turn-kind question goes to ``tier-decide`` ->
+  ``test_the_turn_kind_question_stays_on_tier_fast``;
+* a decide answer carries a reason, or the decide path drops the lead ->
+  ``TestEachKindIsMapped``;
+* the request names the stale agent of the run context ->
+  ``test_the_request_carries_the_run_attribution``.
 """
 from __future__ import annotations
 
