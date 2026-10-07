@@ -13877,7 +13877,9 @@ text.
 
 - **The invitation exists.** EM-S10 adds the estimate. "Sort my imported mail" first reads
   `GET /email/rules/process-past/estimate` for the import window. It shows `will_process` as AI
-  calls. When `capped` is true, it says that one run sorts 2,000 messages, and offers the next run.
+  calls. When `capped` is true, it says how many messages one run sorts, and offers the next run.
+  It reads that number from `limit` in the estimate answer. Today the number is 1,000, because the
+  dialog sends no `limit` (`RuleProcessPastRequest.limit`). The route clamps `limit` at 2,000.
 - **The cost.** Each sorted message costs one `decide` request on `tier-decide` (D-EM-7). That is
   about 2,500 tokens in, about USD 0.0001 at the rate of §13.1.
 - **A second mailbox.** It goes through the range step and the estimate as the first mailbox does.
@@ -13889,6 +13891,9 @@ text.
   - An AI label (`label_ai`) is a prompt, so the list leaves it out.
   - From Outlook to Gmail, a `MOVE_FOLDER` to a system folder that Gmail refuses goes into
     `left_out` with the reason `folder_not_in_target`.
+  - An IMAP target makes no folder and adds no label. A rule with a `MOVE_FOLDER` or a `LABEL`
+    goes into `left_out` with the reason `not_supported_by_target`, and `will_create` is empty
+    (EM-S10 fix round 1).
 - **Tenancy and ownership.** The copy keeps both owner checks (`rule_copy.py:296-297`). The
   folder read uses the target `account_id` that the route already proved. No field comes from
   input that the route did not check (R5 (e), D-EM-4, D-EM-46).
@@ -14521,13 +14526,17 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run
 
 **As built (2026-10-07).**
 
-- **The estimate.** `lib/onboarding.ts::sortEstimateView` gives the words, and `readSortEstimate` reads `GET /email/rules/process-past/estimate` from the start of the import. The step reads it again each time it mounts. So after a capped run it offers the rest.
+- **The estimate.** `lib/onboarding.ts::sortEstimateView` gives the words. `readSortState` reads `GET /email/rules/process-past/status` first, then `GET /email/rules/process-past/estimate` from the start of the import. The step reads both again each time it mounts.
+- **A run that is still going** (fix round 1, G2). While the status is `running`, the step shows "Sorting…" and offers nothing. It reads the status again every `SORT_POLL_MS` (5 seconds). When the run is no longer `running`, it reads the estimate again, so a capped run offers the next run.
+- **A range wider than one run** (fix round 1, G4). When the import range is longer than `PROCESS_PAST_MAX_SPAN_DAYS` (366, a mirror of `runner.py` that a test parses), the step says so and reads no count. Its action opens the dialog to choose a shorter range.
 - **The size of a run comes from the answer.** The step shows `limit` from the estimate, not "2,000". The route clamps `limit` at 2000. The dialog sends no `limit`, so a run sorts 1,000 (`RuleProcessPastRequest.limit`).
-- **The sort action waits for the count.** It stays disabled while the read runs. A failed read keeps the action, because the dialog counts again before it sorts.
+- **A sort never starts without a count shown** (owner requirement for AI cost, fix round 1, G1). The action of the step is enabled only when a count shows. It stays disabled while the read runs and after a failed read, and a failed read offers "Count again". The Process button of the dialog (`RulesTab.tsx`, `ProcessPastEmailsDialog`) is disabled while `estimate` is null or `estimating` is true. A failed count in the dialog offers "Count again" too.
 - **`will_create`.** `rule_copy.will_create` lists each name for each copied rule, by its name in the target. A MOVE_FOLDER to a system folder (Inbox, Archive, Trash) is not in the list.
-- **The refused move.** `rule_copy.move_refuser` asks the provider's own rule (`local_folder_after_move`) through a probe with no credentials. The rule is left out whole, as the forward-loop rule is.
-- ⚠️ **`email_folders` holds few rows.** Its one writer is `POST /email/accounts/{id}/folders` (`transport/folders.py:178`). The folder list reads the provider and writes nothing. So `will_create` can name a folder that the provider already holds. The step says "Metorite did not find", and never "does not exist". The provider uses the folder that it holds, so no second folder occurs.
-- **Fences.** `tests/unit/test_email_rule_copy.py` (63 tests, 28 of them R8, 0 skip on a private database). `lib/onboardingRules.test.ts` and `lib/mailboxSettings.test.ts` hold the estimate line, the next run and the copy report.
+- **The refused move.** `rule_copy.move_refuser` asks the provider's own rule (`local_folder_after_move`) through a probe. The probe holds no member credential. The deployment OAuth app config is loaded, and no network call is made. The rule is left out whole, as the forward-loop rule is.
+- **An IMAP target** (fix round 1, F2). It answers no `will_create`, and each rule with a MOVE_FOLDER or a LABEL is left out as `not_supported_by_target`.
+- ⚠️ **`email_folders` holds few rows.** Its one writer is `POST /email/accounts/{id}/folders` (`transport/folders.py:178`). The folder list reads the provider and writes nothing. So `will_create` can name a folder that the provider already holds. The step says "Metorite has no record of", and never "does not exist". Its second sentence starts "If the mailbox does not have it", so it promises no new folder.
+- ⚠️ **A nested Outlook folder can get a second copy.** This defect is older than EM-S10. `OutlookProvider._get_or_create_folder_id` (`outlook.py:920-925`) searches `/me/mailFolders` by name, and that lists the top-level folders only. So a rule that names "Receipts", which sits under the Inbox, makes a second "Receipts" at the top level. HANDOFF H-267 holds it.
+- **Fences.** `tests/unit/test_email_rule_copy.py` (65 tests, 29 of them R8, 0 skip on a private database). `lib/onboardingRules.test.ts` holds the estimate line, the count gate of the step and of the dialog, the run status, the span cap and the next run. `lib/mailboxSettings.test.ts` holds the copy report.
 
 ### 14.7 Recorded risks
 

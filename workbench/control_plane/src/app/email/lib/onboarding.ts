@@ -21,7 +21,7 @@
  * Fence: `onboarding.test.ts`.
  */
 
-import type { ProcessPastEstimate } from "./api";
+import type { ProcessPastEstimate, ProcessPastStatus } from "./api";
 import { autoDraftRepliesOn } from "./assistantSettings";
 import { atStorageLimit } from "./storage";
 import type { AssistantSettings, AutomationRule, EmailAccount, RuleCopyResult } from "./types";
@@ -363,25 +363,43 @@ export const RULES_STEP_COPY = {
   failed: "Metorite could not save that. Try again.",
   // EM-S10 (§14.4.7, D-EM-59): the count before the sort.
   sortCounting: "Metorite is counting your imported mail.",
-  sortCountFailed:
-    "Metorite could not count your imported mail. Process past emails counts it before it sorts.",
+  sortCountFailed: "Metorite could not count your imported mail, so it cannot start a sort yet.",
+  sortRetry: "Count again",
+  sortRunning: "Sorting… Metorite is sorting your imported mail. This step shows what is left when the run ends.",
   sortDone: "Your imported mail is sorted.",
   sortNothing: "Metorite found no imported mail to sort.",
+  sortChooseRange: "Choose a range to sort",
   sortStatusLabel: "AI calls to sort your imported mail",
 } as const;
 
 // ── The estimate before the sort (EM-S10, §14.4.7, D-EM-59) ────────────────
 
 /**
- * What the step knows about the cost of "Sort my imported mail". `loading`
- * keeps the action disabled, so the member sees the count before any sort.
- * `failed` keeps the action, because Process past emails counts again before
- * it spends a call.
+ * The most days one run of Process past emails covers. It MIRRORS
+ * `_PROCESS_PAST_MAX_SPAN_DAYS` in `routes/email/automation/runner.py`, and
+ * `onboardingRules.test.ts` parses that file and fails when they differ. The
+ * dialog in `RulesTab.tsx` reads this constant too.
+ */
+export const PROCESS_PAST_MAX_SPAN_DAYS = 366;
+
+/** How often the step reads the status of a run that is still going. */
+export const SORT_POLL_MS = 5_000;
+
+/**
+ * What the step knows about the cost of "Sort my imported mail".
+ *
+ * ⚠️ Owner requirement (AI cost): a sort never starts without a count shown.
+ * Only `ready` with a count enables the action. `loading` and `failed` keep it
+ * disabled, and `failed` offers "Count again" instead. `running` offers
+ * nothing while a run goes on. `tooWide` names the span cap before the dialog
+ * refuses it, and the dialog counts the narrower range before it can start.
  */
 export type SortEstimate =
   | { state: "loading" }
   | { state: "ready"; estimate: Pick<ProcessPastEstimate, "in_range" | "eligible" | "will_process" | "capped" | "limit"> }
-  | { state: "failed" };
+  | { state: "failed" }
+  | { state: "running" }
+  | { state: "tooWide"; days: number };
 
 /** What the step draws for the sort. `action` null draws no sort action. */
 export interface SortEstimateView {
@@ -389,18 +407,22 @@ export interface SortEstimateView {
   line: string;
   /** When one run cannot sort all of it: the size of a run, and what waits. */
   capLine: string | null;
-  /** The text of the sort action, or null when nothing waits. */
+  /** The text of the sort action, or null when the step offers none. */
   action: string | null;
-  /** False while the count is read. */
+  /** True only when the member may start: a count is on screen, or the
+   *  action opens the dialog to choose a range that the dialog counts. */
   enabled: boolean;
+  /** True when the count failed, so the step draws "Count again". */
+  retry: boolean;
 }
 
 /**
  * The words for the estimate (EM-S10 item 1). Each sorted message is one AI
  * call (D-EM-7), so `will_process` is the count of calls. When `capped` is
- * true, one run sorts `limit` messages, the oldest first, and the step offers
- * the next run: it reads the estimate again each time it draws, so after a
- * run the same action sorts what waits.
+ * true, one run sorts `limit` messages, the oldest first. The step offers the
+ * next run after this one ends: `readSortState` reads the run status first,
+ * and while a run goes on it reads it again every `SORT_POLL_MS`. When the run
+ * is no longer `running`, it reads the estimate again.
  *
  * ⚠️ `limit` comes from the answer, never from a constant here. The route
  * clamps it at 2000 (`runner.py`), and Process past emails runs with the
@@ -408,36 +430,52 @@ export interface SortEstimateView {
  * dialog never starts.
  */
 export function sortEstimateView(sort: SortEstimate, locale?: string): SortEstimateView {
+  const fmt = new Intl.NumberFormat(locale);
+  const base = { capLine: null, retry: false };
   if (sort.state === "loading") {
-    return { line: RULES_STEP_COPY.sortCounting, capLine: null, action: RULES_STEP_COPY.processPast, enabled: false };
+    return { ...base, line: RULES_STEP_COPY.sortCounting, action: RULES_STEP_COPY.processPast, enabled: false };
   }
   if (sort.state === "failed") {
-    return { line: RULES_STEP_COPY.sortCountFailed, capLine: null, action: RULES_STEP_COPY.processPast, enabled: true };
+    return { ...base, line: RULES_STEP_COPY.sortCountFailed, action: RULES_STEP_COPY.processPast, enabled: false, retry: true };
+  }
+  if (sort.state === "running") {
+    return { ...base, line: RULES_STEP_COPY.sortRunning, action: null, enabled: false };
+  }
+  if (sort.state === "tooWide") {
+    return {
+      ...base,
+      line:
+        `Your imported mail covers ${fmt.format(sort.days)} days. One run covers at most ` +
+        `${fmt.format(PROCESS_PAST_MAX_SPAN_DAYS)} days. Choose a shorter range, and Process past ` +
+        "emails counts the AI calls before it sorts.",
+      action: RULES_STEP_COPY.sortChooseRange,
+      enabled: true,
+    };
   }
   const e = sort.estimate;
   if (e.eligible <= 0 || e.will_process <= 0) {
     return {
+      ...base,
       line: e.in_range > 0 ? RULES_STEP_COPY.sortDone : RULES_STEP_COPY.sortNothing,
-      capLine: null,
       action: null,
       enabled: false,
     };
   }
-  const fmt = new Intl.NumberFormat(locale);
   const calls = e.will_process;
   const line =
     calls === 1
       ? "Sorting it takes 1 AI call."
       : `Sorting it takes ${fmt.format(calls)} AI calls, one for each message.`;
   if (!e.capped) {
-    return { line, capLine: null, action: RULES_STEP_COPY.processPast, enabled: true };
+    return { ...base, line, action: RULES_STEP_COPY.processPast, enabled: true };
   }
   const rest = Math.max(0, e.eligible - calls);
   return {
+    ...base,
     line,
     capLine:
       `One run sorts ${fmt.format(e.limit)} messages, the oldest first. ` +
-      `${fmt.format(rest)} more wait for the next run, and this step offers it when this run ends.`,
+      `${fmt.format(rest)} more wait. After this run ends, this step offers the next run.`,
     action: `Sort the next ${fmt.format(calls)} messages`,
     enabled: true,
   };
@@ -454,6 +492,39 @@ export async function readSortEstimate(
   } catch {
     return { state: "failed" };
   }
+}
+
+/** The days from `from` (YYYY-MM-DD) to `now`, both ends counted, as the
+ *  route counts them (`(end - start).days + 1`). */
+export function sortSpanDays(from: string, now: Date): number {
+  const start = Date.parse(`${from}T00:00:00Z`);
+  if (Number.isNaN(start)) return 0;
+  return Math.floor((now.getTime() - start) / 86_400_000) + 1;
+}
+
+/**
+ * What the step shows for the sort (EM-S10 fix round 1). In order:
+ * 1. A run that is still going is `running`. A failed status read counts as
+ *    no run, because the route refuses a second run on one mailbox.
+ * 2. A range wider than the cap is `tooWide`, with no estimate read.
+ * 3. Otherwise the estimate.
+ */
+export async function readSortState(
+  api: Pick<RulesStepApi, "estimateSort" | "sortStatus">,
+  accountId: string,
+  from: string,
+  now: Date,
+): Promise<SortEstimate> {
+  const status = await api.sortStatus(accountId).catch(() => null);
+  if (status?.status === "running") return { state: "running" };
+  const days = sortSpanDays(from, now);
+  if (days > PROCESS_PAST_MAX_SPAN_DAYS) return { state: "tooWide", days };
+  return readSortEstimate(api, accountId, from);
+}
+
+/** The wait before the next read, or null when the step reads no more. */
+export function sortPollDelay(sort: SortEstimate): number | null {
+  return sort.state === "running" ? SORT_POLL_MS : null;
 }
 
 /** "Metorite added 10 rules." for the presets that the install added. */
@@ -545,6 +616,9 @@ export interface RulesStepApi {
   /** The count before "Sort my imported mail" (EM-S10):
    *  `GET /email/rules/process-past/estimate` from the start of the import. */
   estimateSort(accountId: string, startDate: string): Promise<ProcessPastEstimate>;
+  /** The status of the last Process past emails run (EM-S10 fix round 1):
+   *  `GET /email/rules/process-past/status`. */
+  sortStatus(accountId: string): Promise<Pick<ProcessPastStatus, "status">>;
 }
 
 /**

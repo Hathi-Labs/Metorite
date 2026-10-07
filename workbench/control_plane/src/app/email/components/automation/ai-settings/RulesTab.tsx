@@ -22,6 +22,7 @@ import {
 } from "../../../lib/types";
 import { useEmailStore } from "../../../lib/emailStore";
 import { guardedLoad, loadGuard } from "../../../lib/mailboxSettings";
+import { PROCESS_PAST_MAX_SPAN_DAYS } from "../../../lib/onboarding";
 import { isPendingReview, PatternRow } from "./SettingsTab";
 import { LabeledToggle, Modal } from "../ui";
 import {
@@ -1540,8 +1541,9 @@ const PAST_PRESETS: { label: string; days: number }[] = [
 ];
 
 /** Mirrors _PROCESS_PAST_MAX_SPAN_DAYS in the gateway, which is the real bound —
- *  this only stops the user reaching a range the API will refuse. */
-const PAST_MAX_SPAN_DAYS = 366;
+ *  this only stops the user reaching a range the API will refuse. The one
+ *  mirror lives in `lib/onboarding.ts`, and its test parses runner.py. */
+const PAST_MAX_SPAN_DAYS = PROCESS_PAST_MAX_SPAN_DAYS;
 
 /** Above this, the run is worth pausing over rather than just counting. Set at
  *  the point where a mistake costs real money instead of pennies. */
@@ -1592,6 +1594,10 @@ function ProcessPastEmailsDialog({
   const [error, setError] = useState<string | null>(null);
   const [estimate, setEstimate] = useState<ProcessPastEstimate | null>(null);
   const [estimating, setEstimating] = useState(false);
+  // EM-S10 fix round 1: a failed count shows "Count again", and a new value
+  // reads it again. The Process button stays disabled until a count shows.
+  const [estimateFailed, setEstimateFailed] = useState(false);
+  const [estimateTry, setEstimateTry] = useState(0);
 
   const span = spanDays(start, end);
   const tooWide = span > PAST_MAX_SPAN_DAYS;
@@ -1615,6 +1621,7 @@ function ProcessPastEmailsDialog({
     }
     let live = true;
     setEstimating(true);
+    setEstimateFailed(false);
     const t = setTimeout(() => {
       processPastEstimate({
         accountId,
@@ -1624,14 +1631,18 @@ function ProcessPastEmailsDialog({
         skipProcessed,
       })
         .then((e) => live && setEstimate(e))
-        .catch(() => live && setEstimate(null))
+        .catch(() => {
+          if (!live) return;
+          setEstimate(null);
+          setEstimateFailed(true);
+        })
         .finally(() => live && setEstimating(false));
     }, 300);
     return () => {
       live = false;
       clearTimeout(t);
     };
-  }, [accountId, start, end, includeRead, skipProcessed, tooWide]);
+  }, [accountId, start, end, includeRead, skipProcessed, tooWide, estimateTry]);
 
   const run = async () => {
     setBusy(true);
@@ -1675,7 +1686,9 @@ function ProcessPastEmailsDialog({
       footer={
         <button
           onClick={run}
-          disabled={busy || tooWide || !start}
+          // A run never starts without a count shown (owner, AI cost; EM-S10
+          // fix round 1): no estimate, or one still being read, keeps it off.
+          disabled={busy || tooWide || !start || estimating || !estimate}
           className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50"
         >
           {busy ? <Icon name="Loader2" className="animate-spin" size={13} /> : <Icon name="Play" size={13} />}
@@ -1735,6 +1748,13 @@ function ProcessPastEmailsDialog({
         <p className="text-[11px] text-muted-foreground px-2.5 py-2">
           Counting emails in this range…
         </p>
+      ) : estimateFailed ? (
+        <div role="alert" className="text-[11px] text-destructive px-2.5 py-2 space-y-1">
+          <p>Metorite could not count the emails in this range, so it cannot start a run yet.</p>
+          <Button variant="secondary" size="sm" icon="RefreshCw" onClick={() => setEstimateTry((n) => n + 1)}>
+            Count again
+          </Button>
+        </div>
       ) : estimate ? (
         <div
           className={`text-[11px] rounded-md px-2.5 py-2 space-y-1 ${

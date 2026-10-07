@@ -214,6 +214,9 @@ export const LEFT_OUT_WORDS: Readonly<Record<string, (source: string) => string>
   reply_rule_exists: () => "This mailbox has a reply rule already, and a mailbox keeps only one.",
   // EM-S10: Gmail cannot move mail to Sent, Drafts or a system label.
   folder_not_in_target: () => "This mailbox cannot move mail to the folder that the rule names.",
+  // EM-S10 fix round 1: an IMAP mailbox makes no folder and adds no label.
+  not_supported_by_target: () =>
+    "It moves mail to a folder or adds a label, and Metorite cannot do that in this mailbox.",
 };
 
 /** The words for a reason that this UI does not know. */
@@ -221,15 +224,19 @@ export const LEFT_OUT_UNKNOWN = "Metorite did not copy it.";
 
 /**
  * The line for `willCreate` (EM-S10, D-EM-60). Metorite knows only the
- * folders in its own record of the mailbox, so the line says "did not find"
- * and never "does not exist".
+ * folders in its own record of the mailbox (`email_folders` has one writer),
+ * so the line says "has no record of" and never "does not exist". The
+ * provider uses a folder that it already has, so the second sentence makes
+ * no promise that a folder is made (fix round 1).
  */
 export function willCreateLine(names: ReadonlyArray<string>): string | null {
   if (names.length === 0) return null;
   const listed = names.map((n) => `"${n}"`).join(", ");
   return names.length === 1
-    ? `Metorite did not find the folder or label ${listed} in this mailbox. The mailbox makes it the first time a rule uses it.`
-    : `Metorite did not find these folders and labels in this mailbox: ${listed}. The mailbox makes each one the first time a rule uses it.`;
+    ? `Metorite has no record of the folder or label ${listed} in this mailbox. ` +
+        "If the mailbox does not have it, the mailbox makes it the first time a rule uses it."
+    : `Metorite has no record of these folders and labels in this mailbox: ${listed}. ` +
+        "If the mailbox does not have one, the mailbox makes it the first time a rule uses it.";
 }
 
 /** Each name of `willCreate` once, without case, in the order of the answer. */

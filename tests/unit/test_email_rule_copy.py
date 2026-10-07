@@ -37,6 +37,9 @@ R7 fences named here:
 * ``email-rule-copy-refused-move`` (EM-S10): a copy to Gmail leaves out a
   rule whose MOVE_FOLDER names Sent, Drafts or a system label, as
   ``folder_not_in_target``.
+* ``email-rule-copy-imap`` (EM-S10 fix round 1): a copy to an IMAP mailbox
+  leaves out each rule with a MOVE_FOLDER or a LABEL, as
+  ``not_supported_by_target``, and answers no ``will_create``.
 * ``email-rule-copy-owner-em-s10``: with the folder read in place, a target
   of another member still answers 404, and no rule and no folder name leaks.
 
@@ -135,6 +138,19 @@ class TestTheLeftOutReason:
             rule_copy.LEFT_OUT_REPLY_EXISTS)
         assert reason(self._rule(), own, False) is None
         assert reason(self._rule(name="Vendors"), own, True) is None
+
+    def test_a_target_with_no_folders(self):
+        """EM-S10 fix round 1: IMAP makes no folder and writes no label."""
+        reason = rule_copy._left_out_reason
+        move = self._rule(name="File", actions=[{"type": "MOVE_FOLDER", "label": "X"}])
+        label = self._rule(name="Tag", actions=[{"type": "label", "label": "X"}])
+        ai = self._rule(name="AI", actions=[{"type": "LABEL", "label": "{{x}}", "label_ai": True}])
+        archive = self._rule(name="Old", actions=[{"type": "ARCHIVE"}])
+        for rule in (move, label, ai):
+            assert reason(rule, set(), False, target_has_folders=False) == (
+                rule_copy.LEFT_OUT_NOT_SUPPORTED_BY_TARGET)
+            assert reason(rule, set(), False) is None
+        assert reason(archive, set(), False, target_has_folders=False) is None
 
     def test_a_move_that_the_target_refuses(self):
         """EM-S10: a MOVE_FOLDER that the target refuses leaves the rule out,
@@ -909,6 +925,34 @@ class TestTheNamesThatTheTargetLacks:
             assert _rules_of(p.admin_engine, theirs) == {}
         finally:
             _purge(p.admin_engine, stranger)
+
+
+@_DB_GATE
+class TestACopyToAnImapMailbox:
+
+    async def test_folder_and_label_rules_are_left_out_and_nothing_is_listed(
+        self, member, promoted,  # noqa: F811
+    ):
+        p = promoted
+        src = member.box()
+        dst = member.box(provider="imap")
+        cold = _rule(p.admin_engine, org=p.org_b, account=src, name="Cold Email")
+        _action(p.admin_engine, org=p.org_b, rule=cold, type_="MOVE_FOLDER",
+                label="Cold Email")
+        tag = _rule(p.admin_engine, org=p.org_b, account=src, name="Tag vendors")
+        _action(p.admin_engine, org=p.org_b, rule=tag, type_="LABEL", label="Vendor")
+        old = _rule(p.admin_engine, org=p.org_b, account=src, name="Archive old")
+        _action(p.admin_engine, org=p.org_b, rule=old, type_="ARCHIVE")
+
+        out = await member.copy(src, dst)
+
+        assert out.copied == ["Archive old"]
+        assert sorted((x.name, x.reason) for x in out.left_out) == [
+            ("Cold Email", rule_copy.LEFT_OUT_NOT_SUPPORTED_BY_TARGET),
+            ("Tag vendors", rule_copy.LEFT_OUT_NOT_SUPPORTED_BY_TARGET),
+        ]
+        assert out.will_create == []
+        assert set(_rules_of(p.admin_engine, dst)) == {"Archive old"}
 
 
 @_DB_GATE

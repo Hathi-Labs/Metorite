@@ -21,12 +21,15 @@
  *   (owner decision (d), #576), so the imported mail needs one run of
  *   "Process past emails". The action opens that dialog on the import range.
  *   The dialog counts the mail before it spends a model call.
- * - Before that action, the step reads `process-past/estimate` for the import
- *   range and shows the count of AI calls (EM-S10, D-EM-59). The action stays
- *   disabled until the read returns. When one run cannot sort all of it, the
- *   step says how many wait and offers the next run. It reads the estimate
- *   each time it draws, so after a run it offers the rest. `sortEstimateView`
- *   decides the words.
+ * - Before that action, the step reads the run status and then
+ *   `process-past/estimate` for the import range, and shows the count of AI
+ *   calls (EM-S10, D-EM-59). A sort never starts without a count shown: the
+ *   action is enabled only with a count, and a failed count offers "Count
+ *   again" (fix round 1). While a run goes on, the step shows "Sorting…" and
+ *   reads the status every `SORT_POLL_MS`. When the run ends, it reads the
+ *   estimate again, so a capped run offers the next run. A range wider than
+ *   the cap of one run says so before the dialog opens. `readSortState` and
+ *   `sortEstimateView` decide.
  * - "Draft replies for me" shows only with an enabled reply rule, because a
  *   draft is an action on that rule. It shows the STORED value, read when the
  *   step is ready, and stays disabled until the read returns or when it fails
@@ -51,6 +54,7 @@ import {
   getAssistantSettings,
   installPresetRules,
   listRules,
+  getProcessPastStatus,
   processPastEstimate,
   saveAssistantSettings,
   updateEmailAccount,
@@ -71,10 +75,11 @@ import {
   installedLine,
   processPastFrom,
   readDraftSwitch,
-  readSortEstimate,
+  readSortState,
   rulesStepPhase,
   setDraftReplies,
   sortEstimateView,
+  sortPollDelay,
   type DraftSwitch,
   type RulesStepApi,
   type RulesStepPhase,
@@ -95,6 +100,7 @@ const RULES_API: RulesStepApi = {
   copyRules,
   // The same read, with the same defaults, as the Process past emails dialog.
   estimateSort: (accountId, startDate) => processPastEstimate({ accountId, startDate }),
+  sortStatus: getProcessPastStatus,
 };
 
 type StepMailbox = Pick<EmailAccount, "id" | "emailAddress" | "displayLabel" | "colorSlot">;
@@ -115,6 +121,8 @@ export interface RulesStepViewProps {
   pastFrom: string | null;
   /** The count before the sort (EM-S10). Read only with `pastFrom`. */
   sort: SortEstimate;
+  /** "Count again" after a failed count (EM-S10 fix round 1). */
+  onRetrySort?: () => void;
   onRecommended: () => void;
   onChooseOwn: () => void;
   onSkip: () => void;
@@ -209,7 +217,7 @@ export function RulesStepView(p: RulesStepViewProps) {
                   variant="primary"
                   size="sm"
                   icon="History"
-                  loading={!sort.enabled}
+                  loading={p.sort.state === "loading"}
                   disabled={locked || !sort.enabled}
                   onClick={p.onProcessPast}
                 >
@@ -243,6 +251,11 @@ export function RulesStepView(p: RulesStepViewProps) {
               <div role="status" aria-label={COPY.sortStatusLabel} className="mt-1 text-[11px] text-muted-foreground">
                 <p>{sort.line}</p>
                 {sort.capLine && <p>{sort.capLine}</p>}
+                {sort.retry && (
+                  <Button variant="secondary" size="sm" icon="RefreshCw" className="mt-1" disabled={locked} onClick={p.onRetrySort}>
+                    {COPY.sortRetry}
+                  </Button>
+                )}
               </div>
             )}
             <p className="mt-1 text-[11px] text-muted-foreground">
@@ -320,21 +333,34 @@ export function OnboardingRulesStep({
   const [draftBusy, setDraftBusy] = useState(false);
   const [finished, setFinished] = useState(false);
   const [sort, setSort] = useState<SortEstimate>({ state: "loading" });
+  // A new value reads the count again ("Count again").
+  const [sortTry, setSortTry] = useState(0);
   const phase = rulesStepPhase(rules);
   const pastFrom = processPastFrom(account, new Date());
 
   // The count of AI calls, read before the member can start a sort (EM-S10).
-  // The step mounts again when the member comes back from AI Settings, so a
-  // capped run reads the rest and the step offers the next run.
+  // A run that is still going reads again every SORT_POLL_MS, and the estimate
+  // is read again when it ends. The step also mounts again when the member
+  // comes back from AI Settings.
   useEffect(() => {
     if (phase !== "ready" || !pastFrom) return;
     let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = () => {
+      void readSortState(RULES_API, account.id, pastFrom, new Date()).then((s) => {
+        if (!live) return;
+        setSort(s);
+        const wait = sortPollDelay(s);
+        if (wait !== null) timer = setTimeout(read, wait);
+      });
+    };
     setSort({ state: "loading" });
-    void readSortEstimate(RULES_API, account.id, pastFrom).then((s) => live && setSort(s));
+    read();
     return () => {
       live = false;
+      if (timer) clearTimeout(timer);
     };
-  }, [phase, account.id, pastFrom]);
+  }, [phase, account.id, pastFrom, sortTry]);
 
   // A rule may exist already: the member can make one during the import, or
   // come back from "Choose my own". A failed read shows the choices.
@@ -441,6 +467,7 @@ export function OnboardingRulesStep({
       draftBusy={draftBusy}
       pastFrom={pastFrom}
       sort={sort}
+      onRetrySort={() => setSortTry((n) => n + 1)}
       onRecommended={() => void recommended()}
       onChooseOwn={() => onOpenAutomation("ai-settings")}
       onSkip={() => void finish()}

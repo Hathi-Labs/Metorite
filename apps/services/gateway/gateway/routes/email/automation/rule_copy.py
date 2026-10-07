@@ -52,13 +52,21 @@ Five rules change what arrives:
 5. A rule with a MOVE_FOLDER that the provider of the target refuses is left
    out whole, as ``folder_not_in_target`` (EM-S10). Gmail refuses a move to
    Sent, Drafts and a system label. The check is ``local_folder_after_move``
-   over a provider of the target's kind that holds no credentials. So it makes
-   no network call, and each provider keeps its one rule. A copy without the
-   move would keep the other actions, and would not file the mail.
+   over a probe of the target's provider kind. The probe holds no member
+   credential. The deployment OAuth app config is loaded, and no network call
+   is made. So each provider keeps its one rule. A copy without the move would
+   keep the other actions, and would not file the mail.
+6. A rule with a MOVE_FOLDER or a LABEL is left out whole when the target is
+   an IMAP mailbox, as ``not_supported_by_target`` (EM-S10 fix round 1). The
+   IMAP provider has no folder create, no move and no label write, so the
+   rule could never do what it says there.
 
-The answer names each folder or label that the target does not hold, in
-``will_create`` (EM-S10, D-EM-60). The copy still copies the rule, because the
-provider makes a missing folder or label on first use. The compare reads
+The answer names each folder or label that Metorite has no record of in the
+target, in ``will_create`` (EM-S10, D-EM-60). The copy still copies the rule.
+When the mailbox does not have the name, the provider makes it on first use.
+When it has it, the provider uses it. ``email_folders`` has one writer only
+(``transport/folders.py``), so a name in the list can exist at the provider.
+An IMAP target answers an empty list. The compare reads
 ``email_folders`` of the TARGET only, without case, over the ``account_id``
 that the owner check proved. An AI label (``label_ai``) is a prompt and not a
 name, so the list leaves it out. A MOVE_FOLDER to a system folder (Inbox,
@@ -80,7 +88,7 @@ from acb_auth import UserContext, get_current_user
 from email_ingestion.providers.base import canonical_folder, local_folder_after_move
 from email_ingestion.providers.factory import build_provider
 from fastapi import Depends, HTTPException
-from gateway.routes.email.automation.actions import _SYSTEM_FOLDER_KEYS
+from gateway.routes.email.automation.actions import SYSTEM_FOLDER_KEYS
 from gateway.routes.email.automation.rules import (
     _is_reply_rule,
     _load_rules,
@@ -127,6 +135,11 @@ LEFT_OUT_DISABLED = "disabled"
 LEFT_OUT_FORWARD_LOOP = "forward_to_own_address"
 LEFT_OUT_REPLY_EXISTS = "reply_rule_exists"
 LEFT_OUT_FOLDER_NOT_IN_TARGET = "folder_not_in_target"
+LEFT_OUT_NOT_SUPPORTED_BY_TARGET = "not_supported_by_target"
+
+#: The provider kinds that make no folder, move no mail and write no label
+#: (rule 6). ``providers/imap.py`` has none of those writes.
+_PROVIDERS_WITHOUT_FOLDERS = frozenset({"imap"})
 
 #: The action types whose ``label`` names a folder or a label (EM-S10).
 _NAMED_ACTIONS = frozenset({"MOVE_FOLDER", "LABEL"})
@@ -281,8 +294,9 @@ async def _target_provider(db: Any, account_id: str, owner: str) -> str:
 
 def move_refuser(provider_name: str) -> Callable[[str], bool]:
     """A check that is true when a provider of this kind refuses a move to
-    the folder name. The probe holds no credentials and makes no network
-    call. An unknown provider refuses nothing."""
+    the folder name. The probe holds no member credential. The deployment
+    OAuth app config is loaded, and no network call is made. An unknown
+    provider refuses nothing."""
     try:
         probe = build_provider(provider_name, {})
     except ValueError:
@@ -317,7 +331,7 @@ def will_create(
         name = (a.get("label") or "").strip()
         if kind not in _NAMED_ACTIONS or not name or a.get("label_ai"):
             continue
-        if kind == "MOVE_FOLDER" and canonical_folder(name) in _SYSTEM_FOLDER_KEYS:
+        if kind == "MOVE_FOLDER" and canonical_folder(name) in SYSTEM_FOLDER_KEYS:
             continue
         key = (kind, name.lower())
         if name.lower() in folders or key in seen:
@@ -327,15 +341,24 @@ def will_create(
     return out
 
 
+def names_a_folder(rule: dict[str, Any]) -> bool:
+    """True when the rule has a MOVE_FOLDER or a LABEL action (rule 6)."""
+    return any((a.get("type") or "").upper() in _NAMED_ACTIONS
+               for a in rule.get("actions") or [])
+
+
 def _left_out_reason(
     rule: dict[str, Any], own: set[str], reply_held: bool,
     refuses: Callable[[str], bool] = lambda _name: False,
+    *, target_has_folders: bool = True,
 ) -> str | None:
     """Why the copy leaves out this source rule, or ``None`` to copy it."""
     if not rule["enabled"]:
         return LEFT_OUT_DISABLED
     if forwards_to_own_address(rule, own):
         return LEFT_OUT_FORWARD_LOOP
+    if not target_has_folders and names_a_folder(rule):
+        return LEFT_OUT_NOT_SUPPORTED_BY_TARGET
     if refuses_a_move(rule, refuses):
         return LEFT_OUT_FOLDER_NOT_IN_TARGET
     if reply_held and _is_reply_rule(rule):
@@ -410,9 +433,12 @@ async def copy_rules(
         own = await _own_addresses(db, owner)
         # EM-S10: both reads use ``dst``, which the owner check above proved.
         folders = await _target_folders(db, dst)
-        refuses = move_refuser(await _target_provider(db, dst, owner))
+        provider = await _target_provider(db, dst, owner)
+        refuses = move_refuser(provider)
+        has_folders = provider not in _PROVIDERS_WITHOUT_FOLDERS
         for rule in source_rules:
-            reason = _left_out_reason(rule, own, reply_held, refuses)
+            reason = _left_out_reason(rule, own, reply_held, refuses,
+                                      target_has_folders=has_folders)
             if reason is not None:
                 left_out.append(RuleCopyLeftOut(name=rule["name"], reason=reason))
                 continue
@@ -426,7 +452,8 @@ async def copy_rules(
                 continue
             reply_held = reply_held or is_reply
             copied.append(name)
-            to_create.extend(will_create(rule, name, folders))
+            if has_folders:
+                to_create.extend(will_create(rule, name, folders))
             if name != rule["name"]:
                 renamed.append(RuleCopyRename(name=rule["name"], copied_as=name))
     _log.info("email.rules.copied", from_account_id=src, to_account_id=dst,
