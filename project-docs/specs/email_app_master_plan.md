@@ -12201,6 +12201,10 @@ eval set before the build.
 6. **The dedupe key.** The key is `type|ref|amount|currency|counterpart domain`, in lower case. A
    fact with no `ref` and no amount uses `type|message id|quote hash`. So a reply that quotes an
    invoice again gives no second card.
+   - **Amended (orchestrator decision, 2026-10-07, EM-T14a review round 1).** With no `ref`, the
+     last part is the FULL sender address. Two people at one free mail domain who each send an
+     invoice of INR 5000 then stay two cards. With a `ref`, the last part stays the domain. So one
+     vendor that bills from `billing@` and `ar@` with one invoice number stays one card.
 7. **Confidence, set by code.**
    - 0.9: the quote is in the source, and each field of the type that the quote holds parses.
    - 0.6: the quote is in the source, and one of those fields does not parse.
@@ -12450,8 +12454,8 @@ uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights
 
 - **The migration** is `infra/postgres/231_email_insights.sql`. R1: the highest file on `main` was
   230 at `229d22a09`. No remote branch, local branch or open PR held 231.
-- It creates `email_insights` with the RLS block of 219, the three indexes of §13.3 and four
-  CHECKs. It adds `insights_at`, `insights_tries` and their partial index to `email_messages`. It
+- It creates `email_insights` with the RLS block of 219, the three indexes of §13.3, an index on
+  `attachment_id` and four CHECKs. It adds `insights_at`, `insights_tries` and their partial index to `email_messages`. It
   adds `insights_enabled` to `email_assistant_settings`.
 - **The generated phases.** The four files in `infra/postgres/generated/` get the `email_insights`
   blocks and nothing else. A full run of the generator also renames and moves other blocks. So the
@@ -12477,9 +12481,10 @@ uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights
    row stays one pair.
 5. **A fact has no `domain` field.** `write_facts` reads the domain from the type, so the two
    cannot disagree.
-6. **`write_facts` returns a `WriteResult`.** It holds `written`, `deleted`, `dropped` and
-   `refused`. `refused` names the check that stopped the write. With no tenant, it raises
-   `TenantUnbound`. For a bad version, it raises `ValueError`.
+6. **`write_facts` returns a `WriteResult`.** It holds `written`, `deleted`, `dropped`, `kept`
+   and `refused`. `kept` counts the facts whose key a row of another source holds. `refused` names
+   the check that stopped the write. With no tenant, it raises `TenantUnbound`. For a bad version,
+   it raises `ValueError`.
 7. **`write_facts` reads no flag.** It checks the opt-in only, as §13.5 item 9 says. The job of
    EM-T14b-2 reads `insights_enabled()` before it opens a session.
 8. **The FORCE fence runs the migration again.** The promoted catalog also gets FORCE from
@@ -12489,25 +12494,56 @@ uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights
 9. **M2 changes the key, not the conflict target.** No unique index exists on `message_id`. So
    `ON CONFLICT (message_id)` stops every write with an error, and that proves nothing about the
    dedupe. M2 puts the message id into the dedupe key.
+10. **The slice is larger than the guide of §13.9.** It holds about 640 lines of code and SQL,
+    and a test file of more than 700 lines. The guide is about 600 lines for each PR.
+
+**A raw INSERT and the foreign keys (review round 1, F2).** The check of a foreign key bypasses
+row level security. So a raw INSERT bound to org A can name a message, a mailbox or a file of org
+B, and the check accepts it. The policy still stamps the row as org A.
+
+`write_facts` closes this path. Its message check reads `email_messages` under RLS, with the mailbox in the predicate. So a
+message of another organization, or of another mailbox, writes nothing. No other code writes the
+table.
 
 **Two findings for later slices.**
 
 - `write_facts` sets `insights_at` at each call. So EM-T14b-2 must write the body of a message
-  last. If not, a failed file leaves the message marked as read.
+  last. If not, a failed file leaves the message marked as read. §13.9.2 item 5 records this rule.
 - EM-T14b-1 imports `FACT_FIELDS` and `clean_text` from `insights_store.py`. It must not keep a
   copy.
 
 **Mutations (2026-10-07).** Each one ran against the real database, and the agent restored the
-file after each run.
+file after each run. The results below are of the run after review round 1.
 
 | Id | Mutation | The fence that failed |
 |---|---|---|
 | M1 | Remove FORCE from the migration | `test_the_migration_alone_binds_the_table_owner`: the owner, bound to org B, read 1 row of org A. Also `test_it_forces_rls_with_a_check` |
-| M2 | Put the message id into the dedupe key | `test_two_writes_with_one_key_keep_the_first_row` and `test_the_key_names_type_ref_amount_currency_and_sender_domain` |
-| M3 | Set `state = 'open'` in the conflict arm | `test_two_writes_with_one_key_keep_the_first_row` and `test_a_newer_version_deletes_the_older_facts_of_its_source` |
+| M2 | Put the message id into the dedupe key | `test_two_writes_with_one_key_keep_the_first_row`, `test_one_vendor_with_two_addresses_and_one_ref_is_one_card`, `test_two_freemail_senders_with_no_ref_stay_two_cards` and two key tests |
+| M3 | Set `state = 'open'` in the conflict arm | `test_the_same_source_refines_its_own_fact` and `test_a_newer_version_deletes_the_older_facts_of_its_source` |
 | M4 | Remove the cascade on `message_id` | `test_a_delete_of_the_message_deletes_its_facts` |
 | M5 | Remove the `email_insights` block from `generated/04_policies.sql` | `test_tenant_coverage.py::test_the_generated_set_on_disk_matches_the_tables_that_exist` |
 | M6 | Remove the mailbox predicate from the message check | `test_a_message_of_another_mailbox_writes_nothing` |
+
+**Review round 1 (2026-10-07).** The verifier passed the slice with P3 findings only. The reviewer
+asked for one P1 and three P2 changes, and found the tenancy sound.
+
+| Finding | The fix | The fence |
+|---|---|---|
+| P1: a fact of another message with the same key rewrote `title`, `direction`, `due_on`, `counterpart` and `confidence` of the first row | The conflict arm has `WHERE email_insights.message_id = EXCLUDED.message_id AND email_insights.attachment_id IS NOT DISTINCT FROM EXCLUDED.attachment_id`. A conflict from another source changes nothing, and counts in `kept` | `test_two_writes_with_one_key_keep_the_first_row` (no field changes), `test_the_same_source_refines_its_own_fact` |
+| P2: two free mail senders with no `ref` and one amount got one key | The orchestrator amended §13.5 item 6. With no `ref`, the key holds the full sender address | `test_no_ref_uses_the_full_sender_address`, `test_two_freemail_senders_with_no_ref_stay_two_cards`, `test_one_vendor_with_two_addresses_and_one_ref_is_one_card` |
+| P2: `clean_text` kept a lone surrogate, which raised after the DELETE | `clean_text` removes the categories `Cs`, `Co` and `Cn` too. `write_facts` cleans each fact before any SQL. The sender has a cap of 320 characters | `test_clean_text_keeps_only_text_that_encodes`, `test_every_text_field_of_a_clean_row_encodes`, `test_every_fact_is_cleaned_before_any_sql`, `test_a_lone_surrogate_from_a_model_writes_clean_text` |
+| P2: the cascade on `attachment_id` had no index | Migration 231 adds `idx_email_insights_attachment`, partial on `attachment_id IS NOT NULL`. The generator writes only the index on `organization_id`, so `generated/` does not change | `test_the_cascading_file_key_has_an_index`, `test_a_delete_of_a_file_deletes_its_facts_through_an_index` |
+| F3: the header named the wrong lock | The header says that the `ADD COLUMN` holds ACCESS EXCLUSIVE until COMMIT, so reads wait during the index build | — |
+| F2 and F4 | The note above on a raw INSERT, and departure 10 | — |
+| H-249 and the partial index | §13.9.2 item 5 records three rules for EM-T14b-2 | — |
+
+| Id | Mutation of round 1 | The fence that failed |
+|---|---|---|
+| R1-M1 | Remove the WHERE of the conflict arm | `test_two_writes_with_one_key_keep_the_first_row` |
+| R1-M2 | Use the domain also when `ref` is NULL | `test_no_ref_uses_the_full_sender_address`, `test_two_freemail_senders_with_no_ref_stay_two_cards` |
+| R1-M3 | Keep `Cs` in `clean_text` | three cases of `test_clean_text_keeps_only_text_that_encodes`, `test_every_text_field_of_a_clean_row_encodes`, `test_a_lone_surrogate_from_a_model_writes_clean_text` |
+| R1-M4 | Remove `idx_email_insights_attachment` | `test_the_cascading_file_key_has_an_index`, `test_a_delete_of_a_file_deletes_its_facts_through_an_index` |
+| R1-M5 | Clean the facts after the checks, as before round 1 | `test_every_fact_is_cleaned_before_any_sql` |
 
 #### 13.9.2 EM-T14b — the finance job, in three PRs
 
@@ -12612,6 +12648,14 @@ domains, and the question fence fails.
    - At 100 % of `EMAIL_LLM_DAILY_CALLS` it makes no call.
 4. `email_insights_model` (default `tier-fast`) joins the settings. `email_insights_model` is an
    environment setting, not a column.
+5. **Three rules from EM-T14a review round 1 (2026-10-07).**
+   - Do not catch an error of `write_facts` inside a session and then commit that session
+     (H-249). A failed statement aborts the transaction. Open a new session for the next message.
+   - Write the body of a message LAST. `write_facts` sets `insights_at` at each call, so a file
+     that fails after the body leaves the message marked as read.
+   - The partial index `idx_email_messages_insights_pending` holds each row with `insights_at`
+     NULL. While no mailbox opts in, that is every row of `email_messages`, and each insert of
+     mail writes to it. Measure its size at the flip, and record the result here.
 
 **Non-goals.** No route, no UI and no tool. No sent mail. No spreadsheet figure (D-EM-40).
 
