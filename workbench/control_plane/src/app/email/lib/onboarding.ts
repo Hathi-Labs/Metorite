@@ -12,15 +12,16 @@
  * ⚠️ Every field this module reads is optional. A gateway before EM-T6a sends
  * no `importSince`, so the stage is `null`. A gateway with EM-T6a and before
  * EM-T6b sends no `importPhase`, so there is no progress to draw. In both
- * cases `firstSyncSurface` keeps the old `FirstSyncBanner`, which is true
- * for that gateway. A bar held at 0% would not be (orchestrator, fix
- * round 1).
+ * cases `importPanelShows` is false, because a bar held at 0% would not be
+ * true (orchestrator, fix round 1).
+ *
+ * EM-S9 (§14.6.9) adds `syncBanners`, the rows of the sync banner in the
+ * header. `FirstSyncBanner` went with it.
  *
  * Fence: `onboarding.test.ts`.
  */
 
 import { autoDraftRepliesOn } from "./assistantSettings";
-import { isFirstSyncPending } from "./connect";
 import { atStorageLimit } from "./storage";
 import type { AssistantSettings, AutomationRule, EmailAccount, RuleCopyResult } from "./types";
 import { shortDate } from "./utils";
@@ -79,53 +80,125 @@ export function onboardingStage(
   return null;
 }
 
-// ── What the mail pane draws for a pending mailbox ─────────────────────────
+// ── The import panel of the mailbox in view ────────────────────────────────
 
 /**
- * The progress panel, or the old banner, for a mailbox whose first sync runs.
+ * True when the mail pane draws `OnboardingPanel` for this mailbox.
  *
- * `progress` needs the stage `importing` AND an `importPhase` from the
- * gateway. EM-T6b writes the phase before the first batch, so its presence
- * means the gateway reports real progress. With no phase (a gateway with
- * EM-T6a only), the banner draws, because its text stays true there.
+ * It needs the stage `importing` AND an `importPhase` from the gateway.
+ * EM-T6b writes the phase before the first batch, so its presence means the
+ * gateway reports real progress. A bar held at 0% would not be true.
  *
- * The stage says where the member is in the setup. This says whether the
- * gateway gives a number to draw. Two questions, so two functions.
+ * The page asks this for the mailbox in view only. Each other import draws
+ * a row of the sync banner (`syncBanners`, EM-S9).
  */
-export function firstSyncSurface(
-  account: StageFields & Pick<EmailAccount, "importPhase">,
-): "progress" | "banner" {
-  return onboardingStage(account) === "importing" && !!account.importPhase ? "progress" : "banner";
+export function importPanelShows(account: StageFields & Pick<EmailAccount, "importPhase">): boolean {
+  return onboardingStage(account) === "importing" && !!account.importPhase;
 }
 
-/** What the mail pane draws for one mailbox whose first sync runs. */
-export interface FirstSyncPanel<A> {
+// ── The sync banner in the header (EM-S9, §14.4.6, D-EM-58) ────────────────
+
+/** The phases that write progress, and so draw a row. EM-S9b writes
+ *  `resyncing`. This module reads it already, so EM-S9b needs no UI change. */
+export type SyncBannerPhase = "counting" | "importing" | "resyncing";
+
+/** The words of each phase. Each one says that the sync still runs. */
+export const SYNC_BANNER_LINES: Record<SyncBannerPhase, string> = {
+  counting: "Counting mail to import",
+  importing: "Importing mail",
+  resyncing: "Resyncing mail",
+};
+
+/** What the progress label of each row names, for assistive technology. */
+export const SYNC_BANNER_LABEL = "Mailbox sync progress";
+
+/** The name of the banner region. */
+export const SYNC_BANNER_REGION = "Mailbox sync";
+
+/** The highest percent before the phase ends (§14.4.6). The row goes away
+ *  when the phase ends, so the banner never claims 100% for a running sync. */
+export const SYNC_BANNER_MAX_PERCENT = 99;
+
+/** One row of the sync banner. */
+export interface SyncBannerRow<A> {
   account: A;
-  surface: "progress" | "banner";
-  /** True for two or more mailboxes: the panel draws the chip of its mailbox
-   *  beside the address. One mailbox sees no change (§11.0). */
-  named: boolean;
+  phase: SyncBannerPhase;
+  /** The words of the phase. */
+  line: string;
+  /** 0 to 99 with an estimate. `null` with none: the row draws the count. */
+  percent: number | null;
+  /** "1,240 of about 3,100 messages", "1,240 messages so far" or "Starting". */
+  detail: string;
+}
+
+type BannerFields = Pick<EmailAccount, "id"> &
+  Partial<
+    Pick<
+      EmailAccount,
+      "initialSyncDone" | "syncStatus" | "syncEnabled" | "importPhase" | "importCount" | "importEstimate"
+    >
+  >;
+
+/** The phase of a row, or null when the mailbox draws no row. */
+function bannerPhase(account: BannerFields): SyncBannerPhase | null {
+  if (account.syncStatus === "error") return null;
+  if (account.syncEnabled === false) return null;
+  const phase = account.importPhase;
+  if (phase === "resyncing") return "resyncing";
+  if (account.initialSyncDone === false && (phase === "counting" || phase === "importing")) return phase;
+  return null;
 }
 
 /**
- * One panel for each mailbox whose first sync runs (EM-T8f-3 item 2, §11.6
- * case 19). The mailbox in view comes first, then the others in the order of
- * the list. `isFirstSyncPending` decides which mailboxes run, the same rule as
- * the poll, so an errored or paused mailbox gets no panel.
- * `firstSyncSurface` decides what each panel draws.
+ * Each mailbox whose import writes progress, in the order of the list
+ * (§14.4.6, D-EM-58).
  *
- * `inView` is the mailbox of the page, or null in All inboxes.
+ * - The first import: `initialSyncDone` is false, and `importPhase` is
+ *   `counting` or `importing` (EM-S9).
+ * - A Resync: `importPhase` is `resyncing` (EM-S9b).
+ * - No row for a sync error (the reconnect banner owns it), or for sync off.
+ * - A mailbox out of view still draws its row.
+ * - One surface, not two. The mailbox in view (`inView`) draws no row while
+ *   its `OnboardingPanel` shows (`importPanelShows`).
+ *
+ * The progress: with an estimate above 0, the percent is
+ * `importCount / importEstimate`, capped at 99. With no estimate, the row
+ * shows the count.
  */
-export function firstSyncPanels<
-  A extends Pick<EmailAccount, "id"> & StageFields & Pick<EmailAccount, "importPhase">,
->(accounts: ReadonlyArray<A>, inView: string | null): FirstSyncPanel<A>[] {
-  const pending = accounts.filter((a) => isFirstSyncPending(a));
-  const ordered = [
-    ...pending.filter((a) => a.id === inView),
-    ...pending.filter((a) => a.id !== inView),
-  ];
-  const named = accounts.length > 1;
-  return ordered.map((account) => ({ account, surface: firstSyncSurface(account), named }));
+export function syncBanners<A extends BannerFields & StageFields>(
+  accounts: ReadonlyArray<A>,
+  inView: string | null = null,
+  opts: { locale?: string } = {},
+): SyncBannerRow<A>[] {
+  const fmt = new Intl.NumberFormat(opts.locale);
+  const rows: SyncBannerRow<A>[] = [];
+  for (const account of accounts) {
+    const phase = bannerPhase(account);
+    if (!phase) continue;
+    if (account.id === inView && importPanelShows(account)) continue;
+    const count =
+      typeof account.importCount === "number" && account.importCount > 0 ? account.importCount : 0;
+    const estimate = account.importEstimate;
+    const line = SYNC_BANNER_LINES[phase];
+    if (typeof estimate === "number" && estimate > 0) {
+      rows.push({
+        account,
+        phase,
+        line,
+        percent: Math.min(SYNC_BANNER_MAX_PERCENT, Math.floor(clampPercent((count / estimate) * 100))),
+        detail: `${fmt.format(count)} of about ${fmt.format(estimate)} messages`,
+      });
+    } else {
+      rows.push({
+        account,
+        phase,
+        line,
+        percent: null,
+        detail: count > 0 ? `${fmt.format(count)} ${count === 1 ? "message" : "messages"} so far` : "Starting",
+      });
+    }
+  }
+  return rows;
 }
 
 // ── The progress of the import (D-EM-16) ────────────────────────────────────

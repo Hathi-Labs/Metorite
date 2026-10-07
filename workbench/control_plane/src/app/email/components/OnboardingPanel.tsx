@@ -4,10 +4,9 @@
  * The guided setup of a new mailbox, at the top of the mail pane (WS-17
  * EM-T6d items 4 to 7 and 12).
  *
- * It draws where `FirstSyncBanner` drew, and it is not a modal: the member
- * can read the mail that arrives while the import runs. The page draws it
- * when `onboardingStage(account)` is `importing`, and keeps
- * `FirstSyncBanner` for every other pending mailbox.
+ * It is not a modal: the member can read the mail that arrives while the
+ * import runs. The page draws it for the mailbox in view, when
+ * `importPanelShows(account)` is true.
  *
  * The panel draws `ImportProgressView` from `lib/onboarding.ts` and decides
  * nothing. The page's first-sync poll re-reads `GET /email/accounts` every
@@ -20,9 +19,10 @@
  *
  * Part 2 of EM-T6d adds the rules step here, beside `importing`.
  *
- * Two mailboxes can import at one time. The page draws one panel for each
- * (`firstSyncPanels`), and with two or more mailboxes each panel draws the
- * chip of its mailbox beside the address (EM-T8f-3, §11.6 case 19).
+ * Two mailboxes can import at one time. Since EM-S9 (§14.4.6) the panel is
+ * the detail of the mailbox in view only, and the sync banner in the header
+ * names each other import (`SyncBanner.tsx`). With two or more mailboxes the
+ * panel draws the chip of its mailbox beside the address (EM-T8f-3).
  */
 
 import Icon from "@/components/Icon";
@@ -44,7 +44,7 @@ export function OnboardingPanel({
 }) {
   const title = firstSyncCopy(address).title;
   return (
-    // ⚠️ `bg-card`, not the `bg-primary/5` tint of FirstSyncBanner. In light
+    // ⚠️ `bg-card`, not the `bg-primary/5` tint of the old banner. In light
     // mode `--muted` and that tint over white are both about 96% light, so the
     // empty track of the bar vanished (visual review, 2026-10-02). `bg-card`
     // is the surface of the first ProgressBar caller, the Projects import.
