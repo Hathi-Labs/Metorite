@@ -17,6 +17,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+from tests.unit._card_words import assert_card_words
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_DIR = REPO_ROOT / "apps" / "agents" / "agent-projects"
 SKILL_DIR = REPO_ROOT / "apps" / "skills" / "skill-projects" / "skill_projects"
@@ -125,6 +127,8 @@ def _set_confirmation(monkeypatch: Any, answer: bool) -> list[dict]:
     asked: list[dict] = []
 
     async def _stub(**kwargs: Any) -> Any:
+        # Every card a test draws is checked for the member's words.
+        assert_card_words(kwargs)
         asked.append(dict(kwargs))
         return card_answer(kwargs, answer)
 
@@ -156,6 +160,7 @@ def answer_rows(monkeypatch: Any, ticked: Any) -> list[dict]:
     asked: list[dict] = []
 
     async def _stub(**kwargs: Any) -> Any:
+        assert_card_words(kwargs)
         asked.append(dict(kwargs))
         return card_answer(kwargs, True, ticked)
 

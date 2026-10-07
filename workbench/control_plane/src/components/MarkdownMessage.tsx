@@ -20,6 +20,7 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChatEntityPill from "@/components/ChatEntityPill";
+import { FencedName } from "@/components/FencedText";
 import { ControlLink } from "@/components/ControlLink";
 import MarkdownImage from "@/components/MarkdownImage";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
@@ -90,6 +91,10 @@ interface MarkdownMessageProps {
   /** The index the caller already built (`MessageBubble`). Absent: built
    *  here from `toolEvents`, so the index is made once either way. */
   entityIndex?: EntityIndex;
+  /** Draw a «name» as a quiet emphasis when no pill draws it (owner report,
+   *  2026-10-07). The chat turns it on for every agent answer. A document
+   *  does not. */
+  fences?: boolean;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -277,6 +282,20 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 // every «name» and bare email into a pill, and a missing space before a bold
 // after a full stop is put back. The pills resolve against `entityIndex`, or
 // against the nearest `EntityIndexContext` when no index is passed.
+//
+// `fences` (owner report, 2026-10-07) is the mode of an agent answer with no
+// pills: a «name» draws as a quiet emphasis, and the marks never show. An
+// email stays a mailto link. A document keeps its text as written.
+//
+// `inline` draws ONE line of agent text, for a generative-UI field (a list
+// item, a callout, a table cell). Only inline Markdown survives: bold,
+// italic, strikethrough, inline code and links. Every other element is
+// unwrapped to its text, and an image is dropped, so a field can never load a
+// remote file or draw a block. The link rules are the ones above, and HTML
+// stays text, because this renderer has no `rehype-raw`.
+
+/** The elements an `inline` body keeps. Exported for its test. */
+export const INLINE_ELEMENTS = ["p", "strong", "em", "del", "code", "a", "span", "br"];
 
 export function MarkdownBody({
   content,
@@ -285,6 +304,8 @@ export function MarkdownBody({
   mdFilePath,
   entityPills = false,
   entityIndex,
+  fences = false,
+  inline = false,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
@@ -292,25 +313,35 @@ export function MarkdownBody({
   mdFilePath?: string;
   entityPills?: boolean;
   entityIndex?: EntityIndex;
+  fences?: boolean;
+  inline?: boolean;
 }) {
   return (
     <ReactMarkdown
-      remarkPlugins={entityPills ? [remarkGfm, remarkEntityPills] : [remarkGfm]}
+      remarkPlugins={
+        entityPills
+          ? [remarkGfm, remarkEntityPills]
+          : fences
+            ? [remarkGfm, [remarkEntityPills, { emails: false }]]
+            : [remarkGfm]
+      }
       urlTransform={markdownUrlTransform}
+      allowedElements={inline ? INLINE_ELEMENTS : undefined}
+      unwrapDisallowed={inline}
       components={{
         // ── Entity pills (the plugin's `span[data-entity-pill]`) ──
         // `node` is react-markdown's own prop, and must not reach the DOM.
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         span: ({ node: _node, children, ...rest }) => {
           const attrs = rest as Record<string, unknown>;
-          if (entityPills && attrs[PILL_ATTR] !== undefined) {
+          if ((entityPills || fences) && attrs[PILL_ATTR] !== undefined) {
             const number = attrs[PILL_NUMBER_ATTR];
-            return (
-              <ChatEntityPill
-                text={String(attrs[PILL_TEXT_ATTR] ?? "")}
-                number={typeof number === "string" ? number : undefined}
-                index={entityIndex}
-              />
+            const text = String(attrs[PILL_TEXT_ATTR] ?? "");
+            const n = typeof number === "string" ? number : undefined;
+            return entityPills ? (
+              <ChatEntityPill text={text} number={n} index={entityIndex} />
+            ) : (
+              <FencedName text={text} number={n} />
             );
           }
           return <span {...rest}>{children}</span>;
@@ -339,9 +370,12 @@ export function MarkdownBody({
         ),
 
         // ── Paragraphs & text ──
-        p: ({ children }) => (
-          <p className="mb-3 last:mb-0 text-foreground">{children}</p>
-        ),
+        p: ({ children }) =>
+          inline ? (
+            <span className="block not-first:mt-1">{children}</span>
+          ) : (
+            <p className="mb-3 last:mb-0 text-foreground">{children}</p>
+          ),
         strong: ({ children }) => (
           <strong className="font-semibold text-foreground">{children}</strong>
         ),
@@ -451,7 +485,7 @@ export function MarkdownBody({
           // language is specified; a fenced block WITHOUT a language has no
           // class, so also treat any multi-line code as a block — otherwise an
           // unlabeled ``` block renders cramped as inline with literal newlines.
-          if (match || codeString.includes("\n")) {
+          if (!inline && (match || codeString.includes("\n"))) {
             // MCQ choices block — render interactive buttons instead of code.
             if (lang === "choices") {
               return <ChoiceBlock raw={codeString} onChoice={onChoice} />;
@@ -488,6 +522,7 @@ export default function MarkdownMessage({
   mdFilePath,
   entityPills = false,
   entityIndex: givenIndex,
+  fences = false,
 }: MarkdownMessageProps) {
   // The names this message's tools printed, for the pills (WS-27bm S9).
   const entityIndex = useMemo(
@@ -552,6 +587,7 @@ export default function MarkdownMessage({
         mdFilePath={mdFilePath}
         entityPills={entityPills}
         entityIndex={entityIndex}
+        fences={fences}
       />
 
       {/* Streaming cursor — only once text is actually streaming, so it doesn't

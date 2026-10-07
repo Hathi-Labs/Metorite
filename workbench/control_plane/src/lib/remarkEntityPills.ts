@@ -22,7 +22,14 @@
  * `entityIndex.ts` decides what the pill resolves to.
  *
  * Pure and framework-free, so the node-env vitest can hold it.
+ *
+ * The fence pattern is `FENCE_SOURCE` in `fencedText.ts`, the one parser of
+ * the marks. A surface that is not Markdown draws them with `FencedText`.
+ * With `{ emails: false }` the plugin marks only the fenced names: that is the
+ * mode of an answer that draws no pills (`MarkdownBody` `fences`).
  */
+
+import { FENCE_SOURCE } from "@/lib/fencedText";
 
 /** The smallest shape of an mdast node this plugin reads and writes. */
 export interface MdNode {
@@ -49,9 +56,12 @@ const EMAIL_SOURCE = String.raw`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]
  * email. The fenced arm comes first, so an email inside «» is one pill.
  */
 const PILL = new RegExp(
-  String.raw`(?:(#\d+)\s+)?«([^«»\n]{1,200})»|(?<![\w.@+-])(${EMAIL_SOURCE})(?![\w@-])`,
+  String.raw`${FENCE_SOURCE}|(?<![\w.@+-])(${EMAIL_SOURCE})(?![\w@-])`,
   "g",
 );
+
+/** The fenced names only: the mode with no email pills. */
+const FENCE_ONLY = new RegExp(FENCE_SOURCE, "g");
 
 /** A whole run that is one fenced name, for the bold unwrap. */
 const ONE_PILL = /^\s*(?:#\d+\s+)?«[^«»\n]{1,200}»\s*$/;
@@ -96,7 +106,7 @@ function textOf(nodes: MdNode[]): string | null {
  * fenced name, turn a mailto autolink back into text, and merge adjacent
  * text, so a name split across nodes by the parser is one run again.
  */
-function normalise(children: MdNode[]): MdNode[] {
+function normalise(children: MdNode[], emails: boolean): MdNode[] {
   const flat: MdNode[] = [];
   for (const child of children) {
     if ((child.type === "strong" || child.type === "emphasis") && child.children) {
@@ -106,7 +116,7 @@ function normalise(children: MdNode[]): MdNode[] {
         continue;
       }
     }
-    if (isMailtoAutolink(child)) {
+    if (emails && isMailtoAutolink(child)) {
       flat.push({ type: "text", value: child.children?.[0].value ?? "" });
       continue;
     }
@@ -125,10 +135,10 @@ function normalise(children: MdNode[]): MdNode[] {
 }
 
 /** Split one text value into text and pill nodes. */
-export function splitText(value: string): MdNode[] {
+export function splitText(value: string, emails = true): MdNode[] {
   const out: MdNode[] = [];
   let last = 0;
-  for (const m of value.matchAll(PILL)) {
+  for (const m of value.matchAll(emails ? PILL : FENCE_ONLY)) {
     const start = m.index ?? 0;
     if (start > last) out.push({ type: "text", value: value.slice(last, start) });
     if (m[2] !== undefined) {
@@ -202,9 +212,9 @@ function glueTrailingPunctuation(nodes: MdNode[]): MdNode[] {
   return out;
 }
 
-function walk(node: MdNode, insideLink: boolean): void {
+function walk(node: MdNode, insideLink: boolean, emails: boolean): void {
   if (!node.children || SKIP.has(node.type)) return;
-  const kids = insideLink ? node.children : normalise(node.children);
+  const kids = insideLink ? node.children : normalise(node.children, emails);
   const next: MdNode[] = [];
   for (const child of kids) {
     if (child.type === "text") {
@@ -212,20 +222,26 @@ function walk(node: MdNode, insideLink: boolean): void {
         // No pill inside a link (a control inside a control), and no marks.
         next.push({ ...child, value: (child.value ?? "").replace(/[«»]/g, "") });
       } else {
-        next.push(...splitText(child.value ?? ""));
+        next.push(...splitText(child.value ?? "", emails));
       }
       continue;
     }
-    walk(child, insideLink || child.type === "link");
+    walk(child, insideLink || child.type === "link", emails);
     next.push(child);
   }
   node.children = next;
 }
 
+/** The plugin's options. `emails: false` marks only the fenced names. */
+export interface EntityPillOptions {
+  emails?: boolean;
+}
+
 /** The plugin. `remarkPlugins={[remarkGfm, remarkEntityPills]}`. */
-export default function remarkEntityPills() {
+export default function remarkEntityPills(options?: EntityPillOptions) {
+  const emails = options?.emails !== false;
   return (tree: MdNode) => {
-    walk(tree, false);
+    walk(tree, false, emails);
   };
 }
 

@@ -1,0 +1,167 @@
+"use client";
+
+/**
+ * Readout — a Projects read's result as UI, not as a text dump.
+ *
+ * `lib/readout.ts` turns the tool's text into blocks with no ids and no
+ * `[key]` marks. This file draws them in the chat's own parts:
+ *
+ * - a heading is a small label with its count;
+ * - a `key: value` fact is a labelled row, drawn by kind like a card field
+ *   (`CardFieldValue`): a status chip, person pills, tag pills, a date;
+ * - a row of the vocabulary is its element: a status is the status chip in
+ *   its colour with "default" as a muted mark, a tag is the tag pill, a type
+ *   is a badge, a custom field is its name and its type;
+ * - any other row is its name with its facts after it, split by a quiet
+ *   dot instead of a typed "·".
+ *
+ * Owner report, 2026-10-07 (the Vocabulary card). The tool result keeps
+ * every id, because the model needs them. Only the card drops them.
+ */
+
+import { Fragment } from "react";
+
+import CardFieldValue from "@/components/CardFieldValue";
+import FencedText from "@/components/FencedText";
+import Badge from "@/components/ui/Badge";
+import EntityPill from "@/components/ui/EntityPill";
+import { fieldSpec } from "@/lib/cardFields";
+import { unfenced } from "@/lib/fencedText";
+import { type ReadoutBlock, parseReadout, statusRow } from "@/lib/readout";
+import { statusAccent } from "@/lib/statusAccent";
+
+type Item = Extract<ReadoutBlock, { kind: "item" }>;
+
+/** The quiet dot between the facts of a row. */
+function Sep() {
+  return <span aria-hidden className="inline-block size-1 shrink-0 rounded-full bg-muted-foreground/40" />;
+}
+
+function Facts({ parts }: { parts: string[] }) {
+  return (
+    <>
+      {parts.map((p, i) => (
+        <Fragment key={i}>
+          <Sep />
+          <span className="text-muted-foreground">
+            <FencedText text={p} pills={false} />
+          </span>
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
+function ItemView({ item }: { item: Item }) {
+  const section = item.section.toLowerCase();
+  const [head = item.text, ...facts] = item.parts;
+  if (section.startsWith("statuses")) {
+    const s = statusRow(item);
+    const name = unfenced(s.name);
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1.5">
+        <EntityPill kind="status" label={name} accent={statusAccent({ category: s.category, name })} />
+        {s.isDefault && <span className="text-[10px] text-muted-foreground">default</span>}
+      </span>
+    );
+  }
+  if (section.startsWith("tags")) {
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1.5">
+        <EntityPill kind="tag" label={unfenced(head)} />
+        {facts.length > 0 && <span className="text-[10px] text-muted-foreground">{facts.join(", ")}</span>}
+      </span>
+    );
+  }
+  if (section.startsWith("types")) {
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1.5">
+        <Badge icon="Shapes">{unfenced(head)}</Badge>
+        {facts.length > 0 && <span className="text-[10px] text-muted-foreground">{facts.join(", ")}</span>}
+      </span>
+    );
+  }
+  if (section.startsWith("custom fields")) {
+    // `key <field_key>` is the model's handle, not a word for a person.
+    const type = facts.find((f) => f.startsWith("type "))?.slice(5);
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1.5">
+        <span className="font-medium text-foreground">{unfenced(head)}</span>
+        {type && <span className="text-[10px] text-muted-foreground">{type.replace(/_/g, " ")}</span>}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+      <span className="text-foreground">
+        <FencedText text={head} pills={false} />
+      </span>
+      {item.tag && <span className="text-[10px] text-muted-foreground">{item.tag.replace(/_/g, " ")}</span>}
+      <Facts parts={facts} />
+    </span>
+  );
+}
+
+/** The blocks, grouped: the rows under one heading are one list. */
+export default function Readout({ result, legend }: { result: string; legend?: string }) {
+  const blocks = parseReadout(result, legend);
+  if (blocks.length === 0) return <div className="text-muted-foreground">(no result)</div>;
+  const out: React.ReactNode[] = [];
+  let items: Item[] = [];
+  const flush = () => {
+    if (items.length === 0) return;
+    const section = items[0].section.toLowerCase();
+    const inline = section.startsWith("statuses") || section.startsWith("tags") || section.startsWith("types");
+    out.push(
+      inline ? (
+        <div key={`l${out.length}`} className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          {items.map((it, i) => (
+            <ItemView key={i} item={it} />
+          ))}
+        </div>
+      ) : (
+        <ul key={`l${out.length}`} className="space-y-1">
+          {items.map((it, i) => (
+            <li key={i} className="min-w-0">
+              <ItemView item={it} />
+            </li>
+          ))}
+        </ul>
+      ),
+    );
+    items = [];
+  };
+  blocks.forEach((b, i) => {
+    if (b.kind === "item") {
+      items.push(b);
+      return;
+    }
+    flush();
+    if (b.kind === "heading") {
+      out.push(
+        <div key={i} className="pt-1 text-[11px] font-medium text-foreground first:pt-0">
+          <FencedText text={b.text} pills={false} />
+          {b.count !== undefined && <span className="ml-1 text-muted-foreground">{b.count}</span>}
+        </div>,
+      );
+    } else if (b.kind === "field") {
+      const spec = fieldSpec(b.key);
+      out.push(
+        <div key={i} className="flex gap-3">
+          <span className="w-24 shrink-0 text-muted-foreground">{spec.label}</span>
+          <span className="min-w-0 flex-1 break-words text-foreground">
+            <CardFieldValue value={b.value} kind={spec.kind} many={spec.many} />
+          </span>
+        </div>,
+      );
+    } else {
+      out.push(
+        <p key={i} className="break-words text-muted-foreground">
+          <FencedText text={b.text} pills={false} />
+        </p>,
+      );
+    }
+  });
+  flush();
+  return <div className="space-y-1.5 text-[11px]">{out}</div>;
+}

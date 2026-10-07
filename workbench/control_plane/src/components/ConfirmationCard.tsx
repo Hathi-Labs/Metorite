@@ -20,16 +20,27 @@
  * does not reach the card), so the card cannot tell a send from a create.
  * Do not guess it from the title.
  *
+ * The words (owner report, 2026-10-07). No text on the card shows a «mark»:
+ * the title, the detail, the notes and the rows draw through `FencedText`.
+ * A field's key reads in product words, and its value draws by its kind
+ * (`lib/cardFields.ts`, `CardFieldValue.tsx`): a tag pill, a status chip, a
+ * task pill, a person, a date. Numbered keys (`task 1`, `task 2`) are one
+ * list. A field that only repeats the detail is not drawn twice.
+ *
  * Fences: `src/lib/confirmationQueue.test.ts` (the parse, the hidden ids and
- * the paint).
+ * the paint) and `src/lib/cardFields.test.ts` (the words and the kinds).
  */
 
 import { useEffect, useState } from "react";
 
+import CardFieldValue from "@/components/CardFieldValue";
+import FencedText from "@/components/FencedText";
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
+import { cardKey, fieldSpec, repeatsLine } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
+import { unfenced } from "@/lib/fencedText";
 
 /**
  * How long a new card ignores Approve and Reject.
@@ -43,8 +54,13 @@ import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmatio
 export const ARM_MS = 400;
 
 export interface CardField {
+  /** The key as the tool printed it (`due_at`, `task 1`). */
+  key: string;
   label: string;
+  /** The value as the tool printed it, marks and all. The card draws it. */
   value: string;
+  /** A numbered run (`task 1`, `task 2`, …) as one field: every value. */
+  values?: string[];
 }
 
 export interface CardBody {
@@ -81,9 +97,14 @@ export function isHiddenField(key: string, value: string): boolean {
     .every((part) => UUID.test(part));
 }
 
-function label(key: string): string {
-  const words = key.trim().replace(/_/g, " ");
-  return words.charAt(0).toUpperCase() + words.slice(1);
+/** The fields, less any field whose value only repeats a line the card shows. */
+export function withoutRepeats(fields: CardField[], shown: (string | undefined)[]): CardField[] {
+  return fields.filter((f) => f.values !== undefined || !repeatsLine(f.value, shown));
+}
+
+/** The plural of a numbered field's label: "Task" → "Tasks". */
+function plural(label: string): string {
+  return /s$/.test(label) ? label : `${label}s`;
 }
 
 /** The `context` body as rows, or as text when it is not rows. */
@@ -106,9 +127,19 @@ export function parseCardBody(context: string | undefined): CardBody {
     const m = FIELD.exec(line);
     if (!m) {
       trailing.push(line.trim());
-    } else if (!isHiddenField(m[1], m[2])) {
-      fields.push({ label: label(m[1]), value: unfence(m[2]) });
+      continue;
     }
+    if (isHiddenField(m[1], m[2])) continue;
+    const key = m[1].trim();
+    const value = m[2].trim();
+    const numbered = /\d/.test(key) ? cardKey(key) : "";
+    const last = fields[fields.length - 1];
+    if (numbered && last && cardKey(last.key) === numbered) {
+      last.values = [...(last.values ?? [last.value]), value];
+      last.label = plural(fieldSpec(key).label);
+      continue;
+    }
+    fields.push({ key, label: fieldSpec(key).label, value });
   }
   return { notes: lines.slice(0, first), fields, trailing };
 }
@@ -185,7 +216,10 @@ export default function ConfirmationCard({
   const summary = rowsSummary(base.summary, rows);
   const rest = base.rest;
   const approvable = canApprove(rows);
-  const body = parseCardBody(context);
+  const parsed = parseCardBody(context);
+  // A field that repeats the detail or the summary is drawn once (owner
+  // report, 2026-10-07: "Impact" restated the detail word for word).
+  const body = { ...parsed, fields: withoutRepeats(parsed.fields, [rest, summary]) };
   const many = position && position.total > 1;
   const hasBody =
     hasRows || body.fields.length > 0 || !!body.text || body.notes.length + body.trailing.length > 0;
@@ -194,15 +228,21 @@ export default function ConfirmationCard({
   };
   return (
     <section
-      aria-label={summary}
+      aria-label={unfenced(summary)}
       data-confirmation-card=""
       className="my-3 rounded-xl border border-border bg-card overflow-hidden"
     >
       <div className={`flex items-start gap-2 px-4 pt-3 ${hasBody ? "" : "pb-3"}`}>
         <Icon name="ShieldCheck" size={14} className="mt-0.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-foreground break-words">{summary}</p>
-          {rest && <p className="mt-0.5 text-xs text-muted-foreground break-words">{rest}</p>}
+          <p className="text-sm font-medium text-foreground break-words">
+            <FencedText text={summary} pills={false} />
+          </p>
+          {rest && (
+            <p className="mt-0.5 text-xs text-muted-foreground break-words">
+              <FencedText text={rest} pills={false} />
+            </p>
+          )}
         </div>
         {many && (
           <div className="flex shrink-0 items-center gap-0.5" data-confirmation-pager="">
@@ -250,10 +290,12 @@ export default function ConfirmationCard({
                       data-confirmation-row={r.id}
                     />
                     <span className="flex min-w-0 flex-col gap-0.5">
-                      <span className="break-words text-xs text-foreground">{r.label}</span>
+                      <span className="break-words text-xs text-foreground">
+                        <FencedText text={r.label} pills={false} />
+                      </span>
                       {r.hint && (
                         <span className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
-                          {r.hint}
+                          <FencedText text={r.hint} pills={false} />
                         </span>
                       )}
                     </span>
@@ -264,24 +306,37 @@ export default function ConfirmationCard({
           )}
           {body.fields.length > 0 && (
             <dl className="space-y-1">
-              {body.fields.map((f, i) => (
-                <div key={`${f.label}-${i}`} className="flex gap-3 text-xs">
-                  <dt className="w-24 shrink-0 text-muted-foreground">{f.label}</dt>
-                  <dd className="min-w-0 flex-1 whitespace-pre-wrap break-words text-foreground">
-                    {f.value}
-                  </dd>
-                </div>
-              ))}
+              {body.fields.map((f, i) => {
+                const spec = fieldSpec(f.key);
+                return (
+                  <div key={`${f.key}-${i}`} className="flex gap-3 text-xs" data-card-field={cardKey(f.key)}>
+                    <dt className="w-24 shrink-0 pt-px text-muted-foreground">{f.label}</dt>
+                    <dd className="min-w-0 flex-1 whitespace-pre-wrap break-words text-foreground">
+                      {f.values ? (
+                        <ul className="space-y-1">
+                          {f.values.map((v, k) => (
+                            <li key={k} className="min-w-0">
+                              <CardFieldValue value={v} kind={spec.kind} many={spec.many} />
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <CardFieldValue value={f.value} kind={spec.kind} many={spec.many} />
+                      )}
+                    </dd>
+                  </div>
+                );
+              })}
             </dl>
           )}
           {body.text && (
             <p className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-xs text-foreground">
-              {body.text}
+              <FencedText text={body.text} pills={false} />
             </p>
           )}
           {[...body.notes, ...body.trailing].map((note, i) => (
             <p key={i} className="text-[11px] text-muted-foreground">
-              {note}
+              <FencedText text={note} pills={false} />
             </p>
           ))}
         </div>

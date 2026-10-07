@@ -543,7 +543,7 @@ def _subtask_line(door: str, wanted: bool, count: int, capped: bool = False) -> 
         many = _subtasks_phrase(count, door, capped) if count else f"every {noun}"
         return {"subtasks": f"{many} {_CASCADE_VERB[door]} too"}
     many = _subtasks_phrase(count, door, capped)
-    return {"subtasks": f"{many} stay as they are (include_subtasks=no)"}
+    return {"subtasks": f"{many} stay as they are"}
 
 
 def _subtask_receipt(reply: Any, key: str, door: str) -> list[str]:
