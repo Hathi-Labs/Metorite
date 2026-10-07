@@ -37,6 +37,7 @@ import { coalesce } from "@/lib/useCachedResource";
 import { identity, onClear, peek, put } from "@/lib/dataCache";
 
 import { fetchMessageHtml, messageHtmlKey } from "./api";
+import { filterKey, type SearchFilter } from "./searchFilters";
 
 /** The most rows that one run asks for. */
 export const PREFETCH_MAX_ROWS = 6;
@@ -183,19 +184,34 @@ export function visibleRowIds(
   return boxes.filter((b) => b.bottom > viewTop && b.top < viewBottom).map((b) => b.id);
 }
 
-/** What makes one list: the mailbox or All inboxes, the folder, the label and the search. */
+/**
+ * What makes one list: the mailbox or All inboxes, the folder, the label, and
+ * the search. The search is its text, its scope and its pills, as
+ * `searchViewKey` in `emailStore.ts` reads them.
+ */
 export interface ListIdentity {
   viewAll: boolean;
   accountId: string | null;
   folder: string;
   label: string | null;
   query: string;
+  /** `searchScope` of the store. Null means the open folder. */
+  scope: string | null;
+  /** `searchFilters` of the store, the pills. */
+  filters: readonly SearchFilter[];
 }
 
 /** The key of one list. A soft refresh of the same list keeps the same key. */
 export function prefetchListKey(list: ListIdentity): string {
   const box = list.viewAll ? "all" : list.accountId ?? "";
-  return JSON.stringify([box, list.folder, list.label ?? "", list.query.trim()]);
+  return JSON.stringify([
+    box,
+    list.folder,
+    list.label ?? "",
+    list.query.trim(),
+    list.scope ?? "",
+    list.filters.map(filterKey),
+  ]);
 }
 
 /** The prefetcher, over one {@link PrefetchState}. */
@@ -241,7 +257,13 @@ export function createHtmlPrefetcher(
     request
       .then(
         (html) => {
-          if (!state.retired) deps.keep(id, html);
+          if (state.retired) return;
+          try {
+            deps.keep(id, html);
+          } catch {
+            // A row that the cache cannot keep counts as failed for this list.
+            state.failed.add(id);
+          }
         },
         (err: unknown) => {
           const { status, retryAfter } = failure(err);
@@ -272,6 +294,13 @@ export function createHtmlPrefetcher(
   const pump = () => {
     const run = state.current;
     if (!run) return;
+    // A retired state (after a sign-out or a change of member) starts nothing.
+    // Its requests in flight settle, and its runs resolve.
+    if (state.retired) {
+      state.queue = [];
+      settleIfDone(run);
+      return;
+    }
     while (state.active < PREFETCH_PARALLEL && state.queue.length > 0) {
       if (state.stop || deps.now() < state.waitUntil) {
         state.queue = [];
@@ -334,8 +363,14 @@ export function defaultPrefetchDeps(): PrefetchDeps {
 
 let shared: PrefetchState | null = null;
 
+/** Retire a state: it starts no request and keeps no answer. */
+function retire(state: PrefetchState): void {
+  state.retired = true;
+  state.queue = [];
+}
+
 onClear(() => {
-  if (shared) shared.retired = true;
+  if (shared) retire(shared);
   shared = null;
 });
 
@@ -346,7 +381,7 @@ onClear(() => {
 export function sharedPrefetchState(): PrefetchState {
   const who = identity();
   if (!shared || shared.owner !== who) {
-    if (shared) shared.retired = true;
+    if (shared) retire(shared);
     shared = newPrefetchState(who);
   }
   return shared;

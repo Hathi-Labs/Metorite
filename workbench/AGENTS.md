@@ -21,7 +21,7 @@ Control Plane (Next.js browser UI) and local development tools.
   - The gateway sends `html_remote`. `mapEmail` reads only an explicit true into `htmlRemote`.
   - `fetchMessageHtml` in `api.ts` is the one fetch of `GET /email/messages/{id}/html`. `messageHtmlKey` is its one key in `dataCache`.
   - Each render path of the pane passes `remoteId={remoteHtmlId(view)}` to `MessageContent`. The pane shows the text at once. Then it reads the HTML through `openMessageHtml`, and draws it through `HtmlMessage` and `sanitizeEmailHtml`. A failed fetch keeps the text, with no error state.
-  - `EmailList` prefetches the visible rows after the list stays still for 500 ms. One run asks for 6 rows at most, and only rows with `htmlRemote`.
+  - `EmailList` prefetches the visible rows when the list stays still for 500 ms (`PREFETCH_STILL_MS`). One run asks for 6 rows at most. It asks only for rows with `htmlRemote`.
   - All runs share 2 slots and one set of ids in flight. An open of a row that the prefetch asks for joins that request.
   - The state lives at module scope, so a remount keeps it. `dataCache.clearAll` drops it through `onClear`.
   - The first 503 stops the prefetch until `Retry-After` ends. Then the same list may prefetch again. The first 401 stops it until the list key changes. A failed row is not asked again for the same list. A soft refresh clears no stop.

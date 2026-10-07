@@ -65,8 +65,9 @@ const remote = (id: string): PrefetchRow => ({ id, htmlRemote: true });
 const local = (id: string): PrefetchRow => ({ id, htmlRemote: false });
 const rowsOf = (...ids: string[]) => ids.map(remote);
 const tick = () => new Promise((r) => setTimeout(r, 0));
-const INBOX = prefetchListKey({ viewAll: false, accountId: "acc1", folder: "inbox", label: null, query: "" });
-const SENT = prefetchListKey({ viewAll: false, accountId: "acc1", folder: "sent", label: null, query: "" });
+const LIST = { viewAll: false, accountId: "acc1", folder: "inbox", label: null, query: "", scope: null, filters: [] };
+const INBOX = prefetchListKey(LIST);
+const SENT = prefetchListKey({ ...LIST, folder: "sent" });
 
 /** An error as `gatewayFetch` in `api.ts` throws it. */
 function httpError(status: number, retryAfter?: number): Error {
@@ -476,19 +477,86 @@ describe("email-html-prefetch-stops", () => {
     expect(peek(messageHtmlKey("z"))).toBeUndefined();
   });
 
+  it("after a sign-out, the old state starts no new request", async () => {
+    const h = harness(undefined, { manual: true });
+    const p = createHtmlPrefetcher(h.deps, sharedPrefetchState());
+    p.listLoaded(INBOX);
+    const run = p.run(rowsOf("a", "b", "c", "d", "e", "f"));
+    await tick();
+    expect(h.asked).toEqual(["a", "b"]);
+    clearAll();
+    await h.drain();
+    // a and b settle. c to f never go with the next session.
+    expect(h.asked).toEqual(["a", "b"]);
+    expect((await run).asked).toEqual(["a", "b"]);
+  });
+
+  it("a throw from keep counts the row as failed, with no unhandled rejection", async () => {
+    const seen: unknown[] = [];
+    const onRejection = (reason: unknown) => seen.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const h = harness();
+      const keep = h.deps.keep;
+      h.deps.keep = (id, html) => {
+        if (id === "b") throw new Error("the cache is full");
+        keep(id, html);
+      };
+      const p = prefetcher(h);
+      const out = await p.run(rowsOf("a", "b", "c"));
+      expect(out.stopped).toBeNull();
+      expect(out.asked).toEqual(["a", "b", "c"]);
+      expect(h.kept.has("b")).toBe(false);
+      // The run counts b as failed, so the same list does not ask again.
+      p.listLoaded(INBOX);
+      expect((await p.run(rowsOf("b"))).asked).toEqual([]);
+      await tick();
+      await tick();
+      expect(seen).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
   it("the list key changes with the mailbox, the folder, the label and the search, and nothing else", () => {
-    const base = { viewAll: false, accountId: "acc1", folder: "inbox", label: null, query: "" };
+    const base = LIST;
+    const pill = { kind: "from" as const, value: "arjun@acme.test" };
     expect(prefetchListKey({ ...base })).toBe(INBOX);
     expect(prefetchListKey({ ...base, query: "  " })).toBe(INBOX);
+    expect(prefetchListKey({ ...base, filters: [pill] })).toBe(prefetchListKey({ ...base, filters: [{ ...pill }] }));
     for (const other of [
       { ...base, accountId: "acc2" },
       { ...base, folder: "sent" },
       { ...base, label: "Clients" },
       { ...base, query: "quote" },
       { ...base, viewAll: true },
+      { ...base, scope: "all" },
+      { ...base, filters: [pill] },
+      { ...base, filters: [{ kind: "unread" as const, value: "" }] },
     ]) {
       expect(prefetchListKey(other)).not.toBe(INBOX);
     }
+  });
+
+  it("a change of pill or of search scope is a list change", async () => {
+    let dead = true;
+    const h = harness(() => {
+      if (dead) throw httpError(401);
+      return "<p>x</p>";
+    });
+    const p = prefetcher(h);
+    expect((await p.run(rowsOf("a"))).stopped).toBe("auth");
+    dead = false;
+    const withPill = prefetchListKey({ ...LIST, filters: [{ kind: "unread", value: "" }] });
+    p.listLoaded(withPill);
+    expect((await p.run(rowsOf("a"))).asked).toEqual(["a"]);
+    dead = true;
+    expect((await p.run(rowsOf("b"))).stopped).toBe("auth");
+    dead = false;
+    p.listLoaded(prefetchListKey({ ...LIST, filters: [{ kind: "unread", value: "" }], scope: "all" }));
+    expect((await p.run(rowsOf("b"))).asked).toEqual(["b"]);
+    const list = codeOnly(read("components/EmailList.tsx"));
+    expect(list).toContain("scope: searchScope, filters: searchFilters,");
   });
 });
 

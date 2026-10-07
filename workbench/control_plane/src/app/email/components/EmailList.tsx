@@ -161,7 +161,7 @@ export function EmailList({
     selectedIds, toggleEmailSelected, setSelectedEmails, clearEmailSelection,
     bulkUpdateSelected, bulkDeleteSelected, captureEmailToTasks,
     runTestOnMessage, testRunningIds, snoozeEmail,
-    viewAll, accounts, searchQuery,
+    viewAll, accounts, searchQuery, searchScope, searchFilters,
   } = useEmailStore();
   // In All inboxes each row names its mailbox (EM-T8d, D-EM-22, §11.4).
   const mailboxOfRow = (accountId: string) =>
@@ -328,7 +328,7 @@ export function EmailList({
   // phone each open of a message unmounts the list.
   const listKey = prefetchListKey({
     viewAll, accountId: selectedAccountId, folder: selectedFolder,
-    label: selectedLabel, query: searchQuery,
+    label: selectedLabel, query: searchQuery, scope: searchScope, filters: searchFilters,
   });
   const anyRemote = emails.some((e) => e.htmlRemote === true);
   const visibleRows = useCallback((): PrefetchRow[] => {
