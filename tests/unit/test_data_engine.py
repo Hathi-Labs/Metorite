@@ -1231,9 +1231,13 @@ def _serve_book(dirs: Any, data: bytes, name: str = "b.xlsx") -> dict[str, Any]:
 
 
 def test_a_zip_bomb_is_refused_before_any_part_is_unpacked(dirs: Any, monkeypatch: Any) -> None:
-    """A part over 200 MB unpacked, and a part over 100 times its packed size."""
+    """A part over 200 MB unpacked, and a part over 100 times its packed size.
+
+    The sizes are numbers, and not the engine's caps, so a changed cap fails
+    here and builds no larger bomb.
+    """
     files = xb.parts([("S", b"")])
-    big = _stream_part(files, "xl/worksheets/sheet1.xml", E.ZIP_MAX_PART_BYTES + 2**20)
+    big = _stream_part(files, "xl/worksheets/sheet1.xml", 201 * 2**20)
     dense = _stream_part(files, "xl/worksheets/sheet1.xml", 8 * 2**20)
     assert len(big) < 2**20 and len(dense) < 2**20
     opened = _spy_open(monkeypatch)
