@@ -767,15 +767,16 @@ AGENT-SAFE. To turn any flag on in production is OWNER-GATE.
 keeps its toolbar row below the bar, on purpose: it holds the list filter,
 which §6.7 places above the list.
 
-⚠️ **Do not turn the flag on before NS-4a.** With the flag on, three old
-searches go, and their records come back only in the bar's Find group:
+✅ **NS-4a is built (2026-10-08), so the bar's Find group now holds what the
+three old searches found.** With the flag on, these searches go:
 
 - the Projects palette and its Search button
 - the My Tasks palette and its Search button, on desktop and on the phone
 - the Email palette and its `⌘K` button
 
-Until NS-4a ships, the bar cannot find a task, an email or a person by its
-words.
+Find covers task titles, email subjects and senders, and colleagues by name,
+title or department. The old Projects palette also ran its own commands, such
+as view switches. Those live on the Projects page itself.
 
 Flag `NEXT_PUBLIC_SHELL_BAR`. Files: `src/components/AppShell.tsx`,
 `src/components/AppTopBar.tsx`, a new `src/lib/shell/`, and the pages of
@@ -837,7 +838,32 @@ Done when:
    request.
 5. With the flag off, `/` renders "Welcome back" as it does today.
 
-### NS-4a · Tier 1, record search — AGENT-SAFE
+### NS-4a · Tier 1, record search — AGENT-SAFE · BUILT 2026-10-08, dark
+
+**Built.** `gateway/routes/shell/search.py` serves `GET /shell/search`. It has
+three providers, and each calls its app's own function on the member:
+
+| Provider | Feature | Function |
+|---|---|---|
+| Tasks | `projects` | `search_tasks` |
+| Email | `email` | `search_messages` |
+| People | `people` | `list_directory` |
+
+⚠️ Each app checks its feature on its ROUTER, so a direct call skips that
+check. Each provider therefore checks the feature itself first. The providers
+run one after another, each with a time limit of one second, and a provider
+that fails is left out. The command bar's **Find** group shows the records
+under the rows already shown. The bar holds the highlighted row by its key, so
+a late answer never moves the member's choice.
+
+Fences:
+
+- `tests/unit/test_shell_search.py`: a negative case per provider, the member
+  passed unchanged, one provider at a time, and the email call in step with
+  its route.
+- `tests/unit/test_shell_search_r8.py`: R8. It ran on 2026-10-08 against a
+  private ladder database, because the shared one hits H-172.
+- `e2e/shell-bar.spec.ts`: the Find group.
 
 Flag `NEXT_PUBLIC_SHELL_BAR`. Files: `gateway/routes/shell/search.py` and one
 provider per app that has search today.
