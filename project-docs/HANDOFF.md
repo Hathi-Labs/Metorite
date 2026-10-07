@@ -95,6 +95,29 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-267 · Stop an Outlook rule move from making a second copy of a nested folder · [AGENT]
+- **Check:** run `rg -n "mailFolders" apps/services/email_ingestion/email_ingestion/providers/outlook.py`.
+  If `_get_or_create_folder_id` still searches only `/me/mailFolders` with a
+  `displayName` filter, this is open.
+- **Why.** `OutlookProvider._get_or_create_folder_id` (`outlook.py:920-925`)
+  asks Graph for `/me/mailFolders` with `displayName eq '<name>'`. That call
+  lists the top-level folders only. So when a rule names "Receipts", and
+  "Receipts" sits under the Inbox, the lookup finds nothing, and the provider
+  makes a second "Receipts" at the top level. The rule then files mail there.
+  The defect is older than EM-S10. EM-S10 made it easier to reach, because a
+  rule copy now names folders that the target may hold at any depth.
+- **Do.**
+  1. Make the lookup find a folder at any depth. `list_folders` already walks
+     the child folders (`_descend`), so reuse that walk, or the same Graph
+     calls. Do not add a second folder walk beside it.
+  2. Decide which folder wins when two folders at two depths have one name.
+     Record the rule in `email_app_master_plan.md` §14.6.10.
+  3. Add a test with a fake Graph that holds "Inbox/Receipts". A move to
+     "Receipts" must reach that folder and make no new folder.
+- **Authority:** `email_app_master_plan.md` §14.6.10 "As built" · D-EM-60
+- **Added:** 2026-10-07 · branch `email-s10-rules-estimate` (WS-17 EM-S10
+  fix round 1). PR #719 added H-266.
+
 ### H-266 · Redis has no maxmemory policy, and the email HTML and attachment caches are bounded only by TTL · [AGENT]
 - **Check:** run `grep -rn "maxmemory" infra/ deploy/`. No `maxmemory` with a
   `maxmemory-policy` for the Redis of the gateway means this is open.

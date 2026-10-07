@@ -38,6 +38,8 @@ import AccountStateBanner from "@/components/AccountStateBanner";
 import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
+import { DrawerAccountSection } from "@/components/AccountSwitcher";
+import { useAccountTabSync } from "@/lib/accountSwitch";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
 // in the SHELL so the running timer stays visible across every app in the
 // control plane; renders nothing when no focus session is active.
@@ -100,6 +102,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     bindIdentity(signedInAs);
   }, [signedInAs]);
+  // ⚠️ A switch (or a sign-in as someone else) in ANOTHER tab changes the
+  // cookie under this one. This reloads the tab, so it never writes as an
+  // account it does not show (`lib/accountSwitch.ts`).
+  useAccountTabSync(signedInAs);
   // The chat caches follow the same rule (PR #652): one namespace per account.
   // `useChatScope` binds the member's namespace, and a switch deletes nothing.
   // `useChatSignOutClear` clears the namespace of an account that signed out,
@@ -343,19 +349,25 @@ function MobileBottomNavInner({
           <AppIcon name="Monitor" size={16} className="shrink-0" />
           Desktop view
         </Button>
-        {session?.user && (
-          <Button variant="ghost" size="none" layout="flex items-center" onClick={() => signOut({ callbackUrl: "/signin" })} className="w-full gap-3 px-3 py-2.5 text-sm">
-            <AppIcon name="LogOut" size={16} className="shrink-0" />
-            Sign out
-          </Button>
-        )}
-        {session?.user && (
-          <div className="px-3 pt-1">
-            <div className="truncate text-[11px] font-medium text-muted-foreground">
-              {session.user.name ?? session.user.email}
-            </div>
-          </div>
-        )}
+        {/* The account switcher (MT-1k A2). While its flag is off, it draws
+            the Sign out row and the name, as before. */}
+        <DrawerAccountSection
+          fallback={
+            session?.user && (
+              <>
+                <Button variant="ghost" size="none" layout="flex items-center" onClick={() => signOut({ callbackUrl: "/signin" })} className="w-full gap-3 px-3 py-2.5 text-sm">
+                  <AppIcon name="LogOut" size={16} className="shrink-0" />
+                  Sign out
+                </Button>
+                <div className="px-3 pt-1">
+                  <div className="truncate text-[11px] font-medium text-muted-foreground">
+                    {session.user.name ?? session.user.email}
+                  </div>
+                </div>
+              </>
+            )
+          }
+        />
       </div>
     </>
   );
