@@ -11,7 +11,7 @@
 > record; §11 is the build log and current state. · sibling surface: `whatsapp_calls_note_taker.md` Surface C (calls + recording) SHIPPED 2026-08-02 on this stack *(cross-ref added 2026-08-09)*
 > *(Update 2026-08-01, doc-truth pass: header previously said "PLANNING — no code yet",
 > contradicting §11's own build log; verified against the repo.)*
-> 🆕 **2026-10-06: §12 is the self-serve connect (owner directive).** A member connects their own WhatsApp Business account through Embedded Signup with coexistence. 🔴 §12.3 F1: on production the webhook drops every inbound batch, because it binds no tenant under FORCE RLS. WA-C1 fixes it (BUILT 2026-10-07). WA-C2 adds coexistence to Embedded Signup (BUILT 2026-10-07). WA-C3 adds the history import, the contacts and the echoes (BUILT 2026-10-07, migration 232). Its sync call stays dark behind `WHATSAPP_HISTORY_SYNC`, and the flip waits on owner question Q1 and WA-C0.
+> 🆕 **2026-10-06: §12 is the self-serve connect (owner directive).** A member connects their own WhatsApp Business account through Embedded Signup with coexistence. 🔴 §12.3 F1: on production the webhook drops every inbound batch, because it binds no tenant under FORCE RLS. WA-C1 fixes it (BUILT 2026-10-07). WA-C2 adds coexistence to Embedded Signup (BUILT 2026-10-07). WA-C3 adds the history import, the contacts and the echoes (BUILT 2026-10-07, migration 232). Its sync call stays dark behind `WHATSAPP_HISTORY_SYNC`, and the flip waits on WA-C0 only. The owner answered Q1 on 2026-10-07: triage normally.
 > **Mockups:** `mockups/whatsapp_message_manager.html` (7 screens + build notes, control-plane shell,
 > rebuilt around a single organizing spine — see §7)
 > **Anchors:** ADR-007 (WhatsApp via Meta Cloud API), `email_app_master_plan.md` (the vertical
@@ -1020,8 +1020,8 @@ the build. Do not choose them again.
 
 **Out of scope for WA-C3.**
 
-- The Reply Zero policy for history chats (Q1). `classify_chat_status` does
-  not change.
+- A Reply Zero policy of its own for history chats. The owner answered Q1:
+  triage normally, so `classify_chat_status` does not change.
 - Transcription and embeddings of history.
 - Groups.
 - The bridge routes.
@@ -1053,9 +1053,12 @@ is practical.
 9. Frontend: vitest for each new pure helper, plus `tsc` and the conformance
    suite.
 
-**Owner question Q1.** Should a chat whose newest message came from the history
-import read FYI until a live message arrives? Recommendation: yes. The
-production flip of `WHATSAPP_HISTORY_SYNC` waits on Q1 and WA-C0.
+**Owner question Q1, ANSWERED 2026-10-07.** The question was whether a chat
+whose newest message came from the history import reads FYI until a live
+message arrives. The owner chose "triage normally". An imported chat goes
+through Reply Zero like a live one. So `classify_chat_status` does not change,
+and that is the design, not a gap. The production flip of
+`WHATSAPP_HISTORY_SYNC` now waits on WA-C0 only.
 
 **Build notes (2026-10-07).** WA-C3 took migration 232.
 
