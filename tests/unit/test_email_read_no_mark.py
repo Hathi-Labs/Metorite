@@ -27,19 +27,19 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from acb_auth.roles import UserContext, UserRole  # noqa: E402
-from fastapi import HTTPException  # noqa: E402
-from gateway.routes.email.transport import messages as messages_mod  # noqa: E402
-from sqlalchemy import text  # noqa: E402
+from acb_auth.roles import UserContext, UserRole
+from fastapi import HTTPException
+from gateway.routes.email.transport import messages as messages_mod
+from sqlalchemy import text
 
-from tests.unit.test_email_keep_separate import (  # noqa: E402
+from tests.unit.test_email_keep_separate import (
     _account,
     _as_member,
     _assert_non_priv,
     _mail,
     _purge,
 )
-from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: E402,F401
+from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
     app_engine,
     promoted,

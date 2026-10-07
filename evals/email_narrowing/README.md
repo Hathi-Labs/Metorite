@@ -9,10 +9,10 @@ slice N2 of §9.
 **Status.** Built on 2026-10-07. The scripted run passes. Nobody has run
 `--compare`, because no box has a bound `tier-decide` yet (HANDOFF H-267).
 
-⚠️ **Do not read the gated ratio alone.** The gated ratio is 0.33, under the
+⚠️ **Do not read the gated ratio alone.** The gated ratio is 0.335, under the
 bar of 0.40. It rests on an assumption: today's path reads 5 emails in one
 request. With every read in ONE request, the best case for today, the ratio
-is 0.69, OVER the bar. If `tier-powerful` costs 1.4 times the eval card or
+is 0.696, OVER the bar. If `tier-powerful` costs 1.39 times the eval card or
 more, the saving is gone. The run prints both weak cases under its first line.
 
 ## What it runs
@@ -109,15 +109,15 @@ The scripted run, with 5 reads in one request on the before path:
 
 | Q | Before: listed and read | After: found and read | Recall | Ratio | Ratio, best case for today |
 |---|---|---|---|---|---|
-| Q1 | 24 and 24 | 24 and 13 | 1.0 | 0.29 | 0.69 |
-| Q2 | 29 and 29 | 30 and 11 | 1.0 | 0.25 | 0.67 |
-| Q3 | 14 and 14 | 14 and 8 | 1.0 | 0.41 | 0.70 |
-| Q4 | 8 and 8 | 8 and 6 | 1.0 | 0.52 | 0.71 |
+| Q1 | 24 and 24 | 24 and 13 | 1.0 | 0.29 | 0.70 |
+| Q2 | 29 and 29 | 30 and 11 | 1.0 | 0.25 | 0.68 |
+| Q3 | 14 and 14 | 14 and 8 | 1.0 | 0.42 | 0.70 |
+| Q4 | 8 and 8 | 8 and 6 | 1.0 | 0.53 | 0.71 |
 | Q5 | 11 and 11 | 11 and 3 | 0.6, expected | 0.41 | 0.70 |
 
-On Q1 to Q4 the ratio is **0.33**, under the bar of 0.40. In the best case
-for today it is 0.69, over the bar. The break-even factor of `tier-powerful`
-is 1.4. With a card where `tier-powerful` costs more than 1.4 times the eval
+On Q1 to Q4 the ratio is **0.335**, under the bar of 0.40. In the best case
+for today it is 0.696, over the bar. The break-even factor of `tier-powerful`
+is 1.39. With a card where `tier-powerful` costs more than 1.39 times the eval
 card, the after path is over the bar.
 
 ### What the numbers say, and what they do not

@@ -636,14 +636,14 @@ OWNER-GATE. It moves credit spend for a live org (CLAUDE.md §3a rule 3).
 - **The eval** is `evals/email_narrowing/`. It asks a fifth question, Q5,
   that measures the gap of Q3. Its README holds the tables.
 - **The result of the scripted run, 2026-10-07.** Recall is 1.0 on Q1 to Q4.
-  The cost ratio on Q1 to Q4 is 0.33, under the bar of 0.40. Q5 has a recall
+  The cost ratio on Q1 to Q4 is 0.335, under the bar of 0.40. Q5 has a recall
   of 0.6, as expected: two answers share no word with any search.
 - ⚠️ **The ratio rests on assumptions, and the PR names them.** Each request
   carries about 14,000 tokens of instructions and tool schemas. So the number
   of requests carries most of the saving, and PICK alone saves about 2
   points. The before path reads 5 mails in one request. With every read in
-  ONE request, the ratio is 0.69, over the bar. The break-even factor of
-  `tier-powerful` is 1.4: if it costs 1.4 times `tier-balanced` or more, the
+  ONE request, the ratio is 0.696, over the bar. The break-even factor of
+  `tier-powerful` is 1.39: if it costs 1.39 times `tier-balanced` or more, the
   hint to `tier-powerful` takes the whole saving.
 - **Not done: done-when item 6.** No box has a bound `tier-decide`, so no
   run measured the real verdicts or the real credits. `--compare` is built,
