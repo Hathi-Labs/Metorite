@@ -206,32 +206,42 @@ _MARK = (r"(?:US\$|(?<![A-Za-z])Rs\.|(?<![A-Za-z])(?:INR|USD|EUR)(?![A-Za-z])"
 _CODE = {"US$": "USD", "Rs.": "INR", "INR": "INR", "USD": "USD", "EUR": "EUR",
          "₹": "INR", "€": "EUR", "$": "USD"}
 _NUM = r"\d(?:[\d.,]*\d)?"
-#: The end of a number. No letter or digit follows it, also after one
-#: separator. Without this tail the regex backs off to a shorter number, so
-#: ``$2.5M`` read as 2.00 (review round 1).
-_END = r"(?![.,]?\w)"
-#: A hyphen and the minus sign U+2212, and the no-break space U+00A0. Code
+#: A hyphen and the minus sign U+2212, and the no-break space U+00A0. The
+#: apostrophe and U+2019 group digits in Swiss text, as in ``5'000``. Code
 #: builds them with ``chr`` so that no source line holds a look-alike.
 _MINUS = "-" + chr(0x2212)
 _GAP = " " + chr(0xA0)
+_APOS = "'" + chr(0x2019)
 _MINUS_CLASS = re.escape(_MINUS)
 _SIGN = f"[{_MINUS_CLASS}]?"
-_FREE = rf"(?<![\w.,/{_MINUS_CLASS}])"
+#: The end of a number. No letter or digit follows it, also after one
+#: separator. Without this tail the regex backs off to a shorter number, so
+#: ``$2.5M`` read as 2.00 (review round 1) and ``₹5'000`` as 5.00 (round 2).
+_END = rf"(?![.,{_APOS}]?\w)"
+_FREE = rf"(?<![\w.,/{_APOS}{_MINUS_CLASS}])"
 _MARKED = re.compile(
     rf"(?P<m1>{_MARK})[{_GAP}]?(?P<s1>{_SIGN})(?P<n1>{_NUM}){_END}"
     rf"|{_FREE}(?P<s2>{_SIGN})(?P<n2>{_NUM})[{_GAP}]?(?P<m2>{_MARK})")
 _ANY_MARK = re.compile(_MARK)
-#: A scale word after a number, as a whole word. fin-1 never multiplies, so
-#: a scaled amount gives no amount. ``M/s`` (Messrs) is a name, not a scale.
-_SCALE = (r"(?i:k|m(?!/s\b)|mn|mm|b|bn|l|lacs?|lakhs?|cr|crores?|thousand|million"
-          r"|billion|mio|mrd)(?!\w)")
-_SCALED = re.compile(rf"{_MARK}[{_GAP}]?{_SIGN}{_NUM}\s*{_SCALE}"
-                     rf"|{_FREE}{_SIGN}{_NUM}\s*{_SCALE}\s*{_MARK}")
-#: White space between two digit runs. A space, a no-break space or a line
-#: break can group the digits of ONE number, as in ``₹5 000``. A trailing
-#: comma, as in ``1,23,`` and a line break, counts too.
-_SPLIT_AFTER = re.compile(r",?\s+\d")
-_SPLIT_BEFORE = re.compile(r"\d[.,]?\s+$")
+#: A scale word after a number, as a whole word, with an optional plural
+#: ``s``. White space or a hyphen may sit between the two. fin-1 never
+#: multiplies, so a scaled amount gives no amount. ``M/s`` (Messrs) is a
+#: name, not a scale. Review round 2 added the plurals, the hyphen and the
+#: words from hundred to tsd.
+_SCALE = (r"(?i:(?:k|m(?!/s\b)|mn|mm|b|bn|l|lacs?|lakhs?|lkhs?|crs?|crores?|hundreds?"
+          r"|thousands?|millions?|billions?|trillions?|mils?|mlns?|blns?|mios?|mrds?"
+          r"|grand|tsd)s?)(?!\w)")
+_SCALED = re.compile(rf"{_MARK}[{_GAP}]?{_SIGN}{_NUM}[\s\-]*{_SCALE}"
+                     rf"|{_FREE}{_SIGN}{_NUM}[\s\-]*{_SCALE}\s*{_MARK}")
+#: White space that groups the digits of ONE number, as in ``₹5 000``. A
+#: space, a no-break space or a line break can do it. Review round 2
+#: narrowed the rule, so a digit after an amount does not refuse it. The
+#: split needs a plain run of 1 to 3 digits, or a trailing comma as in
+#: ``1,23,``. Then each next run holds exactly 3 digits.
+_PLAIN = re.compile(r"\d{1,3}")
+_SPLIT_AFTER = re.compile(r"(?P<comma>,?)(?:\s+\d{3})+(?!\d)")
+_SPLIT_BEFORE = re.compile(r"(?:(?<![\d.,])\d{1,3}(?:\s+\d{3})*|\d,)\s+$")
+_THREE_FIRST = re.compile(r"\d{3}(?!\d)")
 #: A number on the other side of the mark, as in ``2041 USD 5,000``.
 _DIGIT_AFTER = re.compile(rf"\s*{_SIGN}\d")
 _DIGIT_BEFORE = re.compile(r"\d[.,]?\s*$")
@@ -292,12 +302,13 @@ def _blocked(text: str, match: re.Match[str]) -> str | None:
     if match.group("m1"):
         if _DIGIT_BEFORE.search(text, 0, match.start("m1")):
             return "ambiguous"
-        if _SPLIT_AFTER.match(text, match.end("n1")):
+        split = _SPLIT_AFTER.match(text, match.end("n1"))
+        if split and (split["comma"] or _PLAIN.fullmatch(match["n1"])):
             return "spaced_number"
         return None
     if _DIGIT_AFTER.match(text, match.end("m2")):
         return "ambiguous"
-    if _SPLIT_BEFORE.search(text, 0, match.start()):
+    if _THREE_FIRST.match(match["n2"]) and _SPLIT_BEFORE.search(text, 0, match.start()):
         return "spaced_number"
     return None
 
@@ -357,17 +368,12 @@ _RELATIVE = re.compile(
     r"|(?:with)?in \d+ days|net \d+|(?:next |this |coming )?"
     r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b")
 _PARTIAL = re.compile(rf"{_MONTH}|(?<!\d)\d{{1,2}}[./-]\d{{1,2}}(?![\d])")
-#: The signals of a SECOND date beside a full date (review round 1). A day
-#: and a month with no year, and a numeric day-month pair, with or without
-#: a short year. A month name alone does not count, because Jan, May and
-#: June are also names and words.
-_DAY_AND_MONTH = re.compile(
-    rf"(?<!\d)\d{{1,2}}{_ORD}[ \-/.]*(?:of )?{_MONTH}|{_MONTH}\.?[ ]*\d{{1,2}}(?!\d)")
-_PAIR = re.compile(r"(?<![\w.,/-])(?P<a>\d{1,2})(?P<s>[./-])(?P<b>\d{1,2})(?:(?P=s)\d{2})?"
-                   r"(?![\w/-]|[.,]\d)")
 _WEEKDAY = r"(?:mon|tues|wednes|thurs|fri|satur|sun)day"
-#: A weekday right next to a full date is a part of that date.
+#: A weekday right next to a full date is a part of that date. Code looks
+#: for it only in a short window before the date, so the search stays
+#: linear (review round 2).
 _WEEKDAY_BEFORE = re.compile(rf"(?i)\b{_WEEKDAY},?\s*$")
+_WEEKDAY_WINDOW = 20
 _WEEKDAY_AFTER = re.compile(rf"(?i),?\s*\(?{_WEEKDAY}\b\)?")
 
 
@@ -385,34 +391,52 @@ def _make(y: str, m: int, d: str) -> date | None:
         return None
 
 
-def _named_dates(text: str, taken: list[tuple[int, int]]) -> list[date | None]:
+class _Taken:
+    """The spans of the full dates of one text. A mask of one byte for each
+    character keeps the overlap check linear. A scan of the span list was
+    quadratic in the number of dates (review round 2)."""
+
+    def __init__(self, size: int) -> None:
+        self.spans: list[tuple[int, int]] = []
+        self._mask = bytearray(size)
+
+    def free(self, m: re.Match[str]) -> bool:
+        return not any(self._mask[m.start():m.end()])
+
+    def add(self, m: re.Match[str]) -> None:
+        start, end = m.span()
+        self.spans.append((start, end))
+        self._mask[start:end] = b"\x01" * (end - start)
+
+
+def _named_dates(text: str, taken: _Taken) -> list[date | None]:
     found: list[date | None] = []
     for pattern in (_DAY_MONTH_YEAR, _MONTH_DAY_YEAR):
         for m in pattern.finditer(text):
-            if any(s < m.end() and m.start() < e for s, e in taken):
+            if not taken.free(m):
                 continue
-            taken.append(m.span())
+            taken.add(m)
             found.append(_make(m["y"], _MONTHS[m["m"][:3].lower()], m["d"]))
     for m in _ISO.finditer(text):
-        taken.append(m.span())
+        taken.add(m)
         found.append(_make(m["y"], int(m["m"]), m["d"]))
     return found
 
 
-def _numeric_dates(text: str, taken: list[tuple[int, int]]) -> tuple[list[date | None], bool]:
+def _numeric_dates(text: str, taken: _Taken) -> tuple[list[date | None], bool]:
     """Each numeric date. A date with both parts at 12 or less is ambiguous
     and gives no date, because day-month and month-day both read it."""
     found: list[date | None] = []
     ambiguous = False
     for m in _NUMERIC.finditer(text):
-        if any(s < m.end() and m.start() < e for s, e in taken):
+        if not taken.free(m):
             continue
         a, b = int(m["a"]), int(m["b"])
         if a <= 12 and b <= 12:
             ambiguous = True
             continue
         day, month = (a, b) if a > 12 else (b, a)
-        taken.append(m.span())
+        taken.add(m)
         found.append(_make(m["y"], month, str(day)))
     return found, ambiguous
 
@@ -421,7 +445,7 @@ def _rest(text: str, taken: list[tuple[int, int]]) -> str:
     """``text`` with each full date blanked, and a weekday next to it too."""
     chars = list(text)
     for start, end in taken:
-        lead = _WEEKDAY_BEFORE.search(text, 0, start)
+        lead = _WEEKDAY_BEFORE.search(text, max(0, start - _WEEKDAY_WINDOW), start)
         trail = _WEEKDAY_AFTER.match(text, end)
         start, end = (lead.start() if lead else start), (trail.end() if trail else end)
         chars[start:end] = " " * (end - start)
@@ -429,15 +453,14 @@ def _rest(text: str, taken: list[tuple[int, int]]) -> str:
 
 
 def _second_date(rest: str) -> bool:
-    """True when ``rest`` holds a relative date, a day and a month with no
-    year, or a numeric day-month pair."""
-    if _RELATIVE.search(rest) or _DAY_AND_MONTH.search(rest):
-        return True
-    for m in _PAIR.finditer(rest):
-        low, high = sorted((int(m["a"]), int(m["b"])))
-        if 1 <= low <= 12 and high <= 31:
-            return True
-    return False
+    """True when ``rest`` holds a relative date.
+
+    Review round 2 removed two signals: a day and a month with no year, and
+    a numeric day-month pair. They refused honest dates beside a ref, such
+    as "PO 4/12" or "1 May Road". The claim check of :func:`_values` stops
+    the case they were for: the model claims "Nov 15", and the quote gives
+    a different date."""
+    return bool(_RELATIVE.search(rest))
 
 
 def parse_due(text: str) -> DueParse:
@@ -448,16 +471,16 @@ def parse_due(text: str) -> DueParse:
     part is ever filled from today, so this uses no fuzzy parser.
 
     A full date beside a second date signal also gives no date (review
-    round 1). The signal is an ambiguous numeric date, a relative date or a
-    date with no year. In "Invoice Date: 01 Oct 2026. Net 30" the one full
-    date is the date of the invoice, not the due date."""
-    taken: list[tuple[int, int]] = []
+    round 1). The signal is an ambiguous numeric date or a relative date.
+    In "Invoice Date: 01 Oct 2026. Net 30" the one full date is the date of
+    the invoice, not the due date."""
+    taken = _Taken(len(text))
     found = _named_dates(text, taken)
     numeric, ambiguous = _numeric_dates(text, taken)
     found += numeric
     dates = {d for d in found if d is not None}
     if len(dates) == 1 and None not in found:
-        if ambiguous or _second_date(_rest(text, taken)):
+        if ambiguous or _second_date(_rest(text, taken.spans)):
             return DueParse(None, "two_dates")
         return DueParse(dates.pop())
     if found:
@@ -527,7 +550,9 @@ def _values(quote: str, item: dict[str, Any], fields: frozenset[str]) -> tuple[d
     claim = item.get("due_on")
     if "due_on" in fields and _claimed(claim):
         due = parse_due(quote).due
-        if due is not None and (not isinstance(claim, str) or parse_due(claim).due != due):
+        # A claim longer than a quote never reaches the parser (review round 2).
+        if due is not None and (not isinstance(claim, str) or len(claim) > CAPS["quote"]
+                                or parse_due(claim).due != due):
             due = None
         out["due_on"] = due
         partial = partial or due is None

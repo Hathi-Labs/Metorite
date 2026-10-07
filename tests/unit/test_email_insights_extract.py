@@ -14,8 +14,9 @@ R7 fences named here:
   that a model gives are never stored (D-EM-41).
 * ``insights-due``: a date needs a day, a month and a year. A numeric date
   with both parts at 12 or less, and a relative date, give no date. A full
-  date beside a second date signal gives no date. The date of the quote is
-  kept only when the claim of the model parses to the same date.
+  date beside an ambiguous or a relative date gives no date. The date of the
+  quote is kept only when the claim of the model parses to the same date. A
+  claim longer than a quote never reaches the parser.
 * ``insights-answer``: the answer must be an object with a ``facts`` list,
   and code keeps at most 10 facts. An unknown type, a type of another domain
   and a key outside the type are dropped. ``ref`` and ``counterpart`` must
@@ -33,6 +34,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import time
 from collections import Counter
 from datetime import date
 from decimal import Decimal
@@ -122,6 +124,65 @@ def test_a_claimed_date_that_does_not_parse_to_the_quote_date_stores_none(claim:
     assert fact.confidence == X.CONF_PART
 
 
+INVOICE_DATE_CASES = [
+    ("Invoice Date: 01 Oct 2026. Net 30", "Net 30"),
+    ("Invoice Date: 01 Oct 2026. Due: 05/11/2026", "05/11/2026"),
+    ("Invoice Date: 01 Oct 2026. Due: Nov 15", "Nov 15"),
+    ("Invoice Date: 01 Oct 2026 Payment Terms: within 30 days", "within 30 days"),
+    ("Invoice Date: 01 Oct 2026, due 15/11/26", "15/11/26"),
+    ("Invoice Date: 01 Oct 2026, due 15.11", "15.11"),
+]
+
+
+@pytest.mark.parametrize(("quote", "claim"), INVOICE_DATE_CASES,
+                         ids=[c[0] for c in INVOICE_DATE_CASES])
+def test_the_claim_check_stops_the_invoice_date(quote: str, claim: str) -> None:
+    """Review round 2: end to end through check_answer, with the claim that a
+    model would send. Each quote holds the invoice date and a due date that
+    code cannot read, so code stores no date."""
+    source = X.body_source("Bill", "a@b.example", "d", f"{quote}\nTotal ₹5,000")
+    (fact,) = X.check_answer({"facts": [_fact(
+        quote=quote, ref=None, counterpart=None, amount=None, due_on=claim)]},
+        source).facts
+    assert fact.due_on is None
+    assert fact.confidence == X.CONF_PART
+
+
+def test_a_claim_of_the_invoice_date_itself_is_a_known_limit() -> None:
+    """Review round 2 records this limit. When the model claims the invoice
+    date as the due date, and the quote holds a due date with no year, code
+    stores the invoice date. The quote shows both dates on the card."""
+    quote = "Invoice Date: 01 Oct 2026. Due: Nov 15"
+    source = X.body_source("Bill", "a@b.example", "d", quote)
+    (fact,) = X.check_answer({"facts": [_fact(
+        quote=quote, ref=None, counterpart=None, amount=None, due_on="01 Oct 2026")]},
+        source).facts
+    assert fact.due_on == date(2026, 10, 1)
+
+
+def test_a_long_claim_never_reaches_the_parser() -> None:
+    """Review round 2 (P3): a claim of 100k characters returns at once. Code
+    refuses a claim longer than a quote before it parses it."""
+    claim = ("1 Oct 2026 Friday " * 6000)[:100_000]
+    start = time.perf_counter()
+    (fact,) = _one(due_on=claim).facts
+    assert time.perf_counter() - start < 0.1
+    assert fact.due_on is None
+
+
+@pytest.mark.parametrize("text", [
+    ("1 Oct 2026 " * 9100)[:100_000],
+    "Friday" + " " * 100_000 + "15 October 2026",
+    ("x" * 50 + "15 October 2026 ") * 1515,
+], ids=["many_dates", "long_space", "spread_dates"])
+def test_parse_due_is_linear_on_a_long_text(text: str) -> None:
+    """Review round 2 (P3): the weekday search uses a short window, and the
+    overlap check uses a mask. Before round 2, the first case took 4 s."""
+    start = time.perf_counter()
+    X.parse_due(text)
+    assert time.perf_counter() - start < 0.5
+
+
 def test_the_date_of_the_invoice_is_not_the_due_date() -> None:
     """Review round 1 (P1-e): the one full date of this quote is the date of
     the invoice. The due date is "within 30 days", so code stores no date."""
@@ -174,14 +235,26 @@ DUE_CASES = [
     ("invoice of 1 March 2026, due 31 March 2026", None),
     ("13/13/2026", None),
     ("no date here", None),
-    # Review round 1 (P1-e): a full date beside a second date signal.
+    # Review round 1 (P1-e): a full date beside an ambiguous or a relative date.
     ("Invoice Date: 01 Oct 2026 Payment Terms: within 30 days", None),
     ("Invoice Date: 01 Oct 2026. Due: 05/11/2026", None),
-    ("Invoice Date: 01 Oct 2026. Due: Nov 15", None),
     ("Invoice Date: 01 Oct 2026. Net 30", None),
-    ("Invoice Date: 01 Oct 2026, due 15/11/26", None),
-    ("Invoice Date: 01 Oct 2026, due 15.11", None),
     ("Invoice Date: 01 Oct 2026, due next Friday", None),
+    # Review round 2: a date with no year is no signal here, so the parser
+    # gives the invoice date. The claim check of check_answer stops these
+    # (test_the_claim_check_stops_the_invoice_date).
+    ("Invoice Date: 01 Oct 2026. Due: Nov 15", date(2026, 10, 1)),
+    ("Invoice Date: 01 Oct 2026, due 15/11/26", date(2026, 10, 1)),
+    ("Invoice Date: 01 Oct 2026, due 15.11", date(2026, 10, 1)),
+    # Review round 2: a ref, a page, a section or a street beside one due date.
+    ("due on 15 Oct 2026, ref 12/7", date(2026, 10, 15)),
+    ("Due 15 Oct 2026 PO 4/12", date(2026, 10, 15)),
+    ("Due Date: 15-10-2026 Invoice No: 7/12", date(2026, 10, 15)),
+    ("Due 15 Oct 2026, page 1/2", date(2026, 10, 15)),
+    ("Due 15 Oct 2026 Sec 3.4", date(2026, 10, 15)),
+    ("Due date 15.10.2026, Invoice 12.5", date(2026, 10, 15)),
+    ("due 15 Oct 2026 for invoice 1-5", date(2026, 10, 15)),
+    ("Due 15 Oct 2026, 1 May Road", date(2026, 10, 15)),
     # A weekday next to the date, an amount and a name are no second date.
     ("13 March 2026 (Friday)", date(2026, 3, 13)),
     ("Pay Rs. 12.50 by 15 October 2026", date(2026, 10, 15)),
