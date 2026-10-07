@@ -3634,7 +3634,7 @@ A file of 1,000 columns and 2,000 rows still loads in the image.
   columns. Pass 2 streams the rows through the nine rules.
 - Each table goes to a clean CSV copy, as a CSV file does. So the type rules
   of WS-43y1a run unchanged, and a workbook gets the same types.
-- `tests/unit/test_data_engine.py` (WS43-F26) now has 148 host tests and 3
+- `tests/unit/test_data_engine.py` (WS43-F26) now has 149 host tests and 3
   Docker tests. Two of the Docker tests read a workbook.
 - The export guard and the SQL lock did not change.
 
@@ -3765,6 +3765,7 @@ file. `git status` was clean after each one.
 | L2 | A merged header cell fills no column | The layout test |
 | S1 | The shared strings as a plain list | `test_a_workbook_load_streams` |
 | C1 | The NULL counts of an empty column stay NULL | The formula test |
+| Z64 | The zip64 end record gives a count of 0 | `test_the_entry_count_reads_a_zip64_end_record` |
 
 A first run of Z1 found a fault in the fence. The bomb took its size from
 the cap of the engine, so a larger cap built a larger bomb. Commit
