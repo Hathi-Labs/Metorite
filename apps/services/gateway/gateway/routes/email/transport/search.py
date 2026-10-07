@@ -335,6 +335,10 @@ async def search_messages(
         emails_out = []
         for row in rows:
             m = _row_to_message(row)
+            if light:
+                # The light read selects `NULL AS body_html`, so the row
+                # cannot say where its HTML is (EM-S1 fix round 1).
+                m.html_remote = False
             d = m.model_dump()
             d["rank"] = float(getattr(row, "rank", 0.0) or 0.0)
             d["sim"] = float(getattr(row, "sim", 0.0) or 0.0)

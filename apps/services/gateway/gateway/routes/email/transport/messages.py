@@ -28,6 +28,7 @@ from gateway.routes.email.core import (
     _decrypt_credentials,
     _fetch_attachments,
     _fetch_attachments_batch,
+    _html_remote,
     _tenant_session,
     _instantiate_provider,
     _log,
@@ -743,6 +744,10 @@ async def get_message(
                     msg.body_text = body_text
                     msg.body_html = body_html
                     msg.has_attachments = full.has_attachments
+                    # The row now answers with HTML, so it is not remote
+                    # (EM-S1 fix round 1). `_row_to_message` read the row
+                    # before the fetch.
+                    msg.html_remote = _html_remote(msg.body_html, row.received_at)
             except HTTPException:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -1228,7 +1233,9 @@ async def _remember_html(org_id: str | None, row_id: Any, html: str | None) -> N
     if not org_id:
         return
     try:
-        payload = json.dumps({"body_html": html})
+        # `ensure_ascii=False` keeps each non-ASCII letter as itself. The
+        # default escape grows Cyrillic and CJK HTML 2 to 3 times.
+        payload = json.dumps({"body_html": html}, ensure_ascii=False)
         with organization_scope(org_id):
             await get_tenant_redis().setex(
                 _html_key(row_id), HTML_CACHE_TTL_SECS, payload,
@@ -1320,7 +1327,9 @@ async def get_message_html(
             raise HTTPException(
                 status_code=401, detail="Email account authentication failed",
             )
-        full = await provider.get_message(row.provider_message_id)
+        # The body only. `get_message` of Outlook expands each attachment,
+        # and Graph then sends the bytes of each file (EM-S1 fix round 1).
+        full = await provider.get_message_body(row.provider_message_id)
         raw_html = getattr(full, "body_html", None) or ""
         html = _truncate_body(raw_html, MAX_BODY_HTML_BYTES) if raw_html.strip() else None
     except HTTPException:

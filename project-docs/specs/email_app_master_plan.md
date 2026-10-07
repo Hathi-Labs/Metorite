@@ -13611,8 +13611,13 @@ owner's, except where a row says "agent decision".
      answers 404, before any cache read.
    - It reads tenant Redis with `key("email-html", <row id>)` inside `organization_scope`, as
      `transport/attachments.py:244-256` does.
-   - On a miss it calls `provider.get_message` through `provider_session`, and cuts the HTML at
-     `MAX_BODY_HTML_BYTES`.
+   - On a miss it opens no session across the provider call. Block A reads the row and the
+     credentials with the owner predicate, then closes. The provider authenticates and fetches
+     with no session open. When `credentials_dirty()` is true, Block B runs
+     `_persist_rotated_creds` in a short session. Block B runs in a `finally`, so a failed
+     fetch keeps a rotated token too.
+   - The fetch is `provider.get_message_body`, which reads the body only. Outlook selects `id`
+     and `body` and expands nothing. The route cuts the HTML at `MAX_BODY_HTML_BYTES`.
    - It writes the cache for 1 hour. It writes no HTML to `email_messages`.
    - Its answer is `{message_id, body_html, source}`. `source` is `stored`, `cache`, `provider` or
      `none`. A plain-text message gives `none`, and the cache keeps that answer too.
@@ -13626,9 +13631,10 @@ owner's, except where a row says "agent decision".
 5. **The prefetch.** The list stays still for 500 milliseconds. Then the client calls the route with
    `prefetch=1` for each visible row with `html_remote`. It asks for 6 rows at most, and 2 at
    one time. It stops at the first 503, and it skips a row that it already holds.
-6. **The known limit.** The provider call holds one pooled connection, as the owned file fetch
-   does (`transport/attachments.py:205-208`). EM-T4a-4 (H-261) owns that split. The prefetch
-   bounds of item 5 keep the cost at 2 connections for each member at most.
+6. **No pooled connection across the provider call.** The route holds no connection while the
+   provider answers (item 1). EM-T4a-4 (H-261) keeps only the owned file fetch
+   (`transport/attachments.py:205-208`), which still holds one. The prefetch bounds of item 5
+   still bound the calls of each member to the provider.
 
 #### 14.4.3 No writer stores old HTML
 
@@ -13916,6 +13922,7 @@ section touches WhatsApp.
 | 14 | **The ceiling of the floor is 180 days for each mailbox** (`import_window.py:98-116`) | `window_policy.window_max_days(row)` sets it: the chosen window, at least 180 and at most 730 days. The floor still rolls. Each mailbox with `window_chosen_at` NULL keeps 180 days (§14.4.5 item 1) |
 | 15 | **The first import starts whenever `initial_sync_done` is false** (`scheduler.py:1455`) | The Python test also needs a phase other than `awaiting_range` (§14.4.5 item 2) |
 | 16 | **A Resync writes no progress** (`scheduler.py:891-898`, `:1467`) | EM-S9b writes `import_phase = 'resyncing'`, `import_count` and `import_estimate`, so the banner shows |
+| 17 | **§14.4.2 item 1 as first written:** the HTML route calls `provider.get_message` through `provider_session` | EM-S1 fix round 1. The route holds no session across the provider call (item 1, item 6). It calls the new `get_message_body` of the provider base, whose default reads `get_message`. Outlook overrides it with `$select=id,body` and no `$expand`, because `get_message` (`outlook.py:1013-1020`) sends `$expand=attachments` and Graph then sends the bytes of each file. The open keeps `get_message`, because it needs `has_attachments` |
 
 **What does not change.**
 
@@ -14029,6 +14036,10 @@ skipped is the proof. A green run with skips proves nothing (R8).
 - The cache key holds the row id and passes through `get_tenant_redis` (R5 (c)).
 - A structural fence: no module outside `html_tier.py` holds the number 90 next to
   `received_at`, and no module outside it reads the two flags.
+- No session is open across the provider call. The fake provider fails if a session is open
+  while it authenticates or fetches.
+- A fetch with no token rotation opens exactly one session
+  (`test_a_fetch_with_no_rotation_opens_one_session`).
 
 **Mutations.** S1-M1 reads the cache before the owner check, and the 404 fence fails. S1-M2 keys
 the cache by the path text, and the spelling fence fails. S1-M3 makes `hot_only()` read one flag,
@@ -14057,6 +14068,7 @@ uv run ruff check apps/services/email_ingestion/email_ingestion/html_tier.py app
 4. With the flag off, `htmlRemote` is false, and nothing changes.
 5. **The 429.** EM-S1 turns a provider 429 into a 503 with a log line. The prefetch stops on it,
    as it stops on each 503.
+6. **The 401.** A dead token gives 401, so the prefetch also stops on the first 401.
 
 **Acceptance.**
 

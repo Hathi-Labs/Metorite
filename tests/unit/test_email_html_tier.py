@@ -24,6 +24,12 @@ R7 fences named here, each a test class:
   line that holds the mailbox id and no mail text.
 * ``email-html-remote`` (:class:`TestHtmlRemote`). ``html_remote`` is true
   only with the flag on, ``body_html`` NULL and a cold message.
+  Fix round 1: a hydrated cold row on the open answers false
+  (:class:`TestTheOpenAnswersTheTruth`), and so does each row of the light
+  search (:class:`TestTheLightSearch`). The route reads the body alone, and
+  the Outlook read sends no ``$expand`` (:class:`TestTheBodyOnlyFetch`). A
+  fetch with no token rotation opens one session, and the cache keeps each
+  letter as itself.
 * ``email-html-one-owner`` (:class:`TestTheOneOwner`). No module outside
   ``html_tier.py`` holds the number 90 next to ``received_at``, and no module
   outside it reads the two flags. Synthetic sources prove that each scan can
@@ -266,6 +272,9 @@ class _Harness:
                 return harness.auth_ok
 
             async def get_message(self, _pmid: str) -> Any:
+                raise AssertionError("the HTML route must use get_message_body")
+
+            async def get_message_body(self, _pmid: str) -> Any:
                 assert not harness.session_open, "a session is open across the fetch"
                 harness.provider_calls += 1
                 if harness.on_provider is not None:
@@ -368,6 +377,23 @@ class TestTheRoute:
         assert (got.source, got.body_html) == ("provider", "<p>org B</p>")
         assert h.provider_calls == 2
         assert sorted(h.redis.store) == sorted([_key(ORG_A), _key(ORG_B)])
+
+    async def test_a_fetch_with_no_rotation_opens_one_session(self, monkeypatch) -> None:
+        """Item 5 of fix round 1: Block B opens only for a rotated token."""
+        h = _Harness(monkeypatch)
+        assert (await _html()).source == "provider"
+        assert h.sessions_opened == 1
+
+    async def test_the_cache_keeps_each_letter_as_itself(self, monkeypatch) -> None:
+        """Item 3 of fix round 1: no ASCII escape, so Cyrillic and CJK HTML
+        takes no more room in the cache than in the answer."""
+        html = "<p>" + "Привет, мир. 你好世界。" * 200 + "</p>"
+        h = _Harness(monkeypatch, html=html)
+        await _html()
+        stored = h.redis.store[_key()]
+        assert "Привет" in stored and "你好" in stored
+        assert len(stored.encode("utf-8")) <= len(html.encode("utf-8")) + 32
+        assert (await _html()).body_html == html
 
     async def test_a_plain_text_message_is_none_and_is_cached(self, monkeypatch) -> None:
         h = _Harness(monkeypatch, html=None)
@@ -641,6 +667,153 @@ class TestHtmlRemote:
         assert core.EmailMessageModel.model_fields["html_remote"].default is False
 
 
+# ── 4b. Fix round 1: the open, the light search, the body-only fetch ────────
+
+
+class _OpenDb:
+    """The session of the open route: one row, and each write recorded."""
+
+    def __init__(self, row: Any) -> None:
+        self.row = row
+        self.sql: list[str] = []
+
+    async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> Any:
+        sql = str(statement)
+        self.sql.append(sql)
+        return SimpleNamespace(fetchone=lambda: self.row, fetchall=lambda: [])
+
+
+def _open_harness(monkeypatch: pytest.MonkeyPatch, *, fetched_html: str | None) -> _OpenDb:
+    """Patch the open route for a cold row stored as headers only."""
+    row = _row(body_html=None, received_at=TestHtmlRemote.COLD)
+    row.body_text = ""
+    row.stored_bytes = 0
+    db = _OpenDb(row)
+
+    @asynccontextmanager
+    async def _tenant_session():
+        yield db
+
+    class _Provider:
+        async def authenticate(self) -> bool:
+            return True
+
+        async def get_message(self, _pmid: str) -> Any:
+            return SimpleNamespace(body_text="the text", body_html=fetched_html,
+                                   has_attachments=False, attachments=[])
+
+        def credentials_dirty(self) -> bool:
+            return False
+
+    async def _provider_for_message(*_a: Any, **_k: Any) -> Any:
+        return _Provider(), "prov-msg", "acct-1", object()
+
+    monkeypatch.setattr(m, "_tenant_session", _tenant_session)
+    monkeypatch.setattr(m, "_provider_for_message", _provider_for_message)
+    return db
+
+
+class TestTheOpenAnswersTheTruth:
+    """Item 1 of fix round 1. The open route read the row before it fetched
+    the body, so a hydrated cold row answered with HTML and ``html_remote``."""
+
+    async def test_a_hydrated_cold_row_is_not_remote(self, monkeypatch) -> None:
+        _open_harness(monkeypatch, fetched_html="<p>fetched</p>")
+        msg = await m.get_message(MSG_ID, user=_user())
+        assert msg.body_html == "<p>fetched</p>"
+        assert msg.html_remote is False
+
+    async def test_a_cold_row_with_no_html_stays_remote(self, monkeypatch) -> None:
+        _open_harness(monkeypatch, fetched_html=None)
+        msg = await m.get_message(MSG_ID, user=_user())
+        assert msg.body_html is None
+        assert msg.html_remote is True
+
+
+async def _search(monkeypatch: pytest.MonkeyPatch, *, light: bool) -> dict[str, Any]:
+    """One search row: a cold message, through the real route."""
+    from gateway.routes.email.transport import search as s
+
+    from tests.unit._email_fakes import bind_db
+
+    row = _row(body_html=None, received_at=TestHtmlRemote.COLD)
+    row.rank, row.sim, row.highlight = 0.0, 0.0, ""
+
+    async def _execute(_stmt: Any, _params: dict[str, Any] | None = None) -> Any:
+        return SimpleNamespace(scalar=lambda: 1, fetchall=lambda: [row])
+
+    async def _also_in(*_a: Any, **_k: Any) -> dict[str, Any]:
+        return {}
+
+    monkeypatch.setattr(s, "_tenant_session", bind_db(SimpleNamespace(execute=_execute)))
+    monkeypatch.setattr(s, "_also_in_by_message", _also_in)
+    resp = await s.search_messages(
+        q=None, account_id="acc-1", folder=None, label=None, labels=None,
+        uncategorized=False, from_addr=None, to_addr=None, received_after=None,
+        received_before=None, is_read=None, is_starred=None, has_attachments=None,
+        sender_category=None, importance=None, hybrid=False, light=light,
+        page=1, page_size=50, user=_user(),
+    )
+    rows = resp["emails"] if isinstance(resp, dict) else resp.emails
+    assert len(rows) == 1
+    return rows[0]
+
+
+class TestTheLightSearch:
+    """Item 4 of fix round 1. The light search selects ``NULL AS body_html``,
+    so its rows cannot say where the HTML is."""
+
+    async def test_a_light_row_is_never_remote(self, monkeypatch) -> None:
+        assert (await _search(monkeypatch, light=True))["html_remote"] is False
+
+    async def test_a_full_row_keeps_the_rule(self, monkeypatch) -> None:
+        assert (await _search(monkeypatch, light=False))["html_remote"] is True
+
+
+class TestTheBodyOnlyFetch:
+    """Item 2 of fix round 1. ``get_message`` of Outlook expands each file,
+    so the HTML route reads the body alone."""
+
+    async def test_outlook_reads_the_body_with_no_files(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from email_ingestion.providers.outlook import OutlookProvider
+
+        request = httpx.Request("GET", "https://graph.microsoft.com/v1.0/me/messages/m-1")
+        client = AsyncMock()
+        client.get.return_value = httpx.Response(200, request=request, json={
+            "id": "m-1", "body": {"contentType": "html", "content": "<p>old</p>"},
+        })
+        provider = OutlookProvider({"access_token": "t", "refresh_token": "r"})
+        provider._http = client
+        got = await provider.get_message_body("m-1")
+        assert got.body_html == "<p>old</p>"
+        client.get.assert_awaited_once()
+        path = client.get.await_args.args[0]
+        params = client.get.await_args.kwargs.get("params") or {}
+        assert path.endswith("/me/messages/m-1")
+        assert "$expand" not in params, "the body read expanded the attachments"
+        assert params.get("$select") == "id,body"
+
+    async def test_the_base_default_reads_get_message(self) -> None:
+        from email_ingestion.providers.base import BaseEmailProvider
+
+        sentinel = SimpleNamespace(body_html="<p>x</p>")
+
+        class _Fake:
+            get_message_body = BaseEmailProvider.get_message_body
+
+            async def get_message(self, _pmid: str) -> Any:
+                return sentinel
+
+        assert await _Fake().get_message_body("p") is sentinel
+
+    async def test_the_route_uses_the_body_only_fetch(self, monkeypatch) -> None:
+        h = _Harness(monkeypatch)
+        assert (await _html()).source == "provider"
+        assert h.provider_calls == 1
+
+
 # ── 5. One owner of the window and the flags ────────────────────────────────
 
 _SCAN_ROOTS = (REPO / "apps", REPO / "packages")
@@ -807,7 +980,7 @@ def fake_provider(monkeypatch) -> dict[str, Any]:
         async def authenticate(self) -> bool:
             return True
 
-        async def get_message(self, _pmid: str) -> Any:
+        async def get_message_body(self, _pmid: str) -> Any:
             state["calls"] += 1
             return SimpleNamespace(body_html="<p>the old mail of member A</p>")
 
