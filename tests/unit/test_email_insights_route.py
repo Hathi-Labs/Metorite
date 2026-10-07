@@ -313,7 +313,10 @@ class TestTheTool:
 
     def test_the_two_tool_lists_agree_with_44_names(self):
         config = json.loads((_AGENT_DIR / "config.json").read_text(encoding="utf-8"))
-        scope = config["own_tool_scope"]
+        # WS-48 N2: ``narrow_and_read`` is in the scope, and only a build
+        # with ``NARROWING_AGENTS`` on holds it (test_own_tool_scope_parity.py).
+        scope = [n for n in config["own_tool_scope"] if n != "narrow_and_read"]
+        assert "narrow_and_read" in config["own_tool_scope"]
         built = [fn.__name__ for fn in agents._TOOLS]
         assert sorted(scope) == sorted(built)
         assert len(scope) == len(set(scope)) == 44
