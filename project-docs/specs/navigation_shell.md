@@ -749,6 +749,10 @@ AGENT-SAFE. To turn any flag on in production is OWNER-GATE.
 - `lib/shell/CommandBar.tsx` has Do, Go to, "In this page" (§6.7 rule 3) and
   Ask. The Ask row opens `/chat?q=`, and Chat types the words in and does not
   send them. NS-4b makes Ask answer in place.
+- `lib/shell/pageFilter.ts` reaches a page's filter for every page: `/`
+  focuses it, and "Show all in …" types into it as a keystroke does. A closed
+  filter (`data-page-filter-opener`) opens first. A page that needs more,
+  such as Email's pills, takes the words itself.
 - `lib/shell/registry.ts` holds the jobs and the ranking. It reads a sentence:
   "new email to priya" finds Write an email. `lib/shell/doJob.tsx` is the job
   door: a link `?do=<id>&fill.<field>=…` opens the app's form once.
@@ -763,9 +767,15 @@ AGENT-SAFE. To turn any flag on in production is OWNER-GATE.
 keeps its toolbar row below the bar, on purpose: it holds the list filter,
 which §6.7 places above the list.
 
-⚠️ **Do not turn the flag on before NS-4a.** With the flag on, `⌘K` no longer
-opens the Projects palette, and the Projects record search comes back only in
-the bar's Find group.
+⚠️ **Do not turn the flag on before NS-4a.** With the flag on, three old
+searches go, and their records come back only in the bar's Find group:
+
+- the Projects palette and its Search button
+- the My Tasks palette and its Search button, on desktop and on the phone
+- the Email palette and its `⌘K` button
+
+Until NS-4a ships, the bar cannot find a task, an email or a person by its
+words.
 
 Flag `NEXT_PUBLIC_SHELL_BAR`. Files: `src/components/AppShell.tsx`,
 `src/components/AppTopBar.tsx`, a new `src/lib/shell/`, and the pages of

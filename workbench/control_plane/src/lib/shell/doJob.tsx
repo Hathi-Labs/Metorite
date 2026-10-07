@@ -24,6 +24,7 @@
  */
 import { Suspense, useEffect, useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { shellBarOn } from "./registry";
 
 /** The `fill.<name>` parameters of a job link, as a plain record. */
 export function jobFields(params: URLSearchParams): Record<string, string> {
@@ -52,6 +53,8 @@ export interface ShellJobProps {
 }
 
 export function ShellJob(props: ShellJobProps) {
+  // Flag off: no job links, so a crafted `?do=` link opens nothing.
+  if (!shellBarOn()) return null;
   return (
     <Suspense fallback={null}>
       <Listen {...props} />
@@ -71,7 +74,15 @@ function Listen({ id, onOpen: open, ready = true }: ShellJobProps): null {
   // replace below lands a render later, so without this the form opened twice.
   const doneFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!asked || !ready || !params) return;
+    // ⚠️ Forget the last link once it has left the address. Next keeps the
+    // page mounted when only the query changes, so the SAME link a second
+    // time ("New task", close, "New task") has the same string, and it was
+    // skipped (review, 2026-10-08).
+    if (!asked) {
+      doneFor.current = null;
+      return;
+    }
+    if (!ready || !params) return;
     const link = params.toString();
     if (doneFor.current === link) return;
     doneFor.current = link;

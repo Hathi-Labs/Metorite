@@ -90,6 +90,8 @@ export function SearchBar() {
     const onFill = (e: Event) => {
       const words = (e as CustomEvent<{ query?: string }>).detail?.query?.trim();
       if (!words) return;
+      // Handled here, so the shell's generic fill leaves the box alone.
+      e.preventDefault();
       const { filters, text } = parseQuery(words, searchFilters);
       setSearchQuery(text);
       apply(filters);
@@ -210,8 +212,8 @@ export function SearchBar() {
             // §6.7 rule 2: with the shell bar on, this box is the page's
             // FILTER. "Search" is the command bar's word, and `/` lands here.
             placeholder={searchFilters.length ? "" : `${shellBarOn() ? "Filter" : "Search"} ${scopeName}`}
-            data-page-filter={scopeName}
-            aria-label={`${shellBarOn() ? "Filter" : "Search"} ${scopeName}`}
+            data-page-filter={shellBarOn() ? scopeName : undefined}
+            aria-label={shellBarOn() ? `Filter ${scopeName}` : undefined}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={onKeyDown}
             onFocus={() => setFocused(true)}

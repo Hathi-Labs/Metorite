@@ -30,7 +30,7 @@ import {
 } from "../lib/priority";
 import { CELL_ICON } from "../lib/priorityIcons";
 import { contextAccent } from "../lib/contextColors";
-import { filterWord } from "@/lib/shell/registry";
+import { filterWord, shellBarOn } from "@/lib/shell/registry";
 
 // The unified filter + sort + group bar (Jira/Linear-style). One row:
 //   [Search icon]  [Filter (N)] [chips…]        [Group by]  [Sort] [⇅]
@@ -192,7 +192,7 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
             onChange={(e) => setFilters({ query: e.target.value })}
             aria-label={`${filterWord()} tasks`}
             placeholder={`${filterWord()} tasks…`}
-            data-page-filter="tasks"
+            data-page-filter={shellBarOn() ? "tasks" : undefined}
             onKeyDown={(e) => {
               if (e.key === "Escape") setOpened(false);
             }}
@@ -204,10 +204,13 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
           variant="secondary"
           size="icon-sm"
           icon="Search"
-          aria-label="Search tasks"
+          aria-label={`${filterWord()} tasks`}
           aria-expanded={false}
-          title="Search titles and notes"
+          title={`${filterWord()} titles and notes`}
           onClick={() => setOpened(true)}
+          // §6.1: `/` opens this, then lands in the box it opens.
+          data-page-filter={shellBarOn() ? "tasks" : undefined}
+          data-page-filter-opener={shellBarOn() ? "" : undefined}
         />
       )}
 

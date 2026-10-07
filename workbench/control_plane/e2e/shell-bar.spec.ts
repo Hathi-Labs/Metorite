@@ -41,7 +41,7 @@ const MEMBER = {
   features: ["tasks", "email", "projects", "people", "chat"],
   permissions: [],
   roles: ["employee"],
-  organization: { slug: "acme", display_name: "Acme" },
+  organization: { id: "org1", slug: "acme", display_name: "Acme" },
 };
 
 async function stub(page: Page) {
@@ -162,12 +162,57 @@ test.describe("desktop", () => {
 
   test("“Ask the assistant” opens Chat with the words typed, not sent", async ({ page }) => {
     await shellOn(page);
+    // One conversation, so Chat opens it rather than its agent picker.
+    await page.addInitScript(() => {
+      const now = new Date().toISOString();
+      localStorage.setItem(
+        "cc-chat::member@example.com|org1::sessions",
+        JSON.stringify([{ id: "s1", name: "Chat", agentName: "assistant", createdAt: now, updatedAt: now, messageCount: 0 }]),
+      );
+    });
     await stub(page);
+    let sent = 0;
+    await page.route("**/api/agent/chat**", (r) => {
+      sent += 1;
+      return r.fulfill({ status: 500, body: "" });
+    });
     await page.goto("/settings/appearance");
     await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
     await field(page).fill("who is free on friday");
     await commandBar(page).getByRole("option", { name: /Ask the assistant/ }).click();
     await page.waitForURL((u) => u.pathname === "/chat");
+    // The words wait in the message box. A build whose question vanished on
+    // arrival fails here (review, 2026-10-08).
+    await expect(page.locator("textarea").filter({ hasText: "" }).first()).toHaveValue("who is free on friday");
+    await expect.poll(() => new URL(page.url()).search).toBe("");
+    expect(sent).toBe(0);
+  });
+
+  test("a job opens again: New task, close, New task", async ({ page }) => {
+    await shellOn(page);
+    await stub(page);
+    await page.goto("/tasks");
+    const capture = page.getByRole("textbox", { name: "Capture to inbox" });
+    for (let round = 0; round < 2; round++) {
+      await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
+      await field(page).fill("new task");
+      await page.keyboard.press("Enter");
+      await expect(capture).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(capture).toHaveCount(0);
+    }
+  });
+
+  test("“Show all in the inbox” fills My Tasks' filter too, not only Email's", async ({ page }) => {
+    await shellOn(page);
+    await stub(page);
+    await page.goto("/tasks");
+    const filter = page.locator('[data-page-filter="the inbox"]');
+    await expect(filter).toBeVisible();
+    await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
+    await field(page).fill("vendor review");
+    await commandBar(page).getByRole("option", { name: /Show all in the inbox/ }).click();
+    await expect(filter).toHaveValue("vendor review");
   });
 });
 

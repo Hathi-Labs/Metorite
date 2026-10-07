@@ -43,6 +43,7 @@ import Icon from "@/components/Icon";
 import { useAccess } from "@/components/AccessProvider";
 import { visibleSections } from "@/lib/nav";
 import { CommandBar } from "./CommandBar";
+import { focusPageFilter, pageFilterTarget } from "./pageFilter";
 import { OPEN_COMMAND_BAR, contextPane, heldPanes } from "./registry";
 
 export { FILL_PAGE_FILTER, OPEN_COMMAND_BAR } from "./registry";
@@ -65,12 +66,6 @@ function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el) return false;
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
-}
-
-/** The page's own list filter, when one is on screen. */
-export function pageFilter(): HTMLElement | null {
-  const el = document.querySelector<HTMLElement>("[data-page-filter]");
-  return el && el.offsetParent !== null ? el : null;
 }
 
 export function ShellFrame({ children, bar = true }: { children: ReactNode; bar?: boolean }) {
@@ -103,8 +98,9 @@ export function ShellFrame({ children, bar = true }: { children: ReactNode; bar?
       if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        const filter = pageFilter();
-        if (filter) filter.focus();
+        // The page's filter when it has one (opened first if it is closed),
+        // the command bar when it has none.
+        if (pageFilterTarget()) void focusPageFilter();
         else openWith("");
       }
     };

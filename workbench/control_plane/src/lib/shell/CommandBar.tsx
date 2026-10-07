@@ -25,7 +25,9 @@ import { useRouter } from "next/navigation";
 import Icon from "@/components/Icon";
 import Modal from "@/components/ui/Modal";
 import type { NavPane } from "@/lib/nav";
-import { FILL_PAGE_FILTER, buildItems, rank, readRecent, rememberRecent, type BarItem } from "./registry";
+import Button from "@/components/ui/Button";
+import { fillPageFilter, pageFilterName } from "./pageFilter";
+import { buildItems, rank, readRecent, rememberRecent, type BarItem } from "./registry";
 
 interface Row {
   key: string;
@@ -34,6 +36,17 @@ interface Row {
   hint: string;
   icon: string;
   run: () => void;
+}
+
+/** Rows in their groups, in order, each with its index in the flat list. */
+function groupsOf(rows: Row[]): { group: Row["group"]; items: { row: Row; index: number }[] }[] {
+  const out: { group: Row["group"]; items: { row: Row; index: number }[] }[] = [];
+  rows.forEach((row, index) => {
+    const last = out[out.length - 1];
+    if (last && last.group === row.group) last.items.push({ row, index });
+    else out.push({ group: row.group, items: [{ row, index }] });
+  });
+  return out;
 }
 
 /** Ask only with real words: two or more, or one of four letters or more. */
@@ -73,8 +86,7 @@ export function CommandBar({
     setToken(here);
     setActive(0);
     setRecent(readRecent(email));
-    const filter = document.querySelector<HTMLElement>("[data-page-filter]");
-    setFilterName(filter && filter.offsetParent !== null ? filter.getAttribute("data-page-filter") || null : null);
+    setFilterName(pageFilterName());
   }, [open, seed, here, email]);
 
   const items = useMemo(() => buildItems(panes), [panes]);
@@ -103,7 +115,7 @@ export function CommandBar({
         icon: "ListFilter",
         run: () => {
           onClose();
-          window.dispatchEvent(new CustomEvent(FILL_PAGE_FILTER, { detail: { query: words } }));
+          void fillPageFilter(words);
         },
       });
     }
@@ -145,7 +157,6 @@ export function CommandBar({
   };
 
   const optionId = (key: string) => `cmdbar-${key.replace(/[^a-z0-9]/gi, "-")}`;
-  let lastGroup: Row["group"] | null = null;
 
   return (
     <Modal
@@ -163,18 +174,17 @@ export function CommandBar({
         {token ? (
           <span className="flex shrink-0 items-center gap-1 rounded-md bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
             in {token.label}
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="X"
               aria-label={`Search everywhere, not only in ${token.label}`}
               title="Search everywhere"
               onClick={() => {
                 setToken(null);
                 inputRef.current?.focus();
               }}
-              className="rounded hover:text-foreground"
-            >
-              <Icon name="X" size={11} />
-            </button>
+            />
           </span>
         ) : null}
         <input
@@ -201,37 +211,41 @@ export function CommandBar({
             Nothing matches “{query.trim()}”. Try other words, or one word like “email”.
           </p>
         ) : (
-          rows.map((row, i) => {
-            const heading = row.group !== lastGroup ? row.group : null;
-            lastGroup = row.group;
-            const on = i === active;
-            return (
-              <div key={row.key}>
-                {heading ? (
-                  <div className="px-4 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    {heading === "Do" && !query.trim() ? "Suggested" : heading}
-                  </div>
-                ) : null}
-                <div
-                  id={optionId(row.key)}
-                  role="option"
-                  aria-selected={on}
-                  onMouseMove={() => setActive(i)}
-                  onClick={row.run}
-                  className={`mx-1 flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 ${
-                    on ? "bg-primary/10 text-foreground" : "text-foreground"
-                  }`}
-                >
-                  <Icon name={row.icon} size={16} className={`shrink-0 ${on ? "text-primary" : "text-muted-foreground"}`} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px]">{row.label}</span>
-                    <span className="block truncate text-[11px] text-muted-foreground">{row.hint}</span>
-                  </span>
-                  {on ? <Icon name="CornerDownLeft" size={13} className="shrink-0 text-muted-foreground" /> : null}
-                </div>
+          // One `group` per kind, named, so a screen reader announces "Do",
+          // "Go to" and so on, and the listbox holds only options and groups.
+          groupsOf(rows).map(({ group, items }) => (
+            <div key={group} role="group" aria-labelledby={`cmdbar-g-${group.replace(/\s+/g, "-")}`}>
+              <div
+                id={`cmdbar-g-${group.replace(/\s+/g, "-")}`}
+                className="px-4 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+              >
+                {group === "Do" && !query.trim() ? "Suggested" : group}
               </div>
-            );
-          })
+              {items.map(({ row, index: i }) => {
+                const on = i === active;
+                return (
+                  <div
+                    key={row.key}
+                    id={optionId(row.key)}
+                    role="option"
+                    aria-selected={on}
+                    onMouseMove={() => setActive(i)}
+                    onClick={row.run}
+                    className={`mx-1 flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 ${
+                      on ? "bg-primary/10 text-foreground" : "text-foreground"
+                    }`}
+                  >
+                    <Icon name={row.icon} size={16} className={`shrink-0 ${on ? "text-primary" : "text-muted-foreground"}`} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px]">{row.label}</span>
+                      <span className="block truncate text-[11px] text-muted-foreground">{row.hint}</span>
+                    </span>
+                    {on ? <Icon name="CornerDownLeft" size={13} className="shrink-0 text-muted-foreground" /> : null}
+                  </div>
+                );
+              })}
+            </div>
+          ))
         )}
       </div>
 
