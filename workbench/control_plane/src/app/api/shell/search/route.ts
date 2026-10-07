@@ -35,8 +35,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const res = await gatewayFetch(`${GATEWAY_URL}/shell/search?${params}`, {
       headers: await gatewayHeaders(),
       cache: "no-store",
-      // Three apps in turn, each limited to a second, plus the trip.
-      signal: AbortSignal.timeout(4_000),
+      // The gateway's whole budget is 1.5 s (TOTAL_BUDGET_S), plus the trip.
+      // ⚠️ The browser's own abort too: the bar drops a request whose words
+      // the member has changed, and the gateway call must stop with it.
+      signal: AbortSignal.any([req.signal, AbortSignal.timeout(2_500)]),
     });
     if (res.ok) {
       const body = (await res.json()) as { groups?: FindGroup[] };

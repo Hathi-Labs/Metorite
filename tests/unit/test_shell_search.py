@@ -132,6 +132,19 @@ class TestOneAppAtATime:
         groups = [g["app"] for g in run("priya", member(*ALL))["groups"]]
         assert groups == ["tasks", "people"]
 
+    def test_one_deadline_for_all_apps_not_one_each(self, fakes, monkeypatch):
+        # Each fake takes 10 ms. A total budget of 15 ms leaves room for one
+        # app, maybe two, and never all three.
+        monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 0.065)
+
+        async def slow(self_name, user, kwargs, _orig=fakes._enter):
+            await asyncio.sleep(0.04)
+            await _orig(self_name, user, kwargs)
+
+        monkeypatch.setattr(fakes, "_enter", lambda n, u, k: slow(n, u, k))
+        run("priya", member(*ALL))
+        assert len(fakes.calls) < 3
+
     def test_a_slow_app_is_left_out(self, fakes, monkeypatch):
         monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 0.001)
         assert run("priya", member(*ALL))["groups"] == []

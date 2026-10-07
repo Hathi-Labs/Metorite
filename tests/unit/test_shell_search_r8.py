@@ -68,6 +68,13 @@ async def test_the_bar_finds_this_orgs_task_by_its_words(seeded, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_bar_never_returns_another_orgs_task(seeded, monkeypatch):
-    body = await _shell(seeded, monkeypatch, "Beta secret")
+async def test_the_bar_never_returns_another_orgs_task(seeded, monkeypatch, caplog):
+    # ⚠️ A provider that FAILED also returns no group, so an empty answer
+    # alone would pass on a broken build. The log says whether it ran clean.
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger=shell.__name__):
+        body = await _shell(seeded, monkeypatch, "Beta secret")
     assert body["groups"] == []
+    assert not [r for r in caplog.records if "provider failed" in r.getMessage()]
+    assert not [r for r in caplog.records if "timed out" in r.getMessage()]

@@ -425,11 +425,16 @@ six example questions.
 | Tier | Budget | Where it runs | What it costs |
 |---|---|---|---|
 | **0 — the registry** | 50 ms | In the browser | Nothing. No server call |
-| **1 — record search** | 300 ms | One gateway route, `GET /shell/search`, which calls each provider in turn on the request's session | Nothing. No model |
+| **1 — record search** | 300 ms typical, 1.5 s ceiling | One gateway route, `GET /shell/search`, which calls each provider in turn on the request's session | Nothing. No model |
 | **2 — AI intent** | 1.5 s | `POST /shell/intent`, through the Router | Credits, metered (§6.5) |
 
 Each tier adds results under the ones already shown. A tier never moves a
 result that the member can already see.
+
+**The tier 1 ceiling.** The providers run one after another, so the route
+holds one total deadline of 1.5 s (`TOTAL_BUDGET_S`) and gives each provider
+what is left. The browser's abort reaches the gateway too, so a request whose
+words the member changed stops at once.
 
 **Tier 2 runs only when one of these is true:**
 
