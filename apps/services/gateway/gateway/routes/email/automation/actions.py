@@ -16,8 +16,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import httpx
 from email_ingestion.llm_cap import llm_slot
+from gateway import outbound_guard
 from gateway.routes.email.automation.drafting import (
     _agent_draft_reply,
     _build_reply_context,
@@ -671,13 +671,22 @@ async def _apply_rule_actions(
                         subject=fwd_subject, body=fwd,
                     )
             elif t == "CALL_WEBHOOK" and a.get("url"):
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    await client.post(a["url"], json={"message_id": message_id})
+                # The one outbound guard (EM-T13b-2): a public host only, the
+                # resolved address pinned, no redirect, and capped in time
+                # and in the bytes of the answer. A refusal raises
+                # OutboundRefused, and the except below records it.
+                await outbound_guard.request(
+                    "POST", a["url"], json={"message_id": message_id})
             else:
                 continue
             done.append(t)
         except Exception as exc:
-            _log.warning("email.rule_action_failed", action=t, error=str(exc)[:120])
+            # A refusal names the host and the reason, and never the path
+            # or the query of the URL (EM-T13b-2).
+            err = (f"webhook refused: {exc}"
+                   if isinstance(exc, outbound_guard.OutboundRefused)
+                   else str(exc))
+            _log.warning("email.rule_action_failed", action=t, error=err[:160])
             if errors_out is not None:
-                errors_out.append({"type": t or "?", "error": str(exc)[:160]})
+                errors_out.append({"type": t or "?", "error": err[:160]})
     return done

@@ -616,7 +616,7 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T11b** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #692 (2026-10-06).** GO-NARROWED by the audit. The shared reader reads `.xlsx` and HTML, with the hardened zip and XML path of a `.docx`. No migration, no flag and no new dependency. See §10.4.13. | See §10.4.13. |
 | **EM-T12** | 🟢 AGENT-SAFE | ✅ **MERGED #688 (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
 | **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
-| **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
+| **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -5525,7 +5525,7 @@ findings.
 #### 10.4.15 EM-T13 — a rule that sends mail out asks the member first
 
 **Status.** ✅ EM-T13a MERGED (#690, 2026-10-06), with review
-rounds 1 and 2. EM-T13b-1 is ✅ MERGED (#698, 2026-10-07). EM-T13b-2 is 📝 SPECIFIED.
+rounds 1 and 2. EM-T13b-1 is ✅ MERGED (#698, 2026-10-07). EM-T13b-2 is ✅ MERGED (#701, 2026-10-07).
 
 **The audit.** 📝 SPECIFIED (2026-10-06). Audited 2026-10-06, GO-NARROWED. The rule tools are not
 in `own_tool_scope`. But the filter of `own_tool_scope` does nothing for a native MAF agent today
@@ -5751,7 +5751,7 @@ database. Then `git checkout` put the file back, and `git status` was clean.
 
 ##### EM-T13b — the unsubscribe and draft cards name the target, and a webhook refuses a private host
 
-**Status.** EM-T13b-1 is ✅ MERGED (#698, 2026-10-07). EM-T13b-2 is 📝 SPECIFIED (2026-10-07). Audited 2026-10-07, GO-NARROWED. Two PRs: EM-T13b-1 (the cards) and EM-T13b-2 (the webhook guard).
+**Status.** EM-T13b-1 is ✅ MERGED (#698, 2026-10-07). EM-T13b-2 is ✅ MERGED (#701, 2026-10-07). Audited 2026-10-07, GO-NARROWED. Two PRs: EM-T13b-1 (the cards) and EM-T13b-2 (the webhook guard).
 
 **Gate.** 🟢 AGENT-SAFE. No migration and no flag. Both PRs change LIVE paths, so each takes the full review loop and a security review. The owner does the live check of a real send.
 
@@ -5818,7 +5818,7 @@ uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gate
 
 **Board findings.** The `send_email` card can hide a Bcc after 500 characters, and that is a candidate for EM-T13c. The webhook post runs while the tenant session of `_apply_rule_actions` is open. Two IP-check copies remain, in `attachments.py` and `workflows/tools.py`. A `send_draft` from the UI with no signature sends the recipients that the provider holds, and those can differ from the row. Review round 1 of EM-T13b-1 closed this gap for the chat.
 
-**As built (EM-T13b-1, 2026-10-07).** 🔨 BUILT, not merged. No migration and no flag.
+**As built (EM-T13b-1, 2026-10-07).** ✅ Merged as #698. No migration and no flag.
 
 1. **The target route.** `GET /email/unsubscribe/target` is in `senders.py`. `_stored_unsubscribe_link` is the one read of the stored link. `POST /email/unsubscribe` calls it when the UI sends no link. `_unsubscribe_kind` is the one rule of the kind, and the POST uses it too. `_mailto_parts` is the one parse of a `mailto:` link, so the card names the address that the send uses.
 2. **The tool.** `unsubscribe_sender` has no `unsubscribe_link` parameter. MAF drops that argument when the model sends it. The tool posts the `link` of the target route.
@@ -5891,6 +5891,95 @@ uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gate
 | N13 | The answer names the raw sender | the answer fence | red, 1 failed |
 | N14 | The unsigned path skips the provider compare | the unsigned fences | red, 5 failed |
 | N15 | A failed provider read goes on to the send | the read failure fence | red, 1 failed |
+
+**As built (EM-T13b-2, 2026-10-07).** ✅ Merged as #701. No migration, no flag and no SQL change.
+
+1. **The seam.** `gateway/outbound_guard.py` holds the check, the pin and the caps. `senders.py` imports `_host_is_public` and `_is_safe_external_url` again. `CALL_WEBHOOK` calls `outbound_guard.request`. `_http_unsubscribe` calls `check_url` once, then `send` for the POST and for the GET.
+2. **The check.** `check_url` refuses a backslash, a URL with no host, and a user name or a password. It also refuses a scheme other than `http` or `https`. It resolves the host once through `_resolve`. `_address_refusal` unwraps an IPv4-mapped address. It refuses the URL when any address is multicast, reserved or not `is_global`. It also refuses a range that carries IPv4, and an address of the box (review round 1).
+3. **The pin.** `send` puts the first resolved address in the URL. It keeps the `Host` header of the URL, with the port. For `https` it sets the `sni_hostname` extension. The client has `trust_env=False` and `follow_redirects=False`.
+4. **A 3xx and the time cap.** A 3xx raises `OutboundRefused` with the reason `redirect <code>`. A run longer than 10 seconds raises it with the reason `timeout`. One `deadline()` covers the lookup and each request of one call (review round 1). The connect timeout is 3 seconds.
+5. **The answer cap.** `_read_capped` reads raw bytes from the wire and stops at 64 KiB. So a compressed answer cannot grow past the cap.
+6. **The record.** For an `OutboundRefused`, the `except` of `_apply_rule_actions` writes `webhook refused: <host> <reason>` to `action_errors`. The log line `email.rule_action_failed` holds the same text. The reasons are `scheme`, `no host`, `user name`, `backslash`, `bad url`, `unresolvable`, `not public`, `redirect <code>` and `timeout`. No reason names an address, a path or a query.
+
+**Departures (EM-T13b-2).**
+
+1. The spec names a refusal for the check. The guard also raises `OutboundRefused` for a 3xx and for the time cap. So the webhook records them the same way. A 3xx on the unsubscribe GET now gives the detail `redirect 302`, not `http-302`.
+2. Three tests in `test_email_unsubscribe.py` patched `_is_safe_external_url` and a fake client with no `send`. They now run over the guard with a fake resolver and `httpx.MockTransport`. Their assertions stay, and two of them also check the pinned address.
+3. A transport fault, for example a refused connection, keeps its `httpx` type. The record keeps `str(exc)`, as before. A 4xx or 5xx answer to a webhook still counts as done, as before.
+4. `http://0177.0.0.1/` never gets to the resolver, because `httpx` refuses a dotted form with a leading zero. Its reason is `bad url`.
+
+**Fences (EM-T13b-2, as built).** All are in `tests/unit/test_email_webhook_guard.py`, 57 tests.
+
+| Fence | Tests |
+|---|---|
+| An address that is not public is refused, and no request goes out | `test_the_guard_refuses_an_address_that_is_not_public` (9 cases), `test_a_webhook_to_an_address_that_is_not_public_sends_nothing` (9 cases), `test_the_address_rule_reads_is_global_and_multicast` |
+| A numeric form and `localhost` are refused | `test_a_numeric_form_or_localhost_is_refused` (6 cases), `test_the_real_resolver_refuses_a_numeric_form_or_localhost` (2 cases) |
+| A host name with a private address is refused | `test_a_host_name_that_resolves_to_a_private_address_is_refused`, `test_one_private_address_among_public_ones_is_refused`, `test_a_mapped_private_address_from_dns_is_refused`, `test_a_host_that_does_not_resolve_is_refused` |
+| The form of the URL is refused before any lookup | `test_the_guard_refuses_the_form_before_any_lookup` (10 cases) |
+| The pin: the resolved address, the `Host` header, the SNI name and one lookup | `test_the_request_goes_to_the_resolved_address_with_the_name`, `test_a_port_stays_in_the_host_header`, `test_an_ipv6_address_is_pinned_in_brackets`, `test_plain_http_sends_the_host_header_and_no_sni`, `test_a_webhook_posts_the_same_body_to_the_pinned_address`, `test_an_unsubscribe_link_goes_through_the_same_pin` |
+| A real TLS handshake checks the name | `test_tls_checks_the_certificate_against_the_name_not_the_address`, `test_tls_refuses_a_certificate_for_another_name` |
+| No proxy and no redirect | `test_the_client_reads_no_proxy_and_follows_no_redirect`, `test_the_guard_does_not_follow_a_3xx`, `test_a_webhook_3xx_is_recorded_as_a_failure` |
+| The caps | `test_the_guard_reads_no_more_of_the_answer_than_the_cap`, `test_the_guard_stops_at_the_total_time` |
+| The record names the host and the reason only | `test_a_refusal_writes_the_host_and_the_reason_and_no_path`, `test_a_refused_form_names_no_path_either` |
+| The old names | `test_the_old_names_answer_through_the_one_seam` |
+
+**Mutations (EM-T13b-2, 2026-10-07).** Each mutation changed one file and ran `test_email_webhook_guard.py`. The slice has no SQL, so the runs used no database. Then `git checkout` put the file back, and `git status` was clean. 6 of 6 mutations turned a test red.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| W1 | The webhook posts with a plain `httpx` client and no guard | the webhook and record fences | red, 13 failed |
+| W2 | `is_private` in place of `is_global` | the `100.64.0.1` cases | red, 4 failed |
+| W3 | `send` connects to the URL host, with no pin | the pin fences | red, 8 failed |
+| W4 | `follow_redirects=True` | the redirect fences | red, 3 failed |
+| W5 | `resp.aread()` reads the whole answer | the cap fence | red, 1 failed |
+| W6 | The error holds the URL | the record fences | red, 12 failed |
+
+One more mutation removed the `sni_hostname` extension. The real TLS test failed with "certificate is not valid for '127.0.0.1'", and 4 tests failed in total.
+
+**Board findings (EM-T13b-2).** The two IP-check copies in `email/transport/attachments.py` and `workflows/tools.py` stay, as the non-goals say. A later ticket can move them onto `outbound_guard`. The reasons `unresolvable` and `not public` tell a member whether a host name resolves on the box. Review round 1 below corrects the IPv6 part of this finding, and names the real classes. The webhook post still runs while the tenant session of `_apply_rule_actions` is open.
+
+**Review round 1 (EM-T13b-2, 2026-10-07).** The verifier passed, and the SSRF review approved. Both found the same P2. The review found a second P2 and three P3 items. Each finding has a fix and a fence below.
+
+1. **P2, reserved IPv6 classes passed.** The rule was "multicast or not `is_global`". The old `_host_is_public` also refused `is_reserved`. So NAT64 (`64:ff9b::/96`), IPv4-compatible (`::/96`), IPv4-translated (`::ffff:0:0:0/96`) and `5f00::1` passed on this branch, and `main` refused them.
+   **The fix.** `_address_refusal` refuses `is_reserved` again. It also refuses four ranges by name, in `_IPV4_CARRIERS`: `64:ff9b::/96`, `64:ff9b:1::/48`, `::/96` and `::ffff:0:0:0/96`. Each range carries an IPv4 address. The names do not depend on the `is_reserved` table of Python.
+   **The fences.** `test_a_reserved_ipv6_literal_is_refused` and `test_a_reserved_ipv6_aaaa_answer_is_refused` (9 addresses each), and `test_a_range_that_carries_ipv4_is_refused_by_name` (4 cases, with `is_reserved` patched off).
+2. **P2, an address of the box passed.** The public address of the box is `is_global`. On the box, a request to it goes over `lo`, and ufw accepts everything on `lo`. So a webhook got to uvicorn on `0.0.0.0:8080`, past ufw and past the `/internal/*` 404 of Caddy.
+   **The fix.** `_is_local_address` binds a UDP socket to the address and closes it at once. Only EADDRNOTAVAIL means "not local". Any other bind failure counts as local, so the check fails closed. A local address gives the reason `local`. `0.0.0.0` and `::` stay refused as `not public`.
+   **The fences.** `test_an_address_of_this_host_is_local` uses the real LAN address of the test host. `test_the_local_check_reads_only_eaddrnotavail_as_not_local` (3 cases) and `test_a_public_address_of_this_host_is_refused_as_local` mock the bind.
+   **The follow-up.** `deploy/hostinger/acb-gateway.service:13` binds uvicorn to `0.0.0.0:8080`, and Caddy proxies to `127.0.0.1:8080`. HANDOFF H-260 holds the change to `127.0.0.1`, as a slice of its own.
+3. **P3, no fence held "check once".** A second `check_url` before the unsubscribe GET kept every test green.
+   **The fence.** `test_the_unsubscribe_post_and_get_share_one_lookup` counts one lookup for the POST and the GET together. The fallback GET test in `test_email_unsubscribe.py` now also checks that both requests go to the pinned address. So departure 2 is true.
+4. **P3, the time budget.** `check_url` had its own 10 seconds before the 10 seconds of `send`. So a webhook could run for about 20 seconds, and an unsubscribe for about 30 seconds.
+   **The fix.** `deadline()` is one `asyncio.timeout(TOTAL_TIMEOUT_S)`. `request()` holds the lookup and the request inside it. `_http_unsubscribe` holds the lookup, the POST and the GET inside it. A run past the budget gives the detail `timeout`.
+   **Known limit.** A lookup that runs past the budget keeps its worker thread until `getaddrinfo` returns, because Python cannot cancel a thread.
+   **The fences.** `test_one_budget_covers_the_lookup_and_the_request` and `test_one_budget_covers_the_whole_unsubscribe`. In each one, every step alone fits the budget, and all of them together do not.
+5. **P3, the text.** The module docstring now names `csv_export.py`, as AGENTS.md 0g does. A refusal cuts the host at 100 characters. The log line now keeps 160 characters, the same as `action_errors`. So a host of 253 characters keeps its reason. The fence is `test_a_long_host_keeps_its_reason_in_the_record`.
+
+**The SSRF re-check of round 1 (EM-T13b-2, 2026-10-07): APPROVE.** The reviewer found no P0, P1 or P2. On the box, its own IPv4 and IPv6 addresses now answer `local`, and the IPv6 forms that carry an IPv4 address answer `not public`. Two P3 items are fixed. Only EAFNOSUPPORT now reads as "not local", so a full descriptor table fails closed. The deprecated site-local range `fec0::/10` is refused.
+
+**Known limits (re-check).** If `ip_nonlocal_bind` is set to 1, each public address reads as `local`, so each webhook fails closed. A subnet-router anycast address of the box is a blind spot of the bind test. It needs IPv6 forwarding, which is off on the box. A move of the gateway into a container needs a new review of this check.
+
+**The board finding, corrected.** The finding above said that the guard does not unwrap a 6to4, Teredo or NAT64 address. That was wrong in two ways. 6to4 (`2002::/16`) and Teredo (`2001::/32`) were already refused, because `is_global` is False for them. NAT64 is refused now, by name, with the IPv4-compatible and IPv4-translated ranges.
+
+**Mutations (review round 1).** Each mutation changed one file and ran `test_email_webhook_guard.py` and `test_email_unsubscribe.py`. Then `git checkout` put the file back, and `git status` was clean. The runner ran W1 to W6 again on the code of round 1, and each one is still red.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| W1 | The webhook posts with a plain `httpx` client and no guard | the webhook and record fences | red, 25 failed |
+| W2 | `is_private` in place of `is_global` | the `100.64.0.1` cases | red, 4 failed |
+| W3 | `send` connects to the URL host, with no pin | the pin fences | red, 11 failed |
+| W4 | `follow_redirects=True` | the redirect fences | red, 3 failed |
+| W5 | `resp.aread()` reads the whole answer | the cap fence | red, 1 failed |
+| W6 | The error holds the URL | the record fences | red, 24 failed |
+| W7 | The rule of round 0: no `is_reserved` and no named ranges | the reserved IPv6 fences | red, 16 failed |
+| W8 | No `is_reserved` | the `5f00::1` cases | red, 2 failed |
+| W9 | No named ranges | the by-name fence | red, 4 failed |
+| W10 | No local check | the local fence | red, 1 failed |
+| W11 | Every bind failure reads as not local | the EADDRNOTAVAIL fence | red, 1 failed |
+| W12 | The unsubscribe checks the URL again before the GET | the one-lookup fence | red, 1 failed |
+| W13 | `request()` has no `deadline()` | the request budget fence | red, 1 failed |
+| W14 | `_http_unsubscribe` has no `deadline()` | the unsubscribe budget fence | red, 1 failed |
+| W15 | The refusal does not cut the host | the long host fence | red, 1 failed |
 
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 

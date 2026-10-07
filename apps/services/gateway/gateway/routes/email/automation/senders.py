@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import ipaddress
 import json
-import socket
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 from acb_auth import UserContext, get_current_user
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
-from gateway import decide_features
+from gateway import decide_features, outbound_guard
+from gateway.outbound_guard import (  # noqa: F401 — the old names (EM-T13b-2)
+    _host_is_public,
+    _is_safe_external_url,
+)
 from gateway.routes.email.automation.identity import proven_own_send, sender_scope
 from gateway.routes.email.core import (
     CLEANUP_CATEGORIES,
@@ -726,35 +728,8 @@ async def upsert_newsletter(
 # ── Real unsubscribe: RFC 8058 one-click + mailto, with SSRF guard ───────────
 
 
-def _host_is_public(host: str) -> bool:
-    """True only if every address ``host`` resolves to is a public IP (SSRF
-    guard — blocks localhost, private ranges, link-local, etc.)."""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception:  # noqa: BLE001 — unresolvable host → unsafe
-        return False
-    if not infos:
-        return False
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            return False
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            return False
-    return True
-
-
-async def _is_safe_external_url(url: str) -> bool:
-    """http(s) scheme + a hostname resolving only to public IPs."""
-    try:
-        parsed = urlparse(url)
-    except Exception:  # noqa: BLE001
-        return False
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        return False
-    return await asyncio.to_thread(_host_is_public, parsed.hostname)
+#: The headers of each unsubscribe request.
+_UNSUBSCRIBE_HEADERS = {"User-Agent": "Metorite-Unsubscribe/1.0"}
 
 
 async def _http_unsubscribe(url: str) -> tuple[bool, str]:
@@ -762,33 +737,45 @@ async def _http_unsubscribe(url: str) -> tuple[bool, str]:
 
     Tries the RFC 8058 one-click POST (``List-Unsubscribe=One-Click``) first,
     then falls back to a plain GET (many mailers honour a GET on the same URL).
-    Returns ``(succeeded, detail)``."""
-    if not await _is_safe_external_url(url):
+    Returns ``(succeeded, detail)``.
+
+    Both requests go through ``gateway.outbound_guard`` (EM-T13b-2). The host
+    resolves once, and both requests go to that one checked address. The guard
+    follows no redirect, because a redirect target never passed the check.
+    ONE ``deadline()`` covers the lookup, the POST and the GET (review
+    round 1)."""
+    try:
+        async with outbound_guard.deadline():
+            return await _http_unsubscribe_steps(url)
+    except TimeoutError:
+        return False, "timeout"
+
+
+async def _http_unsubscribe_steps(url: str) -> tuple[bool, str]:
+    """The check, the POST and the GET of :func:`_http_unsubscribe`."""
+    try:
+        target = await outbound_guard.check_url(url)
+    except outbound_guard.OutboundRefused:
         return False, "unsafe-url"
     try:
-        # follow_redirects=False: the initial URL is SSRF-validated, but httpx
-        # would follow a 3xx to an UNVALIDATED internal target (cloud metadata
-        # 169.254.169.254, localhost, private ranges) — the guard only ran on the
-        # first hop. RFC 8058 one-click returns 200 directly, so we don't chase
-        # redirects; the mailto / provider-filter fallbacks cover the rest.
-        async with httpx.AsyncClient(
-            follow_redirects=False, timeout=10.0,
-            headers={"User-Agent": "Metorite-Unsubscribe/1.0"},
-        ) as client:
-            try:
-                resp = await client.post(
-                    url, content=b"List-Unsubscribe=One-Click",
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                )
-                if resp.is_success:
-                    return True, "one-click-post"
-            except httpx.HTTPError:
-                pass  # fall through to GET
-            resp = await client.get(url)
-            return resp.is_success, ("get" if resp.is_success
-                                     else f"http-{resp.status_code}")
+        resp = await outbound_guard.send(
+            target, "POST", content=b"List-Unsubscribe=One-Click",
+            headers={**_UNSUBSCRIBE_HEADERS,
+                     "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if resp.is_success:
+            return True, "one-click-post"
+    except (httpx.HTTPError, outbound_guard.OutboundRefused):
+        pass  # fall through to GET
+    try:
+        resp = await outbound_guard.send(
+            target, "GET", headers=dict(_UNSUBSCRIBE_HEADERS))
+    except outbound_guard.OutboundRefused as exc:
+        return False, exc.reason
     except httpx.HTTPError as exc:
         return False, str(exc)[:120]
+    return resp.is_success, ("get" if resp.is_success
+                             else f"http-{resp.status_code}")
 
 
 def _mailto_parts(mailto: str) -> tuple[str, str, str]:

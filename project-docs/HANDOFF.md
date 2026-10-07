@@ -95,6 +95,27 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-260 · Bind the gateway to 127.0.0.1, so the box cannot reach it on a public address · [AGENT]
+- **Check:** `rg -n "\-\-host 0.0.0.0" deploy/hostinger/acb-gateway.service`
+  → a hit means this is open.
+- **Why.** `acb-gateway` binds uvicorn to `0.0.0.0:8080`
+  (`deploy/hostinger/acb-gateway.service:13`). Caddy already proxies to
+  `127.0.0.1:8080`. A request from the box to its own public address goes
+  over `lo`, and ufw accepts everything on `lo`. So the request gets to
+  uvicorn past ufw, and past the `/internal/*` 404 of Caddy. EM-T13b-2
+  review round 1 found this through a webhook URL. The outbound guard now
+  refuses an address of the box. This entry closes the gap again, at the
+  network layer.
+- **Do.** In a slice of its own, change `--host 0.0.0.0` to
+  `--host 127.0.0.1`. First find each client that calls port 8080 on an
+  address that is not loopback, on the box and in `deploy/`. A Docker
+  container gets to the host through a bridge address, so check those too.
+  A write under `deploy/` needs the `deploy-write` grant.
+- **Authority:** `project-docs/specs/email_app_master_plan.md` §10.4.15, the
+  EM-T13b-2 review round 1 record.
+- **Added:** 2026-10-07 · WS-17 EM-T13b-2 review round 1 (branch
+  `email-t13b-2`)
+
 ### H-259 · Make a failed nightly backup reach a person · [AGENT]
 - **Check:** `rg -n "acb-backup" .github/workflows/vps-health.yml`
   → no hit means this is open.
