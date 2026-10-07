@@ -739,6 +739,14 @@ validation gives the fixed text `UNAVAILABLE` (`decide_tools.py:40`). The
 agent loop never sees an exception. D57.7 holds: nothing falls back to a
 direct call.
 
+> **Amended by D93, 2026-10-07 (owner).** With `SYSTEM_ONE_ON_DECIDE` on, a
+> typed item goes to `tier-decide` first, with a bound of 10 s for each
+> request (`data_narrowing_pipeline.md` §3.5). A failure sends the item to
+> `tier-fast`, with the bound of 3 s above. So one call can take 13 s at
+> most. `UNAVAILABLE` comes only when no item gets an answer from either
+> engine. When some items get an answer, each other item reads as `unsure`.
+> Owning slice: `data_narrowing_pipeline.md` §9 N3.
+
 ### 6.5 Metering
 
 - Each System-1 request is one routed request on `tier-fast`. The Router

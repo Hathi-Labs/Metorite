@@ -53,6 +53,13 @@ below was run red on 2026-10-07, then taken back out:
   ``TestEachKindIsMapped``;
 * the request names the stale agent of the run context ->
   ``test_the_request_carries_the_run_attribution``.
+
+Review round 1 (2026-10-07), each run red the same way:
+
+* a claimed member goes out as proven, or a fallback logs the client's
+  sentence -> ``TestTheDeploymentKeyArm``;
+* a score position is not clamped -> ``test_a_score_position_is_clamped_to_the_scale``;
+* the two requests run in turn -> ``test_two_decide_requests_run_at_the_same_time``.
 """
 from __future__ import annotations
 

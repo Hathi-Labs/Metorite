@@ -659,6 +659,12 @@ before N1 uses the decide door.
 - **The calling agent.** The request takes `run_attribution()`, and the run
   binding names the agent, as `system_one` does (§6.5 of
   `ai_tier_routing.md`).
+- **A reason is a code.** The Console client gives a sentence for some
+  refusals, and a transport message for an outage. The fallback line logs
+  each of those as `unavailable`.
+- **The deployment-key arm.** Only a member that the gateway verified goes
+  out as proven. A claimed member gets the local refusal of the client, with
+  no request, and the item goes to `tier-fast`. A test holds each case.
 - **The tenant cannot set the flag.** `SYSTEM_ONE_ON_DECIDE` is in
   `env_guard.PLATFORM_ENV_NAMES`.
 - **Not measured yet:** the agreement of the two engines. No box has a
