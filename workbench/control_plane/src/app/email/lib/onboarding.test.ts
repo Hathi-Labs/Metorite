@@ -20,6 +20,7 @@ import { isKnownIcon } from "@/lib/icons";
 import { OnboardingPanel } from "../components/OnboardingPanel";
 import { SyncBanner } from "../components/SyncBanner";
 import {
+  AWAITING_RANGE_PHASE,
   IMPORT_PHASE_LINES,
   IMPORT_PROGRESS_LABEL,
   IMPORT_WAITING_DETAIL,
@@ -485,6 +486,21 @@ describe("email-sync-banner: syncBanners", () => {
       expect(rows).toEqual([]);
     } else {
       expect(rows.map((r) => [r.account.id, r.phase, r.line])).toEqual([["a", phase, SYNC_BANNER_LINES[phase]]]);
+    }
+  });
+
+  it("guards awaiting_range by name, before any arm that gives a row", () => {
+    // An unknown phase gives no row today as well, so the behaviour alone
+    // cannot tell that the guard is there. EM-S6 adds `awaiting_range`, and
+    // a later widening of the fall-through must not draw "Starting sync" for
+    // a mailbox that waits for its range. So the guard is pinned in the source.
+    expect(AWAITING_RANGE_PHASE).toBe("awaiting_range");
+    const src = codeOnly(read("lib/onboarding.ts"));
+    const body = src.slice(src.indexOf("function bannerPhase("), src.indexOf("export function syncBanners"));
+    const guard = body.indexOf("if (phase === AWAITING_RANGE_PHASE) return null;");
+    expect(guard).toBeGreaterThan(-1);
+    for (const arm of ['return "resyncing";', 'return "starting";', "return phase;"]) {
+      expect(body.indexOf(arm), arm).toBeGreaterThan(guard);
     }
   });
 
