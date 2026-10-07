@@ -119,6 +119,8 @@ TITLE_CLIP = 200
 WHO_CLIP = 160
 WHEN_CLIP = 32
 SNIPPET_CLIP = 300
+#: The clip of an id in a header line or a dropped line.
+ID_CLIP = 80
 
 #: The clip of the member's query in the PICK state. The spec names no value.
 QUERY_CLIP = 2000
@@ -363,9 +365,10 @@ def keep(answer: Verdict | None, threshold: float = DROP_THRESHOLD) -> bool:
 def _run_threshold() -> float:
     """The drop threshold for this run's effort (§3.4), from the run binding."""
     try:
-        from acb_skills.decide_tools import _run_threshold as effort_threshold
+        from acb_skills.tier_policy import system_one_threshold
+        from acb_skills.write_artifact import artifact_context
 
-        return float(effort_threshold())
+        return float(system_one_threshold((artifact_context() or {}).get("think_mode")))
     except Exception:  # no binding, or a broken read, reads as Auto
         return DROP_THRESHOLD
 
@@ -400,13 +403,13 @@ def _reason_of_unavailable(exc: Any) -> str:
     reason = str(getattr(exc, "reason", "") or "")
     if reason in {"disabled", "tier_unknown", "insufficient_credits", "forbidden", "unwired"}:
         return reason
+    if reason.startswith("unreadable"):
+        return "unreadable"
     status = getattr(exc, "status", None)
     if isinstance(status, int):
         return f"http_{status}"
     if reason.startswith("HTTP "):
         return "http_" + reason[5:].strip()[:3]
-    if reason.startswith("unreadable"):
-        return "unreadable"
     return "unavailable"
 
 
@@ -553,14 +556,24 @@ async def _pick(query: str, candidates: Sequence[Candidate]) -> _Picked:
 
     tasks = [asyncio.create_task(_one(n, b)) for n, b in enumerate(batches)]
     bound_hit = False
-    if tasks:
-        _done, pending = await asyncio.wait(tasks, timeout=PICK_BOUND_S)
-        if pending:
-            bound_hit = True
-            for task in pending:
+    try:
+        if tasks:
+            _done, pending = await asyncio.wait(tasks, timeout=PICK_BOUND_S)
+            if pending:
+                bound_hit = True
+                _log.warning(
+                    "narrowing.pick_bound", unfinished=len(pending), batches=len(tasks),
+                )
+    finally:
+        # 🔴 `asyncio.wait` does not cancel its tasks when the caller is
+        # cancelled (a stopped turn, a run timeout). So every task that is not
+        # done stops here, on the bound AND on a cancel, and sends nothing
+        # more (review P1).
+        for task in tasks:
+            if not task.done():
                 task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            _log.warning("narrowing.pick_bound", unfinished=len(pending), batches=len(tasks))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     picked = _Picked(verdicts=[], bound_hit=bound_hit)
     for batch, result in zip(batches, results, strict=True):
@@ -577,8 +590,9 @@ async def _pick(query: str, candidates: Sequence[Candidate]) -> _Picked:
 
 # ── The dropped list (§6.3) ──────────────────────────────────────────────────
 
-#: (org, member, thread, call id) -> (expiry, the dropped candidates).
-_DROPPED: OrderedDict[tuple[str, str, str, str], tuple[float, list[Candidate]]] = OrderedDict()
+#: (org, member, thread, call id) -> (expiry, the first clipped lines, the
+#: count of dropped items). It holds no snippet and no body.
+_DROPPED: OrderedDict[tuple[str, str, str, str], tuple[float, list[str], int]] = OrderedDict()
 
 
 def _owner_key() -> tuple[str, str, str] | None:
@@ -608,8 +622,16 @@ def _owner_key() -> tuple[str, str, str] | None:
 
 
 def _sweep(now: float) -> None:
-    for key in [k for k, (expiry, _) in _DROPPED.items() if expiry <= now]:
+    for key in [k for k, (expiry, _l, _n) in _DROPPED.items() if expiry <= now]:
         _DROPPED.pop(key, None)
+
+
+def _dropped_line(c: Candidate) -> str:
+    """One line of the dropped list: the id, the when, the who and the title."""
+    return (
+        f"- {_one_line(c.id, ID_CLIP)} | {_one_line(c.when, WHEN_CLIP)} | "
+        f"{_one_line(c.who, WHO_CLIP)} | {_one_line(c.title, TITLE_CLIP)}"
+    )
 
 
 def _remember_dropped(dropped: list[Candidate]) -> str | None:
@@ -620,7 +642,8 @@ def _remember_dropped(dropped: list[Candidate]) -> str | None:
     now = time.monotonic()
     _sweep(now)
     call_id = "n" + secrets.token_hex(3)
-    _DROPPED[(*owner, call_id)] = (now + DROPPED_TTL_S, list(dropped))
+    lines = [_dropped_line(c) for c in dropped[:DROPPED_LINES]]
+    _DROPPED[(*owner, call_id)] = (now + DROPPED_TTL_S, lines, len(dropped))
     while len(_DROPPED) > DROPPED_MAX_ENTRIES:
         _DROPPED.popitem(last=False)
     return call_id
@@ -637,15 +660,10 @@ def _dropped_answer(call_id: str) -> str:
     entry = _DROPPED.get((*owner, key))
     if entry is None:
         return DROPPED_GONE
-    dropped = entry[1]
-    lines = [DROPPED_LEAD]
-    for c in dropped[:DROPPED_LINES]:
-        lines.append(
-            f"- {_one_line(c.id, 80)} | {_one_line(c.when, WHEN_CLIP)} | "
-            f"{_one_line(c.who, WHO_CLIP)} | {_one_line(c.title, TITLE_CLIP)}"
-        )
-    if len(dropped) > DROPPED_LINES:
-        lines.append(f"{len(dropped) - DROPPED_LINES} more were dropped and are not listed.")
+    _expiry, kept_lines, count = entry
+    lines = [DROPPED_LEAD, *kept_lines]
+    if count > len(kept_lines):
+        lines.append(f"{count - len(kept_lines)} more were dropped and are not listed.")
     return "\n".join(lines)
 
 
@@ -682,7 +700,7 @@ def count_line(c: Counts) -> str:
 def _item_block(item: FullItem) -> str:
     """One kept item: a fixed header line, the title, then the body."""
     header = (
-        f"--- item {_one_line(item.id, 80)} | {_one_line(item.when, WHEN_CLIP)} | "
+        f"--- item {_one_line(item.id, ID_CLIP)} | {_one_line(item.when, WHEN_CLIP)} | "
         f"{_one_line(item.who, WHO_CLIP)} ---"
     )
     title = _one_line(item.title, TITLE_CLIP)
@@ -824,6 +842,8 @@ def make_narrow_tool(
             _log.warning("narrowing.failed", error_type=type(exc).__name__)
             return SEARCH_FAILED.format(source="the source")
 
+    keys = ", ".join(sorted(adapter.filter_keys)) or "none"
+    narrow_and_read.__doc__ = (narrow_and_read.__doc__ or "") + f"\n    Filter keys: {keys}.\n"
     narrow_and_read.__name__ = TOOL_NAME
     narrow_and_read.__qualname__ = TOOL_NAME
     narrow_and_read.__tool_risk__ = NARROW_RISK  # type: ignore[attr-defined]

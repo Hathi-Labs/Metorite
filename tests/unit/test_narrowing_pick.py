@@ -26,6 +26,9 @@ Mutations this file catches (R7), each one run red before the change:
 * an instruction copies a value -> ``test_no_instruction_copies_a_value``;
 * the bound of 4 goes to 5, or to 1 -> ``test_at_most_four_requests_are_in_flight``;
 * the whole step has no bound -> ``test_the_step_bound_keeps_every_item``;
+* a cancelled call leaves its batches running ->
+  ``test_a_cancelled_call_stops_every_request``;
+* the dropped cache keeps raw candidates -> ``test_the_cache_holds_clipped_lines_only``;
 * a failure class does not fall back, or the fallback takes more than its
   batch -> ``TestFallback``;
 * a ``DecideRequestInvalid`` logs under ``error`` -> ``test_a_caller_bug_logs_at_error``;
@@ -396,6 +399,22 @@ async def test_the_step_bound_keeps_every_item(
     )
 
 
+async def test_a_cancelled_call_stops_every_request(door: Door, s1: SystemOne) -> None:
+    """Review P1: a stopped turn cancels the tool. No batch may go on to
+    send a billed request after that."""
+    door.delay = 0.2
+    call = asyncio.create_task(_tool(Adapter(200))(QUERY))
+    await asyncio.sleep(0.05)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    sent = len(door.bodies)
+    assert sent <= narrowing.MAX_IN_FLIGHT
+    await asyncio.sleep(0.6)
+    assert len(door.bodies) == sent, "a batch sent a request after the cancel"
+    assert s1.calls == [], "a cancelled batch fell back to System 1"
+
+
 # ── WS48-F2: the fallback (§3.5) ────────────────────────────────────────────
 
 
@@ -661,6 +680,18 @@ class TestDropped:
         monkeypatch.setattr(narrowing.time, "monotonic", lambda: real() + 15 * 60 + 1)
         assert await tool("", dropped_of=call_id) == narrowing.DROPPED_GONE
 
+    async def test_the_cache_holds_clipped_lines_only(self, door: Door, s1: SystemOne) -> None:
+        """Review P2: no snippet, no body, at most 100 lines, each clipped."""
+        door.rule = lambda cid: ("no", 0.9)
+        tool = _tool(Adapter(150))
+        out = await tool(QUERY)
+        (entry,) = narrowing._DROPPED.values()
+        _expiry, lines, count = entry
+        assert count == 150 and len(lines) == narrowing.DROPPED_LINES == 100
+        assert SNIPPET_CANARY not in repr(entry) and BODY_CANARY not in repr(entry)
+        listed = await tool("", dropped_of=_call_id(out))
+        assert listed.splitlines()[-1] == "50 more were dropped and are not listed."
+
     async def test_a_bad_id_finds_nothing(self, door: Door, s1: SystemOne) -> None:
         tool, _ = await self._dropped(door)
         assert await tool("", dropped_of="n000000") == narrowing.DROPPED_GONE
@@ -768,6 +799,17 @@ def test_the_tool_is_a_platform_tool_with_no_egress() -> None:
     assert eg.is_egress_tool(tool) is False
     assert eg._platform_owned(tool, "narrow_and_read") is True
     assert tier_policy.TOOL_HINTS["narrow_and_read"] == "analysis"
+
+
+def test_the_description_names_the_filter_keys() -> None:
+    assert "Filter keys: after, folder." in (_tool(Adapter(1)).__doc__ or "")
+
+
+def test_an_unreadable_answer_logs_its_own_reason() -> None:
+    from acb_llm import DecideUnavailable
+
+    exc = DecideUnavailable("unreadable answer: an answer is missing", status=200)
+    assert narrowing._reason_of_unavailable(exc) == "unreadable"
 
 
 def test_make_narrow_tool_refuses_a_non_adapter() -> None:
