@@ -11940,6 +11940,8 @@ of data, large Excel files, etc., without hallucinating.
 > dark. EM-T14e and EM-T14f wait for the flip. EM-T14g is not specified. The audit text is in
 > each slice below.
 
+> **Build state (2026-10-07).** EM-T14a is built and not merged (§13.9.1).
+
 > **The owner answers (2026-10-07).** The owner answered Q-IN-1 to Q-IN-4 (§13.12). D-EM-43 to
 > D-EM-46 record them. Q-IN-1 made the job two stages: a cheap screen on `decide`, then the
 > extraction. The flip stays an act of the owner.
@@ -12352,7 +12354,7 @@ behind `EMAIL_INSIGHTS`. The flip is an act of the owner only (the Flip row).
 
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
-| **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
+| **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | 🔨 **BUILT, not merged (2026-10-07). Migration 231.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
 | **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
 | **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
 | **EM-T14d** | 🟢 AGENT-SAFE · R8 · visual review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The view.** Two PRs: EM-T14d-1 (the PATCH, the shared helper, the tile and the digest line) and EM-T14d-2 (the UI). | §13.9.4 |
@@ -12372,7 +12374,8 @@ proves nothing (R8).
 
 #### 13.9.1 EM-T14a — the table, the migration and the write path
 
-**Status.** 📝 SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.
+**Status.** 🔨 BUILT, not merged (2026-10-07, branch `email-t14a`). The audit was GO-NARROWED. It
+ships dark: no job, no route that reads facts, no UI and no tool.
 
 **Gate.** 🟢 AGENT-SAFE. A migration and a new tenant table, so the slice takes the full review
 loop and a security review.
@@ -12442,6 +12445,69 @@ uv run pytest tests/unit/test_email_insights_store.py -v -rs
 uv run pytest tests/unit/test_email_owner_scope_fence.py tests/unit/test_tenant_coverage.py tests/unit/test_migration_prefixes.py tests/unit/test_email_auto_draft_defaults.py -q
 uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights_store.py tests/unit/test_email_insights_store.py
 ```
+
+**As built (EM-T14a, 2026-10-07).**
+
+- **The migration** is `infra/postgres/231_email_insights.sql`. R1: the highest file on `main` was
+  230 at `229d22a09`. No remote branch, local branch or open PR held 231.
+- It creates `email_insights` with the RLS block of 219, the three indexes of §13.3 and four
+  CHECKs. It adds `insights_at`, `insights_tries` and their partial index to `email_messages`. It
+  adds `insights_enabled` to `email_assistant_settings`.
+- **The generated phases.** The four files in `infra/postgres/generated/` get the `email_insights`
+  blocks and nothing else. A full run of the generator also renames and moves other blocks. So the
+  agent copied the blocks by hand, as #497 did.
+- **The flag** is `email_insights` and `email_insights_orgs` in `acb_common/settings.py`. Both are
+  off by default.
+- **The write path** is `routes/email/automation/insights_store.py`. It holds
+  `insights_enabled()`, `FACT_FIELDS`, `clean_text`, `dedupe_key` and `write_facts`.
+- **The opt-in.** `AssistantSettingsModel` and the GET and the PUT of `/email/assistant/settings`
+  have `insights_enabled`. The fixture holds `insights_enabled: false`.
+- **The board.** Row D4 of `work_plan.md` §6 names the two flags as owner-only.
+
+**Departures.**
+
+1. **PUT, not PATCH.** The settings route has no PATCH. The opt-in uses the PUT of
+   `/email/assistant/settings`, as each other setting does.
+2. **"Older" means the same extractor and a lower number.** A version must be `<name>-<n>`, for
+   example `fin-1`. When `fin-2` writes, a `prj-1` fact of the same message stays. One message can
+   hold facts of two domains, and a delete of each other version removes the other domain.
+3. **The delete keeps a key that the new write sends again.** The upsert then keeps the `state` of
+   the member (§13.3). Without this, each new version resets each mark of the member.
+4. **The conflict arm also keeps `attachment_id`.** It keeps `message_id`, so the source of the
+   row stays one pair.
+5. **A fact has no `domain` field.** `write_facts` reads the domain from the type, so the two
+   cannot disagree.
+6. **`write_facts` returns a `WriteResult`.** It holds `written`, `deleted`, `dropped` and
+   `refused`. `refused` names the check that stopped the write. With no tenant, it raises
+   `TenantUnbound`. For a bad version, it raises `ValueError`.
+7. **`write_facts` reads no flag.** It checks the opt-in only, as §13.5 item 9 says. The job of
+   EM-T14b-2 reads `insights_enabled()` before it opens a session.
+8. **The FORCE fence runs the migration again.** The promoted catalog also gets FORCE from
+   `generated/04_policies.sql`. FORCE binds only the owner of a table, and `acb_app_h3rls` is not
+   the owner. So the test removes FORCE, runs the migration body, and makes `acb_app_h3rls` the
+   owner. Then it reads as org B.
+9. **M2 changes the key, not the conflict target.** No unique index exists on `message_id`. So
+   `ON CONFLICT (message_id)` stops every write with an error, and that proves nothing about the
+   dedupe. M2 puts the message id into the dedupe key.
+
+**Two findings for later slices.**
+
+- `write_facts` sets `insights_at` at each call. So EM-T14b-2 must write the body of a message
+  last. If not, a failed file leaves the message marked as read.
+- EM-T14b-1 imports `FACT_FIELDS` and `clean_text` from `insights_store.py`. It must not keep a
+  copy.
+
+**Mutations (2026-10-07).** Each one ran against the real database, and the agent restored the
+file after each run.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | Remove FORCE from the migration | `test_the_migration_alone_binds_the_table_owner`: the owner, bound to org B, read 1 row of org A. Also `test_it_forces_rls_with_a_check` |
+| M2 | Put the message id into the dedupe key | `test_two_writes_with_one_key_keep_the_first_row` and `test_the_key_names_type_ref_amount_currency_and_sender_domain` |
+| M3 | Set `state = 'open'` in the conflict arm | `test_two_writes_with_one_key_keep_the_first_row` and `test_a_newer_version_deletes_the_older_facts_of_its_source` |
+| M4 | Remove the cascade on `message_id` | `test_a_delete_of_the_message_deletes_its_facts` |
+| M5 | Remove the `email_insights` block from `generated/04_policies.sql` | `test_tenant_coverage.py::test_the_generated_set_on_disk_matches_the_tables_that_exist` |
+| M6 | Remove the mailbox predicate from the message check | `test_a_message_of_another_mailbox_writes_nothing` |
 
 #### 13.9.2 EM-T14b — the finance job, in three PRs
 
