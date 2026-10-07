@@ -70,13 +70,22 @@ describe("buildProjectsAssistantPersona", () => {
     expect(out).toContain("…");
   });
 
-  it("tells the agent when the member cannot edit the vocabulary", () => {
-    const denied = buildProjectsAssistantPersona({ node: NODE, canManageSettings: false });
-    expect(denied).toContain("may NOT edit");
-    expect(denied).toContain("projects:settings:write");
-    const allowed = buildProjectsAssistantPersona({ node: NODE, canManageSettings: true });
-    expect(allowed).toContain("may edit");
-    expect(allowed).not.toContain("may NOT");
+  it("states no permission: the server decides each write (owner, 2026-10-07)", () => {
+    // `projects_agent_parity.md` §16. The persona once said "may NOT edit …
+    // say who can: an organization admin" to EVERY member, the org owner too,
+    // from a capability list that never carries the slug. The model then
+    // refused tag writes the server allows. Re-adding any permission sentence
+    // fails here. The Python twin is `test_projects_agent_grants.py`.
+    const inputs = [
+      { node: null },
+      { node: NODE },
+      { node: NODE, openTask: { id: "t-1", title: "Tags", number: 3 } },
+      { node: NODE, selectedTaskIds: ["t-1", "t-2"], view: "board" },
+    ];
+    for (const input of inputs) {
+      const out = buildProjectsAssistantPersona(input);
+      expect(out).not.toMatch(/may not|may NOT|cannot|can't|admin|permission|grant|:write/i);
+    }
   });
 
   it("carries the date, the view and the filters when given", () => {

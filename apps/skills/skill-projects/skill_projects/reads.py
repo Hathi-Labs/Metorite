@@ -777,10 +777,24 @@ async def vocabulary(project_id: str) -> str:
     status_set = (await get(f"/projects/nodes/{pid}/status-set")) or {}
     if status_set.get("owner_name"):
         owner = "this project" if status_set.get("owns") else data(status_set.get("owner_name"))
-        out.append(
-            f"Status set owned by {owner}"
-            + (" · you may edit it" if status_set.get("may_edit") else " · you may not edit it")
+        # `may_edit` is the server's answer (`core.can_manage_settings`, the
+        # status write's own predicate). Only an explicit False is a "no",
+        # and then the server's own words follow (owner directive 2026-10-07).
+        may = status_set.get("may_edit")
+        verdict = (
+            " · the server says you may edit it" if may is True
+            else " · the server says you may not edit it" if may is False
+            else ""
         )
+        out.append(f"Status set owned by {owner}{verdict}")
+        if may is False and status_set.get("edit_refusal"):
+            out.append(f"  Gateway said: {data(status_set.get('edit_refusal'))}")
+    # The server checks a type, tag or field write when the tool runs. No
+    # read answers it before, so this read claims nothing either way.
+    out.append(
+        "Types, tags and fields: the server checks each change when you call "
+        "the tool. Call it when the member asks."
+    )
     statuses = ((await get(f"/projects/nodes/{pid}/statuses")) or {}).get("rows") or []
     out.append(f"Statuses ({len(statuses)}):")
     for s in statuses:
