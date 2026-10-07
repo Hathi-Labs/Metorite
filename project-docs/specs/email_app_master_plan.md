@@ -4055,12 +4055,13 @@ The R8 cases must show PASSED, not SKIPPED.
 2. Delete the old LLM body of each site and the four email calls to `shadow`. Delete `_STATUS_MODEL`, `_STATUS_MODEL_ESCALATION` and each prompt helper that nothing reads.
 3. The startup check runs whenever email sync is on.
 4. A pair in `DECIDE_FEATURE_MODES` for an email feature is now unknown, so it logs `decide.mode_refused`.
+5. ⚠️ **Keep `email.insights_screen`** (EM-T14b-0, 2026-10-07, §13.9.2 item 4). It is the Insights screen, not a triage site, and it has no old path. Items 1 and 4 do not apply to it. It keeps its name in `FEATURES` and `ON_FEATURES`, and its mode in `DECIDE_FEATURE_MODES`. The other choice is to hardcode it too. The owner of WS-17 makes that choice in this slice.
 
 **Gate.** The merge waits for the owner's "go". The evidence is 7 days of `on`, with `decide.unavailable` on fewer than 1% of decisions. After this merge, a revert is the only way back.
 
 **Done when.**
 
-- `FEATURES` holds no name that starts with `email.`.
+- `FEATURES` holds none of the four triage features. It keeps `email.insights_screen` (item 5).
 - An AST fence finds no `_llm_json` or `acompletion` call in the four decision functions. A companion test proves that the fence can fail.
 - With `decide_enabled` false, a run decides no email and stamps nothing. The startup check logs at error level.
 - The suites of EM-T5b-2 pass, less the email shadow cases.
@@ -12448,7 +12449,7 @@ behind `EMAIL_INSIGHTS`. The flip is an act of the owner only (the Flip row).
 | Slice | Gate | Scope | Done when |
 |---|---|---|---|
 | **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | ✅ **MERGED #700 (2026-10-07). Migration 231.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
-| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
+| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | ✅ **EM-T14b-0 MERGED #702 (2026-10-07).** 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
 | **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
 | **EM-T14d** | 🟢 AGENT-SAFE · R8 · visual review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The view.** Two PRs: EM-T14d-1 (the PATCH, the shared helper, the tile and the digest line) and EM-T14d-2 (the UI). | §13.9.4 |
 | **EM-T14e** | 🟢 AGENT-SAFE · R8 · after the flip | 📝 **SPECIFIED (2026-10-07). It waits for the flip.** **Projects.** The four project types, the Projects tab, and the commitments of today beside them. | §13.9.5 |
@@ -12665,6 +12666,9 @@ the full review loop and a security review.
 
 **EM-T14b-0 — the screen (stage 1, no database).** It builds stage 1 of D-EM-43.
 
+**Status of EM-T14b-0.** ✅ MERGED #702 (2026-10-07). It ships
+dark. "As built (EM-T14b-0)" below holds the departures and the mutation table.
+
 1. **No Router and no Console change.** The `decide` task takes any `boolean`, `choice` or `score`
    question, 16 or fewer for each request (`customer_console.md` §6A.14). So the screen needs no
    new task type, no new tier and no operator act. `tier-decide` and `DECIDE_ENABLED` are live in
@@ -12695,6 +12699,91 @@ the full review loop and a security review.
 **Mutations of EM-T14b-0.** B0-M1 leaves the name out of `ON_FEATURES`, and the `on` fence fails.
 B0-M2 treats None as a pass, and the undecided fence fails. B0-M3 asks one `choice` for all
 domains, and the question fence fails.
+
+**As built (EM-T14b-0, 2026-10-07).**
+
+- `decide_features.py`: `email.insights_screen` joins `FEATURES` and `ON_FEATURES`. Its default
+  mode is `off`. No other feature changes.
+- `automation/insights_screen.py` holds `screen()` and `screen_state()`. It imports no database
+  module, and nothing calls it yet.
+- `screen_state()` builds the state of §13.5 item 3a. It cuts the body at 8,000 characters. It
+  keeps 3 files or fewer, and it cuts each file at 2,000 characters. Each cut goes through
+  `decide_features.clip_fact`, as the rule match does.
+- `screen()` sends one request through `decide_features.ask`. The request holds one `boolean`
+  question `d_<domain>` for each enabled domain. Only `finance` has a question (D-EM-37).
+- A domain passes at `PASS_THRESHOLD`, 0.3 or more. A probability that is not a finite number
+  gives no decision.
+- The screen returns None for a mode other than `on`, for no known domain, and for no decision
+  from `ask`. Each case logs `email.insights.screen_skip` with a reason and no mail text.
+- **Prompt injection.** The mail text goes into the state as data, as in the rule match. The
+  instructions and the criteria are constant text, and they name a field by its path.
+  `_named_state` copies the named fields and drops each other key.
+- **Fences.** `tests/unit/test_email_insights_screen.py` holds 44 tests. Three registry fences
+  in `test_email_decide_shadow.py`, `test_email_decide_questions.py` and
+  `test_email_decide_on.py` now name the screen.
+
+**Departures of EM-T14b-0.**
+
+1. **`screen()` also takes `member`, as a keyword.** The spec names four arguments. `ask` takes
+   the mailbox owner as a proven member, so EM-T14b-2 can send it. None keeps the member of the
+   run context.
+2. **`shadow` asks nothing.** The spec names `off` only. The screen has no old answer to
+   compare, so it reads `shadow` as `off`. It logs the reason `mode_shadow`.
+3. **The screen does not ask a domain with no question.** It logs
+   `email.insights.screen_unknown_domain` with a count. With no known domain, it asks nothing
+   and returns None.
+4. **`screen_state()` is new.** The spec names the fields of the state, and not the function
+   that builds them. EM-T14b-2 builds the state with it.
+5. **Three triage fences changed.** Three tests said that `FEATURES` holds the four triage
+   features only. Each one now names the screen too. `ALL_ON` in `test_email_decide_on.py`
+   keeps the four triage features, because that is the value on the box.
+6. **The fence for "no database access" is an AST check.** It refuses an import of
+   `sqlalchemy`, `gateway.db`, `acb_common.db`, the email `core`, `redis` or `email_ingestion`.
+   It also refuses a `db` argument.
+
+**Mutations of EM-T14b-0, as run (2026-10-07).** Each mutation ran against
+`tests/unit/test_email_insights_screen.py`. After each one, the script restored the file,
+and `git status` was clean.
+
+| Id | Mutation | Result |
+|---|---|---|
+| B0-M1 | Leave the name out of `ON_FEATURES` | 17 failed, the `on` fence among them |
+| B0-M2 | Treat None from `ask` as a pass | 8 failed, the undecided fences among them |
+| B0-M3 | Ask one `choice` for all domains | 9 failed, the question fence among them |
+| M4 | A probability that is not a number counts as yes | 2 failed, `nan` and `inf` |
+| M5 | The bar goes from 0.3 to 0.0 | 4 failed, the 0.29 case among them |
+| M6 | The state goes out as the caller gave it | 1 failed, the named-fields fence |
+| M7 | `shadow` asks | 1 failed, the `shadow` case |
+
+**Review (2026-10-07): APPROVE.** The reviewer approved the slice at `3ec351518`, with P3
+findings only. Fix round 1 made these changes:
+
+1. **Bad `domains`.** None, a bare `str` and a value that is not a set of names ask nothing.
+   The screen logs `email.insights.screen_bad_domains` at warning level, with the type name,
+   and returns None. Before the fix, None raised `TypeError`. A bare `"finance"` became a set of
+   letters, so the screen skipped each mail with no word. The screen refuses a `str`, and it
+   does not read it as one domain.
+2. **Files.** `_named_state` accepts each sequence that is not text, a list or a tuple. It
+   drops a value of another type, and each entry that is not an object. A drop logs
+   `email.insights.screen_files_dropped` at warning level, with a count.
+3. **The log.** `decide.decided` holds each probability unrounded, and `threshold` beside it.
+   Before the fix, 0.2999999 logged as 0.3 with `passed=[]`.
+4. **The sender.** The data guidance names `email.sender` too, because an outside sender sets
+   its own display name.
+5. **The docstring** of `decide_features.py` now says five email features.
+6. **EM-T14b-2 item 5** now holds the member rule, with its fence.
+
+**Mutations of fix round 1, as run (2026-10-07).** The implementer committed the fix before the mutations.
+
+| Id | Mutation | Result |
+|---|---|---|
+| R1 | A bare `str` reads as a set of letters | 2 failed, `str` and `bytes` |
+| R2 | The check for None goes, and the `try` stays | 0 failed. The `try` also catches None, so this mutant does the same thing |
+| R2c | The check for None and the `try` go | 3 failed: None, 42 and a list of lists |
+| R3 | The screen accepts only a `list` of files | 1 failed, the tuple case |
+| R4 | An entry that is not an object drops with no log | 1 failed |
+| R5 | The log rounds the probability to 4 places | 1 failed |
+| R6 | The data guidance leaves out `email.sender` | 1 failed |
 
 **EM-T14b-1 — the checks and the eval set (no database).**
 
@@ -12771,6 +12860,15 @@ domains, and the question fence fails.
    - **A kept fact is lost (P3-d).** `write_facts` stores no fact that it counts in `kept`. If the
      row that owns the key goes later, nothing writes that fact again. A later pass that reads such
      messages again must clear `insights_at` for them.
+7. 🔴 **The job MUST send the proven mailbox owner to the screen** (review of EM-T14b-0,
+   2026-10-07). It calls `screen(..., member=owner)`. It reads `owner` with
+   `engine._decide_member(db, account_id, insights_screen.FEATURE)`, in its read session.
+   - **Why.** A deployment Router key refuses a `decide` call with no proven member. It answers
+     403 (`customer_console/auth.py` ~:698-705).
+   - That 403 starts `REFUSAL_COOLDOWN_S`, 15 minutes, for the whole organization. For that time
+     the triage rule match also leaves each mail undecided.
+   - **Fence.** In `tests/unit/test_email_insights_job.py`, the screen call of the job names the
+     owner as a proven member.
 
 **Non-goals.** No route, no UI and no tool. No sent mail. No spreadsheet figure (D-EM-40).
 

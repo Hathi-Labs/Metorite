@@ -14,10 +14,11 @@ Each feature that may ask ``acb_llm.decide`` has ONE mode here: ``off``,
   other than ``off``. An empty list allows no organization, and ``*`` allows
   every organization (EM-T5b-2, owner decision (b) of 2026-10-02).
 
-🔴 **``on`` is accepted for the four email features** (EM-T5b-2 in full,
-2026-10-02, after the narrowed slice opened it for ``email.rule_match``
-only). In ``on`` the ``decide`` answer DECIDES (:func:`ask`), and the old LLM
-call is not made. With no answer the email stays undecided (D-EM-8). For a
+🔴 **``on`` is accepted for the five email features**: the four triage
+features (EM-T5b-2 in full, 2026-10-02, after the narrowed slice opened it
+for ``email.rule_match`` only), and the Insights screen
+``email.insights_screen`` (EM-T14b-0, 2026-10-07). In ``on`` the ``decide``
+answer DECIDES (:func:`ask`), and the old LLM call is not made. With no answer the email stays undecided (D-EM-8). For a
 feature outside :data:`ON_FEATURES` ``on`` resolves to ``off`` and logs
 ``decide.mode_refused``. So does an unknown feature or an unknown mode.
 
@@ -97,11 +98,16 @@ _log = get_logger("gateway.decide_features")
 #: renamed ``email.rule_pick`` to ``email.rule_match``, because it now covers
 #: the multi-rule mode too. The old name is unknown, so it resolves to ``off``
 #: and logs ``decide.mode_refused``.
+#:
+#: WS-17 EM-T14b-0 (§13.9.2) adds ``email.insights_screen``, stage 1 of
+#: Insights (D-EM-43). It is not a triage site. It asks in ``on`` only, and
+#: never in ``shadow`` (``routes/email/automation/insights_screen.py``).
 FEATURES: tuple[str, ...] = (
     "email.cold_check",
     "email.sender_pin",
     "email.thread_status",
     "email.rule_match",
+    "email.insights_screen",
 )
 
 #: The three modes.
@@ -110,13 +116,15 @@ MODES: tuple[str, ...] = ("off", "shadow", "on")
 #: The features that may run ``on``. The narrowed EM-T5b-2 held the rule
 #: match only (owner decision (c)). EM-T5b-2 in full opens the other three.
 #: ``on`` for any other feature resolves to ``off`` and logs
-#: ``decide.mode_refused``. EM-T5b-3 takes the email features out of
-#: :data:`FEATURES`, and then this set holds no email name.
+#: ``decide.mode_refused``. EM-T5b-3 takes the triage features out of
+#: :data:`FEATURES`. ⚠️ It must keep the mode of ``email.insights_screen``,
+#: or hardcode it too (§13.9.2 item 4), because the screen has no old path.
 ON_FEATURES: frozenset[str] = frozenset({
     "email.cold_check",
     "email.sender_pin",
     "email.thread_status",
     "email.rule_match",
+    "email.insights_screen",
 })
 
 #: The value of ``decide_feature_orgs`` that allows every organization.
@@ -303,7 +311,7 @@ def _parse_modes(raw: str) -> Mapping[str, str]:
             continue
         if mode == "on" and feature not in ON_FEATURES:
             # 🔴 `on` only for a feature in ON_FEATURES. Since EM-T5b-2 in
-            # full, that set holds all four email features, so no feature of
+            # full, that set holds every email feature, so no feature of
             # FEATURES reaches this branch today. It stays as the guard for a
             # feature that joins FEATURES without `on`.
             _log.warning(
