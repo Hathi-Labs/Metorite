@@ -116,7 +116,19 @@ line — never reclaim a number by deleting the other entry.
      "Receipts" must reach that folder and make no new folder.
 - **Authority:** `email_app_master_plan.md` §14.6.10 "As built" · D-EM-60
 - **Added:** 2026-10-07 · branch `email-s10-rules-estimate` (WS-17 EM-S10
-  fix round 1). Open PR #719 holds H-266.
+  fix round 1). PR #719 added H-266.
+
+### H-266 · Redis has no maxmemory policy, and the email HTML and attachment caches are bounded only by TTL · [AGENT]
+- **Check:** run `grep -rn "maxmemory" infra/ deploy/`. No `maxmemory` with a
+  `maxmemory-policy` for the Redis of the gateway means this is open.
+- **Why.** The HTML route of EM-S1 caches up to 2 MB of HTML for each message for 1 hour. The
+  file cache of `transport/attachments.py` caches up to 15 MB for each file. The TTL is their only
+  bound, so a burst of opens can fill the memory of the box.
+- **Do.** Set `maxmemory` and `maxmemory-policy volatile-lru` (or `allkeys-lru`) for the Redis of
+  the gateway. First check that no key without a TTL is state that must stay, such as a stream
+  or a consumer group. Measure the memory of Redis on the box before you choose the number.
+- **Authority:** `email_app_master_plan.md` §14.4.2 · EM-S1 fix round 1
+- **Added:** 2026-10-07 · branch `email-s1-html-route` (WS-17 EM-S1)
 
 ### H-265 · Measure the agreement of the two System-1 engines before `SYSTEM_ONE_ON_DECIDE` goes on · [AGENT]
 - **Check:** run `rg -n "engine agreement" project-docs/specs/data_narrowing_pipeline.md`.

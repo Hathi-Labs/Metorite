@@ -4,13 +4,17 @@ hydration, and the full-body endpoint."""
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
+from acb_common import db_busy
+from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
-from email_ingestion.providers.base import local_folder_after_move
+from email_ingestion.providers.base import ProviderRateLimited, local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
 from gateway.routes.email.core import (
+    ATTACHMENT_CACHE_TTL_SECS,
     HUMAN_SENDER_CATEGORIES_LOWER,
     IN_ALL_INBOXES_SQL,
     KNOWN_LABELS_LOWER,
@@ -21,8 +25,10 @@ from gateway.routes.email.core import (
     AttachmentModel,
     EmailMessageModel,
     _assert_account_owner,
+    _decrypt_credentials,
     _fetch_attachments,
     _fetch_attachments_batch,
+    _html_remote,
     _tenant_session,
     _instantiate_provider,
     _log,
@@ -33,6 +39,7 @@ from gateway.routes.email.core import (
     folder_scope,
     router,
 )
+from gateway.routes.email.transport.attachments import _canonical_uuid
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -737,6 +744,10 @@ async def get_message(
                     msg.body_text = body_text
                     msg.body_html = body_html
                     msg.has_attachments = full.has_attachments
+                    # The row now answers with HTML, so it is not remote
+                    # (EM-S1 fix round 1). `_row_to_message` read the row
+                    # before the fetch.
+                    msg.html_remote = _html_remote(msg.body_html, row.received_at)
             except HTTPException:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -1119,3 +1130,241 @@ async def get_full_body(
                 status_code=500,
                 detail=f"Failed to fetch full body: {str(exc)}",
             )
+
+
+# ── The HTML of a message, from the provider (WS-17 EM-S1) ──────────────────
+
+#: The namespace of the HTML cache in tenant Redis. The key holds the id of
+#: the ROW, never the path text, so two spellings of one id share one entry.
+HTML_CACHE_NAMESPACE = "email-html"
+#: How long a cached answer lives: the TTL of the file cache (1 hour), because
+#: the route keeps the order of the owned file fetch (§14.4.2).
+HTML_CACHE_TTL_SECS = ATTACHMENT_CACHE_TTL_SECS
+#: The wait that a refused prefetch asks for (§14.4.2 item 2).
+PREFETCH_RETRY_AFTER_SECS = 30
+#: The longest ``Retry-After`` of a provider 429 that the route passes on.
+#: A longer or unreadable value gives :data:`PREFETCH_RETRY_AFTER_SECS`.
+PROVIDER_RETRY_AFTER_MAX_SECS = 300
+
+
+def _provider_429_response(exc: BaseException) -> Any:
+    """The HTTP answer of a provider 429 in the chain of *exc*, else None.
+
+    A ``ProviderRateLimited`` counts with or without an answer, because a
+    provider raises it when its own tries are spent (``GmailRateLimited``).
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen and len(seen) < 8:
+        seen.add(id(cur))
+        response = getattr(cur, "response", None)
+        if getattr(response, "status_code", None) == 429:
+            return response
+        if isinstance(cur, ProviderRateLimited):
+            return response if response is not None else True
+        cur = cur.__cause__
+    return None
+
+
+def _is_provider_429(exc: BaseException) -> bool:
+    """True when the provider refused the fetch for a rate limit."""
+    return _provider_429_response(exc) is not None
+
+
+def _provider_retry_after(exc: BaseException) -> int:
+    """The ``Retry-After`` that the route sends for a provider 429.
+
+    The seconds of the provider's own header, from 1 to
+    :data:`PROVIDER_RETRY_AFTER_MAX_SECS`. Else :data:`PREFETCH_RETRY_AFTER_SECS`.
+    """
+    response = _provider_429_response(exc)
+    headers = getattr(response, "headers", None)
+    raw = headers.get("Retry-After") if headers is not None else None
+    try:
+        wait = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return PREFETCH_RETRY_AFTER_SECS
+    if 1 <= wait <= PROVIDER_RETRY_AFTER_MAX_SECS:
+        return wait
+    return PREFETCH_RETRY_AFTER_SECS
+
+
+class MessageHtmlModel(BaseModel):
+    """The answer of ``GET /email/messages/{id}/html``.
+
+    ``source`` says where the HTML came from: ``stored`` (the row holds it),
+    ``cache`` (tenant Redis), ``provider`` (a live fetch) or ``none`` (the
+    message has no HTML, and ``body_html`` is null).
+    """
+
+    message_id: str
+    body_html: str | None = None
+    source: Literal["stored", "cache", "provider", "none"]
+
+
+def _html_key(row_id: Any) -> Any:
+    """The cache key of one row. Call it inside ``organization_scope``."""
+    return key(HTML_CACHE_NAMESPACE, str(row_id))
+
+
+async def _cached_html(org_id: str | None, row_id: Any) -> tuple[bool, str | None]:
+    """``(hit, body_html)`` from tenant Redis. A miss is ``(False, None)``.
+
+    Only with an organization in the session, and only after the owner
+    check. A cached ``none`` is a hit with ``None``. A Redis failure or a bad
+    entry is a miss, so the route then asks the provider.
+    """
+    if not org_id:
+        return False, None
+    try:
+        with organization_scope(org_id):
+            raw = await get_tenant_redis().get(_html_key(row_id))
+        if not raw:
+            return False, None
+        data = json.loads(raw)
+        html = data.get("body_html")
+        return True, (html if isinstance(html, str) and html else None)
+    except Exception:  # the cache is best effort
+        return False, None
+
+
+async def _remember_html(org_id: str | None, row_id: Any, html: str | None) -> None:
+    """Cache *html* for the row, ``None`` too. Best effort."""
+    if not org_id:
+        return
+    try:
+        # `ensure_ascii=False` keeps each non-ASCII letter as itself. The
+        # default escape grows Cyrillic and CJK HTML 2 to 3 times.
+        payload = json.dumps({"body_html": html}, ensure_ascii=False)
+        with organization_scope(org_id):
+            await get_tenant_redis().setex(
+                _html_key(row_id), HTML_CACHE_TTL_SECS, payload,
+            )
+    except Exception:  # the cache is best effort
+        pass
+
+
+@router.get("/messages/{message_id}/html", response_model=MessageHtmlModel)
+async def get_message_html(
+    message_id: str,
+    prefetch: bool = Query(False),
+    user: UserContext = Depends(get_current_user),
+) -> MessageHtmlModel:
+    """The HTML of one message of the caller's own mail (WS-17 EM-S1).
+
+    Spec: ``email_app_master_plan.md`` §14.4.2 items 1 and 2, and §14.6.1.
+    The provider holds the HTML of a message older than the hot window, and
+    the reading pane gets it here. The route keeps the order of the owned
+    file fetch (``transport/attachments.py``):
+
+    1. With the flag of ``html_tier.from_provider`` off, the answer is 404.
+    2. With ``prefetch``, a database that refused a connect in the last
+       15 seconds gives 503 with ``Retry-After``. An open is never refused.
+    3. The owner read runs first. A message of another member is 404, before
+       any cache read.
+    4. A row that holds HTML answers it as ``stored``.
+    5. Tenant Redis, keyed by the id of the ROW, inside
+       ``organization_scope``.
+    6. On a miss, the provider, with the member's own token. The HTML is cut
+       at ``MAX_BODY_HTML_BYTES``, and the answer goes into the cache for one
+       hour. A message with no HTML answers ``none``, and the cache keeps it.
+    7. A provider 429 answers 503 with ``Retry-After``, and logs one
+       ``email.html.provider_429`` line with the mailbox id and no mail text.
+
+    ⚠️ **No session is open across the provider call.** Block A reads the
+    row and the credentials, and closes. The provider authenticates and
+    fetches with no session open. Block B opens only when the provider
+    rotated its tokens, and writes them to ``email_accounts``.
+    ⚠️ **No path writes ``email_messages``.** EM-S3 owns the writers.
+    """
+    if not html_tier.from_provider():
+        raise HTTPException(status_code=404, detail="Not found")
+    if prefetch and db_busy.recently_busy():
+        raise HTTPException(
+            status_code=503,
+            detail="The database is busy. Try the prefetch again later.",
+            headers={"Retry-After": str(PREFETCH_RETRY_AFTER_SECS)},
+        )
+    mid = _canonical_uuid(message_id)
+    if mid is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    # Block A: the owner read. The session opens OUTSIDE any try, so
+    # `TenantUnbound` and a refused connect reach the handlers of main.py.
+    async with _tenant_session() as db:
+        row = (await db.execute(
+            text(
+                """SELECT em.id, em.provider_message_id, em.account_id,
+                          em.body_html, ea.provider, ea.credentials_encrypted
+                   FROM email_messages em
+                   JOIN email_accounts ea ON em.account_id = ea.id
+                   WHERE em.id = :mid AND ea.user_id = :user_id"""
+            ),
+            {"mid": mid, "user_id": user.email or "anonymous"},
+        )).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    row_id = str(row.id)
+    if row.body_html:
+        return MessageHtmlModel(message_id=row_id, body_html=row.body_html, source="stored")
+
+    # Ownership confirmed. Only NOW is the cache safe to read.
+    org_id = user.organization_id
+    hit, cached = await _cached_html(org_id, row_id)
+    if hit:
+        return MessageHtmlModel(
+            message_id=row_id, body_html=cached, source="cache" if cached else "none",
+        )
+
+    # The provider, with no session open, and the member's own token.
+    creds, store = _decrypt_credentials(row.credentials_encrypted)
+    provider = _instantiate_provider(row.provider, creds)
+    account_id = str(row.account_id)
+    fetch_error: Exception | None = None
+    html: str | None = None
+    try:
+        if not await provider.authenticate():
+            raise HTTPException(
+                status_code=401, detail="Email account authentication failed",
+            )
+        # The body only. `get_message` of Outlook expands each attachment,
+        # and Graph then sends the bytes of each file (EM-S1 fix round 1).
+        full = await provider.get_message_body(row.provider_message_id)
+        raw_html = getattr(full, "body_html", None) or ""
+        html = _truncate_body(raw_html, MAX_BODY_HTML_BYTES) if raw_html.strip() else None
+    except HTTPException:
+        raise
+    except Exception as exc:  # answered as 502 below
+        fetch_error = exc
+    finally:
+        # Block B: keep a token that the provider rotated, also after a
+        # failed fetch. It writes `email_accounts`, never `email_messages`.
+        if provider.credentials_dirty():
+            try:
+                async with _tenant_session() as db:
+                    await _persist_rotated_creds(db, store, account_id, provider)
+            except Exception as exc:  # never fail the read on it
+                _log.warning("email.html.creds_persist_failed",
+                             message_id=row_id, error=type(exc).__name__)
+    if fetch_error is not None and _is_provider_429(fetch_error):
+        # The provider refused for a rate limit. The prefetch of the pane
+        # stops on a 503, as it stops on a busy database (§14.6.1, EM-S2).
+        # The line holds the mailbox id and the wait, and no mail text.
+        wait = _provider_retry_after(fetch_error)
+        _log.warning("email.html.provider_429", account_id=account_id, retry_after=wait)
+        raise HTTPException(
+            status_code=503,
+            detail="The mail provider asked for a pause. Try again later.",
+            headers={"Retry-After": str(wait)},
+        )
+    if fetch_error is not None:
+        _log.warning("email.html.fetch_failed",
+                     message_id=row_id, error=type(fetch_error).__name__)
+        raise HTTPException(
+            status_code=502, detail="The mail provider did not give the message.",
+        )
+
+    await _remember_html(org_id, row_id, html)
+    return MessageHtmlModel(
+        message_id=row_id, body_html=html, source="provider" if html else "none",
+    )

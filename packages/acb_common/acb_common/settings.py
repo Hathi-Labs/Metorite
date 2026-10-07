@@ -877,6 +877,21 @@ class Settings(BaseSettings):
     # ``env-write``. Fence: tests/unit/test_email_storage_limit.py.
     email_mailbox_storage_limit_mb: int = 500
 
+    # ── The HTML hot window (WS-17 EM-S1, D-EM-49) ──────────────────────────
+    #
+    # `email_html_from_provider` opens `GET /email/messages/{id}/html` and the
+    # `html_remote` signal. With it false, the route answers 404 and the signal
+    # stays false. `email_html_hot_only` stops each writer from storing the
+    # `body_html` of a message older than the hot window. It acts only when the
+    # first flag is true too, so a writer never drops HTML that the pane cannot
+    # get again. The one reader of both is `email_ingestion.html_tier`.
+    #
+    # 🔴 The value `true` on a box is gate `enforcement-flip` (work_plan.md §6
+    # row D4). Spec: email_app_master_plan.md §14.6.1. Fence:
+    # tests/unit/test_email_html_tier.py.
+    email_html_from_provider: bool = False
+    email_html_hot_only: bool = False
+
     # Task-manager semantic capability matching (spec §5, Phase 2) — embed each
     # person's capability text (role · skills · résumé) into people
     # .capability_embedding and blend cosine similarity with the keyword match

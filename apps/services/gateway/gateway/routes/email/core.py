@@ -17,6 +17,7 @@ from typing import Any
 from uuid import UUID
 
 from acb_common import get_logger
+from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from fastapi import APIRouter, HTTPException
 
@@ -98,6 +99,12 @@ class EmailMessageModel(BaseModel):
     subject: str = ""
     body_text: str = ""
     body_html: str | None = None
+    # True when the provider holds the HTML of this message, and the store
+    # holds none: ``body_html`` is NULL and the message is older than the HTML
+    # hot window (WS-17 EM-S1, D-EM-49). The pane then calls
+    # ``GET /email/messages/{id}/html``. With the flag of ``html_tier`` off it
+    # is always false. :func:`_html_remote` is the one rule.
+    html_remote: bool = False
     body_truncated: bool = False
     snippet: str = ""
     has_attachments: bool = False
@@ -927,6 +934,21 @@ def _is_body_truncated(body_text: str, body_html: str) -> bool:
     return False
 
 
+def _html_remote(body_html: str | None, received_at: Any) -> bool:
+    """True when the provider holds the HTML and the store holds none.
+
+    The ONE rule of ``html_remote`` (WS-17 EM-S1, §14.4.2 item 3). It is true
+    only with the flag of ``html_tier.from_provider`` on, ``body_html`` NULL,
+    and a cold message. The test is ``IS NULL``, so an empty string that a
+    writer stored is not remote. ``html_tier`` owns the window.
+    """
+    return (
+        body_html is None
+        and html_tier.is_cold(received_at)
+        and html_tier.from_provider()
+    )
+
+
 def _row_to_message(row: Any) -> EmailMessageModel:
     """Convert a database row to an EmailMessageModel."""
     def _parse_jsonb(val: Any) -> Any:
@@ -971,6 +993,7 @@ def _row_to_message(row: Any) -> EmailMessageModel:
         subject=row.subject or "",
         body_text=row.body_text or "",
         body_html=row.body_html,
+        html_remote=_html_remote(row.body_html, row.received_at),
         body_truncated=_is_body_truncated(
             row.body_text or "", row.body_html or ""
         ),

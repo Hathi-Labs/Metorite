@@ -530,6 +530,15 @@ class BaseEmailProvider(ABC):
         """Get full email message including body."""
         ...
 
+    async def get_message_body(self, provider_message_id: str) -> EmailMessage:
+        """The message, for a caller that reads its body only.
+
+        The HTML route of the reading pane calls it (WS-17 EM-S1). The
+        default reads :meth:`get_message`. A provider whose full read costs
+        more, as Outlook's does, reads the body alone.
+        """
+        return await self.get_message(provider_message_id)
+
     @abstractmethod
     async def send_message(
         self,
