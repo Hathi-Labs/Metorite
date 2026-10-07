@@ -11,7 +11,7 @@
 > record; §11 is the build log and current state. · sibling surface: `whatsapp_calls_note_taker.md` Surface C (calls + recording) SHIPPED 2026-08-02 on this stack *(cross-ref added 2026-08-09)*
 > *(Update 2026-08-01, doc-truth pass: header previously said "PLANNING — no code yet",
 > contradicting §11's own build log; verified against the repo.)*
-> 🆕 **2026-10-06: §12 is the self-serve connect (owner directive).** A member connects their own WhatsApp Business account through Embedded Signup with coexistence. 🔴 §12.3 F1: on production the webhook drops every inbound batch, because it binds no tenant under FORCE RLS. WA-C1 fixes it (BUILT 2026-10-07). WA-C2 adds coexistence to Embedded Signup (BUILT 2026-10-07).
+> 🆕 **2026-10-06: §12 is the self-serve connect (owner directive).** A member connects their own WhatsApp Business account through Embedded Signup with coexistence. 🔴 §12.3 F1: on production the webhook drops every inbound batch, because it binds no tenant under FORCE RLS. WA-C1 fixes it (BUILT 2026-10-07). WA-C2 adds coexistence to Embedded Signup (BUILT 2026-10-07). WA-C3 adds the history import, the contacts and the echoes (BUILT 2026-10-07, migration 232). Its sync call stays dark behind `WHATSAPP_HISTORY_SYNC`, and the flip waits on WA-C0 only. The owner answered Q1 on 2026-10-07: triage normally.
 > **Mockups:** `mockups/whatsapp_message_manager.html` (7 screens + build notes, control-plane shell,
 > rebuilt around a single organizing spine — see §7)
 > **Anchors:** ADR-007 (WhatsApp via Meta Cloud API), `email_app_master_plan.md` (the vertical
@@ -892,9 +892,9 @@ no data from a coexistence number. The connect screen says so.
 | F1 | **The webhook binds no tenant.** It reads `wa_accounts` on an unbound session. Production has FORCE RLS and a NOT NULL `organization_id` on every `wa_*` table (read on the box, 2026-10-06). The account lookup returns no row, and the route logs `whatsapp.webhook.unknown_number` and answers 200. **Every inbound batch is dropped in silence.** The comment at `transport/webhook.py:118` says the tenant comes from the account row, and the code does not do it | `transport/webhook.py:80-132`, `whatsapp_ingestion/persist.py:244` | 🔴 P0 |
 | F2 | The same unbound session runs the post-sync hooks, the scheduler, the bridge push routes and the verify fallback | `automation/replyzero.py:142`, `intent.py:120`, `groups.py:201`, `transcription.py:153`, `outbound.py:72`, `scheduler.py:60,77`, `transport/bridge.py:315-470`, `transport/webhook.py:64` | 🔴 P0 |
 | F3 | Embedded Signup asks for no coexistence. `featureType` is `""`. The listener never reads `data.event`, so CANCEL and ERROR look like FINISH. WA-C2 fixes it | `connect/page.tsx:497-570` | 🟠 |
-| F4 | The parser never reads `change.field`. `history`, `smb_message_echoes` and `smb_app_state_sync` save nothing. Every message is `direction="in"`, and statuses are dropped | `providers/webhook.py:117-199`, `persist.py:244-270` | 🟠 |
-| F5 | No `smb_app_data` sync call exists. Meta allows 24 hours, and after that the member must connect again | — | 🟠 |
-| F6 | A Cloud account stays `sync_status='importing'` forever. A failed WABA subscribe is logged and swallowed, and the UI says done. WA-C2 fixes the Embedded Signup path. The manual path still writes `importing` (open) | `transport/accounts.py:230`, `connect.py:403-418`, `page.tsx:504` | 🟠 |
+| F4 | The parser never reads `change.field`. `history`, `smb_message_echoes` and `smb_app_state_sync` save nothing. Every message is `direction="in"`, and statuses are dropped | `providers/webhook.py:117-199`, `persist.py:244-270`. WA-C3 fixes it (BUILT 2026-10-07) | 🟠 |
+| F5 | No `smb_app_data` sync call exists. Meta allows 24 hours, and after that the member must connect again. WA-C3 adds the call and a retry route (BUILT 2026-10-07, dark behind `WHATSAPP_HISTORY_SYNC`) | — | 🟠 |
+| F6 | A Cloud account stays `sync_status='importing'` forever. A failed WABA subscribe is logged and swallowed, and the UI says done. Since WA-C2 the Embedded Signup path writes `live`, and a failed subscribe saves no row. The manual path still writes `importing` (open) | `transport/accounts.py:230`, `connect.py:403-418`, `page.tsx:504` | 🟠 |
 | F7 | A number is unique per member, not per platform. The webhook picks one row with `fetchone()`, so two connections of one number collide, possibly across orgs | `102_whatsapp.sql:43`, `webhook.py:80-87` | 🟠 |
 | F8 | `verify_signature` accepts an unsigned POST when `WHATSAPP_APP_SECRET` is unset | `webhook.py:37-39` | 🟠 |
 | F9 | Graph `v21.0` is pinned in four places, and the provider ignores `WHATSAPP_GRAPH_VERSION` | `connect.py:32`, `providers/cloud_api.py:24,37`, `app/whatsapp/lib/api.ts:112` | 🟡 |
@@ -912,7 +912,7 @@ Each slice is one PR. Each one ships dark where it changes behaviour.
 | **WA-C1** | **Bind the tenant on the webhook POST path.** Migration (next free number at build time, R1): a partial unique index on `wa_accounts(phone_number_id) WHERE provider = 'cloud_api'`, with a DO-block pre-check that raises with the duplicate count. One SECURITY DEFINER function in the shape of `222_chat_session_exists.sql` returns `(account_id, organization_id)` for a `cloud_api` `phone_number_id`. Only `acb_app` may execute it. It returns an org id, which goes past the one-bit rule of 222, and the reason is that the gateway can already bind any tenant. The POST reads through it, binds the org, runs `persist_sync_result` in `_tenant_session()`, fires the hooks, and releases the tenant in `finally` (the pattern of `routes/email/transport/sync.py:328-352`). The two hooks on that path (`replyzero.py:142`, `intent.py:120`) take `_tenant_session()`. F8: with `WHATSAPP_APP_SECRET` unset and `ACB_ENV` not `dev`, the POST answers 403, and `verify_signature` stays pure. A second connect of a connected number answers 409, not 500. `H2_WHATSAPP_EXEMPT_SITES` in `test_db_engine_seam.py` shrinks to the sites that remain | AGENT-SAFE | An R8 test on the `promoted` fixture, as a NOBYPASSRLS non-owner role. A signed webhook for a connected number writes its message, chat status and intent rows under that org, and a member of another org sees none. An unknown number answers 200 and writes nothing. With no app secret outside dev, the POST answers 403. It is red before the fix. **BUILT 2026-10-07** (migration 230). Each number in a batch binds its own tenant. Meta confirms a number at the server's Graph version before a manual connect inserts it. R8 `test_whatsapp_webhook_under_rls.py` is 14 passed, red first. The review rounds found a batch of two orgs (P0) and an unproven connect (P1), and both are fixed |
 | **WA-C1b** | **Bind the tenant on the other service paths.** The enrichment scheduler (`scheduler.py:60,77`, `groups.py:201`, `transcription.py:153`) loops per org in the shape of `email_ingestion/scheduler.py:396-434`, with no DEFINER. The GET verify fallback (`webhook.py:64`) is removed, because a Tech Provider app has one verify token, `WHATSAPP_VERIFY_TOKEN`. The broadcast handler (`outbound.py:72`) takes the org from the account row of its proposal | AGENT-SAFE | With live accounts in two orgs, one enrichment cycle reads and writes each account's rows under its own org (R8). The GET answers 403 for any token but the env token. A broadcast writes under its account's org (R8) |
 | **WA-C2** | **Coexistence in Embedded Signup.** `featureType: "whatsapp_business_app_onboarding"`. A listener that reads `event` (FINISH, FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING, CANCEL, ERROR). No phone `/register` for a coexistence number. The WABA subscribe is a hard step. `sync_status` moves to `live`, and an error shows as an error. **P1:** the coexistence event returns no `phone_number_id`, so the backend reads the WABA numbers (`list_waba_phone_numbers`) and selects one. Coexistence picks the number with `is_on_biz_app`. `verify_cloud_number` then confirms it. **P2:** no migration. `onboarding` (`cloud` or `coexistence`) goes in the encrypted credentials, and `provider` stays `cloud_api`. **P3:** the order is exchange, find and confirm, subscribe, then save. A failed subscribe answers 400 and saves no row | AGENT-SAFE | A hermetic test per event type. A subscribe failure shows an error and saves no live account. The connect screen names the limits of §12.2. **BUILT 2026-10-07** |
-| **WA-C3** | **History and contacts.** Call `smb_app_data` for `smb_app_state_sync` and `history` right after connect, and record the phase. Parse the `history`, `smb_app_state_sync` and `smb_message_echoes` fields. An echo is `direction="out"`, and its chat is the `to` number. Save statuses | AGENT-SAFE | Meta's sample payload for each field persists the right rows (R8). A history batch is idempotent on `wa_message_id`. An echo threads into the right chat |
+| **WA-C3** | **History and contacts.** Call `smb_app_data` for `smb_app_state_sync` and `history` right after connect, and record the phase. Parse the `history`, `smb_app_state_sync` and `smb_message_echoes` fields. An echo is `direction="out"`, and its chat is the `to` number. Save statuses. The picks P1 to P12 bind the build, and §12.4.1 holds them with the out-of-scope list | AGENT-SAFE. The production flip of `WHATSAPP_HISTORY_SYNC` waits on WA-C0 only (Q1 answered 2026-10-07: triage normally) | Meta's sample payload for each field persists the right rows (R8). A history batch is idempotent on `wa_message_id`. An echo threads into the right chat. The nine acceptance tests of §12.4.1 pass. **BUILT 2026-10-07** (migration 232). The R8 suite `test_whatsapp_history_under_rls.py` is 14 passed, and eight mutations of the persist rules each turn it red |
 | **WA-C4** | The Graph version comes from one setting, at the current version. Keep `expires_in`. Mark an account `reauth_needed` when Meta refuses its token | AGENT-SAFE | One constant, read by all four sites. A 190 error from Meta moves the account to `reauth_needed`, and the UI offers Reconnect |
 | **WA-C5** | **Chat over the messages** inside `/whatsapp`, through the one shared chat rail that Projects uses. No second chat seam | AGENT-SAFE | A member asks "who is waiting on me" in the rail, and the WhatsApp assistant answers from their own chats only |
 | **WA-C0** | **Meta Tech Provider setup** (§12.5) | **OWNER-GATE** | The app ID, the app secret, the Embedded Signup configuration ID and the verify token are on the box. The owner's own number connects through the popup |
@@ -923,6 +923,170 @@ Each slice is one PR. Each one ships dark where it changes behaviour.
 **Order.** WA-C1 comes first, because nothing else can work on production
 without it. WA-C1b comes before `WHATSAPP_ENRICHMENT` is turned on. Then WA-C2 and WA-C3, which the Meta App Review needs for its
 videos. Then WA-C4 and WA-C5. WA-C0 runs beside them.
+
+### 12.4.1 WA-C3 picks (spec-auditor, 2026-10-07)
+
+The spec-auditor cleared WA-C3 as GO-NARROWED on 2026-10-07. These picks bind
+the build. Do not choose them again.
+
+- **P1 Flag.** The gateway reads `WHATSAPP_HISTORY_SYNC` from the environment,
+  and it is OFF by default. It gates only the outbound `smb_app_data` calls. The
+  parser and the persist step go live, and they stay idle until Meta sends
+  the fields.
+- **P2 Migration** (the next free number at build time, R1). It adds only
+  nullable columns with `ADD COLUMN IF NOT EXISTS`, so a replay is safe (R6). It
+  adds no backfill and no constraint.
+  - `wa_accounts` gets `history_sync_state`, `history_sync_error` and
+    `history_import_progress`.
+  - `wa_messages` gets `delivery_status` and `from_history` (default false).
+  - `wa_contacts` gets `in_address_book`.
+  - `history_sync_state` NULL means "not coexistence, or an older row". Its
+    other values are `pending`, `requested`, `failed`, `declined` and
+    `complete`.
+- **P3 The sync call.** After the save of `embedded_signup`, a coexistence
+  connect calls `POST /<VER>/<PHONE_NUMBER_ID>/smb_app_data` two times. The
+  first call sends `smb_app_state_sync`, and the second call sends `history`.
+  Each call uses the server's Graph version and the token in the Authorization
+  header.
+  - Two `request_id` answers set the state to `requested`. A failure sets
+    `failed`, and `history_sync_error` gets the `friendly_meta_error` text. The
+    log carries `meta_error_fields` only, which is the WA-C2 rule.
+  - The connect never fails on this step. `persist_account` saves `pending` for
+    a coexistence row. The response gains `history_sync`, which is
+    `requested`, `failed`, `pending` or null.
+- **P4 Retry.** `POST /whatsapp/accounts/{account_id}/history-sync` checks the
+  owner with `assert_account_owned` and runs P3 again.
+  - It answers 409 when the state is not `pending` or `failed`.
+  - It answers 409 after `created_at` plus 24 hours. The text tells the member
+    to disconnect and connect again.
+  - It answers 400 when the flag is off.
+- **P5 Parser.** `parse_webhook` dispatches on `change.field`. A missing field
+  is `messages`. The parser ignores an unknown field with no error.
+  - `history`: each message gets `from_history`, and its chat is `thread.id`. A
+    message is `out` when the digits of `from` equal the business number, or
+    when it has `to`. All other messages are `in`.
+  - `smb_message_echoes`: the message is `out`, and its chat is `to`. Its
+    sender is the business number, with no name.
+  - `smb_app_state_sync`: one contact add or remove for each item.
+  - The `metadata` of each history item gives the phase and the progress.
+  - Error code 2593109 is a decline. The parser reads it from `value.errors[]`
+    and from `value.history[].errors[]`, because Meta does not say where it
+    goes.
+  - The parser reduces every phone number to digits, to match `wa_id`.
+- **P6 Statuses.** `history_context.status` and the live `statuses[]` set
+  `delivery_status`. SENT is `sent`, DELIVERED is `delivered`, READ is `read`,
+  PLAYED is `played`, PENDING is `pending` and ERROR is `failed`.
+  - A live status updates only a row that has its `wa_message_id`. It never
+    creates a row.
+  - A status only moves forward, in the order pending, sent, delivered, read,
+    played. `failed` applies unless the row is `read` or `played`.
+- **P7 Window.** A message from the history import never sets
+  `wa_chats.service_window_expires_at`, at any age. An echo is `out`, so it
+  sets no window either. `last_message_at` keeps its GREATEST rule.
+- **P8 Hooks.** A history row lands with `rules_processed_at` and
+  `commitment_checked_at` set to the time of the insert. History media lands
+  with `transcription_status='skipped'`, never `pending`.
+  - `persist_sync_result` counts history in its own `history_messages` key. So
+    a batch of history alone does not fire `on_new_messages`.
+  - An echo counts as a live message, so a promise in an echo still becomes a
+    commitment.
+- **P9 Send regime.** An echo or an outbound history row stores `send_regime`
+  NULL, not `session`.
+- **P10 Contacts.** An add upserts `display_name` (`full_name`, else
+  `first_name`) and sets `in_address_book` true.
+  - A remove sets `in_address_book` false. It keeps the name, the category and
+    `entity_ref`, and it never deletes the row.
+  - A later live `contacts[]` profile name does not replace the name of a row
+    with `in_address_book` true.
+- **P11 Progress.** Each progress write runs inside `persist_sync_result`, in
+  the same bound session.
+  - `history_import_phase` is the highest Meta phase seen, plus 1 (1 to 3). The
+    value 0 means that no phase came.
+  - A higher phase replaces the progress. The same phase keeps the GREATEST
+    progress. The parser ignores a lower phase.
+  - Progress 100 sets the state to `complete`. Code 2593109 sets `declined`,
+    with a fixed sentence in `history_sync_error`.
+  - `WhatsAppAccountModel` and the frontend `WaAccount` gain
+    `history_sync_state`, `history_sync_error`, `history_import_progress` and
+    `history_sync_deadline`. The deadline is `created_at` plus 24 hours when
+    the state is not NULL.
+- **P12 UI.** The connect `StepDone` takes `history_sync` and states the true
+  copy for each value.
+  - `/whatsapp/numbers` shows one history line on each coexistence account:
+    progress, complete, declined or failed.
+  - It shows a "Start history import" button while the state is `pending` or
+    `failed` and the deadline has not passed.
+  - It uses the `Button` primitive and tokens only, and it adds no colour.
+
+**Out of scope for WA-C3.**
+
+- A Reply Zero policy of its own for history chats. The owner answered Q1:
+  triage normally, so `classify_chat_status` does not change.
+- Transcription and embeddings of history.
+- Groups.
+- The bridge routes.
+- F13, the `/register` call after a plain FINISH.
+- The `importing` status of the manual path (F6).
+
+**Acceptance.** Each item is a test, and it is red before the fix where that
+is practical.
+
+1. Hermetic, with the flag on: the two calls run in order. Contacts go first,
+   then history. A failed call keeps the account saved with `failed`. The
+   retry route answers 409 after the deadline and 409 in a wrong state. It
+   answers 400 with the flag off. With the flag off, no `smb_app_data` call
+   runs.
+2. R8, Meta's history sample. It writes `in` and `out` rows in a chat keyed on
+   `thread.id`. Each row has `delivery_status`, `from_history` and both
+   watermarks set. It sets no service window and writes no `wa_commitments`
+   row. It writes the progress onto the account.
+3. The same history batch, sent two times, adds no row.
+4. R8: an echo to a number lands `out` in the `wa_chats` row of a live
+   message from that number. Then `wa_chat_status` reads AWAITING.
+5. R8: a contact add and then a remove leave one `wa_contacts` row, with
+   `in_address_book` false and the name still set.
+6. A live `read` and then a live `delivered` leave `read`. An unknown
+   `wa_message_id` creates no row.
+7. A 2593109 payload sets the state to `declined`.
+8. R8: a member of another org sees none of these rows. Each R8 test runs on
+   `promoted`, as the NOBYPASSRLS role that is not the owner.
+9. Frontend: vitest for each new pure helper, plus `tsc` and the conformance
+   suite.
+
+**Owner question Q1, ANSWERED 2026-10-07.** The question was whether a chat
+whose newest message came from the history import reads FYI until a live
+message arrives. The owner chose "triage normally". An imported chat goes
+through Reply Zero like a live one. So `classify_chat_status` does not change,
+and that is the design, not a gap. The production flip of
+`WHATSAPP_HISTORY_SYNC` now waits on WA-C0 only.
+
+**Build notes (2026-10-07).** WA-C3 took migration 232.
+
+- Migration 232 writes the comment of `history_import_phase`, with
+  `COMMENT ON COLUMN`.
+- It does not edit `102_whatsapp.sql`. The deploy runs a changed migration
+  file again, and it takes a backup before it does.
+- The media insert is now idempotent. Before WA-C3 a redelivered batch added a
+  second `wa_media` row, because each row got a new id.
+- A live inbound chat id is now digits only, so it matches the chat of an
+  echo. Meta writes `from` as digits, so no stored chat changes.
+- The fences: `test_whatsapp_history_under_rls.py` (R8), and the WA-C3 tests
+  in `test_whatsapp_webhook_parser.py`, `test_whatsapp_persist.py`,
+  `test_whatsapp_connect.py` and `historySync.test.ts`.
+- Fix round (2026-10-07). The account model carries
+  `history_sync_available`, the value of `WHATSAPP_HISTORY_SYNC`. While it is
+  false, Numbers shows "History import is not on yet." and no button. The
+  connect answers `pending` only in that state, so its last step gives no
+  retry advice either.
+- Fix round. A batch with history and no live message runs no post-sync hook
+  while the import is open. The batch that completes the import, and any
+  history batch after it, runs `classify_chats` once. This is the backfill
+  rule of `bridge.py`, and it keeps a large import inside Meta's timeout.
+- Fix round. A history copy of a live message keeps the live sender. The
+  parser reads a `state_sync[]` item with a `contact` and no `type`, and the
+  decline code as an int or a string.
+- Still open: the embedding pass reads history rows when `WHATSAPP_ENRICHMENT`
+  is on. Transcription skips them.
 
 ### 12.5 The Meta side (WA-C0, OWNER-GATE)
 
@@ -952,7 +1116,7 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8. With
 uv run pytest tests/unit/test_whatsapp_webhook_parser.py tests/unit/test_whatsapp_persist.py tests/unit/test_whatsapp_connect.py -q
 uv run pytest tests/unit/test_whatsapp_routes.py tests/unit/test_whatsapp_replyzero.py tests/unit/test_whatsapp_intent.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_insert_fence.py tests/unit/test_db_engine_seam.py -q
-uv run pytest tests/unit/<the new R8 file> -q -rs        # a SKIP is not a pass
+uv run pytest tests/unit/test_whatsapp_webhook_under_rls.py tests/unit/test_whatsapp_history_under_rls.py -q -rs   # a SKIP is not a pass
 uv run ruff check apps/services/gateway/gateway/routes/whatsapp apps/services/whatsapp_ingestion
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/whatsapp
 ```

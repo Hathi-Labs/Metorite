@@ -55,6 +55,16 @@ class WhatsAppMessage:
     chat_kind: str = "dm"               # 'dm' | 'group' | 'broadcast'
     sent_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # WS-20 WA-C3 (spec §12.4.1). A row of the coexistence history import.
+    # It opens no service window and lands with both automation watermarks
+    # set, so no rule and no commitment pass reads it as new.
+    from_history: bool = False
+    # A message that the business sent from the phone app, which Meta
+    # copies to the webhook as ``smb_message_echoes``. It is live.
+    is_echo: bool = False
+    # 'pending' | 'sent' | 'delivered' | 'read' | 'played' | 'failed', from
+    # ``history_context.status``. None for a live message.
+    delivery_status: str | None = None
 
 
 @dataclass
@@ -69,6 +79,30 @@ class WhatsAppStatus:
 
 
 @dataclass
+class WhatsAppContactChange:
+    """One address-book change from ``smb_app_state_sync`` (WS-20 WA-C3).
+
+    ``phone_number`` is digits only, so it matches ``wa_id``. A remove
+    carries no names."""
+    phone_number: str
+    action: str                         # 'add' | 'remove'
+    full_name: str = ""
+    first_name: str = ""
+    timestamp: datetime | None = None
+
+
+@dataclass
+class HistoryProgress:
+    """The ``metadata`` of one ``history`` item (WS-20 WA-C3).
+
+    ``phase`` is Meta's: 0 is day 0-1, 1 is day 1-90 and 2 is day 90-180.
+    ``progress`` is 0 to 100, and 100 means the import is done."""
+    phase: int
+    progress: int = 0
+    chunk_order: int | None = None
+
+
+@dataclass
 class SyncResult:
     """Result of parsing one webhook payload (or a history-import page)."""
     messages: list[WhatsAppMessage] = field(default_factory=list)
@@ -78,6 +112,11 @@ class SyncResult:
     # The phone_number_id every event in this payload targeted — the receiver
     # resolves the owning wa_account by it. None if the payload had no metadata.
     phone_number_id: str | None = None
+    # WS-20 WA-C3: the address-book changes, the history progress, and
+    # whether the member turned history sharing off (Meta code 2593109).
+    contact_changes: list[WhatsAppContactChange] = field(default_factory=list)
+    history_progress: list[HistoryProgress] = field(default_factory=list)
+    history_declined: bool = False
 
 
 class BaseWhatsAppProvider(ABC):

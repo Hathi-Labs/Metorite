@@ -15,16 +15,24 @@ Two seams that turn "paste a curl command" into a guided, verifiable UI:
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import httpx
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import Depends, HTTPException
-from gateway.routes.whatsapp.core import _instantiate_provider, _tenant_session, router
+from gateway.routes.whatsapp.core import (
+    _instantiate_provider,
+    _tenant_session,
+    assert_account_owned,
+    router,
+)
 from pydantic import BaseModel
+from sqlalchemy import text
 
 _log = get_logger("gateway.whatsapp.connect")
 
@@ -334,6 +342,165 @@ class EmbeddedSignupResponse(BaseModel):
     # Always true since WA-C2: a failed subscribe answers 400 and saves no
     # row. Kept on the wire, because the frontend type reads it.
     subscribed: bool
+    # WS-20 WA-C3 P3. None for a plain Cloud connect. For coexistence:
+    # 'requested' when Meta took both sync calls, 'failed' when it refused
+    # one, and 'pending' when the server does not run the sync.
+    history_sync: Literal["requested", "failed", "pending"] | None = None
+
+
+# ── WS-20 WA-C3: the coexistence history sync (spec §12.4.1 P1, P3, P4) ──────
+#
+# Meta, "Onboard WhatsApp Business app users": two calls of
+# `POST /<VER>/<PHONE_NUMBER_ID>/smb_app_data`, contacts first and then
+# history, within 24 hours of the connect. Each answers `{messaging_product,
+# request_id}`. Meta then sends the data to the webhook as the
+# `smb_app_state_sync` and `history` fields, which the persist path stores.
+
+#: The flag of record. OFF by default. It gates the two outbound calls and
+#: nothing else: the parser and the persist path read the fields always.
+HISTORY_SYNC_ENV = "WHATSAPP_HISTORY_SYNC"
+
+#: The two sync types, in the order that Meta asks for.
+SYNC_TYPES = ("smb_app_state_sync", "history")
+
+#: The 409 detail of a retry after Meta's 24-hour window.
+HISTORY_WINDOW_PASSED = (
+    "Meta allows the history import only in the first 24 hours after you "
+    "connect a number. To import the history now, disconnect this number and "
+    "connect it again.")
+
+#: The 400 detail of a retry while the flag is off.
+HISTORY_SYNC_OFF = "The history import is not turned on on this server."
+
+
+def history_sync_enabled(env: Any = None) -> bool:
+    """True when this server runs the history sync calls. Pure."""
+    src = env if env is not None else os.environ
+    return str(src.get(HISTORY_SYNC_ENV, "")).strip().lower() in {
+        "1", "true", "yes", "on"}
+
+
+async def request_app_data_sync(
+    phone_number_id: str, token: str, graph_version: str, sync_type: str,
+) -> str:
+    """One ``smb_app_data`` call. Returns Meta's ``request_id``, or raises.
+
+    The token goes in the Authorization header and the body is JSON, so no
+    secret is ever in the URL (the WA-C2 rule). The caller checks that the
+    number is digits, because it goes into the URL path."""
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.post(
+            f"{_GRAPH_BASE}/{graph_version}/{phone_number_id}/smb_app_data",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"messaging_product": "whatsapp", "sync_type": sync_type},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    request_id = data.get("request_id") if isinstance(data, dict) else None
+    if not request_id:
+        raise MetaAnswerError("Meta returned no request id for the sync.")
+    return str(request_id)
+
+
+#: The one write of the state after a sync call. It changes only a row that
+#: is still `pending` or `failed`, so a webhook that marked the import
+#: `complete` or `declined` first is never written back.
+_HISTORY_STATE_UPDATE = """UPDATE wa_accounts
+    SET history_sync_state = :state, history_sync_error = :error,
+        updated_at = now()
+    WHERE id = :id AND history_sync_state IN ('pending', 'failed')"""
+
+
+async def start_history_sync(
+    account_id: str, phone_number_id: str, token: str,
+) -> tuple[str, str | None]:
+    """Run the two sync calls for a saved coexistence account, then write
+    the state. Returns ``(state, error)``, and never raises.
+
+    The connect never fails on this step (P3). A refused call gives
+    ``'failed'`` with ``friendly_meta_error`` text, and the log line carries
+    ``meta_error_fields`` only, never the exception text."""
+    from whatsapp_ingestion.providers.factory import (
+        is_phone_number_id,
+        safe_graph_version,
+    )
+
+    gv = safe_graph_version(
+        os.environ.get("WHATSAPP_GRAPH_VERSION", "").strip() or None)
+    state, error = "requested", None
+    if not is_phone_number_id(phone_number_id):
+        state, error = "failed", "The phone number id is not the numeric id that Meta shows."
+    else:
+        for sync_type in SYNC_TYPES:
+            try:
+                await request_app_data_sync(phone_number_id, token, gv, sync_type)
+            except Exception as exc:
+                _log.warning("whatsapp.history_sync.failed", account_id=account_id,
+                             sync_type=sync_type, **meta_error_fields(exc))
+                state, error = "failed", friendly_meta_error(exc)
+                break
+    try:
+        async with _tenant_session() as db:
+            await db.execute(text(_HISTORY_STATE_UPDATE),
+                             {"id": account_id, "state": state, "error": error})
+    except Exception as exc:
+        # The state stays as it was. The member can start the import again.
+        _log.warning("whatsapp.history_sync.state_write_failed",
+                     account_id=account_id, error_class=type(exc).__name__)
+    if state == "requested":
+        _log.info("whatsapp.history_sync.requested", account_id=account_id)
+    return state, error
+
+
+class HistorySyncResponse(BaseModel):
+    history_sync: Literal["requested", "failed"]
+    history_sync_error: str | None = None
+
+
+@router.post("/accounts/{account_id}/history-sync",
+             response_model=HistorySyncResponse)
+async def retry_history_sync(
+    account_id: str, user: UserContext = Depends(get_current_user),
+):
+    """Start the history import again (WS-20 WA-C3 P4).
+
+    400 with the flag off. 404 for an account of another member. 409 when the
+    state is not ``pending`` or ``failed``, and 409 after Meta's 24-hour
+    window. Meta is called after the session closes, so no connection waits
+    on Meta."""
+    from gateway.routes.whatsapp.transport.accounts import history_sync_deadline
+
+    if not history_sync_enabled():
+        raise HTTPException(status_code=400, detail=HISTORY_SYNC_OFF)
+    async with _tenant_session() as db:
+        await assert_account_owned(db, account_id, user.email or "anonymous")
+        row = (await db.execute(
+            text("""SELECT history_sync_state, created_at, phone_number_id,
+                           credentials_encrypted
+                    FROM wa_accounts WHERE id = :id"""),
+            {"id": account_id},
+        )).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if row.history_sync_state not in ("pending", "failed"):
+        raise HTTPException(
+            status_code=409,
+            detail="Only a history import that is pending or failed can start "
+                   "again.")
+    deadline = history_sync_deadline(row.created_at)
+    if deadline is None or datetime.now(UTC) >= deadline:
+        raise HTTPException(status_code=409, detail=HISTORY_WINDOW_PASSED)
+
+    from acb_llm.key_store import get_key_store
+    creds = json.loads(get_key_store().decrypt(row.credentials_encrypted))
+    token = creds.get("access_token") if isinstance(creds, dict) else None
+    if not token:
+        raise HTTPException(
+            status_code=409, detail="This number has no stored token. "
+                                    "Disconnect it and connect it again.")
+    state, error = await start_history_sync(
+        account_id, row.phone_number_id, str(token))
+    return HistorySyncResponse(history_sync=state, history_sync_error=error)
 
 
 @router.post("/connect/embedded", response_model=EmbeddedSignupResponse)
@@ -423,6 +590,7 @@ async def embedded_signup(
     display = (
         req.display_name.strip() or profile.get("verified_name") or "WhatsApp")
     phone = profile.get("display_phone_number") or ""
+    coexistence = req.onboarding == "coexistence"
     async with _tenant_session() as db:
         row = await persist_account(
             db, user_id=user.email or "anonymous", phone_number=phone,
@@ -431,8 +599,20 @@ async def embedded_signup(
             webhook_verify_token=os.environ.get("WHATSAPP_VERIFY_TOKEN") or None,
             verified_profile=profile,
             sync_status="live",
+            history_sync_state="pending" if coexistence else None,
         )
         acct = _account_model(row)
+
+    # 6. the history sync (WS-20 WA-C3 P3). Only a coexistence number has a
+    # history on the phone app. It runs after the save has committed, and the
+    # connect never fails on it. With the flag off the row stays `pending`.
+    history_sync: str | None = None
+    if coexistence:
+        history_sync = "pending"
+        if history_sync_enabled():
+            history_sync, _ = await start_history_sync(
+                acct.id, phone_number_id, token)
     return EmbeddedSignupResponse(
         account_id=acct.id, display_name=acct.display_name,
-        phone_number=acct.phone_number, subscribed=True)
+        phone_number=acct.phone_number, subscribed=True,
+        history_sync=history_sync)

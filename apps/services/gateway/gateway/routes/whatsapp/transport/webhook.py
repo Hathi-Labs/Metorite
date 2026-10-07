@@ -211,6 +211,21 @@ def split_by_number(payload: Any) -> tuple[dict[str, dict[str, Any]], int]:
     return groups, unrouted
 
 
+def defer_chat_sweep(counts: dict[str, int], *, has_progress: bool) -> bool:
+    """True when a batch carried history and nothing live, and the import is
+    not complete yet. Then the webhook runs no post-sync hook. Pure.
+
+    The chunk that completes the import, and any history chunk after it,
+    runs `classify_chats` once, so every imported chat gets its reply state
+    (Q1, "triage normally"). A batch with a live message runs the hooks as
+    before. WS-20 WA-C3 fix round P2-2, after `bridge.py`'s backfill rule.
+    """
+    if counts.get("messages", 0):
+        return False
+    carried_history = bool(counts.get("history_messages", 0)) or has_progress
+    return carried_history and not counts.get("history_complete", 0)
+
+
 async def _ingest_number(phone_number_id: str, sub_payload: dict[str, Any]) -> None:
     """Persist one number's part of a batch under the tenant that owns it.
 
@@ -243,12 +258,24 @@ async def _ingest_number(phone_number_id: str, sub_payload: dict[str, Any]) -> N
             counts = await persist_sync_result(db, account_id, result)
 
         # Fire the shared post-sync pipeline (same brain the whatsmeow bridge uses).
-        await fire_post_sync_hooks(account_id, counts)
+        # A batch of history alone counts no `messages`, so it does not fire
+        # `on_new_messages` (WS-20 WA-C3 P8). It also skips the chat sweep
+        # until the import is complete (fix round P2-2, the bridge's backfill
+        # rule): the sweep reads every chat, and on a large import Meta would
+        # time out and send the chunk again.
+        if defer_chat_sweep(counts, has_progress=bool(result.history_progress)):
+            _log.info("whatsapp.webhook.chat_sweep_deferred",
+                      account_id=account_id,
+                      history_messages=counts.get("history_messages", 0))
+        else:
+            await fire_post_sync_hooks(account_id, counts)
 
         _log.info(
             "whatsapp.webhook.ingested",
             account_id=account_id, messages=counts["messages"],
+            history_messages=counts.get("history_messages", 0),
             statuses=len(result.statuses),
+            contact_changes=len(result.contact_changes),
         )
     finally:
         release_tenant(token)
