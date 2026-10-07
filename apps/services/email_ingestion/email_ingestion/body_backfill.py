@@ -42,6 +42,8 @@ from typing import Any
 
 from sqlalchemy import text
 
+from email_ingestion import html_tier
+
 logger = logging.getLogger(__name__)
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -176,15 +178,24 @@ async def write_bodies(
 
     Takes the caller's session, opens none and never commits. The seam
     commits when the caller's ``tenant_session`` block exits, so each UPDATE
-    runs under the tenant binding."""
+    runs under the tenant binding.
+
+    🔴 **No cold HTML (WS-17 EM-S3, §14.4.3 item 2).** The HTML goes through
+    ``html_tier.COLD_SAFE_HTML_SET``. With ``html_tier.hot_only()`` true, a
+    cold row gets its text and keeps the HTML that it holds, NULL for a row
+    that held none. The row decides by its own ``received_at``, so a
+    candidate needs no date."""
+    cold_before = html_tier.cold_before()
     for b in fetched:
         await db.execute(text(
-            """UPDATE email_messages
-                  SET body_text = :bt, body_html = :bh, snippet = :sn,
+            f"""UPDATE email_messages
+                  SET body_text = :bt, {html_tier.COLD_SAFE_HTML_SET},
+                      snippet = :sn,
                       has_attachments = COALESCE(:ha, has_attachments),
                       updated_at = now()
                 WHERE id = :id"""),
             {"id": b.id, "bt": b.body_text, "bh": b.body_html,
+             "html_cold_before": cold_before,
              "sn": b.snippet, "ha": b.has_attachments},
         )
     if fetched:

@@ -14,6 +14,11 @@ Mutation: delete the ``WHERE`` part from ``_ON_CONFLICT_UPDATE``. Then
 headers-only tests fail, because ``xmin`` moves on each run. Add
 ``updated_at`` to ``_SYNCED_COLUMNS`` and the same tests fail.
 
+WS-17 EM-S3 (:class:`TestColdHtml`). With ``html_tier.hot_only()`` true, a
+re-sync of a cold row writes no HTML back, and ``xmin`` stays. That holds for a
+cleared row and for a row that still holds its HTML. Mutation S3-M1 binds the
+HTML of a cold message, and the cleared-row case fails.
+
 R8: the ``private_db`` fixture builds a PRIVATE database on the server that
 ``TENANT_LADDER_DATABASE_URL`` names, applies the whole tenant ladder, and
 drops the database at the end. It never touches the shared ladder database.
@@ -295,3 +300,113 @@ class TestTheGuardOnARealDatabase:
                 "WHERE relname = 'email_messages'"))).scalar()
 
         assert upd == 1
+
+
+# ── EM-S3: a re-sync never writes cold HTML back (R8) ───────────────────────
+
+
+def _hot_only(monkeypatch, on: bool) -> None:
+    """Both flags of ``html_tier.hot_only()``, through the settings object."""
+    from acb_common.settings import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "email_html_from_provider", on, raising=False)
+    monkeypatch.setattr(settings, "email_html_hot_only", on, raising=False)
+
+
+def _html_of(db, pmid: str):
+    from sqlalchemy import text
+
+    with db.engine.connect() as c:
+        return c.execute(text(
+            "SELECT body_html FROM email_messages "
+            "WHERE account_id = :a AND provider_message_id = :p"),
+            {"a": db.account, "p": pmid}).scalar_one()
+
+
+def _clear_html(db, pmid: str) -> None:
+    """What the clear job of EM-S4 does to one row: HTML NULL, text kept."""
+    from sqlalchemy import text
+
+    with db.engine.begin() as c:
+        c.execute(text(
+            "UPDATE email_messages SET body_html = NULL "
+            "WHERE account_id = :a AND provider_message_id = :p"),
+            {"a": db.account, "p": pmid})
+
+
+_COLD = datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+
+@_DB_GATE
+class TestColdHtml:
+    """WS-17 EM-S3, ``email_app_master_plan.md`` §14.6.3. The SET keeps a
+    stored body through ``COALESCE``, and the upsert binds NULL HTML for a
+    cold message. So the guard sees no change, and ``xmin`` stays.
+
+    Mutation S3-M1: bind the HTML of a cold message in
+    ``persist._bodies``. Then the cleared row gets its HTML back, and
+    ``xmin`` moves."""
+
+    async def test_a_resync_of_a_cleared_cold_row_with_html_writes_no_row(
+        self, private_db, monkeypatch,
+    ) -> None:
+        msg = _Msg(provider_message_id=_pmid(), received_at=_COLD)
+        _hot_only(monkeypatch, False)
+        await _upsert(private_db, msg)
+        _clear_html(private_db, msg.provider_message_id)
+        first = _row(private_db, msg.provider_message_id)
+
+        _hot_only(monkeypatch, True)
+        await _upsert(private_db, msg)
+        second = _row(private_db, msg.provider_message_id)
+
+        assert second.xmin == first.xmin
+        assert _html_of(private_db, msg.provider_message_id) is None
+        assert second.body_text == "the body"
+
+    async def test_a_resync_of_a_cold_row_that_holds_html_keeps_it(
+        self, private_db, monkeypatch,
+    ) -> None:
+        msg = _Msg(provider_message_id=_pmid(), received_at=_COLD)
+        _hot_only(monkeypatch, False)
+        await _upsert(private_db, msg)
+        first = _row(private_db, msg.provider_message_id)
+
+        _hot_only(monkeypatch, True)
+        await _upsert(private_db, msg)
+        second = _row(private_db, msg.provider_message_id)
+
+        assert second.xmin == first.xmin
+        assert _html_of(private_db, msg.provider_message_id) == "<p>the body</p>"
+
+    async def test_a_cold_change_still_writes_and_brings_no_html(
+        self, private_db, monkeypatch,
+    ) -> None:
+        msg = _Msg(provider_message_id=_pmid(), received_at=_COLD)
+        _hot_only(monkeypatch, True)
+        await _upsert(private_db, msg)
+        first = _row(private_db, msg.provider_message_id)
+
+        await _upsert(private_db, replace(msg, is_read=True))
+        second = _row(private_db, msg.provider_message_id)
+
+        assert second.xmin != first.xmin
+        assert second.is_read is True
+        assert _html_of(private_db, msg.provider_message_id) is None
+
+    async def test_with_the_flag_off_a_cleared_row_gets_its_html_back(
+        self, private_db, monkeypatch,
+    ) -> None:
+        """The behaviour before EM-S3, and the reason for it."""
+        msg = _Msg(provider_message_id=_pmid(), received_at=_COLD)
+        _hot_only(monkeypatch, False)
+        await _upsert(private_db, msg)
+        _clear_html(private_db, msg.provider_message_id)
+        first = _row(private_db, msg.provider_message_id)
+
+        await _upsert(private_db, msg)
+        second = _row(private_db, msg.provider_message_id)
+
+        assert second.xmin != first.xmin
+        assert _html_of(private_db, msg.provider_message_id) == "<p>the body</p>"

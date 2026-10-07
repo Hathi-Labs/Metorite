@@ -420,14 +420,19 @@ async def hydrate_message_body(db: Any, message_id: str, user_email: str) -> str
                 _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
                 if full.body_html else None
             )
+            # 🔴 No cold HTML (WS-17 EM-S3, §14.4.3 item 4). With
+            # `html_tier.hot_only()` true, a cold row stores its text only,
+            # and keeps the HTML that it holds.
             if store_body:
                 await db.execute(
                     text(
-                        """UPDATE email_messages
-                           SET body_text = :bt, body_html = :bh, updated_at = now()
+                        f"""UPDATE email_messages
+                           SET body_text = :bt, {html_tier.COLD_SAFE_HTML_SET},
+                               updated_at = now()
                            WHERE id = :id"""
                     ),
-                    {"id": message_id, "bt": body_text, "bh": body_html},
+                    {"id": message_id, "bt": body_text, "bh": body_html,
+                     "html_cold_before": html_tier.cold_before()},
                 )
             else:
                 _log.info("hydrate_message_body.not_stored_at_limit",

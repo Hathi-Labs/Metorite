@@ -27,6 +27,9 @@ from uuid import uuid4
 
 from sqlalchemy import text
 
+from email_ingestion import html_tier
+from email_ingestion.body_backfill import _html_to_text
+
 # Bound the stored body. Mirrors the gateway read-path caps
 # (``core.MAX_BODY_*_BYTES``): a provider that lists headers-only re-sends an
 # empty body, and the rare oversized body is capped here so the reading pane's
@@ -190,10 +193,31 @@ def _canon_categories(cats: Any) -> list:
     ]
 
 
+def _bodies(msg: Any) -> tuple[str | None, str | None]:
+    """``(body_text, body_html)`` to bind, each cut to its cap.
+
+    🔴 **No cold HTML (WS-17 EM-S3, §14.4.3 item 1).** When
+    ``html_tier.drops_html`` is true for the message, the HTML binds as
+    ``None``. The INSERT then stores NULL. The SET keeps a stored value
+    through its ``COALESCE``, so a re-sync never writes HTML back, and the
+    guard of #709 sees no change. This never clears stored HTML. EM-S4 does.
+    Before the HTML goes, an empty text is filled from it, so the AI and
+    search still read the body (D-EM-48).
+    """
+    body_text = truncate_body(msg.body_text, MAX_BODY_TEXT_BYTES)
+    body_html = truncate_body(msg.body_html, MAX_BODY_HTML_BYTES)
+    if body_html and html_tier.drops_html(msg.received_at):
+        if not (body_text or "").strip():
+            body_text = truncate_body(_html_to_text(msg.body_html), MAX_BODY_TEXT_BYTES)
+        body_html = None
+    return body_text, body_html
+
+
 def _message_params(account_id: str, msg: Any) -> dict[str, Any]:
     """Bind params for one message row. Attribute access is duck-typed so both the
     provider :class:`EmailMessage` dataclass and the gateway's message model work;
     ``getattr`` guards the fields older/inbound messages may omit."""
+    body_text, body_html = _bodies(msg)
     return {
         "id": str(uuid4()),
         "account_id": account_id,
@@ -223,8 +247,8 @@ def _message_params(account_id: str, msg: Any) -> dict[str, Any]:
             [{"name": a.name, "email": a.email} for a in msg.bcc_addresses]
         ),
         "subject": msg.subject,
-        "body_text": truncate_body(msg.body_text, MAX_BODY_TEXT_BYTES),
-        "body_html": truncate_body(msg.body_html, MAX_BODY_HTML_BYTES),
+        "body_text": body_text,
+        "body_html": body_html,
         "snippet": msg.snippet[:200] if msg.snippet else "",
         "has_attachments": msg.has_attachments,
         "is_read": msg.is_read,
