@@ -78,7 +78,9 @@ never disagree about which cluster is "the" database.
   The image is `pgvector/pgvector:pg<live major>`, with no network and a 1g
   memory cap. The verify restores `public` only, and any error fails it. The
   old restore into the managed cluster used up its disk I/O budget. Without
-  Docker the verify fails, and it never falls back to the cluster.
+  Docker the verify fails, and it never falls back to the cluster. A failed
+  verify still lets the Console dump, the off-box copy and retention run.
+  Then the run exits 1.
   ~20s on a 193 MB database.
 - **Restore defaults to safe.** With no flags it builds `acb_restored_<ts>` and
   touches nothing live. Overwriting live needs `--target acb --force`, takes an

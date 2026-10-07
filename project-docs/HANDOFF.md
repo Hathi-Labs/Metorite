@@ -100,7 +100,9 @@ line — never reclaim a number by deleting the other entry.
   output other than `active` means this is open. Then run
   `curl -fsS https://api.metorite.com/version` and read `sha` and
   `applied_sha`. For each, run `git merge-base --is-ancestor 82d09830b <sha>`.
-  A non-zero exit means #702 does not serve, and this is open.
+  A non-zero exit means #702 does not serve, and this is open. Last, run
+  `ssh metorite 'docker image inspect pgvector/pgvector:pg17 >/dev/null && echo present'`.
+  No `present` means the image is not on the box, and this is open.
 - **Why.** The response to the incident of 2026-10-07 stopped
   `acb-pull.timer`, so that no deploy reached a slow cluster. #702
   (`82d09830b`) merged in that window. So the box can still serve an older
@@ -110,6 +112,12 @@ line — never reclaim a number by deleting the other entry.
   `sudo systemctl enable --now acb-pull.timer`. Wait one pull cycle of five
   minutes, and read `/version` again. Name the served SHA in the same message
   (CLAUDE.md §3a rule 2).
+- **Pull the verify image before the next nightly run.** After
+  `ops-backup-io` merges, the nightly verify needs `pgvector/pgvector:pg17`.
+  The box holds only `pg16` today, and the pull is about 600 MB. So run
+  `sudo docker pull pgvector/pgvector:pg17` on the box before 02:30 UTC.
+  If the image is absent, the first run pulls it during the backup window.
+  A failed pull fails the verify only. The dumps still complete.
 - **Authority:** CLAUDE.md §3a, gate `deploy` (granted until 2026-11-30) ·
   the incident note in `scripts/backup_db.sh`, "Scratch databases"
 - **Added:** 2026-10-07 · branch `ops-backup-io` (the backup I/O fix)
@@ -134,8 +142,11 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-07 · branch `ops-backup-io` (the backup I/O fix)
 
 ### H-261 · Stop the email sync from holding a transaction open while it waits on the provider (EM-T4a-4) · [AGENT]
-- **Check:** `rg -n "EM-T4a-4 MERGED" project-docs/specs/email_app_master_plan.md`
-  → no hit means this is open. On the box, this query shows the symptom:
+- **Check:** `rg -n "EM-T4a-4( PR-[A-Z0-9]+)? MERGED" project-docs/specs/email_app_master_plan.md`
+  → no hit means this is open. The pattern also matches a part, for example
+  `EM-T4a-4 PR-A MERGED`. If the slice ships in parts, the section
+  "EM-T4a-4 — the request jobs" lists them. Then this stays open until each
+  listed part has a hit. On the box, this query shows the symptom:
   `SELECT pid, now() - state_change AS age, query FROM pg_stat_activity WHERE state = 'idle in transaction' AND wait_event = 'ClientRead' ORDER BY age DESC;`
   A row older than a few seconds is a session that holds a transaction
   across I/O.

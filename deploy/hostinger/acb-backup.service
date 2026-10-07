@@ -52,7 +52,8 @@ EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
 # It now restores into a throwaway `pgvector/pgvector:pg<live major>` container
 # on THIS box: no network, capped at 1g of memory, removed on exit. The cluster
 # gets reads only. So the verify NEEDS Docker on the box (the `Wants=` above).
-# Without Docker the verify fails with exit 1, after the dump is on disk. It
-# never falls back to the cluster.
+# Without Docker the verify fails, and it never falls back to the cluster. The
+# Console dump, the off-box copy and retention still run, and the unit exits 1
+# at the end.
 ExecStart=/bin/bash /opt/acb/app/scripts/backup_db.sh --verify-restore
 TimeoutStartSec=1800

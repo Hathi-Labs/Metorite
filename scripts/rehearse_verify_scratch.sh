@@ -277,5 +277,9 @@ grep -q "restore verified" "$LOG" && { show_log; die "F: a verify passed without
 [ "$(scratch_count)" = "$before" ] || { show_log; die "F: the run fell back to a copy on the cluster"; }
 [ -s "$DEST/$LIVE_DB.dump" ] && [ -s "$DEST/MANIFEST.txt" ] || { show_log; die "F: no dump"; }
 pass "exit $RC, the dump is kept, and nothing was restored into the cluster"
+# A failed verify must not stop the rest of the run (fix round 1, H-98).
+grep -q "Retention (keeping" "$LOG" || { show_log; die "F: retention did not run after the failed verify"; }
+grep -q "the deep verify FAILED" "$LOG" || { show_log; die "F: no closing ERROR for the verify"; }
+pass "the run went on past the failed verify, and named it at the end"
 
 printf "\n==> SCRATCH-DATABASE REHEARSAL PASSED\n"

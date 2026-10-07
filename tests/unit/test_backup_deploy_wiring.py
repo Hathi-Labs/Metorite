@@ -17,6 +17,8 @@ from __future__ import annotations
 import pathlib
 import re
 
+import pytest
+
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 _APPLY = _ROOT / "scripts/vps_apply.sh"
 _MANUAL = _ROOT / "deploy/hostinger/deploy.sh"
@@ -487,7 +489,15 @@ docker() {
         *"from pg_class c"*) echo 7 ;;
         *"pg_available_extensions"*) echo vector ;;
       esac
-      if [ "$stdin" = "1" ]; then cat > /dev/null; fi ;;
+      if [ "$stdin" = "1" ]; then cat > /dev/null; fi
+      # RESTORE_FAILS set: the restore inside the container fails.
+      case "$*" in
+        pg_restore*)
+          if [ -n "${RESTORE_FAILS:-}" ]; then
+            echo "pg_restore: error: could not execute query: ERROR:  boom"
+            return 1
+          fi ;;
+      esac ;;
   esac
   return 0
 }
@@ -496,18 +506,22 @@ export -f docker
 }
 
 
-def _run_backup_verify(docker_mode: str) -> tuple[int, str, str, str]:
-    """Run the REAL backup_db.sh --verify-restore with stubbed tools.
+def _run_backup_verify(docker_mode: str, env: str = "") -> tuple[int, str, str, str]:
+    """Run the REAL backup_db.sh --verify-restore with stubbed tools. `env` is
+    a prefix of NAME=value pairs for the script.
     Returns (exit code, stdout, stderr, calls log)."""
     import subprocess
 
     prog = (
         _STUBS
         + _DOCKER[docker_mode]
-        + 'PG_MODE=local APP_DIR="$W/app" BACKUP_DIR="$W/backups" '
+        + env
+        + ' PG_MODE=local APP_DIR="$W/app" BACKUP_DIR="$W/backups" '
         + "bash scripts/backup_db.sh --verify-restore < /dev/null\n"
         + "rc=$?\n"
         + 'ls "$W"/backups/*/acb.dump >/dev/null 2>&1 && echo "DUMP-ON-DISK" >&2\n'
+        + 'ls "$W"/backups/*/customer_console.dump >/dev/null 2>&1 '
+        + '&& echo "CONSOLE-DUMP-ON-DISK" >&2\n'
         + 'printf "\\n===CALLS===\\n" >&2\n'
         + 'cat "$CALLS" >&2\n'
         + 'rm -rf "$W"\n'
@@ -553,6 +567,39 @@ def test_a_container_that_will_not_start_fails_the_verify() -> None:
     assert "the verify container did not start" in err, err
     assert "Cannot connect to the Docker daemon" in err, "the reason was swallowed"
     assert "DUMP-ON-DISK" in err
+    assert "restore verified" not in out
+    _assert_nothing_reached_the_cluster(calls)
+
+
+_CONSOLE_ENV = "CUSTOMER_CONSOLE_DATABASE_URL=postgresql://cc:pw@cc.example:5432/postgres"
+
+
+@pytest.mark.parametrize(
+    ("docker_mode", "env", "why"),
+    [
+        ("missing", "", "needs Docker"),
+        ("broken", "", "the verify container did not start"),
+        ("works", "RESTORE_FAILS=1", "pg_restore FAILED in the verify container"),
+    ],
+)
+def test_a_failed_verify_still_backs_up_the_console(docker_mode: str, env: str, why: str) -> None:
+    """🔴 Fix round 1. A verify that fails must not cost the Console its
+    backup (H-98: Console data was lost once with no backup). The run goes on
+    to the Console dump, the off-box step and retention, and exits non-zero
+    at the END. Mutation: make a failed verify `exit 1` on the spot again,
+    and the Console dump and the retention line both go missing."""
+    rc, out, err, calls = _run_backup_verify(docker_mode, f"{_CONSOLE_ENV} {env}")
+    assert rc != 0, f"a failed verify exited 0:\n{out}\n{err}"
+    assert why in err, err
+    assert "DUMP-ON-DISK" in err
+    assert "CONSOLE-DUMP-ON-DISK" in err, (
+        f"the verify failed ({docker_mode}) and the Console database was not backed up"
+    )
+    assert any(
+        ln.startswith("pg_dump -d postgresql://cc:pw@cc.example") for ln in calls.splitlines()
+    ), "the Console dump never ran"
+    assert "Retention (keeping" in out, "retention did not run after a failed verify"
+    assert "the deep verify FAILED" in err, "the closing ERROR is missing"
     assert "restore verified" not in out
     _assert_nothing_reached_the_cluster(calls)
 
