@@ -663,10 +663,11 @@ nudges the policy, and it sets the reasoning effort as today.
 > An API caller can still send Thinking or Max (§8). The member's words now
 > set the effort:
 >
-> - The turn-kind question (§4.3) asks a second item in the SAME request. The
->   item asks whether the member explicitly asks for deep, careful or thorough
->   work, for example "think hard", "be thorough", "take your time" or "a
->   detailed analysis". It is one `tier-fast` request, inside the 1.5 s wait.
+> - The turn-kind question (§4.3) asks a second item in the SAME request.
+>   The item asks whether the member explicitly asks for deep, careful or
+>   thorough work. Examples are "think hard", "be thorough", "take your time"
+>   and "a detailed analysis". It is one `tier-fast` request, inside the
+>   1.5 s wait.
 > - A yes at or above the threshold of the effort makes the run's effort
 >   `thinking`. It is never `max`. Under the threshold, the effort stays
 >   `auto`. A timeout or a failure raises nothing.
@@ -681,6 +682,9 @@ nudges the policy, and it sets the reasoning effort as today.
 > - The executor logs `ai_route.effort_from_text` with the agent, the run,
 >   the effort and the source (`system_one` or `keyword`). The line holds no
 >   tenant text.
+> - ⚠️ The server cannot read the UI flag. So the words also count for a
+>   covered agent while the UI flag is off, which is the safe flip order of
+>   §9. There, a member who keeps Auto gets the effort of their words.
 >
 > The text above stays as the record of D90. Q3 (no fourth label) does not
 > change. Fences: `tests/unit/test_tier_policy_effort_from_text.py` and
@@ -893,21 +897,28 @@ bound what an injection can do.
 >    agent with `call_agent`. "+ New conversation" starts an orchestrator chat
 >    with no picker.
 >
-> Each way to choose the agent of `/chat` has a decision:
+> Each way to choose the agent of `/chat` has a decision, with the
+> orchestrator covered:
 >
-> | Way to choose | With the orchestrator covered |
-> |---|---|
-> | The agent selector of the composer ("Metorite ▾") | It leaves |
-> | The "New session" picker | It leaves for a new conversation. It stays for a conversation with no known agent (`isUnresolvedAgent`), because it then names the agent of history that exists |
-> | `?agent=<name>` | It stays. The `/agents` page links to `/chat` this way for one agent |
-> | The latest conversation, on load | It opens with its own agent, as before |
-> | A conversation on another agent | It opens and continues with its own agent. No history moves |
+> - **The agent selector of the composer** ("Metorite ▾"). It leaves.
+> - **The "New session" picker.** It leaves for a new conversation. It stays
+>   for a conversation with no known agent (`isUnresolvedAgent`). There it
+>   names the agent of history that exists.
+> - **`?agent=<name>`.** It stays. The `/agents` page links to `/chat` this
+>   way for one agent.
+> - **The latest conversation, on load.** It opens with its own agent, as
+>   before.
+> - **A conversation on another agent.** It opens and continues with its own
+>   agent. No history moves.
 >
 > No stored "last agent" exists. The page stores the list of conversations,
-> and the latest one opens. The Projects rail, the Tasks rail, the email chat
-> and the App Builder keep their agent. They never drew the agent selector.
-> With the UI flag off, or with the orchestrator not covered, every control
-> is as today. `src/lib/tierRouting.ts` holds the rules: `composerControls`,
+> and the latest one opens.
+>
+> The Projects rail, the Tasks rail, the email chat and the App Builder keep
+> their agent. They never drew the agent selector. With the UI flag off, or
+> with the orchestrator not covered, every control is as today.
+>
+> `src/lib/tierRouting.ts` holds the rules: `composerControls`,
 > `sentThinkMode`, `chatAgentChoice`, `newChatAction`, `agentPickerShows` and
 > `initialChatOpen`.
 

@@ -165,12 +165,16 @@ EFFORT_QUESTION = (
 )
 
 #: The explicit phrases that the keyword check finds in a SHORT message, with
-#: no model. A short message sends no request, so this is all it gets.
+#: no model. A short message sends no request, so this is all it gets. A bare
+#: "thoroughly" does not count ("I thoroughly enjoyed it"). It counts after a
+#: verb of work.
 DEPTH_PHRASES = re.compile(
     r"\b(?:"
     r"think(?:ing)?\s+(?:hard|harder|deeply|deeper|carefully|it\s+through)"
-    r"|be\s+(?:thorough|careful|meticulous)"
-    r"|thoroughly|an?\s+thorough"
+    r"|be\s+(?:very\s+|extra\s+|really\s+)?(?:thorough|careful|meticulous)"
+    r"|(?:check|review|read|test|analy[sz]e|examine|investigate|go\s+through)"
+    r"\s+(?:\w+\s+){0,3}?thoroughly"
+    r"|an?\s+(?:very\s+)?thorough"
     r"|take\s+your\s+time"
     r"|detailed\s+analysis"
     r"|in[-\s]depth"
@@ -179,14 +183,27 @@ DEPTH_PHRASES = re.compile(
     re.IGNORECASE,
 )
 
+#: The words before a phrase that turn it into its opposite ("no need to be
+#: thorough", "do not think hard"). They count within two words of it.
+_NEGATION = re.compile(
+    r"\b(?:no\s+need\s+to|needn'?t|don'?t|do\s+not|not|never|without)"
+    r"\s+(?:\w+\s+){0,2}$",
+    re.IGNORECASE,
+)
+
 
 def asks_for_depth(message: str | None) -> bool:
     """True when *message* holds an explicit request for deep work.
 
     The cheap check, with no model, for a message too short for the turn-kind
-    request. It reads the first :data:`TURN_MESSAGE_MAX` characters only.
+    request. It reads the first :data:`TURN_MESSAGE_MAX` characters only. A
+    phrase right after a negation does not count.
     """
-    return bool(DEPTH_PHRASES.search(str(message or "")[:TURN_MESSAGE_MAX]))
+    text = str(message or "")[:TURN_MESSAGE_MAX]
+    for match in DEPTH_PHRASES.finditer(text):
+        if not _NEGATION.search(text[max(0, match.start() - 40):match.start()]):
+            return True
+    return False
 
 #: The ``ai.route`` AG-UI custom event (§7.2). S3 folds these into a label.
 ROUTE_EVENT = "ai.route"

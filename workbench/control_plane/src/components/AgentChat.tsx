@@ -313,20 +313,25 @@ export default function AgentChat({
   // picks the tier. No picker, no models fetch, no stored choice and no
   // `model` field. The gateway stamps `tier_routed` on the agent list entry,
   // so nothing here names an agent. UI flag off: every field is as today.
+  // The orchestrator (Metorite) is the one agent with an agent selector.
+  const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "metorite";
+  // Coverage reads the entry of the agent that serves the run. A legacy
+  // "metorite" session runs on the orchestrator, so it reads that entry
+  // (review P3). UI flag off: no plan reads the entry.
+  const coverageEntry = currentAgentEntry
+    ?? (isOrchestrator ? agents.find((a) => a.name === "orchestrator") : undefined);
   const modelPlan = composerModelPlan({
     uiOn: tierUi,
     agentsKnown,
-    entry: currentAgentEntry,
+    entry: coverageEntry,
   });
-  // The orchestrator (Metorite) is the one agent with an agent selector.
-  const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "metorite";
   // The member chooses no effort and no agent for a covered agent (owner,
   // 2026-10-07, amendment of D90 §5 and §7). UI flag off: both as today.
   // Computed before the memos below, which read `modelPlan`.
   const controls = composerControls({
     uiOn: tierUi,
     agentsKnown,
-    entry: currentAgentEntry,
+    entry: coverageEntry,
     isOrchestrator,
   });
 

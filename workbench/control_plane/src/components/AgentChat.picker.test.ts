@@ -21,6 +21,8 @@
  *   effort selector, with its three labels";
  * - the /chat agent selector stays for a covered orchestrator -> "draws no agent
  *   selector for a covered orchestrator";
+ * - a legacy "metorite" session reads no coverage -> "a legacy metorite session
+ *   reads the orchestrator's coverage";
  * - the models fetch runs without the plan's leave -> "fetches the models only for a live picker";
  * - a `cc-model-` key is read in the composer -> "reads no stored choice itself";
  * - the composer sends a model for a covered agent -> "sends no model field";
@@ -126,6 +128,16 @@ describe("the composer, with the UI flag on", () => {
     const html = composer("1", [orchestrator(true)], undefined, "orchestrator");
     expect(hasAgentSwitch(html)).toBe(false);
     expect(hasEffort(html)).toBe(false);
+  });
+
+  it("a legacy metorite session reads the orchestrator's coverage (review P3)", () => {
+    const html = composer("1", [orchestrator(true)], undefined, "metorite");
+    expect(hasEffort(html)).toBe(false);
+    expect(hasAgentSwitch(html)).toBe(false);
+    // Flag off, it draws both, as today.
+    const off = composer(undefined, [orchestrator(true)], undefined, "metorite");
+    expect(hasEffort(off)).toBe(true);
+    expect(hasAgentSwitch(off)).toBe(true);
   });
 
   it("keeps both for an orchestrator that the gateway does not cover", () => {

@@ -891,6 +891,13 @@ function ChatPageInner() {
   );
 
   const handleSelectSession = useCallback((id: string) => {
+    // A press of "+ New conversation" that waits for the agent list ends
+    // here: the member chose a conversation instead (review P3). Only a
+    // waiting press closes the request, so the UI flag off is as today.
+    if (newChatWaitingRef.current) {
+      newChatWaitingRef.current = false;
+      setShowPicker(false);
+    }
     setActiveSessionId(id);
     setRestoredId(null);
     setRecoveryNotice(null);

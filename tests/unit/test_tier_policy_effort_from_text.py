@@ -26,6 +26,8 @@ Mutations this file catches (R7), each run red before the change:
   ``test_a_covered_run_takes_thinking_from_the_words``;
 * a short message sends a request, or the keyword path goes ->
   ``test_a_short_message_uses_the_keyword_check_and_sends_nothing``;
+* the keyword check reads a negation or "I thoroughly enjoyed" as an ask ->
+  ``test_the_keyword_check_ignores_other_words``;
 * a sub-agent or the batch path reads the words -> ``test_off_by_default``;
 * the run ignores the raised effort -> ``test_a_covered_run_takes_thinking_from_the_words``;
 * an agent the flag does not cover changes -> ``test_an_uncovered_run_is_as_today``.
@@ -188,9 +190,11 @@ class TestTheQuestion:
 
 @pytest.mark.parametrize("text", [
     "think hard", "Think harder about it", "please think it through",
-    "be thorough", "be careful here", "check it thoroughly", "a thorough review",
-    "take your time", "a detailed analysis", "an in-depth look", "in depth please",
-    "do a deep dive",
+    "be thorough", "be very thorough", "be extra careful", "check it thoroughly",
+    "review the plan thoroughly", "a thorough review", "take your time",
+    "a detailed analysis", "an in-depth look", "in depth please", "do a deep dive",
+    # A negation elsewhere does not cancel a later ask.
+    "not now, but later think hard about it",
 ])
 def test_the_keyword_check_finds_an_explicit_ask(text: str) -> None:
     assert tier_policy.asks_for_depth(text)
@@ -199,6 +203,9 @@ def test_the_keyword_check_finds_an_explicit_ask(text: str) -> None:
 @pytest.mark.parametrize("text", [
     "hi", "thanks", "what is due today", "is the review thorough?",
     "I think the plan is hard", "careful", "show the depth chart", "",
+    # Review P3: a negation, and a figure of speech.
+    "No need to be thorough, just the date", "do not think hard about it",
+    "don't take your time", "I thoroughly enjoyed the demo",
 ])
 def test_the_keyword_check_ignores_other_words(text: str) -> None:
     assert not tier_policy.asks_for_depth(text)

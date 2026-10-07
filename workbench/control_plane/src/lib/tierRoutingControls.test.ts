@@ -20,7 +20,9 @@
  *   "an existing conversation keeps its own agent";
  * - `?agent=` goes -> "the /agents deep link stays";
  * - the repair picker goes -> "a conversation with no known agent still draws
- *   the picker".
+ *   the picker";
+ * - a press that waits for the list survives a session pick -> "a session the
+ *   member picks ends a press that waits for the list".
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -183,6 +185,11 @@ describe("the /chat wiring", () => {
     const start = page.slice(page.indexOf("const startOrchestratorChat"), page.indexOf("const newChatWaitingRef"));
     expect(start).toMatch(/createSession\(CHAT_AGENT\)/);
     expect(start).not.toMatch(/isUnresolvedAgent/);
+  });
+
+  it("a session the member picks ends a press that waits for the list (review P3)", () => {
+    const select = page.slice(page.indexOf("const handleSelectSession"), page.indexOf("const handleDeleteSession"));
+    expect(select).toMatch(/if \(newChatWaitingRef\.current\) \{\s*newChatWaitingRef\.current = false;\s*setShowPicker\(false\);/);
   });
 
   it("the composer sends think_mode through sentThinkMode", () => {

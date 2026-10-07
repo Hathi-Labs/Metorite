@@ -81,7 +81,7 @@ export interface ComposerModelPlan {
  *   sent in that window runs on the agent's default, as "auto" does today.
  *   The persist effect restores the choice once the list lands.
  * - **UI flag on, agent covered:** no picker, no fetch, no stored choice and no
- *   `model` field. The effort selector stays (§5, Q3).
+ *   `model` field. `composerControls` decides the effort selector.
  * - **UI flag on, agent not covered:** everything as today.
  */
 export function composerModelPlan(input: {
