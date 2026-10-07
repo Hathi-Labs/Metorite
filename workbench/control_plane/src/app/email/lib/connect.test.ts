@@ -65,7 +65,7 @@ import {
   reconnectProvider,
   shouldPollFirstSync,
 } from "./connect";
-import { firstSyncPanels } from "./onboarding";
+import { syncBanners } from "./onboarding";
 
 const EMAIL_APP = join(__dirname, "..");
 
@@ -317,13 +317,13 @@ describe("first sync shows progress (done-when 5)", () => {
       /return \(\) => \{\s*cancelled = true;\s*clearInterval\(id\);\s*document\.removeEventListener\("visibilitychange", onVisible\);/,
     );
     // The banner follows the same rule as the poll, so an errored account shows
-    // no spinner. Since EM-T8f-3 the page draws one surface for each pending
-    // mailbox, and `firstSyncPanels` picks them by `isFirstSyncPending`.
-    expect(PAGE).toContain(
-      "const importPanels = firstSyncPanels(accounts, viewAll ? null : selectedAccountId);",
-    );
-    expect(PAGE).toMatch(/<FirstSyncBanner\s+key=\{account\.id\}\s+address=\{account\.emailAddress\}/);
-    expect(firstSyncPanels([{ id: "a", initialSyncDone: false, syncStatus: "error" }], null)).toEqual([]);
+    // no row. Since EM-S9 the sync banner draws one row for each import
+    // (`syncBanners`), and FirstSyncBanner is gone.
+    expect(PAGE).toContain("const syncRows = syncBanners(accounts, importPanelAccount?.id ?? null);");
+    expect(PAGE).not.toMatch(/FirstSyncBanner/);
+    expect(
+      syncBanners([{ id: "a", initialSyncDone: false, syncStatus: "error", importPhase: "importing" }], null),
+    ).toEqual([]);
   });
 
   it("an errored first sync is not pending, shows no spinner and stops the poll (fix round 1, P1)", () => {

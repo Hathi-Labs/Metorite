@@ -27,9 +27,8 @@ import {
   REPLY_RULE_NAMES,
   REPLY_SYSTEM_TYPES,
   RULES_STEP_COPY,
-  firstSyncPanels,
-  firstSyncSurface,
   hasEnabledReplyRule,
+  importPanelShows,
   importProgress,
   installRecommendedRules,
   installedLine,
@@ -39,6 +38,7 @@ import {
   readDraftSwitch,
   rulesStepPhase,
   setDraftReplies,
+  syncBanners,
   type RulesStepApi,
 } from "./onboarding";
 import type { AssistantSettings, EmailAccount } from "./types";
@@ -94,20 +94,16 @@ describe("a mailbox with sync off shows no frozen panel (EM-T6b review)", () => 
     expect(isFirstSyncPending(running)).toBe(true);
   });
 
-  it("firstSyncSurface never draws the progress panel for sync off", () => {
-    expect(firstSyncSurface({ ...running, syncEnabled: false })).toBe("banner");
-    expect(firstSyncSurface(running)).toBe("progress");
+  it("importPanelShows never draws the progress panel for sync off", () => {
+    expect(importPanelShows({ ...running, syncEnabled: false })).toBe(false);
+    expect(importPanelShows(running)).toBe(true);
   });
 
-  it("the page draws a pending surface only through isFirstSyncPending", () => {
-    // EM-T8f-3: the page draws one surface for each pending mailbox, and
-    // `firstSyncPanels` picks them by `isFirstSyncPending`.
+  it("the sync banner draws no row for sync off (EM-S9)", () => {
     const page = codeOnly(read("page.tsx"));
-    expect(page).toContain(
-      "const importPanels = firstSyncPanels(accounts, viewAll ? null : selectedAccountId);",
-    );
-    expect(firstSyncPanels([{ ...running, id: "a", syncEnabled: false }], null)).toEqual([]);
-    expect(firstSyncPanels([{ ...running, id: "a" }], null).map((p) => p.account.id)).toEqual(["a"]);
+    expect(page).toContain("const syncRows = syncBanners(accounts, importPanelAccount?.id ?? null);");
+    expect(syncBanners([{ ...running, id: "a", syncEnabled: false }], null)).toEqual([]);
+    expect(syncBanners([{ ...running, id: "a" }], null).map((r) => r.account.id)).toEqual(["a"]);
   });
 });
 
@@ -455,10 +451,11 @@ describe("the page wiring", () => {
     expect(page).toMatch(
       /\{selectedAccount && setupStage === "rules" && \(\s*<OnboardingRulesStep\s+key=\{selectedAccount\.id\}\s+account=\{selectedAccount\}\s+onOpenAutomation=\{openFromSetup\}\s+onFinished=\{\(updated\) => \{\s*replaceAccount\(updated\);\s*void refreshAccounts\(\);\s*\}\}/,
     );
-    // "<FirstSyncBanner" alone: since EM-T8f-3 a `key` comes before `address`,
-    // and an indexOf of -1 would pass this check with no banner at all.
-    expect(page.indexOf("<FirstSyncBanner")).toBeGreaterThan(-1);
-    expect(page.indexOf("<OnboardingRulesStep")).toBeGreaterThan(page.indexOf("<FirstSyncBanner"));
+    // "<OnboardingPanel" alone: an indexOf of -1 would pass this check with
+    // no panel at all. Since EM-S9 the panel is the one first-import surface
+    // in the mail pane, and FirstSyncBanner is gone.
+    expect(page.indexOf("<OnboardingPanel")).toBeGreaterThan(-1);
+    expect(page.indexOf("<OnboardingRulesStep")).toBeGreaterThan(page.indexOf("<OnboardingPanel"));
     expect(page.indexOf("<OnboardingRulesStep")).toBeLessThan(page.indexOf("<EmailToolbar />"));
   });
 
