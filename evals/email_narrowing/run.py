@@ -56,6 +56,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import httpx
+
 from evals.email_narrowing import dataset as ds_mod
 from evals.email_narrowing import scripted, stub_api
 from evals.email_narrowing.dataset import Dataset, Question
@@ -167,13 +169,11 @@ async def _no_system_one(*_a: Any, **_k: Any) -> Any:
     raise RuntimeError("the scripted eval calls no model")
 
 
-class _TapTransport:
+class _TapTransport(httpx.AsyncBaseTransport):
     """``--compare``: the real transport to the Console, with a record of
     each decide request's size and request id."""
 
     def __init__(self, router: StubRouter, seen: list[str]) -> None:
-        import httpx
-
         self.inner = httpx.AsyncHTTPTransport()
         self.router = router
         self.seen = seen
@@ -243,8 +243,6 @@ async def _run_path(
             stack.enter_context(_patched(console_resolve, "_new_http_client", door.client))
             stack.enter_context(_patched(system_one, "ask", _no_system_one))
         elif compare_seen is not None:
-            import httpx
-
             def tapped(timeout: float = 10.0) -> Any:
                 return httpx.AsyncClient(
                     timeout=timeout, transport=_TapTransport(router, compare_seen))

@@ -244,3 +244,25 @@ def test_compare_refuses_a_door_that_is_not_local(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "http://127.0.0.1:8090")
     monkeypatch.setenv("DECIDE_ENABLED", "false")
     assert run.main(["--compare"]) == run.EXIT_NO_GO
+
+
+def test_the_compare_tap_records_each_decide_request() -> None:
+    """``--compare`` joins its requests to ``usage_event`` by ``request_id``."""
+    import httpx
+
+    async def main() -> tuple[list[str], dict[str, Any]]:
+        seen: list[str] = []
+        router = stub_api.StubRouter()
+
+        async def door(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"answers": {"c1": {}}, "request_id": "rq-1"})
+
+        tap = run._TapTransport(router, seen)
+        tap.inner = httpx.MockTransport(door)
+        async with httpx.AsyncClient(transport=tap) as client:
+            await client.post("http://127.0.0.1/v1/decide", json={"state": {}})
+        return seen, router.table()
+
+    seen, table = asyncio.run(main())
+    assert seen == ["rq-1"]
+    assert table["tier-decide"]["requests"] == 1
