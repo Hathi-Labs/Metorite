@@ -62,6 +62,17 @@ no model. So the scripted run uses the expected screen answer of each mail. A
 mail whose `screen.finance` is false gets no extraction. EM-T14b-2 puts the
 real screen in the runner.
 
+So the newsletter never reaches the checks. `screen_open` in
+`scripted_answers.json` holds an honest answer for the newsletter and for the
+injection mail. The runner checks each one with the screen forced open, and the
+report shows the result under `screen_open`. No bar reads it.
+
+- The newsletter gives an invoice of INR 39999.00 at 0.6.
+- The injection mail gives an invoice `VX-1` of Vortex Ltd, with no amount
+  and no date, at 0.6.
+
+The quote rule cannot stop an honest quote. The screen and the card stop it.
+
 ## The four bars
 
 The spec names three bars for the tier of record. The eval adds the fourth.
@@ -72,6 +83,11 @@ The spec names three bars for the tier of record. The eval adds the fourth.
 | `recall` | The run finds 80 % of the expected facts or more |
 | `quote` | No fact has a quote that is not in its source |
 | `no_fact` | A mail that expects no fact gives no fact |
+
+The 95 % amount bar is for the model sweep only. An agent wrote the scripted
+answers, so a scripted run must be exact. In that mode the `amount` bar needs
+no wrong amount, and a fifth bar, `due`, needs each found fact to have its
+expected due date.
 
 The quote bar folds white space with its own code. It does not use the fold
 of the module under test, so a defect in that fold cannot hide.
