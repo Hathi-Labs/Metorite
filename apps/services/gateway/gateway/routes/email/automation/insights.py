@@ -227,7 +227,8 @@ async def list_insights(
         "total_count": int(total),
         "truncated": offset + len(rows) < int(total),
         "totals": [
-            {"currency": t.currency.strip(), "direction": t.direction,
+            {"currency": t.currency.strip() if t.currency else None,
+             "direction": t.direction,
              "amount": _money(t.amount), "count": int(t.count)}
             for t in totals
         ],
