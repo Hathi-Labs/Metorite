@@ -78,6 +78,16 @@ async function act(action: string, body?: unknown): Promise<Response> {
 export async function switchTo(slot: number, go: (url: string) => void = (u) => window.location.assign(u)) {
   const res = await act("switch", { slot });
   if (!res.ok) return false;
+  // Tell the other tabs NOW (security review round 2, P2). The cookie has
+  // already changed under them. Waiting for this tab's reload to announce
+  // leaves them writing as the new account for a few seconds, or for good
+  // if this tab closes first. The announcement on mount stays as the backstop.
+  try {
+    const { email } = (await res.json()) as { email?: string };
+    if (email) announceAccount(email);
+  } catch {
+    /* no body: the backstop still runs */
+  }
   clearOrgScopedStorage();
   go("/");
   return true;
@@ -136,6 +146,18 @@ export function shouldReloadFor(mine: string | null, announced: unknown): boolea
     announced.trim() !== "" &&
     announced.toLowerCase() !== mine.toLowerCase()
   );
+}
+
+/** Post the active account to every other tab of this origin. */
+export function announceAccount(email: string): void {
+  if (typeof BroadcastChannel === "undefined") return;
+  try {
+    const channel = new BroadcastChannel(ACCOUNT_CHANNEL);
+    channel.postMessage({ email });
+    channel.close();
+  } catch {
+    /* no channel: each tab still announces when it loads */
+  }
 }
 
 export function useAccountTabSync(email: string | null): void {

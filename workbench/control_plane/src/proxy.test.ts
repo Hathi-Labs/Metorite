@@ -126,10 +126,12 @@ describe("proxy — the account switcher's slots end with the session (MT-1k A2,
     }
   });
 
-  it("keeps the slots while a session is live", async () => {
+  it("keeps the slots while a session is live, on every step of Add another account", async () => {
+    // The stashed account A stays in the jar until the callback replaces it.
     posture.session = { user: { email: "a@one.test" } };
-    const res = await proxy(request("/projects", SLOTS));
-    expect(deleted(res)).toEqual([]);
+    for (const path of ["/projects", "/signin", "/api/auth/signin/google", "/api/auth/callback/google", "/signin/code"]) {
+      expect(deleted(await proxy(request(path, SLOTS)))).toEqual([]);
+    }
   });
 
   it("asks for no session when the browser holds no slot", async () => {

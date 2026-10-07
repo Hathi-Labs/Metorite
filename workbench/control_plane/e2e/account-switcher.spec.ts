@@ -105,6 +105,11 @@ test.describe("two tabs", () => {
     await tabB.goto("/settings/appearance");
 
     await tabA.waitForURL((u) => u.pathname === "/");
+    // ⚠️ Close both now. Each stub answers its own session, so the reloaded
+    // tab A announces A again and the two would reload each other. In the
+    // product one cookie jar answers both, and they settle.
+    await tabB.close();
+    await tabA.close();
   });
 });
 

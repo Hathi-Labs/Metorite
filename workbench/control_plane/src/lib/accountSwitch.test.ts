@@ -72,6 +72,23 @@ describe("rule 3: the org-scoped keys", () => {
     expect(localStorage.getItem("cc-org-branding-v1")).toBeNull();
   });
 
+  it("a switch tells the other tabs the new account before it reloads", async () => {
+    const posted: unknown[] = [];
+    class FakeChannel {
+      constructor(public name: string) {}
+      postMessage(m: unknown) {
+        posted.push([this.name, m]);
+      }
+      close() {}
+    }
+    vi.stubGlobal("BroadcastChannel", FakeChannel);
+    const go = vi.fn(() => expect(posted).toHaveLength(1));
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, email: "b@two.test" })));
+    expect(await switchTo(1, go)).toBe(true);
+    expect(posted).toEqual([["mt-active-account", { email: "b@two.test" }]]);
+    expect(go).toHaveBeenCalledWith("/");
+  });
+
   it("Add another account keeps this one first, then opens sign-in", async () => {
     const go = vi.fn();
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({ ok: true }));
