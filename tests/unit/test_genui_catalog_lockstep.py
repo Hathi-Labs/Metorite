@@ -72,3 +72,105 @@ def test_the_plan_card_shape_in_the_docstring_names_every_catalog_field() -> Non
     fields.discard("string")
     missing = sorted(f for f in fields if not re.search(rf"\b{f}\b", bullet))
     assert fields and not missing, f"planCard fields the docstring omits: {missing}"
+
+
+# ── The kinds the tool refuses (2026-10-07) ────────────────────────────────
+#
+# A model emitted ``{"type":"tree"}`` and a member saw "unsupported UI
+# element: tree". ``write_artifact.GENUI_NODE_TYPES`` existed, said it was
+# "to reject obviously-wrong ones early", and nothing read it. Now
+# ``emit_generative_ui`` refuses through ``genui_refusal``, and these tests
+# hold the Python sets to the renderer's.
+
+def _wa():
+    """The module, not the function: the package re-exports
+    ``write_artifact`` under the module's own name."""
+    import importlib
+
+    return importlib.import_module("acb_skills.write_artifact")
+
+
+NODE_TSX = REPO_ROOT / "workbench" / "control_plane" / "src" / "components" / "GenerativeUINode.tsx"
+
+
+def _renderer_kinds() -> set[str]:
+    tsx = NODE_TSX.read_text(encoding="utf-8")
+    block = tsx.split("const KNOWN_TYPES = new Set([", 1)[1].split("]);", 1)[0]
+    return set(re.findall(r'"([A-Za-z]+)"', block))
+
+
+def test_the_tool_refuses_the_kinds_the_renderer_does_not_draw() -> None:
+    wa = _wa()
+
+    kinds = _renderer_kinds()
+    assert kinds, "KNOWN_TYPES not found"
+    assert set(wa.GENUI_NODE_TYPES) == kinds, f"tool vs renderer: {set(wa.GENUI_NODE_TYPES) ^ kinds}"
+    assert set(wa.GENUI_TEMPLATES) == _catalog(), (
+        f"tool vs catalog: {set(wa.GENUI_TEMPLATES) ^ _catalog()}"
+    )
+
+
+def test_the_docstring_names_every_tree_kind() -> None:
+    """A kind the renderer draws and the docstring omits is one the model
+    never learns. ``template``, ``html`` and ``react`` are modes of their own."""
+    src = PY.read_text(encoding="utf-8")
+    body = src.split("2. COMPONENT TREE", 1)[1].split("3. REACT COMPONENT", 1)[0]
+    missing = sorted(
+        k for k in _renderer_kinds() - {"template", "html", "react"}
+        if not re.search(rf"\b{k}\b", body)
+    )
+    assert not missing, f"tree kinds the docstring omits: {missing}"
+
+
+def _emit(ui: str) -> dict:
+    import asyncio
+
+    wa = _wa()
+
+    return asyncio.run(wa.emit_generative_ui(ui))
+
+
+def test_an_unknown_kind_is_refused_with_the_allowed_kinds_named() -> None:
+    res = _emit('{"type":"tree","props":{"items":[{"label":"Firmware"}]}}')
+    assert res["ok"] is False
+    assert "'tree'" in res["error"]
+    for kind in ("card", "markdown", "list", "template"):
+        assert kind in res["error"], kind
+    assert "nested list" in res["error"]
+
+
+def test_an_unknown_kind_deep_in_the_tree_is_refused_with_its_path() -> None:
+    res = _emit(
+        '{"type":"card","children":[{"type":"text","props":{"text":"a"}},'
+        '{"type":"stack","children":[{"type":"gauge"}]}]}'
+    )
+    assert res["ok"] is False
+    assert res["error"].startswith("ui.children[1].children[0]:"), res["error"]
+
+
+def test_an_unknown_template_is_refused_and_a_wrapped_root_is_read() -> None:
+    res = _emit('{"surface":"panel","root":{"type":"template","props":{"name":"ganttChart"}}}')
+    assert res["ok"] is False
+    assert "'ganttChart'" in res["error"] and "planCard" in res["error"]
+
+
+def test_a_known_tree_is_not_refused() -> None:
+    """It passes the check and stops later, at the missing run stream."""
+    wa = _wa()
+
+    ok = '{"type":"card","children":[{"type":"template","props":{"name":"planCard"}}]}'
+    assert wa.genui_refusal(__import__("json").loads(ok)) is None
+    assert _emit(ok)["error"] == "no active run stream to render into"
+
+
+def test_a_type_or_a_template_name_that_is_not_a_string_is_refused_not_raised() -> None:
+    """Review round 1. A list or an object is unhashable: the set lookup
+    raised a TypeError where the tool must return a refusal."""
+    for ui in (
+        '{"type":["card"]}',
+        '{"type":"card","children":[{"type":{"k":1}}]}',
+        '{"type":"template","props":{"name":{"id":"planCard"}}}',
+    ):
+        res = _emit(ui)
+        assert res["ok"] is False, ui
+        assert "Use one of" in res["error"], ui

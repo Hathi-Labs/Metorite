@@ -12,7 +12,7 @@
  *  • Images: a remote URL loads only on a member's click (`MarkdownImage`)
  *  • Entity pills (opt-in, WS-27bm S9): «names» from the tools as pills
  *  • Collapsible tool-call accordion blocks (mirrors VS Code's "Used tool: …")
- *  • Streaming cursor (blinking ▌) while the response is in-flight
+ *  • Streaming caret at the end of the last line while the response is in-flight
  */
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -23,6 +23,7 @@ import ChatEntityPill from "@/components/ChatEntityPill";
 import { ControlLink } from "@/components/ControlLink";
 import MarkdownImage from "@/components/MarkdownImage";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
+import rehypeStreamCaret from "@/lib/streamCaret";
 import { isInAppPath } from "@/components/ui/EntityPill";
 import { buildEntityIndex, type EntityIndex } from "@/lib/entityIndex";
 import remarkEntityPills, {
@@ -285,6 +286,7 @@ export function MarkdownBody({
   mdFilePath,
   entityPills = false,
   entityIndex,
+  caret = false,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
@@ -292,10 +294,14 @@ export function MarkdownBody({
   mdFilePath?: string;
   entityPills?: boolean;
   entityIndex?: EntityIndex;
+  /** Draw the streaming caret at the end of the last line of words
+   *  (`lib/streamCaret.ts`). Never after the body: that is a line of its own. */
+  caret?: boolean;
 }) {
   return (
     <ReactMarkdown
       remarkPlugins={entityPills ? [remarkGfm, remarkEntityPills] : [remarkGfm]}
+      rehypePlugins={caret ? [rehypeStreamCaret] : []}
       urlTransform={markdownUrlTransform}
       components={{
         // ── Entity pills (the plugin's `span[data-entity-pill]`) ──
@@ -552,14 +558,11 @@ export default function MarkdownMessage({
         mdFilePath={mdFilePath}
         entityPills={entityPills}
         entityIndex={entityIndex}
+        // The streaming caret, only once text streams. It draws INSIDE the
+        // last line of words. A span here, after the body, drew a lone "|"
+        // on its own line between the answer and the next card (2026-10-07).
+        caret={!!streaming && answerBody.trim().length > 0}
       />
-
-      {/* Streaming cursor — only once text is actually streaming, so it doesn't
-          float with no text during a tool-only phase (the ThinkingContainer
-          shows activity there instead). */}
-      {streaming && answerBody.trim().length > 0 && (
-        <span className="inline-block w-[2px] h-[1em] bg-zinc-300 animate-pulse ml-0.5 align-middle rounded-full" />
-      )}
     </div>
   );
 }
