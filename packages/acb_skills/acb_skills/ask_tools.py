@@ -469,6 +469,7 @@ async def request_confirmation(
     title: str, detail: str = "", context: str = "",
     non_interactive_default: str = "deny",
     rows: list[dict] | None = None,
+    fenced: bool | None = None,
 ) -> bool | frozenset[str]:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
@@ -492,6 +493,12 @@ async def request_confirmation(
             checkbox per row, ticked when ``checked``, and Approve then
             names the ticked ids (:func:`ticked_rows`). With no rows the
             card, its event and its answer are exactly as before.
+        fenced: ``True`` when the card's text wraps member values in
+            «guillemets» (``skill_projects.client.data``). The client then
+            draws each fenced value as a token, without the marks. With no
+            flag the client draws the text exactly as sent, so an email body
+            that holds a real « » keeps it. ``None`` leaves the event as it
+            was.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -518,6 +525,8 @@ async def request_confirmation(
         }
         if _rows is not None:
             value["rows"] = _rows
+        if fenced is not None:
+            value["fenced"] = bool(fenced)
         return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
 
     def _verdict(result: dict) -> tuple[str, frozenset[str] | None]:

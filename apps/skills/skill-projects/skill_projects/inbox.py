@@ -583,7 +583,7 @@ async def triage_intake(
         oid, other = await _task(duplicate_of)
         body["duplicate_of_task_id"] = oid
         card["duplicate of"] = f"#{other.get('task_number')} {data(other.get('title'))}"
-        card["note"] = "marking a duplicate archives this task; unarchive_task restores it"
+        card["note"] = "marking a duplicate archives this task. Restore it from the archive to undo"
     elif verb == "snooze":
         when = str(until or "").strip()[:10]
         if len(when) != 10:
@@ -591,7 +591,7 @@ async def triage_intake(
         body["until"] = when
         card["until"] = when
     else:
-        card["note"] = "declining archives the task; unarchive_task restores it"
+        card["note"] = "declining archives the task. Restore it from the archive to undo"
     titles = {
         "accept": "Accept this task onto the board?",
         "decline": "Decline this task?",

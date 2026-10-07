@@ -656,3 +656,25 @@ def test_po9_a_second_write_fails(harness: R.OpsHarness) -> None:
 def test_po9_an_answer_without_the_view_fails(harness: R.OpsHarness) -> None:
     steps = [*_po9()[:-1], ("text", "I saved the view.")]
     assert _failed(_run(harness, "PO-9", steps)) == {"answer_names_the_view"}
+
+
+# ── 3c. the member's words in the answer (owner report, 2026-10-07) ─────────
+
+
+def _answer_rule(answer: str, rule: str) -> bool:
+    return next(r for r in C.common(_evidence("PO-6", answer=answer)) if r.rule == rule).ok
+
+
+def test_an_answer_that_names_a_tool_fails() -> None:
+    """Mutation caught: ``answer_names_no_tool`` that reads nothing."""
+    assert not _answer_rule("Use `create_project`, one card.", "answer_names_no_tool")
+    assert not _answer_rule("propose_plan drafts them.", "answer_names_no_tool")
+    # A name a member wrote is data, and an English word is not a tool name.
+    assert _answer_rule("I made «create_project notes» and will assign it.", "answer_names_no_tool")
+
+
+def test_a_stray_mark_fails_and_a_drawable_name_passes() -> None:
+    """Mutation caught: ``stray_marks`` that counts every mark, or none."""
+    assert _answer_rule("Task #5 «Notification engine» is due.", "answer_marks_drawable")
+    assert not _answer_rule("Inside «Hathi Labs a new project sits.", "answer_marks_drawable")
+    assert not _answer_rule("«a «b» c»", "answer_marks_drawable")

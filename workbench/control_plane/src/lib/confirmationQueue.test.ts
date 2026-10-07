@@ -265,7 +265,8 @@ describe("the card reads as a sentence, then rows", () => {
   it("a *_id field that holds a UUID is hidden, and the names stay", () => {
     const body = parseCardBody(requested(1).value.context);
     expect(body.fields.map((f) => f.label)).toEqual(["Title", "Status"]);
-    expect(body.fields[0].value).toBe("Task 1");
+    // The value keeps the tool's marks. The card draws them (`FencedText`).
+    expect(body.fields[0].value).toBe("«Task 1»");
     expect(body.notes).toEqual(["This change is recorded as yours, made through the Projects assistant."]);
     expect(isHiddenField("status_id", `«${STATUS}» → «${PROJECT}»`)).toBe(true);
     expect(isHiddenField("task_number", PROJECT)).toBe(false);
@@ -343,6 +344,7 @@ describe("a card with rows", () => {
         detail: event.detail,
         context: "project: «Ops»\ntasks: 3",
         rows,
+        fenced: true,
         onApprove: () => {},
         onReject: () => {},
       }),
@@ -376,7 +378,9 @@ describe("a card with rows", () => {
 
   // Mutation caught: a summary that says the tool's count, not the ticked one.
   it("the summary counts the ticked rows", () => {
-    expect(card()).toContain("Create 2 of 3 tasks in «Ops»?");
+    // The marks never show: the name is a quiet emphasis (owner, 2026-10-07).
+    expect(card()).toContain('aria-label="Create 2 of 3 tasks in Ops?"');
+    expect(card()).not.toContain("«");
     expect(rowSummary("Create 4 tasks in «Ops»?", 4, 4)).toBe("Create 4 tasks in «Ops»?");
     expect(rowSummary("Create 4 tasks in «Ops»?", 1, 4)).toBe("Create 1 of 4 tasks in «Ops»?");
     expect(rowSummary("Pick the rows", 1, 4)).toBe("Pick the rows (1 of 4)");

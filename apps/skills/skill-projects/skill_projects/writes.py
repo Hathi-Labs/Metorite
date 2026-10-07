@@ -152,9 +152,13 @@ async def _confirm(
     """
     from acb_skills.ask_tools import request_confirmation
 
+    # `fenced`: every member value on these cards is in «marks» (`data()`),
+    # so the client draws each one as a token and never shows the marks.
     if rows is None:
-        return await request_confirmation(title=title, detail=detail, context=context)
-    return await request_confirmation(title=title, detail=detail, context=context, rows=rows)
+        return await request_confirmation(title=title, detail=detail, context=context, fenced=True)
+    return await request_confirmation(
+        title=title, detail=detail, context=context, rows=rows, fenced=True
+    )
 
 
 CANCELLED = "Cancelled — nothing was changed."
@@ -544,7 +548,7 @@ def _subtask_line(door: str, wanted: bool, count: int, capped: bool = False) -> 
         many = _subtasks_phrase(count, door, capped) if count else f"every {noun}"
         return {"subtasks": f"{many} {_CASCADE_VERB[door]} too"}
     many = _subtasks_phrase(count, door, capped)
-    return {"subtasks": f"{many} stay as they are (include_subtasks=no)"}
+    return {"subtasks": f"{many} stay as they are"}
 
 
 def _subtask_receipt(reply: Any, key: str, door: str) -> list[str]:

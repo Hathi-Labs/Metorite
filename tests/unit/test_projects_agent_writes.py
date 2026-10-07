@@ -1736,7 +1736,7 @@ async def test_bulk_refuses_a_clear_beside_a_value_and_names_a_clear(monkeypatch
     )
     assert asked == [] and writes(calls) == []
     await skill_projects.bulk_update(UUID, clear="due")
-    assert "due_at → cleared" in asked[0]["context"]
+    assert "due_at: «cleared»" in asked[0]["context"]
 
 
 async def test_bulk_receipt_prints_rows_for_applied_ids_only(monkeypatch) -> None:

@@ -136,6 +136,17 @@ Seven rules on top of the three above. Each one exists because it was broken:
    **An entity in chat text is one pill,** `src/components/ui/EntityPill.tsx`
    (WS-27bm S9). Do not draw a task, a project or a person as bold text or
    as a second chip. Fence: `src/components/ui/EntityPill.test.ts`.
+   **A «mark» never reaches the member** (owner report, 2026-10-07). The
+   server keeps its data fence, and `src/lib/fencedText.ts` is the one
+   parser of it for display. Draw server text with `FencedText.tsx`, and a
+   generative-UI string with `GenUiText.tsx`. That is `MarkdownBody` in its
+   `inline` mode, never a second renderer. Fences: `fencedText.test.ts` and
+   `genUiInlineText.test.ts`.
+   **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
+   and its kind draws its value. The Python fakes read that map and fail a
+   card test that prints a key with no label (`tests/unit/_card_words.py`).
+   A read result draws through `components/projects/Readout.tsx`, with no
+   id and no `[key]`. Fences: `cardFields.test.ts` and `readout.test.ts`.
    ⚠️ **The BOM trap binds at every hop, and "keep it a `Blob` in the client" is only
    half of it.** `Response.text()` is a UTF-8 *decode* and a UTF-8 decode strips a
    leading byte order mark, so **a BFF proxy that does `await res.text()` and rebuilds
