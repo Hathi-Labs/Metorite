@@ -37,7 +37,16 @@ import { useMobileDrawer } from "@/components/AppShell";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useTierRouted } from "@/hooks/useTierRouted";
-import { governedModelProps, readsChatModel } from "@/lib/tierRouting";
+import {
+  CHAT_AGENT,
+  agentPickerShows,
+  chatAgentChoice,
+  governedModelProps,
+  initialChatOpen,
+  newChatAction,
+  readsChatModel,
+  tierRoutingUiOn,
+} from "@/lib/tierRouting";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 
@@ -701,12 +710,25 @@ function ChatPageInner() {
 
   // Fetch agents once at page level so AgentChat knows agent_runtime before first render.
   const [agentList, setAgentList] = useState<AgentEntry[]>([]);
+  // True once the list has answered. A fault counts, and reads as not covered.
+  const [agentListKnown, setAgentListKnown] = useState(false);
   useEffect(() => {
     fetch("/api/agent/list")
       .then((r) => r.json())
       .then((data: AgentEntry[]) => { if (Array.isArray(data)) setAgentList(data); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setAgentListKnown(true));
   }, []);
+  // Who picks the agent of a NEW conversation (owner, 2026-10-07). With the
+  // UI flag on and the orchestrator covered, nobody: a new conversation talks
+  // to the orchestrator, which routes to the right agent. UI flag off: the
+  // member, with the picker, as today. An existing conversation always keeps
+  // its own agent (`initialChatOpen`).
+  const agentChoice = chatAgentChoice({
+    uiOn: tierRoutingUiOn(),
+    agentsKnown: agentListKnown,
+    entries: agentList,
+  });
   // canonical name → friendly display name, for the session-list group headers.
   const agentAliasMap = useMemo(
     () => Object.fromEntries(
@@ -731,32 +753,31 @@ function ChatPageInner() {
       setRestoredId(null);
       return;
     }
-    const agentParam = searchParams?.get("agent");
     const existing = getSessions();
-    if (agentParam) {
-      const match = existing.find((s) => s.agentName === agentParam);
-      if (match) {
-        setSessions(existing);
-        setActiveSessionId(match.id);
-        setRestoredId(match.id);
-      } else {
-        const fresh = createSession(agentParam);
-        upsertSession(fresh);
-        setSessions(getSessions());
-        setActiveSessionId(fresh.id);
-        setRestoredId(null);
-      }
-    } else if (existing.length === 0) {
-      // No sessions yet — show the agent picker so the user explicitly
-      // chooses which agent to talk to instead of defaulting blindly.
+    // `?agent=` stays: the /agents page links here for one agent. The latest
+    // conversation opens with ITS agent, so no history moves (2026-10-07).
+    const open = initialChatOpen({
+      sessions: existing,
+      agentParam: searchParams?.get("agent"),
+    });
+    if (open.kind === "open") {
+      setSessions(existing);
+      setActiveSessionId(open.id);
+      setRestoredId(open.id);
+    } else if (open.kind === "create") {
+      const fresh = createSession(open.agent);
+      upsertSession(fresh);
+      setSessions(getSessions());
+      setActiveSessionId(fresh.id);
+      setRestoredId(null);
+    } else {
+      // No sessions yet — ask for the agent picker so the user explicitly
+      // chooses which agent to talk to instead of defaulting blindly. It
+      // draws only when the member chooses (`agentPickerShows`).
       setSessions([]);
       setActiveSessionId("");
       setRestoredId(null);
       setShowPicker(true);
-    } else {
-      setSessions(existing);
-      setActiveSessionId(existing[0].id);
-      setRestoredId(existing[0].id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per member
   }, [chatScopeId]);
@@ -811,9 +832,38 @@ function ChatPageInner() {
   }, []);
   const onSessionRefused = useRestoredSessionGuard(activeSessionId, restoredId, recoverChat);
 
-  const handleNewSession = useCallback(() => {
-    setShowPicker(true);
+  // A new conversation on the orchestrator, with no picker. It never repairs
+  // the active conversation, because the member named no agent for it.
+  const startOrchestratorChat = useCallback(() => {
+    setShowPicker(false);
+    const s = createSession(CHAT_AGENT);
+    upsertSession(s);
+    setSessions(getSessions());
+    setActiveSessionId(s.id);
+    setRestoredId(null);
+    setRecoveryNotice(null);
   }, []);
+
+  // A press of "+ New conversation" before the agent list answered.
+  const newChatWaitingRef = useRef(false);
+  const handleNewSession = useCallback(() => {
+    const action = newChatAction(agentChoice);
+    if (action === "create") {
+      startOrchestratorChat();
+      return;
+    }
+    newChatWaitingRef.current = action === "wait";
+    setShowPicker(true);
+  }, [agentChoice, startOrchestratorChat]);
+
+  // The list answered: a waiting press starts the orchestrator chat, or the
+  // picker that it asked for now draws (`agentPickerShows`).
+  useEffect(() => {
+    if (agentChoice === "pending" || !newChatWaitingRef.current) return;
+    newChatWaitingRef.current = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one press, once
+    if (agentChoice === "orchestrator") startOrchestratorChat();
+  }, [agentChoice, startOrchestratorChat]);
 
   const handleSelectAgent = useCallback(
     (agentName: string) => {
@@ -894,6 +944,14 @@ function ChatPageInner() {
   );
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+  // The picker still names the agent of a conversation whose agent is not
+  // known, with any choice, so that conversation keeps the right history.
+  const repairingAgent = !!activeSession && isUnresolvedAgent(activeSession.agentName);
+  const pickerShows = agentPickerShows({
+    requested: showPicker,
+    choice: agentChoice,
+    repairing: repairingAgent,
+  });
 
   // Side panel shows the ACTIVE session's documents only — drop other sessions'
   // tabs when switching so we never render a file from the wrong workspace.
@@ -1023,7 +1081,7 @@ function ChatPageInner() {
   return (
     <div className="relative flex h-full overflow-hidden">
       {/* Agent picker modal */}
-      {showPicker && (
+      {pickerShows && (
         <AgentPickerModal
           onSelect={handleSelectAgent}
           onClose={() => setShowPicker(false)}
@@ -1198,9 +1256,11 @@ function ChatPageInner() {
               />
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
-              <div className="text-sm">Choose an agent to start chatting</div>
+              <div className="text-sm">
+                {agentChoice === "member" ? "Choose an agent to start chatting" : "Start a new conversation"}
+              </div>
               <Button size="none" layout="" onClick={handleNewSession} className="px-5 py-2.5 text-sm">
-                + New session
+                {agentChoice === "member" ? "+ New session" : "+ New conversation"}
               </Button>
             </div>
           )}

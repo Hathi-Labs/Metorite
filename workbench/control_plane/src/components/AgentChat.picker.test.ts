@@ -15,7 +15,12 @@
  * Mutations this file catches (R7), each run red before the change:
  *
  * - the picker draws for a covered agent -> "shows no picker for a covered agent";
- * - the effort selector goes with it -> "keeps the effort selector";
+ * - the effort selector stays for a covered agent (owner, 2026-10-07) -> "draws
+ *   no effort selector for a covered agent";
+ * - the effort selector goes for an agent that is not covered -> "keeps the
+ *   effort selector, with its three labels";
+ * - the /chat agent selector stays for a covered orchestrator -> "draws no agent
+ *   selector for a covered orchestrator";
  * - the models fetch runs without the plan's leave -> "fetches the models only for a live picker";
  * - a `cc-model-` key is read in the composer -> "reads no stored choice itself";
  * - the composer sends a model for a covered agent -> "sends no model field";
@@ -63,16 +68,31 @@ afterEach(() => {
 });
 
 /** The composer, drawn after the agent list landed. */
-function composer(flag: string | undefined, agents?: AgentEntry[], model?: string): string {
+function composer(
+  flag: string | undefined, agents?: AgentEntry[], model?: string, agentName = AGENT,
+): string {
   return withFlag(flag, () =>
     renderToStaticMarkup(createElement(AgentChat, {
-      agentName: AGENT,
+      agentName,
       sessionId: "session-ws45-s3",
       ...(agents ? { availableAgents: agents } : {}),
       ...(model ? { model } : {}),
     })),
   );
 }
+
+function orchestrator(tier_routed?: boolean): AgentEntry {
+  return {
+    name: "orchestrator", display_name: "Metorite", description: "", tags: [],
+    status: "live", agent_runtime: "maf",
+    ...(tier_routed === undefined ? {} : { tier_routed }),
+  };
+}
+
+/** The effort selector's trigger carries the title of the mode in force. */
+const hasEffort = (html: string) => html.includes('title="Let the model decide"');
+/** The agent selector's trigger: a dot, the agent's name and a caret. */
+const hasAgentSwitch = (html: string) => /rounded-full bg-success shrink-0"><\/span><span class="truncate max-w-\[72px\]/.test(html);
 
 /** The picker trigger's label for each model the tests use. */
 const PICKER_LABELS = ["auto (SDK picks)", "Tier 3 (powerful)"];
@@ -95,8 +115,35 @@ describe("the composer, with the UI flag on", () => {
     expect(html).not.toContain("tier-powerful");
   });
 
-  it("keeps the effort selector, with its three labels (done-when 2, Q3)", () => {
+  it("draws no effort selector for a covered agent (owner, 2026-10-07)", () => {
     const html = composer("1", [entry(true)]);
+    expect(hasEffort(html)).toBe(false);
+    // The bar keeps the context ring, so it leaves no empty row.
+    expect(html).toContain("rounded-md cursor-default");
+  });
+
+  it("draws no agent selector for a covered orchestrator (owner, 2026-10-07)", () => {
+    const html = composer("1", [orchestrator(true)], undefined, "orchestrator");
+    expect(hasAgentSwitch(html)).toBe(false);
+    expect(hasEffort(html)).toBe(false);
+  });
+
+  it("keeps both for an orchestrator that the gateway does not cover", () => {
+    const html = composer("1", [orchestrator(false)], undefined, "orchestrator");
+    expect(hasAgentSwitch(html)).toBe(true);
+    expect(hasEffort(html)).toBe(true);
+  });
+
+  it("an old conversation on another agent keeps its agent, and no selector", () => {
+    // /chat hands AgentChat the session's own agent. A covered orchestrator
+    // does not move it, and the composer names the session's agent.
+    const html = composer("1", [entry(true), orchestrator(true)]);
+    expect(html).toContain('aria-label="Message projects-assistant"');
+    expect(hasAgentSwitch(html)).toBe(false);
+  });
+
+  it("keeps the effort selector, with its three labels, for an agent that is not covered (Q3)", () => {
+    const html = composer("1", [entry(false)]);
     expect(html).toContain("Let the model decide");
     expect(html).toContain(">Auto<");
     const src = read("AgentChat.tsx");
@@ -109,8 +156,10 @@ describe("the composer, with the UI flag on", () => {
     expect(hasPicker(composer("1", [entry()]))).toBe(true);
   });
 
-  it("draws no picker before the agent list lands", () => {
+  it("draws no picker, no effort and no agent selector before the agent list lands", () => {
     expect(hasPicker(composer("1"))).toBe(false);
+    expect(hasEffort(composer("1"))).toBe(false);
+    expect(hasAgentSwitch(composer("1", undefined, undefined, "orchestrator"))).toBe(false);
   });
 });
 
@@ -118,6 +167,20 @@ describe("the composer, with the UI flag off (done-when 5)", () => {
   it("draws the picker, whatever the gateway says", () => {
     expect(hasPicker(composer(undefined))).toBe(true);
     expect(hasPicker(composer(undefined, [entry(true)]))).toBe(true);
+  });
+
+  it("draws the effort selector and the orchestrator's agent selector, whatever the gateway says", () => {
+    expect(hasEffort(composer(undefined, [entry(true)]))).toBe(true);
+    const orch = composer(undefined, [orchestrator(true)], undefined, "orchestrator");
+    expect(hasEffort(orch)).toBe(true);
+    expect(hasAgentSwitch(orch)).toBe(true);
+  });
+
+  it("is the same orchestrator markup for each coverage value", () => {
+    const off = composer(undefined, [orchestrator(false)], undefined, "orchestrator");
+    expect(composer(undefined, [orchestrator(true)], undefined, "orchestrator")).toBe(off);
+    expect(composer(undefined, [orchestrator()], undefined, "orchestrator")).toBe(off);
+    expect(composer("1", [orchestrator(false)], undefined, "orchestrator")).toBe(off);
   });
 
   it("is the same markup for a covered agent, an uncovered one, and the flag on with no coverage", () => {

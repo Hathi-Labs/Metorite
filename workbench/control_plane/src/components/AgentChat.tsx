@@ -53,14 +53,17 @@ import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFro
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
 import {
+  composerControls,
   composerModelPlan,
   forgetModelChoice,
   getLastModel,
   getModelUsage,
   incrementModelUsage,
   modelMemoryStep,
+  sentThinkMode,
   setLastModel,
   tierRoutingUiOn,
+  type ThinkMode,
 } from "@/lib/tierRouting";
 
 // Unified model fallback — shown while /api/models/all is loading.
@@ -289,7 +292,6 @@ export default function AgentChat({
     useState<{ afterId: string; label: string }[]>([]);
   const activeMailbox = mailboxes?.find((m) => m.id === activeMailboxId);
   // ── Thinking mode ──────────────────────────────────────────────────
-  type ThinkMode = "auto" | "thinking" | "max";
   const [thinkMode, setThinkMode] = useState<ThinkMode>("auto");
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [agents, setAgents] = useState<AgentEntry[]>(externalAgents ?? []);
@@ -315,6 +317,17 @@ export default function AgentChat({
     uiOn: tierUi,
     agentsKnown,
     entry: currentAgentEntry,
+  });
+  // The orchestrator (Metorite) is the one agent with an agent selector.
+  const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "metorite";
+  // The member chooses no effort and no agent for a covered agent (owner,
+  // 2026-10-07, amendment of D90 §5 and §7). UI flag off: both as today.
+  // Computed before the memos below, which read `modelPlan`.
+  const controls = composerControls({
+    uiOn: tierUi,
+    agentsKnown,
+    entry: currentAgentEntry,
+    isOrchestrator,
   });
 
   // Fetch the unified model list (Copilot SDK + LiteLLM) once the picker is
@@ -409,7 +422,6 @@ export default function AgentChat({
   // its tools + instructions even when using a custom model.
   // The orchestrator (Metorite) still uses model-driven routing for
   // fast stateless chat when LiteLLM models are selected.
-  const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "metorite";
   // A covered orchestrator takes the executor path too: the direct LiteLLM
   // path would skip the tier policy (WS-45 S3).
   const effectiveRuntime = isOrchestrator && !modelPlan.covered ? currentRuntime : "copilot";
@@ -466,7 +478,9 @@ export default function AgentChat({
     model: modelPlan.sendModel ? currentModel : null,
     mode: effectiveRuntime,
     systemContext,
-    thinkMode,
+    // A covered agent sends "auto", and the executor reads the effort from
+    // the member's words (`tier_policy.turn_kind`).
+    thinkMode: sentThinkMode(modelPlan.covered, thinkMode),
     onArtifact,
     onSessionRefused,
     // Load the FULL persisted history into memory so the context sent to the
@@ -1993,7 +2007,7 @@ export default function AgentChat({
             <div className="flex items-center gap-1 px-2 pb-1.5 text-[11px] text-muted-foreground flex-wrap" ref={modelMenuRef}>
               {/* Agent selector — only the orchestrator can switch agents mid-session.
                   Specialised agents lock you into their session for clean history. */}
-              {isOrchestrator && (
+              {controls.showAgentSwitch && (
                 <div className="relative">
                   <button onClick={() => setShowAgentMenu((v) => !v)}
                     className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-secondary hover:text-foreground tech-transition">
@@ -2025,7 +2039,7 @@ export default function AgentChat({
                 </div>
               )}
 
-              {isOrchestrator && <span className="w-px h-3.5 bg-border shrink-0" />}
+              {controls.showAgentSwitch && <span className="w-px h-3.5 bg-border shrink-0" />}
 
               {/* Mailbox picker — the email assistant only. Which inbox the
                   assistant acts on is a per-conversation choice, so it belongs
@@ -2157,7 +2171,10 @@ export default function AgentChat({
               {/* The picker's divider goes with it (WS-45 S3). */}
               {modelPlan.showPicker && <span className="w-px h-3.5 bg-secondary/60 shrink-0" />}
 
-              {/* Thinking mode — compact dropdown (saves space, easier tap on mobile) */}
+              {/* Thinking mode — compact dropdown (saves space, easier tap on mobile).
+                  A covered agent has none: the executor reads the effort from
+                  the member's words (owner, 2026-10-07). */}
+              {controls.showEffort && (
               <div className="relative">
                 <Button variant="ghost" size="none" radius="keep" layout="flex items-center" type="button" onClick={() => setShowThinkMenu((v) => !v)} title={THINK_MODES.find((t) => t.mode === thinkMode)?.title} className="gap-1 px-2 py-1 rounded-md">
                   <span>{THINK_MODES.find((t) => t.mode === thinkMode)?.label ?? "Auto"}</span>
@@ -2180,8 +2197,10 @@ export default function AgentChat({
                   </div>
                 )}
               </div>
+              )}
 
-              <span className="w-px h-3.5 bg-secondary/60 shrink-0" />
+              {/* The effort selector's divider goes with it. */}
+              {controls.showEffort && <span className="w-px h-3.5 bg-secondary/60 shrink-0" />}
 
               {/* Context-window ring — always visible inline */}
               <ContextRing

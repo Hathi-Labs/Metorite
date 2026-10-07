@@ -17,6 +17,13 @@ Neither flag covers an agent on any box.
 `tier-decide`, with `tier-fast` as its fallback. §5 and §6.1 carry the
 amendment, and WS-48 N3 (`data_narrowing_pipeline.md`) builds it.
 
+**Amended by the owner (2026-10-07), §5 and §7.** The chat is a multi-agent,
+multi-model system, so the member chooses no model, no effort and no agent.
+With the UI flag on and the agent covered, the effort selector and the agent
+selector of `/chat` leave. The executor reads the effort from the member's
+words. The boxes in §5 and §7.2 carry the amendment. Branch `ws45-no-pickers`
+builds it, and it ships dark behind the two flags that exist.
+
 **S4b build notes (2026-10-06).** Read these before S5, or before an agent
 joins the flag on a box.
 
@@ -647,6 +654,37 @@ nudges the policy, and it sets the reasoning effort as today.
 > with the effort. The thresholds of the table above apply to both engines
 > until the measure of WS-48 N3 says otherwise. The text above stays as the
 > record of D90. Owning slice: `data_narrowing_pipeline.md` §9 N3.
+
+> **Amended by the owner, 2026-10-07.** The member does not choose the
+> effort. With `NEXT_PUBLIC_AI_TIER_ROUTING` on and the agent covered, the
+> composer draws no effort selector. This applies on `/chat`, the Projects
+> rail, the Tasks rail and the email chat. The run sends `think_mode` "auto".
+> The three states stay on the server, and the table above still maps them.
+> An API caller can still send Thinking or Max (§8). The member's words now
+> set the effort:
+>
+> - The turn-kind question (§4.3) asks a second item in the SAME request. The
+>   item asks whether the member explicitly asks for deep, careful or thorough
+>   work, for example "think hard", "be thorough", "take your time" or "a
+>   detailed analysis". It is one `tier-fast` request, inside the 1.5 s wait.
+> - A yes at or above the threshold of the effort makes the run's effort
+>   `thinking`. It is never `max`. Under the threshold, the effort stays
+>   `auto`. A timeout or a failure raises nothing.
+> - A message under 12 words sends no request, as before. A keyword check
+>   with no model (`tier_policy.asks_for_depth`) reads it instead.
+> - Only the member's own turn reads the words. That is the stream path. A
+>   sub-agent and the batch path read a model's words, so they keep the
+>   effort that the parent binds.
+> - The run then uses Thinking in each place that reads the effort. That is
+>   `reasoning_effort` `medium`, the System-1 threshold 0.80, and `medium` on
+>   the Copilot stream.
+> - The executor logs `ai_route.effort_from_text` with the agent, the run,
+>   the effort and the source (`system_one` or `keyword`). The line holds no
+>   tenant text.
+>
+> The text above stays as the record of D90. Q3 (no fourth label) does not
+> change. Fences: `tests/unit/test_tier_policy_effort_from_text.py` and
+> `src/lib/tierRoutingControls.test.ts`.
 - **Max costs more credits.** Every main request bills at the Powerful rate.
   The selector shows no price (D88's rule for the bar applies here too).
 - **The Copilot stream path sends `low` for Auto** (`executor.py:4251-4268`).
@@ -846,6 +884,33 @@ bound what an injection can do.
 - `/api/models/all` stays. The Models settings page and other surfaces read
   it.
 
+> **Amended by the owner, 2026-10-07.** The first bullet above changes. With
+> the UI flag on, two more controls leave for a covered agent:
+>
+> 1. **The effort selector**, on every chat surface (the box in §5).
+> 2. **The agent selector of `/chat`**, for a covered orchestrator. `/chat`
+>    always talks to the orchestrator, which sends each request to the right
+>    agent with `call_agent`. "+ New conversation" starts an orchestrator chat
+>    with no picker.
+>
+> Each way to choose the agent of `/chat` has a decision:
+>
+> | Way to choose | With the orchestrator covered |
+> |---|---|
+> | The agent selector of the composer ("Metorite ▾") | It leaves |
+> | The "New session" picker | It leaves for a new conversation. It stays for a conversation with no known agent (`isUnresolvedAgent`), because it then names the agent of history that exists |
+> | `?agent=<name>` | It stays. The `/agents` page links to `/chat` this way for one agent |
+> | The latest conversation, on load | It opens with its own agent, as before |
+> | A conversation on another agent | It opens and continues with its own agent. No history moves |
+>
+> No stored "last agent" exists. The page stores the list of conversations,
+> and the latest one opens. The Projects rail, the Tasks rail, the email chat
+> and the App Builder keep their agent. They never drew the agent selector.
+> With the UI flag off, or with the orchestrator not covered, every control
+> is as today. `src/lib/tierRouting.ts` holds the rules: `composerControls`,
+> `sentThinkMode`, `chatAgentChoice`, `newChatAction`, `agentPickerShows` and
+> `initialChatOpen`.
+
 ---
 
 ## 8. Backward compatibility (R6)
@@ -922,6 +987,9 @@ needs restoring.
 | The flag fails closed | `test_tier_policy.py`. A broken settings read reads as OFF | pytest |
 | No new direct vendor call | `tests/unit/test_no_direct_ai_vendor_calls.py` (new). It scans `apps/` and `packages/` for `litellm` verbs, the `openai` and `anthropic` SDKs and vendor AI hosts. A baseline lists the §2.10 paths with a reason each, and it only goes down. `apps/services/customer_console/` is exempt, because it IS the Router | pytest |
 | `tier-fast` serves only a vendor that is already a sub-processor | **Advisory.** §6.6 and §13 Q5 | — |
+| A covered agent draws no effort selector, a covered orchestrator draws no agent selector, and the run sends `think_mode` "auto" (owner, 2026-10-07) | `src/lib/tierRoutingControls.test.ts` and `AgentChat.picker.test.ts`. The flag-off markup is the same for each coverage value | vitest |
+| An existing `/chat` conversation keeps its own agent, and `?agent=` stays | `src/lib/tierRoutingControls.test.ts` | vitest |
+| The member's words give `thinking`, never `max`, in the SAME turn-kind request. A short message sends no request | `tests/unit/test_tier_policy_effort_from_text.py` | pytest |
 
 ---
 
@@ -1064,11 +1132,13 @@ uv run pytest tests/unit/test_system_one_tool.py tests/unit/test_tier_policy.py 
   tests/unit/test_internal_ai_is_routed.py tests/unit/test_native_maf_wire.py \
   tests/unit/test_think_mode.py tests/unit/test_byok_default.py \
   tests/unit/test_no_direct_ai_vendor_calls.py \
-  tests/unit/test_agent_list_tier_routed.py -q
+  tests/unit/test_agent_list_tier_routed.py \
+  tests/unit/test_tier_policy_effort_from_text.py -q
 
 # The UI fences (S3)
 cd workbench/control_plane && npx tsc --noEmit && \
   npx vitest run src/components/AgentChat.picker.test.ts src/lib/tierRouting.test.ts \
+  src/lib/tierRoutingControls.test.ts \
   src/app/api/models/all/route.test.ts src/app/email/lib/chatScope.test.ts
 
 # The writing fence (every PR that touches markdown)
