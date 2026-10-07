@@ -34,13 +34,21 @@
 -- owner check is in the gateway, as for every `email_*` table. Row level
 -- security binds the organization only.
 --
--- ⚠️ The CREATE INDEX on `email_messages` takes a SHARE lock and scans the
--- table once, so writes to that table wait for the build. The index is
--- partial, and every existing row has `insights_at` NULL, so it holds every
--- row today. A deploy applies this file before the services restart.
+-- ⚠️ The lock on `email_messages`. The file is ONE transaction. Its first
+-- `ADD COLUMN` on `email_messages` takes an ACCESS EXCLUSIVE lock, and the
+-- transaction holds that lock until COMMIT. So the partial index build, which
+-- scans the whole table, runs while READS and writes of `email_messages` wait
+-- (review round 1, F3). The `ADD COLUMN` itself rewrites no row. Every
+-- existing row has `insights_at` NULL, so the index holds every row today. A
+-- deploy applies this file before the services restart.
 --
--- Expand only (R6): a new table, two new columns with a constant default or
--- NULL, and two new indexes. No rename, no drop, no UPDATE. Old code names no
+-- ⚠️ The index on `attachment_id` serves the cascade. Referential actions
+-- bypass row level security, so without it each delete of an attachment
+-- scans `email_insights` across every organization (review round 1, P2).
+--
+-- Expand only (R6): a new table with four indexes, three new columns with a
+-- constant default or NULL, and one new index on `email_messages`. No rename,
+-- no drop, no UPDATE. Old code names no
 -- new column, so it runs on the new schema unchanged. A constant default
 -- rewrites no row (Postgres 11 and later).
 -- Idempotent per infra/postgres/README.md: a second run changes nothing.
@@ -98,6 +106,10 @@ CREATE INDEX IF NOT EXISTS idx_email_insights_tabs
 
 CREATE INDEX IF NOT EXISTS idx_email_insights_message
     ON email_insights (message_id);
+
+CREATE INDEX IF NOT EXISTS idx_email_insights_attachment
+    ON email_insights (attachment_id)
+    WHERE attachment_id IS NOT NULL;
 
 DO $rls$
 BEGIN

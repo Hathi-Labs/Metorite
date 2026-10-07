@@ -114,6 +114,14 @@ class TestTheMigrationText:
         assert "WITH CHECK (organization_id =" in body
         assert "current_setting(''app.tenant_id'', true)" in body
 
+    def test_the_cascading_file_key_has_an_index(self):
+        """Review round 1, P2: a referential action bypasses RLS, so with no
+        index each delete of an attachment scans every organization."""
+        body = " ".join(_body(_migration()).split())
+        assert ("CREATE INDEX IF NOT EXISTS idx_email_insights_attachment ON "
+                "email_insights (attachment_id) WHERE attachment_id IS NOT NULL"
+                ) in body
+
     def test_it_is_expand_only(self):
         body = _body(_migration()).upper()
         # R6: no rename, no drop of a table or a column, and no rewrite of a
@@ -244,6 +252,30 @@ class TestTheWritePathTrustsNoField:
         assert row["quote"].startswith("Qq")
         assert row["amount"] == Decimal("100.00")
 
+    @pytest.mark.parametrize(("raw", "want"), [
+        ("Invoice \ud800", "Invoice"),            # a lone high surrogate (Cs)
+        ("\udfffInvoice", "Invoice"),             # a lone low surrogate (Cs)
+        ("Invoice", "Invoice"),             # private use (Co)
+        ("Inv͸oice", "Invoice"),             # unassigned (Cn)
+        ("Inv\x00oice", "Invoice"),               # NUL, which Postgres refuses
+        ("\ud800", None),                         # nothing is left
+    ], ids=["high", "low", "private", "unassigned", "nul", "empty"])
+    def test_clean_text_keeps_only_text_that_encodes(self, raw, want):
+        """Review round 1, P2: a lone surrogate raised in the driver or in the
+        hash, after the DELETE had run."""
+        got = store.clean_text(raw, 200)
+        assert got == want
+        if got is not None:
+            got.encode("utf-8")
+
+    def test_every_text_field_of_a_clean_row_encodes(self):
+        row = store._clean(_invoice(
+            title="T\ud800", counterpart="C\udc00", ref="R\ud83d", quote="Q\udfff"))
+        assert row is not None
+        for field in ("title", "counterpart", "ref", "quote"):
+            row[field].encode("utf-8")
+        store.dedupe_key(row, message_id="m", counterpart_email="a@b.test")
+
 
 class TestTheDedupeKey:
     def test_the_key_names_type_ref_amount_currency_and_sender_domain(self):
@@ -251,6 +283,21 @@ class TestTheDedupeKey:
         assert store.dedupe_key(
             row, message_id="m-1", counterpart_email="Billing@Acme.TEST",
         ) == "invoice|inv-9|1250.50|inr|acme.test"
+
+    def test_no_ref_uses_the_full_sender_address(self):
+        """Review round 1, P2 (orchestrator decision, 2026-10-07). Two people
+        at one free mail domain stay two keys. With a ref, one vendor that
+        bills from two addresses stays one key."""
+        row = store._clean(_invoice(ref=None, amount=Decimal("5000")))
+        ravi = store.dedupe_key(row, message_id="m", counterpart_email="Ravi@Gmail.com")
+        priya = store.dedupe_key(row, message_id="m", counterpart_email="priya@gmail.com")
+        assert ravi == "invoice||5000.00|inr|ravi@gmail.com"
+        assert priya == "invoice||5000.00|inr|priya@gmail.com"
+        with_ref = store._clean(_invoice(ref="INV-1"))
+        assert store.dedupe_key(
+            with_ref, message_id="m", counterpart_email="billing@vendor.test",
+        ) == store.dedupe_key(
+            with_ref, message_id="n", counterpart_email="ar@vendor.test")
 
     def test_no_ref_and_no_amount_uses_the_message_and_the_quote(self):
         row = store._clean(_invoice(ref=None, amount=None, quote="Pay  us\nsoon"))
@@ -265,6 +312,30 @@ class TestTheGuardsBeforeTheDatabase:
     async def test_no_tenant_raises_before_any_sql(self):
         with pytest.raises(TenantUnbound):
             await store.write_facts(None, "a", "m", None, "fin-1", [])
+
+    async def test_every_fact_is_cleaned_before_any_sql(self, monkeypatch):
+        """Review round 1, P2: no value may raise after the DELETE. So the
+        clean runs first, and a failure there leaves the session untouched."""
+        calls: list[str] = []
+
+        class _Db:
+            async def execute(self, sql, params=None):
+                calls.append(str(sql))
+                raise AssertionError("SQL ran before the facts were cleaned")
+
+        def _boom(fact):
+            raise RuntimeError("clean failed")
+
+        monkeypatch.setattr(store, "_clean", _boom)
+        token = bind_tenant(str(uuid.uuid4()))
+        try:
+            with pytest.raises(RuntimeError, match="clean failed"):
+                await store.write_facts(
+                    _Db(), str(uuid.uuid4()), str(uuid.uuid4()), None, "fin-1",
+                    [_invoice()])
+        finally:
+            release_tenant(token)
+        assert calls == []
 
     @pytest.mark.parametrize("version", ["fin", "FIN-1", "fin-x", "fin-1234567", ""])
     async def test_a_bad_version_raises(self, version):
@@ -528,25 +599,119 @@ class TestTheDedupe:
                 c.execute(text(
                     "UPDATE email_insights SET state = 'done' "
                     "WHERE account_id = CAST(:a AS uuid)"), {"a": box.aid})
-            # Two facts with the one key in one call, too: the second meets
-            # the conflict arm of the first.
+            (before,) = _facts(p.admin_engine, account_id=box.aid)
+            # Another message with the same key sends another due date and
+            # direction (review round 1, P1). Two facts in one call, too.
             res = await _write(p, p.org_b, box.aid, again, None, "fin-1", [
                 _invoice(quote="Re: INV-1 is INR 100", confidence=0.6,
-                         title="Invoice INV-1 again"),
-                _invoice(quote="the same key twice in one call", confidence=0.6,
-                         title="Invoice INV-1 again"),
+                         title="Invoice INV-1 again", direction="receivable",
+                         due_on=date(2027, 1, 1), counterpart="Mallory"),
+                _invoice(quote="the same key twice in one call", confidence=0.3,
+                         title="Pay now", due_on=date(2027, 2, 2)),
             ])
-            assert res.written == 2
+            assert (res.written, res.kept) == (0, 2)
             (row,) = _facts(p.admin_engine, account_id=box.aid)
+            # NO field of the first row changed: the source, the quote, the
+            # mark of the member, and each field that the quote holds.
+            assert dict(row) == dict(before)
             assert str(row["message_id"]) == first
             assert row["quote"] == "Invoice INV-1 for INR 100"
             assert row["counterpart_email"] == "billing@acme.test"
             assert row["state"] == "done"
-            # The conflict arm ran: the fields a new extraction may refine moved.
-            assert row["title"] == "Invoice INV-1 again"
-            assert row["confidence"] == pytest.approx(0.6)
+            assert row["direction"] == "payable"
+            assert row["due_on"] == date(2026, 11, 1)
             assert row["dedupe_key"] == "invoice|inv-1|100.00|inr|acme.test"
+            # The job still read the other message.
             assert _insights_at(p.admin_engine, again) is not None
+        finally:
+            _purge(p.admin_engine, f"%-{tag}@t14a.test")
+
+    async def test_the_same_source_refines_its_own_fact(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """A new extraction of the SAME message and file refines the fields.
+        The quote, the source and the mark of the member stay."""
+        p, tag = promoted, uuid.uuid4().hex[:8]
+        box = _mailbox(p, p.org_b, tag)
+        mail = _message(p.admin_engine, org=p.org_b, account_id=box.aid)
+        try:
+            await _write(p, p.org_b, box.aid, mail, None, "fin-1",
+                         [_invoice(quote="Invoice INV-1 for INR 100")])
+            with p.admin_engine.begin() as c:
+                c.execute(text(
+                    "UPDATE email_insights SET state = 'done' "
+                    "WHERE account_id = CAST(:a AS uuid)"), {"a": box.aid})
+            res = await _write(p, p.org_b, box.aid, mail, None, "fin-2", [
+                _invoice(quote="INV-1, INR 100, due 1 Dec 2026", confidence=0.6,
+                         title="Invoice INV-1 refined", due_on=date(2026, 12, 1))])
+            assert (res.written, res.kept) == (1, 0)
+            (row,) = _facts(p.admin_engine, account_id=box.aid)
+            assert row["title"] == "Invoice INV-1 refined"
+            assert row["due_on"] == date(2026, 12, 1)
+            assert row["confidence"] == pytest.approx(0.6)
+            assert row["extractor_version"] == "fin-2"
+            assert row["quote"] == "Invoice INV-1 for INR 100"
+            assert (str(row["message_id"]), row["state"]) == (mail, "done")
+        finally:
+            _purge(p.admin_engine, f"%-{tag}@t14a.test")
+
+    async def test_two_freemail_senders_with_no_ref_stay_two_cards(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Review round 1, P2: with no ``ref`` the key holds the FULL sender."""
+        p, tag = promoted, uuid.uuid4().hex[:8]
+        box = _mailbox(p, p.org_b, tag)
+        ravi = _message(p.admin_engine, org=p.org_b, account_id=box.aid,
+                        sender="ravi@gmail.com")
+        priya = _message(p.admin_engine, org=p.org_b, account_id=box.aid,
+                         sender="priya@gmail.com")
+        try:
+            for mid in (ravi, priya):
+                res = await _write(p, p.org_b, box.aid, mid, None, "fin-1", [
+                    _invoice(ref=None, amount=Decimal("5000"),
+                             quote="Invoice for INR 5000")])
+                assert res.written == 1
+            keys = sorted(r["dedupe_key"]
+                          for r in _facts(p.admin_engine, account_id=box.aid))
+            assert keys == ["invoice||5000.00|inr|priya@gmail.com",
+                            "invoice||5000.00|inr|ravi@gmail.com"]
+        finally:
+            _purge(p.admin_engine, f"%-{tag}@t14a.test")
+
+    async def test_one_vendor_with_two_addresses_and_one_ref_is_one_card(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        p, tag = promoted, uuid.uuid4().hex[:8]
+        box = _mailbox(p, p.org_b, tag)
+        billing = _message(p.admin_engine, org=p.org_b, account_id=box.aid,
+                           sender="billing@vendor.test")
+        ar = _message(p.admin_engine, org=p.org_b, account_id=box.aid,
+                      sender="ar@vendor.test")
+        try:
+            for mid in (billing, ar):
+                await _write(p, p.org_b, box.aid, mid, None, "fin-1", [
+                    _invoice(ref="INV-77", quote="Invoice INV-77 for INR 100")])
+            (row,) = _facts(p.admin_engine, account_id=box.aid)
+            assert row["dedupe_key"] == "invoice|inv-77|100.00|inr|vendor.test"
+            assert str(row["message_id"]) == billing
+        finally:
+            _purge(p.admin_engine, f"%-{tag}@t14a.test")
+
+    async def test_a_lone_surrogate_from_a_model_writes_clean_text(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Review round 1, P2: a lone surrogate never reaches the driver."""
+        p, tag = promoted, uuid.uuid4().hex[:8]
+        box = _mailbox(p, p.org_b, tag)
+        mail = _message(p.admin_engine, org=p.org_b, account_id=box.aid)
+        try:
+            res = await _write(p, p.org_b, box.aid, mail, None, "fin-1", [
+                _invoice(title="Invoice \ud800", counterpart="Acme\udfff",
+                         ref="INV-\ud83d1", quote="Invoice \ud800INV-1")])
+            assert res.written == 1
+            (row,) = _facts(p.admin_engine, account_id=box.aid)
+            assert (row["title"], row["counterpart"], row["ref"], row["quote"]) \
+                == ("Invoice", "Acme", "INV-1", "Invoice INV-1")
         finally:
             _purge(p.admin_engine, f"%-{tag}@t14a.test")
 
@@ -698,6 +863,33 @@ class TestTheCascade:
                     "DELETE FROM email_accounts WHERE id = CAST(:a AS uuid)"),
                     {"a": box.aid})
             assert _facts(p.admin_engine, account_id=box.aid) == []
+        finally:
+            _purge(p.admin_engine, f"%-{tag}@t14a.test")
+
+    async def test_a_delete_of_a_file_deletes_its_facts_through_an_index(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """Review round 1, P2: the cascade on ``attachment_id`` has an index."""
+        p, tag = promoted, uuid.uuid4().hex[:8]
+        box = _mailbox(p, p.org_a, tag)
+        mail = _message(p.admin_engine, org=p.org_a, account_id=box.aid)
+        pdf = _attachment(p.admin_engine, org=p.org_a, message_id=mail)
+        try:
+            await _write(p, p.org_a, box.aid, mail, pdf, "fin-1",
+                         [_invoice(ref="INV-1")])
+            await _write(p, p.org_a, box.aid, mail, None, "fin-1",
+                         [_invoice(ref="INV-2")])
+            async with _as_member(p, p.org_a), tenant_session() as db:
+                await db.execute(text(
+                    "DELETE FROM email_attachments WHERE id = CAST(:f AS uuid)"),
+                    {"f": pdf})
+            assert [r["ref"] for r in _facts(p.admin_engine, account_id=box.aid)] \
+                == ["INV-2"]
+            with p.admin_engine.connect() as c:
+                index = c.execute(text(
+                    "SELECT indexdef FROM pg_indexes "
+                    "WHERE indexname = 'idx_email_insights_attachment'")).scalar_one()
+            assert "(attachment_id) WHERE (attachment_id IS NOT NULL)" in index
         finally:
             _purge(p.admin_engine, f"%-{tag}@t14a.test")
 

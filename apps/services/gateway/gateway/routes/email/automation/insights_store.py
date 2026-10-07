@@ -21,6 +21,8 @@ job that calls :func:`write_facts`. It ships dark.
 **The write, in one session (§13.5 item 9).** The caller opens
 ``_tenant_session()`` and passes it in. :func:`write_facts`:
 
+0. cleans every fact, before any SQL runs. So no value can raise after the
+   DELETE of step 2 (review round 1).
 1. checks that the message is in the mailbox, that the file is in the message,
    and that the opt-in of the mailbox still holds. A miss writes nothing.
 2. deletes the facts of that message and source with an OLDER version of the
@@ -28,8 +30,12 @@ job that calls :func:`write_facts`. It ships dark.
    upsert keeps its ``state``.
 3. upserts each fact on ``(account_id, dedupe_key)``. On a conflict it keeps
    ``message_id``, ``attachment_id``, ``quote``, ``counterpart_email`` and
-   ``state`` of the first row.
+   ``state`` of the first row. Only a write of the SAME source refines the
+   other fields. A conflict from another source changes nothing.
 4. sets ``email_messages.insights_at``.
+
+⚠️ The caller must not catch an error of :func:`write_facts` and then commit
+the same session (H-249). A failed statement aborts the transaction.
 
 It writes ``organization_id`` from ``current_tenant()``. FORCE row level
 security then refuses a row of another organization (WITH CHECK).
@@ -122,6 +128,9 @@ _VERSION = re.compile(r"^([a-z]+)-([0-9]{1,6})$")
 #: An amount fits ``numeric(18,2)`` below this bound.
 _AMOUNT_BOUND = Decimal("1e16")
 _CENT = Decimal("0.01")
+#: The cap of the sender address in the key and in ``counterpart_email``.
+#: RFC 5321 allows 254 characters. A longer From line is cut, never refused.
+_SENDER_CAP = 320
 
 
 @dataclass(frozen=True)
@@ -144,13 +153,16 @@ class Fact:
 
 @dataclass(frozen=True)
 class WriteResult:
-    """What one :func:`write_facts` call did. ``refused`` names the check that
-    stopped the write, and is None when the write ran."""
+    """What one :func:`write_facts` call did. ``written`` counts the rows that
+    it inserted or refined. ``kept`` counts the facts whose key a row of
+    ANOTHER source holds, which stays as it was. ``refused`` names the check
+    that stopped the write, and is None when the write ran."""
 
     written: int = 0
     deleted: int = 0
     dropped: int = 0
     refused: str | None = None
+    kept: int = 0
 
 
 def _parse_orgs(raw: str) -> frozenset[str]:
@@ -174,15 +186,23 @@ def insights_enabled() -> bool:
     return ALL_ORGS in orgs or str(org) in orgs
 
 
+#: The categories that ``clean_text`` removes: control, format, a lone
+#: surrogate, private use and unassigned. A lone surrogate cannot encode to
+#: UTF-8, so it would raise in the driver or in the hash (review round 1).
+_DROP_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn"})
+
+
 def clean_text(value: Any, cap: int) -> str | None:
-    """``value`` with each control and format character removed, the space
-    at each end removed, and cut to ``cap`` characters. None or empty is None.
-    A cut keeps a prefix, so a quote that is in its source stays in it."""
+    """``value`` with each control, format, surrogate, private-use and
+    unassigned character removed, the space at each end removed, and cut to
+    ``cap`` characters. None or empty is None. A cut keeps a prefix, so a
+    quote that is in its source stays in it. The result always encodes to
+    UTF-8."""
     if not isinstance(value, str):
         return None
     kept = "".join(
         ch for ch in value
-        if ch in "\n\t" or unicodedata.category(ch) not in ("Cc", "Cf"))
+        if ch in "\n\t" or unicodedata.category(ch) not in _DROP_CATEGORIES)
     kept = kept.strip()[:cap].strip()
     return kept or None
 
@@ -241,18 +261,27 @@ def _clean(fact: Fact) -> dict[str, Any] | None:
 
 def dedupe_key(row: dict[str, Any], *, message_id: str,
                counterpart_email: str | None) -> str:
-    """§13.5 item 6, in lower case: ``type|ref|amount|currency|counterpart
-    domain``. A fact with no ``ref`` and no amount uses ``type|message
-    id|quote hash``, so a reply that quotes an invoice again gives no second
-    card. The domain comes from the sender address, never from a model."""
+    """§13.5 item 6, in lower case: ``type|ref|amount|currency|sender``.
+
+    * With a ``ref``, the sender part is the DOMAIN of the sender address.
+      One vendor that bills from ``billing@`` and ``ar@`` with one invoice
+      number stays one card.
+    * With no ``ref`` and an amount, the sender part is the FULL address. Two
+      people at one free mail domain who each send an invoice of the same
+      amount stay two cards (orchestrator decision, 2026-10-07).
+    * With no ``ref`` and no amount, the key is ``type|message id|quote
+      hash``, so a reply that quotes an invoice again gives no second card.
+
+    The sender comes from the message row, never from a model."""
     if row["ref"] is None and row["amount"] is None:
         folded = " ".join(row["quote"].split()).lower()
         digest = hashlib.sha256(folded.encode("utf-8")).hexdigest()[:16]
         return f"{row['fact_type']}|{message_id}|{digest}".lower()
     amount = f"{row['amount']:.2f}" if row["amount"] is not None else ""
+    sender = (counterpart_email or "").strip().lower()
+    who = _domain_of(sender) if row["ref"] is not None else sender
     return "|".join((
-        row["fact_type"], row["ref"] or "", amount, row["currency"] or "",
-        _domain_of(counterpart_email or ""),
+        row["fact_type"], row["ref"] or "", amount, row["currency"] or "", who,
     )).lower()
 
 
@@ -290,7 +319,12 @@ _DELETE_OLDER_SQL = text(
     "AND NOT (dedupe_key = ANY(CAST(:keys AS text[])))")
 
 # On a conflict the first row keeps its source (message_id, attachment_id),
-# its quote, its counterpart_email and the member's state.
+# its quote, its counterpart_email and the member's state. The WHERE of the
+# conflict arm limits a refine to the SAME source (review round 1, P1): a fact
+# of another message, or of another file, with the same key changes nothing.
+# Without it, any sender who knows a key could rewrite the due date or the
+# direction of a fact whose quote does not hold them (§13.5, D-EM-41).
+# RETURNING counts only the rows that this write inserted or refined.
 _UPSERT_SQL = text(
     "INSERT INTO email_insights (organization_id, account_id, message_id, "
     "attachment_id, domain, fact_type, direction, title, counterpart, "
@@ -306,7 +340,11 @@ _UPSERT_SQL = text(
     "counterpart = EXCLUDED.counterpart, ref = EXCLUDED.ref, "
     "amount = EXCLUDED.amount, currency = EXCLUDED.currency, "
     "due_on = EXCLUDED.due_on, confidence = EXCLUDED.confidence, "
-    "extractor_version = EXCLUDED.extractor_version, updated_at = now()")
+    "extractor_version = EXCLUDED.extractor_version, updated_at = now() "
+    "WHERE email_insights.message_id = EXCLUDED.message_id "
+    "AND email_insights.attachment_id IS NOT DISTINCT FROM "
+    "EXCLUDED.attachment_id "
+    "RETURNING 1")
 
 _MARK_READ_SQL = text(
     "UPDATE email_messages SET insights_at = now() "
@@ -354,6 +392,18 @@ async def write_facts(
         return _refuse("bad_id")
     ids = {"account_id": aid, "message_id": mid, "attachment_id": att}
 
+    # 0. Clean every fact BEFORE any SQL runs (review round 1, P2). A value
+    #    that cannot reach the database must fail here, never after the
+    #    DELETE below has run in the caller's session (H-249).
+    rows: list[dict[str, Any]] = []
+    dropped = 0
+    for fact in facts:
+        row = _clean(fact)
+        if row is None:
+            dropped += 1
+        else:
+            rows.append(row)
+
     # 1. The checks. RLS binds the organization; these bind the mailbox.
     msg = (await db.execute(_MESSAGE_SQL, {"mid": mid, "aid": aid})).fetchone()
     if msg is None:
@@ -365,17 +415,12 @@ async def write_facts(
     if opt_in is None or not opt_in.insights_enabled:
         return _refuse("not_opted_in", **ids)
 
-    counterpart_email = (msg.sender or "").strip() or None
-    rows: list[dict[str, Any]] = []
-    dropped = 0
-    for fact in facts:
-        row = _clean(fact)
-        if row is None:
-            dropped += 1
-            continue
+    # The sender comes from the message row. The cap keeps the key of the
+    # UNIQUE index far below the size that a btree entry allows.
+    counterpart_email = clean_text(msg.sender, _SENDER_CAP)
+    for row in rows:
         row["dedupe_key"] = dedupe_key(
             row, message_id=mid, counterpart_email=counterpart_email)
-        rows.append(row)
 
     # 2. The older facts of this message and source.
     deleted = (await db.execute(_DELETE_OLDER_SQL, {
@@ -384,16 +429,21 @@ async def write_facts(
     })).rowcount or 0
 
     # 3. One statement for each fact, so two facts with one key in one call
-    #    meet the conflict arm and the first one stays.
+    #    meet the conflict arm and the first one stays. A conflict with a row
+    #    of another source writes nothing, and counts in ``kept``.
+    written = 0
     for row in rows:
-        await db.execute(_UPSERT_SQL, {
+        hit = (await db.execute(_UPSERT_SQL, {
             **row, "org": str(org), "aid": aid, "mid": mid, "att": att,
             "counterpart_email": counterpart_email, "version": version,
-        })
+        })).fetchone()
+        written += 1 if hit is not None else 0
+    kept = len(rows) - written
 
     # 4. The job read this message.
     await db.execute(_MARK_READ_SQL, {"mid": mid, "aid": aid})
 
-    _log.info("email.insights.write", written=len(rows), deleted=deleted,
-              dropped=dropped, extractor_version=version, **ids)
-    return WriteResult(written=len(rows), deleted=deleted, dropped=dropped)
+    _log.info("email.insights.write", written=written, kept=kept,
+              deleted=deleted, dropped=dropped, extractor_version=version, **ids)
+    return WriteResult(written=written, deleted=deleted, dropped=dropped,
+                       kept=kept)
