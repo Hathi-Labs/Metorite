@@ -2445,13 +2445,19 @@ vocabulary: the chooser lists organizations, never roles (D12).
   **How it works.** Auth.js holds one session cookie, and a new sign-in
   overwrites it (`@auth/core` `callback/index.js:71-77` builds a fresh token).
   So the browser keeps each other account's OWN session token, unchanged, in a
-  slot cookie (`mt-acct-0` to `mt-acct-3`, `httpOnly`, `Secure`, `SameSite=Lax`).
+  slot cookie (`__Host-mt-acct-0` to `__Host-mt-acct-3`, `httpOnly`, `Secure`,
+  `SameSite=Lax`). `__Host-`, so a sibling subdomain cannot plant one.
   A switch SWAPS the active token and a slot token. The server never mints a
   token: each one came out of a completed sign-in, through the `signIn` gate.
 
   **What the gateway sees does not change.** One email per request, from the
   active session. The tenant binding (R11) is untouched. A switch changes which
   verified identity is active. It never chooses an organization.
+
+  ⚠️ One read is the exception. To name each other account's organization in
+  the menu, `GET /api/accounts?orgs=1` calls `/auth/me` AS that account. The
+  slot token is the proof, because it is a valid session for that email, held
+  by this browser. Only the organization's name leaves that read.
 
   **The rules, each with its fence:**
 
@@ -2464,10 +2470,26 @@ vocabulary: the chooser lists organizations, never roles (D12).
      belongs to one organization: the logo cache, the org density, and the
      Email mailbox choice. Fence: `accountSwitch.test.ts`, which also fails if
      a listed key is renamed.
-  4. "Sign out of all accounts" clears every slot, and every account's chat
-     namespace (`projects_ai_chat.md` "Replace the pointer when the switcher
-     lands"). Fence: `accountSwitch.test.ts`.
-  5. At most four other accounts. A fifth replaces the oldest.
+  4. The slots end with the session. `proxy.ts` deletes every slot on a request
+     that has no live session, however the session ended: the switcher, a
+     plain `signOut()`, Auth.js's own sign-out page, or an expiry. Fence:
+     `proxy.test.ts`. "Sign out of all accounts" also clears every account's
+     chat namespace (`projects_ai_chat.md` "Replace the pointer when the
+     switcher lands"). Fence: `accountSwitch.test.ts`.
+  5. At most four other accounts. A fifth replaces the slot whose token expires
+     first, which is the account used least recently.
+  6. Every open tab follows the cookie. A tab that loads announces its account
+     on a `BroadcastChannel`, and a tab that shows another account reloads at
+     `/`. Without this, an old tab writes as an account it does not show.
+     Fence: `accountSwitch.test.ts` and the two-tab case in
+     `e2e/account-switcher.spec.ts`.
+
+  **Known, not fixed.** A `/api/auth/session` refresh that is in flight with
+  the old cookie can set it again after a switch. The member then loses the
+  other account from the browser, and must add it again. It loses access and
+  leaks nothing. The session cookie itself is still `__Secure-`, so a sibling
+  subdomain could plant one. That gap is older than this slice. A rename to
+  `__Host-` changes the salt and signs every member out one time.
 
   **Where it shows.** Desktop: the sidebar footer is an account button, and the
   folded rail has an avatar at its foot. Both open one menu: the active account
