@@ -130,6 +130,29 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `data_narrowing_pipeline.md` §3.3 and §9 N4 build notes
 - **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
 
+### H-278 · A single route param can still move a gateway call to another route under its prefix · [AGENT]
+- **Check:** `rg -n '\$\{(sessionId|subject|agentName|provider|threadId)\}' workbench/control_plane/src/app/api`.
+  A hit that puts the raw param into a gateway URL, with no `refuseUnsafePath([...])`
+  in that handler, means this is open.
+- **Why.** About 20 handlers put one raw param into a gateway path with a
+  fixed suffix, for example `chat/sessions/[sessionId]/participants/[subject]`.
+  Next decodes the param once, so `%3F`, `%23` and `%2F` arrive as `?`, `#`
+  and `/`.
+  - A `?` or `#` cuts off the suffix. Then `DELETE .../participants/{s}`
+    reaches `DELETE /chat/sessions/{id}`.
+  - A `/` adds segments, so the call reaches a deeper route.
+  - The path guard (`src/lib/gatewayPath.ts`) refuses every dot segment, so
+    the call cannot leave its prefix, and it still runs as the member. So
+    this is a confused route, not a privilege step. The guard's header names
+    the gap.
+- **Do.** In each handler, refuse the param with `refuseUnsafePath([param])`
+  right after it reads `params`. Then widen the sweep in `gatewayPath.test.ts`
+  from catch-alls to every template that puts a route param into a gateway
+  path. `encodeURIComponent` alone is not enough, because uvicorn decodes
+  `%2F` back into a separator before Starlette routes.
+- **Authority:** verifier and diff review of the path guard PR, 2026-10-08
+- **Added:** 2026-10-08 · branch `proxy-path-guard`.
+
 ### H-277 · `read_whatsapp_chat` reads the oldest messages of a chat, not the recent ones · [AGENT]
 - **Check:** `rg -n "ORDER BY sent_at ASC NULLS FIRST" apps/services/gateway/gateway/routes/whatsapp/transport/messages.py`.
   A hit in `list_messages` with `LIMIT :limit` after it means this is open.

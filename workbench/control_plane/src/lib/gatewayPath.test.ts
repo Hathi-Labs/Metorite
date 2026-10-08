@@ -63,6 +63,12 @@ describe("gatewayUrlEscape", () => {
     "http://gw:8080/projects/a\\..\\internal",
     "http://gw:8080/projects/%2E%2e/internal",
     "http://gw:8080/projects/x/.",
+    // Once decoded, as uvicorn hands the path to Starlette (verifier, 2026-10-08).
+    "http://gw:8080/projects/%2E%2E%2Finternal",
+    "http://gw:8080/projects/x%2F..%2F..%2Finternal",
+    "http://gw:8080/projects/%252e%252e/internal",
+    "http://gw:8080/projects/a%5C..%5Cinternal",
+    "http://gw:8080/projects/a%0Ab",
   ])("refuses %j", (raw) => {
     expect(gatewayUrlEscape(raw)).not.toBeNull();
   });
@@ -73,6 +79,11 @@ describe("gatewayUrlEscape", () => {
     "http://gw:8080/x/...",
     "http://gw:8080/email/messages?q=a..b&next=/../x",
     "http://gw:8080/notes#../../x",
+    // A model id holds a slash. The settings page sends it encoded, and the
+    // gateway route takes it as `{model_id:path}`.
+    "http://gw:8080/settings/llm/enabled-models/openai%2Fgpt-4o",
+    "http://gw:8080/memory/alice%40fracktal.in",
+    "http://gw:8080/files/%E2%80%A4%E2%80%A4",
   ])("lets %j through", (raw) => {
     expect(gatewayUrlEscape(raw)).toBeNull();
   });
@@ -124,7 +135,6 @@ describe("the catch-all sweep", () => {
     // Every read of `params`, in any spelling, is followed by the guard. A
     // handler that reads them another way fails here, and is then written in
     // the one spelling this test knows.
-    if (/unsafeGatewayPath\(path\)/.test(src)) return; // email, whatsapp: in the builder
     const reads = src.match(/await (?:ctx\.|context\.)?params\b/g) ?? [];
     const guarded = src.match(/const \{ path(?: = \[\])? \} = await (?:ctx\.)?params;\n\s+const refused = refuseUnsafePath\(path\);\n\s+if \(refused\) return refused;/g) ?? [];
     expect(reads.length).toBeGreaterThan(0);
@@ -135,19 +145,30 @@ describe("the catch-all sweep", () => {
 describe("a URL object built from a param", () => {
   // gatewayFetch can check only a STRING. A URL object has resolved its dot
   // segments already, so a route that builds one from a param must guard it.
-  const builds = allRoutes(API_DIR)
+  const files = allRoutes(API_DIR)
     .map((path) => ({ rel: path.slice(API_DIR.length), src: readSource(path) }))
-    .flatMap((r) =>
-      [...r.src.matchAll(/new URL\(`\$\{GATEWAY_URL\}[^`]*\$\{(\w+)\}/g)].map((m) => ({ ...r, param: m[1] })),
-    );
+    .map((r) => ({
+      ...r,
+      params: [...r.src.matchAll(/new URL\(`\$\{GATEWAY_URL\}[^`]*\$\{(\w+)\}/g)].map((m) => m[1]),
+    }))
+    .filter((r) => r.params.length > 0);
 
   it("finds the one route that builds one today", () => {
-    expect(builds.length).toBeGreaterThanOrEqual(3);
+    expect(files.map((f) => f.params.length).reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(3);
   });
 
-  it.each(builds.map((b) => [b.rel, b.param, b.src]))("%s guards %s", (_rel, param, src) => {
-    expect(src).toContain(`refuseUnsafePath([${param}])`);
-  });
+  it.each(files.map((f) => [f.rel, f.params, f.src] as const))(
+    "%s guards each build in its own handler",
+    (_rel, params, src) => {
+      // One guard per build, so no handler can drop its own (verifier: a
+      // `toContain` passed with two of three handlers unguarded).
+      for (const param of new Set(params)) {
+        const builds = params.filter((p) => p === param).length;
+        const guards = src.split(`refuseUnsafePath([${param}])`).length - 1;
+        expect(guards, param).toBeGreaterThanOrEqual(builds);
+      }
+    },
+  );
 });
 
 /** A route's source with LF line ends. A Windows checkout can hold CRLF. */

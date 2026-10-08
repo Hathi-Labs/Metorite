@@ -18,10 +18,19 @@
  * 1. `refuseUnsafePath` in each catch-all proxy, right after it reads
  *    `params`. It answers 400.
  * 2. `gatewayUrlEscape` inside `gatewayFetch`, the one fetch to the gateway.
- *    It reads the URL string exactly as the parser will, and refuses a dot
- *    segment in its path. This covers every route, also one that puts a single
- *    param such as `[sessionId]` into the URL, where a decoded `?` would also
- *    cut off the fixed suffix the route adds.
+ *    It refuses a path that can leave its PREFIX, read twice: as the URL
+ *    parser reads it, and once decoded, as uvicorn gives it to Starlette.
+ *    The second read matters because Starlette's trailing-slash redirect
+ *    writes its Location from the decoded path, and `fetch` follows it with
+ *    the token (verifier, 2026-10-08). So `%2F..` is refused, and
+ *    `openai%2Fgpt-4o`, a model id the settings page sends, is not.
+ *
+ * ⚠️ What this does NOT stop. A single param such as `[sessionId]` that holds
+ * a decoded `?`, `#` or `/` can still move the request to another route UNDER
+ * the same prefix: an ancestor when it cuts off the fixed suffix, a
+ * descendant when it adds a segment. It cannot leave the prefix, because that
+ * takes a dot segment. Every such route still runs as the member, so the
+ * gateway's own checks apply. HANDOFF H-278 holds the per-param fix.
  *
  * Fence: `gatewayPath.test.ts` and `gatewayFetch.test.ts`.
  */
@@ -67,14 +76,28 @@ export function refuseUnsafePath(segments: readonly string[] | undefined): NextR
  * It takes the path, from the end of the authority to the first `?` or `#`,
  * and refuses a control character (the parser removes tab, LF and CR, which
  * can join `.\t.` into `..`), a backslash (a slash for `http:`), or a dot
- * segment.
+ * segment. Then it decodes the path once, as uvicorn does, and refuses the
+ * same three again.
  */
 export function gatewayUrlEscape(raw: string): string | null {
   const authority = /^[a-z][a-z0-9+.-]*:\/\/[^/?#\\]*/i.exec(raw);
   const rest = authority ? raw.slice(authority[0].length) : raw;
   const path = rest.split(/[?#]/, 1)[0];
-  if (CONTROL.test(path)) return "a control character in the path";
-  if (path.includes("\\")) return "a backslash in the path";
-  if (path.split("/").some((seg) => DOT_SEGMENT.test(seg))) return "a dot segment in the path";
+  const asParsed = pathEscape(path);
+  if (asParsed) return `${asParsed} in the path`;
+  const asDecoded = pathEscape(decodeOnce(path));
+  if (asDecoded) return `${asDecoded} in the decoded path`;
   return null;
+}
+
+function pathEscape(path: string): string | null {
+  if (CONTROL.test(path)) return "a control character";
+  if (path.includes("\\")) return "a backslash";
+  if (path.split("/").some((seg) => DOT_SEGMENT.test(seg))) return "a dot segment";
+  return null;
+}
+
+/** One percent-decode of each `%XX`, as uvicorn's `unquote` does. Bytes, not UTF-8. */
+function decodeOnce(path: string): string {
+  return path.replace(/%([0-9a-f]{2})/gi, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 }

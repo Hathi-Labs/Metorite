@@ -11,7 +11,7 @@ import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/li
 // "Remove older mail from Metorite" (WS-17 EM-T6e, D1). The rule and its
 // reasons live in that module, with a test beside it.
 import { postTimeoutMs } from "./postTimeout";
-import { unsafeGatewayPath } from "@/lib/gatewayPath";
+import { refuseUnsafePath, unsafeGatewayPath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +46,8 @@ export async function GET(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { path } = await params;
+  const refused = refuseUnsafePath(path);
+  if (refused) return refused;
   const upstream = buildUpstreamUrl(path, req);
   try {
     const res = await gatewayFetch(upstream, {
@@ -90,6 +92,8 @@ export async function POST(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { path } = await params;
+  const refused = refuseUnsafePath(path);
+  if (refused) return refused;
   const upstream = buildUpstreamUrl(path, req);
   try {
     const body = await req.json().catch(() => ({}));
@@ -116,6 +120,8 @@ export async function PATCH(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { path } = await params;
+  const refused = refuseUnsafePath(path);
+  if (refused) return refused;
   const upstream = buildUpstreamUrl(path, req);
   try {
     const body = await req.json().catch(() => ({}));
@@ -142,6 +148,8 @@ export async function PUT(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { path } = await params;
+  const refused = refuseUnsafePath(path);
+  if (refused) return refused;
   const upstream = buildUpstreamUrl(path, req);
   try {
     const body = await req.json().catch(() => ({}));
@@ -168,6 +176,8 @@ export async function DELETE(
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
   const { path } = await params;
+  const refused = refuseUnsafePath(path);
+  if (refused) return refused;
   const upstream = buildUpstreamUrl(path, req);
   try {
     const res = await gatewayFetch(upstream, {
