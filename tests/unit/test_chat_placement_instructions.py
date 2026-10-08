@@ -96,6 +96,10 @@ def _built_instructions(agent_dir: str, monkeypatch: pytest.MonkeyPatch) -> str:
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-placement-dummy")
     monkeypatch.setattr(ti, "_build_registry_block", lambda: "Registered agents: (stub)")
+    # No database: the skill toggles and the app grants read pooled tables.
+    import orchestrator.app_tools as app_tools
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
+    monkeypatch.setattr(app_tools, "load_app_action_tools", lambda name: [])
     get_settings.cache_clear()
     path = ROOT / "apps/agents" / agent_dir
     cfg: dict[str, Any] = json.loads((path / "config.json").read_text(encoding="utf-8"))

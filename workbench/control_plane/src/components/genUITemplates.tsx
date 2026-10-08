@@ -16,8 +16,10 @@
  * posture as Tier 1). The tool refuses an unknown name (`genui_refusal`).
  *
  * SOURCE OF TRUTH: TEMPLATE_CATALOG below lists every template + its data shape.
- * The backend emit_generative_ui docstring MUST mirror this list, or agents will
- * emit names the renderer drops. Keep them in lockstep.
+ * The backend MUST mirror this list, or agents will emit names the renderer
+ * drops: the emit_generative_ui docstring names each template, and
+ * write_artifact.GENUI_TEMPLATE_SHAPES holds each `data` string, which the
+ * tool returns on demand. test_genui_catalog_lockstep.py keeps them in lockstep.
  *
  * All animation is CSS/SVG only (no new bundle deps). Every template is
  * theme-agnostic: it styles via the app's CSS custom-property tokens (full
@@ -94,7 +96,7 @@ const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 export interface TemplateSpec {
   name: string;
   summary: string;
-  /** Human-readable data shape, mirrored into the backend tool docstring. */
+  /** Human-readable data shape, mirrored into GENUI_TEMPLATE_SHAPES (backend). */
   data: string;
 }
 

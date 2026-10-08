@@ -1,6 +1,6 @@
 """An agent opts out of floor tools, and never reads its own registry entry.
 
-Spec: ``project-docs/specs/ai_tier_routing.md`` §6.8 (the fixed prefix of the
+Spec: ``project-docs/specs/projects_ai_chat.md`` §25 (the fixed prefix of the
 Projects and email agents, 2026-10-09).
 
 Every floor tool schema goes into EVERY model request of a run, and a chat
@@ -93,6 +93,10 @@ def _no_registry_db(monkeypatch: pytest.MonkeyPatch) -> None:
         ti._registry_line("email-assistant-2", "A different agent."),
     ])
     monkeypatch.setattr(ti, "_build_registry_block", lambda: block)
+    # No database: the skill toggles and the app grants read pooled tables.
+    import orchestrator.app_tools as app_tools
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
+    monkeypatch.setattr(app_tools, "load_app_action_tools", lambda name: [])
     ti._build_injected_tools_addendum.cache_clear()
     yield
     ti._build_injected_tools_addendum.cache_clear()

@@ -5294,9 +5294,12 @@ too.
 
 ### 24.4 What the agents are told
 
-Five agents carry one section, "Where each part of your answer goes", word for
-word: `agent-projects`, `agent-email-assistant`, `agent-crm`,
-`agent-whatsapp-assistant` and `agent-orchestrator`. It says:
+⚠️ **Changed on 2026-10-09 (§25).** The Projects and email agents no longer
+carry the section. Each one holds `emit_generative_ui`, so each one reads
+`PLACEMENT_RULE` from the injected directive, exactly once. A second copy
+cost every model request its tokens. Three agents still carry the section,
+word for word: `agent-crm`, `agent-whatsapp-assistant` and
+`agent-orchestrator`. The same change can drop it there too. The section says:
 
 - The chat shows each read under its step. So never draw a read's result
   again as a card.
@@ -5364,7 +5367,7 @@ status, one after another.
 | A read draws in its step, and a write in the flow. The owner's turn has four steps that open, and no read card | `src/lib/chatPlacement.test.ts` |
 | The pin shows for a waiting element, and an answer, a run end or a later message clears it | `src/lib/askPin.test.ts` |
 | `task_dataset` draws as a table, with no pipe and no mark | `src/lib/datasetTable.test.ts` |
-| Five agents carry the one section, word for word | `tests/unit/test_chat_placement_instructions.py` |
+| Three agents carry the one section, word for word. The Projects and email agents do not, and their built instructions hold `PLACEMENT_RULE` exactly once (§25) | `tests/unit/test_chat_placement_instructions.py` |
 | The injected directive ends with the rule | `tests/unit/test_genui_proactive_directive.py` |
 | At most one answer card per answer, and no card that repeats a read | `evals/projects_ops/checkers.py` `one_answer_card`, `no_read_recarded`, held by `tests/unit/test_projects_ops_eval.py` |
 | Several new tags or types are ONE card with a checkbox for each, and the server decides each row (H-273) | `tests/unit/test_projects_create_vocab.py`, `test_projects_field_parity.py` (the row exception), eval task PO-11 |
@@ -5431,3 +5434,125 @@ label stays text, because a label carries no link.
 
 **Advisory.** No test reads the "More columns to the right" cue, because it
 needs a real layout. The visual review looked at it.
+
+## 25. The fixed prefix of each request (2026-10-09)
+
+**Status.** Built 2026-10-09, branch `agent-prefix-slim`. It changes what the
+Projects and email agents hold, and it adds no flag. Each agent loses only
+tools that it did not call in 14 days, and text that said a thing twice.
+
+### 25.1 The cost
+
+Each model request of a run sends the same prefix: the system prompt and the
+schema of each tool. A Projects turn makes 5.7 requests, and an email turn
+makes 7.0 (the audit of 2026-10-08). So the run pays each token of the prefix
+about six times in one turn.
+
+The counts below come from one harness. It builds each agent with its own
+`build_agents()`, applies `own_tool_scope` and the real `_inject_agent_tools`,
+and counts with tiktoken `o200k_base`. The registry is the static one.
+
+| Agent and run | Before: prompt, tools, total, count | After: prompt, tools, total, count | Saved per request | Saved per turn |
+|---|---|---|---|---|
+| projects-assistant, direct | 8,544, 31,671, 40,215, 116 | 6,399, 25,656, 32,055, 104 | 8,160 | about 46,500 (× 5.7) |
+| email-assistant, direct | 4,449, 23,387, 27,836, 70 | 3,613, 16,937, 20,550, 57 | 7,286 | about 51,000 (× 7.0) |
+| email-assistant, delegated, no egress | 3,354, 14,648, 18,002, 46 | 3,149, 9,081, 12,230, 36 | 5,772 | about 40,400 (× 7.0) |
+
+### 25.2 What changed
+
+1. **The catalog of `emit_generative_ui` comes on demand.** The docstring
+   keeps what the tool does, when to draw a card (§24), the four modes and
+   the template names. The data shapes moved to
+   `write_artifact.GENUI_TEMPLATE_SHAPES`, and the rules of the react and
+   html modes moved to `GENUI_MODE_GUIDES`. `genui_guide` returns them when
+   the model asks. A template with no `data` gets its shape. An empty or
+   unknown name gets every shape. A code mode with no `code` gets its rules.
+   The tool draws nothing for a request. The schema went from 3,691 to 791
+   tokens, for every agent and not only these two.
+2. **An agent opts out of floor tools.** `config.json: floor_opt_out` names
+   the floor tools and the workflow tools that the agent does not want
+   (`_tool_injection._floor_opt_out`). The names leave the scope and the
+   final tool list, as the D85 withheld names do. No agent can opt out of
+   `ask_questions` or `emit_generative_ui` (`_FLOOR_KEEP`). The injection
+   ignores a name outside the allowed set, and logs a warning.
+3. **The registry block lists each agent but the reader, on one line.**
+   `_registry_block_for` drops the agent's own entry. `_registry_line` keeps
+   the first sentence of a description, cut at 160 characters. The block of
+   Projects went from 708 to 245 tokens.
+4. **The instructions lost the text that the tools already say.** "What you
+   can see" became "Reading", which keeps only the rules that no tool says.
+   The tool lists of "What you can draw" and "What you can change" left. The
+   placement section left both agents (§24.4). The output rule names
+   `load_design_system` only for an agent that holds it.
+5. **Fewer rounds for Projects.** The section "Fewer rounds" tells the model
+   to send independent reads as parallel calls in one request. It says that
+   a write tool finds a status, a type, a field, a tag or a person by name,
+   so no read of `vocabulary` comes first. W1 reads the space and the people
+   in one request.
+
+### 25.3 The tools that left
+
+The counts are the calls in the audit of 2026-10-08, over 14 days. "Not
+held" means that the agent did not get the tool before the change either.
+
+| Tool | Projects | Email |
+|---|---|---|
+| `load_artifact_kit` | removed, 0 calls | removed, 0 calls |
+| `load_design_system` | removed, 0 calls | removed, 0 calls |
+| `run_diagnostics` | removed, 0 calls | removed, 0 calls |
+| `get_errors` | removed, 0 calls | removed, 0 calls |
+| `list_integrations` | removed, 0 calls | removed, 0 calls |
+| `call_agents_parallel` | removed, 0 calls | removed, 0 calls |
+| `call_agent_background` | removed, 0 calls | removed, 0 calls |
+| `list_workflows`, `run_workflow`, `get_workflow_run` | removed, 0 calls | removed, 0 calls |
+| `manage_todo_list` | removed, 1 call | removed, 1 call |
+| `recall_notes` | removed, 0 calls | kept |
+| `code_task`, `run_script` | not held (D85) | removed, 0 calls |
+| `github_search`, `github_repo_search` | not held | not held |
+
+Each agent keeps `ask_questions`, `emit_generative_ui`, `write_artifact`,
+`call_agent` (12 calls from Projects), the memory tools of its scope, the web
+tools, `share_artifact` and `save_note`. `tests/unit/test_floor_opt_out.py`
+pins both lists.
+
+### 25.4 Each write tool finds names — checked in the code
+
+| Name | Where it resolves | Tools |
+|---|---|---|
+| Status | `writes._resolve_status` and `_one_named`, or the bulk route per task | `create_task`, `create_tasks`, `update_task`, `triage_intake`, `update_status`, `delete_status`, `bulk_update` |
+| Task type | `writes._resolve_type` | `create_task`, `create_tasks`, `update_task`, `update_type`, `delete_type` |
+| Field | `writes.field_values` and `_field_of` | `create_task`, `create_tasks`, `update_task`, `move_task`, `update_field`, `delete_field` |
+| Tag | `_one_named`, or a new tag registers itself | `update_tag`, `delete_tag`, `merge_tags`, and the `tags` of a task |
+| Person | `writes._resolve_assignee_name`, through the picker | `create_task`, `create_tasks`, `assign`, `bulk_update`, `create_project`, `update_project`, `propose_plan`, `save_view`, `set_my_overlay` |
+
+A name that matches no row gets a refusal that lists the real names. Two
+matches get a question for the member. A project id and a task id are not
+names. They come from the app's context or from one read.
+
+### 25.5 Fences (R7)
+
+| Rule | Fence |
+|---|---|
+| An opted-out tool is absent, on every branch, and the rest stay | `tests/unit/test_floor_opt_out.py` |
+| No agent opts out of `ask_questions` or `emit_generative_ui` | `tests/unit/test_floor_opt_out.py` |
+| The two agents opt out of exactly the tools of 25.3 | `tests/unit/test_floor_opt_out.py` |
+| An agent never reads its own registry entry, and each entry is one line | `tests/unit/test_floor_opt_out.py` |
+| The tool's shapes are the catalog's, and the loader returns each template | `tests/unit/test_genui_catalog_lockstep.py` |
+| The schema of `emit_generative_ui` stays under 700, and the floor under 6,700 | `tests/unit/test_tool_schema_diet.py` |
+| The covered Projects run holds its pinned tools | `tests/unit/test_delegation_no_egress.py` `COVERED_PROJECTS_TOOLS` |
+
+**Advisory.** Nothing tests that a model sends parallel reads, or skips the
+read of `vocabulary`. The scripted evals replay fixed sequences. Only a model
+sweep can measure the requests of a turn.
+
+### 25.6 What is left
+
+- **The own tools are most of what is left.** The 91 own tools of Projects
+  carry about 23,000 of the 25,656 schema tokens. A narrowing of
+  `own_tool_scope` is an owner decision (`email_app_master_plan.md`
+  §10.4.14), so this change does not make it.
+- **Three agents still carry the placement section** (§24.4).
+- **The Copilot addendum still names two opted-out tools.** Its sections with
+  no gate name `load_design_system` and `load_artifact_kit`, and the static
+  risk block names each platform tool. Only a Copilot agent reads them, and
+  both agents here are native MAF agents.

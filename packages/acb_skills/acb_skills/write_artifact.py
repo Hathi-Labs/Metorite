@@ -1296,7 +1296,7 @@ def genui_refusal(spec: dict) -> str | None:
 #: 2026-10-09 they sat in the tool's docstring, in every model request of
 #: every run. Fence: ``test_genui_catalog_lockstep.py`` holds this map equal
 #: to the catalog, name for name and shape for shape.
-GENUI_TEMPLATE_SHAPES: dict[str, str] = {
+GENUI_TEMPLATE_SHAPES: Mapping[str, str] = MappingProxyType({
     "weatherCard": "{ location, tempC|tempF, condition('sunny'|'cloudy'|'rain'|'snow'|'storm'), highC?, lowC?, humidity?, wind?, forecast?:[{day,condition,high,low}] }",
     "statDashboard": "{ title?, stats:[{ label, value, unit?, delta?:number, icon?(Lucide name e.g. 'trending-up') }] }",
     "barChart": "{ title?, unit?, bars:[{ label, value, tone?('primary'|'success'|'warning'|'danger') }] }",
@@ -1313,7 +1313,7 @@ GENUI_TEMPLATE_SHAPES: dict[str, str] = {
     "dataGrid": "{ title?, columns:[string], rows:[{ id?, cells:[string|number] }], openBase? }",
     "reportCard": "{ title, period?, reportId?, stats?:[{label,value,unit?,icon?}], tables?:[{ title, columns:[string], rows:[{cells:[string|number]}] }] }",
     "planCard": "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner, effort_mins, start?, due, after?:[key], important?:bool, leveraged?:bool, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
-}
+})
 
 #: The templates that collect the member's input. Each one pairs with
 #: ``"hitl": true``.
@@ -1321,7 +1321,7 @@ _GENUI_ASKS = frozenset({"formCard", "optionPicker", "planCard"})
 
 #: The rules of the two code modes, returned on demand (:func:`genui_guide`).
 #: Moved from the tool's docstring on 2026-10-09, word for word.
-GENUI_MODE_GUIDES: dict[str, str] = {
+GENUI_MODE_GUIDES: Mapping[str, str] = MappingProxyType({
     "react": """REACT COMPONENT — a real React component for anything genuinely
 INTERACTIVE or stateful: multi-step forms, filterable/sortable tables,
 calculators, live-editable dashboards, small tools. Shape:
@@ -1379,7 +1379,7 @@ INTERACTIVITY — two channels back to the agent:
   ccSubmit("Temperature", 22) / ccSubmit({temp:22,unit:"C"}) directly. Use
   this whenever the user SETS a value, so the agent receives what they
   chose.""",
-}
+})
 
 
 def genui_catalog(name: str | None = None) -> str:
