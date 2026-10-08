@@ -95,6 +95,25 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-272 · The chat has no batch tool for several tags, types or statuses · [AGENT]
+- **Check:** `grep -n "create_tags\|create_vocabulary" apps/skills/skill-projects/skill_projects/__init__.py`.
+  While it prints nothing, this is open.
+- **Why.** The owner's turn of 2026-10-08 drew a picker, then one
+  confirmation card for each tag (`projects_ai_chat.md` §24.5). The rows
+  card of `request_confirmation(rows=…)` (#691) is the answer: ONE card with
+  a checkbox for each new tag, as `create_tasks` does.
+- **What to build.** The smallest tool is `create_tags(project_id, tags)`,
+  with the same route as `create_tag`, the same class B card with rows, and
+  `FORGED_ROWS` checked again after the answer. It needs a `COMPOSITE` entry
+  and `SENDS` witnesses in `manifest.py`, and the row exception in
+  `test_projects_field_parity.py` that allows rows for `create_tasks` only.
+  It also needs the writes table, the H-236 egress list, `config.json`, a
+  batch receipt in `ProjectToolCards.tsx`, an entry in `chatPlacement.ts`,
+  and an R8 test on a private database.
+- **Then.** Change "Several new words in one turn" in
+  `apps/agents/agent-projects/instructions.md` to name the tool. Types and
+  statuses need the same, or one `create_vocabulary` with a `kind`.
+
 ### H-271 · acb has the same power as root, so an app compromise can delete the off-box backups · [OWNER] · security
 - **Check:** on the box, run each of these:
   `sudo cat /etc/sudoers.d/acb` · `id acb` · `stat -c '%U' /opt/acb/app/scripts/backup_offbox.sh`.

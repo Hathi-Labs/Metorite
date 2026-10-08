@@ -44,7 +44,7 @@ describe("what waits on the member", () => {
     const ask = pendingAsk(sources());
     expect(ask).toMatchObject({
       kind: "choice",
-      title: "Which tags should I register on «Metorite»?",
+      title: "Which tags should I register on Metorite?",
       target: "genui:req-tags-1",
     });
   });

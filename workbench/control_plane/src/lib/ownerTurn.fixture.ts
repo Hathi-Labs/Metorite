@@ -10,7 +10,7 @@
  * the placement rule (`chatPlacement.test.ts`, `askPin.test.ts`,
  * `datasetTable.test.ts`) and the visual rig read this one fixture.
  */
-import type { ToolEvent } from "@/components/MarkdownMessage";
+import type { ToolEvent } from "@/lib/chatStore";
 import type { ChatMessage } from "@/lib/chatStore";
 
 const LEGEND_LINE =

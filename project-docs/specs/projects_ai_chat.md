@@ -434,6 +434,11 @@ read.** `PlanCard` and `ReportCard` are S4, `ActionResultCard` is S2.
 | `formCard` (template) | `edit_task`, `edit_project` | Submits the edited fields back to the tool |
 | `ActionResultCard` | Every write | Says what changed, links the row. A done class C act wears the warning tone, and every other done write wears success. `GUARDED_TOOLS` names the class C tools, and `test_the_cards_know_every_guarded_tool` holds it equal to the manifest. Built 2026-09-23 |
 
+**Since 2026-10-08, a read's card draws inside its step.** The cards above
+for a READ open from the working trail, and never draw after the answer. Only
+a write's receipt and a failed view draw in the flow. §24 is the rule of
+record.
+
 **The generic card is the default.** A tool the card file does not know
 renders as `ActionResultCard` from its class. A new tool never renders as
 raw text, and it never needs a card file change to ship. §7.3 depends on this.
@@ -5211,3 +5216,152 @@ The owner plans one browser signed in to several accounts at once. **The switche
 - A grep fails on a raw `cc-msgs`, `cc-queue`, `cc-chat` or `cc-app-builder-session` key anywhere outside `lib/sessions.ts`. Inside that file, every storage call takes a built key.
 
 A new chat cache uses `chatKey`. The grep fence makes a raw key fail.
+
+
+## 24. Where each element of a turn goes (the placement rule, 2026-10-08)
+
+**This is the placement rule of record.** The owner accepted it on 2026-10-08.
+It binds every chat surface: `/chat` and the Projects, Tasks and email rails.
+They all draw through `AgentChat`, so one rule covers them.
+
+### 24.1 The report that made it necessary
+
+The owner sent screenshots of the Projects rail. The assistant drew an option
+picker, "Which tags should I register on «Metorite»?". Under it, at the end of
+the turn, it drew four receipt cards: "Projects", "Vocabulary", "Tasks (10)"
+and "Task dataset". The last one was the model's text as it is: a header line
+`number | title | status | …` and rows such as `#11 | Task … | To do | todo |
+| Bug`.
+
+The owner had to answer the picker, and it "got lost above in the chat". The
+owner asked for clear rules, so that the generative UI does not overload the
+member.
+
+**The cause.** `MessageBubble.tsx` drew the turn in this order: the trail
+(`MarkdownMessage` → `ThinkingContainer`), the answer text, the
+generative-UI cards, and then `EmailToolCards`, `TaskToolCards` and
+`ProjectToolCards`. Each card file drew a card for EVERY finished tool, a
+read or a write. So the receipts of four reads drew after the picker that the
+turn asked the member to answer. `task_dataset` had no entry in the card file,
+so the generic card drew its text through `Readout`, pipes and all.
+
+### 24.2 The rule
+
+Every element of an assistant turn is one of four kinds.
+
+1. **NEEDS THE MEMBER** — a confirmation card, an option picker, a form,
+   `ask_questions`. It stays in the flow, in order. While it waits, a compact
+   bar above the composer names it, so it can never scroll out of view. The
+   bar shows only while the element is out of view, and a press scrolls to
+   it. Answering the element removes the bar. The bar reuses the "1 of N"
+   confirmation queue and adds no state of its own.
+2. **EVIDENCE** — the result of a READ. Examples are `projects_tree`,
+   `vocabulary`, `list_tasks`, `find_tasks`, `task_detail`, `task_dataset`,
+   `project_summary`, `my_work`, and the email and Tasks reads. It draws
+   INSIDE the working trail, under the step that made it, closed by default.
+   It never draws as a card after the answer.
+3. **THE RESULT OF A WRITE** — done, part done, unknown, refused, cancelled.
+   It draws compact, in the flow, after the answer text.
+4. **THE ANSWER ITSELF** — a card the model chose to draw: a plan, a board, a
+   report, a table. At most ONE for an answer, after the text. A list of fewer
+   than six items stays Markdown, with no card.
+
+### 24.3 What is built
+
+| Part | Where | What it does |
+|---|---|---|
+| The one map | `src/lib/chatPlacement.ts` | `PLACEMENT` gives each tool name a kind. The card files and the trail read it, and none of them guesses from a name. `genUiPlacement` reads a generative-UI SPEC: a `request_id`, a form, a picker, a plan to submit or a button make it an ask. |
+| Evidence in the trail | `ThinkingContainer.tsx` `ToolStepRow`, `evidenceFor` | `MessageBubble` hands each step its receipt from the card files (`projectEvidence`, `taskEvidence`, `emailEvidence`). A step with a receipt shows its chevron at rest. Open, it draws the receipt in place of the raw arguments and output. `InStepContext` takes the dismiss control off a card in a step. |
+| The flow | `ProjectToolCards`, `TaskToolCards`, `EmailToolCards` | Each draws only the writes, and a view that failed. A read is not drawn there. |
+| The pin | `src/lib/askPin.ts`, `src/components/AskPin.tsx`, `AgentChat.tsx` | `pendingAsk` reads the confirmation queue, the question cards and the newest turn's generative-UI ask. An element in the thread carries `data-chat-ask`. The bar watches it with an `IntersectionObserver` and shows while it is out of view. |
+| The dataset table | `src/lib/datasetTable.ts`, `DatasetView` in `ProjectToolCards.tsx` | Both shapes of `task_dataset` (the rows and the groups) draw through the `dataGrid` template, with each column named by its card label, no «mark», and no line meant for the model. |
+
+**When the pin goes.** A confirmation or a question leaves the bar when the
+member answers it. A BLOCKING generative-UI ask has a `request_id`. It waits
+only while the run is live and the member has not answered it. So a run that
+ends without an answer clears it. A non-blocking ask is answered by a new chat
+message, so it waits only while its turn is the newest message.
+
+**A tool the map does not name.** In `ProjectToolCards`, it counts as a read
+and draws in its step. The two fences below keep every tool a card file draws
+named, so only a tool from a newer server can land there. A hidden receipt is
+the smaller harm.
+
+**The other reads.** Only `task_dataset` printed a pipe table. Every other
+Projects read prints `·`-separated rows, which `Readout` already draws as UI.
+The groups shape of `task_dataset` (`key · value · n`) now draws as a table
+too.
+
+### 24.4 What the agents are told
+
+Five agents carry one section, "Where each part of your answer goes", word for
+word: `agent-projects`, `agent-email-assistant`, `agent-crm`,
+`agent-whatsapp-assistant` and `agent-orchestrator`. It says:
+
+- The chat shows each read under its step. So never draw a read's result
+  again as a card.
+- Draw one card for an answer, at most, after the text.
+- A list of fewer than six items stays a Markdown list.
+- A confirmation, a form or a picker is not the answer card.
+
+The injected UI directive (`acb_skills/addendum.py` `ui_first_directive`)
+reaches every agent that holds `emit_generative_ui`. Both its variants end
+with the same rule, `PLACEMENT_RULE`.
+
+The Projects agent no longer says "Prefer a card for a list of things". The
+email agent shows a list the member asked to see as ONE `present_email_groups`
+board, because the reads are now closed in the trail.
+
+### 24.5 Several new tags, types or statuses
+
+`request_confirmation(rows=…)` (#691) gives one card with a checkbox for each
+row, and `create_tasks` uses it. **No batch tool for the vocabulary exists
+yet, and this change does not build one.**
+
+A `create_tags` tool touches seven fences. Four are in the skill: the route
+manifest, the F2 field-parity fence, the writes table and the H-236 egress
+pin. Three are outside it: the agent's scope, the receipt card and an R8 test
+on a real database. The F2 fence
+allows rows for `create_tasks` only. The tool is a write path with its own
+consent, and it does not belong in a UI change. HANDOFF carries it.
+
+Until it exists, the Projects agent creates several words one after another in
+one turn. It draws no picker first, it lists the words in one short Markdown
+list, and each create shows its own card. The chat shows the cards one at a
+time, with "1 of N", and the pin keeps the queue in view.
+
+### 24.6 Fences (R7)
+
+| Rule | Fence |
+|---|---|
+| Every tool a card file draws is classified | `src/lib/chatPlacement.test.ts` |
+| Every `skill-projects` tool is classified, and a class A tool is evidence (or an answer for a view), a class B or C tool a write | `tests/unit/test_chat_placement_classes.py` |
+| A read draws in its step, and a write in the flow. The owner's turn has four steps that open, and no read card | `src/lib/chatPlacement.test.ts` |
+| The pin shows for a waiting element, and an answer, a run end or a later message clears it | `src/lib/askPin.test.ts` |
+| `task_dataset` draws as a table, with no pipe and no mark | `src/lib/datasetTable.test.ts` |
+| Five agents carry the one section, word for word | `tests/unit/test_chat_placement_instructions.py` |
+| The injected directive ends with the rule | `tests/unit/test_genui_proactive_directive.py` |
+| At most one answer card per answer, and no card that repeats a read | `evals/projects_ops/checkers.py` `one_answer_card`, `no_read_recarded`, held by `tests/unit/test_projects_ops_eval.py` |
+
+**Advisory.** Nothing tests the "at most one card" rule in the UI itself. The
+chat draws every card the model emits, and the instructions and the eval hold
+the count. Nothing tests the bar's in-view check, because it needs a browser.
+The visual review (24.7) looked at it.
+
+### 24.7 The visual review
+
+The rig streamed the owner's turn into `/chat` and into the Projects rail, in
+dark, light and at 390px, before and after the change.
+
+- **Before.** The four receipts drew under the picker. In the rail at 1440 and
+  at 390, the picker scrolled out of view, and "Task dataset" showed the pipe
+  dump.
+- **After.** The trail is one closed line, "Read 3 items, ran 1 search". The
+  answer text and the picker sit at the bottom, in view with no scroll. Opened,
+  each read sits under its step, and the dataset is a table. When the member
+  scrolls up to read the steps, the bar "Waiting for your choice" shows above
+  the composer.
+
+It found one defect, now fixed: the picker's and the form's titles showed the
+«marks». They now draw through `GenUiText`, and the bar's title through
+`unfenced`.

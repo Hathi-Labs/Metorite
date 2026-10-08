@@ -30,6 +30,7 @@
 
 import { genUiPlacement, genUiTitle } from "@/lib/chatPlacement";
 import type { PendingConfirmation } from "@/lib/confirmationQueue";
+import { unfenced } from "@/lib/fencedText";
 
 /** What the pin draws. `target` names the element it scrolls to. */
 export interface PendingAsk {
@@ -64,8 +65,9 @@ export interface AskSources {
 /** The longest title the bar draws. The bar is one line. */
 export const PIN_TITLE_CAP = 120;
 
+/** One line, with no «mark» (`lib/fencedText.ts`), cut to the cap. */
 function cap(text: string): string {
-  const one = text.replace(/\s+/g, " ").trim();
+  const one = unfenced(text).replace(/\s+/g, " ").trim();
   return one.length > PIN_TITLE_CAP ? `${one.slice(0, PIN_TITLE_CAP - 1)}…` : one;
 }
 
