@@ -214,6 +214,11 @@ export function parseStoredRunError(json: string): RunErrorView {
  * There is no separate platform-operator flag in the access answer, so the
  * org admin flag is the narrowest one the browser has. A member never sees a
  * shell command.
+ *
+ * ⚠️ OPEN (review round 1): `is_admin` is true for the admin of EVERY org,
+ * so a customer's admin also sees a command for a server they cannot reach.
+ * The brief asked for this gate. A staff-only signal from the server is the
+ * fix, and it does not exist yet.
  */
 export function operatorHint(view: RunErrorView, isAdmin: boolean): string | null {
   if (!isAdmin) return null;
