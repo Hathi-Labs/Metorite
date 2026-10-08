@@ -139,6 +139,10 @@ const EVIDENCE: readonly string[] = [
   "list_learned_patterns",
   "list_rule_patterns",
   "list_patterns",
+  // ── Every data agent (WS-48, `acb_skills/narrowing.py`) ────────────────
+  // `narrow_and_read` searches, picks and reads, and changes nothing. One
+  // name serves the email and the WhatsApp agents.
+  "narrow_and_read",
 ];
 
 /** Writes. Projects names are manifest class B or C. */
