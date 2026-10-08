@@ -16,6 +16,7 @@
  * as "Open" or "Start". A member never sees an id or a route.
  */
 import type { NavPane, NavSection } from "@/lib/nav";
+import { shellNavOn } from "@/lib/shell/shellNav";
 
 /** The flag for the shell bar and its command bar. Off, nothing changes. */
 export function shellBarOn(): boolean {
@@ -140,7 +141,15 @@ export function heldPanes(sections: readonly NavSection[]): NavPane[] {
  * Every tier-0 item for this member: a job only when its app is held, and
  * every held app as "Go to".
  */
-export function buildItems(panes: readonly NavPane[]): BarItem[] {
+export function buildItems(
+  panes: readonly NavPane[],
+  /**
+   * Print the manifest's purpose (NS-2). Behind `NEXT_PUBLIC_SHELL_NAV`,
+   * because this bar is ON in production and a new line here reaches every
+   * organization at once (verifier and review of NS-2, 2026-10-09).
+   */
+  purpose: boolean = shellNavOn(),
+): BarItem[] {
   const held = new Map(panes.map((p) => [p.href, p]));
   const jobs: BarItem[] = JOBS.filter((j) => held.has(j.app)).map((j) => ({
     key: `do:${j.id}`,
@@ -156,11 +165,14 @@ export function buildItems(panes: readonly NavPane[]): BarItem[] {
     key: `go:${p.href}`,
     group: "go",
     label: `Open ${p.label}`,
-    hint: p.note,
+    // The manifest's purpose, in job words (§5.1), with the shell nav on.
+    // `note` was written for operators ("Action Broker · outward writes
+    // awaiting review").
+    hint: purpose ? (p.blurb ?? p.note) : p.note,
     icon: p.icon,
     href: p.href,
     app: p.href,
-    words: [p.label, ...p.note.split(/[^A-Za-z]+/)].filter(Boolean),
+    words: [p.label, ...`${purpose ? (p.blurb ?? "") : ""} ${p.note}`.split(/[^A-Za-z]+/)].filter(Boolean),
   }));
   return [...jobs, ...apps];
 }
