@@ -8,8 +8,9 @@
 
 **N1 is built and dark** (2026-10-07, PR #711). **N3 is built and dark**
 (2026-10-07, branch `ws48-n3-decide-tier`). **N2 is built and dark**
-(2026-10-07, branch `ws48-n2-email`). `NARROWING_AGENTS` ships empty, and
-`SYSTEM_ONE_ON_DECIDE` ships OFF. The N2 and N3 build notes are under §9.
+(2026-10-07, branch `ws48-n2-email`). **N4 is built and dark** (2026-10-08,
+branch `ws48-n4-whatsapp`). `NARROWING_AGENTS` ships empty, and
+`SYSTEM_ONE_ON_DECIDE` ships OFF. The N2, N3 and N4 build notes are under §9.
 
 Verified against code on 2026-10-07 at `main` `82d09830b`. Every file path
 and line in this spec was read at that commit. Re-verify each anchor at
@@ -374,6 +375,13 @@ and it may change a filter key to match its route.
 `is_read`, and `words`, which sets `q` (§3.2). An adapter refuses a bad value
 by name through `narrowing.FilterRefused`, because the route drops a date
 that it cannot parse with no error.)*
+
+*(Amended by WS-48 N4, 2026-10-08. The WhatsApp row as built: NARROW is
+`GET /whatsapp/search` with `hybrid=true`, `websearch=true` and `limit=200`.
+READ is the route of `read_whatsapp_chat` with `around` and `window`. The
+filter keys are `account_id`, `chat_id`, `contact`, `group`, `after`,
+`before`, `from_me`, `has_media` and `words`. The §9 N4 build notes say
+which route parameters N4 adds.)*
 
 ---
 
@@ -751,11 +759,88 @@ the transcript of a voice note when the body is empty.
 
 ```bash
 uv run pytest tests/unit/test_whatsapp_narrow_source.py tests/unit/test_narrowing_one_seam.py -q -rs
+# Added by N4: the R8 half (it needs TENANT_LADDER_DATABASE_URL) and the eval
+uv run pytest tests/unit/test_whatsapp_read_no_mark.py tests/unit/test_whatsapp_narrowing_eval.py -q -rs
+uv run python -m evals.whatsapp_narrowing.run --scripted
 ```
 
-**Out of scope:** a WhatsApp eval, and the WS-47 bot channel.
+**Out of scope:** the WS-47 bot channel.
+*(Amended by WS-48 N4, 2026-10-08. This line also said "a WhatsApp eval". The
+dispatch of N4 asked for one, so N4 adds `evals/whatsapp_narrowing/`.)*
 
 **Gate:** the production flag for `whatsapp-assistant` is OWNER-GATE.
+
+**Build notes (2026-10-08, branch `ws48-n4-whatsapp`).**
+
+- **The adapter** is `apps/agents/agent-whatsapp-assistant/narrow_source.py`.
+  It follows the email adapter. It takes ONE callable, the agent's own `_get`,
+  so it adds no client and opens no session. `agents.py` loads it by path
+  under a name of its own, and builds the tool only through `narrow_tool_for`.
+- **A candidate is ONE message.** Its summary holds the chat name and kind,
+  the sender ("You" for the member), the time and a snippet. NARROW never
+  calls the thread route. A voice note with an empty body uses its
+  transcript. The route gives no highlight, so a long message whose match is
+  past the clip gets a snippet that starts before the first search word.
+- **An item id is `<chat_id>:<message_id>`.** The thread route needs the chat,
+  and the adapter keeps no state between the two steps. Each half must be a
+  UUID before it goes into a path.
+- **The search route gains optional parameters.** Each one defaults to no
+  change, so the app reads the same as before:
+  - `websearch` reads `q` in the `websearch_to_tsquery` grammar, so a search
+    can hold `a OR b`. The default ANDs the words.
+  - `chat_id`, `contact` (a part of the chat name or the sender name),
+    `chat_kind`, `sent_after` and `sent_before` (both inclusive),
+    `direction` and `has_media`.
+  - Each row names its chat (`chat_name` and `chat_kind`).
+  - With no `q`, the filters alone choose the rows. A call with no `q` and no
+    filter is a 422.
+  - The member scope (`wa_accounts.user_id`) is unchanged, and every filter
+    narrows inside it.
+- **The search has no stems.** The route uses `to_tsvector('simple')`, so
+  "price" does not find "prices". With no `words` filter, the adapter searches
+  for ANY word of the question, and it drops the English stop words first,
+  because the `simple` search keeps them. The instructions ask the model to
+  put the other forms and the words in other languages in `words`.
+- **READ reads a small window.** It reads each kept message with 2 messages on
+  each side, on `GET /whatsapp/chats/{id}/messages` with `around` and
+  `window` (new, at most 10). The kept message starts with `>>`. The tool's
+  caps of N1 hold: 25 items, and 6000 characters for each.
+- **READ changes no state.** The thread route only reads. It sends one
+  `SELECT` after the owner check, it writes no row, and no route here calls a
+  provider's `mark_read`, so the sender sees no "seen" receipt. No option was
+  needed, unlike `mark_read=false` of N2. Two fences hold it. The first is
+  `test_whatsapp_narrow_source.py`, which records the SQL of the route and
+  the calls of the adapter. The second is `test_whatsapp_read_no_mark.py`,
+  which compares every row of the member's account before and after a read,
+  on a real database under FORCE RLS (R8).
+- **Tenancy.** A chat of another member, an anchor of another chat, and a
+  member of another org each get a 404 from the thread route. No search
+  filter shows another member's chat. The R8 file holds each case.
+- **The fences of the scope.** `narrow_and_read` is in `own_tool_scope`.
+  `test_own_tool_scope_parity.py` already knows the flag-gated tool
+  (FLAG_GATED), and it covers this agent with no change.
+  `test_whatsapp_assistant_agent.py` compared the scope with `_TOOLS`, and it
+  now reads FLAG_GATED too. `evals/trajectories/test_tool_scope_trajectory.py`
+  covers only email-assistant, so it needs no change.
+  `chatPlacement.ts` names `narrow_and_read` as `evidence`.
+- **The eval** is `evals/whatsapp_narrowing/`: 410 synthetic messages in 27
+  chats, five questions, and another member's chats with the same names as a
+  leak trap. Q5 is the expected miss of the lexical search. Its README holds
+  the tables.
+- ⚠️ **The scripted run does not meet the email bar.** On Q1 to Q4 the
+  gated ratio is 0.650, over the 0.40 of N2. With every chat read in one
+  request, the best case for today, it is 0.918. Q2, a question on the
+  filters only, costs 1.45 times today's path. So the WhatsApp eval gates at
+  1.00: no more than today's path, and recall 1.0. The run prints the email
+  bar beside it. The break-even factor of `tier-powerful` is 2.15.
+- **Why it saves less.** A WhatsApp message is about 15 tokens, and PICK
+  spends about 160 tokens on each candidate, because each question carries its
+  guidance. So PICK costs more than it saves here. The saving that remains is
+  the fewer requests. H-275 holds a rule for short items. These are stub
+  numbers, and no measured saving is claimed. H-274 holds the live run.
+- **A finding outside N4.** `read_whatsapp_chat` reads the OLDEST 20
+  messages of a chat, because its route orders `sent_at ASC` and then applies
+  the limit. The narrowing READ does not use that form. H-276 holds it.
 
 ### N5 · The CRM adapter and the Projects adapter — AGENT-SAFE
 
@@ -816,8 +901,9 @@ uv run pytest tests/unit/test_narrowing_pick.py tests/unit/test_narrowing_one_se
   tests/unit/test_tier_policy.py tests/unit/test_no_direct_ai_vendor_calls.py \
   tests/unit/test_delegation_no_egress.py -q -rs
 
-# The eval (N2)
+# The evals (N2, N4)
 uv run python -m evals.email_narrowing.run --scripted
+uv run python -m evals.whatsapp_narrowing.run --scripted
 
 # The writing fence (every PR that touches markdown)
 node .claude/hooks/ste-lint.mjs --staged
