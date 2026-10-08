@@ -5395,3 +5395,39 @@ dark, light and at 390px, before and after the change.
 It found one defect, now fixed: the picker's and the form's titles showed the
 «marks». They now draw through `GenUiText`, and the bar's title through
 `unfenced`.
+
+### 24.8 Follow-ups of #716 and #735: the data in a turn
+
+A review of the chat's data after #716 and #735 found six defects. This
+section records each one and its fix. The placement rule (24.2) does not
+change.
+
+| # | Defect | Fix |
+|---|---|---|
+| 1a | The dataset table showed a raw category ("in_progress", "todo") in its own column, beside the status. | `lib/dataGridLayout.ts` gives each column a kind. A status is its chip, and a category is its readable label (`categoryLabel`). A category column that `task_dataset` names hides when a status column is there, and its cell gives the status chip its colour. A column that a model names "Category" is text, and it always shows. |
+| 1b | In the Projects rail, the title wrapped one word per line, and the last column was cut with no cue. | The title has a least width of 10rem and wraps. A box narrower than the sum of the least widths draws stacked rows: the number and the title, then chips and labelled facts. A wider table that overflows shows "More columns to the right". |
+| 2 | A board card put the priority chip beside the title, so a long title wrapped one word per line. | The title has the card's whole width. The chip, the assignees and the due date sit under it. |
+| 3 | The email and CRM reads drew the tool's text as it is, with `id=<uuid>` in it. | They draw through the one `Readout`, now `components/Readout.tsx`. A `•` row is an item, and a `• key: value` row is a labelled fact. `withoutIds` removes an `id=`, and a `[kind]` is a chip. The CRM reads draw in their step (`crm/CrmEvidence.tsx`). |
+| 4 | `task_detail` drew "Priya (priya@x.io)" as one label, with "P(" as its initials. | `personOf` splits the name from the address. The chip shows the name, and its tooltip holds the address. |
+| 5 | The templates drew text at `fontSize: 11` to `14`, in px, so the text did not follow the density. | `lib/typeScale.ts` holds the type scale in rem. Each template takes its size from it. |
+| 6 | `ChoiceBlock` and `CodeBlock` used raw palette classes. | They use tokens. The palette budget of `MarkdownMessage.tsx` went from 7 to 0. |
+
+**The data of a column.** `task_dataset` sends a kind for each column, from
+its card key (`lib/cardFields.ts`). A template the model draws sends labels
+only. Then a column takes the kind of its card label (`kindForLabel`), so
+"Status" is a chip and "Assignees" is a person chip. A task or a project
+label stays text, because a label carries no link.
+
+**Fences (R7).**
+
+| Rule | Fence |
+|---|---|
+| The column rules and the width where the rows stack | `src/lib/dataGridLayout.test.ts` |
+| A category draws as its label, and never as its key | `src/lib/dataGridLayout.test.ts`, `src/lib/datasetTable.test.ts` |
+| The email and CRM reads show no id, and label each fact | `src/components/readoutEmailCrm.test.ts` |
+| A CRM read is evidence, and a CRM write is a write | `tests/unit/test_chat_placement_classes.py` |
+| An assignee is a person chip, and the board title has the card's width | `src/components/personChips.test.ts` |
+| No template file sets a font size in px | `src/lib/typeScale.test.ts` |
+
+**Advisory.** No test reads the "More columns to the right" cue, because it
+needs a real layout. The visual review looked at it.

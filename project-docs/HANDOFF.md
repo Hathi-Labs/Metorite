@@ -100,8 +100,8 @@ line — never reclaim a number by deleting the other entry.
   No line with a measured recall and a date under §9 N4 means this is open.
 - **Why.** The PR of WS-48 N4 has only the scripted run, and its verdicts,
   tokens and credits are stub numbers. That run does not meet the email bar of
-  0.40: its gated ratio is 0.650. A real run says whether the WhatsApp tool
-  saves anything before anyone turns it on.
+  0.40: its gated ratio is 0.650, and 0.622 after H-276. A real run says
+  whether the WhatsApp tool saves anything before anyone turns it on.
 - **Do.**
   1. The owner approves the run, because it spends credits and turns on a
      flag. Then set `NARROWING_AGENTS=whatsapp-assistant` on the box.
@@ -115,21 +115,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `data_narrowing_pipeline.md` §9 N4 and §11 · D93
 - **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
 
-### H-276 · PICK costs more than it saves on short items · [AGENT]
-- **Check:** `rg -n "short item" packages/acb_skills/acb_skills/narrowing.py`.
-  No hit means the pick step has no rule for short items, and this is open.
-- **Why.** PICK asks one question for each candidate, and each question
-  carries its guidance. So it spends about 160 tokens on each candidate. A
-  WhatsApp message is about 15 tokens. In the scripted WhatsApp eval, Q2 (all
-  messages of one group in three weeks) costs 1.45 times today's path. A CRM
-  note or a task title (N5) is short too.
-- **Do.** Measure the PICK tokens for each candidate on the decide door.
-  Then propose a rule in spec §3.3 for the owner: for example, when the
-  summaries of all candidates are shorter than the question, READ them with
-  no PICK. Do not change the pipeline before the spec says so.
-- **Authority:** `data_narrowing_pipeline.md` §3.3 and §9 N4 build notes
-- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+### H-278 · The cost check of PICK uses the eval card, not the Router's prices · [AGENT]
+- **Check:** `rg -n "TODO\(H-278\)" packages/acb_skills/acb_skills/narrowing.py`.
+  A hit means this is open.
+- **Why.** H-276 added a cost check before PICK (spec §3.3a). It compares the
+  price of `tier-decide` with the price of the READ tier. The agent cannot read
+  the Router's tier prices, and the seed ships the production card unpriced. So
+  `narrowing.TIER_RATES` copies the eval card. The check uses only the ratio of
+  two prices, but a real card with another ratio moves the decision.
+- **Do.**
+  1. Find out if the Console gives the tenant side a read of its tier prices.
+  2. If it does, read the prices once for each process in `narrowing.py`, and
+     keep `TIER_RATES` as the fallback.
+  3. If it does not, record the gap in `customer_console.md` and keep the
+     constants. `test_narrowing_pick_cost.py` pins them to the eval card.
+- **Authority:** `data_narrowing_pipeline.md` §3.3a · D93
+- **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
 
+<<<<<<< HEAD
 ### H-278 · A single route param can still move a gateway call to another route under its prefix · [AGENT]
 - **Check:** `rg -n '\$\{(sessionId|subject|agentName|provider|threadId)\}' workbench/control_plane/src/app/api`.
   A hit that puts the raw param into a gateway URL, with no `refuseUnsafePath([...])`
@@ -172,6 +175,24 @@ line — never reclaim a number by deleting the other entry.
   the same route. Add a test with a chat of more than `limit` messages.
 - **Authority:** `whatsapp_message_manager.md` · board row WS-20
 - **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+=======
+### H-279 · A WhatsApp question about one whole chat costs more on `narrow_and_read` · [AGENT]
+- **Check:** `rg -n "KNOWN_COSTS_MORE: .*Q2" evals/whatsapp_narrowing/run.py`.
+  A hit means this is open.
+- **Why.** In the scripted WhatsApp eval, Q2 asks for every message of one
+  group in three weeks. It costs 1.45 times today's path. NARROW finds 27
+  messages, more than the READ cap of 25, so PICK must run. The READ windows
+  of one chat also overlap, so READ gives some lines twice. With no PICK at
+  all, and a READ cap of 30, Q2 costs 1.447 times today. The eval names Q2 in
+  `KNOWN_COSTS_MORE`, so the rule of H-276 accepts it up to 1.45 and no more.
+- **Do.** Choose one of these, measure it on the eval, and remove Q2 from
+  `KNOWN_COSTS_MORE`:
+  1. READ merges the overlapping windows of one chat into one block.
+  2. The instructions tell the model to read one whole chat with
+     `read_whatsapp_chat`, and not with `narrow_and_read`.
+- **Authority:** `data_narrowing_pipeline.md` §3.3a and §9 N4 · D93
+- **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
+>>>>>>> origin/main
 
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
@@ -257,6 +278,8 @@ line — never reclaim a number by deleting the other entry.
 - **A cheap partial fix.** `NoNewPrivileges=true` on `acb-gateway.service`
   stops path 1 for the Copilot CLI (H-270) only. It does nothing for paths 2
   and 3. Do not build it in the off-box PR.
+- **Spec:** `specs/box_hardening.md` (WS-49) owns the fixes. The audit found
+  two more paths to root. Read its §0 before you build.
 - **Authority:** `project-docs/specs/backup_and_restore.md` §4.2, the trade-offs ·
   H-123 · H-270
 - **Added:** 2026-10-08 · off-box backup, security review of fix round 2
@@ -284,6 +307,7 @@ line — never reclaim a number by deleting the other entry.
 - **Not in the off-box PR, on purpose.** This is its own change. H-123 moved the backup
   key out of `.env` for this reason. WS-43 (D84) removes the Copilot SDK. Until that
   ships, this stays open.
+- **Spec:** `specs/box_hardening.md` (WS-49), slice BH-1, owns the fix.
 - **Authority:** `apps/services/orchestrator/orchestrator/copilot_agent.py` ·
   `copilot/client.py` in the SDK · H-123
 - **Added:** 2026-10-08 · off-box backup, security review of fix round 1
@@ -4025,14 +4049,17 @@ line — never reclaim a number by deleting the other entry.
     `wbjpwtxigkileyjsgahk`. The coordinator may run the SQL in §4.2 for you.
     Set the upload size limit in Storage → Settings to 1 GB or more. The app
     dump is about 84 MB.
-  - **(b)** Make an S3 access key in the dashboard, at Storage → S3
-    Connection. Write down the endpoint and the region. Keep the key ID and
-    the secret in your password manager. ⚠️ The key is PROJECT-WIDE. It can
-    read and delete every object in every bucket of the project.
+  - **(b) RETIRED (2026-10-08, `specs/box_hardening.md` BH-4).** Do NOT make
+    an S3 access key. That key is PROJECT-WIDE, and it can delete every
+    night. If one exists, revoke it at Storage → S3 Connection. BH-4 puts a
+    write-only credential in its place: a Supabase user JWT under RLS.
   - **(c)** Make a gpg key pair on your own machine. Keep the private key and
     its passphrase in your password manager. Put only the public key on the
     box, at `/opt/acb/backup-public-key.asc`.
-  - **(d)** Put the seven `BACKUP_S3_*` and `BACKUP_GPG_*` keys in
+  - **(d) WAITS FOR BH-4.** BH-4 changes the key list. The project ref and
+    the anon key take the place of the S3 key, and three `BACKUP_SUPABASE_URL`
+    and `BACKUP_AUTH_*` keys join it. Do not push this file before BH-4
+    merges. After that, put the keys in
     `/etc/acb/backup-offbox.env`, owned by root:root with mode 0600. Only
     `acb-backup.service` loads that file. Do NOT put them in
     `/opt/acb/app/.env`. The gateway loads that file (H-270), and the run

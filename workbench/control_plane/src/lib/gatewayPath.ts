@@ -30,7 +30,7 @@
  * the same prefix: an ancestor when it cuts off the fixed suffix, a
  * descendant when it adds a segment. It cannot leave the prefix, because that
  * takes a dot segment. Every such route still runs as the member, so the
- * gateway's own checks apply. HANDOFF H-278 holds the per-param fix.
+ * gateway's own checks apply. HANDOFF H-280 holds the per-param fix.
  *
  * Fence: `gatewayPath.test.ts` and `gatewayFetch.test.ts`.
  */

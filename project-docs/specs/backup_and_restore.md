@@ -228,6 +228,10 @@ line for each.
   `BACKUP_GPG_*` key lives in `/etc/acb/backup-offbox.env`, root:root 0600.
   Only `acb-backup.service` loads that file. The trade-offs below say what
   this file does NOT stop.
+  ⚠️ **The project-wide key is RETIRED (2026-10-08).** `box_hardening.md`
+  BH-4 owns the new credential: a Supabase user JWT that RLS limits to
+  INSERT and SELECT on this bucket, with retention on the Supabase side.
+  Never make the project-wide key. If one exists, revoke it.
 - **Never in the app env file.** `/opt/acb/app/.env` is the env file of
   `acb-gateway` and of the WhatsApp bridge. The gateway's in-process Copilot
   CLI inherits that env (H-270). `backup_offbox.sh` refuses to run as any
@@ -322,11 +326,11 @@ unit has `--offbox`.
    ⚠️ The app dump is about 84 MB, and one object holds it whole. Open
    Storage → Settings and make sure the upload size limit is 1 GB or more.
    The Free plan stops at 50 MB.
-2. **Make an S3 access key** in the dashboard: Storage → S3 Connection. Write
-   down the endpoint and the region that the page shows. Keep the key ID and
-   the secret in your password manager. The secret shows one time only.
-   ⚠️ This key is project-wide. It can read and delete every object in every
-   bucket of the project.
+2. **RETIRED (2026-10-08).** This step made a project-wide S3 access key.
+   Do NOT make one. That key can read and delete every object in every
+   bucket of the project. If one exists, revoke it at Storage → S3
+   Connection. `box_hardening.md` BH-4 owns the write-only credential that
+   takes its place, and its key list for step 4.
 3. **Make a gpg key pair on your own machine.** Keep the private key in your
    password manager, and put only the public key on the box.
 

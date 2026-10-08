@@ -25,6 +25,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
+import { CRM_CARD_TOOLS } from "@/components/crm/CrmEvidence";
 import EmailToolCards, { EMAIL_CARD_TOOLS, emailEvidence } from "@/components/email/EmailToolCards";
 import MessageBubble from "@/components/MessageBubble";
 import type { ToolEvent } from "@/components/MarkdownMessage";
@@ -49,7 +50,7 @@ function ev(name: string, result: string, status: ToolEvent["status"] = "done"):
 
 describe("one map classifies every tool a card file draws", () => {
   it("every tool a card file draws is classified", () => {
-    const unnamed = [...PROJECT_CARD_TOOLS, ...TASK_CARD_TOOLS, ...EMAIL_CARD_TOOLS]
+    const unnamed = [...PROJECT_CARD_TOOLS, ...TASK_CARD_TOOLS, ...EMAIL_CARD_TOOLS, ...CRM_CARD_TOOLS]
       .filter((n) => placementOf(n) === undefined);
     expect(unnamed).toEqual([]);
   });
@@ -85,6 +86,7 @@ describe("one map classifies every tool a card file draws", () => {
       "components/projects/ProjectToolCards.tsx",
       "components/tasks/TaskToolCards.tsx",
       "components/email/EmailToolCards.tsx",
+      "components/crm/CrmEvidence.tsx",
       "components/ThinkingContainer.tsx",
     ];
     for (const f of files) {

@@ -24,6 +24,8 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon from "@/components/Icon";
+import Readout from "@/components/Readout";
+import { withoutIds } from "@/lib/readout";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ToolEvent } from "@/components/MarkdownMessage";
@@ -350,11 +352,13 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
     );
   }
   // Couldn't fetch the conversation — show the tool's text summary so the user
-  // still gets the content.
+  // still gets the content. The bodies are a sender's text, so they keep
+  // their lines, and only the ids go (`withoutIds`). `Readout` would read a
+  // body line "Done: …" as a machine line and drop it (review round 1).
   if (state === "error" || !msgs) {
     return (
       <div className="text-xs whitespace-pre-wrap break-words text-foreground/90 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        {event.result}
+        {threadText(event.result)}
       </div>
     );
   }
@@ -1721,9 +1725,11 @@ function PatternListCard({
         icon={<AppIcon name={iconName} size={12} />}
         onDismiss={() => dismissToolCard(e.id)}
       >
-        <div className="text-[11px] text-muted-foreground whitespace-pre-wrap break-words">
-          {(e.result || "").trim() || "Nothing learned yet."}
-        </div>
+        {(e.result || "").trim() ? (
+          <Readout result={(e.result || "").trim()} />
+        ) : (
+          <div className="text-[11px] text-muted-foreground">Nothing learned yet.</div>
+        )}
       </ToolCardShell>
     );
   }
@@ -2046,8 +2052,11 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
       icon={<AppIcon name={iconName} size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="text-[11px] whitespace-pre-wrap break-words text-foreground/90 max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        {text || "(no result)"}
+      {/* The read as UI through the one `Readout`: no id, a labelled fact
+          for each `key: value`, a chip for a category (follow-up of #716
+          and #735). It drew the result as it is before. */}
+      <div className="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+        <Readout result={text} />
       </div>
     </ToolCardShell>
   );
@@ -2060,8 +2069,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
   const failed = e.status === "error";
   const iconName = failed ? "X" : meta.icon;
-  const result = (e.result || "").trim();
-  const detail = result.length > 160 ? result.slice(0, 160) + "…" : result;
+  const detail = (e.result || "").trim();
 
   return (
     <div
@@ -2083,9 +2091,11 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-[11px] font-medium text-foreground">{meta.label}</div>
+          {/* Compact, and through `Readout`, so an id never shows. The
+              box holds about three lines, and a longer result scrolls. */}
           {detail && (
-            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-3">
-              {detail}
+            <div className="mt-0.5 max-h-16 overflow-y-auto overflow-x-hidden scrollbar-thin">
+              <Readout result={detail} />
             </div>
           )}
         </div>
@@ -2131,14 +2141,24 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
           <div className="text-[11px] font-medium text-foreground">{meta.label}</div>
           {/* No clamp: a question lists each mailbox, and each one matters. */}
           {result && (
-            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
-              {result}
+            <div className="mt-0.5">
+              <Readout result={result} />
             </div>
           )}
         </div>
       </div>
     </div>
   );
+}
+
+/** A `read_thread` result as a member reads it: each line as sent, with no
+ *  id. Exported for its test. */
+export function threadText(raw: string | null | undefined): string {
+  return (raw || "")
+    .split(/\r?\n/)
+    .map((line) => withoutIds(line))
+    .join("\n")
+    .trim();
 }
 
 /** True when a `read_thread` result read a thread: it starts "Thread:". */

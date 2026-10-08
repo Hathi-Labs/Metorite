@@ -6,7 +6,7 @@
  * and every category key, so the text keeps them. A member needs none of
  * them (owner report, 2026-10-07: the Vocabulary card showed
  * "Backlog [backlog] · default · id 75e0ad79-…"). This module turns the text
- * into blocks, and `components/projects/Readout.tsx` draws them. The ids stay
+ * into blocks, and `components/Readout.tsx` draws them. The ids stay
  * in the tool result, so the model still reads them.
  *
  * Rules:
@@ -16,6 +16,12 @@
  * - **No `[key]` reaches the text.** A trailing `[word]` becomes the block's
  *   `tag`, and the card draws it as a word or a chip.
  * - The fence marks stay in the text, and `FencedText` draws them.
+ *
+ * The email and CRM reads use the same blocks (follow-up of #716 and #735).
+ * They print `•` rows, `id=<uuid>` and `(id=<uuid>)`, and `• key: value`
+ * facts. So a `•` row is an item, an `id=` is removed, and a `• key: value`
+ * row is a labelled fact. A `•` row also splits its facts at ` — `. A `-`
+ * row (the Projects reads) splits at ` · ` only, as before.
  *
  * Pure. Fence: `src/lib/readout.test.ts`.
  */
@@ -27,7 +33,7 @@ export type ReadoutBlock =
   | { kind: "heading"; text: string; count?: number }
   | { kind: "field"; key: string; value: string }
   | { kind: "item"; text: string; tag?: string; parts: string[]; section: string }
-  | { kind: "line"; text: string };
+  | { kind: "line"; text: string; tag?: string };
 
 /** A machine line: an id the cards parse, a link the page opens. */
 const MACHINE = /^\s*(?:full_id|link|done|[a-z_]+_id):/i;
@@ -48,31 +54,50 @@ export function withoutIds(line: string): string {
   return line
     .replace(new RegExp(String.raw`\s*·\s*(?:[a-z_]+[\s_])?id:?\s+${UUID_SRC}`, "gi"), "")
     .replace(new RegExp(String.raw`\s*\((?:[a-z_]+[\s_])?id:?\s+${UUID_SRC}\)`, "gi"), "")
+    // The email and CRM forms: `(id=<uuid>)`, and `— id=<uuid>, 3 unread`.
+    .replace(/\s*\((?:[a-z_]+_)?id=[^)\s]+\)/gi, "")
+    .replace(new RegExp(String.raw`(?:[a-z_]+_)?id=${UUID_SRC},?\s*`, "gi"), "")
     .replace(UUID_ANY, "")
-    .replace(/\s*·\s*$/, "")
+    .replace(/\s+([.,])(?=\s|$)/g, "$1")
+    .replace(/\s*(?:·|—)\s*$/, "")
     .trimEnd();
 }
 
 /** Take a `[word]` key out of a row: `«Backlog» [backlog] · default`. */
 function takeTag(text: string): { text: string; tag?: string } {
-  const m = /\s\[([a-z_ ]{1,30})\](?=\s*(?:·|$))/.exec(text);
+  // A leading `[pending] Newsletter rule: …` (the email rule history) too.
+  const lead = /^\[([a-z_ ]{1,30})\]\s+/.exec(text);
+  if (lead) return { text: text.slice(lead[0].length).trim(), tag: lead[1] };
+  const m = /\s\[([a-z_ ]{1,30})\](?=\s*(?:·|—|$))/.exec(text);
   if (!m) return { text };
   return { text: (text.slice(0, m.index) + text.slice(m.index + m[0].length)).trim(), tag: m[1] };
 }
+
+/** `• lead_name: Ravi`, a fact of an email or CRM read. The key holds no mark. */
+const DOT_FIELD = /^([a-z][a-z_ ]{0,39}):\s+(.+)$/;
 
 /** The blocks of a result. `legend` is the data legend line to drop. */
 export function parseReadout(result: string, legend = ""): ReadoutBlock[] {
   const out: ReadoutBlock[] = [];
   let section = "";
-  for (const raw of (result || "").split("\n")) {
+  for (const raw of (result || "").split(/\r?\n/)) {
     if (!raw.trim() || (legend && raw.startsWith(legend))) continue;
     if (MACHINE.test(raw) || MODEL_ONLY.some((re) => re.test(raw))) continue;
+    // `• status_id: <uuid>` is an id fact. It goes before its value does.
+    const dotKey = /^\s*•\s+([a-z][a-z_ ]{0,39}):/.exec(raw);
+    if (dotKey && /(^|_)ids?$/i.test(dotKey[1].trim())) continue;
     const line = withoutIds(raw);
     if (!line.trim()) continue;
-    const item = /^\s*-\s+(.*)$/.exec(line);
+    const item = /^\s*([-•])\s+(.*)$/.exec(line);
     if (item) {
-      const { text, tag } = takeTag(item[1]);
-      const parts = text.split(" · ").map((p) => p.trim()).filter(Boolean);
+      const dot = item[1] === "•";
+      const fact = dot ? DOT_FIELD.exec(item[2].trim()) : null;
+      if (fact) {
+        out.push({ kind: "field", key: fact[1].trim(), value: fact[2].trim() });
+        continue;
+      }
+      const { text, tag } = takeTag(item[2]);
+      const parts = text.split(dot ? / · | — / : " · ").map((p) => p.trim()).filter(Boolean);
       out.push({ kind: "item", text, tag, parts, section });
       continue;
     }
@@ -91,7 +116,8 @@ export function parseReadout(result: string, legend = ""): ReadoutBlock[] {
       );
       continue;
     }
-    out.push({ kind: "line", text: takeTag(line.trim()).text });
+    const plain = takeTag(line.trim());
+    out.push(plain.tag ? { kind: "line", text: plain.text, tag: plain.tag } : { kind: "line", text: plain.text });
   }
   return out;
 }

@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
-import Readout from "@/components/projects/Readout";
+import Readout from "@/components/Readout";
 import { categoricalAccent } from "@/lib/categorical";
 import { LEGEND } from "@/lib/projectToolRows";
 import { parseReadout, statusRow, withoutIds } from "@/lib/readout";
