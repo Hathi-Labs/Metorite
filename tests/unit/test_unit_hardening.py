@@ -8,9 +8,11 @@ Part 1, in this PR, holds two things:
 - `scripts/box_hardening_probe.sh` runs each probe of acceptance 2, and it
   prints no value that it reads (a canary proves that).
 
-The third check of part 1 lands with BH-7, beside the drop-ins of the other
+The third check of part 1 landed with BH-7, beside the drop-ins of the other
 units (spec B2-5): every `User=acb` unit except acb-pull has
-`NoNewPrivileges=yes` in the unit or in its drop-in.
+`NoNewPrivileges=yes` in the unit or in its drop-in. BH-7 also adds its own
+checks here: `40-agent-site.conf`, and that the drop-in installer of
+`vps_apply.sh` never deletes or writes a `90-*` file.
 
 Part 2 (the full slice) adds the `50-hardening.conf` assertions, the write
 allowlist and the strict check of `vps_apply.sh`. Not here.
@@ -495,3 +497,227 @@ def test_the_new_scripts_start_with_a_bash_shebang() -> None:
     """The spec runs both scripts as `bash <path>`, so no exec bit is needed."""
     for p in (PROBE, ROOT / "scripts" / "bh2_rollback.sh"):
         assert _read(p).startswith("#!/usr/bin/env bash\n"), p
+
+
+# ── NoNewPrivileges on every acb unit (lands with the other drop-ins) ────
+#
+# The drop-ins of the other units landed with the BH-7 drop-in installer
+# (spec B2-5), which installs them. These tests read the repo, never the box.
+
+#: The four other units of BH-2 item 3. Each gets these three lines and no
+#: more in this slice.
+OTHER_UNITS = ("acb-workbench", "acb-customer-console", "acb-smoke-chat", "acb-whatsapp-bridge")
+THREE_LINES = ["[Service]", "NoNewPrivileges=yes", "PrivateTmp=yes", "RestrictSUIDSGID=yes"]
+
+#: The User=acb units that part 1 exempts, each with its reason.
+NNP_EXEMPT = {
+    "acb-pull.service": "it runs vps_apply.sh, which needs sudo until BH-5",
+    "acb-gateway.service": "its NoNewPrivileges is in 50-hardening.conf, BH-F3 part 2",
+}
+
+
+def _acb_units() -> list[Path]:
+    return [
+        u for u in sorted(UNITS.glob("*.service"))
+        if "User=acb" in [ln.strip() for ln in _read(u).splitlines()]
+    ]
+
+
+def _last_value(unit: Path, key: str) -> str | None:
+    """The value systemd uses: the unit, then its drop-ins in name order."""
+    value = None
+    files = [unit, *sorted((UNITS / f"{unit.name}.d").glob("*.conf"))]
+    for f in files:
+        for ln in _conf_lines(f):
+            if ln.startswith(f"{key}="):
+                value = ln.split("=", 1)[1]
+    return value
+
+
+def test_every_acb_unit_but_pull_has_no_new_privileges() -> None:
+    units = _acb_units()
+    assert {u.name for u in units} >= {f"{n}.service" for n in OTHER_UNITS}
+    missing = [
+        u.name for u in units
+        if u.name not in NNP_EXEMPT and _last_value(u, "NoNewPrivileges") != "yes"
+    ]
+    assert not missing, f"User=acb units with no NoNewPrivileges=yes: {missing}"
+
+
+@pytest.mark.parametrize("unit", OTHER_UNITS)
+def test_each_other_unit_gets_the_three_lines_and_no_more(unit: str) -> None:
+    conf = UNITS / f"{unit}.service.d" / "50-hardening.conf"
+    assert _conf_lines(conf) == THREE_LINES
+
+
+def test_the_gateway_exemption_ends_with_part_2() -> None:
+    """When the full slice adds the gateway's 50-hardening.conf, delete the
+    acb-gateway entry of NNP_EXEMPT. This test fails until someone does."""
+    gw = UNITS / "acb-gateway.service.d" / "50-hardening.conf"
+    assert not gw.exists() or "acb-gateway.service" not in NNP_EXEMPT, (
+        "50-hardening.conf is here: remove acb-gateway.service from NNP_EXEMPT"
+    )
+
+
+# ── The BH-7 drop-in installer and 40-agent-site.conf ──────────────────
+#
+# BH-7 owns the installer (spec Q3c). It installs each
+# deploy/hostinger/*.service.d/*.conf before the first restart of the apply,
+# writes only the repo names, and never deletes or writes a 90-* file, which
+# is the BH-2 rollback on the box.
+
+APPLY = ROOT / "scripts" / "vps_apply.sh"
+AGENT_SITE_CONF = UNITS / "acb-gateway.service.d" / "40-agent-site.conf"
+AGENT_SITE_LINES = [
+    "[Service]",
+    "StateDirectory=acb-gateway",
+    "CacheDirectory=acb-gateway",
+    "Environment=UV_CACHE_DIR=/var/cache/acb-gateway/uv",
+    "Environment=CUSTOM_APPS_T2_VENDOR_DIR=/opt/acb/t2-vendor",
+]
+
+
+def test_the_agent_site_conf_holds_the_spec_lines_and_no_more() -> None:
+    assert _conf_lines(AGENT_SITE_CONF) == AGENT_SITE_LINES
+
+
+def test_each_drop_in_dir_names_a_unit_of_the_repo() -> None:
+    """A typo in a dir name would install a drop-in that no unit reads."""
+    dirs = sorted(UNITS.glob("*.service.d"))
+    assert dirs
+    for d in dirs:
+        assert (UNITS / d.name[: -len(".d")]).is_file(), d.name
+        assert sorted(p.name for p in d.iterdir()) == sorted(p.name for p in d.glob("*.conf")), d
+        assert not [p.name for p in d.glob("90-*")], f"{d.name}: a 90-* name is the box rollback"
+
+
+def _apply_block(begin: str, end: str) -> list[str]:
+    lines = _read(APPLY).splitlines()
+    return lines[lines.index(begin): lines.index(end) + 1]
+
+
+def _function(name: str) -> str:
+    block = _apply_block("# >>> bh7 helpers", "# <<< bh7 helpers")
+    start = next(i for i, ln in enumerate(block) if ln.startswith(f"{name}() {{"))
+    end = next(i for i, ln in enumerate(block) if i > start and ln == "}")
+    return "\n".join(ln for ln in block[start:end + 1] if not ln.strip().startswith("#"))
+
+
+def test_the_installer_never_deletes_and_never_writes_a_90_name() -> None:
+    fn = _function("install_dropins")
+    assert "rm " not in fn and "rmdir" not in fn and "unlink" not in fn
+    assert "90-*)" in fn and "continue" in fn
+    assert "sudo systemctl daemon-reload" in fn
+
+
+INSTALL_STUB_SUDO = '#!/usr/bin/env bash\nexec "$@"\n'
+INSTALL_STUB_SYSTEMCTL = r"""#!/usr/bin/env bash
+echo "$*" >> "$STUB_LOG"
+case "$1" in
+  is-active) grep -qx "$3" "$STUB_ACTIVE" ;;
+  show) grep -m1 "^$2=" "$STUB_SINCE" | cut -d= -f2- ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+def _installer_env(tmp_path: Path) -> dict[str, str]:
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    for name, body in (("sudo", INSTALL_STUB_SUDO), ("systemctl", INSTALL_STUB_SYSTEMCTL)):
+        p = stubs / name
+        p.write_text(body, encoding="utf-8", newline="\n")
+        p.chmod(0o755)
+    for name in ("log", "active", "since"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+    env = dict(os.environ)
+    env.update({
+        "PATH": f"{stubs.as_posix()}{os.pathsep}{env.get('PATH', '')}",
+        "SYSTEMD_UNIT_DIR": (tmp_path / "etc").as_posix(),
+        "STUB_LOG": (tmp_path / "log").as_posix(),
+        "STUB_ACTIVE": (tmp_path / "active").as_posix(),
+        "STUB_SINCE": (tmp_path / "since").as_posix(),
+    })
+    return env
+
+
+def _helpers_file(tmp_path: Path) -> Path:
+    out = tmp_path / "bh7_helpers.sh"
+    out.write_text("\n".join(_apply_block("# >>> bh7 helpers", "# <<< bh7 helpers")) + "\n",
+                   encoding="utf-8", newline="\n")
+    return out
+
+
+def _run_helpers(tmp_path: Path, env: dict[str, str], body: str) -> subprocess.CompletedProcess:
+    script = f'set -e; source "{_helpers_file(tmp_path).as_posix()}"; {body}'
+    return subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True,
+                          encoding="utf-8", timeout=60, stdin=subprocess.DEVNULL)
+
+
+def _repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "acb-gateway.service.d").mkdir(parents=True)
+    (repo / "acb-workbench.service.d").mkdir()
+    (repo / "acb-gateway.service.d" / "40-agent-site.conf").write_text("[Service]\nA=1\n", encoding="utf-8")
+    (repo / "acb-gateway.service.d" / "90-bh2-off.conf").write_text("[Service]\nEVIL=1\n", encoding="utf-8")
+    (repo / "acb-workbench.service.d" / "50-hardening.conf").write_text("[Service]\nB=1\n", encoding="utf-8")
+    return repo
+
+
+@needs_bash
+def test_the_installer_writes_repo_names_and_keeps_a_rollback(tmp_path: Path) -> None:
+    env = _installer_env(tmp_path)
+    repo = _repo(tmp_path)
+    live = tmp_path / "etc" / "acb-gateway.service.d"
+    live.mkdir(parents=True)
+    (live / "90-bh2-off.conf").write_text("[Service]\nROLLBACK=1\n", encoding="utf-8")
+    (live / "60-hand.conf").write_text("[Service]\nHAND=1\n", encoding="utf-8")
+
+    r = _run_helpers(tmp_path, env, f'install_dropins "{repo.as_posix()}"; echo "CHANGED=$DROPIN_CHANGED_UNITS"')
+    assert r.returncode == 0, r.stderr
+    assert (live / "40-agent-site.conf").read_text(encoding="utf-8") == "[Service]\nA=1\n"
+    assert (tmp_path / "etc" / "acb-workbench.service.d" / "50-hardening.conf").is_file()
+    # The rollback on the box survives, and the repo's 90-* name never goes in.
+    assert (live / "90-bh2-off.conf").read_text(encoding="utf-8") == "[Service]\nROLLBACK=1\n"
+    assert (live / "60-hand.conf").is_file(), "the installer deletes nothing"
+    assert "skipped acb-gateway.service.d/90-bh2-off.conf" in r.stdout
+    assert "CHANGED=acb-gateway.service acb-workbench.service" in r.stdout
+    assert (tmp_path / "log").read_text(encoding="utf-8").splitlines() == ["daemon-reload"]
+
+    # A second run changes nothing, and still reloads.
+    r = _run_helpers(tmp_path, env, f'install_dropins "{repo.as_posix()}"; echo "CHANGED=[$DROPIN_CHANGED_UNITS]"')
+    assert r.returncode == 0, r.stderr
+    assert "CHANGED=[]" in r.stdout
+    assert "installed" not in r.stdout
+
+
+@needs_bash
+def test_each_stale_unit_restarts_once_and_only_then(tmp_path: Path) -> None:
+    """acb-a: active, started BEFORE the install, so one restart. acb-b:
+    restarted after the install by a step of the apply, so none. acb-c: not
+    active (a oneshot), so none."""
+    env = _installer_env(tmp_path)
+    (tmp_path / "active").write_text("acb-a.service\nacb-b.service\n", encoding="utf-8", newline="\n")
+    (tmp_path / "since").write_text(
+        "acb-a.service=Thu 2026-10-08 10:00:00 UTC\nacb-b.service=Fri 2026-10-09 10:00:05 UTC\n",
+        encoding="utf-8", newline="\n",
+    )
+    body = (
+        'DROPIN_CHANGED_UNITS="acb-a.service acb-b.service acb-c.service"; '
+        'DROPIN_INSTALLED_AT="$(date -u -d "Fri 2026-10-09 10:00:00 UTC" +%s)"; '
+        "restart_stale_dropin_units"
+    )
+    r = _run_helpers(tmp_path, env, body)
+    assert r.returncode == 0, r.stderr
+    restarts = [ln for ln in (tmp_path / "log").read_text(encoding="utf-8").splitlines()
+                if ln.startswith("restart ")]
+    assert restarts == ["restart acb-a.service"]
+    assert "acb-c.service is not active" in r.stdout
+
+
+@needs_bash
+def test_no_changed_unit_means_no_restart(tmp_path: Path) -> None:
+    env = _installer_env(tmp_path)
+    r = _run_helpers(tmp_path, env, 'DROPIN_CHANGED_UNITS=""; restart_stale_dropin_units')
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "log").read_text(encoding="utf-8") == ""

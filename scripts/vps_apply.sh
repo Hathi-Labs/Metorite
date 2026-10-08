@@ -809,6 +809,99 @@ else
   echo "    LOCAL_DIAR=0 — local diarization OFF"
 fi
 
+# ── WS-49 BH-7: the .env strip and the systemd drop-ins ─────────────────────
+# Spec: project-docs/specs/box_hardening.md §5 BH-7 (B7-2, B7-3, Q3c, Q3e).
+#
+# 🔴 **THIS RUNS BEFORE THE FIRST SERVICE RESTART OF THE APPLY.** That is the
+# WhatsApp bridge restart below, and then the gateway restart. A drop-in that
+# goes in after a restart applies only at the NEXT restart, so the BH-2 strict
+# check would read stale properties. The BO-23 unit loop near the end stays
+# where it is, after the restarts, on purpose.
+#
+# 1. strip_t2_vendor_env_line removes a CUSTOM_APPS_T2_VENDOR_DIR line from
+#    .env, and warns. It never refuses, because the gateway writes .env, and a
+#    refusal would let the gateway stop every deploy. An EnvironmentFile line
+#    wins over the Environment line of 40-agent-site.conf, so the line must go.
+# 2. install_dropins installs each deploy/hostinger/*.service.d/*.conf, then
+#    runs daemon-reload. It writes only the names that the repo holds, and it
+#    deletes nothing. It never writes a 90-* name: that is the BH-2 rollback
+#    (scripts/bh2_rollback.sh), and a deploy must keep a rollback in place.
+# 3. restart_stale_dropin_units (near the end) restarts ONCE each unit whose
+#    drop-in changed, if it is active and no step of this apply restarted it.
+#
+# tests/unit/test_agent_deps_target.py and tests/unit/test_unit_hardening.py
+# source the block between the two marker lines below. Keep it free of side
+# effects: definitions and defaults only.
+# >>> bh7 helpers
+SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+DROPIN_INSTALLED_AT=""
+DROPIN_CHANGED_UNITS=""
+
+strip_t2_vendor_env_line() {  # <env file>
+  local f="$1" pat='^[[:space:]]*(export[[:space:]]+)?CUSTOM_APPS_T2_VENDOR_DIR[[:space:]]*='
+  [ -f "$f" ] || return 0
+  grep -qE "$pat" "$f" || return 0
+  # sed -i keeps the mode and the owner of the file. No value is printed.
+  sed -i -E "/$pat/d" "$f"
+  echo "    WARN BH-7: removed a CUSTOM_APPS_T2_VENDOR_DIR line from $f."
+  echo "    WARN BH-7: the T2 vendor dir is /opt/acb/t2-vendor, from 40-agent-site.conf."
+}
+
+install_dropins() {  # <dir that holds the *.service.d dirs>
+  local src="$1" d unit_d conf name dest
+  DROPIN_CHANGED_UNITS=""
+  for d in "$src"/*.service.d; do
+    [ -d "$d" ] || continue
+    unit_d="$(basename "$d")"
+    for conf in "$d"/*.conf; do
+      [ -f "$conf" ] || continue
+      name="$(basename "$conf")"
+      case "$name" in
+        90-*)
+          echo "    !! skipped $unit_d/$name: a 90-* name is a rollback on the box, never a repo file"
+          continue ;;
+      esac
+      dest="$SYSTEMD_UNIT_DIR/$unit_d/$name"
+      if sudo cmp -s "$conf" "$dest"; then
+        continue
+      fi
+      sudo install -d -m 0755 "$SYSTEMD_UNIT_DIR/$unit_d"
+      sudo install -m 0644 "$conf" "$dest"
+      echo "    installed $unit_d/$name"
+      case " $DROPIN_CHANGED_UNITS " in
+        *" ${unit_d%.d} "*) ;;
+        *) DROPIN_CHANGED_UNITS="${DROPIN_CHANGED_UNITS:+$DROPIN_CHANGED_UNITS }${unit_d%.d}" ;;
+      esac
+    done
+  done
+  DROPIN_INSTALLED_AT="$(date -u +%s)"
+  sudo systemctl daemon-reload
+}
+
+restart_stale_dropin_units() {
+  local unit since started
+  for unit in $DROPIN_CHANGED_UNITS; do
+    if ! systemctl is-active --quiet "$unit"; then
+      echo "    $unit is not active: its new drop-in applies at its next start"
+      continue
+    fi
+    since="$(systemctl show "$unit" -p ActiveEnterTimestamp --value 2>/dev/null || true)"
+    started="$(date -u -d "$since" +%s 2>/dev/null || echo 0)"
+    if [ "$started" -ge "${DROPIN_INSTALLED_AT:-0}" ]; then
+      echo "    $unit restarted after its drop-in went in: no second restart"
+      continue
+    fi
+    echo "    restarting $unit once, so that its new drop-in applies"
+    sudo systemctl restart "$unit" || echo "    !! could not restart $unit — check: systemctl status $unit"
+  done
+}
+# <<< bh7 helpers
+
+echo "==> WS-49 BH-7: the .env strip and the systemd drop-ins"
+strip_t2_vendor_env_line "$ENV_FILE"
+install_dropins "$APP_DIR/deploy/hostinger"
+echo "    drop-ins installed and systemd reloaded (changed: ${DROPIN_CHANGED_UNITS:-none})"
+
 # ── WhatsApp bridge (whatsmeow, personal-number QR) ───────────────
 # A localhost-only Go service that links a PERSONAL number by QR and
 # streams messages to the gateway's /whatsapp/bridge/ingest (same
@@ -1062,6 +1155,9 @@ echo "==> Restarting gateway (systemd)"
 # :3001 from 2026-09-26 to 2026-09-27 is in that second. The unit now says
 # `Wants=`, which keeps the start order and drops the restart. It must be on
 # the box before this restart, or this deploy still takes the workbench down.
+#
+# The drop-ins (acb-gateway.service.d/40-agent-site.conf and the rest) went in
+# at the BH-7 step above, before any restart, so this restart runs with them.
 sudo cp "$APP_DIR/deploy/hostinger/acb-gateway.service" /etc/systemd/system/acb-gateway.service
 sudo cp "$APP_DIR/deploy/hostinger/acb-workbench.service" /etc/systemd/system/acb-workbench.service
 sudo systemctl daemon-reload
@@ -1105,26 +1201,37 @@ fi
 # app-builder agent's build script
 # (apps/agents/agent-app-builder/build/build_t2.mjs) resolves
 # against via esbuild's nodePaths — installed ONCE here, never
-# per-app. Same default-resolution as CUSTOM_APPS_ROOT (already
-# proven in production for the App Workshop): read an override
-# from .env, else {AGENTS_CLONE_DIR:-$HOME/.acb/agents}.
+# per-app.
 # lucide-react: zero runtime deps of its own (only a react peer
 # dep, already here) — pinned to the exact version
 # workbench/control_plane itself uses, so every T2 app gets real
 # icon components for free instead of hand-rolled SVGs.
+#
+# 🔴 WS-49 BH-7 (P5 variant 2). This step runs `npm install` as a user with
+# sudo, so nothing the gateway can write may steer it:
+#   • The dir is the constant /opt/acb/t2-vendor. This step reads NO path from
+#     .env, because the gateway writes .env. The gateway unit gets the same
+#     value from 40-agent-site.conf, and BH-2 leaves the dir read-only to it.
+#   • `rm -f /opt/acb/t2-vendor/.npmrc` and `--userconfig /dev/null`: no
+#     planted npm config applies.
+#   • `--ignore-scripts`: no package script runs. esbuild still works without
+#     its postinstall, because npm installs its platform binary
+#     (@esbuild/linux-x64) as an optional dependency, not by a script.
+# Fence: tests/unit/test_agent_deps_target.py (BH-F6).
 echo "==> Provisioning T2 (React) vendor cache for the App Workshop builder"
-T2_VENDOR_DIR="$(grep -E '^CUSTOM_APPS_T2_VENDOR_DIR=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)"
-if [ -z "$T2_VENDOR_DIR" ]; then
-  CLONE_DIR="$(grep -E '^AGENTS_CLONE_DIR=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)"
-  T2_VENDOR_DIR="${CLONE_DIR:-$HOME/.acb/agents}/vendor/t2-react"
+T2_VENDOR_DIR="/opt/acb/t2-vendor"
+if [ ! -d "$T2_VENDOR_DIR" ]; then
+  sudo install -d -m 0755 -o "${VENV_OWNER%%:*}" -g "${VENV_OWNER##*:}" "$T2_VENDOR_DIR"
 fi
-mkdir -p "$T2_VENDOR_DIR"
+# A planted .npmrc DIRECTORY makes `rm -f` fail. Under `set -e` that would
+# let the gateway stop every deploy, so the second form removes it.
+rm -f /opt/acb/t2-vendor/.npmrc 2>/dev/null || rm -rf /opt/acb/t2-vendor/.npmrc
 printf '%s\n' \
   '{ "name": "cc-app-workshop-t2-vendor", "private": true,' \
   '  "dependencies": { "react": "18.3.1", "react-dom": "18.3.1", "esbuild": "0.24.0", "lucide-react": "1.17.0" } }' \
   > "$T2_VENDOR_DIR/package.json"
 if [ ! -d "$T2_VENDOR_DIR/node_modules/react" ] || [ ! -d "$T2_VENDOR_DIR/node_modules/esbuild" ] || [ ! -d "$T2_VENDOR_DIR/node_modules/lucide-react" ]; then
-  (cd "$T2_VENDOR_DIR" && npm install --no-audit --no-fund --omit=dev) \
+  (cd "$T2_VENDOR_DIR" && npm install --no-audit --no-fund --omit=dev --ignore-scripts --userconfig /dev/null) \
     && echo "    + T2 vendor cache installed ($T2_VENDOR_DIR)" \
     || echo "    ! T2 vendor install failed — T2 (React) apps will fail to build; T1 apps unaffected"
 else
@@ -1592,6 +1699,14 @@ for timer in "$APP_DIR"/deploy/hostinger/*.timer; do
     || echo "    !! could not enable $(basename "$timer") — check: systemctl status $(basename "$timer")"
 done
 systemctl list-timers --no-pager 'acb-*' 2>/dev/null | head -5 || true
+
+echo "==> WS-49 BH-7: one restart for a unit whose drop-in changed"
+# The BH-7 step installed the drop-ins before every restart of this apply. A
+# unit that this apply restarted after that already runs with them. A unit
+# that is active and was NOT restarted (the WhatsApp bridge when its build is
+# off, for one) gets ONE restart here. A unit that is not active (the oneshot
+# acb-smoke-chat) gets none: its next start applies the drop-in.
+restart_stale_dropin_units
 
 echo "==> Running infra health probe"
 cd "$APP_DIR"

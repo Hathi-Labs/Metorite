@@ -1,0 +1,564 @@
+"""BH-F6 — WS-49 BH-7: agent installs leave the shared venv, and the T2 vendor
+install runs no scripts.
+
+Spec: project-docs/specs/box_hardening.md §5 BH-7 "Fences" and §8.
+
+What breaks this file:
+
+- an install command in ``acb_skills`` with ``--python sys.executable`` and no
+  ``--target``, or with no ``-c``;
+- a freeze with no ``--exclude-editable``, or a constraints file outside
+  ``/var/cache/acb-gateway/``;
+- a deps hash with no target path (spec Q3b);
+- a ``.pth`` file or a ``sitecustomize`` left in agent-site, or a
+  ``site.addsitedir`` of it;
+- ``PYTHONPATH`` or ``CUSTOM_APPS_T2_VENDOR_DIR`` that does not reach
+  ``_script_env`` and ``copilot_env()`` by value, or a unit that sets
+  ``PYTHONPATH``;
+- a T2 step of ``vps_apply.sh`` with no ``--ignore-scripts``, no
+  ``rm -f /opt/acb/t2-vendor/.npmrc``, or a path read from ``.env``;
+- the ``.env`` strip or the drop-in installer after the first service restart.
+
+The bash tests source the ``bh7 helpers`` block of ``vps_apply.sh`` and run it
+with a stub ``sudo`` and a stub ``systemctl`` on ``PATH``.
+"""
+from __future__ import annotations
+
+import ast
+import asyncio
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from acb_common import child_env as seam
+
+ROOT = Path(__file__).resolve().parents[2]
+APPLY = ROOT / "scripts" / "vps_apply.sh"
+SKILLS = ROOT / "packages" / "acb_skills" / "acb_skills"
+UNITS = ROOT / "deploy" / "hostinger"
+AGENT_SITE_CONF = UNITS / "acb-gateway.service.d" / "40-agent-site.conf"
+
+BOX_AGENT_SITE = "/var/lib/acb-gateway/agent-site"
+BOX_T2_VENDOR = "/opt/acb/t2-vendor"
+BOX_CONSTRAINTS = "/var/cache/acb-gateway/constraints.txt"
+
+FREEZE_OUT = "six==1.17.0\n-e file:///opt/acb/app/packages/acb_common\nidna==3.20\n"
+
+
+# ── The fixture: agent-site in a temp dir, and a recording subprocess.run ──
+
+
+class _Done:
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+@pytest.fixture
+def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    from acb_skills import agent_site
+
+    state = tmp_path / "var-lib-acb-gateway"
+    cache = tmp_path / "var-cache-acb-gateway"
+    state.mkdir()
+    cache.mkdir()
+    monkeypatch.setattr(agent_site, "STATE_ROOT", state)
+    monkeypatch.setattr(agent_site, "AGENT_SITE", state / "agent-site")
+    monkeypatch.setattr(agent_site, "CACHE_ROOT", cache)
+    monkeypatch.setattr(agent_site, "CONSTRAINTS", cache / "constraints.txt")
+    monkeypatch.setattr(agent_site, "find_uv", lambda: "/stub/uv")
+    monkeypatch.setattr(agent_site, "_frozen", {})
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kw: Any) -> _Done:
+        assert "env" in kw, "every spawn passes env= (BH-F1)"
+        calls.append(list(cmd))
+        if cmd[1:3] == ["pip", "freeze"]:
+            return _Done(stdout=FREEZE_OUT)
+        return _Done()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return SimpleNamespace(mod=agent_site, state=state, cache=cache, calls=calls)
+
+
+def _installs(calls: list[list[str]]) -> list[list[str]]:
+    return [c for c in calls if c[1:3] == ["pip", "install"]]
+
+
+def _agent(tmp_path: Path, *, req: str = "requests==2.31.0\n", deps: list[str] | None = None) -> Path:
+    d = tmp_path / "agent"
+    (d / ".git").mkdir(parents=True)
+    if req:
+        (d / "requirements.txt").write_text(req, encoding="utf-8")
+    if deps:
+        body = ", ".join(f'"{x}"' for x in deps)
+        (d / "pyproject.toml").write_text(
+            f'[project]\nname = "a"\ndependencies = [{body}]\n', encoding="utf-8",
+        )
+    return d
+
+
+def _settings() -> SimpleNamespace:
+    return SimpleNamespace(agent_deps_allow_source_builds=False)
+
+
+# ── The install target and the constraints ─────────────────────────────
+
+
+def test_the_box_paths_are_the_spec_paths() -> None:
+    from acb_skills import agent_site
+
+    assert seam.AGENT_SITE_DIR == BOX_AGENT_SITE
+    assert str(agent_site.AGENT_SITE).replace("\\", "/").endswith("/var/lib/acb-gateway/agent-site")
+    assert agent_site.CONSTRAINTS.as_posix().endswith(BOX_CONSTRAINTS)
+    assert agent_site.CONSTRAINTS.parent == agent_site.CACHE_ROOT
+
+
+def test_the_loader_installs_into_agent_site_with_constraints(
+    site: SimpleNamespace, tmp_path: Path
+) -> None:
+    from acb_skills.loader import _install_agent_deps
+
+    _install_agent_deps(_agent(tmp_path, deps=["pandas>=2"]), _settings())
+    installs = _installs(site.calls)
+    assert len(installs) == 2, site.calls
+    for cmd in installs:
+        assert cmd[cmd.index("--target") + 1] == str(site.mod.AGENT_SITE)
+        assert cmd[cmd.index("-c") + 1] == str(site.mod.CONSTRAINTS)
+        assert cmd[cmd.index("--python") + 1] == sys.executable
+        assert cmd[cmd.index("--only-binary") + 1] == ":all:"
+    assert site.mod.AGENT_SITE.is_dir()
+
+
+def test_install_dependency_installs_into_agent_site_with_constraints(
+    site: SimpleNamespace,
+) -> None:
+    from acb_skills import dep_tools
+
+    msg = asyncio.run(dep_tools.install_dependency("six"))
+    assert msg.startswith("Installed into the agent package dir"), msg
+    (cmd,) = _installs(site.calls)
+    assert cmd[cmd.index("--target") + 1] == str(site.mod.AGENT_SITE)
+    assert cmd[cmd.index("-c") + 1] == str(site.mod.CONSTRAINTS)
+    assert cmd[-1] == "six"
+
+
+def test_the_freeze_excludes_editables_and_writes_under_var_cache(
+    site: SimpleNamespace,
+) -> None:
+    """B7-1. A plain freeze gives `-e file:///` lines, and uv refuses them as
+    constraints. So the freeze holds --exclude-editable, and no option line
+    reaches the file."""
+    cmd = site.mod.freeze_command("/stub/uv")
+    assert cmd[1:4] == ["pip", "freeze", "--exclude-editable"]
+    assert cmd[cmd.index("--python") + 1] == sys.executable
+    site.mod.prepare("/stub/uv")
+    text = site.mod.CONSTRAINTS.read_text(encoding="utf-8")
+    assert text.splitlines() == ["six==1.17.0", "idna==3.20"]
+
+
+def test_one_freeze_per_process(site: SimpleNamespace) -> None:
+    site.mod.prepare("/stub/uv")
+    site.mod.prepare("/stub/uv")
+    assert sum(1 for c in site.calls if c[1:3] == ["pip", "freeze"]) == 1
+
+
+def test_a_failed_freeze_installs_nothing(
+    site: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from acb_skills.loader import _install_agent_deps
+
+    def fail_run(cmd: list[str], **_: Any) -> _Done:
+        site.calls.append(list(cmd))
+        return _Done(returncode=2, stderr="freeze broke")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+    _install_agent_deps(_agent(tmp_path), _settings())
+    assert _installs(site.calls) == []
+
+
+def _list_strings(node: ast.List) -> list[str]:
+    return [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+
+
+def test_no_install_command_in_acb_skills_writes_the_venv() -> None:
+    """Each list literal that names `pip install` holds --target and -c. No
+    `python -m pip` fallback is left. Each freeze holds --exclude-editable."""
+    installs = 0
+    for path in sorted(SKILLS.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.List):
+                continue
+            words = _list_strings(node)
+            where = f"{path.relative_to(ROOT)}:{node.lineno}"
+            if "pip" in words and "install" in words:
+                installs += 1
+                assert "--target" in words, f"{where}: an install with no --target"
+                assert "-c" in words, f"{where}: an install with no -c"
+                assert "-m" not in words, f"{where}: a python -m pip install"
+            if "pip" in words and "freeze" in words:
+                assert "--exclude-editable" in words, f"{where}: a freeze with no --exclude-editable"
+    assert installs == 1, "agent_site.install_command must be the ONE install command"
+
+
+# ── The hash (Q3b, acceptance 3) ─────────────────────────────────────
+
+
+def test_an_agent_installed_before_bh7_installs_again(
+    site: SimpleNamespace, tmp_path: Path
+) -> None:
+    """The old marker hashed only the declared deps. The new hash holds the
+    target path, so the old marker never matches and the agent installs again
+    into agent-site, once."""
+    from acb_skills.loader import _install_agent_deps
+
+    agent = _agent(tmp_path)
+    req = (agent / "requirements.txt").read_text(encoding="utf-8")
+    old = hashlib.sha256(req.encode("utf-8")).hexdigest()
+    marker = agent / ".git" / "acb-deps-hash"
+    marker.write_text(old, encoding="utf-8")
+
+    _install_agent_deps(agent, _settings())
+    assert len(_installs(site.calls)) == 1
+    new = marker.read_text(encoding="utf-8").strip()
+    assert new != old
+
+    site.calls.clear()
+    _install_agent_deps(agent, _settings())
+    assert _installs(site.calls) == [], "an unchanged set must not install again"
+
+
+def test_the_hash_changes_with_the_target(
+    site: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from acb_skills.loader import _install_agent_deps
+
+    agent = _agent(tmp_path)
+    _install_agent_deps(agent, _settings())
+    first = (agent / ".git" / "acb-deps-hash").read_text(encoding="utf-8")
+    monkeypatch.setattr(site.mod, "AGENT_SITE", site.state / "other-site")
+    site.calls.clear()
+    _install_agent_deps(agent, _settings())
+    assert len(_installs(site.calls)) == 1
+    assert (agent / ".git" / "acb-deps-hash").read_text(encoding="utf-8") != first
+
+
+# ── The guard: no agent-site means no install, and never the venv ─────
+
+
+@pytest.mark.parametrize("missing", ["state", "cache"])
+def test_no_unit_dirs_means_a_refusal(
+    site: SimpleNamespace, tmp_path: Path, missing: str
+) -> None:
+    from acb_skills import dep_tools
+    from acb_skills.loader import _install_agent_deps, read_dep_status
+
+    shutil.rmtree(site.state if missing == "state" else site.cache)
+    agent = _agent(tmp_path)
+    _install_agent_deps(agent, _settings())
+    msg = asyncio.run(dep_tools.install_dependency("six"))
+    assert site.calls == [], "no freeze and no install without the unit dirs"
+    assert msg.startswith("Refused to install six"), msg
+    status = read_dep_status(agent)
+    assert status is not None and status["ok"] is False
+    assert status["error"].startswith("install skipped:")
+    assert not (agent / ".git" / "acb-deps-hash").exists()
+
+
+# ── No .pth and no sitecustomize ───────────────────────────────────────
+
+
+def test_scrub_removes_start_up_files_and_keeps_packages(site: SimpleNamespace) -> None:
+    s = site.mod.AGENT_SITE
+    (s / "usercustomize").mkdir(parents=True)
+    (s / "six.py").write_text("x = 1\n", encoding="utf-8")
+    (s / "pkg").mkdir()
+    (s / "distutils-precedence.pth").write_text("import os\n", encoding="utf-8")
+    (s / "sitecustomize.py").write_text("import os\n", encoding="utf-8")
+    removed = site.mod.scrub()
+    assert sorted(removed) == ["distutils-precedence.pth", "sitecustomize.py", "usercustomize"]
+    assert sorted(p.name for p in s.iterdir()) == ["pkg", "six.py"]
+
+
+def test_each_install_path_scrubs(site: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A package that ships a .pth file or a sitecustomize leaves none."""
+    from acb_skills import dep_tools
+    from acb_skills.loader import _install_agent_deps
+
+    def planting_run(cmd: list[str], **_: Any) -> _Done:
+        site.calls.append(list(cmd))
+        if cmd[1:3] == ["pip", "freeze"]:
+            return _Done(stdout=FREEZE_OUT)
+        target = Path(cmd[cmd.index("--target") + 1])
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "evil.pth").write_text("import os\n", encoding="utf-8")
+        (target / "sitecustomize.py").write_text("import os\n", encoding="utf-8")
+        return _Done()
+
+    monkeypatch.setattr(subprocess, "run", planting_run)
+    _install_agent_deps(_agent(tmp_path), _settings())
+    assert list(site.mod.AGENT_SITE.iterdir()) == []
+    asyncio.run(dep_tools.install_dependency("six"))
+    assert list(site.mod.AGENT_SITE.iterdir()) == []
+
+
+def test_agent_site_is_never_a_site_dir() -> None:
+    """site.addsitedir would run each .pth file in agent-site."""
+    for path in sorted(SKILLS.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            name = node.attr if isinstance(node, ast.Attribute) else getattr(node, "id", "")
+            assert name != "addsitedir", f"{path.name}:{getattr(node, 'lineno', '?')}"
+
+
+# ── Acceptance 1 and 2: the gateway and a run_script child ────────────
+
+
+def _probe_site(tmp_path: Path) -> Path:
+    s = tmp_path / "agent-site"
+    (s / "bh7_probe_pkg").mkdir(parents=True)
+    (s / "bh7_probe_pkg" / "__init__.py").write_text('WHERE = "agent-site"\n', encoding="utf-8")
+    # A copy of a venv package, at another version. The gateway must not take it.
+    (s / "idna").mkdir()
+    (s / "idna" / "__init__.py").write_text('__version__ = "0.0.0-agent-site"\n', encoding="utf-8")
+    return s
+
+
+def test_acceptance_1_the_package_imports_in_the_gateway_and_in_a_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from acb_skills import agent_site, code_tools
+
+    s = _probe_site(tmp_path)
+    monkeypatch.setattr(agent_site, "AGENT_SITE", s)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.delitem(sys.modules, "bh7_probe_pkg", raising=False)
+    agent_site.ensure_on_sys_path()
+    import bh7_probe_pkg  # type: ignore[import-not-found]
+
+    assert bh7_probe_pkg.WHERE == "agent-site"
+
+    monkeypatch.setitem(seam.AGENT_PATH_VALUES, "PYTHONPATH", str(s))
+    env = code_tools._script_env()
+    r = subprocess.run(
+        [sys.executable, "-c", "import bh7_probe_pkg; print(bh7_probe_pkg.WHERE)"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "agent-site"
+
+
+def test_acceptance_2_a_venv_package_wins_in_the_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """agent-site goes AFTER the venv, so the venv's idna wins over a copy."""
+    from acb_skills import agent_site
+
+    s = _probe_site(tmp_path)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(agent_site, "AGENT_SITE", s)
+    agent_site.ensure_on_sys_path()
+    agent_site.ensure_on_sys_path()
+    assert sys.path.count(str(s)) == 1
+    assert sys.path[-1] == str(s)
+    site_packages = [i for i, p in enumerate(sys.path) if p.endswith("site-packages")]
+    assert site_packages and max(site_packages) < sys.path.index(str(s))
+
+    code = textwrap.dedent(f"""
+        from pathlib import Path
+        from acb_skills import agent_site
+        agent_site.AGENT_SITE = Path({str(s)!r})
+        agent_site.ensure_on_sys_path()
+        import idna, bh7_probe_pkg
+        print(idna.__version__)
+    """)
+    env = {**os.environ}
+    env.pop("PYTHONPATH", None)
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=120)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() != "0.0.0-agent-site"
+
+
+def test_acceptance_2_a_child_takes_the_venv_version(site: SimpleNamespace, tmp_path: Path) -> None:
+    """In a child, PYTHONPATH goes before the venv. So the version must be the
+    same: the install pins every venv package with -c (B7-1)."""
+    from acb_skills.loader import _install_agent_deps
+
+    _install_agent_deps(_agent(tmp_path), _settings())
+    (cmd,) = _installs(site.calls)
+    pins = Path(cmd[cmd.index("-c") + 1]).read_text(encoding="utf-8").splitlines()
+    assert "idna==3.20" in pins and "six==1.17.0" in pins
+
+
+# ── PYTHONPATH and the T2 vendor dir, by value (Q3a, Q3d) ─────────────
+
+
+def test_both_agent_children_get_the_two_paths_by_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_skills import code_tools
+
+    monkeypatch.setenv("PYTHONPATH", "/srv/py")
+    monkeypatch.setenv("CUSTOM_APPS_T2_VENDOR_DIR", "/home/acb/.acb/agents/vendor/t2-react")
+    assert seam.AGENT_PATH_VALUES == {
+        "PYTHONPATH": BOX_AGENT_SITE,
+        "CUSTOM_APPS_T2_VENDOR_DIR": BOX_T2_VENDOR,
+    }
+    for env in (seam.copilot_env(), code_tools._script_env()):
+        assert env["PYTHONPATH"] == BOX_AGENT_SITE
+        assert env["CUSTOM_APPS_T2_VENDOR_DIR"] == BOX_T2_VENDOR
+    # A child that is not an agent child keeps the gateway's own value.
+    assert seam.child_env()["PYTHONPATH"] == "/srv/py"
+
+
+def _conf_lines(p: Path) -> list[str]:
+    return [
+        ln.strip() for ln in p.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.strip().startswith(("#", ";"))
+    ]
+
+
+def test_no_unit_sets_pythonpath() -> None:
+    files = [*UNITS.glob("*.service"), *UNITS.glob("*.service.d/*.conf"), *UNITS.glob("rollback/*.conf")]
+    assert AGENT_SITE_CONF in files
+    for f in files:
+        for ln in _conf_lines(f):
+            assert "PYTHONPATH" not in ln, f"{f.name} sets PYTHONPATH: {ln}"
+
+
+def test_one_t2_vendor_value_everywhere() -> None:
+    """Acceptance 4. The route build reads it from the unit env
+    (40-agent-site.conf). The in-chat build gets it from copilot_env(). The
+    deploy installs it at the same literal."""
+    assert f"Environment=CUSTOM_APPS_T2_VENDOR_DIR={BOX_T2_VENDOR}" in _conf_lines(AGENT_SITE_CONF)
+    assert seam.T2_VENDOR_DIR == BOX_T2_VENDOR
+    assert f'T2_VENDOR_DIR="{BOX_T2_VENDOR}"' in _t2_step()
+
+
+def test_the_route_build_reads_the_unit_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_common.settings import get_settings
+    from gateway.routes.apps._common import t2_vendor_dir
+
+    monkeypatch.setenv("CUSTOM_APPS_T2_VENDOR_DIR", BOX_T2_VENDOR)
+    get_settings.cache_clear()
+    try:
+        assert t2_vendor_dir() == Path(BOX_T2_VENDOR)
+    finally:
+        get_settings.cache_clear()
+
+
+# ── vps_apply.sh: the T2 step ─────────────────────────────────────────
+
+
+def _apply_lines() -> list[str]:
+    return APPLY.read_text(encoding="utf-8").splitlines()
+
+
+def _code(lines: list[str]) -> list[str]:
+    return [ln for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+
+
+def _t2_step() -> str:
+    lines = _apply_lines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith('echo "==> Provisioning T2'))
+    end = next(i for i, ln in enumerate(lines) if i > start and ln.startswith("# ── Build a Next.js app"))
+    return "\n".join(_code(lines[start:end]))
+
+
+def test_the_t2_step_runs_no_script_and_reads_no_env() -> None:
+    step = _t2_step()
+    npm = [ln for ln in step.splitlines() if "npm install" in ln]
+    assert len(npm) == 1, npm
+    assert "--ignore-scripts" in npm[0]
+    assert "--userconfig /dev/null" in npm[0]
+    assert "rm -f /opt/acb/t2-vendor/.npmrc" in step
+    assert step.index("rm -f /opt/acb/t2-vendor/.npmrc") < step.index("npm install")
+    for word in ("ENV_FILE", ".env", "grep", "AGENTS_CLONE_DIR", "CUSTOM_APPS_T2_VENDOR_DIR", "HOME"):
+        assert word not in step, f"the T2 step reads {word}"
+
+
+# ── vps_apply.sh: the order (B7-2, B7-3) ──────────────────────────────
+
+
+def _first(lines: list[str], needle: str) -> int:
+    return next(i for i, ln in enumerate(lines) if needle in ln)
+
+
+def test_the_strip_and_the_installer_run_before_any_restart() -> None:
+    lines = _apply_lines()
+    code = [(i, ln) for i, ln in enumerate(lines) if ln.strip() and not ln.strip().startswith("#")]
+    strip = next(i for i, ln in code if ln.strip() == 'strip_t2_vendor_env_line "$ENV_FILE"')
+    install = next(i for i, ln in code if ln.strip() == 'install_dropins "$APP_DIR/deploy/hostinger"')
+    a, b = lines.index("# >>> bh7 helpers"), lines.index("# <<< bh7 helpers")
+    # Any restart of any unit, outside the definitions of the helpers.
+    first_restart = next(i for i, ln in code if "systemctl restart" in ln and not a < i < b)
+    gateway = next(i for i, ln in code if ln.strip() == "sudo systemctl restart acb-gateway")
+    assert strip < install < first_restart <= gateway
+    # The BO-23 loop stays AFTER the gateway restart, on purpose (B7-2).
+    assert gateway < _first(lines, 'echo "==> Syncing systemd units (BO-23)"')
+    stale = next(i for i, ln in code if ln.strip() == "restart_stale_dropin_units")
+    assert _first(lines, 'echo "==> Syncing systemd units (BO-23)"') < stale
+    assert stale < _first(lines, 'record_applied_sha "$(git')
+
+
+# ── vps_apply.sh: the strip, run for real ─────────────────────────────
+
+
+def _bash() -> str | None:
+    b = shutil.which("bash")
+    if not b or "system32" in b.lower():
+        return None
+    return b
+
+
+needs_bash = pytest.mark.skipif(_bash() is None, reason="needs a POSIX bash")
+
+
+def _helpers(tmp: Path) -> Path:
+    lines = _apply_lines()
+    a = lines.index("# >>> bh7 helpers")
+    b = lines.index("# <<< bh7 helpers")
+    out = tmp / "bh7_helpers.sh"
+    out.write_text("\n".join(lines[a:b + 1]) + "\n", encoding="utf-8", newline="\n")
+    return out
+
+
+def _sh(path: Path) -> str:
+    return path.as_posix()
+
+
+@needs_bash
+def test_the_strip_removes_the_line_warns_and_prints_no_value(tmp_path: Path) -> None:
+    env = tmp_path / "dot.env"
+    env.write_text(
+        "A=1\nCUSTOM_APPS_T2_VENDOR_DIR=/home/acb/canary-t2\n"
+        "export CUSTOM_APPS_T2_VENDOR_DIR=/srv/canary-two\nCUSTOM_APPS_ROOT=/keep\nB=2\n",
+        encoding="utf-8", newline="\n",
+    )
+    script = f'set -e; source "{_sh(_helpers(tmp_path))}"; strip_t2_vendor_env_line "{_sh(env)}"'
+    r = subprocess.run([_bash(), "-c", script], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert env.read_text(encoding="utf-8").splitlines() == ["A=1", "CUSTOM_APPS_ROOT=/keep", "B=2"]
+    assert "WARN BH-7: removed a CUSTOM_APPS_T2_VENDOR_DIR line" in r.stdout
+    assert "canary" not in r.stdout + r.stderr
+
+
+@needs_bash
+def test_the_strip_is_silent_with_no_line(tmp_path: Path) -> None:
+    env = tmp_path / "dot.env"
+    env.write_text("A=1\n", encoding="utf-8", newline="\n")
+    script = f'set -e; source "{_sh(_helpers(tmp_path))}"; strip_t2_vendor_env_line "{_sh(env)}"'
+    r = subprocess.run([_bash(), "-c", script], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == ""
+    assert env.read_text(encoding="utf-8") == "A=1\n"

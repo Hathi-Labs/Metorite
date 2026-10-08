@@ -44,6 +44,8 @@ from typing import Any
 from acb_common import get_logger, get_settings
 from acb_common.child_env import child_env
 
+from acb_skills import agent_site
+
 _log = get_logger("acb_skills.loader")
 
 
@@ -1026,15 +1028,14 @@ def _ensure_repo(
         _ensure_workspace_gitignore(clone_dir)
         # After every pull/clone, auto-sync any new skill scripts into agents.py
         _sync_new_skills(clone_dir, settings)
-        # Install the repo's declared deps into the SHARED gateway venv — agents
-        # are imported in-process, so their imports must resolve in the same
-        # interpreter the gateway runs from.
+        # Install the repo's declared deps into agent-site (WS-49 BH-7). Agents
+        # are imported in-process, and agent-site is on the gateway's sys.path.
         _install_agent_deps(clone_dir, settings)
         return clone_dir
 
 
 # ---------------------------------------------------------------------------
-# Dependency installation (shared venv)
+# Dependency installation (agent-site, WS-49 BH-7)
 # ---------------------------------------------------------------------------
 
 def _is_platform_dep(spec: str) -> bool:
@@ -1051,25 +1052,6 @@ def _is_platform_dep(spec: str) -> bool:
         or name.startswith("agent-framework")
         or name == "copilot"
     )
-
-
-def _find_uv() -> str | None:
-    """Locate the ``uv`` binary, even when it's not on the service PATH."""
-    import shutil  # noqa: PLC0415
-    found = shutil.which("uv")
-    if found:
-        return found
-    for cand in (
-        Path.home() / ".local" / "bin" / "uv",
-        Path("/usr/local/bin/uv"),
-        Path("/root/.local/bin/uv"),
-    ):
-        try:
-            if cand.is_file():
-                return str(cand)
-        except Exception:  # noqa: BLE001
-            continue
-    return None
 
 
 def _detect_system_packages(error: str) -> list[str]:
@@ -1151,18 +1133,19 @@ def read_dep_status(agent_dir: Path) -> dict[str, Any] | None:
 
 
 def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
-    """Install an agent's (or skill's) declared dependencies into the shared
-    gateway venv.
+    """Install an agent's (or skill's) declared dependencies into agent-site.
 
-    Agents are imported into the gateway interpreter and run in-process, so any
-    third-party package an agent or its skills import must exist in the SAME
-    venv the gateway runs from.  Nothing else installs them, so we do it here
-    after every clone/pull.
+    Agents are imported into the gateway interpreter and run in-process, so a
+    third-party package that an agent or its skills import must be importable
+    there. WS-49 BH-7 (BH-D10): the install goes to
+    ``/var/lib/acb-gateway/agent-site`` with ``uv pip install --target``, and
+    NEVER into the shared venv, because the deploy runs code from the venv as
+    a user with sudo. ``agent_site`` builds the command, with ``-c`` and the
+    venv's freeze, so a package never takes a version that differs from the
+    venv. The gateway appends agent-site to ``sys.path`` after the venv.
 
     Sources: ``requirements.txt`` (installed verbatim) and the
     ``[project].dependencies`` of ``pyproject.toml`` (platform packages skipped).
-    Installed into ``sys.executable``'s environment via ``uv pip install``
-    (falling back to ``pip``).
 
     RCE guard (BO-7 fast pass): unless ``settings.agent_deps_allow_source_
     builds`` is explicitly set, installs run with ``--only-binary=:all:`` —
@@ -1173,15 +1156,19 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
     covered by anything downstream in the loader — the wheel-only restriction
     is the actual boundary here, not a defense in depth on top of one.
 
-    Best-effort + idempotent: a SHA-256 of the dep sources is cached in
-    ``.git/acb-deps-hash``; an unchanged set is skipped.  A failed install logs
-    a warning and never blocks the agent run.  Runs under the caller's per-repo
-    lock, so concurrent loads can't race the installer.
+    Best-effort + idempotent: a SHA-256 of the dep sources, the target dir and
+    the constraints is cached in ``.git/acb-deps-hash``, and an unchanged set
+    is skipped. The target is in the hash (spec Q3b), so an agent that was
+    installed into the venv before BH-7 installs again into agent-site on its
+    next load. A failed install logs a warning and never blocks the agent run.
+    When the unit's dirs are absent (``agent_site.not_ready``), the loader
+    logs that it skipped the install, and it never falls back to the venv.
+    Runs under the caller's per-repo lock, so concurrent loads can't race the
+    installer.
     """
     import hashlib  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-    import sys  # noqa: PLC0415
 
+    agent_site.ensure_on_sys_path()
     try:
         req = agent_dir / "requirements.txt"
         pyproject = agent_dir / "pyproject.toml"
@@ -1208,8 +1195,28 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
         if not req.is_file() and not pyproject_deps:
             return  # nothing declared to install
 
+        reason = agent_site.not_ready()
+        uv = agent_site.find_uv()
+        if reason is None and not uv:
+            reason = "uv is not on this box"
+        if reason is not None or uv is None:
+            _log.warning(
+                "loader.deps_install_skipped", agent=agent_dir.name, error=reason,
+            )
+            _write_dep_status(
+                agent_dir, ok=False, error=f"install skipped: {reason}",
+                needs_system=[], has_requirements=req.is_file(),
+                pyproject_dep_count=len(pyproject_deps),
+            )
+            return
+        constraints = agent_site.prepare(uv)
+
         digest = hashlib.sha256(
-            "\x00".join(sources).encode("utf-8", "replace")
+            "\x00".join([
+                *sources,
+                f"target={agent_site.AGENT_SITE}",
+                f"constraints={constraints}",
+            ]).encode("utf-8", "replace")
         ).hexdigest()
         marker = agent_dir / ".git" / "acb-deps-hash"
         try:
@@ -1221,19 +1228,16 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
         except Exception:  # noqa: BLE001
             pass
 
-        uv = _find_uv()
-        base = (
-            [uv, "pip", "install", "--python", sys.executable]
-            if uv
-            else [sys.executable, "-m", "pip", "install"]
-        )
-        if not bool(getattr(settings, "agent_deps_allow_source_builds", False)):
-            base = base + ["--only-binary", ":all:"]
+        only_binary = not bool(getattr(settings, "agent_deps_allow_source_builds", False))
         cmds: list[list[str]] = []
         if req.is_file():
-            cmds.append(base + ["-r", str(req)])
+            cmds.append(agent_site.install_command(
+                uv, ["-r", str(req)], only_binary=only_binary,
+            ))
         if pyproject_deps:
-            cmds.append(base + pyproject_deps)
+            cmds.append(agent_site.install_command(
+                uv, pyproject_deps, only_binary=only_binary,
+            ))
 
         ok = True
         errors: list[str] = []
@@ -1250,7 +1254,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
                     _log.warning(
                         "loader.deps_install_failed",
                         agent=agent_dir.name,
-                        tool="uv" if uv else "pip",
+                        tool="uv",
                         error=err[-700:],
                     )
             except Exception as exc:  # noqa: BLE001
@@ -1260,6 +1264,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
                     "loader.deps_install_error",
                     agent=agent_dir.name, error=str(exc),
                 )
+        agent_site.scrub()
 
         # Persist a machine-readable status so the agents page can surface
         # unmet dependencies (and any apt/system packages the build needs).
@@ -1284,6 +1289,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
                 agent=agent_dir.name,
                 requirements=req.is_file(),
                 pyproject_deps=len(pyproject_deps),
+                target=str(agent_site.AGENT_SITE),
             )
         else:
             _log.warning(

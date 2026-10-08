@@ -1,23 +1,23 @@
-"""install_dependency — let an agent add a Python package to the shared agent
-venv at runtime.
+"""install_dependency — let an agent add a Python package at runtime.
 
 Agents run in-process in the gateway interpreter, so a package an agent needs
-mid-task must be installed into the SAME venv the gateway runs from.  A bare
-``pip install`` fails (the uv-created venv has no pip) and a bare ``uv pip
-install`` has no target venv, so agents can't reliably self-install via shell.
-This tool does it correctly: ``uv pip install --python <gateway venv>``.
+mid-task must be importable there. WS-49 BH-7 (BH-D10): the package goes to
+agent-site (``/var/lib/acb-gateway/agent-site``) with ``uv pip install
+--target``, and NEVER into the shared venv, because the deploy runs code from
+the venv as a user with sudo. ``acb_skills.agent_site`` builds the command,
+with the venv's constraints. When the unit's dirs are absent, the tool refuses
+and installs nothing.
 
 Auto-injected into every agent (MAF and GitHub Copilot SDK) by the executor.
 """
 from __future__ import annotations
 
 import re
-import shutil
-import sys
-from pathlib import Path
 
 from acb_common import get_logger
 from acb_common.child_env import child_env
+
+from acb_skills import agent_site
 
 _log = get_logger("acb_skills.dep_tools")
 
@@ -29,31 +29,13 @@ _SPEC_RE = re.compile(
 )
 
 
-def _find_uv() -> str | None:
-    """Locate the ``uv`` binary even when it's not on the service PATH."""
-    found = shutil.which("uv")
-    if found:
-        return found
-    for cand in (
-        Path.home() / ".local" / "bin" / "uv",
-        Path("/usr/local/bin/uv"),
-        Path("/root/.local/bin/uv"),
-    ):
-        try:
-            if cand.is_file():
-                return str(cand)
-        except Exception:  # noqa: BLE001
-            continue
-    return None
-
-
 async def install_dependency(packages: str) -> str:
     """Install one or more Python packages into the agent runtime so your
     imports/tools work.
 
     Call this when a task needs a package that isn't installed yet (you hit a
     ``ModuleNotFoundError`` or know you'll need one).  The package is installed
-    into the shared agent venv and is importable immediately afterwards.
+    into the agent-site dir and is importable immediately afterwards.
 
     Args:
         packages: Space- or comma-separated package specs — plain names with an
@@ -75,27 +57,38 @@ async def install_dependency(packages: str) -> str:
             + (f" Rejected: {rejected}." if rejected else "")
         )
 
-    uv = _find_uv()
-    if uv:
-        cmd = [uv, "pip", "install", "--python", sys.executable, *specs]
-    else:
-        # Fallback — works only if the venv has pip; uv is the expected path.
-        cmd = [sys.executable, "-m", "pip", "install", *specs]
+    # The guard (spec BH-7): with no agent-site, refuse. Never the venv.
+    reason = agent_site.not_ready()
+    uv = agent_site.find_uv()
+    if reason is None and not uv:
+        reason = "uv is not on this box"
+    if reason is not None or uv is None:
+        _log.warning("dep_tools.install_refused", packages=specs, error=reason)
+        return (
+            f"Refused to install {', '.join(specs)}: the agent package dir is "
+            f"not ready ({reason}). Nothing was installed."
+        )
+
+    uv_bin: str = uv
 
     def _run() -> tuple[int, str]:
         try:
+            agent_site.prepare(uv_bin)
+            cmd = agent_site.install_command(uv_bin, specs, only_binary=False)
             r = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=600,
                 env=child_env(),
             )
+            agent_site.scrub()
             return r.returncode, (r.stderr or r.stdout or "")
         except Exception as exc:  # noqa: BLE001
             return 1, str(exc)
 
+    agent_site.ensure_on_sys_path()
     code, out = await asyncio.to_thread(_run)
     if code == 0:
-        _log.info("dep_tools.installed", packages=specs)
-        msg = f"Installed into the agent venv: {', '.join(specs)}."
+        _log.info("dep_tools.installed", packages=specs, target=str(agent_site.AGENT_SITE))
+        msg = f"Installed into the agent package dir: {', '.join(specs)}."
     else:
         _log.warning(
             "dep_tools.install_failed", packages=specs, error=out[-500:],
