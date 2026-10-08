@@ -310,9 +310,10 @@ async def create_account(
 async def delete_account(
     account_id: str, user: UserContext = Depends(get_current_user),
 ):
-    """Disconnect a number. The message archive is kept (rows cascade only if the
-    account row is removed) — we remove the account, which cascades its data; the
-    UI copy makes that explicit."""
+    """Disconnect a number. This deletes the account row, and every ``wa_*``
+    table that keys on it cascades, so the chats, messages, contacts and media
+    go with it. The UI confirm and the privacy policy (``site/privacy.html``,
+    section 9) both say so."""
     async with _tenant_session() as db:
         result = await db.execute(
             text("DELETE FROM wa_accounts WHERE id = :id AND user_id = :uid"),
