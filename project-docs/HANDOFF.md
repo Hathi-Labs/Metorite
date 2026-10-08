@@ -4545,9 +4545,14 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-03 · the EM-T4e review (branch `email-t4e`)
 
 ### H-215 · Keep tool results across turns on Tier 1, then move task-manager to MAF · [AGENT]
-- ⏸ **Parked by D86, 2026-10-03.** The owner parked the task-manager move
-  (WS-8i) and WS-43t2. Do not work this entry until the owner restarts them.
-  `specs/maf_coding_engine.md` §16.2 lists the parked slices.
+- ▶ **Restarted by D92, 2026-10-07** (`specs/maf_coding_engine.md` §17).
+  D86 parked WS-8i and WS-43t2 on 2026-10-03, and D92 opened both again.
+- ✅ **WS-43t2 is built and dark** (2026-10-08, branch `ws43t2-sessions`,
+  migration 228). `MAF_NATIVE_SESSIONS` is OFF, so nothing changes yet.
+- 🔴 **Next is an owner act, WS43-G13.** The owner sets
+  `MAF_NATIVE_SESSIONS=true` on production, and the one-week soak of
+  §15.9.8 starts. An agent must not flip it. The dev-phase window does not
+  open this gate.
 - **Check:** `grep -n -A 25 '"name": "task-manager"' apps/services/gateway/gateway/routes/agent.py | grep agent_runtime`
   → `github-copilot` means the entry is still open.
 - **Why:** PR #585 moved task-manager to native MAF, and the review found a
@@ -4572,7 +4577,7 @@ line — never reclaim a number by deleting the other entry.
   turns of projects-assistant, email-assistant and crm-assistant cannot see
   earlier tool output either. Their write tools ask on a card in the same
   turn, which limits the damage. The same fix helps them. WS-43t1 (PR #595)
-  is the first half, and WS-43t2 carries the tool output.
+  is the first half, and WS-43t2 carries the tool output after the flip.
 - **Authority:** `specs/maf_coding_engine.md` §15.9 (the owner, `work_plan.md` §4) ·
   `specs/agent_architecture.md` §11.3.1 · PR #585 review and the supervisor's split
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move

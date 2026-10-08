@@ -4692,7 +4692,7 @@ off, nothing changes.
 
 ⚠️ **The soak gates the moves.** No agent with a confirm turn moves to MAF
 for every organization, and WS-43q does not merge, before the soak ends. A
-merge of WS-43t2 is not enough. The soak (WS43-G13) has two parts:
+merge of WS-43t2 is not enough. The soak (WS43-G13) has these parts:
 
 1. The flag stays ON in production for one week, with no regression, for
    every native agent. The outcome lines of §15.9.4 show the hit rate.
