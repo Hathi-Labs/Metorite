@@ -1156,9 +1156,11 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
     covered by anything downstream in the loader — the wheel-only restriction
     is the actual boundary here, not a defense in depth on top of one.
 
-    A declared dependency that the venv already provides (an editable
-    workspace member too) is skipped before any uv call. When the venv
-    provides all of them, the loader writes the marker and runs no uv.
+    A declared dependency that the venv already provides at an allowed
+    version (an editable workspace member too) is skipped before any uv call.
+    A venv package at a version that the agent does not allow is a conflict:
+    it is not installed, the dep status is red, and no marker is written.
+    When the venv provides all of them, the loader runs no uv.
 
     Best-effort + idempotent: a SHA-256 of the deps to install, the target dir
     and the constraints is cached in ``.git/acb-deps-hash``, and an unchanged
@@ -1199,27 +1201,59 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
         if not req.is_file() and not pyproject_deps:
             return  # nothing declared to install
 
-        # WS-49 BH-7 fix round 1 (P1): --target does not see the venv, so a
+        # WS-49 BH-7 fix rounds 1 and 2. --target does not see the venv, so a
         # dependency that the venv already holds would resolve on PyPI. An
-        # editable workspace member (skill-projects) answers 404 there, and
-        # every load failed. Drop each one the venv provides, before any uv.
-        declared = [
-            *(agent_site.requirement_lines(sources[0]) if req.is_file() else []),
-            *pyproject_deps,
-        ]
-        to_install, provided = agent_site.split_provided(declared)
+        # editable workspace member (skill-projects) answers 404 there. So
+        # classify() sorts each line first. A line the venv provides at an
+        # allowed version, or whose marker is false here, is not installed.
+        # A line that asks for a venv package at a version the venv does not
+        # hold is a CONFLICT. It is not installed either, because a second
+        # copy would shadow the venv in a child. The rest of the deps install
+        # as normal, the dep status is red and names the conflict, and no
+        # marker is written. That is how a failed install already reports.
+        req_v = agent_site.classify(
+            agent_site.requirement_lines(sources[0]) if req.is_file() else []
+        )
+        py_v = agent_site.classify(pyproject_deps)
+        provided = req_v.provided + py_v.provided
+        conflicts = req_v.conflicts + py_v.conflicts
         if provided:
             _log.info(
                 "loader.deps_provided_by_venv", agent=agent_dir.name,
                 deps=[f"{spec} ({version})" for spec, version in provided],
             )
+        if req_v.not_here or py_v.not_here:
+            _log.info(
+                "loader.deps_marker_false", agent=agent_dir.name,
+                deps=req_v.not_here + py_v.not_here,
+            )
+        if conflicts:
+            _log.warning("loader.deps_conflict", agent=agent_dir.name, conflicts=conflicts)
+        conflict_text = "\n".join(f"conflict: {c}" for c in conflicts)
         marker = agent_dir / ".git" / "acb-deps-hash"
-        if not to_install:
+        if not req_v.to_install and not py_v.to_install:
+            if conflicts:
+                _write_dep_status(
+                    agent_dir, ok=False, error=conflict_text, needs_system=[],
+                    has_requirements=req.is_file(), pyproject_dep_count=len(pyproject_deps),
+                )
+                return  # nothing to install, and no marker
+            # The venv provides every declared dependency: no uv at all. The
+            # marker holds the venv versions, so a warm load that finds the
+            # same set returns here at once.
             digest = hashlib.sha256(
                 "\x00".join([
-                    "venv-provides-all", *declared, f"target={agent_site.AGENT_SITE}",
+                    "venv-provides-all",
+                    *(f"{spec}={version}" for spec, version in provided),
+                    *req_v.not_here, *py_v.not_here,
+                    f"target={agent_site.AGENT_SITE}",
                 ]).encode("utf-8", "replace")
             ).hexdigest()
+            try:
+                if marker.is_file() and marker.read_text(encoding="utf-8").strip() == digest:
+                    return  # unchanged since the last check
+            except Exception:  # noqa: BLE001
+                pass
             _write_dep_status(
                 agent_dir, ok=True, error="", needs_system=[],
                 has_requirements=req.is_file(), pyproject_dep_count=len(pyproject_deps),
@@ -1228,7 +1262,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
                 marker.write_text(digest, encoding="utf-8")
             except Exception:  # noqa: BLE001
                 pass
-            return  # the venv provides every declared dependency: no uv at all
+            return
 
         reason = agent_site.not_ready()
         uv = agent_site.find_uv()
@@ -1251,14 +1285,17 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
         # test_agent_deps_target.py (the hash tests).
         digest = hashlib.sha256(
             "\x00".join([
-                *to_install,
+                *req_v.to_install,
+                "--",
+                *py_v.to_install,
                 f"target={agent_site.AGENT_SITE}",
                 f"constraints={constraints}",
             ]).encode("utf-8", "replace")
         ).hexdigest()
         try:
             if (
-                marker.is_file()
+                not conflicts
+                and marker.is_file()
                 and marker.read_text(encoding="utf-8").strip() == digest
             ):
                 return  # unchanged since the last successful install
@@ -1266,18 +1303,26 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
             pass
 
         only_binary = not bool(getattr(settings, "agent_deps_allow_source_builds", False))
-        # One install of what is left, from a file of the gateway's own, so an
-        # option line of requirements.txt keeps working.
-        req_dir = agent_site.CACHE_ROOT / "requirements"
-        req_dir.mkdir(exist_ok=True)
-        to_file = req_dir / f"{agent_dir.name}.txt"
-        to_file.write_text("\n".join(to_install) + "\n", encoding="utf-8")
-        cmds = [agent_site.install_command(
-            uv, ["-r", str(to_file)], only_binary=only_binary,
-        )]
+        args: list[str] = []
+        if req_v.to_install and not req_v.dropped:
+            # Nothing dropped: the agent's OWN file, so its relative includes
+            # and its hash lines resolve as the author wrote them.
+            args += ["-r", str(req)]
+        elif req_v.to_install:
+            # Some lines dropped: the rest go to a file of the gateway's own.
+            # Each -r/-c include is made absolute against the agent dir, and
+            # each kept pin carries its own --hash options on its line.
+            req_dir = agent_site.CACHE_ROOT / "requirements"
+            req_dir.mkdir(exist_ok=True)
+            to_file = req_dir / f"{agent_dir.name}.txt"
+            lines = agent_site.absolute_includes(req_v.to_install, agent_dir)
+            to_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            args += ["-r", str(to_file)]
+        args += py_v.to_install
+        cmds = [agent_site.install_command(uv, args, only_binary=only_binary)]
 
-        ok = True
-        errors: list[str] = []
+        ok = not conflicts
+        errors: list[str] = [conflict_text] if conflicts else []
         for cmd in cmds:
             try:
                 result = subprocess.run(

@@ -26,8 +26,10 @@ this module is the ONE place that builds those commands.
 * **The venv first (fix round 1, P1).** ``--target`` does not see the venv. So
   a declared dependency that the venv already holds would resolve against
   PyPI, and an editable workspace member (``skill-projects``) answers 404
-  there. ``split_provided()`` drops each dependency that the venv provides,
-  before any uv call.
+  there. ``classify()`` drops each dependency that the venv provides, before
+  any uv call. Provided means the name AND a version that the specifier
+  allows (fix round 2). A venv package at another version is a conflict: it
+  is not installed, and the dep status says so.
 * **No shadow copies (fix round 1, P2).** ``--target`` also copies the
   dependencies of a package that the venv holds (``idna``, ``numpy``). A child
   puts ``PYTHONPATH`` before site-packages, so such a copy would shadow the
@@ -47,17 +49,24 @@ import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from acb_common import get_logger
 from acb_common.child_env import AGENT_SITE_DIR, child_env
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.version import InvalidVersion, Version
 
 __all__ = [
     "AGENT_SITE",
     "CACHE_ROOT",
     "CONSTRAINTS",
     "STATE_ROOT",
+    "Verdict",
+    "absolute_includes",
+    "classify",
     "constraints_digest",
     "ensure_on_sys_path",
     "find_uv",
@@ -68,7 +77,6 @@ __all__ = [
     "prune_venv_duplicates",
     "requirement_lines",
     "scrub",
-    "split_provided",
     "venv_version",
 ]
 
@@ -194,7 +202,7 @@ def prepare(uv: str) -> str:
     return digest
 
 
-# ── What the venv already provides (fix round 1, P1 and P2) ─────────────────
+# ── What the venv already provides (fix rounds 1 and 2) ─────────────────────
 
 
 def _canonical(name: str) -> str:
@@ -212,32 +220,74 @@ def requirement_name(spec: str) -> str | None:
 
 
 def requirement_lines(text: str) -> list[str]:
-    """The requirement lines of a ``requirements.txt``, with no comment."""
+    """The logical lines of a ``requirements.txt``, with no comment.
+
+    A line that ends with ``\\`` goes on in the next line, as pip reads it. So
+    a pin of a ``--generate-hashes`` file and its ``--hash=`` lines are ONE
+    logical line, and a skipped pin takes its hashes with it (fix round 2).
+    """
     out: list[str] = []
+    buf = ""
     for raw in text.splitlines():
-        line = raw.split(" #", 1)[0].strip()
-        if line and not line.startswith("#"):
-            out.append(line)
+        line = raw.rstrip()
+        if line.endswith("\\"):
+            buf += line[:-1] + " "
+            continue
+        buf += line
+        logical = buf.split(" #", 1)[0].strip()
+        buf = ""
+        if logical and not logical.startswith("#"):
+            out.append(" ".join(logical.split()))
+    tail = buf.split(" #", 1)[0].strip()
+    if tail and not tail.startswith("#"):
+        out.append(" ".join(tail.split()))
+    return out
+
+
+#: An include of another file, in the separate or the "=" form.
+_INCLUDE_RE = re.compile(r"^(-r|-c|--requirement|--constraint)(=|\s+)(\S+)(.*)$")
+
+
+def absolute_includes(lines: list[str], base: Path) -> list[str]:
+    """Make the path of each ``-r``/``-c`` include absolute against ``base``.
+
+    The loader writes the lines that are left to a file of its own, in
+    another dir. A relative include would then name a file beside THAT file.
+    A URL stays as it is.
+    """
+    out: list[str] = []
+    for line in lines:
+        m = _INCLUDE_RE.match(line)
+        if m and "://" not in m.group(3) and not os.path.isabs(m.group(3)):
+            path = os.path.normpath(os.path.join(str(base), m.group(3)))
+            line = f"{m.group(1)} {path}{m.group(4)}"
+        out.append(line)
     return out
 
 
 def _venv_paths() -> list[str]:
-    """``sys.path`` of the gateway's interpreter, WITHOUT agent-site. A copy in
-    agent-site must never count as a venv package, or the prune would remove
-    what the agent installed."""
-    site = os.path.normcase(os.path.abspath(str(AGENT_SITE)))
-    return [
-        p for p in sys.path
-        if p and os.path.normcase(os.path.abspath(p)) != site
-    ]
+    """The site dirs of the gateway's own venv: ``purelib`` and ``platlib``.
+
+    Only these count as the venv. Not agent-site, or the prune would remove
+    what the agent installed. Not the agent and skill dirs that
+    ``load_agent`` puts on ``sys.path``, or a checked-in ``*.egg-info`` there
+    would count as a venv package. An editable workspace member keeps its
+    ``.dist-info`` in site-packages, so it still counts.
+    """
+    paths = sysconfig.get_paths()
+    out: list[str] = []
+    for key in ("purelib", "platlib"):
+        p = paths.get(key)
+        if p and p not in out:
+            out.append(p)
+    return out
 
 
 def venv_version(name: str) -> str | None:
-    """The version of ``name`` in the gateway's interpreter, or ``None``.
+    """The version of ``name`` in the gateway's venv, or ``None``.
 
     The lookup is ``importlib.metadata`` over ``_venv_paths()``, with the name
-    normalised. An editable workspace member has a ``.dist-info`` in
-    site-packages, so it counts as provided.
+    normalised.
     """
     want = _canonical(name)
     try:
@@ -250,22 +300,73 @@ def venv_version(name: str) -> str | None:
     return None
 
 
-def split_provided(specs: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
-    """Split ``specs`` into the ones to install and the ones the venv provides.
+@dataclass
+class Verdict:
+    """What ``classify`` decided for each requirement line.
 
-    Returns ``(to_install, provided)``. ``provided`` holds ``(spec, version)``.
-    An option line stays in ``to_install``.
+    * ``to_install``: the lines that go to uv, option lines included.
+    * ``provided``: ``(line, venv version)``. The venv holds the name at a
+      version that the specifier allows.
+    * ``not_here``: lines whose marker is false for this interpreter.
+    * ``conflicts``: one sentence for each line that asks for a version of a
+      venv package that the venv does not hold. Such a line is NOT installed:
+      a second copy would shadow the venv in a child, and the prune would
+      remove it again.
     """
-    to_install: list[str] = []
-    provided: list[tuple[str, str]] = []
-    for spec in specs:
-        name = requirement_name(spec)
-        version = venv_version(name) if name else None
+
+    to_install: list[str] = field(default_factory=list)
+    provided: list[tuple[str, str]] = field(default_factory=list)
+    not_here: list[str] = field(default_factory=list)
+    conflicts: list[str] = field(default_factory=list)
+
+    @property
+    def dropped(self) -> bool:
+        return bool(self.provided or self.not_here or self.conflicts)
+
+
+#: The options that may follow a requirement on its line (``--hash=…``).
+_LINE_OPTIONS = re.compile(r"\s+(?=--?[A-Za-z])")
+
+
+def classify(lines: list[str]) -> Verdict:
+    """Sort requirement lines against the venv (fix round 2, P2-b).
+
+    A line is provided only when the venv holds the name AND its version
+    satisfies the specifier. A prerelease counts only when the venv's own
+    version is a prerelease. A line whose marker is false here is not
+    installed. A line that ``packaging`` cannot read goes to uv as it is.
+    """
+    v = Verdict()
+    for line in lines:
+        if line.startswith("-"):
+            v.to_install.append(line)
+            continue
+        try:
+            req = Requirement(_LINE_OPTIONS.split(line, maxsplit=1)[0])
+        except InvalidRequirement:
+            v.to_install.append(line)
+            continue
+        if req.marker is not None and not req.marker.evaluate():
+            v.not_here.append(line)
+            continue
+        version = venv_version(req.name)
         if version is None:
-            to_install.append(spec)
+            v.to_install.append(line)
+            continue
+        if req.url or not req.specifier:
+            v.provided.append((line, version))
+            continue
+        try:
+            pre = Version(version).is_prerelease
+        except InvalidVersion:
+            pre = False
+        if req.specifier.contains(version, prereleases=pre):
+            v.provided.append((line, version))
         else:
-            provided.append((spec, version))
-    return to_install, provided
+            v.conflicts.append(
+                f"the venv holds {req.name} {version}, the agent asks for {req}"
+            )
+    return v
 
 
 def _dist_name(info: Path) -> str | None:

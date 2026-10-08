@@ -57,12 +57,21 @@ async def install_dependency(packages: str) -> str:
             + (f" Rejected: {rejected}." if rejected else "")
         )
 
-    # WS-49 BH-7 fix round 1 (P1): a package the venv holds needs no install,
-    # and --target would resolve it on PyPI.
-    specs, provided = agent_site.split_provided(specs)
+    # WS-49 BH-7 fix rounds 1 and 2: the loader's verdict. A package the venv
+    # holds at an allowed version needs no install, and --target would
+    # resolve it on PyPI. A venv package at another version is a conflict, and
+    # is never installed: a second copy would shadow the venv in a child.
+    verdict = agent_site.classify(specs)
+    specs = verdict.to_install
+    provided = verdict.provided
     have = ", ".join(f"{spec} ({version})" for spec, version in provided)
+    notes = ""
+    if provided:
+        notes += f" Already provided by the platform: {have}."
+    if verdict.conflicts:
+        notes += " Refused, a conflict with the platform: " + ". ".join(verdict.conflicts) + "."
     if not specs:
-        return f"Already provided by the platform: {have}. Nothing was installed."
+        return ("Nothing was installed." + notes).strip()
 
     # The guard (spec BH-7): with no agent-site, refuse. Never the venv.
     reason = agent_site.not_ready()
@@ -102,8 +111,7 @@ async def install_dependency(packages: str) -> str:
             "dep_tools.install_failed", packages=specs, error=out[-500:],
         )
         msg = f"Failed to install {', '.join(specs)}: {out[-400:].strip()}"
-    if provided:
-        msg += f" Already provided by the platform: {have}."
+    msg += notes
     if rejected:
         msg += f" (ignored invalid specs: {rejected})"
     return msg

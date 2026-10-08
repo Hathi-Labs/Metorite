@@ -138,12 +138,13 @@ def test_the_loader_installs_into_agent_site_with_constraints(
 ) -> None:
     from acb_skills.loader import _install_agent_deps
 
-    _install_agent_deps(_agent(tmp_path, deps=[FAKE_TWO]), _settings())
+    agent = _agent(tmp_path, deps=[FAKE_TWO])
+    _install_agent_deps(agent, _settings())
     installs = _installs(site.calls)
     assert len(installs) == 1, site.calls
-    req = Path(installs[0][installs[0].index("-r") + 1])
-    assert req.read_text(encoding="utf-8").splitlines() == [FAKE, FAKE_TWO]
-    assert req.parent == site.cache / "requirements"
+    # Nothing dropped: the agent's OWN file, as before (fix round 2, P2-a).
+    assert installs[0][installs[0].index("-r") + 1] == str(agent / "requirements.txt")
+    assert installs[0][-1] == FAKE_TWO
     for cmd in installs:
         assert cmd[cmd.index("--target") + 1] == str(site.mod.AGENT_SITE)
         assert cmd[cmd.index("-c") + 1] == str(site.mod.CONSTRAINTS)
@@ -593,10 +594,12 @@ def test_an_editable_workspace_member_is_skipped(site: SimpleNamespace, tmp_path
 
     assert _is_editable("skill-projects"), "the test venv must hold skill-projects as editable"
     assert site.mod.venv_version("Skill_Projects") is not None, "names are normalised"
-    _install_agent_deps(_agent(tmp_path, deps=["skill-projects", FAKE_TWO]), _settings())
+    agent = _agent(tmp_path, deps=["skill-projects", FAKE_TWO])
+    _install_agent_deps(agent, _settings())
     (cmd,) = _installs(site.calls)
-    lines = Path(cmd[cmd.index("-r") + 1]).read_text(encoding="utf-8").splitlines()
-    assert lines == [FAKE, FAKE_TWO]
+    assert "skill-projects" not in cmd
+    assert cmd[cmd.index("-r") + 1] == str(agent / "requirements.txt")
+    assert cmd[-1] == FAKE_TWO
 
 
 def test_a_set_the_venv_provides_writes_the_marker_and_runs_no_uv(
@@ -617,7 +620,7 @@ def test_install_dependency_skips_what_the_venv_holds(site: SimpleNamespace) -> 
 
     msg = asyncio.run(dep_tools.install_dependency("idna skill-projects"))
     assert site.calls == []
-    assert msg.startswith("Already provided by the platform: idna"), msg
+    assert msg.startswith("Nothing was installed. Already provided by the platform: idna"), msg
     msg = asyncio.run(dep_tools.install_dependency("idna bh7-fake-agent-pkg"))
     (cmd,) = _installs(site.calls)
     assert cmd[-1] == "bh7-fake-agent-pkg"
@@ -743,3 +746,191 @@ def test_a_new_venv_state_installs_again(site: SimpleNamespace, tmp_path: Path, 
     monkeypatch.setattr(site.mod, "_frozen", {})
     _install_agent_deps(agent, _settings())
     assert len(_installs(site.calls)) == 1, "a new constraints digest must install again"
+
+
+# ── Fix round 2, P2-a: the gateway's own requirements file stays valid ────
+
+
+def _written(site: SimpleNamespace) -> list[str]:
+    (cmd,) = _installs(site.calls)
+    f = Path(cmd[cmd.index("-r") + 1])
+    assert f.parent == site.cache / "requirements", "lines were dropped: the gateway's own file"
+    return f.read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.parametrize("form", ["-r base.txt", "--requirement base.txt", "--requirement=base.txt"])
+def test_a_relative_include_is_made_absolute(site: SimpleNamespace, tmp_path: Path, form: str) -> None:
+    from acb_skills.loader import _install_agent_deps
+
+    agent = _agent(tmp_path, req=f"idna\n{form}\n")  # idna is provided, so a line drops
+    (agent / "base.txt").write_text(FAKE + "\n", encoding="utf-8")
+    _install_agent_deps(agent, _settings())
+    (line,) = _written(site)
+    flag, path = line.split(" ", 1)
+    assert flag in ("-r", "--requirement")
+    assert Path(path).is_absolute() and Path(path).is_file()
+    assert Path(path) == agent / "base.txt"
+
+
+@pytest.mark.parametrize("form", ["-c pins.txt", "--constraint=pins.txt"])
+def test_a_relative_constraint_is_made_absolute(site: SimpleNamespace, tmp_path: Path, form: str) -> None:
+    from acb_skills.loader import _install_agent_deps
+
+    agent = _agent(tmp_path, req=f"idna\n{form}\n{FAKE}\n")
+    (agent / "pins.txt").write_text(FAKE + "\n", encoding="utf-8")
+    _install_agent_deps(agent, _settings())
+    lines = _written(site)
+    assert lines[1] == FAKE
+    flag, path = lines[0].split(" ", 1)
+    assert flag in ("-c", "--constraint")
+    assert Path(path) == agent / "pins.txt"
+
+
+def test_a_url_include_stays_as_it_is() -> None:
+    from acb_skills import agent_site
+
+    assert agent_site.absolute_includes(["-c https://x/pins.txt"], Path("/a")) == ["-c https://x/pins.txt"]
+
+
+def test_a_hashed_file_drops_a_provided_pin_with_its_hashes(
+    site: SimpleNamespace, tmp_path: Path
+) -> None:
+    """A pip-compile --generate-hashes file. idna is provided, so its pin and
+    its two --hash lines go. The kept pin keeps its hashes on its own line."""
+    from acb_skills.loader import _install_agent_deps
+
+    req = (
+        "# via pip-compile --generate-hashes\n"
+        "idna==3.20 \\\n    --hash=sha256:aaaa \\\n    --hash=sha256:bbbb\n"
+        f"{FAKE} \\\n    --hash=sha256:cccc\n"
+    )
+    _install_agent_deps(_agent(tmp_path, req=req), _settings())
+    lines = _written(site)
+    assert lines == [f"{FAKE} --hash=sha256:cccc"]
+    for line in lines:
+        assert not line.endswith("\\") and not line.lstrip().startswith("--hash")
+
+
+def test_continuations_join_before_the_split() -> None:
+    from acb_skills import agent_site
+
+    text = "a==1 \\\n  --hash=sha256:x \\\n  --hash=sha256:y\n# c\nb==2  # note\nc==3 \\\n"
+    assert agent_site.requirement_lines(text) == [
+        "a==1 --hash=sha256:x --hash=sha256:y", "b==2", "c==3",
+    ]
+
+
+# ── Fix round 2, P2-b: provided means the name AND an allowed version ─────
+
+
+def test_a_satisfied_specifier_is_provided() -> None:
+    from acb_skills import agent_site
+
+    v = agent_site.classify(["idna>=3", "idna==3.20", "IDNA", "idna==3.20 --hash=sha256:x"])
+    assert [line for line, _ in v.provided] == ["idna>=3", "idna==3.20", "IDNA", "idna==3.20 --hash=sha256:x"]
+    assert v.to_install == [] and v.conflicts == []
+
+
+def test_an_unpinned_name_is_provided() -> None:
+    from acb_skills import agent_site
+
+    v = agent_site.classify(["idna"])
+    assert v.provided == [("idna", agent_site.venv_version("idna"))]
+
+
+def test_a_false_marker_is_not_installed() -> None:
+    from acb_skills import agent_site
+
+    v = agent_site.classify(['bh7-fake-agent-pkg==1.0; python_version < "3.0"'])
+    assert v.not_here and v.to_install == [] and v.provided == []
+
+
+def test_a_prerelease_counts_only_for_a_prerelease_venv(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_skills import agent_site
+
+    monkeypatch.setattr(agent_site, "venv_version", lambda name: "2.0rc1")
+    assert agent_site.classify(["x>=1.0"]).provided
+    monkeypatch.setattr(agent_site, "venv_version", lambda name: "2.0")
+    assert agent_site.classify(["x<3"]).provided
+
+
+def test_an_unsatisfied_specifier_is_a_conflict(site: SimpleNamespace, tmp_path: Path) -> None:
+    """idna>=99 against the venv's idna. Not installed (a copy would shadow the
+    venv in a child), the dep status is red and names both versions, no
+    marker. The agent's other deps still install."""
+    from acb_skills.loader import _install_agent_deps, read_dep_status
+
+    agent = _agent(tmp_path, req=f"idna>=99\n{FAKE}\n")
+    _install_agent_deps(agent, _settings())
+    (line,) = _written(site)
+    assert line == FAKE
+    status = read_dep_status(agent)
+    assert status is not None and status["ok"] is False
+    assert f"the venv holds idna {site.mod.venv_version('idna')}, the agent asks for idna>=99" in status["error"]
+    assert not (agent / ".git" / "acb-deps-hash").exists()
+
+
+def test_a_conflict_alone_runs_no_uv(site: SimpleNamespace, tmp_path: Path) -> None:
+    from acb_skills.loader import _install_agent_deps, read_dep_status
+
+    agent = _agent(tmp_path, req="idna>=99\n")
+    _install_agent_deps(agent, _settings())
+    assert site.calls == []
+    status = read_dep_status(agent)
+    assert status is not None and status["ok"] is False and "idna>=99" in status["error"]
+    assert not (agent / ".git" / "acb-deps-hash").exists()
+
+
+def test_install_dependency_gives_the_same_verdict(site: SimpleNamespace) -> None:
+    from acb_skills import dep_tools
+
+    msg = asyncio.run(dep_tools.install_dependency("idna>=99"))
+    assert site.calls == []
+    assert "Refused, a conflict with the platform: the venv holds idna" in msg
+    msg = asyncio.run(dep_tools.install_dependency("idna>=99 bh7-fake-agent-pkg"))
+    (cmd,) = _installs(site.calls)
+    assert cmd[-1] == "bh7-fake-agent-pkg" and "idna>=99" not in cmd
+    assert "Refused, a conflict" in msg
+
+
+# ── Fix round 2: the lookup reads the venv's site dirs only ──────────────
+
+
+def test_an_egg_info_in_an_agent_dir_is_not_a_venv_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """load_agent puts the agent and skill dirs on sys.path. A checked-in
+    *.egg-info there must not count as a venv package."""
+    from acb_skills import agent_site
+
+    agent = tmp_path / "repos" / "an-agent"
+    egg = agent / "bh7_checked_in.egg-info"
+    egg.mkdir(parents=True)
+    (egg / "PKG-INFO").write_text("Metadata-Version: 2.1\nName: bh7-checked-in\nVersion: 9.9\n",
+                                  encoding="utf-8")
+    monkeypatch.setattr(sys, "path", [str(agent), *sys.path])
+    import importlib.metadata
+    assert importlib.metadata.version("bh7-checked-in") == "9.9", "the egg-info is on sys.path"
+    assert agent_site.venv_version("bh7-checked-in") is None
+    assert agent_site.classify(["bh7-checked-in"]).to_install == ["bh7-checked-in"]
+
+
+# ── Fix round 2: the venv-provides-all marker is read on the warm path ────
+
+
+def test_a_warm_load_reads_the_provides_all_marker(
+    site: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from acb_skills import loader
+
+    agent = _agent(tmp_path, req="idna\n")
+    loader._install_agent_deps(agent, _settings())
+    assert (agent / ".git" / "acb-deps-hash").is_file()
+    writes: list[bool] = []
+    monkeypatch.setattr(loader, "_write_dep_status", lambda *a, **k: writes.append(k["ok"]))
+    loader._install_agent_deps(agent, _settings())
+    assert writes == [], "an unchanged set returns at the marker"
+    (agent / "requirements.txt").write_text("idna\nskill-projects\n", encoding="utf-8")
+    loader._install_agent_deps(agent, _settings())
+    assert writes == [True], "a changed set writes the status again"
+    assert site.calls == []

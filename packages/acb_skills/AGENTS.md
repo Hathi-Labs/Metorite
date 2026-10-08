@@ -243,13 +243,18 @@ clone cache.
    of the venv (`--exclude-editable`), at
    `/var/cache/acb-gateway/constraints.txt`.
 
-   `--target` does not see the venv. So `split_provided()` drops each
-   declared dependency that the venv already provides, before any uv call.
-   An editable workspace member counts as provided. When the venv provides
-   all of them, the loader writes the marker and runs no uv.
+   `--target` does not see the venv. So `classify()` sorts each declared
+   line before any uv call. The venv provides a line when its site dirs hold
+   the name at a version that the specifier allows. An editable workspace
+   member counts. A line with a false marker is not installed either. A venv
+   package at another version is a conflict: the loader does not install it,
+   and the dep status is red.
+
+   When the venv provides all of them, no uv runs.
    `prune_venv_duplicates()` removes each copy of a venv package from
    agent-site, by its `RECORD`. It runs after each install and once for each
-   new venv state.
+   new venv state. When the loader drops a line, it writes the rest to a file
+   of its own, with each `-r` or `-c` path made absolute.
 
    The gateway APPENDS agent-site to `sys.path`, so a venv package wins. A
    child gets `PYTHONPATH` from `acb_common.child_env.AGENT_PATH_VALUES`.
