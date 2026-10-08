@@ -5,6 +5,9 @@
  * operator command. These tests hold the four rules that replaced it. Each
  * names the mutation it was run against.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -15,7 +18,6 @@ import {
   ChatRunError,
   RUN_ERROR_WORDS,
   codeForStatus,
-  operatorHint,
   parseStoredRunError,
   runErrorView,
   type RunErrorCode,
@@ -26,13 +28,14 @@ const REPR =
   "(\"<class 'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient'> " +
   "service failed to complete the prompt: Connection error.\", APIConnectionError('Connection error.'))";
 
+const SRC = fileURLToPath(new URL("..", import.meta.url));
+
 const view = (code: RunErrorCode, ref: string | null = "3f9c2a1b"): RunErrorView => ({ code, ref, raw: REPR });
 
-const render = (v: RunErrorView, opts: { isAdmin?: boolean; open?: boolean; retry?: boolean } = {}) =>
+const render = (v: RunErrorView, opts: { open?: boolean; retry?: boolean } = {}) =>
   renderToStaticMarkup(
     createElement(ErrorCardView, {
       error: v,
-      isAdmin: opts.isAdmin ?? false,
       defaultOpen: opts.open ?? false,
       onRetry: opts.retry === false ? undefined : () => {},
     }),
@@ -65,18 +68,20 @@ describe("the code maps to the product's words", () => {
   });
 
   // Mutation: return the frame's text as the code, and the off-list case fails.
-  it("the reference line shows only when the server named a ref", () => {
-    expect(render(view("unknown", null))).not.toContain("Reference");
-    expect(render(view("unknown"))).toContain("Reference");
+  // Mutation: move the reference line out of the fold, and this fails.
+  it("the reference line sits in the fold, and only when the server named a ref", () => {
+    expect(render(view("unknown", null), { open: true })).not.toContain("Reference");
+    const open = render(view("unknown"), { open: true });
+    expect(open).toContain("Reference: <span class=\"font-mono\">3f9c2a1b</span>");
+    expect(outsideFold(open)).not.toContain("Reference");
     expect(RUN_ERROR_WORDS.unknown.body).not.toContain("below");
   });
 
   it("an unknown or missing code draws the unknown words with the ref", () => {
     expect(runErrorView({ raw: REPR, code: "APIConnectionError" }).code).toBe("unknown");
     expect(runErrorView({ raw: REPR }).code).toBe("unknown");
-    const html = render(view("unknown"));
-    expect(html).toContain("Something went wrong");
-    expect(html).toContain("3f9c2a1b");
+    expect(render(view("unknown"))).toContain("Something went wrong");
+    expect(render(view("unknown"), { open: true })).toContain("3f9c2a1b");
   });
 
   it("the stream error carries the server's code and ref", () => {
@@ -146,19 +151,24 @@ describe("the raw text stays inside the fold", () => {
   });
 });
 
-describe("the operator hint is for an admin only", () => {
-  // Mutation: return the hint for every member, and the first case fails.
-  it("a member never sees a shell command, even with the fold open", () => {
-    expect(operatorHint(view("unknown"), false)).toBeNull();
-    expect(render(view("unknown"), { open: true })).not.toMatch(/journalctl|sudo/);
+describe("no member ever sees operator text", () => {
+  // Owner call on PR #733: the org admin flag marks the admin of EVERY
+  // customer org, so the card shows no operator text to anyone. The card no
+  // longer reads the access answer, so admin and member render the same.
+  // Mutation: put a `sudo journalctl -u acb-gateway` line back in the fold,
+  // and this fails.
+  const OPERATOR = /journalctl|sudo|acb-/;
+  it.each(Object.keys(RUN_ERROR_WORDS) as RunErrorCode[])("%s, shut and open", (code) => {
+    for (const ref of ["3f9c2a1b", null]) {
+      const v: RunErrorView = { code, ref, raw: "Connection error." };
+      expect(render(v)).not.toMatch(OPERATOR);
+      expect(render(v, { open: true })).not.toMatch(OPERATOR);
+    }
   });
 
-  it("an admin sees it, inside the fold, with the ref to grep", () => {
-    const shut = render(view("unknown"), { isAdmin: true });
-    expect(shut).not.toContain("journalctl");
-    const open = render(view("unknown"), { isAdmin: true, open: true });
-    expect(open).toContain("journalctl -u acb-gateway | grep 3f9c2a1b");
-    expect(outsideFold(open)).not.toContain("journalctl");
+  it("the card takes no admin flag, so it cannot gate operator text on one", () => {
+    const src = readFileSync(join(SRC, "components/ChatErrorCard.tsx"), "utf8");
+    expect(src).not.toMatch(/useAccess|isAdmin|is_admin/);
   });
 });
 

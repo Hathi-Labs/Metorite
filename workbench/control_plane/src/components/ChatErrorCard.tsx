@@ -2,8 +2,7 @@
 
 import React from "react";
 import Button from "@/components/ui/Button";
-import { useAccess } from "@/components/AccessProvider";
-import { RUN_ERROR_WORDS, operatorHint, type RunErrorView } from "@/lib/runErrors";
+import { RUN_ERROR_WORDS, type RunErrorView } from "@/lib/runErrors";
 
 /**
  * The error card a failed turn leaves in the thread.
@@ -15,7 +14,8 @@ import { RUN_ERROR_WORDS, operatorHint, type RunErrorView } from "@/lib/runError
  * - The raw text sits inside "Show full error", wraps, and scrolls in its
  *   own block. Every text node carries `wrap-anywhere` and `min-w-0`, so a
  *   long token can never push the card wider than its column.
- * - The operator hint shows only to an admin, and only inside the fold.
+ * - No member sees an operator instruction, a server name or a unit name,
+ *   admin or not. The fold shows the ref, and staff grep the logs for it.
  * - Retry re-sends the member's last message through the chat's one retry
  *   path (`AgentChat`'s `handleRetryMessage`).
  *
@@ -23,12 +23,10 @@ import { RUN_ERROR_WORDS, operatorHint, type RunErrorView } from "@/lib/runError
  */
 export function ErrorCardView({
   error,
-  isAdmin,
   onRetry,
   defaultOpen = false,
 }: {
   error: RunErrorView;
-  isAdmin: boolean;
   onRetry?: () => void;
   /** Tests render the fold open. A member opens it by hand. */
   defaultOpen?: boolean;
@@ -36,7 +34,6 @@ export function ErrorCardView({
   const [copied, setCopied] = React.useState(false);
   const [expanded, setExpanded] = React.useState(defaultOpen);
   const words = RUN_ERROR_WORDS[error.code];
-  const hint = operatorHint(error, isAdmin);
 
   const handleCopy = () => {
     const text = error.ref ? `${error.raw}\n\nReference: ${error.ref}` : error.raw;
@@ -53,11 +50,6 @@ export function ErrorCardView({
     >
       <p className="min-w-0 font-semibold text-destructive wrap-anywhere">{words.title}</p>
       <p className="mt-1 min-w-0 text-xs leading-relaxed text-foreground wrap-anywhere">{words.body}</p>
-      {error.ref && (
-        <p className="mt-1 min-w-0 text-[11px] text-muted-foreground wrap-anywhere">
-          Reference: <span className="font-mono">{error.ref}</span>
-        </p>
-      )}
       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
         {onRetry && words.retry && (
           <Button type="button" size="sm" variant="secondary" icon="RefreshCw" onClick={onRetry}>
@@ -76,8 +68,10 @@ export function ErrorCardView({
           <pre className="max-h-40 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-muted/60 p-2 font-mono text-[10px] text-muted-foreground wrap-anywhere">
             {error.raw || "(no error details)"}
           </pre>
-          {hint && (
-            <p className="min-w-0 text-[11px] leading-relaxed text-muted-foreground wrap-anywhere">{hint}</p>
+          {error.ref && (
+            <p className="min-w-0 text-[11px] text-muted-foreground wrap-anywhere">
+              Reference: <span className="font-mono">{error.ref}</span>
+            </p>
           )}
         </div>
       )}
@@ -85,8 +79,7 @@ export function ErrorCardView({
   );
 }
 
-/** The card as the thread mounts it: the admin flag comes from the access answer. */
+/** The card as the thread mounts it. */
 export default function ErrorCard({ error, onRetry }: { error: RunErrorView; onRetry?: () => void }) {
-  const { access } = useAccess();
-  return <ErrorCardView error={error} isAdmin={access.is_admin} onRetry={onRetry} />;
+  return <ErrorCardView error={error} onRetry={onRetry} />;
 }

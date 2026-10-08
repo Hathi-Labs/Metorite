@@ -16,8 +16,14 @@
  * `tests/unit/test_run_errors.py` reads this file and fails when they differ.
  * A code this file does not know draws the `unknown` words.
  *
- * Fences: `runErrors.test.ts` (the words, the fold, the operator hint, the
- * retry target) and `tests/unit/test_run_errors.py` (the vocabulary).
+ * Fences: `runErrors.test.ts` (the words, the fold, the retry target, and
+ * no operator text for anyone) and `tests/unit/test_run_errors.py` (the
+ * vocabulary).
+ *
+ * ⚠️ **No member sees an operator instruction, admin or not.** The org
+ * admin flag is true for the admin of EVERY customer org, so it cannot
+ * mark Metorite staff. The card shows the ref, and staff grep the logs
+ * for it (owner call on PR #733, 2026-10-08).
  */
 
 export type RunErrorCode =
@@ -205,23 +211,4 @@ export function parseStoredRunError(json: string): RunErrorView {
   } catch {
     return { code: "unknown", ref: null, raw: json };
   }
-}
-
-/**
- * The operator's next step, or null for a member who cannot act on it.
- *
- * ⚠️ Only for a member the server resolved as an admin (`access.is_admin`).
- * There is no separate platform-operator flag in the access answer, so the
- * org admin flag is the narrowest one the browser has. A member never sees a
- * shell command.
- *
- * ⚠️ OPEN (review round 1): `is_admin` is true for the admin of EVERY org,
- * so a customer's admin also sees a command for a server they cannot reach.
- * The brief asked for this gate. A staff-only signal from the server is the
- * fix, and it does not exist yet.
- */
-export function operatorHint(view: RunErrorView, isAdmin: boolean): string | null {
-  if (!isAdmin) return null;
-  const grep = view.ref ? ` | grep ${view.ref}` : " -n 50";
-  return `Operator: read the gateway log for this run with \`sudo journalctl -u acb-gateway${grep}\`.`;
 }
