@@ -95,6 +95,7 @@ from acb_skills.write_artifact import announce_artifact, artifact_context
 _log = get_logger("acb_skills.sandbox_tools")
 
 __all__ = [
+    "CODE_TASK_SESSION_TOOLS",
     "HOST_NETWORK_TOOLS",
     "PROJECTS_AGENT",
     "WITHHELD_HOST_TOOLS",
@@ -102,7 +103,10 @@ __all__ = [
     "ProjectsSandboxProvider",
     "SandboxScriptRunner",
     "attach_for_run",
+    "code_task_run_command",
+    "code_task_session_parts",
     "request_network_access",
+    "run_code_task_command",
     "run_command",
 ]
 
@@ -226,6 +230,21 @@ async def _run_in_sandbox(command: str, timeout_s: Any, *, tool_name: str, label
             f"{tool_name} refused: the sandbox does not cover this agent for this "
             "organization. Nothing ran."
         )
+    return await _exec_and_sweep(
+        sb, binding, command, timeout_s, tool_name=tool_name, label=label, sweep=_sweep,
+    )
+
+
+async def _exec_and_sweep(
+    sb: Any, binding: Any, command: str, timeout_s: Any, *,
+    tool_name: str, label: str, sweep: Any,
+) -> str:
+    """``decide()``, one broker exec, then *sweep* under the dir lock.
+
+    The shared half of ``run_command`` (the ``projects`` target) and of the
+    ``code_task`` session's ``run_command`` (WS-43e). The caller has read the
+    run binding and checked its own cover. Nothing here runs on the host.
+    """
     allowed, code = _audit_decision(tool_name, command)
     if not allowed:
         return f"[blocked by permission policy: {code}]"
@@ -247,12 +266,106 @@ async def _run_in_sandbox(command: str, timeout_s: Any, *, tool_name: str, label
             return f"{tool_name} failed: {exc} Nothing ran on the host."
         try:
             async with broker.host_files(handle):
-                saved = await _sweep(binding, since=started)
+                saved = await sweep(binding, since=started)
         except sb.SandboxError:
             saved = []
     finally:
         await broker.release(handle)
     return _format(label, result, saved)
+
+
+# ── the code_task session (WS-43e, §7.6) ─────────────────────────────────────
+
+#: The scope target of the ``code_task`` session (§7.1, §7.7).
+CODE_TASK_TARGET = "code_task"
+
+
+def _code_task_binding(sb: Any, tool_name: str) -> tuple[Any, str | None]:
+    """The bound run, when the ``code_task`` target covers it. Else a refusal.
+
+    The org comes from the run binding, never from input (R5). The scope is
+    read on each call, so a flip off ends the session's commands.
+    """
+    try:
+        binding = sb.read_run_binding()
+    except sb.SandboxError as exc:
+        return None, f"{tool_name} refused: {exc} Nothing ran."
+    if binding.target != CODE_TASK_TARGET or not sb.maf_coding_scope_allows(
+        CODE_TASK_TARGET, binding.org,
+    ):
+        return None, (
+            f"{tool_name} refused: MAF_CODING_SCOPE does not name code_task for "
+            "this organization. Nothing ran."
+        )
+    return binding, None
+
+
+async def _sweep_workspace(binding: Any, *, since: float) -> list[str]:
+    """Mirror what a ``code_task`` command changed under ``agent-data/`` and ``outputs/``.
+
+    The caller holds the dir lock. The reads use the safe opener. No card is
+    shown, as on the Copilot path: the session reports its files in its text.
+    """
+    from acb_skills.code_tools import sweep_changed_files
+
+    return [rel for rel, _data in await sweep_changed_files(binding.workspace, since=since)]
+
+
+async def run_code_task_command(
+    command: str, timeout_s: Any = _DEFAULT_TIMEOUT_SECONDS, *,
+    tool_name: str = "run_command", label: str = "run_command",
+) -> str:
+    """Run *command* in the container of a ``code_task`` session (WS-43e).
+
+    The one code path of the session's ``run_command`` and of its skill
+    scripts. It checks the ``code_task`` target of ``MAF_CODING_SCOPE`` for
+    the run's own org, and never ``covers()``, which stays ``False`` for this
+    target until WS-43f (§7.7). It never runs anything on the host.
+    """
+    ctx = artifact_context()
+    if not ctx.get("workspace_root") or not ctx.get("session_id"):
+        return f"{tool_name} failed: no run is bound, so nothing ran."
+    if not isinstance(command, str) or not command.strip():
+        return f"{tool_name} failed: the command is empty."
+    try:
+        sb = _broker_module()
+    except ImportError:
+        return f"{tool_name} is unavailable: the sandbox broker is not installed. Nothing ran."
+    binding, refusal = _code_task_binding(sb, tool_name)
+    if refusal is not None:
+        return refusal
+    return await _exec_and_sweep(
+        sb, binding, command, timeout_s, tool_name=tool_name, label=label,
+        sweep=_sweep_workspace,
+    )
+
+
+async def code_task_run_command(command: str, timeout_s: int = _DEFAULT_TIMEOUT_SECONDS) -> str:
+    """Run a shell command in this session's sandbox and return its output.
+
+    The sandbox is a Linux container with Python 3.12, pandas, numpy,
+    matplotlib, openpyxl, python-docx, python-pptx and the other packages of
+    the coding image. It has NO network and NO credentials. It sees this
+    agent's workspace at ``/workspace``, read-write:
+
+    * ``/workspace/agent-data/`` holds the durable files: ``SCRIPTS.md``,
+      ``scripts/`` and ``skills/``.
+    * ``/workspace/outputs/`` holds the generated files of a task.
+    * ``/workspace/inputs/`` holds the files that a member uploaded.
+
+    Files that a command writes under ``agent-data/`` and ``outputs/`` are
+    kept. ``/tmp`` is cleared when the sandbox restarts.
+
+    Args:
+        command: The bash command, for example
+            ``"python3 /workspace/agent-data/scripts/report.py"``.
+        timeout_s: Seconds before the command is killed. The most is 300.
+
+    Returns:
+        The exit code, the time, the output (cut to its first and last 6 KB
+        when it is long), and the files the command saved.
+    """
+    return await run_code_task_command(command, timeout_s)
 
 
 async def _sweep(binding: Any, *, since: float) -> list[str]:
@@ -350,9 +463,13 @@ class SandboxScriptRunner:
     ``--key value`` pairs, each one shell-quoted.
     """
 
-    def __init__(self, workspace: Path, member: str = "") -> None:
+    def __init__(self, workspace: Path, member: str = "", run: Any = None) -> None:
         self._workspace = Path(workspace)
         self._member = str(member or "").strip().lower()
+        #: The sandbox runner of the command. The ``projects`` target uses
+        #: ``_run_in_sandbox``, and the ``code_task`` session uses
+        #: :func:`run_code_task_command` (WS-43e). Both run in the container only.
+        self._run = run or _run_in_sandbox
 
     def _own_skill(self, posix: str) -> bool:
         from acb_skills.agent_paths import SKILL_MINE, skill_owner, skill_top_rel
@@ -388,7 +505,7 @@ class SandboxScriptRunner:
             argv = [str(a) for a in args]
         command = " ".join(shlex.quote(p) for p in ["python3", path, *argv])
         # The steer drain runs at the tool, which _steered() wraps.
-        return await _run_in_sandbox(
+        return await self._run(
             command, _DEFAULT_TIMEOUT_SECONDS,
             tool_name="run_skill_script", label=f"skill script {script.name}",
         )
@@ -460,13 +577,13 @@ class LockedSkillsSource(SkillsSource):
     the lock. Scripts run in the sandbox (:class:`SandboxScriptRunner`).
     """
 
-    def __init__(self, workspace: Path, guard: Any, member: str = "") -> None:
+    def __init__(self, workspace: Path, guard: Any, member: str = "", run: Any = None) -> None:
         self._workspace = Path(workspace)
         self._guard = guard
         self._member = str(member or "").strip().lower()
         self._inner = FileSkillsSource(
             str(self._workspace / _SKILLS_REL),
-            script_runner=SandboxScriptRunner(self._workspace, self._member),
+            script_runner=SandboxScriptRunner(self._workspace, self._member, run),
             resource_extensions=(),
         )
 
@@ -698,3 +815,76 @@ def attach_for_run(agent: Any, agent_name: str) -> Any:
 
     _log.info("sandbox_tools.attached", agent=agent_name)
     return agent_with_providers(agent, [ProjectsSandboxProvider(agent_name)])
+
+
+# ── the code_task session's parts (WS-43e, §7.4, §7.6) ───────────────────────
+
+
+class _WorkspaceGuard:
+    """The broker's dir lock and quota, for the ``code_task`` session's store.
+
+    ``hold()`` is the broker's ``host_dir()``, which reads the run binding
+    itself (R5) and takes the SAME lock as every container on the dir. The
+    flat map needs no thread folder, so ``prepare()`` makes nothing.
+    """
+
+    def __init__(self, broker: Any, workspace: Path) -> None:
+        self._broker = broker
+        self._workspace = Path(workspace)
+
+    def hold(self) -> Any:
+        return self._broker.host_dir()
+
+    async def prepare(self) -> None:
+        return None
+
+    def writes_refused(self) -> bool:
+        return bool(self._broker.writes_refused(self._workspace))
+
+
+#: The tools that a ``code_task`` session may hold, and no other (WS-43e).
+#: ``run_command`` and ``request_network_access``, MAF's eight file tools and
+#: the three skill tools. A session that holds any other tool, such as a web
+#: search that an ``agent-framework-core`` upgrade adds, has it withheld from
+#: each request and refused on a call (``code_session.SessionToolPin``).
+CODE_TASK_FILE_TOOLS = frozenset({
+    "file_access_read", "file_access_read_lines", "file_access_write",
+    "file_access_replace", "file_access_replace_lines", "file_access_ls",
+    "file_access_grep", "file_access_delete",
+})
+CODE_TASK_SKILL_TOOLS = frozenset({"load_skill", "read_skill_resource", "run_skill_script"})
+CODE_TASK_SESSION_TOOLS = frozenset(
+    {"run_command", "request_network_access"} | CODE_TASK_FILE_TOOLS | CODE_TASK_SKILL_TOOLS,
+)
+
+
+def code_task_session_parts(binding: Any) -> tuple[Any, Any, list[Any]]:
+    """``(file store, skills provider, tools)`` of one ``code_task`` session.
+
+    *binding* is the run binding that the broker read (R5). The store is
+    :class:`~acb_skills.tenant_file_store.WorkspaceFileStore` over the same
+    dir that the container mounts. The skills live under
+    ``agent-data/skills/``, list with no cache, and run their scripts in the
+    container (:func:`run_code_task_command`). The tools are the session's
+    ``run_command`` and the ``request_network_access`` stub, with no approval
+    prompt, because no person sits in a one-shot session.
+    """
+    from acb_skills.tenant_file_store import WorkspaceFileStore
+
+    sb = _broker_module()
+    broker = sb.get_broker()
+    member = str(artifact_context().get("member") or "")
+    guard = _WorkspaceGuard(broker, binding.workspace)
+    store = WorkspaceFileStore(workspace=binding.workspace, guard=guard, member=member)
+    skills = SkillsProvider(
+        LockedSkillsSource(binding.workspace, guard, member, run=run_code_task_command),
+        source_id=f"{SOURCE_ID}-code-task-skills",
+        disable_load_skill_approval=True,
+        disable_read_skill_resource_approval=True,
+        disable_run_skill_script_approval=True,
+    )
+    tools = [
+        tool(code_task_run_command, name="run_command", approval_mode="never_require"),
+        tool(request_network_access, approval_mode="never_require"),
+    ]
+    return store, skills, tools

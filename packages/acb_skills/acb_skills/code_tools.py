@@ -315,6 +315,8 @@ def _commit_repo_changes(root: Path, task: str) -> str | None:
 
     if not (root / ".git").exists():
         return None
+    if not _host_git_ok(root):
+        return None
 
     def _git(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -351,6 +353,87 @@ def _commit_repo_changes(root: Path, task: str) -> str | None:
         return None
 
 
+def _host_git_ok(root: Path) -> bool:
+    """True when host git may run in *root* (§7.5 rule A, WS-43e).
+
+    ``sandbox_broker.host_git_allowed``. A dir that a coding sandbox mounts
+    now, or mounted, answers ``False``: a container could have written its
+    ``.git/config`` or a hook, and host git would run it. Fence WS43-F13.
+    With no orchestrator in this process, no container can mount the dir.
+    """
+    try:
+        from orchestrator.sandbox_broker import host_git_allowed
+    except ImportError:
+        return True
+    return host_git_allowed(root)
+
+
+def _maf_engine() -> bool:
+    """True when this run's ``code_task`` runs on the MAF engine (WS-43e, §7.6).
+
+    ``MAF_CODING_SCOPE`` names ``code_task`` for the run's own org. It is read
+    on each call. With no orchestrator, the answer is ``False``.
+    """
+    try:
+        from orchestrator.code_session import maf_engine_for_run
+    except ImportError:
+        return False
+    try:
+        return maf_engine_for_run()
+    except Exception:  # an unreadable scope is no scope: the Copilot path
+        return False
+
+
+async def _maf_code_task(root: Path, task: str) -> str:
+    """``code_task`` on the MAF engine (WS-43e, spec ``maf_coding_engine.md`` §7.6).
+
+    The session runs its commands in the sandbox broker's container. A broker
+    that refuses or fails is an error, and nothing runs on the host: no
+    Copilot fallback (§7.1 rule 14). After the session, the sweep runs under
+    the dir lock with the safe opener. ``_commit_repo_changes`` never runs:
+    a container could write the dir's ``.git`` (§7.5 rule A). The scripts get
+    no credential, so the session text names no integration env var.
+    """
+    from orchestrator.code_session import (
+        CodeSessionError,
+        CodeSessionRefused,
+        run_maf_code_session,
+    )
+
+    started = time.time()
+    try:
+        report = await run_maf_code_session(task=task, workspace=str(root))
+        error = ""
+    except CodeSessionRefused as exc:
+        # No container ran, so there is nothing to sweep.
+        return f"code_task failed: {exc} Nothing ran on the host."
+    except CodeSessionError as exc:
+        report, error = None, str(exc)
+    except TimeoutError:
+        report, error = None, "the coding session ran past its time limit."
+    except Exception as exc:
+        report, error = None, f"{type(exc).__name__}: {exc}"
+    swept = await _sweep_under_lock(root, since=started)
+    if report is None:
+        return (
+            f"code_task failed: {error} Nothing ran on the host."
+            + (f"\n[{swept} file(s) it wrote were still persisted]" if swept else "")
+        )
+    tail = f"\n\n[{swept} file(s) persisted to the durable store]" if swept else ""
+    return _cap(report) + tail
+
+
+async def _sweep_under_lock(root: Path, *, since: float) -> int:
+    """The after-session sweep, inside the broker's dir lock (§7.6, §7.5 rule B)."""
+    try:
+        from orchestrator import sandbox_broker as sb
+
+        async with sb.get_broker().host_dir():
+            return await _sweep_to_blob_store(root, since=since)
+    except Exception:
+        return 0
+
+
 async def code_task(task: str) -> str:
     """Write, edit, run, and test scripts in your workspace via a bounded
     coding session (the platform's coding engine).
@@ -383,6 +466,9 @@ async def code_task(task: str) -> str:
         return "code_task failed: no active workspace for this run."
     if not (task or "").strip():
         return "code_task failed: describe what to build or change."
+
+    if _maf_engine():
+        return await _maf_code_task(root, task)
 
     started = time.time()
     try:

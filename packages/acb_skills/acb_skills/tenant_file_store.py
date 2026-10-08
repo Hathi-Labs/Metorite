@@ -82,6 +82,7 @@ __all__ = [
     "RUN_DATA",
     "HostFileGuard",
     "TenantFileStore",
+    "WorkspaceFileStore",
     "first_time_shown",
 ]
 
@@ -438,3 +439,86 @@ class TenantFileStore(FileSystemAgentFileStore):
         return await AgentFileStore.search(
             self, directory, regex_pattern, glob_pattern, recursive=recursive,
         )
+
+
+class WorkspaceFileStore(TenantFileStore):
+    """The store of the ``code_task`` session's file tools (WS-43e, §7.4, §7.6).
+
+    The same safe opener, dir lock, quota, ``decide()`` and blob-store mirror
+    as :class:`TenantFileStore`. One thing differs: the map is FLAT, because
+    the ``code_task`` container mounts the whole working dir read-write at
+    ``/workspace`` with no nested folder (§7.1 rule 5). So a file tool and a
+    command in that container always see the same file:
+
+    =====================  ==============================  =====
+    Tool path              Host path                       Kept
+    =====================  ==============================  =====
+    ``agent-data/…``       ``<working dir>/agent-data/…``  yes
+    ``inputs/…``           ``<working dir>/inputs/…``      yes
+    ``outputs/…``          ``<working dir>/outputs/…``     yes
+    =====================  ==============================  =====
+
+    * There is no ``.run/``. The session has no run data.
+    * A file at the root, any other folder, and any part that starts with a
+      dot (``.git``, ``.local``, ``.cc-instance``, the skill author marker)
+      are refused.
+    * A write shows no artifact card. The Copilot path shows none either: the
+      session names its files in its report.
+    """
+
+    def __init__(self, *, workspace: Path, guard: HostFileGuard, member: str = "") -> None:
+        # The parent's thread folders are never used: :meth:`_place` maps flat.
+        super().__init__(
+            workspace=workspace, outputs_rel=OUTPUTS, run_data=Path(workspace),
+            guard=guard, member=member, inputs_rel=INPUTS,
+        )
+
+    def _place(self, path: str) -> _Place:
+        parts = safe_open.split_rel(path)
+        if not parts:
+            return _Place(self._workspace, "", None)
+        head = parts[0]
+        if any(part.startswith(".") for part in parts):
+            raise safe_open.UnsafePath("A name that starts with a dot is not a workspace file.")
+        if head not in (*KEPT_HEADS, INPUTS, OUTPUTS):
+            raise safe_open.UnsafePath(
+                f"{head!r} is not a workspace folder. Use agent-data/, inputs/ or outputs/."
+            )
+        rel = "/".join(parts)
+        return _Place(self._workspace, rel, rel)
+
+    async def _prepare(self, place: _Place) -> None:
+        del place  # no thread folder and no run data to make
+
+    async def _after_write(self, place: _Place, data: bytes, *, existed: bool) -> None:
+        if place.store_rel is None:
+            return
+        from acb_skills.write_artifact import mirror_to_blob_store
+
+        mime = mimetypes.guess_type(place.store_rel)[0] or "application/octet-stream"
+        await mirror_to_blob_store(
+            place.store_rel, data, mime_type=mime,
+            action="modify" if existed else "create",
+        )
+
+    async def list_children(self, directory: str = "") -> list[FileStoreEntry]:
+        place = self._place(directory)
+        async with self._guard.hold():
+            await asyncio.to_thread(self._refuse_foreign_skill, place)
+            listed = await asyncio.to_thread(safe_open.list_dir, place.root, place.rel)
+            entries = [(n, k) for n, k in (listed or []) if not n.startswith(".")]
+            if not place.rel:
+                # The root shows the three tool heads, and nothing else.
+                heads = (*KEPT_HEADS, INPUTS, OUTPUTS)
+                entries = [(n, k) for n, k in entries if k == "dir" and n in heads]
+            elif place.store_rel == "agent-data/skills":
+                entries = [
+                    (n, k) for n, k in entries
+                    if not self._foreign_skill(self._place(f"agent-data/skills/{n}/SKILL.md"))
+                ]
+        return [
+            FileStoreEntry(
+                name, FileStoreEntry.DIRECTORY if kind == "dir" else FileStoreEntry.FILE,
+            )
+            for name, kind in entries
+        ]
