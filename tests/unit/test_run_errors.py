@@ -79,6 +79,7 @@ class TestTheClassifier:
             (_status_error(503), "connection"),
             (_status_error(504), "timeout"),
             (_status_error(401), "unknown"),
+            (_status_error(409), "run_in_progress"),
             (_status_error(500), "unknown"),
             (asyncio.CancelledError(), "cancelled"),
             (KeyError("projects"), "unknown"),

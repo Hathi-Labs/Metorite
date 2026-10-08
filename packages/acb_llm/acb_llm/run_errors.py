@@ -65,6 +65,10 @@ RUN_ERROR_CODES: tuple[str, ...] = (
     "cancelled",
     "run_in_progress",
     "unknown",
+    # The browser's own: the chat route's session ended (a 401 from the
+    # gateway to the route). The server never sends it, because a 401 here
+    # is our own key to our own Router.
+    "signed_out",
 )
 
 #: The longest raw text a RUN_ERROR keeps. It is shown inside the fold only.
@@ -88,6 +92,10 @@ def classify_status(status: int) -> str:
         return "permission"
     if status == 429:
         return "rate_limited"
+    if status == 409:
+        # `_refuse_if_another_run_is_active`: another member's run holds the
+        # thread.
+        return "run_in_progress"
     if status in (408, 504):
         return "timeout"
     if status in (400, 404, 413, 422):

@@ -4,8 +4,12 @@
  * Two controls use it. The answer bubble's "Retry" regenerates an assistant
  * turn, and the error card's "Retry" (owner report, 2026-10-08) re-sends the
  * turn that failed. Both re-send the member's last message before the turn,
- * in the same thread, and both drop the old pair, so the thread never shows
- * the same question twice.
+ * in the same thread, and both drop the old pair from the thread on screen.
+ *
+ * ⚠️ Only from the screen. The chat store upserts rows and deletes none, so
+ * the dropped question stays in Postgres, and a reload shows it above the
+ * retried one. The answer bubble's Retry had the same limit before
+ * 2026-10-08. Advisory: nothing tests the reload.
  *
  * `AgentChat`'s `handleRetryMessage` is the only caller. Fence:
  * `runErrors.test.ts`.

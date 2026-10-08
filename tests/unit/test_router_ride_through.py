@@ -88,9 +88,12 @@ def test_it_gives_up_inside_the_deadline():
 
 def test_a_failure_after_the_first_token_is_never_retried():
     """The response started, a token streamed, then the connection dropped.
-    Mutation: retry on ``httpx.TransportError`` instead of ``ConnectError``
-    at the transport, or re-read in a loop: either way this sees more than
-    one call."""
+    The transport has returned by then, so no catch in it sees the body's
+    error. This test holds that property: the failure reaches the caller
+    once, and nothing sends the request again. Mutation: make the transport
+    read the whole body before it returns and retry a ``ReadError``, and this
+    sees two calls. The ``TransportError`` mutation is fenced by
+    ``test_only_a_refused_connection_is_retried``."""
     clock = _Clock()
 
     class _Drops(httpx.AsyncByteStream):
@@ -128,6 +131,47 @@ def test_only_a_refused_connection_is_retried(exc):
     with pytest.raises(type(exc)):
         asyncio.run(go())
     assert inner.calls == 1
+
+
+def test_a_stopping_process_never_rides_through(monkeypatch):
+    """Review round 1: on the box the agents call their OWN process, so a
+    wait during its restart only holds the old process up. Mutation: drop
+    ``stopping()`` from the give-up test, and this sleeps."""
+    from acb_llm import ride_through
+
+    monkeypatch.setattr(ride_through, "_STOPPING", ride_through.threading.Event())
+    ride_through.mark_stopping()
+    clock = _Clock()
+    inner = _Script([httpx.ConnectError("refused"), _ok()])
+
+    async def go():
+        async with _client(inner, clock) as c:
+            await c.post(URL, json={})
+
+    with pytest.raises(httpx.ConnectError):
+        asyncio.run(go())
+    assert inner.calls == 1
+    assert clock.slept == []
+
+
+def test_the_stop_hook_chains_the_servers_handler(monkeypatch):
+    """The server's own handler still runs, after the flag is set.
+    Mutation: drop the ``_prev(signum, frame)`` call, and this fails."""
+    import signal
+
+    from acb_llm import ride_through
+
+    monkeypatch.setattr(ride_through, "_STOPPING", ride_through.threading.Event())
+    seen: list[int] = []
+    prev = signal.getsignal(signal.SIGTERM)
+    try:
+        signal.signal(signal.SIGTERM, lambda s, f: seen.append(s))
+        ride_through.install_stop_hook()
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+    finally:
+        signal.signal(signal.SIGTERM, prev)
+    assert ride_through.stopping()
+    assert seen == [signal.SIGTERM]
 
 
 def test_the_sdks_own_retries_pass_straight_through():

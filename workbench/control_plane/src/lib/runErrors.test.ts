@@ -65,6 +65,12 @@ describe("the code maps to the product's words", () => {
   });
 
   // Mutation: return the frame's text as the code, and the off-list case fails.
+  it("the reference line shows only when the server named a ref", () => {
+    expect(render(view("unknown", null))).not.toContain("Reference");
+    expect(render(view("unknown"))).toContain("Reference");
+    expect(RUN_ERROR_WORDS.unknown.body).not.toContain("below");
+  });
+
   it("an unknown or missing code draws the unknown words with the ref", () => {
     expect(runErrorView({ raw: REPR, code: "APIConnectionError" }).code).toBe("unknown");
     expect(runErrorView({ raw: REPR }).code).toBe("unknown");
@@ -91,10 +97,12 @@ describe("the code maps to the product's words", () => {
   });
 
   it("the status table matches classify_status in run_errors.py", () => {
+    // 401 and 404 differ from the Python table on purpose (see codeForStatus).
     const table: Array<[number, RunErrorCode]> = [
-      [402, "credits"], [403, "permission"], [429, "rate_limited"], [408, "timeout"], [504, "timeout"],
-      [400, "model_refused"], [404, "model_refused"], [413, "model_refused"], [422, "model_refused"],
-      [502, "connection"], [503, "connection"], [401, "unknown"], [500, "unknown"],
+      [402, "credits"], [403, "permission"], [429, "rate_limited"], [409, "run_in_progress"],
+      [408, "timeout"], [504, "timeout"], [400, "model_refused"], [413, "model_refused"],
+      [422, "model_refused"], [502, "connection"], [503, "connection"], [401, "signed_out"],
+      [404, "unknown"], [500, "unknown"],
     ];
     for (const [status, code] of table) expect(codeForStatus(status)).toBe(code);
   });

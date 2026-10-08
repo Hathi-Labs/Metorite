@@ -29,6 +29,7 @@ export type RunErrorCode =
   | "permission"
   | "cancelled"
   | "run_in_progress"
+  | "signed_out"
   | "unknown";
 
 export interface RunErrorWords {
@@ -74,8 +75,10 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     retry: true,
   },
   permission: {
-    title: "No access",
-    body: "You do not have access to do this. Ask an admin of your organization.",
+    title: "Not allowed",
+    body:
+      "Metorite refused this request. You may not have access to it, or your organization " +
+      "reached a spending limit. Ask an admin of your organization.",
     retry: false,
   },
   cancelled: {
@@ -90,11 +93,14 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
       "Wait for it to finish, then press Retry.",
     retry: true,
   },
+  signed_out: {
+    title: "Signed out",
+    body: "Your session ended. Sign in again, then send your message again.",
+    retry: false,
+  },
   unknown: {
     title: "Something went wrong",
-    body:
-      "Metorite could not finish this answer. Press Retry. " +
-      "If it happens again, give your admin the reference below.",
+    body: "Metorite could not finish this answer. Press Retry. If it happens again, tell your admin.",
     retry: true,
   },
 };
@@ -118,13 +124,19 @@ export function isRunErrorCode(v: unknown): v is RunErrorCode {
  * Mirrors `classify_status` in `run_errors.py`, for the failures that never
  * reached the executor (the gateway refused the request, or the route could
  * not reach it). `runErrors.test.ts` pins the same table.
+ *
+ * Two statuses differ on purpose, because here they come from the GATEWAY,
+ * not from the model. A 401 is the member's session (`signed_out`). A 404 is
+ * a missing session or route, not a model that refused (`unknown`).
  */
 export function codeForStatus(status: number): RunErrorCode {
   if (status === 402) return "credits";
   if (status === 403) return "permission";
   if (status === 429) return "rate_limited";
+  if (status === 409) return "run_in_progress";
+  if (status === 401) return "signed_out";
   if (status === 408 || status === 504) return "timeout";
-  if (status === 400 || status === 404 || status === 413 || status === 422) return "model_refused";
+  if (status === 400 || status === 413 || status === 422) return "model_refused";
   if (status === 502 || status === 503) return "connection";
   return "unknown";
 }

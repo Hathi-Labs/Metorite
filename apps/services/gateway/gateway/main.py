@@ -57,6 +57,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     os.environ.setdefault("PYTHONUTF8", "1")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
+    # A stopping gateway must not ride through its OWN restart: its agents
+    # call this process's port, and each wait holds the old process up
+    # (acb_llm.ride_through, review of the 2026-10-08 fix). uvicorn holds its
+    # signal handlers by now, so the hook chains them.
+    try:
+        from acb_llm.ride_through import install_stop_hook
+        install_stop_hook()
+    except Exception:  # noqa: BLE001 - a missing hook is a slower restart only
+        pass
+
     # Expose the gateway's venv to every child process (the Copilot CLI, agent
     # shells, install_dependency).  `uv pip install` needs a target venv; the
     # service env often lacks VIRTUAL_ENV, so a bare `uv pip install` from an

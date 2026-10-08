@@ -54,18 +54,35 @@ while the gateway restarts, and a call to a Router that restarts on its own.
 A turn in the restarting process needs a listener that does not restart
 with the gateway, or a bounded graceful shutdown. Both are deploy choices.
 
+**So a process that is stopping never rides through** (review round 1).
+Its waits would only hold the old process up for 14 s more, because uvicorn
+waits for the run before it exits. :func:`install_stop_hook` chains the
+server's SIGTERM and SIGINT handlers and sets the flag, and the gateway
+calls it at startup. After the flag is set, a refused connection fails at
+once, exactly as it did before this module.
+
 Fence: ``tests/unit/test_router_ride_through.py``.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import signal
+import threading
 import time
 from collections.abc import Awaitable, Callable
 
 import httpx
 from acb_common import get_logger
 
-__all__ = ["RIDE_THROUGH_DEADLINE_S", "RIDE_THROUGH_DELAYS", "RideThroughTransport"]
+__all__ = [
+    "RIDE_THROUGH_DEADLINE_S",
+    "RIDE_THROUGH_DELAYS",
+    "RideThroughTransport",
+    "install_stop_hook",
+    "mark_stopping",
+    "stopping",
+]
 
 _log = get_logger("acb_llm.ride_through")
 
@@ -78,6 +95,45 @@ RIDE_THROUGH_DEADLINE_S = 15.0
 
 #: The OpenAI SDK's own retry counter, on every request it sends.
 _SDK_RETRY_HEADER = "x-stainless-retry-count"
+
+#: Set when this process got a stop signal. See the module doc.
+_STOPPING = threading.Event()
+
+
+def stopping() -> bool:
+    """True when this process got a stop signal."""
+    return _STOPPING.is_set()
+
+
+def mark_stopping() -> None:
+    """Make every later refused connection fail at once, with no wait."""
+    _STOPPING.set()
+
+
+def install_stop_hook() -> None:
+    """Chain the current SIGTERM and SIGINT handlers with :func:`mark_stopping`.
+
+    Call it once the server holds its own handlers. uvicorn installs them
+    before it runs the app's lifespan startup, so the gateway calls this
+    there. The server's handler still runs, unchanged, after the flag is set.
+    It does nothing outside the main thread, and it never raises.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(Exception):
+            prev = signal.getsignal(sig)
+            # Only a server's own handler is chained. A default or an ignored
+            # signal keeps its meaning, because a Python function cannot
+            # reproduce "terminate".
+            if not callable(prev):
+                continue
+
+            def _chained(signum, frame, _prev=prev):
+                mark_stopping()
+                _prev(signum, frame)
+
+            signal.signal(sig, _chained)
 
 
 class RideThroughTransport(httpx.AsyncBaseTransport):
@@ -107,7 +163,7 @@ class RideThroughTransport(httpx.AsyncBaseTransport):
             try:
                 return await self._inner.handle_async_request(request)
             except httpx.ConnectError as exc:
-                if not ride or tries >= len(self._delays):
+                if not ride or stopping() or tries >= len(self._delays):
                     raise
                 delay = self._delays[tries]
                 if self._clock() - started + delay > self._deadline_s:

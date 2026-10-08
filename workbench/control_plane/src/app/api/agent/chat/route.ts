@@ -605,7 +605,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     userId = session?.user?.email ?? "";
     if (isAuthEnabled && !userId) {
       return new Response(
-        `data: ${JSON.stringify({ type: "error", content: "Unauthorized" })}\n\n`,
+        `data: ${JSON.stringify({ type: "error", content: "Unauthorized", code: "signed_out" })}\n\n`,
         { status: 401, headers: sseHeaders() }
       );
     }
