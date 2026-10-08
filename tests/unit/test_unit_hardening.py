@@ -363,3 +363,64 @@ def test_the_new_scripts_start_with_a_bash_shebang() -> None:
     """The spec runs both scripts as `bash <path>`, so no exec bit is needed."""
     for p in (PROBE, ROOT / "scripts" / "bh2_rollback.sh"):
         assert _read(p).startswith("#!/usr/bin/env bash\n"), p
+
+
+# ── NoNewPrivileges on every acb unit (lands with the other drop-ins) ────
+#
+# The drop-ins of the other units merge only AFTER the BH-7 drop-in
+# installer merges (spec B2-5). Before it, nothing installs a .service.d
+# file, so these tests read the repo, never the box.
+
+#: The four other units of BH-2 item 3. Each gets these three lines and no
+#: more in this slice.
+OTHER_UNITS = ("acb-workbench", "acb-customer-console", "acb-smoke-chat", "acb-whatsapp-bridge")
+THREE_LINES = ["[Service]", "NoNewPrivileges=yes", "PrivateTmp=yes", "RestrictSUIDSGID=yes"]
+
+#: The User=acb units that part 1 exempts, each with its reason.
+NNP_EXEMPT = {
+    "acb-pull.service": "it runs vps_apply.sh, which needs sudo until BH-5",
+    "acb-gateway.service": "its NoNewPrivileges is in 50-hardening.conf, BH-F3 part 2",
+}
+
+
+def _acb_units() -> list[Path]:
+    return [
+        u for u in sorted(UNITS.glob("*.service"))
+        if "User=acb" in [ln.strip() for ln in _read(u).splitlines()]
+    ]
+
+
+def _last_value(unit: Path, key: str) -> str | None:
+    """The value systemd uses: the unit, then its drop-ins in name order."""
+    value = None
+    files = [unit, *sorted((UNITS / f"{unit.name}.d").glob("*.conf"))]
+    for f in files:
+        for ln in _conf_lines(f):
+            if ln.startswith(f"{key}="):
+                value = ln.split("=", 1)[1]
+    return value
+
+
+def test_every_acb_unit_but_pull_has_no_new_privileges() -> None:
+    units = _acb_units()
+    assert {u.name for u in units} >= {f"{n}.service" for n in OTHER_UNITS}
+    missing = [
+        u.name for u in units
+        if u.name not in NNP_EXEMPT and _last_value(u, "NoNewPrivileges") != "yes"
+    ]
+    assert not missing, f"User=acb units with no NoNewPrivileges=yes: {missing}"
+
+
+@pytest.mark.parametrize("unit", OTHER_UNITS)
+def test_each_other_unit_gets_the_three_lines_and_no_more(unit: str) -> None:
+    conf = UNITS / f"{unit}.service.d" / "50-hardening.conf"
+    assert _conf_lines(conf) == THREE_LINES
+
+
+def test_the_gateway_exemption_ends_with_part_2() -> None:
+    """When the full slice adds the gateway's 50-hardening.conf, delete the
+    acb-gateway entry of NNP_EXEMPT. This test fails until someone does."""
+    gw = UNITS / "acb-gateway.service.d" / "50-hardening.conf"
+    assert not gw.exists() or "acb-gateway.service" not in NNP_EXEMPT, (
+        "50-hardening.conf is here: remove acb-gateway.service from NNP_EXEMPT"
+    )
