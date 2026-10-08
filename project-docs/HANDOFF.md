@@ -3818,52 +3818,44 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-20 · credit and usage review session
 
 ### H-123 · Backups exist now, and live only on the box they protect · [OWNER]
-- **Check:** on the box, `sudo grep -c '^BACKUP_REMOTE=' /opt/acb/app/.env`.
-  A zero means every dump still lives on one disk, and this is open.
-- 🔴 **Filed because closing two entries orphaned their caveats.** H-98
-  and H-105 closed on 2026-09-19. The nightly timer runs, and the job covers
-  the Console database. A restore is verified. That day's deploy took a
-  pre-migration dump. Both entries carried this warning as a sub-point, so
-  deleting them deleted the only record of it.
-- 🔴 **CORRECTION, same day: the TIMER was never armed.** H-98 and
-  H-105 closed on the strength of `Result=success`, a verified restore and
-  14 dumps on disk. All three were true. The timer was
-  `UnitFileState=disabled` throughout, with an empty
-  `NextElapseUSecRealtime`, so no night was ever covered. Today's run was a
-  manual one. `systemctl enable --now acb-backup.timer` armed it at 12:17
-  UTC, and it now prints NEXT `Sun 2026-09-20 02:30:16 UTC`.
-- 🔴 **SECOND CORRECTION, 2026-09-20: the timer was DISABLED again.** The
-  arming above held for one day. `systemctl list-unit-files` reported
-  `acb-backup.timer disabled` this morning, and no NEXT date. The cause is
-  `scripts/vps_apply.sh` lines 917 to 919. On a `PG_MODE=local` box it runs
-  `systemctl disable --now acb-backup.timer` on every apply. Its own comment
-  says it disables rather than skips, so that a hand-enable does not survive
-  a deploy. That is exactly what happened to mine.
-- ✅ **The carve-out is GONE (2026-09-20), and H-132 closed with it.**
-  `vps_apply.sh` disabled the timer on every apply. The reason was written on
-  2026-08-17, when the unit loaded no `EnvironmentFile` and would dump an
-  empty container. The service gained `EnvironmentFile=/opt/acb/app/.env` on
-  2026-09-19, so the guard outlived the hole. The timer is now armed by the
-  deploy like every other one. Two fences replaced it:
-  `test_the_backup_service_must_load_its_credentials` and
-  `test_no_timer_is_carved_out_of_the_enable_loop`.
+- **Check:** `ssh metorite "sudo journalctl -u acb-backup --since -26h --no-pager | grep -c 'off-box copy ok'"`.
+  A zero means no night left the box in the last day, and this is open.
+- ✅ **The code is BUILT (2026-10-08, branch `ops-offbox-backup`).** The
+  owner chose a private Supabase Storage bucket, through its S3 endpoint.
+  Each night, `backup_db.sh` encrypts the dumps, the manifest, the file data
+  and the meeting-bot volume to your PUBLIC key. Then rclone sends them. The
+  copy stays OFF until you do the four steps below.
+- **The four owner steps.** Spec `backup_and_restore.md` §4.2 holds each
+  exact command. Do them after a deploy of the branch, so rclone is on the box.
+  - **(a)** Make the private bucket `metorite-backups` in project
+    `wbjpwtxigkileyjsgahk`. The coordinator may run the SQL in §4.2 for you.
+    Set the upload size limit in Storage → Settings to 1 GB or more. The app
+    dump is about 84 MB.
+  - **(b)** Make an S3 access key in the dashboard, at Storage → S3
+    Connection. Write down the endpoint and the region. Keep the key ID and
+    the secret in your password manager.
+  - **(c)** Make a gpg key pair on your own machine. Keep the private key and
+    its passphrase in your password manager. Put only the public key on the
+    box, at `/opt/acb/backup-public-key.asc`.
+  - **(d)** Set the seven `BACKUP_S3_*` and `BACKUP_GPG_*` keys in
+    `/opt/acb/app/.env`. Then run `sudo systemctl start acb-backup.service`
+    and run the Check above.
+- **To restore:** `scripts/restore_offbox.sh` lists, downloads, decrypts and
+  verifies one night. Spec §4.2 holds the steps.
+- ⚠️ **The trade-off.** The bucket is in the same Supabase account as the
+  database. It covers the loss of the VPS, which is this gap. It does not
+  cover the loss of the account. The S3 key on the box can also delete the
+  backups. A copy at a second provider is a later choice.
+- ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
+  Supabase MCP reports project health, not the backup configuration. Our
+  logical dumps stand on their own.
 - **The lesson, so it is not learned twice.** A manual `systemctl start`
   proves the SERVICE. It says nothing about the SCHEDULE. Read
   `systemctl list-timers <unit> --all` and require a NEXT date.
-  `Result=success` is also the default for a service that never ran.
-- **What is still true.** `backup_db.sh` says it on every run: a backup on
-  the same disk as the database survives a bad migration and a dropped
-  table. It does not survive the disk, the box, or the provider account.
-- ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
-  Supabase MCP reports project health, not backup configuration, so an
-  agent cannot produce the evidence. Our logical dumps stand on their own
-  and are not the provider's point-in-time recovery.
-- **Why OWNER.** Choosing where the copies go is a money and third-party
-  decision: another host, an object store, or the provider's own retention.
-  📌 Once a destination exists, setting `BACKUP_REMOTE` is the whole
-  change — the script already rsyncs to it and warns while it is unset.
-- **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
-- **Added:** 2026-09-19 · operator console session, after the backup repair
+- **Authority:** `scripts/backup_db.sh` · `scripts/restore_offbox.sh` ·
+  `project-docs/specs/backup_and_restore.md` §4.2
+- **Added:** 2026-09-19 · operator console session, after the backup repair.
+  Rewritten 2026-10-08, when the off-box copy was built.
 
 ### H-140 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
 - **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`

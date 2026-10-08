@@ -55,5 +55,16 @@ EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
 # Without Docker the verify fails, and it never falls back to the cluster. The
 # Console dump, the off-box copy and retention still run, and the unit exits 1
 # at the end.
+#
+# 🔴 **The off-box copy (H-123, owner decision 2026-10-08).** When the env file
+# above sets the BACKUP_S3_* and BACKUP_GPG_* keys, each night also goes to the
+# private Supabase Storage bucket through its S3 endpoint. Every item is
+# compressed with zstd and encrypted with gpg to the owner's PUBLIC key, so
+# this box can write a backup and cannot read one. rclone reads the bucket key
+# from the environment only, never from a config file or argv. rclone is
+# installed by scripts/vps_apply.sh. A failed upload is an ERROR and the unit
+# exits 1, after the local dump, the Console dump and local retention ran.
+# The journal line `off-box copy ok` is the evidence that a night left the box.
+# Restore: scripts/restore_offbox.sh, and project-docs/specs/backup_and_restore.md §4.2.
 ExecStart=/bin/bash /opt/acb/app/scripts/backup_db.sh --verify-restore
 TimeoutStartSec=1800
