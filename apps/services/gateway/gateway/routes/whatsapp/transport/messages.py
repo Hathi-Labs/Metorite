@@ -15,6 +15,9 @@ routes. Each one defaults to no change, so the app reads the same as before:
   in each row. With no ``q``, it searches on the filters only.
 * ``GET /chats/{chat_id}/messages`` gains ``around`` and ``window``: the
   message ``around`` and at most ``window`` messages on each side of it.
+
+H-277 changes the plain thread read: it takes the NEWEST ``limit`` messages,
+still in reading order. It took the oldest ones before.
 """
 
 from __future__ import annotations
@@ -132,7 +135,17 @@ async def list_messages(
     window: int = Query(2, ge=0, le=MAX_WINDOW),
     user: UserContext = Depends(get_current_user),
 ):
-    """Return a conversation's messages oldest-first (thread reading order).
+    """Return the NEWEST ``limit`` messages of a conversation, oldest first
+    (thread reading order).
+
+    H-277: the route took the oldest ``limit`` messages, because it applied the
+    limit after ``ORDER BY sent_at ASC``. A chat longer than ``limit`` then
+    showed its first messages and hid its recent ones. Both callers want the
+    recent ones: ``read_whatsapp_chat`` ("the recent messages") and the app's
+    thread view, which shows the newest message at the bottom and reloads
+    after a send. So the route takes the newest ``limit`` and gives them in
+    reading order. A message with no ``sent_at`` counts as the oldest, as
+    before. ``test_whatsapp_thread_newest.py`` holds it on a real database.
 
     With ``around`` (a message id of this chat), return that message and at
     most ``window`` messages on each side of it, oldest first (WS-48 N4).
@@ -148,14 +161,19 @@ async def list_messages(
             if anchor is None or canonical_chat is None:
                 raise HTTPException(status_code=404, detail="Message not found")
             return await _window(db, canonical_chat, anchor, max(0, min(window, MAX_WINDOW)))
+        # The newest `limit` first, then reading order (H-277). `id` breaks a
+        # tie of `sent_at`, so the cut and the order agree.
         rows = (await db.execute(
-            text("""SELECT id, chat_id, wa_message_id, direction, kind, sender,
-                           body_text, transcript_text, quoted_wa_message_id,
-                           categories, intent, send_regime, sent_at
-                    FROM wa_messages
-                    WHERE chat_id = :cid
-                    ORDER BY sent_at ASC NULLS FIRST
-                    LIMIT :limit"""),
+            text("""SELECT * FROM (
+                        SELECT id, chat_id, wa_message_id, direction, kind, sender,
+                               body_text, transcript_text, quoted_wa_message_id,
+                               categories, intent, send_regime, sent_at
+                        FROM wa_messages
+                        WHERE chat_id = :cid
+                        ORDER BY sent_at DESC NULLS LAST, id DESC
+                        LIMIT :limit
+                    ) newest
+                    ORDER BY sent_at ASC NULLS FIRST, id ASC"""),
             {"cid": chat_id, "limit": limit},
         )).fetchall()
         return [_message_model(r) for r in rows]

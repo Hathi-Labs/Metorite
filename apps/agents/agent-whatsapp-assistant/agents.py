@@ -304,7 +304,7 @@ def _fmt_message(m: dict[str, Any]) -> str:
 
 @_annotate_risk(open_world=False)
 async def read_whatsapp_chat(chat_id: str, limit: int = 20) -> str:
-    """Read the recent messages of a chat (oldest→newest), including voice-note
+    """Read the newest `limit` messages of a chat (shown oldest→newest), including voice-note
     transcripts. Use before drafting a reply or answering a question about a
     conversation."""
     msgs = await _get(f"/whatsapp/chats/{chat_id}/messages", {"limit": limit})
