@@ -48,7 +48,7 @@ def _settings(*, allow_source_builds: bool = False) -> types.SimpleNamespace:
 
 
 def test_default_install_is_wheels_only(tmp_path, monkeypatch):
-    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("bh7-fake-agent-pkg==1.0\n", encoding="utf-8")
 
     captured: list[list[str]] = []
 
@@ -67,7 +67,7 @@ def test_default_install_is_wheels_only(tmp_path, monkeypatch):
 
 
 def test_source_builds_opt_out_omits_the_flag(tmp_path, monkeypatch):
-    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("bh7-fake-agent-pkg==1.0\n", encoding="utf-8")
 
     captured: list[list[str]] = []
 

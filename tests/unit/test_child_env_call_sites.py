@@ -116,7 +116,7 @@ async def test_install_dependency_keeps_the_uv_cache(
         return SimpleNamespace(returncode=0, stdout="six==1.17.0\n", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    await dep_tools.install_dependency("six")
+    await dep_tools.install_dependency("bh7-fake-agent-pkg")
     assert len(seen) == 2, "the freeze, then the install"
     for env in seen:
         _clean(env)

@@ -837,7 +837,6 @@ fi
 # effects: definitions and defaults only.
 # >>> bh7 helpers
 SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
-DROPIN_CHANGED_UNITS=""
 
 strip_t2_vendor_env_line() {  # <env file>
   local f="$1" pat='^[[:space:]]*(export[[:space:]]+)?CUSTOM_APPS_T2_VENDOR_DIR[[:space:]]*='
@@ -851,7 +850,6 @@ strip_t2_vendor_env_line() {  # <env file>
 
 install_dropins() {  # <dir that holds the *.service.d dirs>
   local src="$1" d unit_d conf name dest
-  DROPIN_CHANGED_UNITS=""
   for d in "$src"/*.service.d; do
     [ -d "$d" ] || continue
     unit_d="$(basename "$d")"
@@ -870,10 +868,6 @@ install_dropins() {  # <dir that holds the *.service.d dirs>
       sudo install -d -m 0755 "$SYSTEMD_UNIT_DIR/$unit_d"
       sudo install -m 0644 "$conf" "$dest"
       echo "    installed $unit_d/$name"
-      case " $DROPIN_CHANGED_UNITS " in
-        *" ${unit_d%.d} "*) ;;
-        *) DROPIN_CHANGED_UNITS="${DROPIN_CHANGED_UNITS:+$DROPIN_CHANGED_UNITS }${unit_d%.d}" ;;
-      esac
     done
   done
   sudo systemctl daemon-reload
@@ -896,8 +890,12 @@ restart_stale_dropin_units() {  # <dir that holds the *.service.d dirs>
       echo "    $unit is not active: its drop-ins apply at its next start"
       continue
     fi
-    since="$(systemctl show "$unit" -p ActiveEnterTimestamp --value 2>/dev/null || true)"
-    started="$(date -u -d "$since" +%s 2>/dev/null || echo 0)"
+    # --timestamp=unix gives "@<epoch>". A zone name (AEST) is not something
+    # `date -d` can parse, and a failed parse would restart the unit on every
+    # deploy (fix round 1, B). A value that is not an epoch counts as 0.
+    since="$(systemctl show "$unit" -p ActiveEnterTimestamp --timestamp=unix --value 2>/dev/null || true)"
+    started="${since#@}"
+    case "$started" in ''|*[!0-9]*) started=0 ;; esac
     if [ "$started" -ge "$newest" ]; then
       echo "    $unit started after its newest drop-in: no restart"
       continue
@@ -911,7 +909,7 @@ restart_stale_dropin_units() {  # <dir that holds the *.service.d dirs>
 echo "==> WS-49 BH-7: the .env strip and the systemd drop-ins"
 strip_t2_vendor_env_line "$ENV_FILE"
 install_dropins "$APP_DIR/deploy/hostinger"
-echo "    drop-ins installed and systemd reloaded (changed: ${DROPIN_CHANGED_UNITS:-none})"
+echo "    drop-ins installed and systemd reloaded"
 
 # ── WhatsApp bridge (whatsmeow, personal-number QR) ───────────────
 # A localhost-only Go service that links a PERSONAL number by QR and

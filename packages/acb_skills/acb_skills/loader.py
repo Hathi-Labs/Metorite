@@ -1156,9 +1156,13 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
     covered by anything downstream in the loader — the wheel-only restriction
     is the actual boundary here, not a defense in depth on top of one.
 
-    Best-effort + idempotent: a SHA-256 of the dep sources, the target dir and
-    the constraints is cached in ``.git/acb-deps-hash``, and an unchanged set
-    is skipped. The target is in the hash (spec Q3b), so an agent that was
+    A declared dependency that the venv already provides (an editable
+    workspace member too) is skipped before any uv call. When the venv
+    provides all of them, the loader writes the marker and runs no uv.
+
+    Best-effort + idempotent: a SHA-256 of the deps to install, the target dir
+    and the constraints is cached in ``.git/acb-deps-hash``, and an unchanged
+    set is skipped. The target is in the hash (spec Q3b), so an agent that was
     installed into the venv before BH-7 installs again into agent-site on its
     next load. A failed install logs a warning and never blocks the agent run.
     When the unit's dirs are absent (``agent_site.not_ready``), the loader
@@ -1195,6 +1199,37 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
         if not req.is_file() and not pyproject_deps:
             return  # nothing declared to install
 
+        # WS-49 BH-7 fix round 1 (P1): --target does not see the venv, so a
+        # dependency that the venv already holds would resolve on PyPI. An
+        # editable workspace member (skill-projects) answers 404 there, and
+        # every load failed. Drop each one the venv provides, before any uv.
+        declared = [
+            *(agent_site.requirement_lines(sources[0]) if req.is_file() else []),
+            *pyproject_deps,
+        ]
+        to_install, provided = agent_site.split_provided(declared)
+        if provided:
+            _log.info(
+                "loader.deps_provided_by_venv", agent=agent_dir.name,
+                deps=[f"{spec} ({version})" for spec, version in provided],
+            )
+        marker = agent_dir / ".git" / "acb-deps-hash"
+        if not to_install:
+            digest = hashlib.sha256(
+                "\x00".join([
+                    "venv-provides-all", *declared, f"target={agent_site.AGENT_SITE}",
+                ]).encode("utf-8", "replace")
+            ).hexdigest()
+            _write_dep_status(
+                agent_dir, ok=True, error="", needs_system=[],
+                has_requirements=req.is_file(), pyproject_dep_count=len(pyproject_deps),
+            )
+            try:
+                marker.write_text(digest, encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+            return  # the venv provides every declared dependency: no uv at all
+
         reason = agent_site.not_ready()
         uv = agent_site.find_uv()
         if reason is None and not uv:
@@ -1211,14 +1246,16 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
             return
         constraints = agent_site.prepare(uv)
 
+        # The hash holds the set to install, the target (spec Q3b) and the
+        # constraints digest, so a new venv state installs again. Fences:
+        # test_agent_deps_target.py (the hash tests).
         digest = hashlib.sha256(
             "\x00".join([
-                *sources,
+                *to_install,
                 f"target={agent_site.AGENT_SITE}",
                 f"constraints={constraints}",
             ]).encode("utf-8", "replace")
         ).hexdigest()
-        marker = agent_dir / ".git" / "acb-deps-hash"
         try:
             if (
                 marker.is_file()
@@ -1229,15 +1266,15 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
             pass
 
         only_binary = not bool(getattr(settings, "agent_deps_allow_source_builds", False))
-        cmds: list[list[str]] = []
-        if req.is_file():
-            cmds.append(agent_site.install_command(
-                uv, ["-r", str(req)], only_binary=only_binary,
-            ))
-        if pyproject_deps:
-            cmds.append(agent_site.install_command(
-                uv, pyproject_deps, only_binary=only_binary,
-            ))
+        # One install of what is left, from a file of the gateway's own, so an
+        # option line of requirements.txt keeps working.
+        req_dir = agent_site.CACHE_ROOT / "requirements"
+        req_dir.mkdir(exist_ok=True)
+        to_file = req_dir / f"{agent_dir.name}.txt"
+        to_file.write_text("\n".join(to_install) + "\n", encoding="utf-8")
+        cmds = [agent_site.install_command(
+            uv, ["-r", str(to_file)], only_binary=only_binary,
+        )]
 
         ok = True
         errors: list[str] = []
@@ -1264,6 +1301,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
                     "loader.deps_install_error",
                     agent=agent_dir.name, error=str(exc),
                 )
+        agent_site.prune_venv_duplicates()
         agent_site.scrub()
 
         # Persist a machine-readable status so the agents page can surface

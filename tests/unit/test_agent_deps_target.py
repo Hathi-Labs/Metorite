@@ -49,6 +49,9 @@ BOX_AGENT_SITE = "/var/lib/acb-gateway/agent-site"
 BOX_T2_VENDOR = "/opt/acb/t2-vendor"
 BOX_CONSTRAINTS = "/var/cache/acb-gateway/constraints.txt"
 
+#: The real subprocess.run, for a child that must really run.
+_real_run = subprocess.run
+
 FREEZE_OUT = "six==1.17.0\n-e file:///opt/acb/app/packages/acb_common\nidna==3.20\n"
 
 
@@ -76,6 +79,7 @@ def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(agent_site, "CONSTRAINTS", cache / "constraints.txt")
     monkeypatch.setattr(agent_site, "find_uv", lambda: "/stub/uv")
     monkeypatch.setattr(agent_site, "_frozen", {})
+    monkeypatch.setattr(agent_site, "_pruned_for", set())
     monkeypatch.setattr(sys, "path", list(sys.path))
 
     calls: list[list[str]] = []
@@ -95,7 +99,12 @@ def _installs(calls: list[list[str]]) -> list[list[str]]:
     return [c for c in calls if c[1:3] == ["pip", "install"]]
 
 
-def _agent(tmp_path: Path, *, req: str = "requests==2.31.0\n", deps: list[str] | None = None) -> Path:
+#: Names that no venv holds, so the install is not skipped (fix round 1, P1).
+FAKE = "bh7-fake-agent-pkg==1.0"
+FAKE_TWO = "bh7-fake-other>=2"
+
+
+def _agent(tmp_path: Path, *, req: str = FAKE + "\n", deps: list[str] | None = None) -> Path:
     d = tmp_path / "agent"
     (d / ".git").mkdir(parents=True)
     if req:
@@ -129,9 +138,12 @@ def test_the_loader_installs_into_agent_site_with_constraints(
 ) -> None:
     from acb_skills.loader import _install_agent_deps
 
-    _install_agent_deps(_agent(tmp_path, deps=["pandas>=2"]), _settings())
+    _install_agent_deps(_agent(tmp_path, deps=[FAKE_TWO]), _settings())
     installs = _installs(site.calls)
-    assert len(installs) == 2, site.calls
+    assert len(installs) == 1, site.calls
+    req = Path(installs[0][installs[0].index("-r") + 1])
+    assert req.read_text(encoding="utf-8").splitlines() == [FAKE, FAKE_TWO]
+    assert req.parent == site.cache / "requirements"
     for cmd in installs:
         assert cmd[cmd.index("--target") + 1] == str(site.mod.AGENT_SITE)
         assert cmd[cmd.index("-c") + 1] == str(site.mod.CONSTRAINTS)
@@ -145,12 +157,12 @@ def test_install_dependency_installs_into_agent_site_with_constraints(
 ) -> None:
     from acb_skills import dep_tools
 
-    msg = asyncio.run(dep_tools.install_dependency("six"))
+    msg = asyncio.run(dep_tools.install_dependency("bh7-fake-agent-pkg"))
     assert msg.startswith("Installed into the agent package dir"), msg
     (cmd,) = _installs(site.calls)
     assert cmd[cmd.index("--target") + 1] == str(site.mod.AGENT_SITE)
     assert cmd[cmd.index("-c") + 1] == str(site.mod.CONSTRAINTS)
-    assert cmd[-1] == "six"
+    assert cmd[-1] == "bh7-fake-agent-pkg"
 
 
 def test_the_freeze_excludes_editables_and_writes_under_var_cache(
@@ -267,9 +279,9 @@ def test_no_unit_dirs_means_a_refusal(
     shutil.rmtree(site.state if missing == "state" else site.cache)
     agent = _agent(tmp_path)
     _install_agent_deps(agent, _settings())
-    msg = asyncio.run(dep_tools.install_dependency("six"))
+    msg = asyncio.run(dep_tools.install_dependency("bh7-fake-agent-pkg"))
     assert site.calls == [], "no freeze and no install without the unit dirs"
-    assert msg.startswith("Refused to install six"), msg
+    assert msg.startswith("Refused to install bh7-fake-agent-pkg"), msg
     status = read_dep_status(agent)
     assert status is not None and status["ok"] is False
     assert status["error"].startswith("install skipped:")
@@ -309,7 +321,7 @@ def test_each_install_path_scrubs(site: SimpleNamespace, tmp_path: Path, monkeyp
     monkeypatch.setattr(subprocess, "run", planting_run)
     _install_agent_deps(_agent(tmp_path), _settings())
     assert list(site.mod.AGENT_SITE.iterdir()) == []
-    asyncio.run(dep_tools.install_dependency("six"))
+    asyncio.run(dep_tools.install_dependency("bh7-fake-agent-pkg"))
     assert list(site.mod.AGENT_SITE.iterdir()) == []
 
 
@@ -561,3 +573,172 @@ def test_the_strip_is_silent_with_no_line(tmp_path: Path) -> None:
     assert r.returncode == 0, r.stderr
     assert r.stdout == ""
     assert env.read_text(encoding="utf-8") == "A=1\n"
+
+
+# ── Fix round 1, P1: a dependency the venv provides is never installed ─────
+
+
+def _is_editable(name: str) -> bool:
+    import importlib.metadata
+    import json
+
+    raw = importlib.metadata.distribution(name).read_text("direct_url.json") or "{}"
+    return bool(json.loads(raw).get("dir_info", {}).get("editable"))
+
+
+def test_an_editable_workspace_member_is_skipped(site: SimpleNamespace, tmp_path: Path) -> None:
+    """projects-assistant declares skill-projects. It is an editable member of
+    the workspace, and PyPI answers 404 for it. It must never reach uv."""
+    from acb_skills.loader import _install_agent_deps
+
+    assert _is_editable("skill-projects"), "the test venv must hold skill-projects as editable"
+    assert site.mod.venv_version("Skill_Projects") is not None, "names are normalised"
+    _install_agent_deps(_agent(tmp_path, deps=["skill-projects", FAKE_TWO]), _settings())
+    (cmd,) = _installs(site.calls)
+    lines = Path(cmd[cmd.index("-r") + 1]).read_text(encoding="utf-8").splitlines()
+    assert lines == [FAKE, FAKE_TWO]
+
+
+def test_a_set_the_venv_provides_writes_the_marker_and_runs_no_uv(
+    site: SimpleNamespace, tmp_path: Path
+) -> None:
+    from acb_skills.loader import _install_agent_deps, read_dep_status
+
+    agent = _agent(tmp_path, req="idna>=3\n", deps=["Skill_Projects"])
+    _install_agent_deps(agent, _settings())
+    assert site.calls == [], "no freeze and no install: the venv provides it all"
+    assert (agent / ".git" / "acb-deps-hash").is_file()
+    status = read_dep_status(agent)
+    assert status is not None and status["ok"] is True
+
+
+def test_install_dependency_skips_what_the_venv_holds(site: SimpleNamespace) -> None:
+    from acb_skills import dep_tools
+
+    msg = asyncio.run(dep_tools.install_dependency("idna skill-projects"))
+    assert site.calls == []
+    assert msg.startswith("Already provided by the platform: idna"), msg
+    msg = asyncio.run(dep_tools.install_dependency("idna bh7-fake-agent-pkg"))
+    (cmd,) = _installs(site.calls)
+    assert cmd[-1] == "bh7-fake-agent-pkg"
+    assert "Already provided by the platform: idna" in msg
+
+
+# ── Fix round 1, P2: no copy in agent-site shadows the venv ──────────────
+
+
+def _fake_dist(site_dir: Path, name: str, version: str, files: dict[str, str]) -> None:
+    info = site_dir / f"{name}-{version}.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n\n",
+                                   encoding="utf-8")
+    rows = []
+    for rel, body in files.items():
+        f = site_dir / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(body, encoding="utf-8")
+        rows.append(f"{rel},,")
+    rows += [f"{info.name}/METADATA,,", f"{info.name}/RECORD,,"]
+    (info / "RECORD").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def test_prune_removes_a_venv_copy_by_its_record(site: SimpleNamespace) -> None:
+    s = site.mod.AGENT_SITE
+    _fake_dist(s, "idna", "0.0.1", {"idna/__init__.py": "__version__ = '0.0.1'\n",
+                                   "nsx/from_idna.py": "x = 1\n"})
+    (s / "idna" / "__pycache__").mkdir()
+    (s / "idna" / "__pycache__" / "x.pyc").write_bytes(b"\0")
+    _fake_dist(s, "bh7-only-here", "1.0", {"bh7_only_here/__init__.py": "x = 1\n",
+                                          "nsx/from_agent.py": "y = 2\n"})
+    # The gateway has agent-site on sys.path. The lookup must still skip it,
+    # or the prune would remove what only the agent installed.
+    site.mod.ensure_on_sys_path()
+    removed = site.mod.prune_venv_duplicates()
+    assert removed == ["idna"]
+    assert not (s / "idna").exists()
+    assert not (s / "idna-0.0.1.dist-info").exists()
+    assert (s / "bh7_only_here" / "__init__.py").is_file()
+    assert (s / "bh7-only-here-1.0.dist-info").is_dir()
+    assert sorted(p.name for p in (s / "nsx").iterdir()) == ["from_agent.py"]
+
+
+def test_after_a_venv_bump_a_child_takes_the_venv_version(
+    site: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """agent-site holds idna 0.0.1, an old copy from before a venv bump. The
+    first prepare() of the new venv state prunes it, so a run_script child
+    imports the venv's idna, not the copy."""
+    import idna as venv_idna
+    from acb_skills import code_tools
+
+    s = site.mod.AGENT_SITE
+    _fake_dist(s, "idna", "0.0.1", {"idna/__init__.py": "__version__ = '0.0.1'\n"})
+    monkeypatch.setitem(seam.AGENT_PATH_VALUES, "PYTHONPATH", str(s))
+    probe = [sys.executable, "-c", "import idna; print(idna.__version__)"]
+
+    before = _real_run(probe, capture_output=True, text=True,
+                       env=code_tools._script_env(), timeout=60)
+    assert before.stdout.strip() == "0.0.1", "the copy shadows the venv in a child"
+
+    # A new venv state: the first prepare() of its digest prunes agent-site.
+    monkeypatch.setattr(site.mod, "_frozen", {"/stub/uv": "new-venv-state"})
+    site.mod.CONSTRAINTS.write_text("idna==3.20\n", encoding="utf-8")
+    site.mod.prepare("/stub/uv")
+    after = _real_run(probe, capture_output=True, text=True,
+                      env=code_tools._script_env(), timeout=60)
+    assert after.returncode == 0, after.stderr
+    assert after.stdout.strip() == venv_idna.__version__
+
+
+
+def test_each_install_prunes(site: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--target copies the deps of a venv package too. Each install path
+    prunes them at once."""
+    from acb_skills import dep_tools
+    from acb_skills.loader import _install_agent_deps
+
+    def copying_run(cmd: list[str], **_: Any) -> _Done:
+        site.calls.append(list(cmd))
+        if cmd[1:3] == ["pip", "freeze"]:
+            return _Done(stdout=FREEZE_OUT)
+        target = Path(cmd[cmd.index("--target") + 1])
+        _fake_dist(target, "idna", "0.0.1", {"idna/__init__.py": "x = 1\n"})
+        _fake_dist(target, "bh7-fake-agent-pkg", "1.0", {"bh7_fake_agent_pkg/__init__.py": "x = 1\n"})
+        return _Done()
+
+    monkeypatch.setattr(subprocess, "run", copying_run)
+    _install_agent_deps(_agent(tmp_path), _settings())
+    assert not (site.mod.AGENT_SITE / "idna").exists()
+    assert (site.mod.AGENT_SITE / "bh7_fake_agent_pkg").is_dir()
+    shutil.rmtree(site.mod.AGENT_SITE)
+    asyncio.run(dep_tools.install_dependency("bh7-fake-agent-pkg"))
+    assert not (site.mod.AGENT_SITE / "idna").exists()
+    assert (site.mod.AGENT_SITE / "bh7_fake_agent_pkg").is_dir()
+
+
+# ── Fix round 1, R7: the constraints digest is in the deps hash ──────────
+
+
+def test_a_new_venv_state_installs_again(site: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hash holds the constraints digest. A new venv state (a deploy that
+    changed a pin) installs the agent again, so its packages follow the new
+    pins. Same deps, same target: only the constraints changed."""
+    from acb_skills.loader import _install_agent_deps
+
+    agent = _agent(tmp_path)
+    _install_agent_deps(agent, _settings())
+    assert len(_installs(site.calls)) == 1
+    site.calls.clear()
+    _install_agent_deps(agent, _settings())
+    assert _installs(site.calls) == [], "the same venv state installs nothing"
+
+    def bumped(cmd: list[str], **_: Any) -> _Done:
+        site.calls.append(list(cmd))
+        if cmd[1:3] == ["pip", "freeze"]:
+            return _Done(stdout=FREEZE_OUT.replace("idna==3.20", "idna==3.21"))
+        return _Done()
+
+    monkeypatch.setattr(subprocess, "run", bumped)
+    monkeypatch.setattr(site.mod, "_frozen", {})
+    _install_agent_deps(agent, _settings())
+    assert len(_installs(site.calls)) == 1, "a new constraints digest must install again"

@@ -1106,7 +1106,7 @@ def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[An
         pass
 
     # Runtime dependency install — agents can add a Python package mid-task
-    # (installed into the shared agent venv, importable immediately).
+    # (installed into agent-site, WS-49 BH-7, importable immediately).
     try:
         from acb_skills.dep_tools import install_dependency  # noqa: PLC0415
         _all_tools = _all_tools + [install_dependency]

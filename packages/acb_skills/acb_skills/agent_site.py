@@ -23,14 +23,27 @@ this module is the ONE place that builds those commands.
 * **The guard.** ``not_ready()`` names the reason when the unit's
   ``StateDirectory`` or ``CacheDirectory`` is absent. Then nothing installs,
   and nothing falls back to the venv.
+* **The venv first (fix round 1, P1).** ``--target`` does not see the venv. So
+  a declared dependency that the venv already holds would resolve against
+  PyPI, and an editable workspace member (``skill-projects``) answers 404
+  there. ``split_provided()`` drops each dependency that the venv provides,
+  before any uv call.
+* **No shadow copies (fix round 1, P2).** ``--target`` also copies the
+  dependencies of a package that the venv holds (``idna``, ``numpy``). A child
+  puts ``PYTHONPATH`` before site-packages, so such a copy would shadow the
+  venv after a venv bump. ``prune_venv_duplicates()`` removes each one, by
+  its ``RECORD``, after every install and once for each new venv state.
 
 The fence is ``tests/unit/test_agent_deps_target.py`` (BH-F6).
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import importlib
+import importlib.metadata
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -52,7 +65,11 @@ __all__ = [
     "install_command",
     "not_ready",
     "prepare",
+    "prune_venv_duplicates",
+    "requirement_lines",
     "scrub",
+    "split_provided",
+    "venv_version",
 ]
 
 _log = get_logger("acb_skills.agent_site")
@@ -70,6 +87,11 @@ _STARTUP_NAMES = ("sitecustomize", "usercustomize")
 
 _lock = threading.Lock()
 _frozen: dict[str, str] = {}
+#: The constraints digests that this process pruned agent-site for.
+_pruned_for: set[str] = set()
+
+#: The project name at the start of a requirement line (PEP 508).
+_NAME_RE = re.compile(r"^\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)")
 
 
 def find_uv() -> str | None:
@@ -160,9 +182,194 @@ def constraints_digest(uv: str) -> str:
 
 def prepare(uv: str) -> str:
     """Make agent-site and the constraints file. Returns the constraints
-    digest. Call it only after ``not_ready()`` returned ``None``."""
+    digest. Call it only after ``not_ready()`` returned ``None``.
+
+    On each new venv state (a new digest), it prunes from agent-site every
+    distribution that the venv also holds (P2)."""
     AGENT_SITE.mkdir(exist_ok=True)
-    return constraints_digest(uv)
+    digest = constraints_digest(uv)
+    if digest not in _pruned_for:
+        prune_venv_duplicates()
+        _pruned_for.add(digest)
+    return digest
+
+
+# ── What the venv already provides (fix round 1, P1 and P2) ─────────────────
+
+
+def _canonical(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def requirement_name(spec: str) -> str | None:
+    """The project name of a requirement line, or ``None`` for an option line
+    (``-r``, ``--index-url``) or a line that names no project."""
+    line = spec.strip()
+    if not line or line.startswith(("-", "#")):
+        return None
+    m = _NAME_RE.match(line)
+    return m.group(1) if m else None
+
+
+def requirement_lines(text: str) -> list[str]:
+    """The requirement lines of a ``requirements.txt``, with no comment."""
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = raw.split(" #", 1)[0].strip()
+        if line and not line.startswith("#"):
+            out.append(line)
+    return out
+
+
+def _venv_paths() -> list[str]:
+    """``sys.path`` of the gateway's interpreter, WITHOUT agent-site. A copy in
+    agent-site must never count as a venv package, or the prune would remove
+    what the agent installed."""
+    site = os.path.normcase(os.path.abspath(str(AGENT_SITE)))
+    return [
+        p for p in sys.path
+        if p and os.path.normcase(os.path.abspath(p)) != site
+    ]
+
+
+def venv_version(name: str) -> str | None:
+    """The version of ``name`` in the gateway's interpreter, or ``None``.
+
+    The lookup is ``importlib.metadata`` over ``_venv_paths()``, with the name
+    normalised. An editable workspace member has a ``.dist-info`` in
+    site-packages, so it counts as provided.
+    """
+    want = _canonical(name)
+    try:
+        for dist in importlib.metadata.distributions(name=want, path=_venv_paths()):
+            meta_name = dist.metadata["Name"] if dist.metadata else None
+            if meta_name is None or _canonical(meta_name) == want:
+                return dist.version
+    except Exception as exc:  # a broken dist must not stop a load
+        _log.warning("agent_site.venv_lookup_failed", name=name, error=str(exc))
+    return None
+
+
+def split_provided(specs: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """Split ``specs`` into the ones to install and the ones the venv provides.
+
+    Returns ``(to_install, provided)``. ``provided`` holds ``(spec, version)``.
+    An option line stays in ``to_install``.
+    """
+    to_install: list[str] = []
+    provided: list[tuple[str, str]] = []
+    for spec in specs:
+        name = requirement_name(spec)
+        version = venv_version(name) if name else None
+        if version is None:
+            to_install.append(spec)
+        else:
+            provided.append((spec, version))
+    return to_install, provided
+
+
+def _dist_name(info: Path) -> str | None:
+    try:
+        for line in (info / "METADATA").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("Name:"):
+                return line[5:].strip()
+            if not line:
+                break
+    except OSError:
+        pass
+    stem = info.name[: -len(".dist-info")]
+    return stem.rsplit("-", 1)[0] or None
+
+
+def _inside(root: str, p: str) -> bool:
+    return p != root and p.startswith(root + os.sep)
+
+
+def _drop_empty_dirs(dirs: set[str], root: str) -> None:
+    """Remove each dir that the removal left empty, up to agent-site. A dir
+    that holds only ``__pycache__`` counts as empty."""
+    for d in sorted(dirs, key=len, reverse=True):
+        while _inside(root, d):
+            try:
+                names = os.listdir(d)
+            except OSError:
+                break
+            if names == ["__pycache__"]:
+                shutil.rmtree(os.path.join(d, "__pycache__"), ignore_errors=True)
+                names = []
+            if names:
+                break
+            try:
+                os.rmdir(d)
+            except OSError:
+                break
+            d = os.path.dirname(d)
+
+
+def _remove_dist(info: Path) -> None:
+    """Remove one distribution from agent-site: each file of its ``RECORD``
+    inside agent-site, then its ``.dist-info``. Shared dirs (a namespace
+    package) keep the files of other distributions."""
+    root = os.path.normpath(os.path.abspath(str(AGENT_SITE)))
+    dirs: set[str] = set()
+    record = info / "RECORD"
+    rows: list[list[str]] = []
+    try:
+        rows = list(csv.reader(record.read_text(encoding="utf-8", errors="replace").splitlines()))
+    except OSError:
+        rows = []
+    if rows:
+        for row in rows:
+            if not row or not row[0]:
+                continue
+            path = os.path.normpath(os.path.join(root, row[0]))
+            if not _inside(root, path) or path.startswith(str(info)):
+                continue
+            try:
+                if os.path.isfile(path) or os.path.islink(path):
+                    os.unlink(path)
+                    dirs.add(os.path.dirname(path))
+            except OSError as exc:
+                _log.warning("agent_site.prune_file_failed", path=row[0], error=str(exc))
+    else:
+        try:
+            tops = (info / "top_level.txt").read_text(encoding="utf-8").split()
+        except OSError:
+            tops = []
+        for top in tops:
+            for cand in (os.path.join(root, top), os.path.join(root, top + ".py")):
+                if not _inside(root, os.path.normpath(cand)):
+                    continue
+                if os.path.isdir(cand) and not os.path.islink(cand):
+                    shutil.rmtree(cand, ignore_errors=True)
+                elif os.path.exists(cand):
+                    os.unlink(cand)
+    shutil.rmtree(info, ignore_errors=True)
+    _drop_empty_dirs(dirs, root)
+
+
+def prune_venv_duplicates() -> list[str]:
+    """Remove from agent-site each distribution that the venv also holds.
+
+    A child takes ``PYTHONPATH`` before site-packages, so a copy here would
+    shadow the venv's version. With the copy gone, the child imports the
+    venv's own. Returns the pruned names.
+    """
+    removed: list[str] = []
+    try:
+        infos = sorted(AGENT_SITE.glob("*.dist-info"))
+    except OSError:
+        infos = []
+    for info in infos:
+        name = _dist_name(info)
+        if not name or venv_version(name) is None:
+            continue
+        _remove_dist(info)
+        removed.append(name)
+    if removed:
+        _log.info("agent_site.pruned_venv_duplicates", names=removed)
+        importlib.invalidate_caches()
+    return removed
 
 
 def install_command(uv: str, args: list[str], *, only_binary: bool) -> list[str]:

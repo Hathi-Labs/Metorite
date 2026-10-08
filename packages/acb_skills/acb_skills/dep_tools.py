@@ -57,6 +57,13 @@ async def install_dependency(packages: str) -> str:
             + (f" Rejected: {rejected}." if rejected else "")
         )
 
+    # WS-49 BH-7 fix round 1 (P1): a package the venv holds needs no install,
+    # and --target would resolve it on PyPI.
+    specs, provided = agent_site.split_provided(specs)
+    have = ", ".join(f"{spec} ({version})" for spec, version in provided)
+    if not specs:
+        return f"Already provided by the platform: {have}. Nothing was installed."
+
     # The guard (spec BH-7): with no agent-site, refuse. Never the venv.
     reason = agent_site.not_ready()
     uv = agent_site.find_uv()
@@ -79,6 +86,7 @@ async def install_dependency(packages: str) -> str:
                 cmd, capture_output=True, text=True, timeout=600,
                 env=child_env(),
             )
+            agent_site.prune_venv_duplicates()
             agent_site.scrub()
             return r.returncode, (r.stderr or r.stdout or "")
         except Exception as exc:  # noqa: BLE001
@@ -94,6 +102,8 @@ async def install_dependency(packages: str) -> str:
             "dep_tools.install_failed", packages=specs, error=out[-500:],
         )
         msg = f"Failed to install {', '.join(specs)}: {out[-400:].strip()}"
+    if provided:
+        msg += f" Already provided by the platform: {have}."
     if rejected:
         msg += f" (ignored invalid specs: {rejected})"
     return msg

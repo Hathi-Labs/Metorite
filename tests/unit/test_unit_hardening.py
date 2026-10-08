@@ -611,14 +611,35 @@ def test_the_installer_never_deletes_and_never_writes_a_90_name() -> None:
 
 
 INSTALL_STUB_SUDO = '#!/usr/bin/env bash\nexec "$@"\n'
+#: The stub answers `show -p ActiveEnterTimestamp` like systemd. With
+#: --timestamp=unix it prints "@<epoch>". With no such flag it prints the local
+#: form with a zone name (AEST) that `date -d` cannot parse (fix round 1, B).
 INSTALL_STUB_SYSTEMCTL = r"""#!/usr/bin/env bash
 echo "$*" >> "$STUB_LOG"
 case "$1" in
   is-active) grep -qx "$3" "$STUB_ACTIVE" ;;
-  show) grep -m1 "^$2=" "$STUB_SINCE" | cut -d= -f2- ;;
+  show)
+    row="$(grep -m1 "^$2=" "$STUB_SINCE" | cut -d= -f2-)"
+    case " $* " in
+      *" --timestamp=unix "*) echo "@${row%%|*}" ;;
+      *) echo "${row#*|}" ;;
+    esac ;;
   *) exit 0 ;;
 esac
 """
+
+
+def _since(tmp_path: Path, started: dict[str, str]) -> None:
+    """Write when each unit started: `unit=<epoch>|<local form with AEST>`."""
+    import calendar
+    import time
+
+    rows = []
+    for unit, utc in started.items():
+        epoch = calendar.timegm(time.strptime(utc, "%Y-%m-%d %H:%M:%S"))
+        local = time.strftime("%a %Y-%m-%d %H:%M:%S AEST", time.gmtime(epoch + 10 * 3600))
+        rows.append(f"{unit}={epoch}|{local}")
+    (tmp_path / "since").write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
 
 
 def _installer_env(tmp_path: Path) -> dict[str, str]:
@@ -673,7 +694,7 @@ def test_the_installer_writes_repo_names_and_keeps_a_rollback(tmp_path: Path) ->
     (live / "90-bh2-off.conf").write_text("[Service]\nROLLBACK=1\n", encoding="utf-8")
     (live / "60-hand.conf").write_text("[Service]\nHAND=1\n", encoding="utf-8")
 
-    r = _run_helpers(tmp_path, env, f'install_dropins "{repo.as_posix()}"; echo "CHANGED=$DROPIN_CHANGED_UNITS"')
+    r = _run_helpers(tmp_path, env, f'install_dropins "{repo.as_posix()}"')
     assert r.returncode == 0, r.stderr
     assert (live / "40-agent-site.conf").read_text(encoding="utf-8") == "[Service]\nA=1\n"
     assert (tmp_path / "etc" / "acb-workbench.service.d" / "50-hardening.conf").is_file()
@@ -681,13 +702,15 @@ def test_the_installer_writes_repo_names_and_keeps_a_rollback(tmp_path: Path) ->
     assert (live / "90-bh2-off.conf").read_text(encoding="utf-8") == "[Service]\nROLLBACK=1\n"
     assert (live / "60-hand.conf").is_file(), "the installer deletes nothing"
     assert "skipped acb-gateway.service.d/90-bh2-off.conf" in r.stdout
-    assert "CHANGED=acb-gateway.service acb-workbench.service" in r.stdout
+    assert [ln.strip() for ln in r.stdout.splitlines() if "installed" in ln] == [
+        "installed acb-gateway.service.d/40-agent-site.conf",
+        "installed acb-workbench.service.d/50-hardening.conf",
+    ]
     assert (tmp_path / "log").read_text(encoding="utf-8").splitlines() == ["daemon-reload"]
 
     # A second run changes nothing, and still reloads.
-    r = _run_helpers(tmp_path, env, f'install_dropins "{repo.as_posix()}"; echo "CHANGED=[$DROPIN_CHANGED_UNITS]"')
+    r = _run_helpers(tmp_path, env, f'install_dropins "{repo.as_posix()}"')
     assert r.returncode == 0, r.stderr
-    assert "CHANGED=[]" in r.stdout
     assert "installed" not in r.stdout
 
 
@@ -715,11 +738,11 @@ def test_each_stale_unit_restarts_once_and_only_then(tmp_path: Path) -> None:
         _installed(tmp_path, f"{u}.service", "2026-10-09 10:00:00 UTC")
     (tmp_path / "active").write_text("acb-a.service\nacb-b.service\nacb-d.service\n",
                                      encoding="utf-8", newline="\n")
-    (tmp_path / "since").write_text(
-        "acb-a.service=Thu 2026-10-08 10:00:00 UTC\nacb-b.service=Fri 2026-10-09 10:00:05 UTC\n"
-        "acb-d.service=Thu 2026-10-08 10:00:00 UTC\n",
-        encoding="utf-8", newline="\n",
-    )
+    _since(tmp_path, {
+        "acb-a.service": "2026-10-08 10:00:00",
+        "acb-b.service": "2026-10-09 10:00:05",
+        "acb-d.service": "2026-10-08 10:00:00",
+    })
     r = _run_helpers(tmp_path, env, f'restart_stale_dropin_units "{repo.as_posix()}"')
     assert r.returncode == 0, r.stderr
     restarts = [ln for ln in (tmp_path / "log").read_text(encoding="utf-8").splitlines()
@@ -736,8 +759,31 @@ def test_a_current_box_means_no_restart(tmp_path: Path) -> None:
     (repo / "acb-a.service.d").mkdir(parents=True)
     _installed(tmp_path, "acb-a.service", "2026-10-08 09:00:00 UTC")
     (tmp_path / "active").write_text("acb-a.service\n", encoding="utf-8", newline="\n")
-    (tmp_path / "since").write_text("acb-a.service=Thu 2026-10-08 10:00:00 UTC\n",
-                                    encoding="utf-8", newline="\n")
+    _since(tmp_path, {"acb-a.service": "2026-10-08 10:00:00"})
     r = _run_helpers(tmp_path, env, f'restart_stale_dropin_units "{repo.as_posix()}"')
     assert r.returncode == 0, r.stderr
     assert "restart " not in (tmp_path / "log").read_text(encoding="utf-8")
+
+
+@needs_bash
+def test_a_zone_that_date_cannot_parse_restarts_nothing(tmp_path: Path) -> None:
+    """Fix round 1, B. systemd prints ActiveEnterTimestamp in the box's local
+    zone, and `date -d` cannot parse a name like AEST. The check asks for
+    --timestamp=unix, so a unit that started after its drop-in gets no
+    restart, whatever the zone."""
+    env = _installer_env(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / "acb-a.service.d").mkdir(parents=True)
+    _installed(tmp_path, "acb-a.service", "2026-10-09 10:00:00 UTC")
+    (tmp_path / "active").write_text("acb-a.service\n", encoding="utf-8", newline="\n")
+    _since(tmp_path, {"acb-a.service": "2026-10-09 11:00:00"})
+    assert "AEST" in (tmp_path / "since").read_text(encoding="utf-8")
+    bad = subprocess.run(["date", "-u", "-d", "Fri 2026-10-09 21:00:00 AEST", "+%s"],
+                         capture_output=True, text=True)
+    assert bad.returncode != 0, "this date parses AEST, so the test proves nothing here"
+    r = _run_helpers(tmp_path, env, f'restart_stale_dropin_units "{repo.as_posix()}"')
+    assert r.returncode == 0, r.stderr
+    log = (tmp_path / "log").read_text(encoding="utf-8")
+    assert "--timestamp=unix" in log
+    assert "restart " not in log
+    assert "acb-a.service started after its newest drop-in" in r.stdout
