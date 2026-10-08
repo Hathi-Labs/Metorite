@@ -297,7 +297,7 @@ So the tool checks the cost before PICK. ONE function holds the rule,
    recall cannot drop. The count line says so:
 
    ```text
-   Read all 7 matches in full, with no PICK step. A check of items this short costs more than it saves.
+   Read all 7 matches in full, with no PICK step. A check of items this short costs more than it saves. No item was checked, so say that you read them all.
    ```
 
 9. **The prices.** The agent cannot read the Router's tier prices. So
@@ -492,6 +492,11 @@ read fails, it reads "Read 6 of 7 matches in full".)*
 The instructions of each data agent gain one line: "When you answer from
 `narrow_and_read`, say how many items you checked and how many you kept."
 WS48-F4 asserts that line.
+
+*(Amended by H-276, 2026-10-08. The count line of a skip holds no checked
+count and no kept count. So it ends with "No item was checked, so say that you
+read them all." The instruction line does not change, so a call that runs
+PICK sends no extra token.)*
 
 ### 6.2 Metering in the output
 
@@ -922,11 +927,11 @@ dispatch of N4 asked for one, so N4 adds `evals/whatsapp_narrowing/`.)*
   every email question, and the email eval does not move.
 - **The scripted WhatsApp run after H-276.** These are stub numbers. Q1, Q3,
   Q4 and Q5 skip PICK and read every candidate. Recall stays 1.0 on Q1 to Q4.
-  The ratios go from 0.437 to 0.416 (Q1), from 0.600 to 0.546 (Q3) and from
-  0.570 to 0.528 (Q4). Q2 has 27 candidates, more than the READ cap, so PICK
-  runs and Q2 stays at 1.445. The gated ratio goes from 0.650 to 0.619.
+  The ratios go from 0.437 to 0.419 (Q1), from 0.600 to 0.550 (Q3) and from
+  0.570 to 0.532 (Q4). Q2 has 27 candidates, more than the READ cap, so PICK
+  runs and Q2 stays at 1.445. The gated ratio goes from 0.650 to 0.622.
 - **The bar moves toward the email bar.** The WhatsApp eval gated at 1.00. It
-  now gates at 0.65, a ratchet with a small margin over 0.619. The rule of
+  now gates at 0.65, a ratchet with a small margin over 0.622. The rule of
   §3.3a, "never more than today's path", takes the place of the old bar of
   1.00. It names Q2 at 1.45, and H-279 holds its fix.
 - **The email run after H-276** is the same as before: a gated ratio of

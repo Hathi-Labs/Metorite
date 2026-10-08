@@ -100,7 +100,7 @@ line — never reclaim a number by deleting the other entry.
   No line with a measured recall and a date under §9 N4 means this is open.
 - **Why.** The PR of WS-48 N4 has only the scripted run, and its verdicts,
   tokens and credits are stub numbers. That run does not meet the email bar of
-  0.40: its gated ratio is 0.650, and 0.619 after H-276. A real run says
+  0.40: its gated ratio is 0.650, and 0.622 after H-276. A real run says
   whether the WhatsApp tool saves anything before anyone turns it on.
 - **Do.**
   1. The owner approves the run, because it spends credits and turns on a

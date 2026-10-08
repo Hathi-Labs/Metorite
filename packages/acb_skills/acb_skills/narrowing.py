@@ -635,7 +635,9 @@ def _pick_chars(query: str, batch: Sequence[Candidate], keys: Sequence[str]) -> 
             for k in keys
         },
     }
-    return len(json.dumps(body))
+    # The door measures the JSON with `ensure_ascii=False`
+    # (`decide_shape.py`), so a non-ASCII character counts as one, not six.
+    return len(json.dumps(body, ensure_ascii=False))
 
 
 def _read_chars(c: Candidate) -> int:
@@ -871,9 +873,13 @@ class Counts:
         return self.total > self.candidates or self.more
 
 
-#: The end of the count line when the cost check skipped PICK (H-276).
+#: The end of the count line when the cost check skipped PICK (H-276). The
+#: instruction line asks the model for a checked and a kept count. A skip has
+#: neither, so this line tells the model what to say instead. It is not in the
+#: instructions, so a call that runs PICK sends no extra token (review P2).
 NO_PICK = (
-    ", with no PICK step. A check of items this short costs more than it saves."
+    ", with no PICK step. A check of items this short costs more than it saves. "
+    "No item was checked, so say that you read them all."
 )
 
 

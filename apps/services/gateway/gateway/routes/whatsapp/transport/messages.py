@@ -145,7 +145,7 @@ async def list_messages(
     thread view, which shows the newest message at the bottom and reloads
     after a send. So the route takes the newest ``limit`` and gives them in
     reading order. A message with no ``sent_at`` counts as the oldest, as
-    before. ``test_whatsapp_read_no_mark.py`` holds it on a real database.
+    before. ``test_whatsapp_thread_newest.py`` holds it on a real database.
 
     With ``around`` (a message id of this chat), return that message and at
     most ``window`` messages on each side of it, oldest first (WS-48 N4).

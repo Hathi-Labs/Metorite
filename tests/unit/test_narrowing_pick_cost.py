@@ -33,6 +33,8 @@ Mutations this file catches (R7), each one run red before the change:
 * the eval card and the rates of the check drift apart ->
   ``test_the_rates_are_the_eval_card``;
 * a broken estimate breaks the call -> ``test_a_broken_estimate_keeps_pick``.
+* the PICK estimate counts a non-ASCII character as six (the JSON escape),
+  not as one as the door does -> ``test_a_non_ascii_text_costs_as_its_length``.
 """
 from __future__ import annotations
 
@@ -57,7 +59,10 @@ from tests.unit.test_narrowing_pick import (  # noqa: F401 — _box is an autous
 )
 
 CARD = Path(__file__).resolve().parents[2] / "evals" / "email_narrowing" / "fixtures" / "rate_card.json"
-NO_PICK_END = ", with no PICK step. A check of items this short costs more than it saves."
+NO_PICK_END = (
+    ", with no PICK step. A check of items this short costs more than it saves. "
+    "No item was checked, so say that you read them all."
+)
 
 
 @pytest.fixture
@@ -219,6 +224,20 @@ async def test_the_count_line_says_there_was_no_pick_step(door: Door, s1: System
                                        not_checked=4, read=4, pick_skipped=True))
     assert line == "Read all 4 matches in full" + NO_PICK_END
     assert "Checked" not in line and "Kept" not in line
+
+
+def test_a_non_ascii_text_costs_as_its_length() -> None:
+    """The decide door measures its JSON with ``ensure_ascii=False``. A
+    Devanagari message must cost the same as an ASCII one of the same length,
+    or PICK looks six times dearer and the tool skips it where it pays."""
+    def cost(text: str) -> float:
+        cands = [Candidate(f"m{i}", title="t", who="w", when="d", snippet=text, size=300)
+                 for i in range(10)]
+        return narrowing.pick_cost(QUERY, cands).pick
+
+    hindi = "कल पंप का रेट " * 25
+    assert len(hindi) == len("x" * len(hindi))
+    assert cost(hindi) == cost("x" * len(hindi))
 
 
 async def test_a_broken_estimate_keeps_pick(

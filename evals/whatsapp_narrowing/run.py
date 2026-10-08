@@ -79,7 +79,7 @@ THREAD = "thread-whatsapp-narrowing-eval"
 #: The cost bar of the pass rule. ⚠️ It is NOT the 40 percent bar of the email
 #: eval (§7.2). A WhatsApp message is about 15 tokens, and PICK spends about
 #: 160 tokens on each candidate. N4 gated at 1.00 with a ratio of 0.650. H-276
-#: skips PICK when it does not pay, and the ratio fell to 0.619. So the bar
+#: skips PICK when it does not pay, and the ratio fell to 0.622. So the bar
 #: moves toward the email bar, to 0.65: a ratchet with a small headroom. The
 #: summary prints the email bar beside it, so nobody reads a pass as a saving.
 COST_BAR = Decimal("0.65")

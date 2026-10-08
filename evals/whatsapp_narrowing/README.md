@@ -10,9 +10,9 @@ is lost. The owning spec is `project-docs/specs/data_narrowing_pipeline.md`,
 `--compare`, because the live run needs owner approval.
 
 ⚠️ **This eval does not show a saving of the email size.** The email eval
-gates at a ratio of 0.40. Here the gated ratio is 0.619, OVER that bar. It was
+gates at a ratio of 0.40. Here the gated ratio is 0.622, OVER that bar. It was
 0.650 before H-276. With every chat read in ONE request, the best case for
-today, the ratio is 0.873. On Q2 the new path costs 1.44 times today's path.
+today, the ratio is 0.878. On Q2 the new path costs 1.44 times today's path.
 
 So the bar here is 0.65. The run prints the email bar and each question that
 costs more under its first line. The rule of H-276 also binds: no gated
@@ -148,9 +148,9 @@ number is a stub estimate. Only Q2 runs PICK.
 | Q4 | 117 and 117 | 1.0 | 7 and 7 | 1.0 | 0.53 | 0.72 |
 | Q5 | 67 and 67 | 0.6, expected | 5 and 5 | 0.6, expected | 0.75 | 0.75 |
 
-On Q1 to Q4 the ratio is **0.619**, under the bar of 0.65 and over the email
-bar of 0.40. In the best case for today it is 0.873. With the bar at 0.65, the
-break-even factor of `tier-powerful` is 1.09, and of `tier-decide` 1.51.
+On Q1 to Q4 the ratio is **0.622**, under the bar of 0.65 and over the email
+bar of 0.40. In the best case for today it is 0.878. With the bar at 0.65, the
+break-even factor of `tier-powerful` is 1.08, and of `tier-decide` 1.46.
 
 ## The result of N4, 2026-10-08, before H-276
 

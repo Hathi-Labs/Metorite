@@ -281,7 +281,10 @@ def test_the_short_questions_skip_pick(raw: run.Raw) -> None:
     every candidate. Q2 has 27 candidates, more than the READ cap of 25, so
     PICK still runs there. Recall stays 1.0 on every gated question."""
     summary = run.judge(raw)
-    end = ", with no PICK step. A check of items this short costs more than it saves."
+    end = (
+        ", with no PICK step. A check of items this short costs more than it saves. "
+        "No item was checked, so say that you read them all."
+    )
     for qid in ("Q1", "Q3", "Q4", "Q5"):
         q = _q(summary, qid)
         assert q["after"]["count_line"].endswith(end), q["after"]["count_line"]
