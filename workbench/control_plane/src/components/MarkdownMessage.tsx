@@ -139,9 +139,9 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
       <div className="flex items-center justify-between px-3 py-1.5 bg-secondary/80 border-b border-border/60">
         {isTerminal ? (
           <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
+            <span className="w-2.5 h-2.5 rounded-full bg-destructive/70" />
             <span className="w-2.5 h-2.5 rounded-full bg-cat-12/70" />
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/70" />
+            <span className="w-2.5 h-2.5 rounded-full bg-success/70" />
             <span className="ml-2 text-[11px] text-muted-foreground font-mono">{lang}</span>
           </div>
         ) : (
@@ -227,13 +227,13 @@ function ChoiceBlock({
               }}
               className={`text-left text-xs rounded-lg border px-3 py-2 transition-colors ${
                 isPicked
-                  ? "border-emerald-600/70 bg-emerald-900/40 text-emerald-200"
+                  ? "border-primary/60 bg-primary/10 text-primary"
                   : picked !== null
                   ? "border-border bg-card/40 text-muted-foreground cursor-not-allowed"
-                  : "border-border bg-secondary/70 text-foreground hover:border-emerald-600/60 hover:bg-secondary"
+                  : "border-border bg-secondary/70 text-foreground hover:border-primary/50 hover:bg-secondary"
               }`}
             >
-              {isPicked && <span className="mr-1.5 text-emerald-400">✓</span>}
+              {isPicked && <span className="mr-1.5 text-primary">✓</span>}
               {opt}
             </button>
           );

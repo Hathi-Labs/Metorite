@@ -1,7 +1,12 @@
 "use client";
 
 /**
- * Readout — a Projects read's result as UI, not as a text dump.
+ * Readout — a read's result as UI, not as a text dump.
+ *
+ * It draws the Projects reads, and since the follow-up of #716 and #735 the
+ * email and CRM reads too (`EmailToolCards`, `crm/CrmEvidence.tsx`). It
+ * moved out of `components/projects/` for that. There is one Readout, and
+ * no card file draws the text of a read as it is.
  *
  * `lib/readout.ts` turns the tool's text into blocks with no ids and no
  * `[key]` marks. This file draws them in the chat's own parts:
@@ -25,7 +30,7 @@ import CardFieldValue from "@/components/CardFieldValue";
 import FencedText from "@/components/FencedText";
 import Badge from "@/components/ui/Badge";
 import EntityPill from "@/components/ui/EntityPill";
-import { fieldSpec } from "@/lib/cardFields";
+import { fieldSpec, formatWords } from "@/lib/cardFields";
 import { unfenced } from "@/lib/fencedText";
 import { type ReadoutBlock, parseReadout, statusRow } from "@/lib/readout";
 import { statusAccent } from "@/lib/statusAccent";
@@ -96,8 +101,21 @@ function ItemView({ item }: { item: Item }) {
       <span className="text-foreground">
         <FencedText text={head} pills={false} />
       </span>
-      {item.tag && <span className="text-[10px] text-muted-foreground">{item.tag.replace(/_/g, " ")}</span>}
+      {item.tag && <KindChip tag={item.tag} />}
       <Facts parts={facts} />
+    </span>
+  );
+}
+
+/**
+ * A row's or a line's `[kind]` ("space", "pending", a CRM stage's "open") as
+ * a chip in words, never as the key (follow-up of #716 and #735). The chip
+ * is the shared status chip, so a kind with a stage's meaning takes its hue.
+ */
+function KindChip({ tag }: { tag: string }) {
+  return (
+    <span className="inline-flex align-middle">
+      <EntityPill fit kind="status" label={formatWords(tag)} accent={statusAccent({ category: tag, name: tag })} />
     </span>
   );
 }
@@ -158,6 +176,11 @@ export default function Readout({ result, legend }: { result: string; legend?: s
       out.push(
         <p key={i} className="break-words text-muted-foreground">
           <FencedText text={b.text} pills={false} />
+          {b.tag && (
+            <span className="ml-1.5">
+              <KindChip tag={b.tag} />
+            </span>
+          )}
         </p>,
       );
     }

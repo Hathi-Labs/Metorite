@@ -32,8 +32,11 @@
  *   with its class in `skill_projects/manifest.py` (A is a read, B and C are
  *   writes, H-236).
  *
- * A tool that no card file draws (a script run, `manage_todo_list`, a CRM
- * read) has no receipt to place. It is a step row in the trail, as before.
+ * A tool that no card file draws (a script run, `manage_todo_list`) has no
+ * receipt to place. It is a step row in the trail, as before. The CRM reads
+ * draw through `components/crm/CrmEvidence.tsx` since the follow-up of #716
+ * and #735, and `test_chat_placement_classes.py` holds them to the CRM
+ * agent's own annotations.
  *
  * Pure and framework-free, so the node-env vitest holds it.
  */
@@ -139,6 +142,11 @@ const EVIDENCE: readonly string[] = [
   "list_learned_patterns",
   "list_rule_patterns",
   "list_patterns",
+  // ── CRM (agent-crm, `read_only=True`) ──────────────────────────────────
+  "search_crm",
+  "get_pipeline",
+  "get_record",
+  "get_timeline",
 ];
 
 /** Writes. Projects names are manifest class B or C. */
@@ -262,6 +270,11 @@ const WRITE: readonly string[] = [
   "send_digest",
   "sync_account",
   "resync_account",
+  // ── CRM (agent-crm): each asks the member first ────────────────────────
+  "create_lead",
+  "update_deal_status",
+  "log_activity",
+  "convert_lead",
 ];
 
 function build(): Readonly<Record<string, Placement>> {

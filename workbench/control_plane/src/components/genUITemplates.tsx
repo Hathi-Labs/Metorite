@@ -24,7 +24,7 @@
  * colors — see theme-css-vars memory) so it reads correctly in light and dark.
  */
 
-import { createElement, useEffect, useRef, useState } from "react";
+import { createElement, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import GenUIFallback from "@/components/GenUIFallback";
 import { resolveIcon } from "@/lib/icons";
@@ -46,13 +46,27 @@ import {
 } from "@/app/projects/lib/planCard";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
-import { fieldSpec, formatCardDate } from "@/lib/cardFields";
+import { fieldSpec, formatCardDate, personOf } from "@/lib/cardFields";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { ReportFileButtons } from "@/app/projects/components/ReportFileButtons";
 import { taskCell } from "@/app/projects/lib/matrix";
 import { reportLink } from "@/app/projects/lib/reportBuilder";
 import { PriorityChip } from "@/components/TaskMeta";
+import EntityPill from "@/components/ui/EntityPill";
+import {
+  type CellKind,
+  type GridColumn,
+  type GridLayout,
+  cellText,
+  gridColumns,
+  gridLayout,
+  isEmptyCell,
+  splitMany,
+} from "@/lib/dataGridLayout";
+import { statusAccent } from "@/lib/statusAccent";
+import { categoryLabel } from "@/lib/statusCategory";
 import { priorityChip } from "@/lib/taskCard";
+import { TYPE } from "@/lib/typeScale";
 
 type Data = Record<string, unknown>;
 
@@ -321,15 +335,15 @@ function WeatherCard({ data }: { data: Data }) {
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <WeatherGlyph condition={condition} />
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13, color: "var(--muted-foreground)" }}>{location}</div>
-          <div style={{ fontSize: 34, fontWeight: 600, color: "var(--foreground)", lineHeight: 1.1 }}>
+          <div style={{ fontSize: TYPE.sm, color: "var(--muted-foreground)" }}>{location}</div>
+          <div style={{ fontSize: TYPE["4xl"], fontWeight: 600, color: "var(--foreground)", lineHeight: 1.1 }}>
             {Math.round(animated)}{unit}
           </div>
-          <div style={{ fontSize: 12, color: "var(--muted-foreground)", textTransform: "capitalize" }}>
+          <div style={{ fontSize: TYPE.xs, color: "var(--muted-foreground)", textTransform: "capitalize" }}>
             {condition}
           </div>
         </div>
-        <div style={{ textAlign: "right", fontSize: 11, color: "var(--muted-foreground)", lineHeight: 1.6 }}>
+        <div style={{ textAlign: "right", fontSize: TYPE.caption, color: "var(--muted-foreground)", lineHeight: 1.6 }}>
           {data.highC != null && <div>H {num(data.highC)}°</div>}
           {data.lowC != null && <div>L {num(data.lowC)}°</div>}
           {data.humidity != null && <div>💧 {num(data.humidity)}%</div>}
@@ -345,9 +359,9 @@ function WeatherCard({ data }: { data: Data }) {
                 flex: 1, textAlign: "center", padding: "8px 4px", borderRadius: 10,
                 background: "var(--secondary)", animation: `ccFadeUp .4s ease ${i * 0.05}s both`,
               }}>
-                <div style={{ fontSize: 10, color: "var(--muted-foreground)" }}>{str(day.day)}</div>
+                <div style={{ fontSize: TYPE.micro, color: "var(--muted-foreground)" }}>{str(day.day)}</div>
                 <WeatherGlyph condition={str(day.condition, condition)} size={26} />
-                <div style={{ fontSize: 11, color: "var(--foreground)" }}>
+                <div style={{ fontSize: TYPE.caption, color: "var(--foreground)" }}>
                   {num(day.high)}°<span style={{ color: "var(--muted-foreground)" }}> {num(day.low)}°</span>
                 </div>
               </div>
@@ -388,16 +402,16 @@ function StatTile({ s }: { s: Data }) {
       border: "1px solid var(--border)", background: "var(--card)",
       animation: "ccFadeUp .4s ease both",
     }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--muted-foreground)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>
         <TIcon name={s.icon} size={13} />
         <span>{str(s.label)}</span>
       </div>
-      <div style={{ fontSize: 24, fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
+      <div style={{ fontSize: TYPE["2xl"], fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
         {isNumeric ? Math.round(animated).toLocaleString() : str(s.value)}
-        {s.unit != null && <span style={{ fontSize: 13, color: "var(--muted-foreground)" }}> {str(s.unit)}</span>}
+        {s.unit != null && <span style={{ fontSize: TYPE.sm, color: "var(--muted-foreground)" }}> {str(s.unit)}</span>}
       </div>
       {delta != null && (
-        <div style={{ fontSize: 11, marginTop: 2 }}><DeltaArrow delta={delta} /></div>
+        <div style={{ fontSize: TYPE.caption, marginTop: 2 }}><DeltaArrow delta={delta} /></div>
       )}
     </div>
   );
@@ -408,7 +422,7 @@ function StatDashboard({ data }: { data: Data }) {
   return (
     <div>
       {data.title != null && (
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)", marginBottom: 8 }}>
+        <div style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)", marginBottom: 8 }}>
           {str(data.title)}
         </div>
       )}
@@ -426,7 +440,7 @@ function BarChart({ data }: { data: Data }) {
   return (
     <div style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
       {data.title != null && (
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)", marginBottom: 10 }}>
+        <div style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)", marginBottom: 10 }}>
           {str(data.title)}
         </div>
       )}
@@ -436,7 +450,7 @@ function BarChart({ data }: { data: Data }) {
           const color = barColor(b.tone);
           return (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ width: 90, fontSize: 11, color: "var(--muted-foreground)", textAlign: "right",
+              <div style={{ width: 90, fontSize: TYPE.caption, color: "var(--muted-foreground)", textAlign: "right",
                 overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {str(b.label)}
               </div>
@@ -446,7 +460,7 @@ function BarChart({ data }: { data: Data }) {
                   animation: `ccGrow .7s cubic-bezier(.22,1,.36,1) ${i * 0.06}s both`,
                 }} />
               </div>
-              <div style={{ width: 52, fontSize: 11, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
+              <div style={{ width: 52, fontSize: TYPE.caption, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
                 {num(b.value).toLocaleString()}{data.unit != null ? str(data.unit) : ""}
               </div>
             </div>
@@ -474,12 +488,12 @@ function SparkTrend({ data }: { data: Data }) {
     <div style={{ display: "flex", alignItems: "center", gap: 14, padding: 14, borderRadius: 12,
       border: "1px solid var(--border)", background: "var(--card)" }}>
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 11, color: "var(--muted-foreground)" }}>{str(data.label)}</div>
-        <div style={{ fontSize: 24, fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
+        <div style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{str(data.label)}</div>
+        <div style={{ fontSize: TYPE["2xl"], fontWeight: 600, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
           {Math.round(animated).toLocaleString()}
-          {data.unit != null && <span style={{ fontSize: 13, color: "var(--muted-foreground)" }}> {str(data.unit)}</span>}
+          {data.unit != null && <span style={{ fontSize: TYPE.sm, color: "var(--muted-foreground)" }}> {str(data.unit)}</span>}
         </div>
-        {data.delta != null && <div style={{ fontSize: 11 }}><DeltaArrow delta={num(data.delta)} /></div>}
+        {data.delta != null && <div style={{ fontSize: TYPE.caption }}><DeltaArrow delta={num(data.delta)} /></div>}
       </div>
       <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
         <polyline points={pts} fill="none" stroke="var(--primary)" strokeWidth="2"
@@ -499,14 +513,14 @@ function Comparison({ data }: { data: Data }) {
   return (
     <div style={{ borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
       {data.title != null && (
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)", padding: "10px 12px",
+        <div style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)", padding: "10px 12px",
           borderBottom: "1px solid var(--border)", background: "var(--card)" }}>{str(data.title)}</div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: `140px repeat(${options.length}, 1fr)` }}>
         <div style={{ background: "var(--card)" }} />
         {options.map((o, i) => (
           <div key={i} style={{
-            padding: "8px 10px", fontSize: 12, fontWeight: 600, textAlign: "center",
+            padding: "8px 10px", fontSize: TYPE.xs, fontWeight: 600, textAlign: "center",
             color: o.recommended ? "var(--success)" : "var(--foreground)",
             background: o.recommended ? "color-mix(in srgb, var(--success) 12%, var(--card))" : "var(--card)",
             borderLeft: "1px solid var(--border)",
@@ -516,14 +530,14 @@ function Comparison({ data }: { data: Data }) {
         ))}
         {rowLabels.map((label, ri) => (
           <div key={label} style={{ display: "contents" }}>
-            <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--muted-foreground)",
+            <div style={{ padding: "8px 10px", fontSize: TYPE.caption, color: "var(--muted-foreground)",
               borderTop: "1px solid var(--border)", background: ri % 2 ? "var(--secondary)" : "transparent" }}>
               {label}
             </div>
             {options.map((o, ci) => {
               const row = arr(o.rows).map((r) => (r ?? {}) as Data).find((r) => str(r.label) === label);
               return (
-                <div key={ci} style={{ padding: "8px 10px", fontSize: 12, textAlign: "center",
+                <div key={ci} style={{ padding: "8px 10px", fontSize: TYPE.xs, textAlign: "center",
                   color: "var(--foreground)", borderTop: "1px solid var(--border)", borderLeft: "1px solid var(--border)",
                   background: o.recommended ? "color-mix(in srgb, var(--success) 6%, transparent)" : (ri % 2 ? "var(--secondary)" : "transparent") }}>
                   {row ? str(row.value) : "—"}
@@ -544,7 +558,7 @@ function ProgressTracker({ data }: { data: Data }) {
   return (
     <div style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
       {data.title != null && (
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)", marginBottom: 10 }}>{str(data.title)}</div>
+        <div style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)", marginBottom: 10 }}>{str(data.title)}</div>
       )}
       <div style={{ height: 6, borderRadius: 3, background: "var(--secondary)", overflow: "hidden", marginBottom: 12 }}>
         <div style={{ height: "100%", width: `${pct}%`, background: "var(--success)",
@@ -560,10 +574,10 @@ function ProgressTracker({ data }: { data: Data }) {
                 boxShadow: state === "active" ? "0 0 0 4px color-mix(in srgb, var(--primary) 25%, transparent)" : "none",
                 animation: state === "active" ? "ccPulse 1.6s ease-in-out infinite" : "none",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 9, color: "var(--success-foreground)" }}>
+                fontSize: TYPE.micro, color: "var(--success-foreground)" }}>
                 {state === "done" ? "✓" : ""}
               </span>
-              <span style={{ fontSize: 12,
+              <span style={{ fontSize: TYPE.xs,
                 color: state === "pending" ? "var(--muted-foreground)" : "var(--foreground)",
                 fontWeight: state === "active" ? 600 : 400 }}>
                 {str(s.label)}
@@ -594,15 +608,15 @@ function RecipeCard({ data }: { data: Data }) {
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <TIcon name="utensils" size={16} color="var(--accent)" />
-          <span style={{ fontSize: 15, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Recipe")}</span>
+          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Recipe")}</span>
         </div>
         {data.description != null && (
-          <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 4 }}><GenUiText text={str(data.description)} /></div>
+          <div style={{ fontSize: TYPE.xs, color: "var(--muted-foreground)", marginTop: 4 }}><GenUiText text={str(data.description)} /></div>
         )}
         {meta.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 8 }}>
             {meta.map(([icon, label]) => (
-              <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11,
+              <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: TYPE.caption,
                 color: "var(--muted-foreground)", background: "var(--secondary)", borderRadius: 999, padding: "3px 9px" }}>
                 <TIcon name={icon} size={12} /> {label}
               </span>
@@ -613,15 +627,15 @@ function RecipeCard({ data }: { data: Data }) {
       <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
         {ingredients.length > 0 && (
           <div>
-            <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em",
+            <div style={{ fontSize: TYPE.caption, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em",
               color: "var(--muted-foreground)", marginBottom: 6 }}>Ingredients</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 4 }}>
               {ingredients.map((ing, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 12,
+                <div key={i} style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: TYPE.xs,
                   color: "var(--foreground)", animation: `ccFadeUp .3s ease ${i * 0.03}s both` }}>
                   <TIcon name="check" size={11} color="var(--success)" />
                   <span>{str(ing.item)}</span>
-                  {ing.amount != null && <span style={{ color: "var(--muted-foreground)", fontSize: 11 }}>{str(ing.amount)}</span>}
+                  {ing.amount != null && <span style={{ color: "var(--muted-foreground)", fontSize: TYPE.caption }}>{str(ing.amount)}</span>}
                 </div>
               ))}
             </div>
@@ -629,14 +643,14 @@ function RecipeCard({ data }: { data: Data }) {
         )}
         {steps.length > 0 && (
           <div>
-            <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em",
+            <div style={{ fontSize: TYPE.caption, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em",
               color: "var(--muted-foreground)", marginBottom: 6 }}>Steps</div>
             <ol style={{ display: "flex", flexDirection: "column", gap: 8, margin: 0, padding: 0, listStyle: "none" }}>
               {steps.map((s, i) => (
-                <li key={i} style={{ display: "flex", gap: 10, fontSize: 12.5, color: "var(--foreground)",
+                <li key={i} style={{ display: "flex", gap: 10, fontSize: TYPE.xs, color: "var(--foreground)",
                   animation: `ccFadeUp .3s ease ${i * 0.05}s both` }}>
                   <span style={{ flexShrink: 0, width: 20, height: 20, borderRadius: "50%", display: "flex",
-                    alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600,
+                    alignItems: "center", justifyContent: "center", fontSize: TYPE.micro, fontWeight: 600,
                     background: "color-mix(in srgb, var(--primary) 15%, transparent)",
                     color: "var(--primary)" }}>{i + 1}</span>
                   <span style={{ lineHeight: 1.55 }}>{s}</span>
@@ -646,7 +660,7 @@ function RecipeCard({ data }: { data: Data }) {
           </div>
         )}
         {data.tip != null && (
-          <div style={{ display: "flex", gap: 8, fontSize: 12, color: "var(--foreground)", padding: "8px 10px",
+          <div style={{ display: "flex", gap: 8, fontSize: TYPE.xs, color: "var(--foreground)", padding: "8px 10px",
             borderRadius: 10, background: "color-mix(in srgb, var(--accent) 10%, transparent)" }}>
             <TIcon name="lightbulb" size={14} color="var(--accent)" />
             <span><GenUiText text={str(data.tip)} /></span>
@@ -655,7 +669,7 @@ function RecipeCard({ data }: { data: Data }) {
         {tags.length > 0 && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {tags.map((t) => (
-              <span key={t} style={{ fontSize: 10, color: "var(--muted-foreground)",
+              <span key={t} style={{ fontSize: TYPE.micro, color: "var(--muted-foreground)",
                 border: "1px solid var(--border)", borderRadius: 999, padding: "2px 8px" }}>{t}</span>
             ))}
           </div>
@@ -680,7 +694,7 @@ const STATUS_TONE: Record<string, { color: string; bg: string }> = {
 function StatusBadge({ status }: { status: string }) {
   const tone = STATUS_TONE[status] ?? STATUS_TONE.scheduled;
   return (
-    <span style={{ fontSize: 10.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em",
+    <span style={{ fontSize: TYPE.caption, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em",
       color: tone.color, background: tone.bg, borderRadius: 999, padding: "3px 10px" }}>
       {status}
     </span>
@@ -690,12 +704,12 @@ function StatusBadge({ status }: { status: string }) {
 function EndpointBlock({ e, align }: { e: Data; align: "left" | "right" }) {
   return (
     <div style={{ textAlign: align, minWidth: 72 }}>
-      <div style={{ fontSize: 22, fontWeight: 700, color: "var(--foreground)", letterSpacing: "0.02em" }}>
+      <div style={{ fontSize: TYPE.xl, fontWeight: 700, color: "var(--foreground)", letterSpacing: "0.02em" }}>
         {str(e.code ?? e.station, "—")}
       </div>
-      {e.city != null && <div style={{ fontSize: 11, color: "var(--muted-foreground)" }}>{str(e.city)}</div>}
-      {e.time != null && <div style={{ fontSize: 12, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>{str(e.time)}</div>}
-      <div style={{ fontSize: 10, color: "var(--muted-foreground)" }}>
+      {e.city != null && <div style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{str(e.city)}</div>}
+      {e.time != null && <div style={{ fontSize: TYPE.xs, color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>{str(e.time)}</div>}
+      <div style={{ fontSize: TYPE.micro, color: "var(--muted-foreground)" }}>
         {e.terminal != null && <span>T{str(e.terminal)} </span>}
         {e.gate != null && <span>Gate {str(e.gate)}</span>}
         {e.platform != null && <span>Platform {str(e.platform)}</span>}
@@ -715,10 +729,10 @@ function FlightStatus({ data }: { data: Data }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <TIcon name="plane" size={16} color="var(--primary)" />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>
+          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
             {data.airline != null ? `${str(data.airline)} ` : ""}{str(data.flightNo)}
           </span>
-          {data.date != null && <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>{str(data.date)}</span>}
+          {data.date != null && <span style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{str(data.date)}</span>}
         </div>
         <StatusBadge status={status} />
       </div>
@@ -737,7 +751,7 @@ function FlightStatus({ data }: { data: Data }) {
         <EndpointBlock e={to} align="right" />
       </div>
       {(data.durationMin != null || data.note != null) && (
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, fontSize: 11,
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, fontSize: TYPE.caption,
           color: "var(--muted-foreground)" }}>
           <span>{data.durationMin != null ? `${Math.floor(num(data.durationMin) / 60)}h ${num(data.durationMin) % 60}m` : ""}</span>
           <span>{data.note != null ? str(data.note) : ""}</span>
@@ -759,13 +773,13 @@ function TrainStatus({ data }: { data: Data }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <TIcon name="train-front" size={16} color="var(--primary)" />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>
+          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
             {[str(data.operator), str(data.trainNo), data.line != null ? `· ${str(data.line)}` : ""].filter(Boolean).join(" ")}
           </span>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           {delay > 0 && (
-            <span style={{ fontSize: 10.5, fontWeight: 600, color: "var(--warning)",
+            <span style={{ fontSize: TYPE.caption, fontWeight: 600, color: "var(--warning)",
               background: "color-mix(in srgb, var(--warning) 14%, transparent)",
               borderRadius: 999, padding: "3px 10px" }}>+{delay} min</span>
           )}
@@ -785,7 +799,7 @@ function TrainStatus({ data }: { data: Data }) {
             const dot = state === "done" ? "var(--success)"
               : state === "active" ? "var(--primary)" : "var(--border)";
             return (
-              <div key={i} style={{ position: "relative", padding: "5px 0", fontSize: 12,
+              <div key={i} style={{ position: "relative", padding: "5px 0", fontSize: TYPE.xs,
                 color: state === "pending" ? "var(--muted-foreground)" : "var(--foreground)",
                 animation: `ccFadeUp .3s ease ${i * 0.04}s both` }}>
                 <span style={{ position: "absolute", left: -20, top: 9, width: 10, height: 10,
@@ -800,7 +814,7 @@ function TrainStatus({ data }: { data: Data }) {
         </div>
       )}
       {data.note != null && (
-        <div style={{ marginTop: 8, fontSize: 11, color: "var(--muted-foreground)" }}>{str(data.note)}</div>
+        <div style={{ marginTop: 8, fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>{str(data.note)}</div>
       )}
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
@@ -808,7 +822,7 @@ function TrainStatus({ data }: { data: Data }) {
 }
 
 const FIELD_INPUT_STYLE: React.CSSProperties = {
-  width: "100%", fontSize: 12.5, color: "var(--foreground)", background: "var(--secondary)",
+  width: "100%", fontSize: TYPE.xs, color: "var(--foreground)", background: "var(--secondary)",
   border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", outline: "none",
 };
 
@@ -842,11 +856,11 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
       {data.title != null && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
           <TIcon name="clipboard-list" size={15} color="var(--primary)" />
-          <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--foreground)" }}><GenUiText text={str(data.title)} /></span>
+          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}><GenUiText text={str(data.title)} /></span>
         </div>
       )}
       {data.description != null && (
-        <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
+        <div style={{ fontSize: TYPE.xs, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {fields.map((f, i) => {
@@ -877,7 +891,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           return (
             <label key={name || i} style={{ display: "flex", flexDirection: "column", gap: 4,
               animation: `ccFadeUp .3s ease ${i * 0.04}s both` }}>
-              <span style={{ fontSize: 11.5, color: "var(--muted-foreground)" }}>
+              <span style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)" }}>
                 {str(f.label, name)}{f.required ? " *" : ""}
                 {type === "slider" && (
                   <span style={{ float: "right", color: "var(--foreground)", fontVariantNumeric: "tabular-nums" }}>
@@ -925,7 +939,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         })}
       </div>
       <button type="button" onClick={submit} disabled={!ctx?.onAction || submitted || missing}
-        style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
+        style={{ marginTop: 12, fontSize: TYPE.xs, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
           border: "none", cursor: submitted || missing ? "default" : "pointer",
           color: "var(--primary-foreground)",
           background: submitted ? "var(--success)" : "var(--primary)",
@@ -961,10 +975,10 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   return (
     <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
       {data.title != null && (
-        <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--foreground)", marginBottom: 4 }}><GenUiText text={str(data.title)} /></div>
+        <div style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)", marginBottom: 4 }}><GenUiText text={str(data.title)} /></div>
       )}
       {data.description != null && (
-        <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
+        <div style={{ fontSize: TYPE.xs, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 8 }}>
         {options.map((o, i) => {
@@ -980,16 +994,16 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 opacity: submitted && !active ? 0.5 : 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <TIcon name={o.icon} size={14} color="var(--primary)" />
-                <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--foreground)" }}>{str(o.label)}</span>
-                {o.recommended ? <span style={{ color: "var(--accent)", fontSize: 11 }}>★</span> : null}
+                <span style={{ fontSize: TYPE.xs, fontWeight: 600, color: "var(--foreground)" }}>{str(o.label)}</span>
+                {o.recommended ? <span style={{ color: "var(--accent)", fontSize: TYPE.caption }}>★</span> : null}
               </div>
               {o.description != null && (
-                <div style={{ fontSize: 11, color: "var(--muted-foreground)", marginTop: 3, lineHeight: 1.45 }}>
+                <div style={{ fontSize: TYPE.caption, color: "var(--muted-foreground)", marginTop: 3, lineHeight: 1.45 }}>
                   <GenUiText text={str(o.description)} />
                 </div>
               )}
               {o.badge != null && (
-                <span style={{ display: "inline-block", marginTop: 5, fontSize: 9.5, fontWeight: 600,
+                <span style={{ display: "inline-block", marginTop: 5, fontSize: TYPE.micro, fontWeight: 600,
                   color: "var(--primary)", background: "color-mix(in srgb, var(--primary) 12%, transparent)",
                   borderRadius: 999, padding: "2px 7px" }}>{str(o.badge)}</span>
               )}
@@ -1000,7 +1014,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
       {multi && (
         <button type="button" onClick={() => submit(picked)}
           disabled={!ctx?.onAction || submitted || !picked.length}
-          style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
+          style={{ marginTop: 12, fontSize: TYPE.xs, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
             border: "none", cursor: "pointer", color: "var(--primary-foreground)",
             background: submitted ? "var(--success)" : "var(--primary)",
             opacity: !ctx?.onAction || !picked.length ? 0.5 : 1 }}>
@@ -1020,8 +1034,8 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
 // as nothing. A row with an `id` is a plain link into the app (`?task=`),
 // which is the same door the tool cards use.
 
-const CELL: React.CSSProperties = { fontSize: 12, color: "var(--foreground)" };
-const MUTED: React.CSSProperties = { fontSize: 11, color: "var(--muted-foreground)" };
+const CELL: React.CSSProperties = { fontSize: TYPE.xs, color: "var(--foreground)" };
+const MUTED: React.CSSProperties = { fontSize: TYPE.caption, color: "var(--muted-foreground)" };
 const CARD_BOX: React.CSSProperties = {
   borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 14,
 };
@@ -1053,7 +1067,7 @@ function Timeline({ data }: { data: Data }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <TIcon name="history" size={15} color="var(--primary)" />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>
+          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
             <TitleLink href={taskHref(data.taskId)}>{str(data.title, "Timeline")}</TitleLink>
           </span>
         </div>
@@ -1112,18 +1126,24 @@ function TaskChip({ t }: { t: Data }) {
     due_at: typeof t.due_at === "string" ? t.due_at : typeof t.due === "string" ? t.due : null,
   });
   const people = arr(t.assignees).map((a) => str(a)).filter(Boolean);
+  const chip = level !== "low-priority";
+  const due = t.due != null && str(t.due) !== "";
+  // The title has the card's whole width (follow-up of #716 and #735). Beside
+  // the priority chip in a 180px lane it kept about 60px, and a long title
+  // wrapped one word per line. The chip now sits in the facts row under it,
+  // with the assignees as person chips and the due date.
   const body = (
-    <div style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--secondary)",
+    <div data-board-card="" style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--secondary)",
       padding: "6px 8px", marginBottom: 6, opacity: t.done ? 0.6 : 1 }}>
-      <div style={{ ...CELL, display: "flex", gap: 6, alignItems: "flex-start" }}>
-        {t.number != null && <span style={MUTED}>#{str(t.number)}</span>}
-        <span style={{ textDecoration: t.done ? "line-through" : "none", flex: 1 }}>{str(t.title)}</span>
-        {level !== "low-priority" && <PriorityChip chip={priorityChip(level)} />}
+      <div style={{ ...CELL, overflowWrap: "anywhere" }}>
+        {t.number != null && <span style={{ ...MUTED, marginRight: 4 }}>#{str(t.number)}</span>}
+        <span style={{ textDecoration: t.done ? "line-through" : "none" }}>{str(t.title)}</span>
       </div>
-      {(people.length > 0 || t.due != null) && (
-        <div style={{ ...MUTED, display: "flex", gap: 8, marginTop: 2, flexWrap: "wrap" }}>
-          {people.length > 0 && <span>{people.join(", ")}</span>}
-          {t.due != null && str(t.due) !== "" && <span>due {formatCardDate(str(t.due))}</span>}
+      {(chip || people.length > 0 || due) && (
+        <div style={{ ...MUTED, display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap", alignItems: "center" }}>
+          {chip && <PriorityChip chip={priorityChip(level)} />}
+          {people.map((p) => <PersonChip key={p} text={p} />)}
+          {due && <span>due {formatCardDate(str(t.due))}</span>}
         </div>
       )}
     </div>
@@ -1155,7 +1175,7 @@ function TaskBoard({ data }: { data: Data }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <TIcon name="kanban" size={15} color="var(--primary)" />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Board")}</span>
+          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Board")}</span>
         </div>
         {data.total != null && <span style={MUTED}>{num(data.total)} tasks</span>}
       </div>
@@ -1191,66 +1211,205 @@ export function isDateCell(cell: unknown): boolean {
   return /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?$/.test(str(cell).trim());
 }
 
-function DataGrid({ data }: { data: Data }) {
-  const columns = arr(data.columns).map((c) => str(c));
+/** A person as a chip: the name, with the address as its initials' seed. */
+function PersonChip({ text }: { text: string }) {
+  if (text.startsWith("agent:")) return <EntityPill fit kind="agent" label={text.slice(6)} />;
+  const who = personOf(text);
+  return <EntityPill fit kind="person" label={who.name} email={who.email} />;
+}
+
+/** One cell, drawn by its kind (`lib/dataGridLayout.ts` rule 1). */
+function GridCell({ kind, cell, category }: { kind: CellKind; cell: unknown; category?: unknown }) {
+  if (isEmptyCell(cell)) {
+    return <span style={{ color: "var(--muted-foreground)" }}>{kind === "text" ? cellText(cell) : ""}</span>;
+  }
+  const text = cellText(cell).trim();
+  switch (kind) {
+    case "status":
+      return (
+        <EntityPill fit kind="status" label={text}
+          accent={statusAccent({ category: category == null ? undefined : cellText(category), name: text })} />
+      );
+    case "category":
+      return <EntityPill fit kind="status" label={categoryLabel(text)} accent={statusAccent({ category: text, name: text })} />;
+    case "tag":
+    case "person":
+      return (
+        <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4, maxWidth: "100%" }}>
+          {splitMany(cell).map((v) => (kind === "tag"
+            ? <EntityPill key={v} fit kind="tag" label={v} />
+            : <PersonChip key={v} text={v} />))}
+        </span>
+      );
+    case "date":
+      return <>{formatCardDate(text)}</>;
+    default:
+      return <>{text}</>;
+  }
+}
+
+/** The kinds whose cell never wraps: a short value or one chip. */
+const NOWRAP: ReadonlySet<CellKind> = new Set(["status", "category", "date"]);
+
+/** The root font size in px, so the stack threshold follows the density. */
+function rootRemPx(): number {
+  if (typeof window === "undefined") return 16;
+  const px = parseFloat(window.getComputedStyle(document.documentElement).fontSize);
+  return Number.isFinite(px) && px > 0 ? px : 16;
+}
+
+const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+/**
+ * The `dataGrid` template. It draws a table where the box is wide enough,
+ * and stacked rows where it is not (`lib/dataGridLayout.ts`). `layout` fixes
+ * one of the two, for a test. The data may also carry `kinds`, one card kind
+ * per column (`task_dataset` sends them). Without them, each column takes
+ * the kind of its card label.
+ */
+export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) {
+  const labels = arr(data.columns).map((c) => str(c));
+  const kinds = Array.isArray(data.kinds)
+    ? data.kinds.map((k) => (typeof k === "string" ? k : undefined))
+    : undefined;
+  const { shown, categoryAt, primaryAt } = gridColumns(labels, kinds);
   const rows = arr(data.rows).map((r) => (r ?? {}) as Data);
   const base = str(data.openBase, "/projects?task=");
   const [sort, setSort] = useState<{ col: number; dir: 1 | -1 } | null>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  const [more, setMore] = useState(false);
+  const mode = layout ?? gridLayout(width, shown, rootRemPx());
+  useIsoLayoutEffect(() => {
+    const el = boxRef.current;
+    if (!el || layout) return;
+    const measure = () => setWidth(el.clientWidth);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    return () => observer?.disconnect();
+  }, [layout]);
+  // The cue while columns sit off to the right (`lib/scrollCue.ts`): a
+  // column is never cut at the edge with nothing to say the table scrolls.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || mode !== "table") return;
+    const check = () => setMore(hasMoreToTheRight(el.scrollWidth, el.clientWidth, el.scrollLeft));
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(check);
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", check);
+      observer?.disconnect();
+    };
+  }, [mode, rows.length]);
   const sorted = sort
     ? [...rows].sort((a, b) => {
       const av = arr(a.cells)[sort.col];
       const bv = arr(b.cells)[sort.col];
-      const an = typeof av === "number" ? av : parseFloat(str(av));
-      const bn = typeof bv === "number" ? bv : parseFloat(str(bv));
+      const an = typeof av === "number" ? av : parseFloat(cellText(av));
+      const bn = typeof bv === "number" ? bv : parseFloat(cellText(bv));
       if (Number.isFinite(an) && Number.isFinite(bn)) return (an - bn) * sort.dir;
-      return str(av).localeCompare(str(bv)) * sort.dir;
+      return cellText(av).localeCompare(cellText(bv)) * sort.dir;
     })
     : rows;
+  const cellOf = (r: Data, c: GridColumn) => (
+    <GridCell kind={c.kind} cell={arr(r.cells)[c.index]}
+      category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />
+  );
+  const titleOf = (r: Data) => {
+    const href = taskHref(r.id, base);
+    const cell = <GridCell kind="text" cell={arr(r.cells)[primaryAt]} />;
+    return href ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{cell}</a> : cell;
+  };
+  const lead = shown.find((c) => c.role === "lead");
   return (
-    <div style={CARD_BOX}>
+    <div ref={boxRef} data-grid-layout={mode} style={CARD_BOX}>
       {data.title != null && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
           <TIcon name="table-2" size={15} color="var(--primary)" />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title)}</span>
+          <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title)}</span>
         </div>
       )}
-      <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              {columns.map((c, i) => (
-                <th key={i} onClick={() => setSort((s) =>
-                  s && s.col === i ? { col: i, dir: s.dir === 1 ? -1 : 1 } : { col: i, dir: 1 })}
-                  style={{ ...MUTED, textAlign: "left", padding: "4px 6px", cursor: "pointer",
-                    borderBottom: "1px solid var(--border)", position: "sticky", top: 0,
-                    background: "var(--card)", userSelect: "none", whiteSpace: "nowrap" }}>
-                  {c}{sort && sort.col === i ? (sort.dir === 1 ? " ↑" : " ↓") : ""}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((r, i) => {
-              const href = taskHref(r.id, base);
-              return (
-                <tr key={str(r.id) || i} style={{ borderBottom: "1px solid var(--border)" }}>
-                  {arr(r.cells).map((cell, k) => (
-                    <td key={k} style={{ ...CELL, padding: "5px 6px", verticalAlign: "top",
-                      ...(isDateCell(cell) ? { whiteSpace: "nowrap" as const } : {}) }}>
-                      {k === 1 && href
-                        ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{str(cell)}</a>
-                        : str(cell)}
-                    </td>
+      {mode === "stacked" ? (
+        <div style={{ maxHeight: 420, overflowY: "auto" }}>
+          {rows.map((r, i) => {
+            const facts = shown.filter((c) => c.role === "secondary" && !isEmptyCell(arr(r.cells)[c.index]));
+            return (
+              <div key={str(r.id) || i} data-grid-row="" style={{ padding: "6px 0",
+                borderBottom: i < rows.length - 1 ? "1px solid var(--border)" : "none" }}>
+                <div style={{ ...CELL, overflowWrap: "anywhere" }}>
+                  {lead && <span style={{ ...MUTED, marginRight: 4 }}>{cellText(arr(r.cells)[lead.index])}</span>}
+                  {titleOf(r)}
+                </div>
+                {facts.length > 0 && (
+                  <div style={{ ...CELL, display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px 10px", marginTop: 3 }}>
+                    {facts.map((c) => (
+                      c.kind === "text" || c.kind === "date" ? (
+                        <span key={c.index} data-grid-fact="" style={{ overflowWrap: "anywhere" }}>
+                          <span style={MUTED}>{c.label} </span>{cellOf(r, c)}
+                        </span>
+                      ) : (
+                        <span key={c.index} title={c.label} style={{ display: "inline-flex", maxWidth: "100%" }}>
+                          {cellOf(r, c)}
+                        </span>
+                      )
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {rows.length === 0 && <div style={{ ...MUTED, padding: 8 }}>No rows.</div>}
+        </div>
+      ) : (
+        <>
+          <div ref={scrollRef} style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  {shown.map((c) => (
+                    <th key={c.index} onClick={() => setSort((s) =>
+                      s && s.col === c.index ? { col: c.index, dir: s.dir === 1 ? -1 : 1 } : { col: c.index, dir: 1 })}
+                      style={{ ...MUTED, textAlign: "left", padding: "4px 6px", cursor: "pointer",
+                        borderBottom: "1px solid var(--border)", position: "sticky", top: 0, zIndex: 1,
+                        background: "var(--card)", userSelect: "none", whiteSpace: "nowrap" }}>
+                      {c.label}{sort && sort.col === c.index ? (sort.dir === 1 ? " ↑" : " ↓") : ""}
+                    </th>
                   ))}
                 </tr>
-              );
-            })}
-            {sorted.length === 0 && (
-              <tr><td colSpan={Math.max(1, columns.length)} style={{ ...MUTED, padding: 8 }}>No rows.</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {sorted.map((r, i) => (
+                  <tr key={str(r.id) || i} style={{ borderBottom: "1px solid var(--border)" }}>
+                    {shown.map((c) => {
+                      const cell = arr(r.cells)[c.index];
+                      const nowrap = c.role === "lead" || NOWRAP.has(c.kind) || isDateCell(cell);
+                      return (
+                        <td key={c.index} style={{ ...CELL, padding: "5px 6px", verticalAlign: "top",
+                          ...(c.role === "primary" ? { minWidth: "10rem", overflowWrap: "anywhere" as const } : {}),
+                          ...(nowrap ? { whiteSpace: "nowrap" as const } : {}) }}>
+                          {c.role === "primary" ? titleOf(r) : cellOf(r, c)}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+                {sorted.length === 0 && (
+                  <tr><td colSpan={Math.max(1, shown.length)} style={{ ...MUTED, padding: 8 }}>No rows.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {more && (
+            <div data-grid-more="" style={{ ...MUTED, display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 4, marginTop: 4 }}>
+              More columns to the right <TIcon name="arrow-right" size={12} color="var(--muted-foreground)" />
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -1262,7 +1421,7 @@ function ReportCard({ data }: { data: Data }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <TIcon name="file-text" size={15} color="var(--primary)" />
-        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--foreground)" }}>
+        <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>
           {/* The one address builder of Reports (`projects_reports.md` §6.5 item 18). */}
           <TitleLink href={reportLink()}>{str(data.title, "Report")}</TitleLink>
         </span>
@@ -1290,7 +1449,7 @@ const PLAN_WRAP: React.CSSProperties = { overflowWrap: "anywhere" };
 /** A warning tint behind foreground text. Warning TEXT on a light card is too
  *  faint to read (S7c visual review), so the tint carries the tone. */
 const MARK_BOX: React.CSSProperties = {
-  ...CELL, fontSize: 11, borderRadius: 6, padding: "3px 8px", marginTop: 2,
+  ...CELL, fontSize: TYPE.caption, borderRadius: 6, padding: "3px 8px", marginTop: 2,
   background: "color-mix(in srgb, var(--warning) 14%, transparent)",
 };
 
@@ -1317,7 +1476,7 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     <div style={CARD_BOX}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
         <TIcon name="list-todo" size={15} color="var(--primary)" />
-        <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Plan")}</span>
+        <span style={{ fontSize: TYPE.sm, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Plan")}</span>
       </div>
       {data.description != null && <div style={{ ...MUTED, marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>}
       <label style={{ ...MUTED, display: "block", marginBottom: 10 }}>
@@ -1354,7 +1513,7 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 {!submitted && (
                   <button type="button" onClick={() => drop(i)} aria-label="Remove task"
                     style={{ border: "none", background: "transparent", cursor: "pointer", paddingBottom: 7,
-                      color: "var(--muted-foreground)", fontSize: 12 }}>✕</button>
+                      color: "var(--muted-foreground)", fontSize: TYPE.xs }}>✕</button>
                 )}
               </div>
               <div style={PLAN_GRID}>{shortCols.map(field)}</div>
@@ -1411,7 +1570,7 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         </div>
       )}
       <button type="button" onClick={submit} disabled={!ctx?.onAction || submitted || !!blocked}
-        style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
+        style={{ marginTop: 12, fontSize: TYPE.xs, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
           border: "none", cursor: "pointer", color: "var(--primary-foreground)",
           background: submitted ? "var(--success)" : "var(--primary)",
           opacity: !ctx?.onAction || blocked ? 0.5 : 1 }}>

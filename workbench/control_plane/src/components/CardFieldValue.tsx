@@ -26,16 +26,23 @@ import {
   formatPlain,
   formatWords,
   parseFieldValue,
+  personOf,
 } from "@/lib/cardFields";
 import { statusAccent } from "@/lib/statusAccent";
+import { categoryLabel } from "@/lib/statusCategory";
 
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** One short name with no mark: a lane's name or a category key. */
+const LANE_WORD = /^[\p{L}\p{N}][\p{L}\p{N} _&/-]{0,39}$/u;
 
 /** One element of a value, by kind. Exported for its test. */
 export function ValueElement({ item, kind }: { item: ValueItem; kind: FieldKind }) {
   const text = item.text;
-  if (!item.named) {
-    if (kind === "date") return <>{formatPlain(text)}</>;
+  // An unfenced category ("in_progress") or status ("Qualified", in a CRM
+  // read) is still one lane, so it draws as its chip and never as the raw
+  // value (follow-up of #716 and #735). A phrase stays words.
+  const lane = (kind === "category" || kind === "status") && LANE_WORD.test(text.trim()) && formatPlain(text) !== "none";
+  if (!item.named && !lane) {
+    if (kind === "date") return <>{formatCardDate(formatPlain(text))}</>;
     if (kind === "minutes") return <>{formatMinutes(text)}</>;
     if (kind === "flag") return <>{formatPlain(text)}</>;
     const plain = formatPlain(text);
@@ -52,11 +59,13 @@ export function ValueElement({ item, kind }: { item: ValueItem; kind: FieldKind 
       return <EntityPill fit kind="status" label={text} accent={statusAccent({ name: text })} />;
     case "category":
       return (
-        <EntityPill fit kind="status" label={formatWords(text)} accent={statusAccent({ category: text, name: text })} />
+        <EntityPill fit kind="status" label={categoryLabel(text)} accent={statusAccent({ category: text, name: text })} />
       );
     case "person": {
       if (text.startsWith("agent:")) return <EntityPill fit kind="agent" label={text.slice(6)} />;
-      return <EntityPill fit kind="person" label={text} email={EMAIL.test(text) ? text : undefined} />;
+      // "Priya (priya@x.io)" is a name and an address, never one label.
+      const who = personOf(text);
+      return <EntityPill fit kind="person" label={who.name} email={who.email} />;
     }
     case "project":
       return <EntityPill fit kind="project" label={text} />;

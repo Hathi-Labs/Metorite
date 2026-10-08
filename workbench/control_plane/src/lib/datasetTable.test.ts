@@ -10,6 +10,12 @@
  * - a line for the model reaches the member -> "drops the lines that speak
  *   to the model";
  * - the groups shape stays text -> "the groups draw as a table too".
+ *
+ * Follow-up of #716 and #735 (spec §24.8), each run red before the change:
+ *
+ * - the column kinds are dropped -> "gives each column its card kind";
+ * - the Status category column draws beside Status again, or a category
+ *   draws its raw key -> "the step draws no raw category".
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -19,6 +25,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { projectEvidence } from "@/components/projects/ProjectToolCards";
 import { parseDatasetTable } from "@/lib/datasetTable";
+import { statusAccent } from "@/lib/statusAccent";
 import { OWNER_READS, TASK_DATASET_RESULT } from "@/lib/ownerTurn.fixture";
 
 const GROUPS = [
@@ -40,21 +47,25 @@ describe("parseDatasetTable", () => {
     expect(table.columns).toEqual(["Number", "Title", "Status", "Status category", "Type", "Tags"]);
   });
 
+  it("gives each column its card kind", () => {
+    expect(table.kinds).toEqual([undefined, undefined, "status", "category", "words", "tag"]);
+  });
+
   it("the rows, with no mark and no pipe", () => {
     expect(table.rows).toHaveLength(10);
     expect(table.rows[0].cells).toEqual([
-      "#11", "Task doesn't disappear after archive", "To do", "todo", "Bug", "Bug",
+      "#11", "Task doesn't disappear after archive", "To do", "todo", "Bug", ["Bug"],
     ]);
     // The empty tags cell is kept, so the columns stay in line.
     expect(table.rows[1].cells).toHaveLength(6);
-    expect(table.rows[1].cells[5]).toBe("");
+    expect(table.rows[1].cells[5]).toEqual([]);
     expect(JSON.stringify(table.rows)).not.toMatch(/[«»|]/);
   });
 
   it("drops the lines that speak to the model, and keeps a note for a person", () => {
     expect(table.caption).toBe("10 tasks");
     expect(table.notes).toEqual([
-      "Cycle times: first in_progress to first done, for completions since 2026-07-16 (12 weeks).",
+      "Cycle times: first in progress to first done, for completions since 2026-07-16 (12 weeks).",
     ]);
     expect(JSON.stringify(table)).not.toContain("Label every figure");
     expect(JSON.stringify(table)).not.toContain("rows=");
@@ -81,6 +92,13 @@ describe("parseDatasetTable", () => {
     expect(t.columns).toEqual(["Number", "Title"]);
     expect(t.rows[0]).toEqual({ id, cells: ["#1", "X"] });
   });
+
+  it("keeps a name with a comma in it as one name", () => {
+    const t = parseDatasetTable(
+      ["Tasks in «A», state open:", "number | tags", "#1 | «UX, polish», «Bug»", "rows=1 total=1"].join("\n"),
+    )!;
+    expect(t.rows[0].cells[1]).toEqual(["UX, polish", "Bug"]);
+  });
 });
 
 describe("the step draws a table, never the pipes", () => {
@@ -91,7 +109,15 @@ describe("the step draws a table, never the pipes", () => {
     expect(html).toContain("data-dataset-table");
     expect(html).toContain("<table");
     expect(html).toContain("<th");
-    expect(html).toContain("Status category");
+  });
+
+  it("the step draws no raw category, and a status as its chip", () => {
+    const visible = html.replace(/<[^>]*>/g, "|");
+    // The status already says the stage, so the category column is gone.
+    expect(visible).not.toContain("|Status category|");
+    expect(visible).not.toMatch(/\|(?:todo|in_progress|done)\|/);
+    // The chip of "In review" takes its colour from its hidden category.
+    expect(html).toContain(statusAccent({ category: "in_progress", name: "In review" }).dot);
   });
 
   it("shows no pipe, no header line and no mark", () => {

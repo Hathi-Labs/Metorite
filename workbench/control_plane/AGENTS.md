@@ -157,7 +157,7 @@ Seven rules on top of the three above. Each one exists because it was broken:
    **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
    and its kind draws its value. The Python fakes read that map and fail a
    card test that prints a key with no label (`tests/unit/_card_words.py`).
-   A read result draws through `components/projects/Readout.tsx`, with no
+   A read result draws through `components/Readout.tsx`, with no
    id and no `[key]`. Fences: `cardFields.test.ts` and `readout.test.ts`.
    ⚠️ **The BOM trap binds at every hop, and "keep it a `Blob` in the client" is only
    half of it.** `Response.text()` is a UTF-8 *decode* and a UTF-8 decode strips a
