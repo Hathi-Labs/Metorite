@@ -168,7 +168,7 @@ def _ask(**kw: Any) -> str:
 
 
 def test_one_call_is_one_request_on_tier_fast(monkeypatch) -> None:
-    """S1 done-when 1: ``tier-fast``, no ``tools``, a ``json_schema`` format."""
+    """S1 done-when 1: ``tier-fast``, no ``tools``, JSON mode (amended 2026-10-09)."""
     wire = _wire(monkeypatch, lambda _b: _answers(
         {"id": "q", "choice": "beta", "confidence": 0.91, "reason": "names beta"},
     ))
@@ -178,10 +178,33 @@ def test_one_call_is_one_request_on_tier_fast(monkeypatch) -> None:
     body = wire.bodies[0]
     assert body["model"] == "tier-fast"
     assert "tools" not in body and "tool_choice" not in body
-    assert body["response_format"]["type"] == "json_schema"
-    assert body["response_format"]["json_schema"]["strict"] is True
+    assert body["response_format"] == {"type": "json_object"}
     assert str(wire.requests[0].url).endswith("/v1/chat/completions")
     assert out == f"{LEAD}\nbeta (confidence 0.91) — names beta"
+
+
+def test_the_request_asks_for_json_mode_and_names_no_schema(monkeypatch) -> None:
+    """The request shape the vendor behind ``tier-fast`` accepts. PINNED.
+
+    With ``{"type": "json_schema", "strict": true}`` the Router answered 400
+    to every System-1 request (2026-10-05 to 2026-10-08). JSON mode is what
+    every other JSON caller of the platform sends. A JSON-mode vendor wants
+    the word "json" in the prompt, so the system message must name it and
+    carry the shape that :func:`system_one.parse_answers` checks.
+    """
+    wire = _wire(monkeypatch, lambda _b: _answers(
+        {"id": "q", "choice": "yes", "confidence": 0.9, "reason": "r"},
+    ))
+    _ask(question="Is it?", context="x")
+    body = wire.bodies[0]
+    assert body["response_format"] == {"type": "json_object"}
+    assert "json_schema" not in json.dumps(body)
+    system = [m for m in body["messages"] if m.get("role") == "system"]
+    assert len(system) == 1
+    text = json.dumps(system[0]["content"])
+    assert "JSON" in text
+    for key in ("answers", "id", "choice", "confidence", "reason"):
+        assert f"`{key}`" in text, key
 
 
 def test_the_system_one_agent_holds_no_tools() -> None:
@@ -386,6 +409,21 @@ class TestFailureIsUnavailable:
         _wire(monkeypatch, lambda _b: _completion(content))
         assert _ask(question="Is it?", context="x") == UNAVAILABLE
 
+    @pytest.mark.parametrize("content", [
+        # A JSON-mode reply can come back in a code fence or with prose
+        # around it. Each is NOT the shape, so it is never parsed as a guess.
+        '```json\n{"answers": []}\n```',
+        'Here you go: {"answers": []}',
+        '{"answers": [{"id": "q", "choice": "yes"}], "answers2"',
+    ])
+    def test_a_malformed_json_mode_answer_is_unavailable(self, monkeypatch, content) -> None:
+        _wire(monkeypatch, lambda _b: _completion(content))
+        item = system_one.Item("q", "Is it?", "yes_no", ("yes", "no"))
+        with pytest.raises(system_one.SystemOneUnavailable) as caught:
+            asyncio.run(system_one.ask("x", [item]))
+        assert caught.value.reason == "not_json"
+        assert _ask(question="Is it?", context="x") == UNAVAILABLE
+
     def test_the_client_waits_three_seconds_and_never_retries(self) -> None:
         assert system_one.TIMEOUT_S == 3.0
         _agent, client = system_one._build_agent()
@@ -464,6 +502,57 @@ def test_the_logs_hold_no_tenant_text(monkeypatch) -> None:
     assert logs, "the tool logged nothing"
     text = json.dumps(logs, default=str)
     assert SECRET_CONTEXT not in text and SECRET_OPTION not in text
+
+
+class TestTheFailureReasonIsLogged:
+    """``system_one.failed`` names WHY, as a code (2026-10-09).
+
+    Before this, the turn-kind caller dropped the reason, so 18 Router 400s
+    left no System-1 line at all.
+    """
+
+    def _failed(self, monkeypatch, reply: Callable[[dict[str, Any]], Any]) -> list[dict]:
+        _wire(monkeypatch, reply)
+        item = system_one.Item("q", f"Is {SECRET_OPTION} late?", "yes_no", ("yes", "no"))
+        with structlog.testing.capture_logs() as logs, pytest.raises(
+            system_one.SystemOneUnavailable,
+        ):
+            asyncio.run(system_one.ask(SECRET_CONTEXT, [item]))
+        text = json.dumps(logs, default=str)
+        assert SECRET_CONTEXT not in text and SECRET_OPTION not in text
+        return [r for r in logs if r.get("event") == "system_one.failed"]
+
+    @pytest.mark.parametrize("status", [400, 402, 503])
+    def test_a_router_refusal_logs_its_http_status(self, monkeypatch, status) -> None:
+        rows = self._failed(monkeypatch, lambda _b: httpx.Response(
+            status, json={"error": {"message": f"bad {SECRET_CONTEXT}"}},
+        ))
+        assert [(r["reason"], r["items"], r["log_level"]) for r in rows] == [
+            (f"http_{status}", 1, "warning"),
+        ]
+
+    def test_a_bad_answer_logs_not_json(self, monkeypatch) -> None:
+        rows = self._failed(monkeypatch, lambda _b: _completion(f"no json {SECRET_CONTEXT}"))
+        assert [r["reason"] for r in rows] == ["not_json"]
+
+    def test_a_timeout_logs_timeout(self, monkeypatch) -> None:
+        def slow(_b: dict[str, Any]) -> httpx.Response:
+            raise httpx.ReadTimeout("the Router took too long")
+
+        rows = self._failed(monkeypatch, slow)
+        assert [r["reason"] for r in rows] == ["timeout"]
+
+    def test_the_turn_kind_question_logs_the_reason_too(self, monkeypatch) -> None:
+        """The audit's path: ``turn_kind`` reads ``unavailable``, and the
+        reason is in the log beside it."""
+        _wire(monkeypatch, lambda _b: httpx.Response(400, json={"error": "x"}))
+        message = f"Please plan the next three weeks for {SECRET_OPTION} and rebalance it all"
+        with structlog.testing.capture_logs() as logs:
+            turn = asyncio.run(tier_policy.turn_kind(message, ["vocabulary"], "auto"))
+        assert (turn.kind, turn.source) == ("chat", "unavailable")
+        rows = [r for r in logs if r.get("event") == "system_one.failed"]
+        assert [r["reason"] for r in rows] == ["http_400"]
+        assert SECRET_OPTION not in json.dumps(logs, default=str)
 
 
 # ── 5. The tool's identity and its egress class (§6.1, §6.6) ────────────────
@@ -606,7 +695,7 @@ class TestARealProjectsRun:
         body = wire.bodies[0]
         assert body["model"] == "tier-fast"
         assert "tools" not in body
-        assert body["response_format"]["type"] == "json_schema"
+        assert body["response_format"] == {"type": "json_object"}
         assert wire.requests[0].headers["X-CC-Agent"] == PA
         assert wire.requests[0].headers["X-CC-Source"] == "system_one"
         results = [m["content"] for m in model.bodies[1]["messages"] if m["role"] == "tool"]
