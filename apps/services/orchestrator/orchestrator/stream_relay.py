@@ -812,6 +812,15 @@ def register_background_child(thread_id: str, task: asyncio.Task) -> None:
     task.add_done_callback(_discard)
 
 
+def live_run_count() -> int:
+    """How many detached runs in THIS process have not ended.
+
+    A restart ends every one of them, so the gateway's stop step asks this
+    number first and waits for it to reach zero (``GET /internal/drain``).
+    """
+    return sum(1 for task in list(_DETACHED_TASKS.values()) if not task.done())
+
+
 def get_detached_task(thread_id: str) -> asyncio.Task[None] | None:
     """Return the in-flight detached run task for *thread_id*, if any."""
     task = _DETACHED_TASKS.get(thread_id)
