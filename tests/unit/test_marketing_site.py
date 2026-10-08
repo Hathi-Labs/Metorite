@@ -156,5 +156,71 @@ def test_size_under_100kb() -> None:
         )
 
 
+# ── Version 2: the product tour (marketing_site.md §6.5) ─────────────────────
+# Since 2026-10-09 the home page carries real screenshots, served from
+# ``site/img/`` on the same origin. These checks keep that cheap and honest: no
+# broken image, no image without a text alternative, and no image heavy enough
+# to make the page slow.
+
+IMG_DIR = SITE_DIR / "img"
+IMG_SUFFIXES = {".webp", ".png", ".svg", ".jpg", ".jpeg"}
+MAX_IMG_BYTES = 300 * 1024
+MAX_IMG_DIR_BYTES = 3 * 1024 * 1024
+
+_SRC_ATTR = re.compile(r"""\bsrc\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+_SRCSET_ATTR = re.compile(r"""\bsrcset\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+_IMG_TAG = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_ALT_ATTR = re.compile(r"""\balt\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+
+
+def _local_refs(html: str) -> list[str]:
+    """Every same-origin path a page loads through ``src`` or ``srcset``."""
+    refs = list(_SRC_ATTR.findall(html))
+    for value in _SRCSET_ATTR.findall(html):
+        refs += [part.strip().split()[0] for part in value.split(",") if part.strip()]
+    out = []
+    for ref in refs:
+        parts = urlsplit(ref.strip())
+        if parts.scheme or parts.netloc or ref.startswith(("data:", "#")):
+            continue
+        out.append(parts.path)
+    return out
+
+
+def test_every_local_src_exists() -> None:
+    missing: list[str] = []
+    for page in site_pages():
+        for path in _local_refs(page.read_text(encoding="utf-8")):
+            target = (SITE_DIR / path.lstrip("/")).resolve()
+            inside = SITE_DIR.resolve() in target.parents
+            if not inside or not target.is_file():
+                missing.append(f"{page.name}: {path}")
+    assert not missing, f"these images do not exist under site/: {missing}"
+
+
+def test_every_img_has_alt() -> None:
+    bare: list[str] = []
+    for page in site_pages():
+        for tag in _IMG_TAG.findall(page.read_text(encoding="utf-8")):
+            alt = _ALT_ATTR.search(tag)
+            if alt is None or not alt.group(1).strip():
+                bare.append(f"{page.name}: {tag[:80]}")
+    assert not bare, f"every <img> needs a non-empty alt: {bare}"
+
+
+def test_img_files_are_small_web_images() -> None:
+    if not IMG_DIR.is_dir():
+        return
+    total = 0
+    for f in sorted(p for p in IMG_DIR.rglob("*") if p.is_file()):
+        assert f.suffix.lower() in IMG_SUFFIXES, f"{f.name}: not a web image"
+        size = f.stat().st_size
+        assert size < MAX_IMG_BYTES, f"{f.name} is {size} bytes, over {MAX_IMG_BYTES}"
+        total += size
+    assert total < MAX_IMG_DIR_BYTES, (
+        f"site/img/ holds {total} bytes; it must stay under {MAX_IMG_DIR_BYTES}"
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover - convenience runner
     raise SystemExit(pytest.main([__file__, "-q"]))
