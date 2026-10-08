@@ -100,7 +100,12 @@ _SLIDING_WINDOW_GROUPS = 200
 
 #: The SQL of one load. Every statement runs in ONE bound transaction, so the
 #: rows, the room and the stored session agree.
-_CHAT_EXISTS_SQL = "SELECT user_id FROM chat_session WHERE id = :tid"
+#: Each chat read also names the organization. RLS is the first lock, and
+#: this predicate is the second.
+_CHAT_EXISTS_SQL = (
+    "SELECT user_id FROM chat_session WHERE id = :tid "
+    "AND organization_id = CAST(:org AS uuid)"
+)
 _PARTICIPANTS_SQL = (
     "SELECT subject FROM chat_session_participant WHERE session_id = :tid"
 )
@@ -122,7 +127,8 @@ _UPSERT_SQL = """
          transcript_digest, session_fingerprint, updated_at)
     SELECT CAST(:org AS uuid), CAST(:tid AS text), CAST(:agent AS text),
            CAST(:body AS jsonb), CAST(:digest AS text), CAST(:fp AS text), now()
-     WHERE EXISTS (SELECT 1 FROM chat_session WHERE id = CAST(:tid AS text))
+     WHERE EXISTS (SELECT 1 FROM chat_session WHERE id = CAST(:tid AS text)
+                     AND organization_id = CAST(:org AS uuid))
     ON CONFLICT (organization_id, thread_id, agent_name) DO UPDATE SET
         session_json        = EXCLUDED.session_json,
         transcript_digest   = EXCLUDED.transcript_digest,
@@ -267,20 +273,48 @@ def room_members(participants: Sequence[str], session_user: str) -> list[str]:
     return list(_expand_members([_Subject(p) for p in participants], session_user))
 
 
+def solo_thread(participants: Sequence[str], session_user: str, actor: str) -> bool:
+    """True only when the acting member is the one party of the thread.
+
+    A stored session holds the raw tool calls and tool results of earlier
+    turns. The transcript shows each reader a filtered view of those turns:
+    the waterline of a ``since_join`` room, and the redaction of a turn that
+    a run made with access the reader does not hold (``routes/chat.py``
+    ``_render_message``). A session cannot apply those filters to the model
+    context. So a session loads only in a thread whose ONLY party is the
+    acting member, and that member made every turn that it holds.
+
+    Two facts must both hold. The actor made the chat (``chat_session.user_id``),
+    and no participant row names another subject. Any other subject fails it:
+    a second member, a viewer, a ``group:`` subject or an ``org`` subject. A
+    chat that another member made fails it too, even when the participant
+    rows name only the actor, because an owner can remove the creator. An
+    unknown actor fails it.
+    """
+    me = str(actor or "").strip().lower()
+    if not me or str(session_user or "").strip().lower() != me:
+        return False
+    subjects = {str(p).strip().lower() for p in participants if str(p or "").strip()}
+    return subjects <= {me}
+
+
 def session_fingerprint(
     *, members: Sequence[str], agent_name: str, thread_id: str, instance: str,
+    actor: str = "",
 ) -> str:
-    """SHA-256 over the member set, each member's clearance and the instance key.
+    """SHA-256 over the actor, the member set, each member's clearance and the instance key.
 
     The clearance fingerprint is the one the memory cache keys on
     (``acb_memory.Clearance.fingerprint``). A room of one is not shared, and a
-    room of two or more is, as ``RoomAccess.is_shared`` decides.
+    room of two or more is, as ``RoomAccess.is_shared`` decides. The acting
+    member is in the hash, so a session that one member saved never loads for
+    another member.
     """
     from acb_memory import resolve_clearance  # type: ignore[import-untyped, unused-ignore]
 
     unique = sorted(set(members))
     shared = len(unique) > 1
-    lines = ["v1", f"instance={instance}"]
+    lines = ["v2", f"actor={str(actor or '').strip().lower()}", f"instance={instance}"]
     for member in unique:
         clearance = resolve_clearance(
             actor=member, agent_name=agent_name, thread_id=thread_id, shared=shared,
@@ -326,7 +360,9 @@ def read_state(organization_id: str, thread_id: str, agent_name: str) -> LoadSta
     from sqlalchemy import text
 
     with tenant_session(organization_id) as s:
-        chat = s.execute(text(_CHAT_EXISTS_SQL), {"tid": thread_id}).first()
+        chat = s.execute(
+            text(_CHAT_EXISTS_SQL), {"tid": thread_id, "org": organization_id},
+        ).first()
         if chat is None:
             return LoadState(chat_exists=False)
         participants = [
@@ -454,12 +490,15 @@ async def begin_turn(
     current_message: str,
     browser_history: Any,
     token_budget: int,
+    actor: str = "",
 ) -> SessionTurn | None:
     """Load the stored session of this run. Logs ONE outcome line.
 
-    *organization_id* is the run binding that the executor resolved on the
-    event loop. Returns ``None`` when the run must use the text history with
-    no session at all (the load failed, or the thread has no chat row).
+    *organization_id* and *actor* are the run binding that the executor
+    resolved on the event loop. *actor* is the verified member of the run.
+    Returns ``None`` when the run must use the text history with no session
+    at all: the load failed, the thread has no chat row, or the thread is not
+    the actor's alone (:func:`solo_thread`).
     Otherwise a :class:`SessionTurn`: on ``hit`` it holds the stored session,
     fitted to *token_budget*, and on any other outcome a fresh one.
     """
@@ -475,6 +514,12 @@ async def begin_turn(
     if not state.chat_exists:
         _log_outcome(NO_ROW, agent_name=agent_name, thread_id=thread_id, reason="no_chat")
         return None
+    if not solo_thread(state.participants, state.session_user, actor):
+        # A shared room keeps the text history of main, with no load and no
+        # save, so no member's model gets turns that member may not read.
+        _log_outcome(NO_ROW, agent_name=agent_name, thread_id=thread_id,
+                     reason="shared_room")
+        return None
 
     prior = rows_before_turn(state.rows, current_message)
     covered = covered_rows(prior)
@@ -482,6 +527,7 @@ async def begin_turn(
         fingerprint = session_fingerprint(
             members=room_members(state.participants, state.session_user),
             agent_name=agent_name, thread_id=thread_id, instance=instance,
+            actor=actor,
         )
     except Exception as exc:
         _log_outcome(NO_ROW, agent_name=agent_name, thread_id=thread_id,

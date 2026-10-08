@@ -6294,7 +6294,13 @@ def _compose_session_run(
         loader = event_payload.get("_history_loader")
         assembled = assemble_run_context(
             system_context=context_text,
-            history=[] if turn.loaded else (event_payload.get("messages") or []),
+            # A fresh session keeps only the user and assistant turns of the
+            # browser history. A `system` or `tool` turn in a request body
+            # never goes into a stored session.
+            history=[] if turn.loaded else [
+                m for m in (event_payload.get("messages") or [])
+                if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            ],
             current_message=current,
             model=model,
             max_output_tokens=_reserved_output_tokens(model),
@@ -6391,9 +6397,10 @@ async def _begin_native_session(
     """Load the stored session of a native run (WS-43t2), or ``None``.
 
     ``None`` when ``MAF_NATIVE_SESSIONS`` is off, the run is one that §15.9.5
-    keeps out, or no organization resolves. The organization is the RUN
-    BINDING, read here on the event loop by :func:`_current_run_org`, before
-    the store's ``run_in_executor`` hop. It never comes from the payload (R5).
+    keeps out, no organization resolves, or the run has no verified member.
+    The organization and the member are the RUN BINDING, read here on the
+    event loop (:func:`_current_run_org`, :func:`_verified_run_member`), before
+    the store's ``run_in_executor`` hop. Neither comes from the payload (R5).
     The load logs one outcome line and never fails the run.
     """
     if not _native_sessions_enabled():
@@ -6405,6 +6412,9 @@ async def _begin_native_session(
     org = _current_run_org() if reason is None else None
     if reason is None and not org:
         reason = "no_org"
+    actor = _verified_run_member() if reason is None else ""
+    if reason is None and not actor:
+        reason = "no_member"
     if reason is not None:
         _log.info(
             "native_session.skip", agent=agent_name,
@@ -6434,12 +6444,31 @@ async def _begin_native_session(
                 event_payload.get("messages") if "messages" in event_payload else None
             ),
             token_budget=_native_history_cap(model, reserve),
+            actor=actor,
         )
     except Exception as exc:
         _log.warning(
             "native_session.begin_failed", agent=agent_name, error=str(exc)[:200],
         )
         return None
+
+
+def _verified_run_member() -> str:
+    """The VERIFIED member of the run on this frame, lower case, or ``""``.
+
+    It comes from the run binding (``user`` with ``member_verified``), which
+    ``run_agent_stream`` binds from the session's member (H-73), never from
+    the payload. The store loads a session only for a thread that is this
+    member's alone, so a run with no verified member gets none.
+    """
+    try:
+        from acb_common import get_run_context
+
+        ctx = get_run_context() or {}
+    except Exception:
+        return ""
+    member = str(ctx.get("user") or "").strip().lower()
+    return member if member and ctx.get("member_verified") == "1" else ""
 
 
 async def _finish_native_session(turn: Any) -> None:
