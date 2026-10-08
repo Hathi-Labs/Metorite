@@ -3950,14 +3950,17 @@ line — never reclaim a number by deleting the other entry.
     `wbjpwtxigkileyjsgahk`. The coordinator may run the SQL in §4.2 for you.
     Set the upload size limit in Storage → Settings to 1 GB or more. The app
     dump is about 84 MB.
-  - **(b)** Make an S3 access key in the dashboard, at Storage → S3
-    Connection. Write down the endpoint and the region. Keep the key ID and
-    the secret in your password manager. ⚠️ The key is PROJECT-WIDE. It can
-    read and delete every object in every bucket of the project.
+  - **(b) RETIRED (2026-10-08, `specs/box_hardening.md` BH-4).** Do NOT make
+    an S3 access key. That key is PROJECT-WIDE, and it can delete every
+    night. If one exists, revoke it at Storage → S3 Connection. BH-4 puts a
+    write-only credential in its place: a Supabase user JWT under RLS.
   - **(c)** Make a gpg key pair on your own machine. Keep the private key and
     its passphrase in your password manager. Put only the public key on the
     box, at `/opt/acb/backup-public-key.asc`.
-  - **(d)** Put the seven `BACKUP_S3_*` and `BACKUP_GPG_*` keys in
+  - **(d) WAITS FOR BH-4.** BH-4 changes the key list. The project ref and
+    the anon key take the place of the S3 key, and three `BACKUP_SUPABASE_URL`
+    and `BACKUP_AUTH_*` keys join it. Do not push this file before BH-4
+    merges. After that, put the keys in
     `/etc/acb/backup-offbox.env`, owned by root:root with mode 0600. Only
     `acb-backup.service` loads that file. Do NOT put them in
     `/opt/acb/app/.env`. The gateway loads that file (H-270), and the run
