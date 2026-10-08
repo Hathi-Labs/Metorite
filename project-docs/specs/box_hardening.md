@@ -1157,9 +1157,9 @@ parts (B2-5).
   acceptance 2.
 - The drop-ins of the other units merge only after the BH-7 installer
   merges, because nothing installs a drop-in before it. So they land with
-  BH-7, with this check of part 1: every `User=acb` unit in
-  `deploy/hostinger/`, except `acb-pull.service`, has `NoNewPrivileges=yes`
-  in the unit or in its drop-in.
+  BH-7, and so does one check of part 1. That check reads each `User=acb`
+  unit in `deploy/hostinger/`, except `acb-pull.service`. Each one has
+  `NoNewPrivileges=yes` in the unit or in its drop-in.
 
 **Part 2, in the full slice:**
 
