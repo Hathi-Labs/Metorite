@@ -10,7 +10,20 @@ User=acb
 WorkingDirectory=/opt/acb/app
 Environment=PATH=/home/acb/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=/opt/acb/app/.env
-ExecStart=/home/acb/.local/bin/uv run uvicorn gateway.main:app --host 0.0.0.0 --port 8080
+# A restart is a gap in which nobody can connect. The gap is the drain after
+# SIGTERM plus the 9 to 16 s start, and it must stay inside the workbench's
+# 25 s retry (gatewayFetch.ts) and Caddy's 30 s hold. On 2026-10-08 the drain
+# had no bound and ran 30, 32, 90 and 90 s, so members saw "Metorite is
+# updating". Fence: tests/unit/test_gateway_drain.py.
+#
+# 1. ExecStop= runs FIRST, while this process still serves. It waits up to
+#    60 s for running chat answers and Projects agent runs to end.
+# 2. Then SIGTERM. uvicorn closes the port and drains open connections for at
+#    most 5 s. A stream it cuts reconnects through the holds above.
+# 3. TimeoutStopSec= bounds each of the two, and SIGKILL follows.
+ExecStart=/home/acb/.local/bin/uv run uvicorn gateway.main:app --host 0.0.0.0 --port 8080 --timeout-graceful-shutdown 5
+ExecStop=/bin/bash /opt/acb/app/deploy/hostinger/gateway-drain.sh
+TimeoutStopSec=75
 Restart=always
 RestartSec=5
 
