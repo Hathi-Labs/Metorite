@@ -1352,7 +1352,12 @@ async def list_agents(
     dynamic = _load_dynamic_agents()
     dynamic_names = {a["name"] for a in dynamic}
     # Static agents not overridden by dynamic entries come first
-    static = [a for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
+    # A COPY of each entry. The loop below writes each declared runtime into
+    # the entry, and the executor reads ``_AGENT_REGISTRY`` for its label. A
+    # write into the shared dict changed the label of the process on the first
+    # GET /agent (WS-43n review): task-manager and app-builder declare "maf"
+    # in config.json and are labelled "github-copilot" here, on purpose.
+    static = [dict(a) for a in _AGENT_REGISTRY if a["name"] not in dynamic_names]
     # Back-fill agent_runtime for legacy dynamic entries that predate the field
     # or have NULL in the DB column. WS-43n (§15.5): the default is "maf" for
     # every source. A repo URL no longer implies the Copilot SDK. An entry
@@ -1641,6 +1646,11 @@ async def register_agent(
                         except Exception:  # noqa: BLE001
                             cfg = {}
                         break
+                    # Only a 404 tries the next branch. Any other status
+                    # stops here, so a 5xx on main is not hidden by a 404 on
+                    # master and HEAD.
+                    if resp.status_code != 404:
+                        break
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "agent.config_fetch_failed",
@@ -1694,10 +1704,12 @@ async def register_agent(
                 ),
             )
 
-    # WS-43n (D84, D92): a NEW agent never registers on the Copilot SDK. A
-    # repo whose config.json declares it gets a 400 with the migration text of
-    # §15.5. Agents registered before this change keep their row and still
-    # run (§15.5 step 2). A repo that declares nothing gets "maf".
+    # WS-43n (D84, D92): a repo whose config.json DECLARES the Copilot
+    # runtime gets a 400 with the migration text of §15.5. A repo that
+    # declares nothing gets "maf". If such a repo still builds a Copilot
+    # agent, the loader logs its deprecation line and the executor finds it
+    # by the object (``is_copilot_agent``) until WS-43r refuses it. Agents
+    # registered before this change keep their row and still run.
     if declared_runtime == "github-copilot":
         from acb_skills.loader import COPILOT_MIGRATION_TEXT
 

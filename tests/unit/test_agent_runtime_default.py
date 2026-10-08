@@ -32,7 +32,15 @@ Mutations this file catches (R7), each run red before the change:
 * the loader stops flagging a Copilot agent, or logs it each run ->
   ``test_an_allowlisted_copilot_agent_still_loads_with_one_line``;
 * the WS-43r switch does not refuse ->
-  ``test_the_ws43r_switch_refuses_a_copilot_agent``.
+  ``test_the_ws43r_switch_refuses_a_copilot_agent``;
+* ``list_agents`` writes into the shared ``_AGENT_REGISTRY`` dicts ->
+  ``test_list_agents_leaves_the_registry_labels_alone``;
+* a 5xx on ``main`` is hidden by a 404 on the next branch ->
+  ``test_a_5xx_on_main_is_not_hidden_by_a_404_later``;
+* the sub-agent or batch path decides by the label alone ->
+  ``test_the_executor_finds_a_copilot_object_without_its_label``;
+* the batch path sends ``AgentRuntimeUnsupported`` to its self-mutation
+  clause -> ``test_a_refused_runtime_never_self_mutates``.
 """
 
 from __future__ import annotations
@@ -327,3 +335,149 @@ def test_an_allowlisted_copilot_agent_still_loads_with_one_line(log, name, rel_d
     assert built and loader.is_copilot_agent(built[0])
     lines = _deprecations(log)
     assert [line["agent"] for line in lines] == [name]
+
+
+# ── Review round 1 ──────────────────────────────────────────────────────────
+
+
+def test_list_agents_leaves_the_registry_labels_alone(monkeypatch) -> None:
+    """``list_agents`` writes each declared runtime into its entries. It must
+    write into copies: the executor reads ``_AGENT_REGISTRY`` for its label,
+    and task-manager declares "maf" while it is held on "github-copilot"."""
+    before = {e["name"]: e.get("agent_runtime") for e in agent_routes._AGENT_REGISTRY}
+    monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [])
+    monkeypatch.setattr(agent_routes, "_declared_runtime", lambda *_a, **_k: "maf")
+    monkeypatch.setattr(agent_routes, "_load_agent_aliases", lambda: {})
+    user = SimpleNamespace(has_permission=lambda _p: True, can_run_agent=lambda _n: True)
+
+    listed = asyncio.run(agent_routes.list_agents(user=user))
+
+    assert all(a["agent_runtime"] == "maf" for a in listed), "the listing shows the declared runtime"
+    after = {e["name"]: e.get("agent_runtime") for e in agent_routes._AGENT_REGISTRY}
+    assert after == before
+    assert after["task-manager"] == "github-copilot"
+
+
+def test_a_5xx_on_main_is_not_hidden_by_a_404_later(monkeypatch, saved) -> None:
+    import httpx
+
+    statuses = iter([503, 404, 404])
+
+    class _Client:
+        def __init__(self, *_a, **_k) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a) -> None:
+            return None
+
+        async def get(self, url: str, headers=None):
+            return _FakeResponse(next(statuses))
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    with pytest.raises(HTTPException) as exc:
+        _register(name="new-agent", repo_url="acme/agent-new")
+    assert exc.value.status_code == 502
+    assert not saved
+
+
+def _function(tree, name: str):
+    import ast
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    raise AssertionError(f"executor.{name} is gone")
+
+
+def _calls_is_copilot_agent(node) -> bool:
+    import ast
+
+    return any(
+        isinstance(n, ast.Call) and getattr(n.func, "id", None) == "is_copilot_agent"
+        for n in ast.walk(node)
+    )
+
+
+def test_the_executor_finds_a_copilot_object_without_its_label() -> None:
+    """A repo agent that declares no runtime is labelled "maf" (WS-43n). The
+    sub-agent and batch paths read the label, so each must also test the
+    object, as the stream path does. Read from the syntax tree, because the
+    two paths need a tenant, a workspace and a parent run to drive."""
+    import ast
+
+    src = (REPO_ROOT / "apps/services/orchestrator/orchestrator/executor.py").read_text(
+        encoding="utf-8",
+    )
+    tree = ast.parse(src)
+
+    sub = _function(tree, "_run_sub_agent_streaming")
+    decides = [
+        n for n in ast.walk(sub)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "_sub_is_copilot" for t in n.targets)
+    ]
+    assert decides and all(_calls_is_copilot_agent(n.value) for n in decides), (
+        "the sub-agent path decides by the label alone"
+    )
+    label_only = [
+        n for n in ast.walk(sub)
+        if isinstance(n, ast.If)
+        and any(
+            isinstance(c, ast.Compare)
+            and getattr(c.left, "id", None) == "_runtime"
+            for c in ast.walk(n.test)
+        )
+    ]
+    assert not label_only, "an `if` of the sub-agent path tests `_runtime` alone"
+
+    batch = _function(tree, "_run_agent_inner")
+    sets_from_object = [
+        n for n in ast.walk(batch)
+        if isinstance(n, ast.If)
+        and _calls_is_copilot_agent(n.test)
+        and any(
+            isinstance(b, ast.Assign)
+            and any(getattr(t, "id", None) == "_is_copilot_agent" for t in b.targets)
+            for b in n.body
+        )
+    ]
+    assert sets_from_object, "the batch path decides by the label alone"
+
+
+def test_a_refused_runtime_never_self_mutates(monkeypatch) -> None:
+    """After WS-43r a Copilot agent raises ``AgentRuntimeUnsupported``. The
+    batch path must answer it before its ``AgentLoadError`` clause, which
+    starts a self-mutation and opens a repair PR."""
+    executor = pytest.importorskip("orchestrator.executor")
+    mutation = pytest.importorskip("orchestrator.mutation")
+    mutations: list[dict] = []
+
+    class _Ctx:
+        def __enter__(self):
+            raise loader.AgentRuntimeUnsupported("refused: " + loader.COPILOT_MIGRATION_TEXT)
+
+        def __exit__(self, *_a) -> bool:
+            return False
+
+    async def _record(**kw: Any) -> None:
+        mutations.append(kw)
+
+    async def _may_run(_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(mutation, "attempt_self_mutation", _record)
+    monkeypatch.setattr(executor, "_assert_may_run_agent", _may_run)
+    monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _Ctx())
+    monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [
+        {"name": "legacy-agent", "agent_runtime": "maf", "repo_name": "acme/x",
+         "local_path": None},
+    ])
+
+    with pytest.raises(executor.AgentRunError) as exc:
+        asyncio.run(executor.run_agent("legacy-agent", {"message": "x"}))
+    assert isinstance(exc.value.original, loader.AgentRuntimeUnsupported)
+    assert loader.COPILOT_MIGRATION_TEXT in str(exc.value)
+    assert mutations == [], "a refused runtime started a self-mutation"
