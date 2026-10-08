@@ -920,10 +920,10 @@ not a `jobs.json`, because the gateway cannot import the workbench.
 `test_shell_intent.py::TestOneJobList` fails if the ids, the links or the gates
 drift from `lib/shell/registry.ts`.
 
-Each call has a bound of 3 s for the pick and 3 s for the fill, on the
-server, because Uvicorn does not cancel a handler when the browser goes. A
-fill that fails or runs out of time is no fill: the job opens empty, and the
-answer is cached, so the pick is never billed twice. A caller with no address,
+The server limits the pick to 3 s and the fill to 3 s. Uvicorn does not cancel
+a handler when the browser goes, so the limit must live on the server. A fill
+that fails or runs out of time is no fill. The job opens empty, and the answer
+is cached, so the pick is never billed twice. A caller with no address,
 such as the internal service, is no member and is never billed.
 
 The bar shows the pick as the first row of Ask: "New task · call the vendor",

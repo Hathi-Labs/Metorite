@@ -143,7 +143,6 @@ def _job_answer(job: Job, filled: dict[str, str]) -> dict[str, Any]:
 async def _pick(user: UserContext, words: str, scope: str | None, jobs: list[Job]):
     """The job the words ask for, or ASK. Raises DecideUnavailable when it cannot say."""
     from acb_llm import ChoiceAnswer, ChoiceQuestion, decide
-
     from acb_llm.routed import run_attribution
 
     # Who to bill, from the request's own binding, as the email features do
