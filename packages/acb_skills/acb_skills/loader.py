@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 import threading
@@ -43,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_logger, get_settings
+from acb_common.child_env import child_env
 
 _log = get_logger("acb_skills.loader")
 
@@ -79,14 +79,14 @@ def _build_github_url(org: str, repo: str, token: str | None) -> str:
     return f"https://github.com/{org}/{repo}.git"
 
 
-# Environment passed to every git subprocess: suppresses credential popups and
-# GUI password prompts (GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never) so the
-# process fails fast rather than hanging waiting for user input.
+# The names every git clone and pull adds to ``acb_common.child_env``'s
+# allowlist (WS-49 BH-1). They suppress credential popups and GUI password
+# prompts (GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never) so the process fails
+# fast rather than hanging waiting for user input.
 # PYTHONUTF8=1 + PYTHONIOENCODING=utf-8: ensure child Python processes use
 # UTF-8 on Windows (avoids cp1252 UnicodeEncodeError for scripts with emoji/
 # non-ASCII output — e.g. zoho_crm.py's pipeline summary headers).
-_GIT_ENV: dict[str, str] = {
-    **os.environ,
+_GIT_EXTRA: dict[str, str] = {
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_ASKPASS": "echo",
     "GCM_INTERACTIVE": "never",
@@ -94,6 +94,15 @@ _GIT_ENV: dict[str, str] = {
     "PYTHONUTF8": "1",
     "PYTHONIOENCODING": "utf-8",
 }
+
+
+def _git_env() -> dict[str, str]:
+    """The env of a git clone or pull: the allowlist and ``_GIT_EXTRA``.
+
+    It is built at each call, so a name the gateway sets after import (a
+    proxy, ``UV_CACHE_DIR``) reaches the child, and no secret does.
+    """
+    return child_env(extra=_GIT_EXTRA)
 
 
 def _run_git(args: list[str], *, cwd: Path, timeout: int = 60) -> subprocess.CompletedProcess[str]:
@@ -104,7 +113,7 @@ def _run_git(args: list[str], *, cwd: Path, timeout: int = 60) -> subprocess.Com
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=_GIT_ENV,
+        env=_git_env(),
         timeout=timeout,
     )
 
@@ -123,7 +132,7 @@ def _clone_repo(url: str, dest: Path) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=_GIT_ENV,
+        env=_git_env(),
         timeout=120,
     )
     if result.returncode != 0:
@@ -134,12 +143,14 @@ def _clone_repo(url: str, dest: Path) -> None:
     # empty placeholder while all code lives on another branch), try to checkout
     # the first remote branch that has actual files.
     tracked = subprocess.run(
-        ["git", "ls-files"], cwd=str(dest), capture_output=True, text=True, encoding="utf-8"
+        ["git", "ls-files"], cwd=str(dest), capture_output=True, text=True, encoding="utf-8",
+        env=child_env(),
     )
     if not tracked.stdout.strip():
         branches_r = subprocess.run(
             ["git", "branch", "-r", "--sort=-committerdate"],
             cwd=str(dest), capture_output=True, text=True, encoding="utf-8",
+            env=child_env(),
         )
         for branch_line in branches_r.stdout.splitlines():
             branch = branch_line.strip()
@@ -148,11 +159,13 @@ def _clone_repo(url: str, dest: Path) -> None:
             co = subprocess.run(
                 ["git", "checkout", branch, "--", "."],
                 cwd=str(dest), capture_output=True, text=True, encoding="utf-8",
+                env=child_env(),
             )
             if co.returncode == 0:
                 # Verify we actually got files
                 verify = subprocess.run(
-                    ["git", "ls-files"], cwd=str(dest), capture_output=True, text=True, encoding="utf-8"
+                    ["git", "ls-files"], cwd=str(dest), capture_output=True, text=True, encoding="utf-8",
+                    env=child_env(),
                 )
                 if verify.stdout.strip():
                     _log.info("loader.fallback_branch", dest=dest.name, branch=branch)
@@ -1225,6 +1238,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
             try:
                 result = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=600,
+                    env=child_env(),
                 )
                 if result.returncode != 0:
                     ok = False

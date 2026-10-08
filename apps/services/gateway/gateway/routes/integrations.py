@@ -27,6 +27,7 @@ from typing import Any
 import httpx
 from acb_auth import UserContext, UserRole, get_current_user, require_feature_router, require_role
 from acb_common import env_guard, get_logger, get_settings
+from acb_common.child_env import child_env, env_values
 from acb_llm.key_store import CUSTOM_INTEGRATION_TYPE, INTEGRATION_ENV_MAP
 from fastapi import APIRouter, Depends, HTTPException, status
 from gateway.db import current_tenant
@@ -2306,6 +2307,7 @@ async def github_account(
             capture_output=True,
             text=True,
             timeout=8,
+            env=child_env(extra=env_values("GH_TOKEN")),
         )
         output = proc.stdout + proc.stderr
         parsed = _parse_gh_status(output)
@@ -2348,6 +2350,7 @@ async def github_connect_cli(
             capture_output=True,
             text=True,
             timeout=8,
+            env=child_env(),
         )
     except FileNotFoundError:
         raise HTTPException(
@@ -2372,6 +2375,7 @@ async def github_connect_cli(
             capture_output=True,
             text=True,
             timeout=8,
+            env=child_env(),
         )
         parsed = _parse_gh_status(status_proc.stdout + status_proc.stderr)
         login = parsed["login"] or "unknown"

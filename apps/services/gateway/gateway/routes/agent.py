@@ -39,6 +39,7 @@ from acb_auth import (
     require_permission,
 )
 from acb_common import get_logger, get_settings
+from acb_common.child_env import child_env
 from fastapi import (APIRouter, BackgroundTasks, Depends, Header,
                      HTTPException, Request, status)
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -1467,6 +1468,7 @@ async def pull_agent(
             cwd=str(clone_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         if proc.returncode == 0:
@@ -1493,6 +1495,7 @@ async def pull_agent(
             cwd=str(clone_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         if proc.returncode == 0:
@@ -1510,6 +1513,7 @@ async def pull_agent(
                 cwd=str(clone_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
+                env=child_env(),
             )
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
             if proc.returncode == 0:
@@ -3165,6 +3169,7 @@ async def approve_pending_commit(
             cwd=clone_dir,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         await verify.communicate()
         if verify.returncode != 0:
@@ -3182,6 +3187,7 @@ async def approve_pending_commit(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         branch_out, _ = await branch_proc.communicate()
         local_branch = branch_out.decode(errors="replace").strip().splitlines()[0].strip() if branch_out else "main"
@@ -3196,6 +3202,7 @@ async def approve_pending_commit(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         await remote_proc.communicate()
         has_remote = remote_proc.returncode == 0
@@ -3335,6 +3342,7 @@ async def approve_pending_commit(
                     cwd=clone_dir,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
+                    env=child_env(),
                 )
                 await anc_proc.communicate()
                 if anc_proc.returncode == 0:
@@ -3437,6 +3445,7 @@ async def reject_pending_commit(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         head_out, _ = await head_proc.communicate()
         head_sha = head_out.decode().strip()
@@ -3531,6 +3540,7 @@ async def remutate_pending_commit(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         head_out, _ = await head_proc.communicate()
         head_sha = head_out.decode().strip()
@@ -3681,6 +3691,7 @@ async def _git_behind_count(clone_dir: str) -> int:
             cwd=clone_dir,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         await asyncio.wait_for(fetch_proc.communicate(), timeout=5)
     except (TimeoutError, Exception):
@@ -3693,6 +3704,7 @@ async def _git_behind_count(clone_dir: str) -> int:
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         if proc.returncode == 0:
@@ -3712,6 +3724,7 @@ async def _git_exec(cwd: str, args: list[str]) -> int:
         cwd=cwd,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        env=child_env(),
     )
     await proc.communicate()
     return proc.returncode
@@ -3742,6 +3755,7 @@ async def _git_push_with_rebase(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         rb_out, _ = await asyncio.wait_for(rb_proc.communicate(), timeout=15)
         for line in rb_out.decode(errors="replace").splitlines():
@@ -3764,6 +3778,7 @@ async def _git_push_with_rebase(
         cwd=clone_dir,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=child_env(),
     )
     _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=60)
     if proc.returncode == 0:
@@ -3796,8 +3811,7 @@ async def _git_push_with_rebase(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**__import__("os").environ,
-                 "GIT_SEQUENCE_EDITOR": "true"},
+            env=child_env(extra={"GIT_SEQUENCE_EDITOR": "true"}),
         )
         _, rebase_err = await asyncio.wait_for(
             rebase_proc.communicate(), timeout=60,
@@ -3842,6 +3856,7 @@ async def _git_push_with_rebase(
             cwd=clone_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         sha_out, _ = await asyncio.wait_for(sha_proc.communicate(), timeout=10)
         if sha_proc.returncode == 0:
@@ -3863,6 +3878,7 @@ async def _git_push_with_rebase(
         cwd=clone_dir,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        env=child_env(),
     )
     await asyncio.wait_for(retry_proc.communicate(), timeout=60)
     success = retry_proc.returncode == 0

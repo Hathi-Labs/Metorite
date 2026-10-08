@@ -32,10 +32,11 @@ sandbox remains the hardening path for untrusted code.
 from __future__ import annotations
 
 import os
-import re
 import sys
 import time
 from pathlib import Path
+
+from acb_common.child_env import child_env
 
 from acb_skills.write_artifact import (
     artifact_context,
@@ -57,11 +58,6 @@ _SWEEP_MAX_FILES = 200
 # the run is harmless (the mirror is an idempotent write-through).
 _SWEEP_MTIME_SLACK = 2.0
 
-# Env allowlist for script subprocesses, plus a deny-pattern so nothing
-# secret-shaped leaks even through allowed names.
-_ENV_ALLOW = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR", "PYTHONPATH")
-_ENV_DENY_RE = re.compile(r"(TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL)", re.I)
-
 
 def _workspace_root() -> Path | None:
     root = artifact_context().get("workspace_root")
@@ -77,7 +73,8 @@ def _script_env() -> dict[str, str]:
     """Minimal environment for script subprocesses: base allowlist + exactly
     the agent's DECLARED integrations' credentials.
 
-    The base allowlist is secret-free (deny-pattern on top). On top of it, the
+    The base allowlist is ``acb_common.child_env`` (WS-49 BH-1), the one
+    allowlist of every child of the gateway. On top of it, the
     canonical env vars of the integrations this agent declared in its
     ``config.json`` — and that resolved for this run — are passed through
     (``acb_skills.integrations.FIELD_TO_ENV``). So a script gets the Zoho
@@ -95,10 +92,7 @@ def _script_env() -> dict[str, str]:
     concurrent run cannot widen *which names* are looked up. A true per-run
     boundary for the process itself is the Tier-2 container env (MT-0c).
     """
-    env = {
-        k: v for k, v in os.environ.items()
-        if k in _ENV_ALLOW and not _ENV_DENY_RE.search(k)
-    }
+    extra: dict[str, str | None] = {}
     declared = _declared_integrations()
     if declared:
         try:
@@ -109,11 +103,11 @@ def _script_env() -> dict[str, str]:
             for var in env_var_names(declared):
                 val = credential(var)
                 if val:
-                    env[var] = val
+                    extra[var] = val
         except ImportError:
             pass
-    env.setdefault("PYTHONUNBUFFERED", "1")
-    return env
+    extra.setdefault("PYTHONUNBUFFERED", "1")
+    return child_env(extra=extra)
 
 
 def _cap(text: str) -> str:
@@ -320,6 +314,7 @@ def _commit_repo_changes(root: Path, task: str) -> str | None:
         return subprocess.run(
             ["git", *args], cwd=str(root),
             capture_output=True, text=True, timeout=30,
+            env=child_env(),
         )
 
     try:

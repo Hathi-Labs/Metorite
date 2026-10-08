@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from acb_common import get_logger, get_settings
+from acb_common.child_env import child_env
 
 _log = get_logger("gateway.monorepo_pr")
 
@@ -122,6 +123,7 @@ async def _run(args: list[str], *, cwd: str | Path, timeout: int = 60) -> tuple[
         cwd=str(cwd),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=child_env(),
     )
     out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     return (

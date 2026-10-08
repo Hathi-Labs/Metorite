@@ -40,6 +40,7 @@ from typing import Any
 
 from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
+from acb_common.child_env import child_env, docker_env
 
 _log = get_logger("orchestrator.mutation")
 
@@ -195,6 +196,7 @@ async def _auto_push_commit(agent_dir: str, commit_sha: str) -> bool:
             cwd=agent_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=child_env(),
         )
         _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30)
         if proc.returncode == 0:
@@ -741,6 +743,7 @@ async def _stash_pull_before_mutation(
             cwd=agent_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=child_env(),
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
         return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
@@ -922,6 +925,7 @@ async def _run_mutation_sandbox(
             *docker_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=docker_env(),
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -1005,6 +1009,7 @@ async def _docker_kill(short_run: str) -> None:
             "docker", "kill", f"acb-mutation-{short_run}",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            env=docker_env(),
         )
         await proc.communicate()
     except Exception:
@@ -1024,6 +1029,7 @@ async def _git_diff(agent_dir: str, commit_sha: str) -> str:
             cwd=agent_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=child_env(),
         )
         stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
         diff = stdout_bytes.decode(errors="replace")

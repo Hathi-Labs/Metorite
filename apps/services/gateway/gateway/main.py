@@ -10,6 +10,7 @@ from acb_auth import (UserContext, UserRole, get_current_user,
                       require_role)
 from acb_common import configure_logging, get_logger, get_settings
 from acb_common import db_busy
+from acb_common.child_env import copilot_env
 from acb_common.db import TenantUnbound, clear_tenant, release_tenant
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -130,12 +131,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             os.environ.setdefault("GITHUB_TOKEN", _gh)
             import time as _t
 
-            from copilot import CopilotClient as _CC
-            _c = _CC(github_token=_gh); await _c.start()  # SDK 1.0: keywords (H-181)
-            try:
-                _m = await _c.list_models()
-            finally:
-                await _c.stop()
+            _m = await _list_copilot_models(_gh)
             if _m:
                 _copilot_models_cache["data"] = {
                     "models": [{"id": x.id, "label": x.name, "model_picker_enabled": True}
@@ -1896,6 +1892,23 @@ _copilot_models_cache: dict = {"data": None, "ts": 0.0}
 _COPILOT_MODELS_CACHE_TTL = 300
 
 
+async def _list_copilot_models(github_token: str) -> list:
+    """Start one Copilot CLI to list the models, then stop it.
+
+    The startup warmup and ``/copilot/models`` both call this. WS-49 BH-1: the
+    CLI gets ``copilot_env()`` and no gateway secret. The SDK adds
+    ``COPILOT_SDK_AUTH_TOKEN`` from ``github_token`` itself.
+    """
+    from copilot import CopilotClient
+
+    sdk = CopilotClient(github_token=github_token, env=copilot_env())  # SDK 1.0: keywords (H-181)
+    await sdk.start()
+    try:
+        return list(await sdk.list_models() or [])
+    finally:
+        await sdk.stop()
+
+
 @app.get("/copilot/models", tags=["copilot"])
 async def copilot_models() -> dict:
     """Return Copilot SDK models with 5-min TTL cache."""
@@ -1911,13 +1924,7 @@ async def copilot_models() -> dict:
     if github_token:
         try:
             os.environ.setdefault("GITHUB_TOKEN", github_token)
-            from copilot import CopilotClient
-            _sdk = CopilotClient(github_token=github_token)  # SDK 1.0: keywords (H-181)
-            await _sdk.start()
-            try:
-                _models = await _sdk.list_models()
-            finally:
-                await _sdk.stop()
+            _models = await _list_copilot_models(github_token)
             if _models:
                 result = {
                     "models": [

@@ -7,6 +7,7 @@ import os
 from collections.abc import AsyncIterable
 from typing import Any
 
+from acb_common.child_env import copilot_env
 from acb_llm import compress_tool_output
 from acb_llm.attribution import attribution_headers
 from agent_framework import AgentResponseUpdate, Content
@@ -215,6 +216,14 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
             or os.environ.get("GITHUB_TOKEN")
             or ""
         ).strip()
+        if self._client is None and not token and not self._started:
+            # WS-49 BH-1 (BH-D3): with no client, the upstream start builds
+            # its own CopilotClient with no env (``_agent.py`` line 772), and
+            # that CLI inherits every secret of the gateway. Refuse instead.
+            raise AgentException(
+                "No Copilot token is set (COPILOT_GITHUB_TOKEN, "
+                "GITHUB_COPILOT_TOKEN or GITHUB_TOKEN). Connect GitHub first."
+            )
         if self._client is None and token:
             client_options: dict[str, Any] = {"github_token": token}
             cli_path = self._settings.get("cli_path")
@@ -223,7 +232,9 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
             log_level = self._settings.get("log_level")
             if log_level:
                 client_options["log_level"] = log_level
-            self._client = CopilotClient(**client_options)
+            # WS-49 BH-1: the CLI gets the allowlist and no gateway secret.
+            # The SDK adds COPILOT_SDK_AUTH_TOKEN from github_token itself.
+            self._client = CopilotClient(**client_options, env=copilot_env())
             logger.info("Copilot client using explicit token auth")
         # Explicit base call (not super()): this method is monkey-patched
         # onto plain GitHubCopilotAgent instances, where zero-arg super()
