@@ -14,6 +14,7 @@
  * member does not hold (`launch_surface.md` §8.4).
  */
 import Link from "next/link";
+import { useRef } from "react";
 import Icon from "@/components/Icon";
 import Modal from "@/components/ui/Modal";
 import type { NavSection } from "@/lib/nav";
@@ -32,10 +33,17 @@ export default function AppLauncher({
   pathname: string | null;
 }) {
   const groups = launcherGroups(sections);
+  // ⚠️ Focus the app the member is in, else the first app. Without this the
+  // dialog focuses its first tabbable, the header's Close button, and Enter
+  // shuts the dialog with no app opened (review of NS-2, 2026-10-09).
+  const shown = groups.flatMap((g) => g.items);
+  const focusHref = (shown.find((p) => isActive(pathname, p.href)) ?? shown[0])?.href;
+  const focusRef = useRef<HTMLAnchorElement | null>(null);
   return (
     <Modal
       open={open}
       onClose={onClose}
+      initialFocus={focusHref ? focusRef : undefined}
       title="All apps"
       description="Everything you can open here, and what each one is for."
       icon="LayoutGrid"
@@ -44,6 +52,14 @@ export default function AppLauncher({
     >
       {/* The body pads itself, as every Modal body does (TaskSettingsModal). */}
       <div className="flex max-h-[70vh] flex-col gap-5 overflow-y-auto p-4" data-testid="app-launcher">
+        {groups.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            You have no apps yet. An admin of your organization chooses them.{" "}
+            <Link href="/people/access" onClick={onClose} className="text-primary underline-offset-2 hover:underline">
+              See what you can open
+            </Link>
+          </p>
+        )}
         {groups.map((g) => (
           <section key={g.id} aria-labelledby={`launcher-${g.id}`}>
             <h3
@@ -58,6 +74,7 @@ export default function AppLauncher({
                 return (
                   <li key={p.href}>
                     <Link
+                      ref={p.href === focusHref ? focusRef : undefined}
                       href={p.href}
                       onClick={onClose}
                       aria-current={here ? "page" : undefined}

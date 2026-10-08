@@ -25,7 +25,7 @@ import OrgBrandLockup from "@/components/OrgBrandLockup";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
 import AppLauncher from "@/lib/shell/AppLauncher";
-import { HOME_PANE, accountLinks, isActive, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
+import { HOME_PANE, accountLinks, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
 
 /** Mirrors gateway/routes/apps/pins.py's PinnedApp — GET /api/apps/pins. */
 type PinnedApp = { slug: string; name: string; icon?: string };
@@ -125,14 +125,15 @@ export default function Sidebar() {
   useEffect(() => {
     if (!pathname) return;
     setFoldedSections((prev) => {
-      // Both shapes: the shell nav groups by team, so its ids differ.
-      const owners = [...NAV_SECTIONS, ...shellSidebar(NAV_SECTIONS)]
-        .filter((s) => prev[s.id] && s.items.some((p) => pathname.startsWith(p.href)))
-        .map((s) => s.id);
-      if (owners.length === 0) return prev;
-      return persistFolds({ ...prev, ...Object.fromEntries(owners.map((id) => [id, false])) });
+      // The shape on screen. The shell nav groups by team, so its ids differ.
+      // The FIRST owner only, as before: on /people/me the "Apps" group (it
+      // holds /people) keeps the fold its member chose.
+      const shape = shellNav ? shellSidebar(NAV_SECTIONS) : NAV_SECTIONS;
+      const owner = shape.find((s) => s.items.some((p) => pathname.startsWith(p.href)));
+      if (!owner || !prev[owner.id]) return prev;
+      return persistFolds({ ...prev, [owner.id]: false });
     });
-  }, [pathname]);
+  }, [pathname, shellNav]);
 
   // Poll agent list for behind_by counts — shows "N updates" badge on Agents
   useEffect(() => {
@@ -372,7 +373,7 @@ export default function Sidebar() {
       </nav>
 
       {/* All apps (NS-2): every app the member holds, each with its purpose. */}
-      {shellNav && !accessLoading && (
+      {shellNav && !accessLoading && launcherGroups(sections).length > 0 && (
         <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2" : "px-2 py-2"}`}>
           <button
             type="button"

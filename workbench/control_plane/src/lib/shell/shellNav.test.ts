@@ -81,6 +81,10 @@ describe("the account menu holds pages about the member", () => {
     ]);
   });
 
+  it("for an unresolved viewer: no row at all, not My access alone (§8.1)", () => {
+    expect(accountLinks(visibleSections(null, true))).toEqual([]);
+  });
+
   it("for a member who holds nothing: still their own pages, which no grant gates", () => {
     expect(accountLinks(visibleSections([], false)).map((l) => l.href)).toEqual([
       "/people/me",

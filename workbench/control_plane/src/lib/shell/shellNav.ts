@@ -109,6 +109,10 @@ export const MY_ACCESS: AccountLink = { href: "/people/access", label: "My acces
  * then the organization's. A member sees only what `visibleSections` gave.
  */
 export function accountLinks(sections: readonly NavSection[]): AccountLink[] {
+  // No sections is an unresolved viewer (`visibleSections(null)`). A member
+  // who holds nothing still gets My Profile and Appearance, which no grant
+  // gates. So nothing here means "not known yet", and it shows nothing (§8.1).
+  if (sections.length === 0) return [];
   const panes = accountPanes(sections);
   const row = (p: NavPane): AccountLink => ({ href: p.href, label: p.label, icon: p.icon });
   const mine = panes.filter((p) => p.team === "personal").map(row);

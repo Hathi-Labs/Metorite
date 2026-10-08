@@ -43,7 +43,7 @@ import { useAccountTabSync } from "@/lib/accountSwitch";
 import { ShellFrame } from "@/lib/shell/ShellBar";
 import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 import AppLauncher from "@/lib/shell/AppLauncher";
-import { HOME_PANE, accountLinks, isActive, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
+import { HOME_PANE, accountLinks, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
 // in the SHELL so the running timer stays visible across every app in the
 // control plane; renders nothing when no focus session is active.
@@ -408,8 +408,9 @@ function MobileBottomNavInner({
             </div>
           </div>
         ))}
-        {/* All apps (NS-2). The drawer closes first, so one overlay shows. */}
-        {shellNav && !accessLoading && (
+        {/* All apps (NS-2), only when it would list something. The drawer
+            closes first, so one overlay shows. */}
+        {shellNav && !accessLoading && launcherGroups(navSections).length > 0 && (
           <div className="px-2 pb-2">
             <button
               type="button"
