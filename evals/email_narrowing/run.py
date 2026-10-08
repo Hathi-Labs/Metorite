@@ -22,6 +22,8 @@ against the gateway stub, and the after path runs the REAL pipeline of
    answering message stays unread.
 2. COST. The after path's credits on the gated questions are at most
    :data:`COST_BAR` (40 percent) of the before path's credits.
+3. NEVER MORE (H-276). No gated question costs more after than before, and
+   the gated questions together do not (:func:`never_costs_more`).
 
 Q5 is the expected miss (spec Q3). The search is lexical, and two of its
 answers share no word with the search. Its recall is reported and not gated.
@@ -340,6 +342,45 @@ def _ratio(after: Decimal, before: Decimal) -> float | None:
     return round(float(after / before), 4) if before else None
 
 
+#: The name of the rule of H-276 in ``Summary.rules``.
+NEVER_MORE = "never_costs_more_than_today"
+
+
+def never_costs_more(
+    rows: list[tuple[str, Decimal, Decimal]],
+    known: dict[str, tuple[Decimal, str]] | None = None,
+) -> dict[str, Any]:
+    """The rule of H-276: the narrowing path never costs more than today's path.
+
+    *rows* holds ``(question id, before credits, after credits)`` for each
+    gated question. The rule fails when one question costs more after than
+    before, or when the gated questions together do.
+
+    *known* names a question that already costs more, with the highest ratio
+    that the gate accepts for it and the HANDOFF id that holds its fix. Such a
+    question passes only while its ratio stays at that ratio or under it, so
+    it cannot get worse in silence. A ratio of 1 or less needs no entry.
+    """
+    known = known or {}
+    over: list[str] = []
+    accepted: list[str] = []
+    for qid, before, after in rows:
+        if after <= before:
+            continue
+        ratio = _ratio(after, before)
+        shown = f"x{ratio}" if ratio is not None else "with no cost today"
+        cap = known.get(qid)
+        if cap is not None and before > 0 and after <= before * cap[0]:
+            accepted.append(f"{qid} {shown} (known, {cap[1]}, gate x{cap[0]})")
+        else:
+            over.append(f"{qid} {shown}")
+    total_before = sum((b for _q, b, _a in rows), Decimal(0))
+    total_after = sum((a for _q, _b, a in rows), Decimal(0))
+    if total_after > total_before:
+        over.append(f"the gated questions together x{_ratio(total_after, total_before)}")
+    return {"pass": not over, "detail": over, "accepted": accepted}
+
+
 def _break_even(
     before: Decimal, after_tables: list[dict[str, dict[str, int]]],
     card: dict[str, dict[str, str]], tier: str,
@@ -440,6 +481,7 @@ def judge(raw: Raw, card: dict[str, dict[str, str]] | None = None) -> Summary:
     questions: list[dict[str, Any]] = []
     gated_before = gated_after = gated_best = Decimal(0)
     recall_ok = True
+    rows: list[tuple[str, Decimal, Decimal]] = []
     for q in ds.questions:
         before, after = results[q.id]["before"], results[q.id]["after"]
         b_cr, a_cr, best_cr = (before.router.credits(card), after.router.credits(card),
@@ -450,6 +492,7 @@ def judge(raw: Raw, card: dict[str, dict[str, str]] | None = None) -> Summary:
         pick = _recall(found_answering, after.read)
         status = "pass"
         if q.spec.gated:
+            rows.append((q.id, b_cr, a_cr))
             gated_before += b_cr
             gated_after += a_cr
             gated_best += best_cr
@@ -476,6 +519,9 @@ def judge(raw: Raw, card: dict[str, dict[str, str]] | None = None) -> Summary:
         })
     ratio = _ratio(gated_after, gated_before)
     cost_ok = ratio is not None and Decimal(str(ratio)) <= COST_BAR
+    # H-276: every gated question, and all of them together, cost no more
+    # after than before. The email eval knows no question that costs more.
+    rules = {**rules, NEVER_MORE: never_costs_more(rows)}
     rules_ok = all(r["pass"] is not False for r in rules.values())
     gated_tables = [results[q.id]["after"].table() for q in ds.questions if q.spec.gated]
     bodies = [len(m["body_text"]) for m in ds.messages]
@@ -547,12 +593,24 @@ def summary_lines(s: Summary) -> list[str]:
         f"  break-even: tier-powerful x{t['break_even_powerful_x']}, "
         f"tier-decide x{t['break_even_decide_x']}"
     )
+    lines.extend(never_more_lines(s.rules))
     for name, rule in s.rules.items():
         if rule["pass"] is False:
             lines.append(f"  RULE FAILED: {name}: {rule['detail']}")
         elif rule["pass"] is None:
             lines.append(f"  RULE NOT CHECKED: {name}: {rule['detail']}")
     lines.append("  stubbed: " + "; ".join(t["stubbed"]))
+    return lines
+
+
+def never_more_lines(rules: dict[str, dict[str, Any]]) -> list[str]:
+    """The summary lines of the rule of H-276, in both evals."""
+    rule = rules.get(NEVER_MORE)
+    if rule is None:
+        return []
+    verdict = "holds" if rule["pass"] else "BROKEN"
+    lines = [f"  NEVER MORE (H-276): the narrowing path costs no more than today's path: {verdict}"]
+    lines += [f"  NEVER MORE: accepted {a}" for a in rule.get("accepted", [])]
     return lines
 
 
