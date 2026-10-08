@@ -5,6 +5,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,8 @@ export async function GET(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
+    const refused = refuseUnsafePath([sessionId]);
+    if (refused) return refused;
     const filePath = req.nextUrl.searchParams.get("path");
     if (!filePath) {
       return NextResponse.json({ error: "Missing ?path= query parameter" }, { status: 400 });
@@ -63,6 +66,8 @@ export async function PUT(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
+    const refused = refuseUnsafePath([sessionId]);
+    if (refused) return refused;
     const filePath = req.nextUrl.searchParams.get("path");
     if (!filePath) {
       return NextResponse.json({ error: "Missing ?path= query parameter" }, { status: 400 });
@@ -102,6 +107,8 @@ export async function DELETE(
   if (me instanceof NextResponse) return me;
   try {
     const { sessionId } = await params;
+    const refused = refuseUnsafePath([sessionId]);
+    if (refused) return refused;
     const filePath = req.nextUrl.searchParams.get("path");
     if (!filePath) {
       return NextResponse.json({ error: "Missing ?path= query parameter" }, { status: 400 });

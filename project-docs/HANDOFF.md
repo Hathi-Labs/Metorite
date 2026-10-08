@@ -149,6 +149,35 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `data_narrowing_pipeline.md` §3.3a and §9 N4 · D93
 - **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
 
+### H-280 · A single route param can still move a gateway call to another route under its prefix · [AGENT]
+- **Check:** `rg -n '\$\{(sessionId|subject|agentName|provider|threadId)\}' workbench/control_plane/src/app/api`.
+  A hit that puts the raw param into a gateway URL, with no `refuseUnsafePath([...])`
+  in that handler, means this is open.
+- **Why.** About 20 handlers put one raw param into a gateway path with a
+  fixed suffix, for example `chat/sessions/[sessionId]/participants/[subject]`.
+  Next decodes the param once, so `%3F`, `%23` and `%2F` arrive as `?`, `#`
+  and `/`.
+  - A `?` or `#` cuts off the suffix. Then `DELETE .../participants/{s}`
+    reaches `DELETE /chat/sessions/{id}`.
+  - A `/` adds segments, so the call reaches a deeper route.
+  - The path guard (`src/lib/gatewayPath.ts`) refuses every dot segment, so
+    the call cannot leave its prefix, and it still runs as the member. So
+    this is a confused route, not a privilege step. The guard's header names
+    the gap.
+- **Do.** In each handler, refuse the param with `refuseUnsafePath([param])`
+  right after it reads `params`. Then widen the sweep in `gatewayPath.test.ts`
+  from catch-alls to every template that puts a route param into a gateway
+  path. `encodeURIComponent` alone is not enough, because uvicorn decodes
+  `%2F` back into a separator before Starlette routes.
+- **A latent chain, closed by the same PR.** Layer 2 reads the path one
+  decode deep. A triple-encoded slash (`%25252F`) becomes a separator only
+  after TWO Starlette trailing-slash redirects. Today no gateway route ends in
+  `/` after a param, so no such pair exists (review of #743). Set
+  `redirect: "manual"` in `gatewayFetch` to close it for good. First check
+  which callers rely on a followed redirect, such as `/people/`.
+- **Authority:** verifier and diff review of the path guard PR, 2026-10-08
+- **Added:** 2026-10-08 · branch `proxy-path-guard`.
+
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
   While it prints nothing, this is open.
