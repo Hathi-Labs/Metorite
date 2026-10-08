@@ -75,6 +75,64 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
 })
 
 
+# ── The per-agent floor opt-out (``config.json: floor_opt_out``) ───────────
+# The floor is the same for every agent, and it is not free. Each tool schema
+# goes into EVERY model request of a run, and a chat turn makes about six
+# requests. An agent that never calls a floor tool pays for it on each one.
+# So an agent may name, in its config, the floor tools it does not want.
+#
+# One mechanism, and it can only take away. The names leave the resolved
+# SCOPE (so no prompt text offers them) and the final tool list (so a
+# fallback branch cannot bring them back), exactly as the D85 withheld names
+# do. The workflow trio is in the list too: it is appended for every agent
+# after the scope, so a scope can never narrow it.
+#
+# Fence: ``tests/unit/test_floor_opt_out.py``.
+
+#: The tools that ``load_workflow_tools`` appends for every agent.
+_WORKFLOW_TOOL_NAMES: frozenset[str] = frozenset({
+    "list_workflows", "run_workflow", "get_workflow_run",
+})
+
+#: Floor tools that no agent may opt out of. ``ask_questions`` is how an
+#: agent asks the member, and ``emit_generative_ui`` carries every form,
+#: picker and plan card that waits for the member (the HITL surface).
+_FLOOR_KEEP: frozenset[str] = frozenset({"ask_questions", "emit_generative_ui"})
+
+#: The names an agent may put in ``floor_opt_out``.
+FLOOR_OPT_OUT_ALLOWED: frozenset[str] = (
+    (_CORE_STANDARD_TOOL_NAMES | _WORKFLOW_TOOL_NAMES) - _FLOOR_KEEP
+)
+
+
+def _floor_opt_out(
+    agent_name: str | None, agent_config: dict[str, Any] | None,
+) -> frozenset[str]:
+    """The platform tools that *agent_config* opts out of, or none.
+
+    It reads ``config.json: floor_opt_out``, a list of tool names. It keeps
+    only the names of :data:`FLOOR_OPT_OUT_ALLOWED`. A name outside that set
+    is ignored with a warning, so a typo or a kept tool can never take a tool
+    away in silence. A config without the key changes nothing.
+    """
+    raw = agent_config.get("floor_opt_out") if isinstance(agent_config, dict) else None
+    if not raw:
+        return frozenset()
+    if not isinstance(raw, list):
+        _log.warning("executor.floor_opt_out_not_a_list", agent=agent_name)
+        return frozenset()
+    names = {str(n) for n in raw}
+    refused = names - FLOOR_OPT_OUT_ALLOWED
+    if refused:
+        _log.warning(
+            "executor.floor_opt_out_ignored", agent=agent_name,
+            entries=sorted(refused),
+            hint="only a floor or workflow tool, and never ask_questions or "
+                 "emit_generative_ui",
+        )
+    return frozenset(names & FLOOR_OPT_OUT_ALLOWED)
+
+
 def _sandbox_covers(agent_name: str, organization_id: str) -> bool:
     """True when the sandbox broker runs this agent's shell TOOLS (D85).
 
@@ -508,14 +566,17 @@ def materialize_skill_bodies_for_agent(
         scope = _resolve_injected_scope(
             tool_scope,
             disabled_families=_load_disabled_skill_families(agent_name),
-            withheld=_withheld_shell_tools(agent_name, agent_config),
+            withheld=(
+                _withheld_shell_tools(agent_name, agent_config)
+                | _floor_opt_out(agent_name, agent_config)
+            ),
         )
         return materialize_skill_bodies(
             workspace_root,
             effective_scope=(
                 frozenset(scope) if scope is not None else None
             ),
-            registry_block=_build_registry_block(),
+            registry_block=_registry_block_for(agent_name),
         )
     except Exception:  # noqa: BLE001 — never block a run over a body file
         _log.warning(
@@ -638,15 +699,19 @@ def _resolve_declared_scope(
     return base & enabled_tools
 
 
-def _build_output_discipline_block(*, compact: bool = False) -> str:
+def _build_output_discipline_block(
+    *, compact: bool = False, design_system: bool = True,
+) -> str:
     """The 'all generated files live under outputs/' + design-language rule.
 
     Prose moved to ``acb_skills.addendum`` (WS-23 S3 — one text source for the
     generated addendum AND this native-MAF instruction append); this seam keeps
-    the historical name both injection paths call.
+    the historical name both injection paths call. ``design_system=False``
+    leaves out the ``load_design_system`` pointer, for an agent that does not
+    hold the tool.
     """
     from acb_skills.addendum import build_output_discipline_block  # noqa: PLC0415
-    return build_output_discipline_block(compact=compact)
+    return build_output_discipline_block(compact=compact, design_system=design_system)
 
 
 def _ui_first_directive(*, compact: bool = False) -> str:
@@ -795,6 +860,7 @@ def _build_injected_tools_addendum(
     is_sub_agent: bool = False,
     effective_scope: frozenset[str] | None = None,
     own_risk: frozenset[tuple[str, bool, bool, bool]] = frozenset(),
+    agent_name: str | None = None,
 ) -> str:
     """Return a system-prompt addendum describing the Metorite-injected tools.
 
@@ -826,6 +892,10 @@ def _build_injected_tools_addendum(
     system-prompt prefix stays byte-stable across turns — required for KV-cache
     hits.  Call ``_build_injected_tools_addendum.cache_clear()`` alongside
     ``_build_registry_block.cache_clear()`` when the registry changes.
+
+    ``agent_name`` is the agent that reads the addendum. Its own entry leaves
+    the registry block (:func:`_registry_block_for`), because an agent that
+    delegates to itself only spends a turn. ``None`` lists every agent.
     """
     try:
         from acb_skills.addendum import (  # noqa: PLC0415
@@ -843,7 +913,7 @@ def _build_injected_tools_addendum(
     return render_injected_tools_addendum(
         is_sub_agent=is_sub_agent,
         effective_scope=effective_scope,
-        registry_block=_build_registry_block(),
+        registry_block=_registry_block_for(agent_name),
         risk_block=risk_summary_block(own=own_risk),
     )
 
@@ -888,6 +958,11 @@ def _build_registry_block() -> str:
     per Manus benchmarks).
 
     Call ``_build_registry_block.cache_clear()`` after registering a new agent.
+
+    Each agent is ONE line: its name and the first sentence of its
+    description (:func:`_registry_line`). The block goes into every model
+    request of a run, and a description of a paragraph only repeats what
+    the target agent's own tools say once it runs.
     """
     agent_lines: list[str] = []
     try:
@@ -896,15 +971,50 @@ def _build_registry_block() -> str:
         all_agents = _load_dynamic_agents() + _AGENT_REGISTRY
         for a in all_agents:
             name = a.get("name", "")
-            desc = a.get("description", "")
             if name:
-                agent_lines.append(f"  - {name!r}: {desc}")
+                agent_lines.append(_registry_line(name, a.get("description", "")))
     except Exception:  # noqa: BLE001
         pass
     return (
         "Registered agents:\n" + "\n".join(agent_lines)
         if agent_lines
         else "Registered agents: check with the orchestrator if unsure."
+    )
+
+
+#: The longest summary a registry line carries, in characters.
+_REGISTRY_SUMMARY_MAX = 160
+
+
+def _registry_line(name: str, description: Any) -> str:
+    """One registry line: ``  - 'name': <first sentence>``.
+
+    The first sentence of *description*, on one line, cut at a word to
+    :data:`_REGISTRY_SUMMARY_MAX` characters. :func:`_registry_block_for`
+    finds the agent's own line by this prefix, so both read one format.
+    """
+    text = " ".join(str(description or "").split())
+    cut = text.find(". ")
+    if cut != -1:
+        text = text[: cut + 1]
+    if len(text) > _REGISTRY_SUMMARY_MAX:
+        text = text[:_REGISTRY_SUMMARY_MAX].rsplit(" ", 1)[0].rstrip(",;:—-") + "…"
+    return f"  - {name!r}: {text}"
+
+
+def _registry_block_for(agent_name: str | None) -> str:
+    """The registry block that *agent_name* reads: every agent but itself.
+
+    It filters the cached :func:`_build_registry_block`, so a stub of that
+    function in a test still applies. ``None`` returns the whole block.
+    """
+    block = _build_registry_block()
+    if not agent_name:
+        return block
+    own = _registry_line(agent_name, "").rstrip()  # "  - 'name':"
+    return "\n".join(
+        line for line in block.splitlines()
+        if line.rstrip() != own and not line.startswith(own + " ")
     )
 
 
@@ -1213,7 +1323,9 @@ def _inject_agent_tools(
     shared agent gets no ``SHELL_TOOLS`` member until the sandbox broker
     covers it. ``None`` reads as shared, so a caller that forgets it fails
     closed. Every executor call site passes it, and
-    ``tests/unit/test_shared_agent_shell_tools.py`` says so.
+    ``tests/unit/test_shared_agent_shell_tools.py`` says so. Its
+    ``floor_opt_out`` list takes floor and workflow tools away from this
+    agent (:func:`_floor_opt_out`).
 
     ``no_egress`` (H-236) is the answer of :func:`_run_no_egress` for this
     run, and every executor call passes it by name (the WS43-F24 AST fence).
@@ -1294,9 +1406,18 @@ def _inject_agent_tools(
         frozenset(fn.__name__ for fn in _all_tools if _is_egress(fn))
         if no_egress else frozenset()
     )
+    # The agent's own floor opt-out (config.json: floor_opt_out). The names
+    # leave the SCOPE, so no prompt text offers them, and the final list
+    # below, so no fallback branch brings them back.
+    _opted_out = _floor_opt_out(agent_name, agent_config)
+    if _opted_out:
+        _log.info(
+            "executor.floor_tools_opted_out",
+            agent=agent_name, tools=sorted(_opted_out),
+        )
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
-        withheld=_withheld | _egress,
+        withheld=_withheld | _egress | _opted_out,
     )
     if _scope_names is not None:
         # Scope-typo guard (multi_agent_orchestration.md Phase 0.3): an entry
@@ -1359,8 +1480,9 @@ def _inject_agent_tools(
 
     # D85, the last word: the no-match fallback above restores the WHOLE
     # chain, shell tools included. So the withheld names leave the final
-    # list too, whatever branch built it.
-    _extra_tools = _drop_withheld(_extra_tools, _withheld)
+    # list too, whatever branch built it. So do the opted-out names, which
+    # covers the workflow trio appended above.
+    _extra_tools = _drop_withheld(_extra_tools, _withheld | _opted_out)
     # H-236, the same last word: an app or workflow tool that reaches outside
     # the platform leaves too, whatever branch added it.
     if no_egress:
@@ -1391,10 +1513,20 @@ def _inject_agent_tools(
     _UI_DIRECTIVE_MARKER = "Rich UI by default"
     # Heads both the full and compact Copilot addendum → guards re-injection.
     _ADDENDUM_MARKER = "## Metorite Platform Tools"
-    # Present in BOTH output-discipline variants (the load_design_system
-    # pointer) and vanishingly unlikely in a MAF agent's own instructions →
-    # a safe idempotency marker for the native-MAF append below.
-    _OUTPUT_DISCIPLINE_MARKER = "load_design_system"
+    # The output-discipline block opens with one of these (the full and the
+    # compact variant) → the idempotency marker for the native-MAF append
+    # below. It is no longer the load_design_system pointer, because an agent
+    # that opts out of that tool gets the block without the pointer.
+    from acb_skills.addendum import OUTPUT_DISCIPLINE_MARKERS  # noqa: PLC0415
+
+    def _has_output_discipline(text: str) -> bool:
+        return any(m in text for m in OUTPUT_DISCIPLINE_MARKERS)
+
+    # The design-system pointer names a tool. Offer it only to an agent that
+    # holds the tool (the floor opt-out can take it away).
+    _design_injected = any(
+        getattr(fn, "__name__", "") == "load_design_system" for fn in _extra_tools
+    )
 
     for agent in agents:
         injected = False
@@ -1468,6 +1600,8 @@ def _inject_agent_tools(
                         ),
                         # H-236: this agent's own risky tools, from its own list.
                         own_risk=_own_risk(list(agent._tools)),
+                        # The registry block leaves out the agent itself.
+                        agent_name=agent_name,
                     )
                     opts = getattr(agent, "_default_options", None)
                     if isinstance(opts, dict):
@@ -1543,16 +1677,17 @@ def _inject_agent_tools(
                     fn.__name__ == "call_agent" for fn in _extra_tools
                 ):
                     try:
-                        _reg = _build_registry_block()
+                        # The agent itself is not in the list: a hand-off
+                        # to itself only spends a turn.
+                        _reg = _registry_block_for(agent_name)
                         _prev = _do.get("instructions") or ""
                         if _reg and "Delegatable agents" not in _prev:
                             _do["instructions"] = (
                                 _prev
                                 + "\n\n## Delegatable agents (call_agent)\n"
-                                "Hand off to any of these registered specialist "
-                                "agents with call_agent(name, message) and use "
-                                "their reply (e.g. to gather context before "
-                                "drafting):\n" + _reg
+                                "Hand off to one of these agents with "
+                                "call_agent(agent_name, message), and use its "
+                                "reply:\n" + _reg
                             )
                     except Exception:
                         pass
@@ -1573,10 +1708,13 @@ def _inject_agent_tools(
                     # addendum; native MAF agents need the same at system-prompt
                     # level so they know where files go and to load the design
                     # system before a report. Marker-guarded for idempotency.
-                    if _OUTPUT_DISCIPLINE_MARKER not in _prev2:
+                    if not _has_output_discipline(_prev2):
                         _do["instructions"] = (
                             _prev2 + "\n\n"
-                            + _build_output_discipline_block(compact=is_sub_agent)
+                            + _build_output_discipline_block(
+                                compact=is_sub_agent,
+                                design_system=_design_injected,
+                            )
                         )
                 except Exception:  # noqa: BLE001
                     pass
@@ -1610,11 +1748,12 @@ def _inject_agent_tools(
                                 compact=is_sub_agent,
                             )
                             agent.instructions = _instr
-                        if _OUTPUT_DISCIPLINE_MARKER not in _instr:
+                        if not _has_output_discipline(_instr):
                             agent.instructions = (
                                 _instr + "\n\n"
                                 + _build_output_discipline_block(
                                     compact=is_sub_agent,
+                                    design_system=_design_injected,
                                 )
                             )
                 except Exception:  # noqa: BLE001

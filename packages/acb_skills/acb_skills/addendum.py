@@ -68,7 +68,17 @@ from acb_skills.skill_families import SKILL_FAMILIES
 # ---------------------------------------------------------------------------
 
 
-def build_output_discipline_block(*, compact: bool = False) -> str:
+#: Each variant of :func:`build_output_discipline_block` opens with one of
+#: these. The native-MAF injection reads them as its idempotency marker.
+OUTPUT_DISCIPLINE_MARKERS: tuple[str, ...] = (
+    "### Output discipline (REQUIRED)",
+    "FILES: write files with write_artifact",
+)
+
+
+def build_output_discipline_block(
+    *, compact: bool = False, design_system: bool = True,
+) -> str:
     """The 'all generated files live under outputs/' + design-language rule.
 
     Injected into every agent (both runtimes). Two concerns, one block:
@@ -79,17 +89,39 @@ def build_output_discipline_block(*, compact: bool = False) -> str:
       2. Design language — a pointer to the on-demand design system
          (``load_design_system()``) so any heavier document, report, or custom
          HTML matches the Metorite look.
+
+    ``design_system=False`` leaves out the pointer, for an agent that opted
+    out of ``load_design_system`` (``config.json: floor_opt_out``). A prompt
+    must not name a tool that the agent does not hold. The default text is
+    byte-identical to the text before that option.
     """
     if compact:
-        return (
+        text = (
             "FILES: write files with write_artifact(path, content) — pass the "
             "content directly; do NOT build files with shell heredocs / echo / "
             "printf / base64 (fragile quoting truncates large writes). Put "
             "every file under outputs/ (logical subfolders, e.g. "
-            "outputs/reports/); never the working-dir root. For a full-page "
+            "outputs/reports/); never the working-dir root."
+        )
+        if not design_system:
+            return text
+        return text + (
+            " For a full-page "
             "report or bespoke custom HTML, call load_design_system() first to "
             "match the Metorite look (named genUI templates are already "
             "on-brand)."
+        )
+    if not design_system:
+        return (
+            "### Output discipline (REQUIRED)\n"
+            "- **To write a file, call `write_artifact(path, content)`**, and "
+            "pass the content of the file as `content`. Do not make a file with "
+            "a shell heredoc, `echo`, `printf` or `base64`.\n"
+            "- Write EVERY file you make under **outputs/**, in a folder that "
+            "names its kind, for example `outputs/reports/q3.md`. It persists, "
+            "and it is where the member looks for what you made.\n"
+            "- Write Markdown (`.md`) for a document and HTML (`.html`) for a "
+            "rich report. Both open in the side panel."
         )
     return (
         "### Output discipline (REQUIRED)\n"
@@ -258,7 +290,7 @@ Workspace folders visible in the Files Viewer: **outputs/** (default for generat
 - **write_artifact(path, content, encoding?, overwrite?)** — Write a file to outputs/ (if path has no prefix). The chat shows a Download/preview card **automatically** — you do NOT need to build or paste any URL; just say what the file is. It never clobbers an existing file by default (it auto-versions to ``name (1).ext`` and returns the real ``path``); pass ``overwrite=true`` only when you deliberately want to replace a file in place. For **.html** files the result may include a ``warnings`` list — the sandbox fails silently, so these are real defects (a CDN URL the CSP blocks, an unknown ``cc-`` class, a chart block missing its ``--v``). Fix them and re-write with ``overwrite=true`` in the same turn; never leave a warned artifact for the user to find. Writing **`outputs/<name>.jsx`** (or `.tsx`) creates a FULL-PAGE, immersive **React** artifact that opens in the side panel — same rules as the `emit_generative_ui` react node (default-export a component, import only from react/react-dom/client, style with the cc-* kit). Use it for a substantial interactive tool or dashboard the user will keep; use the inline react node for something compact in the chat itself.
 - **share_artifact(path)** — If you created a file with your OWN tools (shell, editor, a script you ran) instead of write_artifact, call this with that file's path (or a folder) to surface it as a Download/preview card. The card appears automatically; do NOT hand-construct links.
 - **emit_generative_ui(ui)** — Render a rich, interactive, animated UI element inline in the chat, on the fly. REACH FOR THIS EAGERLY: when the answer is data, a metric, a status, a comparison, a checklist, or a value the user should pick or set, render UI instead of a paragraph — it is clearer and often interactive. Do not be trivial about it (a one-line factual reply or a long narrative stays as text), but whenever there is a genuine chance to let the user adjust a value, pick an option, or confirm a choice, prefer an interactive UI over asking in prose. All three modes follow the Metorite design language automatically (blue primary, warm-orange accent, rounded cards, subtle motion). `ui` is a JSON object discriminated by its top-level `type`. Three modes, prefer them in this order:
-    1. **Named template** (best-looking, use first when one fits) — a node with type "template" and props holding `name` plus a `data` object. Pre-designed animated cards; supply data only. Available names: weatherCard, statDashboard, barChart, sparkTrend, comparison, progressTracker, recipeCard, flightStatus, trainStatus, formCard, optionPicker (see the emit_generative_ui tool doc for each one's data shape). statDashboard stats accept an optional `icon` (a Lucide name). formCard and optionPicker COLLECT user input — pair them with top-level `"hitl": true` so the submitted values return as this tool call's result, and use top-level `"surface": "panel"` to open any big UI as an immersive side-panel view instead of an inline card.
+    1. **Named template** (best-looking, use first when one fits) — a node with type "template" and props holding `name` plus a `data` object. Pre-designed animated cards; supply data only. Available names: weatherCard, statDashboard, barChart, sparkTrend, comparison, progressTracker, recipeCard, flightStatus, trainStatus, formCard, optionPicker (to get the data shape of one, call emit_generative_ui with its name and no data). statDashboard stats accept an optional `icon` (a Lucide name). formCard and optionPicker COLLECT user input — pair them with top-level `"hitl": true` so the submitted values return as this tool call's result, and use top-level `"surface": "panel"` to open any big UI as an immersive side-panel view instead of an inline card.
     2. **Component tree** (structured, safe) — a whitelist tree of card / table / keyValue / badge / callout / list / button / icon nodes; data, not code. The icon node takes a `name` = any Lucide icon (e.g. cloud-sun, check-circle, trending-up). A button node has a `label` plus an `action` string sent back when clicked. Good for summaries, tables, labelled rows, and action buttons.
     3. **React component** (for anything genuinely INTERACTIVE or stateful — filterable/sortable tables, multi-step forms, calculators, live dashboards, small tools) — a node with type "react" and props holding `code`: ordinary modern React that DEFAULT-EXPORTS a component (`export default function App(){{...}}`). Hooks all work; JSX/TypeScript are compiled for you. You may import from "@cc/ui" (the prebuilt design kit — call load_artifact_kit() first) and from "react" / "react-dom/client". Nothing else: the sandbox has NO network, so no npm packages, no CDNs, no icon libraries; inline your helpers and seed the data in the file. Style it with the SAME cc-* classes and --cc-* tokens as custom HTML (start with <div className="cc-report">). Send data back with window.ccSubmit('Label', value) or window.ccAction('message') — both work from first mount. If the build fails, the tool result carries the compiler errors: fix them and emit again.
     4. **Custom HTML** (escape hatch, only when no template/tree fits, and the place for genuinely interactive controls) — a node with type "html" and props holding `code` (a full HTML/CSS/JS snippet) plus an optional `icons` array of Lucide names. Runs in an isolated sandbox for bespoke animation/layout. No external network/CDNs — inline everything; use declared icons via ccIcon('Name') or a span with data-cc-icon='Name'. DESIGN: use the pre-defined CSS variables so it matches the app — --cc-primary, --cc-accent, --cc-fg, --cc-muted, --cc-card, --cc-secondary, --cc-border, --cc-success, --cc-warning, --cc-danger, --cc-radius, --cc-ease — instead of hard-coded colors; native button/input/select/textarea and range sliders are already styled on-brand (add class cc-primary for a filled blue button, cc-card for a panel). INTERACTIVITY: put data-cc-action='<follow-up message>' on a clickable element (or call ccAction('...') in script) to fire a fixed follow-up like a button; put data-cc-submit='<label>' on a button to harvest every named input/select/textarea in its enclosing form (or a data-cc-form container) and submit their VALUES back — or call ccSubmit('Temperature', 22) directly — so when the user sets a slider/number/option the agent actually receives what they chose.

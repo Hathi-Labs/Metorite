@@ -146,7 +146,10 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # catalog (timeline, taskBoard, dataGrid, reportCard, planCard), and the
     # docstring mirrors the catalog by rule (generative_ui_2.md §3). Measured
     # 3163 with the bullets trimmed to one shape line each.
-    "emit_generative_ui": 3200,
+    # 2026-10-09: the shapes and the two code-mode guides left the docstring.
+    # The tool returns them on demand (write_artifact.genui_guide), and the
+    # docstring keeps the names. Measured 641.
+    "emit_generative_ui": 700,
     "fetch_page": 270,
     "get_errors": 170,
     "list_integrations": 190,
@@ -163,7 +166,9 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
 }
 
 #: The whole floor. Nudging one tool up must be paid for elsewhere.
-CORE_SCHEMA_TOTAL_CEILING = 9_000
+#: 9,000 until 2026-10-09. The floor then measured 6,438 with `decide`, after
+#: the catalog of emit_generative_ui went on demand.
+CORE_SCHEMA_TOTAL_CEILING = 6_700
 
 
 def _tools_by_name() -> dict[str, object]:
