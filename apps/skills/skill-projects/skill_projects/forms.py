@@ -25,6 +25,10 @@ assigns through ``assign``) and ``link_tasks``. Before each card it reads
 exists, under ONE confirmation card with one checkbox per task
 (``request_confirmation`` rows). The member's one Approve names the ticked
 tasks. It writes through ``create_task``'s own write path, one task at a time.
+
+``create_tags`` and ``create_types`` (H-273) do the same for several new
+words of the project's vocabulary. Each ticked row is one POST to the route
+of ``create_tag`` or ``create_type``, and the server decides each one.
 """
 
 from __future__ import annotations
@@ -59,17 +63,22 @@ from skill_projects.writes import (
     _fields_block,
     _fits_on_card,
     _follow_new_task,
+    _matches_by_name,
     _NewTask,
     _node,
     _post_new_task,
     _prepare_new_task,
     _resolve_assignee,
+    _root_of,
     _split,
     _statuses_of,
     _subtask_counts,
     _subtasks_phrase,
     _task,
+    _tree_scope,
     _unknown_addresses,
+    _vocab,
+    _yes_no,
     agent_assignee_refusal_as_text,
     update_project,
     update_task,
@@ -1745,4 +1754,379 @@ def _batch_receipt(
     return "\n".join(lines)
 
 
-__all__ = ["create_tasks", "edit_project", "edit_task", "propose_plan"]
+# ── Several new tags or types, as one batch (H-273) ──────────────────────────
+#
+# Spec: ``projects_ai_chat.md`` §24.5, and the owner directive of 2026-10-07
+# (``projects_agent_parity.md`` §16): the member's grants decide, and the
+# server checks. On 2026-10-08 the owner asked for several new tags. The chat
+# drew a picker, and then one card for each tag. These tools take the words in
+# ONE call, under ONE confirmation card with a checkbox for each row, as
+# ``create_tasks`` does. Each ticked row is one POST to the route of
+# ``create_tag`` or ``create_type``. The tool decides no permission. A 403 of
+# the route is quoted in the receipt, row by row.
+
+
+class _VocabKind:
+    """One kind of vocabulary word that a batch can add."""
+
+    def __init__(
+        self, *, tool: str, arg: str, kind: str, noun: str, single: str,
+        keys: tuple[str, ...], example: str, blank: str,
+    ) -> None:
+        self.tool = tool
+        #: The tool's argument that holds the rows.
+        self.arg = arg
+        #: The ``writes._vocab`` list, and the last segment of the route.
+        self.kind = kind
+        self.noun = noun
+        #: The single tool that takes the same row, with org_wide.
+        self.single = single
+        #: The keys of one row. Each one means what the argument of the same
+        #: name of the single tool means.
+        self.keys = keys
+        self.example = example
+        #: The hint of a row that gives only a name.
+        self.blank = blank
+
+    def nouns(self, n: int) -> str:
+        return self.noun if n == 1 else f"{self.noun}s"
+
+
+TAG_KIND = _VocabKind(
+    tool="create_tags", arg="tags", kind="tags", noun="tag", single="create_tag",
+    keys=("name", "color", "description"),
+    example='[{"name": "q4", "color": "blue"}, {"name": "blocked"}]',
+    blank="no colour or description",
+)
+TYPE_KIND = _VocabKind(
+    tool="create_types", arg="types", kind="types", noun="type", single="create_type",
+    keys=("name", "icon", "color", "is_epic"),
+    example='[{"name": "Chore", "icon": "broom"}, {"name": "Spike"}]',
+    blank="no icon or colour",
+)
+#: The batch tools of the vocabulary, by tool name. The F2 fence reads the
+#: row keys from here.
+VOCAB_KINDS: dict[str, _VocabKind] = {k.tool: k for k in (TAG_KIND, TYPE_KIND)}
+#: The words of a row on the card and on the receipt, by row key.
+_VOCAB_WORDS = {"color": "colour", "icon": "icon", "description": "description"}
+
+
+def _vocab_format(spec: _VocabKind) -> str:
+    return (
+        f"{spec.arg} is a JSON list with one object per {spec.noun}, for example "
+        f"{spec.example}. A plain name is a row too. The keys are: "
+        f"{', '.join(spec.keys)}. Only name is required."
+    )
+
+
+def _vocab_name(raw: Any) -> str:
+    """A name as the routes store it: trimmed, with the inner spaces collapsed."""
+    return " ".join(str(raw or "").split())
+
+
+def _vocab_items(spec: _VocabKind, raw: Any) -> list[dict[str, Any]] | str:
+    """The rows as the model sent them, checked for shape, or the refusal."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return _vocab_format(spec)
+    if not isinstance(raw, list) or not raw:
+        return _vocab_format(spec)
+    if len(raw) > MAX_BATCH:
+        return (
+            f"That is {len(raw)} {spec.nouns(2)}. The limit for one card is {MAX_BATCH}. "
+            "Split them into two calls. Nothing was created."
+        )
+    items: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    for i, item in enumerate(raw, start=1):
+        if isinstance(item, str):
+            item = {"name": item}
+        if not isinstance(item, dict):
+            return f"Row {i} is not an object. {_vocab_format(spec)}"
+        name = _vocab_name(item.get("name")) if isinstance(item.get("name"), str) else ""
+        label = f"Row {i}" + (f" ({data(name)})" if name else "")
+        for key, value in item.items():
+            if key in ("org_wide", "scope", "is_default"):
+                return (
+                    f"{label}: a batch adds {spec.nouns(2)} to this project's tree only, and "
+                    f"none is the default. For {data(key)}, call {spec.single} for that "
+                    f"{spec.noun} alone. Nothing was created."
+                )
+            if key not in spec.keys:
+                return (
+                    f"{label} has no key {data(key)}. The keys are: {', '.join(spec.keys)}. "
+                    "Nothing was created."
+                )
+            if isinstance(value, list | dict):
+                return f"{label}: {key} takes text, not a list or an object. Nothing was created."
+        if not name:
+            return f"Row {i} has no name. Every {spec.noun} needs one. Nothing was created."
+        twin = seen.setdefault(name.lower(), i)
+        if twin != i:
+            return (
+                f"Rows {twin} and {i} have the same name, {data(name)}. Drop one. "
+                "Nothing was created."
+            )
+        items.append({**item, "name": name})
+    return items
+
+
+def _vocab_payload(spec: _VocabKind, item: dict[str, Any]) -> dict[str, Any]:
+    """The POST body of one row: the body the single tool sends for the same words."""
+    payload: dict[str, Any] = {"name": item["name"]}
+    for key in spec.keys:
+        if key in ("name", "is_epic"):
+            continue
+        value = str(item.get(key) or "").strip()
+        if value:
+            payload[key] = value
+    if "is_epic" in spec.keys and _yes_no(str(item.get("is_epic") or ""), "is_epic"):
+        payload["is_epic"] = True
+    return payload
+
+
+class _VocabRow:
+    """One row of a vocabulary batch, with what the card says about it."""
+
+    def __init__(self, index: int, payload: dict[str, Any]) -> None:
+        self.index = index
+        self.name: str = payload["name"]
+        self.payload = payload
+        #: Why the row starts unticked, or "" when it starts ticked.
+        self.exists = ""
+
+    def facts(self) -> str:
+        """The row's values in words. The name is the label, so it is not here.
+
+        Each value is member text, so it is fenced with ``data()``: the receipt
+        is read line by line, and a description with a line break could forge
+        a ``tag_id:`` or a ``stopped:`` line (review round 1). The card's hint
+        takes the marks off again (``_unfenced``)."""
+        out = [f"{_VOCAB_WORDS[k]} {data(v)}" for k, v in self.payload.items()
+               if k in _VOCAB_WORDS]
+        if self.payload.get("is_epic"):
+            out.append("a top level (epic)")
+        return " · ".join(out)
+
+
+def _vocab_exists(spec: _VocabKind, rows: list[dict[str, Any]], name: str) -> str:
+    """Why a name starts unticked: it is in the project's vocabulary already."""
+    found = _matches_by_name(rows, name)
+    if not found:
+        return ""
+    if any(r.get("project_id") is not None for r in found):
+        return f"a {spec.noun} with this name exists here already"
+    return (
+        f"an organization-wide {spec.noun} with this name exists. Tick it only to add a "
+        "copy for this tree"
+    )
+
+
+class _VocabPlan:
+    """What the card shows, and what Approve writes."""
+
+    def __init__(
+        self, spec: _VocabKind, path: str, node: dict[str, Any], where: str,
+        rows: list[_VocabRow],
+    ) -> None:
+        self.spec = spec
+        self.path = path
+        self.node = node
+        self.where = where
+        self.rows = rows
+
+    def card(self) -> dict[str, Any]:
+        n, spec = len(self.rows), self.spec
+        body = {"project": data(self.node.get("name")), "scope": self.where}
+        return {
+            "title": f"Add {n} {spec.nouns(n)} to {data(self.node.get('name'))}?",
+            "detail": f"one batch in {self.where} · untick a {spec.noun} to leave it out",
+            "context": _fields_block(body),
+            "rows": [_vocab_card_row(spec, p) for p in self.rows],
+        }
+
+    def fits(self) -> bool:
+        """Does the whole batch fit on one card? A cut card is not consent."""
+        body: dict[str, Any] = {"project": data(self.node.get("name")), "scope": self.where}
+        for p in self.rows:
+            body[f"row {p.index}"] = f"{data(p.name)} · {p.facts()} · {p.exists}"
+        return _fits_on_card(body)
+
+
+def _vocab_row_id(p: _VocabRow) -> str:
+    return f"row-{p.index}"
+
+
+def _vocab_card_row(spec: _VocabKind, p: _VocabRow) -> dict[str, Any]:
+    hint = _unfenced(p.facts()) or spec.blank
+    if p.exists:
+        hint += f" · {_unfenced(p.exists)}, so it starts unticked"
+    return {"id": _vocab_row_id(p), "label": _plain(p.name), "hint": hint,
+            "checked": not p.exists}
+
+
+async def _vocab_plan(spec: _VocabKind, project_id: str, raw: Any) -> _VocabPlan | str:
+    """Every row resolved and every read done, before the card, or the refusal."""
+    uuid_of(project_id, "project_id")
+    items = _vocab_items(spec, raw)
+    if isinstance(items, str):
+        return items
+    rows: list[_VocabRow] = []
+    for i, item in enumerate(items, start=1):
+        try:
+            rows.append(_VocabRow(i, _vocab_payload(spec, item)))
+        except GatewayRefusal as exc:
+            said = " ".join(str(exc).split())
+            return f"Row {i} ({data(item['name'])}): {said} Nothing was created."
+    pid, node = await _node(project_id)
+    paths = {"tags": f"/projects/nodes/{pid}/tags", "types": f"/projects/nodes/{pid}/types"}
+    known = await _vocab(pid, spec.kind)
+    for p in rows:
+        p.exists = _vocab_exists(spec, known, p.name)
+    from acb_skills.ask_tools import ROW_LABEL_MAX
+
+    long = next((p for p in rows if len(p.name) > ROW_LABEL_MAX), None)
+    if long is not None:
+        return (
+            f"Row {long.index}: a name is at most {ROW_LABEL_MAX} characters on the card. "
+            "Nothing was created."
+        )
+    where = _tree_scope(await _root_of(pid, node), node)
+    plan = _VocabPlan(spec, paths[spec.kind], node, where, rows)
+    if not plan.fits():
+        return (
+            f"These {len(rows)} {spec.nouns(2)} do not fit on one confirmation card. "
+            "Split them into two calls. Nothing was created."
+        )
+    return plan
+
+
+def _vocab_failure(exc: Exception) -> tuple[bool, str]:
+    """``(known, words)`` for one row's POST that failed. A gateway refusal is
+    a known result, and its words are the server's (a 403 included)."""
+    if isinstance(exc, GatewayRefusal):
+        status = getattr(exc, "status", None)
+        if status is not None:
+            detail = getattr(exc, "detail", "")
+            return True, f"refused ({status})" + (f": {data(detail)}" if detail else "")
+        return True, f"refused: {' '.join(str(exc).split())}"
+    return False, (
+        f"failed ({type(exc).__name__}), so it may or may not exist. Read vocabulary "
+        "before a retry. A retry starts it unticked when it exists."
+    )
+
+
+async def _vocab_write(plan: _VocabPlan, ticked: Any) -> str:
+    """One POST per ticked row, in the card's order, and the receipt.
+
+    It never raises after the card. A raise reads to the model as "Function
+    failed", and the model would make the words again.
+    """
+    spec = plan.spec
+    if not isinstance(ticked, frozenset) or not ticked:
+        return CANCELLED
+    if not ticked <= {_vocab_row_id(p) for p in plan.rows}:
+        return FORGED_ROWS
+    chosen = [p for p in plan.rows if _vocab_row_id(p) in ticked]
+    left = [p for p in plan.rows if _vocab_row_id(p) not in ticked]
+    made: list[tuple[_VocabRow, dict[str, Any]]] = []
+    refused: list[str] = []
+    unknown: list[str] = []
+    for p in chosen:
+        try:
+            row = await post(plan.path, p.payload)
+        except Exception as exc:  # each row ends in the receipt, never in a raise
+            _log_unknown(exc, spec.tool)
+            known, words = _vocab_failure(exc)
+            line = _said(f"{'failed' if known else 'unknown'}: row {p.index} {data(p.name)} {words}")
+            (refused if known else unknown).append(line)
+            continue
+        made.append((p, row if isinstance(row, dict) else {}))
+    return _vocab_receipt(plan, chosen, left, made, refused, unknown)
+
+
+def _vocab_receipt(
+    plan: _VocabPlan,
+    chosen: list[_VocabRow],
+    left: list[_VocabRow],
+    made: list[tuple[_VocabRow, dict[str, Any]]],
+    refused: list[str],
+    unknown: list[str],
+) -> str:
+    spec, many = plan.spec, len(chosen)
+    if not refused and not unknown:
+        head = f"Added {len(made)} {spec.nouns(len(made))} to {plan.where}:"
+    else:
+        parts = [f"Added {len(made)} of {many} {spec.nouns(many)} to {plan.where}." if made
+                 else f"No {spec.noun} of the {many} is known to exist in {plan.where}."]
+        if unknown:
+            parts.append(f"{len(unknown)} may have been created: read vocabulary before a retry.")
+        if refused:
+            parts.append(f"{len(refused)} {'was' if len(refused) == 1 else 'were'} not created.")
+        head = " ".join(parts)
+    lines = [head]
+    for p, row in made:
+        facts = p.facts()
+        lines.append(f"- {spec.noun} {data(row.get('name') or p.name)}"
+                     + (f" · {facts}" if facts else ""))
+        lines.append(f"  {spec.noun}_id: {row.get('id')}")
+    lines.extend(refused)
+    lines.extend(unknown)
+    failed = len(refused) + len(unknown)
+    if failed:
+        lines.append(f"stopped: {failed} of {many} rows failed.")
+    if made:
+        lines.append(
+            f"The {len(made)} {spec.nouns(len(made))} listed above exist. Never create them "
+            f"again. To retry a failed row, call {spec.tool} with that row alone."
+        )
+    lines.extend(
+        f"left out: row {p.index} {data(p.name)}, unticked on the card"
+        + (f", because {p.exists}." if p.exists else ".")
+        for p in left
+    )
+    return "\n".join(lines)
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+async def create_tags(project_id: str, tags: str) -> str:
+    """Register several new tags on the project's tree as one batch. Use it
+    for 2 or more new tags, with no picker first, and never call create_tag
+    several times. project_id is a `full_id` from projects_tree. tags is a
+    JSON list with one object per tag: name (required), color and
+    description, as create_tag takes them. A plain name is a row too. The
+    member sees ONE card with a checkbox for each tag, and approves the
+    ticked tags once. A name the project has already starts unticked. Each
+    row is its own write, and the server decides each one: the receipt names
+    each tag made and quotes each refusal. An organization-wide tag is
+    create_tag with org_wide=true, one call each."""
+    plan = await _vocab_plan(TAG_KIND, project_id, tags)
+    if isinstance(plan, str):
+        return plan
+    ticked = await _confirm(**plan.card())
+    return await _vocab_write(plan, ticked)
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+async def create_types(project_id: str, types: str) -> str:
+    """Add several new task types to the project's tree as one batch. Use it
+    for 2 or more new types, with no picker first, and never call
+    create_type several times. project_id is a `full_id` from projects_tree.
+    types is a JSON list with one object per type: name (required), icon,
+    color and is_epic (yes or no), as create_type takes them. The member sees
+    ONE card with a checkbox for each type, and approves the ticked types
+    once. A name the project has already starts unticked. Each row is its own
+    write, and the server decides each one. The default type, and an
+    organization-wide type, are create_type, one call each."""
+    plan = await _vocab_plan(TYPE_KIND, project_id, types)
+    if isinstance(plan, str):
+        return plan
+    ticked = await _confirm(**plan.card())
+    return await _vocab_write(plan, ticked)
+
+
+__all__ = [
+    "create_tags", "create_tasks", "create_types", "edit_project", "edit_task", "propose_plan",
+]

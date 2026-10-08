@@ -841,8 +841,8 @@ dispatch of N4 asked for one, so N4 adds `evals/whatsapp_narrowing/`.)*
 - **Why it saves less.** A WhatsApp message is about 15 tokens, and PICK
   spends about 160 tokens on each candidate, because each question carries its
   guidance. So PICK costs more than it saves here. The saving that remains is
-  the fewer requests. H-275 holds a rule for short items. These are stub
-  numbers, and no measured saving is claimed. H-274 holds the live run.
+  the fewer requests. H-276 holds a rule for short items. These are stub
+  numbers, and no measured saving is claimed. H-275 holds the live run.
 - **The review fixes.** The route gives no total, so a page of 200 hid an
   overflow, and the count line never told the model to narrow (review P1).
   NARROW now asks for 201 rows, keeps 200, and sets `Narrowed.more` (N1, §6.1)
@@ -852,7 +852,7 @@ dispatch of N4 asked for one, so N4 adds `evals/whatsapp_narrowing/`.)*
   `group` keeps a broadcast chat.
 - **A finding outside N4.** `read_whatsapp_chat` reads the OLDEST 20
   messages of a chat, because its route orders `sent_at ASC` and then applies
-  the limit. The narrowing READ does not use that form. H-276 holds it.
+  the limit. The narrowing READ does not use that form. H-277 holds it.
 
 ### N5 · The CRM adapter and the Projects adapter — AGENT-SAFE
 

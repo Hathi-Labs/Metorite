@@ -144,6 +144,15 @@ def _po10(ds: Dataset) -> list[Step]:
     ]
 
 
+def _po11(ds: Dataset) -> list[Step]:
+    return [
+        tool("projects_tree"),
+        tool("create_tags", project_id=ds.project("Launch").id,
+             tags=json.dumps(["vendor", "print", "av"])),
+        ("text", "I registered 3 tags in Launch: «vendor», «print» and «av»."),
+    ]
+
+
 _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-1": _po1,
     "PO-2": _po2,
@@ -154,6 +163,7 @@ _SEQUENCES: dict[str, Callable[[Dataset], list[Step]]] = {
     "PO-8": _po8,
     "PO-9": _po9,
     "PO-10": _po10,
+    "PO-11": _po11,
 }
 
 SCRIPTED_IDS: tuple[str, ...] = tuple(_SEQUENCES)

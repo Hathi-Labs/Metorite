@@ -90,6 +90,8 @@ class OpsStub:
     rules: dict[str, dict[str, Any]] = field(default_factory=dict)
     nodes: list[dict[str, Any]] = field(default_factory=list)
     views: list[dict[str, Any]] = field(default_factory=list)
+    #: H-273: the tags each project registers (the stub starts with none).
+    tags: list[dict[str, Any]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
@@ -154,6 +156,8 @@ class OpsStub:
             ("GET", "/projects/my/today", lambda _i, _q, _b: self.today()),
             ("GET", f"/projects/nodes/{_ID}/views", lambda i, _q, _b: self.list_views(i)),
             ("POST", f"/projects/nodes/{_ID}/views", lambda i, _q, b: self.create_view(i, b)),
+            ("GET", f"/projects/nodes/{_ID}/tags", lambda i, _q, _b: self.list_tags(i)),
+            ("POST", f"/projects/nodes/{_ID}/tags", lambda i, _q, b: self.create_tag(i, b)),
             ("GET", "/projects/assignees", lambda _i, q, _b: self.assignees(q)),
             ("GET", "/projects/people/names", lambda _i, q, _b: self.people_names(q)),
             ("POST", "/projects/tasks", lambda _i, _q, b: self.create_task(b)),
@@ -320,6 +324,29 @@ class OpsStub:
                 "view_type": kind, "config": normalise_config(body.get("config"))}
         self.views.append(view)
         return copy.deepcopy(view)
+
+    # ── tags (H-273) ────────────────────────────────────────────────────────
+
+    def list_tags(self, node_id: str) -> dict[str, Any]:
+        root = self._project_of(node_id).id
+        rows = [copy.deepcopy(t) for t in self.tags if t["project_id"] == root]
+        return {"rows": rows, "total": len(rows)}
+
+    def create_tag(self, node_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """The route's own rules (``tags.create_tag``): a name is trimmed with
+        its inner spaces collapsed, and a clash in the tree is a 409."""
+        root = self._project_of(node_id).id
+        name = " ".join(str(body.get("name") or "").split())
+        if not name:
+            raise StubError(422, "A tag needs a name.")
+        clash = next((t for t in self.tags
+                      if t["project_id"] == root and t["name"].lower() == name.lower()), None)
+        if clash is not None:
+            raise StubError(409, f"'{clash['name']}' already exists here.")
+        tag = {"id": ident("tag", root, name.lower()), "project_id": root, "name": name,
+               "color": body.get("color") or "gray", "description": body.get("description")}
+        self.tags.append(tag)
+        return copy.deepcopy(tag)
 
     def assignees(self, q: dict[str, str]) -> dict[str, Any]:
         words = (q.get("q") or "").strip().lower()

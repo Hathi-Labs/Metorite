@@ -88,6 +88,8 @@ describe("describeToolStep — a step in words", () => {
     // WS-46 P13: the batch reads as one act on a project, never "a tasks".
     expect(step("create_tasks").label).toBe("Added tasks to a project");
     expect(step("create_tasks", {}, "running").label).toBe("Adding tasks to a project");
+    expect(step("create_tags").label).toBe("Added tags to a project");
+    expect(step("create_types", {}, "running").label).toBe("Adding task types to a project");
   });
 
   it("keys on the bare name when a runtime prefixes it", () => {

@@ -1,6 +1,6 @@
-"""The Projects operations tasks, PO-1 to PO-10 (WS-46 P3 and later slices).
+"""The Projects operations tasks, PO-1 to PO-11 (WS-46 P3 and later slices).
 
-PO-8 is from P6, PO-9 from P7 and PO-10 from P13.
+PO-8 is from P6, PO-9 from P7, PO-10 from P13 and PO-11 from H-273.
 
 Spec: ``project-docs/specs/projects_agent_parity.md`` §11.2. The spec gives
 each prompt in a short form. The full prompt below keeps its meaning and names
@@ -110,6 +110,13 @@ TASKS: tuple[TaskSpec, ...] = (
         "Add these 3 tasks to project X",
         "Add these 3 tasks to the Launch project: book the caterer for Priya Menon, print "
         "the badges, and test the projector.",
+        cards=(APPROVE,),
+    ),
+    # H-273: several new tags in a project that exists, as one batch.
+    TaskSpec(
+        "PO-11", "Three new tags in one call",
+        "Register these 3 tags",
+        "Register these 3 tags in the Launch project: vendor, print and av.",
         cards=(APPROVE,),
     ),
 )

@@ -150,6 +150,9 @@ const WRITE: readonly string[] = [
   // ── Projects (skill-projects, class B) ─────────────────────────────────
   "create_task",
   "create_tasks",
+  // H-273: several new tags or types, one card with rows.
+  "create_tags",
+  "create_types",
   "update_task",
   "assign",
   "comment",

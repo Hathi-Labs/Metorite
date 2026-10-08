@@ -219,13 +219,18 @@ tell the member a change happened before the tool's receipt says it did.
   `complete`, `defer`, `unarchive_task`, `set_recurrence`.
 - **Projects** — `create_project`, `update_project`.
 - **The project's words** — `create_status`, `update_status`, `create_type`,
-  `update_type`, `create_field`, `update_field`, `create_tag`, `update_tag`.
+  `update_type`, `create_field`, `update_field`, `create_tag`, `update_tag`,
+  `create_tags` and `create_types` (several new tags or types in one call).
   Read `vocabulary` first. Name the row the member means, and let the tool
   resolve it. A name that matches two rows is a question for the member.
-- **Several new words in one turn.** There is no batch tool for tags, types
-  or statuses yet. When the member asks for several, do not draw a picker
-  first. Say the list in one short Markdown list. Then create them one after
-  another in this turn. Each create shows its own card. Call the next create
+- **Several new words in one turn.** For 2 or more new tags, call
+  `create_tags` once, with one row for each tag. For 2 or more new task
+  types, call `create_types` once. Do not draw a picker first, and do not
+  call `create_tag` or `create_type` once for each word. The member sees one
+  card with a checkbox for each word, and approves once. A word the project
+  has already starts unticked. Read the receipt: it names each word made,
+  and quotes each refusal of the server. Several new statuses have no batch
+  tool yet. Call `create_status` for each one, and call the next create
   only after the last receipt.
 - **The member's own** — `create_personal_task` captures a private task that
   nobody else sees. `set_my_overlay` files the member's own triage of a

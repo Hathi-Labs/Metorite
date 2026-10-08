@@ -95,7 +95,7 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-274 · Measure the WhatsApp narrowing on a real run · [OWNER]
+### H-275 · Measure the WhatsApp narrowing on a real run · [OWNER]
 - **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
   No line with a measured recall and a date under §9 N4 means this is open.
 - **Why.** The PR of WS-48 N4 has only the scripted run, and its verdicts,
@@ -115,7 +115,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `data_narrowing_pipeline.md` §9 N4 and §11 · D93
 - **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
 
-### H-275 · PICK costs more than it saves on short items · [AGENT]
+### H-276 · PICK costs more than it saves on short items · [AGENT]
 - **Check:** `rg -n "short item" packages/acb_skills/acb_skills/narrowing.py`.
   No hit means the pick step has no rule for short items, and this is open.
 - **Why.** PICK asks one question for each candidate, and each question
@@ -130,7 +130,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `data_narrowing_pipeline.md` §3.3 and §9 N4 build notes
 - **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
 
-### H-276 · `read_whatsapp_chat` reads the oldest messages of a chat, not the recent ones · [AGENT]
+### H-277 · `read_whatsapp_chat` reads the oldest messages of a chat, not the recent ones · [AGENT]
 - **Check:** `rg -n "ORDER BY sent_at ASC NULLS FIRST" apps/services/gateway/gateway/routes/whatsapp/transport/messages.py`.
   A hit in `list_messages` with `LIMIT :limit` after it means this is open.
 - **Why.** The tool says that it reads "the recent messages". The route orders
@@ -144,25 +144,27 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `whatsapp_message_manager.md` · board row WS-20
 - **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
 
-### H-273 · The chat has no batch tool for several tags, types or statuses · [AGENT]
-- **Check:** `grep -n "create_tags\|create_vocabulary" apps/skills/skill-projects/skill_projects/__init__.py`.
+### H-274 · The chat has no batch tool for several new statuses · [AGENT]
+- **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
   While it prints nothing, this is open.
-- **Why.** The owner's turn of 2026-10-08 drew a picker, then one
-  confirmation card for each tag (`projects_ai_chat.md` §24.5). The rows
-  card of `request_confirmation(rows=…)` (#691) is the answer: ONE card with
-  a checkbox for each new tag, as `create_tasks` does.
-- **What to build.** The smallest tool is `create_tags(project_id, tags)`.
-  It uses the same route as `create_tag` and the same class B card with rows.
-  It checks `FORGED_ROWS` again after the answer. It needs a `COMPOSITE` entry
-  and `SENDS` witnesses in `manifest.py`. `test_projects_field_parity.py`
-  allows rows for `create_tasks` only, so its row exception changes too.
-  It also needs the writes table, the H-236 egress list and `config.json`.
-  In the client, it needs a batch receipt in `ProjectToolCards.tsx` and an
-  entry in `chatPlacement.ts`. Last, it needs an R8 test on a private
-  database.
-- **Then.** Change "Several new words in one turn" in
-  `apps/agents/agent-projects/instructions.md` to name the tool. Types and
-  statuses need the same, or one `create_vocabulary` with a `kind`.
+- **Why.** H-273 built `create_tags` and `create_types` on one helper
+  (`forms.py` `_VocabKind`). Statuses did not fit that helper in a few lines,
+  for three reasons:
+  1. The status route has no duplicate rule. `create_status` refuses a
+     name that exists, but `admin.create_status` inserts a second lane. A
+     ticked row that exists would make a duplicate lane.
+  2. Each lane needs its own `position`, after the last lane of the set.
+  3. The card must quote the server's `may_edit` first, as
+     `status_edit_refusal` does for `create_status`.
+- **Until then.** The Projects agent calls `create_status` once for each new
+  status, one after another (`instructions.md`, "Several new words in one
+  turn").
+- **What to build.** A `_VocabKind` for statuses, with the keys `name`,
+  `category` and `color`. Decide rule 1 first: refuse an existing name
+  before the card, or add a 409 to the route. The fences are the ones that
+  H-273 touched. Its commit message lists them (`git log --grep H-273`).
+- **Authority:** `project-docs/specs/projects_ai_chat.md` §24.5
+- **Added:** 2026-10-08 · H-273, branch `projects-vocab-batch`
 
 ### H-272 · plan-guard cannot see the secrets drop folder · [AGENT] · security
 - **Check:** `rg -c "metorite\[" .claude/hooks/plan-guard.mjs` → no hit
