@@ -23,6 +23,10 @@ on:
       - "apps/agents/agent-projects/**"
       # WS-48 N2: the email narrowing eval runs this agent's tools.
       - "apps/agents/agent-email-assistant/**"
+      # WS-48 N4: the WhatsApp narrowing eval runs this agent's tools, and the
+      # stub reads the signatures of the WhatsApp routes.
+      - "apps/agents/agent-whatsapp-assistant/**"
+      - "apps/services/gateway/gateway/routes/whatsapp/transport/**"
       - ".github/workflows/skill-eval.yml"
   workflow_dispatch:
 
@@ -65,6 +69,13 @@ jobs:
       # mailbox. Recall 100% and cost <= 40%. No model, no Router.
       - name: Email narrowing eval (scripted)
         run: uv run python -m evals.email_narrowing.run --scripted --out "$RUNNER_TEMP/email-narrowing"
+
+      # WS-48 N4 (data_narrowing_pipeline.md §9 N4): five questions of
+      # whatsapp-assistant, today's path and narrow_and_read, on synthetic
+      # chats. Recall 100% and cost <= today's path (NOT the email bar of
+      # 40%; the run prints both). No model, no Router.
+      - name: WhatsApp narrowing eval (scripted)
+        run: uv run python -m evals.whatsapp_narrowing.run --scripted --out "$RUNNER_TEMP/whatsapp-narrowing"
 
   inspect:
     name: "Inspect AI scenario harness (smoke)"

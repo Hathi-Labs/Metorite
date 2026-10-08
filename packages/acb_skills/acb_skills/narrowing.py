@@ -207,10 +207,16 @@ class Candidate:
 
 @dataclass(frozen=True)
 class Narrowed:
-    """The candidates in rank order, and the total match count."""
+    """The candidates in rank order, and the total match count.
+
+    ``more`` is for a source that knows no exact total (WS-48 N4): it is True
+    when the source saw more matches than it gave. The count line then says
+    "more than", and never a total that nobody counted.
+    """
 
     candidates: Sequence[Candidate]
     total: int = 0
+    more: bool = False
 
 
 @dataclass(frozen=True)
@@ -703,11 +709,23 @@ class Counts:
     dropped: int
     not_checked: int
     read: int
+    #: The source saw more matches than it gave, with no exact total (N4).
+    more: bool = False
+
+    @property
+    def overflow(self) -> bool:
+        """More items matched than the candidates."""
+        return self.total > self.candidates or self.more
 
 
 def count_line(c: Counts) -> str:
     """The first line of the tool output, in its fixed shape (§6.1)."""
-    of = f" of {c.total}" if c.total > c.candidates else ""
+    if c.total > c.candidates:
+        of = f" of {c.total}"
+    elif c.more:
+        of = f" of more than {c.candidates}"
+    else:
+        of = ""
     unchecked = f", and {c.not_checked} were not checked (kept)" if c.not_checked else ""
     return (
         f"Checked {c.checked}{of} matches. Kept {c.kept}, dropped {c.dropped}"
@@ -765,6 +783,7 @@ async def _narrow_and_read(adapter: SourceAdapter, query: str, filters: str) -> 
     found = list(narrowed.candidates or [])
     candidates = found[:MAX_CANDIDATES]
     total = max(int(narrowed.total or 0), len(found))
+    more = bool(getattr(narrowed, "more", False))
 
     picked = await _pick(query, candidates)
     threshold = _run_threshold()
@@ -795,20 +814,20 @@ async def _narrow_and_read(adapter: SourceAdapter, query: str, filters: str) -> 
     counts = Counts(
         candidates=len(candidates), total=total, checked=checked,
         kept=len(kept), dropped=len(dropped),
-        not_checked=len(candidates) - checked, read=len(items),
+        not_checked=len(candidates) - checked, read=len(items), more=more,
     )
     call_id = _remember_dropped(dropped)
     _log.info(
         "narrowing.done",
         source=source, candidates=counts.candidates, total=counts.total,
         checked=counts.checked, kept=counts.kept, dropped=counts.dropped,
-        not_checked=counts.not_checked, read=counts.read,
+        not_checked=counts.not_checked, read=counts.read, more=counts.more,
         engines=dict(picked.engines), request_ids=list(picked.request_ids),
         bound_hit=picked.bound_hit,
     )
 
     lines = [count_line(counts)]
-    if counts.total > counts.candidates:
+    if counts.overflow:
         lines.append(
             f"More than {counts.candidates} items matched. Narrow the filters to check the rest."
         )

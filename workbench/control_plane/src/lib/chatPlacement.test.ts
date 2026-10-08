@@ -74,6 +74,8 @@ describe("one map classifies every tool a card file draws", () => {
     expect(new Set(Object.values(PLACEMENT))).toEqual(new Set(["ask", "evidence", "write", "answer"]));
     expect(placementOf("skill_projects.list_tasks")).toBe("evidence");
     expect(placementOf("projects__create_task")).toBe("write");
+    // WS-48: the narrowing tool of every data agent is a read.
+    expect(placementOf("narrow_and_read")).toBe("evidence");
     expect(placementOf("no_such_tool")).toBeUndefined();
   });
 

@@ -95,6 +95,55 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-275 · Measure the WhatsApp narrowing on a real run · [OWNER]
+- **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
+  No line with a measured recall and a date under §9 N4 means this is open.
+- **Why.** The PR of WS-48 N4 has only the scripted run, and its verdicts,
+  tokens and credits are stub numbers. That run does not meet the email bar of
+  0.40: its gated ratio is 0.650. A real run says whether the WhatsApp tool
+  saves anything before anyone turns it on.
+- **Do.**
+  1. The owner approves the run, because it spends credits and turns on a
+     flag. Then set `NARROWING_AGENTS=whatsapp-assistant` on the box.
+  2. Ask the WhatsApp assistant one broad question over many chats. Then ask
+     the same question with the flag off.
+  3. Join each run's `request_id` values to `usage_event`. Compare the
+     requests, tokens and credits per tier, and the answers that each run
+     found.
+  4. Write the recall, the credits, the date and the SHA under §9 N4, with the
+     words "compare run". Turn the flag off again if the tool costs more.
+- **Authority:** `data_narrowing_pipeline.md` §9 N4 and §11 · D93
+- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+
+### H-276 · PICK costs more than it saves on short items · [AGENT]
+- **Check:** `rg -n "short item" packages/acb_skills/acb_skills/narrowing.py`.
+  No hit means the pick step has no rule for short items, and this is open.
+- **Why.** PICK asks one question for each candidate, and each question
+  carries its guidance. So it spends about 160 tokens on each candidate. A
+  WhatsApp message is about 15 tokens. In the scripted WhatsApp eval, Q2 (all
+  messages of one group in three weeks) costs 1.45 times today's path. A CRM
+  note or a task title (N5) is short too.
+- **Do.** Measure the PICK tokens for each candidate on the decide door.
+  Then propose a rule in spec §3.3 for the owner: for example, when the
+  summaries of all candidates are shorter than the question, READ them with
+  no PICK. Do not change the pipeline before the spec says so.
+- **Authority:** `data_narrowing_pipeline.md` §3.3 and §9 N4 build notes
+- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+
+### H-277 · `read_whatsapp_chat` reads the oldest messages of a chat, not the recent ones · [AGENT]
+- **Check:** `rg -n "ORDER BY sent_at ASC NULLS FIRST" apps/services/gateway/gateway/routes/whatsapp/transport/messages.py`.
+  A hit in `list_messages` with `LIMIT :limit` after it means this is open.
+- **Why.** The tool says that it reads "the recent messages". The route orders
+  `sent_at ASC` and then applies the limit, so a chat of more than 20 messages
+  gives its OLDEST 20. The agent then answers from old messages, and a recent
+  answer is not seen. WS-48 N4 found it, and the narrowing READ does not use
+  this form (it reads with `around`).
+- **Do.** Take the newest `limit` messages, then give them oldest first, in the
+  route or in the tool. Check the app's thread view first, because it reads
+  the same route. Add a test with a chat of more than `limit` messages.
+- **Authority:** `whatsapp_message_manager.md` · board row WS-20
+- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
   While it prints nothing, this is open.

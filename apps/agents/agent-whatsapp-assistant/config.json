@@ -43,6 +43,7 @@
     "list_whatsapp_group_summaries",
     "transcribe_whatsapp_voice_note",
     "draft_whatsapp_reply",
-    "draft_waiting_on_nudge"
+    "draft_waiting_on_nudge",
+    "narrow_and_read"
   ]
 }
