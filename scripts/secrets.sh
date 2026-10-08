@@ -11,7 +11,9 @@
 #   scripts/secrets.sh init                     make the folder, the README and the templates
 #   scripts/secrets.sh status [name]            missing-local | local-only | in-sync | differs | remote-only
 #   scripts/secrets.sh diff <name>              the key NAMES that a push would add, change or remove
-#   scripts/secrets.sh push <name> [--yes]      check, back up, write, verify, restart
+#   scripts/secrets.sh push <name> [--yes]      check, back up, write, verify, restart, roll back
+#   scripts/secrets.sh push --all [--yes]       push each entry that has its values, in manifest order
+#   scripts/secrets.sh push ... --verify        also run the post-push check (a full backup: minutes)
 #   scripts/secrets.sh gen backup-gpg [--force] make the backup key pair with local gpg
 #   scripts/secrets.sh forget <key> [--yes]     shred a local file
 #
@@ -139,22 +141,63 @@ set +x
 umask 077
 export LC_ALL=C
 
+# The seconds a restarted unit must stay up before it counts as healthy, and
+# the tries (2 seconds apart) that its health URL gets.
+r_settle=10
+r_health_tries=30
+
+# r_no_link PATH — refuse a symbolic link. The script runs as root, and a link
+# in a directory that acb can write would send a root write somewhere else.
+r_no_link() {
+  if [ -L "$1" ]; then echo "ERROR: $1 is a symbolic link. The script refuses it." >&2; exit 3; fi
+}
+
+# r_probe PATH KIND KEY... — KIND is env-file, env-merge or file. A hash goes
+# out for the listed keys ONLY, so a probe of the app env file never hashes a
+# value that the manifest does not manage. For env-file, the names of the
+# other keys go out too, with no hash, because a push removes them.
 r_probe() {
-  local path="$1" how="$2" k
+  local path="$1" kind="$2" k
+  shift 2
+  local -A want=()
+  for k in "$@"; do want[$k]=1; done
+  r_no_link "$path"
   if [ ! -e "$path" ]; then echo "R exists 0"; return 0; fi
   if [ ! -f "$path" ]; then echo "ERROR: $path is not a regular file." >&2; exit 3; fi
   echo "R exists 1"
   echo "R meta $(stat -c '%U:%G %a' "$path")"
   echo "R sha $(sd_sha < "$path")"
-  if [ "$how" = env ]; then
+  if [ "$kind" != file ]; then
     sd_parse "$path"
-    for k in "${sd_keys[@]}"; do echo "R key $k $(printf '%s' "${sd_val[$k]}" | sd_sha)"; done
+    for k in "${sd_keys[@]}"; do
+      if [ -n "${want[$k]+x}" ]; then
+        echo "R key $k $(printf '%s' "${sd_val[$k]}" | sd_sha)"
+      elif [ "$kind" = env-file ]; then
+        echo "R other $k"
+      fi
+    done
   fi
 }
 
+# r_prune PATH KEEP — keep the newest KEEP backups of PATH, and delete the
+# rest. Only a name of the form PATH.bak-<YYYYMMDDTHHMMSSZ> counts. The glob
+# sorts in C order, and the stamp sorts by time.
+r_prune() {
+  local path="$1" keep="$2" f n=0 i
+  local -a all=()
+  for f in "$path".bak-*; do
+    [[ "${f#"$path".bak-}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || continue
+    if [ -f "$f" ] && [ ! -L "$f" ]; then all+=("$f"); fi
+  done
+  for ((i = 0; i < ${#all[@]} - keep; i++)); do rm -f -- "${all[$i]}"; n=$((n + 1)); done
+  echo "R pruned $n"
+}
+
 r_write() {
-  local path="$1" owner="$2" group="$3" mode="$4" how="$5" dir bak k
+  local path="$1" owner="$2" group="$3" mode="$4" how="$5" dir bak k btmp
   dir="$(dirname "$path")"
+  r_no_link "$path"
+  r_no_link "$dir"
   if [ -e "$path" ] && [ ! -f "$path" ]; then
     echo "ERROR: $path is not a regular file." >&2; exit 3
   fi
@@ -168,7 +211,8 @@ r_write() {
     echo "R made-dir $dir"
   fi
   r_tmp="$(mktemp "$dir/.secrets-drop.XXXXXX")"
-  trap 'rm -f "$r_tmp"' EXIT
+  btmp=""
+  trap 'rm -f "$r_tmp" ${btmp:+"$btmp"}' EXIT
   if [ "$how" = merge ]; then
     sd_parse /dev/stdin
     if [ "${#sd_bad[@]}" -ne 0 ] || [ "${#sd_dup[@]}" -ne 0 ]; then
@@ -181,9 +225,22 @@ r_write() {
     cat > "$r_tmp"
   fi
   if [ -e "$path" ]; then
-    bak="$path.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-    if [ -e "$bak" ]; then bak="$bak.$$"; fi
-    cp -p "$path" "$bak"
+    # A name that exists means a push in this same second. Wait for the next
+    # stamp, and never invent a second name. A link at the name is refused.
+    for k in 1 2 3; do
+      bak="$path.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+      r_no_link "$bak"
+      [ -e "$bak" ] || break
+      command sleep 1
+    done
+    if [ -e "$bak" ]; then
+      echo "ERROR: the backup $bak exists. Wait one second, then push again." >&2; exit 3
+    fi
+    # Copy into a fresh temp file, then rename. A rename never follows a link.
+    btmp="$(mktemp "$dir/.secrets-drop.XXXXXX")"
+    cp -p "$path" "$btmp"
+    mv -f -T "$btmp" "$bak"
+    btmp=""
     echo "R backup $bak"
   else
     echo "R backup none"
@@ -191,31 +248,101 @@ r_write() {
   chown "$owner:$group" "$r_tmp"
   chmod "$mode" "$r_tmp"
   echo "R meta $(stat -c '%U:%G %a' "$r_tmp")"
-  mv -f "$r_tmp" "$path"
+  mv -f -T "$r_tmp" "$path"
   trap - EXIT
   echo "R sha $(sd_sha < "$path")"
   if [ "$how" = merge ]; then
     sd_parse "$path"
     for k in "${m_keys[@]}"; do echo "R key $k $(printf '%s' "${sd_val[$k]-}" | sd_sha)"; done
   fi
+  r_prune "$path" 3
 }
 
+# r_rollback PATH BACKUP — put BACKUP back at PATH. BACKUP is `none` when the
+# push made a new file, and then the new file goes.
+r_rollback() {
+  local path="$1" bak="$2" dir tmp
+  dir="$(dirname "$path")"
+  r_no_link "$path"
+  r_no_link "$dir"
+  if [ "$bak" = none ]; then
+    rm -f -- "$path"
+    echo "R rolled-back removed"
+    return 0
+  fi
+  case "$bak" in "$path".bak-*) ;; *) echo "ERROR: $bak is not a backup of $path." >&2; exit 3 ;; esac
+  r_no_link "$bak"
+  if [ ! -f "$bak" ]; then echo "ERROR: the backup $bak is gone." >&2; exit 3; fi
+  tmp="$(mktemp "$dir/.secrets-drop.XXXXXX")"
+  trap 'rm -f "$tmp"' EXIT
+  cp -p "$bak" "$tmp"
+  mv -f -T "$tmp" "$path"
+  trap - EXIT
+  echo "R rolled-back restored"
+  echo "R sha $(sd_sha < "$path")"
+}
+
+# r_restart UNIT [HEALTH_URL] — restart UNIT and prove that it stays up.
+# `is-active` alone is not proof: a Type=simple unit with Restart=always reads
+# active between two crashes. So NRestarts must not grow after the restart,
+# and the health URL, when there is one, must answer 200.
 r_restart() {
-  local unit="$1" n
+  local unit="$1" url="${2:-}" n0 n1 code ok=0 i
   systemctl restart "$unit"
-  for n in $(seq 1 30); do
-    if systemctl is-active --quiet "$unit"; then echo "R active yes"; return 0; fi
-    sleep 1
+  n0="$(systemctl show -p NRestarts --value "$unit")"
+  sleep "$r_settle"
+  if ! systemctl is-active --quiet "$unit"; then echo "R fail $unit is not active"; exit 4; fi
+  n1="$(systemctl show -p NRestarts --value "$unit")"
+  if [ "$n1" != "$n0" ]; then echo "R fail $unit restarted by itself ($n0 to $n1)"; exit 4; fi
+  if [ -n "$url" ]; then
+    for ((i = 0; i < r_health_tries; i++)); do
+      code="$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null || true)"
+      if [ "$code" = 200 ]; then ok=1; break; fi
+      sleep 2
+    done
+    if [ "$ok" != 1 ]; then echo "R fail $unit did not answer 200 at $url"; exit 4; fi
+    n1="$(systemctl show -p NRestarts --value "$unit")"
+    if [ "$n1" != "$n0" ]; then echo "R fail $unit restarted by itself ($n0 to $n1)"; exit 4; fi
+  fi
+  echo "R healthy $unit"
+}
+
+# r_postcheck UNIT MATCH SECS ENVFILE — start UNIT, wait for it (SECS at most),
+# and look for MATCH in its journal since the start. The last 5 relevant lines
+# go out, with every value of ENVFILE replaced by [REDACTED:<key>].
+r_postcheck() {
+  local unit="$1" match="$2" secs="$3" envf="$4" since rc=0 lines line k v lc
+  local -a keep=()
+  since="$(date '+%Y-%m-%d %H:%M:%S')"
+  timeout "$secs" systemctl start "$unit" || rc=$?
+  lines="$(journalctl -u "$unit" --since "$since" --no-pager -o cat 2>/dev/null || true)"
+  sd_keys=(); sd_val=()
+  if [ -f "$envf" ] && [ ! -L "$envf" ]; then sd_parse "$envf"; fi
+  while IFS= read -r line; do
+    lc="${line,,}"
+    if [[ "$line" == *"$match"* ]] || [[ "$lc" =~ error|warn|fail ]]; then keep+=("$line"); fi
+  done <<< "$lines"
+  if [ "${#keep[@]}" -eq 0 ]; then mapfile -t keep < <(printf '%s\n' "$lines" | tail -n 5); fi
+  k=$(( ${#keep[@]} > 5 ? ${#keep[@]} - 5 : 0 ))
+  for line in "${keep[@]:k}"; do
+    for k in "${sd_keys[@]}"; do
+      v="${sd_val[$k]}"
+      if [ "${#v}" -ge 4 ]; then line="${line//"$v"/[REDACTED:$k]}"; fi
+    done
+    echo "R log $line"
   done
-  echo "R active no"
-  exit 4
+  if [ "$rc" -eq 0 ] && [[ "$lines" == *"$match"* ]]; then echo "R postcheck pass"; return 0; fi
+  echo "R postcheck fail (start exit $rc)"
+  exit 5
 }
 
 verb="${1:?}"; shift
 case "$verb" in
   probe) r_probe "$@" ;;
   write) r_write "$@" ;;
+  rollback) r_rollback "$@" ;;
   restart) r_restart "$@" ;;
+  postcheck) r_postcheck "$@" ;;
   *) echo "ERROR: unknown remote verb." >&2; exit 2 ;;
 esac
 REMOTE
@@ -229,7 +356,8 @@ remote() {
   local cmd a
   cmd="sudo -n bash -c \"\$(printf %s $sd_remote_b64 | base64 -d)\" secrets-drop"
   for a in "$@"; do cmd+=" $(printf '%q' "$a")"; done
-  ssh -T -o ConnectTimeout=15 "$host" "$cmd"
+  # ServerAlive keeps a long post-push check (a full backup) on the line.
+  ssh -T -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "$host" "$cmd"
 }
 
 # ── The manifest ──────────────────────────────────────────────────────────────
@@ -328,7 +456,7 @@ vl() {
   done
 }
 
-env_validators="non_empty https_url fingerprint_40_hex absolute_path s3_bucket_name"
+env_validators="non_empty https_url gpg_fingerprint absolute_path s3_bucket_name"
 file_validators="non_empty gpg_public_key_only"
 
 load_manifest() {
@@ -355,9 +483,27 @@ load_manifest() {
     [[ "$(ef "$i" owner)" =~ ^[a-z_][a-z0-9_-]*$ ]] || errs+=("$name: owner is not a user name.")
     [[ "$(ef "$i" group)" =~ ^[a-z_][a-z0-9_-]*$ ]] || errs+=("$name: group is not a group name.")
     [[ "$(ef "$i" mode)" =~ ^0?[0-7]{3}$ ]] || errs+=("$name: mode must be octal, for example 0600.")
-    v="$(ef "$i" restart)"
-    if [ -n "$v" ] && ! [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9@._-]*$ ]]; then
-      errs+=("$name: restart is not a unit name.")
+    if [ "${mft[entries.$i.restart]-}" != array ]; then
+      errs+=("$name: restart must be a list of unit names. Use [] for none.")
+    fi
+    while IFS= read -r v; do
+      [ -n "$v" ] || continue
+      [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9@._-]*$ ]] || errs+=("$name: restart $v is not a unit name.")
+    done <<< "$(el "$i" restart)"
+    for p in "${!mft[@]}"; do
+      [[ "$p" =~ ^entries\.$i\.health\.([A-Za-z0-9_-]+)$ ]] || continue
+      k="${BASH_REMATCH[1]}"
+      grep -qxF -- "$k" <<< "$(el "$i" restart)" || errs+=("$name: health names $k, which restart does not list.")
+      [[ "${mf[$p]}" =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]{1,5})?/[A-Za-z0-9._/-]*$ ]] \
+        || errs+=("$name: the health URL of $k must be http://127.0.0.1 or localhost.")
+    done
+    if [ -n "${mft[entries.$i.post_push]+x}" ]; then
+      [[ "${mf[entries.$i.post_push.start_unit]-}" =~ ^[A-Za-z0-9][A-Za-z0-9@._-]*$ ]] \
+        || errs+=("$name: post_push.start_unit is not a unit name.")
+      [[ "${mf[entries.$i.post_push.journal_match]-}" =~ ^[A-Za-z0-9][A-Za-z0-9\ ._:\(\)-]*$ ]] \
+        || errs+=("$name: post_push.journal_match must be letters, digits, spaces and . _ : ( ) -")
+      [[ "${mf[entries.$i.post_push.timeout_secs]-}" =~ ^[1-9][0-9]{0,4}$ ]] \
+        || errs+=("$name: post_push.timeout_secs must be a whole number of seconds.")
     fi
     while IFS= read -r k; do
       [ -n "$k" ] || continue
@@ -435,7 +581,8 @@ run_validator() {
   case "$1" in
     non_empty) [ -n "$v" ] ;;
     https_url) [[ "$v" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~%/-]*)?$ ]] ;;
-    fingerprint_40_hex) [[ "$v" =~ ^[0-9A-Fa-f]{40}$ ]] ;;
+    # 40 hex digits (a v4 key) or 64 (a v5 key), as backup_offbox.sh accepts.
+    gpg_fingerprint) [[ "$v" =~ ^([0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$ ]] ;;
     absolute_path) [[ "$v" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "/$v/" != */../* ]] ;;
     s3_bucket_name) [[ "$v" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] ;;
     *) return 1 ;;
@@ -552,29 +699,40 @@ check_local_perms() {
 }
 
 # ── The remote state ──────────────────────────────────────────────────────────
-r_exists=""; r_meta=""; r_sha=""; r_backup=""; r_active=""
+r_exists=""; r_meta=""; r_sha=""; r_backup=""; r_fail=""; r_post=""; r_pruned=""
+declare -a r_other=() r_logs=()
 
 parse_remote() {
-  local tag a b c
-  rh=(); r_exists=""; r_meta=""; r_sha=""; r_backup=""; r_active=""
-  while read -r tag a b c; do
+  local line tag a b c
+  rh=(); r_other=(); r_logs=()
+  r_exists=""; r_meta=""; r_sha=""; r_backup=""; r_fail=""; r_post=""; r_pruned=""
+  while IFS= read -r line; do
+    case "$line" in
+      "R log "*) r_logs+=("${line#R log }"); continue ;;
+      "R fail "*) r_fail="${line#R fail }"; continue ;;
+      "R postcheck "*) r_post="${line#R postcheck }"; continue ;;
+    esac
+    read -r tag a b c <<< "$line"
     [ "$tag" = R ] || continue
     case "$a" in
       exists) r_exists="$b" ;;
       meta) r_meta="$b $c" ;;
       sha) r_sha="$b" ;;
       key) rh[$b]="$c" ;;
+      other) r_other+=("$b") ;;
       backup) r_backup="$b" ;;
-      active) r_active="$b" ;;
+      pruned) r_pruned="$b" ;;
     esac
   done <<< "$1"
 }
 
-# probe I — read the remote state of entry I. False when ssh fails.
+# probe I — read the remote state of entry I. False when ssh fails. The box
+# hashes only the allowed keys of the entry.
 probe() {
-  local i="$1" out how=file
-  if is_env_kind "$i"; then how="env"; fi
-  out="$(remote probe "$(ef "$i" remote_path)" "$how" < /dev/null)" || return 1
+  local i="$1" out k
+  local -a keys=()
+  while IFS= read -r k; do [ -z "$k" ] || keys+=("$k"); done <<< "$(el "$i" allowed_keys)"
+  out="$(remote probe "$(ef "$i" remote_path)" "$(ef "$i" kind)" "${keys[@]}" < /dev/null)" || return 1
   parse_remote "$out"
 }
 
@@ -598,7 +756,7 @@ compute_diff() {
     else d_same=$((d_same + 1)); fi
   done
   if [ "$(ef "$i" kind)" = env-file ]; then
-    for k in $(printf '%s\n' "${!rh[@]}" | sort); do
+    for k in $(printf '%s\n' "${!rh[@]}" "${r_other[@]}" | sort -u); do
       [ -n "${lh[$k]+x}" ] || d_rem+=("$k")
     done
   fi
@@ -717,7 +875,7 @@ cmd_status() {
             if [ -n "${rh[$k]+x}" ]; then rsub[$k]="${rh[$k]}"; fi
           done <<< "$(el "$i" allowed_keys)"
           if [ "${#rsub[@]}" -gt 0 ]; then have_remote=1; rsum="$(combo rsub)"; fi
-        elif [ "${#rh[@]}" -gt 0 ]; then
+        elif [ "${#rh[@]}" -gt 0 ] || [ "${#r_other[@]}" -gt 0 ]; then
           have_remote=1; rsum="$(combo rh)"
         fi
         if [ "$have_local" = 1 ] && [ "$have_remote" = 1 ]; then
@@ -729,11 +887,11 @@ cmd_status() {
         if [ "$have_local" = 1 ] && [ "$(sd_sha < "$f")" = "$r_sha" ]; then same=1; fi
       fi
     fi
-    if [ "$have_local" = 0 ] && [ "$have_remote" = 0 ]; then state=missing-local
-    elif [ "$have_local" = 0 ]; then state=remote-only
-    elif [ "$have_remote" = 0 ]; then state=local-only
-    elif [ "$same" = 1 ]; then state=in-sync
-    else state=differs; fi
+    if [ "$have_local" = 0 ] && [ "$have_remote" = 0 ]; then state="missing-local"
+    elif [ "$have_local" = 0 ]; then state="remote-only"
+    elif [ "$have_remote" = 0 ]; then state="local-only"
+    elif [ "$same" = 1 ]; then state="in-sync"
+    else state="differs"; fi
     printf '%-20s %-14s local %-8s  remote %-8s\n' "$name" "$state" "$lsum" "$rsum"
   done
   return "$fail"
@@ -790,32 +948,131 @@ confirm() {
   [ "$ans" = yes ] || die "you did not type yes. Nothing changed."
 }
 
+unit_fail=""
+
+# restart_units I — restart each unit of entry I, in order, and prove each one
+# healthy on the box (r_restart). False at the first failure, with unit_fail set.
+restart_units() {
+  local i="$1" u url out rc
+  unit_fail=""
+  while IFS= read -r u; do
+    [ -n "$u" ] || continue
+    url="${mf[entries.$i.health.$u]-}"
+    rc=0; out="$(remote restart "$u" "$url" < /dev/null)" || rc=$?
+    parse_remote "$out"
+    if [ "$rc" -ne 0 ]; then
+      unit_fail="${r_fail:-$u failed its check (exit $rc)}"
+      return 1
+    fi
+    if [ -n "$url" ]; then say "restart: $u is healthy, and $url answers 200"
+    else say "restart: $u is healthy"; fi
+  done <<< "$(el "$i" restart)"
+  return 0
+}
+
+# redact LINE — replace each local value of the entry with [REDACTED:<key>].
+# The box does the same with its own values first. This is the second layer.
+redact() {
+  local line="$1" k v
+  for k in "${!sd_val[@]}"; do
+    v="${sd_val[$k]}"
+    if [ "${#v}" -ge 4 ]; then line="${line//"$v"/[REDACTED:$k]}"; fi
+  done
+  printf '%s\n' "$line"
+}
+
+# post_step I NAME VERIFY — the post-push check of entry I, when it has one.
+# It runs only with --verify, because it can take many minutes.
+post_step() {
+  local i="$1" name="$2" verify="$3" unit match secs about out rc line
+  [ -n "${mft[entries.$i.post_push]+x}" ] || return 0
+  unit="${mf[entries.$i.post_push.start_unit]}"
+  match="${mf[entries.$i.post_push.journal_match]}"
+  secs="${mf[entries.$i.post_push.timeout_secs]}"
+  about="${mf[entries.$i.post_push.about_minutes]-some}"
+  if [ "$verify" != 1 ]; then
+    say "post-push check: not run. It starts $unit and takes about $about minutes. To run it:"
+    say "  scripts/secrets.sh push $name --verify"
+    return 0
+  fi
+  say "post-push check: start $unit and wait for it (about $about minutes, $secs seconds at most)."
+  rc=0; out="$(remote postcheck "$unit" "$match" "$secs" "$(ef "$i" remote_path)" < /dev/null)" || rc=$?
+  parse_remote "$out"
+  for line in "${r_logs[@]}"; do say "  | $(redact "$line")"; done
+  if [ "$rc" -eq 0 ] && [ "$r_post" = pass ]; then
+    log_push "$name" "result=post-push-pass"
+    say "post-push check: PASS. The journal of $unit holds '$match'."
+    return 0
+  fi
+  log_push "$name" "result=post-push-fail"
+  die "post-push check: FAIL. The journal of $unit does not hold '$match'. Run on the box: sudo journalctl -u $unit -n 80"
+}
+
+# roll_back I NAME PRE_SHA BACKUP WANT — after a failed restart: put the old
+# file back, verify it, restart again, and fail with ROLLED BACK.
+roll_back() {
+  local i="$1" name="$2" pre="$3" bak="$4" want="$5" rp out rc first again
+  rp="$(ef "$i" remote_path)"
+  first="$unit_fail"
+  warn "$first"
+  say "rollback: put the old file back on $host:$rp."
+  rc=0; out="$(remote rollback "$rp" "$bak" < /dev/null)" || rc=$?
+  parse_remote "$out"
+  if [ "$rc" -ne 0 ]; then
+    log_push "$name" "sha=$want result=rollback-failed"
+    die "ROLLBACK FAILED (exit $rc). The new file is still on the box. Backup: $bak"
+  fi
+  if [ "$bak" != none ] && [ "$r_sha" != "$pre" ]; then
+    log_push "$name" "sha=$want result=rollback-failed"
+    die "ROLLBACK FAILED: the file on the box does not match the old file. Backup: $bak"
+  fi
+  if [ "$bak" = none ]; then say "rollback: the new file is gone. There was no old file."
+  else say "rollback: the old file is back, hash ${pre:0:8} verified."; fi
+  if restart_units "$i"; then again="the units are healthy with the old file"
+  else again="the units are NOT healthy with the old file either: $unit_fail"; fi
+  log_push "$name" "sha=$want result=rolled-back"
+  printf 'ERROR: ROLLED BACK. %s. The old file is back on %s, and %s.\n' "$first" "$host" "$again" >&2
+  exit 2
+}
+
 cmd_push() {
-  local name="" yes=0 a i f kind rp owner group mode unit payload="" k out rc want bad=0
+  local name="" yes=0 verify=0 all=0 a i f kind rp owner group mode payload="" k out rc want bad=0 pre bak
+  local -a flags=()
   for a in "$@"; do
     case "$a" in
-      --yes) yes=1 ;;
+      --yes) yes=1; flags+=("$a") ;;
+      --verify) verify=1; flags+=("$a") ;;
+      --all) all=1 ;;
       -*) die "push: unknown option $a" ;;
-      *) [ -z "$name" ] || die "usage: scripts/secrets.sh push <name> [--yes]"; name="$a" ;;
+      *) [ -z "$name" ] || die "usage: scripts/secrets.sh push <name>|--all [--yes] [--verify]"; name="$a" ;;
     esac
   done
-  [ -n "$name" ] || die "usage: scripts/secrets.sh push <name> [--yes]"
+  if [ "$all" = 1 ]; then
+    [ -z "$name" ] || die "push: give a name or --all, not both."
+    cmd_push_all "${flags[@]}"
+    return
+  fi
+  [ -n "$name" ] || die "usage: scripts/secrets.sh push <name>|--all [--yes] [--verify]"
   ensure_drop
   i="$(entry "$name")"
   f="$drop/$(ef "$i" local_file)"
   kind="$(ef "$i" kind)"
   rp="$(ef "$i" remote_path)"
   owner="$(ef "$i" owner)"; group="$(ef "$i" group)"; mode="$(ef "$i" mode)"
-  unit="$(ef "$i" restart)"
 
   validate_local "$i"
   check_local_perms "$f"
   probe "$i" || die "ssh to $host failed. Nothing changed."
+  pre="$r_sha"
   if [ "$kind" = env-merge ] && [ "$r_exists" != 1 ]; then
     die "$rp does not exist on $host. A merge needs the env file to exist. Nothing changed."
   fi
   show_diff "$i"
-  if ! has_change "$i"; then say "in-sync: nothing to push."; return 0; fi
+  if ! has_change "$i"; then
+    say "in-sync: nothing to push."
+    post_step "$i" "$name" "$verify"
+    return 0
+  fi
   if [ "$yes" != 1 ]; then confirm "Push $name to $host:$rp?"; fi
 
   if [ "$kind" = file ]; then
@@ -839,7 +1096,7 @@ cmd_push() {
     log_push "$name" "result=write-failed"
     die "the write on $host failed (exit $rc). Read the lines above. Backup: ${r_backup:-none}."
   fi
-  say "backup: ${r_backup:-none}"
+  say "backup: ${r_backup:-none} (older backups pruned: ${r_pruned:-0}, the newest 3 stay)"
 
   if [ "$kind" = env-merge ]; then
     for k in "${push_keys[@]}"; do
@@ -860,19 +1117,71 @@ cmd_push() {
   fi
   say "wrote: $rp ($r_meta), hash $want verified"
 
-  if [ -n "$unit" ]; then
-    rc=0; out="$(remote restart "$unit" < /dev/null)" || rc=$?
-    parse_remote "$out"
-    if [ "$rc" -ne 0 ] || [ "$r_active" != yes ]; then
-      log_push "$name" "sha=$want result=restart-failed unit=$unit"
-      die "$unit is not active after the restart. Run on the box: sudo journalctl -u $unit -n 50"
-    fi
-    say "restart: $unit is active"
+  # Keep the backup path now: each remote call below resets r_backup.
+  bak="${r_backup:-none}"
+  if [ -n "$(el "$i" restart)" ]; then
+    restart_units "$i" || roll_back "$i" "$name" "$pre" "$bak" "$want"
   else
     say "restart: none"
   fi
   log_push "$name" "sha=$want result=ok"
   say "OK"
+  post_step "$i" "$name" "$verify"
+}
+
+# cmd_push_all [--yes] [--verify] — push every entry that has a local value,
+# in manifest order. Each push runs in its own process, so a failure stops
+# the run before the next entry.
+cmd_push_all() {
+  local i name f k rc pushed=0 missing
+  ensure_drop
+  for ((i = 0; i < ent_count; i++)); do
+    name="$(ef "$i" name)"
+    f="$drop/$(ef "$i" local_file)"
+    if is_env_kind "$i"; then
+      if [ ! -f "$f" ]; then say "skip $name: there is no local file."; continue; fi
+      read_local_env "$i"
+      missing=""
+      while IFS= read -r k; do
+        [ -n "$k" ] || continue
+        [ -n "${sd_val[$k]-}" ] || missing+=" $k"
+      done <<< "$(el "$i" required_keys)"
+      if [ -n "$missing" ]; then say "skip $name: these required keys are empty:$missing"; continue; fi
+      if [ "${#push_keys[@]}" -eq 0 ]; then say "skip $name: the file holds no value to push."; continue; fi
+    elif [ ! -s "$f" ]; then
+      say "skip $name: there is no local file."; continue
+    fi
+    say "== push $name"
+    rc=0; bash "${BASH_SOURCE[0]}" push "$name" "$@" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf 'ERROR: push --all stopped at %s (exit %s). The entries after it were not pushed.\n' "$name" "$rc" >&2
+      exit "$rc"
+    fi
+    pushed=$((pushed + 1))
+  done
+  say "push --all: $pushed entries pushed or already in sync."
+}
+
+# shred_file FILE — overwrite FILE, then delete it. Sets shred_how.
+shred_how=""
+shred_file() {
+  local f="$1" size
+  if command -v shred >/dev/null 2>&1; then
+    shred -u -z -n 3 -- "$f"
+    shred_how="shred"
+  else
+    size="$(wc -c < "$f" | tr -d ' ')"
+    dd if=/dev/urandom of="$f" bs=1 count="$size" conv=notrunc 2>/dev/null
+    rm -f -- "$f"
+    shred_how="overwrite, then delete"
+  fi
+}
+
+# shred_tree DIR — shred each file in DIR, then remove DIR.
+shred_tree() {
+  local x
+  while IFS= read -r -d '' x; do shred_file "$x"; done < <(find "$1" -type f -print0)
+  rm -rf -- "$1"
 }
 
 cmd_gen() {
@@ -889,11 +1198,15 @@ cmd_gen() {
   pass="$drop/backup-gpg-passphrase.txt"
   if [ -s "$pub" ] || [ -e "$priv" ] || [ -e "$pass" ]; then
     if [ "$force" != 1 ]; then
-      die "a backup key pair is already in the drop folder. To make a new one, add --force. The old files are kept as .old-<stamp>."
+      die "a backup key pair is already in the drop folder. --force makes a new one and SHREDS the old private key and passphrase. Save them in your password manager first."
     fi
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    for f in "$pub" "$priv" "$pass"; do
-      if [ -e "$f" ]; then mv "$f" "$f.old-$stamp"; say "kept the old $(basename "$f") as $(basename "$f").old-$stamp"; fi
+    if [ -e "$pub" ]; then
+      mv "$pub" "$pub.old-$stamp"
+      say "kept the old backup-gpg-public.asc as backup-gpg-public.asc.old-$stamp"
+    fi
+    for f in "$priv" "$pass"; do
+      if [ -e "$f" ]; then shred_file "$f"; say "shredded the old $(basename "$f") ($shred_how)"; fi
     done
   fi
 
@@ -908,7 +1221,7 @@ cmd_gen() {
     --quick-gen-key "Metorite off-box backup" ed25519 cert never >/dev/null 2>&1 \
     || die "gpg could not make the key. Nothing was written."
   fpr="$(gpg --homedir "$gh" --batch --with-colons --list-keys 2>/dev/null | awk -F: '/^fpr:/ && !d { print $10; d = 1 }')"
-  [[ "$fpr" =~ ^[0-9A-F]{40}$ ]] || die "gpg did not give a 40-digit fingerprint. Nothing was written."
+  [[ "$fpr" =~ ^([0-9A-F]{40}|[0-9A-F]{64})$ ]] || die "gpg did not give a full fingerprint. Nothing was written."
   gpg --homedir "$gh" --batch --quiet --pinentry-mode loopback --passphrase-file "$gh/pass" \
     --quick-add-key "$fpr" cv25519 encr never >/dev/null 2>&1 \
     || die "gpg could not add the encryption subkey. Nothing was written."
@@ -937,8 +1250,11 @@ cmd_gen() {
   say "Copy backup-gpg-PRIVATE.asc and backup-gpg-passphrase.txt into your password manager, then run \`scripts/secrets.sh forget backup-gpg-private\`."
 }
 
+# cmd_forget KEY [--yes] — shred the local files of KEY, every <file>.old-*
+# copy of them, and any .gnupg-gen.* folder that a stopped `gen` left.
 cmd_forget() {
-  local key="" yes=0 a i j k files=() f size
+  local key="" yes=0 a i j k f o d
+  local -a files=() targets=() gens=()
   for a in "$@"; do
     case "$a" in
       --yes) yes=1 ;;
@@ -968,19 +1284,21 @@ cmd_forget() {
     printf '\n' >&2
     exit 1
   fi
-  if [ "$yes" != 1 ]; then confirm "Delete ${files[*]} from $drop for good?"; fi
   for f in "${files[@]}"; do
-    if [ ! -e "$drop/$f" ]; then say "absent: $f"; continue; fi
-    if command -v shred >/dev/null 2>&1; then
-      shred -u -z -n 3 "$drop/$f"
-      say "forgot: $f (shred)"
-    else
-      size="$(wc -c < "$drop/$f" | tr -d ' ')"
-      dd if=/dev/urandom of="$drop/$f" bs=1 count="$size" conv=notrunc 2>/dev/null
-      rm -f "$drop/$f"
-      say "forgot: $f (overwrite, then delete)"
-    fi
+    if [ -f "$drop/$f" ]; then targets+=("$drop/$f"); else say "absent: $f"; fi
+    for o in "$drop/$f".old-*; do
+      if [ -f "$o" ]; then targets+=("$o"); fi
+    done
   done
+  for d in "$drop"/.gnupg-gen.*; do
+    if [ -d "$d" ]; then gens+=("$d"); fi
+  done
+  if [ "${#targets[@]}" -eq 0 ] && [ "${#gens[@]}" -eq 0 ]; then say "nothing to forget."; return 0; fi
+  if [ "$yes" != 1 ]; then
+    confirm "Delete ${#targets[*]} file(s) and ${#gens[*]} leftover gpg folder(s) from $drop for good?"
+  fi
+  for f in "${targets[@]}"; do shred_file "$f"; say "forgot: $(basename "$f") ($shred_how)"; done
+  for d in "${gens[@]}"; do shred_tree "$d"; say "forgot: $(basename "$d")/ (a leftover gpg folder)"; done
 }
 
 usage() {
