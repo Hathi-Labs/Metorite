@@ -490,6 +490,14 @@ BRIEF_CACHE_NAMESPACE = "email-brief"
 #: A brief lives for one UTC day. The day is part of the key too, so a brief
 #: never crosses midnight. The TTL only frees the memory.
 BRIEF_CACHE_TTL_SECS = 26 * 3600
+#: The model and the system prompt of the brief.
+_BRIEF_MODEL = "tier-fast"
+_BRIEF_SYSTEM = (
+    "You write ONE short sentence orienting someone to their inbox "
+    "for the day — what's most pressing and who it's with. Name 1-3 "
+    "specific items (a person or subject), newest-pressing first. No "
+    "greeting, no preamble, under 25 words. "
+    'Respond ONLY JSON {"brief": "<sentence>"}.')
 
 
 def _brief_cache_key(account_id: str, user_prompt: str) -> Any:
@@ -507,7 +515,11 @@ def _brief_cache_key(account_id: str, user_prompt: str) -> Any:
 
     from acb_common.tenant_redis import key
 
-    digest = hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()[:24]
+    # The model and the system prompt are in the hash too, so a deploy that
+    # changes either one does not serve a brief of the old prompt (review
+    # round 1).
+    source = f"{_BRIEF_MODEL}\n{_BRIEF_SYSTEM}\n{user_prompt}"
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
     day = datetime.now(UTC).strftime("%Y-%m-%d")
     return key(BRIEF_CACHE_NAMESPACE, str(account_id), day, digest)
 
@@ -599,13 +611,8 @@ async def _digest_brief(
         return cached
     try:
         data, _content, _used = await _llm_json(
-            "tier-fast",
-            [{"role": "system", "content": (
-                "You write ONE short sentence orienting someone to their inbox "
-                "for the day — what's most pressing and who it's with. Name 1-3 "
-                "specific items (a person or subject), newest-pressing first. No "
-                "greeting, no preamble, under 25 words. "
-                'Respond ONLY JSON {"brief": "<sentence>"}.')},
+            _BRIEF_MODEL,
+            [{"role": "system", "content": _BRIEF_SYSTEM},
              {"role": "user", "content": user_prompt}],
             max_tokens=160,
         )

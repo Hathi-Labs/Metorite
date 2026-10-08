@@ -395,19 +395,46 @@ _STATUS_THINKING: dict[str, str] = {"type": "disabled"}
 def _status_retry_model(model: str) -> str:
     """The tier of the one retry of the old status call, or "" for no retry.
 
-    No retry when :data:`_STATUS_RETRY_MODEL` resolves to the model of the
-    first try (``acb_llm.context.resolve_underlying_model``, the check that
-    ``acompletion_with_fallback`` uses). A second ask of the same model is a
-    second bill for the same failure.
+    Off the Router, no retry when :data:`_STATUS_RETRY_MODEL` resolves to the
+    model of the first try (``acb_llm.context.resolve_underlying_model``, the
+    check that ``acompletion_with_fallback`` uses). A second ask of the same
+    model is a second bill for the same failure.
+
+    ⚠️ **On the Router the local table is not the binding** (review round 1).
+    ``resolve_underlying_model`` reads ``acb_llm.client._TIER_MODEL``, and
+    the Console ``tier_binding`` decides a routed call. So on the Router
+    only the tier names are compared, and the two differ. The named
+    constraint ``STATUS_TIER_CONSTRAINT`` says what the operator keeps true.
     """
     from acb_llm.context import resolve_underlying_model
+    from acb_llm.routed import routing_is_on
 
     retry = _STATUS_RETRY_MODEL
     if not retry or retry == model:
         return ""
+    if routing_is_on():
+        return retry
     if resolve_underlying_model(retry) == resolve_underlying_model(model):
         return ""
     return retry
+
+
+#: ADVISORY (R7: no test can read the live Console). What the operator keeps
+#: true for the old status call, when the Router serves it:
+#:
+#: 1. ``tier-balanced`` and ``tier-fast`` bind DIFFERENT models. Else the
+#:    retry asks the same model twice.
+#: 2. Each one binds a model that takes ``thinking``: DeepSeek or Anthropic.
+#:    The Console sends ``thinking`` to litellm with no ``drop_params``, so an
+#:    OpenAI model raises ``UnsupportedParamsError``. The ask then falls back
+#:    to a guessed status (review round 1, measured on litellm 1.103.0).
+#:
+#: ``test_email_ai_cost.py`` holds the SEED to both (``002_seed_catalog.sql``),
+#: which is the binding of a new Console. A later binding is an operator act.
+STATUS_TIER_CONSTRAINT = (
+    "tier-balanced and tier-fast bind different models, and each takes thinking")
+
+
 # How many chars of the thread the determiner reads. Kept as the TAIL (newest
 # messages, incl. the user's closing reply) — never the head, which is what's
 # safe to drop as a thread grows.

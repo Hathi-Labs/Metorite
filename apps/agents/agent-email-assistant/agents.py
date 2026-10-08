@@ -518,7 +518,8 @@ async def read_email(email_id: str, full: bool = False) -> str:
 
     The normal read gives the NEW text of the body: the quoted earlier
     messages, the signature and any legal footer are cut (read_thread reads
-    the earlier messages). Set ``full=true`` to pull the COMPLETE, untruncated
+    the earlier messages of the thread, and a forwarded email comes back
+    whole). Set ``full=true`` to pull the COMPLETE, untruncated
     body straight from the provider — use it when the normal read shows a
     cut-off body (long emails are capped in local storage), or when you need
     the signature, the quoted text or the footer, to summarize, answer a

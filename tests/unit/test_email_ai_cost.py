@@ -43,7 +43,13 @@ to the committed SHA after each one:
   ``test_new_mail_refreshes_the_brief``;
 * ``strip_for_reading`` loses ``strip_signature`` or ``strip_disclaimer`` ->
   the fixture cases of :class:`TestReadingText`;
-* ``get_message`` trims with no ``trim`` -> ``test_no_trim_returns_the_whole_body``.
+* ``get_message`` trims with no ``trim`` -> ``test_no_trim_returns_the_whole_body``;
+* review round 1: ``strip_disclaimer`` cuts from the first footer-like
+  paragraph to the end, or ``strip_signature`` takes any line under a
+  closing line as a name, or ``strip_for_reading`` cuts a forward ->
+  ``test_mail_that_comes_back_whole``;
+* review round 1: ``_status_retry_model`` reads the local table on the
+  Router -> ``test_on_the_router_the_local_table_does_not_decide``.
 """
 from __future__ import annotations
 
@@ -248,6 +254,34 @@ class TestTheRetry:
                             lambda m: "deepseek/deepseek-v4-pro")
         assert await _ask() == ("FYI", False)
         assert [c["model"] for c in fake.calls] == ["tier-balanced"]
+
+    async def test_on_the_router_the_local_table_does_not_decide(
+        self, monkeypatch, tenant,
+    ) -> None:
+        """Review round 1: the gateway table is not the Console binding."""
+        import acb_llm.routed as routed
+
+        fake = ThinkingVendor(answer="{}")
+        monkeypatch.setattr(llm_context, "acompletion_with_fallback", fake)
+        monkeypatch.setattr(llm_context, "resolve_underlying_model",
+                            lambda m: "deepseek/deepseek-v4-pro")
+        monkeypatch.setattr(routed, "routing_is_on", lambda: True)
+        await _ask()
+        assert [c["model"] for c in fake.calls] == ["tier-balanced", "tier-fast"]
+
+    def test_the_seed_keeps_the_status_tier_constraint(self) -> None:
+        """``replyzero.STATUS_TIER_CONSTRAINT`` on the seed binding of a new
+        Console: two different models, each one a model that takes
+        ``thinking``. A live binding is an operator act, so this is the
+        fence of the seed only."""
+        import re
+
+        seed = (Path(__file__).resolve().parents[2]
+                / "infra/customer_console/002_seed_catalog.sql").read_text(encoding="utf-8")
+        bound = dict(re.findall(r"\('(tier-[a-z]+)',\s*'([^']+)'", seed))
+        fast, balanced = bound["tier-fast"], bound["tier-balanced"]
+        assert fast != balanced
+        assert all(m.startswith(("deepseek/", "anthropic/")) for m in (fast, balanced))
 
     async def test_shadow_still_returns_the_old_answer(self, vendor, monkeypatch,
                                                        tenant) -> None:
@@ -524,11 +558,13 @@ FIXTURES: list[tuple[str, str, list[str], list[str]]] = [
      "Acme Components Pvt Ltd\naccounts@acme-components.example\n\n" + _DISCLAIMER,
      ["Invoice 4471", "Regards,", "Accounts Team"],
      ["accounts@acme", "CONFIDENTIALITY"]),
-    ("forwarded chain",
-     "FYI, see below. Can you check the tolerance on the bore?\n\n"
-     "---------- Forwarded message ---------\nFrom: QA <qa@plant.example>\n"
-     "Date: Wed, 7 Oct 2026\nSubject: NCR 2231\n\n" + ("Measured bore 12.08 mm. " * 30),
-     ["tolerance on the bore"], ["NCR 2231", "Measured bore"]),
+    ("reply quoting a reply, two quote levels",
+     "Hi Meera,\n\nThe bore is fine now, I measured 12.01 mm.\n\nThanks,\nRahul\n\n"
+     "On Wed, 7 Oct 2026 at 09:30, Meera QA <qa@plant.example> wrote:\n"
+     + "".join(f"> Measured bore 12.0{n} mm on part {n}. Please re-check.\n"
+               for n in range(9))
+     + "> On Tue, 6 Oct 2026, Rahul wrote:\n>> Parts are on the bench.\n",
+     ["12.01 mm", "Rahul"], ["Please re-check", "on the bench"]),
     ("footer with no signature",
      "Please ship the 40 units by Friday.\n\nThis email and any files transmitted "
      "with it are confidential and intended solely for the use of the individual "
@@ -547,6 +583,27 @@ UNCHANGED = [
     "---------- Forwarded message ---------\nFrom: QA <qa@plant.example>\n"
     "Subject: NCR\n\nThe bore is out of tolerance.",
     "Call me at +91 98450 12345 when you land.\n\nCheers,\nAnil",
+    # Review round 1: each of these lost the member's own words.
+    "Dear Ravi,\n\nThis email confirms your offer of employment as a design "
+    "engineer from 1 November. The terms are confidential. Please sign and "
+    "return the attached letter by 15 October so we can book your laptop.",
+    "Hi Legal,\n\nConfidentiality question: can we share the drawings with the "
+    "sub-contractor under our NDA?\n\nThanks,\nPriya",
+    "Hi all,\n\nThe review is on Friday at 10.\n\nIf you are not able to attend, "
+    "please delete this invite and tell me who will come in your place, so that "
+    "the room booking stays right for the whole team.\n\nThe agenda is in the "
+    "shared folder.",
+    "Hi team,\n\nImportant notice: the office is closed on Friday for the audit. "
+    "The audit papers are confidential, so keep them in the locked cabinet.\n\n"
+    "Work from home if you can.",
+    "Deal is approved.\n\nCheers,\nRavi\nP.S. The new number for the client is "
+    "+1 415 555 0101, call them today.",
+    "Hi Sam,\n\nThanks\n\nI got the parts. Two issues:\n1. The bracket is bent.\n"
+    "2. Call me at +91 98450 12345 about it.\nSee https://drive.example/p/1",
+    "Stock count:\nBolts | 400\n--\nNuts | 250\n--\nWashers | 900",
+    "FYI, see below. Can you check the tolerance on the bore?\n\n"
+    "---------- Forwarded message ---------\nFrom: QA <qa@plant.example>\n"
+    "Date: Wed, 7 Oct 2026\nSubject: NCR 2231\n\nMeasured bore 12.08 mm.",
 ]
 
 
