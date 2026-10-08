@@ -14,6 +14,11 @@ GO-NARROWED and BH-6 NO-GO. This round applies W1 to W3, S1 to S4, Q3a to
 Q3e and C1 to C4. BH-7 and BH-6 dispatch after a third audit. Part of BH-2
 may start now (§5 BH-2, "The GO-NARROWED split").
 
+**Fix round 3, 2026-10-08.** The third audit verified each round-2 item and
+found new defects in three fixes. This round applies B7-1 to B7-3, B2-1 to
+B2-5 and B6-1 to B6-3. The coordinator dispatches the builds from this text
+with no fourth audit.
+
 **The box changed after the audit (coordinator, 2026-10-08 16:38 UTC).**
 
 - The coordinator ran `docker update --restart=no acb-neo4j` and
@@ -793,8 +798,14 @@ read-only to the gateway.
   (`dep_tools.py:49-86`) install with `uv pip install --target
   /var/lib/acb-gateway/agent-site`.
   - Each install passes `-c <constraints>`. The constraints file comes from
-    `uv pip freeze --python sys.executable`. So a package in `agent-site`
-    never takes a version or an ABI that differs from the venv.
+    `uv pip freeze --exclude-editable --python sys.executable`, and the
+    installer writes it to `/var/cache/acb-gateway/constraints.txt`. So a
+    package in `agent-site` never takes a version or an ABI that differs
+    from the venv.
+  - `--exclude-editable` is required (B7-1). The auditor measured that a
+    plain freeze gives 20 `-e file:///` lines. uv then refuses the file with
+    "Unnamed requirements are not allowed as constraints", and every agent
+    install fails.
 - **How the gateway and its children find it (Q3a).**
   - In the gateway process, the loader appends `agent-site` to `sys.path`,
     after the venv. A venv package always wins.
@@ -818,6 +829,10 @@ read-only to the gateway.
     `deploy/hostinger/*.service.d/*.conf`. It writes only the names that the
     repo holds. It never deletes a `90-*` file, because that is the rollback
     of BH-2.
+  - The installer runs before the first service restart
+    (`vps_apply.sh:1069`), then runs `daemon-reload` (B7-2). The unit loop
+    at `vps_apply.sh:1561-1572` runs after that restart, on purpose, and it
+    stays where it is.
   - `deploy/hostinger/acb-gateway.service.d/40-agent-site.conf` holds:
 
 ```ini
@@ -833,11 +848,15 @@ Environment=CUSTOM_APPS_T2_VENDOR_DIR=/opt/acb/t2-vendor
   - The vendor dir is a constant, `/opt/acb/t2-vendor`. The script reads no
     path from `.env`.
   - The gateway cannot write that dir, because BH-2 does not list it.
+  - Before `npm install`, the step runs `rm -f /opt/acb/t2-vendor/.npmrc`
+    (B7-3).
   - `npm install` runs with `--ignore-scripts`, and with
     `--userconfig /dev/null` so that no `.npmrc` applies.
   - **`vps_apply.sh` STRIPS a `CUSTOM_APPS_T2_VENDOR_DIR` line from `.env`,
     and prints a warning (Q3e).** An `EnvironmentFile` line overrides an
-    `Environment=` line, so the line must go. A refusal would let the gateway
+    `Environment=` line, so the line must go. The strip runs before the
+    gateway restart at `vps_apply.sh:1069` (B7-3), so the gateway starts on
+    the new `.env`. A refusal would let the gateway
     stop every deploy by writing that line.
 - **The in-chat T2 build (Q3d).** The app-builder agent runs `node
   build_t2.mjs` in the Copilot shell (`agents.py:28-34`, the
@@ -845,9 +864,9 @@ Environment=CUSTOM_APPS_T2_VENDOR_DIR=/opt/acb/t2-vendor
   holds no `CUSTOM_APPS_T2_VENDOR_DIR`. BH-7 puts that value in
   `copilot_env()`. It is a path, not a secret. The other build path,
   `routes/apps/files.py:215-222`, passes it by value already.
-- **Until BH-7 lands, the gateway refuses installs.** If BH-2 ships first,
-  `install_dependency` answers with a refusal, and the loader logs that it
-  skipped the install. Neither one writes the venv.
+- **A guard, not a plan.** §6 ships BH-7 before `50-hardening.conf`. If
+  that order ever breaks, `install_dependency` answers with a refusal, and
+  the loader logs that it skipped the install. Neither one writes the venv.
 
 **Acceptance.**
 
@@ -879,12 +898,16 @@ ssh metorite 'systemctl cat acb-gateway | grep -E "^(StateDirectory|CacheDirecto
 
 - No install command in `acb_skills` holds `--python sys.executable` with no
   `--target`. Each install holds `-c`.
+- The freeze that makes the constraints file holds `--exclude-editable`, and
+  it writes under `/var/cache/acb-gateway/`.
 - The deps hash includes the target path.
 - No `.pth` file and no `sitecustomize` is written into `agent-site`.
 - `_script_env` and `copilot_env()` pass `PYTHONPATH` and
   `CUSTOM_APPS_T2_VENDOR_DIR` by value. No unit file sets `PYTHONPATH`.
-- The T2 step of `vps_apply.sh` holds `--ignore-scripts`, reads no `.env`
-  name, and strips `CUSTOM_APPS_T2_VENDOR_DIR` from `.env`.
+- The T2 step of `vps_apply.sh` holds `--ignore-scripts` and the
+  `rm -f /opt/acb/t2-vendor/.npmrc`, and it reads no `.env` name.
+- The strip of `CUSTOM_APPS_T2_VENDOR_DIR` and the drop-in installer come
+  before the gateway restart at `vps_apply.sh:1069`.
 
 BH-F3 checks `40-agent-site.conf`, and that the drop-in installer never
 deletes a `90-*` file.
@@ -997,19 +1020,26 @@ RestrictRealtime=yes
    - `.env`. `scripts/secrets.sh push app-env` already restarts
      acb-gateway (the `restart` list of `deploy/secrets/manifest.json`).
      `vps_apply.sh:490` (`sed -i`, a replace) runs before the restart at
-     `vps_apply.sh:1069`.
+     `vps_apply.sh:1069`. The BH-7 strip of `CUSTOM_APPS_T2_VENDOR_DIR` is a
+     replace too, and it also runs before that restart.
    - `infra/provider_models_cache.json` and
      `apps/services/gateway/agents.json`. Git tracks both, so the
      `git reset --hard` of a deploy replaces their inodes. The deploy
      restarts the gateway after that reset.
    - The gateway's own writes (`write_text`, `write_bytes`) keep the inode.
    - No test checks this rule. It is advisory, with those facts.
-5. **The strict check (S2, S3).** It runs at the END of `vps_apply.sh`, after
-   every restart and before the success marker. It passes when the gateway
-   has `ActiveState=active`, `NoNewPrivileges=yes` and
-   `ProtectSystem=strict`. It also passes on a full PASS from
-   `box_hardening_probe.sh acb-gateway`. Else it exits 1, unless the
-   rollback file of item 6 is valid.
+5. **The strict check (S2, S3, B2-1 to B2-3).** It runs at the END of
+   `vps_apply.sh`, after every restart and before the success marker.
+   - It passes ONLY when `ActiveState=active`, AND one of two things holds.
+     Either `NoNewPrivileges=yes` and `ProtectSystem=strict`, or
+     `box_hardening_probe.sh acb-gateway` gives a full PASS.
+   - An inactive gateway fails the check, even when the probe passes.
+   - Else it exits 1, unless the rollback file of item 6 is valid.
+   - It reads `/etc/acb/bh2-rollback-ack` with `sudo`, because that file is
+     root:root.
+   - It assumes that the BH-7 drop-in installer ran before the restart at
+     `vps_apply.sh:1069`. Without that, the restart runs the old unit, and
+     the check reads stale properties.
 6. **The rollback, with an expiry (S1, S4).**
    - `deploy/hostinger/rollback/acb-gateway-90-bh2-off.conf` holds at least
      these lines. Each empty assignment resets the list of the drop-in
@@ -1032,6 +1062,10 @@ PrivateTmp=no
      while it is there, the script prints `WARN BH-2 rolled back`.
    - `health-watchdog.sh` logs the same WARN on each tick.
    - `scripts/bh2_rollback.sh off` removes the conf and the file.
+   - **Recovery after the expiry (B2-4).** A deploy after the date fails.
+     Fix the cause, then run `sudo bash /opt/acb/app/scripts/bh2_rollback.sh
+     off`. Then run `sudo MODE=force bash /opt/acb/app/scripts/vps_pull.sh`
+     to apply the release again.
    - The drop-in installer of BH-7 writes only the repo names, and it never
      deletes a `90-*` file. So a deploy keeps a rollback in place.
 7. **The probe.** Add `scripts/box_hardening_probe.sh <unit>`. It reads the
@@ -1086,6 +1120,8 @@ PrivateTmp=no
    `systemctl` on `PATH` answers each property. The check:
    - It passes on `active`, `yes` and `strict`.
    - It fails on any other value, with no rollback file.
+   - It fails on `inactive` with a passing probe.
+   - A stub `sudo` answers the read of `/etc/acb/bh2-rollback-ack`.
    - It passes on a rollback file with a date in the future, and prints
      `WARN BH-2 rolled back`.
    - It fails on a rollback file with a date in the past.
@@ -1101,10 +1137,23 @@ ssh metorite 'journalctl -u acb-gateway --since "-24h" --no-pager | grep -cE "Re
 curl -s -o /dev/null -w "%{http_code}\n" https://api.metorite.com/health
 ```
 
-**Fences.** BH-F3 is `tests/unit/test_unit_hardening.py`.
+**Fences.** BH-F3 is `tests/unit/test_unit_hardening.py`. It lands in two
+parts (B2-5).
+
+**Part 1, in the narrowed PR:**
 
 - Every `User=acb` unit in `deploy/hostinger/`, except `acb-pull.service`,
   has `NoNewPrivileges=yes` in the unit or in its drop-in.
+- `acb-gateway-90-bh2-off.conf` holds the six reset lines:
+  `ReadWritePaths=`, `InaccessiblePaths=`, `ProtectSystem=no`,
+  `ProtectHome=no`, `NoNewPrivileges=no` and `PrivateTmp=no`.
+- `scripts/box_hardening_probe.sh` exists, and it runs each probe of
+  acceptance 2.
+- The drop-ins of the other units merge only after the BH-7 installer
+  merges, because nothing installs a drop-in before it.
+
+**Part 2, in the full slice:**
+
 - `50-hardening.conf` holds each line of the block above.
 - Its `ReadWritePaths` entries equal one allowlist constant in the test. A
   new write path needs a reviewed change. `.venv`, `/opt/acb/t2-vendor` and
@@ -1154,6 +1203,11 @@ applies C1 to C4.
   EXACT names that may enter `/etc/acb/root.env`, one on each line.
   `vps_apply.sh` and `scripts/secrets.sh` both read it. No script holds a
   second copy.
+- **Two source files (B6-1).** `root.env` comes from `/opt/acb/app/.env`
+  first, then from `/opt/acb/app/apps/services/customer_console/.env`. For a
+  name in both files, the Console value wins, as the two `EnvironmentFile=`
+  lines of `acb-backup.service` do today. `CUSTOMER_CONSOLE_DATABASE_URL`
+  lives only in the Console file. A missing Console file is not an error.
   - The names: `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`,
     `PGSSLMODE`, `PG_MODE`, `PG_CONTAINER`, `POSTGRES_USER`,
     `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`,
@@ -1171,7 +1225,12 @@ applies C1 to C4.
     dispatch, because they change.
 - **The copies (C4).** `vps_apply.sh` syncs these into `/usr/local/lib/acb/`
   on every deploy, with `sudo rsync -a --delete --chown=root:root`. So the
-  copy never goes stale, and a file that the repo drops leaves the copy too:
+  copy never goes stale, and a file that the repo drops leaves the copy too.
+  `rsync` joins the tool list at `vps_apply.sh:1516-1518`, with one more
+  `command -v rsync || _offbox_missing="$_offbox_missing rsync"` line. The
+  apt calls at `vps_apply.sh:1533-1539` then install it (B6-2). The sync
+  step runs after that block. It checks `command -v rsync` first, and stops
+  the deploy if it is missing:
   - `scripts/backup_db.sh`, `scripts/backup_offbox.sh`,
     `scripts/offbox_lib.sh` and `deploy/hostinger/health-watchdog.sh`.
   - The `infra/` dir and `apps/services/meeting_bot/`. The compose file uses
@@ -1179,18 +1238,21 @@ applies C1 to C4.
     (`docker-compose.yml:173,224`).
   - The `sandbox` profile builds from `../apps/services/orchestrator`
     (`docker-compose.yml:127,152`). The box never runs that profile. So the
-    one-dir rule exempts `build:`, and the copy leaves that context out. A
-    build of the `sandbox` profile runs from the checkout, and never from a
-    root unit.
+    one-dir rule exempts ONE command: `docker compose --profile sandbox
+    build`. The copy leaves that context out. That build runs from the
+    checkout, and never from a root unit (B6-3).
+  - Every other compose call uses the one project dir. That includes the
+    meeting-bot build at `vps_apply.sh:937` (`up -d --build meeting-bot`),
+    whose context is in the copy.
 - **The root units run the copies.** `acb-backup.service`,
   `acb-health-watchdog.service` and `acb.service` run from
   `/usr/local/lib/acb/`. `acb.service` is the repo copy that BH-8 added.
 - **No root unit loads `/opt/acb/app/.env`.** `backup_db.sh` reads
   `/etc/acb/root.env`. Its `ENV_FILE` at `backup_db.sh:102-124` points
   there, in place of `$APP_DIR/.env`.
-- **`secrets.sh push app-env` rewrites `/etc/acb/root.env`**, from the same
-  name list, after it writes `.env`. So a new password reaches the backup at
-  once.
+- **`secrets.sh` rewrites `/etc/acb/root.env`** after it pushes either
+  source file, from the same name list and the same two files. So a new
+  password reaches the backup at once.
 - **One compose working dir.** Every compose call uses
   `sudo docker compose --project-directory /usr/local/lib/acb/infra -f
   /usr/local/lib/acb/infra/docker-compose.yml --env-file /etc/acb/root.env`.
@@ -1198,7 +1260,7 @@ applies C1 to C4.
   `vps_apply.sh:936-961`. It also closes the BH-8 finding at
   `vps_apply.sh:544`.
 - **The order in `vps_apply.sh` (C2).**
-  1. Write `/etc/acb/root.env` from the name list.
+  1. Write `/etc/acb/root.env` from the name list and the two source files.
   2. Sync the copies.
   3. Run `sudo docker compose --project-directory /usr/local/lib/acb/infra
      … config -q`. Stop the deploy if it fails.
@@ -1228,6 +1290,9 @@ applies C1 to C4.
 6. `systemctl is-active acb-gateway` gives `active` after the deploy.
    `acb-gateway.service` has `Requires=acb.service`, so a failed
    `acb.service` takes the gateway down.
+7. `sudo grep -c '^CUSTOMER_CONSOLE_DATABASE_URL=' /etc/acb/root.env` gives
+   1. The next backup journal holds no "Console database is NOT in" line
+   (B6-1).
 
 **Verification.**
 
@@ -1252,7 +1317,9 @@ ssh metorite 'systemctl list-timers acb-backup.timer acb-health-watchdog.timer -
 - The list holds no `*`. It also holds no `LD_PRELOAD`, `BASH_ENV`, `ENV`,
   `PATH`, `PYTHONPATH` and no name that ends in `_BIND`.
 - Every `docker compose` call in `vps_apply.sh` and the units names the one
-  project dir. `build:` contexts are exempt.
+  project dir. The only exempt call is `--profile sandbox build`.
+- `vps_apply.sh` builds `root.env` from both source files, app first, and
+  it checks `command -v rsync`.
 - `vps_apply.sh` runs `config -q` before it installs `acb.service`.
 
 **Risks.**
