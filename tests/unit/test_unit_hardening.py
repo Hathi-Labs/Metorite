@@ -230,7 +230,8 @@ echo 0
 """
 
 
-def _stub_env(tmp_path: Path, props: dict[str, str], mode: str) -> dict[str, str]:
+def _stub_env(tmp_path: Path, props: dict[str, str], mode: str,
+              **override: str) -> dict[str, str]:
     binr = tmp_path / "bin"
     binr.mkdir()
     stubs = {
@@ -243,6 +244,7 @@ def _stub_env(tmp_path: Path, props: dict[str, str], mode: str) -> dict[str, str
         "touch": STUB_TOUCH,
         "id": STUB_ID,
     }
+    stubs.update(override)
     for name, body in stubs.items():
         (binr / name).write_text(body, encoding="utf-8", newline="\n")
         (binr / name).chmod(0o755)
@@ -260,8 +262,9 @@ def _stub_env(tmp_path: Path, props: dict[str, str], mode: str) -> dict[str, str
     )
 
 
-def _probe(tmp_path: Path, props: dict[str, str], mode: str) -> subprocess.CompletedProcess:
-    env = _stub_env(tmp_path, props, mode)
+def _probe(tmp_path: Path, props: dict[str, str], mode: str,
+           **override: str) -> subprocess.CompletedProcess:
+    env = _stub_env(tmp_path, props, mode, **override)
     return subprocess.run(
         [_bash(), PROBE.as_posix(), "acb-gateway"], env=env, capture_output=True,
         text=True, encoding="utf-8", timeout=60, stdin=subprocess.DEVNULL,
@@ -295,6 +298,20 @@ def test_the_probe_prints_no_value_and_fails_on_a_leaky_box(tmp_path: Path) -> N
     assert "FAIL p3-touch-scripts-erofs" in r.stdout
     # The transient unit ran every probe, so this one does not fire.
     assert "transient-unit-ran-every-probe" not in r.stdout
+
+
+@needs_bash
+@pytest.mark.parametrize(("answer", "verdict"), [
+    ("no crontab for acb", "FAIL"),
+    ("crontabs/acb/: fopen: Permission denied", "PASS"),
+])
+def test_no_crontab_means_setgid_worked(tmp_path: Path, answer: str, verdict: str) -> None:
+    """`crontab -l` exits 1 with "no crontab for acb" when setgid WORKED and
+    the user has no crontab. That answer must not count as a PASS."""
+    stub = f'#!/usr/bin/env bash\necho "{answer}" >&2\nexit 1\n'
+    r = _probe(tmp_path, dict(GOOD_PROPS), "run", crontab=stub)
+    _assert_no_value(r)
+    assert f"{verdict} setgid-crontab-l-fails" in r.stdout, r.stdout
 
 
 @needs_bash
