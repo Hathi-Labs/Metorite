@@ -1662,7 +1662,8 @@ access today when they are on. WS-43 limits the risk in three ways:
   narrow local API. Another choice is a socket proxy. It allows only the
   create, exec and remove calls, and only on labelled containers.
 
-To change the box's Docker access is WS43-G1.
+To change the box's Docker access is WS43-G1. `box_hardening.md` BH-3
+(WS-49) owns the build of the broker's own unit and user.
 
 **WS43-S3. The WS-3a refusal moves to `covers()`.** WS-3a
 (`permissions_sandbox_b6.md` §P5-a.2) refuses a T2 run that
@@ -4111,7 +4112,7 @@ An agent refuses each of these by name:
 
 | # | Act |
 |---|---|
-| WS43-G1 | Change Docker access on the box, such as adding the gateway user to the `docker` group. Or install the host firewall rule of §7.3 |
+| WS43-G1 | Change Docker access on the box, such as adding the gateway user to the `docker` group. Or install the host firewall rule of §7.3. The broker's own unit is `box_hardening.md` BH-3 (WS-49) |
 | WS43-G2 | Build or load the sandbox image on the box, or write the deploy step under `deploy/` |
 | WS43-G3 | Set `MAF_CODING_SCOPE` on production, for any organization. First, the owner confirms that the caps of §7.1 rule 8 fit the box's memory |
 | WS43-G4 | Set `SANDBOX_EGRESS_ENABLED` on production, or set the production allowlist |
@@ -4122,7 +4123,7 @@ An agent refuses each of these by name:
 | WS43-G9 | Merge a Copilot removal slice: WS-43p, WS-43q, WS-43r or WS-43s. The migration of WS-43s is one-way |
 | WS43-G10 | Set the `mutation:*` or `metorite:*` target on production. WS43-G3 covers the setting, and this row names the targets. `metorite:*` and `app_builder` wait on the soak of WS43-G13 (§15.9.8) |
 | WS43-G11 | Change a repo outside this one, such as `FracktalWorks/agent-sales-assistant` |
-| WS43-G12 | Edit `scripts/vps_apply.sh`. It lies outside `deploy/`, so no plan-guard rule matches it, and this text gates it |
+| WS43-G12 | Edit `scripts/vps_apply.sh`. It lies outside `deploy/`, so no plan-guard rule matches it, and this text gates it. 2026-10-08: the owner approved `vps_apply.sh` edits for WS-49 (`box_hardening.md`) and #729 |
 | WS43-G13 | Set `MAF_NATIVE_SESSIONS` on production. The one-week soak of §15.9.8 starts then, and WS-8i, the confirm-turn scopes and WS-43q wait on its end |
 
 **The data toolkit adds no gate (2026-10-06).** The image with DuckDB on the

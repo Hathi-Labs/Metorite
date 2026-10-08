@@ -228,6 +228,8 @@ line — never reclaim a number by deleting the other entry.
 - **A cheap partial fix.** `NoNewPrivileges=true` on `acb-gateway.service`
   stops path 1 for the Copilot CLI (H-270) only. It does nothing for paths 2
   and 3. Do not build it in the off-box PR.
+- **Spec:** `specs/box_hardening.md` (WS-49) owns the fixes. The audit found
+  two more paths to root. Read its §0 before you build.
 - **Authority:** `project-docs/specs/backup_and_restore.md` §4.2, the trade-offs ·
   H-123 · H-270
 - **Added:** 2026-10-08 · off-box backup, security review of fix round 2
@@ -255,6 +257,7 @@ line — never reclaim a number by deleting the other entry.
 - **Not in the off-box PR, on purpose.** This is its own change. H-123 moved the backup
   key out of `.env` for this reason. WS-43 (D84) removes the Copilot SDK. Until that
   ships, this stays open.
+- **Spec:** `specs/box_hardening.md` (WS-49), slice BH-1, owns the fix.
 - **Authority:** `apps/services/orchestrator/orchestrator/copilot_agent.py` ·
   `copilot/client.py` in the SDK · H-123
 - **Added:** 2026-10-08 · off-box backup, security review of fix round 1
@@ -3996,14 +3999,17 @@ line — never reclaim a number by deleting the other entry.
     `wbjpwtxigkileyjsgahk`. The coordinator may run the SQL in §4.2 for you.
     Set the upload size limit in Storage → Settings to 1 GB or more. The app
     dump is about 84 MB.
-  - **(b)** Make an S3 access key in the dashboard, at Storage → S3
-    Connection. Write down the endpoint and the region. Keep the key ID and
-    the secret in your password manager. ⚠️ The key is PROJECT-WIDE. It can
-    read and delete every object in every bucket of the project.
+  - **(b) RETIRED (2026-10-08, `specs/box_hardening.md` BH-4).** Do NOT make
+    an S3 access key. That key is PROJECT-WIDE, and it can delete every
+    night. If one exists, revoke it at Storage → S3 Connection. BH-4 puts a
+    write-only credential in its place: a Supabase user JWT under RLS.
   - **(c)** Make a gpg key pair on your own machine. Keep the private key and
     its passphrase in your password manager. Put only the public key on the
     box, at `/opt/acb/backup-public-key.asc`.
-  - **(d)** Put the seven `BACKUP_S3_*` and `BACKUP_GPG_*` keys in
+  - **(d) WAITS FOR BH-4.** BH-4 changes the key list. The project ref and
+    the anon key take the place of the S3 key, and three `BACKUP_SUPABASE_URL`
+    and `BACKUP_AUTH_*` keys join it. Do not push this file before BH-4
+    merges. After that, put the keys in
     `/etc/acb/backup-offbox.env`, owned by root:root with mode 0600. Only
     `acb-backup.service` loads that file. Do NOT put them in
     `/opt/acb/app/.env`. The gateway loads that file (H-270), and the run
