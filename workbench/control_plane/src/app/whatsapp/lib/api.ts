@@ -4,7 +4,6 @@
 
 import type {
   WaAccount,
-  WaBridgeSession,
   WaCall,
   WaCallDiagnostics,
   WaCallList,
@@ -154,22 +153,6 @@ export function createAccount(input: {
   credentials: { access_token: string };
 }) {
   return postJSON<WaAccount>("accounts", input);
-}
-
-// ── Personal number via whatsmeow QR bridge (W15) ─────────────────────────────
-
-// Begin QR pairing for a personal number: the gateway creates a 'pairing'
-// account and asks the local bridge for a QR to render.
-export function startBridgeSession() {
-  return postJSON<WaBridgeSession>("bridge/connect", {});
-}
-
-// Poll pairing status + the current QR for a pairing account.
-export function fetchBridgeStatus(accountId: string): Promise<WaBridgeSession> {
-  return getJSON<WaBridgeSession>(
-    `bridge/status?account_id=${encodeURIComponent(accountId)}`,
-    { account_id: accountId, qr: null, status: "unknown", bridge_reachable: false }
-  );
 }
 
 export function fetchStreams(accountId?: string): Promise<WaStreams> {
