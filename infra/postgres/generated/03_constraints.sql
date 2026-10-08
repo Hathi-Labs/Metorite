@@ -863,6 +863,18 @@ ALTER TABLE pm_import_runs ADD CONSTRAINT pm_import_runs_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_import_runs_org_idx ON pm_import_runs (organization_id);
 
+-- maf_agent_session
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM maf_agent_session WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: maf_agent_session still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE maf_agent_session ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE maf_agent_session ADD CONSTRAINT maf_agent_session_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS maf_agent_session_org_idx ON maf_agent_session (organization_id);
+
 -- user_settings
 DO $$
 BEGIN

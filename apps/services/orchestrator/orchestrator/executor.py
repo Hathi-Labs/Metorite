@@ -3533,6 +3533,9 @@ async def run_agent_stream(
     """
     _disable_agent_telemetry_once()
     run_id = run_id or str(uuid.uuid4())
+    # WS-43t2 (§15.9.5): the thread id the CALLER named. A run with none
+    # neither loads nor saves a native session.
+    _caller_thread_id = thread_id
     # H-227: a thread that this executor mints, for a run with no chat and no
     # parent run, makes a batch run (see `_run_agent_inner`).
     from acb_skills.write_artifact import artifact_context as _ctx_now
@@ -3672,9 +3675,14 @@ async def run_agent_stream(
     _relay_token = _stream_relay_thread_id.set(thread_id)
     # H-201 (§21.16): this run's artifact context lives in this token's scope.
     from acb_skills.write_artifact import (
+        artifact_context,
         enter_artifact_context,
         reset_artifact_context,
     )
+    # WS-43t2 (§15.9.5): a run that starts inside the artifact context of
+    # another run is a delegation. Read it BEFORE this run opens its own. A
+    # delegated run neither loads nor saves a native session.
+    _delegated_run = bool(artifact_context().get("run_id"))
     _artifact_token = enter_artifact_context()
     # H-236: decide this run's no_egress ONCE, before anything can fail, and
     # bind it. A covered agent's run is a covered run, whatever its parent.
@@ -3952,6 +3960,9 @@ async def run_agent_stream(
                 or (hasattr(agent, "_default_options")
                     and agent._default_options is not None)
             )
+            # WS-43t2: the stored session of a native run. Tier 1 loads it,
+            # and Tier 2 reuses it when Tier 1 fails before any output.
+            _session_turn: Any = None
 
             # ── Session continuity: restore Copilot SDK session if available ─
             # Storing the service_session_id allows MAF's _get_or_create_session
@@ -4182,12 +4193,20 @@ async def run_agent_stream(
             # Safety net: if streaming raises BEFORE emitting anything, fall
             # through to the proven Tier 2 batch path below.
             if not _is_copilot_sdk and hasattr(agent, "run"):
+                # WS-43t2: with the flag on, load this run's stored session.
+                # It logs ONE outcome line. None means no session at all.
+                _session_turn = await _begin_native_session(
+                    agent, agent_name, event_payload, integrations,
+                    run_id=run_id, caller_thread_id=_caller_thread_id,
+                    delegated=_delegated_run, instance=_agent_instance,
+                )
                 # WS-43t1: flag OFF returns today's string and no provider.
                 # Flag ON returns structured turns, and a context provider
                 # that _agent_for_run attaches to THIS run only (§15.9.5).
+                # A loaded session makes the input the current turn only.
                 _native_input, _native_ctx = _compose_maf_run(
                     agent_name, run_id, event_payload, integrations,
-                    native=True,
+                    native=True, session_turn=_session_turn,
                 )
                 # Context-pressure notice (audit CX6): eviction was silent —
                 # a long conversation just degraded as oldest turns dropped.
@@ -4225,10 +4244,16 @@ async def run_agent_stream(
                             await _nstack.enter_async_context(agent)
                         # WS-45 S2: a covered run's view also carries the
                         # tier policy. None leaves the view as it was.
+                        # WS-43t2: the view carries the session history too.
                         _agen = _with_tier_policy(
-                            _agent_for_run(agent, _native_ctx), _tier_run,
+                            _agent_for_run(
+                                agent, _native_ctx,
+                                history=_native_session_history(_session_turn),
+                            ),
+                            _tier_run,
                         ).run(
                             _native_input, stream=True,
+                            **_native_session_run_kwargs(_session_turn),
                         ).__aiter__()
                         # Race the agent's next update against the injected-tool
                         # event queue. A BLOCKING tool (ask_questions HITL) puts
@@ -4476,6 +4501,10 @@ async def run_agent_stream(
                             ),
                         ))
                     elif not _loop_tripped:
+                        # WS-43t2: only a run that finished saves its
+                        # session, and before RUN_FINISHED, so a quick next
+                        # turn finds it. The save never fails the run.
+                        await _finish_native_session(_session_turn)
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
                         # would make the client render the run as successful.
@@ -5501,15 +5530,23 @@ async def run_agent_stream(
                     # fell back here from Tier 1 now takes the same flag-gated
                     # input as Tier 1. A Copilot SDK agent, or any agent with
                     # the flag OFF, still gets the string and runs on itself.
+                    # WS-43t2: a native run reuses the session that Tier 1
+                    # loaded. A Copilot SDK agent never has one, because
+                    # Tier 1 never ran for it.
                     _run_input, _run_ctx = _compose_maf_run(
                         agent_name, run_id, event_payload, integrations,
                         native=not _is_copilot_sdk,
+                        session_turn=_session_turn,
                     )
                     response = await _with_tier_policy(
-                        _agent_for_run(agent, _run_ctx),
+                        _agent_for_run(
+                            agent, _run_ctx,
+                            history=_native_session_history(_session_turn),
+                        ),
                         None if _is_copilot_sdk else _tier_run,
                     ).run(
                         _run_input,
+                        **_native_session_run_kwargs(_session_turn),
                     )
                 return getattr(response, "text", "") or ""
 
@@ -5555,6 +5592,8 @@ async def run_agent_stream(
                 raise
             except Exception as exc:
                 raise exc
+            # WS-43t2: the Tier 2 run finished, so its session is saved.
+            await _finish_native_session(_session_turn)
 
             # Strip integration setup tokens (same as batch path)
             setup_token_re = __import__("re").compile(r"<<<SETUP:[^>]+>>>")
@@ -6189,6 +6228,7 @@ def _compose_maf_run(
     integrations: dict[str, Any],
     *,
     native: bool,
+    session_turn: Any = None,
 ) -> tuple[Any, Any]:
     """Build the input of a MAF run, and the provider of its context.
 
@@ -6220,6 +6260,11 @@ def _compose_maf_run(
     The structured branch runs the assembler ONCE. It does not call
     :func:`_compose_maf_run_input` first, because that would run the assembler
     and the route's ``_history_loader`` (a database read) a second time.
+
+    *session_turn* (WS-43t2) is the stored session of this run, from
+    :func:`_begin_native_session`. A usable one sends the input through
+    :func:`_compose_session_run`, which never returns the string: a stored
+    session keeps its input messages, and the string carries the memory.
     """
     if not native or not _native_sessions_enabled():
         return (
@@ -6231,6 +6276,10 @@ def _compose_maf_run(
     current_msg_text = (
         event_payload.get("message") or event_payload.get("user_query") or ""
     )
+    if session_turn is not None and getattr(session_turn, "usable", False):
+        return _compose_session_run(
+            agent_name, run_id, event_payload, integrations, session_turn,
+        )
     if not (history_msgs or _loader) or not current_msg_text.strip():
         return (
             _compose_maf_run_input(agent_name, run_id, event_payload, integrations),
@@ -6281,6 +6330,251 @@ def _compose_maf_run(
         return message, None
 
 
+def _compose_session_run(
+    agent_name: str,
+    run_id: str,
+    event_payload: dict[str, Any],
+    integrations: dict[str, Any],
+    turn: Any,
+) -> tuple[Any, Any]:
+    """The input of a native run that carries a session (WS-43t2, §15.9.4).
+
+    * The session loaded (``hit``): the input is the current user turn only.
+      The session holds the turns before it, with their tool calls (dedup).
+      The assembler fits only the context block and the current turn, and
+      reads no history, so the route's loader does not run.
+    * Any other outcome: the text history as WS-43t1 structures it, and the
+      current turn, even with no history at all. The fresh session stores
+      them, so the next turn can load.
+
+    The context block always travels by the per-run provider, never as a
+    message, so no stored session holds it (§15.9.5). On a failure the run
+    goes on with the string and NO session: the turn is abandoned, so it is
+    neither attached nor saved.
+    """
+    current = str(
+        event_payload.get("message") or event_payload.get("user_query") or ""
+    ).strip()
+    try:
+        from acb_llm import assemble_run_context
+        from acb_llm.prompt_cache import CACHE_BREAK
+        from agent_framework import Message as _MAFMsg
+
+        from orchestrator._native_run_context import RunContextProvider
+
+        context_text = _run_context_text(event_payload, integrations).strip()
+        model = _active_run_model.get() or ""
+        loader = event_payload.get("_history_loader")
+        assembled = assemble_run_context(
+            system_context=context_text,
+            # A fresh session keeps only the user and assistant turns of the
+            # browser history. A `system` or `tool` turn in a request body
+            # never goes into a stored session.
+            history=[] if turn.loaded else [
+                m for m in (event_payload.get("messages") or [])
+                if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            ],
+            current_message=current,
+            model=model,
+            max_output_tokens=_reserved_output_tokens(model),
+            history_loader=(
+                None if turn.loaded or not callable(loader) else loader
+            ),
+        )
+        turns = list(assembled)
+        fitted_context = ""
+        if context_text and turns and turns[0].get("role") == "system":
+            fitted_context = str(turns.pop(0).get("content") or "")
+        if not turn.loaded:
+            turns = _cap_structured_history(turns, model, has_current=True)
+        if not current or not turns or turns[-1].get("role") != "user":
+            raise ValueError("no current user turn")
+        maf_messages = [
+            _MAFMsg(role=m["role"], contents=[m["content"]]) for m in turns
+        ]
+        provider = (
+            RunContextProvider(f"{CACHE_BREAK}\n{fitted_context}")
+            if fitted_context else None
+        )
+        return maf_messages, provider
+    except Exception as exc:
+        _log.warning(
+            "executor.native_session_input_failed",
+            agent=agent_name, run_id=run_id, error=str(exc)[:300],
+        )
+        turn.abandon("compose_failed")
+        return _build_event_message(agent_name, run_id, event_payload, integrations), None
+
+
+def _native_history_cap(model: str, reserve_tokens: int = 0) -> int:
+    """The token cap of a native session's history (§15.9.6).
+
+    The smaller of two numbers: the budget of
+    ``acb_llm.context.fit_messages_to_context`` for *model*, and
+    ``_HISTORY_MAX_TOKENS``. The same minimum that the string path takes in
+    :func:`_history_char_budget`. *reserve_tokens* is room held back for the
+    context block and the current turn, when a loaded session is fitted.
+    """
+    from acb_llm.context import context_window_for
+
+    window = int(context_window_for(model))
+    budget = window - _reserved_output_tokens(model) - 512
+    if budget < 1024:
+        budget = max(1024, window - 1024 - 512)
+    return max(1024, min(budget, _HISTORY_MAX_TOKENS) - max(0, reserve_tokens))
+
+
+def _native_session_skip(
+    agent: Any,
+    agent_name: str,
+    event_payload: dict[str, Any],
+    *,
+    run_id: str,
+    caller_thread_id: str | None,
+    delegated: bool,
+) -> str | None:
+    """Why this native run neither loads nor saves a session, or ``None``.
+
+    §15.9.5: no thread id (the caller named none, so the id is the
+    ``<agent>:<run>`` default), a delegated run, and an event with no current
+    turn. An agent that brings its own history provider keeps it, and gets
+    no second one.
+    """
+    thread = str(caller_thread_id or "").strip()
+    if not thread or thread == f"{agent_name}:{run_id}":
+        return "no_thread"
+    if delegated:
+        return "delegated"
+    current = event_payload.get("message") or event_payload.get("user_query") or ""
+    if not str(current).strip():
+        return "no_current_turn"
+    from agent_framework import HistoryProvider
+
+    for provider in getattr(agent, "context_providers", None) or []:
+        if isinstance(provider, HistoryProvider) and provider.load_messages:
+            return "agent_history_provider"
+    return None
+
+
+async def _begin_native_session(
+    agent: Any,
+    agent_name: str,
+    event_payload: dict[str, Any],
+    integrations: dict[str, Any],
+    *,
+    run_id: str,
+    caller_thread_id: str | None,
+    delegated: bool,
+    instance: str,
+) -> Any:
+    """Load the stored session of a native run (WS-43t2), or ``None``.
+
+    ``None`` when ``MAF_NATIVE_SESSIONS`` is off, the run is one that §15.9.5
+    keeps out, no organization resolves, or the run has no verified member.
+    The organization and the member are the RUN BINDING, read here on the
+    event loop (:func:`_current_run_org`, :func:`_verified_run_member`), before
+    the store's ``run_in_executor`` hop. Neither comes from the payload (R5).
+    The load logs one outcome line and never fails the run.
+    """
+    if not _native_sessions_enabled():
+        return None
+    reason = _native_session_skip(
+        agent, agent_name, event_payload,
+        run_id=run_id, caller_thread_id=caller_thread_id, delegated=delegated,
+    )
+    org = _current_run_org() if reason is None else None
+    if reason is None and not org:
+        reason = "no_org"
+    actor = _verified_run_member() if reason is None else ""
+    if reason is None and not actor:
+        reason = "no_member"
+    if reason is not None:
+        _log.info(
+            "native_session.skip", agent=agent_name,
+            thread_id=str(caller_thread_id or "")[:40], reason=reason,
+        )
+        return None
+    try:
+        from acb_llm import count_message_tokens
+
+        from orchestrator import native_session_store
+
+        model = _active_run_model.get() or ""
+        current = str(
+            event_payload.get("message") or event_payload.get("user_query") or ""
+        )
+        reserve = count_message_tokens([
+            {"role": "system", "content": _run_context_text(event_payload, integrations)},
+            {"role": "user", "content": current},
+        ], model)
+        return await native_session_store.begin_turn(
+            organization_id=str(org),
+            thread_id=str(caller_thread_id),
+            agent_name=agent_name,
+            instance=instance or "",
+            current_message=current,
+            browser_history=(
+                event_payload.get("messages") if "messages" in event_payload else None
+            ),
+            token_budget=_native_history_cap(model, reserve),
+            actor=actor,
+        )
+    except Exception as exc:
+        _log.warning(
+            "native_session.begin_failed", agent=agent_name, error=str(exc)[:200],
+        )
+        return None
+
+
+def _verified_run_member() -> str:
+    """The VERIFIED member of the run on this frame, lower case, or ``""``.
+
+    It comes from the run binding (``user`` with ``member_verified``), which
+    ``run_agent_stream`` binds from the session's member (H-73), never from
+    the payload. The store loads a session only for a thread that is this
+    member's alone, so a run with no verified member gets none.
+    """
+    try:
+        from acb_common import get_run_context
+
+        ctx = get_run_context() or {}
+    except Exception:
+        return ""
+    member = str(ctx.get("user") or "").strip().lower()
+    return member if member and ctx.get("member_verified") == "1" else ""
+
+
+async def _finish_native_session(turn: Any) -> None:
+    """Save the session of a native run that finished. Never raises."""
+    if turn is None or not getattr(turn, "usable", False):
+        return
+    try:
+        from orchestrator import native_session_store
+
+        await native_session_store.finish_turn(
+            turn, token_budget=_native_history_cap(_active_run_model.get() or ""),
+        )
+    except Exception as exc:
+        _log.warning("native_session.finish_failed", error=str(exc)[:200])
+
+
+def _native_session_history(turn: Any) -> Any:
+    """The history provider a run attaches for its session, or ``None``."""
+    if turn is None or not getattr(turn, "usable", False):
+        return None
+    return turn.history
+
+
+def _native_session_run_kwargs(turn: Any) -> dict[str, Any]:
+    """``{"session": ...}`` for a run that carries a session, else ``{}``.
+
+    An empty dict leaves the ``run`` call exactly as it was before WS-43t2.
+    """
+    if turn is None or not getattr(turn, "usable", False):
+        return {}
+    return {"session": turn.session}
+
+
 async def _end_sandbox_run() -> None:
     """Delete the run-data dir of the run on this frame (WS-43d, §16.3).
 
@@ -6296,19 +6590,23 @@ async def _end_sandbox_run() -> None:
     await end_sandbox_run()
 
 
-def _agent_for_run(agent: Any, provider: Any) -> Any:
+def _agent_for_run(agent: Any, provider: Any, history: Any = None) -> Any:
     """The object a native run calls ``run`` on.
 
-    No provider: *agent* itself, unchanged (and the flag-off path never
-    imports the provider module). A provider: a per-run copy that carries it,
-    so the shared agent object never holds one run's context
-    (``orchestrator._native_run_context.agent_for_run``, WS43-F20).
+    No provider and no history: *agent* itself, unchanged (and the flag-off
+    path never imports the provider module). Otherwise a per-run copy that
+    carries them, so the shared agent object never holds one run's context
+    or session (``orchestrator._native_run_context.agent_for_run``, WS43-F20).
+
+    ⚠️ A run with a ``session`` MUST carry its *history*. With no history
+    provider, MAF 1.19 appends an ``InMemoryHistoryProvider`` to the agent it
+    runs on, and that agent would be the shared one.
     """
-    if provider is None:
+    if provider is None and history is None:
         return agent
     from orchestrator._native_run_context import agent_for_run
 
-    return agent_for_run(agent, provider)
+    return agent_for_run(agent, provider, history=history)
 
 
 # ── WS-45 S2: the tier policy of a run (ai_tier_routing.md §4, §5, D90) ─────

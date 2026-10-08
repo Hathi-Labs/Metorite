@@ -524,6 +524,13 @@ CREATE POLICY pm_import_runs_tenant_isolation ON pm_import_runs
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE maf_agent_session ENABLE ROW LEVEL SECURITY;
+ALTER TABLE maf_agent_session FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS maf_agent_session_tenant_isolation ON maf_agent_session;
+CREATE POLICY maf_agent_session_tenant_isolation ON maf_agent_session
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_settings FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS gtd_settings_tenant_isolation ON user_settings;
