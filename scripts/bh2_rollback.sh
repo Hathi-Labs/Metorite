@@ -38,6 +38,8 @@ DROPIN="$DROPIN_DIR/90-bh2-off.conf"
 ACK_DIR="/etc/acb"
 ACK="$ACK_DIR/bh2-rollback-ack"
 TTL_SECONDS=$((72 * 3600))
+# An expiry later than now + TTL + this slack was not written by `on`.
+EXPIRY_SLACK_SECONDS=300
 HEALTH_URL="http://127.0.0.1:8080/health"
 HEALTH_TRIES=120
 
@@ -53,27 +55,45 @@ now_epoch() { date -u +%s; }
 
 fmt_utc() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 
-# Prints the expiry epoch of the ack, or nothing when the file is absent or
-# malformed. A malformed file counts as expired (fail closed).
+# Prints the raw EXPIRES_EPOCH value of the ack, or nothing when the file is
+# absent or has no such line. check_expiry decides if the value is trusted.
 ack_expiry() {
   sudo test -f "$ACK" || return 0
-  sudo cat "$ACK" 2>/dev/null | sed -n 's/^EXPIRES_EPOCH=\([0-9][0-9]*\)$/\1/p' | tail -n 1
+  sudo cat "$ACK" 2>/dev/null | sed -n 's/^EXPIRES_EPOCH=//p' | tail -n 1
 }
 
 have_ack() { sudo test -f "$ACK"; }
 have_dropin() { sudo test -f "$DROPIN"; }
 
+# Sets EXPIRY_WHY to an empty string when EXPIRES is a date that the script
+# trusts, and to the reason when it does not. $1 = now (epoch).
+# Each test fails closed, BEFORE any arithmetic, so a huge value cannot make
+# `[ -ge ]` error out and fall through to "on" (review fix round 1, P2).
+check_expiry() {
+  local now="$1"
+  if ! [[ "$EXPIRES" =~ ^[0-9]{1,12}$ ]]; then
+    EXPIRY_WHY="the ack holds no valid EXPIRES_EPOCH line"
+  elif [ "$EXPIRES" -gt $((now + TTL_SECONDS + EXPIRY_SLACK_SECONDS)) ]; then
+    EXPIRY_WHY="the expiry is more than 72 h ahead, so the ack is not trusted"
+  elif [ "$now" -ge "$EXPIRES" ]; then
+    EXPIRY_WHY="expired at $(fmt_utc "$EXPIRES")"
+  else
+    EXPIRY_WHY=""
+  fi
+}
+
 # Sets STATE to one of: off, on, expired, partial-conf, partial-ack.
-# Sets EXPIRES to the epoch, or to an empty string.
+# Sets EXPIRES to the raw value of the ack, and EXPIRY_WHY (check_expiry).
 read_state() {
   local conf=0 ack=0 now
   have_dropin && conf=1
   have_ack && ack=1
   EXPIRES="$(ack_expiry)"
   now="$(now_epoch)"
+  check_expiry "$now"
   if [ "$conf" = 0 ] && [ "$ack" = 0 ]; then
     STATE="off"
-  elif [ "$ack" = 1 ] && { [ -z "$EXPIRES" ] || [ "$now" -ge "$EXPIRES" ]; }; then
+  elif [ "$ack" = 1 ] && [ -n "$EXPIRY_WHY" ]; then
     STATE="expired"
   elif [ "$conf" = 1 ] && [ "$ack" = 0 ]; then
     STATE="partial-conf"
@@ -128,7 +148,7 @@ cmd_on() {
   [ -f "$SRC_CONF" ] || { echo "!! missing $SRC_CONF" >&2; exit 1; }
   read_state
   if [ "$STATE" = "expired" ]; then
-    echo "!! the BH-2 rollback expired or its ack is malformed." >&2
+    echo "!! the BH-2 rollback is not valid: $EXPIRY_WHY." >&2
     echo "   Run 'bh2_rollback.sh off' first. Run 'on' again only if you still need it." >&2
     exit 3
   fi
@@ -185,11 +205,7 @@ cmd_status() {
       echo "WARN BH-2 rolled back until $(fmt_utc "$EXPIRES")"
       exit 0 ;;
     expired)
-      if [ -n "$EXPIRES" ]; then
-        echo "BH-2 rollback: EXPIRED at $(fmt_utc "$EXPIRES")"
-      else
-        echo "BH-2 rollback: EXPIRED (the ack holds no valid EXPIRES_EPOCH line)"
-      fi
+      echo "BH-2 rollback: EXPIRED ($EXPIRY_WHY)"
       exit 3 ;;
     partial-conf)
       echo "BH-2 rollback: PARTIAL, $DROPIN is there and $ACK is not"

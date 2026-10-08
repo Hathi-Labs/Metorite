@@ -228,6 +228,45 @@ def test_a_malformed_ack_counts_as_expired(box: Box, body: str) -> None:
     assert "EXPIRED" in r.stdout
 
 
+def _hand_written_ack(box: Box, value: str) -> None:
+    box.path(DROPIN).parent.mkdir(parents=True)
+    box.path(DROPIN).write_text(CONF.read_text(encoding="utf-8"), encoding="utf-8")
+    box.path(ACK).parent.mkdir(parents=True)
+    box.path(ACK).write_text(f"EXPIRES_EPOCH={value}\n", encoding="utf-8", newline="\n")
+
+
+@needs_bash
+@pytest.mark.parametrize(("value", "why"), [
+    ("9" * 25, "no valid EXPIRES_EPOCH"),           # `[ -ge ]` errors on it
+    ("9" * 13, "no valid EXPIRES_EPOCH"),           # more than 12 digits
+    (str(NOW + 10 * 365 * 86400), "more than 72 h ahead"),
+    (str(NOW + TTL + 301), "more than 72 h ahead"),  # past the 300 s slack
+    ("-1", "no valid EXPIRES_EPOCH"),
+    ("", "no valid EXPIRES_EPOCH"),
+])
+def test_an_untrusted_expiry_fails_closed(box: Box, value: str, why: str) -> None:
+    """Review fix round 1, P2. A huge value made `[ -ge ]` error out, and the
+    state fell through to "on" with exit 0. A date 10 years ahead was valid.
+    Each one is now EXPIRED (exit 3), and `on` refuses it."""
+    _hand_written_ack(box, value)
+    r = box.run("status")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "EXPIRED" in r.stdout and why in r.stdout, r.stdout
+    assert "WARN BH-2 rolled back" not in r.stdout
+    r = box.run("on")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert not [c for c in box.calls("systemctl") if c.startswith("restart")]
+
+
+@needs_bash
+def test_an_expiry_inside_the_slack_is_trusted(box: Box) -> None:
+    """`on` at one second and the check at the next must agree. So an expiry
+    up to 300 s past now + 72 h stays valid."""
+    _hand_written_ack(box, str(NOW + TTL + 300))
+    r = box.run("status")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
 @needs_bash
 @pytest.mark.parametrize("which", ["conf", "ack"])
 def test_a_half_rollback_is_not_honoured(box: Box, which: str) -> None:
