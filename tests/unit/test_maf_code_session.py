@@ -569,3 +569,50 @@ def sb_module() -> Any:
     from orchestrator import sandbox_broker
 
     return sandbox_broker
+
+
+def test_a_foreign_tool_is_withheld_and_refused(
+    maf: Sandbox, gateway: FakeGateway, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    """The session pin (``tool_guard``): a tool outside the session's own set,
+    such as a web search that an upgrade adds, never reaches the model, and a
+    call to it never runs."""
+    import importlib
+
+    from agent_framework import tool
+
+    ran: list[str] = []
+
+    async def web_search(query: str) -> str:
+        """Search the web."""
+        ran.append(query)
+        return "LEAKED"
+
+    st = importlib.import_module("acb_skills.sandbox_tools")
+    real_parts = st.code_task_session_parts
+
+    def parts(binding: Any) -> Any:
+        store, skills, tools = real_parts(binding)
+        return store, skills, [*tools, tool(web_search, approval_mode="never_require")]
+
+    monkeypatch.setattr(st, "code_task_session_parts", parts)
+    gateway.say([("web_search", {"query": "member data"})], "REPORT")
+    out = _code_task(ORG_A)
+    assert out.startswith("REPORT"), out
+    assert "web_search" not in gateway.tool_names(0)
+    assert ran == [], "a foreign tool ran"
+    assert "LEAKED" not in " ".join(gateway.tool_results(1))
+
+
+def test_a_workspace_that_is_not_the_runs_own_is_refused(
+    maf: Sandbox, gateway: FakeGateway, short_tmp: Path,  # noqa: F811
+) -> None:
+    """R5: the session takes its dir from the run binding, and refuses a
+    caller that names another dir. No container starts."""
+    from orchestrator.code_session import CodeSessionRefused, run_maf_code_session
+
+    other = short_tmp / "elsewhere"
+    other.mkdir()
+    with bound_run(ORG_A, agent=AGENT, instance=PERSONAL), pytest.raises(CodeSessionRefused):
+        asyncio.run(run_maf_code_session(task="t", workspace=str(other)))
+    assert maf.docker.runs() == [] and gateway.requests == []
