@@ -95,6 +95,33 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-270 · The gateway's in-process Copilot CLI inherits every secret in `.env` · [AGENT] · security
+- **Check:** `grep -nE "\benv\b|environment" apps/services/orchestrator/orchestrator/copilot_agent.py`.
+  No `env` in the `CopilotClient` options means the CLI still gets the whole gateway
+  environment, and this is open. To confirm the fallback in the SDK, run
+  `grep -n "effective_env = os.environ" .venv/lib/python3.12/site-packages/copilot/client.py`.
+- **Why.** `copilot_agent.py` lines 220 to 226 build `client_options` with a token, a CLI
+  path and a log level. They pass no `env`. The SDK then sets
+  `effective_env = os.environ` (`copilot/client.py` line 1601). The CLI has a shell tool.
+  So a prompt that reaches that tool can read every secret that `acb-gateway.service`
+  loads from `/opt/acb/app/.env`. That includes the database URLs, the OAuth client
+  secrets and the provider API keys.
+- **The partial guard is OFF.** `copilot_sandbox_scope` moves some calls into a
+  container. It is empty by default (`settings.py` line 673), so every call runs in the
+  gateway process.
+- **Do.**
+  1. Give the client an env built from an allow list: `PATH`, `HOME`, the Copilot token
+     and the proxy names that the CLI needs. Give it nothing else.
+  2. Add a test that starts the client with a stub CLI. Make it fail when a secret from
+     `.env` reaches the child env.
+  3. Decide if `copilot_sandbox_scope` must be ON by default.
+- **Not in the off-box PR, on purpose.** This is its own change. H-123 moved the backup
+  key out of `.env` for this reason. WS-43 (D84) removes the Copilot SDK. Until that
+  ships, this stays open.
+- **Authority:** `apps/services/orchestrator/orchestrator/copilot_agent.py` ·
+  `copilot/client.py` in the SDK · H-123
+- **Added:** 2026-10-08 · off-box backup, security review of fix round 1
+
 ### H-269 · Make the long-header test of the data engine pass on a busy CI runner · [AGENT]
 - **Check:** run `gh run list --workflow pr-check.yml --limit 50 --json databaseId,conclusion`,
   then search the logs of the failed runs for
@@ -3822,9 +3849,10 @@ line — never reclaim a number by deleting the other entry.
   A zero means no night left the box in the last day, and this is open.
 - ✅ **The code is BUILT (2026-10-08, branch `ops-offbox-backup`).** The
   owner chose a private Supabase Storage bucket, through its S3 endpoint.
-  Each night, `backup_db.sh` encrypts the dumps, the manifest, the file data
-  and the meeting-bot volume to your PUBLIC key. Then rclone sends them. The
-  copy stays OFF until you do the four steps below.
+  Each night, `acb-backup.service` runs `backup_db.sh --offbox`. It encrypts
+  the dumps, the manifest, the file data and the meeting-bot volume to your
+  PUBLIC key. Then rclone sends them. No other caller uploads. The copy stays
+  OFF until you do the four steps below.
 - **The four owner steps.** Spec `backup_and_restore.md` §4.2 holds each
   exact command. Do them after a deploy of the branch, so rclone is on the box.
   - **(a)** Make the private bucket `metorite-backups` in project
@@ -3833,27 +3861,32 @@ line — never reclaim a number by deleting the other entry.
     dump is about 84 MB.
   - **(b)** Make an S3 access key in the dashboard, at Storage → S3
     Connection. Write down the endpoint and the region. Keep the key ID and
-    the secret in your password manager.
+    the secret in your password manager. ⚠️ The key is PROJECT-WIDE. It can
+    read and delete every object in every bucket of the project.
   - **(c)** Make a gpg key pair on your own machine. Keep the private key and
     its passphrase in your password manager. Put only the public key on the
     box, at `/opt/acb/backup-public-key.asc`.
-  - **(d)** Set the seven `BACKUP_S3_*` and `BACKUP_GPG_*` keys in
-    `/opt/acb/app/.env`. Then run `sudo systemctl start acb-backup.service`
-    and run the Check above.
+  - **(d)** Put the seven `BACKUP_S3_*` and `BACKUP_GPG_*` keys in
+    `/etc/acb/backup-offbox.env`, owned by root:root with mode 0600. Only
+    `acb-backup.service` loads that file. Do NOT put them in
+    `/opt/acb/app/.env`. The gateway loads that file (H-270), and the run
+    refuses it. Then run `sudo systemctl start acb-backup.service` and the
+    Check above.
 - **To restore:** `scripts/restore_offbox.sh` lists, downloads, decrypts and
   verifies one night. Spec §4.2 holds the steps.
 - ⚠️ **The trade-off.** The bucket is in the same Supabase account as the
   database. It covers the loss of the VPS, which is this gap. It does not
-  cover the loss of the account. The S3 key on the box can also delete the
-  backups. A copy at a second provider is a later choice.
+  cover the loss of the account. The S3 key can also delete the backups, so
+  an attacker with root on the box can delete them. The app user cannot read
+  the key. A copy at a second provider is a later choice.
 - ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
   Supabase MCP reports project health, not the backup configuration. Our
   logical dumps stand on their own.
 - **The lesson, so it is not learned twice.** A manual `systemctl start`
   proves the SERVICE. It says nothing about the SCHEDULE. Read
   `systemctl list-timers <unit> --all` and require a NEXT date.
-- **Authority:** `scripts/backup_db.sh` · `scripts/restore_offbox.sh` ·
-  `project-docs/specs/backup_and_restore.md` §4.2
+- **Authority:** `scripts/backup_db.sh` · `scripts/backup_offbox.sh` ·
+  `scripts/restore_offbox.sh` · `project-docs/specs/backup_and_restore.md` §4.2
 - **Added:** 2026-09-19 · operator console session, after the backup repair.
   Rewritten 2026-10-08, when the off-box copy was built.
 

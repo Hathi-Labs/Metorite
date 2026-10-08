@@ -3,7 +3,8 @@
 #
 # SOURCED, never run. Two scripts share it, so they cannot disagree about where
 # a night lives or how rclone reaches the bucket:
-#   scripts/backup_db.sh       uploads one encrypted night, then prunes old ones
+#   scripts/backup_offbox.sh   uploads one encrypted night, then prunes old ones
+#                              (backup_db.sh runs it, only with --offbox)
 #   scripts/restore_offbox.sh  lists the nights, downloads one, decrypts it
 #
 # ── The layout in the bucket ──────────────────────────────────────────────────
@@ -32,6 +33,15 @@ offbox_bucket_re='^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
 # Each segment starts with a letter or a digit, so `.` and `..` cannot be one.
 offbox_prefix_re='^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$'
 offbox_remote='offbox'
+
+# offbox_uint <value> — print a whole number read in BASE 10, or return 1.
+# `10#` matters: bash reads "08" and "09" as bad octal, and "010" as 8.
+# Empty, signed, decimal or longer than 9 digits is refused.
+offbox_uint() {
+  local v="${1-}"
+  [[ "$v" =~ ^[0-9]{1,9}$ ]] || return 1
+  printf '%s\n' "$((10#$v))"
+}
 
 # offbox_prefix_ok <prefix> — true when the prefix is safe to scope a delete to.
 offbox_prefix_ok() {
@@ -114,15 +124,73 @@ offbox_rclone() {
   return "$rc"
 }
 
-# offbox_list_nights — the night stamps under the prefix, oldest first.
-# Anything else under the prefix is not a night, and nothing here touches it.
-offbox_list_nights() {
+# offbox_listing — every object under the prefix, one "<dir>/<name>" a line.
+# One call, so the night list and the "complete" mark come from one view.
+offbox_listing() {
   local listing
-  listing="$(offbox_rclone lsf --dirs-only "$offbox_base")" || {
+  listing="$(offbox_rclone lsf -R --files-only "$offbox_base")" || {
     printf '%s\n' "$listing" | sed 's/^/    /' >&2
     return 1
   }
-  printf '%s\n' "$listing" | sed 's#/$##' | grep -E "$offbox_stamp_re" | sort || true
+  printf '%s\n' "$listing"
+}
+
+# offbox_nights_in — the night stamps in a listing on stdin, oldest first.
+# Anything else under the prefix is not a night, and nothing here touches it.
+offbox_nights_in() {
+  cut -d/ -f1 | grep -E "$offbox_stamp_re" | sort -u || true
+}
+
+# offbox_complete_in — the nights in a listing on stdin that hold the
+# completion mark, SHA256SUMS.zst.gpg. It goes up last, so only a whole night
+# has it.
+offbox_complete_in() {
+  grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z/SHA256SUMS\.zst\.gpg$' | cut -d/ -f1 | sort -u || true
+}
+
+# offbox_list_nights — the night stamps under the prefix, oldest first.
+offbox_list_nights() {
+  local listing
+  listing="$(offbox_listing)" || return 1
+  printf '%s\n' "$listing" | offbox_nights_in
+}
+
+# offbox_plan_prune <keep> — read a listing on stdin, and print the nights to
+# delete, oldest first. Pure: it calls nothing, so a test can feed it anything.
+#   1. Keep the newest <keep> COMPLETE nights. Older complete nights go.
+#   2. An incomplete night goes only when it is older than the oldest complete
+#      night that is kept. With no complete night kept, none goes.
+#   3. The newest incomplete night never goes. It may still be uploading.
+# So a run of failed or partial nights can never push out the good copies.
+offbox_plan_prune() {
+  local keep="$1" listing all complete kept_oldest newest_incomplete n
+  listing="$(cat)"
+  all="$(printf '%s\n' "$listing" | offbox_nights_in)"
+  complete="$(printf '%s\n' "$listing" | offbox_complete_in)"
+  local -a comp=()
+  while IFS= read -r n; do
+    if [ -n "$n" ]; then comp+=("$n"); fi
+  done <<< "$complete"
+  local total="${#comp[@]}" drop=0
+  if [ "$total" -gt "$keep" ]; then drop=$((total - keep)); fi
+  kept_oldest=""
+  if [ "$total" -gt 0 ]; then kept_oldest="${comp[$drop]}"; fi
+  newest_incomplete=""
+  while IFS= read -r n; do
+    if [ -n "$n" ] && ! printf '%s\n' "$complete" | grep -qxF "$n"; then
+      newest_incomplete="$n"
+    fi
+  done <<< "$all"
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if printf '%s\n' "$complete" | grep -qxF "$n"; then
+      # A complete night: it goes when it is older than the oldest kept one.
+      if [ -n "$kept_oldest" ] && [[ "$n" < "$kept_oldest" ]]; then echo "$n"; fi
+    else
+      if [ "$n" = "$newest_incomplete" ]; then continue; fi
+      if [ -n "$kept_oldest" ] && [[ "$n" < "$kept_oldest" ]]; then echo "$n"; fi
+    fi
+  done <<< "$all"
 }
 
 # offbox_delete_night <stamp> — delete ONE night. The only delete in the bucket.

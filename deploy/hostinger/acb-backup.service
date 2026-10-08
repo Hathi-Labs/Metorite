@@ -35,6 +35,17 @@ EnvironmentFile=/opt/acb/app/.env
 # rather than fail the whole unit. `backup_db.sh` skips the second cluster when
 # the variable is absent.
 EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
+# 🔴 **The off-box bucket key (H-123) lives HERE and nowhere else.** A
+# Supabase S3 key is PROJECT-WIDE: it passes Row Level Security and can read
+# or delete every object in every bucket of the project. /opt/acb/app/.env is
+# also the env file of acb-gateway (User=acb) and of the WhatsApp bridge, and
+# the gateway's in-process Copilot CLI inherits that env (H-270). So every
+# BACKUP_S3_* and BACKUP_GPG_* key goes in this root:root 0600 file, which
+# only THIS unit loads. The `-` keeps a box without the off-box copy working.
+# backup_offbox.sh refuses a key file that is not root:root 0600, and refuses
+# a BACKUP_S3_* or BACKUP_GPG_* key in /opt/acb/app/.env.
+# `test_only_the_backup_unit_loads_the_offbox_key_file` fences the units.
+EnvironmentFile=-/etc/acb/backup-offbox.env
 # Invoked through bash on purpose — a checkout that loses the executable bit
 # (Windows contributors, archive exports) would otherwise fail with a bare
 # "Permission denied" and backups would silently never run. Same reasoning as
@@ -56,15 +67,16 @@ EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
 # Console dump, the off-box copy and retention still run, and the unit exits 1
 # at the end.
 #
-# 🔴 **The off-box copy (H-123, owner decision 2026-10-08).** When the env file
-# above sets the BACKUP_S3_* and BACKUP_GPG_* keys, each night also goes to the
-# private Supabase Storage bucket through its S3 endpoint. Every item is
-# compressed with zstd and encrypted with gpg to the owner's PUBLIC key, so
-# this box can write a backup and cannot read one. rclone reads the bucket key
-# from the environment only, never from a config file or argv. rclone is
-# installed by scripts/vps_apply.sh. A failed upload is an ERROR and the unit
-# exits 1, after the local dump, the Console dump and local retention ran.
+# 🔴 **The off-box copy (H-123, owner decision 2026-10-08).** `--offbox` is
+# OPT-IN, and THIS line is the only place that passes it. With the keys of
+# /etc/acb/backup-offbox.env, each night also goes to the private Supabase
+# Storage bucket through its S3 endpoint. zstd compresses each item, and gpg
+# encrypts it to the owner's PUBLIC key, so this box can write a backup and
+# cannot read one. rclone reads the key from the environment only. The step
+# runs AFTER local retention, under `timeout` (BACKUP_S3_TIMEOUT_SECS, default
+# 1200 s plus 30 s to KILL), which fits in TimeoutStartSec below. A failed or
+# timed-out upload is an ERROR, and the unit exits 1 at the end.
 # The journal line `off-box copy ok` is the evidence that a night left the box.
 # Restore: scripts/restore_offbox.sh, and project-docs/specs/backup_and_restore.md §4.2.
-ExecStart=/bin/bash /opt/acb/app/scripts/backup_db.sh --verify-restore
+ExecStart=/bin/bash /opt/acb/app/scripts/backup_db.sh --verify-restore --offbox
 TimeoutStartSec=1800

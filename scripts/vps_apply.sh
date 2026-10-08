@@ -1512,7 +1512,7 @@ else
 fi
 
 echo "==> Ensuring the off-box backup tools (H-123)"
-# backup_db.sh uploads the nightly copy with rclone, after zstd and gpg. The
+# backup_offbox.sh uploads the nightly copy with rclone, after zstd and gpg. The
 # box has gpg and zstd. rclone comes from apt HERE, so no hand install drifts
 # from the repo, and a rebuilt box gets it on the first deploy. Idempotent: a
 # tool that is present costs one `command -v`.
@@ -1524,10 +1524,19 @@ _offbox_missing=""
 command -v rclone >/dev/null 2>&1 || _offbox_missing="$_offbox_missing rclone"
 command -v gpg    >/dev/null 2>&1 || _offbox_missing="$_offbox_missing gnupg"
 command -v zstd   >/dev/null 2>&1 || _offbox_missing="$_offbox_missing zstd"
+# ⚠️ `DPkg::Lock::Timeout=120`: unattended-upgrades holds the dpkg lock for
+# minutes at a time, and without a wait the install fails at once. A failed
+# `apt-get update` does NOT stop the install: the package lists already on the
+# box can still hold the package. Each outcome is logged.
 if [ -n "$_offbox_missing" ]; then
   echo "    installing:$_offbox_missing"
+  if sudo apt-get -o DPkg::Lock::Timeout=120 update -qq >/dev/null 2>&1 < /dev/null; then
+    echo "    apt-get update ok"
+  else
+    echo "    !! apt-get update FAILED — trying the install from the package lists on the box"
+  fi
   # shellcheck disable=SC2086 # one word per package, on purpose
-  if (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $_offbox_missing) >/dev/null 2>&1 < /dev/null; then
+  if sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -qq $_offbox_missing >/dev/null 2>&1 < /dev/null; then
     echo "    + installed:$_offbox_missing"
   else
     echo "    !! could not install:$_offbox_missing — the nightly off-box copy FAILS until it is"

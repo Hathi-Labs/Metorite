@@ -1,18 +1,22 @@
 # Backup & Restore — BO-23
 
-**Status:** scripts SHIPPED · **scheduling CLOSED 2026-08-05** (timer installed,
-enabled, and proven by a real run) · **off-box copy BUILT 2026-10-08, and OFF
-until the owner does the four steps in §4.2 (H-123)**
+**Status:** The scripts SHIPPED. **Scheduling CLOSED on 2026-08-05.** A real
+run proved the timer. **The off-box copy is BUILT (2026-10-08).** It stays
+OFF until the owner does the four steps in §4.2 (H-123).
+
 **2026-10-08, owner decision:** the off-box copy goes to a private Supabase
 Storage bucket, through its S3 endpoint. The box encrypts each night to the
-owner's PUBLIC key before the upload. Branch `ops-offbox-backup`. A real S3
-server (MinIO) proved the round trip in `scripts/rehearse_offbox.sh`. Nobody
-has measured it on the box yet.
+owner's PUBLIC key before the upload. Only the nightly unit uploads
+(`--offbox`), and only root can read the bucket key. Branch
+`ops-offbox-backup`. A real S3 server (MinIO) proved the round trip in
+`scripts/rehearse_offbox.sh`. Nobody has measured it on the box yet.
+
 **2026-10-07, after an I/O incident on the managed cluster:** `--verify-restore`
 now restores into a throwaway container on the box, and never into the live
 cluster. The pre-migration backup runs only when the ledger shows a migration
 to apply.
 Branch `ops-backup-io`. The verify on the box is not yet measured.
+
 **Owner row:** FOUNDATION_BUILDOUT_CHECKLIST.md §BO-23
 **Last measured:** 2026-08-05 against the live VPS (srv1747539); §1's recovery
 position was measured 2026-08-03 and is unchanged
@@ -195,9 +199,11 @@ restore verified
 
 #### What the nightly unit sends
 
-When the env file sets the `BACKUP_S3_*` keys, `backup_db.sh` sends each night
-to `<bucket>/<prefix>/<stamp>/`. The default prefix is `nightly`, and `<stamp>`
-is the name of the local backup folder. Each object is `<name>.zst.gpg`:
+Only `acb-backup.service` passes `--offbox` to `backup_db.sh`. With that flag
+and the keys of `/etc/acb/backup-offbox.env`, `backup_offbox.sh` sends the
+night to `<bucket>/<prefix>/<stamp>/`. The default prefix is `nightly`, and
+`<stamp>` is the name of the local backup folder. Each object is
+`<name>.zst.gpg`:
 
 | Object | What it holds |
 |---|---|
@@ -212,46 +218,76 @@ line for each.
 
 #### How it is safe
 
+- **Opt-in, in one place.** Without `--offbox`, the run uploads nothing, whatever
+  the env holds. The pre-migration backup of a deploy never passes the flag.
+  So a deploy never uploads, and a bucket outage cannot block a migration.
+  `test_only_the_nightly_unit_passes_offbox` checks every caller.
+- **The key is for root only.** A Supabase S3 key is **project-wide**. It
+  passes Row Level Security, and it can read or delete every object in every
+  bucket of the project. So every `BACKUP_S3_*` and `BACKUP_GPG_*` key lives
+  in `/etc/acb/backup-offbox.env`, root:root 0600. Only `acb-backup.service`
+  loads that file.
+- **Never in the app env file.** `/opt/acb/app/.env` is the env file of
+  `acb-gateway` and of the WhatsApp bridge. The gateway's in-process Copilot
+  CLI inherits that env (H-270). `backup_offbox.sh` refuses to run as any
+  user but root. It also refuses a key file that is not root:root 0600, and
+  a `BACKUP_S3_*` or `BACKUP_GPG_*` line in `/opt/acb/app/.env`.
 - **Encrypted on the box, or not sent.** zstd compresses each item, and gpg
   encrypts it to the PUBLIC key named by `BACKUP_GPG_RECIPIENT` (a full
   fingerprint). The box never holds the private key. So the box can write a
   backup, and it cannot read one.
 - **The script checks the key before any data moves.** A missing, unreadable,
-  private, revoked or wrong key fails the step, and rclone never runs. No
-  plaintext can leave the box.
+  private, revoked or wrong key fails the step, and rclone never runs. A
+  failed encryption of one file also stops the step before the upload.
 - **No secret on disk or on argv.** rclone reads the bucket key from its
-  environment only (`RCLONE_CONFIG_OFFBOX_*`), and `RCLONE_CONFIG=/dev/null`
-  stops it from reading a config file. The script first clears every inherited
-  `RCLONE_*` name. `env_guard` refuses a tenant write to `BACKUP_*`, `RCLONE_*`
-  and `GNUPGHOME`.
-- **One delete, with one guard.** Bucket retention keeps the last
-  `BACKUP_S3_KEEP` nights (default 14). `offbox_delete_night` is the only
-  delete. It accepts a night stamp only, and it builds the path from the
-  checked bucket and prefix. So no delete can reach a path outside
+  environment only, as `RCLONE_CONFIG_OFFBOX_*`. `RCLONE_CONFIG=/dev/null`
+  stops rclone from reading a config file. The script first clears every
+  inherited `RCLONE_*` name. `env_guard` refuses a tenant write to
+  `BACKUP_*`, `RCLONE_*`, `ZSTD_*`, `TAR_OPTIONS` and `GNUPGHOME`.
+- **One delete, with one guard.** `offbox_delete_night` is the only delete.
+  It accepts a night stamp only, and it builds the path from the checked
+  bucket and prefix. So no delete can reach a path outside
   `<bucket>/<prefix>/<stamp>`.
-- **A failure costs no local backup.** The step runs in a subshell, as the
-  deep verify does. A failure is an ERROR and the unit exits 1. The local dump,
-  the Console dump and local retention run first. Bucket retention runs only
-  after a good upload, so a run of failed nights never prunes the last good
-  copies.
-- **A deploy never uploads.** The pre-migration backup runs with the keys that
-  `vps_apply.sh` lifts from `.env`, and none of them is a `BACKUP_` key. So a
-  bucket outage cannot block a migration.
+- **Retention counts complete nights only.** A night is complete when it
+  holds `SHA256SUMS.zst.gpg`. Retention keeps the newest `BACKUP_S3_KEEP`
+  complete nights (default 14, read in base 10). An incomplete night goes
+  only when it is older than the oldest complete night that is kept. The
+  newest incomplete night never goes, because its upload may not be done yet.
+  Retention runs only after a good upload.
+- **Bounded in time.** Local retention runs first. Then `timeout` bounds the
+  whole off-box step at `BACKUP_S3_TIMEOUT_SECS` (default 1200 s), plus 30 s
+  before a KILL. That fits in the unit's `TimeoutStartSec=1800`. A timeout
+  counts as a failed upload.
+- **A failure costs no local backup.** Any failure is an ERROR, and the unit
+  exits 1 at the end. The local dump, the Console dump and local retention
+  run first. A failed Console dump does not stop the off-box copy of the app
+  dump.
 
 The fences are in `tests/unit/test_backup_deploy_wiring.py`. The real round
 trip is `scripts/rehearse_offbox.sh` (§6.2).
 
-#### The trade-off, recorded
+#### The trade-offs, recorded
 
-The bucket is in the **same Supabase account** as the database. It protects
-against the loss of the VPS, which is the gap that H-123 names. It does not
-protect against the loss of the Supabase account. The S3 key on the box can
-also delete objects, so an attacker with root on the box can delete the
-backups. A copy at a second provider closes both gaps. That is a later choice.
+- **One account.** The bucket is in the **same Supabase account** as the
+  database. It protects against the loss of the VPS, which is the gap that
+  H-123 names. It does not protect against the loss of the Supabase account.
+- **The key can delete.** The S3 key is project-wide, and it can delete
+  objects. An attacker with root on the box can delete the backups. The app
+  user cannot read the key. A copy at a second provider closes both gaps.
+  That is a later choice.
+- **Integrity, not authenticity (F7).** The box encrypts each night, and it does
+  not sign it, because the box holds no signing key. `SHA256SUMS` proves that a
+  night is whole. It does not prove who wrote it. A person with the bucket key
+  and the public key can write a whole, false night. So restore only from a
+  night whose date and size you expect.
+- **Names and sizes are plain (F10).** The bucket shows the name of each item
+  (for example `acb.dump`), the night stamp and the size of each object. It
+  does not show the content.
 
 #### The owner steps to switch it on
 
-Do these after a deploy of this branch, so that rclone is on the box.
+Do these after a deploy of this branch, so that rclone is on the box and the
+unit has `--offbox`.
 
 1. **Make the private bucket** `metorite-backups` in project
    `wbjpwtxigkileyjsgahk`. The coordinator may run this SQL for you:
@@ -268,6 +304,8 @@ Do these after a deploy of this branch, so that rclone is on the box.
 2. **Make an S3 access key** in the dashboard: Storage → S3 Connection. Write
    down the endpoint and the region that the page shows. Keep the key ID and
    the secret in your password manager. The secret shows one time only.
+   ⚠️ This key is project-wide. It can read and delete every object in every
+   bucket of the project.
 3. **Make a gpg key pair on your own machine.** Keep the private key in your
    password manager, and put only the public key on the box.
 
@@ -284,7 +322,19 @@ Do these after a deploy of this branch, so that rclone is on the box.
    ssh metorite 'sudo install -m 0644 /tmp/metorite-backups-public.asc /opt/acb/backup-public-key.asc'
    ```
 
-4. **Set the keys** in `/opt/acb/app/.env` on the box:
+4. **Put the keys in the root-only file.** Do NOT put them in
+   `/opt/acb/app/.env`. The run refuses that.
+
+   ```bash
+   ssh metorite
+   sudo mkdir -p /etc/acb
+   sudo touch /etc/acb/backup-offbox.env
+   sudo chown root:root /etc/acb/backup-offbox.env
+   sudo chmod 0600 /etc/acb/backup-offbox.env
+   sudoedit /etc/acb/backup-offbox.env
+   ```
+
+   Put these seven lines in the file:
 
    ```bash
    BACKUP_S3_ENDPOINT=https://wbjpwtxigkileyjsgahk.storage.supabase.co/storage/v1/s3
@@ -299,6 +349,7 @@ Do these after a deploy of this branch, so that rclone is on the box.
    Then prove it at once. Do not wait for 02:30:
 
    ```bash
+   sudo stat -c '%U:%G %a' /etc/acb/backup-offbox.env    # expect root:root 600
    sudo systemctl start acb-backup.service
    sudo journalctl -u acb-backup -n 80 --no-pager | grep -E 'off-box copy ok|ERROR'
    ```
@@ -307,21 +358,23 @@ Do these after a deploy of this branch, so that rclone is on the box.
 
 #### The owner steps to restore
 
-`scripts/restore_offbox.sh` lists the nights, downloads one, decrypts it and
-checks it against `SHA256SUMS` and `MANIFEST.txt`. It needs `rclone`, `gpg`,
+`scripts/restore_offbox.sh` lists the nights, and it downloads, decrypts and
+checks one. It refuses a night that fails `SHA256SUMS` or `MANIFEST.txt`, a
+file that `SHA256SUMS` does not list, and a disk with too little room. It
+keeps the private key in `/dev/shm`, in memory only. It needs `rclone`, `gpg`,
 `zstd` and `sha256sum`. The box has all four. On the box:
 
 ```bash
 # 1. Bring the private key, and its passphrase, into memory only.
 scp metorite-backups-PRIVATE.asc metorite:/dev/shm/k.asc
 ssh metorite
-printf '%s\n' '<the passphrase>' > /dev/shm/p.txt && chmod 600 /dev/shm/*.asc /dev/shm/p.txt
+printf '%s\n' '<the passphrase>' > /dev/shm/p.txt && chmod 600 /dev/shm/k.asc /dev/shm/p.txt
 
 # 2. See the nights. A night with no SHA256SUMS is INCOMPLETE.
-sudo bash /opt/acb/app/scripts/restore_offbox.sh --env-file /opt/acb/app/.env --list
+sudo bash /opt/acb/app/scripts/restore_offbox.sh --env-file /etc/acb/backup-offbox.env --list
 
 # 3. Get one night, decrypt it and verify it. Use a stamp in place of latest.
-sudo bash /opt/acb/app/scripts/restore_offbox.sh --env-file /opt/acb/app/.env \
+sudo bash /opt/acb/app/scripts/restore_offbox.sh --env-file /etc/acb/backup-offbox.env \
   --night latest --key /dev/shm/k.asc --passphrase-file /dev/shm/p.txt \
   --out /opt/acb/restore-offbox
 
@@ -336,8 +389,10 @@ sudo BACKUP_DIR=/opt/acb/restore-offbox bash /opt/acb/app/scripts/restore_db.sh 
 If the VPS is gone, do the same steps on any Linux machine. Install `rclone`,
 `gnupg` and `zstd`, and clone the repository. Put the `BACKUP_S3_*` values in
 a file, and give that file to `--env-file`. If you do not have the S3 secret,
-make a new key on the S3 Connection page. The plain files hold customer data.
-Delete them when the restore is done.
+make a new key on the S3 Connection page.
+
+On a machine with no `/dev/shm`, name a RAM disk with `--keyring-parent`. The
+plain files hold customer data. Delete them when the restore is done.
 
 ### 4.3 PITR — deliberately NOT attempted
 
@@ -469,7 +524,7 @@ better position than BO-23 was filed against, and still not the finished one.
 2026-10-08 it ran in an `ubuntu:24.04` container, with the apt versions that
 the box gets: rclone 1.60.1, GnuPG 2.4.4 and zstd 1.5.5. The S3 server was
 MinIO (`pgsty/minio`, because MinIO no longer publishes its own image). The
-database was `postgres:16`. It proved five things:
+database was `postgres:16`. The run was repeated after fix round 1. It proved five things:
 
 1. `backup_db.sh` sent one night, and each of the 5 objects is an OpenPGP
    message to the test public key. No object is plaintext.
@@ -477,9 +532,12 @@ database was `postgres:16`. It proved five things:
    verified it against `SHA256SUMS` and `MANIFEST.txt`.
 3. The restored dump gave back the same 250 rows (the same md5), and
    `files.tar` gave back the same attachment.
-4. With `BACKUP_S3_KEEP=2`, three nights became two. A folder under the
-   prefix that is not a night, and a night under another prefix, stayed.
-5. With no key, the run failed, and no night reached the bucket.
+4. With `BACKUP_S3_KEEP=2`, three complete nights became two. An old
+   incomplete night went, and the newest incomplete night stayed. A folder
+   that is not a night, and a night under another prefix, stayed.
+5. A run without `--offbox` uploaded nothing. A key file in mode 0644 was
+   refused. With no key, the run failed. No night reached the bucket in
+   these three runs.
 
 **What it does not prove.** The run used no meeting-bot volume, and it used
 MinIO, not Supabase. The first real night on the box is the evidence for

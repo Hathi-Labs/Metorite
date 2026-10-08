@@ -28,6 +28,9 @@
 #   scripts/backup_db.sh                  # dump + cheap integrity check
 #   scripts/backup_db.sh --verify-restore # ALSO restore into a throwaway
 #                                         # LOCAL container (needs Docker)
+#   scripts/backup_db.sh --offbox         # ALSO send the night to Supabase
+#                                         # Storage (H-123). ONLY
+#                                         # acb-backup.service passes it.
 #
 # Env:
 #   BACKUP_DIR      (default /opt/acb/backups)
@@ -42,7 +45,11 @@
 #                   script says so loudly — see "Off-box" below.
 #
 #   The off-box copy in Supabase Storage (H-123, owner decision 2026-10-08).
-#   It runs when any BACKUP_S3_* key is set, and then ALL of these must be set:
+#   It runs ONLY with --offbox. Without the flag nothing is uploaded, whatever
+#   the env holds. Every key below lives in /etc/acb/backup-offbox.env
+#   (root:root 0600), which only acb-backup.service loads. NEVER in
+#   /opt/acb/app/.env: the gateway loads that file (see backup_offbox.sh).
+#   With --offbox and any of these set, ALL of these must be set:
 #   BACKUP_S3_ENDPOINT    the S3 endpoint, https://<ref>.storage.supabase.co/storage/v1/s3
 #   BACKUP_S3_REGION      the region of the project, for example ap-south-1
 #   BACKUP_S3_BUCKET      a PRIVATE bucket, for example metorite-backups
@@ -51,7 +58,9 @@
 #   BACKUP_GPG_PUBLIC_KEY_FILE   a path on this box to that PUBLIC key
 #   Optional:
 #   BACKUP_S3_PREFIX      the folder in the bucket (default nightly)
-#   BACKUP_S3_KEEP        nights to keep in the bucket (default 14)
+#   BACKUP_S3_KEEP        COMPLETE nights to keep in the bucket (default 14)
+#   BACKUP_S3_TIMEOUT_SECS  the deadline of the whole off-box step (default 1200)
+#   BACKUP_OFFBOX_ENV_FILE  the root-only key file (default /etc/acb/backup-offbox.env)
 #   BACKUP_FILE_DIRS      the file-data directories, split by spaces
 #   BACKUP_MEETING_BOT_VOLUME   the Docker volume of the meeting bot
 set -euo pipefail
@@ -62,7 +71,19 @@ APP_DIR="${APP_DIR:-/opt/acb/app}"
 KEEP_DAILY="${KEEP_DAILY:-14}"
 BACKUP_REMOTE="${BACKUP_REMOTE:-}"
 VERIFY_RESTORE=0
-[ "${1:-}" = "--verify-restore" ] && VERIFY_RESTORE=1
+# --offbox is OPT-IN on purpose (H-123). The pre-migration backup of a deploy
+# runs this script too, and it must never upload. The fence over every caller
+# is `test_only_the_nightly_unit_passes_offbox`.
+offbox_requested=0
+for arg in "$@"; do
+  case "$arg" in
+    --verify-restore) VERIFY_RESTORE=1 ;;
+    --offbox) offbox_requested=1 ;;
+    *) echo "ERROR: unknown argument '$arg'. Known: --verify-restore, --offbox." >&2; exit 2 ;;
+  esac
+done
+# Absolute, because retention below runs `cd "$BACKUP_DIR"`.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 say()  { printf "\n==> %s\n" "$*"; }
 warn() { printf "  !! %s\n" "$*" >&2; }
@@ -183,9 +204,12 @@ verify_ctr_failures=0
 # failed verify never costs the Console dump, the off-box copy or retention.
 verify_failed=0
 # Set to 1 when the off-box copy to Supabase Storage failed for ANY reason: a
-# setting, the key, the encryption, the upload or the bucket retention. Checked
-# LAST too, so a failed upload never costs the local retention.
+# setting, the key, the encryption, the upload, the deadline or the bucket
+# retention. Checked LAST too.
 offbox_failed=0
+# Set to 1 when the Customer Console dump failed or was corrupt. Checked LAST,
+# so a Console failure never costs the off-box copy of the app dump.
+console_failed=0
 
 # psql and libpq can echo a connection string, password included, into an
 # error. Apply this to every error text before it reaches a log. It is the
@@ -668,281 +692,26 @@ if [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ]; then
       (cd "$DEST" && sha256sum ./customer_console.dump >> MANIFEST.txt)
     else
       echo "CORRUPT"
-      warn "pg_restore could not read customer_console.dump — backup FAILED"
-      exit 1
+      warn "pg_restore could not read customer_console.dump — the Console backup FAILED."
+      warn "The run goes on, and exits 1 at the end."
+      mv -f "$DEST/customer_console.dump" "$DEST/customer_console.dump.corrupt"
+      console_failed=1
     fi
   else
     echo "FAILED"
     warn "Could not dump the Customer Console database. The app database above"
     warn "IS backed up; the Console's is NOT. See $DEST/customer_console.err"
     warn "— that file holds the DSN, so do not paste it anywhere."
-    exit 1
+    warn "The run goes on, and exits 1 at the end."
+    if [ -e "$DEST/customer_console.dump" ]; then
+      mv -f "$DEST/customer_console.dump" "$DEST/customer_console.dump.failed"
+    fi
+    console_failed=1
   fi
 else
   warn "CUSTOMER_CONSOLE_DATABASE_URL is unset — the Console database is NOT in"
   warn "this backup. If this box serves the Console, that is H-98: the unit is"
   warn "missing its second EnvironmentFile."
-fi
-
-# --- Off-box copy ------------------------------------------------------------
-# A backup on the same disk as the database survives `DROP TABLE`. It does not
-# survive the disk, the box, or the provider account. Two destinations exist.
-# Each is optional, and the script warns loudly when neither is set.
-#
-# 1. BACKUP_REMOTE, an rsync destination. Unchanged since BO-23.
-if [ -n "$BACKUP_REMOTE" ]; then
-  say "Copying off-box -> $BACKUP_REMOTE"
-  rsync -a --delete-after "$DEST" "$BACKUP_REMOTE/" && echo "    off-box copy ok"
-fi
-
-# 2. Supabase Storage, through its S3 endpoint (H-123, owner decision
-#    2026-10-08). scripts/offbox_lib.sh holds the layout and the guards.
-#
-# 🔴 **Encrypted on the box, or not sent at all.** Each item is compressed
-# with zstd and encrypted with gpg to the owner's PUBLIC key. The box never
-# holds the private key, so the box can write a backup and cannot read one.
-# The key is checked in full BEFORE anything is staged. A missing, unreadable,
-# private, revoked or wrong key fails the step, and nothing is uploaded.
-#
-# What goes up each night, as <name>.zst.gpg:
-#   every *.dump, globals.sql and MANIFEST.txt of this run (the Console too)
-#   files.tar               the file-data directories (BACKUP_FILE_DIRS)
-#   meeting-bot-volume.tar  the meeting bot's Docker volume, read in place
-#   SHA256SUMS              the checksum of each plain item, uploaded LAST
-# A directory or a volume that does not exist is skipped, with one line.
-#
-# 🔴 **A failure here never costs the local backup.** The step runs in a
-# subshell, as the deep verify does. Any failure sets `offbox_failed`, the run
-# goes on to local retention, and the run exits 1 at the END.
-# The bucket retention runs only after tonight's upload succeeded. A run of
-# failed nights therefore never prunes the last good copies.
-#
-# ⚠️ **The pre-migration backup never uploads.** apply_migrations.sh runs
-# this script during a deploy, and vps_apply.sh exports a fixed list of keys
-# to it with no BACKUP_S3_* name. So an outage of the bucket cannot block a
-# migration, and a deploy cannot push a real night out of the retention.
-# `test_backup_deploy_wiring.py` fences both halves.
-offbox_wanted=0
-if [ -n "${BACKUP_S3_ENDPOINT:-}${BACKUP_S3_REGION:-}${BACKUP_S3_BUCKET:-}${BACKUP_S3_ACCESS_KEY_ID:-}${BACKUP_S3_SECRET_ACCESS_KEY:-}${BACKUP_GPG_RECIPIENT:-}${BACKUP_GPG_PUBLIC_KEY_FILE:-}" ]; then
-  offbox_wanted=1
-fi
-if [ "$offbox_wanted" = "1" ]; then
-  say "Copying off-box -> Supabase Storage (S3), encrypted"
-  offbox_work="$DEST/offbox.work"
-  set +e
-  (
-    set -e
-    # shellcheck source=scripts/offbox_lib.sh
-    . "$(dirname "${BASH_SOURCE[0]}")/offbox_lib.sh"
-    offbox_settings || exit 1
-    keep="${BACKUP_S3_KEEP:-14}"
-    if ! [[ "$keep" =~ ^[0-9]+$ ]] || [ "$keep" -lt 1 ]; then
-      echo "ERROR: BACKUP_S3_KEEP '$keep' must be a whole number of 1 or more." >&2
-      exit 1
-    fi
-    for tool in rclone gpg zstd tar sha256sum; do
-      if ! command -v "$tool" >/dev/null 2>&1; then
-        echo "ERROR: the off-box copy needs '$tool', and it is not on PATH." >&2
-        echo "       scripts/vps_apply.sh installs rclone on each deploy." >&2
-        exit 1
-      fi
-    done
-
-    # ── The key, checked in full before any data is touched ─────────────────
-    # A keyring made for this run only. It holds one PUBLIC key and goes away.
-    gpg_home="$(mktemp -d)"
-    trap 'gpgconf --homedir "$gpg_home" --kill all >/dev/null 2>&1 || true; rm -rf "$gpg_home" "$offbox_work"' EXIT
-    key_fail() {
-      echo "ERROR: $*" >&2
-      echo "       Nothing was uploaded. The off-box copy never sends plaintext." >&2
-      exit 1
-    }
-    fpr="$(printf '%s' "${BACKUP_GPG_RECIPIENT:-}" | tr -d ' ' | tr 'a-f' 'A-F')"
-    key_file="${BACKUP_GPG_PUBLIC_KEY_FILE:-}"
-    if ! [[ "$fpr" =~ ^([0-9A-F]{40}|[0-9A-F]{64})$ ]]; then
-      key_fail "BACKUP_GPG_RECIPIENT must be the full fingerprint of a key (40 or 64 hex digits)."
-    fi
-    if [ -z "$key_file" ] || [ ! -r "$key_file" ]; then
-      key_fail "BACKUP_GPG_PUBLIC_KEY_FILE '$key_file' is not a readable file."
-    fi
-    if ! shown="$(gpg --homedir "$gpg_home" --batch --with-colons \
-                    --import-options show-only --import "$key_file" 2>/dev/null)"; then
-      key_fail "the file $key_file holds no OpenPGP key that gpg can read."
-    fi
-    if grep -qE '^(sec|ssb):' <<< "$shown"; then
-      key_fail "the file $key_file holds a PRIVATE key. Put only the PUBLIC key on the box."
-    fi
-    if ! gpg --homedir "$gpg_home" --batch --quiet --import "$key_file" >/dev/null 2>&1; then
-      key_fail "gpg could not import $key_file."
-    fi
-    listing="$(gpg --homedir "$gpg_home" --batch --with-colons --with-fingerprint \
-                 --with-subkey-fingerprint --list-keys "$fpr" 2>/dev/null || true)"
-    if ! grep -q "^fpr:::::::::$fpr:" <<< "$listing"; then
-      key_fail "no key in $key_file has the exact fingerprint $fpr."
-    fi
-    pub="$(grep -m1 '^pub:' <<< "$listing" || true)"
-    case "$(cut -d: -f2 <<< "$pub")" in
-      r|e|d|i|n) key_fail "the key $fpr is revoked, expired or not valid." ;;
-    esac
-    if [[ "$(cut -d: -f12 <<< "$pub")" != *E* ]]; then
-      key_fail "the key $fpr has no usable encryption subkey."
-    fi
-    echo "    encrypting to $fpr"
-
-    # ── Stage. Compress, then encrypt, each item ─────────────────────────────
-    rm -rf "$offbox_work"
-    up="$offbox_work/up"
-    mkdir -p "$up"
-    chmod 700 "$offbox_work"
-    sums="$offbox_work/SHA256SUMS"
-    : > "$sums"
-    # enc <plain file> — add its checksum, and write <name>.zst.gpg to $up.
-    # SHA256SUMS itself gets no line: a file cannot hold its own checksum.
-    enc() {
-      if [ "$1" != "$sums" ]; then
-        (cd "$(dirname "$1")" && sha256sum "$(basename "$1")") >> "$sums"
-      fi
-      zstd -q -c "$1" \
-        | gpg --homedir "$gpg_home" --batch --yes --quiet --trust-model always \
-              --compress-algo none --recipient "$fpr" \
-              --output "$up/$(basename "$1").zst.gpg" --encrypt
-    }
-    # tar_items <out> <dir> <path...>. GNU tar exits 1 when a file changed
-    # while it read it. That is a live box, and the copy holds the rest.
-    tar_items() {
-      local out="$1" dir="$2" rc=0
-      shift 2
-      tar -C "$dir" -cf "$out" "$@" || rc=$?
-      if [ "$rc" = "1" ]; then
-        echo "    note: a file changed while tar read it, for $(basename "$out")."
-        rc=0
-      fi
-      return "$rc"
-    }
-
-    for f in "$DEST"/*.dump "$DEST/globals.sql" "$DEST/MANIFEST.txt"; do
-      if [ -f "$f" ]; then
-        enc "$f"
-      fi
-    done
-
-    # The file data: Tasks and Projects attachments, meeting audio and the
-    # agent workspaces. Paths are absolute, and the tar keeps them under /.
-    read -r -a file_dirs <<< "${BACKUP_FILE_DIRS:-$APP_DIR/data/gtd_attachments $APP_DIR/data/notes_media /home/acb/.acb/agents}"
-    present=()
-    for d in "${file_dirs[@]}"; do
-      if [ "${d#/}" = "$d" ]; then
-        echo "    skip $d (not an absolute path)"
-      elif [ -d "$d" ]; then
-        present+=("${d#/}")
-      else
-        echo "    skip $d (no such directory)"
-      fi
-    done
-    if [ "${#present[@]}" -gt 0 ]; then
-      tar_items "$offbox_work/files.tar" / "${present[@]}"
-      enc "$offbox_work/files.tar"
-      rm -f "$offbox_work/files.tar"
-    fi
-
-    # The meeting bot's volume, read in place through its mount point. The
-    # bot keeps running. Compose may prefix the name with its project.
-    read -r -a volumes <<< "${BACKUP_MEETING_BOT_VOLUME:-acb-meeting-bot-data acb_acb-meeting-bot-data}"
-    vol_path=""
-    if command -v docker >/dev/null 2>&1; then
-      for vol in "${volumes[@]}"; do
-        p="$(docker volume inspect -f '{{.Mountpoint}}' "$vol" 2>/dev/null || true)"
-        if [ -n "$p" ] && [ -d "$p" ]; then
-          vol_path="$p"
-          echo "    meeting-bot volume $vol at $p"
-          break
-        fi
-      done
-    fi
-    if [ -n "$vol_path" ]; then
-      tar_items "$offbox_work/meeting-bot-volume.tar" "$vol_path" .
-      enc "$offbox_work/meeting-bot-volume.tar"
-      rm -f "$offbox_work/meeting-bot-volume.tar"
-    else
-      echo "    skip the meeting-bot volume (none of: ${volumes[*]})"
-    fi
-
-    # The checksums go last, as the mark of a complete night.
-    enc "$sums"
-
-    # ── Upload ───────────────────────────────────────────────────────────────
-    offbox_rclone_env
-    night="$offbox_base/$STAMP"
-    n="$(find "$up" -type f | wc -l | tr -d ' ')"
-    size="$(du -sh "$up" | cut -f1)"
-    echo "    uploading $n encrypted files ($size) -> $night"
-    if ! offbox_rclone copy --exclude SHA256SUMS.zst.gpg "$up" "$night" >&2; then
-      echo "ERROR: the upload to $night FAILED." >&2
-      exit 1
-    fi
-    if ! offbox_rclone copyto "$up/SHA256SUMS.zst.gpg" "$night/SHA256SUMS.zst.gpg" >&2; then
-      echo "ERROR: the upload of SHA256SUMS.zst.gpg to $night FAILED." >&2
-      exit 1
-    fi
-    if ! listed="$(offbox_rclone lsf --files-only "$night")"; then
-      echo "ERROR: could not list $night after the upload:" >&2
-      printf '%s\n' "$listed" | sed 's/^/    /' >&2
-      exit 1
-    fi
-    for f in "$up"/*; do
-      if ! grep -qxF "$(basename "$f")" <<< "$listed"; then
-        echo "ERROR: $(basename "$f") is not in $night after the upload." >&2
-        exit 1
-      fi
-    done
-    echo "    off-box copy ok ($night, $n files, $size)"
-
-    # ── Retention in the bucket ──────────────────────────────────────────────
-    # Only names that match the night stamp count, and only those are deleted.
-    # offbox_delete_night is the one delete, and it builds its own path.
-    echo "    off-box retention: keeping $keep nights under $offbox_base"
-    if ! nights_txt="$(offbox_list_nights)"; then
-      echo "ERROR: could not list the nights under $offbox_base." >&2
-      exit 1
-    fi
-    nights=()
-    while IFS= read -r ln; do
-      if [ -n "$ln" ]; then
-        nights+=("$ln")
-      fi
-    done <<< "$nights_txt"
-    total="${#nights[@]}"
-    pruned=0
-    prune_failed=0
-    if [ "$total" -gt "$keep" ]; then
-      for old in "${nights[@]:0:$((total - keep))}"; do
-        if offbox_delete_night "$old" >&2; then
-          echo "    pruned $old"
-          pruned=$((pruned + 1))
-        else
-          prune_failed=1
-        fi
-      done
-    fi
-    echo "    $((total - pruned)) night(s) in the bucket"
-    if [ "$prune_failed" != "0" ]; then
-      echo "ERROR: could not prune every old night under $offbox_base. Tonight's copy IS up." >&2
-      exit 1
-    fi
-  )
-  offbox_rc=$?
-  set -e
-  if [ "$offbox_rc" != "0" ]; then
-    offbox_failed=1
-    warn "the off-box copy FAILED (exit $offbox_rc). The backup goes on, and exits 1 at the end."
-  fi
-fi
-
-if [ -z "$BACKUP_REMOTE" ] && [ "$offbox_wanted" != "1" ]; then
-  warn "No off-box copy is set up — this backup exists ONLY on this box."
-  warn "It protects against bad migrations and dropped tables, NOT against"
-  warn "losing the VPS. Set the BACKUP_S3_* keys to close that gap (H-123)."
-  warn "A pre-migration backup of a deploy never has them, by design."
 fi
 
 # --- Retention ---------------------------------------------------------------
@@ -967,6 +736,73 @@ if [ "$total" -gt "$KEEP_DAILY" ]; then
   done
 fi
 echo "    $(ls -1d [0-9]*Z 2>/dev/null | wc -l) backup(s) retained, $(du -sh "$BACKUP_DIR" | cut -f1) total"
+
+# --- Off-box copy, AFTER local retention ------------------------------------
+# A backup on the same disk as the database survives `DROP TABLE`. It does not
+# survive the disk, the box, or the provider account. Two destinations exist.
+# Each is optional, and the script warns loudly when neither is set.
+# It runs AFTER local retention, so a slow or hung upload never costs it.
+#
+# 1. BACKUP_REMOTE, an rsync destination. Unchanged since BO-23.
+if [ -n "$BACKUP_REMOTE" ]; then
+  say "Copying off-box -> $BACKUP_REMOTE"
+  rsync -a --delete-after "$DEST" "$BACKUP_REMOTE/" && echo "    off-box copy ok"
+fi
+
+# 2. Supabase Storage, through its S3 endpoint (H-123, owner decision
+#    2026-10-08). scripts/backup_offbox.sh does the work, and
+#    scripts/offbox_lib.sh holds the layout and the guards.
+#
+# 🔴 **ONLY with --offbox.** Only acb-backup.service passes it. The
+# pre-migration backup of a deploy never does, so a deploy never uploads, an
+# outage of the bucket cannot block a migration, and a deploy cannot push a
+# real night out of the retention. The deploy cannot read the key either: it
+# lives in /etc/acb/backup-offbox.env, root:root 0600.
+#
+# 🔴 **Bounded.** The whole step runs under `timeout` (BACKUP_S3_TIMEOUT_SECS,
+# default 1200 s, plus 30 s to KILL). That fits in the unit's
+# TimeoutStartSec=1800 with the dump and the verify. A timeout is a failed
+# upload. `test_the_off_box_deadline_fits_in_the_unit` holds the sum.
+#
+# 🔴 **A failure costs nothing local.** It sets `offbox_failed`, and the run
+# exits 1 at the END. The dump, the Console dump and local retention are done.
+offbox_configured=0
+if [ -n "${BACKUP_S3_ENDPOINT:-}${BACKUP_S3_REGION:-}${BACKUP_S3_BUCKET:-}${BACKUP_S3_ACCESS_KEY_ID:-}${BACKUP_S3_SECRET_ACCESS_KEY:-}${BACKUP_GPG_RECIPIENT:-}${BACKUP_GPG_PUBLIC_KEY_FILE:-}" ]; then
+  offbox_configured=1
+fi
+if [ "$offbox_requested" = "1" ] && [ "$offbox_configured" = "1" ]; then
+  say "Copying off-box -> Supabase Storage (S3), encrypted"
+  offbox_timeout="${BACKUP_S3_TIMEOUT_SECS-1200}"
+  if ! [[ "$offbox_timeout" =~ ^[0-9]{1,9}$ ]] || [ "$((10#$offbox_timeout))" -lt 1 ]; then
+    echo "ERROR: BACKUP_S3_TIMEOUT_SECS '$offbox_timeout' must be a whole number of seconds, 1 or more." >&2
+    offbox_failed=1
+  else
+    offbox_timeout="$((10#$offbox_timeout))"
+    offbox_rc=0
+    timeout --kill-after=30 "$offbox_timeout" \
+      bash "$script_dir/backup_offbox.sh" "$DEST" "$STAMP" "$APP_DIR" < /dev/null \
+      || offbox_rc=$?
+    if [ "$offbox_rc" = "124" ] || [ "$offbox_rc" = "137" ]; then
+      echo "ERROR: the off-box copy did not finish in ${offbox_timeout}s (BACKUP_S3_TIMEOUT_SECS)," >&2
+      echo "       so timeout stopped it. The night is NOT complete in the bucket." >&2
+    fi
+    if [ "$offbox_rc" != "0" ]; then
+      offbox_failed=1
+      warn "the off-box copy FAILED (exit $offbox_rc). The run exits 1 at the end."
+    fi
+  fi
+  # A KILL runs no trap, so the staging directory can stay. Remove it here.
+  rm -rf "$DEST/offbox.work" 2>/dev/null || true
+elif [ "$offbox_configured" = "1" ]; then
+  echo "    off-box copy: not in this run. Only acb-backup.service passes --offbox."
+elif [ -z "$BACKUP_REMOTE" ] && [ "$offbox_requested" = "1" ]; then
+  warn "No off-box copy is set up — this backup exists ONLY on this box."
+  warn "It protects against bad migrations and dropped tables, NOT against"
+  warn "losing the VPS. Set the BACKUP_S3_* keys in /etc/acb/backup-offbox.env"
+  warn "to close that gap (H-123)."
+elif [ -z "$BACKUP_REMOTE" ]; then
+  echo "    off-box copy: not in this run. Only acb-backup.service passes --offbox."
+fi
 
 # --- A scratch database that would not drop (rule 3) -------------------------
 # Checked LAST on purpose. The dump, the manifest, the Console dump and the
@@ -1002,11 +838,19 @@ if [ "$verify_ctr_failures" -gt 0 ]; then
   final_rc=1
 fi
 
+# --- A Customer Console dump that failed (H-98) ------------------------------
+# Checked LAST, for the reason above. The app dump and its off-box copy ran.
+if [ "$console_failed" -gt 0 ]; then
+  echo "ERROR: the Customer Console dump FAILED. See the warning above. The app" >&2
+  echo "       dump at $DEST is complete, and its off-box copy ran." >&2
+  final_rc=1
+fi
+
 # --- An off-box copy that failed (H-123) -------------------------------------
 # Checked LAST, for the reason above. The local dump and retention are done.
 if [ "$offbox_failed" -gt 0 ]; then
   echo "ERROR: the off-box copy to Supabase Storage FAILED. See the ERROR lines above." >&2
-  echo "       The dump at $DEST is complete, and local retention ran." >&2
+  echo "       The dump at $DEST is complete, and local retention ran first." >&2
   echo "       This night has NO good copy off the box." >&2
   final_rc=1
 fi

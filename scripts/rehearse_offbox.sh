@@ -14,9 +14,13 @@
 #      PRIVATE key and a passphrase, and both checksum lists verify.
 #   3. The restored dump gives back the SAME rows (an md5 over them), and the
 #      file-data tar gives back the same file.
-#   4. With BACKUP_S3_KEEP=2, three nights become two. A folder under the
-#      prefix that is not a night, and a night under another prefix, stay.
-#   5. With the key missing, the run fails, and no new night reaches the bucket.
+#   4. With BACKUP_S3_KEEP=2, three complete nights become two. An old
+#      incomplete night goes, and the newest incomplete night stays. A folder
+#      under the prefix that is not a night, and another prefix, stay.
+#   5. Without --offbox nothing goes up. A key file in mode 0644 is refused.
+#      With the key missing, the run fails. No night reaches the bucket.
+#
+# It must run as ROOT, because backup_offbox.sh refuses any other user.
 #
 # Usage:
 #   BACKUP_S3_ENDPOINT=http://minio:9000 BACKUP_S3_ACCESS_KEY_ID=... \
@@ -94,11 +98,17 @@ pass "made"
 mkdir -p "$work/app" "$work/backups" "$work/files/attachments"
 printf 'POSTGRES_USER=%s\n' "$PGUSER" > "$work/app/.env"
 printf 'resume of a candidate, rehearsal\n' > "$work/files/attachments/cv.txt"
+# The key file, as on the box: root:root 0600. This runs as root, so the file
+# is root's. backup_offbox.sh refuses it with any other owner or mode.
+[ "$(id -u)" = "0" ] || die "run this as root: the off-box copy refuses any other user"
+env | grep -E '^BACKUP_S3_' > "$work/backup-offbox.env"
+chmod 600 "$work/backup-offbox.env"
+export BACKUP_OFFBOX_ENV_FILE="$work/backup-offbox.env"
 backup() {
   APP_DIR="$work/app" BACKUP_DIR="$work/backups" \
   BACKUP_FILE_DIRS="$work/files/attachments $work/files/absent" \
   BACKUP_MEETING_BOT_VOLUME=offbox-rehearsal-no-such-volume \
-    bash "$here/backup_db.sh"
+    bash "$here/backup_db.sh" --offbox
 }
 
 say "Night 1: backup_db.sh with the off-box copy"
@@ -142,6 +152,11 @@ cmp -s "$work/files/attachments/cv.txt" "$work/restore${work}/files/attachments/
   || die "the file in files.tar differs from the source"
 pass "files.tar gives back the attachment"
 
+say "Two INCOMPLETE nights from before (no SHA256SUMS.zst.gpg)"
+offbox_rclone copyto "$work/keep.txt" "offbox:$BACKUP_S3_BUCKET/nightly/2026-01-04T000000Z/acb.dump.zst.gpg"
+offbox_rclone copyto "$work/keep.txt" "offbox:$BACKUP_S3_BUCKET/nightly/2026-01-05T000000Z/acb.dump.zst.gpg"
+pass "planted 2026-01-04 and 2026-01-05"
+
 say "Nights 2 and 3 with BACKUP_S3_KEEP=2"
 for n in 2 3; do
   sleep 1
@@ -150,13 +165,37 @@ for n in 2 3; do
 done
 grep -E "pruned|night\(s\) in the bucket" "$work/night3.log" | sed 's/^/    /'
 mapfile -t left < <(offbox_list_nights)
-[ "${#left[@]}" = 2 ] || die "expected 2 nights, got ${#left[@]}: ${left[*]}"
+mapfile -t left_complete < <(offbox_listing | offbox_complete_in)
+[ "${#left_complete[@]}" = 2 ] || die "expected 2 complete nights, got: ${left_complete[*]}"
 case " ${left[*]} " in *" $night1 "*) die "night 1 survived the retention" ;; esac
+case " ${left[*]} " in *" 2026-01-04T000000Z "*) die "an old incomplete night survived" ;; esac
+case " ${left[*]} " in *" 2026-01-05T000000Z "*) ;; *) die "the NEWEST incomplete night was deleted" ;; esac
+pass "2 complete nights kept, the old incomplete night went, the newest incomplete stayed"
 offbox_rclone lsf "offbox:$BACKUP_S3_BUCKET/nightly/not-a-stamp" | grep -qx keep.txt \
   || die "retention deleted a folder that is not a night"
 offbox_rclone lsf "offbox:$BACKUP_S3_BUCKET/other/2026-01-01T000000Z" | grep -qx keep.txt \
   || die "retention reached outside the prefix"
 pass "2 nights left, and nothing outside them was touched"
+
+say "Without --offbox, nothing is uploaded"
+before="$(offbox_list_nights | wc -l)"
+sleep 1
+BACKUP_GPG_RECIPIENT="$fpr" BACKUP_GPG_PUBLIC_KEY_FILE="$work/public.asc" \
+APP_DIR="$work/app" BACKUP_DIR="$work/backups" bash "$here/backup_db.sh" > "$work/noflag.log" 2>&1 \
+  || { cat "$work/noflag.log"; die "a run without --offbox failed"; }
+grep -q "Only acb-backup.service passes --offbox" "$work/noflag.log" || die "no 'not in this run' line"
+[ "$before" = "$(offbox_list_nights | wc -l)" ] || die "a run without --offbox uploaded"
+pass "no upload, $before nights before and after"
+
+say "A key file that is not 0600 is refused"
+chmod 644 "$work/backup-offbox.env"
+sleep 1
+if BACKUP_GPG_RECIPIENT="$fpr" BACKUP_GPG_PUBLIC_KEY_FILE="$work/public.asc" \
+   backup > "$work/mode.log" 2>&1; then die "a 0644 key file was accepted"; fi
+grep -q "It must be '0:0 600'" "$work/mode.log" || { cat "$work/mode.log"; die "no mode refusal"; }
+chmod 600 "$work/backup-offbox.env"
+[ "$before" = "$(offbox_list_nights | wc -l)" ] || die "a 0644 key file uploaded a night"
+pass "refused, and nothing uploaded"
 
 say "With no key, the run fails and uploads nothing"
 before="$(offbox_list_nights | wc -l)"
