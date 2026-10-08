@@ -200,7 +200,9 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/email",
-        label: "Email",
+        // "My Email" since 2026-10-08 (owner): the member's own mailbox,
+        // apart from any shared team inbox a later app may add.
+        label: "My Email",
         icon: "Mail",
         note: "AI-powered inbox",
         feature: "email",
@@ -211,11 +213,15 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         href: "/whatsapp",
-        label: "WhatsApp",
+        // "My WhatsApp", and `live`, since 2026-10-08 by owner decision (WS-20
+        // WA-C6). A member connects a WhatsApp Business account through Meta's
+        // Embedded Signup, the one official way in. `launch_surface.md` §2
+        // moved in the same change.
+        label: "My WhatsApp",
         icon: "MessageSquare",
         note: "AI-powered WhatsApp inbox",
         feature: "whatsapp",
-        launch: "preview", // WS-20 incomplete
+        launch: "live",
       },
       {
         href: "/notes",

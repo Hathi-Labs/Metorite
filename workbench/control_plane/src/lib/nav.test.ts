@@ -49,6 +49,9 @@ const LIVE_SET: ReadonlyArray<[string, string]> = [
   // taking the live set from TEN to ELEVEN. Email sits after `/people/me`
   // because `/dashboard` between them is still `preview`.
   ["personal", "/email"],
+  // Added 2026-10-08 by owner decision (WS-20 WA-C6), taking the live set from
+  // TEN to ELEVEN. "My WhatsApp" sits after "My Email", in nav order.
+  ["personal", "/whatsapp"],
   ["apps", "/projects"],
   // Added 2026-09-20 by owner decision, taking the live set from NINE to TEN.
   // The directory was held back while it could not load at all (PR #306) and
@@ -176,13 +179,14 @@ describe("preview panes are hidden, and the flag restores them (LS-1)", () => {
     // The §3.4 rule, as a test: holding the feature is NOT enough to reveal a
     // preview pane, and lacking it still hides a live one. If these two ever
     // agree, somebody has started hiding apps by revoking grants.
-    // The example is WhatsApp since 2026-10-02: Email went live (EM-T3b).
-    const withWhatsAppGrant = visibleSections(["whatsapp", "chat"], false, false);
-    expect(withWhatsAppGrant.flatMap((s) => s.items.map((p) => p.href))).not.toContain(
-      "/whatsapp",
+    // The example is Notes since 2026-10-08: WhatsApp went live (WA-C6), as
+    // Email did before it (EM-T3b).
+    const withNotesGrant = visibleSections(["notes", "chat"], false, false);
+    expect(withNotesGrant.flatMap((s) => s.items.map((p) => p.href))).not.toContain(
+      "/notes",
     );
 
-    const withoutChat = visibleSections(["whatsapp"], false, false);
+    const withoutChat = visibleSections(["notes"], false, false);
     expect(withoutChat.flatMap((s) => s.items.map((p) => p.href))).not.toContain(
       "/chat",
     );
