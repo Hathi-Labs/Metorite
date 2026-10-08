@@ -141,6 +141,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
+    # WS-44 NS-4b: the command bar's coordinator. It sends the member's words
+    # to the decision model and spends credits, so only the operator writes it
+    # (navigation_shell.md NS-4b).
+    "COMMAND_BAR_AI",
     # WS-43y1a: the fault hook of the data engine (exit, kill, sleep, grow).
     # Only its tests set it. A tenant that set it would break each verb.
     "DATA_ENGINE_FAULT",
