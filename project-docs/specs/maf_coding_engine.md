@@ -3048,7 +3048,7 @@ instead.
 **Gate.** AGENT-SAFE. It ships dark. The table is an expand step (R6). The
 production flip of `MAF_NATIVE_SESSIONS` is WS43-G13.
 
-**As built (2026-10-03).** It is off by default, behind
+**As built (2026-10-03, finished 2026-10-08).** It is off by default, behind
 `MAF_NATIVE_SESSIONS`.
 
 - **Migration 228** (`infra/postgres/228_maf_agent_session.sql`) creates the
@@ -3111,18 +3111,38 @@ production flip of `MAF_NATIVE_SESSIONS` is WS43-G13.
 8. **The sliding window.** §15.9.6 names no group count. The window keeps
    200 groups, near the text path's bound of 400 messages. The token budget
    is the bound that binds.
+9. **Only the actor's own thread** (review, 2026-10-08). A session loads and
+   saves only when the verified member of the run made the chat and no
+   participant row names another subject (§15.9.5). A room keeps the text
+   history of `main`. The reason: a session gives the model raw tool
+   results, and only the transcript can filter a turn for each reader.
+   This also stops a forged history of one member from reaching another
+   member's run.
+10. **The verified member.** `_verified_run_member()` reads `user` and
+   `member_verified` of the run binding, which come from the session's
+   member (H-73). A run with no verified member skips with `no_member`. A
+   claim in the request body never counts.
+11. **A fresh session takes only user and assistant turns** of the browser
+   history. A `system` or `tool` turn in a request body never goes into a
+   stored session.
+12. **A second lock.** The chat read, the stored read and the save's
+   `EXISTS` each name the bound organization. RLS is the first lock.
 
 **The outcome line.** Each load logs `native_session.load` with `outcome`,
 `agent`, `thread_id` and `reason`. A load that fails logs `no_row` with the
 reason `load_failed` or `restore_failed`, and the run uses the text history.
 A run that never loads logs `native_session.skip` with its reason.
 
-**Fence.** `tests/unit/test_native_session_persistence.py` has 60 cases now.
-Sixteen are R8 on the H3 phase-4 catalog, as the NOBYPASSRLS role
+**Fence.** `tests/unit/test_native_session_persistence.py` has 76 cases now.
+Nineteen are R8 on the H3 phase-4 catalog, as the NOBYPASSRLS role
 `acb_app_h3rls`. The probe of §15.9.7 runs through the real executor and the
 real fold. `test_rooms.py::test_no_chat_or_room_path_opens_an_unbound_session`
-scans the store. Nineteen mutations each turned the fence red, and the PR
-lists them.
+scans the store. The deploy never replays `generated/`, so in production the
+guarded block of migration 228 is the only lock on the table.
+`test_r8_the_migration_alone_forces_and_scopes_the_table` takes FORCE and the
+policy away, runs 228 again, and reads across tenants as the table owner. On
+2026-10-08, after the merge of `main`, 24 mutations each turned the fence
+red, and the PR lists them.
 
 **Known limits.**
 
@@ -3131,6 +3151,9 @@ lists them.
   the text history. The hit rate of the soak shows it.
 - Each load reads every text row of the thread for the digest. So a very long
   thread costs one read of its transcript on each turn.
+- A room gets no session, so a confirm turn in a room still loses the tool
+  output of the turn before, as on `main`. A safe room session needs the
+  model context filtered for each reader, as the transcript is.
 - The R8 suites build `<db>_h3rls` on the shared scratch server. Two sessions
   that run them at the same time drop the database of the other one. A
   private database for `TENANT_LADDER_DATABASE_URL` prevents it.
@@ -4640,6 +4663,21 @@ table. WS-43t2 adds it to the source scan of
     memory cache uses at `gateway/routes/agent.py:1987-2104`),
   - the instance key of a personal agent. A load with a different fingerprint drops the session. So tool
   output never reaches further than the room's intersection allows.
+- ⚠️ **As built (WS-43t2 review, 2026-10-08): a session loads only in the
+  actor's own thread.** The fingerprint alone did not hold. A stored session
+  holds raw tool results. The transcript filters each turn for each reader,
+  by the waterline of a `since_join` room and by the redaction of a turn made
+  with access the reader does not hold (`routes/chat.py` `_render_message`).
+  A session cannot filter the model context. The fingerprint also did not
+  see a member who joins through a `group:` subject. So the store loads and
+  saves a session only when two facts hold:
+  - the verified member of the run (the run binding, never the payload)
+    made the chat, and
+  - no participant row names another subject.
+
+  Any room logs `no_row` with the reason `shared_room`, and the run keeps the
+  text history of `main`. The fingerprint now also hashes the acting member
+  (v2). Decision 9 of WS-43t2 gives the reason.
 - **Deletes.** The foreign key of §15.9.2 removes the rows of a deleted chat,
   for every agent of that thread. A WS43-F20 case saves after the delete and
   finds no row.
