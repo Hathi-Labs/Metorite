@@ -856,8 +856,9 @@ rclone() {
   printf 'rclone %s\n' "$*" >> "$CALLS"
   local secret=unset
   if [ -n "${RCLONE_CONFIG_OFFBOX_SECRET_ACCESS_KEY:-}" ]; then secret=set; fi
-  printf 'rclone-env endpoint=%s secret=%s config=%s\n' \
-    "${RCLONE_CONFIG_OFFBOX_ENDPOINT:-}" "$secret" "${RCLONE_CONFIG:-}" >> "$CALLS"
+  printf 'rclone-env endpoint=%s secret=%s config=%s dry_run=%s\n' \
+    "${RCLONE_CONFIG_OFFBOX_ENDPOINT:-}" "$secret" "${RCLONE_CONFIG:-}" \
+    "${RCLONE_DRY_RUN:-}" >> "$CALLS"
   if [ -n "${STUB_UPLOAD_FAILS:-}" ]; then
     echo "ERROR : AccessDenied key=$RCLONE_CONFIG_OFFBOX_ACCESS_KEY_ID secret=$RCLONE_CONFIG_OFFBOX_SECRET_ACCESS_KEY" >&2
     return 1
@@ -1087,8 +1088,11 @@ def test_no_secret_reaches_argv_or_the_log() -> None:
     """The keys reach rclone through its ENVIRONMENT only. Neither key value is
     on any argv, in stdout, or in stderr, even when rclone prints them in an
     error. And a RCLONE_* value already in the env file cannot redirect the
-    copy: the script unsets them first."""
-    for setup in ("export RCLONE_CONFIG_OFFBOX_ENDPOINT=https://attacker.example\n",
+    copy: the script unsets them first. RCLONE_DRY_RUN is the name that
+    matters, because the script never sets it: inherited, it would turn every
+    upload into a silent no-op."""
+    for setup in ("export RCLONE_CONFIG_OFFBOX_ENDPOINT=https://attacker.example\n"
+                  "export RCLONE_DRY_RUN=true\n",
                   "export STUB_UPLOAD_FAILS=1\n"):
         r = _run_backup_offbox(_S3_ENV + _GPG_ENV + _DIRS_ENV, setup=setup)
         text = f"{r['out']}\n{r['err']}\n{r['calls']}"
@@ -1100,6 +1104,9 @@ def test_no_secret_reaches_argv_or_the_log() -> None:
             assert "secret=set" in ln, "the secret did not reach rclone through its env"
             assert "endpoint=https://ref.storage.supabase.co/storage/v1/s3" in ln, ln
             assert "config=/dev/null" in ln, "rclone may read a config file"
+            assert ln.endswith("dry_run="), (
+                "an inherited RCLONE_DRY_RUN reached rclone, so the upload is a no-op"
+            )
     assert "secret=***" in str(r["err"]), "the rclone error was not shown, redacted"
 
 
