@@ -964,10 +964,13 @@ deletes a `90-*` file.
   hold, for example `numpy>=2` against numpy 1.26. The loader does not
   install that line, because a second copy would shadow the venv in a child.
   The rest of the agent's deps install. The dep status is red, and it names
-  both versions. The loader writes no marker, so the next load checks again.
-  `install_dependency` refuses the same line with the same words.
+  both versions. The marker holds the conflict, so a warm load runs no uv and
+  still reports red. `install_dependency` refuses the same line with the same
+  words.
 - A dependency that the venv holds at an allowed version, or whose marker is
   false here, is not installed. An editable workspace member counts as held.
+  A line with an extra, such as `requests[socks]`, goes to uv, so the
+  packages of the extra install. The prune then removes the copy of the base.
 - A T2 package that needs an install script fails. esbuild fetches its
   binary in `postinstall`. Use the platform package (`@esbuild/linux-x64`)
   as a direct dependency, and check the build in acceptance 4.

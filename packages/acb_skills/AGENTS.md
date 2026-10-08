@@ -246,9 +246,12 @@ clone cache.
    `--target` does not see the venv. So `classify()` sorts each declared
    line before any uv call. The venv provides a line when its site dirs hold
    the name at a version that the specifier allows. An editable workspace
-   member counts. A line with a false marker is not installed either. A venv
-   package at another version is a conflict: the loader does not install it,
-   and the dep status is red.
+   member counts. A line with a false marker is not installed either.
+
+   A venv package at another version is a conflict: the loader does not
+   install it, and the dep status is red. The marker holds the conflict, so a
+   warm load runs no uv and still reports red. A line with an extra goes to
+   uv, so the packages of the extra install.
 
    When the venv provides all of them, no uv runs.
    `prune_venv_duplicates()` removes each copy of a venv package from

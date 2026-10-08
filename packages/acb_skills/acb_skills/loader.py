@@ -1159,7 +1159,8 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
     A declared dependency that the venv already provides at an allowed
     version (an editable workspace member too) is skipped before any uv call.
     A venv package at a version that the agent does not allow is a conflict:
-    it is not installed, the dep status is red, and no marker is written.
+    it is not installed, and the dep status is red on every load. The marker
+    holds the conflict, so a standing conflict runs no uv again.
     When the venv provides all of them, the loader runs no uv.
 
     Best-effort + idempotent: a SHA-256 of the deps to install, the target dir
@@ -1280,25 +1281,33 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
             return
         constraints = agent_site.prepare(uv)
 
-        # The hash holds the set to install, the target (spec Q3b) and the
-        # constraints digest, so a new venv state installs again. Fences:
-        # test_agent_deps_target.py (the hash tests).
+        # The hash holds the set to install, each conflict with its venv
+        # version, the target (spec Q3b) and the constraints digest. So a new
+        # venv state installs again, and a conflict added or resolved later
+        # changes the hash too. Fences: test_agent_deps_target.py (the hash
+        # tests).
         digest = hashlib.sha256(
             "\x00".join([
                 *req_v.to_install,
                 "--",
                 *py_v.to_install,
+                "--",
+                *conflicts,
                 f"target={agent_site.AGENT_SITE}",
                 f"constraints={constraints}",
             ]).encode("utf-8", "replace")
         ).hexdigest()
         try:
-            if (
-                not conflicts
-                and marker.is_file()
-                and marker.read_text(encoding="utf-8").strip() == digest
-            ):
-                return  # unchanged since the last successful install
+            if marker.is_file() and marker.read_text(encoding="utf-8").strip() == digest:
+                # Unchanged since the last good install: no uv (fix round 3,
+                # P2-d). A standing conflict still reports red on each load.
+                if conflicts:
+                    _write_dep_status(
+                        agent_dir, ok=False, error=conflict_text, needs_system=[],
+                        has_requirements=req.is_file(),
+                        pyproject_dep_count=len(pyproject_deps),
+                    )
+                return
         except Exception:  # noqa: BLE001
             pass
 
@@ -1321,7 +1330,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
         args += py_v.to_install
         cmds = [agent_site.install_command(uv, args, only_binary=only_binary)]
 
-        ok = not conflicts
+        installed = True
         errors: list[str] = [conflict_text] if conflicts else []
         for cmd in cmds:
             try:
@@ -1330,7 +1339,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
                     env=child_env(),
                 )
                 if result.returncode != 0:
-                    ok = False
+                    installed = False
                     err = (result.stderr or result.stdout or "")
                     errors.append(err)
                     _log.warning(
@@ -1340,7 +1349,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
                         error=err[-700:],
                     )
             except Exception as exc:  # noqa: BLE001
-                ok = False
+                installed = False
                 errors.append(str(exc))
                 _log.warning(
                     "loader.deps_install_error",
@@ -1351,6 +1360,7 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
 
         # Persist a machine-readable status so the agents page can surface
         # unmet dependencies (and any apt/system packages the build needs).
+        ok = installed and not conflicts
         joined_err = "\n".join(errors)
         needs_system = [] if ok else _detect_system_packages(joined_err)
         _write_dep_status(
@@ -1362,11 +1372,14 @@ def _install_agent_deps(agent_dir: Path, settings: Any) -> None:
             pyproject_dep_count=len(pyproject_deps),
         )
 
-        if ok:
+        if installed:
+            # The marker goes in when uv succeeded, even with a conflict, so
+            # the next load runs no uv. The conflict is in the digest.
             try:
                 marker.write_text(digest, encoding="utf-8")
             except Exception:  # noqa: BLE001
                 pass
+        if ok:
             _log.info(
                 "loader.deps_installed",
                 agent=agent_dir.name,

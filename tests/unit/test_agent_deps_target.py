@@ -856,8 +856,9 @@ def test_a_prerelease_counts_only_for_a_prerelease_venv(monkeypatch: pytest.Monk
 
 def test_an_unsatisfied_specifier_is_a_conflict(site: SimpleNamespace, tmp_path: Path) -> None:
     """idna>=99 against the venv's idna. Not installed (a copy would shadow the
-    venv in a child), the dep status is red and names both versions, no
-    marker. The agent's other deps still install."""
+    venv in a child), the dep status is red and names both versions. The
+    agent's other deps still install. Fix round 3 (P2-d): the marker goes in,
+    with the conflict in its digest, so the next load runs no uv."""
     from acb_skills.loader import _install_agent_deps, read_dep_status
 
     agent = _agent(tmp_path, req=f"idna>=99\n{FAKE}\n")
@@ -867,7 +868,7 @@ def test_an_unsatisfied_specifier_is_a_conflict(site: SimpleNamespace, tmp_path:
     status = read_dep_status(agent)
     assert status is not None and status["ok"] is False
     assert f"the venv holds idna {site.mod.venv_version('idna')}, the agent asks for idna>=99" in status["error"]
-    assert not (agent / ".git" / "acb-deps-hash").exists()
+    assert (agent / ".git" / "acb-deps-hash").is_file()
 
 
 def test_a_conflict_alone_runs_no_uv(site: SimpleNamespace, tmp_path: Path) -> None:
@@ -950,3 +951,73 @@ def test_a_conflict_added_later_turns_the_status_red(site: SimpleNamespace, tmp_
     _install_agent_deps(agent, _settings())
     status = read_dep_status(agent)
     assert status is not None and status["ok"] is False and "idna>=99" in status["error"]
+
+
+# ── Fix round 3, P2-c: a line with extras goes to uv ─────────────────────
+
+
+def test_a_line_with_extras_is_installed(site: SimpleNamespace, tmp_path: Path) -> None:
+    """The venv holds requests, not PySocks. requests[socks] must reach uv, so
+    the packages of the extra install. The prune drops the base copy later."""
+    import importlib.metadata
+
+    from acb_skills import agent_site
+
+    assert agent_site.venv_version("requests") is not None
+    with pytest.raises(importlib.metadata.PackageNotFoundError):
+        importlib.metadata.version("PySocks")
+    v = agent_site.classify(["requests[socks]", "requests"])
+    assert v.to_install == ["requests[socks]"]
+    assert [line for line, _ in v.provided] == ["requests"]
+
+
+def test_a_line_with_extras_outside_the_specifier_is_a_conflict() -> None:
+    from acb_skills import agent_site
+
+    v = agent_site.classify(["requests[socks]>=99"])
+    assert v.to_install == [] and v.provided == []
+    assert v.conflicts and "requests[socks]>=99" in v.conflicts[0]
+
+
+# ── Fix round 3, P2-d: a standing conflict runs no uv on a warm load ──────
+
+
+def test_a_standing_conflict_runs_no_uv_and_stays_red(site: SimpleNamespace, tmp_path: Path) -> None:
+    from acb_skills.loader import _install_agent_deps, read_dep_status
+
+    agent = _agent(tmp_path, req=f"idna>=99\n{FAKE}\n")
+    _install_agent_deps(agent, _settings())
+    assert len(_installs(site.calls)) == 1
+    site.calls.clear()
+    (agent / ".git" / "acb-deps-status.json").unlink()
+    _install_agent_deps(agent, _settings())
+    assert _installs(site.calls) == [], "the same conflict must not run uv again"
+    status = read_dep_status(agent)
+    assert status is not None and status["ok"] is False, "the warm path reports red"
+    assert "idna>=99" in status["error"]
+
+
+def test_a_venv_bump_that_resolves_the_conflict_goes_green(
+    site: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from acb_skills.loader import _install_agent_deps, read_dep_status
+
+    agent = _agent(tmp_path, req=f"idna>=99\n{FAKE}\n")
+    _install_agent_deps(agent, _settings())
+    site.calls.clear()
+    real = site.mod.venv_version
+    monkeypatch.setattr(site.mod, "venv_version", lambda n: "99.1" if n == "idna" else real(n))
+    _install_agent_deps(agent, _settings())
+    assert len(_installs(site.calls)) == 1, "a resolved conflict changes the digest: install again"
+    status = read_dep_status(agent)
+    assert status is not None and status["ok"] is True
+
+
+# ── Fix round 3: a comment line ends a continuation ──────────────────────
+
+
+def test_a_comment_ending_in_a_backslash_does_not_swallow_a_line() -> None:
+    from acb_skills import agent_site
+
+    text = "a==1 \\\n  --hash=sha256:x \\\n# a note \\\nb==2\nc==3\n"
+    assert agent_site.requirement_lines(text) == ["a==1 --hash=sha256:x", "b==2", "c==3"]

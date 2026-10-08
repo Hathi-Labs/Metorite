@@ -230,6 +230,14 @@ def requirement_lines(text: str) -> list[str]:
     buf = ""
     for raw in text.splitlines():
         line = raw.rstrip()
+        if line.lstrip().startswith("#"):
+            # A comment line ends a continuation, as pip reads it, even when
+            # it ends in a backslash (fix round 3).
+            logical = buf.split(" #", 1)[0].strip()
+            buf = ""
+            if logical:
+                out.append(" ".join(logical.split()))
+            continue
         if line.endswith("\\"):
             buf += line[:-1] + " "
             continue
@@ -306,7 +314,7 @@ class Verdict:
 
     * ``to_install``: the lines that go to uv, option lines included.
     * ``provided``: ``(line, venv version)``. The venv holds the name at a
-      version that the specifier allows.
+      version that the specifier allows, and the line names no extra.
     * ``not_here``: lines whose marker is false for this interpreter.
     * ``conflicts``: one sentence for each line that asks for a version of a
       venv package that the venv does not hold. Such a line is NOT installed:
@@ -353,19 +361,24 @@ def classify(lines: list[str]) -> Verdict:
         if version is None:
             v.to_install.append(line)
             continue
-        if req.url or not req.specifier:
-            v.provided.append((line, version))
-            continue
-        try:
-            pre = Version(version).is_prerelease
-        except InvalidVersion:
-            pre = False
-        if req.specifier.contains(version, prereleases=pre):
-            v.provided.append((line, version))
-        else:
+        allowed = True
+        if req.specifier and not req.url:
+            try:
+                pre = Version(version).is_prerelease
+            except InvalidVersion:
+                pre = False
+            allowed = req.specifier.contains(version, prereleases=pre)
+        if not allowed:
             v.conflicts.append(
                 f"the venv holds {req.name} {version}, the agent asks for {req}"
             )
+        elif req.extras:
+            # The venv holds the base, but maybe not the packages of the extra
+            # (fix round 3, P2-c). uv installs them. The prune then removes
+            # the copy of the base and keeps the packages of the extra.
+            v.to_install.append(line)
+        else:
+            v.provided.append((line, version))
     return v
 
 
