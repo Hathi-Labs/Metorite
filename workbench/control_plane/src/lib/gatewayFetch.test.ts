@@ -783,3 +783,33 @@ describe("rule 10 — a string body goes out as JSON", () => {
     expect(withJsonContentType(get)).toBe(get);
   });
 });
+
+describe("the path guard (gatewayPath.ts, layer 2)", () => {
+  it("answers 400 for a path that escapes, and never calls the gateway", async () => {
+    const fake = vi.fn(async () => new Response("{}", { status: 200 }));
+    const lines: string[] = [];
+    for (const url of [
+      "http://127.0.0.1:8080/chat/sessions/../../v1/chat/completions?/messages",
+      "http://127.0.0.1:8080/projects/.\t./internal/drain",
+      "http://127.0.0.1:8080/projects/%2e\n%2e/internal/drain",
+    ]) {
+      const res = await gatewayFetch(url, { method: "POST", body: "{}" }, {
+        ...FAST, fetchImpl: fake as unknown as typeof fetch, log: (l) => lines.push(l),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(fake).not.toHaveBeenCalled();
+    expect(lines.every((l) => l.startsWith("[gateway] refused:"))).toBe(true);
+  });
+
+  it("lets an ordinary path through, dots in the query too", async () => {
+    const fake = vi.fn(async () => new Response("{}", { status: 200 }));
+    const res = await gatewayFetch(
+      "http://127.0.0.1:8080/memory/a.b/file.v2.pdf?next=/../x",
+      {},
+      { ...FAST, fetchImpl: fake as unknown as typeof fetch, log: () => {} },
+    );
+    expect(res.status).toBe(200);
+    expect(fake).toHaveBeenCalledOnce();
+  });
+});

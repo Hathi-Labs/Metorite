@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from acb_auth import UserContext
+from acb_common import get_settings
+from acb_common.child_env import child_env
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from gateway.routes.apps._common import (
@@ -216,8 +218,12 @@ async def _run_build_t2(workspace: Path, script: Path) -> tuple[bool, str]:
     ``output`` is stdout on success, stderr on failure. Never raises: a
     timeout or a missing ``node`` binary is reported the same as any other
     build failure."""
-    env = dict(os.environ)
-    env["CUSTOM_APPS_T2_VENDOR_DIR"] = str(t2_vendor_dir())
+    # build_t2.mjs reads these two names (lines 75-77) and nothing else of the
+    # gateway env (WS-49 BH-1).
+    env = child_env(extra={
+        "CUSTOM_APPS_T2_VENDOR_DIR": str(t2_vendor_dir()),
+        "AGENTS_CLONE_DIR": get_settings().agents_clone_dir or None,
+    })
     try:
         proc = await asyncio.create_subprocess_exec(
             "node", str(script),

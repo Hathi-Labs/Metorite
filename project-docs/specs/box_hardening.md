@@ -1,9 +1,15 @@
 # Box hardening — an app compromise must not become root
 
-**Status: ACTIVE, specified 2026-10-08, nothing built.** Board row
+**Status: ACTIVE, specified 2026-10-08, built in part. BH-1 BUILT, not
+merged** (branch `sec-bh1-child-env`, fix round 1 of its review on
+2026-10-08). Board row
 **WS-49**. The owner ruled on 2026-10-08 to close this gap first, before the
 data of the beta customers arrives. This spec owns H-270 and H-271 in
 `HANDOFF.md`.
+
+**BH-2 narrowed part BUILT 2026-10-08 on `sec-bh2a-probe-rollback`:** probe,
+rollback script and conf, BH-F3 part 1. The other-unit drop-ins land with
+BH-7. `50-hardening.conf`, the staging and the strict check wait.
 
 **Fix round 1, 2026-10-08.** The spec audit at `dc1e80bc5` returned
 GO-NARROWED. This round applies its fixes E1 to E7 and re-specifies BH-2.
@@ -300,11 +306,24 @@ and what BH-1 does with it.
 | `gateway/main.py:134` | `_CC` (alias, line 133) | yes, to list models | `env=copilot_env()` |
 | `gateway/main.py:1915` | `CopilotClient` (line 1914) | yes, to list models | `env=copilot_env()` |
 | `orchestrator/executor.py:5393` | `_CopilotClient` (alias, line 5351) | yes, for a repo agent with no client | `env=copilot_env()` |
-| `orchestrator/mutation_runner.py:114` | `CopilotClient` | yes, inside the mutation container | fenced: `env=copilot_env()`. The container env holds the gateway URL and key, and the CLI shell needs neither |
-| `agent_framework_github_copilot/_agent.py:772` | in the wrapper | yes, when no client is set | never runs: `MetoriteCopilotAgent.start` raises with no token |
+| `orchestrator/mutation_runner.py:114` and `:171` | `CopilotClient`, `subprocess.run` | yes, inside the mutation container | `env=child_env()`, the file's OWN literal allowlist (a BH-D1 exception). The image holds only `github-copilot-sdk`, so it cannot import `acb_common`. The list holds no `GATEWAY_API_KEY` and no `COPILOT_GITHUB_TOKEN`, and the SDK gets the token as `github_token` |
+| `agent_framework_github_copilot/_agent.py:772` | in the wrapper | yes, when no client is set | replaced: a guard on the CLASS builds the client with `copilot_env()` (BH-D3) |
 
 Two of the sites import the class under another name. So the fence must
 resolve import aliases, or it misses them.
+
+**The upstream start is on many paths (review of BH-1, P0).** A plain
+`GitHubCopilotAgent`, as `apps/agents/*/agents.py` builds it, reaches
+`_agent.py:772` from the batch run `_run_with_maf_agent` (`POST /agent/run`,
+workflows, the email consult, projects dispatch and the self-anneal
+retries) and from the sub-agent block of `_run_sub_agent_streaming`
+(`call_agent`). One guard on the class covers all of them, and any path
+that a later change adds (BH-D3).
+
+**The `gh` names.** `gh auth status` at `integrations.py:2305` gets
+`GH_TOKEN` and `GITHUB_TOKEN` by value, because `gh` reads both. The two
+`gh` calls of the connect route at `:2348` and `:2373` get the base list
+only. They import the token that `gh` holds in its own config.
 
 **Stdio MCP servers (fix E4).** `orchestrator/_tool_injection.py:1823-1836`
 hands a stdio MCP server to the CLI with its own `env` dict from the
@@ -503,18 +522,34 @@ of BH-8.
 (`pdf_render.CHILD_ENV_KEYS`, `code_tools._ENV_ALLOW`, `loader._GIT_ENV`)
 become callers of it. A second allowlist is a defect.
 
+One exception exists. `orchestrator/mutation_runner.py` runs in the
+mutation container, and its image cannot import `acb_common`. It keeps a
+LITERAL allowlist of the base names, and it still passes `env=` at each
+spawn. The fence names the file and its one function (`LOCAL_ALLOWLISTS`).
+
 **BH-D2. The base allowlist is §2.2's list.** A caller adds a name only by
 value, with `extra={"NAME": value}`, at the call site, in code that a
-reviewer reads. `child_env()` never copies a name by pattern. Some names
-hold `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `CREDENTIAL` or `DSN`. Such a
-name enters only through `extra`, and only from a named list in the module.
+reviewer reads. `child_env()` never copies a name by pattern. Each base
+name is a literal, `LC_*`, `XDG_*` and `SSL_CERT_*` included. A name of a
+secret shape (`SECRET_SHAPED`: TOKEN, SECRET, KEY, PASS, PWD, PRIVATE,
+COOKIE, JWT, BEARER, CRED, DSN, AUTH) never sits on a list of the module,
+and the module refuses to import if one does. Such a name enters only
+through `extra`, at a call site, by value.
 
 **BH-D3. The Copilot CLI gets `copilot_env()`.** That is `child_env()` with
 no token name, and the SDK adds `COPILOT_SDK_AUTH_TOKEN` itself. Every
 `CopilotClient(` in our tree passes `env=copilot_env()`.
 
-`MetoriteCopilotAgent.start` always builds the client, so the wrapper never
-builds one with no env. With no token, it raises.
+The upstream `GitHubCopilotAgent.start` builds a client with no env. So
+`orchestrator/copilot_agent.py` replaces it on the CLASS with a guard, and
+the import of the `orchestrator` package installs that guard. The guard
+and `MetoriteCopilotAgent.start` both build the client with
+`child_env_client`, which passes `env=copilot_env()`. A client that a
+caller set first is kept. With no token, the client gets no
+`github_token`, so the CLI keeps its logged-in user. It does not refuse.
+`copilot_agent.GUARDED_WRAPPER_VERSIONS` lists the wrapper versions the
+tests cover. Any other version refuses every Copilot start, and the
+import logs it.
 
 **BH-D4. The gateway runs in a systemd sandbox.** NoNewPrivileges by itself
 is not enough (§0). The gateway gets the full set of §5 BH-2, and its write
@@ -574,14 +609,14 @@ covers the act until 2026-11-30, or OWNER-GATE.
   They are `orchestrator/sandbox/data_engine.py` and `meeting_bot/`.
 - `orchestrator/mutation_runner.py` runs in the mutation container, and the
   fence covers it anyway (fix E1). Its `subprocess.run` at line 171 and its
-  `CopilotClient` at line 114 pass `env=`. The fence scans
-  `apps/services/orchestrator/` as a whole for that reason.
+  `CopilotClient` at line 114 pass `env=` from the file's own literal
+  allowlist (the BH-D1 exception).
 - Pass `env=copilot_env()` at every spawning site of the §2.2 client table:
   `copilot_agent.py:226`, `main.py:134`, `main.py:1915`, `executor.py:5393`
   and `mutation_runner.py:114`. `copilot_agent.py:201` is exempt, because it
   connects to a URI and spawns nothing.
-- Make `MetoriteCopilotAgent.start` refuse when no token is set, so that
-  `_agent.py:772` never runs.
+- Replace the upstream start on the class with a guard, so that
+  `_agent.py:772` never builds a client with no env (BH-D3).
 - Move `pdf_render`, `code_tools` and `loader` onto the helper.
 
 **Acceptance.**
@@ -614,18 +649,23 @@ runs, so start the watch FIRST. It prints names only, never values.
 ssh metorite 'for i in $(seq 1 600); do for p in $(pgrep -u acb -f "github-copilot-sdk/cli"); do tr "\0" "\n" < /proc/$p/environ | cut -d= -f1 | sort | tr "\n" " "; echo; done; sleep 0.2; done | sort -u'
 ```
 
-Then start one of these two, from an owner session:
+Then start each of these three, from an owner session, with the watch
+running. Each one starts the CLI on a different code path.
 
-- **The agent run.** `POST /agent/run` (`routes/agent.py:2758`) with
+- **The batch path.** `POST /agent/run` (`routes/agent.py:2762`) with
   `{"agent": "task-manager", "payload": {"message": "list my open tasks"}}`.
-  The executor reads `payload.message` (`executor.py:5977`).
-  `agent-task-manager` is a `GitHubCopilotAgent`
-  (`apps/agents/agent-task-manager/agents.py:126-140`). Its run goes through
-  `executor.py:5393` or `copilot_agent.py:226`. Confirm at dispatch that the
-  agent is registered on the box.
+  The run goes through `run_agent` and `_run_with_maf_agent`, which starts
+  the plain `GitHubCopilotAgent` of `apps/agents/agent-task-manager/agents.py`
+  through the class guard. Confirm at dispatch that the agent is
+  registered on the box.
+- **The stream path.** `POST /agent/run/stream` (`routes/agent.py:2037`)
+  with the same body. The run goes through `run_agent_stream`, Tier 1.5,
+  and `MetoriteCopilotAgent.start`. The Agent Registry chat in the app uses
+  this route too.
 - **The model list.** `GET /copilot/models` (`gateway/main.py`, the
-  `copilot_models` route). It spawns the CLI at `main.py:1915` for about one
-  second. It caches for 5 minutes, so call it again after the cache expires.
+  `copilot_models` route). It spawns the CLI through
+  `_list_copilot_models` for about one second. It caches for 5 minutes,
+  so call it again after the cache expires.
 
 The name list must hold no name from `.env` except the allowlist.
 
@@ -671,12 +711,10 @@ acceptance 1 and 2.
 - `git` over HTTPS needs no env token (§2.2). If a clone uses a credential
   helper that reads `GH_TOKEN`, a push fails. Watch `git push` in the journal
   for one day.
-- **`gh auth status` reads `GH_TOKEN` (fix E4).** `integrations.py:2304`,
-  `2346` and `2370` run `gh`. With no `GH_TOKEN` or `GITHUB_TOKEN` in the env,
-  `gh` reports "not logged in". `gh` is not installed on the box, so the
-  route already reports that there. On a dev box with `gh`, the Integrations
-  page changes. Pass the token by value with `extra=` at those three sites,
-  if the page must keep the answer.
+- **`gh auth status` reads `GH_TOKEN` (fix E4).** `integrations.py:2305`
+  passes `GH_TOKEN` and `GITHUB_TOKEN` by value with `extra=`. The two
+  calls of the connect route pass the base list only (§2.2). `gh` is not
+  installed on the box.
 - **The T2 build reads two path names (fix E4).** `build_t2.mjs:75-77` reads
   `CUSTOM_APPS_T2_VENDOR_DIR` and `AGENTS_CLONE_DIR`. `files.py:215-222`
   passes the first by value today. Pass both by value with `extra=` from the
@@ -932,6 +970,10 @@ the owner 2026-10-08 for WS-49.
 **Re-specified in fix rounds 1 and 2.** The second audit returned
 GO-NARROWED. This version applies W1 to W3 and S1 to S4.
 
+**BH-2 narrowed part BUILT 2026-10-08 on `sec-bh2a-probe-rollback`:** probe,
+rollback script and conf, BH-F3 part 1. The other-unit drop-ins land with
+BH-7. `50-hardening.conf`, the staging and the strict check wait.
+
 **The GO-NARROWED split.**
 
 - **These may start now:**
@@ -1142,15 +1184,16 @@ parts (B2-5).
 
 **Part 1, in the narrowed PR:**
 
-- Every `User=acb` unit in `deploy/hostinger/`, except `acb-pull.service`,
-  has `NoNewPrivileges=yes` in the unit or in its drop-in.
 - `acb-gateway-90-bh2-off.conf` holds the six reset lines:
   `ReadWritePaths=`, `InaccessiblePaths=`, `ProtectSystem=no`,
   `ProtectHome=no`, `NoNewPrivileges=no` and `PrivateTmp=no`.
 - `scripts/box_hardening_probe.sh` exists, and it runs each probe of
   acceptance 2.
 - The drop-ins of the other units merge only after the BH-7 installer
-  merges, because nothing installs a drop-in before it.
+  merges, because nothing installs a drop-in before it. So they land with
+  BH-7, and so does one check of part 1. That check reads each `User=acb`
+  unit in `deploy/hostinger/`, except `acb-pull.service`. Each one has
+  `NoNewPrivileges=yes` in the unit or in its drop-in.
 
 **Part 2, in the full slice:**
 
@@ -1187,6 +1230,31 @@ parts (B2-5).
 **Rollback.** One command: `sudo bash /opt/acb/app/scripts/bh2_rollback.sh on`.
 It needs no edit on the box, and the next deploy passes for 72 hours. After
 the fix, run `sudo bash /opt/acb/app/scripts/bh2_rollback.sh off`.
+
+**Deferred from the narrowed part.** Each item goes with the full slice.
+
+- **The `acb-operator-console.service` unit (item 3).** Its unit is only on
+  the box. The BO-23 unit loop (`vps_apply.sh:1560`) installs each
+  `deploy/hostinger/*.service` file. So a copy in the repo changes the live
+  unit on the next deploy. Read the box's unit first, then add the copy with
+  the three lines.
+- **The deploy lock in `bh2_rollback.sh`.** The script does not take
+  `/opt/acb/acb-deploy.lock`. So an `on` or `off` during a deploy can race the
+  gateway restart of that deploy.
+- **A live check of `CapabilityBoundingSet=~`.** The rollback conf uses it to
+  give every capability back. The systemd source reads `~` with an empty
+  list as "all", and `systemd-analyze verify` (systemd 255) accepts it. No
+  `systemctl show` on the box has confirmed the value. Run
+  `systemctl show acb-gateway -p CapabilityBoundingSet` after the first `on`.
+
+**Two probe checks can pass on a box with no sandbox.** The overall verdict
+stays right, because the property checks of part 1 of the probe fail there.
+
+- `etc-acb-hidden` passes when `/etc/acb` is absent, or when its mode is
+  0700. Only `hidden-etc-acb`, a property check, proves the sandbox.
+- `p5-touch-t2-vendor-fails` reports SKIP when `/opt/acb/t2-vendor` is
+  absent, which is the case before BH-7. Until BH-7, the vendor dir is
+  `~/.acb/agents/vendor/t2-react`, and the probe does not check that path.
 
 **The gate.** AGENT-SAFE to build. The staging on the box, the deploy and the
 drop-ins are §3a `deploy` and `deploy-write`. WS43-G12 approved by the owner
