@@ -1750,10 +1750,45 @@ def _git_dir_for(agent_dir: Path, effective_dir: str, store_instance: str) -> st
     A shared agent's tenant dir holds no code and is not a checkout, so those
     helpers keep the clone, as before H-201 part 3. Every other run keeps its
     working dir, so a personal agent is unchanged.
+
+    WS-43e (§7.5 rule A): it returns ``""`` when that dir is a sandbox dir, a
+    dir that a container mounts now or mounted. The helpers then skip the run,
+    and the self-anneal and the self-mutation get no dir (:func:`_repair_dir`).
     """
     from acb_skills.agent_paths import is_tenant_instance
 
-    return str(agent_dir) if is_tenant_instance(store_instance) else effective_dir
+    chosen = str(agent_dir) if is_tenant_instance(store_instance) else effective_dir
+    return chosen if _host_git_ok(chosen) else ""
+
+
+def _repair_dir(git_dir: str | None, effective_dir: str | None) -> str | None:
+    """The dir of the self-anneal and the self-mutation, or ``None``.
+
+    It is the git dir, else the working dir, as before. WS-43e (§7.5 rule A):
+    it is ``None`` when that dir is a sandbox dir. The self-anneal rewrites
+    files there with plain path calls, and the self-mutation runs host git
+    there, so neither may touch a dir that a container could write.
+    """
+    chosen = git_dir or effective_dir
+    return chosen if chosen and _host_git_ok(chosen) else None
+
+
+def _host_git_ok(path: str | os.PathLike[str] | None) -> bool:
+    """True when host git may run in *path* (§7.5 rule A, WS-43e).
+
+    Every host git site of this module asks it first. It is
+    ``sandbox_broker.host_git_allowed``: a sandbox dir answers ``False``, and
+    so does an empty path. Fence WS43-F13.
+    """
+    if not path:
+        return False
+    from orchestrator.sandbox_broker import host_git_allowed
+
+    try:
+        return host_git_allowed(path)
+    except Exception as exc:  # a run must never fail, or hide its own error, here
+        _log.warning("executor.host_git_check_failed", error=str(exc)[:300])
+        return False
 
 
 async def _maybe_sandbox_session_workspace(
@@ -1961,7 +1996,12 @@ from orchestrator._model_resolution import (
     _is_gateway_model,
 )
 async def _get_current_head(agent_dir: str) -> str:
-    """Return the current HEAD SHA of *agent_dir*, or '' on error."""
+    """Return the current HEAD SHA of *agent_dir*, or '' on error.
+
+    It returns '' for a sandbox dir, with no host git (WS-43e, §7.5 rule A).
+    """
+    if not _host_git_ok(agent_dir):
+        return ""
     try:
         proc = await asyncio.create_subprocess_exec(
             "git", "rev-parse", "HEAD",
@@ -1982,7 +2022,11 @@ async def _commit_on_remote(agent_dir: str, commit_sha: str) -> bool:
     so ``git branch -r --contains <sha>`` lists a remote ref when the commit was
     pushed. Used to auto-approve a commit the user told the agent to push from
     chat (it lands on origin, so it needs no separate Control-Plane approval).
+
+    It answers ``False`` for a sandbox dir, with no host git (WS-43e).
     """
+    if not _host_git_ok(agent_dir):
+        return False
     try:
         proc = await asyncio.create_subprocess_exec(
             "git", "branch", "-r", "--contains", commit_sha,
@@ -2012,7 +2056,13 @@ async def _install_push_guard(agent_dir: str) -> None:
 
     Non-fatal — if any hook write fails, execution continues; the post-run
     commit scan (including catch-up) still catches new commits.
+
+    It writes nothing for a sandbox dir (WS-43e, §7.5 rule A). A hook there
+    would sit in a ``.git`` that a container could write, and an empty dir
+    would put the hooks in the gateway's own working dir.
     """
+    if not _host_git_ok(agent_dir):
+        return
     try:
         hooks_dir = Path(agent_dir) / ".git" / "hooks"
         if not hooks_dir.is_dir():
@@ -2079,8 +2129,11 @@ async def _detect_agent_commits(
     do not commit simply produce empty scans.
 
     Non-fatal — any subprocess or DB error is logged and swallowed.
+
+    It scans nothing in a sandbox dir (WS-43e, §7.5 rule A). A container could
+    have written its ``.git``, so host git there could run a planted hook.
     """
-    if not agent_dir:
+    if not _host_git_ok(agent_dir):
         return
 
     # Resolve the pending_commit session opener ONCE, HERE — on the event-loop
@@ -3158,7 +3211,7 @@ async def _run_agent_inner(
             agent_name=agent_name,
             run_id=run_id,
             error=exc,
-            agent_dir=_git_dir or _effective_agent_dir,
+            agent_dir=_repair_dir(_git_dir, _effective_agent_dir),
             incompatibility=True,
         )
         pr_url = mutation_result.pr_url if mutation_result else None
@@ -3190,7 +3243,7 @@ async def _run_agent_inner(
             run_id=run_id,
             thread_id=thread_id,
             event_payload=event_payload,
-            agent_dir=_git_dir or _effective_agent_dir,
+            agent_dir=_repair_dir(_git_dir, _effective_agent_dir),
             error=exc,
             # H-236: every retry injects with THIS run's answer.
             no_egress=_no_egress,
@@ -3208,7 +3261,7 @@ async def _run_agent_inner(
             agent_name=agent_name,
             run_id=run_id,
             error=exc,
-            agent_dir=_git_dir or _effective_agent_dir,  # the clone, for an authenticated push
+            agent_dir=_repair_dir(_git_dir, _effective_agent_dir),  # the clone, for an authenticated push
         )
         pr_url = mutation_result.pr_url if mutation_result else None
 

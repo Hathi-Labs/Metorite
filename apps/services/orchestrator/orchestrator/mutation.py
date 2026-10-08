@@ -60,6 +60,23 @@ _MUTATION_ATTEMPTS_MAX_KEYS = 10_000  # crude unbounded-growth guard (rare path)
 ROUTER_HEADERS_ENV = "MUTATION_ROUTER_HEADERS"
 
 
+def _host_git_ok(agent_dir: str | None) -> bool:
+    """True when host git may run in *agent_dir* (§7.5 rule A, WS-43e).
+
+    ``sandbox_broker.host_git_allowed``. A dir that a coding sandbox mounts
+    now, or mounted, answers ``False``: a container could have written its
+    ``.git/config`` or a hook. Each host git site of this module asks it
+    first. Fence WS43-F13, ``tests/unit/test_no_host_git_on_sandbox_dir.py``.
+    """
+    from orchestrator.sandbox_broker import host_git_allowed
+
+    try:
+        return host_git_allowed(agent_dir)
+    except Exception as exc:  # fail closed, and never raise into a run
+        _log.warning("mutation.host_git_check_failed", error=str(exc)[:300])
+        return False
+
+
 def _router_headers() -> dict[str, str]:
     """The ``X-CC-*`` headers of the run that failed, for the sandbox (H-152).
 
@@ -189,6 +206,8 @@ async def _auto_push_commit(agent_dir: str, commit_sha: str) -> bool:
     """
     import asyncio  # noqa: PLC0415
 
+    if not _host_git_ok(agent_dir):
+        return False
     try:
         proc = await asyncio.create_subprocess_exec(
             "git", "push", "origin", "HEAD",
@@ -362,6 +381,16 @@ async def attempt_self_mutation(
     Returns:
         A :class:`MutationResult` describing what happened.
     """
+    # WS-43e (§7.5 rule A): a dir that a coding sandbox could write gets no
+    # self-mutation, and the refusal costs the run no attempt.
+    if agent_dir and not _host_git_ok(agent_dir):
+        return MutationResult(
+            agent_name=agent_name,
+            run_id=run_id,
+            attempted=False,
+            skipped_reason="the agent dir is a sandbox dir, so host git does not run there",
+        )
+
     # An at-the-limit run is refused by a pure in-memory peek BEFORE anything
     # else — no database round-trip, no attempt consumed, and the refusal
     # reason names the limit rather than whatever the first-party gate would
@@ -732,8 +761,12 @@ async def _stash_pull_before_mutation(
     rebase instead of reset --hard.
 
     Non-fatal: if the pull fails, the sandbox runs on the current clone as-is.
+    It runs no host git in a sandbox dir (WS-43e).
     """
     import asyncio
+
+    if not _host_git_ok(agent_dir):
+        return
 
     async def _git(args: list[str]) -> tuple[int, str, str]:
         proc = await asyncio.create_subprocess_exec(
@@ -848,6 +881,12 @@ async def _run_mutation_sandbox(
     sandbox_image: str = getattr(settings, "mutation_sandbox_image", "acb-mutation-runner:latest")
     timeout_s: int = int(getattr(settings, "mutation_timeout_seconds", 600))
     agent_dir: str | None = telemetry.get("local_clone_dir")
+
+    # WS-43e (§7.5 rule A): never mount, pull or diff a dir that a coding
+    # sandbox could write. Its `.git` could hold a planted config or hook.
+    if agent_dir and not _host_git_ok(agent_dir):
+        _log.warning("mutation.sandbox_dir_refused", agent=agent_name, run_id=run_id)
+        return False, "", "", "", None
 
     if not github_token and not gateway_key:
         _log.warning(
@@ -1015,9 +1054,12 @@ async def _git_diff(agent_dir: str, commit_sha: str) -> str:
     """Return ``git diff HEAD~1 HEAD`` from the local clone as a string.
 
     Safe to call even if there is no parent commit (returns full tree diff).
+    It returns '' for a sandbox dir, with no host git (WS-43e).
     """
     import asyncio
 
+    if not _host_git_ok(agent_dir):
+        return ""
     try:
         proc = await asyncio.create_subprocess_exec(
             "git", "diff", "HEAD~1", "HEAD",
