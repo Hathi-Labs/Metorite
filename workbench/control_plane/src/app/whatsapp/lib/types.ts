@@ -126,16 +126,6 @@ export type WaVerifyResult = {
   quality_rating: string | null;
   error: string | null;
 };
-
-// Personal-number (whatsmeow QR) pairing session (W15). `qr` is a ready-to-render
-// data-URI PNG of the current pairing code; `status` walks pairing → live.
-export type WaBridgeSession = {
-  account_id: string;
-  qr: string | null;
-  status: string; // "pairing" | "live" | "unknown" | "logged_out"
-  bridge_reachable: boolean;
-};
-
 // A native WhatsApp label as it hangs off a chat row (mirrored read-only, W16).
 export type WaChatLabel = {
   wa_label_id: string;

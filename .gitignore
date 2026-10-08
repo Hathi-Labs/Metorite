@@ -24,6 +24,11 @@ infra/litellm/tier_overrides.yaml  # Settings UI tier changes — survives deplo
 *.pem
 *.key
 secrets/
+# The secrets-drop manifest holds names and paths only, never a value. Only
+# that one file is tracked. Every other file in deploy/secrets/ stays ignored.
+!deploy/secrets/
+deploy/secrets/*
+!deploy/secrets/manifest.json
 
 # Local reference checkouts (e.g. upstream inbox-zero for parity work)
 reference/

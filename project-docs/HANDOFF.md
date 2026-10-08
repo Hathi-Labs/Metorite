@@ -95,7 +95,7 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-272 · The chat has no batch tool for several tags, types or statuses · [AGENT]
+### H-273 · The chat has no batch tool for several tags, types or statuses · [AGENT]
 - **Check:** `grep -n "create_tags\|create_vocabulary" apps/skills/skill-projects/skill_projects/__init__.py`.
   While it prints nothing, this is open.
 - **Why.** The owner's turn of 2026-10-08 drew a picker, then one
@@ -114,6 +114,36 @@ line — never reclaim a number by deleting the other entry.
 - **Then.** Change "Several new words in one turn" in
   `apps/agents/agent-projects/instructions.md` to name the tool. Types and
   statuses need the same, or one `create_vocabulary` with a `kind`.
+
+### H-272 · plan-guard cannot see the secrets drop folder · [AGENT] · security
+- **Check:** `rg -c "metorite\[" .claude/hooks/plan-guard.mjs` → no hit
+  means the guard does not know the drop folder, and this is open.
+- **Why.** `scripts/secrets.sh` keeps plain-text secrets in
+  `~/.metorite/secrets` and runs its own ssh to the box (`docs/secrets_drop.md`).
+  `plan-guard.mjs` reads only the command that an agent types. So it has four
+  gaps here:
+  1. The `deploy` gate needs the form `ssh user@host`. `ssh metorite …` and
+     `scripts/secrets.sh push` do not match it. The dev-phase grant covers
+     `deploy` until 2026-11-30, and after that date the gate stops no push.
+  2. The `env-write` path rule matches a `.env` token only. `backup-offbox.env`
+     and `app.env` in the drop folder do not match it, so a shell write there
+     is not gated.
+  3. The `secrets` read rule matches `cat … .env` only. It does not match
+     `backup-gpg-PRIVATE.asc` or `backup-gpg-passphrase.txt`.
+  4. The guard never checks the Read tool. An agent can Read any file in the
+     drop folder, and the value goes into the transcript.
+- **The fix: the three arms that the reviewer proposed, word for word.** Add
+  each one at the end of the `test` regex of its gate:
+  - deploy: `|\bssh\b[^\n|;&]*\bmetorite\b|\bscripts[\\/]secrets\.sh\s+push\b`
+  - env-write: `|(^|[\\/])\.metorite[\\/]+secrets[\\/]`
+  - secrets read: `|\.metorite[\\/]+secrets[\\/]+(?!README\.txt\b|push\.log\b)[\w.-]`
+  For gap 4, add a `Read` branch that runs the secrets read arm on `file_path`.
+  Add a case for each arm to `plan-guard.test.mjs`. Editing the guard needs
+  the `guard-write` grant.
+- **Not in the secrets-drop PR, on purpose.** Fix round 1 of that PR said do
+  not edit plan-guard there.
+- **Authority:** `docs/secrets_drop.md` §4 · `.claude/hooks/plan-guard.mjs` · H-123
+- **Added:** 2026-10-08 · secrets drop, security review of fix round 1
 
 ### H-271 · acb has the same power as root, so an app compromise can delete the off-box backups · [OWNER] · security
 - **Check:** on the box, run each of these:
@@ -3928,6 +3958,7 @@ line — never reclaim a number by deleting the other entry.
     `/opt/acb/app/.env`. The gateway loads that file (H-270), and the run
     refuses it. Then run `sudo systemctl start acb-backup.service` and the
     Check above.
+  - **Use `scripts/secrets.sh`** for (c) and (d). It makes the key pair, checks the keys and writes both files. `push --all --verify` also runs one backup and checks the journal. `docs/secrets_drop.md` §2 lists the steps.
 - **To restore:** `scripts/restore_offbox.sh` lists, downloads, decrypts and
   verifies one night. Spec §4.2 holds the steps.
 - ⚠️ **The trade-off.** The bucket is in the same Supabase account as the

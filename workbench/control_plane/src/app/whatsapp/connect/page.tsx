@@ -1,11 +1,11 @@
 "use client";
 
-// WhatsApp Connect wizard (W11) — the guided, VERIFIABLE onboarding that turns
-// Meta's fiddly Cloud API setup into four calm steps: what you need → point Meta
-// at your inbox → paste + live-test your credentials → you're live. The "Test
-// connection" step calls Meta's Graph API for real, so you never save a broken
-// token. Honest by design: it names exactly what Meta requires and never fakes a
-// one-click flow the platform can't actually deliver without app review.
+// WhatsApp Connect — the ONE official way in (owner decision, 2026-10-08).
+// A member connects a WhatsApp Business account through Meta's Embedded Signup
+// (WS-20 §12, WA-C2). The unofficial personal-number QR route (the whatsmeow
+// bridge) is gone from this screen, because it breaks WhatsApp's terms and can
+// get a number banned. The guided manual wizard stays as a fallback for an
+// install with no Metorite Meta app configured.
 
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -13,9 +13,7 @@ import { useRouter } from "next/navigation";
 import {
   createAccount,
   embeddedSignup,
-  fetchBridgeStatus,
   fetchConnectionInfo,
-  startBridgeSession,
   verifyConnection,
 } from "../lib/api";
 import {
@@ -39,8 +37,6 @@ const STEPS = ["Prerequisites", "Webhook", "Credentials", "Done"];
 
 type ConnectMode =
   | "loading"
-  | "pick" // choose transport: personal QR vs business cloud API
-  | "personal" // whatsmeow QR pairing
   | "choose" // business: embedded-signup chooser
   | "manual" // business: guided manual wizard
   | "done";
@@ -58,21 +54,16 @@ export default function ConnectPage() {
     fetchConnectionInfo().then((i) => {
       setInfo(i);
       sessionStorage.setItem("wa_verify_token", i.verify_token);
-      // Land on the transport chooser: personal QR (simple, now) vs the Cloud
-      // API business path.
-      setMode("pick");
+      // One official path: Embedded Signup when the Metorite Meta app is
+      // configured, else the guided manual wizard.
+      setMode(i.embedded_signup ? "choose" : "manual");
     });
   }, []);
 
   const goInbox = () => router.push("/whatsapp");
 
   // Subtitle reflects the chosen path.
-  const subtitle =
-    mode === "personal"
-      ? "Personal number · scan a QR code"
-      : mode === "choose" || mode === "manual"
-        ? "WhatsApp Business · official Meta Cloud API"
-        : "Pick how you want to connect";
+  const subtitle = "WhatsApp Business · the official Meta connection";
 
   return (
     <div className="mx-auto flex min-h-full max-w-2xl flex-col p-4 md:p-6">
@@ -92,23 +83,6 @@ export default function ConnectPage() {
         <div className="mt-10 flex justify-center text-muted-foreground">
           <Icon name="Loader2" className="h-5 w-5 animate-spin" />
         </div>
-      )}
-
-      {mode === "pick" && (
-        <PickTransport
-          onPersonal={() => setMode("personal")}
-          onBusiness={() => {
-            setStep(0);
-            setMode(info?.embedded_signup ? "choose" : "manual");
-          }}
-        />
-      )}
-
-      {mode === "personal" && (
-        <PersonalPairing
-          onBack={() => setMode("pick")}
-          onDone={() => setMode("done")}
-        />
       )}
 
       {mode === "choose" && info && (
@@ -161,237 +135,6 @@ export default function ConnectPage() {
   );
 }
 
-// ── Transport chooser: personal QR vs business Cloud API (W15) ────────────────
-
-function PickTransport({
-  onPersonal,
-  onBusiness,
-}: {
-  onPersonal: () => void;
-  onBusiness: () => void;
-}) {
-  return (
-    <div className="space-y-3">
-      <button
-        onClick={onPersonal}
-        className="group flex w-full items-start gap-3 rounded-xl border border-border bg-background p-5 text-left transition hover:border-primary/60 hover:bg-primary/[0.03]"
-      >
-        <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary">
-          <Icon name="Smartphone" className="h-5 w-5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-[14px] font-semibold">
-              Personal WhatsApp
-            </span>
-            <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-primary">
-              Fastest
-            </span>
-          </div>
-          <p className="mt-1 text-[12.5px] text-muted-foreground">
-            Link your own number by scanning a QR code — the same way WhatsApp
-            Web works. No Meta developer account, no tokens, live in a minute.
-          </p>
-        </div>
-        <Icon name="ArrowRight" className="mt-1 h-4 w-4 shrink-0 text-muted-foreground transition group-hover:translate-x-0.5 group-hover:text-primary" />
-      </button>
-
-      <button
-        onClick={onBusiness}
-        className="group flex w-full items-start gap-3 rounded-xl border border-border bg-background p-5 text-left transition hover:border-primary/60 hover:bg-primary/[0.03]"
-      >
-        <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-          <Icon name="Building2" className="h-5 w-5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <span className="text-[14px] font-semibold">
-            WhatsApp Business (Cloud API)
-          </span>
-          <p className="mt-1 text-[12.5px] text-muted-foreground">
-            The official Meta route for a business number — templates, higher
-            limits, and fully within WhatsApp&apos;s terms. Needs a Meta app and
-            about 15 minutes of setup.
-          </p>
-        </div>
-        <Icon name="ArrowRight" className="mt-1 h-4 w-4 shrink-0 text-muted-foreground transition group-hover:translate-x-0.5 group-hover:text-primary" />
-      </button>
-
-      <p className="px-1 pt-1 text-[11px] leading-relaxed text-muted-foreground">
-        Not sure? Use <b>Personal WhatsApp</b> for your own line right now — you
-        can add a business number later; both live side by side.
-      </p>
-    </div>
-  );
-}
-
-// ── Personal number: whatsmeow QR pairing (W15) ───────────────────────────────
-
-function PersonalPairing({
-  onBack,
-  onDone,
-}: {
-  onBack: () => void;
-  onDone: () => void;
-}) {
-  const [qr, setQr] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>("starting");
-  const [reachable, setReachable] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const accountId = useRef<string | null>(null);
-  const doneRef = useRef(false);
-
-  // Apply a start-session result. All setState lives here (a promise callback),
-  // never synchronously inside an effect — the app's fetch-then-set pattern.
-  const applySession = useCallback((res: Awaited<ReturnType<typeof startBridgeSession>>) => {
-    if (!res.ok || !res.data) {
-      setError(res.error ?? "Couldn't start pairing.");
-      setStatus("error");
-      return;
-    }
-    accountId.current = res.data.account_id;
-    setQr(res.data.qr);
-    setReachable(res.data.bridge_reachable);
-    setStatus(res.data.status || "pairing");
-  }, []);
-
-  // Retry / "New code": reset the visible state, then start a fresh session.
-  const restart = useCallback(() => {
-    doneRef.current = false;
-    setError(null);
-    setStatus("starting");
-    setQr(null);
-    startBridgeSession().then(applySession);
-  }, [applySession]);
-
-  // Kick off a session on mount.
-  useEffect(() => {
-    startBridgeSession().then(applySession);
-  }, [applySession]);
-
-  // Poll status + refreshed QR until the phone scans it (status → live).
-  useEffect(() => {
-    const id = setInterval(async () => {
-      if (!accountId.current || doneRef.current) return;
-      const s = await fetchBridgeStatus(accountId.current);
-      setReachable(s.bridge_reachable);
-      if (s.qr) setQr(s.qr);
-      setStatus(s.status);
-      if (s.status === "live") {
-        doneRef.current = true;
-        clearInterval(id);
-        onDone();
-      }
-    }, 2500);
-    return () => clearInterval(id);
-  }, [onDone]);
-
-  const bridgeDown = status !== "starting" && !reachable;
-
-  return (
-    <Card>
-      <div className="flex items-center gap-2">
-        <Icon name="QrCode" className="h-4 w-4 text-primary" />
-        <h2 className="text-[14px] font-semibold">Scan to link your WhatsApp</h2>
-      </div>
-
-      {bridgeDown ? (
-        <BridgeUnreachable onRetry={restart} />
-      ) : (
-        <>
-          <ol className="mt-2 space-y-0.5 text-[12.5px] text-muted-foreground">
-            <li>1. Open WhatsApp on your phone.</li>
-            <li>
-              2. Tap <b>Settings → Linked devices → Link a device</b>.
-            </li>
-            <li>3. Point your phone at the code below.</li>
-          </ol>
-
-          <div className="mt-4 flex justify-center">
-            <div className="flex h-[280px] w-[280px] items-center justify-center rounded-xl border border-border bg-white p-3">
-              {qr ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={qr}
-                  alt="WhatsApp pairing QR code"
-                  width={256}
-                  height={256}
-                  className="h-full w-full"
-                />
-              ) : status === "error" ? (
-                <div className="px-4 text-center text-[12px] text-red-500">
-                  {error ?? "Couldn't load the QR code."}
-                </div>
-              ) : (
-                <div className="flex flex-col items-center gap-2 text-muted-foreground">
-                  <Icon name="Loader2" className="h-5 w-5 animate-spin" />
-                  <span className="text-[11px]">Generating code…</span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-3 flex items-center justify-center gap-1.5 text-[11.5px] text-muted-foreground">
-            {status === "live" ? (
-              <span className="font-semibold text-success">Linked!</span>
-            ) : (
-              <>
-                <Icon name="Loader2" className="h-3 w-3 animate-spin" />
-                Waiting for you to scan… the code refreshes automatically.
-              </>
-            )}
-          </div>
-
-          <div className="mt-4 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-warning">
-            <b>Heads up:</b> linking a personal number this way is outside
-            WhatsApp&apos;s official terms and carries a small risk to the
-            account. It&apos;s great for your own line; use the Cloud API for a
-            business number.
-          </div>
-        </>
-      )}
-
-      {error && !bridgeDown && status !== "error" && (
-        <div className="mt-3 rounded-md bg-red-500/10 px-3 py-1.5 text-[11px] text-red-500">
-          {error}
-        </div>
-      )}
-
-      <div className="mt-5 flex items-center justify-between">
-        <GhostButton onClick={onBack}>
-          <Icon name="ArrowLeft" className="h-3.5 w-3.5" /> Back
-        </GhostButton>
-        <GhostButton onClick={restart}>
-          <Icon name="RefreshCw" className="h-3.5 w-3.5" /> New code
-        </GhostButton>
-      </div>
-    </Card>
-  );
-}
-
-function BridgeUnreachable({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div className="mt-3">
-      <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3">
-        <Icon name="AlertTriangle" className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
-        <div className="text-[12px] text-warning">
-          <div className="font-semibold">The WhatsApp bridge isn&apos;t running</div>
-          <p className="mt-1 leading-relaxed">
-            Personal linking needs the local <code>whatsapp_bridge</code> service
-            to be up and reachable from the gateway. Start it (see{" "}
-            <code>apps/services/whatsapp_bridge/README.md</code>) and set{" "}
-            <code>WHATSAPP_BRIDGE_URL</code> on the gateway, then retry.
-          </p>
-        </div>
-      </div>
-      <div className="mt-4 flex justify-end">
-        <PrimaryButton onClick={onRetry}>
-          <Icon name="RefreshCw" className="h-3.5 w-3.5" /> Retry
-        </PrimaryButton>
-      </div>
-    </div>
-  );
-}
-
 // ── Chooser + Embedded Signup (W12) ───────────────────────────────────────────
 
 type FbLoginResponse = { authResponse?: { code?: string } | null };
@@ -422,6 +165,13 @@ function ChooseConnect({
         the setup (token exchange and webhook subscription) for you.
       </p>
       <CoexistenceLimits />
+      <p className="mt-3 text-xs text-muted-foreground">
+        <span className="font-semibold text-foreground">
+          Using regular WhatsApp?
+        </span>{" "}
+        Switch the number to the free WhatsApp Business app first. It keeps
+        your chats. Then connect it here.
+      </p>
       <div className="mt-4">
         <EmbeddedSignupButton info={info} onDone={onDone} />
       </div>
