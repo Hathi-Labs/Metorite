@@ -249,7 +249,7 @@ export default function TasksPage() {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
         {/* NS-1: the command bar's "New task" opens Capture here. */}
-        <ShellJob id="capture" onOpen={(f) => openQuickCapture("single", f.title ?? "")} />
+        <ShellJob id="capture" onOpen={(f) => openQuickCapture("single", f.title ?? "", true)} />
         {/* The phone bar, as Projects draws it (`AppTopBar compact`). It
             holds the page's one h1 here too. Capture and the lists live in
             the shell's bottom bar, so this carries "My day", search and the
@@ -296,7 +296,7 @@ export default function TasksPage() {
   return (
     <div className="flex h-full w-full select-none flex-col overflow-hidden bg-background">
       {/* NS-1: the command bar's "New task" opens Capture here. */}
-      <ShellJob id="capture" onOpen={(f) => openQuickCapture("single", f.title ?? "")} />
+      <ShellJob id="capture" onOpen={(f) => openQuickCapture("single", f.title ?? "", true)} />
       {/* The shared app bar (`components/AppTopBar.tsx`), the one Projects
           renders: rail toggle, the app's h1, Capture, then search, the
           bell and the assistant at the right end. */}

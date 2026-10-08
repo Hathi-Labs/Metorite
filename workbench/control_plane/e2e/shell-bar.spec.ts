@@ -306,6 +306,8 @@ test.describe("the coordinator (NS-4b)", () => {
     await row.click();
     await page.waitForURL((u) => u.pathname === "/tasks");
     await expect(page.getByRole("textbox", { name: "Capture to inbox" })).toHaveValue("call the vendor");
+    // §6.4 rule 2: the box says the AI filled it.
+    await expect(page.getByText("Filled by AI. Check it, then press Enter to add it.")).toBeVisible();
     // The job and its fields left the address.
     await expect.poll(() => new URL(page.url()).search).toBe("");
   });

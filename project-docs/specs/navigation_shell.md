@@ -920,10 +920,20 @@ not a `jobs.json`, because the gateway cannot import the workbench.
 `test_shell_intent.py::TestOneJobList` fails if the ids, the links or the gates
 drift from `lib/shell/registry.ts`.
 
+Each call has a bound of 3 s for the pick and 3 s for the fill, on the
+server, because Uvicorn does not cancel a handler when the browser goes. A
+fill that fails or runs out of time is no fill: the job opens empty, and the
+answer is cached, so the pick is never billed twice. A caller with no address,
+such as the internal service, is no member and is never billed.
+
 The bar shows the pick as the first row of Ask: "New task · call the vendor",
-marked "Suggested by AI". It waits for two words and a pause of 900 ms. Capture
+marked "Suggested by AI". Compose and Capture then say "Filled by AI" beside
+what the AI wrote (§6.4 rule 2). It waits for two words and a pause of 900 ms. Capture
 and Compose open with the filled words. The member checks them, and nothing is
 saved or sent until the member does so.
+
+**Not built: a limit per member.** Only the organization's credit cap stops a
+script that sends a new sentence on every call. Chat has the same exposure.
 
 **Two switches, both the owner's:** `COMMAND_BAR_AI` on the gateway turns the
 route on. `DECIDE_ENABLED`, which the email rules already use, serves the pick.

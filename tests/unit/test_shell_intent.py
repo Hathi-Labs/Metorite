@@ -207,6 +207,51 @@ class TestTheAnswer:
         assert "bcc" not in answer["href"] and "fill.to=Priya" in answer["href"]
         assert world.completions[-1]["tier"] == intent.FILL_TIER
 
+    def test_a_fill_outage_opens_the_job_empty_and_caches_it(self, world, monkeypatch):
+        import acb_llm.routed as routed
+
+        world.routing = True
+
+        async def outage(**_kw):
+            raise ConnectionError("console away")
+
+        monkeypatch.setattr(routed, "completion_on_router", outage)
+        user = member("email")
+        first = ask("write to priya about march", user)
+        assert first["kind"] == "job" and first["filled"] == {}
+        ask("write to priya about march", user)
+        assert len(world.decides) == 1, "the pick was billed again after an outage"
+
+    def test_a_slow_pick_is_cut_off_and_says_unavailable(self, world, monkeypatch):
+        import acb_llm
+
+        monkeypatch.setattr(intent, "PICK_TIMEOUT_S", 0.01)
+
+        async def slow(*_a, **_k):
+            await asyncio.sleep(1)
+
+        monkeypatch.setattr(acb_llm, "decide", slow)
+        assert ask("write to priya about march", member("email")) == {"kind": "unavailable"}
+
+    def test_a_slow_fill_opens_the_job_empty(self, world, monkeypatch):
+        import acb_llm.routed as routed
+
+        world.routing = True
+        monkeypatch.setattr(intent, "FILL_TIMEOUT_S", 0.01)
+
+        async def slow(**_kw):
+            await asyncio.sleep(1)
+
+        monkeypatch.setattr(routed, "completion_on_router", slow)
+        answer = ask("write to priya about march", member("email"))
+        assert answer["kind"] == "job" and answer["filled"] == {}
+
+    def test_the_internal_service_caller_is_no_member_and_is_never_billed(self, world):
+        internal = UserContext(email="system:internal", role=UserRole.EMPLOYEE,
+                               access=EffectiveAccess(role_granted=frozenset({"*"})))
+        assert ask("write to priya about march", internal) == {"kind": "unavailable"}
+        assert world.decides == []
+
     def test_a_reply_that_is_not_json_fills_nothing(self, world):
         world.routing = True
         world.fill_reply = "Sure! I would write to Priya."

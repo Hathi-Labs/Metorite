@@ -818,7 +818,13 @@ export default function EmailPage() {
       <ShellJob
         id="compose"
         ready={accounts.length > 0}
-        onOpen={(f) => openCompose({ to: f.to ?? "", subject: f.subject ?? "" })}
+        onOpen={(f) =>
+          openCompose({
+            to: f.to ?? "",
+            subject: f.subject ?? "",
+            aiFilled: ["to", "subject"].filter((k) => !!f[k]),
+          })
+        }
       />
       {/* Loading overlay */}
       {surface === "loading" && (
@@ -1379,6 +1385,7 @@ export default function EmailPage() {
         defaultCc={composeDefaults?.cc}
         replyToBody={composeDefaults?.replyToBody}
         unsavedEdit={composeDefaults?.unsavedEdit}
+        aiFilled={composeDefaults?.aiFilled}
         handOver={composeDefaults?.handOver}
         quote={composeDefaults?.quote}
         replyToMessageId={composeDefaults?.replyToMessageId}

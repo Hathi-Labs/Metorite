@@ -32,6 +32,7 @@ The rules it keeps, each with its fence in ``tests/unit/test_shell_intent.py``:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -59,6 +60,12 @@ MAX_FIELD_CHARS = 200
 PAUSED_LINE = "AI suggestions are paused. Ask an admin to add credits."
 #: The tier the fill step names. The Router picks the model (D32.7).
 FILL_TIER = "tier-fast"
+#: Seconds for the pick and for the fill. ⚠️ A server-side bound: Uvicorn does
+#: not cancel a handler when the browser gives up, so without it a slow
+#: Console held a worker for up to 120 s (security review of NS-4b,
+#: 2026-10-08). Email bounds `decide` the same way (`ON_BOUND_S`).
+PICK_TIMEOUT_S = 3.0
+FILL_TIMEOUT_S = 3.0
 
 
 def ai_on() -> bool:
@@ -137,6 +144,14 @@ async def _pick(user: UserContext, words: str, scope: str | None, jobs: list[Job
     """The job the words ask for, or ASK. Raises DecideUnavailable when it cannot say."""
     from acb_llm import ChoiceAnswer, ChoiceQuestion, decide
 
+    from acb_llm.routed import run_attribution
+
+    # Who to bill, from the request's own binding, as the email features do
+    # (`decide_features.py`). Never a hard-coded "proven": the internal service
+    # caller is `system:internal`, which is no member at all.
+    attribution = dict(run_attribution())
+    attribution["member"] = user.email
+    attribution["member_proven"] = True
     criteria = {j.id: f"{j.label}: {j.meaning}" for j in jobs}
     criteria[ASK] = "anything else: a question, a search, or a request none of the jobs above does"
     decision = await decide(
@@ -148,8 +163,8 @@ async def _pick(user: UserContext, words: str, scope: str | None, jobs: list[Job
             ),
             criteria=criteria,
         )},
-        member=user.email,
-        member_proven=True,
+        member=attribution["member"],
+        member_proven=attribution["member_proven"],
         module_slug="shell",
     )
     answer = decision["job"]
@@ -183,6 +198,13 @@ async def _fill(job: Job, words: str) -> dict[str, str]:
             source="shell",
         )
     except RoutedRefusal:
+        return {}
+    except Exception:
+        # ⚠️ Any other failure, an outage above all, is NO fill and never a
+        # 500. The pick is already paid for, so the job opens with an empty
+        # form and the answer is cached (review, P1). A raise here sent the
+        # member nothing and billed the pick again on the next pause.
+        logger.info("shell.intent fill failed")
         return {}
     try:
         text = resp.choices[0].message.content or ""
@@ -241,6 +263,10 @@ async def shell_intent(
         raise HTTPException(status_code=401, detail="Authentication required")
     if not ai_on():
         return {"kind": "off"}
+    # A member is a person with an address. The internal service caller
+    # (`system:internal`) is not one, and nobody is billed for its words.
+    if "@" not in user.email:
+        return {"kind": "unavailable"}
     words = " ".join((body.q or "").split())[:MAX_WORDS_CHARS]
     if len(words.split()) < 2:
         return {"kind": "none"}
@@ -254,7 +280,10 @@ async def shell_intent(
     from acb_llm import DecideError, DecideUnavailable
 
     try:
-        answer = await _pick(user, words, body.scope, jobs)
+        answer = await asyncio.wait_for(_pick(user, words, body.scope, jobs), PICK_TIMEOUT_S)
+    except TimeoutError:
+        logger.info("shell.intent pick timed out")
+        return {"kind": "unavailable"}
     except DecideUnavailable as exc:
         if exc.reason == "insufficient_credits":
             return {"kind": "paused", "message": PAUSED_LINE}
@@ -269,6 +298,10 @@ async def shell_intent(
     if chosen is None or unsure:
         result = _handoff(words)
     else:
-        result = _job_answer(chosen, await _fill(chosen, words))
+        try:
+            filled = await asyncio.wait_for(_fill(chosen, words), FILL_TIMEOUT_S)
+        except TimeoutError:
+            filled = {}
+        result = _job_answer(chosen, filled)
     await _remember(user, digest, result)
     return result
