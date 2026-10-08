@@ -41,6 +41,7 @@ from gateway.routes.email.core import (
     router,
 )
 from gateway.routes.email.transport.attachments import _canonical_uuid
+from gateway.routes.email.quoting import strip_for_reading
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -652,6 +653,12 @@ async def get_message(
         description="False reads the mail with no change to its read state. "
                     "A background read (WS-48 N2, narrow_and_read) is not the "
                     "member opening the mail."),
+    trim: bool = Query(
+        False,
+        description="True cuts the quoted thread, the signature and a legal "
+                    "footer from body_text, for a model to read "
+                    "(quoting.strip_for_reading). The store keeps the whole "
+                    "body."),
 ):
     """Get full email detail.
 
@@ -790,6 +797,14 @@ async def get_message(
                 msg.attachments = await _hydrate_attachments(
                     db, message_id, user.email or "anonymous"
                 )
+        # After the hydration and its write, so the store keeps the whole
+        # body (WS-17, 2026-10-09). `is True`, as `mark_read` above, holds the
+        # default for a direct Python call.
+        if trim is True and msg.body_text:
+            trimmed = strip_for_reading(msg.body_text)
+            if trimmed != msg.body_text:
+                msg.body_text = trimmed
+                msg.body_trimmed = True
         return msg
 
 

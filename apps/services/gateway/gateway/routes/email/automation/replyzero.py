@@ -356,11 +356,58 @@ async def project_reply_status_from_matches(
 
 # The thread-status judgment is hard to do well on a weak model (it's a
 # multi-turn "whose court is it?" call), and any wrong/empty answer collapses to
-# the AWAITING fallback — so default to a mid tier and ESCALATE once on failure
-# rather than silently mis-classifying. Configurable hook left for a future
-# per-account "status" model role.
+# the AWAITING fallback — so default to a mid tier. Configurable hook left for
+# a future per-account "status" model role.
 _STATUS_MODEL = "tier-balanced"
-_STATUS_MODEL_ESCALATION = "tier-powerful"
+#: The one retry of the old status call, after an answer that we cannot read.
+#:
+#: 🔴 **Measured 2026-10-02 to 10-08 (usage_event).** The retry used to be
+#: `tier-powerful`. The Router binds `tier-balanced` and `tier-powerful` to ONE
+#: model, `deepseek/deepseek-v4-pro`, so the retry asked the same model the
+#: same question. Each failed ask cost two calls that failed the same way:
+#: 4,755 and 4,616 calls, 10,598 credits, all at the output cap.
+#:
+#: The retry is now a DIFFERENT and cheaper model. An unreadable answer is a
+#: format slip, and a second model is the useful second opinion. When this
+#: tier resolves to the model of the first try, :func:`_status_retry_model`
+#: skips the retry. Fence: ``tests/unit/test_email_ai_cost.py``.
+_STATUS_RETRY_MODEL = "tier-fast"
+#: The output cap of the old status call. The answer is one JSON object with
+#: a key and a one-line reason, which is less than 100 tokens.
+_STATUS_MAX_TOKENS = 300
+#: The reasoning budget of the old status call: none.
+#:
+#: 🔴 **The root cause of the failed status calls (WS-17, 2026-10-09).**
+#: `deepseek/deepseek-v4-pro` thinks by default (``model_limits`` marks it
+#: ``reasoning``, and ``customer_console/reasoning.py`` records that it sends
+#: ``reasoning_content`` with no ``thinking`` parameter). The vendor counts
+#: the reasoning tokens in ``completion_tokens``. So the model spent the old
+#: cap of 500 tokens on reasoning. It stopped with ``finish_reason=length``
+#: before it wrote the JSON, ``content`` was empty, ``_safe_json`` read None,
+#: and the call fell back to a guessed ``· auto`` status. 98% of the calls
+#: stopped at exactly 500 output tokens. The question is a choice of four
+#: keys, so it needs no reasoning. litellm sends ``{"type": "disabled"}`` to
+#: DeepSeek as it is (``DeepSeekChatConfig.map_openai_params``), and the
+#: Router forwards ``thinking`` (``acb_llm.routed._FORWARDABLE``).
+_STATUS_THINKING: dict[str, str] = {"type": "disabled"}
+
+
+def _status_retry_model(model: str) -> str:
+    """The tier of the one retry of the old status call, or "" for no retry.
+
+    No retry when :data:`_STATUS_RETRY_MODEL` resolves to the model of the
+    first try (``acb_llm.context.resolve_underlying_model``, the check that
+    ``acompletion_with_fallback`` uses). A second ask of the same model is a
+    second bill for the same failure.
+    """
+    from acb_llm.context import resolve_underlying_model
+
+    retry = _STATUS_RETRY_MODEL
+    if not retry or retry == model:
+        return ""
+    if resolve_underlying_model(retry) == resolve_underlying_model(model):
+        return ""
+    return retry
 # How many chars of the thread the determiner reads. Kept as the TAIL (newest
 # messages, incl. the user's closing reply) — never the head, which is what's
 # safe to drop as a thread grows.
@@ -715,16 +762,27 @@ async def _llm_determine_thread_status(
                 allowed.add("FYI")
             messages = [{"role": "system", "content": sys_prompt},
                         {"role": "user", "content": user_prompt}]
-            # Try the configured tier, then escalate once. A wrong/empty answer here
-            # always biases AWAITING, so a second stronger attempt is cheap insurance.
-            for attempt_model in (model, _STATUS_MODEL_ESCALATION):
-                data, _content, _used = await _llm_json(
-                    attempt_model, messages, max_tokens=500,
+            # The configured tier, then at most ONE retry on a different,
+            # cheaper model. Each try asks for no reasoning, so the cap holds
+            # the answer (`_STATUS_THINKING`). A wrong or empty answer here
+            # always biases AWAITING, so the retry is cheap insurance.
+            attempts = [model]
+            retry = _status_retry_model(model)
+            if retry:
+                attempts.append(retry)
+            for attempt_model in attempts:
+                data, content, _used = await _llm_json(
+                    attempt_model, messages, max_tokens=_STATUS_MAX_TOKENS,
+                    thinking=dict(_STATUS_THINKING),
                 )
                 st = ((data.get("status") if isinstance(data, dict) else "") or "")
                 st = _canon_status_key(st)  # tolerate a legacy TO_REPLY/ACTIONED reply
                 if st in allowed:
                     return st, True
+                # Our own numbers only, never the reply text: it can quote mail.
+                _log.warning("email.determine_status_unreadable",
+                             model=attempt_model, content_chars=len(content or ""),
+                             parsed=isinstance(data, dict))
             return fallback, False
         except LLMBudgetExhausted:
             # EM-T4b item 13: a spent daily budget is not an answer. Raise it
@@ -2132,6 +2190,29 @@ _REPLY_DETERMINE_CAP = 40
 # How many inbound gap threads get an engine match (classification) per cycle.
 _BACKFILL_INBOUND_CAP = 25
 
+#: How long a provisional status (a reason that ends in ``· auto``) waits
+#: before the backfill asks about its thread again.
+#:
+#: 🔴 **The re-ask storm (WS-17, 2026-10-09).** A failed status ask writes a
+#: guessed status with ``· auto``. The backfill runs on EACH sync cycle,
+#: about every 5 minutes, and it selected each ``· auto`` row again at once.
+#: While the asks failed (they all did, see ``_STATUS_THINKING``), one thread
+#: cost a failed pair of calls in each cycle, up to 40 threads a cycle. Now a
+#: thread gets one ask in this window. A new message on the thread still
+#: selects it at once, because its ``last_message_id`` changes.
+_PROVISIONAL_RECHECK_HOURS = 6
+
+#: The ONE "this thread needs a status" test of the backfill, over the
+#: latest message ``l`` of a thread and its status row ``s``. The selection
+#: of :func:`_maybe_classify_threads` and the count of
+#: :func:`_count_reply_zero_backlog` share it, so the drain stops when the
+#: backfill has nothing left to select. Fence: ``test_email_ai_cost.py``.
+_NEEDS_STATUS_SQL = f"""(s.thread_id IS NULL
+       OR s.last_message_id::text <> l.id::text
+       OR (COALESCE(s.reason, '') LIKE '%· auto'
+           AND (s.classified_at IS NULL
+                OR s.classified_at < now() - interval '{_PROVISIONAL_RECHECK_HOURS} hours')))"""
+
 
 def _split_backfill_rows(
     rows: list[Any], existing: dict[str, tuple[str, str]],
@@ -2276,9 +2357,7 @@ async def _maybe_classify_threads(account_id: str) -> None:
                    SELECT l.* FROM latest l
                      LEFT JOIN email_thread_status s
                             ON s.account_id = :aid AND s.thread_id = l.thread_id
-                    WHERE (s.thread_id IS NULL
-                       OR s.last_message_id::text <> l.id::text
-                       OR COALESCE(s.reason, '') LIKE '%· auto')
+                    WHERE {_NEEDS_STATUS_SQL}
                       AND (LOWER(COALESCE(l.folder, '')) NOT IN ('inbox', 'sent')
                            OR l.received_at >= {NEW_MAIL_FLOOR_SQL})
                     -- Inbox first. Those are the threads that might still need a
@@ -2451,9 +2530,10 @@ _RECLASSIFY_MAX_PASSES = 200
 async def _count_reply_zero_backlog(db: Any, account_id: str) -> int:
     """How many threads still NEED a status — the same "needs work" predicate the
     backfill selects on (statusless, latest-message changed, or a provisional
-    "· auto" status). Drives both the progress total and the drain's stop test."""
+    "· auto" status past its recheck window, :data:`_NEEDS_STATUS_SQL`).
+    Drives both the progress total and the drain's stop test."""
     return (await db.execute(text(
-        """WITH latest AS (
+        f"""WITH latest AS (
              SELECT DISTINCT ON (thread_id) thread_id, id
              FROM email_messages
              WHERE account_id = :aid AND thread_id IS NOT NULL
@@ -2462,9 +2542,7 @@ async def _count_reply_zero_backlog(db: Any, account_id: str) -> int:
            SELECT COUNT(*) FROM latest l
              LEFT JOIN email_thread_status s
                     ON s.account_id = :aid AND s.thread_id = l.thread_id
-            WHERE s.thread_id IS NULL
-               OR s.last_message_id::text <> l.id::text
-               OR COALESCE(s.reason, '') LIKE '%· auto'"""
+            WHERE {_NEEDS_STATUS_SQL}"""
     ), {"aid": account_id})).scalar() or 0
 
 

@@ -516,9 +516,12 @@ def _fmt_recipients(lst: Any) -> str:
 async def read_email(email_id: str, full: bool = False) -> str:
     """Fetch one email by id — sender, To/Cc, subject, attachments, and body.
 
-    Set ``full=true`` to pull the COMPLETE, untruncated body straight from the
-    provider — use it when the normal read shows a cut-off body (long emails are
-    capped in local storage) and you need the whole text to summarize, answer a
+    The normal read gives the NEW text of the body: the quoted earlier
+    messages, the signature and any legal footer are cut (read_thread reads
+    the earlier messages). Set ``full=true`` to pull the COMPLETE, untruncated
+    body straight from the provider — use it when the normal read shows a
+    cut-off body (long emails are capped in local storage), or when you need
+    the signature, the quoted text or the footer, to summarize, answer a
     detailed question, or draft an accurate reply."""
     if full:
         e = await _get(f"/email/messages/{email_id}/full-body")
@@ -532,7 +535,9 @@ async def read_email(email_id: str, full: bool = False) -> str:
             f"Subject: {e.get('subject', '(no subject)')}\n"
             f"From: {e.get('from', '')}\n---\n{body[:12000]}"
         )
-    e = await _get(f"/email/messages/{email_id}")
+    # `trim` cuts the quoted thread, the signature and a legal footer on the
+    # gateway (`quoting.strip_for_reading`, the one seam). WS-17, 2026-10-09.
+    e = await _get(f"/email/messages/{email_id}", params={"trim": "true"})
     frm = e.get("from_address", {}) or {}
     you_sent = " (you sent)" if (e.get("folder") or "").lower() == "sent" else ""
     lines = [f"From: {frm.get('name')} <{frm.get('email')}>{you_sent}"]
@@ -554,7 +559,17 @@ async def read_email(email_id: str, full: bool = False) -> str:
             f"attachment_id {a.get('id')})"
             for a in atts)
         lines.append(f"Attachments: {names}")
-    return "\n".join(lines) + "\n---\n" + (e.get("body_text") or "")[:4000]
+    body = (e.get("body_text") or "")[:4000]
+    if e.get("body_trimmed"):
+        body += _TRIMMED_NOTE
+    return "\n".join(lines) + "\n---\n" + body
+
+
+#: The line under a trimmed body, so the model knows what it does not see.
+_TRIMMED_NOTE = (
+    "\n\n[The quoted earlier messages, the signature and any legal footer were "
+    "removed. Call read_email with full=true for the whole body.]"
+)
 
 
 # ── The text of an attachment (WS-17 EM-T11) ─────────────────────────────────

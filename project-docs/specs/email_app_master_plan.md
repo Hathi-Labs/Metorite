@@ -143,7 +143,7 @@ records only what the email app must keep true.
    |---|---|---|---|
    | 1 | Cold-email check, `senders.py:1245` `_llm_is_cold` | `tier-fast` | boolean |
    | 2 | Auto-learn sender pin, `learning.py:67` | `tier-balanced` | boolean, with a 0.9 threshold |
-   | 3 | Thread status, `replyzero.py:334` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
+   | 3 | Thread status, `replyzero.py:334` | `tier-balanced` with no reasoning, then `tier-fast` (WS-17 AI cost, 2026-10-09) | choice of 3 or 4 |
    | 4 | Rule classifier, `engine.py:322` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
 
    Amended 2026-10-02 by D-EM-7. The rule match now covers the multi-rule mode too, and `rule_model` no longer applies. §10.4.8 holds the current anchors.
@@ -1598,7 +1598,7 @@ The four triage decisions. Each one has an `on` path and an old path. The old pa
 | Decision | `on` | The old path |
 |---|---|---|
 | Rule match. `email.rule_match=on` is live for all organizations | `engine.py:761` `ask`, then `_ask_all` (`decide_features.py:526-530`). The Router path. The slot waits | `engine.py:860` and `:946`, `_llm_json` |
-| Thread status | `replyzero.py:606` `ask` | `replyzero.py:721` `_llm_json`, up to two tries |
+| Thread status | `replyzero.py:606` `ask` | `replyzero.py:721` `_llm_json`, up to two tries. Since 2026-10-09 each try asks for no reasoning, and the second try is a different model (`_STATUS_RETRY_MODEL`) |
 | Cold check | `senders.py:1339` `ask` | `senders.py:1353` `_llm_json` |
 | Sender pin. The caller is `runner.py:1246` | `learning.py:161` `ask` | `learning.py:183` `_llm_json` |
 | Shadow, all four | — | `shadow` (`decide_features.py:687`) starts the task at `:728`. The task tries for a slot, or it skips |
