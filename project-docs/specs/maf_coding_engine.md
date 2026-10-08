@@ -2701,7 +2701,23 @@ uv run pytest tests/unit/test_root_agent_maf.py \
 
 **Gate.** AGENT-SAFE. It ships dark.
 
-### WS-43n — Agents from a repo default to MAF 🔲 ⏸ **Parked by D86, 2026-10-03** · ▶ **Restarted by D92, 2026-10-07** (§17)
+### WS-43n — Agents from a repo default to MAF 🔨 **Built 2026-10-08, in review on branch `ws43n-maf-default`** · ⏸ Parked by D86, 2026-10-03 · ▶ Restarted by D92, 2026-10-07 (§17)
+
+**As built (2026-10-08).** The anchors moved. The back-fill is now in
+`list_agents`, and the default is in `register_agent`. Four points differ
+from the text below:
+
+- **The loader refuses at load time only after WS-43r.** Done-when 3 says
+  that the loader refuses a Copilot repo. §15.5 step 2 says that a loaded
+  Copilot agent still runs until WS-43r. The build follows §15.5, because
+  four Copilot agents must keep working. The switch is the code constant
+  `acb_skills.loader.COPILOT_AGENTS_SUPPORTED`, and WS-43r sets it to False.
+- **The deprecation line comes once for each agent in each process**, not
+  once for each run. A run of task-manager would otherwise log it each turn.
+- **The GitHub fetch of `config.json` fails closed.** A network fault or a
+  5xx gives HTTP 502, and the gateway saves nothing. A 404 or a 403 gives
+  `maf`, as before.
+- **WS43-F31 is built here** (§17.6), in `tests/unit/test_agent_config_runtime.py`.
 
 **Scope.** `gateway/routes/agent.py` (`:1279-1284` and `:1589`), the loader's
 check of a built agent in `acb_skills/loader.py`, and fence WS43-F18. §15.5 is
@@ -5234,7 +5250,7 @@ Each slice keeps its text, its done-when and its gate. Its heading now says
 | task-manager | `GitHubCopilotAgent` (`apps/agents/agent-task-manager/agents.py:37`) | `"maf"` in its `config.json`, and `"github-copilot"` in `_AGENT_REGISTRY` (`gateway/routes/agent.py:439`) | WS-8i |
 | app-builder | `GitHubCopilotAgent` (`apps/agents/agent-app-builder/agents.py:18`) | `"maf"` in its `config.json`, and `"github-copilot"` in `_AGENT_REGISTRY` (`:496`) | WS-43h |
 | `metorite` (root) | `GitHubCopilotAgent` (root `agents.py:104-108`) | `"github-copilot"` in the root `config.json` | WS-43m |
-| agent-sales-assistant | Loaded from its repo | `"github-copilot"` in `gateway/agents.json:11` | WS-43n |
+| agent-sales-assistant | Loaded from its repo | `"github-copilot"` in `gateway/agents.json:11` | WS-43n builds the fence. The label goes in WS-43q, after WS43-G11, because the sub-agent path reads only the label |
 
 ⚠️ **The `config.json` label of the first two agents is wrong.** The executor
 takes the Copilot path for an agent when the label says `github-copilot`, or
