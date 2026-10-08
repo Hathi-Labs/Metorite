@@ -13,6 +13,7 @@ import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
 import EmailToolCards, { emailEvidence } from "@/components/email/EmailToolCards";
 import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
 import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
+import { crmEvidence } from "@/components/crm/CrmEvidence";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { genUiPlacement } from "@/lib/chatPlacement";
 import { genUiTarget } from "@/lib/askPin";
@@ -206,10 +207,11 @@ function MessageBubble({
   // A READ's receipt draws in its step, inside the trail, and never after the
   // answer (spec `projects_ai_chat.md` §24 rule 2, owner 2026-10-08). Each
   // card file says whether an event is its read; `lib/chatPlacement.ts` is
-  // the one map behind all three.
+  // the one map behind all four.
   const accountId = emailContext?.accountId;
   const evidenceFor = useCallback(
-    (e: ToolEvent) => projectEvidence(e) ?? taskEvidence(e) ?? emailEvidence(e, accountId),
+    (e: ToolEvent) =>
+      projectEvidence(e) ?? taskEvidence(e) ?? emailEvidence(e, accountId) ?? crmEvidence(e),
     [accountId],
   );
 

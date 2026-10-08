@@ -26,16 +26,34 @@ import {
   formatPlain,
   formatWords,
   parseFieldValue,
+  personOf,
 } from "@/lib/cardFields";
 import { statusAccent } from "@/lib/statusAccent";
+import { categoryLabel } from "@/lib/statusCategory";
 
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** One short name with no mark: a lane's name or a category key. */
+const LANE_WORD = /^[\p{L}\p{N}][\p{L}\p{N} _&/-]{0,39}$/u;
+
+/**
+ * True when an element draws as its chip. A fenced name does. An unfenced
+ * category ("in_progress") or status ("Qualified", in a CRM read) is still
+ * one lane, and an unfenced address ("priya@x.io") is still one person, so
+ * each draws as its chip and never as the raw value (follow-up of #716 and
+ * #735). A phrase stays words.
+ */
+function asChip(item: ValueItem, kind: FieldKind): boolean {
+  if (item.named) return true;
+  const text = item.text.trim();
+  if (kind === "category" || kind === "status") return LANE_WORD.test(text) && formatPlain(text) !== "none";
+  if (kind === "person") return personOf(text).email !== undefined;
+  return false;
+}
 
 /** One element of a value, by kind. Exported for its test. */
 export function ValueElement({ item, kind }: { item: ValueItem; kind: FieldKind }) {
   const text = item.text;
-  if (!item.named) {
-    if (kind === "date") return <>{formatPlain(text)}</>;
+  if (!asChip(item, kind)) {
+    if (kind === "date") return <>{formatCardDate(formatPlain(text))}</>;
     if (kind === "minutes") return <>{formatMinutes(text)}</>;
     if (kind === "flag") return <>{formatPlain(text)}</>;
     const plain = formatPlain(text);
@@ -52,11 +70,13 @@ export function ValueElement({ item, kind }: { item: ValueItem; kind: FieldKind 
       return <EntityPill fit kind="status" label={text} accent={statusAccent({ name: text })} />;
     case "category":
       return (
-        <EntityPill fit kind="status" label={formatWords(text)} accent={statusAccent({ category: text, name: text })} />
+        <EntityPill fit kind="status" label={categoryLabel(text)} accent={statusAccent({ category: text, name: text })} />
       );
     case "person": {
       if (text.startsWith("agent:")) return <EntityPill fit kind="agent" label={text.slice(6)} />;
-      return <EntityPill fit kind="person" label={text} email={EMAIL.test(text) ? text : undefined} />;
+      // "Priya (priya@x.io)" is a name and an address, never one label.
+      const who = personOf(text);
+      return <EntityPill fit kind="person" label={who.name} email={who.email} />;
     }
     case "project":
       return <EntityPill fit kind="project" label={text} />;
@@ -96,7 +116,7 @@ function Side({ items, kind, muted = false }: { items: ValueItem[]; kind: FieldK
       {items.map((item, i) => (
         // `inline-flex max-w-full` lets a long pill shrink to the column and
         // truncate (its tooltip holds the whole name), at 390px too.
-        <span key={i} className={CHIP_KINDS.has(kind) && item.named ? "inline-flex min-w-0 max-w-full" : "min-w-0"}>
+        <span key={i} className={CHIP_KINDS.has(kind) && asChip(item, kind) ? "inline-flex min-w-0 max-w-full" : "min-w-0"}>
           <ValueElement item={item} kind={kind} />
           {i < items.length - 1 && kind === "text" && ","}
         </span>

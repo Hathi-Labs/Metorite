@@ -76,6 +76,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "contact": { label: "Contact" },
   "context": { label: "Context" },
   "copied from": { label: "Copied from", kind: "project" },
+  "created_at": { label: "Created", kind: "date" },
   "current triage": { label: "Your triage now" },
   "deal": { label: "Deal" },
   "decision": { label: "Decision", kind: "words" },
@@ -138,6 +139,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "order": { label: "Order" },
   "organization": { label: "Organisation" },
   "organization_name": { label: "Organisation" },
+  "owner_email": { label: "Owner", kind: "person" },
   "parent": { label: "Parent task", kind: "task" },
   "parent_id": { label: "Parent" },
   "parent_project_id": { label: "Parent project" },
@@ -164,6 +166,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "start_date": { label: "Start", kind: "date" },
   "status": { label: "Status", kind: "status" },
   "status set": { label: "Status set", kind: "project" },
+  "status_category": { label: "Status category", kind: "category" },
   "status_id": { label: "Status" },
   "statuses": { label: "Statuses" },
   "subject": { label: "Subject" },
@@ -185,6 +188,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "under": { label: "Under", kind: "project" },
   "undo": { label: "Undo" },
   "until": { label: "Until", kind: "date" },
+  "updated_at": { label: "Updated", kind: "date" },
   "view": { label: "View" },
   "view_type": { label: "View type", kind: "words" },
   "visible to": { label: "Visible to" },
@@ -213,6 +217,44 @@ export function fieldSpec(raw: string): FieldSpec {
   if (spec) return spec;
   const words = raw.trim().replace(/_/g, " ");
   return { label: words.charAt(0).toUpperCase() + words.slice(1) };
+}
+
+/** The kinds a column label may take from this map. A task or a project
+ *  needs its link, which a label does not carry, so it stays text. A
+ *  "Category" label is text too: a model's "Category" is not a stage. */
+const LABEL_KINDS: ReadonlySet<FieldKind> = new Set(["status", "tag", "person", "date"]);
+
+const KIND_BY_LABEL: ReadonlyMap<string, FieldKind> = (() => {
+  const out = new Map<string, FieldKind>();
+  for (const spec of Object.values(CARD_FIELDS)) {
+    const key = spec.label.toLowerCase();
+    if (spec.kind && LABEL_KINDS.has(spec.kind) && !out.has(key)) out.set(key, spec.kind);
+  }
+  return out;
+})();
+
+/**
+ * The kind a table column draws by, from its label: "Status" is a status,
+ * "Tags" a tag, "Assignees" a person, "Due" a date. A label that this map
+ * does not hold, or holds with no such kind, is text. The `dataGrid`
+ * template reads it when the data names no kinds (`lib/dataGridLayout.ts`).
+ */
+export function kindForLabel(label: string): FieldKind | undefined {
+  return KIND_BY_LABEL.get(label.trim().toLowerCase());
+}
+
+/**
+ * A person as a name and an address. An assignee is a bare string that
+ * nothing validates (D-PM-4), so the tools print "Priya (priya@x.io)",
+ * "Priya <priya@x.io>", an address alone, or a name alone. A chip shows the
+ * name, and keeps the address for its initials and its tooltip.
+ */
+export function personOf(text: string): { name: string; email?: string } {
+  const value = text.trim();
+  const m = /^(.+?)\s*[(<]\s*([^\s()<>@]+@[^\s()<>@]+\.[^\s()<>@]+)\s*[)>]$/.exec(value);
+  if (m) return { name: m[1].trim(), email: m[2] };
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return { name: value, email: value };
+  return { name: value };
 }
 
 // ── The value ────────────────────────────────────────────────────────────────

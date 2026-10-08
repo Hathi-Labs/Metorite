@@ -105,3 +105,28 @@ def test_an_email_tool_that_sends_or_destroys_is_never_evidence() -> None:
             if "open_world=True" in h or "destructive=True" in h} | EMAIL_QUIET_WRITES
     wrong = sorted(n for n in loud if placement.get(n) == "evidence")
     assert not wrong, f"these email tools write, and the map draws them as reads: {wrong}"
+
+
+CRM_AGENT = ROOT / "apps/agents/agent-crm/agents.py"
+
+
+def test_a_crm_read_is_evidence_and_a_crm_write_is_a_write() -> None:
+    """The CRM reads draw in their step, and every CRM write keeps its row.
+
+    Follow-up of #716 and #735 (spec ``projects_ai_chat.md`` §24.8): the CRM
+    reads had no receipt, so the step opened to the raw output. Each tool the
+    agent annotates ``read_only=True`` is evidence, and every other one is a
+    write. Mutation: move ``get_record`` to WRITE, or ``create_lead`` to
+    EVIDENCE.
+    """
+    placement = _placement()
+    src = CRM_AGENT.read_text(encoding="utf-8")
+    hints = {m.group(2): m.group(1)
+             for m in re.finditer(r"@_annotate_risk\(([^)]*)\)\s*\n\s*async def (\w+)", src)}
+    assert len(hints) == 8
+    wrong = []
+    for name, hint in sorted(hints.items()):
+        want = "evidence" if "read_only=True" in hint else "write"
+        if placement.get(name) != want:
+            wrong.append(f"{name}: wants {want}, the map says {placement.get(name)}")
+    assert not wrong, "\n".join(wrong)

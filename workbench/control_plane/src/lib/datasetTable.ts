@@ -29,16 +29,27 @@
  *
  * The server never puts a `|` inside a cell (`_fenced` turns it into `/`), so
  * a split on `|` is exact. Pure. Fence: `src/lib/datasetTable.test.ts`.
+ *
+ * Each column also carries its card KIND (follow-up of #716 and #735), so
+ * the `dataGrid` template draws a status as its chip, a category as its
+ * readable label, and tags and assignees as pills. A column of several
+ * values (tags, assignees) gives each cell as a list of names, split at the
+ * marks, so a name with a comma in it stays one name.
  */
 
-import { fieldSpec } from "@/lib/cardFields";
-import { unfenced } from "@/lib/fencedText";
+import { type FieldKind, fieldSpec } from "@/lib/cardFields";
+import { splitFenced, unfenced } from "@/lib/fencedText";
 import { LEGEND } from "@/lib/projectToolRows";
+
+/** One cell: a value, or the names of a column that holds several. */
+export type DatasetCell = string | string[];
 
 export interface DatasetTable {
   title: string;
   columns: string[];
-  rows: { id?: string; cells: string[] }[];
+  /** Each column's card kind, by index: how the template draws its cells. */
+  kinds: (FieldKind | undefined)[];
+  rows: { id?: string; cells: DatasetCell[] }[];
   /** "10 of 25 tasks", or "" when the trailer is missing. */
   caption: string;
   notes: string[];
@@ -55,7 +66,8 @@ const FOR_MODEL = [
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function firstSentence(line: string): string {
-  const text = unfenced(line.trim());
+  // "first in_progress to first done": a category key in a note reads as words.
+  const text = unfenced(line.trim()).replace(/\b([a-z]+)_([a-z]+)\b/g, "$1 $2");
   const m = text.match(/^(.+?[.!?])(?:\s|$)/);
   const one = m ? m[1] : text;
   return one.charAt(0).toUpperCase() + one.slice(1);
@@ -80,6 +92,12 @@ function splitDots(line: string): string[] {
   }
   out.push(cur);
   return out.map((s) => s.trim());
+}
+
+/** A cell of a column that holds several values, as its names. */
+function namesOf(cell: string): string[] {
+  const names = splitFenced(cell).filter((p) => p.kind === "name").map((p) => p.text);
+  return names.length > 0 ? names : unfenced(cell).split(",").map((t) => t.trim()).filter(Boolean);
 }
 
 function measureLabel(measure: string): string {
@@ -120,10 +138,13 @@ export function parseDatasetTable(result: string): DatasetTable | null {
 
   const rows: DatasetTable["rows"] = [];
   let columns: string[];
+  let kinds: (FieldKind | undefined)[];
   let k = headAt + 1;
   if (isGroups) {
     const by = titleLine.match(/^Groups by (\w+), measure (\w+)/);
-    columns = [fieldSpec(by?.[1] ?? "group").label, measureLabel(by?.[2] ?? "count"), "Tasks"];
+    const group = fieldSpec(by?.[1] ?? "group");
+    columns = [group.label, measureLabel(by?.[2] ?? "count"), "Tasks"];
+    kinds = [group.kind, undefined, undefined];
     let extra = false;
     for (; k < lines.length && /^- /.test(lines[k]); k++) {
       const [label = "", value = "", n = "", ...more] = splitDots(lines[k].slice(2));
@@ -132,19 +153,25 @@ export function parseDatasetTable(result: string): DatasetTable | null {
     }
     if (extra) {
       columns.push("Note");
+      kinds.push(undefined);
       for (const r of rows) while (r.cells.length < columns.length) r.cells.push("");
     }
   } else {
     const keys = lines[headAt].split("|").map((c) => c.trim());
     const idCol = keys.indexOf("full_id");
-    columns = keys.filter((_, i) => i !== idCol).map((c) => fieldSpec(c).label);
+    const specs = keys.map((c) => fieldSpec(c));
+    columns = specs.filter((_, i) => i !== idCol).map((s) => s.label);
+    kinds = specs.filter((_, i) => i !== idCol).map((s) => s.kind);
     for (; k < lines.length && lines[k].includes("|"); k++) {
-      const cells = lines[k].split("|").map((c) => unfenced(c.trim()));
-      while (cells.length < keys.length) cells.push("");
-      const id = idCol >= 0 && UUID.test(cells[idCol]) ? cells[idCol] : undefined;
+      const raw = lines[k].split("|").map((c) => c.trim());
+      while (raw.length < keys.length) raw.push("");
+      const cells: DatasetCell[] = raw
+        .slice(0, keys.length)
+        .map((c, i) => (specs[i].many ? namesOf(c) : unfenced(c)));
+      const id = idCol >= 0 && UUID.test(String(cells[idCol])) ? String(cells[idCol]) : undefined;
       rows.push({
         ...(id ? { id } : {}),
-        cells: cells.slice(0, keys.length).filter((_, i) => i !== idCol),
+        cells: cells.filter((_, i) => i !== idCol),
       });
     }
   }
@@ -160,5 +187,5 @@ export function parseDatasetTable(result: string): DatasetTable | null {
     if (FOR_MODEL.some((re) => re.test(t))) continue;
     notes.push(firstSentence(t));
   }
-  return { title, columns, rows, caption, notes };
+  return { title, columns, kinds, rows, caption, notes };
 }

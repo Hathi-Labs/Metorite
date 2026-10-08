@@ -49,7 +49,9 @@ its number is part of your change**, not a follow-up.
 Type scale: `text-sm` / `text-xs` / `text-[11px]` / `text-[10px]`. Do not invent
 an off-grid size — `text-[12px]` is `text-xs` written the long way, and it also
 opts out of the user's density preference, because `--ui-scale` reaches rem and
-not px.
+not px. In a `style` object, take the size from `TYPE` in `src/lib/typeScale.ts`,
+which holds the same scale in rem. A generative-UI template never sets a font
+size in px (fence: `src/lib/typeScale.test.ts`).
 
 `npx vitest run src/lib/theme/` before you push.
 
@@ -157,8 +159,13 @@ Seven rules on top of the three above. Each one exists because it was broken:
    **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
    and its kind draws its value. The Python fakes read that map and fail a
    card test that prints a key with no label (`tests/unit/_card_words.py`).
-   A read result draws through `components/projects/Readout.tsx`, with no
-   id and no `[key]`. Fences: `cardFields.test.ts` and `readout.test.ts`.
+   A read result draws through `components/Readout.tsx`, with no
+   id and no `[key]`. That includes the email and CRM reads. Fences:
+   `cardFields.test.ts`, `readout.test.ts` and `readoutEmailCrm.test.ts`.
+   **A table draws by its column kinds.** `src/lib/dataGridLayout.ts` holds
+   the rules of the `dataGrid` template. A status is its chip, and the rows
+   stack in a narrow box. A category column that the data names hides beside
+   a status. Fence: `dataGridLayout.test.ts`.
    ⚠️ **The BOM trap binds at every hop, and "keep it a `Blob` in the client" is only
    half of it.** `Response.text()` is a UTF-8 *decode* and a UTF-8 decode strips a
    leading byte order mark, so **a BFF proxy that does `await res.text()` and rebuilds
