@@ -16,8 +16,10 @@
  *    else from the column's card label (`kindForLabel`), the one label map.
  *    A status is the status chip, a category its readable label in a chip, a
  *    tag a tag pill, a person a person chip, a date a formatted date.
- * 2. **A category column hides when a status column is there.** The status
- *    chip already says it, and the hidden cell gives the chip its colour.
+ * 2. **A category column hides when a status column is there**, when the
+ *    data names its kind (`kinds`). The status chip already says it, and
+ *    the hidden cell gives the chip its colour. A column the model names
+ *    "Category" is text, and it always shows.
  * 3. **The title column has priority.** It has a minimum width and wraps.
  *    The other columns do not wrap.
  * 4. **Under a width, the rows stack.** The table needs the sum of its
@@ -67,15 +69,18 @@ export function gridColumns(labels: readonly string[], kinds?: readonly (string 
     index,
     label,
     kind: cellKind(kinds?.[index] ?? kindForLabel(label)),
+    named: typeof kinds?.[index] === "string",
   }));
   const lead = all.length > 1 && LEAD.test(all[0].label.trim()) ? 0 : -1;
   const named = all.find((c) => c.index !== lead && PRIMARY.test(c.label.trim()));
   const primaryAt = named?.index ?? all.find((c) => c.index !== lead)?.index ?? 0;
   const hasStatus = all.some((c) => c.kind === "status");
-  const category = hasStatus ? all.find((c) => c.kind === "category") : undefined;
+  // Only a category the DATA names hides (review round 1). A model's own
+  // "Category" column ("Travel", "Food") is text, and it always shows.
+  const category = hasStatus ? all.find((c) => c.kind === "category" && c.named) : undefined;
   const shown: GridColumn[] = all
     .filter((c) => c.index !== category?.index)
-    .map((c) => ({
+    .map(({ named: _named, ...c }) => ({
       ...c,
       role: c.index === lead ? "lead" : c.index === primaryAt ? "primary" : "secondary",
     }));
@@ -144,4 +149,14 @@ export function cellText(cell: unknown): string {
 /** A cell that says there is nothing: drawn muted, never as a chip. */
 export function isEmptyCell(cell: unknown): boolean {
   return /^(?:|-|—|none|unassigned|no status)$/i.test(cellText(cell).trim());
+}
+
+/**
+ * The labels of a grid, with one for each cell past the last label. A model
+ * can send a row with more cells than columns, and no cell drops with no
+ * mark (review round 1).
+ */
+export function gridLabels(labels: readonly string[], rows: readonly { cells?: unknown }[]): string[] {
+  const width = Math.max(labels.length, ...rows.map((r) => (Array.isArray(r.cells) ? r.cells.length : 0)));
+  return Array.from({ length: width }, (_, i) => labels[i] ?? `Column ${i + 1}`);
 }

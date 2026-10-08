@@ -34,6 +34,7 @@ import { fieldSpec, formatWords } from "@/lib/cardFields";
 import { unfenced } from "@/lib/fencedText";
 import { type ReadoutBlock, parseReadout, statusRow } from "@/lib/readout";
 import { statusAccent } from "@/lib/statusAccent";
+import { CATEGORY_LABEL } from "@/lib/statusCategory";
 
 type Item = Extract<ReadoutBlock, { kind: "item" }>;
 
@@ -112,10 +113,15 @@ function ItemView({ item }: { item: Item }) {
  * a chip in words, never as the key (follow-up of #716 and #735). The chip
  * is the shared status chip, so a kind with a stage's meaning takes its hue.
  */
+/** A stage key reads as its label ("todo" is "To do"), any other kind as words. */
+function kindLabel(tag: string): string {
+  return Object.hasOwn(CATEGORY_LABEL, tag) ? CATEGORY_LABEL[tag] : formatWords(tag);
+}
+
 function KindChip({ tag }: { tag: string }) {
   return (
     <span className="inline-flex align-middle">
-      <EntityPill fit kind="status" label={formatWords(tag)} accent={statusAccent({ category: tag, name: tag })} />
+      <EntityPill fit kind="status" label={kindLabel(tag)} accent={statusAccent({ category: tag, name: tag })} />
     </span>
   );
 }

@@ -220,8 +220,9 @@ export function fieldSpec(raw: string): FieldSpec {
 }
 
 /** The kinds a column label may take from this map. A task or a project
- *  needs its link, which a label does not carry, so it stays text. */
-const LABEL_KINDS: ReadonlySet<FieldKind> = new Set(["status", "category", "tag", "person", "date"]);
+ *  needs its link, which a label does not carry, so it stays text. A
+ *  "Category" label is text too: a model's "Category" is not a stage. */
+const LABEL_KINDS: ReadonlySet<FieldKind> = new Set(["status", "tag", "person", "date"]);
 
 const KIND_BY_LABEL: ReadonlyMap<string, FieldKind> = (() => {
   const out = new Map<string, FieldKind>();

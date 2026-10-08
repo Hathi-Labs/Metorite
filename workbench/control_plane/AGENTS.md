@@ -163,9 +163,9 @@ Seven rules on top of the three above. Each one exists because it was broken:
    id and no `[key]`. That includes the email and CRM reads. Fences:
    `cardFields.test.ts`, `readout.test.ts` and `readoutEmailCrm.test.ts`.
    **A table draws by its column kinds.** `src/lib/dataGridLayout.ts` holds
-   the rules of the `dataGrid` template: a status is its chip, a category
-   column hides beside a status, and the rows stack in a narrow box. Fence:
-   `dataGridLayout.test.ts`.
+   the rules of the `dataGrid` template. A status is its chip, and the rows
+   stack in a narrow box. A category column that the data names hides beside
+   a status. Fence: `dataGridLayout.test.ts`.
    ⚠️ **The BOM trap binds at every hop, and "keep it a `Blob` in the client" is only
    half of it.** `Response.text()` is a UTF-8 *decode* and a UTF-8 decode strips a
    leading byte order mark, so **a BFF proxy that does `await res.text()` and rebuilds

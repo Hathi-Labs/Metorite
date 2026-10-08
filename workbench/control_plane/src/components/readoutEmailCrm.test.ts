@@ -14,6 +14,8 @@
  * - `withoutIds` loses the `id=` forms -> "shows no id";
  * - the `• key: value` rule goes -> "labels each fact";
  * - a `[kind]` draws as the key -> "draws a stage as a chip";
+ * - the thread fallback drops a body line "Done: …" (review round 1) ->
+ *   "a thread's fallback keeps each body line";
  * - an unfenced address draws as text -> "labels each fact of a record"
  *   (the person chip's initials).
  */
@@ -25,7 +27,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { crmEvidence } from "@/components/crm/CrmEvidence";
-import EmailToolCards, { emailEvidence } from "@/components/email/EmailToolCards";
+import EmailToolCards, { emailEvidence, threadText } from "@/components/email/EmailToolCards";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { parseReadout } from "@/lib/readout";
 import { statusAccent } from "@/lib/statusAccent";
@@ -109,6 +111,16 @@ describe("the email reads", () => {
     expect(out).toContain("Moved to folder");
     NO_ID(out);
     expect(visible(out)).toContain("Moved 1 email to Archive.");
+  });
+
+  it("a thread's fallback keeps each body line, and drops only the ids", () => {
+    // Review round 1: `Readout` read a body line "Done: …" as a machine line.
+    const raw = [`Thread: PO — 2 messages, oldest first: (id=${ID})`, "Done: the PO is signed", "- item one", "Agenda:"].join("\n");
+    const out = threadText(raw);
+    expect(out).toContain("Done: the PO is signed");
+    expect(out).toContain("- item one");
+    expect(out).toContain("Agenda:");
+    expect(out).not.toContain(ID);
   });
 
   it("no email card draws a result as it is", () => {

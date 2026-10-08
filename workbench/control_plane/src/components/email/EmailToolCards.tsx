@@ -25,6 +25,7 @@
 import Button from "@/components/ui/Button";
 import AppIcon from "@/components/Icon";
 import Readout from "@/components/Readout";
+import { withoutIds } from "@/lib/readout";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ToolEvent } from "@/components/MarkdownMessage";
@@ -351,12 +352,13 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
     );
   }
   // Couldn't fetch the conversation — show the tool's text summary so the user
-  // still gets the content. It draws through `Readout`, with no id (follow-up
-  // of #716 and #735).
+  // still gets the content. The bodies are a sender's text, so they keep
+  // their lines, and only the ids go (`withoutIds`). `Readout` would read a
+  // body line "Done: …" as a machine line and drop it (review round 1).
   if (state === "error" || !msgs) {
     return (
-      <div className="max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        <Readout result={event.result || ""} />
+      <div className="text-xs whitespace-pre-wrap break-words text-foreground/90 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
+        {threadText(event.result)}
       </div>
     );
   }
@@ -2147,6 +2149,16 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
       </div>
     </div>
   );
+}
+
+/** A `read_thread` result as a member reads it: each line as sent, with no
+ *  id. Exported for its test. */
+export function threadText(raw: string | null | undefined): string {
+  return (raw || "")
+    .split(/\r?\n/)
+    .map((line) => withoutIds(line))
+    .join("\n")
+    .trim();
 }
 
 /** True when a `read_thread` result read a thread: it starts "Thread:". */

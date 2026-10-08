@@ -15,6 +15,15 @@
  * - the stacked rows lose the labels of their facts -> "a stacked row is the
  *   title, then chips and labelled facts";
  * - a category cell draws its raw key -> "the status label mapping".
+ *
+ * Review round 1, each run red before its fix:
+ *
+ * - a model's own "Category" column hides beside "Status" -> "keeps a
+ *   model's Category column";
+ * - the primary cell of a groups-by-stage table draws as text -> "a stage
+ *   in the title column reads as its label";
+ * - a cell past the last label drops -> "labels a cell past the last
+ *   column".
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -24,7 +33,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { DataGrid } from "@/components/genUITemplates";
 import { ValueElement } from "@/components/CardFieldValue";
-import { cellText, gridColumns, gridLayout, isEmptyCell, minTableRem, splitMany } from "@/lib/dataGridLayout";
+import { cellText, gridColumns, gridLabels, gridLayout, isEmptyCell, minTableRem, splitMany } from "@/lib/dataGridLayout";
 import { statusAccent } from "@/lib/statusAccent";
 import { categoryLabel } from "@/lib/statusCategory";
 
@@ -58,6 +67,36 @@ describe("the column rules", () => {
     // `render_tasks` sends labels only.
     const g = gridColumns(["#", "Title", "Status", "Assignees", "Due", "Priority"]);
     expect(g.shown.map((c) => c.kind)).toEqual(["text", "text", "status", "person", "date", "text"]);
+  });
+});
+
+describe("review round 1", () => {
+  it("keeps a model's Category column", () => {
+    // `emit_generative_ui` sends labels only, and "Travel" is not a stage.
+    const g = gridColumns(["Item", "Category", "Status"]);
+    expect(g.shown.map((c) => c.label)).toEqual(["Item", "Category", "Status"]);
+    expect(g.shown[1].kind).toBe("text");
+    expect(g.categoryAt).toBe(-1);
+  });
+
+  it("a stage in the title column reads as its label", () => {
+    const out = renderToStaticMarkup(
+      createElement(DataGrid, {
+        data: { columns: ["Status category", "Count", "Tasks"], kinds: ["category"], rows: [{ cells: ["in_progress", "4", "4"] }] },
+        layout: "table",
+      }),
+    );
+    expect(out).toContain(">In progress<");
+    expect(out.replace(/<[^>]*>/g, "|")).not.toContain("|in_progress|");
+  });
+
+  it("labels a cell past the last column", () => {
+    expect(gridLabels(["A"], [{ cells: ["x", "y", "z"] }])).toEqual(["A", "Column 2", "Column 3"]);
+    const out = renderToStaticMarkup(
+      createElement(DataGrid, { data: { columns: ["Title"], rows: [{ cells: ["X", "extra"] }] }, layout: "table" }),
+    );
+    expect(out).toContain(">Column 2<");
+    expect(out).toContain(">extra<");
   });
 });
 

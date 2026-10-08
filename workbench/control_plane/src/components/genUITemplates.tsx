@@ -46,25 +46,26 @@ import {
 } from "@/app/projects/lib/planCard";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
-import { fieldSpec, formatCardDate, personOf } from "@/lib/cardFields";
+import { fieldSpec, formatCardDate } from "@/lib/cardFields";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { ReportFileButtons } from "@/app/projects/components/ReportFileButtons";
 import { taskCell } from "@/app/projects/lib/matrix";
 import { reportLink } from "@/app/projects/lib/reportBuilder";
 import { PriorityChip } from "@/components/TaskMeta";
 import EntityPill from "@/components/ui/EntityPill";
+import { ValueElement } from "@/components/CardFieldValue";
 import {
   type CellKind,
   type GridColumn,
   type GridLayout,
   cellText,
   gridColumns,
+  gridLabels,
   gridLayout,
   isEmptyCell,
   splitMany,
 } from "@/lib/dataGridLayout";
 import { statusAccent } from "@/lib/statusAccent";
-import { categoryLabel } from "@/lib/statusCategory";
 import { priorityChip } from "@/lib/taskCard";
 import { TYPE } from "@/lib/typeScale";
 
@@ -1142,7 +1143,7 @@ function TaskChip({ t }: { t: Data }) {
       {(chip || people.length > 0 || due) && (
         <div style={{ ...MUTED, display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap", alignItems: "center" }}>
           {chip && <PriorityChip chip={priorityChip(level)} />}
-          {people.map((p) => <PersonChip key={p} text={p} />)}
+          {people.map((p, i) => <PersonChip key={i} text={p} />)}
           {due && <span>due {formatCardDate(str(t.due))}</span>}
         </div>
       )}
@@ -1211,41 +1212,40 @@ export function isDateCell(cell: unknown): boolean {
   return /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?$/.test(str(cell).trim());
 }
 
-/** A person as a chip: the name, with the address as its initials' seed. */
+/**
+ * A person as a chip, through the one value renderer (`ValueElement`). It
+ * owns the `agent:` rule and `personOf`, so the board, the grid and a card
+ * draw a person the same way (review round 1, AGENTS.md rule 4).
+ */
 function PersonChip({ text }: { text: string }) {
-  if (text.startsWith("agent:")) return <EntityPill fit kind="agent" label={text.slice(6)} />;
-  const who = personOf(text);
-  return <EntityPill fit kind="person" label={who.name} email={who.email} />;
+  return <ValueElement item={{ text, named: true }} kind="person" />;
 }
 
-/** One cell, drawn by its kind (`lib/dataGridLayout.ts` rule 1). */
+/**
+ * One cell, drawn by its kind (`lib/dataGridLayout.ts` rule 1). A status
+ * draws here, because its colour can come from a hidden category cell. Every
+ * other kind draws through `ValueElement`, the one value renderer.
+ */
 function GridCell({ kind, cell, category }: { kind: CellKind; cell: unknown; category?: unknown }) {
   if (isEmptyCell(cell)) {
     return <span style={{ color: "var(--muted-foreground)" }}>{kind === "text" ? cellText(cell) : ""}</span>;
   }
   const text = cellText(cell).trim();
-  switch (kind) {
-    case "status":
-      return (
-        <EntityPill fit kind="status" label={text}
-          accent={statusAccent({ category: category == null ? undefined : cellText(category), name: text })} />
-      );
-    case "category":
-      return <EntityPill fit kind="status" label={categoryLabel(text)} accent={statusAccent({ category: text, name: text })} />;
-    case "tag":
-    case "person":
-      return (
-        <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4, maxWidth: "100%" }}>
-          {splitMany(cell).map((v) => (kind === "tag"
-            ? <EntityPill key={v} fit kind="tag" label={v} />
-            : <PersonChip key={v} text={v} />))}
-        </span>
-      );
-    case "date":
-      return <>{formatCardDate(text)}</>;
-    default:
-      return <>{text}</>;
+  if (kind === "status") {
+    return (
+      <EntityPill fit kind="status" label={text}
+        accent={statusAccent({ category: category == null ? undefined : cellText(category), name: text })} />
+    );
   }
+  if (kind === "tag" || kind === "person") {
+    return (
+      <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4, maxWidth: "100%" }}>
+        {splitMany(cell).map((v, i) => <ValueElement key={i} item={{ text: v, named: true }} kind={kind} />)}
+      </span>
+    );
+  }
+  if (kind === "text") return <>{text}</>;
+  return <ValueElement item={{ text, named: true }} kind={kind} />;
 }
 
 /** The kinds whose cell never wraps: a short value or one chip. */
@@ -1268,12 +1268,13 @@ const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayout
  * the kind of its card label.
  */
 export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) {
-  const labels = arr(data.columns).map((c) => str(c));
   const kinds = Array.isArray(data.kinds)
     ? data.kinds.map((k) => (typeof k === "string" ? k : undefined))
     : undefined;
-  const { shown, categoryAt, primaryAt } = gridColumns(labels, kinds);
   const rows = arr(data.rows).map((r) => (r ?? {}) as Data);
+  // A cell past the last label gets a "Column N" label, and never drops.
+  const labels = gridLabels(arr(data.columns).map((c) => str(c)), rows);
+  const { shown, categoryAt, primaryAt } = gridColumns(labels, kinds);
   const base = str(data.openBase, "/projects?task=");
   const [sort, setSort] = useState<{ col: number; dir: 1 | -1 } | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -1321,7 +1322,11 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
   );
   const titleOf = (r: Data) => {
     const href = taskHref(r.id, base);
-    const cell = <GridCell kind="text" cell={arr(r.cells)[primaryAt]} />;
+    // The title draws by its column's kind: a groups table by stage puts the
+    // stage first, and it reads as its label, never the key (review round 1).
+    const kind = shown.find((c) => c.index === primaryAt)?.kind ?? "text";
+    const cell = <GridCell kind={kind} cell={arr(r.cells)[primaryAt]}
+      category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />;
     return href ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{cell}</a> : cell;
   };
   const lead = shown.find((c) => c.role === "lead");
