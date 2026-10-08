@@ -975,11 +975,12 @@ async def run_detached(
                 thread_id=thread_id[:12],
             )
             try:
-                await push_event(thread_id, {
-                    "type": "RUN_ERROR",
-                    "message": str(exc),
-                    "code": type(exc).__name__,
-                })
+                # A code from the run-error vocabulary and a ref the log
+                # carries (acb_llm.run_errors, owner report 2026-10-08).
+                from acb_llm.run_errors import run_error_event
+                await push_event(thread_id, run_error_event(
+                    exc, where="stream_relay.detached_run",
+                ))
             except Exception:  # noqa: BLE001
                 pass
         finally:

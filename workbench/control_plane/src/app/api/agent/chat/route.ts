@@ -32,7 +32,10 @@
  *   {"type":"tool_start", "id":"…","name":"…","args":{}}
  *   {"type":"tool_end",   "id":"…","name":"…","result":"…","success":bool}
  *   {"type":"done",       "run_id":"…"}
- *   {"type":"error",      "content":"…"}
+ *   {"type":"error",      "content":"…", "code":"connection", "ref":"3f9c2a1b"}
+ *                       — `code` names the failure for the member's words
+ *                         (`lib/runErrors.ts`). `content` is the raw text,
+ *                         shown only inside the card's fold.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -46,6 +49,7 @@ import {
 import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
+import { codeForStatus } from "@/lib/runErrors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -451,7 +455,14 @@ async function translateAndPersistStream(
           }
           out = { type: "done", run_id: ev.runId || ev.run_id };
         } else if (t === "RUN_ERROR") {
-          out = { type: "error", content: String(ev.message ?? "Agent run error") };
+          // The server names the failure (`acb_llm.run_errors`). Pass its
+          // code and ref through, and never derive one from the text here.
+          out = {
+            type: "error",
+            content: String(ev.message ?? "Agent run error"),
+            ...(typeof ev.code === "string" ? { code: ev.code } : {}),
+            ...(typeof ev.ref === "string" ? { ref: ev.ref } : {}),
+          };
         }
 
         // Forward the Redis stream ID so the frontend can track the last
@@ -594,7 +605,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     userId = session?.user?.email ?? "";
     if (isAuthEnabled && !userId) {
       return new Response(
-        `data: ${JSON.stringify({ type: "error", content: "Unauthorized" })}\n\n`,
+        `data: ${JSON.stringify({ type: "error", content: "Unauthorized", code: "signed_out" })}\n\n`,
         { status: 401, headers: sseHeaders() }
       );
     }
@@ -704,7 +715,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return new Response(
-        `data: ${JSON.stringify({ type: "error", content: `Gateway unreachable: ${msg}` })}\n\n`,
+        `data: ${JSON.stringify({ type: "error", content: `Gateway unreachable: ${msg}`, code: "connection" })}\n\n`,
         { status: 502, headers: sseHeaders() }
       );
     }
@@ -725,7 +736,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!streamRes.ok || !streamRes.body) {
       const text = await streamRes.text().catch(() => `status ${streamRes.status}`);
       return new Response(
-        `data: ${JSON.stringify({ type: "error", content: text })}\n\n`,
+        `data: ${JSON.stringify({ type: "error", content: text, code: codeForStatus(streamRes.status) })}\n\n`,
         { status: streamRes.status, headers: sseHeaders() }
       );
     }
@@ -771,7 +782,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
         if (!gatewayRes.ok) {
           const text = await gatewayRes.text().catch(() => `status ${gatewayRes.status}`);
-          controller.enqueue(sseEvent({ type: "error", content: `Gateway error: ${text}` }));
+          controller.enqueue(sseEvent({ type: "error", content: `Gateway error: ${text}`, code: codeForStatus(gatewayRes.status) }));
           controller.close();
           return;
         }
@@ -887,7 +898,7 @@ function streamLiteLLM({
 
         if (!upstream.ok || !upstream.body) {
           const text = await upstream.text().catch(() => `status ${upstream.status}`);
-          controller.enqueue(sseEvent({ type: "error", content: `LiteLLM error: ${text}` }));
+          controller.enqueue(sseEvent({ type: "error", content: `LiteLLM error: ${text}`, code: codeForStatus(upstream.status) }));
           controller.close();
           return;
         }
@@ -942,7 +953,7 @@ function streamLiteLLM({
         controller.enqueue(sseEvent({ type: "done" }));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        controller.enqueue(sseEvent({ type: "error", content: `LiteLLM unreachable: ${msg}` }));
+        controller.enqueue(sseEvent({ type: "error", content: `LiteLLM unreachable: ${msg}`, code: "connection" }));
       } finally {
         controller.close();
       }

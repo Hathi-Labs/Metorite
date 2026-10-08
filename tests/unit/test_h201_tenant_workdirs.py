@@ -310,7 +310,10 @@ def test_a_stream_run_with_no_tenant_ends_in_a_run_error(disk, monkeypatch) -> N
         monkeypatch.setattr(executor, "load_agent", load)
         events = asyncio.run(_collect())
     errors = [e for e in events if e.get("type") == "RUN_ERROR"]
-    assert errors and errors[0]["code"] == "RunWorkspaceRefused", events
+    # `code` is the member-facing vocabulary (acb_llm.run_errors) since
+    # 2026-10-08. The class name moved to `error_type`.
+    assert errors and errors[0]["error_type"] == "RunWorkspaceRefused", events
+    assert errors[0]["code"] == "unknown"
     assert not state_root().exists()
     assert disk.snapshot() == before
 

@@ -30,6 +30,7 @@ import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
 import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, type StreamFold } from "@/lib/chatStream";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { settleFailedTurn, type SessionRefusedHandler } from "@/lib/chatTurnFailure";
+import { ChatRunError } from "@/lib/runErrors";
 import { chatModelField } from "@/lib/tierRouting";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
@@ -398,7 +399,8 @@ export function useAgentChat({
                 break;
               }
               case "error":
-                throw new Error(String(evt.content ?? "Stream error"));
+                // The code and the ref ride out of the loop with the raw text.
+                throw new ChatRunError(String(evt.content ?? "Stream error"), evt.code, evt.ref);
             }
         }
 
@@ -454,6 +456,8 @@ export function useAgentChat({
           content: userMsg.content,
           rawErr,
           status: failedStatus,
+          code: err instanceof ChatRunError ? err.code : null,
+          ref: err instanceof ChatRunError ? err.ref : null,
           onSessionRefused: onSessionRefusedRef.current,
         });
         if (outcome === "error") emitAgentEvent("onError", { error: rawErr, threadId });

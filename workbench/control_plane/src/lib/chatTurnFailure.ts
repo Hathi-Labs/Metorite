@@ -12,7 +12,7 @@
  * Fence: `railSessions.test.ts`, which runs this against the real chat store.
  */
 import { setSessionState } from "@/lib/chatStore";
-import { parseAgentError } from "@/lib/parseAgentError";
+import { runErrorView } from "@/lib/runErrors";
 import { nanoid } from "@/lib/chatStream";
 import { isSessionRefusal, isSessionRefusalText } from "@/lib/sessions";
 
@@ -32,6 +32,10 @@ export interface FailedTurn {
   rawErr: string;
   /** The HTTP status, or null for an error frame inside a stream. */
   status: number | null;
+  /** The server's code for the failure (`lib/runErrors.ts`), when it sent one. */
+  code?: string | null;
+  /** The server's short reference for the failure, when it sent one. */
+  ref?: string | null;
   onSessionRefused?: SessionRefusedHandler;
 }
 
@@ -46,7 +50,9 @@ export function settleFailedTurn(t: FailedTurn): "recovered" | "error" {
     }));
     return "recovered";
   }
-  const parsed = parseAgentError(t.rawErr);
+  // The words come from the server's code. Nothing here reads the raw text,
+  // which goes into the card's fold only (owner report, 2026-10-08).
+  const view = runErrorView({ raw: t.rawErr, code: t.code, ref: t.ref, status: t.status });
   setSessionState(t.threadId, (prev) => ({
     ...prev,
     error: t.rawErr,
@@ -55,7 +61,7 @@ export function settleFailedTurn(t: FailedTurn): "recovered" | "error" {
       .concat({
         id: nanoid(),
         role: "system",
-        content: `__ERROR__${JSON.stringify(parsed)}`,
+        content: `__ERROR__${JSON.stringify(view)}`,
         timestamp: Date.now(),
       }),
   }));
