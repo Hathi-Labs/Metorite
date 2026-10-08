@@ -1336,8 +1336,14 @@ class SandboxBroker:
     def is_sandbox_dir(self, path: str | os.PathLike[str]) -> bool:
         """True when *path* lies in a dir that a container mounts now, or did.
 
-        It fails closed (WS-43e). A path that does not resolve, and a dir list
-        that cannot be read, both answer ``True``, so host git skips the dir.
+        A path that does not resolve answers ``True``, so host git skips it.
+
+        A dir list that cannot be read (WS-43e, review P2-1) answers ``True``
+        while ``MAF_CODING_SCOPE`` names any target, so host git fails closed
+        when a container may run. With an empty scope, no container can start
+        (``acquire()`` refuses), so it answers ``False`` with an error line. A
+        bad ``sandbox_state_dir`` then never stops the push guard and the
+        commit scan of every run on a box that runs no sandbox.
         """
         try:
             real = Path(path).resolve()
@@ -1346,8 +1352,11 @@ class SandboxBroker:
         try:
             dirs = self._sandbox_dirs()
         except (OSError, SandboxError) as exc:
-            _log.warning("sandbox_broker.dir_list_unreadable", error=str(exc)[:300])
-            return True
+            scoped = bool(str(getattr(self._settings(), "maf_coding_scope", "") or "").strip())
+            _log.error(
+                "sandbox_broker.dir_list_unreadable", error=str(exc)[:300], fail_closed=scoped,
+            )
+            return scoped
         return any(real == d or real.is_relative_to(d) for d in dirs)
 
     def refuse_if_sandbox_dir(self, path: str | os.PathLike[str]) -> None:

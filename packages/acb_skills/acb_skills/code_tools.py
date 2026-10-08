@@ -430,7 +430,12 @@ async def _sweep_under_lock(root: Path, *, since: float) -> int:
 
         async with sb.get_broker().host_dir():
             return await _sweep_to_blob_store(root, since=since)
-    except Exception:
+    except Exception as exc:  # each command already mirrored its own files
+        from acb_common import get_logger
+
+        get_logger("acb_skills.code_tools").warning(
+            "code_task.maf_sweep_failed", error=str(exc)[:300],
+        )
         return 0
 
 

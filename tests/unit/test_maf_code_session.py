@@ -478,7 +478,10 @@ def test_two_orgs_get_two_containers_on_their_own_dirs(
     maf: Sandbox, gateway: FakeGateway, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     """Tenant isolation: the same agent and the same thread id in two orgs
-    give two containers, each with its own org label and its own mount."""
+    give two containers, each with its own org label and its own mount.
+
+    It uses tenant keys (``o:<org>``) to prove the broker's rule. D85 keeps
+    ``code_task`` from a shared agent today, so a live run is personal."""
     maf.set_scope(monkeypatch, f"code_task:{ORG_A},code_task:{ORG_B}")
     thread = new_thread()
     gateway.say([("run_command", {"command": "echo A"})], "REPORT A",

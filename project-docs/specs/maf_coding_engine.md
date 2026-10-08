@@ -1784,7 +1784,7 @@ until its PR merges.
 | WS-43b | The sandbox image and the Docker test workflow | Nothing | AGENT-SAFE. The box build is WS43-G2 |
 | WS-43c | The sandbox broker and the scope setting | WS-43b | AGENT-SAFE |
 | WS-43d | `run_command`, the file store, the safe opener, skills. ▶ Projects track step 1 (D86). Built, dark, merged in PR #603 | WS-43c, D85 (PR #598) for `covers()` | AGENT-SAFE |
-| WS-43e | `code_task` on a MAF harness session, and no host git | WS-43d | AGENT-SAFE |
+| WS-43e | `code_task` on a MAF harness session, and no host git. Built 2026-10-08, dark, in review | WS-43d | AGENT-SAFE |
 | WS-43f | `run_script` and `install_dependency` in the broker | WS-43e | AGENT-SAFE |
 | WS-43g | Egress proxy, the approved grant, the host firewall script | WS-43c, WS-43d | AGENT-SAFE. The flip and the firewall install are owner acts |
 | WS-43h | app-builder on the MAF harness | WS-43d, WS-43e | AGENT-SAFE. ⏸ Parked by D86 |
@@ -2391,7 +2391,7 @@ These facts change or add to the text above:
   outlives the host dir. So only CI shows that the run data is gone from a
   fresh container.
 
-### WS-43e — `code_task` on a MAF harness session, and no host git 🔲
+### WS-43e — `code_task` on a MAF harness session, and no host git 🔲 ▶ **Built 2026-10-08, dark, in review**
 
 **Scope.** `run_maf_code_session` in `code_session.py`, the scope switch in
 `code_tools.code_task`, the two middlewares, the guard
@@ -2431,6 +2431,55 @@ uv run pytest tests/unit/test_sandbox_exec_hygiene.py -q -rs -m sandbox_docker
 ```
 
 **Gate.** AGENT-SAFE. It ships dark.
+
+**Built 2026-10-08, dark, on branch `ws43e-code-task-harness`.** The audit
+gave GO-NARROWED. These facts change or add to the text above:
+
+- **Two parts move out.** The Custom Apps clauses of WS43-F13 and the `_git`
+  flags of `apps/durability.py` go to WS-43h, because its scope names both.
+  Middleware 2 (the Gemini 3 thought signature) waits on a WS-43a finding,
+  and it belongs in the Router adapter.
+- **Who reaches the MAF path.** D85 withholds `code_task` from a shared agent
+  until `covers()` is true, and `covers()` stays false for this target until
+  WS-43f. So today the MAF path reaches a personal agent only. A run with no
+  store key, such as the root `metorite` agent, gets the clear error of
+  done-when 3.
+- **The container comes first.** `run_maf_code_session` acquires the
+  container before the first model call, and holds its lease to the end. So
+  a broker refusal costs no model call, and no eviction stops a session
+  between two commands.
+- **The store is flat.** `WorkspaceFileStore` maps `agent-data/`, `inputs/`
+  and `outputs/` to themselves, because the `code_task` container mounts the
+  whole working dir read-write with no nested folder. It refuses `.run/`, a
+  root file and any name that starts with a dot. A write shows no card, as on
+  the Copilot path.
+- **The session keeps to its own tools.** It holds `run_command`,
+  `request_network_access`, the eight file tools and the three skill tools
+  (`sandbox_tools.CODE_TASK_SESSION_TOOLS`). A per-session pair of
+  `tool_guard` withholds any other tool from each request and refuses a call
+  to one. `code_task` itself keeps `open_world=True`, so a `no_egress` run
+  never holds it (H-236).
+- **The host git guard.** `sandbox_broker.host_git_allowed` is the one
+  check, and it calls `refuse_if_sandbox_dir`. An empty path answers no.
+  When the dir list cannot be read, the answer depends on the scope. With a
+  target in the scope, it answers no, so the check fails closed. With an
+  empty scope, no container can start. Then it answers yes and logs an error,
+  so a bad `sandbox_state_dir` never stops the push guard (review P2-1).
+  `executor._repair_dir` replaces `git_dir or effective_dir` at the
+  self-anneal and the self-mutation. That fallback gave them the sandbox dir
+  when `_git_dir_for` returned nothing. A self-mutation of a sandbox dir
+  costs the run none of its tries.
+- **The tier stays `tier-balanced`.** D90 sends code to `tier-powerful`, and
+  WS43-Q4 says `tier-balanced`. This slice keeps WS43-Q4 and does not decide
+  between them.
+- **A carry-over for WS-43f.** The sweep after a command does not skip a
+  name that starts with a dot. So a container can write
+  `agent-data/skills/<name>/.metorite-author`, and the sweep mirrors it. A
+  personal agent has one member, so no harm follows today. Before WS-43f
+  covers a shared agent, the sweep must refuse that marker (review P2-4).
+- **The `code_task` docstring is not changed.** It says that the session can
+  edit and commit a built-in skill. That is true only on the Copilot path.
+  The MAF path has no clone and no host commit.
 
 ### WS-43f — `run_script` and `install_dependency` in the broker 🔲
 

@@ -239,6 +239,33 @@ def test_an_unreadable_dir_list_fails_closed(
     assert sb.host_git_allowed(tmp_path) is False
 
 
+def test_an_unreadable_dir_list_with_an_empty_scope_keeps_host_git(
+    broker: sb.SandboxBroker, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Review P2-1: with no target in the scope, no container can start, so a
+    bad state dir never stops the push guard and the commit scan of every run."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "maf_coding_scope", "")
+
+    def broken() -> set[Path]:
+        raise sb.SandboxUnavailable("the state dir lies inside a mount root")
+
+    monkeypatch.setattr(broker, "_sandbox_dirs", broken)
+    assert sb.is_sandbox_dir(tmp_path) is False
+    assert sb.host_git_allowed(tmp_path) is True
+
+
+def test_the_default_state_dir_reads_the_dir_list(
+    monkeypatch: pytest.MonkeyPatch, short_tmp: Path,  # noqa: F811
+) -> None:
+    """The default settings never take the fail-closed branch."""
+    configure_env(monkeypatch, short_tmp)
+    fresh = sb.SandboxBroker(docker=FakeDocker())  # type: ignore[arg-type]
+    assert fresh._sandbox_dirs() == set()
+    assert fresh.is_sandbox_dir(short_tmp) is False
+
+
 def test_an_empty_path_is_never_a_git_dir() -> None:
     assert sb.host_git_allowed("") is False
     assert sb.host_git_allowed(None) is False
