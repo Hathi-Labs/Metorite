@@ -539,11 +539,12 @@ RestrictRealtime=yes
   start, and the gateway must not write the venv for that.
 - Four more units get `NoNewPrivileges=yes`, `PrivateTmp=yes` and
   `RestrictSUIDSGID=yes`. They are acb-workbench, acb-customer-console,
-  acb-smoke-chat and acb-whatsapp-bridge. acb-workbench and
-  acb-customer-console also get
-  `ProtectSystem=strict`, `ProtectHome=read-only` and `CapabilityBoundingSet=`,
-  with `.next/cache` writable for the workbench. acb-customer-console also
-  starts from the venv binary, for the same reason as the gateway.
+  acb-smoke-chat and acb-whatsapp-bridge.
+- The workbench and the customer console also get `ProtectSystem=strict`,
+  `ProtectHome=read-only` and `CapabilityBoundingSet=`. The workbench keeps
+  `.next/cache` writable.
+- The customer console also starts from the venv binary, for the same
+  reason as the gateway.
 - Copy the box's `acb-operator-console.service` into `deploy/hostinger/`
   with the workbench set.
 - `acb-pull` gets nothing. It needs sudo until BH-5.
