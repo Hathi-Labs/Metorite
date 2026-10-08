@@ -116,6 +116,9 @@ SPAN_KEYS: frozenset[str] = frozenset({"account_id", "chat_id", "contact", "grou
 #: It is the default ``limit`` of the thread route. 100 lines of about 60
 #: characters fit in one or two blocks of the body clip.
 SPAN_LIMIT = 100
+#: H-279. The messages that the next step of a cut span reads past the
+#: matches, for the messages that reach the chat between NARROW and READ.
+SPAN_SLACK = 20
 #: The highest ``limit`` of the thread route (``list_messages``, ``le=500``).
 #: The next step of a cut span names it.
 THREAD_LIMIT_MAX = 500
@@ -362,6 +365,7 @@ def _line(m: Mapping[str, Any], *, kept: bool) -> str:
 
 def is_whole_chat(
     filters: Mapping[str, Any], params: Mapping[str, Any], rows: Sequence[Mapping[str, Any]],
+    *, more: bool = False,
 ) -> bool:
     """True when a NARROW call found every message of ONE chat since ``after``.
 
@@ -372,9 +376,14 @@ def is_whole_chat(
     * every filter key is in :data:`SPAN_KEYS`;
     * every row is in the same chat;
     * with ``contact``, the name of that chat holds it. The route also matches
-      a sender's name, and then the rows are a part of the chat, not all of it.
+      a sender's name, and then the rows are a part of the chat, not all of it;
+    * with *more* (the route found more than 200 rows), ``chat_id`` names the
+      chat. The 200 rows are the newest only, and an older match can be in a
+      second chat that ``contact`` or ``group`` also chose (review P1).
     """
     if params.get("q") or not rows:
+        return False
+    if more and "chat_id" not in filters:
         return False
     if not set(filters) - {WORDS} <= SPAN_KEYS:
         return False
@@ -389,7 +398,9 @@ def is_whole_chat(
 
 def span_further(chat_id: str, found: int, more: bool) -> str:
     """The next step that reads the older messages of a cut span (H-279)."""
-    limit = THREAD_LIMIT_MAX if more else min(THREAD_LIMIT_MAX, max(found, 1))
+    # A few messages can reach the chat between NARROW and READ, and they
+    # push the oldest matches out of the newest `found` (review P2).
+    limit = THREAD_LIMIT_MAX if more else min(THREAD_LIMIT_MAX, max(found, 1) + SPAN_SLACK)
     return (
         f'To read the older messages, call read_whatsapp_chat with chat_id="{chat_id}" '
         f"and limit={limit}."
@@ -540,7 +551,7 @@ class WhatsAppNarrowSource:
         words = _search_words(str(params.get("q") or ""))
         # H-279: the filters chose every message of one chat. READ takes the
         # chat in one read, with no PICK and no windows.
-        span = is_whole_chat(filters, params, rows)
+        span = is_whole_chat(filters, params, rows, more=more)
         further = span_further(str(rows[0].get("chat_id")), len(rows), more) if span else ""
         # The route gives no total, so `more` says "more than", not a count.
         return Narrowed(candidates=[candidate_of(r, words) for r in rows],

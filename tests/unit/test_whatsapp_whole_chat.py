@@ -30,6 +30,10 @@ Mutations this file catches (R7), each one run red before the change:
   -> ``test_a_span_counts_only_what_it_read`` and
   ``test_a_long_chat_splits_into_whole_blocks``;
 * a part of a chat reads as a whole chat -> ``test_a_part_of_a_chat_is_not_a_span``;
+  more than 200 matches with no ``chat_id`` read as one chat ->
+  ``test_an_overflow_with_no_chat_id_is_not_a_span`` (review P1);
+* the seam keeps the oldest blocks of a span past the READ cap ->
+  ``test_the_seam_keeps_the_newest_blocks``;
 * a failed span read loses the matches -> ``test_a_failed_span_read_falls_back``;
 * two windows that overlap show a message twice, or a merged block cuts a
   kept line -> ``test_windows_that_overlap_merge`` and
@@ -204,6 +208,7 @@ async def test_a_whole_chat_is_one_read_with_no_pick(
         "The filters chose every item of one span, so no item was checked. "
         "Say that you read them all.")
     assert out.count("--- item ") == 1
+    assert "To read the older messages" not in out  # a full span needs no next step
     kept = _kept_lines(out)
     assert len(kept) == 27
     for r in rows:  # recall: every match is a kept line, once, with its text
@@ -227,21 +232,66 @@ async def test_the_count_line_states_the_cap(picks: list[int]) -> None:
         "40 older matches were not read.")
     assert lines[1] == (
         f'To read the older messages, call read_whatsapp_chat with chat_id="{GROUP}" '
-        "and limit=140.")
+        f"and limit={140 + ns.SPAN_SLACK}.")
     kept = "\n".join(_kept_lines(out))
     assert all(r["body_text"] + "\n" in kept + "\n" for r in rows[40:])
     assert not any(f"October stock line {k}\n" in kept + "\n" for k in range(40))
 
 
 async def test_an_overflow_says_more_than(picks: list[int]) -> None:
-    """More than 200 matches: no total is known, so the line says "more than"."""
+    """More than 200 matches of the chat that ``chat_id`` names: no total is
+    known, so the line says "more than"."""
     gateway = Gateway(_rows(GROUP, 230))
-    out = await _ask(gateway, WHOLE)
+    out = await _ask(gateway, {"chat_id": GROUP, "words": ""})
     lines = out.splitlines()
     assert lines[0].startswith("Read the newest 100 of more than 200 matches in full, as one span")
     assert lines[0].endswith("More than 100 older matches were not read.")
     assert lines[1].endswith(f'chat_id="{GROUP}" and limit={ns.THREAD_LIMIT_MAX}.')
     assert lines[2] == "More than 200 items matched. Narrow the filters to check the rest."
+    assert picks == []
+
+
+@pytest.mark.parametrize("filters", [WHOLE, {"group": True, "words": ""}])
+async def test_an_overflow_with_no_chat_id_is_not_a_span(
+    picks: list[int], filters: dict[str, Any],
+) -> None:
+    """Review P1. The newest 200 matches are all in one busy group, and a
+    second group holds older matches. Only ``chat_id`` pins ONE chat, so with
+    more than 200 matches ``contact`` and ``group`` make no span. The tool
+    never says that one chat holds every match."""
+    rows = _rows(GROUP, 230, start_day=10) + _rows(OTHER, 5, name="Dealers North East",
+                                                   start_day=1)
+    gateway = Gateway(rows)
+    out = await _ask(gateway, filters)
+    assert "as one span" not in out and "read_whatsapp_chat" not in out
+    assert picks == [200]
+    assert "More than 200 items matched. Narrow the filters to check the rest." in out
+
+
+class _ManyBlocks:
+    """A span source whose read gives more blocks than the READ cap."""
+
+    name = "many"
+    filter_keys = frozenset()
+
+    async def candidates(self, query: str, filters: Mapping[str, Any]) -> Narrowed:
+        return Narrowed([Candidate(id=f"m{k}") for k in range(30)], total=30, span=True,
+                        span_further="Read further with your other tools.")
+
+    async def read(self, ids: Sequence[str]) -> list[FullItem]:
+        raise AssertionError("a span takes read_span")
+
+    async def read_span(self, candidates: Sequence[Candidate]) -> list[FullItem]:
+        return [FullItem(id=f"m{k}", text=f"block {k}") for k in range(30)]
+
+
+async def test_the_seam_keeps_the_newest_blocks(picks: list[int]) -> None:
+    """The blocks come in reading order, so the tool keeps the LAST 25."""
+    out = await narrowing.make_narrow_tool(_ManyBlocks())(QUERY)
+    assert out.splitlines()[0].startswith("Read the newest 25 of 30 matches in full")
+    assert out.splitlines()[1] == "Read further with your other tools."
+    lines = out.splitlines()
+    assert "block 29" in lines and "block 5" in lines and "block 4" not in lines
     assert picks == []
 
 
@@ -317,7 +367,7 @@ def test_is_whole_chat_reads_each_condition() -> None:
     assert not ns.is_whole_chat(WHOLE, params, [])
     assert not ns.is_whole_chat({"contact": "Asha", "words": ""},
                                 ns.search_params(QUERY, {"contact": "Asha", "words": ""}), rows)
-    assert ns.SPAN_KEYS == {"account_id", "chat_id", "contact", "group", "after"}
+    assert {"account_id", "chat_id", "contact", "group", "after"} == ns.SPAN_KEYS
 
 
 async def test_a_failed_span_read_falls_back(picks: list[int]) -> None:

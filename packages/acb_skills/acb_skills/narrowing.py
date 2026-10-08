@@ -1071,7 +1071,8 @@ async def _span_answer(
     takes the steps of §3.3 to §3.6, so a failed span read costs no recall.
     """
     try:
-        got = list(await adapter.read_span(candidates) or [])[:READ_CAP]
+        # The blocks are in reading order, so the NEWEST are the last ones.
+        got = list(await adapter.read_span(candidates) or [])[-READ_CAP:]
     except Exception as exc:  # the steps of §3.3 to §3.6 take over
         _log.warning("narrowing.span_read_failed", source=source, error_type=type(exc).__name__)
         return None

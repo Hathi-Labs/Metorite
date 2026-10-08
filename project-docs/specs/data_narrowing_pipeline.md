@@ -335,6 +335,9 @@ The fix lives in the shared seam and in the adapter, and in no instruction:
    - every candidate is in one chat.
    - with `contact`, the chat name holds it. The route also matches a
      sender's name, and then the rows are a part of the chat.
+   - with more than 200 matches, `chat_id` names the chat. The 200 rows are
+     only the newest, so an older match can be in a second chat that
+     `contact` or `group` also chose.
 2. **A span skips PICK and the windows.** The tool calls the adapter's
    `read_span` (`narrowing.SpanSource`). The WhatsApp adapter sends ONE GET of
    the route of `read_whatsapp_chat`, with `limit` and no `around`. The route
@@ -346,8 +349,11 @@ The fix lives in the shared seam and in the adapter, and in no instruction:
 
    ```text
    Read the newest 100 of 140 matches in full, as one span in reading order, with no PICK step. The filters chose every item of one span, so no item was checked. 40 older matches were not read.
-   To read the older messages, call read_whatsapp_chat with chat_id="<chat>" and limit=140.
+   To read the older messages, call read_whatsapp_chat with chat_id="<chat>" and limit=160.
    ```
+
+   The limit of the next step is the match count plus 20 (`SPAN_SLACK`),
+   because new messages can reach the chat between NARROW and READ.
 
    When the read takes every match, the line starts "Read all 27 matches in
    full, as one span in reading order" and ends "Say that you read them all."
