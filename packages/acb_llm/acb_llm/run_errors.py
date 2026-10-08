@@ -27,6 +27,8 @@ the control plane holds the words for each code, and
 of the codes. ``ref`` is a short id that the same function writes to the log,
 so an operator can find the full failure from what the member reads out.
 ``message`` keeps the raw text, and the chat shows it only inside a fold.
+``error_type`` keeps the class name for logs and tests. The chat route drops
+it.
 
 ⚠️ AG-UI's ``code`` field carried a Python class name before this module
 (``type(exc).__name__``). Nothing read it. It now carries a code from the
@@ -146,16 +148,15 @@ def _code_of(exc: BaseException) -> str | None:
         return classify_status(status)
     if "ContentFilter" in type(exc).__name__:
         return "model_refused"
-    try:
-        import openai
-
-        # APITimeoutError IS an APIConnectionError, so it is asked first.
-        if isinstance(exc, openai.APITimeoutError):
-            return "timeout"
-        if isinstance(exc, openai.APIConnectionError):
-            return "connection"
-    except ImportError:  # pragma: no cover - openai is a dependency
-        pass
+    # The OpenAI SDK's errors, by class NAME in the MRO. Importing the SDK
+    # here would be a vendor import (tests/unit/test_no_direct_ai_vendor_calls
+    # refuses one in this package), and a name check needs no import.
+    # APITimeoutError IS an APIConnectionError, so it is asked first.
+    mro = {k.__name__ for k in type(exc).__mro__}
+    if "APITimeoutError" in mro:
+        return "timeout"
+    if "APIConnectionError" in mro:
+        return "connection"
     try:
         import httpx
 
@@ -240,6 +241,10 @@ def run_error_event(
         "code": code,
         "ref": ref,
     }
+    if exc is not None:
+        # For logs, tests and replays: the class that failed. The chat route
+        # does not forward it, so no member reads a class name.
+        event["error_type"] = type(exc).__name__
     if run_id:
         event["runId"] = run_id
     return event
