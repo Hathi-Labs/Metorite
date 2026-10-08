@@ -529,6 +529,13 @@ FIXTURES: list[tuple[str, str, list[str], list[str]]] = [
      "---------- Forwarded message ---------\nFrom: QA <qa@plant.example>\n"
      "Date: Wed, 7 Oct 2026\nSubject: NCR 2231\n\n" + ("Measured bore 12.08 mm. " * 30),
      ["tolerance on the bore"], ["NCR 2231", "Measured bore"]),
+    ("footer with no signature",
+     "Please ship the 40 units by Friday.\n\nThis email and any files transmitted "
+     "with it are confidential and intended solely for the use of the individual "
+     "to whom they are addressed. If you have received this email in error, "
+     "please notify the system manager.\n\nPlease consider the environment "
+     "before printing this email.",
+     ["ship the 40 units"], ["confidential", "environment"]),
 ]
 
 #: Mail that must come back whole.
