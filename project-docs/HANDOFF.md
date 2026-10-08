@@ -132,8 +132,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `data_narrowing_pipeline.md` §3.3a · D93
 - **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
 
-<<<<<<< HEAD
-### H-278 · A single route param can still move a gateway call to another route under its prefix · [AGENT]
+### H-279 · A WhatsApp question about one whole chat costs more on `narrow_and_read` · [AGENT]
+- **Check:** `rg -n "KNOWN_COSTS_MORE: .*Q2" evals/whatsapp_narrowing/run.py`.
+  A hit means this is open.
+- **Why.** In the scripted WhatsApp eval, Q2 asks for every message of one
+  group in three weeks. It costs 1.45 times today's path. NARROW finds 27
+  messages, more than the READ cap of 25, so PICK must run. The READ windows
+  of one chat also overlap, so READ gives some lines twice. With no PICK at
+  all, and a READ cap of 30, Q2 costs 1.447 times today. The eval names Q2 in
+  `KNOWN_COSTS_MORE`, so the rule of H-276 accepts it up to 1.45 and no more.
+- **Do.** Choose one of these, measure it on the eval, and remove Q2 from
+  `KNOWN_COSTS_MORE`:
+  1. READ merges the overlapping windows of one chat into one block.
+  2. The instructions tell the model to read one whole chat with
+     `read_whatsapp_chat`, and not with `narrow_and_read`.
+- **Authority:** `data_narrowing_pipeline.md` §3.3a and §9 N4 · D93
+- **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
+
+### H-280 · A single route param can still move a gateway call to another route under its prefix · [AGENT]
 - **Check:** `rg -n '\$\{(sessionId|subject|agentName|provider|threadId)\}' workbench/control_plane/src/app/api`.
   A hit that puts the raw param into a gateway URL, with no `refuseUnsafePath([...])`
   in that handler, means this is open.
@@ -161,38 +177,6 @@ line — never reclaim a number by deleting the other entry.
   which callers rely on a followed redirect, such as `/people/`.
 - **Authority:** verifier and diff review of the path guard PR, 2026-10-08
 - **Added:** 2026-10-08 · branch `proxy-path-guard`.
-
-### H-277 · `read_whatsapp_chat` reads the oldest messages of a chat, not the recent ones · [AGENT]
-- **Check:** `rg -n "ORDER BY sent_at ASC NULLS FIRST" apps/services/gateway/gateway/routes/whatsapp/transport/messages.py`.
-  A hit in `list_messages` with `LIMIT :limit` after it means this is open.
-- **Why.** The tool says that it reads "the recent messages". The route orders
-  `sent_at ASC` and then applies the limit, so a chat of more than 20 messages
-  gives its OLDEST 20. The agent then answers from old messages, and a recent
-  answer is not seen. WS-48 N4 found it, and the narrowing READ does not use
-  this form (it reads with `around`).
-- **Do.** Take the newest `limit` messages, then give them oldest first, in the
-  route or in the tool. Check the app's thread view first, because it reads
-  the same route. Add a test with a chat of more than `limit` messages.
-- **Authority:** `whatsapp_message_manager.md` · board row WS-20
-- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
-=======
-### H-279 · A WhatsApp question about one whole chat costs more on `narrow_and_read` · [AGENT]
-- **Check:** `rg -n "KNOWN_COSTS_MORE: .*Q2" evals/whatsapp_narrowing/run.py`.
-  A hit means this is open.
-- **Why.** In the scripted WhatsApp eval, Q2 asks for every message of one
-  group in three weeks. It costs 1.45 times today's path. NARROW finds 27
-  messages, more than the READ cap of 25, so PICK must run. The READ windows
-  of one chat also overlap, so READ gives some lines twice. With no PICK at
-  all, and a READ cap of 30, Q2 costs 1.447 times today. The eval names Q2 in
-  `KNOWN_COSTS_MORE`, so the rule of H-276 accepts it up to 1.45 and no more.
-- **Do.** Choose one of these, measure it on the eval, and remove Q2 from
-  `KNOWN_COSTS_MORE`:
-  1. READ merges the overlapping windows of one chat into one block.
-  2. The instructions tell the model to read one whole chat with
-     `read_whatsapp_chat`, and not with `narrow_and_read`.
-- **Authority:** `data_narrowing_pipeline.md` §3.3a and §9 N4 · D93
-- **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
->>>>>>> origin/main
 
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
