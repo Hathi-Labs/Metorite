@@ -133,10 +133,34 @@ Metorite has two memory layers that persist across conversations:
 
 ⚠️ The deploy starts `--profile core` only, so Neo4j does not run. WS-49 BH-8
 took the memory profile out of `acb.service`, because Neo4j answered on the
-public internet. Neo4j has no default password. It refuses to start until
-`NEO4J_PASSWORD` holds a real secret. Set that value through
-`scripts/secrets.sh`. Its ports bind to `127.0.0.1`, so use an SSH tunnel for
-the browser. To turn Graphiti on, set the env vars in `/opt/acb/app/.env`:
+public internet with the old compose default password. Its ports now bind to
+`127.0.0.1`, so use an SSH tunnel for the browser.
+
+**What the compose guard checks, and what it does not check.** The compose
+file has no default password. Its entrypoint guard stops the container when
+`NEO4J_PASSWORD` is empty, `neo4j` or `neo4j_dev_change_me`. The guard reads
+only the env. Neo4j sets the password from the env on the FIRST start of an
+empty data volume only (`set-initial-password`). After that, Neo4j keeps the
+password that the volume stores, whatever the env says. So a volume that
+started once with the old default keeps the old default.
+
+**The 2026-10-08 removal.** On the box, the coordinator archived the Neo4j
+volume to `/opt/acb/backups/neo4j-volume-20261008T172504Z.tar.zst` (root,
+0600) at 17:25 UTC. Then the coordinator removed the `acb-neo4j` container and
+the `acb_acb-neo4j-data` and `acb_acb-neo4j-logs` volumes. No Neo4j container
+and no Neo4j volume remain on the box.
+
+**Before you turn Neo4j on again, do these steps in this order:**
+
+1. Make sure that no old volume remains. Run
+   `docker volume ls -q | grep acb_acb-neo4j`. Expect no output.
+2. If a volume remains, remove it with the container, or change the password
+   in the running database. To remove it, run `docker rm -f acb-neo4j`, then
+   `docker volume rm acb_acb-neo4j-data acb_acb-neo4j-logs`. To change it, run
+   `cypher-shell -u neo4j -p '<old>' -d system "ALTER CURRENT USER SET PASSWORD FROM '<old>' TO '<new>'"`
+   inside the container. Then put the new value in `NEO4J_PASSWORD`.
+3. Set `NEO4J_PASSWORD` through `scripts/secrets.sh`, never by hand.
+4. Set the env vars in `/opt/acb/app/.env`:
 
 ```bash
 MEM0_ENABLED=true

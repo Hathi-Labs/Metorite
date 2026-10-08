@@ -12,10 +12,11 @@ wrote, so no repo file held it and no test could see it.
 
 This file pins four things:
 
-1. Every published port in the production compose file binds to the LITERAL
+1. Every published port in EVERY tracked compose file binds to the LITERAL
    ``127.0.0.1``. A host part from an env var also fails. The gateway writes
    ``.env`` at run time, so ``${POSTGRES_BIND:-127.0.0.1}`` let a gateway write
-   publish Postgres.
+   publish Postgres. The standalone meeting-bot file published ``"8080:8080"``
+   with an empty token, so it now needs ``MEETING_BOT_TOKEN`` to start.
 2. Neo4j has no default password, and its entrypoint guard refuses the bad
    ones. The compose file holds no ``${VAR:?}``: Compose interpolates the whole
    file before it reads profiles, so a required var breaks ``--profile core``
@@ -41,6 +42,7 @@ yaml = pytest.importorskip("yaml")
 
 _ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _ROOT / "infra" / "docker-compose.yml"
+_BOT_COMPOSE = _ROOT / "apps" / "services" / "meeting_bot" / "docker-compose.yml"
 _UNITS = _ROOT / "deploy" / "hostinger"
 _UNIT = _UNITS / "acb.service"
 _APPLY = _ROOT / "scripts" / "vps_apply.sh"
@@ -49,9 +51,13 @@ _DEPLOY = _UNITS / "deploy.sh"
 
 _LOOPBACK = "127.0.0.1"
 
-# Every host port the production file publishes today. A scan that finds
+# Every host port the tracked compose files publish today. A scan that finds
 # nothing passes the loopback test, so this floor makes an empty scan fail.
-_KNOWN_HOST_PORTS = {"5432", "6379", "7474", "7687", "3000", "8095", "6080"}
+_KNOWN_HOST_PORTS = {"5432", "6379", "7474", "7687", "3000", "8095", "6080", "8080"}
+
+# A compose file by its name: docker-compose*.yml, compose*.yaml and so on.
+_COMPOSE_NAME = re.compile(r"^(docker-)?compose[^/]*\.ya?ml$")
+_SKIP_DIRS = {".git", "node_modules", ".venv", ".next", "__pycache__"}
 
 # The values the Neo4j guard must refuse: empty, the image default, and the
 # old compose default that this repo published.
@@ -76,6 +82,29 @@ def _code_lines(text: str) -> list[str]:
 
 def _compose() -> dict[str, Any]:
     return yaml.safe_load(_read(_COMPOSE))
+
+
+def _compose_files() -> list[Path]:
+    """Every tracked compose file. ``git ls-files`` names the tracked set. A
+    tree with no git falls back to a walk that skips the derived dirs."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(_ROOT), "ls-files", "-z"],
+            capture_output=True,
+            check=True,
+            timeout=60,
+        ).stdout.decode("utf-8")
+        paths = [_ROOT / p for p in out.split("\0") if p]
+    except (OSError, subprocess.SubprocessError):
+        paths = []
+        for root, dirs, files in os.walk(_ROOT):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+            paths.extend(Path(root) / f for f in files)
+    return sorted(p for p in paths if _COMPOSE_NAME.match(p.name) and p.is_file())
+
+
+def _rel(path: Path) -> str:
+    return path.relative_to(_ROOT).as_posix()
 
 
 # ── 1. Published ports ──────────────────────────────────────────────────────
@@ -121,19 +150,51 @@ def _host_ports(compose: dict[str, Any]) -> set[str]:
     return ports
 
 
-def test_every_published_port_binds_to_loopback() -> None:
-    bad = _public_ports(_compose())
+@pytest.mark.parametrize("path", _compose_files(), ids=_rel)
+def test_every_published_port_binds_to_loopback(path: Path) -> None:
+    bad = _public_ports(yaml.safe_load(_read(path)) or {})
     assert bad == [], (
-        "these ports in infra/docker-compose.yml reach past the box. Docker "
-        "port rules go around ufw. Write the host part as the literal "
-        f"{_LOOPBACK}, with no env var: {bad}"
+        f"these ports in {_rel(path)} reach past the box. Docker port rules "
+        f"go around ufw. Write the host part as the literal {_LOOPBACK}, with "
+        f"no env var: {bad}"
     )
 
 
+def test_the_scan_finds_every_compose_file() -> None:
+    found = {_rel(p) for p in _compose_files()}
+    assert {_rel(_COMPOSE), _rel(_BOT_COMPOSE)} <= found, found
+
+
+def test_the_compose_name_match_can_fail() -> None:
+    for name in (
+        "docker-compose.yml",
+        "docker-compose.prod.yaml",
+        "compose.yml",
+        "compose.dev.yaml",
+    ):
+        assert _COMPOSE_NAME.match(name), name
+    for name in ("compose.ts", "my-compose.yml", "ComposePanel.tsx", "test_email_compose.py"):
+        assert not _COMPOSE_NAME.match(name), name
+
+
 def test_the_scan_sees_every_published_port() -> None:
-    found = _host_ports(_compose())
+    found: set[str] = set()
+    for path in _compose_files():
+        found |= _host_ports(yaml.safe_load(_read(path)) or {})
     missing = _KNOWN_HOST_PORTS - found
     assert not missing, f"the scan no longer sees these host ports: {sorted(missing)}"
+
+
+def test_the_standalone_meeting_bot_needs_its_token() -> None:
+    """``app/main.py`` checks the bearer token only when it is set, so an empty
+    token is an open API. The standalone file has no profiles, so the ``:?``
+    form stops only this file. A profile here would make that unsafe."""
+    data = yaml.safe_load(_read(_BOT_COMPOSE))
+    for name, svc in data["services"].items():
+        assert "profiles" not in (svc or {}), f"{name}: a profile makes :? unsafe here"
+    token = data["services"]["meeting-bot"]["environment"]["MEETING_BOT_TOKEN"]
+    assert token.startswith("${MEETING_BOT_TOKEN:?"), token
+    assert data["services"]["meeting-bot"]["ports"] == ["127.0.0.1:8080:8080"]
 
 
 def test_the_port_fence_can_fail() -> None:

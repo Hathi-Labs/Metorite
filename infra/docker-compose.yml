@@ -103,6 +103,9 @@ services:
     # The guard: no password, the image default, or the old compose default
     # stops the container before Neo4j sets an initial password. Then it hands
     # over to the image's own entrypoint, unchanged.
+    # ⚠️ The guard reads ONLY the env. Neo4j applies the env password on the
+    # first start of an empty volume. A volume that started once keeps its
+    # stored password. Read deploy/hostinger/README.md before a re-enable.
     entrypoint:
       - /bin/sh
       - -c

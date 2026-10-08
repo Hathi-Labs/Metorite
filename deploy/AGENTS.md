@@ -21,7 +21,8 @@ Hostinger VPS deployment scripts, Caddy reverse proxy config, and CI/CD pipeline
 - `scripts/vps_apply.sh` installs every `hostinger/*.service` and `*.timer` file when it changes (BO-23). A unit that is not a repo file is drift
 - Docker Compose boots with `--profile core` only (Postgres, Redis). The memory profile (Neo4j) is OFF. WS-49 BH-8 took it out after Neo4j answered on the public internet
 - Every published port in `infra/docker-compose.yml` binds to the literal `127.0.0.1`. Docker port rules go around ufw. Fence: `tests/unit/test_compose_ports_local.py`
-- Neo4j has no default password. It refuses to start without a real `NEO4J_PASSWORD`, which goes to the box through `scripts/secrets.sh`
+- Every published port in every tracked compose file binds to the literal `127.0.0.1`. That includes `apps/services/meeting_bot/docker-compose.yml`, which also needs `MEETING_BOT_TOKEN` to start
+- Neo4j has no default password in compose. Its guard reads only the env. An existing data volume keeps its stored password, so read `hostinger/README.md` (Memory system) before you turn Neo4j on again. `NEO4J_PASSWORD` goes to the box through `scripts/secrets.sh`
 - Neo4j is required for Graphiti bi-temporal knowledge graph (GRAPHITI_ENABLED=true)
 - **LLM routing: gateway /v1/chat/completions reads keys from encrypted Postgres — no separate proxy**
 - Provider keys live in the encrypted `provider_keys` table; seeded from `.env` on first boot
