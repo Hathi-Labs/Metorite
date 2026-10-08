@@ -267,7 +267,7 @@ def _rules(ds: Dataset, results: dict[str, dict[str, PathResult]],
     searches = [r for r in after_requests if r.path == "/whatsapp/search"]
     not_fixed = [r.params for r in searches
                  if r.params.get("hybrid") != ["true"] or r.params.get("websearch") != ["true"]
-                 or r.params.get("limit") != ["200"]]
+                 or r.params.get("limit") != ["201"]]
     over: list[str] = []
     off_route: list[str] = []
     from acb_skills import narrowing
@@ -287,7 +287,7 @@ def _rules(ds: Dataset, results: dict[str, dict[str, PathResult]],
         "acts_as_the_member": {"pass": members == [ds_mod.MEMBER], "detail": members},
         "no_other_members_chats": {"pass": not leaked, "detail": leaked},
         "real_route_parameters": {"pass": not unknown, "detail": unknown},
-        "narrow_is_hybrid_websearch_200": {"pass": bool(searches) and not not_fixed,
+        "narrow_is_hybrid_websearch_201": {"pass": bool(searches) and not not_fixed,
                                            "detail": not_fixed},
         "read_only_kept_within_cap": {"pass": not over, "detail": over},
         # READ changes no state: a GET of the thread route with `around`, and

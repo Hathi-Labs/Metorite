@@ -377,7 +377,7 @@ by name through `narrowing.FilterRefused`, because the route drops a date
 that it cannot parse with no error.)*
 
 *(Amended by WS-48 N4, 2026-10-08. The WhatsApp row as built: NARROW is
-`GET /whatsapp/search` with `hybrid=true`, `websearch=true` and `limit=200`.
+`GET /whatsapp/search` with `hybrid=true`, `websearch=true` and `limit=201`.
 READ is the route of `read_whatsapp_chat` with `around` and `window`. The
 filter keys are `account_id`, `chat_id`, `contact`, `group`, `after`,
 `before`, `from_me`, `has_media` and `words`. The §9 N4 build notes say
@@ -419,6 +419,11 @@ Checked 196 of 212 matches. Kept 47, dropped 153, and 4 were not checked (kept).
 
 *(Amended by WS-48 N1, 2026-10-07. The old example did not add up. The
 numbers now obey the two sums below.)*
+
+*(Amended by WS-48 N4, 2026-10-08. A source with no exact total sets
+`Narrowed.more` when it saw more matches than it gave. The count line then
+reads "of more than 200 matches", and the "More than 200 items matched" line
+follows. It never prints a total that nobody counted.)*
 
 - "Checked" counts the questions that got an answer.
 - "Kept" includes the items that were not checked. So "Checked" plus "not
@@ -838,6 +843,13 @@ dispatch of N4 asked for one, so N4 adds `evals/whatsapp_narrowing/`.)*
   guidance. So PICK costs more than it saves here. The saving that remains is
   the fewer requests. H-275 holds a rule for short items. These are stub
   numbers, and no measured saving is claimed. H-274 holds the live run.
+- **The review fixes.** The route gives no total, so a page of 200 hid an
+  overflow, and the count line never told the model to narrow (review P1).
+  NARROW now asks for 201 rows, keeps 200, and sets `Narrowed.more` (N1, §6.1)
+  on a 201st row. The search route takes `limit` up to 201 for that probe. A
+  question of stop words only, with no filter, is refused by name before any
+  call. `group: false` keeps chats with one person, so neither value of
+  `group` keeps a broadcast chat.
 - **A finding outside N4.** `read_whatsapp_chat` reads the OLDEST 20
   messages of a chat, because its route orders `sent_at ASC` and then applies
   the limit. The narrowing READ does not use that form. H-276 holds it.

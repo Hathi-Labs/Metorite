@@ -107,7 +107,8 @@ uv run python -m evals.whatsapp_narrowing.dataset --write
    - No message of the other member reaches a response.
    - Each query parameter is a real parameter of its route. The runner reads
      each route's own signature.
-   - Each NARROW call sends `hybrid=true`, `websearch=true` and `limit=200`.
+   - Each NARROW call sends `hybrid=true`, `websearch=true` and `limit=201`: 200
+     candidates and one probe row that says more matched.
    - READ reads only messages that NARROW found, and at most 25.
    - READ changes no state. Every request of both paths is a GET, and each
      READ is the thread route with `around` and the adapter's window.

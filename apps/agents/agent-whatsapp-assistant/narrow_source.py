@@ -88,11 +88,13 @@ WORDS = "words"
 FILTER_KEYS: frozenset[str] = frozenset(PARAMS) | {WORDS}
 
 #: The fixed parameters of every NARROW call (§4: ``hybrid=true``). The
-#: ``websearch`` grammar lets one search hold ``a OR b``.
+#: ``websearch`` grammar lets one search hold ``a OR b``. The route gives no
+#: total, so NARROW asks for ONE row past the cap: a 201st row means that more
+#: than 200 matched, and the count line says so (review P1, WS-48 N4).
 FIXED_PARAMS: dict[str, str] = {
     "hybrid": "true",
     "websearch": "true",
-    "limit": str(MAX_CANDIDATES),
+    "limit": str(MAX_CANDIDATES + 1),
 }
 
 #: The messages of context on each side of a kept message (a small window).
@@ -233,6 +235,12 @@ def search_params(query: str, filters: Mapping[str, Any]) -> dict[str, Any]:
     text = search_text(query, filters)
     if text:
         params["q"] = text
+    elif len(params) == len(FIXED_PARAMS):
+        # No search word and no filter: the route would refuse the call, and
+        # the model would read "could not search" (review note, WS-48 N4).
+        raise FilterRefused(
+            "the question holds no search word. Put the search words in words, "
+            "or set a filter.")
     return params
 
 
@@ -342,10 +350,12 @@ class WhatsAppNarrowSource:
         params = search_params(query, filters)
         data = await self._get(SEARCH_PATH, params)
         rows = [r for r in (data if isinstance(data, list) else []) if isinstance(r, Mapping)]
+        more = len(rows) > MAX_CANDIDATES  # the probe row: more matched
         rows = rows[:MAX_CANDIDATES]
         words = _search_words(str(params.get("q") or ""))
-        # The route gives a list and no total. A full page may hide more.
-        return Narrowed(candidates=[candidate_of(r, words) for r in rows], total=len(rows))
+        # The route gives no total, so `more` says "more than", not a count.
+        return Narrowed(candidates=[candidate_of(r, words) for r in rows],
+                        total=len(rows), more=more)
 
     async def read(self, ids: Sequence[str]) -> list[FullItem]:
         """READ: each kept message with :data:`READ_WINDOW` messages of context

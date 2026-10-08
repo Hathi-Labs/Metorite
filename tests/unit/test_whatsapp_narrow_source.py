@@ -151,7 +151,8 @@ class Gateway:
     async def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         self.calls.append((path, dict(params or {})))
         if path == ns.SEARCH_PATH:
-            return self.rows
+            # The route applies its limit, and gives no total.
+            return self.rows[:int((params or {}).get("limit") or 50)]
         prefix, suffix = "/whatsapp/chats/", "/messages"
         if path.startswith(prefix) and path.endswith(suffix):
             chat = path[len(prefix):-len(suffix)]
@@ -290,7 +291,8 @@ def test_each_target_is_a_real_parameter_of_the_route() -> None:
     assert sent - set(route) == set(), sorted(sent - set(route))
     # The page size is inside the route's own bound.
     bound = [m.le for m in route["limit"].default.metadata if hasattr(m, "le")]
-    assert bound and bound[0] >= narrowing.MAX_CANDIDATES
+    # One row past the cap, so NARROW sees that more matched (review P1).
+    assert bound and bound[0] >= narrowing.MAX_CANDIDATES + 1
 
     from gateway.routes.whatsapp.transport import messages as messages_mod
 
@@ -311,7 +313,7 @@ def test_the_filter_keys_are_the_keys_of_n4() -> None:
 def test_the_fixed_parameters_are_hybrid_websearch_and_200() -> None:
     params = ns.search_params(QUERY, {})
     assert params["hybrid"] == "true" and params["websearch"] == "true"
-    assert params["limit"] == "200"
+    assert params["limit"] == "201"  # 200 and one probe row (review P1)
 
 
 @pytest.mark.parametrize(("filters", "expected"), [
@@ -452,12 +454,38 @@ async def test_a_deep_match_reaches_the_pick_state(
 async def test_at_most_200_candidates_reach_pick(
     monkeypatch: pytest.MonkeyPatch, door: Door,
 ) -> None:
+    """The route gives no total. The probe row says that more than 200
+    matched, and the count line says "more than", never a false total."""
     gateway = Gateway([_row(n) for n in range(1, 251)])
     door.rule = lambda n: ("no", 0.95)
     out = await _tool(monkeypatch, gateway)(QUERY)
-    assert out.startswith("Checked 200 matches. Kept 0, dropped 200.")
+    assert out.startswith("Checked 200 of more than 200 matches. Kept 0, dropped 200.")
+    assert "More than 200 items matched. Narrow the filters to check the rest." in out
     assert sum(len(b["questions"]) for b in door.bodies) == 200
     assert max(len(b["questions"]) for b in door.bodies) == 16
+
+
+async def test_a_full_page_of_exactly_200_is_not_an_overflow(
+    monkeypatch: pytest.MonkeyPatch, door: Door,
+) -> None:
+    gateway = Gateway([_row(n) for n in range(1, 201)])
+    door.rule = lambda n: ("no", 0.95)
+    out = await _tool(monkeypatch, gateway)(QUERY)
+    assert out.startswith("Checked 200 matches. Kept 0, dropped 200.")
+    assert "More than" not in out
+
+
+async def test_a_question_of_stop_words_only_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch, door: Door,
+) -> None:
+    """With no search word and no filter the route would refuse the call. The
+    model gets a reason it can act on, not "could not search"."""
+    gateway = Gateway([_row(1)])
+    out = await _tool(monkeypatch, gateway)("What did they do about it?")
+    assert out.startswith("narrow_and_read: the question holds no search word.")
+    assert gateway.calls == [] and door.bodies == []
+    # A filter alone is a real search.
+    assert "q" not in ns.search_params("What did they do about it?", {"group": True})
 
 
 # ── §3.6: READ reads only the kept items, within the caps ───────────────────

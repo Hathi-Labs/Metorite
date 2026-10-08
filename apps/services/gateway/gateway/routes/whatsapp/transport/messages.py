@@ -182,7 +182,9 @@ def _like(value: str) -> str:
 async def search_messages(
     q: str | None = None,
     account_id: str | None = None,
-    limit: int = Query(50, le=200),
+    # 201, not 200: a caller that wants 200 rows asks for one more, to see
+    # that more matched (WS-48 N4). The route returns no total.
+    limit: int = Query(50, le=201),
     hybrid: bool = Query(
         False, description="Blend semantic (vector) similarity into the ranking"),
     websearch: bool = False,
