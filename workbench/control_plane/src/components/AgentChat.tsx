@@ -25,6 +25,8 @@ import FileUploadButton from "@/components/FileUploadButton";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import SuggestionPills from "@/components/SuggestionPills";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
+import AskPin from "@/components/AskPin";
+import { HITL_TARGET, pendingAsk } from "@/lib/askPin";
 import {
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
@@ -969,12 +971,18 @@ export default function AgentChat({
   // filters incoming events by threadId; this handles the card that was
   // ALREADY showing when the user switched.  Reset-during-render (not an
   // effect) — React's "adjusting state when a prop changes" pattern.
+  // The `request_id`s of blocking generative-UI asks the member answered in
+  // this session. The pin above the composer reads it (`lib/askPin.ts`), so
+  // an answered picker stops waiting before the run's next event lands.
+  const [answeredAsks, setAnsweredAsks] = useState<ReadonlySet<string>>(() => new Set());
+
   const [hitlSession, setHitlSession] = useState(sessionId);
   if (hitlSession !== sessionId) {
     setHitlSession(sessionId);
     dispatchConfirmation({ type: "reset" });
     setElicitation(null);
     setUserInput(null);
+    setAnsweredAsks(new Set());
   }
 
   // POST a blocking-HITL answer to /api/agent/respond-input.
@@ -1360,6 +1368,11 @@ export default function AgentChat({
    *  back to sending the answer as a normal message so it's never lost. */
   const handleGenUiHitl = useCallback(
     (requestId: string, answer: string) => {
+      setAnsweredAsks((prev) => {
+        const next = new Set(prev);
+        next.add(requestId);
+        return next;
+      });
       postRespondInput(
         { request_id: requestId, answer, was_freeform: true },
         () => submitText(answer),
@@ -1475,8 +1488,10 @@ export default function AgentChat({
 
   const renderHitlCards = (): React.ReactNode => {
     if (!hasConfirmations && !elicitation && !userInput) return null;
+    // One mark for the group: the pin above the composer scrolls here
+    // while a card waits (`lib/askPin.ts`, spec §24 rule 1).
     return (
-      <>
+      <div data-chat-ask={HITL_TARGET} className="space-y-2 outline-none">
         {hasConfirmations && (
           <ConfirmationQueue cards={confirmations.cards} onAnswer={answerConfirmation} />
         )}
@@ -1560,9 +1575,21 @@ export default function AgentChat({
             }}
           />
         )}
-      </>
+      </div>
     );
   };
+
+  // The element that waits on the member, for the pin above the composer
+  // (spec §24 rule 1). It reads the queue and the question state above, and
+  // keeps none of its own.
+  const waiting = pendingAsk({
+    confirmations: confirmations.cards,
+    elicitation,
+    userInput,
+    messages,
+    runActive: isRunActive,
+    answered: answeredAsks,
+  });
 
   // The assistant turn the HITL card anchors to = the last assistant message
   // (the parked run streams into it). Used to render the card inline there.
@@ -1826,6 +1853,8 @@ export default function AgentChat({
           }
           return null;
         })()}
+        {/* The element that waits on the member, while it is out of view. */}
+        <AskPin ask={waiting} threadRef={threadRef} />
         {queuedCount > 0 && (
           <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-[11px] text-warning">
             <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />

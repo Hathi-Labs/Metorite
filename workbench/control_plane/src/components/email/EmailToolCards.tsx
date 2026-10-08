@@ -39,6 +39,7 @@ import { LabelChip } from "@/app/email/components/LabelChip";
 import { useEmailStore } from "@/app/email/lib/emailStore";
 import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
+import { placementOf } from "@/lib/chatPlacement";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -206,6 +207,43 @@ function renderCard(
       : <ManageInboxCard event={e} />;
   }
   return <ActionResultCard event={e} />;
+}
+
+/** Every tool name this file routes. The placement fence reads it. */
+export const EMAIL_CARD_TOOLS: readonly string[] = [
+  ...DRAFT_TOOLS,
+  ...RULE_TOOLS,
+  ...LIST_TOOLS,
+  READ_TOOL,
+  READ_THREAD_TOOL,
+  SETTINGS_TOOL,
+  GROUPS_TOOL,
+  ...INFO_TOOLS,
+  ...PATTERN_TOOLS,
+  ...Object.keys(ACTION_META),
+];
+const EMAIL_CARD_SET: ReadonlySet<string> = new Set(EMAIL_CARD_TOOLS);
+
+/**
+ * The receipt of an email READ for the trail (`ThinkingContainer`), or null.
+ * Spec `projects_ai_chat.md` §24 rule 2: a read draws under its step, and
+ * never as a card after the answer. Each read draws its own card there: the
+ * merged list and the folded reads were for a flow with no steps to hold
+ * them.
+ */
+export function emailEvidence(e: ToolEvent, accountId?: string | null): React.ReactNode | null {
+  if (e.status !== "done") return null;
+  if (!EMAIL_CARD_SET.has(e.name) || placementOf(e.name) !== "evidence") return null;
+  const none = noActionOf(e.result);
+  if (none) return <NoActionCard event={e} kind={none} />;
+  if (LIST_TOOLS.has(e.name)) return <EmailListCard events={[e]} />;
+  if (e.name === READ_TOOL) return <EmailPreviewCard event={e} />;
+  if (e.name === READ_THREAD_TOOL) return <ThreadCard event={e} accountId={accountId} />;
+  if (PATTERN_TOOLS.has(e.name)) return <PatternListCard event={e} meta={patternMeta(e)} />;
+  if (e.name === "get_rules_and_settings") return <RulesOverviewCard event={e} accountId={accountId} />;
+  if (e.name === "list_labels") return <LabelsCard event={e} />;
+  if (INFO_TOOLS.has(e.name)) return <InfoResultCard event={e} />;
+  return null;
 }
 
 /** Folded "Read N message(s)" card for a run of read_email context calls — one
@@ -389,6 +427,8 @@ export default function EmailToolCards({
     }
   };
   for (const e of all) {
+    // A read draws in its step (`emailEvidence`, spec §24), never here.
+    if (placementOf(e.name) === "evidence") continue;
     // Fold consecutive read_email context calls into one group — dropped
     // entirely when a thread card is present (subsumed by the thread).
     if (e.status === "done" && e.name === READ_TOOL) {
