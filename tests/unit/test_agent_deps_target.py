@@ -37,7 +37,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from acb_common import child_env as seam
 
 ROOT = Path(__file__).resolve().parents[2]
