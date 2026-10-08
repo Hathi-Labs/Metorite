@@ -850,15 +850,18 @@ def _sync_new_skills(agent_dir: Path, settings: Any) -> None:
         tool_defs.append(
             f"\nasync def {fn}(*args: str) -> str:\n"
             f'    """Run {script.stem} ({skill_name}). Pass CLI args as strings."""\n'
-            f"    import asyncio as _a, os as _os, subprocess as _s, sys as _sys\n"
+            f"    import asyncio as _a, subprocess as _s, sys as _sys\n"
             f"    from pathlib import Path as _P\n"
+            # WS-49 BH-1: the script gets the one allowlisted env, never the
+            # gateway's. agents.py runs in the gateway, so acb_common imports.
+            f"    from acb_common.child_env import child_env as _child_env\n"
             f"    _d = _P(__file__).parent.resolve()\n"
             f'    _cmd = [_sys.executable, "-X", "utf8", str(_d / "{rel}")] + list(args)\n'
-            f"    _env = {{**_os.environ, \"PYTHONUTF8\": \"1\", \"PYTHONIOENCODING\": \"utf-8\"}}\n"
-            f"    _r = await _a.to_thread(\n"
-            f"        _s.run, _cmd, capture_output=True, encoding=\"utf-8\", errors=\"replace\",\n"
+            f"    _env = _child_env(extra={{\"PYTHONUTF8\": \"1\", \"PYTHONIOENCODING\": \"utf-8\"}})\n"
+            f"    _r = await _a.to_thread(lambda: _s.run(\n"
+            f"        _cmd, capture_output=True, encoding=\"utf-8\", errors=\"replace\",\n"
             f"        cwd=str(_d), env=_env,\n"
-            f"    )\n"
+            f"    ))\n"
             f"    if _r.returncode != 0:\n"
             f"        raise RuntimeError(_r.stderr[:500] or \"Script exited non-zero\")\n"
             f"    return _r.stdout or \"(no output)\"\n"

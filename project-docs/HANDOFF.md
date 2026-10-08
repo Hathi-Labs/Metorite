@@ -149,6 +149,24 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `data_narrowing_pipeline.md` §3.3a and §9 N4 · D93
 - **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
 
+### H-280 · Old auto-synced tool wrappers in the agent clones still give a script the whole env · [AGENT] · security
+- **Check:** on the box, run
+  `ssh metorite 'grep -l "\*\*_os.environ" /home/acb/.acb/agents/repos/*/agents.py | wc -l'`.
+  A count above 0 means this is open.
+- **Why.** The loader writes a tool wrapper into an agent repo's `agents.py`
+  for each new skill script (`acb_skills/loader.py`, `_sync_new_skills`).
+  Before WS-49 BH-1, the wrapper started the script with
+  `env={**_os.environ, …}`, so the script got every secret of the gateway.
+  BH-1 changes the template to `child_env(extra=…)`. A wrapper that a clone
+  already holds keeps the old line until someone edits it.
+- **Do.**
+  1. Count the wrappers on the box with the Check, and list each repo.
+  2. In each repo, replace the `_env = {**_os.environ, …}` line with the
+     new template line, and commit it through the normal approval inbox.
+  3. Run the Check again. It must give 0.
+- **Authority:** `specs/box_hardening.md` §5 BH-1 · H-270
+- **Added:** 2026-10-08 · branch `sec-bh1-child-env` (WS-49 BH-1, fix round 1).
+
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
   While it prints nothing, this is open.

@@ -129,7 +129,7 @@ async def test_t2_build_gets_its_two_dirs(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert env["AGENTS_CLONE_DIR"] == "/srv/agents"
 
 
-async def test_gh_auth_status_alone_gets_gh_token(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_gh_auth_status_alone_gets_the_gh_names(monkeypatch: pytest.MonkeyPatch) -> None:
     from gateway.routes import integrations
 
     monkeypatch.setenv("GH_TOKEN", "gho_bh1_status")
@@ -144,8 +144,9 @@ async def test_gh_auth_status_alone_gets_gh_token(monkeypatch: pytest.MonkeyPatc
     await integrations.github_account(user=SimpleNamespace(email="a@b.c"))
     args, env = seen[0]
     assert args == ["gh", "auth", "status"]
-    _clean(env, "GH_TOKEN")
+    _clean(env, "GH_TOKEN", "GITHUB_TOKEN")
     assert env["GH_TOKEN"] == "gho_bh1_status"
+    assert env["GITHUB_TOKEN"] == "ghp_bh1canary"  # gh reads both names (spec §2.2)
 
     seen.clear()
     monkeypatch.setattr(integrations, "_refuse_provider_key_without_byok", lambda _keys: None)

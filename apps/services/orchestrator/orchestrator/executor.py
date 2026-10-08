@@ -118,6 +118,8 @@ def _tier2_copilot_client(agent_settings: dict[str, Any]) -> Any:
     from copilot import CopilotClient as _CopilotClient
     from copilot import RuntimeConnection as _RuntimeConnection
 
+    from orchestrator.copilot_agent import copilot_token
+
     cli_opts: dict[str, Any] = {
         "connection": _RuntimeConnection.for_stdio(
             path=agent_settings.get("cli_path") or None,
@@ -127,12 +129,7 @@ def _tier2_copilot_client(agent_settings: dict[str, Any]) -> Any:
     log_level = agent_settings.get("log_level")
     if log_level:
         cli_opts["log_level"] = log_level
-    token = (
-        os.environ.get("COPILOT_GITHUB_TOKEN")
-        or os.environ.get("GITHUB_COPILOT_TOKEN")
-        or os.environ.get("GITHUB_TOKEN")
-        or ""
-    ).strip()
+    token = copilot_token()
     if token:
         cli_opts["github_token"] = token
     return _CopilotClient(**cli_opts, env=copilot_env())

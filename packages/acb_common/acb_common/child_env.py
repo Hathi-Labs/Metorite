@@ -10,8 +10,7 @@ So every spawn in the gateway, the orchestrator and ``packages/`` passes
 ``env=`` from this module. ``child_env()`` gives a short allowlist of names
 that hold no secret. A call site that needs one more name adds it by value,
 with ``extra=``, in code that a reviewer reads. ``env_values(...)`` reads
-named values for ``extra=``. This module never copies a name by a pattern
-that can match a secret.
+named values for ``extra=``. This module never copies a name by a pattern.
 
 * ``child_env(extra=...)`` is the base. Use it for ``git``, ``uv``,
   ``ffmpeg``, ``python`` and ``node`` children.
@@ -35,7 +34,6 @@ from collections.abc import Mapping
 __all__ = [
     "AGENT_PATH_VALUES",
     "BASE_NAMES",
-    "BASE_PREFIXES",
     "COPILOT_NAMES",
     "DOCKER_NAMES",
     "child_env",
@@ -45,7 +43,9 @@ __all__ = [
 ]
 
 #: The names every child gets, when they are set. None of them holds a
-#: secret. The three Python names are here and not call-site extras (spec fix
+#: secret. Each one is a literal name, and no name passes by a pattern (BH-D2,
+#: fix round 1). So ``XDG_RUNTIME_DIR`` never passes: it points at
+#: ``/run/user/<uid>``, the user systemd manager, which is path P4. The three Python names are here and not call-site extras (spec fix
 #: E3). Each one is a path. ``pdf_render`` and ``run_script`` start Python
 #: children that need ``VIRTUAL_ENV`` and ``PYTHONPATH``. BH-2 sets
 #: ``UV_CACHE_DIR`` for every ``uv`` child, and without it ``uv`` falls back
@@ -65,19 +65,18 @@ BASE_NAMES: tuple[str, ...] = (
     "https_proxy",
     "no_proxy",
     "NODE_EXTRA_CA_CERTS",
+    "LC_ALL",
+    "LC_CTYPE",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
     "VIRTUAL_ENV",
     "PYTHONPATH",
     "UV_CACHE_DIR",
 )
-
-#: The name families every child gets. A family name that looks like a
-#: secret is still refused (``_SECRET_SHAPED``).
-BASE_PREFIXES: tuple[str, ...] = ("LC_", "XDG_", "SSL_CERT_")
-
-#: Names that a prefix matches and that no child gets. ``XDG_RUNTIME_DIR``
-#: points at ``/run/user/<uid>``, the user systemd manager, which is path P4
-#: of the spec. ``systemd-run --user`` finds the manager through it.
-_REFUSED_NAMES: frozenset[str] = frozenset({"XDG_RUNTIME_DIR"})
 
 #: The names a Windows dev box needs to start any process at all. They are
 #: added only on Windows, and the box runs Linux.
@@ -138,21 +137,32 @@ _COPILOT_TOKEN_NAMES: frozenset[str] = frozenset({
     "COPILOT_SDK_AUTH_TOKEN",
 })
 
-_SECRET_SHAPED = re.compile(
-    r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|DSN|AUTH", re.IGNORECASE
+#: A name of this shape holds a secret. No name on a list above may match
+#: it. ``check_lists`` runs at import, so a token name on a list fails the
+#: import of the module, and so every test that imports it.
+SECRET_SHAPED = re.compile(
+    r"TOKEN|SECRET|KEY|PASS|PWD|PRIVATE|COOKIE|JWT|BEARER|CRED|DSN|AUTH",
+    re.IGNORECASE,
 )
 
 
+def check_lists() -> None:
+    """Refuse a secret-shaped name on any allowlist of this module."""
+    named = [*BASE_NAMES, *_WINDOWS_NAMES, *COPILOT_NAMES, *DOCKER_NAMES, *AGENT_PATH_VALUES]
+    bad = sorted(n for n in named if SECRET_SHAPED.search(n))
+    if bad:
+        raise RuntimeError(f"child_env: a secret-shaped name is on an allowlist: {bad}")
+
+
+check_lists()
+
+_BASE: frozenset[str] = frozenset(BASE_NAMES)
+
+
 def _base_name(name: str) -> bool:
-    if name in _REFUSED_NAMES:
-        return False
-    if name in BASE_NAMES:
+    if name in _BASE:
         return True
-    if os.name == "nt" and name.upper() in _WINDOWS_NAMES:
-        return True
-    if name.startswith(BASE_PREFIXES):
-        return not _SECRET_SHAPED.search(name)
-    return False
+    return os.name == "nt" and name.upper() in _WINDOWS_NAMES
 
 
 def env_values(*names: str) -> dict[str, str]:

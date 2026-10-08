@@ -19,6 +19,12 @@ What breaks this fence:
   ``.update(os.environ)`` on the name the helper's result is bound to;
 - ``os.system``, ``os.popen``, ``pty.spawn`` and every other call that cannot
   take an env;
+- a spawn function or ``CopilotClient`` used as a VALUE, not called:
+  ``asyncio.to_thread(subprocess.run, ...)``, ``run_in_executor``,
+  ``functools.partial``, ``f = subprocess.run``, ``getattr(subprocess, "run")``
+  or a callback;
+- in a ``LOCAL_ALLOWLISTS`` file, an ``env=`` from anything but its own
+  literal allowlist function;
 - an exemption that no longer matches a call.
 
 The exempt lists below name each file or call and its reason.
@@ -48,9 +54,17 @@ EXEMPT_FILES: dict[str, str] = {
     "apps/services/orchestrator/sandbox/":
         "runs in the coding sandbox container (data_engine.py). The broker "
         "builds its env with --env.",
-    "apps/services/orchestrator/mutation_runner.py":
-        "runs in the mutation container (Dockerfile.mutation ENTRYPOINT). "
-        "mutation.py hands it its env with -e.",
+}
+
+#: Files that may use their OWN literal allowlist, because they cannot import
+#: ``acb_common`` (a BH-D1 exception). Each spawn there must still pass
+#: ``env=``, and only from the named local function. file -> (function, reason).
+LOCAL_ALLOWLISTS: dict[str, tuple[str, str]] = {
+    "apps/services/orchestrator/mutation_runner.py": (
+        "child_env",
+        "runs in the mutation container, whose image holds only "
+        "github-copilot-sdk, so acb_common does not import there",
+    ),
 }
 
 #: Single calls the scan skips: (file, function, a text the call holds).
@@ -273,6 +287,11 @@ class _Module:
                 if problem:
                     return problem
             return None
+        local = LOCAL_ALLOWLISTS.get(self.rel)
+        if local and isinstance(expr.func, ast.Name) and expr.func.id == local[0]:
+            if expr.func.id in self.functions and not expr.args and not expr.keywords:
+                return None
+            return f"{expr.func.id}() must be this file's own literal allowlist"
         if isinstance(expr.func, ast.Name) and expr.func.id in self.functions:
             name = expr.func.id
             returns = [n for n in self._own(self.functions[name]) if isinstance(n, ast.Return)]
@@ -368,10 +387,90 @@ def _env_expr(kind: str, call: ast.Call) -> tuple[ast.AST | None, str | None]:
     return None, "no env=, so the child inherits every secret of the gateway"
 
 
+_MODULES = frozenset({
+    "subprocess", "os", "pty", "asyncio", "asyncio.subprocess", "anyio",
+    "copilot", "copilot.client",
+})
+
+
+def _is_target(dotted: str | None) -> bool:
+    if not dotted:
+        return False
+    return (
+        dotted in SPAWN_KW or dotted in SPAWN_POS or dotted in SPAWN_NO_ENV
+        or dotted.split(".")[-1] == "CopilotClient"
+    )
+
+
+def _type_positions(tree: ast.AST) -> set[int]:
+    """Ids of nodes in a type position: annotations, isinstance and issubclass."""
+    out: set[int] = set()
+    roots: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            roots.append(node.annotation)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.returns:
+            roots.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            roots.append(node.annotation)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"isinstance", "issubclass"}
+            and len(node.args) == 2
+        ):
+            roots.append(node.args[1])
+    for root in roots:
+        out.update(id(n) for n in ast.walk(root))
+    return out
+
+
+def _value_uses(mod: _Module) -> list[tuple[ast.AST, str]]:
+    """A spawn function or CopilotClient used as a VALUE, not called.
+
+    ``asyncio.to_thread(subprocess.run, ...)``, ``run_in_executor(None,
+    subprocess.run, ...)``, ``functools.partial(subprocess.run, ...)``,
+    ``f = subprocess.run`` and a callback all hand the spawn to code that
+    calls it with no env. ``getattr(subprocess, "run")`` does the same.
+    """
+    called = {id(n.func) for n in ast.walk(mod.tree) if isinstance(n, ast.Call)}
+    typed = _type_positions(mod.tree)
+    out: list[tuple[ast.AST, str]] = []
+    for node in ast.walk(mod.tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            name = node.args[1].value
+            base = mod.dotted(node.args[0])
+            if name in LOOP_ATTRS or (base in _MODULES and _is_target(f"{base}.{name}")):
+                out.append((node, f"getattr(..., {name!r})"))
+            continue
+        if id(node) in called or id(node) in typed:
+            continue
+        parent = mod.parent.get(id(node))
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            continue  # ``CopilotClient.create_session``: a member, not the class
+        if isinstance(node, ast.Attribute) and node.attr in LOOP_ATTRS:
+            out.append((node, f"loop.{node.attr}"))
+        elif isinstance(node, ast.Name | ast.Attribute) and _is_target(mod.dotted(node)):
+            out.append((node, str(mod.dotted(node))))
+    return out
+
+
 def scan_source(source: str, rel: str, report: Report | None = None) -> Report:
     """Scan one file. The self-tests call this with a snippet."""
     report = report or Report()
     mod = _Module(source, rel)
+    for node, what in _value_uses(mod):
+        report.violations.append(
+            f"{rel}:{node.lineno} {mod.qualname(node)} {what}: a spawn used as a value "
+            "reaches a caller that passes no env. Call it with env= instead"
+        )
     for node in ast.walk(mod.tree):
         if not isinstance(node, ast.Call):
             continue
@@ -525,6 +624,19 @@ _RED = {
         "import os, subprocess\ndef _env():\n    return dict(os.environ)\n"
         "subprocess.run(['git'], env=_env())"
     ),
+    "to_thread": "import asyncio, subprocess\nasync def f():\n    await asyncio.to_thread(subprocess.run, ['git'])",
+    "run_in_executor": "import subprocess\nasync def f(loop):\n    await loop.run_in_executor(None, subprocess.run, ['git'])",
+    "partial": "import functools, subprocess\nf = functools.partial(subprocess.run, ['git'])",
+    "bound alias": "import subprocess\nf = subprocess.run",
+    "getattr spawn": "import subprocess\ngetattr(subprocess, 'run')(['git'])",
+    "getattr copilot": "import copilot\ngetattr(copilot, 'CopilotClient')()",
+    "callback": "import asyncio\ncb(asyncio.create_subprocess_exec)",
+    "loop method value": "def f(loop):\n    g = loop.subprocess_exec",
+    "client class value": "from copilot import CopilotClient\nmake(CopilotClient)",
+    "local allowlist elsewhere": (
+        "import subprocess\ndef child_env():\n    return {}\n"
+        "subprocess.run(['git'], env=child_env())"
+    ),
     "env_values variable": (
         "import subprocess\nfrom acb_common.child_env import child_env, env_values\n"
         "def f(n):\n    subprocess.run(['git'], env=child_env(extra=env_values(n)))"
@@ -573,6 +685,11 @@ _GREEN = {
         "async def f():\n    await asyncio.create_subprocess_exec('docker', 'ps', env=docker_env())"
     ),
     "not a spawn": "import subprocess\nx = subprocess.PIPE\nrun(['git'])\nobj.run('x')",
+    "type positions": (
+        "import subprocess\nfrom copilot import CopilotClient\n"
+        "def f(c: CopilotClient, p: subprocess.Popen) -> CopilotClient:\n"
+        "    x: CopilotClient = c\n    return isinstance(p, subprocess.Popen)"
+    ),
 }
 
 
@@ -580,6 +697,16 @@ _GREEN = {
 def test_the_fence_refuses(name: str) -> None:
     report = scan_source(_RED[name], "selftest.py")
     assert report.violations, f"the fence missed: {name}"
+
+
+def test_the_local_allowlist_is_honoured_only_in_its_file() -> None:
+    src = (
+        "import subprocess\ndef child_env():\n    return {}\n"
+        "subprocess.run(['git'], env=child_env())\nsubprocess.run(['git'])"
+    )
+    report = scan_source(src, "apps/services/orchestrator/mutation_runner.py")
+    assert len(report.violations) == 1, report.violations
+    assert "no env=" in report.violations[0]
 
 
 @pytest.mark.parametrize("name", sorted(_GREEN))
@@ -707,3 +834,128 @@ def test_agent_path_values_reach_both_agent_children(
         assert env["CUSTOM_APPS_T2_VENDOR_DIR"] == "/opt/acb/t2-vendor"
         _no_canary(env)
     assert seam.child_env()["PYTHONPATH"] == "/srv/py"
+
+
+def test_no_name_passes_by_a_pattern(canaries: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BH-D2: each base name is literal (fix round 1). A name of a family that
+    the old prefixes matched, and that the spec does not list, stays out."""
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/cert.pem")
+    monkeypatch.setenv("LC_NUMERIC", "C")
+    monkeypatch.setenv("XDG_SESSION_ID", "3")
+    env = seam.child_env()
+    assert env["SSL_CERT_FILE"] == "/etc/ssl/cert.pem"
+    assert "LC_NUMERIC" not in env
+    assert "XDG_SESSION_ID" not in env
+    assert "XDG_RUNTIME_DIR" not in env
+
+
+@pytest.mark.parametrize("token_name", ["GITHUB_TOKEN", "GH_TOKEN", "OPENAI_API_KEY", "DB_PASS"])
+def test_a_secret_name_on_an_allowlist_fails_the_import(
+    monkeypatch: pytest.MonkeyPatch, token_name: str
+) -> None:
+    """The token pop in copilot_env() hides a token name from the env, so a
+    token name on COPILOT_NAMES would pass silently. check_lists() runs at
+    import and refuses it (verifier item, mutation M7)."""
+    monkeypatch.setattr(seam, "COPILOT_NAMES", (*seam.COPILOT_NAMES, token_name))
+    with pytest.raises(RuntimeError):
+        seam.check_lists()
+    monkeypatch.undo()
+    seam.check_lists()
+
+
+@pytest.mark.parametrize(
+    "name", ["SECRET", "TOKEN", "API_KEY", "PASSWORD", "DB_PASS", "PGPWD", "PRIVATE_PEM",
+             "SESSION_COOKIE", "JWT", "BEARER", "AWS_CREDS", "DATABASE_DSN", "BASIC_AUTH"],
+)
+def test_the_secret_shape_covers_the_usual_names(name: str) -> None:
+    assert seam.SECRET_SHAPED.search(name)
+
+
+# ── the BH-D1 exception: mutation_runner.py ─────────────────────────────────
+
+_RUNNER = REPO / "apps/services/orchestrator/mutation_runner.py"
+
+
+def _runner_module():  # type: ignore[no-untyped-def]
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("bh1_mutation_runner", _RUNNER)
+    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
+
+def test_the_runner_allowlist_is_literal_and_holds_no_secret() -> None:
+    runner = _runner_module()
+    names = runner.CHILD_ENV_NAMES
+    assert all(isinstance(n, str) for n in names)
+    assert not [n for n in names if seam.SECRET_SHAPED.search(n)]
+    assert "GATEWAY_API_KEY" not in names and "COPILOT_GITHUB_TOKEN" not in names
+    # Literal in the source, so a reviewer reads it: no name comes from a call.
+    tree = ast.parse(_RUNNER.read_text(encoding="utf-8"))
+    assign = next(
+        n for n in tree.body
+        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "CHILD_ENV_NAMES"
+    )
+    assert isinstance(assign.value, ast.Tuple)
+    assert all(isinstance(e, ast.Constant) for e in assign.value.elts)
+
+
+def test_the_runner_children_get_no_container_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = _runner_module()
+    monkeypatch.setenv("GATEWAY_API_KEY", "bh1canary-key")
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "bh1canary-token")
+    monkeypatch.setenv("MUTATION_PROMPT", "bh1canary prompt")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = runner.child_env()
+    assert env["PATH"] == "/usr/bin"
+    assert not [k for k, v in env.items() if "bh1canary" in v]
+
+
+def test_the_runner_passes_env_at_both_spawns() -> None:
+    report = scan_source(_RUNNER.read_text(encoding="utf-8"), _RUNNER.relative_to(REPO).as_posix())
+    assert not report.violations, report.violations
+    assert report.copilot == 1 and report.spawns == 1
+
+
+# ── the auto-sync wrapper template (loader.py) ──────────────────────────────
+
+
+def test_the_auto_sync_wrapper_passes_the_one_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loader writes a tool wrapper into an agent repo's agents.py. That
+    wrapper once copied ``**os.environ`` into the script's env."""
+    from types import SimpleNamespace
+
+    from acb_skills import loader
+
+    (tmp_path / "skills" / "probe" / "scripts").mkdir(parents=True)
+    (tmp_path / "skills" / "probe" / "scripts" / "env_dump.py").write_text(
+        "import os\nprint(' '.join(sorted(os.environ)))\n", encoding="utf-8"
+    )
+    (tmp_path / "agents.py").write_text(
+        '"""A probe agent."""\n\n\ndef build_agents():\n    return dict(tools=[])\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        loader, "_run_git", lambda *_a, **_k: SimpleNamespace(returncode=1, stdout="")
+    )
+    loader._sync_new_skills(tmp_path, SimpleNamespace())
+    text = (tmp_path / "agents.py").read_text(encoding="utf-8")
+    assert "env_dump" in text
+    assert "os.environ" not in text
+    assert "from acb_common.child_env import child_env as _child_env" in text
+    report = scan_source(text, "agent-repo/agents.py")
+    assert report.spawns == 1 and not report.violations, report.violations
+
+    import asyncio
+    import importlib.util
+
+    monkeypatch.setenv("BH1_CANARY_SECRET", "bh1canary")
+    spec = importlib.util.spec_from_file_location("bh1_synced_agents", tmp_path / "agents.py")
+    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    names = asyncio.run(module.env_dump()).split()
+    assert "BH1_CANARY_SECRET" not in names
+    assert "PATH" in names and "PYTHONUTF8" in names

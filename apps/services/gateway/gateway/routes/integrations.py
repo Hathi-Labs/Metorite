@@ -2307,7 +2307,7 @@ async def github_account(
             capture_output=True,
             text=True,
             timeout=8,
-            env=child_env(extra=env_values("GH_TOKEN")),
+            env=child_env(extra=env_values("GH_TOKEN", "GITHUB_TOKEN")),
         )
         output = proc.stdout + proc.stderr
         parsed = _parse_gh_status(output)
