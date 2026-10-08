@@ -1,67 +1,92 @@
 "use client";
 
 import React from "react";
-import type { ParsedAgentError } from "@/lib/parseAgentError";
+import Button from "@/components/ui/Button";
+import { useAccess } from "@/components/AccessProvider";
+import { RUN_ERROR_WORDS, operatorHint, type RunErrorView } from "@/lib/runErrors";
 
-// ── Error card — shown inline in the message thread ──────────────────────────
-export default function ErrorCard({ parsed, compact = false }: { parsed: ParsedAgentError; compact?: boolean }) {
+/**
+ * The error card a failed turn leaves in the thread.
+ *
+ * Owner report, 2026-10-08: the card printed a Python repr whose class name
+ * ran past the right edge, and an operator command for a customer. Now:
+ *
+ * - The words come from the server's code (`lib/runErrors.ts`).
+ * - The raw text sits inside "Show full error", wraps, and scrolls in its
+ *   own block. Every text node carries `wrap-anywhere` and `min-w-0`, so a
+ *   long token can never push the card wider than its column.
+ * - The operator hint shows only to an admin, and only inside the fold.
+ * - Retry re-sends the member's last message through the chat's one retry
+ *   path (`AgentChat`'s `handleRetryMessage`).
+ *
+ * Fences: `runErrors.test.ts`, which renders this card.
+ */
+export function ErrorCardView({
+  error,
+  isAdmin,
+  onRetry,
+  defaultOpen = false,
+}: {
+  error: RunErrorView;
+  isAdmin: boolean;
+  onRetry?: () => void;
+  /** Tests render the fold open. A member opens it by hand. */
+  defaultOpen?: boolean;
+}) {
   const [copied, setCopied] = React.useState(false);
-  const [expanded, setExpanded] = React.useState(false);
+  const [expanded, setExpanded] = React.useState(defaultOpen);
+  const words = RUN_ERROR_WORDS[error.code];
+  const hint = operatorHint(error, isAdmin);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(parsed.raw).catch(() => {});
+    const text = error.ref ? `${error.raw}\n\nReference: ${error.ref}` : error.raw;
+    navigator.clipboard?.writeText(text).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const codeLabel = parsed.code === 429 ? "429 Rate limit"
-    : parsed.code === 401 ? "401 Unauthorized"
-    : parsed.code === 402 ? "402 Payment required"
-    : parsed.code === 400 ? "400 Bad request"
-    : parsed.code === 404 ? "404 Not found"
-    : null;
-
   return (
-    <div className={`rounded-xl border border-red-900/50 bg-red-950/30 ${compact ? "px-3 py-2" : "px-4 py-3"} text-sm`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-red-300 font-semibold">{parsed.title}</span>
-            {codeLabel && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full border border-red-800/60 text-red-400">{codeLabel}</span>
-            )}
-          </div>
-          {!compact && (
-            <p className="mt-1 text-xs text-muted-foreground leading-relaxed">{parsed.detail}</p>
-          )}
-          <div className="mt-2 flex items-start gap-1.5">
-            <span className="text-warning shrink-0 text-xs mt-0.5">→</span>
-            <p className="text-xs text-warning/90 leading-relaxed">{parsed.suggestion}</p>
-          </div>
-        </div>
-        <button
-          onClick={handleCopy}
-          title="Copy full error"
-          className="shrink-0 text-[10px] px-2 py-1 rounded border border-border text-muted-foreground hover:text-foreground hover:border-primary/40 tech-transition mt-0.5 whitespace-nowrap"
-        >
-          {copied ? "Copied!" : "Copy error"}
-        </button>
+    <div
+      data-chat-error-card
+      role="alert"
+      className="w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm"
+    >
+      <p className="min-w-0 font-semibold text-destructive wrap-anywhere">{words.title}</p>
+      <p className="mt-1 min-w-0 text-xs leading-relaxed text-foreground wrap-anywhere">{words.body}</p>
+      {error.ref && (
+        <p className="mt-1 min-w-0 text-[11px] text-muted-foreground wrap-anywhere">
+          Reference: <span className="font-mono">{error.ref}</span>
+        </p>
+      )}
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
+        {onRetry && words.retry && (
+          <Button type="button" size="sm" variant="secondary" icon="RefreshCw" onClick={onRetry}>
+            Retry
+          </Button>
+        )}
+        <Button type="button" size="sm" variant="text" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded}>
+          {expanded ? "Hide full error" : "Show full error"}
+        </Button>
+        <Button type="button" size="sm" variant="text" onClick={handleCopy} title="Copy the full error">
+          {copied ? "Copied" : "Copy error"}
+        </Button>
       </div>
-      {!compact && (
-        <div className="mt-2">
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground tech-transition"
-          >
-            {expanded ? "▲ Hide full error" : "▼ Show full error"}
-          </button>
-          {expanded && (
-            <pre className="mt-1.5 text-[10px] text-muted-foreground bg-muted/60 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
-              {parsed.raw}
-            </pre>
+      {expanded && (
+        <div className="mt-2 min-w-0 space-y-2" data-chat-error-fold>
+          <pre className="max-h-40 min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-lg bg-muted/60 p-2 font-mono text-[10px] text-muted-foreground wrap-anywhere">
+            {error.raw || "(no error details)"}
+          </pre>
+          {hint && (
+            <p className="min-w-0 text-[11px] leading-relaxed text-muted-foreground wrap-anywhere">{hint}</p>
           )}
         </div>
       )}
     </div>
   );
+}
+
+/** The card as the thread mounts it: the admin flag comes from the access answer. */
+export default function ErrorCard({ error, onRetry }: { error: RunErrorView; onRetry?: () => void }) {
+  const { access } = useAccess();
+  return <ErrorCardView error={error} isAdmin={access.is_admin} onRetry={onRetry} />;
 }

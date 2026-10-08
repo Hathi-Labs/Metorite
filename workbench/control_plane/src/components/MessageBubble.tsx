@@ -5,7 +5,7 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import React from "react";
 import type { ChatMessage } from "@/hooks/useAgentChat";
 import type { FileEntry } from "@/components/ArtifactSidebar";
-import type { ParsedAgentError } from "@/lib/parseAgentError";
+import { parseStoredRunError } from "@/lib/runErrors";
 import MarkdownMessage from "@/components/MarkdownMessage";
 import MessageActionBar from "@/components/MessageActionBar";
 import GenerativeUIPanel from "@/components/GenerativeUIPanel";
@@ -280,12 +280,13 @@ function MessageBubble({
   if (isSystem) {
     const content = message.content;
     if (content.startsWith("__ERROR__")) {
-      try {
-        const parsed: ParsedAgentError = JSON.parse(content.slice(9));
-        return <ErrorCard parsed={parsed} />;
-      } catch {
-        // fall through
-      }
+      // Retry re-sends the member's last message (`lib/chatRetry.ts`).
+      return (
+        <ErrorCard
+          error={parseStoredRunError(content.slice(9))}
+          onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined}
+        />
+      );
     }
     // Context-compaction summary pill — styled distinctly so users know
     // the conversation was compressed.

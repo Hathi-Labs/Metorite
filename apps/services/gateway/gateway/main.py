@@ -1023,9 +1023,13 @@ if _HAS_MAF:
                 except Exception as exc:
                     _log.exception("copilot_chat.stream_error")
                     try:
+                        # A code from the run-error vocabulary, which the
+                        # chat maps to words (acb_llm.run_errors). It was the
+                        # class name until 2026-10-08.
+                        from acb_llm.run_errors import classify_run_error
                         yield encoder.encode(_RunErrorEvent(
                             message="Internal error during agent run",
-                            code=type(exc).__name__,
+                            code=classify_run_error(exc),
                         ))
                     except Exception:
                         pass

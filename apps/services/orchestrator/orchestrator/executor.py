@@ -37,6 +37,7 @@ from typing import Any, AsyncIterator, Callable
 
 from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
+from acb_llm.run_errors import run_error_event
 from acb_skills.ask_tools import is_hitl_blocking_tool as _is_hitl_blocking_tool
 from acb_skills.integrations import build_integrations
 from acb_skills.loader import AgentLoadError, load_agent
@@ -4300,14 +4301,15 @@ async def run_agent_stream(
                                     "executor.native_maf_tool_loop_detected",
                                     agent=agent_name, repeats=_loop_max,
                                 )
-                                yield _sse({
-                                    "type": "RUN_ERROR", "runId": run_id,
-                                    "message": (
+                                yield _sse(run_error_event(
+                                    run_id=run_id, code="unknown",
+                                    where="native_maf_tool_loop",
+                                    message=(
                                         "Agent stopped: the same tool was "
                                         f"called with identical arguments "
                                         f"{_loop_max} times (loop detected)."
                                     ),
-                                })
+                                ))
                                 # _next_task is None here in the normal flow
                                 # (reset after .result() above); it is only a
                                 # live task if the trip path ever moves before
@@ -4352,14 +4354,15 @@ async def run_agent_stream(
                             "executor.native_maf_stream_idle_timeout",
                             agent=agent_name, idle_seconds=_native_idle_after,
                         )
-                        yield _sse({
-                            "type": "RUN_ERROR", "runId": run_id,
-                            "message": (
+                        yield _sse(run_error_event(
+                            run_id=run_id, code="timeout",
+                            where="native_maf_idle",
+                            message=(
                                 "Agent produced no output for "
                                 f"{int(_native_idle_after)}s and was stopped "
                                 "(possible stall)."
                             ),
-                        })
+                        ))
                     elif not _loop_tripped:
                         # A loop trip already emitted its terminal RUN_ERROR
                         # inline — don't follow it with a RUN_FINISHED that
@@ -4382,10 +4385,9 @@ async def run_agent_stream(
                         # doesn't hang in "streaming" before the error lands.
                         for _ev in _close_text_message(_t_state):
                             yield _sse(_ev)
-                        yield _sse({
-                            "type": "RUN_ERROR", "runId": run_id,
-                            "message": str(_nexc),
-                        })
+                        yield _sse(run_error_event(
+                            _nexc, run_id=run_id, where="native_maf_stream",
+                        ))
                         return
                     # Nothing emitted yet — fall through to Tier 2 batch.
                     # WS-45 S2: the held ai.route events go, and the policy
@@ -4921,8 +4923,9 @@ async def run_agent_stream(
                                 "executor.copilot_maf_stream_error",
                                 agent=agent_name,
                             )
-                            yield _sse({"type": "RUN_ERROR", "runId": run_id,
-                                        "message": str(_exc)})
+                            yield _sse(run_error_event(
+                                _exc, run_id=run_id, where="copilot_maf_stream",
+                            ))
                             return
                         # Stale session — clear it and prepare a retry.
                         _log.warning(
@@ -5518,11 +5521,10 @@ async def run_agent_stream(
     except AgentRunError:
         raise
     except Exception as exc:
-        yield _sse({
-            "type": "RUN_ERROR",
-            "message": str(exc),
-            "code": type(exc).__name__,
-        })
+        # The code names the failure for the member's chat, and the ref
+        # finds this log line (owner report, 2026-10-08). Before, `code` was
+        # the class name and the member read the raw repr.
+        yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
         # ── Live activity feed (E2): agent activation END ────────────────────
@@ -6746,16 +6748,16 @@ def _copilot_no_text_end(
         )
     return (
         [
-            {
-                "type": "RUN_ERROR",
-                "runId": run_id,
-                "message": (
+            # `model_refused`: the model answered with nothing, which is a
+            # content filter or a provider refusal (owner report 2026-10-08:
+            # the code is a word the chat maps to member-facing text).
+            run_error_event(
+                run_id=run_id, code="model_refused", where="no_output",
+                message=(
                     "The agent produced no output.  The underlying model may "
-                    "have hit a content filter or a provider error.  Check "
-                    "gateway logs for details."
+                    "have hit a content filter or a provider error."
                 ),
-                "code": "NO_OUTPUT",
-            },
+            ),
         ],
         False,
     )

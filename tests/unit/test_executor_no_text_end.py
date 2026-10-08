@@ -69,7 +69,10 @@ def test_no_tool_activity_is_a_hard_error() -> None:
     err = events[0]
     assert err["type"] == "RUN_ERROR"
     assert err["runId"] == "r2"
-    assert err["code"] == "NO_OUTPUT"
+    # A code from the run-error vocabulary (acb_llm.run_errors), which the
+    # chat maps to member-facing words. It was "NO_OUTPUT" until 2026-10-08.
+    assert err["code"] == "model_refused"
+    assert err["ref"] == "r2"
 
 
 def test_message_ids_are_unique_per_call() -> None:
