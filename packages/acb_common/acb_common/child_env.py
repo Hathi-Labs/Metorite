@@ -33,9 +33,11 @@ from collections.abc import Mapping
 
 __all__ = [
     "AGENT_PATH_VALUES",
+    "AGENT_SITE_DIR",
     "BASE_NAMES",
     "COPILOT_NAMES",
     "DOCKER_NAMES",
+    "T2_VENDOR_DIR",
     "child_env",
     "copilot_env",
     "docker_env",
@@ -109,13 +111,32 @@ COPILOT_NAMES: tuple[str, ...] = (
     "CUSTOM_APPS_T2_VENDOR_DIR",
 )
 
+#: The dir that holds the Python packages that agents install (WS-49 BH-7,
+#: BH-D10). It is NOT the shared venv. The gateway unit's
+#: ``StateDirectory=acb-gateway`` makes ``/var/lib/acb-gateway``, and
+#: ``acb_skills.agent_site`` installs into this dir with ``uv pip install
+#: --target``. The gateway appends it to ``sys.path`` after the venv, so a
+#: venv package always wins in the gateway.
+AGENT_SITE_DIR = "/var/lib/acb-gateway/agent-site"
+
+#: The T2 (React) vendor cache. The deploy installs it with
+#: ``--ignore-scripts``, and the gateway unit sets the same value
+#: (``40-agent-site.conf``). ``vps_apply.sh`` reads no path from ``.env``.
+T2_VENDOR_DIR = "/opt/acb/t2-vendor"
+
 #: Fixed path values for the children that run agent code: the Copilot CLI
 #: (``copilot_env()``) and ``run_script`` (``code_tools._script_env``). This is
 #: the ONE place to add one. A value here wins over the gateway's own value of
-#: that name. It is empty today. WS-49 BH-7 adds ``PYTHONPATH`` (the agent-site
-#: dir) and ``CUSTOM_APPS_T2_VENDOR_DIR`` here, and no call site changes.
-#: Never put a secret here.
-AGENT_PATH_VALUES: dict[str, str] = {}
+#: that name. Never put a secret here.
+#:
+#: WS-49 BH-7 (spec Q3a, Q3d). ``PYTHONPATH`` gives a child the agent-site
+#: dir. No unit sets it, because a unit-wide value goes BEFORE the venv on
+#: ``sys.path`` in the gateway too. ``CUSTOM_APPS_T2_VENDOR_DIR`` lets the
+#: in-chat T2 build of the app-builder agent find the vendor cache.
+AGENT_PATH_VALUES: dict[str, str] = {
+    "PYTHONPATH": AGENT_SITE_DIR,
+    "CUSTOM_APPS_T2_VENDOR_DIR": T2_VENDOR_DIR,
+}
 
 #: The names that tell the ``docker`` CLI where the daemon is and how to
 #: reach it. ``DOCKER_CERT_PATH`` is a dir, not a key.

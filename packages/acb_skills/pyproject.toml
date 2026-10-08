@@ -22,6 +22,9 @@ dependencies = [
     # read_attachment (H-229) parses a chat PDF. pypdf is pure Python, and
     # each parse switches off its one subprocess (jbig2dec).
     "pypdf>=6.19",
+    # agent_site.py (WS-49 BH-7) reads an agent's requirement lines, their
+    # version specifiers and their markers, against the venv.
+    "packaging>=24",
 ]
 
 [build-system]

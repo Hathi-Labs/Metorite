@@ -11,6 +11,11 @@ data of the beta customers arrives. This spec owns H-270 and H-271 in
 rollback script and conf, BH-F3 part 1. The other-unit drop-ins land with
 BH-7. `50-hardening.conf`, the staging and the strict check wait.
 
+**BH-7 BUILT, not merged, 2026-10-09 on `sec-bh7-agent-site`.** Agent
+installs go to `agent-site`, and the T2 vendor step runs no scripts. The slice
+adds the drop-in installer and `40-agent-site.conf`. It also adds the drop-ins
+of the four other units from BH-2 item 3.
+
 **Fix round 1, 2026-10-08.** The spec audit at `dc1e80bc5` returned
 GO-NARROWED. This round applies its fixes E1 to E7 and re-specifies BH-2.
 **Dispatchable now: BH-1 and BH-8.**
@@ -822,6 +827,9 @@ the owner 2026-10-08 for WS-49.
 
 ### BH-7 — Agent installs leave the shared venv, and the T2 vendor install runs no scripts
 
+**Status: BUILT, not merged, 2026-10-09** (branch `sec-bh7-agent-site`). The
+four other-unit drop-ins of BH-2 item 3 land in the same PR.
+
 **Fix round 2, 2026-10-08.** The second audit returned NO-GO. This version
 applies Q3a to Q3e.
 
@@ -952,8 +960,17 @@ deletes a `90-*` file.
 
 **Risks.**
 
-- An agent that needs a newer version of a shared library fails to install,
-  because the constraints refuse it. The install log says so.
+- An agent can ask for a version of a venv package that the venv does not
+  hold, for example `numpy>=2` against numpy 1.26. The loader does not
+  install that line, because a second copy would shadow the venv in a child.
+  The rest of the agent's deps install. The dep status is red, and it names
+  both versions. The marker holds the conflict, so a warm load runs no uv and
+  still reports red. `install_dependency` refuses the same line with the same
+  words.
+- A dependency that the venv holds at an allowed version, or whose marker is
+  false here, is not installed. An editable workspace member counts as held.
+  A line with an extra, such as `requests[socks]`, goes to uv, so the
+  packages of the extra install. The prune then removes the copy of the base.
 - A T2 package that needs an install script fails. esbuild fetches its
   binary in `postinstall`. Use the platform package (`@esbuild/linux-x64`)
   as a direct dependency, and check the build in acceptance 4.

@@ -69,11 +69,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         pass
 
     # Expose the gateway's venv to every child process (the Copilot CLI, agent
-    # shells, install_dependency).  `uv pip install` needs a target venv; the
-    # service env often lacks VIRTUAL_ENV, so a bare `uv pip install` from an
-    # agent would have nowhere to install.  Point VIRTUAL_ENV at this venv and
-    # put its bin first on PATH so runtime dependency installs land here and are
-    # importable in-process.
+    # shells).  Point VIRTUAL_ENV at this venv and put its bin first on PATH, so
+    # a child finds the venv's python and tools.  Agent dependency installs do
+    # NOT land here: `install_dependency` and the loader install into agent-site
+    # (WS-49 BH-7, acb_skills/agent_site.py).
     try:
         import sys as _sys
         from pathlib import Path as _Path
@@ -209,8 +208,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                     continue
                 if _ws is not None:
                     # Already cloned — ensure its declared deps are installed
-                    # into the shared venv (idempotent; no-op when unchanged),
-                    # so all its tools work without waiting for the next run.
+                    # into agent-site (WS-49 BH-7; idempotent, a no-op when
+                    # unchanged), so its tools work before the next run.
                     try:
                         await _asyncio.to_thread(
                             _install_agent_deps, _ws, settings

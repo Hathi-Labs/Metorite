@@ -69,7 +69,9 @@ def test_run_script_gets_declared_credentials_only(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("PYTHONPATH", "/srv/py")
     env = code_tools._script_env()
     _clean(env)
-    assert env["PYTHONPATH"] == "/srv/py"
+    # WS-49 BH-7: run_script gets the agent-site dir by value, not the
+    # gateway's own PYTHONPATH (acb_common.child_env.AGENT_PATH_VALUES).
+    assert env["PYTHONPATH"] == "/var/lib/acb-gateway/agent-site"
     assert env["PYTHONUNBUFFERED"] == "1"
     assert env["UV_CACHE_DIR"] == "/var/cache/acb-gateway/uv"
 
@@ -92,19 +94,33 @@ def test_loader_git_gets_the_no_prompt_names(monkeypatch: pytest.MonkeyPatch, tm
     assert env["PYTHONUTF8"] == "1"
 
 
-async def test_install_dependency_keeps_the_uv_cache(monkeypatch: pytest.MonkeyPatch) -> None:
-    from acb_skills import dep_tools
+async def test_install_dependency_keeps_the_uv_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from acb_skills import agent_site, dep_tools
+
+    # WS-49 BH-7: the install needs the unit's two dirs, here in tmp_path.
+    (tmp_path / "state").mkdir()
+    (tmp_path / "cache").mkdir()
+    monkeypatch.setattr(agent_site, "STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(agent_site, "AGENT_SITE", tmp_path / "state" / "agent-site")
+    monkeypatch.setattr(agent_site, "CACHE_ROOT", tmp_path / "cache")
+    monkeypatch.setattr(agent_site, "CONSTRAINTS", tmp_path / "cache" / "constraints.txt")
+    monkeypatch.setattr(agent_site, "find_uv", lambda: "/stub/uv")
+    monkeypatch.setattr(agent_site, "_frozen", {})
 
     seen: list[dict[str, str]] = []
 
     def fake_run(*_: Any, **kw: Any) -> Any:
         seen.append(kw.get("env"))
-        return SimpleNamespace(returncode=1, stdout="", stderr="stub")
+        return SimpleNamespace(returncode=0, stdout="six==1.17.0\n", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    await dep_tools.install_dependency("six")
-    _clean(seen[0])
-    assert seen[0]["UV_CACHE_DIR"] == "/var/cache/acb-gateway/uv"
+    await dep_tools.install_dependency("bh7-fake-agent-pkg")
+    assert len(seen) == 2, "the freeze, then the install"
+    for env in seen:
+        _clean(env)
+        assert env["UV_CACHE_DIR"] == "/var/cache/acb-gateway/uv"
 
 
 async def test_t2_build_gets_its_two_dirs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

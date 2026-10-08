@@ -66,8 +66,8 @@ NEVER push and never create a branch — the platform queues every local \
 commit for human approval and pushes it after approval. Never commit \
 `agent-data/`, `inputs/`, or `outputs/` (ignored runtime state).
 7. Never touch files outside the working directory. Never install system \
-packages; Python deps go through `uv pip install` into the current venv only \
-when genuinely needed.
+packages. A Python dep goes through the `install_dependency` tool, and only \
+when genuinely needed. It installs into the agent package dir, never the venv.
 7b. Integration credentials: if the task lists available integrations, \
 scripts must read their env vars with `os.getenv` at RUN time. NEVER \
 hard-code, print, log, or write a credential value into any file — scripts \
