@@ -934,3 +934,19 @@ def test_a_warm_load_reads_the_provides_all_marker(
     loader._install_agent_deps(agent, _settings())
     assert writes == [True], "a changed set writes the status again"
     assert site.calls == []
+
+
+def test_a_conflict_added_later_turns_the_status_red(site: SimpleNamespace, tmp_path: Path) -> None:
+    """The install marker covers only the lines that go to uv. A conflict line
+    added later leaves those the same, so the marker would still match. The
+    loader must not return at the marker while a conflict stands."""
+    from acb_skills.loader import _install_agent_deps, read_dep_status
+
+    agent = _agent(tmp_path)
+    _install_agent_deps(agent, _settings())
+    status = read_dep_status(agent)
+    assert status is not None and status["ok"] is True
+    (agent / "requirements.txt").write_text(f"{FAKE}\nidna>=99\n", encoding="utf-8")
+    _install_agent_deps(agent, _settings())
+    status = read_dep_status(agent)
+    assert status is not None and status["ok"] is False and "idna>=99" in status["error"]
