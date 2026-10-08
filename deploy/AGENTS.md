@@ -10,6 +10,7 @@ Hostinger VPS deployment scripts, Caddy reverse proxy config, and CI/CD pipeline
 - hostinger/acb-gateway.service -- systemd unit: FastAPI gateway on :8080
 - hostinger/acb-workbench.service -- systemd unit: Next.js workbench on :3001
 - caddy/ -- Caddy reverse proxy configuration
+- secrets/manifest.json -- the secrets-drop manifest that `scripts/secrets.sh` reads. It holds names, paths and modes, and never a value. Git tracks only this file in `secrets/`. Reference: `docs/secrets_drop.md`
 - ../.github/workflows/deploy.yml -- CI/CD: push-to-deploy (lint → test → SSH → deploy → smoke)
 - ../.github/workflows/pr-check.yml -- PR validation (lint + test only)
 

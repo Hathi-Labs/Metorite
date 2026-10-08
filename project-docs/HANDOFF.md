@@ -3908,6 +3908,7 @@ line — never reclaim a number by deleting the other entry.
     `/opt/acb/app/.env`. The gateway loads that file (H-270), and the run
     refuses it. Then run `sudo systemctl start acb-backup.service` and the
     Check above.
+  - **Use `scripts/secrets.sh`** for (c) and (d). It makes the key pair, checks the keys and writes both files. `docs/secrets_drop.md` §2 lists the steps.
 - **To restore:** `scripts/restore_offbox.sh` lists, downloads, decrypts and
   verifies one night. Spec §4.2 holds the steps.
 - ⚠️ **The trade-off.** The bucket is in the same Supabase account as the
