@@ -95,6 +95,42 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-271 · acb has the same power as root, so an app compromise can delete the off-box backups · [OWNER] · security
+- **Check:** on the box, run each of these:
+  `sudo cat /etc/sudoers.d/acb` · `id acb` · `stat -c '%U' /opt/acb/app/scripts/backup_offbox.sh`.
+  While any one shows `NOPASSWD:ALL`, the `docker` group, or the owner `acb`, this is open.
+- **Why.** The off-box bucket key (H-123) is in `/etc/acb/backup-offbox.env`,
+  root:root 0600. That stops the PASSIVE paths: the inherited env,
+  `/proc/<pid>/environ`, and env dumps in logs or crash reports. It does not
+  stop an ACTIVE attacker who has `acb` or the app, which runs as `acb`. The
+  S3 key is project-wide, so that attacker can read it and delete every
+  off-box night.
+- **The three paths from `acb` to root.**
+  1. `/etc/sudoers.d/acb` grants `acb ALL=(ALL) NOPASSWD:ALL`
+     (`deploy/hostinger/acb-pull.service` lines 34 to 36). `acb-gateway.service`
+     sets no `NoNewPrivileges`, so a shell from the gateway can use sudo.
+  2. `acb` is in the `docker` group (`deploy/hostinger/bootstrap.sh` line 31).
+     It can mount `/etc/acb` into a container and read the file.
+  3. `acb` owns the checkout and `/opt/acb/app/.env`. The root unit runs
+     `backup_db.sh` and `backup_offbox.sh` from that checkout. So `acb` can
+     edit a script, or set `BASH_ENV` in `.env`, and root runs it.
+- **The real fixes. Each one is an owner decision.**
+  1. A credential that can write and cannot delete, with retention on the
+     server side. On Supabase, that is an S3 session token under an RLS
+     policy that allows insert only, and a scheduled function that runs the
+     retention. The other way is a second provider with Object Lock and
+     lifecycle rules.
+  2. Take `acb` out of the `docker` group, and narrow its sudo to a list of
+     commands. This needs a new design for the deploy path, which uses both.
+  3. Run the root unit's scripts from a copy that root owns, not from the
+     checkout of `acb`.
+- **A cheap partial fix.** `NoNewPrivileges=true` on `acb-gateway.service`
+  stops path 1 for the Copilot CLI (H-270) only. It does nothing for paths 2
+  and 3. Do not build it in the off-box PR.
+- **Authority:** `project-docs/specs/backup_and_restore.md` §4.2, the trade-offs ·
+  H-123 · H-270
+- **Added:** 2026-10-08 · off-box backup, security review of fix round 2
+
 ### H-270 · The gateway's in-process Copilot CLI inherits every secret in `.env` · [AGENT] · security
 - **Check:** `grep -nE "\benv\b|environment" apps/services/orchestrator/orchestrator/copilot_agent.py`.
   No `env` in the `CopilotClient` options means the CLI still gets the whole gateway
@@ -3875,10 +3911,13 @@ line — never reclaim a number by deleting the other entry.
 - **To restore:** `scripts/restore_offbox.sh` lists, downloads, decrypts and
   verifies one night. Spec §4.2 holds the steps.
 - ⚠️ **The trade-off.** The bucket is in the same Supabase account as the
-  database. It covers the loss of the VPS, which is this gap. It does not
-  cover the loss of the account. The S3 key can also delete the backups, so
-  an attacker with root on the box can delete them. The app user cannot read
-  the key. A copy at a second provider is a later choice.
+  database. It covers the loss of the VPS, the disk or the provider account,
+  which is this gap. It does NOT cover a compromise of the app.
+- ⚠️ **The root-owned key file stops the PASSIVE paths only.** These are the
+  inherited env, `/proc/<pid>/environ`, and env dumps in logs or crash
+  reports. `acb` has the same power as root on this box. So an ACTIVE
+  compromise of the app or of `acb` can still read the key and delete every
+  off-box night. H-271 holds the fixes, and they are owner decisions.
 - ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
   Supabase MCP reports project health, not the backup configuration. Our
   logical dumps stand on their own.

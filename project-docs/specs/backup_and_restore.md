@@ -7,7 +7,7 @@ OFF until the owner does the four steps in §4.2 (H-123).
 **2026-10-08, owner decision:** the off-box copy goes to a private Supabase
 Storage bucket, through its S3 endpoint. The box encrypts each night to the
 owner's PUBLIC key before the upload. Only the nightly unit uploads
-(`--offbox`), and only root can read the bucket key. Branch
+(`--offbox`), and the bucket key is in a root-owned file. Branch
 `ops-offbox-backup`. A real S3 server (MinIO) proved the round trip in
 `scripts/rehearse_offbox.sh`. Nobody has measured it on the box yet.
 
@@ -222,16 +222,18 @@ line for each.
   the env holds. The pre-migration backup of a deploy never passes the flag.
   So a deploy never uploads, and a bucket outage cannot block a migration.
   `test_only_the_nightly_unit_passes_offbox` checks every caller.
-- **The key is for root only.** A Supabase S3 key is **project-wide**. It
-  passes Row Level Security, and it can read or delete every object in every
-  bucket of the project. So every `BACKUP_S3_*` and `BACKUP_GPG_*` key lives
-  in `/etc/acb/backup-offbox.env`, root:root 0600. Only `acb-backup.service`
-  loads that file.
+- **The key is in a root-owned file.** A Supabase S3 key is
+  **project-wide**. It passes Row Level Security, and it can read or delete
+  every object in every bucket of the project. So every `BACKUP_S3_*` and
+  `BACKUP_GPG_*` key lives in `/etc/acb/backup-offbox.env`, root:root 0600.
+  Only `acb-backup.service` loads that file. The trade-offs below say what
+  this file does NOT stop.
 - **Never in the app env file.** `/opt/acb/app/.env` is the env file of
   `acb-gateway` and of the WhatsApp bridge. The gateway's in-process Copilot
   CLI inherits that env (H-270). `backup_offbox.sh` refuses to run as any
-  user but root. It also refuses a key file that is not root:root 0600, and
-  a `BACKUP_S3_*` or `BACKUP_GPG_*` line in `/opt/acb/app/.env`.
+  user but root. It also refuses a key file that is not root:root 0600. It
+  refuses a `BACKUP_S3_*`, `BACKUP_GPG_*` or `BACKUP_OFFBOX_ENV_FILE` line in
+  `/opt/acb/app/.env`, so that acb-writable file cannot name another key file.
 - **Encrypted on the box, or not sent.** zstd compresses each item, and gpg
   encrypts it to the PUBLIC key named by `BACKUP_GPG_RECIPIENT` (a full
   fingerprint). The box never holds the private key. So the box can write a
@@ -248,16 +250,25 @@ line for each.
   It accepts a night stamp only, and it builds the path from the checked
   bucket and prefix. So no delete can reach a path outside
   `<bucket>/<prefix>/<stamp>`.
-- **Retention counts complete nights only.** A night is complete when it
-  holds `SHA256SUMS.zst.gpg`. Retention keeps the newest `BACKUP_S3_KEEP`
-  complete nights (default 14, read in base 10). An incomplete night goes
-  only when it is older than the oldest complete night that is kept. The
-  newest incomplete night never goes, because its upload may not be done yet.
-  Retention runs only after a good upload.
-- **Bounded in time.** Local retention runs first. Then `timeout` bounds the
-  whole off-box step at `BACKUP_S3_TIMEOUT_SECS` (default 1200 s), plus 30 s
-  before a KILL. That fits in the unit's `TimeoutStartSec=1800`. A timeout
-  counts as a failed upload.
+- **Retention is by UTC day, and counts complete nights only.** A night is
+  complete when it holds `SHA256SUMS.zst.gpg`. Retention keeps the newest
+  complete night of each UTC day, for the newest `BACKUP_S3_KEEP` days that
+  have one (default 14, read in base 10). Many runs in one day use one slot,
+  so they cannot push the earlier days out. A day with no complete night uses
+  no slot, so a gap in the backups deletes nothing.
+- **Incomplete nights.** An incomplete night goes only when it is older than
+  the oldest kept night. The newest incomplete night never goes, because its
+  upload may not be done yet. Retention runs only after a good upload.
+- **Bounded by the time left in the unit.** Local retention runs first. The
+  off-box deadline is `min(BACKUP_S3_TIMEOUT_SECS, 1800 - elapsed - 60)`, in
+  seconds, and `timeout` adds 30 s before a KILL. The default for
+  `BACKUP_S3_TIMEOUT_SECS` is 1200. 1800 is the unit's `TimeoutStartSec`,
+  and `backup_db.sh` names it `unit_timeout_secs`. A test fails when the two
+  values drift.
+- **Too little time is a failure.** With under 120 s left, the upload does
+  not start, and the run records a failure. A timeout is a failed upload too.
+  The recorded pre-migration dump took about 11 minutes, so a fixed deadline
+  could outlive the unit.
 - **A failure costs no local backup.** Any failure is an ERROR, and the unit
   exits 1 at the end. The local dump, the Console dump and local retention
   run first. A failed Console dump does not stop the off-box copy of the app
@@ -271,10 +282,20 @@ trip is `scripts/rehearse_offbox.sh` (§6.2).
 - **One account.** The bucket is in the **same Supabase account** as the
   database. It protects against the loss of the VPS, which is the gap that
   H-123 names. It does not protect against the loss of the Supabase account.
-- **The key can delete.** The S3 key is project-wide, and it can delete
-  objects. An attacker with root on the box can delete the backups. The app
-  user cannot read the key. A copy at a second provider closes both gaps.
-  That is a later choice.
+- **The root-owned file stops the PASSIVE paths only.** The app does not
+  inherit the key, and `/proc/<gateway pid>/environ` does not show it. An env
+  dump in a log or a crash report does not hold it either.
+- **An ACTIVE compromise of the app can still read the key (H-271).** On this
+  box `acb` has the same power as root, in three ways. It has passwordless sudo.
+  It is in the `docker` group, so it can mount `/etc/acb` into a container.
+  It owns the checkout, and the root unit runs `backup_db.sh` and
+  `backup_offbox.sh` from that checkout. So an attacker with acb, or with the
+  app, can read the key and delete every off-box night.
+- **What the copy protects against.** It protects against the loss of the
+  VPS, the disk or the provider account. It does NOT protect against a
+  compromise of the app. The real fixes are owner decisions, and H-271
+  lists them. A write-only bucket credential with retention on the server
+  side, or a second provider with Object Lock, closes the gap.
 - **Integrity, not authenticity (F7).** The box encrypts each night, and it does
   not sign it, because the box holds no signing key. `SHA256SUMS` proves that a
   night is whole. It does not prove who wrote it. A person with the bucket key
@@ -322,7 +343,7 @@ unit has `--offbox`.
    ssh metorite 'sudo install -m 0644 /tmp/metorite-backups-public.asc /opt/acb/backup-public-key.asc'
    ```
 
-4. **Put the keys in the root-only file.** Do NOT put them in
+4. **Put the keys in the root-owned file.** Do NOT put them in
    `/opt/acb/app/.env`. The run refuses that.
 
    ```bash

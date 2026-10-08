@@ -14,9 +14,10 @@
 #      PRIVATE key and a passphrase, and both checksum lists verify.
 #   3. The restored dump gives back the SAME rows (an md5 over them), and the
 #      file-data tar gives back the same file.
-#   4. With BACKUP_S3_KEEP=2, three complete nights become two. An old
-#      incomplete night goes, and the newest incomplete night stays. A folder
-#      under the prefix that is not a night, and another prefix, stay.
+#   4. Retention is by UTC day. With BACKUP_S3_KEEP=2, three runs on one day
+#      plus earlier days keep today's newest run and the newest earlier day.
+#      An old incomplete night goes, and the newest incomplete night stays. A
+#      folder under the prefix that is not a night, and another prefix, stay.
 #   5. Without --offbox nothing goes up. A key file in mode 0644 is refused.
 #      With the key missing, the run fails. No night reaches the bucket.
 #
@@ -152,12 +153,16 @@ cmp -s "$work/files/attachments/cv.txt" "$work/restore${work}/files/attachments/
   || die "the file in files.tar differs from the source"
 pass "files.tar gives back the attachment"
 
-say "Two INCOMPLETE nights from before (no SHA256SUMS.zst.gpg)"
-offbox_rclone copyto "$work/keep.txt" "offbox:$BACKUP_S3_BUCKET/nightly/2026-01-04T000000Z/acb.dump.zst.gpg"
+say "Earlier days: two complete nights, and two INCOMPLETE ones"
+for d in 2026-01-01T000000Z 2026-01-02T000000Z; do
+  offbox_rclone copyto "$work/keep.txt" "offbox:$BACKUP_S3_BUCKET/nightly/$d/acb.dump.zst.gpg"
+  offbox_rclone copyto "$work/keep.txt" "offbox:$BACKUP_S3_BUCKET/nightly/$d/SHA256SUMS.zst.gpg"
+done
+offbox_rclone copyto "$work/keep.txt" "offbox:$BACKUP_S3_BUCKET/nightly/2025-12-30T000000Z/acb.dump.zst.gpg"
 offbox_rclone copyto "$work/keep.txt" "offbox:$BACKUP_S3_BUCKET/nightly/2026-01-05T000000Z/acb.dump.zst.gpg"
-pass "planted 2026-01-04 and 2026-01-05"
+pass "complete 2026-01-01 and 2026-01-02, incomplete 2025-12-30 and 2026-01-05"
 
-say "Nights 2 and 3 with BACKUP_S3_KEEP=2"
+say "Nights 2 and 3, on the SAME day as night 1, with BACKUP_S3_KEEP=2"
 for n in 2 3; do
   sleep 1
   BACKUP_S3_KEEP=2 BACKUP_GPG_RECIPIENT="$fpr" BACKUP_GPG_PUBLIC_KEY_FILE="$work/public.asc" \
@@ -166,11 +171,16 @@ done
 grep -E "pruned|night\(s\) in the bucket" "$work/night3.log" | sed 's/^/    /'
 mapfile -t left < <(offbox_list_nights)
 mapfile -t left_complete < <(offbox_listing | offbox_complete_in)
-[ "${#left_complete[@]}" = 2 ] || die "expected 2 complete nights, got: ${left_complete[*]}"
-case " ${left[*]} " in *" $night1 "*) die "night 1 survived the retention" ;; esac
-case " ${left[*]} " in *" 2026-01-04T000000Z "*) die "an old incomplete night survived" ;; esac
+night3="$(printf '%s\n' "${left_complete[@]}" | tail -1)"
+# By UTC day: today keeps ONE night (the newest), and 2026-01-02 keeps its
+# own. Nights 1 and 2 are older runs of today, and 2026-01-01 is a third day.
+[ "${left_complete[*]}" = "2026-01-02T000000Z $night3" ] \
+  || die "expected 2026-01-02 and tonight's newest night, got: ${left_complete[*]}"
+case " ${left[*]} " in *" $night1 "*) die "night 1, an older run of today, survived" ;; esac
+case " ${left[*]} " in *" 2026-01-01T000000Z "*) die "a third day survived KEEP=2" ;; esac
+case " ${left[*]} " in *" 2025-12-30T000000Z "*) die "an old incomplete night survived" ;; esac
 case " ${left[*]} " in *" 2026-01-05T000000Z "*) ;; *) die "the NEWEST incomplete night was deleted" ;; esac
-pass "2 complete nights kept, the old incomplete night went, the newest incomplete stayed"
+pass "one night per day for 2 days, the old incomplete night went, the newest incomplete stayed"
 offbox_rclone lsf "offbox:$BACKUP_S3_BUCKET/nightly/not-a-stamp" | grep -qx keep.txt \
   || die "retention deleted a folder that is not a night"
 offbox_rclone lsf "offbox:$BACKUP_S3_BUCKET/other/2026-01-01T000000Z" | grep -qx keep.txt \

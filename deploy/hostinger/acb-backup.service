@@ -43,7 +43,11 @@ EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
 # BACKUP_S3_* and BACKUP_GPG_* key goes in this root:root 0600 file, which
 # only THIS unit loads. The `-` keeps a box without the off-box copy working.
 # backup_offbox.sh refuses a key file that is not root:root 0600, and refuses
-# a BACKUP_S3_* or BACKUP_GPG_* key in /opt/acb/app/.env.
+# a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE line in .env.
+# ⚠️ This closes the PASSIVE paths only: the inherited env, /proc/<pid>/environ
+# and env dumps in logs. `acb` is equivalent to root on this box (sudo, the
+# docker group, and it owns the scripts this unit runs), so an ACTIVE
+# compromise of the app can still read this key. That is H-271.
 # `test_only_the_backup_unit_loads_the_offbox_key_file` fences the units.
 EnvironmentFile=-/etc/acb/backup-offbox.env
 # Invoked through bash on purpose — a checkout that loses the executable bit
@@ -73,10 +77,14 @@ EnvironmentFile=-/etc/acb/backup-offbox.env
 # Storage bucket through its S3 endpoint. zstd compresses each item, and gpg
 # encrypts it to the owner's PUBLIC key, so this box can write a backup and
 # cannot read one. rclone reads the key from the environment only. The step
-# runs AFTER local retention, under `timeout` (BACKUP_S3_TIMEOUT_SECS, default
-# 1200 s plus 30 s to KILL), which fits in TimeoutStartSec below. A failed or
+# runs AFTER local retention, under `timeout`. Its deadline is the time LEFT
+# in this unit: min(BACKUP_S3_TIMEOUT_SECS, TimeoutStartSec - elapsed - 60).
+# With under 120 s left, it is skipped and recorded as a failure. A failed or
 # timed-out upload is an ERROR, and the unit exits 1 at the end.
 # The journal line `off-box copy ok` is the evidence that a night left the box.
 # Restore: scripts/restore_offbox.sh, and project-docs/specs/backup_and_restore.md §4.2.
 ExecStart=/bin/bash /opt/acb/app/scripts/backup_db.sh --verify-restore --offbox
+# ⚠️ ONE value with `unit_timeout_secs` in scripts/backup_db.sh, which cuts
+# the off-box deadline from it. `test_the_unit_budget_is_one_value` fails when
+# the two drift. Change both, or neither.
 TimeoutStartSec=1800

@@ -18,8 +18,14 @@
 # env file of acb-gateway (User=acb) and of the WhatsApp bridge, and the
 # gateway's in-process Copilot CLI inherits that env (H-270). This script
 # refuses to run as any user but root, refuses a key file that is not
-# root:root 0600, and refuses when /opt/acb/app/.env holds a BACKUP_S3_* or
-# BACKUP_GPG_* key.
+# root:root 0600, and refuses when /opt/acb/app/.env holds a BACKUP_S3_*,
+# BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE line.
+# ⚠️ That closes the PASSIVE paths only: the inherited env, /proc/<pid>/environ
+# and env dumps in logs or crash reports. `acb` is equivalent to root on this
+# box: passwordless sudo, the docker group, and it owns this very script. So
+# an ACTIVE compromise of the app can still read the key and delete every
+# off-box night. The off-box copy protects against the loss of the VPS, the
+# disk or the provider account, NOT against a compromise of the app. H-271.
 #
 # 🔴 **Encrypted on the box, or not sent at all.** zstd compresses each item,
 # and gpg encrypts it to the owner's PUBLIC key. The box never holds the
@@ -56,6 +62,18 @@ if ! keep="$(offbox_uint "${BACKUP_S3_KEEP-14}")" || [ "$keep" -lt 1 ]; then
 fi
 
 # ── 2. Only root holds the bucket key ─────────────────────────────────────────
+# FIRST, before the path below is trusted: /opt/acb/app/.env is acb-writable,
+# and acb-backup.service loads it. So a line there could name another key
+# file (BACKUP_OFFBOX_ENV_FILE), or carry the key itself into the env of the
+# gateway. Either is refused. Only an export in the environment of a root
+# shell (the rehearsal, a hand run) may move the key file.
+if [ -f "$app_dir/.env" ] \
+   && grep -qE '^[[:space:]]*(export[[:space:]]+)?BACKUP_(S3_|GPG_|OFFBOX_ENV_FILE)' "$app_dir/.env"; then
+  fail "$app_dir/.env holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE
+       line. The gateway and the WhatsApp bridge load that file, and acb can
+       write it. Move each BACKUP_S3_* and BACKUP_GPG_* line to
+       /etc/acb/backup-offbox.env, and delete BACKUP_OFFBOX_ENV_FILE."
+fi
 key_env_file="${BACKUP_OFFBOX_ENV_FILE:-/etc/acb/backup-offbox.env}"
 uid="$(id -u)"
 if [ "$uid" != "0" ]; then
@@ -67,12 +85,6 @@ fi
 key_perm="$(stat -c '%u:%g %a' "$key_env_file" 2>/dev/null || true)"
 if [ "$key_perm" != "0:0 600" ]; then
   fail "$key_env_file is '$key_perm' (uid:gid mode). It must be '0:0 600'."
-fi
-if [ -f "$app_dir/.env" ] \
-   && grep -qE '^[[:space:]]*(export[[:space:]]+)?BACKUP_(S3|GPG)_' "$app_dir/.env"; then
-  fail "$app_dir/.env holds a BACKUP_S3_* or BACKUP_GPG_* key. The gateway and the
-       WhatsApp bridge load that file, so the app user could read the bucket
-       key. Move every such line to $key_env_file."
 fi
 
 for tool in rclone gpg zstd tar sha256sum; do

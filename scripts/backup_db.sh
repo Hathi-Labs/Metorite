@@ -59,8 +59,10 @@
 #   Optional:
 #   BACKUP_S3_PREFIX      the folder in the bucket (default nightly)
 #   BACKUP_S3_KEEP        COMPLETE nights to keep in the bucket (default 14)
-#   BACKUP_S3_TIMEOUT_SECS  the deadline of the whole off-box step (default 1200)
-#   BACKUP_OFFBOX_ENV_FILE  the root-only key file (default /etc/acb/backup-offbox.env)
+#   BACKUP_S3_TIMEOUT_SECS  the deadline of the whole off-box step (default 1200),
+#                         cut down to the time left in the unit (see below)
+#   BACKUP_OFFBOX_ENV_FILE  the root-owned key file (default /etc/acb/backup-offbox.env).
+#                         Refused when /opt/acb/app/.env sets it (acb writes that file).
 #   BACKUP_FILE_DIRS      the file-data directories, split by spaces
 #   BACKUP_MEETING_BOT_VOLUME   the Docker volume of the meeting bot
 set -euo pipefail
@@ -84,6 +86,13 @@ for arg in "$@"; do
 done
 # Absolute, because retention below runs `cd "$BACKUP_DIR"`.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The off-box deadline is cut from the time left in the unit, so it is taken
+# here, at the very start. A wall-clock stamp, not the SECONDS counter of
+# bash: bash imports SECONDS from the environment, so an env file could move it.
+backup_started_at="$(date +%s)"
+# == TimeoutStartSec in deploy/hostinger/acb-backup.service. One named value,
+# and `test_the_unit_budget_is_one_value` fails when the two drift.
+unit_timeout_secs=1800
 
 say()  { printf "\n==> %s\n" "$*"; }
 warn() { printf "  !! %s\n" "$*" >&2; }
@@ -756,13 +765,18 @@ fi
 # 🔴 **ONLY with --offbox.** Only acb-backup.service passes it. The
 # pre-migration backup of a deploy never does, so a deploy never uploads, an
 # outage of the bucket cannot block a migration, and a deploy cannot push a
-# real night out of the retention. The deploy cannot read the key either: it
-# lives in /etc/acb/backup-offbox.env, root:root 0600.
+# real night out of the retention. The deploy's environment does not carry
+# the key either: it lives in /etc/acb/backup-offbox.env, root:root 0600.
 #
-# 🔴 **Bounded.** The whole step runs under `timeout` (BACKUP_S3_TIMEOUT_SECS,
-# default 1200 s, plus 30 s to KILL). That fits in the unit's
-# TimeoutStartSec=1800 with the dump and the verify. A timeout is a failed
-# upload. `test_the_off_box_deadline_fits_in_the_unit` holds the sum.
+# 🔴 **Bounded by the time LEFT in the unit.** The deadline is
+#   min(BACKUP_S3_TIMEOUT_SECS (default 1200), unit_timeout_secs - elapsed - 60)
+# and `timeout` adds 30 s before a KILL, inside that 60 s margin. A fixed
+# 1200 s was wrong: a slow dump (about 11 min recorded for the pre-migration
+# one) left too little of the unit's 1800 s, and systemd would have killed the
+# unit with no ERROR line. With under 120 s left, the upload is skipped and
+# recorded as a failure. A timeout is a failed upload too.
+offbox_min_secs=120
+offbox_margin_secs=60
 #
 # 🔴 **A failure costs nothing local.** It sets `offbox_failed`, and the run
 # exits 1 at the END. The dump, the Console dump and local retention are done.
@@ -778,17 +792,31 @@ if [ "$offbox_requested" = "1" ] && [ "$offbox_configured" = "1" ]; then
     offbox_failed=1
   else
     offbox_timeout="$((10#$offbox_timeout))"
-    offbox_rc=0
-    timeout --kill-after=30 "$offbox_timeout" \
-      bash "$script_dir/backup_offbox.sh" "$DEST" "$STAMP" "$APP_DIR" < /dev/null \
-      || offbox_rc=$?
-    if [ "$offbox_rc" = "124" ] || [ "$offbox_rc" = "137" ]; then
-      echo "ERROR: the off-box copy did not finish in ${offbox_timeout}s (BACKUP_S3_TIMEOUT_SECS)," >&2
-      echo "       so timeout stopped it. The night is NOT complete in the bucket." >&2
+    elapsed="$(( $(date +%s) - backup_started_at ))"
+    left="$(( unit_timeout_secs - elapsed - offbox_margin_secs ))"
+    if [ "$left" -lt "$offbox_timeout" ]; then
+      offbox_timeout="$left"
     fi
-    if [ "$offbox_rc" != "0" ]; then
+    echo "    deadline ${offbox_timeout}s (run at ${elapsed}s of the unit's ${unit_timeout_secs}s)"
+    # The floor is for the time LEFT in the unit. A short BACKUP_S3_TIMEOUT_SECS
+    # is the operator's own choice, and it stands.
+    if [ "$left" -lt "$offbox_min_secs" ]; then
+      echo "ERROR: only ${left}s are left in the unit's ${unit_timeout_secs}s, under the" >&2
+      echo "       ${offbox_min_secs}s floor. The off-box copy did NOT run tonight." >&2
       offbox_failed=1
-      warn "the off-box copy FAILED (exit $offbox_rc). The run exits 1 at the end."
+    else
+      offbox_rc=0
+      timeout --kill-after=30 "$offbox_timeout" \
+        bash "$script_dir/backup_offbox.sh" "$DEST" "$STAMP" "$APP_DIR" < /dev/null \
+        || offbox_rc=$?
+      if [ "$offbox_rc" = "124" ] || [ "$offbox_rc" = "137" ]; then
+        echo "ERROR: the off-box copy did not finish in its ${offbox_timeout}s deadline," >&2
+        echo "       so timeout stopped it. The night is NOT complete in the bucket." >&2
+      fi
+      if [ "$offbox_rc" != "0" ]; then
+        offbox_failed=1
+        warn "the off-box copy FAILED (exit $offbox_rc). The run exits 1 at the end."
+      fi
     fi
   fi
   # A KILL runs no trap, so the staging directory can stay. Remove it here.

@@ -157,35 +157,45 @@ offbox_list_nights() {
 
 # offbox_plan_prune <keep> — read a listing on stdin, and print the nights to
 # delete, oldest first. Pure: it calls nothing, so a test can feed it anything.
-#   1. Keep the newest <keep> COMPLETE nights. Older complete nights go.
-#   2. An incomplete night goes only when it is older than the oldest complete
-#      night that is kept. With no complete night kept, none goes.
-#   3. The newest incomplete night never goes. It may still be uploading.
+#   1. BY UTC DAY. Group the COMPLETE nights by their day (the first 10
+#      characters of the stamp). Keep the newest complete night of each of the
+#      newest <keep> days that have one. Every other complete night goes: an
+#      older run of a kept day, and every night of an older day. So a day of
+#      many runs (each deploy, a hand run) costs ONE slot, and it can never
+#      push the earlier days out.
+#   2. An incomplete night goes only when it is older than the oldest kept
+#      night. With no complete night kept, none goes.
+#   3. The newest incomplete night never goes. Its upload may not be done yet.
 # So a run of failed or partial nights can never push out the good copies.
 offbox_plan_prune() {
-  local keep="$1" listing all complete kept_oldest newest_incomplete n
+  local keep="$1" listing all complete kept="" kept_oldest="" newest_incomplete=""
+  local n day last_day="" days=0
   listing="$(cat)"
   all="$(printf '%s\n' "$listing" | offbox_nights_in)"
   complete="$(printf '%s\n' "$listing" | offbox_complete_in)"
-  local -a comp=()
+  # Newest first: the first night seen of a day is that day's newest.
   while IFS= read -r n; do
-    if [ -n "$n" ]; then comp+=("$n"); fi
-  done <<< "$complete"
-  local total="${#comp[@]}" drop=0
-  if [ "$total" -gt "$keep" ]; then drop=$((total - keep)); fi
-  kept_oldest=""
-  if [ "$total" -gt 0 ]; then kept_oldest="${comp[$drop]}"; fi
-  newest_incomplete=""
+    [ -n "$n" ] || continue
+    day="${n:0:10}"
+    if [ "$day" != "$last_day" ]; then
+      last_day="$day"
+      if [ "$days" -lt "$keep" ]; then
+        kept="$kept$n"$'\n'
+        kept_oldest="$n"
+        days=$((days + 1))
+      fi
+    fi
+  done < <(printf '%s\n' "$complete" | sort -r)
   while IFS= read -r n; do
-    if [ -n "$n" ] && ! printf '%s\n' "$complete" | grep -qxF "$n"; then
+    if [ -n "$n" ] && ! grep -qxF "$n" <<< "$complete"; then
       newest_incomplete="$n"
     fi
   done <<< "$all"
   while IFS= read -r n; do
     [ -n "$n" ] || continue
-    if printf '%s\n' "$complete" | grep -qxF "$n"; then
-      # A complete night: it goes when it is older than the oldest kept one.
-      if [ -n "$kept_oldest" ] && [[ "$n" < "$kept_oldest" ]]; then echo "$n"; fi
+    if grep -qxF "$n" <<< "$complete"; then
+      # A complete night that is not its day's kept night goes.
+      if ! grep -qxF "$n" <<< "$kept"; then echo "$n"; fi
     else
       if [ "$n" = "$newest_incomplete" ]; then continue; fi
       if [ -n "$kept_oldest" ] && [[ "$n" < "$kept_oldest" ]]; then echo "$n"; fi

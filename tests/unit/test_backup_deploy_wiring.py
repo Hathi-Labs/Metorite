@@ -961,7 +961,20 @@ plant_partial() {
   mkdir -p "$S3/metorite-backups/nightly/$1"
   echo x > "$S3/metorite-backups/nightly/$1/acb.dump.zst.gpg"
 }
-export -f id stat df pg_dump gpgconf zstd gpg _s3p rclone docker
+# The clock of backup_db.sh. Its FIRST `date +%s` is the start of the run, and
+# every later one reads STUB_ELAPSED seconds after it. Any other `date` is real.
+date() {
+  if [ "$#" = 1 ] && [ "$1" = "+%s" ]; then
+    if [ -e "$W/clock" ]; then
+      echo "$(( $(cat "$W/clock") + ${STUB_ELAPSED:-0} ))"
+    else
+      command date +%s | tee "$W/clock"
+    fi
+    return 0
+  fi
+  command date "$@"
+}
+export -f id stat df pg_dump gpgconf zstd gpg _s3p rclone docker date
 """
 
 _S3_SECRET = "S3cr3tStubValue987"
@@ -1162,11 +1175,17 @@ def test_only_the_backup_unit_loads_the_offbox_key_file() -> None:
         ("", 'BACKUP_OFFBOX_ENV_FILE="$W/nope.env" ', "does not exist. The bucket key belongs there"),
         (
             "mkdir -p \"$W/app\"; printf 'POSTGRES_USER=acb\\nBACKUP_S3_SECRET_ACCESS_KEY=x\\n' > \"$W/app/.env\"\n",
-            "", "holds a BACKUP_S3_* or BACKUP_GPG_* key",
+            "", "holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE",
         ),
         (
             "mkdir -p \"$W/app\"; printf 'export BACKUP_GPG_RECIPIENT=x\\n' >> \"$W/app/.env\"\n",
-            "", "holds a BACKUP_S3_* or BACKUP_GPG_* key",
+            "", "holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE",
+        ),
+        # The acb-writable .env must not choose the key file (round 2). The
+        # stub file it names is root:root 0600, so only this check stops it.
+        (
+            "mkdir -p \"$W/app\"; printf 'BACKUP_OFFBOX_ENV_FILE=%s\\n' \"$W/backup-offbox.env\" >> \"$W/app/.env\"\n",
+            "", "holds a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE",
         ),
     ],
 )
@@ -1293,7 +1312,7 @@ def test_a_hung_upload_is_stopped_by_the_deadline() -> None:
         timeout=120,
     )
     assert r["rc"] != 0, f"a hung upload exited 0:\n{r['out']}\n{r['err']}"
-    assert "did not finish in 3s (BACKUP_S3_TIMEOUT_SECS)" in str(r["err"]), r["err"]
+    assert "did not finish in its 3s deadline" in str(r["err"]), r["err"]
     assert "Retention (keeping" in str(r["out"])
     assert "off-box copy ok" not in str(r["out"])
     assert "WORK-DIR-LEFT" not in str(r["err"]), "the staging directory outlived the timeout"
@@ -1307,15 +1326,51 @@ def test_a_bad_timeout_is_a_failed_upload(value: str) -> None:
     assert _rclone_calls(r["calls"]) == []
 
 
-def test_the_off_box_deadline_fits_in_the_unit() -> None:
-    """The default deadline, plus the 30 s to KILL, plus 300 s for the dump
-    and the verify, must fit in the unit's TimeoutStartSec."""
+def test_the_unit_budget_is_one_value() -> None:
+    """🔴 Round 2. backup_db.sh cuts the off-box deadline from the unit's
+    TimeoutStartSec, so the two must be ONE number. And the 30 s that
+    `timeout` waits before a KILL must land inside the margin it keeps."""
     text = _BACKUP.read_text(encoding="utf-8")
-    default = int(re.search(r"BACKUP_S3_TIMEOUT_SECS-(\d+)\}", text).group(1))  # type: ignore[union-attr]
+    script = int(re.search(r"^unit_timeout_secs=(\d+)$", text, re.M).group(1))  # type: ignore[union-attr]
+    margin = int(re.search(r"^offbox_margin_secs=(\d+)$", text, re.M).group(1))  # type: ignore[union-attr]
     kill = int(re.search(r"timeout --kill-after=(\d+)", text).group(1))  # type: ignore[union-attr]
     unit = (_UNITS_DIR / "acb-backup.service").read_text(encoding="utf-8")
     start = int(re.search(r"^TimeoutStartSec=(\d+)$", unit, re.M).group(1))  # type: ignore[union-attr]
-    assert default + kill + 300 <= start, (default, kill, start)
+    assert script == start, f"backup_db.sh says {script}s and the unit says {start}s"
+    assert kill < margin, (kill, margin)
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "env", "want"),
+    [
+        # A fast run: the configured deadline wins.
+        ("0", "BACKUP_S3_TIMEOUT_SECS=300 ", "deadline 300s (run at 0s of the unit's 1800s)"),
+        # A slow dump, 25 min in: 1800 - 1500 - 60 = 240 s are left.
+        ("1500", "", "deadline 240s (run at 1500s of the unit's 1800s)"),
+    ],
+)
+def test_the_deadline_is_cut_to_the_time_left_in_the_unit(elapsed: str, env: str, want: str) -> None:
+    """🔴 Round 2. The deadline is min(BACKUP_S3_TIMEOUT_SECS, 1800 -
+    elapsed - 60). A fixed 1200 s after an 11 min dump outlives the unit, and
+    systemd kills it with no ERROR line. Mutation: drop the cut, and the
+    1500 s case reads 1200 s."""
+    r = _run_backup_offbox(_FULL_ENV + env, setup=f"export STUB_ELAPSED={elapsed}\n")
+    assert r["rc"] == 0, f"exit {r['rc']}:\n{r['out']}\n{r['err']}"
+    assert want in str(r["out"]), r["out"]
+    assert "off-box copy ok" in str(r["out"])
+
+
+def test_too_little_time_left_skips_the_upload_as_a_failure() -> None:
+    """🔴 Round 2. 1650 s in, only 90 s are left, under the 120 s floor. The
+    upload does not start, rclone never runs, and the run exits 1 with an
+    ERROR that says why."""
+    r = _run_backup_offbox(_FULL_ENV, setup="export STUB_ELAPSED=1650\n")
+    assert r["rc"] != 0, f"exit 0:\n{r['out']}\n{r['err']}"
+    assert "only 90s are left in the unit's 1800s" in str(r["err"]), r["err"]
+    assert "the off-box copy to Supabase Storage FAILED" in str(r["err"])
+    assert _rclone_calls(r["calls"]) == []
+    assert not _encrypted(r["calls"])
+    assert "Retention (keeping" in str(r["out"])
 
 
 def test_a_console_failure_still_sends_the_app_dump_off_box() -> None:
@@ -1464,6 +1519,27 @@ def test_the_prune_plan_keeps_complete_nights_and_the_newest_partial() -> None:
     assert _plan(14, [_D[3], _D[5]], [_D[0], _D[1], _D[8]]) == [_D[0], _D[1]]
     # A name that is not a night is never planned, however old it reads.
     assert _plan(1, [_D[5]], [], ["0000-not-a-night/x", "nightly/x"]) == []
+
+
+def test_the_prune_plan_keeps_one_night_per_day() -> None:
+    """🔴 Round 2. Retention is BY UTC DAY. 14 complete runs on one day (each
+    deploy, a hand run) must keep that day's NEWEST run only, and must never
+    push the earlier days out. A partial run inside the day stays while it is
+    newer than the oldest kept night, and the newest partial always stays.
+    Mutation: keep the newest KEEP complete nights by count, and the five
+    earlier days go."""
+    earlier = [f"2026-01-0{d}T023000Z" for d in range(1, 6)]
+    same_day = [f"2026-01-09T{h:02d}0000Z" for h in range(14)]
+    partials = ["2026-01-09T005000Z", "2026-01-09T140000Z"]
+    gone = _plan(14, earlier + same_day, partials)
+    assert gone == same_day[:-1], gone
+    # KEEP=3: the same day, then the two newest earlier days.
+    gone = _plan(3, earlier + same_day, partials)
+    assert gone == earlier[:3] + same_day[:-1], gone
+    # Two days, three runs each, KEEP=1: only the newest run of the newest day.
+    two = ["2026-01-01T010000Z", "2026-01-01T020000Z", "2026-01-01T030000Z",
+           "2026-01-02T010000Z", "2026-01-02T020000Z", "2026-01-02T030000Z"]
+    assert _plan(1, two, []) == two[:-1]
 
 
 @pytest.mark.parametrize(("value", "want"), [("08", "8"), ("09", "9"), ("010", "10"), ("14", "14"), ("0", "0")])
