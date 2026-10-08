@@ -19,6 +19,8 @@ import asyncio
 import json as _json
 from pathlib import Path
 
+from acb_common.child_env import child_env
+
 
 def _find_workspace_root() -> str:
     """The workspace root of the run on this frame, or ``""`` for none.
@@ -97,6 +99,7 @@ async def get_errors(filePaths: str = "[]") -> str:
                 "python", "-m", "py_compile", str(fp),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env(),
             )
             _, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=10,
@@ -123,6 +126,7 @@ async def get_errors(filePaths: str = "[]") -> str:
             cwd=str(root_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=child_env(),
         )
         stdout, _ = await asyncio.wait_for(
             proc.communicate(), timeout=30,

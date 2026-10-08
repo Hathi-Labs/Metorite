@@ -37,6 +37,7 @@ from typing import Any, AsyncIterator, Callable
 
 from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
+from acb_common.child_env import child_env, copilot_env
 from acb_llm.run_errors import run_error_event
 from acb_skills.ask_tools import is_hitl_blocking_tool as _is_hitl_blocking_tool
 from acb_skills.integrations import build_integrations
@@ -96,6 +97,44 @@ from orchestrator._tool_injection import (
     _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
 )
+
+
+def _tier2_copilot_client(agent_settings: dict[str, Any]) -> Any:
+    """The CopilotClient of a Tier 2 Copilot agent that has none yet.
+
+    D85 (fix round 1 of PR #598): the CLI shell is ALWAYS denied on Tier 2.
+    Tier 1.5 returns for every Copilot-shaped agent, so Tier 2 never serves
+    the ``github-copilot`` label. SDK 1.0 (H-181): ``cli_path`` and the args
+    are one stdio ``RuntimeConnection``, and the client takes keywords.
+
+    Headless auth: the token comes from ``COPILOT_GITHUB_TOKEN``, then
+    ``GITHUB_COPILOT_TOKEN``, then the canonical ``GITHUB_TOKEN``. A server has
+    no logged-in CLI user, so with no token the CLI answers "Authorization
+    error, run /login".
+
+    WS-49 BH-1: the CLI gets ``copilot_env()`` and no gateway secret. The SDK
+    adds ``COPILOT_SDK_AUTH_TOKEN`` from ``github_token`` itself.
+    """
+    from copilot import CopilotClient as _CopilotClient
+    from copilot import RuntimeConnection as _RuntimeConnection
+
+    from orchestrator.copilot_agent import copilot_token
+
+    cli_opts: dict[str, Any] = {
+        "connection": _RuntimeConnection.for_stdio(
+            path=agent_settings.get("cli_path") or None,
+            args=["--deny-tool", "shell"],
+        ),
+    }
+    log_level = agent_settings.get("log_level")
+    if log_level:
+        cli_opts["log_level"] = log_level
+    token = copilot_token()
+    if token:
+        cli_opts["github_token"] = token
+    return _CopilotClient(**cli_opts, env=copilot_env())
+
+
 def _tier2_tool_view(agent: Any, make_shim: Callable[[Any, str], Any]) -> Any:
     """*agent*, or a per-run copy whose ``default_options`` tools are shimmed.
 
@@ -2008,6 +2047,7 @@ async def _get_current_head(agent_dir: str) -> str:
             cwd=agent_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         return out.decode(errors="replace").strip() if proc.returncode == 0 else ""
@@ -2033,6 +2073,7 @@ async def _commit_on_remote(agent_dir: str, commit_sha: str) -> bool:
             cwd=agent_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
         return proc.returncode == 0 and bool(out.decode(errors="replace").strip())
@@ -2207,6 +2248,7 @@ async def _detect_agent_commits(
                                     cwd=agent_dir,
                                     stdout=asyncio.subprocess.PIPE,
                                     stderr=asyncio.subprocess.DEVNULL,
+                                    env=child_env(),
                                 )
                                 out, _ = await asyncio.wait_for(p.communicate(), timeout=5)
                                 msg = out.decode(errors="replace").strip()
@@ -2228,6 +2270,7 @@ async def _detect_agent_commits(
                 cwd=agent_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=child_env(),
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=10,
@@ -2259,6 +2302,7 @@ async def _detect_agent_commits(
             cwd=agent_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=child_env(),
         )
         catchup_out, _ = await asyncio.wait_for(
             catchup_proc.communicate(), timeout=10,
@@ -5416,49 +5460,10 @@ async def run_agent_stream(
                     # may not be installed.  Our Python tools (e.g. zoho_crm) work fine
                     # without it, and we don't want the LLM to fall back to shell execution.
                     try:
-                        from copilot import CopilotClient as _CopilotClient
-                        from copilot import RuntimeConnection as _RuntimeConnection
                         if hasattr(agent, "_client") and agent._client is None:
-                            _agent_settings = getattr(agent, "_settings", {}) or {}
-                            _cli_opts: dict[str, Any] = {}
-                            # For GitHub Copilot agents (repo-sourced), allow all tools
-                            # including shell — pwsh 7.6.2 is installed. For local/built-in
-                            # MAF agents with Python tools, deny shell to prevent the LLM
-                            # from bypassing structured Python tools with raw shell calls.
-                            # SDK 1.0 (H-181): cli_path + cli_args became one
-                            # stdio RuntimeConnection, and the client takes
-                            # keywords instead of an options dict.
-                            # D85 (fix round 1 of PR #598): ALWAYS deny the
-                            # CLI shell on Tier 2. Tier 1.5 returns for every
-                            # Copilot-shaped agent, and a `github-copilot`
-                            # label makes an agent Copilot-shaped, so Tier 2
-                            # never serves that label. Its old "allow shell
-                            # for github-copilot" branch could not run.
-                            _cli_args = ["--deny-tool", "shell"]
-                            _cli_path = _agent_settings.get("cli_path")
-                            if _cli_path or _cli_args:
-                                _cli_opts["connection"] = _RuntimeConnection.for_stdio(
-                                    path=_cli_path or None, args=_cli_args,
-                                )
-                            _log_level = _agent_settings.get("log_level")
-                            if _log_level:
-                                _cli_opts["log_level"] = _log_level
-                            # Headless auth: explicit Copilot token (servers
-                            # have no logged-in copilot CLI user).
-                            # Fall back to the canonical GITHUB_TOKEN — the
-                            # only secret the connect UI / settings store / DB
-                            # hydration actually populate. Without this, the
-                            # headless CLI has no auth and no logged-in copilot
-                            # user, yielding "Authorization error, run /login".
-                            _cop_tok = (
-                                os.environ.get("COPILOT_GITHUB_TOKEN")
-                                or os.environ.get("GITHUB_COPILOT_TOKEN")
-                                or os.environ.get("GITHUB_TOKEN")
-                                or ""
-                            ).strip()
-                            if _cop_tok:
-                                _cli_opts["github_token"] = _cop_tok
-                            agent._client = _CopilotClient(**_cli_opts)
+                            agent._client = _tier2_copilot_client(
+                                getattr(agent, "_settings", {}) or {}
+                            )
                             agent._owns_client = True
                     except Exception:
                         pass
