@@ -949,8 +949,8 @@ def count_line(c: Counts) -> str:
         older = max(0, c.candidates - c.read)
         older_text = f"More than {older}" if c.overflow else str(older)
         return (
-            f"Read the newest {c.read} of {c.candidates}{of} matches in full{SPAN_NO_PICK} "
-            f"{older_text} older matches were not read."
+            f"Read the newest {c.read}{of or f' of {c.candidates}'} matches in full"
+            f"{SPAN_NO_PICK} {older_text} older matches were not read."
         )
     if c.pick_skipped:
         # H-276: say that NO item was checked, so neither the model nor the
