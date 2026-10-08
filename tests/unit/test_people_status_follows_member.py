@@ -241,22 +241,18 @@ def test_the_trigger_and_backfill_match_ONLY_the_members_tenant(eng) -> None:
     """Migration 209 lets two customers each hold a row for one address.
 
     Activation at customer A must not touch customer B's row, in the trigger
-    or in the backfill. This adds the column the generated tenancy layer adds
-    (H-104) and rebuilds the function around it.
+    or in the backfill. Migration 209 puts ``organization_id`` on the ladder,
+    so this is the with-column arm, which is production's shape.
 
-    ⚠️ **All of it is ONE transaction, rolled back.** An ADD COLUMN that
-    commits and a DROP COLUMN after it each spend one of the table's 1600
-    column slots for good. That is how the shared scratch database wore out.
+    ⚠️ **All of it is ONE transaction, rolled back.** Nothing here should
+    commit DDL. A committed ADD COLUMN and DROP COLUMN each spend one of the
+    table's 1600 column slots for good, and that is how the shared scratch
+    database wore out.
     """
     email, drifted = _address("twotenants"), _address("twodrift")
     conn = eng.connect()
     tx = conn.begin()
     try:
-        conn.execute(text(
-            "ALTER TABLE people ADD COLUMN IF NOT EXISTS "
-            "organization_id UUID DEFAULT "
-            "current_setting('app.tenant_id', true)::uuid"))
-        conn.execute(text(_body()))
         a, b = _org(conn), _org(conn)
 
         def b_row(addr: str) -> None:
@@ -295,6 +291,45 @@ def test_the_trigger_and_backfill_match_ONLY_the_members_tenant(eng) -> None:
         assert by_org(drifted) == {a: "invited", b: "invited"}
         conn.execute(text(_body()))
         assert by_org(drifted) == {a: "active", b: "invited"}
+    finally:
+        tx.rollback()
+        conn.close()
+
+
+def test_the_no_column_arm_works_too(eng) -> None:
+    """The arm a database without ``people.organization_id`` takes (H-104).
+
+    209 puts the column on the ladder, so every other test here takes the
+    with-column arm. This drops the column INSIDE a transaction that rolls
+    back, rebuilds the function, and runs the trigger and the backfill.
+    A rolled-back DROP COLUMN spends no column slot.
+    """
+    email, drifted = _address("nocol"), _address("nocoldrift")
+    conn = eng.connect()
+    tx = conn.begin()
+    try:
+        conn.execute(text(
+            "ALTER TABLE people DROP COLUMN organization_id CASCADE"))
+        conn.execute(text(_body()))
+        org = _org(conn)
+
+        _member(conn, email, "", org, "invited")
+        conn.execute(text(
+            "UPDATE app_user SET status = 'active', display_name = 'No Col' "
+            " WHERE email = :e"), {"e": email})
+        assert _row(conn, email) == {"name": "No Col", "status": "active"}
+
+        _member(conn, drifted, "", org, "invited")
+        conn.execute(text(
+            "ALTER TABLE app_user DISABLE TRIGGER trg_app_user_directory_row"))
+        conn.execute(text(
+            "UPDATE app_user SET status = 'active' WHERE email = :e"),
+            {"e": drifted})
+        conn.execute(text(
+            "ALTER TABLE app_user ENABLE TRIGGER trg_app_user_directory_row"))
+        assert _row(conn, drifted)["status"] == "invited"
+        conn.execute(text(_body()))
+        assert _row(conn, drifted)["status"] == "active"
     finally:
         tx.rollback()
         conn.close()

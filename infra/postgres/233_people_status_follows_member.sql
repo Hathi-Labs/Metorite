@@ -54,7 +54,8 @@ BEGIN;
 
 -- ── 1. The trigger function ─────────────────────────────────────────────────
 --
--- The INSERT half is 209's, byte for byte. The UPDATE half is new. Both build
+-- The INSERT half writes what 209's writes. Only the two inputs are held in
+-- variables now. The UPDATE half is new. Both build
 -- their column list per call, for the reason 206 section 1 gives (H-104).
 
 CREATE OR REPLACE FUNCTION people_row_from_member() RETURNS trigger
