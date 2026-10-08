@@ -57,10 +57,13 @@ def test_no_agent_is_told_to_prefer_a_card_for_a_list() -> None:
 
 
 def test_the_projects_agent_creates_several_words_without_a_picker() -> None:
+    """H-273: several new tags or types are ONE batch call, with no picker."""
     text = _text("agent-projects")
     assert "**Several new words in one turn.**" in text
-    assert "do not draw a picker\n  first" in text
-    assert "Call the next create\n  only after the last receipt." in text
+    assert "For 2 or more new tags, call\n  `create_tags` once" in text
+    assert "call `create_types` once" in text
+    assert "Do not draw a picker first" in text
+    assert "create them one after\n  another" not in text
 
 
 def test_the_email_agent_shows_a_list_as_one_board() -> None:

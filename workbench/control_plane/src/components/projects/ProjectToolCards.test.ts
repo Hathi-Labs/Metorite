@@ -31,6 +31,7 @@ import {
   OPENS_APP,
   BATCH_TOOLS,
   batchNotes,
+  parseVocabRows,
   UNKNOWN_LINE,
 } from "./ProjectToolCards";
 
@@ -324,5 +325,66 @@ describe("WS-46 P13: the receipt of a batch of new tasks", () => {
       "left out: row 4 Order the banners, unticked on the card.",
     ]);
     expect(notes.join(" ")).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
+  });
+});
+
+describe("H-273: the receipt of a batch of new tags or types", () => {
+  const OTHER = "1f8fad5b-d9cb-469f-a165-70867728950e";
+  // The shape `forms.py::_vocab_receipt` prints. `test_projects_create_vocab.py`
+  // holds the Python side to these same lines.
+  const partial = [
+    "Added 2 of 3 tags to «Ops» and every project under it. 1 was not created.",
+    "- tag «q4» · colour blue",
+    `  tag_id: ${ID}`,
+    "- tag «blocked»",
+    `  tag_id: ${OTHER}`,
+    "failed: row 2 «vip» refused (403): «Not permitted.»",
+    "stopped: 1 of 3 rows failed.",
+    "The 2 tags listed above exist. Never create them again. To retry a failed row, call create_tags with that row alone.",
+    "left out: row 4 «urgent», unticked on the card, because a tag with this name exists here already.",
+  ].join("\n");
+
+  it("draws tags and types through the batch card", () => {
+    expect(BATCH_TOOLS.get("create_tags")?.rows).toBe("tag");
+    expect(BATCH_TOOLS.get("create_types")?.rows).toBe("type");
+    expect(BATCH_TOOLS.get("create_tasks")?.rows).toBe("task");
+  });
+
+  it("reads each tag and its id, as a tag row, and no task row", () => {
+    expect(parseVocabRows(partial)).toEqual([
+      { kind: "tag", id: ID, name: "q4", meta: "colour blue" },
+      { kind: "tag", id: OTHER, name: "blocked", meta: "" },
+    ]);
+    expect(parseTaskRows(partial)).toEqual([]);
+  });
+
+  it("does not take a row whose id line names the other kind", () => {
+    const mixed = ["Added 1 type to «Ops»:", "- type «Chore»", `  tag_id: ${ID}`].join("\n");
+    expect(parseVocabRows(mixed)).toEqual([]);
+  });
+
+  it("is partial with a refused row, and quotes the 403 in the notes", () => {
+    expect(classifyActionResult(partial, "done", "create_tags")).toBe("partial");
+    expect(batchNotes(partial).map(unfenced)).toEqual([
+      "failed: row 2 vip refused (403): Not permitted.",
+      "stopped: 1 of 3 rows failed.",
+      "left out: row 4 urgent, unticked on the card, because a tag with this name exists here already.",
+    ]);
+  });
+
+  it("is done when every ticked row landed", () => {
+    const clean = ["Added 1 type to «Ops» and every project under it:", "- type «Chore» · icon broom",
+      `  type_id: ${ID}`].join("\n");
+    expect(classifyActionResult(clean, "done", "create_types")).toBe("done");
+    expect(parseVocabRows(clean)).toEqual([{ kind: "type", id: ID, name: "Chore", meta: "icon broom" }]);
+  });
+
+  it("is not done when the server refused every row", () => {
+    const none = [
+      "No tag of the 1 is known to exist in «Ops» and every project under it. 1 was not created.",
+      "failed: row 1 «vip» refused (403): «Not permitted.»",
+      "stopped: 1 of 1 rows failed.",
+    ].join("\n");
+    expect(classifyActionResult(none, "done", "create_tags")).toBe("refused");
   });
 });

@@ -95,25 +95,27 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-273 · The chat has no batch tool for several tags, types or statuses · [AGENT]
-- **Check:** `grep -n "create_tags\|create_vocabulary" apps/skills/skill-projects/skill_projects/__init__.py`.
+### H-274 · The chat has no batch tool for several new statuses · [AGENT]
+- **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
   While it prints nothing, this is open.
-- **Why.** The owner's turn of 2026-10-08 drew a picker, then one
-  confirmation card for each tag (`projects_ai_chat.md` §24.5). The rows
-  card of `request_confirmation(rows=…)` (#691) is the answer: ONE card with
-  a checkbox for each new tag, as `create_tasks` does.
-- **What to build.** The smallest tool is `create_tags(project_id, tags)`.
-  It uses the same route as `create_tag` and the same class B card with rows.
-  It checks `FORGED_ROWS` again after the answer. It needs a `COMPOSITE` entry
-  and `SENDS` witnesses in `manifest.py`. `test_projects_field_parity.py`
-  allows rows for `create_tasks` only, so its row exception changes too.
-  It also needs the writes table, the H-236 egress list and `config.json`.
-  In the client, it needs a batch receipt in `ProjectToolCards.tsx` and an
-  entry in `chatPlacement.ts`. Last, it needs an R8 test on a private
-  database.
-- **Then.** Change "Several new words in one turn" in
-  `apps/agents/agent-projects/instructions.md` to name the tool. Types and
-  statuses need the same, or one `create_vocabulary` with a `kind`.
+- **Why.** H-273 built `create_tags` and `create_types` on one helper
+  (`forms.py` `_VocabKind`). Statuses did not fit that helper in a few lines,
+  for three reasons:
+  1. The status route has no duplicate rule. `create_status` refuses a
+     name that exists, but `admin.create_status` inserts a second lane. A
+     ticked row that exists would make a duplicate lane.
+  2. Each lane needs its own `position`, after the last lane of the set.
+  3. The card must quote the server's `may_edit` first, as
+     `status_edit_refusal` does for `create_status`.
+- **Until then.** The Projects agent calls `create_status` once for each new
+  status, one after another (`instructions.md`, "Several new words in one
+  turn").
+- **What to build.** A `_VocabKind` for statuses, with the keys `name`,
+  `category` and `color`. Decide rule 1 first: refuse an existing name
+  before the card, or add a 409 to the route. The fences are the ones H-273
+  touched (the PR body lists them).
+- **Authority:** `project-docs/specs/projects_ai_chat.md` §24.5
+- **Added:** 2026-10-08 · H-273, branch `projects-vocab-batch`
 
 ### H-272 · plan-guard cannot see the secrets drop folder · [AGENT] · security
 - **Check:** `rg -c "metorite\[" .claude/hooks/plan-guard.mjs` → no hit

@@ -217,10 +217,46 @@ def _witnesses() -> list[tuple[Route, str, str, str]]:
     return out
 
 
-def test_every_witness_is_an_argument_of_a_tool_that_reaches_the_route() -> None:
+def _row_arguments() -> dict[tuple[str, str], tuple[str, ...]]:
+    """The tools that take rows, each with its row argument and its row keys.
+
+    This is the F2 row exception, and it is a list on purpose. ``create_tasks``
+    (WS-46 P13) takes ``ROW_KEYS``. ``create_tags`` and ``create_types``
+    (H-273) take the keys of their ``forms.VOCAB_KINDS`` entry. A new tool with
+    rows must be added here by hand, and ``test_the_row_exception_is_exactly...``
+    holds the list.
+    """
     from skill_projects import forms
 
+    out: dict[tuple[str, str], tuple[str, ...]] = {("create_tasks", "tasks"): forms.ROW_KEYS}
+    for spec in forms.VOCAB_KINDS.values():
+        out[(spec.tool, spec.arg)] = spec.keys
+    return out
+
+
+def test_the_row_exception_is_exactly_the_three_batch_tools() -> None:
+    """Mutation: give a fourth tool rows, or drop one -> this test fails."""
+    assert set(_row_arguments()) == {
+        ("create_tasks", "tasks"),
+        ("create_tags", "tags"),
+        ("create_types", "types"),
+    }
+
+
+def test_every_row_key_of_a_vocabulary_batch_is_a_witness() -> None:
+    """Each row key is sent on the wire, so F2 checks it. Mutation: a row key
+    that no SENDS witness names -> this test fails."""
+    named = {(t, a) for _k, _n, t, a in _witnesses()}
+    for (tool, param), keys in _row_arguments().items():
+        if tool == "create_tasks":
+            continue  # held by test_projects_create_tasks.py
+        for key in keys:
+            assert (tool, f"{param}.{key}") in named, f"{tool}.{param}.{key} has no witness"
+
+
+def test_every_witness_is_an_argument_of_a_tool_that_reaches_the_route() -> None:
     rows = {(r.method, r.path): r for r in m.MANIFEST}
+    row_args = _row_arguments()
     for key, name, tool, arg in _witnesses():
         assert tool in skill_projects.__all__, f"{key} · {name}: {tool} is not an exported tool"
         if arg:
@@ -228,9 +264,11 @@ def test_every_witness_is_an_argument_of_a_tool_that_reaches_the_route() -> None
             params = inspect.signature(getattr(skill_projects, tool)).parameters
             assert param in params, f"{key} · {name}: {tool} has no argument {param!r}"
             if row_key:
-                # Only create_tasks takes rows today. Its row keys are ROW_KEYS.
-                assert (tool, param) == ("create_tasks", "tasks"), f"{key} · {name}: {arg}"
-                assert row_key in forms.ROW_KEYS, f"{key} · {name}: no row key {row_key!r}"
+                # Only the tools of the row exception take rows.
+                assert (tool, param) in row_args, f"{key} · {name}: {arg}"
+                assert row_key in row_args[(tool, param)], (
+                    f"{key} · {name}: no row key {row_key!r}"
+                )
         assert m.reaches(tool, rows[key].tool), (
             f"{key} · {name}: {tool} may not reach a route the manifest gives {rows[key].tool}"
         )
@@ -262,7 +300,10 @@ _BASE: dict[str, dict[str, Any]] = {
     "create_task": {"project_id": UUID, "title": "Call the vendor"},
     # WS-46 P13: one row. A witness of a row key replaces the row.
     "create_tasks": {"project_id": UUID, "tasks": '[{"title": "Call the vendor"}]'},
+    # H-273: one row. A witness of a row key replaces the row.
+    "create_tags": {"project_id": UUID, "tags": '[{"name": "q4"}]'},
     "create_type": {"project_id": UUID, "name": "Chore"},
+    "create_types": {"project_id": UUID, "types": '[{"name": "Chore"}]'},
     "defer": {"task_id": UUID, "until": "2026-10-06"},
     "delete_status": {"project_id": UUID, "status": "to do", "move_to": "done"},
     "edit_comment": {"task_id": UUID, "comment_id": tw.LINK, "body": "Waiting on finance."},
@@ -398,6 +439,8 @@ _SAMPLE: dict[str, Any] = {
     "filters": '{"overdue": true}',
     "personal": '{"disposition": "someday", "context": "@home"}',
 }
+#: A row key's sample, where the argument of the same name takes another form.
+_ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
 #: The whole call, where the base call takes another branch of the tool.
 _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
     ("POST", "/projects/tasks/{task_id}/move", "parent_task_id"): {
@@ -526,7 +569,9 @@ def _call_for(key: Route, name: str, tool: str, arg: str) -> dict[str, Any]:
     param, _, row_key = arg.partition(".")
     if row_key:
         # WS-46 P13: one row, with the base title and the one key the witness names.
-        row = {"title": "Call the vendor", row_key: _SAMPLE[row_key]}
+        # H-273: a vocabulary row has a name, not a title.
+        first = {"title": "Call the vendor"} if tool == "create_tasks" else {"name": "Chore"}
+        row = {**first, row_key: _ROW_SAMPLE.get(row_key, _SAMPLE.get(row_key))}
         return {**_BASE.get(tool, {}), param: json.dumps([row])}
     full = _CALL.get((key[0], key[1], name))
     if full is not None and tool != "create_tasks":

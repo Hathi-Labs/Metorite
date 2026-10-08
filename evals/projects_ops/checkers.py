@@ -644,6 +644,40 @@ def check_po10(ev: Evidence) -> list[Rule]:
     ]
 
 
+# ── PO-11: three new tags in one call (H-273) ────────────────────────────────
+
+#: The tags PO-11 asks for, in the member's words.
+PO11_TAGS = ("vendor", "print", "av")
+
+
+def check_po11(ev: Evidence) -> list[Rule]:
+    launch = ev.dataset.project("Launch").id
+    batch = [c for c in ev.calls if c.name == "create_tags"]
+    single = [c for c in ev.calls if c.name == "create_tag"]
+    rows = [len(c.rows) for c in ev.cards]
+    path = f"/projects/nodes/{launch}/tags"
+    posts = ev.writes_to("POST", path)
+    made = sorted(str((p.response or {}).get("name") or "").lower()
+                  for p in posts if p.status < 400)
+    others = [(r.method, r.path) for r in ev.writes() if not (r.method == "POST" and r.path == path)]
+    return [
+        _rule("one_batch_call", len(batch) == 1 and not single,
+              "one create_tags call, and no create_tag call",
+              f"{len(batch)} create_tags and {len(single)} create_tag calls"),
+        _rule("one_card_with_rows", rows == [3],
+              "one card with a checkbox for each of the 3 tags",
+              f"the cards carried {rows} rows, not one card with 3"),
+        _one_approved_card(ev),
+        _rule("three_tags_in_launch", len(posts) == 3 and made == sorted(PO11_TAGS),
+              f"three POST …/tags on Launch, for {', '.join(PO11_TAGS)}",
+              f"{len(posts)} tag creates on Launch, and the tags made are {made}"),
+        _rule("nothing_else_written", not others, "the tag creates are the only writes",
+              f"other writes: {others}"),
+        _rule("answer_counts_three", bool(re.search(r"\b(3|three)\b", ev.answer, re.I)),
+              "the answer says 3 tags", "the answer does not say how many tags it made"),
+    ]
+
+
 # ── the table ───────────────────────────────────────────────────────────────
 
 CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
@@ -657,6 +691,7 @@ CHECKERS: dict[str, Callable[[Evidence], list[Rule]]] = {
     "PO-8": check_po8,
     "PO-9": check_po9,
     "PO-10": check_po10,
+    "PO-11": check_po11,
 }
 
 

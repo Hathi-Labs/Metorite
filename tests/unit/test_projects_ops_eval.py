@@ -108,8 +108,8 @@ def test_next_monday(today: date, monday: date) -> None:
 # ── the task table ──────────────────────────────────────────────────────────
 
 
-def test_the_ten_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
-    assert tuple(f"PO-{n}" for n in range(1, 11)) == T.TASK_IDS
+def test_the_eleven_tasks_each_have_a_checker_and_a_script_or_an_xfail() -> None:
+    assert tuple(f"PO-{n}" for n in range(1, 12)) == T.TASK_IDS
     assert set(C.CHECKERS) == set(T.TASK_IDS)
     for spec in T.TASKS:
         assert (spec.id in S.SCRIPTED_IDS) is (spec.xfail is None), spec.id
@@ -121,7 +121,7 @@ def test_the_task_selector() -> None:
     assert [t.id for t in T.select("all")] == list(T.TASK_IDS)
     assert [t.id for t in T.select("PO-4, PO-1")] == ["PO-4", "PO-1"]
     with pytest.raises(ValueError):
-        T.select("PO-11")
+        T.select("PO-12")
 
 
 # ── 2. the scripted sweep, through the REAL executor ────────────────────────
@@ -168,7 +168,7 @@ def test_the_scripted_sweep_passes_every_task_uncovered(
         assert record["status"] == want, (task_id, record["failure"])
     assert all(r["no_egress"] == [False] for r in records if r["status"] == "pass")
     assert R.coding.exit_code(records) == R.EXIT_PASS
-    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 10
+    assert len(list((tmp_path / "out").glob("PO-*-uncovered-run1.json"))) == 11
 
 
 def test_the_scripted_sweep_passes_every_task_covered(
@@ -478,6 +478,51 @@ def test_po10_a_second_write_fails(harness: R.OpsHarness) -> None:
 def test_po10_an_answer_without_the_count_fails(harness: R.OpsHarness) -> None:
     steps = _po10(answer="I added the tasks to Launch.")
     assert _failed(_run(harness, "PO-10", steps)) == {"answer_counts_three"}
+
+
+def _po11(*names: str, project: str = "Launch", answer: str = "") -> list[Any]:
+    """PO-11's batch (H-273). No names means the known-good tags."""
+    return [tool("create_tags", project_id=DS.project(project).id,
+                 tags=json.dumps(list(names or C.PO11_TAGS))),
+            ("text", answer or "I registered 3 tags in Launch.")]
+
+
+def test_po11_the_known_good_run_passes(harness: R.OpsHarness) -> None:
+    record = _run(harness, "PO-11")
+    assert record["status"] == "pass", record["failure"]
+    [card] = record["cards"]
+    assert [r["label"] for r in card["rows"]] == list(C.PO11_TAGS)
+    assert card["title"] == "Add 3 tags to «Launch»?"
+
+
+def test_po11_one_call_per_tag_fails(harness: R.OpsHarness) -> None:
+    """The owner's turn of 2026-10-08: one create_tag, and one card, per tag."""
+    steps = [*[tool("create_tag", project_id=LAUNCH.id, name=n) for n in C.PO11_TAGS],
+             ("text", "I registered 3 tags.")]
+    spec = dataclasses.replace(T.by_id("PO-11"), cards=(T.APPROVE,) * 3)
+    failed = _failed(_run(harness, "PO-11", steps, spec=spec))
+    assert {"one_batch_call", "one_card_with_rows", "one_card"} <= failed
+
+
+def test_po11_an_unticked_row_fails(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-11"), untick=("row-2",))
+    assert _failed(_run(harness, "PO-11", _po11(), spec=spec)) == {"three_tags_in_launch"}
+
+
+def test_po11_a_declined_card_fails(harness: R.OpsHarness) -> None:
+    spec = dataclasses.replace(T.by_id("PO-11"), cards=(T.DECLINE,))
+    assert _failed(_run(harness, "PO-11", _po11(), spec=spec)) == {
+        "one_card", "three_tags_in_launch"}
+
+
+def test_po11_the_wrong_project_fails(harness: R.OpsHarness) -> None:
+    assert _failed(_run(harness, "PO-11", _po11(project="Ops"))) == {
+        "three_tags_in_launch", "nothing_else_written"}
+
+
+def test_po11_an_answer_without_the_count_fails(harness: R.OpsHarness) -> None:
+    steps = _po11(answer="I registered the tags in Launch.")
+    assert _failed(_run(harness, "PO-11", steps)) == {"answer_counts_three"}
 
 
 def test_the_runner_answers_the_rows_of_a_card_as_drawn() -> None:
