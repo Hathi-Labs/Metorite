@@ -110,7 +110,9 @@ gpg() {
   done
   case "$op" in
     *--import*)
-      if command grep -q PRIVATE "$last" || command grep -q STUB-SECRET "$last"; then
+      if command grep -q STUB-BOTH "$last"; then
+        echo "pub:u:255:22:AAAA:::::::"; echo "sec:u:255:22:CCCC:::::::"
+      elif command grep -q PRIVATE "$last" || command grep -q STUB-SECRET "$last"; then
         echo "sec:u:255:22:AAAA:::::::"; echo "ssb:u:255:18:BBBB:::::::"
       else
         echo "pub:u:255:22:AAAA:::::::"; echo "sub:u:255:18:BBBB:::::::"
@@ -441,7 +443,9 @@ def test_the_public_key_validator_rejects_a_private_key() -> None:
     private = "-----BEGIN PGP PRIVATE KEY BLOCK-----\\nx\\n-----END PGP PRIVATE KEY BLOCK-----\\n"
     # A file that SAYS public, and that gpg shows as a secret key.
     disguised = "-----BEGIN PGP PUBLIC KEY BLOCK-----\\nSTUB-SECRET\\n-----END PGP PUBLIC KEY BLOCK-----\\n"
-    for content in (private, disguised, "not a key\\n"):
+    # A file that gpg shows as a public key AND a secret key.
+    both = "-----BEGIN PGP PUBLIC KEY BLOCK-----\\nSTUB-BOTH\\n-----END PGP PUBLIC KEY BLOCK-----\\n"
+    for content in (private, disguised, both, "not a key\\n"):
         res = _run(
             "SD init >/dev/null\n"
             f"printf -- '{content}' > \"$D/backup-gpg-public.asc\"\n"
