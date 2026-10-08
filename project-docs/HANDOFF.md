@@ -100,8 +100,8 @@ line — never reclaim a number by deleting the other entry.
   No line with a measured recall and a date under §9 N4 means this is open.
 - **Why.** The PR of WS-48 N4 has only the scripted run, and its verdicts,
   tokens and credits are stub numbers. That run does not meet the email bar of
-  0.40: its gated ratio is 0.650. A real run says whether the WhatsApp tool
-  saves anything before anyone turns it on.
+  0.40: its gated ratio is 0.650, and 0.622 after H-276. A real run says
+  whether the WhatsApp tool saves anything before anyone turns it on.
 - **Do.**
   1. The owner approves the run, because it spends credits and turns on a
      flag. Then set `NARROWING_AGENTS=whatsapp-assistant` on the box.
@@ -115,34 +115,39 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `data_narrowing_pipeline.md` §9 N4 and §11 · D93
 - **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
 
-### H-276 · PICK costs more than it saves on short items · [AGENT]
-- **Check:** `rg -n "short item" packages/acb_skills/acb_skills/narrowing.py`.
-  No hit means the pick step has no rule for short items, and this is open.
-- **Why.** PICK asks one question for each candidate, and each question
-  carries its guidance. So it spends about 160 tokens on each candidate. A
-  WhatsApp message is about 15 tokens. In the scripted WhatsApp eval, Q2 (all
-  messages of one group in three weeks) costs 1.45 times today's path. A CRM
-  note or a task title (N5) is short too.
-- **Do.** Measure the PICK tokens for each candidate on the decide door.
-  Then propose a rule in spec §3.3 for the owner: for example, when the
-  summaries of all candidates are shorter than the question, READ them with
-  no PICK. Do not change the pipeline before the spec says so.
-- **Authority:** `data_narrowing_pipeline.md` §3.3 and §9 N4 build notes
-- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+### H-278 · The cost check of PICK uses the eval card, not the Router's prices · [AGENT]
+- **Check:** `rg -n "TODO\(H-278\)" packages/acb_skills/acb_skills/narrowing.py`.
+  A hit means this is open.
+- **Why.** H-276 added a cost check before PICK (spec §3.3a). It compares the
+  price of `tier-decide` with the price of the READ tier. The agent cannot read
+  the Router's tier prices, and the seed ships the production card unpriced. So
+  `narrowing.TIER_RATES` copies the eval card. The check uses only the ratio of
+  two prices, but a real card with another ratio moves the decision.
+- **Do.**
+  1. Find out if the Console gives the tenant side a read of its tier prices.
+  2. If it does, read the prices once for each process in `narrowing.py`, and
+     keep `TIER_RATES` as the fallback.
+  3. If it does not, record the gap in `customer_console.md` and keep the
+     constants. `test_narrowing_pick_cost.py` pins them to the eval card.
+- **Authority:** `data_narrowing_pipeline.md` §3.3a · D93
+- **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
 
-### H-277 · `read_whatsapp_chat` reads the oldest messages of a chat, not the recent ones · [AGENT]
-- **Check:** `rg -n "ORDER BY sent_at ASC NULLS FIRST" apps/services/gateway/gateway/routes/whatsapp/transport/messages.py`.
-  A hit in `list_messages` with `LIMIT :limit` after it means this is open.
-- **Why.** The tool says that it reads "the recent messages". The route orders
-  `sent_at ASC` and then applies the limit, so a chat of more than 20 messages
-  gives its OLDEST 20. The agent then answers from old messages, and a recent
-  answer is not seen. WS-48 N4 found it, and the narrowing READ does not use
-  this form (it reads with `around`).
-- **Do.** Take the newest `limit` messages, then give them oldest first, in the
-  route or in the tool. Check the app's thread view first, because it reads
-  the same route. Add a test with a chat of more than `limit` messages.
-- **Authority:** `whatsapp_message_manager.md` · board row WS-20
-- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+### H-279 · A WhatsApp question about one whole chat costs more on `narrow_and_read` · [AGENT]
+- **Check:** `rg -n "KNOWN_COSTS_MORE: .*Q2" evals/whatsapp_narrowing/run.py`.
+  A hit means this is open.
+- **Why.** In the scripted WhatsApp eval, Q2 asks for every message of one
+  group in three weeks. It costs 1.45 times today's path. NARROW finds 27
+  messages, more than the READ cap of 25, so PICK must run. The READ windows
+  of one chat also overlap, so READ gives some lines twice. With no PICK at
+  all, and a READ cap of 30, Q2 costs 1.447 times today. The eval names Q2 in
+  `KNOWN_COSTS_MORE`, so the rule of H-276 accepts it up to 1.45 and no more.
+- **Do.** Choose one of these, measure it on the eval, and remove Q2 from
+  `KNOWN_COSTS_MORE`:
+  1. READ merges the overlapping windows of one chat into one block.
+  2. The instructions tell the model to read one whole chat with
+     `read_whatsapp_chat`, and not with `narrow_and_read`.
+- **Authority:** `data_narrowing_pipeline.md` §3.3a and §9 N4 · D93
+- **Added:** 2026-10-08 · branch `ws48-pick-cost` (H-276).
 
 ### H-274 · The chat has no batch tool for several new statuses · [AGENT]
 - **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
