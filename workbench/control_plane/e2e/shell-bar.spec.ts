@@ -153,7 +153,7 @@ test.describe("desktop", () => {
     await page.goto("/email");
     await expect(page.locator("[data-page-filter]")).toBeVisible();
     await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
-    await expect(commandBar(page)).toContainText("in Email");
+    await expect(commandBar(page)).toContainText("in My Email");
     await field(page).fill("invoice march");
     await commandBar(page).getByRole("option", { name: /Show all in/ }).click();
     await expect(commandBar(page)).toHaveCount(0);
