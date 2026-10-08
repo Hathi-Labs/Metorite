@@ -932,7 +932,7 @@ cmd_diff() {
   ensure_drop
   i="$(entry "$1")"
   validate_local "$i"
-  probe "$i" || die "ssh to $host failed."
+  probe "$i" || die "the probe on $host failed. Read the line above."
   show_diff "$i"
 }
 
@@ -1062,7 +1062,7 @@ cmd_push() {
 
   validate_local "$i"
   check_local_perms "$f"
-  probe "$i" || die "ssh to $host failed. Nothing changed."
+  probe "$i" || die "the probe on $host failed. Read the line above. Nothing changed."
   pre="$r_sha"
   if [ "$kind" = env-merge ] && [ "$r_exists" != 1 ]; then
     die "$rp does not exist on $host. A merge needs the env file to exist. Nothing changed."
