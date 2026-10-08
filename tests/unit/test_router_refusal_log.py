@@ -22,6 +22,7 @@ Mutations this file catches (R7), each run red before the change:
   ``test_the_line_holds_no_text_of_the_vendor_message``;
 * the walk drops the vendor of the refusing step ->
   ``test_the_walk_names_the_vendor_that_refused``;
+* the class-name check goes -> ``test_an_error_class_that_is_not_a_plain_name_is_unnamed``;
 * a hint matches a word inside another word ->
   ``test_a_hint_needs_a_whole_word``.
 """
@@ -128,6 +129,14 @@ def test_the_line_holds_no_text_of_the_vendor_message(caplog) -> None:
 def test_a_hint_needs_a_whole_word() -> None:
     fields = describe_failure(_refused("the top_ply and xmax_tokens fields"))
     assert fields["hints"] == "none"
+
+
+def test_an_error_class_that_is_not_a_plain_name_is_unnamed() -> None:
+    """A type name is code. One that does not read as a plain name is dropped."""
+    odd = type("Bad Name: " + SECRET, (VendorError,), {})
+    failed = UpstreamFailed(400, vendor="deepseek")
+    failed.__cause__ = odd(400, "x")
+    assert describe_failure(failed)["error_class"] == "unnamed"
 
 
 def test_a_failure_with_no_cause_still_logs() -> None:

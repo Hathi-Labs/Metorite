@@ -128,27 +128,25 @@ class SystemOneUnavailable(Exception):
         self.reason = reason
 
 
-#: The longest cause chain that :func:`failure_reason` walks.
-_CHAIN_MAX = 8
-
-
 def failure_reason(exc: BaseException) -> str:
     """A reason CODE for a failed request: ``http_<status>``, ``timeout`` or a type name.
 
-    The client library and MAF can each wrap the HTTP error, so this walks the
-    cause chain to the first error that carries an integer ``status_code``. It
-    reads no message, because a message can quote the request.
+    The client library and MAF can each wrap the HTTP error. The walk is the
+    ONE walker of the platform, ``acb_llm.run_errors``, so the two cannot
+    disagree about which link holds the status. It reads no message, because
+    a message can quote the request.
     """
-    seen: BaseException | None = exc
-    for _ in range(_CHAIN_MAX):
-        if seen is None:
-            break
-        status = getattr(seen, "status_code", None)
-        if isinstance(status, int) and not isinstance(status, bool):
+    try:
+        from acb_llm.run_errors import _chain, _status_of
+    except ImportError:  # the reason must never become a second failure
+        return type(exc).__name__
+    links = _chain(exc)
+    for link in links:
+        status = _status_of(link)
+        if status is not None:
             return f"http_{status}"
-        if isinstance(seen, TimeoutError) or "Timeout" in type(seen).__name__:
-            return "timeout"
-        seen = seen.__cause__ or seen.__context__
+    if any(isinstance(e, TimeoutError) or "Timeout" in type(e).__name__ for e in links):
+        return "timeout"
     return type(exc).__name__
 
 
