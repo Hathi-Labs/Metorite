@@ -26,10 +26,13 @@ import Button from "@/components/ui/Button";
 import FencedText from "@/components/FencedText";
 import AppIcon from "@/components/Icon";
 import Readout from "@/components/projects/Readout";
+import { renderTemplate } from "@/components/genUITemplates";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { ToolCardShell } from "@/components/ToolCardShell";
+import { placementOf } from "@/lib/chatPlacement";
+import { parseDatasetTable } from "@/lib/datasetTable";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { LEGEND, parseTaskRows, taskMetaForPeople, type ProjectTaskRow } from "@/lib/projectToolRows";
 
@@ -84,6 +87,10 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   // S6 — navigation. The page usually opens the row itself; this card keeps
   // the link for a member who is not on the Projects page.
   open_in_app: { icon: "ExternalLink", label: "Open in Projects" },
+  // S7e — the on-the-fly table. It draws as a table (`lib/datasetTable.ts`).
+  task_dataset: { icon: "Table2", label: "Task dataset" },
+  my_led_projects: { icon: "FolderKanban", label: "Projects you lead" },
+  my_areas: { icon: "Layers", label: "Your areas" },
 };
 
 /**
@@ -305,11 +312,28 @@ export const VIEW_TOOLS: ReadonlySet<string> = new Set([
   "status_report",
 ]);
 
+/**
+ * A READ is evidence (`lib/chatPlacement.ts`, spec §24 rule 2): it draws in
+ * the working trail, under its step, and never as a card after the answer.
+ * A Projects tool the map does not name counts as a read here. The fences
+ * keep every exported tool named, so only a tool from a newer server lands
+ * here, and a hidden receipt is the smaller harm than a wall of cards.
+ */
+function isProjectEvidence(e: ToolEvent): boolean {
+  const p = placementOf(e.name);
+  return p === "evidence" || p === undefined;
+}
+
+/** A card in the FLOW: a write's receipt, or a view that failed. */
 function hasProjectCard(e: ToolEvent): boolean {
   if (e.status !== "done" && e.status !== "error") return false;
+  if (!isProjectsTool(e) || isProjectEvidence(e)) return false;
   if (e.status === "done" && VIEW_TOOLS.has(e.name)) return false;
-  return isProjectsTool(e);
+  return true;
 }
+
+/** Every tool name this file routes. The placement fence reads it. */
+export const PROJECT_CARD_TOOLS: readonly string[] = [...PROJECT_TOOLS];
 
 // ── Result-text parser ────────────────────────────────────────────────────────
 
@@ -364,39 +388,113 @@ function TaskRowView({ row }: { row: ProjectTaskRow }) {
   );
 }
 
-function TaskListCard({ event: e }: { event: ToolEvent }) {
-  const result = e.result || "";
-  const rows = parseTaskRows(result);
+/** The words a task-list read is known by: "Search · extruder", "My inbox". */
+function listLabel(e: ToolEvent): string {
   const args = (e.args ?? {}) as Record<string, unknown>;
-  const label =
-    e.name === "find_tasks"
-      ? `Search${args.query ? ` · ${String(args.query)}` : ""}`
-      : e.name === "my_work"
-        ? String(args.view ?? "") === "inbox" ? "My inbox" : "Assigned to me"
-        : e.name === "calendar"
-          ? "Calendar"
-          : e.name === "intake_queue"
-            ? "Intake"
-            : e.name === "notifications"
-              ? "Notifications"
-              : "Tasks";
-  const title = `${label} (${rows.length})`;
-  if (rows.length === 0) {
-    return <InfoCard event={e} icon="ListChecks" label={label} />;
-  }
+  if (e.name === "find_tasks") return `Search${args.query ? ` · ${String(args.query)}` : ""}`;
+  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My inbox" : "Assigned to me";
+  if (e.name === "calendar") return "Calendar";
+  if (e.name === "intake_queue") return "Intake";
+  if (e.name === "notifications") return "Notifications";
+  return "Tasks";
+}
+
+// ── Evidence: a read, drawn inside its step (spec §24 rule 2) ─────────────────
+
+/** The `task_dataset` table: the dataGrid template, a caption, the notes. */
+function DatasetView({ result }: { result: string }) {
+  const table = parseDatasetTable(result);
+  if (!table) return <Readout result={result} legend={LEGEND} />;
   return (
-    <ToolCardShell
-      title={title}
-      icon={<AppIcon name="ListChecks" size={12} />}
-      onDismiss={() => dismissToolCard(e.id)}
-    >
-      <div className="space-y-0.5 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        {rows.map((r) => (
-          <TaskRowView key={r.id} row={r} />
-        ))}
-      </div>
-    </ToolCardShell>
+    <div data-dataset-table="" className="min-w-0 space-y-1.5">
+      {renderTemplate("dataGrid", {
+        title: table.title,
+        columns: table.columns,
+        rows: table.rows,
+      })}
+      {(table.caption || table.notes.length > 0) && (
+        <div className="space-y-0.5 text-[10px] text-muted-foreground">
+          {table.caption && <div>{table.caption}</div>}
+          {table.notes.map((n, i) => (
+            <div key={i}>{n}</div>
+          ))}
+        </div>
+      )}
+    </div>
   );
+}
+
+/**
+ * One Projects read as the member reads it, with no card chrome: the step
+ * row above it already says what it is. Rows open the task, a table draws as
+ * a table, and every other read draws through `Readout`.
+ */
+function ProjectEvidenceBody({ event: e }: { event: ToolEvent }) {
+  const router = useRouter();
+  const result = e.result || "";
+  if (e.status === "error") {
+    return (
+      <div className="text-[11px] whitespace-pre-wrap text-destructive">
+        <FencedText text={forPeopleFenced(result) || "(no result)"} pills={false} />
+      </div>
+    );
+  }
+  if (e.name === "task_dataset") return <DatasetView result={result} />;
+  const rows = parseTaskRows(result);
+  const opens = OPENS_APP[e.name];
+  const body = withoutLegend(result);
+  const link = body.match(/^\s*link:\s*(\/projects\?[\w=&-]+)\s*$/m)?.[1] ?? "";
+  const isList = LIST_TOOLS.has(e.name) || !(e.name in INFO_META);
+  return (
+    <div className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 min-w-0 text-[11px]">
+      <div className="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+        {isList && rows.length > 0 ? (
+          <>
+            <div className="mb-1 text-[11px] font-medium text-foreground">
+              {listLabel(e)} <span className="text-muted-foreground">{rows.length}</span>
+            </div>
+            <div className="space-y-0.5">
+              {rows.map((r) => (
+                <TaskRowView key={r.id} row={r} />
+              ))}
+            </div>
+          </>
+        ) : (
+          <Readout result={result} legend={LEGEND} />
+        )}
+      </div>
+      {link && !opens && (
+        <div className="mt-2">
+          <Button variant="secondary" size="sm" icon="ExternalLink" onClick={() => router.push(link)}>
+            Open in Projects
+          </Button>
+        </div>
+      )}
+      {opens && (
+        <div className="mt-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="ExternalLink"
+            onClick={() => router.push(`/projects?app=${opens.app}`)}
+          >
+            {opens.label}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The receipt of a Projects READ for the trail (`ThinkingContainer`), or
+ * null when the event is not one. A finished or failed step only: a running
+ * step has no result yet.
+ */
+export function projectEvidence(e: ToolEvent): React.ReactNode | null {
+  if (e.status !== "done" && e.status !== "error") return null;
+  if (!isProjectsTool(e) || !isProjectEvidence(e)) return null;
+  return <ProjectEvidenceBody event={e} />;
 }
 
 /** Strip the data legend: the model needs it, a person does not. */
@@ -745,10 +843,12 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
   );
   if (all.length === 0) return null;
 
+  // Only the FLOW is here: the receipts of writes, and a view that failed.
+  // Every read draws inside its step (`projectEvidence`, spec §24).
   const items: React.ReactNode[] = [];
   for (const e of all) {
-    if (LIST_TOOLS.has(e.name)) {
-      items.push(<TaskListCard key={e.id} event={e} />);
+    if (BATCH_TOOLS.has(e.name)) {
+      items.push(<BatchReceiptCard key={e.id} event={e} />);
       continue;
     }
     const meta = INFO_META[e.name];
@@ -756,22 +856,9 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
       items.push(<InfoCard key={e.id} event={e} icon={meta.icon} label={meta.label} />);
       continue;
     }
-    if (BATCH_TOOLS.has(e.name)) {
-      items.push(<BatchReceiptCard key={e.id} event={e} />);
-      continue;
-    }
-    if (e.name in ACTION_META) {
-      items.push(<ActionResultCard key={e.id} event={e} />);
-      continue;
-    }
-    // A tool the manifest added after this file was written. The generic
-    // card renders it from its name, so shipping the tool never waits on a
-    // card (spec §7.3). If it prints task rows, it gets the list card.
-    if (parseTaskRows(e.result || "").length > 0) {
-      items.push(<TaskListCard key={e.id} event={e} />);
-      continue;
-    }
-    items.push(<InfoCard key={e.id} event={e} icon="Wrench" label={genericLabel(e.name)} />);
+    // A write, known or new. A new one draws the generic receipt from its
+    // name, so shipping the tool never waits on a card (spec §7.3).
+    items.push(<ActionResultCard key={e.id} event={e} />);
   }
 
   return <div className="mt-3 space-y-2 min-w-0 overflow-hidden">{items}</div>;

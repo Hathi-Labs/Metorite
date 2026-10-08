@@ -1,7 +1,7 @@
 "use client";
 
 import Icon from "@/components/Icon";
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import React from "react";
 import type { ChatMessage } from "@/hooks/useAgentChat";
 import type { FileEntry } from "@/components/ArtifactSidebar";
@@ -10,9 +10,12 @@ import MarkdownMessage from "@/components/MarkdownMessage";
 import MessageActionBar from "@/components/MessageActionBar";
 import GenerativeUIPanel from "@/components/GenerativeUIPanel";
 import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
-import EmailToolCards from "@/components/email/EmailToolCards";
-import TaskToolCards from "@/components/tasks/TaskToolCards";
-import ProjectToolCards from "@/components/projects/ProjectToolCards";
+import EmailToolCards, { emailEvidence } from "@/components/email/EmailToolCards";
+import TaskToolCards, { taskEvidence } from "@/components/tasks/TaskToolCards";
+import ProjectToolCards, { projectEvidence } from "@/components/projects/ProjectToolCards";
+import type { ToolEvent } from "@/components/MarkdownMessage";
+import { genUiPlacement } from "@/lib/chatPlacement";
+import { genUiTarget } from "@/lib/askPin";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
 import { DismissableCard } from "@/components/ToolCardShell";
@@ -198,6 +201,16 @@ function MessageBubble({
   const entityIndex = useMemo(
     () => (pills ? buildEntityIndex(dedupedToolEvents) : null),
     [pills, dedupedToolEvents],
+  );
+
+  // A READ's receipt draws in its step, inside the trail, and never after the
+  // answer (spec `projects_ai_chat.md` §24 rule 2, owner 2026-10-08). Each
+  // card file says whether an event is its read; `lib/chatPlacement.ts` is
+  // the one map behind all three.
+  const accountId = emailContext?.accountId;
+  const evidenceFor = useCallback(
+    (e: ToolEvent) => projectEvidence(e) ?? taskEvidence(e) ?? emailEvidence(e, accountId),
+    [accountId],
   );
 
   // Dismissed tool/artifact cards (persisted) — filter them out of every card
@@ -475,6 +488,7 @@ function MessageBubble({
         entityPills={pills}
         entityIndex={entityIndex ?? undefined}
         fences
+        evidenceFor={evidenceFor}
       />
       {/* Inline artifact cards — dismissable (persisted), keyed by sha/path. */}
       {(() => {
@@ -524,6 +538,10 @@ function MessageBubble({
               if (requestId && onHitlRespond) onHitlRespond(requestId, msg);
               else onChoice?.(msg);
             };
+            // An element that needs the member is marked, so the pin above
+            // the composer can find it and scroll to it (§24 rule 1).
+            const ask = genUiPlacement(spec) === "ask";
+            const askAttr = ask ? { "data-chat-ask": genUiTarget(message.id, i, spec) } : {};
             if (rec.surface === "panel") {
               const title = typeof rec.title === "string" && rec.title
                 ? rec.title : "Interactive view";
@@ -545,6 +563,13 @@ function MessageBubble({
                     — open in side panel
                   </span>
                 </button>
+              );
+            }
+            if (ask) {
+              return (
+                <div key={i} {...askAttr} className="min-w-0 outline-none">
+                  <GenerativeUINode spec={spec} onAction={act} />
+                </div>
               );
             }
             return <GenerativeUINode key={i} spec={spec} onAction={act} />;

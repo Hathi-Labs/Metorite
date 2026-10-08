@@ -842,7 +842,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
       {data.title != null && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
           <TIcon name="clipboard-list" size={15} color="var(--primary)" />
-          <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title)}</span>
+          <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--foreground)" }}><GenUiText text={str(data.title)} /></span>
         </div>
       )}
       {data.description != null && (
@@ -961,7 +961,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   return (
     <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
       {data.title != null && (
-        <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--foreground)", marginBottom: 4 }}>{str(data.title)}</div>
+        <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--foreground)", marginBottom: 4 }}><GenUiText text={str(data.title)} /></div>
       )}
       {data.description != null && (
         <div style={{ fontSize: 12, color: "var(--muted-foreground)", marginBottom: 10 }}><GenUiText text={str(data.description)} /></div>

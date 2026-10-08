@@ -117,6 +117,20 @@ def build_output_discipline_block(*, compact: bool = False) -> str:
     )
 
 
+#: Where a card goes (``projects_ai_chat.md`` §24, owner 2026-10-08). The
+#: owner's report: a picker to answer "got lost above in the chat", under four
+#: read receipts the turn drew after the answer. The chat now draws each read
+#: under its step, so a card that repeats one is clutter. Both variants of the
+#: directive end with this text, so the rule reaches both runtimes.
+#: Fence: ``tests/unit/test_genui_proactive_directive.py``.
+PLACEMENT_RULE = (
+    "Where a card goes: draw at most ONE card for an answer, after your text. "
+    "A list of fewer than six items stays a Markdown list. Never draw a read's "
+    "result again as a card: the chat already shows each read under its step. "
+    "A form or a picker that waits for the member is not the answer card."
+)
+
+
 def ui_first_directive(*, compact: bool = False) -> str:
     """The proactive 'render UI by default' rule (generative_ui_2 Phase 2).
 
@@ -138,7 +152,8 @@ def ui_first_directive(*, compact: bool = False) -> str:
             "trainStatus, formCard, optionPicker) rather than describing it in "
             "prose; use a component tree for simple structured data and custom "
             "html only as a last resort; pair any pick/set with \"hitl\":true. "
-            "Skip UI only for a trivial one-liner or a long narrative."
+            "Skip UI only for a trivial one-liner or a long narrative. "
+            + PLACEMENT_RULE
         )
     return (
         "### Rich UI by default for structured answers "
@@ -163,7 +178,8 @@ def ui_first_directive(*, compact: bool = False) -> str:
         "When the user must choose or set something, use formCard / "
         "optionPicker (or buttons) with top-level `\"hitl\":true` so their "
         "answer returns to you in the same turn. Skip UI only for a trivial "
-        "one-liner or a long narrative explanation."
+        "one-liner or a long narrative explanation.\n"
+        + PLACEMENT_RULE
     )
 
 

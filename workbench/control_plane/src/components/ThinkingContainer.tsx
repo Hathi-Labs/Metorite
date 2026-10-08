@@ -18,6 +18,13 @@
  * from `lib/toolSteps.ts` ("Ran a script in the sandbox", "Created a task"),
  * the one place a tool name becomes a sentence. Fence: `toolSteps.test.ts`.
  *
+ * A READ's receipt draws HERE, under the step that made it, and nowhere
+ * after the answer (spec `projects_ai_chat.md` §24 rule 2, owner
+ * 2026-10-08). The caller hands each step's receipt in through
+ * `evidenceFor`, and `lib/chatPlacement.ts` decides which tools are reads.
+ * A step with a receipt is closed by default, and it shows its chevron, so a
+ * member can see there is something to open.
+ *
  * Patterns sourced from VS Code Copilot Chat UI study —
  * see project-docs/spec_chat_ux.md.
  */
@@ -29,6 +36,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import MarkdownImage from "@/components/MarkdownImage";
+import { InStepContext } from "@/components/ToolCardShell";
 import { markdownUrlTransform } from "@/lib/markdownMedia";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import { TRAIL_AXIS, TRAIL_ICON_CELL, trailBodySize } from "@/lib/trailLayout";
@@ -51,6 +59,12 @@ interface ThinkingContainerProps {
    *  segmentCutoff. Empty for id-less runtimes (which use the reasoning fold). */
   narrationSegments?: string[];
   isActive: boolean;
+  /**
+   * The receipt of a read, drawn inside its step when the step is open
+   * (§24 rule 2). Null for a step with none. `MessageBubble` supplies it
+   * from the card files, so this component names no tool.
+   */
+  evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
 }
 
 // ─── Step kinds ─────────────────────────────────────────────────────────────
@@ -418,18 +432,33 @@ export function ToolStepRow({
   event,
   open,
   onToggle,
+  evidence,
 }: {
   event: ToolEvent;
   open: boolean;
   onToggle?: () => void;
+  /** The read's receipt (§24 rule 2). It replaces the raw arguments and
+   *  output in the detail. */
+  evidence?: React.ReactNode | null;
 }) {
   const step = describeToolStep(event);
   const running = step.status === "running";
   const failed = step.status === "failed";
   const dur = event.endedAt && event.startedAt ? event.endedAt - event.startedAt : undefined;
   const hasSubAgent = !!(event.subAgentName && (event.subAgentTools?.length || event.subAgentText));
+  const hasEvidence = evidence != null && !running;
+  // A receipt can hold state the member made (a deleted pattern, an archived
+  // mail). Once opened, it stays mounted and only hides, so closing the step
+  // does not undo what the member did (review round 1).
+  const [kept, setKept] = useState(open);
+  if (open && !kept) setKept(true);
   return (
-    <div className="relative flex min-w-0" data-step-status={step.status} data-step-kind={step.kind}>
+    <div
+      className="relative flex min-w-0"
+      data-step-status={step.status}
+      data-step-kind={step.kind}
+      {...(hasEvidence ? { "data-step-has-evidence": "" } : {})}
+    >
       {/* The icon on the axis: what the step does, inked by where it is. It
           sits in the trail's one icon column, the same cell as the header's
           (`lib/trailLayout.ts`), so the two cannot drift apart. */}
@@ -466,12 +495,23 @@ export function ToolStepRow({
           {dur !== undefined && dur > 1000 && (
             <span data-step-duration="" className="text-[10px] text-muted-foreground tabular-nums shrink-0">{(dur / 1000).toFixed(1)}s</span>
           )}
-          <span className="ml-auto shrink-0 text-muted-foreground text-[10px] opacity-0 group-hover/tool:opacity-100 transition-opacity">
+          {/* A step that holds a receipt shows its chevron at rest: the
+              member needs to see that it opens. */}
+          <span
+            className={`ml-auto shrink-0 text-muted-foreground text-[10px] transition-opacity ${
+              hasEvidence ? "opacity-70 group-hover/tool:opacity-100" : "opacity-0 group-hover/tool:opacity-100"
+            }`}
+          >
             {open ? "▴" : "▾"}
           </span>
         </button>
 
-        {open && (
+        {hasEvidence && (open || kept) && (
+          <div data-step-evidence="" hidden={!open} className="mt-1 min-w-0">
+            <InStepContext.Provider value={true}>{evidence}</InStepContext.Provider>
+          </div>
+        )}
+        {open && !hasEvidence && (
           <div className="mt-1 min-w-0">
             {step.kind === "run" ? (
               <RunDetail event={event} running={running} dur={dur} />
@@ -481,6 +521,7 @@ export function ToolStepRow({
             {hasSubAgent && <SubAgentSteps event={event} />}
           </div>
         )}
+        {open && hasEvidence && hasSubAgent && <SubAgentSteps event={event} />}
       </div>
     </div>
   );
@@ -494,6 +535,7 @@ export default function ThinkingContainer({
   reasoningBlocks,
   narrationSegments,
   isActive,
+  evidenceFor,
 }: ThinkingContainerProps) {
   const hasReasoning = !!(reasoningBlocks && reasoningBlocks.length > 0);
   const hasNarration = !!(narrationSegments && narrationSegments.length > 0);
@@ -511,6 +553,10 @@ export default function ThinkingContainer({
   // row is open while running (live output) and collapsed when done —
   // matching VS Code's chat tool invocation parts.
   const [toolOverrides, setToolOverrides] = useState<Record<string, boolean>>({});
+  // Once the body has been open, it stays mounted and only hides, so a
+  // receipt in a step keeps what the member did in it (review round 1).
+  const [bodyKept, setBodyKept] = useState(false);
+  if (expanded && hasContent && !bodyKept) setBodyKept(true);
 
   // Chronologically interleaved narration + reasoning + tool timeline
   // (VS Code style; narration segments are Phase 3b message-id ground truth).
@@ -680,9 +726,10 @@ export default function ThinkingContainer({
           rather than a message inside the container. */}
 
       {/* ── Body: vertical timeline ────────────────────────────────── */}
-      {expanded && hasContent && (
+      {(expanded || bodyKept) && hasContent && (
         <div
           ref={bodyRef}
+          hidden={!expanded}
           data-trail-body=""
           className={`border-t border-border/40 chat-fade-in overflow-y-auto ${
             // A cap, never a height (`lib/trailLayout.ts`). A fixed `h-56`
@@ -744,6 +791,7 @@ export default function ThinkingContainer({
                     key={event.id}
                     event={event}
                     open={open}
+                    evidence={evidenceFor?.(event) ?? null}
                     onToggle={() =>
                       setToolOverrides((prev) => ({ ...prev, [event.id]: !open }))
                     }

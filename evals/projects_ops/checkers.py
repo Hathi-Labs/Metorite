@@ -35,8 +35,8 @@ from evals.projects_ops.stub_api import NOT_SERVED, OpsRequest
 from evals.projects_ops.tasks import APPROVE, DECLINE, MEMBER
 
 __all__ = [
-    "CHECKERS", "Card", "Evidence", "Rule", "Session", "ToolCall", "check", "first_failure",
-    "passed",
+    "CHECKERS", "Card", "Evidence", "Rule", "Session", "ToolCall", "answer_cards", "check",
+    "first_failure", "is_ask_card", "passed", "recarded_reads",
 ]
 
 #: The first word of every refusal the model reads (``skill_projects.refusals``).
@@ -142,12 +142,124 @@ def stray_marks(answer: str) -> bool:
     return bool(re.search(r"[«»]", _FENCED_NAME.sub("", answer or "")))
 
 
+# ── where the cards go (projects_ai_chat.md §24, owner 2026-10-08) ──────────
+
+#: The tool that draws a card the model chose.
+GENUI_TOOL = "emit_generative_ui"
+#: The views: each draws one template, which is an answer card.
+ANSWER_VIEWS: frozenset[str] = frozenset(
+    {"render_timeline", "render_board", "render_tasks", "render_report", "status_report"}
+)
+#: The templates a member fills in. A card with one waits on the member: it
+#: is an ask, never the answer card (``chatPlacement.ts`` ``ASK_TEMPLATES``).
+ASK_TEMPLATES: frozenset[str] = frozenset({"formCard", "optionPicker", "planCard"})
+#: A task number or an id: the items a read prints and a card can repeat.
+_ITEM = re.compile(r"#\d+\b|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+#: A card repeats a read when this share of each side's items is the other's.
+MIRROR_SHARE = 0.8
+#: A card with fewer items than this repeats nothing worth a rule.
+MIRROR_MIN = 3
+
+
+def _ui_spec(call: ToolCall) -> dict[str, Any] | None:
+    raw = _args(call).get("ui")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _has_control(node: Any, depth: int = 0) -> bool:
+    if depth > 20 or not isinstance(node, dict):
+        return False
+    props = node.get("props") if isinstance(node.get("props"), dict) else {}
+    if node.get("type") == "button" and props.get("action"):
+        return True
+    if node.get("type") == "template" and props.get("name") in ASK_TEMPLATES:
+        return True
+    kids = node.get("children") if isinstance(node.get("children"), list) else []
+    return any(_has_control(k, depth + 1) for k in kids)
+
+
+def _drew(call: ToolCall) -> bool:
+    """The call drew its card. The tool refuses a spec it cannot draw with
+    ``{"ok": false}`` as a normal result, so ``call.ok`` stays True for it
+    (``genui_refusal``). A refused spec drew nothing (review round 1)."""
+    if call.ok is False:
+        return False
+    try:
+        result = json.loads(call.result or "{}")
+    except ValueError:
+        return True
+    return not (isinstance(result, dict) and result.get("ok") is False)
+
+
+def is_ask_card(spec: dict[str, Any]) -> bool:
+    """A card that waits on the member: it blocks, or it holds a control."""
+    if spec.get("hitl") is True or spec.get("request_id"):
+        return True
+    return _has_control(spec.get("root") or spec.get("view") or spec)
+
+
+def answer_cards(session: Session) -> list[ToolCall]:
+    """The cards the model chose for its answer: views, and genUI that is no ask."""
+    out = []
+    for call in session.tool_calls:
+        if not _drew(call):
+            continue
+        if call.name in ANSWER_VIEWS:
+            out.append(call)
+        elif call.name == GENUI_TOOL and (spec := _ui_spec(call)) is not None and not is_ask_card(spec):
+            out.append(call)
+    return out
+
+
+def recarded_reads(session: Session) -> list[str]:
+    """Each genUI answer card that only repeats one earlier read's items.
+
+    The chat shows every read under its step, so such a card is a second copy
+    of what the member can already open. A card built from a read with other
+    items, or a view the member asked for, is not counted.
+    """
+    from skill_projects import manifest
+
+    reads = manifest.tools_by_class("A") - ANSWER_VIEWS
+    seen: list[tuple[str, set[str]]] = []
+    found: list[str] = []
+    for call in session.tool_calls:
+        if call.name in reads and call.ok is not False:
+            seen.append((call.name, set(_ITEM.findall(call.result or ""))))
+            continue
+        if call.name != GENUI_TOOL or not _drew(call):
+            continue
+        spec = _ui_spec(call)
+        if spec is None or is_ask_card(spec):
+            continue
+        items = set(_ITEM.findall(json.dumps(spec)))
+        if len(items) < MIRROR_MIN:
+            continue
+        # Compare like with like: a card that lists numbers is held to the
+        # read's numbers, and one that carries ids to its ids.
+        kinds = {i.startswith("#") for i in items}
+        for name, all_got in seen:
+            got = {g for g in all_got if g.startswith("#") in kinds}
+            both = len(items & got)
+            if got and both / len(items) >= MIRROR_SHARE and both / len(got) >= MIRROR_SHARE:
+                found.append(name)
+                break
+    return found
+
+
 def common(ev: Evidence) -> list[Rule]:
     errors = [s.error for s in ev.sessions if s.error]
     strangers = sorted({r.member for r in ev.requests if r.member != MEMBER})
     unserved = sorted({f"{r.method} {r.path}" for r in ev.requests
                        if r.status == 404 and _detail(r) == NOT_SERVED})
     want = "covered" if ev.covered else "uncovered"
+    most = max((len(answer_cards(x)) for x in ev.sessions), default=0)
+    recarded = sorted({name for x in ev.sessions for name in recarded_reads(x)})
     return [
         _rule("run_completed", not errors and bool(ev.sessions), "the session ended",
               f"session error: {errors[0] if errors else 'no session'}"),
@@ -165,6 +277,12 @@ def common(ev: Evidence) -> list[Rule]:
         _rule("answer_marks_drawable", not stray_marks(ev.answer),
               "every « » in the answer is one drawable name",
               "the answer holds a « or » that no pill can draw"),
+        # Where the cards go (§24, owner 2026-10-08). The chat draws each read
+        # under its step, so one answer needs one card at most.
+        _rule("one_answer_card", most <= 1, "each answer drew one card at most",
+              f"one answer drew {most} cards"),
+        _rule("no_read_recarded", not recarded, "no card repeats a read",
+              f"a card repeats the result of {recarded}"),
     ]
 
 

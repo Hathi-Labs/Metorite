@@ -142,6 +142,18 @@ Seven rules on top of the three above. Each one exists because it was broken:
    generative-UI string with `GenUiText.tsx`. That is `MarkdownBody` in its
    `inline` mode, never a second renderer. Fences: `fencedText.test.ts` and
    `genUiInlineText.test.ts`.
+   **Each element of a chat turn has one place** (owner, 2026-10-08).
+   `src/lib/chatPlacement.ts` is the one map from a tool to its kind. Do not
+   guess a kind from a tool name in a card file. Add the name to the map.
+   The rule of record is `projects_ai_chat.md` §24.
+   - An element that needs the member stays in the flow, and `AskPin` keeps
+     it in view.
+   - A read draws inside its step in the trail, closed, and never after the
+     answer.
+   - A write's receipt draws compact after the text. An answer card is one
+     at most, after the text.
+   - Fences: `chatPlacement.test.ts`, `askPin.test.ts`,
+     `datasetTable.test.ts` and `tests/unit/test_chat_placement_classes.py`.
    **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
    and its kind draws its value. The Python fakes read that map and fail a
    card test that prints a key with no label (`tests/unit/_card_words.py`).

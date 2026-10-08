@@ -97,6 +97,9 @@ interface MarkdownMessageProps {
    *  2026-10-07). The chat turns it on for every agent answer. A document
    *  does not. */
   fences?: boolean;
+  /** A read's receipt for its step in the trail (`ThinkingContainer`,
+   *  spec `projects_ai_chat.md` §24 rule 2). `MessageBubble` supplies it. */
+  evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -534,6 +537,7 @@ export default function MarkdownMessage({
   entityPills = false,
   entityIndex: givenIndex,
   fences = false,
+  evidenceFor,
 }: MarkdownMessageProps) {
   // The names this message's tools printed, for the pills (WS-27bm S9).
   const entityIndex = useMemo(
@@ -586,6 +590,7 @@ export default function MarkdownMessage({
             reasoningBlocks={reasoningBlocks}
             narrationSegments={narrationSegments}
             isActive={!!isThinkingActive}
+            evidenceFor={evidenceFor}
           />
         </div>
       )}

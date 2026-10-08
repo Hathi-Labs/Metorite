@@ -95,6 +95,26 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-273 · The chat has no batch tool for several tags, types or statuses · [AGENT]
+- **Check:** `grep -n "create_tags\|create_vocabulary" apps/skills/skill-projects/skill_projects/__init__.py`.
+  While it prints nothing, this is open.
+- **Why.** The owner's turn of 2026-10-08 drew a picker, then one
+  confirmation card for each tag (`projects_ai_chat.md` §24.5). The rows
+  card of `request_confirmation(rows=…)` (#691) is the answer: ONE card with
+  a checkbox for each new tag, as `create_tasks` does.
+- **What to build.** The smallest tool is `create_tags(project_id, tags)`.
+  It uses the same route as `create_tag` and the same class B card with rows.
+  It checks `FORGED_ROWS` again after the answer. It needs a `COMPOSITE` entry
+  and `SENDS` witnesses in `manifest.py`. `test_projects_field_parity.py`
+  allows rows for `create_tasks` only, so its row exception changes too.
+  It also needs the writes table, the H-236 egress list and `config.json`.
+  In the client, it needs a batch receipt in `ProjectToolCards.tsx` and an
+  entry in `chatPlacement.ts`. Last, it needs an R8 test on a private
+  database.
+- **Then.** Change "Several new words in one turn" in
+  `apps/agents/agent-projects/instructions.md` to name the tool. Types and
+  statuses need the same, or one `create_vocabulary` with a `kind`.
+
 ### H-272 · plan-guard cannot see the secrets drop folder · [AGENT] · security
 - **Check:** `rg -c "metorite\[" .claude/hooks/plan-guard.mjs` → no hit
   means the guard does not know the drop folder, and this is open.
