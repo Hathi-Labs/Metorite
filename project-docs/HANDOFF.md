@@ -164,6 +164,10 @@ line — never reclaim a number by deleting the other entry.
   2. In each repo, replace the `_env = {**_os.environ, …}` line with the
      new template line, and commit it through the normal approval inbox.
   3. Run the Check again. It must give 0.
+- **The wrapper version.** BH-7 moves agent installs out of the shared venv.
+  Until then, an agent's `requirements.txt` can change the Copilot wrapper
+  version. `copilot_agent.GUARDED_WRAPPER_VERSIONS` then refuses every
+  Copilot start, and the gateway journal names the version.
 - **Authority:** `specs/box_hardening.md` §5 BH-1 · H-270
 - **Added:** 2026-10-08 · branch `sec-bh1-child-env` (WS-49 BH-1, fix round 1).
 

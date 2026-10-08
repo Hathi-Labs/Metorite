@@ -289,3 +289,64 @@ async def test_the_stub_sees_a_leak_without_env(stub: tuple[str, Path]) -> None:
     assert env.get("BH1_CANARY_SECRET") == "bh1canary"
     with pytest.raises(AssertionError):
         _assert_clean(env)
+
+
+# ── The guard fails loudly when it cannot work (re-review P3) ──────────────
+
+
+def _fake_class(start: object) -> type:
+    return type("FakeCopilotAgent", (), {"start": start})
+
+
+async def _upstream_that_builds_a_client(self: object) -> None:
+    self._client = CopilotClient()  # type: ignore[attr-defined,name-defined]  # noqa: F821
+
+
+async def _upstream_that_builds_no_client(self: object) -> None:
+    self._started = True  # type: ignore[attr-defined]
+
+
+def test_the_installed_wrapper_is_one_the_guard_covers() -> None:
+    import importlib.metadata
+
+    from agent_framework_github_copilot import GitHubCopilotAgent
+    from orchestrator import copilot_agent
+
+    assert importlib.metadata.version("agent-framework-github-copilot") in (
+        copilot_agent.GUARDED_WRAPPER_VERSIONS
+    )
+    assert getattr(GitHubCopilotAgent.start, "_ws49_bh1_child_env_guard", False)
+
+
+@pytest.mark.parametrize(
+    ("upstream", "version", "refused"),
+    [
+        (_upstream_that_builds_a_client, "2.0.0", False),
+        (_upstream_that_builds_no_client, "2.0.0", True),
+        (_upstream_that_builds_a_client, "9.9.9", True),
+        (_upstream_that_builds_a_client, "", True),
+    ],
+    ids=["covered", "no-CopilotClient-in-start", "version-off-the-list", "no-version"],
+)
+async def test_the_guard_refuses_every_start_when_it_cannot_work(
+    upstream: object, version: str, refused: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    from agent_framework.exceptions import AgentException
+    from orchestrator import copilot_agent
+
+    assert (copilot_agent.guard_problem(upstream, version) is not None) is refused
+    fake = _fake_class(upstream)
+    with caplog.at_level("ERROR"):
+        copilot_agent.install_child_env_guard(fake, wrapper_version=version)
+    assert getattr(fake.start, "_ws49_bh1_child_env_guard", False)
+    agent = fake()
+    agent._client = object()  # a client set first: the guard never builds one
+    agent._started = False
+    agent._settings = {}
+    if refused:
+        with pytest.raises(AgentException, match="refused"):
+            await agent.start()
+        assert "Copilot agents are refused" in caplog.text
+    else:
+        with pytest.raises(NameError):  # the fake upstream ran, past the guard
+            await agent.start()

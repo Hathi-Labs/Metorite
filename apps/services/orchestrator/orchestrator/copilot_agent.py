@@ -230,26 +230,85 @@ def child_env_client(settings: Any = None) -> CopilotClient:
 
 _GUARD_FLAG = "_ws49_bh1_child_env_guard"
 
+#: The versions of ``agent-framework-github-copilot`` that the BH-1 tests
+#: cover. The guard knows how 2.0.0 builds its client: in ``start``, and only
+#: when none is set. The loader installs an agent's ``requirements.txt`` into
+#: the shared venv (until WS-49 BH-7), so an agent repo can change this
+#: version. A version off this list may build the client by another path, so
+#: the guard refuses every Copilot start under it. Add a version only after
+#: the stub CLI tests pass on it (``tests/unit/test_copilot_child_env.py``).
+GUARDED_WRAPPER_VERSIONS: frozenset[str] = frozenset({"2.0.0"})
 
-def install_child_env_guard() -> None:
+
+def _wrapper_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("agent-framework-github-copilot")
+    except PackageNotFoundError:
+        return ""
+
+
+def guard_problem(upstream: Any, wrapper_version: str) -> str | None:
+    """Why the guard cannot work on *upstream*, or None when it can.
+
+    Two checks. The upstream start must build the client itself (its code
+    names ``CopilotClient``), so that a client set before it is the one it
+    uses. And the wrapper version must be one the tests cover.
+    """
+    code = getattr(upstream, "__code__", None)
+    if code is None or "CopilotClient" not in code.co_names:
+        return (
+            "GitHubCopilotAgent.start no longer builds the CopilotClient, so the "
+            "WS-49 BH-1 guard cannot give its CLI copilot_env()"
+        )
+    if wrapper_version not in GUARDED_WRAPPER_VERSIONS:
+        return (
+            f"agent-framework-github-copilot {wrapper_version or '(missing)'} is not "
+            f"one of {sorted(GUARDED_WRAPPER_VERSIONS)}, which the WS-49 BH-1 "
+            "guard is tested on"
+        )
+    return None
+
+
+def install_child_env_guard(cls: Any = None, wrapper_version: str | None = None) -> None:
     """Make every ``GitHubCopilotAgent.start`` build its client here. Idempotent.
 
     A client that a caller set before the start (the sandbox URI, the Tier 2
     client, a test) is kept. Only the upstream fallback, which has no env, is
     replaced.
-    """
-    if getattr(GitHubCopilotAgent.start, _GUARD_FLAG, False):
-        return
-    upstream = GitHubCopilotAgent.start
 
-    async def start(self: GitHubCopilotAgent) -> None:
-        if self._client is None and not self._started:
-            self._client = child_env_client(self._settings)
-        await upstream(self)
+    When the guard cannot work (``guard_problem``), every Copilot start
+    REFUSES with ``AgentException``, and the import logs one error. It does
+    not raise at import: the import of the ``orchestrator`` package serves
+    every agent run, and a native MAF agent needs no Copilot CLI. A gateway
+    that cannot guard the CLI env starts no Copilot agent. ``cls`` and
+    ``wrapper_version`` exist for the tests.
+    """
+    cls = cls or GitHubCopilotAgent
+    if getattr(cls.start, _GUARD_FLAG, False):
+        return
+    upstream = cls.start
+    problem = guard_problem(
+        upstream, _wrapper_version() if wrapper_version is None else wrapper_version
+    )
+
+    if problem:
+        logger.error("Copilot agents are refused: %s", problem)
+
+        async def start(self: Any) -> None:
+            raise AgentException(f"Copilot agent start refused: {problem}.")
+
+    else:
+
+        async def start(self: Any) -> None:
+            if self._client is None and not self._started:
+                self._client = child_env_client(self._settings)
+            await upstream(self)
 
     setattr(start, _GUARD_FLAG, True)
     start.__doc__ = upstream.__doc__
-    GitHubCopilotAgent.start = start  # type: ignore[method-assign]
+    cls.start = start
 
 
 install_child_env_guard()
