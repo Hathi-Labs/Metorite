@@ -69,18 +69,18 @@ export function gridColumns(labels: readonly string[], kinds?: readonly (string 
     index,
     label,
     kind: cellKind(kinds?.[index] ?? kindForLabel(label)),
-    named: typeof kinds?.[index] === "string",
   }));
   const lead = all.length > 1 && LEAD.test(all[0].label.trim()) ? 0 : -1;
   const named = all.find((c) => c.index !== lead && PRIMARY.test(c.label.trim()));
   const primaryAt = named?.index ?? all.find((c) => c.index !== lead)?.index ?? 0;
   const hasStatus = all.some((c) => c.kind === "status");
-  // Only a category the DATA names hides (review round 1). A model's own
-  // "Category" column ("Travel", "Food") is text, and it always shows.
-  const category = hasStatus ? all.find((c) => c.kind === "category" && c.named) : undefined;
+  // A category comes only from the data's `kinds`: `kindForLabel` never
+  // answers one, so a model's "Category" column ("Travel") is text and
+  // always shows (review round 1).
+  const category = hasStatus ? all.find((c) => c.kind === "category") : undefined;
   const shown: GridColumn[] = all
     .filter((c) => c.index !== category?.index)
-    .map(({ named: _named, ...c }) => ({
+    .map((c) => ({
       ...c,
       role: c.index === lead ? "lead" : c.index === primaryAt ? "primary" : "secondary",
     }));
