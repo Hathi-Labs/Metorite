@@ -124,7 +124,6 @@ const EVIDENCE: readonly string[] = [
   "read_thread",
   "list_accounts",
   "get_unread_count",
-  "generate_writing_style",
   "list_labels",
   "list_artifacts",
   "get_sender_categories",
@@ -135,7 +134,6 @@ const EVIDENCE: readonly string[] = [
   "list_cold_senders",
   "suggest_unsubscribes",
   "get_account_overview",
-  "digest",
   "get_digest",
   "test_rule_match",
   "list_learned_patterns",
@@ -216,6 +214,10 @@ const WRITE: readonly string[] = [
   "my_tasks_sync",
   "my_tasks_plan_project",
   // ── Email ──────────────────────────────────────────────────────────────
+  // `digest` can send the digest, and `generate_writing_style` saves the
+  // style it derives: both receipts belong in the flow (review round 1).
+  "digest",
+  "generate_writing_style",
   "draft_reply",
   "draft_email",
   "create_rule",

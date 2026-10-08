@@ -183,6 +183,19 @@ def _has_control(node: Any, depth: int = 0) -> bool:
     return any(_has_control(k, depth + 1) for k in kids)
 
 
+def _drew(call: ToolCall) -> bool:
+    """The call drew its card. The tool refuses a spec it cannot draw with
+    ``{"ok": false}`` as a normal result, so ``call.ok`` stays True for it
+    (``genui_refusal``). A refused spec drew nothing (review round 1)."""
+    if call.ok is False:
+        return False
+    try:
+        result = json.loads(call.result or "{}")
+    except ValueError:
+        return True
+    return not (isinstance(result, dict) and result.get("ok") is False)
+
+
 def is_ask_card(spec: dict[str, Any]) -> bool:
     """A card that waits on the member: it blocks, or it holds a control."""
     if spec.get("hitl") is True or spec.get("request_id"):
@@ -194,7 +207,7 @@ def answer_cards(session: Session) -> list[ToolCall]:
     """The cards the model chose for its answer: views, and genUI that is no ask."""
     out = []
     for call in session.tool_calls:
-        if call.ok is False:
+        if not _drew(call):
             continue
         if call.name in ANSWER_VIEWS:
             out.append(call)
@@ -219,7 +232,7 @@ def recarded_reads(session: Session) -> list[str]:
         if call.name in reads and call.ok is not False:
             seen.append((call.name, set(_ITEM.findall(call.result or ""))))
             continue
-        if call.name != GENUI_TOOL or call.ok is False:
+        if call.name != GENUI_TOOL or not _drew(call):
             continue
         spec = _ui_spec(call)
         if spec is None or is_ask_card(spec):

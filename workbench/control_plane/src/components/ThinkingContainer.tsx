@@ -447,6 +447,11 @@ export function ToolStepRow({
   const dur = event.endedAt && event.startedAt ? event.endedAt - event.startedAt : undefined;
   const hasSubAgent = !!(event.subAgentName && (event.subAgentTools?.length || event.subAgentText));
   const hasEvidence = evidence != null && !running;
+  // A receipt can hold state the member made (a deleted pattern, an archived
+  // mail). Once opened, it stays mounted and only hides, so closing the step
+  // does not undo what the member did (review round 1).
+  const [kept, setKept] = useState(open);
+  if (open && !kept) setKept(true);
   return (
     <div
       className="relative flex min-w-0"
@@ -501,13 +506,14 @@ export function ToolStepRow({
           </span>
         </button>
 
-        {open && (
+        {hasEvidence && (open || kept) && (
+          <div data-step-evidence="" hidden={!open} className="mt-1 min-w-0">
+            <InStepContext.Provider value={true}>{evidence}</InStepContext.Provider>
+          </div>
+        )}
+        {open && !hasEvidence && (
           <div className="mt-1 min-w-0">
-            {hasEvidence ? (
-              <div data-step-evidence="" className="min-w-0">
-                <InStepContext.Provider value={true}>{evidence}</InStepContext.Provider>
-              </div>
-            ) : step.kind === "run" ? (
+            {step.kind === "run" ? (
               <RunDetail event={event} running={running} dur={dur} />
             ) : (
               <ArgsDetail event={event} dur={dur} />
@@ -515,6 +521,7 @@ export function ToolStepRow({
             {hasSubAgent && <SubAgentSteps event={event} />}
           </div>
         )}
+        {open && hasEvidence && hasSubAgent && <SubAgentSteps event={event} />}
       </div>
     </div>
   );
@@ -546,6 +553,10 @@ export default function ThinkingContainer({
   // row is open while running (live output) and collapsed when done —
   // matching VS Code's chat tool invocation parts.
   const [toolOverrides, setToolOverrides] = useState<Record<string, boolean>>({});
+  // Once the body has been open, it stays mounted and only hides, so a
+  // receipt in a step keeps what the member did in it (review round 1).
+  const [bodyKept, setBodyKept] = useState(false);
+  if (expanded && hasContent && !bodyKept) setBodyKept(true);
 
   // Chronologically interleaved narration + reasoning + tool timeline
   // (VS Code style; narration segments are Phase 3b message-id ground truth).
@@ -715,9 +726,10 @@ export default function ThinkingContainer({
           rather than a message inside the container. */}
 
       {/* ── Body: vertical timeline ────────────────────────────────── */}
-      {expanded && hasContent && (
+      {(expanded || bodyKept) && hasContent && (
         <div
           ref={bodyRef}
+          hidden={!expanded}
           data-trail-body=""
           className={`border-t border-border/40 chat-fade-in overflow-y-auto ${
             // A cap, never a height (`lib/trailLayout.ts`). A fixed `h-56`

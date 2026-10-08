@@ -711,6 +711,14 @@ def test_one_answer_card_passes_and_two_fail() -> None:
     assert not _card_rule([view, _genui(_STATS)], "one_answer_card")
 
 
+def test_a_refused_card_is_not_counted() -> None:
+    """Mutation caught: ``_drew`` that trusts ``ok`` alone. The tool refuses a
+    spec it cannot draw with ``{"ok": false}``, and the model draws it again."""
+    refused = ToolCall(C.GENUI_TOOL, json.dumps({"ui": json.dumps(_STATS)}),
+                       '{"ok": false, "error": "ui: the renderer has no tree type."}', True)
+    assert _card_rule([refused, _genui(_STATS)], "one_answer_card")
+
+
 def test_a_picker_that_waits_is_not_the_answer_card() -> None:
     """Mutation caught: ``is_ask_card`` that reads a picker as an answer."""
     assert _card_rule([_genui(_PICKER), _genui(_STATS)], "one_answer_card")

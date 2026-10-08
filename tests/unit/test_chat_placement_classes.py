@@ -76,3 +76,32 @@ def test_the_views_are_class_a() -> None:
     """A view is a read that draws a card. If one turned into a write, the
     receipt of that write would hide as an answer."""
     assert {manifest.tool_class(v) for v in VIEWS} == {"A"}
+
+
+EMAIL_AGENT = ROOT / "apps/agents/agent-email-assistant/agents.py"
+
+#: Email tools that write and say ``open_world=False``. The annotations cannot
+#: tell them from a read, so they are named here (review round 1).
+EMAIL_QUIET_WRITES = {"generate_writing_style"}
+
+
+def _email_annotations() -> dict[str, str]:
+    """Each email tool's ``_annotate_risk`` hints, by tool name."""
+    src = EMAIL_AGENT.read_text(encoding="utf-8")
+    return {m.group(2): m.group(1)
+            for m in re.finditer(r"@_annotate_risk\(([^)]*)\)\s*\n\s*async def (\w+)", src)}
+
+
+def test_an_email_tool_that_sends_or_destroys_is_never_evidence() -> None:
+    """A send, a provider write or a destructive act keeps its receipt in the flow.
+
+    Review round 1 found ``digest`` (it can send the digest) in EVIDENCE, so a
+    sent mail's receipt hid in a closed step. Mutation: move ``digest`` back.
+    """
+    placement = _placement()
+    hints = _email_annotations()
+    assert len(hints) > 40
+    loud = {name for name, h in hints.items()
+            if "open_world=True" in h or "destructive=True" in h} | EMAIL_QUIET_WRITES
+    wrong = sorted(n for n in loud if placement.get(n) == "evidence")
+    assert not wrong, f"these email tools write, and the map draws them as reads: {wrong}"

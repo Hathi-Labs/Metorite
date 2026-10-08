@@ -44,6 +44,7 @@ def test_each_agent_carries_the_one_section_word_for_word() -> None:
 def test_the_section_holds_the_four_rules() -> None:
     body = _section(AGENTS[0])
     assert "Never draw a read's result again as" in body
+    assert "Give a list the member asked for once." in body
     assert "Draw one card for an answer, at most." in body
     assert "Put it after your text." in body
     assert "fewer than six items as a\n  Markdown list, with no card" in body
@@ -59,7 +60,7 @@ def test_the_projects_agent_creates_several_words_without_a_picker() -> None:
     text = _text("agent-projects")
     assert "**Several new words in one turn.**" in text
     assert "do not draw a picker\n  first" in text
-    assert "call the next create only after the last receipt" in text
+    assert "Call the next create\n  only after the last receipt." in text
 
 
 def test_the_email_agent_shows_a_list_as_one_board() -> None:

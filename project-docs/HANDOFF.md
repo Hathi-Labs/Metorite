@@ -102,14 +102,15 @@ line — never reclaim a number by deleting the other entry.
   confirmation card for each tag (`projects_ai_chat.md` §24.5). The rows
   card of `request_confirmation(rows=…)` (#691) is the answer: ONE card with
   a checkbox for each new tag, as `create_tasks` does.
-- **What to build.** The smallest tool is `create_tags(project_id, tags)`,
-  with the same route as `create_tag`, the same class B card with rows, and
-  `FORGED_ROWS` checked again after the answer. It needs a `COMPOSITE` entry
-  and `SENDS` witnesses in `manifest.py`, and the row exception in
-  `test_projects_field_parity.py` that allows rows for `create_tasks` only.
-  It also needs the writes table, the H-236 egress list, `config.json`, a
-  batch receipt in `ProjectToolCards.tsx`, an entry in `chatPlacement.ts`,
-  and an R8 test on a private database.
+- **What to build.** The smallest tool is `create_tags(project_id, tags)`.
+  It uses the same route as `create_tag` and the same class B card with rows.
+  It checks `FORGED_ROWS` again after the answer. It needs a `COMPOSITE` entry
+  and `SENDS` witnesses in `manifest.py`. `test_projects_field_parity.py`
+  allows rows for `create_tasks` only, so its row exception changes too.
+  It also needs the writes table, the H-236 egress list and `config.json`.
+  In the client, it needs a batch receipt in `ProjectToolCards.tsx` and an
+  entry in `chatPlacement.ts`. Last, it needs an R8 test on a private
+  database.
 - **Then.** Change "Several new words in one turn" in
   `apps/agents/agent-projects/instructions.md` to name the tool. Types and
   statuses need the same, or one `create_vocabulary` with a `kind`.

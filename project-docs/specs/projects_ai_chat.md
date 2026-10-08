@@ -5300,6 +5300,7 @@ word: `agent-projects`, `agent-email-assistant`, `agent-crm`,
 
 - The chat shows each read under its step. So never draw a read's result
   again as a card.
+- Give a list the member asked for once. A long one can be the one card.
 - Draw one card for an answer, at most, after the text.
 - A list of fewer than six items stays a Markdown list.
 - A confirmation, a form or a picker is not the answer card.
@@ -5327,8 +5328,8 @@ consent, and it does not belong in a UI change. HANDOFF carries it.
 
 Until it exists, the Projects agent creates several words one after another in
 one turn. It draws no picker first, it lists the words in one short Markdown
-list, and each create shows its own card. The chat shows the cards one at a
-time, with "1 of N", and the pin keeps the queue in view.
+list, and each create shows its own card. The pin keeps each card in view
+while it waits.
 
 ### 24.6 Fences (R7)
 
@@ -5336,6 +5337,7 @@ time, with "1 of N", and the pin keeps the queue in view.
 |---|---|
 | Every tool a card file draws is classified | `src/lib/chatPlacement.test.ts` |
 | Every `skill-projects` tool is classified, and a class A tool is evidence (or an answer for a view), a class B or C tool a write | `tests/unit/test_chat_placement_classes.py` |
+| An email tool that sends, writes to the provider or destroys is never evidence | `tests/unit/test_chat_placement_classes.py` |
 | A read draws in its step, and a write in the flow. The owner's turn has four steps that open, and no read card | `src/lib/chatPlacement.test.ts` |
 | The pin shows for a waiting element, and an answer, a run end or a later message clears it | `src/lib/askPin.test.ts` |
 | `task_dataset` draws as a table, with no pipe and no mark | `src/lib/datasetTable.test.ts` |
@@ -5343,8 +5345,12 @@ time, with "1 of N", and the pin keeps the queue in view.
 | The injected directive ends with the rule | `tests/unit/test_genui_proactive_directive.py` |
 | At most one answer card per answer, and no card that repeats a read | `evals/projects_ops/checkers.py` `one_answer_card`, `no_read_recarded`, held by `tests/unit/test_projects_ops_eval.py` |
 
-**Advisory.** Nothing tests the "at most one card" rule in the UI itself. The
-chat draws every card the model emits, and the instructions and the eval hold
+**Advisory.** A receipt in a step stays mounted after the member opens it,
+so a closed step keeps what the member did in it. Nothing tests that, because
+the markup tests cannot change state.
+
+Nothing tests the "at most one card" rule in the UI itself. The chat draws
+every card the model emits, and the instructions and the eval hold
 the count. Nothing tests the bar's in-view check, because it needs a browser.
 The visual review (24.7) looked at it.
 

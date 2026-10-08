@@ -113,6 +113,11 @@ describe("the bar", () => {
     expect(draw(ask, true)).toBe("");
   });
 
+  it("waits for the observer before it draws, so an element in view never flashes it", () => {
+    const html = renderToStaticMarkup(createElement(AskPin, { ask, threadRef: createRef<HTMLElement>() }));
+    expect(html).toBe("");
+  });
+
   it("names the queue's count", () => {
     expect(draw({ ...ask, kind: "confirm", count: 4 } as never)).toContain("1 of 4");
   });

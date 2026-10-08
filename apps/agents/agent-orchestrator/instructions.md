@@ -51,9 +51,11 @@ Rules:
 The chat puts each part of your turn in one place. Obey these rules in every
 answer.
 
-- **The chat shows each read under its step.** It draws the result of every
-  read inside your working steps, closed. Never draw a read's result again as
-  a card, and never copy it out as a long list. Say what the result means.
+- **The chat shows each read under its step.** The result of every read
+  sits inside your working steps, closed. Never draw a read's result again as
+  a card. Say what the result means.
+- **Give a list the member asked for once.** Write it as a Markdown list. A
+  long list the member will act on can be your one card instead.
 - **Draw one card for an answer, at most.** Put it after your text. A plan, a
   board, a report or a table can be that card. Two cards for one answer is too
   many.

@@ -36,17 +36,21 @@ const SEEN_PX = 120;
 export default function AskPin({
   ask,
   threadRef,
-  initialInView = false,
+  initialInView = null,
 }: {
   ask: PendingAsk | null;
   threadRef: RefObject<HTMLElement | null>;
-  /** What the bar assumes before the observer reports. The markup tests set it. */
-  initialInView?: boolean;
+  /**
+   * What the bar assumes before the observer reports. `null` (the default)
+   * draws nothing until the first report, so an element already in view
+   * never flashes the bar (review round 1). The markup tests set it.
+   */
+  initialInView?: boolean | null;
 }) {
   const target = ask?.target ?? null;
   // What the observer last said, and about which element. A report about
   // another target says nothing about this one.
-  const [seen, setSeen] = useState<{ target: string | null; inView: boolean }>({
+  const [seen, setSeen] = useState<{ target: string | null; inView: boolean | null }>({
     target,
     inView: initialInView,
   });
@@ -55,8 +59,11 @@ export default function AskPin({
     if (!target) return;
     const root = threadRef.current;
     const el = targetIn(root, target);
-    // Nothing to watch: the bar stays, as the only way to the element.
-    if (!el || typeof IntersectionObserver === "undefined") return;
+    // Nothing to watch: the bar shows, as the only way to the element.
+    if (!el || typeof IntersectionObserver === "undefined") {
+      const raf = requestAnimationFrame(() => setSeen({ target, inView: false }));
+      return () => cancelAnimationFrame(raf);
+    }
     const io = new IntersectionObserver(
       (entries) => {
         const e = entries[entries.length - 1];
@@ -72,8 +79,9 @@ export default function AskPin({
     // `ask.title` changes when the queue moves on: the element may be new.
   }, [target, ask?.title, ask?.count, threadRef]);
 
-  const inView = seen.target === target && seen.inView;
-  if (!ask || inView) return null;
+  // Not known yet for this target: wait for the observer.
+  const inView = seen.target === target ? seen.inView : null;
+  if (!ask || inView !== false) return null;
 
   const show = () => {
     const el = targetIn(threadRef.current, ask.target);
