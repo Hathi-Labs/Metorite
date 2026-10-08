@@ -28,6 +28,9 @@
 #   scripts/backup_db.sh                  # dump + cheap integrity check
 #   scripts/backup_db.sh --verify-restore # ALSO restore into a throwaway
 #                                         # LOCAL container (needs Docker)
+#   scripts/backup_db.sh --offbox         # ALSO send the night to Supabase
+#                                         # Storage (H-123). ONLY
+#                                         # acb-backup.service passes it.
 #
 # Env:
 #   BACKUP_DIR      (default /opt/acb/backups)
@@ -40,6 +43,28 @@
 #   BACKUP_REMOTE   optional rsync destination for an off-box copy, e.g.
 #                   user@host:/srv/cc-backups . UNSET BY DEFAULT, and the
 #                   script says so loudly — see "Off-box" below.
+#
+#   The off-box copy in Supabase Storage (H-123, owner decision 2026-10-08).
+#   It runs ONLY with --offbox. Without the flag nothing is uploaded, whatever
+#   the env holds. Every key below lives in /etc/acb/backup-offbox.env
+#   (root:root 0600), which only acb-backup.service loads. NEVER in
+#   /opt/acb/app/.env: the gateway loads that file (see backup_offbox.sh).
+#   With --offbox and any of these set, ALL of these must be set:
+#   BACKUP_S3_ENDPOINT    the S3 endpoint, https://<ref>.storage.supabase.co/storage/v1/s3
+#   BACKUP_S3_REGION      the region of the project, for example ap-south-1
+#   BACKUP_S3_BUCKET      a PRIVATE bucket, for example metorite-backups
+#   BACKUP_S3_ACCESS_KEY_ID, BACKUP_S3_SECRET_ACCESS_KEY   an S3 access key
+#   BACKUP_GPG_RECIPIENT  the full FINGERPRINT of the owner's public key
+#   BACKUP_GPG_PUBLIC_KEY_FILE   a path on this box to that PUBLIC key
+#   Optional:
+#   BACKUP_S3_PREFIX      the folder in the bucket (default nightly)
+#   BACKUP_S3_KEEP        COMPLETE nights to keep in the bucket (default 14)
+#   BACKUP_S3_TIMEOUT_SECS  the deadline of the whole off-box step (default 1200),
+#                         cut down to the time left in the unit (see below)
+#   BACKUP_OFFBOX_ENV_FILE  the root-owned key file (default /etc/acb/backup-offbox.env).
+#                         Refused when /opt/acb/app/.env sets it (acb writes that file).
+#   BACKUP_FILE_DIRS      the file-data directories, split by spaces
+#   BACKUP_MEETING_BOT_VOLUME   the Docker volume of the meeting bot
 set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/opt/acb/backups}"
@@ -48,7 +73,26 @@ APP_DIR="${APP_DIR:-/opt/acb/app}"
 KEEP_DAILY="${KEEP_DAILY:-14}"
 BACKUP_REMOTE="${BACKUP_REMOTE:-}"
 VERIFY_RESTORE=0
-[ "${1:-}" = "--verify-restore" ] && VERIFY_RESTORE=1
+# --offbox is OPT-IN on purpose (H-123). The pre-migration backup of a deploy
+# runs this script too, and it must never upload. The fence over every caller
+# is `test_only_the_nightly_unit_passes_offbox`.
+offbox_requested=0
+for arg in "$@"; do
+  case "$arg" in
+    --verify-restore) VERIFY_RESTORE=1 ;;
+    --offbox) offbox_requested=1 ;;
+    *) echo "ERROR: unknown argument '$arg'. Known: --verify-restore, --offbox." >&2; exit 2 ;;
+  esac
+done
+# Absolute, because retention below runs `cd "$BACKUP_DIR"`.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The off-box deadline is cut from the time left in the unit, so it is taken
+# here, at the very start. A wall-clock stamp, not the SECONDS counter of
+# bash: bash imports SECONDS from the environment, so an env file could move it.
+backup_started_at="$(date +%s)"
+# == TimeoutStartSec in deploy/hostinger/acb-backup.service. One named value,
+# and `test_the_unit_budget_is_one_value` fails when the two drift.
+unit_timeout_secs=1800
 
 say()  { printf "\n==> %s\n" "$*"; }
 warn() { printf "  !! %s\n" "$*" >&2; }
@@ -168,6 +212,13 @@ verify_ctr_failures=0
 # start, a readiness wait, the restore or the count. Checked LAST too, so a
 # failed verify never costs the Console dump, the off-box copy or retention.
 verify_failed=0
+# Set to 1 when the off-box copy to Supabase Storage failed for ANY reason: a
+# setting, the key, the encryption, the upload, the deadline or the bucket
+# retention. Checked LAST too.
+offbox_failed=0
+# Set to 1 when the Customer Console dump failed or was corrupt. Checked LAST,
+# so a Console failure never costs the off-box copy of the app dump.
+console_failed=0
 
 # psql and libpq can echo a connection string, password included, into an
 # error. Apply this to every error text before it reaches a log. It is the
@@ -650,33 +701,26 @@ if [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ]; then
       (cd "$DEST" && sha256sum ./customer_console.dump >> MANIFEST.txt)
     else
       echo "CORRUPT"
-      warn "pg_restore could not read customer_console.dump — backup FAILED"
-      exit 1
+      warn "pg_restore could not read customer_console.dump — the Console backup FAILED."
+      warn "The run goes on, and exits 1 at the end."
+      mv -f "$DEST/customer_console.dump" "$DEST/customer_console.dump.corrupt"
+      console_failed=1
     fi
   else
     echo "FAILED"
     warn "Could not dump the Customer Console database. The app database above"
     warn "IS backed up; the Console's is NOT. See $DEST/customer_console.err"
     warn "— that file holds the DSN, so do not paste it anywhere."
-    exit 1
+    warn "The run goes on, and exits 1 at the end."
+    if [ -e "$DEST/customer_console.dump" ]; then
+      mv -f "$DEST/customer_console.dump" "$DEST/customer_console.dump.failed"
+    fi
+    console_failed=1
   fi
 else
   warn "CUSTOMER_CONSOLE_DATABASE_URL is unset — the Console database is NOT in"
   warn "this backup. If this box serves the Console, that is H-98: the unit is"
   warn "missing its second EnvironmentFile."
-fi
-
-# --- Off-box copy ------------------------------------------------------------
-# A backup on the same disk as the database survives `DROP TABLE`. It does not
-# survive the disk, the box, or the provider account. Until BACKUP_REMOTE is
-# set this is a same-box backup and the script refuses to pretend otherwise.
-if [ -n "$BACKUP_REMOTE" ]; then
-  say "Copying off-box -> $BACKUP_REMOTE"
-  rsync -a --delete-after "$DEST" "$BACKUP_REMOTE/" && echo "    off-box copy ok"
-else
-  warn "BACKUP_REMOTE is unset — this backup exists ONLY on this box."
-  warn "It protects against bad migrations and dropped tables, NOT against"
-  warn "losing the VPS. Set BACKUP_REMOTE to close that gap."
 fi
 
 # --- Retention ---------------------------------------------------------------
@@ -701,6 +745,92 @@ if [ "$total" -gt "$KEEP_DAILY" ]; then
   done
 fi
 echo "    $(ls -1d [0-9]*Z 2>/dev/null | wc -l) backup(s) retained, $(du -sh "$BACKUP_DIR" | cut -f1) total"
+
+# --- Off-box copy, AFTER local retention ------------------------------------
+# A backup on the same disk as the database survives `DROP TABLE`. It does not
+# survive the disk, the box, or the provider account. Two destinations exist.
+# Each is optional, and the script warns loudly when neither is set.
+# It runs AFTER local retention, so a slow or hung upload never costs it.
+#
+# 1. BACKUP_REMOTE, an rsync destination. Unchanged since BO-23.
+if [ -n "$BACKUP_REMOTE" ]; then
+  say "Copying off-box -> $BACKUP_REMOTE"
+  rsync -a --delete-after "$DEST" "$BACKUP_REMOTE/" && echo "    off-box copy ok"
+fi
+
+# 2. Supabase Storage, through its S3 endpoint (H-123, owner decision
+#    2026-10-08). scripts/backup_offbox.sh does the work, and
+#    scripts/offbox_lib.sh holds the layout and the guards.
+#
+# 🔴 **ONLY with --offbox.** Only acb-backup.service passes it. The
+# pre-migration backup of a deploy never does, so a deploy never uploads, an
+# outage of the bucket cannot block a migration, and a deploy cannot push a
+# real night out of the retention. The deploy's environment does not carry
+# the key either: it lives in /etc/acb/backup-offbox.env, root:root 0600.
+#
+# 🔴 **Bounded by the time LEFT in the unit.** The deadline is
+#   min(BACKUP_S3_TIMEOUT_SECS (default 1200), unit_timeout_secs - elapsed - 60)
+# and `timeout` adds 30 s before a KILL, inside that 60 s margin. A fixed
+# 1200 s was wrong: a slow dump (about 11 min recorded for the pre-migration
+# one) left too little of the unit's 1800 s, and systemd would have killed the
+# unit with no ERROR line. With under 120 s left, the upload is skipped and
+# recorded as a failure. A timeout is a failed upload too.
+offbox_min_secs=120
+offbox_margin_secs=60
+#
+# 🔴 **A failure costs nothing local.** It sets `offbox_failed`, and the run
+# exits 1 at the END. The dump, the Console dump and local retention are done.
+offbox_configured=0
+if [ -n "${BACKUP_S3_ENDPOINT:-}${BACKUP_S3_REGION:-}${BACKUP_S3_BUCKET:-}${BACKUP_S3_ACCESS_KEY_ID:-}${BACKUP_S3_SECRET_ACCESS_KEY:-}${BACKUP_GPG_RECIPIENT:-}${BACKUP_GPG_PUBLIC_KEY_FILE:-}" ]; then
+  offbox_configured=1
+fi
+if [ "$offbox_requested" = "1" ] && [ "$offbox_configured" = "1" ]; then
+  say "Copying off-box -> Supabase Storage (S3), encrypted"
+  offbox_timeout="${BACKUP_S3_TIMEOUT_SECS-1200}"
+  if ! [[ "$offbox_timeout" =~ ^[0-9]{1,9}$ ]] || [ "$((10#$offbox_timeout))" -lt 1 ]; then
+    echo "ERROR: BACKUP_S3_TIMEOUT_SECS '$offbox_timeout' must be a whole number of seconds, 1 or more." >&2
+    offbox_failed=1
+  else
+    offbox_timeout="$((10#$offbox_timeout))"
+    elapsed="$(( $(date +%s) - backup_started_at ))"
+    left="$(( unit_timeout_secs - elapsed - offbox_margin_secs ))"
+    if [ "$left" -lt "$offbox_timeout" ]; then
+      offbox_timeout="$left"
+    fi
+    echo "    deadline ${offbox_timeout}s (run at ${elapsed}s of the unit's ${unit_timeout_secs}s)"
+    # The floor is for the time LEFT in the unit. A short BACKUP_S3_TIMEOUT_SECS
+    # is the operator's own choice, and it stands.
+    if [ "$left" -lt "$offbox_min_secs" ]; then
+      echo "ERROR: only ${left}s are left in the unit's ${unit_timeout_secs}s, under the" >&2
+      echo "       ${offbox_min_secs}s floor. The off-box copy did NOT run tonight." >&2
+      offbox_failed=1
+    else
+      offbox_rc=0
+      timeout --kill-after=30 "$offbox_timeout" \
+        bash "$script_dir/backup_offbox.sh" "$DEST" "$STAMP" "$APP_DIR" < /dev/null \
+        || offbox_rc=$?
+      if [ "$offbox_rc" = "124" ] || [ "$offbox_rc" = "137" ]; then
+        echo "ERROR: the off-box copy did not finish in its ${offbox_timeout}s deadline," >&2
+        echo "       so timeout stopped it. The night is NOT complete in the bucket." >&2
+      fi
+      if [ "$offbox_rc" != "0" ]; then
+        offbox_failed=1
+        warn "the off-box copy FAILED (exit $offbox_rc). The run exits 1 at the end."
+      fi
+    fi
+  fi
+  # A KILL runs no trap, so the staging directory can stay. Remove it here.
+  rm -rf "$DEST/offbox.work" 2>/dev/null || true
+elif [ "$offbox_configured" = "1" ]; then
+  echo "    off-box copy: not in this run. Only acb-backup.service passes --offbox."
+elif [ -z "$BACKUP_REMOTE" ] && [ "$offbox_requested" = "1" ]; then
+  warn "No off-box copy is set up — this backup exists ONLY on this box."
+  warn "It protects against bad migrations and dropped tables, NOT against"
+  warn "losing the VPS. Set the BACKUP_S3_* keys in /etc/acb/backup-offbox.env"
+  warn "to close that gap (H-123)."
+elif [ -z "$BACKUP_REMOTE" ]; then
+  echo "    off-box copy: not in this run. Only acb-backup.service passes --offbox."
+fi
 
 # --- A scratch database that would not drop (rule 3) -------------------------
 # Checked LAST on purpose. The dump, the manifest, the Console dump and the
@@ -733,6 +863,23 @@ if [ "$verify_ctr_failures" -gt 0 ]; then
   echo "ERROR: the verify container could not be removed. See the ERROR line above." >&2
   echo "       The dump at $DEST IS complete. Remove the container by hand:" >&2
   echo "       docker rm -f -v \$(docker ps -aq --filter label=acb.backup-verify=1)" >&2
+  final_rc=1
+fi
+
+# --- A Customer Console dump that failed (H-98) ------------------------------
+# Checked LAST, for the reason above. The app dump and its off-box copy ran.
+if [ "$console_failed" -gt 0 ]; then
+  echo "ERROR: the Customer Console dump FAILED. See the warning above. The app" >&2
+  echo "       dump at $DEST is complete, and its off-box copy ran." >&2
+  final_rc=1
+fi
+
+# --- An off-box copy that failed (H-123) -------------------------------------
+# Checked LAST, for the reason above. The local dump and retention are done.
+if [ "$offbox_failed" -gt 0 ]; then
+  echo "ERROR: the off-box copy to Supabase Storage FAILED. See the ERROR lines above." >&2
+  echo "       The dump at $DEST is complete, and local retention ran first." >&2
+  echo "       This night has NO good copy off the box." >&2
   final_rc=1
 fi
 if [ "$final_rc" != "0" ]; then

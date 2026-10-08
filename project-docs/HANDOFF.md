@@ -95,6 +95,69 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-271 · acb has the same power as root, so an app compromise can delete the off-box backups · [OWNER] · security
+- **Check:** on the box, run each of these:
+  `sudo cat /etc/sudoers.d/acb` · `id acb` · `stat -c '%U' /opt/acb/app/scripts/backup_offbox.sh`.
+  While any one shows `NOPASSWD:ALL`, the `docker` group, or the owner `acb`, this is open.
+- **Why.** The off-box bucket key (H-123) is in `/etc/acb/backup-offbox.env`,
+  root:root 0600. That stops the PASSIVE paths: the inherited env,
+  `/proc/<pid>/environ`, and env dumps in logs or crash reports. It does not
+  stop an ACTIVE attacker who has `acb` or the app, which runs as `acb`. The
+  S3 key is project-wide, so that attacker can read it and delete every
+  off-box night.
+- **The three paths from `acb` to root.**
+  1. `/etc/sudoers.d/acb` grants `acb ALL=(ALL) NOPASSWD:ALL`
+     (`deploy/hostinger/acb-pull.service` lines 34 to 36). `acb-gateway.service`
+     sets no `NoNewPrivileges`, so a shell from the gateway can use sudo.
+  2. `acb` is in the `docker` group (`deploy/hostinger/bootstrap.sh` line 31).
+     It can mount `/etc/acb` into a container and read the file.
+  3. `acb` owns the checkout and `/opt/acb/app/.env`. The root unit runs
+     `backup_db.sh` and `backup_offbox.sh` from that checkout. So `acb` can
+     edit a script, or set `BASH_ENV` in `.env`, and root runs it.
+- **The real fixes. Each one is an owner decision.**
+  1. A credential that can write and cannot delete, with retention on the
+     server side. On Supabase, that is an S3 session token under an RLS
+     policy that allows insert only, and a scheduled function that runs the
+     retention. The other way is a second provider with Object Lock and
+     lifecycle rules.
+  2. Take `acb` out of the `docker` group, and narrow its sudo to a list of
+     commands. This needs a new design for the deploy path, which uses both.
+  3. Run the root unit's scripts from a copy that root owns, not from the
+     checkout of `acb`.
+- **A cheap partial fix.** `NoNewPrivileges=true` on `acb-gateway.service`
+  stops path 1 for the Copilot CLI (H-270) only. It does nothing for paths 2
+  and 3. Do not build it in the off-box PR.
+- **Authority:** `project-docs/specs/backup_and_restore.md` §4.2, the trade-offs ·
+  H-123 · H-270
+- **Added:** 2026-10-08 · off-box backup, security review of fix round 2
+
+### H-270 · The gateway's in-process Copilot CLI inherits every secret in `.env` · [AGENT] · security
+- **Check:** `grep -nE "\benv\b|environment" apps/services/orchestrator/orchestrator/copilot_agent.py`.
+  No `env` in the `CopilotClient` options means the CLI still gets the whole gateway
+  environment, and this is open. To confirm the fallback in the SDK, run
+  `grep -n "effective_env = os.environ" .venv/lib/python3.12/site-packages/copilot/client.py`.
+- **Why.** `copilot_agent.py` lines 220 to 226 build `client_options` with a token, a CLI
+  path and a log level. They pass no `env`. The SDK then sets
+  `effective_env = os.environ` (`copilot/client.py` line 1601). The CLI has a shell tool.
+  So a prompt that reaches that tool can read every secret that `acb-gateway.service`
+  loads from `/opt/acb/app/.env`. That includes the database URLs, the OAuth client
+  secrets and the provider API keys.
+- **The partial guard is OFF.** `copilot_sandbox_scope` moves some calls into a
+  container. It is empty by default (`settings.py` line 673), so every call runs in the
+  gateway process.
+- **Do.**
+  1. Give the client an env built from an allow list: `PATH`, `HOME`, the Copilot token
+     and the proxy names that the CLI needs. Give it nothing else.
+  2. Add a test that starts the client with a stub CLI. Make it fail when a secret from
+     `.env` reaches the child env.
+  3. Decide if `copilot_sandbox_scope` must be ON by default.
+- **Not in the off-box PR, on purpose.** This is its own change. H-123 moved the backup
+  key out of `.env` for this reason. WS-43 (D84) removes the Copilot SDK. Until that
+  ships, this stays open.
+- **Authority:** `apps/services/orchestrator/orchestrator/copilot_agent.py` ·
+  `copilot/client.py` in the SDK · H-123
+- **Added:** 2026-10-08 · off-box backup, security review of fix round 1
+
 ### H-269 · Make the long-header test of the data engine pass on a busy CI runner · [AGENT]
 - **Check:** run `gh run list --workflow pr-check.yml --limit 50 --json databaseId,conclusion`,
   then search the logs of the failed runs for
@@ -3818,52 +3881,53 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-20 · credit and usage review session
 
 ### H-123 · Backups exist now, and live only on the box they protect · [OWNER]
-- **Check:** on the box, `sudo grep -c '^BACKUP_REMOTE=' /opt/acb/app/.env`.
-  A zero means every dump still lives on one disk, and this is open.
-- 🔴 **Filed because closing two entries orphaned their caveats.** H-98
-  and H-105 closed on 2026-09-19. The nightly timer runs, and the job covers
-  the Console database. A restore is verified. That day's deploy took a
-  pre-migration dump. Both entries carried this warning as a sub-point, so
-  deleting them deleted the only record of it.
-- 🔴 **CORRECTION, same day: the TIMER was never armed.** H-98 and
-  H-105 closed on the strength of `Result=success`, a verified restore and
-  14 dumps on disk. All three were true. The timer was
-  `UnitFileState=disabled` throughout, with an empty
-  `NextElapseUSecRealtime`, so no night was ever covered. Today's run was a
-  manual one. `systemctl enable --now acb-backup.timer` armed it at 12:17
-  UTC, and it now prints NEXT `Sun 2026-09-20 02:30:16 UTC`.
-- 🔴 **SECOND CORRECTION, 2026-09-20: the timer was DISABLED again.** The
-  arming above held for one day. `systemctl list-unit-files` reported
-  `acb-backup.timer disabled` this morning, and no NEXT date. The cause is
-  `scripts/vps_apply.sh` lines 917 to 919. On a `PG_MODE=local` box it runs
-  `systemctl disable --now acb-backup.timer` on every apply. Its own comment
-  says it disables rather than skips, so that a hand-enable does not survive
-  a deploy. That is exactly what happened to mine.
-- ✅ **The carve-out is GONE (2026-09-20), and H-132 closed with it.**
-  `vps_apply.sh` disabled the timer on every apply. The reason was written on
-  2026-08-17, when the unit loaded no `EnvironmentFile` and would dump an
-  empty container. The service gained `EnvironmentFile=/opt/acb/app/.env` on
-  2026-09-19, so the guard outlived the hole. The timer is now armed by the
-  deploy like every other one. Two fences replaced it:
-  `test_the_backup_service_must_load_its_credentials` and
-  `test_no_timer_is_carved_out_of_the_enable_loop`.
+- **Check:** `ssh metorite "sudo journalctl -u acb-backup --since -26h --no-pager | grep -c 'off-box copy ok'"`.
+  A zero means no night left the box in the last day, and this is open.
+- ✅ **The code is BUILT (2026-10-08, branch `ops-offbox-backup`).** The
+  owner chose a private Supabase Storage bucket, through its S3 endpoint.
+  Each night, `acb-backup.service` runs `backup_db.sh --offbox`. It encrypts
+  the dumps, the manifest, the file data and the meeting-bot volume to your
+  PUBLIC key. Then rclone sends them. No other caller uploads. The copy stays
+  OFF until you do the four steps below.
+- **The four owner steps.** Spec `backup_and_restore.md` §4.2 holds each
+  exact command. Do them after a deploy of the branch, so rclone is on the box.
+  - **(a)** Make the private bucket `metorite-backups` in project
+    `wbjpwtxigkileyjsgahk`. The coordinator may run the SQL in §4.2 for you.
+    Set the upload size limit in Storage → Settings to 1 GB or more. The app
+    dump is about 84 MB.
+  - **(b)** Make an S3 access key in the dashboard, at Storage → S3
+    Connection. Write down the endpoint and the region. Keep the key ID and
+    the secret in your password manager. ⚠️ The key is PROJECT-WIDE. It can
+    read and delete every object in every bucket of the project.
+  - **(c)** Make a gpg key pair on your own machine. Keep the private key and
+    its passphrase in your password manager. Put only the public key on the
+    box, at `/opt/acb/backup-public-key.asc`.
+  - **(d)** Put the seven `BACKUP_S3_*` and `BACKUP_GPG_*` keys in
+    `/etc/acb/backup-offbox.env`, owned by root:root with mode 0600. Only
+    `acb-backup.service` loads that file. Do NOT put them in
+    `/opt/acb/app/.env`. The gateway loads that file (H-270), and the run
+    refuses it. Then run `sudo systemctl start acb-backup.service` and the
+    Check above.
+- **To restore:** `scripts/restore_offbox.sh` lists, downloads, decrypts and
+  verifies one night. Spec §4.2 holds the steps.
+- ⚠️ **The trade-off.** The bucket is in the same Supabase account as the
+  database. It covers the loss of the VPS, the disk or the provider account,
+  which is this gap. It does NOT cover a compromise of the app.
+- ⚠️ **The root-owned key file stops the PASSIVE paths only.** These are the
+  inherited env, `/proc/<pid>/environ`, and env dumps in logs or crash
+  reports. `acb` has the same power as root on this box. So an ACTIVE
+  compromise of the app or of `acb` can still read the key and delete every
+  off-box night. H-271 holds the fixes, and they are owner decisions.
+- ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
+  Supabase MCP reports project health, not the backup configuration. Our
+  logical dumps stand on their own.
 - **The lesson, so it is not learned twice.** A manual `systemctl start`
   proves the SERVICE. It says nothing about the SCHEDULE. Read
   `systemctl list-timers <unit> --all` and require a NEXT date.
-  `Result=success` is also the default for a service that never ran.
-- **What is still true.** `backup_db.sh` says it on every run: a backup on
-  the same disk as the database survives a bad migration and a dropped
-  table. It does not survive the disk, the box, or the provider account.
-- ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
-  Supabase MCP reports project health, not backup configuration, so an
-  agent cannot produce the evidence. Our logical dumps stand on their own
-  and are not the provider's point-in-time recovery.
-- **Why OWNER.** Choosing where the copies go is a money and third-party
-  decision: another host, an object store, or the provider's own retention.
-  📌 Once a destination exists, setting `BACKUP_REMOTE` is the whole
-  change — the script already rsyncs to it and warns while it is unset.
-- **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
-- **Added:** 2026-09-19 · operator console session, after the backup repair
+- **Authority:** `scripts/backup_db.sh` · `scripts/backup_offbox.sh` ·
+  `scripts/restore_offbox.sh` · `project-docs/specs/backup_and_restore.md` §4.2
+- **Added:** 2026-09-19 · operator console session, after the backup repair.
+  Rewritten 2026-10-08, when the off-box copy was built.
 
 ### H-140 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
 - **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`
