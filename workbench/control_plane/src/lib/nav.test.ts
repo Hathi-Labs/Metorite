@@ -241,3 +241,41 @@ describe("an unresolved viewer sees nothing, never everything (LS-4 · §8.1)", 
     expect(sections.map((s) => s.id)).not.toContain("ai-studio");
   });
 });
+
+// ── The shell manifest (D89, `navigation_shell.md` §5.1, NS-2) ─────────────
+
+describe("every live pane carries its manifest (D89)", () => {
+  it.each(LIVE_PANES.map((p) => [p.href, p] as const))("%s has a team", (_href, p) => {
+    expect(["personal", "across", "studio", "admin"]).toContain(p.team);
+  });
+
+  it.each(LIVE_PANES.map((p) => [p.href, p] as const))(
+    "%s says what it is for, in one line of 60 characters or fewer",
+    (_href, p) => {
+      expect(p.blurb, "the launcher and the command bar print this").toBeTruthy();
+      expect(p.blurb!.length).toBeLessThanOrEqual(60);
+      // One sentence, in words a member uses: no dot-separated jargon list,
+      // no trailing full stop, and not the operator line again.
+      expect(p.blurb).not.toMatch(/·|\.$/);
+      expect(p.blurb).not.toBe(p.note);
+    },
+  );
+
+  it("gives every pane a team, live or not, so a promoted app needs no second edit", () => {
+    expect(PANES.filter((p) => !p.team).map((p) => p.href)).toEqual([]);
+  });
+
+  it("puts only pages about the member or the organization in the account menu", () => {
+    const account = PANES.filter((p) => p.door === "account").map((p) => p.href);
+    expect(account).toEqual(["/people/me", "/settings/organization", "/settings/appearance"]);
+  });
+
+  it("marks only preferences as settings, so All apps lists apps", () => {
+    expect(PANES.filter((p) => p.setting).map((p) => p.href)).toEqual([
+      "/people/me",
+      "/settings/appearance",
+    ]);
+    // A setting is never a sidebar door: it has no place to show then.
+    expect(PANES.filter((p) => p.setting && p.door !== "account")).toEqual([]);
+  });
+});

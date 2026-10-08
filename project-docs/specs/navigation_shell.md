@@ -1,8 +1,8 @@
 # The shell — how a member finds an app, a job or an answer
 
-**Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-4a, NS-4b, NS-10,
-NS-10b and NS-11. The shell bar is ON in production since 2026-10-08. Board
-row **WS-44**.
+**Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-2 slice 1,
+NS-4a, NS-4b, NS-10, NS-10b and NS-11. The shell bar is ON in production since
+2026-10-08. NS-2 is dark behind `NEXT_PUBLIC_SHELL_NAV`. Board row **WS-44**.
 
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
@@ -17,7 +17,7 @@ found: a wrong cap citation, three listener sites and five stale anchors.
 people. Where the page and this spec disagree, this spec wins.
 
 **Single owner.** This spec owns the shell. That is the bar, the sidebar shape,
-Home, the command bar, the dock and the bell. It also owns the avatar menu,
+Home, the command bar, the dock and the bell. It also owns the account menu,
 role presets and the app manifest.
 
 `launch_surface.md` keeps owning WHICH panes are live.
@@ -56,7 +56,7 @@ through one manifest, and no app builds its own copy.
 ### 1.1 In scope
 
 - The shell bar and the slots an app fills in it (§3.1).
-- The sidebar shape and the avatar menu (§3.2, §3.3).
+- The sidebar shape and the account menu (§3.2, §3.3).
 - Home at three altitudes, and the jobs of the Personal Center apps (§4).
 - The app manifest and its rules for every app (§5).
 - The command bar, its three tiers and its metering (§6).
@@ -126,7 +126,7 @@ height of today's app bar, so no app loses height.
 | New | The shell | The jobs of the apps the member holds, in preset order (§8) |
 | Bell | The shell | "Needs you", from every app (§7.2) |
 | Assistant | The shell | The dock toggle (§7.1) |
-| Avatar | The shell | The avatar menu (§3.3) |
+| ~~Avatar~~ | — | Not in the bar. The account menu is the sidebar's foot (§3.3, NS-2 slice 1) |
 
 An app fills its slots through one React context in `src/lib/shell/`. The
 ticket names it. An app does not render a bar of its own. A page body may
@@ -148,8 +148,10 @@ The launcher lists every app the member holds, grouped by team. Each tile
 shows the name and the manifest's one-line purpose. A star pins or unpins.
 
 **Admin panes leave the sidebar.** Approvals and Organisation appear in the
-launcher under Admin, and in the avatar menu, for a member who holds them.
-Approvals' items reach every approver through the bell and My Day.
+launcher under Admin, for a member who holds them. Organisation also opens
+from the account menu. Approvals' items reach every approver through the bell
+and My Day. ⚠️ Until NS-6 builds the bell, Approvals keeps its sidebar door
+(§3.2a item 2).
 Appearance is a personal preference, so it moves to every member's avatar
 menu.
 
@@ -177,21 +179,68 @@ ten live panes, and `nav.test.ts` still counts ten. This spec changes
 WHERE a live pane renders, not WHETHER it is live. Promotion stays an owner
 decision (**H-21**).
 
-### 3.3 The avatar menu
+### 3.2a What NS-2 slice 1 changed from §3.2, and why
 
-My Profile, My access, Appearance, the colour-mode toggle and sign-out. For
-an admin it adds Organisation and Approvals. My Profile and My access describe
-the member. The member does not work in them, so they leave the sidebar.
+The owner asked on 2026-10-09 that every shell change be "genuinely a step
+ahead" for a member who is not technical. Slice 1 was measured against that
+on screen, before and after, and three parts of §3.2 changed. Each one waits
+on a ticket that is not built yet. When that ticket lands, the §3.2 shape
+applies.
 
-**The account switcher is in the sidebar foot today** (MT-1k slice A2,
-`saas_multitenancy.md`, built 2026-10-07, dark). It lists every account this
-browser is signed in to, with its organization, and switches with one click.
-When NS-2 builds this avatar menu, the switcher moves into it. It holds no
-second copy of the list.
+1. **No "My apps" group, and the top item is "Home".** Pins need NS-7, so
+   the group would be empty for every member. A heading over nothing costs
+   attention and gives nothing. `/` is still the "Welcome back" grid, so the
+   name "My Day" would promise a page that does not exist. NS-3 renames it.
+2. **Chat and Approvals keep a sidebar door.** §3.2 moves Approvals out,
+   because the bell and My Day carry its items. Neither is built (NS-3,
+   NS-6). Until they are, Approvals is an approver's only door to the queue,
+   and Chat is the assistant itself. Both stay in their team's group: AI
+   Studio and Admin.
+3. **One line per item.** The old sidebar printed a second line under each
+   item. In slice 1 that line was the manifest's purpose, and the sidebar grew
+   taller than a 900px screen. A member who opens the sidebar every day reads
+   that line once. The purpose now shows on hover. All apps prints it in
+   full, because a member goes there to find out what an app is.
+
+**Groups, in order:** Home, then Personal Center, Across teams, AI Studio and
+Admin, each only when it has an item. All apps and the account menu are at the
+foot. `src/lib/shell/shellNav.ts` builds all of it from `visibleSections`.
+`shellNav.test.ts` pins four shapes: a full admin, a member with three apps, a
+member with none, and an unresolved viewer.
+
+### 3.3 The account menu
+
+It holds My Profile, My access, Appearance and sign-out, and Organisation for
+an admin. These pages describe the member or the organization. The member does
+not work in them, so they leave the sidebar.
+
+⚠️ **Approvals is NOT in this menu** (§3.2a item 2). It keeps its sidebar door
+until NS-6 builds the bell. The colour-mode toggle sits beside the foot's
+button, not inside the menu. Do not move either one from this paragraph alone.
+
+**The account switcher is in the sidebar foot** (MT-1k slice A2,
+`saas_multitenancy.md`, built 2026-10-07). It lists every account this browser
+is signed in to, with its organization, and switches with one click.
+
+✅ **NS-2 slice 1 (2026-10-09) puts this menu IN that foot, not in a new avatar
+at the top.** The owner asked for the switcher at the bottom left, beside
+sign-out. A second place for "you" at the top would split one idea in two.
+Slack, Notion and Linear put the menu in the same place.
+
+The foot's menu holds these rows, in order:
+
+1. the active account
+2. My Profile, My access and Appearance, and Organisation for an admin
+3. the other accounts
+4. "Add another account" and sign-out
+
+The colour-mode toggle stays beside the foot's button. With the switcher flag
+off, the foot still shows. It reads the session then, and it lists no other
+accounts.
 
 **My Access moved first, on 2026-10-05.** The owner moved it into the People
 app, as the ungated "My access" tab at `/people/access`, beside My profile. When
-NS-2 builds the avatar menu, the menu links to that tab. It holds no second copy
+NS-2 builds the account menu, the menu links to that tab. It holds no second copy
 of the page.
 
 ---
@@ -311,6 +360,8 @@ registry.
 | `needs` | the name of a server needs provider | no | The bell, My Day |
 | `cards` | a list of `{ id, title, altitudes, component }` | no | Home |
 | `agent` | an agent slug | no | The dock |
+| `door` | `"sidebar"` (the default) or `"account"` | no | The sidebar and the account menu (§3.2a, §3.3) |
+| `setting` | `true` for a preference about the member | no | All apps leaves it out |
 
 **A job opens a form.** `href` is the form's route. `fields` names the query
 values the form reads, so tier 2 may fill them (§6.6). A job never writes when
@@ -378,12 +429,12 @@ manifest" section, and the spec-auditor refuses one without it.
 | Email | personal | Write an email | email search | needs reply | Needs reply | `email-assistant` | Its palette commands become jobs. Its ⌘K handler goes. Its `text-sm` heading drift (`app/email/page.tsx:963`) closes when it adopts the bar |
 | Projects | across | New task, New project | projects search | `pm_notifications` | Team pulse, At-risk work | `projects-assistant` | Its palette and bell move to the shell. `lib/chatDock.ts` becomes the dock's rule. Its tree groups by team (D22) |
 | People | people | Request leave | the directory | — | Out today | — | None beyond the manifest |
-| My Profile | personal | — | — | — | — | — | Move to the avatar menu |
-| My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's avatar menu links to it |
+| My Profile | personal | — | — | — | — | — | Move to the account menu |
+| My Access | personal | — | — | — | — | — | Done 2026-10-05: a People tab at `/people/access`. NS-2's account menu links to it |
 | Chat | studio | New chat | chat sessions | — | — | any | `/chat` stays. The dock shares its sessions |
 | Approvals | admin | — | — | `pending_actions` | Waiting for you | — | Its items feed the bell |
-| Organisation | admin | Invite a member | members | seat requests | — | — | Moves to the avatar menu |
-| Appearance | personal | — | — | — | — | — | Moves to every member's avatar menu |
+| Organisation | admin | Invite a member | members | seat requests | — | — | Moves to the account menu |
+| Appearance | personal | — | — | — | — | — | Moves to every member's account menu |
 
 A `preview` app writes its manifest in the pull request that promotes it.
 
@@ -740,7 +791,7 @@ and a Menu tab opens a drawer (`AppShell.tsx:186-236`).
 | Three palettes | One command bar. `app/projects/lib/commands.ts` seeds the job list | NS-1, NS-2 |
 | The Projects `NotificationBell`, and no Approvals badge | The shell's "Needs you" | NS-6 |
 | Three assistant rails | One dock | NS-6 |
-| My Profile and Appearance in the sidebar | The avatar menu | NS-2 |
+| My Profile and Appearance in the sidebar | The account menu | NS-2 |
 | My Access in the sidebar | ✅ The People app's "My access" tab, 2026-10-05 | — |
 | Calendar's own header | The shell bar's title slot | NS-1 |
 | Projects shows "every space you can see" | Grouped by team (D22), driven by the scope chip | NS-5 |
@@ -820,10 +871,30 @@ Done when:
 6. The visual review of `DESIGN_SYSTEM.md` §8 ran: light mode, compact density,
    a changed accent, and the neighbouring app.
 
-### NS-2 · The manifest, All apps, the sidebar shape and the avatar menu — AGENT-SAFE
+### NS-2 · The manifest, All apps, the sidebar shape and the account menu — AGENT-SAFE · slice 1 BUILT 2026-10-09, dark
+
+**Built in slice 1:**
+
+- `NavPane` carries `team`, `blurb`, `door` and `setting` (§5.1). Every pane
+  has a team. Every live pane has a purpose in job words, 60 characters or
+  fewer. The command bar prints it beside "Open …", in place of the operator
+  note.
+- `src/lib/shell/shellNav.ts` builds the sidebar, the account menu and All
+  apps from `visibleSections`. `AppLauncher.tsx` is All apps.
+- The sidebar, the folded rail and the phone drawer take the shape of §3.2a.
+  The account menu is the sidebar's foot (§3.3).
+- Fences: `nav.test.ts` and `shellNav.test.ts`. The first fails on a live
+  pane with no team or no purpose. It also fails when a page other than the
+  three member and organization pages opens from the account menu. The second
+  pins the shapes that four kinds of member see.
+
+**Still open in NS-2:** done-when 1's "one job or more" for every live pane.
+Projects, Chat, WhatsApp, Approvals and Organisation have no job yet, and each
+needs a form link that opens with `?do=`. Done-when 2's job route check comes
+with them.
 
 Flag `NEXT_PUBLIC_SHELL_NAV`. Files: `src/lib/nav.ts`, `src/lib/nav.test.ts`,
-`src/components/Sidebar.tsx`, and a new launcher and avatar menu in
+`src/components/Sidebar.tsx`, and a new launcher and account menu in
 `src/lib/shell/`.
 
 Done when:
@@ -835,7 +906,7 @@ Done when:
 3. The launcher renders `visibleSections(features, isAdmin)` and nothing else
    (`launch_surface.md` §8.4).
 4. The live count in `nav.test.ts` is still ten.
-5. With the flag on, the sidebar takes the §3.2 shape, and the avatar menu holds
+5. With the flag on, the sidebar takes the §3.2 shape, and the account menu holds
    the §3.3 items.
 
 ### NS-3 · My Day and the needs feed — AGENT-SAFE (build), OWNER-GATE (turn on)
