@@ -214,6 +214,11 @@ def _start(run: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
     return task
 
 
+def live_run_count() -> int:
+    """How many runs this sink started have not ended (``GET /internal/drain``)."""
+    return sum(1 for task in list(_RUNS) if not task.done())
+
+
 async def stop_runs(timeout: float = INTERRUPTED_WRITE_SECONDS + 1.0) -> None:
     """Cancel every run this sink started, and wait briefly for each to close.
 

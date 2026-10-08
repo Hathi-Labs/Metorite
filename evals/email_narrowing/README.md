@@ -80,6 +80,10 @@ marks it `xfail`. If a later change finds them, the eval marks it `xpass`.
    message. So PICK dropped no answer, and READ left no answer unread.
 2. **Cost.** On Q1 to Q4, the after path's credits are at most 40 percent of
    the before path's credits.
+3. **Never more (H-276).** No question of Q1 to Q4 costs more after than
+   before, and the four together do not. The email eval names no known
+   breach. A mail body is long, so the cost check of spec §3.3a keeps PICK on
+   every question, and the result does not move: the gated ratio is 0.3351.
 
 Six rules bind every question too:
 
