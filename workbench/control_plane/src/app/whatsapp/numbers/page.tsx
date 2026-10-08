@@ -45,8 +45,8 @@ export default function NumbersPage() {
       const label = a.display_name || a.phone_number || "this number";
       if (
         !confirm(
-          `Disconnect ${label}? Its chats stay stored, but no new messages will ` +
-            `sync until you reconnect.`
+          `Disconnect ${label}? This deletes every chat, message, contact and ` +
+            `attachment Metorite stored from this number. It can't be undone.`
         )
       )
         return;
