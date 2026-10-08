@@ -104,6 +104,8 @@
     "edit_task",
     "propose_plan",
     "create_tasks",
+    "create_tags",
+    "create_types",
     "capture_intake",
     "mark_notifications_read",
     "save_view",

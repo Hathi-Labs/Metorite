@@ -25,6 +25,7 @@
 import Button from "@/components/ui/Button";
 import FencedText from "@/components/FencedText";
 import AppIcon from "@/components/Icon";
+import EntityPill from "@/components/ui/EntityPill";
 import Readout from "@/components/Readout";
 import { renderTemplate } from "@/components/genUITemplates";
 import { useRouter } from "next/navigation";
@@ -175,6 +176,10 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   // WS-46 P13 — several new tasks in one project. Its receipt lists every
   // task it made, so it draws through `BatchReceiptCard`, not one link.
   create_tasks: { icon: "ListPlus", label: "Tasks created" },
+  // H-273 — several new tags or types. The receipt lists every word it
+  // added, so it draws through `BatchReceiptCard` too.
+  create_tags: { icon: "Tags", label: "Tags added" },
+  create_types: { icon: "Shapes", label: "Types added" },
   // S5 — the rest of the writes
   save_view: { icon: "LayoutList", label: "View saved" },
   capture_intake: { icon: "Inbox", label: "Captured into intake" },
@@ -731,14 +736,56 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   );
 }
 
+/** What one batch receipt lists, and its heading when nothing is known to exist. */
+export interface BatchKind {
+  rows: "task" | "tag" | "type";
+  maybe: string;
+}
+
 /**
- * The write tools whose receipt lists SEVERAL tasks, each with its own
- * `full_id` line. `BatchReceiptCard` draws each one as a row that opens the
- * task, and the lines about the rows that failed under them.
+ * The write tools whose receipt lists SEVERAL rows, each with its own id
+ * line. `BatchReceiptCard` draws a task as a row that opens the task, a tag
+ * as a tag pill and a type as a pill, with the lines about the rows that
+ * failed under them.
  */
-export const BATCH_TOOLS: ReadonlySet<string> = new Set(["create_tasks"]);
+export const BATCH_TOOLS: ReadonlyMap<string, BatchKind> = new Map<string, BatchKind>([
+  ["create_tasks", { rows: "task", maybe: "Tasks may have been created" }],
+  // H-273: `forms.py` `_vocab_receipt` prints `- tag «q4» · facts` and then
+  // `  tag_id: <uuid>` for each word it added.
+  ["create_tags", { rows: "tag", maybe: "Tags may have been added" }],
+  ["create_types", { rows: "type", maybe: "Types may have been added" }],
+]);
 
 const NL = "\n";
+
+/** One word a vocabulary batch added: a tag or a task type. */
+export interface VocabRow {
+  kind: "tag" | "type";
+  id: string;
+  name: string;
+  meta: string;
+}
+
+const VOCAB_ROW = /^\s*-\s*(tag|type)\s+«([^»]*)»\s*(?:·\s*(.*))?$/;
+const VOCAB_ID = /^\s*(tag|type)_id:\s*([0-9a-f-]{36})\s*$/i;
+
+/**
+ * Parse `- tag «name» · facts` + `  tag_id: <uuid>` pairs (and the same for
+ * a type) out of a batch receipt. A row whose id line is missing, or names
+ * the other kind, is not a row. Pure, exported for its test.
+ */
+export function parseVocabRows(result: string): VocabRow[] {
+  const rows: VocabRow[] = [];
+  const lines = result.split(NL);
+  for (let k = 1; k < lines.length; k++) {
+    const id = lines[k].match(VOCAB_ID);
+    if (!id) continue;
+    const head = (lines[k - 1] ?? "").match(VOCAB_ROW);
+    if (!head || head[1] !== id[1].toLowerCase()) continue;
+    rows.push({ kind: head[1] as "tag" | "type", id: id[2], name: head[2], meta: (head[3] ?? "").trim() });
+  }
+  return rows;
+}
 
 /**
  * A batch receipt's lines for a person, without the head line and the task
@@ -757,6 +804,10 @@ export function batchNotes(result: string): string[] {
       k++; // the task row and its id line: drawn as a row
       continue;
     }
+    if (VOCAB_ROW.test(line) && VOCAB_ID.test(next)) {
+      k++; // a tag or a type and its id line: drawn as a pill (H-273)
+      continue;
+    }
     if (/^\s*full_id:/i.test(line) || !line.trim()) continue;
     if (/listed above exist\. Never create them again/.test(line)) continue;
     kept.push(line);
@@ -764,20 +815,40 @@ export function batchNotes(result: string): string[] {
   return forPeopleFenced(kept.join(NL)).split(NL).filter((l) => l.trim());
 }
 
+/** One word a vocabulary batch added. A tag is the tag pill, a type a plain pill. */
+function VocabRowView({ row }: { row: VocabRow }) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 px-1.5 py-0.5">
+      <span className="inline-flex min-w-0 max-w-full">
+        <EntityPill fit kind={row.kind === "tag" ? "tag" : "unknown"} label={row.name} />
+      </span>
+      {row.meta && (
+        <span className="min-w-0 truncate text-[10px] text-muted-foreground">
+          <FencedText text={row.meta} pills={false} />
+        </span>
+      )}
+    </div>
+  );
+}
+
 /**
- * The receipt of `create_tasks`: a heading with the count, one row per task
- * made (each opens the task in Projects), and the lines about each row that
- * failed. A partial batch wears the warning tone, as `toneFor` gives it.
+ * The receipt of a batch (`BATCH_TOOLS`): a heading with the count, one row
+ * per task made (each opens the task in Projects) or one pill per word
+ * added, and the lines about each row that failed. A partial batch wears the
+ * warning tone, as `toneFor` gives it.
  */
 function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "ListPlus", label: genericLabel(e.name) };
+  const kind: BatchKind = BATCH_TOOLS.get(e.name) ?? { rows: "task", maybe: "Tasks may have been created" };
   const result = (e.result || "").trim();
   const outcome = classifyActionResult(result, e.status, e.name);
   useEffect(() => {
     if ((outcome === "done" || outcome === "partial") && isFreshReceipt(e)) announceChange(e.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
   }, [outcome, e.id]);
-  const rows = parseTaskRows(result);
+  const tasks = kind.rows === "task" ? parseTaskRows(result) : [];
+  const words = kind.rows === "task" ? [] : parseVocabRows(result);
+  const rows: readonly unknown[] = kind.rows === "task" ? tasks : words;
   const head = forPeopleFenced(withoutLegend(result).split(NL)[0] ?? "");
   const notes = batchNotes(result);
   const icon =
@@ -788,7 +859,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
             : meta.icon;
   const heading =
     outcome === "failed" ? `${meta.label} — failed`
-      : outcome === "partial" && rows.length === 0 ? "Tasks may have been created"
+      : outcome === "partial" && rows.length === 0 ? kind.maybe
       : outcome === "partial" ? `${meta.label} — stopped part way (${rows.length})`
         : outcome === "cancelled" ? "Cancelled"
           : outcome === "refused" ? "Not done"
@@ -808,8 +879,11 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
           )}
           {rows.length > 0 && (
             <div className="mt-1 space-y-0.5 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
-              {rows.map((r) => (
+              {tasks.map((r) => (
                 <TaskRowView key={r.id} row={r} />
+              ))}
+              {words.map((r) => (
+                <VocabRowView key={r.id} row={r} />
               ))}
             </div>
           )}

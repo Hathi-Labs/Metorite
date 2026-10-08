@@ -511,6 +511,10 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # Review round 2: the read before the card sends `include_triage` on
     # list_tasks' route, so F2 holds that claim too.
     "create_tasks": frozenset({"create_task", "list_tasks"}),
+    # H-273 — several new tags, or several new types, under ONE confirmation
+    # card. Each ticked row is one POST to the single tool's own route.
+    "create_tags": frozenset({"create_tag"}),
+    "create_types": frozenset({"create_type"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
 }
@@ -698,13 +702,14 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "mode": "set_status_set.mode",
         "copy_from": "set_status_set.copy_from",
     },
+    # H-273: create_types sends each field from one key of each row.
     ("POST", "/projects/nodes/{project_id}/types"): {
-        "name": "create_type.name",
-        "icon": "create_type.icon",
-        "color": "create_type.color",
+        "name": ("create_type.name", "create_types.types.name"),
+        "icon": ("create_type.icon", "create_types.types.icon"),
+        "color": ("create_type.color", "create_types.types.color"),
         "is_default": "create_type.is_default",
         "scope": "create_type.org_wide",
-        "is_epic": "create_type.is_epic",
+        "is_epic": ("create_type.is_epic", "create_types.types.is_epic"),
     },
     ("PATCH", "/projects/types/{type_id}"): {
         "name": "update_type.name",
@@ -727,10 +732,11 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "options": "update_field.options",
         "required": "update_field.required",
     },
+    # H-273: create_tags sends each field from one key of each row.
     ("POST", "/projects/nodes/{project_id}/tags"): {
-        "name": "create_tag.name",
-        "color": "create_tag.color",
-        "description": "create_tag.description",
+        "name": ("create_tag.name", "create_tags.tags.name"),
+        "color": ("create_tag.color", "create_tags.tags.color"),
+        "description": ("create_tag.description", "create_tags.tags.description"),
         "scope": "create_tag.org_wide",
     },
     ("PATCH", "/projects/tags/{tag_id}"): {

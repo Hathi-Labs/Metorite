@@ -152,6 +152,9 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   propose_plan: { kind: "think", verb: V.plan, object: "a project" },
   // WS-46 P13: several new tasks in one project, as one batch.
   create_tasks: { kind: "edit", verb: V.add, object: "tasks to a project" },
+  // H-273: several new tags or types, as one batch.
+  create_tags: { kind: "edit", verb: V.add, object: "tags to a project" },
+  create_types: { kind: "edit", verb: V.add, object: "task types to a project" },
   mark_notifications_read: { kind: "edit", verb: V.mark, object: "notifications read" },
   set_my_overlay: { kind: "edit", verb: V.update, object: "your view of a task" },
   set_status_set: { kind: "edit", verb: V.update, object: "the statuses" },
