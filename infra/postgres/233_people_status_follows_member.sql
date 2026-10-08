@@ -37,6 +37,13 @@
 -- ⚠️ **It still fails open.** Anything unexpected is a WARNING, and the
 --   member write succeeds. Re-running this file repairs what was missed.
 --
+-- ⚠️ **RE-RUN THIS FILE, NOT 206 OR 209.** 206's header says to re-run 206
+--   after the tenancy layer is promoted. 206 and 209 each replace this same
+--   function with the INSERT-only version, so re-running either one silently
+--   brings the defect back. If you re-run one of them, re-run this file after
+--   it. 206 is not edited to say so: a changed checksum makes the next deploy
+--   re-apply all of 206.
+--
 -- Depends on: 206_people_from_membership.sql, 209_people_email_unique_per_tenant.sql.
 -- Idempotent: CREATE OR REPLACE FUNCTION, and a backfill whose predicates
 --             match nothing on a second run.
