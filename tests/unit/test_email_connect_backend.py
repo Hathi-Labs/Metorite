@@ -61,6 +61,13 @@ _APP_ENV = (
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     s = get_settings()
     monkeypatch.setattr(s, "gateway_session_secret", SECRET, raising=False)
+    # The Gmail connect is dark by default since EM-G7. These cases test
+    # the connect itself, so the flag is on. test_email_gmail_connect.py
+    # fences the dark state.
+    monkeypatch.setattr(s, "email_gmail_connect", True, raising=False)
+    # An empty member list lets each member through (EM-G7b), so a list in
+    # the developer's own environment cannot change these cases.
+    monkeypatch.setattr(s, "email_gmail_connect_members", "", raising=False)
     for name in ("msft_oauth_client_id", "gmail_oauth_client_id"):
         monkeypatch.setattr(s, name, SETTINGS_ID, raising=False)
     for name in ("msft_oauth_client_secret", "gmail_oauth_client_secret"):
@@ -383,7 +390,8 @@ async def test_a_consent_error_lands_on_its_reason(error, description, shown) ->
     assert f"{url.scheme}://{url.netloc}{url.path}" == (
         "https://app.example.test/email/oauth/callback"
     )
-    assert parse_qs(url.query) == {"error": [shown]}
+    # EM-G7 item 6: each bounce names its provider.
+    assert parse_qs(url.query) == {"error": [shown], "provider": ["microsoft"]}
     for fragment in ("Trace", "Correlation", "admin approval", "AADSTS", "script"):
         assert fragment not in location
 
@@ -402,6 +410,7 @@ async def test_a_description_with_no_error_is_still_invalid_state() -> None:
     )
     assert parse_qs(urlparse(resp.headers["location"]).query) == {
         "error": ["invalid_state"],
+        "provider": ["microsoft"],  # EM-G7 item 6
     }
 
 

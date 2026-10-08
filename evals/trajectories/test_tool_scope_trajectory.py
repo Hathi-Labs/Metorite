@@ -8,8 +8,9 @@ Leaderboard), so this eval guards two things:
   1. STATIC — the three previously-unscoped agents (email-assistant, apis-config,
      orchestrator) now declare a lean, VALID ``tool_scope`` (every name is a real
      injectable platform tool; a typo would silently fail open to all tools).
-     email-assistant additionally declares ``own_tool_scope`` naming only real
-     baked tools.
+     email-assistant additionally declares ``own_tool_scope`` naming only tools
+     that its ``build_agents()`` gives (WS-8o: membership in the BUILT tools,
+     not an ``async def`` in the source, which a stale name also passes).
 
   2. BEHAVIORAL — ``_apply_own_tool_scope`` filters an agent's baked ``.tools``
      to the allowlist, and fails OPEN (keeps everything + warns) when no name
@@ -22,11 +23,13 @@ See specs/runtime_agent_effectiveness_2026-07.md (Item ①).
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import orchestrator.executor as ex
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -71,22 +74,45 @@ def test_previously_unscoped_agents_now_declare_valid_tool_scope():
         assert "ask_questions" in scope, f"{agent_dir} must keep ask_questions (HITL)"
 
 
-def test_email_assistant_own_tool_scope_names_are_all_real_baked_tools():
-    """own_tool_scope entries must exist in the agent's _TOOLS, or they silently drop."""
-    import re
+def test_email_assistant_own_tool_scope_names_are_all_built_tools(monkeypatch, request):
+    """Each own_tool_scope name is a tool that build_agents() gives (WS-8o).
+
+    An ``async def`` in ``agents.py`` is not enough: a function that the agent
+    never registers passes that check and still drops from the scope.
+    """
+    pytest.importorskip("agent_framework")
+    from acb_common.settings import get_settings
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ws8o-dummy")
+    # WS-48 N2: narrow_and_read is in the scope and is built only when
+    # NARROWING_AGENTS names the agent. Turn the flag on, so this check stays
+    # strict: every scoped name must be built. The flag-off case is held by
+    # tests/unit/test_own_tool_scope_parity.py (FLAG_GATED).
+    monkeypatch.setenv("NARROWING_AGENTS", "*")
+    get_settings.cache_clear()
+    # Clear again after the test, so the cached flag does not reach the next one.
+    request.addfinalizer(get_settings.cache_clear)
     cfg = _cfg("agent-email-assistant")
     scope = cfg.get("own_tool_scope")
-    assert scope, "email-assistant must declare own_tool_scope to trim its ~63 baked tools"
-    src = (REPO / "apps/agents/agent-email-assistant/agents.py").read_text(encoding="utf-8")
-    defined = set(re.findall(r"async def ([a-z_][a-z0-9_]+)\s*\(", src))
-    missing = [t for t in scope if t not in defined]
-    assert not missing, f"own_tool_scope names not defined in agents.py: {missing}"
-    # Must actually shrink the surface (63 baked → far fewer).
-    assert len(scope) < 40, f"own_tool_scope not lean enough ({len(scope)} kept)"
-    # Core send/read actions survive. (send_email absorbed send_reply in the tool
-    # consolidation — it now sends both new mail and replies via reply_to_email_id.)
-    for essential in ("read_email", "draft_reply", "send_email", "search_emails"):
-        assert essential in scope, f"email-assistant own_tool_scope dropped essential {essential}"
+    assert scope, "email-assistant must declare own_tool_scope"
+    path = REPO / "apps/agents/agent-email-assistant/agents.py"
+    spec = importlib.util.spec_from_file_location("ws8o_traj_email", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    built = {
+        ex._tool_name(t)
+        for agent in mod.build_agents()
+        for t in (getattr(agent, "default_options", None) or {}).get("tools") or []
+    }
+    assert built, "email-assistant built no tool"
+    missing = [t for t in scope if t not in built]
+    assert not missing, f"own_tool_scope names tools build_agents() does not give: {missing}"
+    # The core read and send actions are built and in scope. (send_email sends
+    # both new mail and replies, through reply_to_email_id.)
+    for essential in ("read_email", "draft_reply", "send_email"):
+        assert essential in built, f"email-assistant no longer builds {essential}"
+        assert essential in scope, f"email-assistant own_tool_scope dropped {essential}"
 
 
 # ── 2. BEHAVIORAL: _apply_own_tool_scope filters, and fails open ─────────────

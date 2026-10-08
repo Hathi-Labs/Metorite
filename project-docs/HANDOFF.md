@@ -95,6 +95,773 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-275 · Measure the WhatsApp narrowing on a real run · [OWNER]
+- **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
+  No line with a measured recall and a date under §9 N4 means this is open.
+- **Why.** The PR of WS-48 N4 has only the scripted run, and its verdicts,
+  tokens and credits are stub numbers. That run does not meet the email bar of
+  0.40: its gated ratio is 0.650. A real run says whether the WhatsApp tool
+  saves anything before anyone turns it on.
+- **Do.**
+  1. The owner approves the run, because it spends credits and turns on a
+     flag. Then set `NARROWING_AGENTS=whatsapp-assistant` on the box.
+  2. Ask the WhatsApp assistant one broad question over many chats. Then ask
+     the same question with the flag off.
+  3. Join each run's `request_id` values to `usage_event`. Compare the
+     requests, tokens and credits per tier, and the answers that each run
+     found.
+  4. Write the recall, the credits, the date and the SHA under §9 N4, with the
+     words "compare run". Turn the flag off again if the tool costs more.
+- **Authority:** `data_narrowing_pipeline.md` §9 N4 and §11 · D93
+- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+
+### H-276 · PICK costs more than it saves on short items · [AGENT]
+- **Check:** `rg -n "short item" packages/acb_skills/acb_skills/narrowing.py`.
+  No hit means the pick step has no rule for short items, and this is open.
+- **Why.** PICK asks one question for each candidate, and each question
+  carries its guidance. So it spends about 160 tokens on each candidate. A
+  WhatsApp message is about 15 tokens. In the scripted WhatsApp eval, Q2 (all
+  messages of one group in three weeks) costs 1.45 times today's path. A CRM
+  note or a task title (N5) is short too.
+- **Do.** Measure the PICK tokens for each candidate on the decide door.
+  Then propose a rule in spec §3.3 for the owner: for example, when the
+  summaries of all candidates are shorter than the question, READ them with
+  no PICK. Do not change the pipeline before the spec says so.
+- **Authority:** `data_narrowing_pipeline.md` §3.3 and §9 N4 build notes
+- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+
+### H-277 · `read_whatsapp_chat` reads the oldest messages of a chat, not the recent ones · [AGENT]
+- **Check:** `rg -n "ORDER BY sent_at ASC NULLS FIRST" apps/services/gateway/gateway/routes/whatsapp/transport/messages.py`.
+  A hit in `list_messages` with `LIMIT :limit` after it means this is open.
+- **Why.** The tool says that it reads "the recent messages". The route orders
+  `sent_at ASC` and then applies the limit, so a chat of more than 20 messages
+  gives its OLDEST 20. The agent then answers from old messages, and a recent
+  answer is not seen. WS-48 N4 found it, and the narrowing READ does not use
+  this form (it reads with `around`).
+- **Do.** Take the newest `limit` messages, then give them oldest first, in the
+  route or in the tool. Check the app's thread view first, because it reads
+  the same route. Add a test with a chat of more than `limit` messages.
+- **Authority:** `whatsapp_message_manager.md` · board row WS-20
+- **Added:** 2026-10-08 · branch `ws48-n4-whatsapp` (WS-48 N4).
+
+### H-274 · The chat has no batch tool for several new statuses · [AGENT]
+- **Check:** `grep -n "create_statuses" apps/skills/skill-projects/skill_projects/__init__.py`.
+  While it prints nothing, this is open.
+- **Why.** H-273 built `create_tags` and `create_types` on one helper
+  (`forms.py` `_VocabKind`). Statuses did not fit that helper in a few lines,
+  for three reasons:
+  1. The status route has no duplicate rule. `create_status` refuses a
+     name that exists, but `admin.create_status` inserts a second lane. A
+     ticked row that exists would make a duplicate lane.
+  2. Each lane needs its own `position`, after the last lane of the set.
+  3. The card must quote the server's `may_edit` first, as
+     `status_edit_refusal` does for `create_status`.
+- **Until then.** The Projects agent calls `create_status` once for each new
+  status, one after another (`instructions.md`, "Several new words in one
+  turn").
+- **What to build.** A `_VocabKind` for statuses, with the keys `name`,
+  `category` and `color`. Decide rule 1 first: refuse an existing name
+  before the card, or add a 409 to the route. The fences are the ones that
+  H-273 touched. Its commit message lists them (`git log --grep H-273`).
+- **Authority:** `project-docs/specs/projects_ai_chat.md` §24.5
+- **Added:** 2026-10-08 · H-273, branch `projects-vocab-batch`
+
+### H-272 · plan-guard cannot see the secrets drop folder · [AGENT] · security
+- **Check:** `rg -c "metorite\[" .claude/hooks/plan-guard.mjs` → no hit
+  means the guard does not know the drop folder, and this is open.
+- **Why.** `scripts/secrets.sh` keeps plain-text secrets in
+  `~/.metorite/secrets` and runs its own ssh to the box (`docs/secrets_drop.md`).
+  `plan-guard.mjs` reads only the command that an agent types. So it has four
+  gaps here:
+  1. The `deploy` gate needs the form `ssh user@host`. `ssh metorite …` and
+     `scripts/secrets.sh push` do not match it. The dev-phase grant covers
+     `deploy` until 2026-11-30, and after that date the gate stops no push.
+  2. The `env-write` path rule matches a `.env` token only. `backup-offbox.env`
+     and `app.env` in the drop folder do not match it, so a shell write there
+     is not gated.
+  3. The `secrets` read rule matches `cat … .env` only. It does not match
+     `backup-gpg-PRIVATE.asc` or `backup-gpg-passphrase.txt`.
+  4. The guard never checks the Read tool. An agent can Read any file in the
+     drop folder, and the value goes into the transcript.
+- **The fix: the three arms that the reviewer proposed, word for word.** Add
+  each one at the end of the `test` regex of its gate:
+  - deploy: `|\bssh\b[^\n|;&]*\bmetorite\b|\bscripts[\\/]secrets\.sh\s+push\b`
+  - env-write: `|(^|[\\/])\.metorite[\\/]+secrets[\\/]`
+  - secrets read: `|\.metorite[\\/]+secrets[\\/]+(?!README\.txt\b|push\.log\b)[\w.-]`
+  For gap 4, add a `Read` branch that runs the secrets read arm on `file_path`.
+  Add a case for each arm to `plan-guard.test.mjs`. Editing the guard needs
+  the `guard-write` grant.
+- **Not in the secrets-drop PR, on purpose.** Fix round 1 of that PR said do
+  not edit plan-guard there.
+- **Authority:** `docs/secrets_drop.md` §4 · `.claude/hooks/plan-guard.mjs` · H-123
+- **Added:** 2026-10-08 · secrets drop, security review of fix round 1
+
+### H-271 · acb has the same power as root, so an app compromise can delete the off-box backups · [OWNER] · security
+- **Check:** on the box, run each of these:
+  `sudo cat /etc/sudoers.d/acb` · `id acb` · `stat -c '%U' /opt/acb/app/scripts/backup_offbox.sh`.
+  While any one shows `NOPASSWD:ALL`, the `docker` group, or the owner `acb`, this is open.
+- **Why.** The off-box bucket key (H-123) is in `/etc/acb/backup-offbox.env`,
+  root:root 0600. That stops the PASSIVE paths: the inherited env,
+  `/proc/<pid>/environ`, and env dumps in logs or crash reports. It does not
+  stop an ACTIVE attacker who has `acb` or the app, which runs as `acb`. The
+  S3 key is project-wide, so that attacker can read it and delete every
+  off-box night.
+- **The three paths from `acb` to root.**
+  1. `/etc/sudoers.d/acb` grants `acb ALL=(ALL) NOPASSWD:ALL`
+     (`deploy/hostinger/acb-pull.service` lines 34 to 36). `acb-gateway.service`
+     sets no `NoNewPrivileges`, so a shell from the gateway can use sudo.
+  2. `acb` is in the `docker` group (`deploy/hostinger/bootstrap.sh` line 31).
+     It can mount `/etc/acb` into a container and read the file.
+  3. `acb` owns the checkout and `/opt/acb/app/.env`. The root unit runs
+     `backup_db.sh` and `backup_offbox.sh` from that checkout. So `acb` can
+     edit a script, or set `BASH_ENV` in `.env`, and root runs it.
+- **The real fixes. Each one is an owner decision.**
+  1. A credential that can write and cannot delete, with retention on the
+     server side. On Supabase, that is an S3 session token under an RLS
+     policy that allows insert only, and a scheduled function that runs the
+     retention. The other way is a second provider with Object Lock and
+     lifecycle rules.
+  2. Take `acb` out of the `docker` group, and narrow its sudo to a list of
+     commands. This needs a new design for the deploy path, which uses both.
+  3. Run the root unit's scripts from a copy that root owns, not from the
+     checkout of `acb`.
+- **A cheap partial fix.** `NoNewPrivileges=true` on `acb-gateway.service`
+  stops path 1 for the Copilot CLI (H-270) only. It does nothing for paths 2
+  and 3. Do not build it in the off-box PR.
+- **Authority:** `project-docs/specs/backup_and_restore.md` §4.2, the trade-offs ·
+  H-123 · H-270
+- **Added:** 2026-10-08 · off-box backup, security review of fix round 2
+
+### H-270 · The gateway's in-process Copilot CLI inherits every secret in `.env` · [AGENT] · security
+- **Check:** `grep -nE "\benv\b|environment" apps/services/orchestrator/orchestrator/copilot_agent.py`.
+  No `env` in the `CopilotClient` options means the CLI still gets the whole gateway
+  environment, and this is open. To confirm the fallback in the SDK, run
+  `grep -n "effective_env = os.environ" .venv/lib/python3.12/site-packages/copilot/client.py`.
+- **Why.** `copilot_agent.py` lines 220 to 226 build `client_options` with a token, a CLI
+  path and a log level. They pass no `env`. The SDK then sets
+  `effective_env = os.environ` (`copilot/client.py` line 1601). The CLI has a shell tool.
+  So a prompt that reaches that tool can read every secret that `acb-gateway.service`
+  loads from `/opt/acb/app/.env`. That includes the database URLs, the OAuth client
+  secrets and the provider API keys.
+- **The partial guard is OFF.** `copilot_sandbox_scope` moves some calls into a
+  container. It is empty by default (`settings.py` line 673), so every call runs in the
+  gateway process.
+- **Do.**
+  1. Give the client an env built from an allow list: `PATH`, `HOME`, the Copilot token
+     and the proxy names that the CLI needs. Give it nothing else.
+  2. Add a test that starts the client with a stub CLI. Make it fail when a secret from
+     `.env` reaches the child env.
+  3. Decide if `copilot_sandbox_scope` must be ON by default.
+- **Not in the off-box PR, on purpose.** This is its own change. H-123 moved the backup
+  key out of `.env` for this reason. WS-43 (D84) removes the Copilot SDK. Until that
+  ships, this stays open.
+- **Authority:** `apps/services/orchestrator/orchestrator/copilot_agent.py` ·
+  `copilot/client.py` in the SDK · H-123
+- **Added:** 2026-10-08 · off-box backup, security review of fix round 1
+
+### H-269 · Make the long-header test of the data engine pass on a busy CI runner · [AGENT]
+- **Check:** run `gh run list --workflow pr-check.yml --limit 50 --json databaseId,conclusion`,
+  then search the logs of the failed runs for
+  `test_a_long_header_keeps_each_answer_under_1_mb`. Each new failure with `error: memory` means
+  this is open. If the test still loads 400 header names of 5000 characters with no change to
+  the memory cap of the engine, this is open too.
+- **Why.** `tests/unit/test_data_engine.py::test_a_long_header_keeps_each_answer_under_1_mb`
+  failed in the run 37648131027 of PR #721. The engine hit its memory cap and answered
+  `error: memory`. A rerun passed with no change, so the cause is the load of the runner and not
+  the code. A flaky test teaches people to rerun until green, and then a real failure gets
+  rerun too.
+- **Do.**
+  1. Measure the peak memory of the test on a quiet machine. Compare it with the cap.
+  2. Make the test fit with a clear margin. Use a smaller header that still proves the cut, or
+     a cap for this test that a test fixture sets. Do not raise the cap for production.
+  3. Run the test 20 times under load, for example beside a full `pytest` run, and record that
+     no run failed.
+- **Also: port 3101 is one port for each worktree.** `workbench/control_plane/playwright.config.ts`
+  starts `next dev -p 3101`, with `reuseExistingServer: false`. So two worktrees that run the
+  local e2e suite at one time fight over that port, and one run fails or drives the other
+  server. Run one local e2e suite at a time. A fix lets an environment value choose the port.
+- **Authority:** `project-docs/specs/engineering_practice.md` (testing) · board WS-17
+- **Added:** 2026-10-08 · branch `email-s2-reading-pane` (WS-17 EM-S2 fix round 2). PR #722
+  added H-268.
+
+### H-267 · Stop an Outlook rule move from making a second copy of a nested folder · [AGENT]
+- **Check:** run `rg -n "mailFolders" apps/services/email_ingestion/email_ingestion/providers/outlook.py`.
+  If `_get_or_create_folder_id` still searches only `/me/mailFolders` with a
+  `displayName` filter, this is open.
+- **Why.** `OutlookProvider._get_or_create_folder_id` (`outlook.py:920-925`)
+  asks Graph for `/me/mailFolders` with `displayName eq '<name>'`. That call
+  lists the top-level folders only. So when a rule names "Receipts", and
+  "Receipts" sits under the Inbox, the lookup finds nothing, and the provider
+  makes a second "Receipts" at the top level. The rule then files mail there.
+  The defect is older than EM-S10. EM-S10 made it easier to reach, because a
+  rule copy now names folders that the target may hold at any depth.
+- **Do.**
+  1. Make the lookup find a folder at any depth. `list_folders` already walks
+     the child folders (`_descend`), so reuse that walk, or the same Graph
+     calls. Do not add a second folder walk beside it.
+  2. Decide which folder wins when two folders at two depths have one name.
+     Record the rule in `email_app_master_plan.md` §14.6.10.
+  3. Add a test with a fake Graph that holds "Inbox/Receipts". A move to
+     "Receipts" must reach that folder and make no new folder.
+- **Authority:** `email_app_master_plan.md` §14.6.10 "As built" · D-EM-60
+- **Added:** 2026-10-07 · branch `email-s10-rules-estimate` (WS-17 EM-S10
+  fix round 1). PR #719 added H-266.
+
+### H-268 · Measure the email narrowing saving on a real run · [OWNER]
+- **Check:** run `rg -n "compare run" project-docs/specs/data_narrowing_pipeline.md`.
+  No line with a measured recall and a date under §9 N2 means this is open.
+- **Why.** WS-48 N2 done-when item 6 wants the before and after numbers from a
+  real Router. The PR has only the scripted run. Its verdicts, tokens and
+  credits are stub numbers. Production already serves `tier-decide`:
+  `DECIDE_ENABLED=true`, and the Console answered 341 `POST /v1/decide`
+  requests with 200 in the 24 hours to 2026-10-07 (email rule matching).
+- **Do.**
+  1. The owner approves the run, because it spends credits and turns on a
+     flag. Then set `NARROWING_AGENTS=email-assistant` on the box, and
+     optionally `SYSTEM_ONE_ON_DECIDE`.
+  2. Ask the email assistant one broad question over many emails. Then ask
+     the same question with the flag off.
+  3. Join each run's `request_id` values to `usage_event`. Compare the
+     requests, tokens and credits per tier.
+  4. Write the recall, the credits, the date and the SHA under §9 N2, with the
+     words "compare run". Turn the flag off again if the saving does not hold.
+- **Authority:** `data_narrowing_pipeline.md` §7.2, §9 N2 and §11 · D93
+- **Added:** 2026-10-07 · branch `ws48-n2-email` (WS-48 N2). Renumbered from
+  H-267 at merge, because main took H-267.
+
+### H-266 · Redis has no maxmemory policy, and the email HTML and attachment caches are bounded only by TTL · [AGENT]
+- **Check:** run `grep -rn "maxmemory" infra/ deploy/`. No `maxmemory` with a
+  `maxmemory-policy` for the Redis of the gateway means this is open.
+- **Why.** The HTML route of EM-S1 caches up to 2 MB of HTML for each message for 1 hour. The
+  file cache of `transport/attachments.py` caches up to 15 MB for each file. The TTL is their only
+  bound, so a burst of opens can fill the memory of the box.
+- **Do.** Set `maxmemory` and `maxmemory-policy volatile-lru` (or `allkeys-lru`) for the Redis of
+  the gateway. First check that no key without a TTL is state that must stay, such as a stream
+  or a consumer group. Measure the memory of Redis on the box before you choose the number.
+- **Authority:** `email_app_master_plan.md` §14.4.2 · EM-S1 fix round 1
+- **Added:** 2026-10-07 · branch `email-s1-html-route` (WS-17 EM-S1)
+
+### H-265 · Measure the agreement of the two System-1 engines before `SYSTEM_ONE_ON_DECIDE` goes on · [AGENT]
+- **Check:** run `rg -n "engine agreement" project-docs/specs/data_narrowing_pipeline.md`.
+  No line with a measured percent under §9 N3 means this is open.
+- **Why.** D75.7 says that a caller reports the agreement of the two engines
+  before the owner turns the decide engine on. WS-48 N3 built the engine
+  dark, and no box has a bound `tier-decide` with `DECIDE_ENABLED` on. So
+  the PR could not measure it.
+- **Do.**
+  1. On a dev box with `DECIDE_ENABLED` on and `tier-decide` bound, ask the
+     50 Projects questions of WS-45 S1 to both engines. Use the same context
+     for each engine.
+  2. Count the items where both engines give the same choice above the Auto
+     threshold of 0.70. Count each `unsure` too.
+  3. Write the percent, the count of `unsure` for each engine and the date
+     under §9 N3, with the words "engine agreement".
+- **Do not** turn on `SYSTEM_ONE_ON_DECIDE` on production. That is
+  OWNER-GATE (spec §11), and a dev-box measure does not open it.
+- **Authority:** `data_narrowing_pipeline.md` §9 N3 "Measured, not in CI" ·
+  D75.7 · D93
+- **Added:** 2026-10-07 · branch `ws48-n3-decide-tier` (WS-48 N3). It was
+  H-264, and it moved to H-265 because N1 (#711) merged first with H-264.
+
+### H-264 · Let a decide request say that the narrowing pipeline sent it · [AGENT]
+
+- **Check:** run
+  `grep -n "X-CC-Source" packages/acb_auth/acb_auth/console_resolve.py`.
+  No match in `_attribution_headers` means this is open.
+- **Why.** `data_narrowing_pipeline.md` §7.1 wants each PICK request to
+  carry `X-CC-Source: narrowing`, so that the operator can count the rows of
+  the pipeline apart from the email features. `acb_llm.decide` sends only the
+  member, the agent, the app and the run. The decide door reads no source
+  header. WS-48 N1 could not meet the line, and it amended §7.1 to say so.
+- **Do.** Add an optional `source` to `acb_llm.decide` and to
+  `console_resolve.decide_on_console`. Send it as `X-CC-Source`, and make the
+  door record it on the `usage_event` row. Prove the row with an R8 test.
+  Then pass `source="narrowing"` from `acb_skills/narrowing.py`.
+- Added: 2026-10-07, WS-48 N1.
+
+### H-263 · Start `acb-pull.timer` again on the box, and prove that #702 serves · [AGENT]
+- **Check:** run `ssh metorite 'systemctl is-active acb-pull.timer'`. Any
+  output other than `active` means this is open. Then run
+  `curl -fsS https://api.metorite.com/version` and read `sha` and
+  `applied_sha`. For each, run `git merge-base --is-ancestor 82d09830b <sha>`.
+  A non-zero exit means #702 does not serve, and this is open. Last, run
+  `ssh metorite 'docker image inspect pgvector/pgvector:pg17 >/dev/null && echo present'`.
+  No `present` means the image is not on the box, and this is open.
+- **Why.** The response to the incident of 2026-10-07 stopped
+  `acb-pull.timer`, so that no deploy reached a slow cluster. #702
+  (`82d09830b`) merged in that window. So the box can still serve an older
+  build, and no pull brings it forward.
+- **Do.** Run the Check first, because the coordinator can have done this
+  already. If the timer is not active, run
+  `sudo systemctl enable --now acb-pull.timer`. Wait one pull cycle of five
+  minutes, and read `/version` again. Name the served SHA in the same message
+  (CLAUDE.md §3a rule 2).
+- **Pull the verify image before the next nightly run.** After
+  `ops-backup-io` merges, the nightly verify needs `pgvector/pgvector:pg17`.
+  The box holds only `pg16` today, and the pull is about 600 MB. So run
+  `sudo docker pull pgvector/pgvector:pg17` on the box before 02:30 UTC.
+  If the image is absent, the first run pulls it during the backup window.
+  A failed pull fails the verify only. The dumps still complete.
+- **Authority:** CLAUDE.md §3a, gate `deploy` (granted until 2026-11-30) ·
+  the incident note in `scripts/backup_db.sh`, "Scratch databases"
+- **Added:** 2026-10-07 · branch `ops-backup-io` (the backup I/O fix)
+
+### H-262 · Decide if the Supabase compute size is large enough · [OWNER]
+- **Check:** `rg -n "H-262" project-docs/work_plan.md project-docs/specs/backup_and_restore.md`
+  → no hit means the owner has not recorded a decision, and this is open.
+- **Why.** At about 02:55 UTC on 2026-10-07, the production Supabase
+  project used up its disk I/O budget. Checkpoint write time went from a
+  normal 270 seconds to between 905 and 1015 seconds. Sync time went from
+  0.04 to 9 seconds. Statements timed out across the instance. The gateway
+  pool timed out too. At 04:20 the project was still slow.
+- **What made the load.** The nightly verify restored a full copy into the
+  cluster from 02:32 to 02:36 UTC. Also, seven deploys that day each took a
+  full `pg_dump` with no migration pending. Branch `ops-backup-io` removes
+  both loads.
+- **The decision.** With both loads gone, decide if the current compute size
+  gives enough headroom. A larger size costs money each month, so only the
+  owner decides (CLAUDE.md §3a rule 3). Read the checkpoint numbers above,
+  and the I/O graph of the project for the week after the fix.
+- **Authority:** CLAUDE.md §3a rule 3 · `deploy/hostinger/acb-backup.service`
+- **Added:** 2026-10-07 · branch `ops-backup-io` (the backup I/O fix)
+
+### H-261 · Stop the email sync from holding a transaction open while it waits on the provider (EM-T4a-4) · [AGENT]
+- **Check:** `rg -n "EM-T4a-4( PR-[A-Z0-9]+)? MERGED" project-docs/specs/email_app_master_plan.md`
+  → no hit means this is open. The pattern also matches a part, for example
+  `EM-T4a-4 PR-A MERGED`. If the slice ships in parts, the section
+  "EM-T4a-4 — the request jobs" lists them. Then this stays open until each
+  listed part has a hit. On the box, this query shows the symptom:
+  `SELECT pid, now() - state_change AS age, query FROM pg_stat_activity WHERE state = 'idle in transaction' AND wait_event = 'ClientRead' ORDER BY age DESC;`
+  A row older than a few seconds is a session that holds a transaction
+  across I/O.
+- **Why.** During the incident of 2026-10-07, the cluster showed sessions
+  `idle in transaction` with the wait event `ClientRead`. The email sync
+  keeps a database session open while it waits on Gmail or Graph. Each such
+  session holds a pool connection and its locks. On a slow cluster, a slow
+  provider call then becomes a gateway pool timeout.
+- **Do.** Build EM-T4a-4 as §10.4.6 of the email master plan defines it.
+  EM-T4a-2 PR-B3 and EM-T4a-3 come first. Then run the query above on the
+  box again, and record the result.
+- **Authority:** `project-docs/specs/email_app_master_plan.md` §10.4.6, EM-T4a-4
+- **Added:** 2026-10-07 · branch `ops-backup-io` (the incident record)
+
+### H-260 · Bind the gateway to 127.0.0.1, so the box cannot reach it on a public address · [AGENT]
+- **Check:** `rg -n "\-\-host 0.0.0.0" deploy/hostinger/acb-gateway.service`
+  → a hit means this is open.
+- **Why.** `acb-gateway` binds uvicorn to `0.0.0.0:8080`
+  (`deploy/hostinger/acb-gateway.service:13`). Caddy already proxies to
+  `127.0.0.1:8080`. A request from the box to its own public address goes
+  over `lo`, and ufw accepts everything on `lo`. So the request gets to
+  uvicorn past ufw, and past the `/internal/*` 404 of Caddy. EM-T13b-2
+  review round 1 found this through a webhook URL. The outbound guard now
+  refuses an address of the box. This entry closes the gap again, at the
+  network layer.
+- **Do.** In a slice of its own, change `--host 0.0.0.0` to
+  `--host 127.0.0.1`. First find each client that calls port 8080 on an
+  address that is not loopback, on the box and in `deploy/`. A Docker
+  container gets to the host through a bridge address, so check those too.
+  A write under `deploy/` needs the `deploy-write` grant.
+- **Authority:** `project-docs/specs/email_app_master_plan.md` §10.4.15, the
+  EM-T13b-2 review round 1 record.
+- **Added:** 2026-10-07 · WS-17 EM-T13b-2 review round 1 (branch
+  `email-t13b-2`)
+
+### H-259 · Make a failed nightly backup reach a person · [AGENT]
+- **Check:** `rg -n "acb-backup" .github/workflows/vps-health.yml`
+  → no hit means this is open.
+- **Why.** `backup_db.sh` now exits 1 when a scratch database will not drop.
+  That is the signal for the 2026-10-06 incident. But `acb-backup.service`
+  has no `OnFailure=`, and `vps-health.yml` reads `is-failed` for
+  `acb-smoke-chat` only. So nobody sees a backup that failed.
+- **Do.** Read `systemctl is-failed acb-backup.service` in `vps-health.yml`,
+  the same way as for `acb-smoke-chat`. First read the last runs on the box.
+  If the unit is red today for another reason (H-98), name it, or the new
+  check is red on its first run.
+- **Authority:** `scripts/backup_db.sh`, the "Scratch databases" block.
+  Review round 1 of the verify-drop fix found this gap.
+- **Added:** 2026-10-06 · the backup verify-drop fix (branch
+  `backup-verify-drop`)
+
+### H-257 · Keep a node with a hidden parent out of the top level of the tree drag · [AGENT]
+- **Check:** `rg -n "parentId === null\) return \[\.\.\.roots\]" workbench/control_plane/src/app/projects/lib/treeDrop.ts`
+  → a hit means this is open.
+- **Why.** `get_tree` shows a node whose parent the member cannot see as a
+  root. `siblingsOf(roots, null)` counts that node as a top-level sibling.
+  When the top level has no order yet, the drag spreads the positions and
+  sends `parent_project_id: null` for that node. The move route then makes it
+  a space, with its own lanes. The chat had the same defect, and WS-46 P7
+  review round 1 fixed it in `guarded.py` `_plan_place`.
+- **Do.** Keep only the roots with no `parent_project_id` in `siblingsOf`.
+  Fence it in `treeDrop.test.ts` with a hidden-parent root.
+- **Authority:** `specs/projects_agent_parity.md` §15, the P7 record
+- **Added:** 2026-10-06 · WS-46 P7 review round 1
+
+### H-256 · Give `user_settings` a key for each organization of a member · [AGENT]
+- **Check:** `rg -n "user_id TEXT PRIMARY KEY" infra/postgres/51_gtd_settings.sql`,
+  then find a later migration that keys the table on
+  `(organization_id, user_id)`. No such migration means this is open.
+- **Why.** The table holds one row for each address, because `user_id` is
+  its whole primary key. The tenancy phases in `generated/` add
+  `organization_id` and FORCE RLS, and the key stays the same. So a member of two
+  organizations can save settings in one of them only. The insert in the
+  other one fails on the key. Since WS-46 P7 the Projects chat reads the
+  member's zone from this table (`GET /projects/my/today`).
+- **Do.** Measure the rows first. Then change the key in expand and contract
+  steps (R6): add a unique index on `(organization_id, user_id)`, move each
+  reader and writer to it, and drop the old key in a later release. Fence it
+  with an R8 test of one address in two organizations.
+- **Authority:** `specs/projects_agent_parity.md` §15, the P7 record · R5 · R6
+- **Added:** 2026-10-06 · WS-46 P7
+
+### H-255 · Check the pop-out and the discard of a reply by eye (EM-G3c-3) · [OWNER]
+- **Check:** `rg -n "EM-G3c-3 visual check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result. An agent then writes that
+  line, with the date, under §12.3.3c. Then it deletes this entry.
+- **Why.** EM-G3c-3 changed how the three composers save, pop out and discard
+  a draft. Fakes and source fences test it. Nobody looked at it with a signed-in
+  mailbox, and an agent must not use a real mailbox.
+- **Do.** In Metorite, with a connected Outlook mailbox:
+  1. Open a mail and click Reply. Type a line, click Pop out, and check that the
+     full composer holds the line. Close it, and check that Drafts holds one
+     copy of the reply.
+  2. Click Reply on a mail again. If you have two mailboxes, change the From,
+     type a line and click Discard. Check that Drafts of both mailboxes holds no
+     copy of that reply.
+  3. Do not send either draft.
+- **Authority:** `specs/email_app_master_plan.md` §12.3.3c
+- **Added:** 2026-10-06 · the EM-G3c-3 session
+
+### H-254 · Count a task's subtasks with one gateway read, as the cascade counts them · [AGENT]
+- **Check:** `rg -n "_subtask_counts" apps/skills/skill-projects/skill_projects/writes.py`
+  and read the function. A loop over `/projects/tasks/{tid}/relations` means
+  this is open.
+- **Why.** Before a complete, an archive or an edit of a parent, the Projects
+  chat counts the subtasks for its card and its question (WS-46 P6). It walks
+  `/relations` one task at a time, up to 100 reads. `edit_task` walks it
+  twice, once before the form and once in `update_task`. `/relations` lists
+  only the visible children that are not archived. So the walk misses a
+  visible task under an archived or hidden child. The cascade
+  (`cascade.load_subtree`) reaches that task, so the card can count fewer
+  tasks than the act changes.
+- **Do.** Add one read route that counts with `cascade.load_subtree`: the
+  visible descendants that are not archived, and the open ones among them.
+  Map it in the manifest as class A. Point `_subtask_counts` at it, with one
+  read for each act. Fence it with a hidden child that has a visible child.
+- **Authority:** `specs/projects_agent_parity.md` §15, the P6 record ·
+  PR #677 review
+- **Added:** 2026-10-06 · WS-46 P6 review round 2
+
+### H-253 · One member can still hold both parse slots of the gateway (EM-T11) · [AGENT]
+- **Check:** `rg -n "EM-T11 slot gap closed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open.
+- **Why.** The text route of EM-T11 lets a member run one read at a time. The
+  hold ends with the request, but a parse slot ends with its worker thread. A
+  parse that runs past its deadline answers "took too long" and keeps its slot.
+  So one member can hold both slots of the process, for every org, while each
+  worker runs past 22 seconds. A sender can mail a file that does this.
+- **Do.** Keep the hold of `_ReadHold`
+  (`gateway/routes/email/transport/attachments.py`) until the worker of
+  `acb_skills.attachment_tools.parse_bounded` gives its slot back. Add a fence
+  with a stuck reader and a short deadline. Member A reads twice, and then
+  member B must still get a slot. Then write the line of the Check under §10.4.12.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.12, the re-verify of round 1
+- **Added:** 2026-10-06 · the EM-T11 session
+
+### H-252 · Ask a chat to summarise a PDF that came in a mail (EM-T11) · [OWNER]
+- **Check:** `rg -n "EM-T11 live check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result. An agent then writes that
+  line, with the date, under §10.4.12. Then it deletes this entry.
+- **Why.** Before EM-T11, each chat answered that it could not read the files
+  of a mail. The email assistant now has a `read_email_attachment` tool. Fakes
+  test it. Nobody has checked it with a real model and a real mailbox, and an
+  agent must not use a real mailbox.
+- **Do.** In Metorite, with a connected mailbox:
+  1. Find a mail with a PDF or a Word file. In the Email chat, ask for a
+     summary of that file. Check that the answer quotes the file.
+  2. In the Projects chat, ask the same question. It hands the question to the
+     email assistant. Check that the answer quotes the file.
+  3. Report each answer, or the error that each chat gives.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.12
+- **Added:** 2026-10-06 · the EM-T11 session
+
+### H-251 · Set up the Metorite WhatsApp bot number at Meta · [OWNER]
+- **Check:** on the box, `grep -c '^WHATSAPP_ASSISTANT_PHONE_NUMBER_ID=.' /opt/acb/app/.env`.
+  An output of 0 means this is open. Do not print the line, because the
+  file holds secrets.
+- **Why:** WS-47 lets a member chat with Metorite from their own WhatsApp.
+  Metorite needs ONE number of its own for that. Only the owner can create
+  the company's identity at Meta, add a payment method and put the token on
+  the box. Development does not wait for this, because WAC-1 to
+  WAC-5 run on Meta's free test number.
+- **What to do:** follow `specs/whatsapp_assistant_channel.md` §6 in order.
+  1. Buy a new prepaid SIM for the company, and keep it off every WhatsApp
+     app. Keep it recharged.
+  2. Create the Meta Business Portfolio and verify the business and the
+     `metorite.com` domain.
+  3. Create the Meta app, add WhatsApp, add the number, and set the display
+     name to "Metorite".
+  4. Create a System User with a permanent token.
+  5. Set the webhook to `https://api.metorite.com/whatsapp/webhook`, and
+     subscribe to `messages`.
+  6. Add a payment method, submit the templates of §5.8, and publish the app.
+  7. Put the four values of §5.1 in the box `.env`. Never paste them in chat.
+- **The same Meta app also serves the WhatsApp inbox (WS-20 §12).** For that, add the Embedded Signup configuration, the four webhook fields and the Tech Provider App Review of `specs/whatsapp_message_manager.md` §12.5. Do both in one pass.
+- **Authority:** `specs/whatsapp_assistant_channel.md` §6 · `specs/whatsapp_message_manager.md` §12.5 · board rows WS-47 and WS-20.
+- **Added:** 2026-10-06 · the WS-47 spec session.
+
+### H-250 · Bring the last database connections inside the pool budget · [AGENT]
+- **Check:** `rg -n "psycopg.connect\(" packages/acb_common/acb_common/org_settings.py packages/acb_llm/acb_llm/model_config.py packages/acb_llm/acb_llm/key_store.py`.
+  A hit means part 1 is open.
+- **Why:** Supabase's session pooler allows 15 clients for the whole
+  database. PR #662 (2026-10-06) sized both pools to fit: async 7 + 2 and
+  sync 2 + 1. The NS-11 review the same day found three more gaps.
+  1. **Bare connects outside both pools.** `org_settings` opens two per
+     full page load (appearance and branding). `model_config.load_blob` and
+     `KeyStore._execute` on a cache miss open more. During a migration, a
+     burst of page loads can still meet the cap. Route each one through the
+     sync pool, then make the fence in `test_db_engine_seam.py` refuse a bare
+     `psycopg.connect` in the gateway's import graph.
+  2. **Sync sessions on the event loop.** 14 `async def` routes take a sync
+     `get_session` or `tenant_session` with no `to_thread`, for example
+     `routes/chat.py:1152` and `orchestrator/_tool_injection.py:1738`. A wait
+     for the pool blocks the whole gateway. Move each one into
+     `asyncio.to_thread`.
+  3. **mem0's own pool.** `mem0`'s pgvector store opens a `psycopg_pool`
+     (up to 5) on the same `DATABASE_URL` when `MEM0_ENABLED` is on. Read the
+     box `.env` first. If it is on, count it in the budget.
+- **Authority:** `specs/navigation_shell.md` §7.3 and NS-11 ·
+  `acb_common/settings.py` (the budget comment).
+- **Added:** 2026-10-06 · the NS-11 session.
+
+### H-245 · Close the four P3 edges of skill privacy that the PR #635 review left · [AGENT]
+- **Check:** run these four checks. Each one stays open until its step closes.
+  1. `rg -n "SKILL_UNCLAIMED" packages/acb_skills/acb_skills/tenant_file_store.py`.
+     No hit means step 1 is open.
+  2. `rg -n "acb_memory" packages/acb_skills/acb_skills/agent_paths.py`.
+     No import of the store in `claim_skill` means step 2 is open.
+  3. `rg -n "skill_owner" packages/acb_skills/acb_skills/note_tools.py`.
+     No hit means step 3 is open.
+  4. `rg -n "_odd_name_form" apps/services/gateway/gateway/routes/workspace.py`.
+     Step 4 is open while no hit lies inside `get_workspace_tree`.
+- **What happens.** The review of PR #635 found no live leak, and these four
+  P3 edges.
+  1. **The covered file store hides only FOREIGN.** `TenantFileStore._foreign_skill`
+     refuses another member's folder, but a folder with files and no marker
+     stays readable to the covered model. A store error during the
+     best-effort rehydrate (`acb_memory.blob_store.rehydrate_workspace`) can
+     restore A's files without A's marker. Then a covered run of B reads them.
+  2. **The claim reads the disk only.** `claim_skill` refuses a folder that
+     holds files and no marker. After a disk loss, those files sit only in
+     the store, so B can claim the name. The gateway write rules restore a
+     lost marker first, but a folder whose marker row is gone too has no
+     such guard.
+  3. **The notes tools ignore skill ownership.** `recall_notes` has no
+     owner check, so it reads another member's skill files.
+     `save_note` refuses only FOREIGN (through `refused_write`). A covered
+     run does not hold either tool, so skill privacy holds only while
+     `MAF_CODING_SCOPE` covers the org.
+  4. **The tree and the case rule disagree.** `_odd_name_form` refuses an
+     `agent-data/Skills/` head in every dir, personal dirs too. The tree
+     does not apply it, so the tree lists a path that GET then refuses.
+- **Do.**
+  1. In `_foreign_skill`, hide an UNCLAIMED folder that holds files, the
+     same rule as `claim_skill`. Or log `rehydrate_failed` at warning level,
+     and refuse skill reads for that run.
+  2. Before the claim, look in the store for any row under `<top>/`, and
+     refuse the claim when one exists.
+  3. In `_notes_target`, refuse a path in a skill folder whose
+     `skill_owner` is not MINE, for both tools.
+  4. Make the tree apply `_odd_name_form`, so the tree and GET agree.
+  5. Add a test and a mutation for each step (R7).
+- **Authority:** `specs/maf_coding_engine.md` §16.3 (the skill rule and the
+  residual risk) · the review of PR #635
+- **Added:** 2026-10-05 · the approval review of PR #635 (four P3s).
+
+### H-244 · Decide whether an agent may set an env var through a SETUP token · [OWNER]
+- **Check:** `rg -n "<<<SETUP" apps/services/orchestrator/orchestrator/executor.py workbench/control_plane/src/app/api/agent/chat/route.ts`.
+  A hit means the model-output path to configure still exists, and the
+  decision is open.
+- **What happens today.** The orchestrator and the chat route post
+  `<<<SETUP:service:KEY=value>>>` from model output to
+  `POST /integrations/configure`. The security fix of 2026-10-05 and its
+  round 1 narrow that write (`acb_common/env_guard.py`, fence
+  `tests/unit/test_integrations_env_hardening.py`). Only a key that a
+  built-in guide declares reaches the env file now. So a prompt injection can
+  write only one of 13 integration keys, with a clean value. It can still
+  replace `GITHUB_TOKEN` (when BYOK is on) or a Zoho secret for every
+  organization.
+- **Do.** Decide one of three: keep the path, limit it to a key that is not
+  set yet, or remove it. Then an agent builds the decision.
+- **What changed for the box (round 1).** A key that a custom integration
+  declares now goes to the store of the organization only. No resolver read
+  such a key, but agent code that called `os.getenv` for it no longer finds a
+  value that the page set. The key store no longer loads an operator-only or
+  platform row at startup, so the env file of the box wins for those names.
+  Round 2 adds two more. `GMAIL_DEFAULT_USER` is operator-only, so the
+  operator sets the mailbox of the Gmail service account on the box. A
+  custom integration may not take a built-in service id, and the start
+  loads only rows of credential_type `integration`.
+- **Done on 2026-10-05.** The orchestrator ran read-only checks on the box,
+  after the fix. None found anything that an earlier write left.
+  1. A hidden line break in `/opt/acb/app/.env`. A count with `wc -l` does not
+     see `\r`, `\x0b`, `\x0c`, `\x1c` to `\x1e`, U+0085, U+2028 or U+2029.
+     This grep prints key names only, and it found no line (an empty result):
+     `LC_ALL=C grep -naP '[\x0b\x0c\x0d\x1c-\x1e]|\xc2\x85|\xe2\x80[\xa8\xa9]' /opt/acb/app/.env | cut -d= -f1`
+  2. Stored mail-app rows. This query returned no row:
+     `SELECT organization_id, provider, updated_at FROM provider_keys WHERE provider LIKE 'gmail-oauth:%' OR provider LIKE 'microsoft-oauth:%'`
+  3. The journal since 2026-09-28 holds no `integrations.configure`,
+     `integrations.key_put`, `integrations.key_deleted` or
+     `integrations.custom_created` event.
+     ⚠️ **The journal starts on 2026-09-28. Nothing before that date is
+     covered.**
+  4. No value in the env file holds a character that the fix now refuses.
+     No line is longer than 2 KB.
+  5. The backup and server key names are absent: no `BACKUP_*`, `KEEP_*`,
+     `UVICORN_*`, `WEB_CONCURRENCY`, `FORWARDED_ALLOW_IPS`, `SHELLOPTS`,
+     `BASHOPTS`, `V1_*` or `LIVE_ASR_URL`. `SKILLS_ROOT` is the only
+     `SKILLS_*` name. `MEET_PROFILE_DIR` and `MEET_VNC` are present, and the
+     operator set them.
+- **Board:** the R4 line is on row WS-2 (Secrets) in `work_plan.md` §2.
+  Row WS-29 owns the cross-tenant env write too, but its legacy text holds
+  141 semicolons, so a line there fails the STE gate on commit.
+- **Authority:** `work_plan.md` §6 gate (f) · `apps/services/gateway/AGENTS.md`
+  items 5 and 7
+- **Added:** 2026-10-05 · branch `integrations-env-hardening`. The box results
+  are from 2026-10-05.
+
+### H-243 · Answer WS-44's four open questions before a shell flag goes on · [OWNER]
+- **Check:** read `project-docs/specs/navigation_shell.md` §13.3. A row that
+  still shows only a default means that question is open.
+- **Why:** each question has a default, and an agent builds to it behind a
+  flag. The owner checks the default before the flag reaches customers.
+  1. **Q2.** Does `/` become My Day for every member? The default is yes.
+  2. **Q4.** Does the shell bar share one row with each app's bar? The
+     default is yes.
+  3. **Q5.** Fixed presets, or an editor for each organization? The default
+     is eight fixed presets.
+  4. **Q6.** Does Desk mode hide All apps? The default is yes.
+- **Authority:** `specs/navigation_shell.md` §13.3 · `work_plan.md` §6.0 C5 ·
+  board row WS-44.
+- **Added:** 2026-10-05 · the session that wrote `navigation_shell.md`.
+
+### H-228 · Give `get_errors` and `run_diagnostics` a containment check · [AGENT]
+- **Check:** `rg -n "resolve_in_workspace|relative_to" packages/acb_skills/acb_skills/error_tools.py`.
+  No hit means the tool still has no containment check, and this is open.
+- **What happens today.** `get_errors` takes a list of paths from the model,
+  joins each one onto the working dir and resolves it
+  (`error_tools.py:71`). It never checks that the result stays in the
+  working dir. So `"../../../etc/x.py"`, or a link, reaches a host file. It
+  compiles that file, and it can return the text of a syntax error.
+  `run_diagnostics` is the same tool by another name.
+- **Why it matters.** It predates WS-43d. A run that the sandbox covers does
+  not hold the two tools (`sandbox_tools.WITHHELD_HOST_TOOLS`). Every other
+  run of every agent does.
+- **Do.**
+  1. Route each path through `write_artifact.resolve_in_workspace`, and
+     drop a path that leaves the working dir.
+  2. Read each file with `acb_skills.safe_open`, so a link fails too.
+  3. Add a fence: an escape and a link give "No Python files to check".
+
+### H-237 · Close what H-227 left: the member purge, the shared `agent-data/`, and a live check · [AGENT]
+- **Check:** `rg -n "purge_thread_files" apps/services/gateway/gateway/routes/admin/members.py`.
+  No hit means step 1 is open. Steps 2 and 3 stay open until a decision
+  and a live check are on record.
+- **What happens.** H-227 (PR #616) keeps the uploads and the S8 documents
+  of a shared agent in the folders of their chat thread. Three items stay.
+  1. The member purge of the admin routes deletes the private chats of a
+     member (`routes/admin/members.py`, `private_chat_sessions`). It does
+     not call `workspace.purge_thread_files`, so their thread folders, and
+     the loose files that they began, stay on disk and in the store. A
+     client can choose a chat id, so a member who knows one of those ids
+     can make a new session with it and read those files.
+  2. `agent-data/` of a shared agent is one folder for the whole
+     organization. A fact that one member's run saves to
+     `agent-data/NOTES.md` reaches the run of each other member, and the
+     session routes serve `agent-data/` to every session. That is a
+     channel between members, older than H-227.
+  3. No live check is on record.
+- **Do.**
+  1. Make the member purge call `purge_thread_files` for each private chat
+     that it deletes. Add an R8 test and a mutation.
+  2. Get a decision on `agent-data/` of a shared agent: one folder for each
+     member, one for each thread, or one for the organization as today.
+     Then build it, with the skill folders of WS-43d in mind.
+  3. After the deploy of PR #616, open a Projects chat document and an
+     attachment from the session of another member of the same
+     organization. Each must answer 404.
+- **Authority:** `specs/projects_ai_chat.md` §22.9 (the residuals) ·
+  `specs/maf_coding_engine.md` §16.3 · D12
+- **Added:** 2026-10-04 · the H-227 PR. Fix round 1 of PR #616 closed its
+  first scope, `save_note` and `recall_notes`. These three items replaced it.
+
+### H-239 · Count the loose files with no history row, and decide on an admin view · [AGENT]
+- **Check:** count the loose files of the tenant dirs on production that
+  have no row in `agent_file_history`. A loose file lies in `inputs/` or
+  `outputs/`, in no thread folder. Read `agent_blob` for the store side, and
+  walk `state/*/o_*` for the disk side. Until a count and a decision are on
+  record, this is open.
+- **What happens.** Since H-227 (PR #616), a loose file opens only for the
+  session that began it. A file that a batch run wrote opens for every
+  member (`specs/projects_ai_chat.md` §22.9 rules 2 and 8). A loose file with no
+  history row opens for nobody. Before H-227 every member of the
+  organization could open it.
+- **Who loses what.** A document from before S15 had no row, so its link
+  answered 404 already. A file that a run wrote while the store was down,
+  or a file that a member copied onto the disk, now shows to nobody.
+- **Do.**
+  1. Count those files for each organization, on disk and in the store,
+     with no member data in the output.
+  2. With the count, the supervisor decides: no view, or an admin view that
+     lists them for the admins of their organization.
+  3. Record the count and the decision in `specs/projects_ai_chat.md` §22.9.
+- **Authority:** `specs/projects_ai_chat.md` §22.9 · D12 · the supervisor's
+  batch decision of 2026-10-04
+- **Added:** 2026-10-04 · fix round 1 of PR #616. The batch decision gave the
+  document of an assigned task's run a home (rule 8). So this id now holds
+  the count.
+
+### H-242 · Close the three edges of the H-227 new-chat purge · [AGENT]
+- **Check:** run these three searches.
+  1. `rg -n "room is None or not thread_id" apps/services/gateway/gateway/routes/agent.py`.
+     A hit means step 1 is open.
+  2. `rg -n "_last_write" apps/services/gateway/gateway/routes/workspace.py`.
+     A hit means step 2 is open.
+  3. `rg -n "pg_advisory_xact_lock" apps/services/gateway/gateway/routes/chat.py`.
+     No hit means step 3 is open, unless the run doors insert the row
+     before the run (the second form of Do 3).
+- **What happens.** Fix round 3 of PR #616 purges the id of a new chat
+  before its first row (`chat.prepare_new_session`). The reviewer found
+  three edges, each a P3.
+  1. **A null room skips the purge.** `agent._prepare_if_new_thread` reads a
+     room of `None` as "not new". `_resolve_room` gives `None` on an
+     exception, or when the caller has no email. So such a run purges
+     nothing before its mint makes the row.
+  2. **The next writer can own the deleted chat's text.** A chat began a
+     loose file, and another session wrote its newest bytes, for example
+     through the `save_note` append of main. The purge keeps that file
+     (`workspace._last_write`). The bytes on disk can still hold the deleted
+     chat's text, and the session that wrote them becomes the owner.
+  3. **The purge races the first row** (§22.9 residual 6). A run door purges
+     a new id, and then the best-effort mint makes the row within 2 s
+     (`_MINT_TIMEOUT_S`). When the mint times out, the run writes with no
+     row. A `POST /chat/sessions` in that window purges the run's first
+     files.
+- **Do.**
+  1. Read a room of `None` as "not new" only for the internal caller (the
+     rule of `_is_service_caller`). For any other caller, purge, or refuse
+     the run.
+  2. Decide one of two: the purge deletes such a file, or it keeps the file
+     with no owner. Then build it, and remove the `_last_write` branch.
+  3. Take `pg_advisory_xact_lock(hashtextextended(:id, 0))`. Then check
+     again that no row exists, purge, and insert the row, all in one
+     transaction. Or make each run door insert the row after the purge and
+     before the run, and answer 503 when the insert fails. That replaces
+     the best-effort mint for a new thread.
+  4. Add an R8 test and a mutation for each step.
+- **Authority:** `specs/projects_ai_chat.md` §22.9 (fix round 3, the
+  residuals) · D12
+- **Added:** 2026-10-05 · the round 3 review of PR #616 (approved with nits).
+
 ### H-218 · Take the GitHub token out of each clone's remote URL · [AGENT]
 - **Check:** `rg -n 'x-token:\{token\}@github.com' packages/acb_skills/acb_skills/loader.py`.
   A hit means this is open.
@@ -262,19 +1029,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/email_app_master_plan.md` §10 · `acb_llm/key_store.py`
 - **Added:** 2026-10-02 · the Outlook onboarding session
 
-### H-209 · The two migration-order tests of 223 skip in CI · [AGENT]
-- **Check:** in the log of a `pr-check.yml` unit-test job, find
-  `test_email_account_unique_per_tenant.py::TestTheProductionOrder` and
-  `TestTheFreshLadderOrder`. If they show SKIPPED, this is open.
-- **Why.** CI did not prove migration 223 in the production order or on a fresh
-  ladder (run 36974344368). They passed on a local real database, and the box
-  showed the right indexes after the deploy. A later migration of the same
-  shape would ship with no CI proof.
-- **Do.** Find the condition that skips the two classes in CI, and make CI meet
-  it. Do not weaken the tests.
-- **Authority:** `specs/email_app_master_plan.md` §10.4.5 (EM-T2a) · R8
-- **Added:** 2026-10-02 · the Outlook onboarding session
-
 ### H-207 · 🔴 Rotate the Microsoft app secret that reached a chat transcript · [OWNER]
 - **Check:** in Entra, open the app `3bfeff54-14fb-4cee-8b17-2c8d41cad6a8` →
   Certificates & secrets. If a secret whose value ends `…scaAH` still exists,
@@ -292,6 +1046,93 @@ line — never reclaim a number by deleting the other entry.
   5. Delete the old secret in Entra.
 - **Authority:** `specs/email_app_master_plan.md` §10.2 (D-EM-2, interim) · §10.5
 - **Added:** 2026-10-01 · the Outlook onboarding session
+
+### H-241 · Register the Metorite Google mail app, so Gmail can connect · [OWNER]
+- **Check:** `rg -n "Q-GM-6 \(answered" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner closes it. The owner confirms that the client on
+  the box is the mail app of §12.4. An agent then writes
+  `**Q-GM-6 (answered, <date>).**` under §12.5.
+- ⚠️ **Do not count the keys on the box.** The box holds a Google client since
+  2026-10-05, and nobody in the plan set it (Q-GM-6). So a key count of 1 does
+  not show that the owner registered the app. The old Check counted
+  `GMAIL_OAUTH_CLIENT_ID=` lines. The orchestrator found that key by name on
+  2026-10-05 (§12.1), so a `/handoff` run can delete this entry too early.
+  The EM-G9 session wrote this Check on 2026-10-05.
+- **Why.** On 2026-10-04 the owner amended D-EM-5: Gmail and Google Workspace
+  mailboxes join Outlook. The code needs ONE Google OAuth app that Metorite
+  owns. An agent cannot create it, because it needs a Google account of
+  Metorite (`work_plan.md` §6.0 B).
+- **Do.**
+  1. Do steps 1 to 8 of `specs/email_app_master_plan.md` §12.4, in Testing mode.
+  2. Give the client ID and the secret to an agent through a one-time channel.
+     Do not paste the secret into a chat.
+  3. The agent writes the two keys on the box under gate `env-write`.
+  4. Answer Q-GM-1 to Q-GM-6 (§12.5).
+- **Then.** The owner's test (EM-G10) runs after EM-G5a, EM-G9 and EM-G7b
+  merge (D-EM-36, amended 2026-10-05). EM-G5b, EM-G3b and EM-G3c come before
+  customers, with Google verification and CASA (§12.4 steps 10 to 15).
+- **Authority:** `specs/email_app_master_plan.md` §12.4 · D-EM-5 (amended) ·
+  D-EM-31
+- **Added:** 2026-10-04 · the EM-G0 spec session
+
+### H-249 · The tenant session commits an aborted transaction with no error · [AGENT]
+- **Check:** `rg -n "aborted" packages/acb_common/acb_common/db.py` → no hit
+  in `tenant_session` means this entry is still open.
+- **Why.** A statement can fail inside a `tenant_session` block, and a reader
+  can catch the error with no `_savepoint`. Then Postgres aborts the
+  transaction, and each later statement of the block fails too. The block
+  exits normally, and `session.commit()` (`acb_common/db.py` ~:301-302) gives
+  no error. So each write after the swallowed error is lost, with no log line.
+- **Proof.** The review of EM-T4a-2 PR-B1 (2026-10-06) measured it on real
+  Postgres: an R8 case and an asyncpg probe both showed a silent commit. PR-B1
+  closed the two rule jobs with a `SELECT 1` at the end of each read block.
+  Each other block that swallows a failed statement has the same fault.
+- **Do.** Audit the fix in the seam before you build it. The first choice is to
+  raise in `tenant_session` when the transaction is aborted at its exit. That
+  changes the control flow of each caller that degrades on purpose, so list
+  those callers first. The other choice is a `_savepoint` in each reader that
+  swallows an error. Name the fence (R7) and run R8 on a private database.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.6 (PR-B1 review round 1)
+- **Added:** 2026-10-06 · the EM-T4a-2 PR-B1 session
+
+### H-248 · Check that a reopened Outlook draft keeps its recipients (EM-T10) · [OWNER]
+- **Check:** `rg -n "EM-T10 live check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result. An agent then writes that
+  line, with the date, under §10.4.11. Then it deletes this entry.
+- **Why.** EM-T10 fixed a LIVE defect. A reply that the member narrowed to the
+  sender went to everyone again after a reopen, and a Bcc was lost. Outlook also
+  dropped the To of a reply on its first save. Fakes test the fix. Nobody has
+  checked it on a real mailbox yet, and an agent must not use a real mailbox.
+- **Do.** In Metorite, with a connected Outlook mailbox:
+  1. Open a mail that went to several people. Click Reply, type a line, and wait
+     two seconds. Close the reply, open the draft again, and check that To holds
+     only the sender.
+  2. Make a second reply with Reply All. Wait five minutes for one sync. Open
+     the draft again, and check that To still holds everyone.
+  3. Do not send either draft. Discard both.
+- **Authority:** `specs/email_app_master_plan.md` §10.4.11
+- **Added:** 2026-10-05 · the EM-T10 session
+
+### H-247 · Send three test mails from Outlook, to prove the fix of a lost file (EM-T9) · [OWNER]
+- **Check:** `rg -n "EM-T9 live check passed" project-docs/specs/email_app_master_plan.md`
+  → no hit means open. The owner reports the result of the three mails. An agent
+  then writes that line, with the date, under §10.4.10. Then it deletes this entry.
+- **Why.** EM-T9 (#643, live since 2026-10-05) fixed a LIVE defect. Before it, the
+  code lost a file of 3 MB or more on an Outlook draft, with no error. So a
+  mail went out without its file. Fakes test the fix, and nobody has sent a real
+  mail through it yet. An agent must not send real mail (CLAUDE.md §3a rule 3).
+- **Do.** From a connected Outlook mailbox in Metorite, send three mails to your
+  own address.
+  1. Attach a file of about 5 MB to the first mail.
+  2. Attach a file of about 1 MB to the second mail.
+  3. Attach no file to the third mail.
+
+  Each mail must arrive, with its file. Tell an agent the result.
+- **If a mail fails.** The composer shows "The file <name> could not be
+  attached. The mail was not sent." An agent then reads the gateway journal for
+  `outlook.attachment_failed` (it names the stage and the reason, never a URL).
+- **Authority:** `specs/email_app_master_plan.md` §10.4.10 (N9)
+- **Added:** 2026-10-05 · the EM-T9 session
 
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
@@ -348,16 +1189,6 @@ line — never reclaim a number by deleting the other entry.
   estimate, and a naive reader stores that as `cost_source = 'vendor'`. Tell
   the two apart before trusting the figure. Found by the PR #500 review.
 - **Added:** 2026-09-28 · the dependency upgrade
-
-### H-189 · The out-of-workspace write veto never fires for a real write · [AGENT]
-- **Check:** in `apps/services/orchestrator/orchestrator/permission_policy.py`,
-  find the key that `decide` reads for a write's target. `path` alone means
-  this is open.
-- **Found 2026-09-26, by the SDK upgrade (H-181).** `decide` reads `path`, and
-  an SDK write request carries `file_name`. The 0.1.32 SDK did the same. So a
-  Copilot agent can write outside its workspace, and the veto never runs.
-- ⚠️ **The fix changes what production denies.** Build it as its own slice,
-  with a test that sends the SDK's real write request shape.
 
 ### H-181 · Prove the upgraded Copilot path on the live Router · [AGENT]
 - **Check:** run one `task-manager` chat on the box. Then read its
@@ -618,7 +1449,8 @@ line — never reclaim a number by deleting the other entry.
 - **Done, by owner report on 2026-10-02 (not measured):** the AI/ML API account, the key, and `tier-decide` bound to `aimlapi/typesafe/jev`. D-EM-9 answers residency for email triage.
 - **Done, by owner report on 2026-10-02 (decision (a), `email_app_master_plan.md` §10.2):** `DECIDE_ENABLED=true` is ON in production since 12:16 UTC. One smoke `decide` call from the box reached Jev, with a probability of 0.99 in 1.5 s. So step 3 below is done.
 - **Done, by orchestrator report on 2026-10-02:** `DECIDE_FEATURE_MODES=email.rule_match=on` and `DECIDE_FEATURE_ORGS=*` are on the box since 16:31 UTC. The first live `decide.decided` line came at 16:50:47 UTC.
-- **Next, after EM-T5b-2 in full merges:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
+- **First, PR-B3 of EM-T4a-2 must merge.** Until then the status ask of `on` runs inside a block (`email_app_master_plan.md` §10.4.6).
+- **Next, after EM-T5b-2 in full merges and after PR-B3:** the orchestrator sets `DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on` and restarts the gateway. Then it reports one `decide.decided` line for each feature, each with a `request_id`. The names are the names in `decide_features.FEATURES`. A misspelt name logs `decide.mode_refused` and stays `off`.
 - **Do this, in order:**
   1. Give the deployment key of the box the `serve` capability. It is a hand edit (§8 gate 7), as H-152 says.
   2. Set `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY=true`. Leave `ROUTER_SERVING_ENABLED` unset, so chat stays on its current path.
@@ -1501,19 +2333,6 @@ line — never reclaim a number by deleting the other entry.
   one instance of a pattern, not one bug. Nothing in the tree tests layout.
 - **Authority:** `app/projects/page.tsx` · `DESIGN_SYSTEM.md` §8 · H-8
 - **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
-
-### H-119 · ✅ DISSOLVED — a stop closes nothing, so there is no lane · [RESOLVED]
-- **Answered 2026-09-19, and the question turned out to be wrong.** The owner:
-  *"Stopping a project does not change its status, so the status of those
-  individual tasks remains the same as before. Only the project gets stopped."*
-- So there is no bulk close and no lane to choose. **D-PM-26's offer to close
-  open tasks on Stop is WITHDRAWN**, and the derive-never-write half of that
-  decision stands unchanged. Nothing was built against the withdrawn half.
-- **What replaced it: D-PM-32(b).** A stopped project's tasks leave the
-  reports. Paused and queued work stays, because hiding a stalled project from
-  the one surface that would reveal the stall is how its work goes missing.
-- **Delete this entry** once somebody has read it. Kept for one cycle because
-  H-8 and the WS-27 board row both pointed here.
 
 ### H-8 · Still owed on WS-27bg slice 2, and WS-27bg slice 3 / WS-27bh unbuilt · [AGENT]
 - **Check:** the WS-27 row in `work_plan.md` §2 — it names what is built. Read
@@ -2901,33 +3720,6 @@ line — never reclaim a number by deleting the other entry.
   unapplied and mark the two tests expected-fail with that reason. Today they
   are neither, which is the worst of the three.
 
-### H-117 · An outage tells a member they belong to no organization · [AGENT]
-- **Check:** `rg -n "no_organization" apps/services/gateway/gateway/main.py` →
-  the 403 arm answers on the presence of a user header alone.
-- **Why:** `_tenant_unbound` (shipped 2026-09-18, #293) answers **403
-  `no_organization`** whenever a request carries `X-User-Email` and no tenant
-  is bound. That is right for the ordinary case and WRONG during an outage:
-  `resolve_identity` also returns `(None, None)` when the database refuses the
-  read, so a member of long standing is told, in so many words, that they are
-  not a member of any organization.
-- **It is not hypothetical.** `EMAXCONNSESSION — max clients reached in session
-  mode, pool_size: 15` fired twice at 13:06:08 UTC on 2026-09-18, and
-  `auth.identity_resolve_failed` fired with it. That log line exists precisely
-  to tell the two apart — it was added in the same pull request — but it only
-  helps the operator. The member still reads the accusation.
-- **What it needs.** The distinction already exists at the point of failure and
-  is thrown away before the handler sees it. Carry it: mark the request when
-  `resolve_identity` raised rather than found nothing, and answer **503** for
-  that arm. A person should be told "we could not reach your workspace", never
-  "you have none".
-- **Related:** the pool blip above is its own question — two events in one
-  second during a restart is not yet a pattern, and `pool_size: 15` is the
-  Supabase session-mode pooler's limit, not ours. Watch it before tuning it.
-- **Authority:** `gateway/main.py` `_tenant_unbound` ·
-  `acb_auth/access.py` `resolve_identity` · D-MT-1c
-- **Added:** 2026-09-18 · the risk was named in #293's own description, and the
-  first day in production produced it.
-
 ### H-114 · R8 suites still run psycopg. The gateway runs asyncpg · [AGENT]
 - **Check:** `uv run pytest tests/unit/test_projects_sql_asyncpg.py
   tests/unit/test_auth_sql_asyncpg.py -q` with `TENANT_LADDER_DATABASE_URL`
@@ -3105,42 +3897,6 @@ line — never reclaim a number by deleting the other entry.
   related: H-95, H-103, H-65
 - **Added:** 2026-09-18 · operator console workspace session
 
-### H-133 · The customer's page shows their BALANCE and never their USAGE · [AGENT]
-- **Check:** open `workbench/operator_console/src/app/customers/[slug]/page.tsx`
-  and read `loadOrg`. Five reads, none of them a usage read, means this is open.
-- 🔴 **It is the page where the question gets asked.** A customer writes in
-  saying their credits went faster than they expected. The operator opens that
-  customer and sees the balance, the lots and the ledger. The ledger says
-  `usage -1.29` eight hundred times. It cannot say which tier, which app or
-  which person, so the operator cannot answer.
-- ⚠️ **The read already exists and nothing calls it.** `GET
-  /admin/usage/daily?org_slug=<slug>` serves a per-organization series, and
-  `usageDaily(days, orgSlug)` in `lib/console.ts` already takes the slug. The
-  fleet board at `/usage` computes calls, credits, cost, margin, runway and
-  the silent flag per organization, and the per-customer page reads none of it.
-- **The slice.** One panel under Credit lots: the 30-day series, the same row
-  the fleet board draws for this organization, and a link to `/usage`. Judge
-  it with the functions in `lib/usage.ts` — a second verdict on one row is the
-  defect `golive.ts` and `fallback.ts` already record.
-- **Authority:** `specs/ai_metering_and_analytics.md` §5 · `customer_console.md` §6B
-- **Added:** 2026-09-20 · credit and usage review session
-
-### H-134 · D66 is BUILT and unwired — a customer sees a total and no breakdown · [AGENT]
-- **Check:** grep the workbench for `my/usage/activity` and `my/usage/members`.
-  No consumer means this is open.
-- 🔴 **Two endpoints answer "what did we spend it ON" and nothing asks them.**
-  `GET /my/usage/activity` is D66 (a), spend by activity. `GET
-  /my/usage/members` is D66 (b), spend per person. Both are implemented,
-  tested and reachable. `settings/billing` reads only `/me/billing`, so the
-  customer sees a balance, a burn figure and a runway.
-- ⚠️ **A customer who cannot see the breakdown cannot manage the spend.** They
-  can only ask us, which makes every credit question a support conversation.
-- ⚠️ **`/my/usage/members` must NOT grow a cap column.** Its own docstring says
-  so: showing a cap beside a spend implies the cap is enforced, and
-  `member_ai_cap` is not enforced. H-73 owns that.
-- **Authority:** D66 · `customer_console.md` · `specs/launch_surface.md` §7
-- **Added:** 2026-09-20 · credit and usage review session
-
 ### H-137 · 🔴 The deploy reports SUCCESS while `vps_apply.sh` dies half way · [AGENT]
 - **Check:** open the newest green `deploy.yml` run, job *Deploy to Hostinger*,
   and search the log for `ssh exited non-zero`. A hit inside a run marked
@@ -3226,52 +3982,54 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-20 · credit and usage review session
 
 ### H-123 · Backups exist now, and live only on the box they protect · [OWNER]
-- **Check:** on the box, `sudo grep -c '^BACKUP_REMOTE=' /opt/acb/app/.env`.
-  A zero means every dump still lives on one disk, and this is open.
-- 🔴 **Filed because closing two entries orphaned their caveats.** H-98
-  and H-105 closed on 2026-09-19. The nightly timer runs, and the job covers
-  the Console database. A restore is verified. That day's deploy took a
-  pre-migration dump. Both entries carried this warning as a sub-point, so
-  deleting them deleted the only record of it.
-- 🔴 **CORRECTION, same day: the TIMER was never armed.** H-98 and
-  H-105 closed on the strength of `Result=success`, a verified restore and
-  14 dumps on disk. All three were true. The timer was
-  `UnitFileState=disabled` throughout, with an empty
-  `NextElapseUSecRealtime`, so no night was ever covered. Today's run was a
-  manual one. `systemctl enable --now acb-backup.timer` armed it at 12:17
-  UTC, and it now prints NEXT `Sun 2026-09-20 02:30:16 UTC`.
-- 🔴 **SECOND CORRECTION, 2026-09-20: the timer was DISABLED again.** The
-  arming above held for one day. `systemctl list-unit-files` reported
-  `acb-backup.timer disabled` this morning, and no NEXT date. The cause is
-  `scripts/vps_apply.sh` lines 917 to 919. On a `PG_MODE=local` box it runs
-  `systemctl disable --now acb-backup.timer` on every apply. Its own comment
-  says it disables rather than skips, so that a hand-enable does not survive
-  a deploy. That is exactly what happened to mine.
-- ✅ **The carve-out is GONE (2026-09-20), and H-132 closed with it.**
-  `vps_apply.sh` disabled the timer on every apply. The reason was written on
-  2026-08-17, when the unit loaded no `EnvironmentFile` and would dump an
-  empty container. The service gained `EnvironmentFile=/opt/acb/app/.env` on
-  2026-09-19, so the guard outlived the hole. The timer is now armed by the
-  deploy like every other one. Two fences replaced it:
-  `test_the_backup_service_must_load_its_credentials` and
-  `test_no_timer_is_carved_out_of_the_enable_loop`.
+- **Check:** `ssh metorite "sudo journalctl -u acb-backup --since -26h --no-pager | grep -c 'off-box copy ok'"`.
+  A zero means no night left the box in the last day, and this is open.
+- ✅ **The code is BUILT (2026-10-08, branch `ops-offbox-backup`).** The
+  owner chose a private Supabase Storage bucket, through its S3 endpoint.
+  Each night, `acb-backup.service` runs `backup_db.sh --offbox`. It encrypts
+  the dumps, the manifest, the file data and the meeting-bot volume to your
+  PUBLIC key. Then rclone sends them. No other caller uploads. The copy stays
+  OFF until you do the four steps below.
+- **The four owner steps.** Spec `backup_and_restore.md` §4.2 holds each
+  exact command. Do them after a deploy of the branch, so rclone is on the box.
+  - **(a)** Make the private bucket `metorite-backups` in project
+    `wbjpwtxigkileyjsgahk`. The coordinator may run the SQL in §4.2 for you.
+    Set the upload size limit in Storage → Settings to 1 GB or more. The app
+    dump is about 84 MB.
+  - **(b)** Make an S3 access key in the dashboard, at Storage → S3
+    Connection. Write down the endpoint and the region. Keep the key ID and
+    the secret in your password manager. ⚠️ The key is PROJECT-WIDE. It can
+    read and delete every object in every bucket of the project.
+  - **(c)** Make a gpg key pair on your own machine. Keep the private key and
+    its passphrase in your password manager. Put only the public key on the
+    box, at `/opt/acb/backup-public-key.asc`.
+  - **(d)** Put the seven `BACKUP_S3_*` and `BACKUP_GPG_*` keys in
+    `/etc/acb/backup-offbox.env`, owned by root:root with mode 0600. Only
+    `acb-backup.service` loads that file. Do NOT put them in
+    `/opt/acb/app/.env`. The gateway loads that file (H-270), and the run
+    refuses it. Then run `sudo systemctl start acb-backup.service` and the
+    Check above.
+  - **Use `scripts/secrets.sh`** for (c) and (d). It makes the key pair, checks the keys and writes both files. `push --all --verify` also runs one backup and checks the journal. `docs/secrets_drop.md` §2 lists the steps.
+- **To restore:** `scripts/restore_offbox.sh` lists, downloads, decrypts and
+  verifies one night. Spec §4.2 holds the steps.
+- ⚠️ **The trade-off.** The bucket is in the same Supabase account as the
+  database. It covers the loss of the VPS, the disk or the provider account,
+  which is this gap. It does NOT cover a compromise of the app.
+- ⚠️ **The root-owned key file stops the PASSIVE paths only.** These are the
+  inherited env, `/proc/<pid>/environ`, and env dumps in logs or crash
+  reports. `acb` has the same power as root on this box. So an ACTIVE
+  compromise of the app or of `acb` can still read the key and delete every
+  off-box night. H-271 holds the fixes, and they are owner decisions.
+- ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
+  Supabase MCP reports project health, not the backup configuration. Our
+  logical dumps stand on their own.
 - **The lesson, so it is not learned twice.** A manual `systemctl start`
   proves the SERVICE. It says nothing about the SCHEDULE. Read
   `systemctl list-timers <unit> --all` and require a NEXT date.
-  `Result=success` is also the default for a service that never ran.
-- **What is still true.** `backup_db.sh` says it on every run: a backup on
-  the same disk as the database survives a bad migration and a dropped
-  table. It does not survive the disk, the box, or the provider account.
-- ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
-  Supabase MCP reports project health, not backup configuration, so an
-  agent cannot produce the evidence. Our logical dumps stand on their own
-  and are not the provider's point-in-time recovery.
-- **Why OWNER.** Choosing where the copies go is a money and third-party
-  decision: another host, an object store, or the provider's own retention.
-  📌 Once a destination exists, setting `BACKUP_REMOTE` is the whole
-  change — the script already rsyncs to it and warns while it is unset.
-- **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
-- **Added:** 2026-09-19 · operator console session, after the backup repair
+- **Authority:** `scripts/backup_db.sh` · `scripts/backup_offbox.sh` ·
+  `scripts/restore_offbox.sh` · `project-docs/specs/backup_and_restore.md` §4.2
+- **Added:** 2026-09-19 · operator console session, after the backup repair.
+  Rewritten 2026-10-08, when the off-box copy was built.
 
 ### H-140 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
 - **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`
@@ -3787,6 +4545,9 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-10-03 · the EM-T4e review (branch `email-t4e`)
 
 ### H-215 · Keep tool results across turns on Tier 1, then move task-manager to MAF · [AGENT]
+- ⏸ **Parked by D86, 2026-10-03.** The owner parked the task-manager move
+  (WS-8i) and WS-43t2. Do not work this entry until the owner restarts them.
+  `specs/maf_coding_engine.md` §16.2 lists the parked slices.
 - **Check:** `grep -n -A 25 '"name": "task-manager"' apps/services/gateway/gateway/routes/agent.py | grep agent_runtime`
   → `github-copilot` means the entry is still open.
 - **Why:** PR #585 moved task-manager to native MAF, and the review found a
@@ -3885,6 +4646,211 @@ line — never reclaim a number by deleting the other entry.
   that thread to the gate.
 - **Authority:** `specs/agent_architecture.md` §11.3.1 · PR #585 review, round 1
 - **Added:** 2026-10-03 · the WS-8 task-manager and apis-config MAF move
+
+### H-223 · The sandbox quota flag lives on one handle, and two handles can share one dir · [AGENT]
+- **Check:** `grep -n "handle.over_quota = used" apps/services/orchestrator/orchestrator/sandbox_broker.py`
+  → a hit means the entry is still open.
+- **Why:** `measure_workspace` sets `over_quota` on the handle of the exec
+  that measured. Two threads of one organization on one shared agent mount
+  the same `o:<org>` dir in two containers (review P2-b of PR #591). So each
+  other handle on that dir runs one more exec past the quota before its own
+  measure sets its flag. Keep the flag per mount source, as the lock is.
+- **Authority:** `specs/maf_coding_engine.md` §7.1 rule 10 · PR #591 review, round 2
+- **Added:** 2026-10-03 · WS-43c, the sandbox broker
+
+### H-224 · A cancelled `docker run` can leave a Created sandbox container · [AGENT]
+- **Check:** `grep -n "_remove_container(handle.container_id, handle.start_id)" apps/services/orchestrator/orchestrator/sandbox_broker.py`
+  → a hit, and no retry of the start-label removal, means the entry is still open.
+- **Why:** a cancel during `docker run -d` kills the CLI. The broker then
+  removes that start by its id or its `metorite.start` label. If the daemon
+  records the create after that removal ran, the container stays in the
+  Created state. The next start of the same name removes it, and so does the
+  startup sweep. Until then it holds the name, and Docker counts it. Retry the
+  label removal once after a short wait, or let the reaper remove labelled
+  containers that are not in the registry.
+- **Authority:** `specs/maf_coding_engine.md` §7.1 rules 12 and 13 · PR #591 review, round 2
+- **Added:** 2026-10-03 · WS-43c, the sandbox broker
+
+### H-225 · Take the shell tools from personal agents too, once the sandbox covers them · [AGENT]
+- **Check:** `grep -n 'return instancing == "personal"' apps/services/orchestrator/orchestrator/_tool_injection.py`
+  → a hit means a personal agent still keeps its host shell tools.
+- **Why:** D85 blocks `code_task`, `run_script`, `install_dependency` and the
+  Copilot CLI shell for shared agents only, because the owner left personal
+  agents out of scope.
+  email-assistant and whatsapp-assistant still run code on the host. There,
+  `run_script` has the network and the credentials of the integrations.
+  When WS-43f makes `covers()` live, apply the same rule to a personal
+  agent: no shell tool without a cover. Ask the owner first, because the
+  change takes a tool from a live agent.
+- **The delegation path.** A shared agent can reach that code through
+  `call_agent`. For example, projects-assistant delegates to email-assistant,
+  and email-assistant then calls `code_task` or `run_script` on the host. The
+  sub-run works in the `u:` dir of the acting member (H-201 P2-c), so it
+  reads that member's own files only. It still runs on the shared server.
+- **Test plan for the delegation path.**
+  1. In `tests/unit/test_shared_agent_shell_tools.py`, add a probe through
+     `executor._run_sub_agent_streaming`. A shared parent context
+     (`host_shell_refused=True`) delegates to email-assistant with its real
+     config. Today the sub-agent holds `run_script` and `code_task`, so pin
+     that first as the "before".
+  2. Make the change in `_tool_injection._d85_leaves_alone`, then turn the
+     probe around: no shell tool for the personal sub-agent without a cover.
+  3. Add the same probe for whatsapp-assistant, and one for a personal
+     Copilot-shaped sub-agent, whose CLI shell the guard then refuses.
+  4. Mutation: restore the `personal` early return. All three probes turn red.
+- **Authority:** `work_plan.md` D85 · `specs/maf_coding_engine.md` §7.9
+- **Added:** 2026-10-03 · the D85 interim block
+
+### H-230 · Put the first-party check in front of `spawn_copilot_agent`'s mutation sandbox · [AGENT]
+- **Check:** `grep -n "_self_mutation_permitted\|_read_first_party" apps/services/orchestrator/orchestrator/agents.py`
+  → no hit means `spawn_copilot_agent` still starts the sandbox for any organization.
+- **What happens.** `spawn_copilot_agent` (`orchestrator/agents.py` ~162)
+  calls `mutation._run_mutation_sandbox` (~222) directly.
+  `attempt_self_mutation` applies the MT-0b first-party check first
+  (`mutation.py` ~390), and this path does not. So a tenant run that reaches
+  `spawn_copilot_agent` can start a mutation container.
+- **Do.** Call `mutation._self_mutation_permitted(org)` before any mutation
+  image is built, with the org from the run binding. Refuse with the same
+  reason text that MT-0b gives.
+- **Test plan.** A test in `tests/unit/test_mt0b_self_mutation_containment.py`
+  shows that a customer org's `spawn_copilot_agent` starts no sandbox. Prove
+  it with a mutation that removes the check.
+- **Authority:** root `AGENTS.md` non-negotiable 3 · `saas_multitenancy.md`
+  §6.2 (MT-0b) · PR #598 review, P2
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-231 · Confirm that `metorite` is registered in production, so its exempt name is taken · [AGENT]
+- **Check:** read-only, on the box: `SELECT name FROM dynamic_agents WHERE lower(name)='metorite';`
+  → no row means the name is free, and an `agents:manage` holder could register another agent under it.
+- **What happens.** `_D85_OWNER_PENDING` exempts the registry name
+  `metorite`, and the first-party-admin gate guards it. The dynamic registry
+  (`gateway/routes/agent.py` ~688) has no organization filter, and a name is
+  unique across it. So the exemption is safe only while the real root agent
+  holds that name.
+- **Do.** Run the Check. If no row exists, register the root agent under
+  `metorite`, or reserve the name in `register_agent` so that nobody else
+  can take it.
+- **Authority:** `specs/maf_coding_engine.md` §7.9 and §15.4 · PR #598 review
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-232 · Compare the member's organization with the run's in `_first_party_admin_runs` · [AGENT]
+- **Check:** `grep -n "member_org\|membership" apps/services/orchestrator/orchestrator/executor.py`
+  → no hit means the gate does not compare the two organizations.
+- **What happens.** `_first_party_admin_runs` (`executor.py` ~1391) checks
+  that the run's org is first-party, and that the member holds
+  `admin:members:manage`. It does not check that the member's own org is the
+  run's org. `resolve_access` returns no organization, and with
+  `IDENTITY_CUTOVER` off it reads `app_user` by email only.
+- **Do.** Resolve the member's membership in the run's org (the identity
+  seam, `acb_auth.access`), and refuse when the two disagree. It is defence in
+  depth: today the run's org comes from the member's own session.
+- **Test plan.** A member who is an admin of a customer org, on a run bound to
+  the first-party org, is refused. Prove it with a mutation.
+- **Authority:** `specs/maf_coding_engine.md` §15.4 · the PR #598 verifier
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-233 · Make the refused root agent look absent everywhere · [AGENT]
+- **Check:** `grep -n '"code": type(exc).__name__' apps/services/orchestrator/orchestrator/executor.py`
+  → a hit means a refused stream still says `AgentNotFound`, a code that no unknown agent gives.
+- **What happens.** §15.4 says "as if it did not exist". Two leaks remain:
+  1. A refused stream ends with `RUN_ERROR` code `AgentNotFound`. An agent
+     that truly fails to load gives `AgentLoadError`. So the code tells the
+     two apart.
+  2. `GET /agent` lists `metorite` to every member who may list agents. A
+     customer org's owner holds `*`, so that owner sees it.
+- **Do.** Emit `AgentLoadError` as the code for `AgentNotFound`. Filter the
+  agents in `executor._FIRST_PARTY_ADMIN_ONLY_AGENTS` out of every registry
+  list for a caller who is not a first-party admin. The 422 "Unknown agent …
+  Registered: …" text names them too.
+- **Authority:** `specs/maf_coding_engine.md` §15.4 · the PR #598 verifier
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-234 · Run a real Copilot CLI session, to see whether it writes outside its workspace · [AGENT]
+- **Check:** `grep -c "write_out_of_workspace" <the log of a real task-manager turn on the local stack>`
+  → no run on record means this is still unverified.
+- **What happens.** PR #598 made `decide()` read the SDK 1.0 write target
+  `file_name`. Production runs the enforcing mode, because its `.env` sets no
+  permission mode. So a CLI write outside the run's workspace is now refused.
+  The CLI may ask to write its own session-state files, for example under its
+  home dir. If it does, the refusal can break task-manager, which is live.
+- **Do.** On the local stack, leave the permission mode unset, so it reads as
+  enforcing, as on production. Run one real My Tasks turn through the Copilot
+  CLI, and read every `permission.decision` line. If the CLI asks for its own
+  state files, allow its state dir by name in `decide()`, and add a test.
+- **Authority:** `specs/maf_coding_engine.md` §7.9 · the PR #598 verifier
+- **Added:** 2026-10-04 · fix round 2 of PR #598
+
+### H-235 · Finish chat attachments: `.xlsx`, and one live read · [AGENT]
+- **Check:** `grep -c '".xlsx"' packages/acb_skills/acb_skills/attachment_text.py`
+  → `0` means `.xlsx` is still unread. Step 2 stays open until a live read is on record.
+- **What happens.** H-229 built `read_attachment` for `.docx`, PDF, `.txt`,
+  `.md` and `.csv` (`projects_ai_chat.md` §22). It opens through the safe
+  opener, and under the dir lock in a covered run. Two items stay open.
+  1. H-229 asked for `.xlsx` too. The supervisor narrowed the slice, so the
+     tool refuses a `.xlsx` with one sentence.
+  2. No live read is on record. The test plan of H-229 needs production.
+- **Do.**
+  1. Read `.xlsx` in `acb_skills/attachment_text.py`: the zip, the shared
+     strings and each sheet, with the same caps and a test for each cap.
+  2. After the deploy, upload a `.docx` in the Projects chat of the
+     smoke-chat org, and ask for its contents. The answer must quote the
+     file, and the gateway log must show `attachment.read`.
+- **Authority:** `specs/projects_ai_chat.md` §22.7 ·
+  `specs/maf_coding_engine.md` §7.9 · the H-229 slice
+- **Added:** 2026-10-04 · the H-229 slice
+
+### H-238 · Add an app-wide CSP that limits `img-src` and `script-src` · [AGENT]
+- **Check:** `grep -rn "Content-Security-Policy" workbench/control_plane/next.config.ts workbench/control_plane/src/proxy.ts`
+  → no hit means no app-wide CSP is set.
+- **What happens.** The control plane sends no CSP header. Each renderer
+  must gate a remote fetch by itself. The chat PR "a remote image in an
+  agent message loads only on a click" gates the Markdown renderers. A
+  renderer that a later change adds, and that forgets the gate, leaks
+  again. A CSP is the second wall behind the gate.
+- **Do.**
+  1. List every remote host the app loads on purpose. Avatars, org logos,
+     the integration logos and the OAuth images are the known ones.
+  2. Set the header in `src/proxy.ts` or in `next.config.ts` `headers()`.
+     Start with `Content-Security-Policy-Report-Only`, and read the reports.
+  3. Enforce `img-src 'self' data: blob:` plus the listed hosts, and a
+     `script-src` with no remote host.
+- **Test plan.** A Playwright spec loads `/chat` and reads the response
+  header. A second case renders a remote image after the click, and expects
+  the browser to refuse a host that is not on the list.
+- **Why not in the chat PR.** An enforced CSP can break avatars and other
+  surfaces at once. It needs its own list and its own report window.
+- **Authority:** `specs/projects_ai_chat.md` §14.8 ·
+  `src/lib/markdownMedia.ts`
+- **Added:** 2026-10-04 · the chat click-to-load PR
+
+### H-240 · Give a dispatched agent run the member who assigned the task · [AGENT]
+- **Check:** `grep -c "session_user" apps/services/gateway/gateway/routes/projects/agent_dispatch.py`
+  → `0` means the gap is open. The sink passes no member to `run_agent`.
+- **What happens.** `pm.task.assigned` carries the task, the new assignees
+  and the org, and no assigner. So `agent_dispatch` calls `run_agent` with no
+  `session_user`, and the executor logs `executor.run_has_no_acting_user`.
+  A tool that calls the gateway as the member refuses. The agent can reply on
+  the timeline, and it cannot comment on, move or edit the task.
+- **What the spec wants.** §6.4: the agent works the task under its own
+  `agent:<name>` identity, limited to the acting member through
+  `EffectiveAccess.intersect()`.
+- **Do.**
+  1. `set_assignees` puts the signed-in member on the event, from the
+     session and never from the body (R11).
+  2. The sink passes that member to `run_agent` as `session_user`, never as
+     a payload key.
+  3. Fence it on the R8 database: the run binds the member as verified, and
+     a `skill-projects` write in that run is limited to what the member may do.
+- **Two more items for the flip (no fix now).**
+  1. With the flag ON, no cap limits the number of dispatched runs at one
+     time. Only the Router's credit cap stops them.
+  2. A workflow node that assigns an agent no longer waits for the run,
+     because the sink starts each run in the background.
+- **Why it waits.** The run is dark (`PROJECTS_AGENT_DISPATCH`, PR #622).
+  This gap must close before the owner flips the flag.
+- **Authority:** `specs/project_management_app.md` §6.4 and §9.12.10 ·
+  `work_plan.md` §6.1
+- **Added:** 2026-10-04 · PR #622
 
 # DONE — deleted, not archived
 

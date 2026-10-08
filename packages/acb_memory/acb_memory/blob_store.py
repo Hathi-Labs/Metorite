@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from pathlib import Path
 from dataclasses import dataclass
 
 from acb_common import get_logger
@@ -237,7 +238,8 @@ def _sync_delete(
 
 def _sync_history(
     agent_name: str, path: str | None, limit: int, instance: str = "",
-    organization_id: str | None = None,
+    organization_id: str | None = None, session_id: str | None = None,
+    run_rows: bool = False,
 ) -> list[dict]:
     from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
@@ -251,6 +253,11 @@ def _sync_history(
     if path:
         sql += " AND path = :p"
         params["p"] = path
+    if session_id:
+        sql += " AND session_id = :sid"
+        params["sid"] = session_id
+    if run_rows:
+        sql += f" AND {_RUN_ROW}"
     sql += " ORDER BY created_at DESC LIMIT :lim"
     params["lim"] = max(1, min(limit, 1000))
     with tenant_session(organization_id) as s:
@@ -260,9 +267,86 @@ def _sync_history(
             "path": r[0], "folder": r[1], "sha256": r[2], "size": int(r[3]),
             "mime_type": r[4], "action": r[5], "run_id": r[6],
             "session_id": r[7], "actor": r[8], "created_at": str(r[9]),
+            # H-227 fix round 3: the gateway tells an older batch row by its
+            # session, `<agent>:<run id>` (`_RUN_ROW` below).
+            "agent": agent_name,
         }
         for r in rows
     ]
+
+
+_IN_KEPT_TREE = "(left(path, 7) = 'inputs/' OR left(path, 8) = 'outputs/')"
+
+#: A row that a run with no chat wrote, which no chat may claim or purge
+#: (H-227, PR #616). Two forms. Since H-227 the actor is ``batch``. Before
+#: H-227 the executor wrote ``agent`` with the minted thread
+#: ``<agent>:<run id>`` as the session (fix round 3). The match is exact, and
+#: no new chat can take that id (``gateway.routes.chat``). The gateway's
+#: ``workspace._is_batch_row`` is the same rule in Python.
+_RUN_ROW = (
+    "(actor = 'batch' OR (actor = 'agent' AND coalesce(run_id, '') <> '' "
+    "AND session_id = agent_name || ':' || run_id))"
+)
+
+
+def _sync_session_paths(
+    session_id: str, instance: str, organization_id: str | None,
+) -> list[tuple[str, str]]:
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    with tenant_session(organization_id) as s:
+        rows = s.execute(
+            text(
+                "SELECT DISTINCT agent_name, path FROM agent_file_history "
+                "WHERE session_id = :sid AND instance IN (:i, '') "
+                f"AND action <> 'delete' AND NOT {_RUN_ROW} AND {_IN_KEPT_TREE}"
+            ),
+            {"sid": session_id, "i": instance},
+        ).fetchall()
+    return [(str(r[0]), str(r[1])) for r in rows]
+
+
+def _sync_purge(
+    instance: str, organization_id: str | None, *,
+    prefixes: tuple[str, ...], paths: tuple[tuple[str, str], ...],
+    session_id: str | None,
+) -> int:
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    gone = 0
+    with tenant_session(organization_id) as s:
+        for prefix in prefixes:
+            # left() and not LIKE: a slug may hold '_', which LIKE reads as
+            # any one character.
+            for table in ("agent_blob", "agent_file_history"):
+                gone += s.execute(
+                    text(
+                        f"DELETE FROM {table} WHERE instance IN (:i, '') "
+                        "AND left(path, length(:p)) = :p"
+                    ),
+                    {"i": instance, "p": prefix},
+                ).rowcount or 0
+        for agent, path in paths:
+            for table in ("agent_blob", "agent_file_history"):
+                gone += s.execute(
+                    text(
+                        f"DELETE FROM {table} WHERE agent_name = :a "
+                        "AND instance IN (:i, '') AND path = :p"
+                    ),
+                    {"a": agent, "i": instance, "p": path},
+                ).rowcount or 0
+        if session_id:
+            gone += s.execute(
+                text(
+                    "DELETE FROM agent_file_history WHERE session_id = :sid "
+                    f"AND NOT {_RUN_ROW} AND instance IN (:i, '') AND {_IN_KEPT_TREE}"
+                ),
+                {"sid": session_id, "i": instance},
+            ).rowcount or 0
+        s.commit()
+    return gone
 
 
 # ---------------------------------------------------------------------------
@@ -366,23 +450,120 @@ async def delete_file(
 async def file_history(
     agent_name: str, path: str | None = None, limit: int = 200,
     *, instance: str = "", organization_id: str | None = None,
+    session_id: str | None = None, run_rows: bool = False,
 ) -> list[dict]:
-    """Version history for one agent instance, newest first."""
+    """Version history for one agent instance, newest first.
+
+    *session_id* keeps only the rows that one chat session wrote, and
+    *run_rows* only the rows of a run with no chat (``_RUN_ROW``). The
+    gateway's session routes ask for them, to tell which loose file of a
+    shared agent's tenant dir a session wrote, or a batch run wrote (H-227).
+    """
     if not agent_name:
         return []
     try:
         return await asyncio.to_thread(
             _sync_history, agent_name, path, limit, instance,
-            _caller_tenant(organization_id),
+            _caller_tenant(organization_id), session_id, run_rows,
         )
     except Exception as exc:  # noqa: BLE001
         _log.debug("blob_store.history_failed", agent=agent_name, error=str(exc)[:120])
         return []
 
 
+async def session_paths(
+    session_id: str, *, instance: str, organization_id: str | None = None,
+) -> list[tuple[str, str]]:
+    """``(agent, path)`` of each ``inputs/`` or ``outputs/`` path that one chat
+    session wrote, under *instance* or the older ``''`` key.
+
+    The gateway reads it when a member deletes a chat (H-227), to find the
+    loose files that the chat began. It RAISES on a database error (fix round
+    2 of PR #616): an empty answer would let the purge delete the chat's
+    first-writer rows while its loose files stay on disk.
+    """
+    if not session_id:
+        return []
+    return await asyncio.to_thread(
+        _sync_session_paths, session_id, instance, _caller_tenant(organization_id),
+    )
+
+
+async def purge_files(
+    *, instance: str, organization_id: str | None = None,
+    prefixes: tuple[str, ...] = (), paths: tuple[tuple[str, str], ...] = (),
+    session_id: str | None = None,
+) -> int:
+    """Delete stored files AND their history, for a deleted chat (H-227).
+
+    In one tenant, under *instance* and the older ``''`` key:
+
+    * every row under each of *prefixes* (a thread's own folders), of any agent;
+    * every row at each ``(agent, path)`` of *paths* (the loose files the chat
+      began);
+    * every history row of *session_id* under ``inputs/`` or ``outputs/``,
+      except a row of a run with no chat (``_RUN_ROW``), which no chat wrote.
+
+    Unlike :func:`delete_file` it keeps no delete row: a chat id can come back
+    from a client, and a row that names it would hand the next owner of the
+    id its files. Returns the rows deleted. Raises on a database error, so
+    the caller can log that the purge did not finish.
+    """
+    return await asyncio.to_thread(
+        _sync_purge, instance, _caller_tenant(organization_id),
+        prefixes=tuple(prefixes), paths=tuple(paths), session_id=session_id,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Rehydrate — restore an agent's workspace folders from the store on load
 # ---------------------------------------------------------------------------
+
+
+class _SafeDisk:
+    """The rehydrate's reads and writes, through the safe opener (WS-43d).
+
+    ``maf_coding_engine.md`` §7.5 rule B. A sandbox container can write a
+    link into the dir it mounts, and the next rehydrate would then write the
+    blob through it, onto a host file. ``acb_skills.safe_open`` refuses a
+    link at any depth.
+
+    ⚠️ A deliberate lazy import of ``acb_skills`` from this lower package, at
+    the call site and never at module top: the opener lives in
+    ``acb_skills`` (spec §7.5), and the rehydrate is the one writer here.
+    Without ``acb_skills`` installed there is no sandbox either, so the
+    writes fall back to the plain path calls of before.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        try:
+            from acb_skills import safe_open
+        except ImportError:  # no acb_skills means no sandbox on this box
+            safe_open = None
+        self._safe = safe_open
+
+    def read(self, rel: str) -> bytes | None:
+        try:
+            if self._safe is not None:
+                return self._safe.read_bytes(self.root, rel)
+            path = self.root / rel
+            return path.read_bytes() if path.is_file() else None
+        except (OSError, ValueError):
+            return None
+
+    def write(self, rel: str, data: bytes) -> bool:
+        try:
+            if self._safe is not None:
+                self._safe.write_bytes(self.root, rel, data)
+            else:
+                path = self.root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+        except (OSError, ValueError) as exc:
+            _log.warning("blob_store.rehydrate_refused", path=rel, error=str(exc)[:200])
+            return False
+        return True
 
 
 async def rehydrate_workspace(
@@ -413,8 +594,6 @@ async def rehydrate_workspace(
 
     Returns the number of files restored/updated. Never raises.
     """
-    from pathlib import Path  # noqa: PLC0415
-
     if not agent_name or not workspace_root:
         return 0
     try:
@@ -432,25 +611,21 @@ async def rehydrate_workspace(
         if not plan:
             return 0
         root = Path(workspace_root)
+        disk = _SafeDisk(root)
         restored = 0
         for meta, from_instance in plan:
-            dest = root / meta.path
             # Skip if disk already has this exact version.
-            if dest.exists():
-                try:
-                    if _sha256(dest.read_bytes()) == meta.sha256:
-                        continue
-                except Exception:  # noqa: BLE001
-                    pass
+            current = await asyncio.to_thread(disk.read, meta.path)
+            if current is not None and _sha256(current) == meta.sha256:
+                continue
             data = await get_file(
                 agent_name, meta.path, instance=from_instance,
                 organization_id=org,
             )
             if data is None:
                 continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
-            restored += 1
+            if await asyncio.to_thread(disk.write, meta.path, data):
+                restored += 1
         if restored:
             _log.info(
                 "blob_store.rehydrated",

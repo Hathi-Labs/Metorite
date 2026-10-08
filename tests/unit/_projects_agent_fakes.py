@@ -17,6 +17,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+from tests.unit._card_words import assert_card_words
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 AGENT_DIR = REPO_ROOT / "apps" / "agents" / "agent-projects"
 SKILL_DIR = REPO_ROOT / "apps" / "skills" / "skill-projects" / "skill_projects"
@@ -67,7 +69,9 @@ class FakeClient:
         }
         self._calls.append(call)
         payload = self._responder(call) if callable(self._responder) else self._responder
-        return FakeResponse(payload)
+        # A responder may answer with a whole response, to refuse with a
+        # status (WS-46 P2, tests/unit/test_projects_agent_refusals.py).
+        return payload if isinstance(payload, FakeResponse) else FakeResponse(payload)
 
 
 def fake_gateway(
@@ -122,9 +126,43 @@ def _set_confirmation(monkeypatch: Any, answer: bool) -> list[dict]:
 
     asked: list[dict] = []
 
-    async def _stub(**kwargs: Any) -> bool:
+    async def _stub(**kwargs: Any) -> Any:
+        # Every card a test draws is checked for the member's words.
+        assert_card_words(kwargs)
         asked.append(dict(kwargs))
-        return answer
+        return card_answer(kwargs, answer)
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", _stub)
+    return asked
+
+
+def card_answer(kwargs: dict[str, Any], approved: bool, ticked: Any = None) -> Any:
+    """What ``request_confirmation`` returns for *kwargs*, as the real one does.
+
+    A card with rows (WS-46 P13 one-card) answers with the frozenset of the
+    ticked row ids: the rows the tool ticked, unless *ticked* names others,
+    and empty when the member declined. A card with no rows answers a bool.
+    """
+    rows = kwargs.get("rows")
+    if rows is None:
+        return approved
+    if not approved:
+        return frozenset()
+    if ticked is not None:
+        return frozenset(ticked)
+    return frozenset(r["id"] for r in rows if r.get("checked", True))
+
+
+def answer_rows(monkeypatch: Any, ticked: Any) -> list[dict]:
+    """The member approves a card with rows, with exactly *ticked* ticked."""
+    import acb_skills.ask_tools as ask_tools
+
+    asked: list[dict] = []
+
+    async def _stub(**kwargs: Any) -> Any:
+        assert_card_words(kwargs)
+        asked.append(dict(kwargs))
+        return card_answer(kwargs, True, ticked)
 
     monkeypatch.setattr(ask_tools, "request_confirmation", _stub)
     return asked

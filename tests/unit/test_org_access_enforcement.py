@@ -259,10 +259,59 @@ def test_an_ungated_router_still_resolves_an_identity(module: str) -> None:
         )
 
 
+#: Routers whose routes check a feature PER ITEM, not once at the router.
+#:
+#: The command bar's routes (`navigation_shell.md` §6.3) serve every app at
+#: once. A member who holds Email and not Projects must get Email's answer, so
+#: a router-level gate on one feature would be wrong. Each provider checks its
+#: own app's feature instead, before it calls that app.
+#:
+#: ⚠️ ROUTE BY ROUTE, with the argument beside each. A route added to such a
+#: router fails `test_every_delegated_route_is_named` until somebody names it
+#: here and says where its gate is (security review of NS-4a, 2026-10-08: a
+#: router in neither registry is unchecked, and NS-4b adds routes to this one).
+DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
+    "gateway.routes.shell": {
+        "/shell/search": (
+            "NS-4a. Each provider in `PROVIDERS` checks "
+            "`user.has_permission('feature:<app>')` before it calls the app's own "
+            "search, and a member without the app gets no group "
+            "(`test_shell_search.py::TestTheFeatureGate`)."
+        ),
+        "/shell/intent": (
+            "NS-4b. The coordinator offers the model only `held_jobs(user)`, each "
+            "job gated on its app's feature, and never returns a job outside that "
+            "list (`test_shell_intent.py::TestTheModelSeesOnlyWhatTheMemberCanOpen`). "
+            "It reads no app data: a job is a link to a form the member then fills."
+        ),
+    },
+}
+
+
+@pytest.mark.parametrize("module", sorted(DELEGATED_ROUTERS))
+def test_every_delegated_route_is_named(module: str) -> None:
+    served = {route.path for route in _routes(module)}
+    named = set(DELEGATED_ROUTERS[module])
+    assert served == named, (
+        f"{module}: routes {sorted(served - named)} have no named gate, "
+        f"and {sorted(named - served)} are named but gone"
+    )
+    for path, why in DELEGATED_ROUTERS[module].items():
+        assert why.strip(), f"{module} {path} delegates its gate with no reason"
+
+
+def test_the_shell_providers_each_name_a_feature() -> None:
+    from gateway.routes.shell.search import PROVIDERS
+
+    for app, (feature, _label, _fn) in PROVIDERS.items():
+        assert feature and feature.isidentifier(), f"provider {app} has no feature"
+
+
 def test_the_two_registries_do_not_overlap() -> None:
     """A module cannot be both. If one grows routes of the other kind, it needs
     splitting, not two entries."""
     assert not set(GATED_ROUTERS) & set(UNGATED_ROUTERS)
+    assert not set(DELEGATED_ROUTERS) & (set(GATED_ROUTERS) | set(UNGATED_ROUTERS))
 
 
 def _routes(module: str):

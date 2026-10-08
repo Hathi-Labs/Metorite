@@ -823,10 +823,6 @@ _RUN_AGENT_WITHOUT_SESSION_USER: dict[tuple[str, str], tuple[int, str]] = {
         1, "the sub-agent fallback inside a run; it inherits the parent's "
            "member"),
     ("apps/services/gateway/gateway/routes/email/automation/drafting.py",
-     "_draft_via_maf_agent"): (
-        1, "dead code (drafting.py marks it so); its `user_email` claim "
-           "stays unverified"),
-    ("apps/services/gateway/gateway/routes/email/automation/drafting.py",
      "_orchestrate_draft"): (
         1, "runs inside `as_mailbox_owner`; its `user_email` is that same "
            "owner, which `_run_member` keeps verified"),

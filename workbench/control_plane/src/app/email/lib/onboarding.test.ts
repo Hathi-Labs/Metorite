@@ -18,15 +18,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { isKnownIcon } from "@/lib/icons";
 
 import { OnboardingPanel } from "../components/OnboardingPanel";
+import { SyncBanner } from "../components/SyncBanner";
+import { shouldPollFirstSync } from "./connect";
 import {
+  AWAITING_RANGE_PHASE,
   IMPORT_PHASE_LINES,
   IMPORT_PROGRESS_LABEL,
   IMPORT_WAITING_DETAIL,
-  firstSyncSurface,
+  SYNC_BANNER_LABEL,
+  SYNC_BANNER_LINES,
+  SYNC_BANNER_MAX_PERCENT,
+  SYNC_BANNER_REGION,
+  importPanelShows,
   importProgress,
   onboardingStage,
   rangeDonePercent,
   shortDate,
+  syncBanners,
+  type SyncBannerPhase,
 } from "./onboarding";
 import type { EmailAccount } from "./types";
 
@@ -104,6 +113,40 @@ describe("onboardingStage (item 1)", () => {
     expect(onboardingStage({ ...IMPORTING, initialSyncDone: true })).toBe("rules");
     // Only an explicit false is a running import, and only an explicit true an ended one.
     expect(onboardingStage({ ...IMPORTING, initialSyncDone: undefined })).toBeNull();
+  });
+});
+
+describe("email-storage-stage: the storage stage of EM-T6e (A7, D6)", () => {
+  const MB = 1_048_576;
+  // EM-T6c writes `initial_sync_done = true` with the phase `limit`.
+  const FULL: Partial<EmailAccount> = {
+    ...IMPORTING,
+    syncStatus: "idle",
+    initialSyncDone: true,
+    importPhase: "limit",
+    storedBytes: 512 * MB,
+    storageLimitBytes: 500 * MB,
+  };
+
+  it.each([
+    ["the phase limit at the limit", FULL, {}, "storage"],
+    ["the meter exactly at the limit", { ...FULL, storedBytes: 500 * MB }, {}, "storage"],
+    ["the phase limit under the limit (the gap of D2)", { ...FULL, storedBytes: 499 * MB }, {}, "rules"],
+    ["a removal that went under the limit and ended the phase", { ...FULL, storedBytes: 120 * MB, importPhase: "done" }, {}, "rules"],
+    ["'Keep it as it is'", FULL, { storageKept: true }, "rules"],
+    ["the meter at the limit in the phase done", { ...FULL, importPhase: "done" }, {}, "rules"],
+    ["a meter that has not run", { ...FULL, storedBytes: null }, {}, "rules"],
+    ["a gateway with no limit", { ...FULL, storageLimitBytes: undefined }, {}, "rules"],
+    ["a closed setup", { ...FULL, onboardingDone: true }, {}, null],
+    ["a sync error, which the reconnect banner owns", { ...FULL, syncStatus: "error" }, {}, null],
+    ["sync off", { ...FULL, syncEnabled: false }, {}, null],
+    ["a mailbox from before EM-T6", { ...FULL, importSince: null }, {}, null],
+  ] as const)("%s gives %s", (_name, account, opts, stage) => {
+    expect(onboardingStage(account, opts)).toBe(stage);
+  });
+
+  it("never draws the import panel for a mailbox at the limit", () => {
+    expect(importPanelShows(FULL)).toBe(false);
   });
 });
 
@@ -239,36 +282,36 @@ describe("the phase line, and never a spinner alone (item 6)", () => {
 
 describe("the degrade cases: a gateway before EM-T6a or EM-T6b (fix round 1, P2)", () => {
   // Orchestrator decision: the progress panel draws only when the gateway
-  // sends `import_phase` (EM-T6b). Before that, FirstSyncBanner stays,
-  // because its text is true there and a bar held at 0% is not.
+  // sends `import_phase` (EM-T6b), because a bar held at 0% is not true.
+  // Since EM-S9 no panel and no FirstSyncBanner draws then.
 
-  it("with no import_since (before EM-T6a), the stage is null and the banner draws", () => {
+  it("with no import_since (before EM-T6a), the stage is null and no panel draws", () => {
     const old = { syncStatus: "syncing", initialSyncDone: false };
     expect(onboardingStage(old)).toBeNull();
-    expect(firstSyncSurface(old)).toBe("banner");
+    expect(importPanelShows(old)).toBe(false);
     // A phase without a range is not a guided mailbox either.
-    expect(firstSyncSurface({ ...old, importPhase: "importing" })).toBe("banner");
+    expect(importPanelShows({ ...old, importPhase: "importing" })).toBe(false);
   });
 
-  it("with import_since and no import_phase (EM-T6a only), the stage is importing and the banner draws", () => {
+  it("with import_since and no import_phase (EM-T6a only), the stage is importing and no panel draws", () => {
     const t6aOnly = { importSince: daysAgo(30), onboardingDone: false, initialSyncDone: false };
     expect(onboardingStage(t6aOnly)).toBe("importing");
-    expect(firstSyncSurface(t6aOnly)).toBe("banner");
-    expect(firstSyncSurface({ ...t6aOnly, importPhase: null })).toBe("banner");
-    expect(firstSyncSurface({ ...t6aOnly, importPhase: "" })).toBe("banner");
+    expect(importPanelShows(t6aOnly)).toBe(false);
+    expect(importPanelShows({ ...t6aOnly, importPhase: null })).toBe(false);
+    expect(importPanelShows({ ...t6aOnly, importPhase: "" })).toBe(false);
   });
 
   it("with import_phase (EM-T6b), the progress panel draws", () => {
     for (const importPhase of ["counting", "importing"]) {
-      expect(firstSyncSurface({ ...IMPORTING, importPhase }), importPhase).toBe("progress");
+      expect(importPanelShows({ ...IMPORTING, importPhase }), importPhase).toBe(true);
     }
   });
 
   it("an error, a closed setup or a finished import never draws the panel", () => {
     const withPhase = { ...IMPORTING, importPhase: "importing" };
-    expect(firstSyncSurface({ ...withPhase, syncStatus: "error" })).toBe("banner");
-    expect(firstSyncSurface({ ...withPhase, onboardingDone: true })).toBe("banner");
-    expect(firstSyncSurface({ ...withPhase, initialSyncDone: true })).toBe("banner");
+    expect(importPanelShows({ ...withPhase, syncStatus: "error" })).toBe(false);
+    expect(importPanelShows({ ...withPhase, onboardingDone: true })).toBe(false);
+    expect(importPanelShows({ ...withPhase, initialSyncDone: true })).toBe(false);
   });
 
   it("a phase this UI does not know draws the plain line, with no order claimed", () => {
@@ -337,19 +380,29 @@ describe("the account API carries the fields (items 4 and 7)", () => {
   });
 });
 
-describe("the page draws the panel where FirstSyncBanner drew (items 7 and 12)", () => {
+describe("the page draws the panel for the mailbox in view (items 7 and 12, EM-S9)", () => {
   const PAGE = codeOnly(read("page.tsx"));
 
-  it("draws the panel only for progress, and the banner for each other pending mailbox", () => {
-    expect(PAGE).toMatch(
-      /\{pendingAccount &&\s*\(firstSyncSurface\(pendingAccount\) === "progress" \? \(\s*<OnboardingPanel[\s\S]*?\) : \(\s*<FirstSyncBanner address=\{pendingAccount\.emailAddress\} \/>/,
+  it("draws the panel for the mailbox in view only, and only for progress", () => {
+    // EM-S9: the panel is the detail of the mailbox in view. The sync banner
+    // names each other import, so no FirstSyncBanner is left.
+    expect(PAGE).toContain(
+      "!viewAll && selectedAccount && importPanelShows(selectedAccount) ? selectedAccount : null;",
     );
-    // One decision: the page does not test the phase itself. It reads the
-    // stage once, for the rules step of part 2.
+    expect(PAGE).toMatch(/\{importPanelAccount && \(\s*<OnboardingPanel\s+key=\{importPanelAccount\.id\}/);
+    expect(PAGE.match(/<OnboardingPanel\b/g)).toHaveLength(1);
+    expect(PAGE).not.toMatch(/FirstSyncBanner/);
+    // One decision: the page does not test the phase itself. The panel comes
+    // from importPanelShows, and the page reads the stage once, for the
+    // storage step of EM-T6e and the rules step of part 2.
     expect(PAGE).not.toMatch(/importPhase/);
     expect(PAGE.match(/onboardingStage\(/g)).toEqual(["onboardingStage("]);
-    expect(PAGE).toContain('onboardingStage(selectedAccount) === "rules"');
-    expect(PAGE).toContain("progress={importProgress(pendingAccount, { now: new Date() })}");
+    expect(PAGE).toContain(
+      "onboardingStage(selectedAccount, { storageKept: storageKept.includes(selectedAccount.id) })",
+    );
+    expect(PAGE).toContain('selectedAccount && setupStage === "rules"');
+    expect(PAGE).toContain('selectedAccount && setupStage === "storage"');
+    expect(PAGE).toContain("progress={importProgress(importPanelAccount, { now: new Date() })}");
   });
 
   it("sits in the mail pane after the reconnect banner, and not in a modal", () => {
@@ -389,5 +442,277 @@ describe("copy that promises a year goes (item 13)", () => {
     expect(Math.max(...presets.map((p) => p.days))).toBeLessThanOrEqual(180);
     expect(presets.map((p) => p.label)).not.toContain("Last year");
     expect(presets[presets.length - 1]).toEqual({ label: "Last 6 months", days: 180 });
+  });
+});
+
+// ── EM-S9: the sync banner in the header (§14.4.6, §14.6.9, D-EM-58) ───────
+
+describe("email-sync-banner: syncBanners", () => {
+  type Box = Partial<EmailAccount> & Pick<EmailAccount, "id" | "emailAddress">;
+  const box = (id: string, extra: Partial<EmailAccount> = {}): Box => ({
+    id,
+    emailAddress: `${id}@contoso.test`,
+    displayLabel: id.toUpperCase(),
+    colorSlot: 1,
+    ...IMPORTING,
+    importPhase: "importing",
+    importCount: 1240,
+    importEstimate: 3100,
+    ...extra,
+  });
+  const rowsOf = (accounts: Box[], inView: string | null = null) =>
+    syncBanners(accounts, inView, { locale: "en-US" });
+
+  it.each([
+    ["the first import, counting", { importPhase: "counting" }, "counting"],
+    ["the first import, importing", { importPhase: "importing" }, "importing"],
+    ["a Resync (EM-S9b)", { importPhase: "resyncing", initialSyncDone: true }, "resyncing"],
+    ["a Resync of a mailbox from before EM-T6", { importPhase: "resyncing", initialSyncDone: true, importSince: null }, "resyncing"],
+    ["an import that ended", { importPhase: "done", initialSyncDone: true }, null],
+    ["an import that the limit stopped", { importPhase: "limit", initialSyncDone: true }, null],
+    ["a stale phase after the end", { importPhase: "importing", initialSyncDone: true }, null],
+    ["a first sync with a NULL phase, before the scheduler writes one (D-EM-58)", { importPhase: null }, "starting"],
+    ["a first sync with no phase field", { importPhase: undefined }, "starting"],
+    ["a first sync of a mailbox from before EM-T6", { importPhase: null, importSince: null }, "starting"],
+    ["a mailbox that waits for its range (EM-S6)", { importPhase: "awaiting_range" }, null],
+    ["a phase this UI does not know", { importPhase: "something-new" }, null],
+    ["a NULL phase with a sync error", { importPhase: null, syncStatus: "error" }, null],
+    ["a NULL phase with sync off", { importPhase: null, syncEnabled: false }, null],
+    ["a NULL phase after the end", { importPhase: null, initialSyncDone: true }, null],
+    ["a sync error, which the reconnect banner owns", { syncStatus: "error" }, null],
+    ["a Resync with a sync error", { importPhase: "resyncing", initialSyncDone: true, syncStatus: "error" }, null],
+    ["sync off", { syncEnabled: false }, null],
+  ] as const)("%s gives the phase %s", (_name, extra, phase) => {
+    const rows = rowsOf([box("a", extra as Partial<EmailAccount>)]);
+    if (phase === null) {
+      expect(rows).toEqual([]);
+    } else {
+      expect(rows.map((r) => [r.account.id, r.phase, r.line])).toEqual([["a", phase, SYNC_BANNER_LINES[phase]]]);
+    }
+  });
+
+  it("guards awaiting_range by name, before any arm that gives a row", () => {
+    // An unknown phase gives no row today as well, so the behaviour alone
+    // cannot tell that the guard is there. EM-S6 adds `awaiting_range`, and
+    // a later widening of the fall-through must not draw "Starting sync" for
+    // a mailbox that waits for its range. So the guard is pinned in the source.
+    expect(AWAITING_RANGE_PHASE).toBe("awaiting_range");
+    const src = codeOnly(read("lib/onboarding.ts"));
+    const body = src.slice(src.indexOf("function bannerPhase("), src.indexOf("export function syncBanners"));
+    const guard = body.indexOf("if (phase === AWAITING_RANGE_PHASE) return null;");
+    expect(guard).toBeGreaterThan(-1);
+    for (const arm of ['return "resyncing";', 'return "starting";', "return phase;"]) {
+      expect(body.indexOf(arm), arm).toBeGreaterThan(guard);
+    }
+  });
+
+  it("reads 'Starting sync' with no bar and no count before the first phase", () => {
+    // The fixture carries a count and an estimate. With no phase, neither is true yet.
+    const [row] = rowsOf([box("a", { importPhase: null })]);
+    expect(row.line).toBe("Starting sync");
+    expect(row.percent).toBeNull();
+    expect(row.detail).toBe("");
+  });
+
+  it("shows the percent of the estimate, with the count in the detail", () => {
+    const [row] = rowsOf([box("a")]);
+    expect(row.percent).toBe(40);
+    expect(row.detail).toBe("1,240 of about 3,100 messages");
+  });
+
+  it("caps the percent at 99 until the phase ends", () => {
+    expect(SYNC_BANNER_MAX_PERCENT).toBe(99);
+    for (const importCount of [3099, 3100, 3400, 9_999_999]) {
+      expect(rowsOf([box("a", { importCount })])[0].percent, String(importCount)).toBe(99);
+    }
+    expect(rowsOf([box("a", { importCount: 0 })])[0].percent).toBe(0);
+    expect(rowsOf([box("a", { importCount: null })])[0].percent).toBe(0);
+  });
+
+  it("shows the count when there is no estimate", () => {
+    for (const importEstimate of [null, undefined, 0]) {
+      const [row] = rowsOf([box("a", { importEstimate })]);
+      expect(row.percent).toBeNull();
+      expect(row.detail).toBe("1,240 messages so far");
+    }
+    expect(rowsOf([box("a", { importEstimate: null, importCount: 1 })])[0].detail).toBe("1 message so far");
+    expect(rowsOf([box("a", { importEstimate: null, importCount: 0 })])[0].detail).toBe("Starting");
+    expect(rowsOf([box("a", { importEstimate: null, importCount: null })])[0].detail).toBe("Starting");
+  });
+
+  it("shows a mailbox out of view, in the order of the list", () => {
+    const accounts = [box("a"), box("b", { initialSyncDone: true, importPhase: "done" }), box("c"), box("d")];
+    // All inboxes: no mailbox in view, so each import draws a row.
+    expect(rowsOf(accounts).map((r) => r.account.id)).toEqual(["a", "c", "d"]);
+    // In the view of mailbox b, whose import ended, a, c and d still draw.
+    expect(rowsOf(accounts, "b").map((r) => r.account.id)).toEqual(["a", "c", "d"]);
+  });
+
+  it("leaves out the mailbox in view while its import panel shows, and only then", () => {
+    const accounts = [box("a"), box("c")];
+    expect(importPanelShows(accounts[1])).toBe(true);
+    expect(rowsOf(accounts, "c").map((r) => r.account.id)).toEqual(["a"]);
+    // No range (a mailbox from before EM-T6): no panel, so the row stays.
+    const old = [box("a"), box("c", { importSince: null })];
+    expect(importPanelShows(old[1])).toBe(false);
+    expect(rowsOf(old, "c").map((r) => r.account.id)).toEqual(["a", "c"]);
+    // A Resync of the mailbox in view: no panel, so the row stays.
+    const resync = [box("c", { importPhase: "resyncing", initialSyncDone: true })];
+    expect(rowsOf(resync, "c").map((r) => r.account.id)).toEqual(["c"]);
+  });
+
+  it("removes the row when the phase ends", () => {
+    const running = box("a");
+    expect(rowsOf([running])).toHaveLength(1);
+    expect(rowsOf([{ ...running, initialSyncDone: true, importPhase: "done" }])).toEqual([]);
+    expect(rowsOf([{ ...running, initialSyncDone: true, importPhase: "limit" }])).toEqual([]);
+  });
+});
+
+describe("email-sync-banner-polls: every row keeps the page polling", () => {
+  // A row that the poll does not refresh freezes on screen. The page polls
+  // while `shouldPollFirstSync(accounts)` is true, so each account that
+  // `syncBanners` gives a row for must make it true.
+  const running: Partial<EmailAccount> = {
+    ...IMPORTING,
+    syncEnabled: true,
+    importCount: 10,
+    importEstimate: 100,
+  };
+  const FIRST_IMPORT: ReadonlyArray<readonly [SyncBannerPhase, Partial<EmailAccount>]> = [
+    ["starting", { ...running, importPhase: null }],
+    ["counting", { ...running, importPhase: "counting" }],
+    ["importing", { ...running, importPhase: "importing" }],
+  ];
+  const RESYNC: Partial<EmailAccount> = { ...running, initialSyncDone: true, importPhase: "resyncing" };
+
+  const rowPhase = (account: Partial<EmailAccount>) => syncBanners([{ ...account, id: "a" }])[0]?.phase;
+
+  it("the page gates its poll on shouldPollFirstSync", () => {
+    const PAGE = codeOnly(read("page.tsx"));
+    expect(PAGE).toContain("const firstSyncPending = shouldPollFirstSync(accounts);");
+    expect(PAGE).toMatch(/if \(!firstSyncPending\) return;/);
+  });
+
+  it("names a case for every phase that gives a row", () => {
+    const covered = [...FIRST_IMPORT.map(([p]) => p), rowPhase(RESYNC)].sort();
+    expect(covered).toEqual(Object.keys(SYNC_BANNER_LINES).sort());
+  });
+
+  it.each(FIRST_IMPORT)("a first import in the phase %s gives a row and polls", (phase, account) => {
+    expect(rowPhase(account)).toBe(phase);
+    expect(shouldPollFirstSync([account])).toBe(true);
+  });
+
+  // ⚠️ A KNOWN GAP, not a skip. `isFirstSyncPending` needs `initialSyncDone`
+  // false, and a Resync keeps it true, so a `resyncing` row does not refresh.
+  // EM-S9b widens the poll to "a row shows" (§14.6.9b item 5). `it.fails`
+  // runs the test and passes only while it fails. When EM-S9b widens the
+  // poll, this goes red, and EM-S9b changes `it.fails` to `it`.
+  it.fails("a Resync gives a row and polls (fails until EM-S9b, §14.6.9b item 5)", () => {
+    expect(rowPhase(RESYNC)).toBe("resyncing");
+    expect(shouldPollFirstSync([RESYNC])).toBe(true);
+  });
+});
+
+describe("email-sync-banner: the row on screen", () => {
+  type Row = Pick<EmailAccount, "id" | "emailAddress"> & Partial<EmailAccount>;
+  const a: Row = {
+    id: "a",
+    emailAddress: "vj@fracktal.in",
+    displayLabel: "Fracktal",
+    colorSlot: 2,
+    initialSyncDone: false,
+    importPhase: "importing",
+    importCount: 1240,
+    importEstimate: 3100,
+  };
+  const b: Row = { ...a, id: "b", emailAddress: "ravi@contoso.test", displayLabel: "Contoso", importEstimate: null };
+  const draw = (accounts: Row[]) =>
+    renderToStaticMarkup(createElement(SyncBanner, { rows: syncBanners(accounts, null, { locale: "en-US" }) }));
+
+  it("draws one row for each mailbox, with its chip, and a percent or a count", () => {
+    const out = draw([a, b]);
+    expect(out.match(/data-sync-row="/g)).toHaveLength(2);
+    expect(out).toContain(`aria-label="${SYNC_BANNER_REGION}"`);
+    expect(out).toContain('aria-label="Mailbox Fracktal, vj@fracktal.in"');
+    expect(out).toContain('aria-label="Mailbox Contoso, ravi@contoso.test"');
+    // a has an estimate: a bar at 40%. b has none: the count, and no bar.
+    const bars = progressbars(out);
+    expect(bars).toHaveLength(1);
+    expect(bars[0]["aria-valuenow"]).toBe("40");
+    expect(bars[0]["aria-label"]).toBe(`${SYNC_BANNER_LABEL}, vj@fracktal.in`);
+    expect(out).toContain("1,240 of about 3,100 messages");
+    expect(out).toContain("1,240 messages so far");
+  });
+
+  it("draws the bar at 99 for a count past the estimate", () => {
+    const bars = progressbars(draw([{ ...a, importCount: 5000 }]));
+    expect(bars[0]["aria-valuenow"]).toBe("99");
+  });
+
+  it("only the phase line of each row is a status region, so a poll does not speak each count", () => {
+    const out = draw([a, b]);
+    // The whole text of each status element, its hidden address included.
+    const regions = [...out.matchAll(/<p\b[^>]*role="status"[^>]*>([\s\S]*?)<\/p>/g)].map((m) => m[1]);
+    const live = regions.map((html) => html.replace(/<[^>]+>/g, ""));
+    // A screen reader hears the mailbox, then the phase, and never the count.
+    expect(live).toEqual([
+      `vj@fracktal.in: ${SYNC_BANNER_LINES.importing}`,
+      `ravi@contoso.test: ${SYNC_BANNER_LINES.importing}`,
+    ]);
+    for (const text of live) expect(text).not.toMatch(/\d{2,}|messages|%/);
+    // The address is hidden from the eye with the design system's own utility.
+    expect(regions[0]).toContain('<span class="sr-only">vj@fracktal.in: </span>');
+    expect(out.match(/role="status"/g)).toHaveLength(2);
+  });
+
+  it("draws nothing when no import runs", () => {
+    expect(draw([{ ...a, initialSyncDone: true, importPhase: "done" }])).toBe("");
+  });
+
+  it("draws 'Starting sync' with the chip, and no bar and no count, before the first phase", () => {
+    const out = draw([{ ...a, importPhase: null }]);
+    expect(out.match(/data-sync-row="/g)).toHaveLength(1);
+    expect(out).toContain('aria-label="Mailbox Fracktal, vj@fracktal.in"');
+    expect(out).toContain(">Starting sync<");
+    expect(progressbars(out)).toEqual([]);
+    expect(out).not.toMatch(/messages|%/);
+  });
+
+  it("uses the primitives and the tokens, and no colour of its own", () => {
+    const src = codeOnly(read("components/SyncBanner.tsx"));
+    expect(src).toMatch(/import ProgressBar from "@\/components\/ui\/ProgressBar"/);
+    expect(src).toMatch(/<ProgressBar\b/);
+    expect(src).toMatch(/<MailboxChip\b/);
+    expect(src).not.toMatch(/<button\b|<input\b|<select\b/);
+    expect(src).not.toMatch(/#[0-9a-fA-F]{3,8}\b|\b(rgb|hsl)a?\(|text-white|bg-black/);
+    // `bg-card`: the empty track of the bar stays visible in light mode.
+    expect(src).toContain("bg-card");
+    expect(src).not.toMatch(/\bbg-primary\//);
+    expect(src).not.toMatch(/fetch\(|EventSource|\/api\//);
+    const names = [...src.matchAll(/name="([A-Za-z0-9]+)"/g)].map((m) => m[1]);
+    expect(names.length).toBeGreaterThan(0);
+    for (const n of names) expect(isKnownIcon(n), n).toBe(true);
+  });
+
+  it("sits under the header on the page, and FirstSyncBanner is gone", () => {
+    const PAGE = codeOnly(read("page.tsx"));
+    expect(PAGE).toContain("const syncRows = syncBanners(accounts, importPanelAccount?.id ?? null);");
+    expect(PAGE.match(/<SyncBanner\b/g)).toHaveLength(1);
+    expect(PAGE).toContain("<SyncBanner rows={syncRows} />");
+    const at = PAGE.indexOf("<SyncBanner");
+    // Below the reconnect banner, which wins attention for a failed mailbox.
+    const reconnect = PAGE.indexOf("{RECONNECT_LABEL[provider]}");
+    expect(reconnect).toBeGreaterThan(-1);
+    expect(at).toBeGreaterThan(reconnect);
+    expect(at).toBeLessThan(PAGE.indexOf("<StorageNotice"));
+    expect(at).toBeLessThan(PAGE.indexOf("<OnboardingPanel"));
+    expect(at).toBeLessThan(PAGE.indexOf("<EmailToolbar />"));
+    // The poll of the first sync stays as it was (§14.6.9).
+    expect(PAGE).toContain("const firstSyncPending = shouldPollFirstSync(accounts);");
+    const files = walk(EMAIL_APP).map((f) => f.replace(/\\/g, "/"));
+    expect(files.some((f) => f.endsWith("components/FirstSyncBanner.tsx"))).toBe(false);
+    expect(files.filter((f) => /FirstSyncBanner/.test(codeOnly(readFileSync(f, { encoding: "utf-8" }))))).toEqual([]);
   });
 });

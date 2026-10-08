@@ -876,6 +876,7 @@ export function TaskBoard({
       canvas: "board",
       filtered: isFiltered(filters),
       onStatusAxis: groupBy === "status",
+      query: filters.q,
     });
     return (
       <EmptyState

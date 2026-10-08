@@ -167,6 +167,9 @@ UPDATE email_executed_rules SET organization_id = (SELECT id FROM organization W
 UPDATE email_folders SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE email_insights SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE email_knowledge SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 

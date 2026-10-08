@@ -32,6 +32,7 @@
     "save_memory",
     "emit_generative_ui",
     "write_artifact",
+    "read_attachment",
     "call_agent"
   ],
   "own_tool_scope": [
@@ -61,6 +62,7 @@
     "intake_queue",
     "my_contexts",
     "my_led_projects",
+    "my_areas",
     "notifications",
     "project_access",
     "project_views",
@@ -101,6 +103,9 @@
     "edit_project",
     "edit_task",
     "propose_plan",
+    "create_tasks",
+    "create_tags",
+    "create_types",
     "capture_intake",
     "mark_notifications_read",
     "save_view",

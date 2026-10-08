@@ -21,6 +21,7 @@ import AppShell from "@/components/AppShell";
 import Providers from "@/components/Providers";
 import { UndoProvider } from "@/components/UndoProvider";
 import { ToastProvider } from "@/components/ui/Toast";
+import UpdateNotice from "@/lib/shell/UpdateNotice";
 import { themeBootScript } from "@/lib/theme/boot";
 
 export const metadata: Metadata = {
@@ -67,6 +68,12 @@ export default function RootLayout({
             without the provider every `useToast()` call site degrades to a
             silent no-op and no other test in the tree would go red. */}
         <ToastProvider>
+          {/* "Metorite is updating", instead of a 502 (navigation_shell.md
+              §7.3, owner directive 2026-10-05). Inside the toast provider,
+              because it speaks through the toast. OUTSIDE `Providers` for the
+              toast's own reason: it must speak while session and access are
+              failing to resolve, which is exactly what an update looks like. */}
+          <UpdateNotice />
           {/* Undo/redo, mounted once for the whole product (owner directive,
               2026-08-31). Inside the toast provider because a failed undo
               reports through it, and OUTSIDE `Providers` for the same reason

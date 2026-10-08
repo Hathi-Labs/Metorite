@@ -305,9 +305,10 @@ async def test_every_mode_off_makes_zero_calls_on_all_four_features(
     for site in SITES:
         await site(monkeypatch)
     assert fake.calls == []
+    # EM-T14b-0 added the Insights screen, which is not a triage site.
     assert set(df.FEATURES) == {
         "email.cold_check", "email.sender_pin", "email.thread_status",
-        "email.rule_match"}
+        "email.rule_match", "email.insights_screen"}
 
 
 # ── Done when: the old name resolves to off and is refused ──────────────────
@@ -928,6 +929,9 @@ async def test_recompute_thread_status_passes_the_messages_and_the_last_id(
     monkeypatch.setattr(rz, "build_thread_context", AsyncMock(return_value=ctx))
     monkeypatch.setattr(rz, "_status_corrections_block", AsyncMock(return_value=""))
     monkeypatch.setattr(rz, "_upsert_thread_status", AsyncMock())
+    # The thread has a participant outside the member's mailboxes, so the
+    # status is asked (D-EM-27, EM-T8e-1 review round 1).
+    monkeypatch.setattr(rz, "_thread_is_self_only", AsyncMock(return_value=False))
     with structlog.testing.capture_logs() as caps:
         await rz.recompute_thread_status(AsyncMock(), ACC, "t1", trigger="inbound")
     assert fake.calls[0]["state"]["thread"] == THREAD

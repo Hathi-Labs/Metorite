@@ -29,10 +29,12 @@ grant write (spec §12, question 2).
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from skill_projects import client as _client
 from skill_projects.client import (
+    GatewayRefusal,
     data,
     delete,
     get,
@@ -48,9 +50,12 @@ from skill_projects.priority import (
 )
 from skill_projects.reads import _day, _task_line
 from skill_projects.writes import (
+    _REOPENING,
     CANCELLED,
+    CARD_CONTEXT_LIMIT,
     CARD_NOTE,
     MAX_BATCH,
+    OVERLAY_ARGUMENTS,
     _clears,
     _confirm,
     _field_of,
@@ -59,11 +64,20 @@ from skill_projects.writes import (
     _node,
     _one_named,
     _org_wide,
+    _overlay_values,
     _ref,
     _resolve_assignee,
+    _same_chase,
     _split,
+    _subtask_counts,
+    _subtask_receipt,
+    _subtasks_phrase,
+    _subtasks_wanted,
     _task,
     _vocab,
+    agent_assignee_refusal_as_text,
+    ask_about_subtasks,
+    status_edit_refusal,
 )
 
 try:
@@ -83,6 +97,21 @@ ONE_ACT = "takes ONE id. A guarded act is one card per row. Ask again for each o
 #: WS-27bn R5d (§9 Q12). The words of the server's 403, in
 #: ``reports.DELETE_REFUSED``. A test pins the two as one sentence.
 REPORT_DELETE_REFUSED = "Only the author of this report or an admin may delete it."
+
+
+#: A product rule, not a permission (owner directive 2026-10-07,
+#: ``projects_agent_parity.md`` §16). Since H-205 (2026-10-01) the routes let
+#: a member with organization settings permission delete a shared tag, field
+#: or type, and merge two shared tags, after the count. The chat has no tool
+#: for that count (``GET /projects/vocabulary/{kind}/{id}/impact`` is class X
+#: in the manifest), so the chat does not do the act for ANY member, the
+#: owner too. The text says where the act lives and names no permission.
+def _shared_entry_text(row: dict[str, Any], verb: str) -> str:
+    return (
+        f"{data(row.get('name'))} is an organization-wide entry. The chat does not "
+        f"{verb} a shared entry, for any member. In the app, Projects settings, "
+        "Shared vocabulary does it and shows the count first."
+    )
 
 
 def _many(value: str) -> bool:
@@ -167,7 +196,7 @@ def _short_ref(task: dict[str, Any]) -> str:
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def archive_project(project_id: str) -> str:
     """File a project and its whole subtree out of the default surfaces.
     ONE project per call. The card leads with how many projects the archive
@@ -197,7 +226,7 @@ async def archive_project(project_id: str) -> str:
             {
                 "project": data(node.get("name")),
                 "tasks": "not changed; they follow their project out of view",
-                "undo": "unarchive_project restores exactly the rows this archive stamps",
+                "undo": "restoring it from the archive brings back exactly these rows",
             },
         ),
     ):
@@ -210,7 +239,7 @@ async def archive_project(project_id: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def unarchive_project(project_id: str) -> str:
     """Bring an archived project back, with every row its own archive filed.
     ONE project per call. A project filed by an ANCESTOR's archive is refused
@@ -253,60 +282,254 @@ async def unarchive_project(project_id: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+# ── The order of a node among its siblings (WS-46 P7, G13) ─────────────────
+#
+# The tree drag's maths (``lib/treeDrop.ts``), mirrored: a float position, the
+# midpoint of the two neighbours, and a one-time spread of a sibling set that
+# was never ordered. ``tests/unit/test_projects_project_fields.py`` holds the
+# two constants equal to the TypeScript.
+
+#: What a first, unordered sibling set is spread across (``POSITION_SPAN``).
+POSITION_SPAN = 65536
+#: The gap below which two positions are re-spread (``MIN_GAP``).
+MIN_GAP = 1e-6
+PLACES = ("first", "last", "before", "after")
+
+
+def _place_of(place: str) -> tuple[str, str] | str:
+    """``first``, ``last``, ``before <full_id>`` or ``after <full_id>`` ->
+    ``(word, sibling id)``, ``("", "")`` for none, or the refusal."""
+    raw = " ".join(str(place or "").replace(":", " ").split())
+    if not raw:
+        return "", ""
+    word, _, rest = raw.partition(" ")
+    word = word.lower()
+    if word in ("first", "last") and not rest:
+        return word, ""
+    if word in ("before", "after") and rest:
+        return word, uuid_of(rest, "place")
+    return (
+        "place is first, last, before <full_id> or after <full_id>, where the id is a "
+        "sibling's full_id from projects_tree."
+    )
+
+
+def _position_at(others: list[dict[str, Any]], index: int) -> float | None:
+    """``positionAt``: the float for a node landing at *index* among
+    *others*, or ``None`` when the set must be spread first."""
+    if any(not isinstance(n.get("position"), (int, float)) for n in others):
+        return None
+    before = float(others[index - 1]["position"]) if index > 0 else None
+    after = float(others[index]["position"]) if index < len(others) else None
+    if before is None and after is None:
+        return POSITION_SPAN / 2
+    if before is None:
+        return after / 2  # type: ignore[operator]
+    if after is None:
+        return before + POSITION_SPAN / 2
+    if after - before < MIN_GAP:
+        return None
+    return (before + after) / 2
+
+
+def _spread(others: list[dict[str, Any]], moving: str, index: int) -> list[tuple[str, float]]:
+    """``spreadPositions``: every sibling, evenly spread, the node at *index*."""
+    order = [str(n["id"]) for n in others[:index]] + [moving]
+    order += [str(n["id"]) for n in others[index:]]
+    step = POSITION_SPAN / (len(order) + 1)
+    return [(nid, step * (i + 1)) for i, nid in enumerate(order)]
+
+
+def _plan_place(
+    rows: list[dict[str, Any]], pid: str, parent_id: str | None, word: str, sibling: str
+) -> tuple[float, list[tuple[str, float]], str] | str | None:
+    """``(position, spread, phrase)`` for the node *pid* placed by *word*
+    under *parent_id*, ``None`` when it is there already, or the refusal.
+
+    The siblings are the live children of the parent in the tree's order,
+    which is the order the app draws.
+    """
+    if parent_id is None:
+        # Only the true roots. The tree shows a node whose parent the member
+        # cannot see as a root (tree.py `get_tree`). A spread that wrote
+        # `parent_project_id: null` for it would make it a space (review
+        # round 1).
+        siblings = [n for n in rows if n.get("parent_project_id") is None]
+    else:
+        parent = _find_node(rows, parent_id)
+        if parent is None:
+            return (
+                "Its parent is not visible to you, so the order of its siblings "
+                "cannot be read. Ask a person who can see the parent."
+            )
+        siblings = parent.get("children") or []
+    live = [n for n in siblings if not n.get("archived_at")]
+    others = [n for n in live if str(n.get("id")) != pid]
+    if word in ("first", "last"):
+        index = 0 if word == "first" else len(others)
+        phrase = f"{word} among {_plural(len(others) + 1, 'sibling')}"
+    else:
+        at = next((i for i, n in enumerate(others) if str(n.get("id")) == sibling), None)
+        if at is None:
+            return (
+                f"{sibling} is not a live sibling there. The siblings are: "
+                + ", ".join(f"{data(n.get('name'))} ({n.get('id')})" for n in others)
+            )
+        index = at if word == "before" else at + 1
+        phrase = f"{word} {data(others[at].get('name'))}"
+    now = next((i for i, n in enumerate(live) if str(n.get("id")) == pid), None)
+    if now is not None and now == index:
+        return None
+    position = _position_at(others, index)
+    if position is not None:
+        return position, [], phrase
+    spread = _spread(others, pid, index)
+    mine = next(p for nid, p in spread if nid == pid)
+    return mine, [(nid, p) for nid, p in spread if nid != pid], phrase
+
+
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def move_project(
-    project_id: str, parent_project_id: str = "", to_top_level: bool = False
+    project_id: str, parent_project_id: str = "", to_top_level: bool = False, place: str = ""
 ) -> str:
     """Re-parent a project, folder or subproject under another node, or
     make it a space (to_top_level=true). ONE node per call. Every task under
     it is re-rooted, its types and counter follow the new root, and a task
     whose lane the new set lacks is re-pointed by category. The card leads
-    with the subtree size and the task count."""
+    with the subtree size and the task count.
+    place sets its order among its siblings, as the tree drag does: first,
+    last, before <full_id> or after <full_id> of a sibling. With place and no
+    parent, the node stays under its parent and only its order changes. A
+    sibling set that was never ordered is numbered once, and the card says
+    how many siblings that touches."""
     if _many(project_id):
         return f"move_project {ONE_ACT}"
-    if bool(parent_project_id.strip()) == bool(to_top_level):
-        return "Pass parent_project_id, or to_top_level=true to make it a space, not both."
+    placed = _place_of(place)
+    if isinstance(placed, str):
+        return placed
+    word, sibling = placed
+    reorder = bool(word) and not parent_project_id.strip() and not to_top_level
+    if not reorder and bool(parent_project_id.strip()) == bool(to_top_level):
+        return (
+            "Pass parent_project_id, or to_top_level=true to make it a space, not both. "
+            "To change only the order, pass place alone."
+        )
     pid, node = await _node(project_id)
+    if word and parent_project_id.strip() and uuid_of(parent_project_id, "parent_project_id") == str(
+        node.get("parent_project_id")
+    ):
+        # The node's own parent with a place is a reorder, and its card says
+        # so. It is not a move (review round 1).
+        reorder, parent_project_id = True, ""
+    found = await _move_target(pid, node, parent_project_id, word, reorder)
+    if isinstance(found, str):
+        return found
+    target, parent, where, tree_rows = found
+    plan = _plan_place(tree_rows, pid, target, word, sibling) if word else (0.0, [], "")
+    if plan is None:
+        return f"{data(node.get('name'))} is already {word} there. Nothing changed."
+    if isinstance(plan, str):
+        return plan
+    position, spread, phrase = plan
+    card = await _move_card(
+        pid, node, parent, target, where, tree_rows, phrase if word else "", len(spread), reorder
+    )
+    if isinstance(card, str):
+        return card
+    title, detail, impact, rest = card
+    if not await _confirm(title=title, detail=detail, context=_guard_card(impact, rest)):
+        return CANCELLED
+    # The spread first, every row of it, as the tree drag writes it: the
+    # node's own position means nothing until its siblings carry one.
+    for sid, at in spread:
+        sibling_id = uuid_of(sid, "sibling")
+        await post(
+            f"/projects/nodes/{sibling_id}/move",
+            {"parent_project_id": target, "position": at},
+        )
+    payload: dict[str, Any] = {"parent_project_id": target}
+    if word:
+        payload["position"] = position
+    result = (await post(f"/projects/nodes/{pid}/move", payload)) or {}
+    if reorder:
+        return f"Placed {data(node.get('name'))} {phrase} under {where}.\n  project_id: {pid}"
+    remapped = (result.get("statuses_remapped") or {}).get("moved")
+    tail = f" {remapped} task(s) changed lane." if remapped else ""
+    spot = f", {phrase}" if word else ""
+    return f"Moved {data(node.get('name'))} under {where}{spot}.{tail}\n  project_id: {pid}"
+
+
+async def _move_target(
+    pid: str, node: dict[str, Any], parent_project_id: str, word: str, reorder: bool
+) -> tuple[str | None, dict[str, Any] | None, str, list[dict[str, Any]]] | str:
+    """``(target parent id, parent row, its name, the tree)`` for a move, or
+    the refusal. A reorder keeps the node's own parent."""
     parent: dict[str, Any] | None = None
     parent_id = ""
     if parent_project_id.strip():
         parent_id, parent = await _node(parent_project_id)
         if parent_id == pid:
             return "A project cannot be moved under itself."
-        if str(parent.get("id")) == str(node.get("parent_project_id")):
+        if not word and str(parent.get("id")) == str(node.get("parent_project_id")):
             return f"{data(node.get('name'))} is already under {data(parent.get('name'))}."
-    elif node.get("parent_project_id") is None:
+    elif not reorder and node.get("parent_project_id") is None:
         return f"{data(node.get('name'))} is already a space."
+    rows = ((await get("/projects/tree")) or {}).get("rows") or []
+    if not reorder:
+        where = "the top level (a space)" if parent is None else data(parent.get("name"))
+        return parent_id or None, parent, where, rows
+    current = node.get("parent_project_id")
+    if not current:
+        return None, None, "the top level", rows
+    target = uuid_of(current, "parent_project_id")
+    return target, None, data((_find_node(rows, target) or {}).get("name") or "its parent"), rows
+
+
+async def _move_card(
+    pid: str,
+    node: dict[str, Any],
+    parent: dict[str, Any] | None,
+    target: str | None,
+    where: str,
+    rows: list[dict[str, Any]],
+    phrase: str,
+    spread: int,
+    reorder: bool,
+) -> tuple[str, str, str, dict[str, Any]] | str:
+    """``(title, detail, impact, rest)`` of the move card, or the refusal.
+    *target* is the new parent's id as the caller gave it, canonical."""
+    pid = uuid_of(pid, "project_id")
+    name = data(node.get("name"))
+    order: dict[str, Any] = {"place": phrase} if phrase else {}
+    if spread:
+        order["order"] = (
+            f"the siblings had no order yet, so {_plural(spread, 'other sibling')} "
+            "get a position too, once"
+        )
+    if reorder:
+        rest = {"project": name, "under": where, **order, "undo": "move it back with place"}
+        impact = f"{name} placed {phrase} under {where}"
+        return "Reorder this project?", f"{name} → {phrase} under {where}", impact, rest
     summary = (await get(f"/projects/nodes/{pid}/summary")) or {}
-    subtree = await _tree_node(pid)
-    if parent_id and subtree is not None and _find_node(subtree.get("children") or [], parent_id):
-        # `assert_no_project_cycle`'s 422, said before the card.
-        return f"{data(parent.get('name'))} is inside {data(node.get('name'))}. A tree cannot loop."
-    below = _descendants(subtree)
-    tasks = int(summary.get("tasks") or 0)
-    where = "the top level (a space)" if parent is None else data(parent.get("name"))
-    impact = (
-        f"{_plural(1 + below, 'project')} moved · {_plural(tasks, 'task')} re-rooted under {where}"
-    )
-    if not await _confirm(
-        title="Move this project?",
-        detail=f"{data(node.get('name'))} → {where} · {impact}",
-        context=_guard_card(
-            impact,
-            {
-                "project": data(node.get("name")),
-                "to": where,
-                "statuses": "a task whose lane the destination set lacks is re-pointed by category",
-                "undo": "move it back; the counter and types follow the new root",
-            },
-        ),
+    subtree = _find_node(rows, pid)
+    if parent is not None and target and subtree is not None and _find_node(
+        subtree.get("children") or [], target
     ):
-        return CANCELLED
-    payload: dict[str, Any] = {"parent_project_id": parent_id or None}
-    result = (await post(f"/projects/nodes/{pid}/move", payload)) or {}
-    remapped = (result.get("statuses_remapped") or {}).get("moved")
-    tail = f" {remapped} task(s) changed lane." if remapped else ""
-    return f"Moved {data(node.get('name'))} under {where}.{tail}\n  project_id: {pid}"
+        # `assert_no_project_cycle`'s 422, said before the card.
+        return f"{data(parent.get('name'))} is inside {name}. A tree cannot loop."
+    tasks = int(summary.get("tasks") or 0)
+    impact = (
+        f"{_plural(1 + _descendants(subtree), 'project')} moved · "
+        f"{_plural(tasks, 'task')} re-rooted under {where}"
+    )
+    rest = {
+        "project": name,
+        "to": where,
+        **order,
+        "statuses": "a task whose lane the destination set lacks is re-pointed by category",
+        "undo": "move it back; the counter and types follow the new root",
+    }
+    return "Move this project?", f"{name} → {where} · {impact}", impact, rest
 
 
 # ── Tasks ────────────────────────────────────────────────────────────────────
@@ -320,39 +543,46 @@ async def _status_name(task: dict[str, Any]) -> str:
     return "(unknown)"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
-async def archive_task(task_id: str) -> str:
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     """Shelve one task from every board, list, calendar and search. ONE
     task per call, from any status; archiving is a filing decision and
-    claims no outcome. Subtasks stay where they are: the gateway also takes
-    include_subtasks, which shelves them too, and this tool does NOT send it.
-    The card carries the title, the lane and how many open subtasks it leaves
-    behind. unarchive_task is the undo."""
+    claims no outcome. include_subtasks (yes or no): yes shelves its
+    subtasks too. When the task has subtasks and no answer is given, the
+    tool asks first (D-PM-38: the app takes them along by default). The card
+    carries the title, the lane and what happens to the subtasks.
+    unarchive_task is the undo, and it restores one task."""
     if _many(task_id):
         return f"archive_task {ONE_ACT}"
+    wanted = _subtasks_wanted(include_subtasks)
     tid, task = await _task(task_id)
     if task.get("archived_at"):
         return f"{_ref(task)} is already archived."
-    relations = (await get(f"/projects/tasks/{tid}/relations")) or {}
-    progress = relations.get("progress") or {}
-    subtasks = relations.get("subtasks") or []
-    open_subs = max(0, len(subtasks) - int(progress.get("done") or 0))
+    count = await _subtask_counts(tid)
+    if wanted is None and count.total:
+        return ask_about_subtasks(task, count.total, "archive", count.capped)
     lane = await _status_name(task)
-    impact = (
-        f"1 task archived from lane {lane} · {_plural(open_subs, 'open subtask')} left on the board"
-    )
+    if wanted and count.total:
+        tail = f"{_subtasks_phrase(count.total, 'archive', count.capped)} archived with it"
+    else:
+        tail = f"{_subtasks_phrase(count.open, 'complete', count.capped)} left on the board"
+    impact = f"1 task archived from lane {lane} · {tail}"
+    rest = {"task": _ref(task), "status": lane, "undo": "restore it from the archive"}
     if not await _confirm(
         title="Archive this task?",
         detail=f"{_ref(task)} · {impact}",
-        context=_guard_card(impact, {"task": _ref(task), "status": lane, "undo": "unarchive_task"}),
+        context=_guard_card(impact, rest),
     ):
         return CANCELLED
-    row = await post(f"/projects/tasks/{tid}/archive")
+    params = {"include_subtasks": True} if wanted else None
+    row = await post(f"/projects/tasks/{tid}/archive", params=params)
     merged = {**task, **(row if isinstance(row, dict) else {})}
-    return "\n".join(["Archived:", *_task_line(merged)])
+    return "\n".join(
+        ["Archived:", *_task_line(merged), *_subtask_receipt(row, "subtasks_archived", "archive")]
+    )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def merge_tasks(target_task_id: str, source_task_ids: str) -> str:
     """Fold one or more tasks into a survivor, in the SAME project. Their
     comments, attachments, links, subtasks and watchers move to the
@@ -457,7 +687,10 @@ async def _bulk_body(
     if patch:
         body["patch"] = patch
     for key, raw in (("assignees_add", assignees_add), ("assignees_remove", assignees_remove)):
-        people = [await _resolve_assignee(a) for a in _split(raw)]
+        # H-236: only an assignee to ADD can start an agent's run.
+        people = [
+            await _resolve_assignee(a, dispatch=key == "assignees_add") for a in _split(raw)
+        ]
         if people:
             body[key] = people
     for key, raw in (("tags_add", tags_add), ("tags_remove", tags_remove)):
@@ -478,27 +711,62 @@ async def _bulk_body(
     return body
 
 
+def _bulk_subtasks(body: dict[str, Any], include_subtasks: str) -> dict[str, str]:
+    """``include_subtasks`` on a bulk act, asked once for the whole selection.
+
+    It means something with ``action: archive`` and with a status patch,
+    where the route cascades into a Done lane. It is set on *body* here.
+    Returns the card's ``subtasks`` line. A bulk act does not read each
+    task's subtree first, so the line states the rule and not a count.
+    """
+    wanted = _subtasks_wanted(include_subtasks)
+    archiving = body.get("action") == "archive"
+    closing = "status" in (body.get("patch") or {})
+    if not archiving and not closing:
+        if wanted is not None:
+            raise GatewayRefusal(
+                "include_subtasks goes with action archive, or with a status in a Done lane."
+            )
+        return {}
+    if wanted:
+        body["include_subtasks"] = True
+        if archiving:
+            return {"subtasks": "archived with each task"}
+        return {"subtasks": "open subtasks completed too, where a task lands in a Done lane"}
+    return {"subtasks": "stay as they are, unless you ask for them too"}
+
+
 def _bulk_impact(body: dict[str, Any], n: int) -> str:
+    """The card's one-line impact. It names no wire key (owner report,
+    2026-10-07: the member read "tags_add → Bug"). The change itself is on
+    the card as fields, from :func:`_bulk_changes`, and the card draws each
+    one by its key: a tag as a tag, a status as a status."""
     verb = body.get("action")
     if verb:
         return f"{_plural(n, 'task')} {verb}d"
-    described: dict[str, Any] = {}
+    return f"one change across {_plural(n, 'task')}"
+
+
+def _bulk_changes(body: dict[str, Any]) -> dict[str, Any]:
+    """The change of a bulk body as card fields: ``key: value`` lines, each
+    member value fenced. The keys are the ones the card's label map knows
+    (``cardFields.ts``). A cleared field reads ``cleared``."""
+    out: dict[str, Any] = {}
     for key, value in (body.get("patch") or {}).items():
         # The flags as a member reads them, never the stored number (H-173).
         if key in ("importance", "leveraged"):
-            described.update(card_view({key: value}))
+            out.update({k: data(v) for k, v in card_view({key: value}).items()})
         else:
-            described[key] = value
+            out[key] = "cleared" if value is None else data(value)
     for key in ("assignees_add", "assignees_remove", "tags_add", "tags_remove"):
         if key in body:
-            described[key] = ", ".join(body[key])
-    return f"{_plural(n, 'task')} changed: " + ", ".join(
-        f"{k} → {'cleared' if v is None else v}" for k, v in described.items()
-    )
+            out[key] = ", ".join(data(v) for v in body[key])
+    return out
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 @takes_priority
+@agent_assignee_refusal_as_text
 async def bulk_update(
     task_ids: str,
     status: str = "",
@@ -515,6 +783,8 @@ async def bulk_update(
     important: str = "",
     leveraged: str = "",
     importance: Removed = None,
+    include_subtasks: str = "",
+    personal: str = "",
 ) -> str:
     """One change across a selection of tasks, in one transaction. task_ids
     is comma-separated, at most 50. status is by NAME and is resolved per
@@ -523,12 +793,38 @@ async def bulk_update(
     not pass stays as it is on every task. assignees_add/remove and
     tags_add/remove take comma-separated values. action is archive or
     unarchive, on its own with no other change. Deleting is not offered.
+    include_subtasks (yes or no) is asked once for the whole selection: yes
+    with action archive shelves each task's subtasks too, and yes with a
+    status in a Done lane completes their open subtasks. Without it the
+    subtasks stay as they are, and the card says so.
+    personal sets the member's OWN overlay on every task, as the My Tasks
+    bulk bar does: a JSON object with set_my_overlay's arguments, for example
+    {"disposition": "someday", "context": "@home"}. It goes on its own, with
+    no other change.
     The card names every task and the exact change."""
     ids = [uuid_of(t, "task_id") for t in _split(task_ids)]
     if not ids:
         return "Give at least one task id."
     if len(ids) > MAX_BATCH:
         return f"That is {len(ids)} tasks. The limit for one card is {MAX_BATCH}."
+    if str(personal or "").strip():
+        others = [
+            name for name, value in (
+                ("status", status), ("due", due), ("start", start), ("clear", clear),
+                ("estimate_mins", estimate_mins), ("assignees_add", assignees_add),
+                ("assignees_remove", assignees_remove), ("tags_add", tags_add),
+                ("tags_remove", tags_remove), ("action", action), ("priority", priority),
+                ("important", important), ("leveraged", leveraged),
+                ("include_subtasks", include_subtasks),
+            )
+            if str(value or "").strip() not in ("", "0")
+        ]
+        if others:
+            return (
+                f"personal goes on its own. Send {', '.join(others)} in another call: the "
+                "overlay is yours, and the other fields are the team's."
+            )
+        return await _bulk_personal(ids, personal)
     patch = _bulk_patch(
         status, importance, due, start, estimate_mins, clear, priority, important, leveraged
     )
@@ -539,11 +835,17 @@ async def bulk_update(
     )
     if isinstance(body, str):
         return body
+    subtasks = _bulk_subtasks(body, include_subtasks)
     tasks = [(await _task(t))[1] for t in ids]
     impact = _bulk_impact(body, len(tasks))
-    rest: dict[str, Any] = {}
+    rest: dict[str, Any] = {**_bulk_changes(body), **subtasks}
+    # Whole titles when the card holds them, and the UI cuts a long one with
+    # its full title as the tooltip. Only a card too long for the limit clips
+    # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).
+    whole = {f"task {i + 1}": _ref(t) for i, t in enumerate(tasks)}
+    fits = len(_guard_card(impact, {**rest, **whole})) <= CARD_CONTEXT_LIMIT
     for i, t in enumerate(tasks):
-        rest[f"task {i + 1}"] = _short_ref(t)
+        rest[f"task {i + 1}"] = whole[f"task {i + 1}"] if fits else _short_ref(t)
     if not await _confirm(
         title=f"Change {_plural(len(tasks), 'task')} at once?",
         detail=impact,
@@ -552,6 +854,8 @@ async def bulk_update(
         return CANCELLED
     result = (await post("/projects/tasks/bulk", body)) or {}
     out = [f"Applied to {result.get('applied', 0)} of {result.get('requested', len(ids))} tasks."]
+    door = ("subtasks_archived", "archive") if body.get("action") else ("subtasks_completed", "complete")
+    out.extend(_subtask_receipt(result, *door))
     for row in result.get("skipped") or []:
         out.append(f"- skipped {row.get('task_id')}: {data(row.get('reason'))}")
     for row in result.get("failed") or []:
@@ -565,6 +869,107 @@ async def bulk_update(
             # The level asked for, against each task's own due date.
             out.extend(level_note(priority, {**t, **patch}))
     return "\n".join(out)
+
+
+def _overlay_shown(value: Any) -> str:
+    """One overlay value on the card. A flag reads yes or no: ``data(False)``
+    is ``«»``, which the card would draw as "none" (review round 1)."""
+    if value is None:
+        return "cleared"
+    if isinstance(value, bool):
+        return data("yes" if value else "no")
+    if isinstance(value, dict):
+        return data(value.get("email"))
+    return data(value)
+
+
+async def _bulk_personal(ids: list[str], personal: str) -> str:
+    """``action: personal`` (``bulk.py`` ``validate_personal``): the member's
+    own overlay on every task of the selection, under one class C card."""
+    try:
+        given = json.loads(personal)
+    except ValueError:
+        given = None
+    if not isinstance(given, dict):
+        return (
+            "personal is a JSON object with set_my_overlay's arguments, for example "
+            f'{{"disposition": "someday"}}. The arguments are {", ".join(OVERLAY_ARGUMENTS)}.'
+        )
+    values = await _overlay_values(given, {})
+    if isinstance(values, str):
+        return values
+    if not values:
+        return "Nothing to change in personal."
+    tasks = [(await _task(t))[1] for t in ids]
+    groups = await _chase_groups(ids, values, bool(str(given.get("waiting_since") or "").strip()))
+    shown = ", ".join(
+        f"{k} → {'cleared' if v is None else (v.get('email') if isinstance(v, dict) else v)}"
+        for k, v in values.items()
+    )
+    # The card names no wire key in its prose (owner, 2026-10-07). The
+    # values are fields, which the card labels and draws by kind.
+    impact = f"your own triage of {_plural(len(tasks), 'task')}"
+    rest: dict[str, Any] = {k: _overlay_shown(v) for k, v in values.items()}
+    rest["seen by"] = "you only. The board does not change"
+    kept = sum(len(g) for g, v in groups if "waiting_on" in v and "delegated_at" not in v)
+    if kept:
+        rest["waiting since"] = (
+            f"{_plural(kept, 'task')} already wait on this person and keep their start. "
+            "The others start now"
+        )
+    finished = [t for t in tasks if t.get("completed_at")]
+    if values.get("disposition") in _REOPENING and finished:
+        rest["reopens"] = (
+            f"{_plural(len(finished), 'finished task')} reopen on the board (D77)"
+        )
+    for i, t in enumerate(tasks):
+        rest[f"task {i + 1}"] = _short_ref(t)
+    if not await _confirm(
+        title=f"Set your triage of {_plural(len(tasks), 'task')}?",
+        detail=impact,
+        context=_guard_card(impact, rest),
+    ):
+        return CANCELLED
+    applied, skipped, failed = 0, [], []
+    for group_ids, group_values in groups:
+        body = {"task_ids": group_ids, "action": "personal", "personal": group_values}
+        result = (await post("/projects/tasks/bulk", body)) or {}
+        applied += int(result.get("applied") or 0)
+        skipped += result.get("skipped") or []
+        failed += result.get("failed") or []
+    out = [f"Your triage is set on {applied} of {len(ids)} tasks: {shown}."]
+    for row in skipped:
+        out.append(f"- skipped {row.get('task_id')}: {data(row.get('reason'))}")
+    for row in failed:
+        out.append(f"- failed {row.get('task_id')}: {data(row.get('reason'))}")
+    return "\n".join(out)
+
+
+async def _chase_groups(
+    ids: list[str], values: dict[str, Any], since_given: bool
+) -> list[tuple[list[str], dict[str, Any]]]:
+    """The bulk bodies for one overlay: ``[(task ids, values)]``.
+
+    The route writes ONE overlay to every task of a request. A chase needs a
+    since-when (migration 188), and the tool stamps now. A task that already
+    waits on the same person keeps its start, because the age is what a
+    person scans before a nudge (PR #683 review). So each overlay is read
+    first, and those tasks get a second body with no ``delegated_at``. The
+    app's own bulk bar sends a disposition only, and never a chase.
+    """
+    if "waiting_on" not in values or since_given:
+        return [(ids, values)]
+    same: list[str] = []
+    new: list[str] = []
+    for tid in ids:
+        task_id = uuid_of(tid, "task_id")
+        try:
+            mine = (await get(f"/projects/my/tasks/{task_id}")) or {}
+        except GatewayRefusal:
+            mine = {}
+        (same if _same_chase(values["waiting_on"], mine) else new).append(tid)
+    keep = {k: v for k, v in values.items() if k != "delegated_at"}
+    return [g for g in ((same, keep), (new, values)) if g[0]]
 
 
 # ── The timeline ─────────────────────────────────────────────────────────────
@@ -582,7 +987,7 @@ async def _timeline_row(task_id: str, activity_id: str, kind: str) -> dict[str, 
     return None
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def delete_comment(task_id: str, comment_id: str) -> str:
     """Delete a comment the member wrote. The words are cleared and the row
     is hidden; replies keep their place. The author only, checked before the
@@ -621,7 +1026,7 @@ def _change_lines(changes: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return out
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def revert_activity(task_id: str, activity_id: str) -> str:
     """Undo one field change from a task's timeline: the values it recorded
     as "old" are written back. activity_id comes from task_detail's
@@ -642,7 +1047,8 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
     aid = uuid_of(activity_id, "activity_id")
     if not await _confirm(
         title="Revert this change?",
-        detail=f"{_ref(task)} · " + ", ".join(f"{f}: {v}" for f, v in lines),
+        # The fields are rows on the card. The detail names no wire key.
+        detail=impact,
         context=_guard_card(impact, {"task": _ref(task), **dict(lines)}),
     ):
         return CANCELLED
@@ -656,7 +1062,7 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
 # ── Vocabulary deletes ───────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
     """Delete a lane, moving the tasks in it to move_to (a status NAME in
     the same set) first. The card leads with how many tasks move: the count
@@ -693,8 +1099,9 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
             "or Cancelled lane first."
         )
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    if owner.get("may_edit") is False:
-        return "You may not edit this project's statuses. It needs the settings permission."
+    refused = status_edit_refusal(owner, node.get("name"))
+    if refused:
+        return refused
     in_use = int(counts.get(sid) or 0)
     target: dict[str, Any] | None = None
     if move_to.strip():
@@ -731,7 +1138,7 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str:
     """Switch where a project's lanes come from. mode=inherit drops its own
     set and uses the parent's; mode=own gives it a set of its own, copied
@@ -746,8 +1153,9 @@ async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str
         return "mode is inherit or own."
     pid, node = await _node(project_id)
     current = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    if current.get("may_edit") is False:
-        return "You may not edit this project's statuses. It needs the settings permission."
+    refused = status_edit_refusal(current, node.get("name"))
+    if refused:
+        return refused
     if which == "inherit" and not current.get("can_inherit"):
         return f"{data(node.get('name'))} is a space. It has nothing to inherit from."
     if which == "inherit" and not current.get("owns"):
@@ -787,7 +1195,7 @@ async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_type(project_id: str, type_name: str) -> str:
     """Delete a task type from the project's root. Tasks that carry it keep
     existing, untyped. The route counts them as it deletes and the receipt
@@ -798,7 +1206,7 @@ async def delete_type(project_id: str, type_name: str) -> str:
     pid, node = await _node(project_id)
     row = _one_named(await _vocab(pid, "types"), type_name, "type")
     if _org_wide(row):
-        return f"{data(row.get('name'))} is organization-wide. It is not deleted from a project."
+        return _shared_entry_text(row, "delete")
     if row.get("is_system"):
         return f"{data(row.get('name'))} is a system type and cannot be deleted."
     kid = uuid_of(str(row.get("id")), "type_id")
@@ -819,7 +1227,7 @@ async def delete_type(project_id: str, type_name: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_field(project_id: str, field: str) -> str:
     """Delete a custom field AND every value filed under its key, across
     the project's tree. The route counts the values as it clears them and
@@ -830,7 +1238,7 @@ async def delete_field(project_id: str, field: str) -> str:
     pid, node = await _node(project_id)
     row = _field_of(await _vocab(pid, "fields"), field)
     if _org_wide(row):
-        return f"{data(row.get('name'))} is organization-wide. It is not deleted from a project."
+        return _shared_entry_text(row, "delete")
     fid = uuid_of(str(row.get("id")), "field_id")
     impact = (
         f"1 field deleted · every value under key {data(row.get('field_key'))} in "
@@ -852,7 +1260,7 @@ async def delete_field(project_id: str, field: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_tag(project_id: str, tag: str) -> str:
     """Delete a tag and strip it from every task in the project's tree.
     The card leads with the impact read: how many tasks, in how many
@@ -862,7 +1270,7 @@ async def delete_tag(project_id: str, tag: str) -> str:
     pid, node = await _node(project_id)
     row = _one_named(await _vocab(pid, "tags"), tag, "tag")
     if _org_wide(row):
-        return f"{data(row.get('name'))} is organization-wide. It is not deleted from a project."
+        return _shared_entry_text(row, "delete")
     gid = uuid_of(str(row.get("id")), "tag_id")
     hit = (await get(f"/projects/tags/{gid}/impact")) or {}
     tasks = int(hit.get("tasks") or 0)
@@ -878,7 +1286,7 @@ async def delete_tag(project_id: str, tag: str) -> str:
     return f"Deleted tag {data(row.get('name'))}; {_plural(stripped, 'task')} untagged.\n  tag_id: {gid}"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def merge_tags(project_id: str, tag: str, into: str) -> str:
     """Fold one tag into another and delete the first. Every task wearing
     the first gets the second once. Same project only, root-local only.
@@ -892,7 +1300,7 @@ async def merge_tags(project_id: str, tag: str, into: str) -> str:
     if source.get("id") == target.get("id"):
         return "A tag cannot be merged into itself."
     if _org_wide(source) or _org_wide(target):
-        return "An organization-wide tag is not merged from a project."
+        return _shared_entry_text(source if _org_wide(source) else target, "merge")
     sid = uuid_of(str(source.get("id")), "tag_id")
     tid = uuid_of(str(target.get("id")), "into")
     # The list's `task_count` excludes archived tasks; the merge's rewrite
@@ -922,7 +1330,7 @@ async def merge_tags(project_id: str, tag: str, into: str) -> str:
 # ── Views, reports, attachments ──────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_view(project_id: str, view_name: str) -> str:
     """Delete a saved view, its hand-arranged order and every member's
     arrangement of it. The route counts both as it deletes and the receipt
@@ -951,7 +1359,7 @@ async def delete_view(project_id: str, view_name: str) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def report_delete(report_id: str) -> str:
     """Delete a saved report definition, with its schedule and recipients.
     The numbers it renders are not stored, so nothing else is lost."""
@@ -978,7 +1386,7 @@ async def report_delete(report_id: str) -> str:
     return f"Deleted report {data(row.get('name'))}.\n  report_id: {rid}"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True)
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
 async def delete_attachment(task_id: str, attachment_id: str) -> str:
     """Detach a file from a task. The bytes are kept, because the same
     file may hang off another task. attachment_id comes from task_detail.

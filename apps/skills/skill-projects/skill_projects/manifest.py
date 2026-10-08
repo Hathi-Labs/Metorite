@@ -19,6 +19,16 @@ Classes:
 
 A row may name a tool that is not built yet. Every such tool is in
 :data:`PLANNED` with the slice that builds it, and the fence asserts that.
+
+WS-46 P4 (D91) takes the same rule from the route to the FIELD. :data:`SENDS`,
+:data:`FIELD_EXEMPT` and :data:`FIELD_PLANNED` hold every field of a mapped
+route's request, and ``tests/unit/test_projects_field_parity.py`` (fence F2)
+reads the fields from the real router.
+
+WS-46 P5 takes it to the UI client METHOD. :data:`UI_ACTIONS`,
+:data:`UI_EXEMPT` and :data:`UI_PLANNED` hold every method of the Projects
+client, and ``tests/unit/test_projects_ui_actions.py`` (fence F3) reads the
+methods and the routes they call from the TypeScript source.
 """
 
 from __future__ import annotations
@@ -29,9 +39,17 @@ from dataclasses import dataclass
 __all__ = [
     "CLASSES",
     "COMPOSITE",
+    "FIELD_EXEMPT",
+    "FIELD_GAPS",
+    "FIELD_PLANNED",
+    "IDENTITY_HEADERS",
     "MANIFEST",
     "PLANNED",
     "READ_ONLY_POSTS",
+    "SENDS",
+    "UI_ACTIONS",
+    "UI_EXEMPT",
+    "UI_PLANNED",
     "Route",
     "allowed",
     "is_read",
@@ -39,6 +57,7 @@ __all__ = [
     "route_for",
     "tool_class",
     "tools_by_class",
+    "witnesses",
 ]
 
 CLASSES = ("A", "B", "C", "X")
@@ -252,6 +271,9 @@ MANIFEST: tuple[Route, ...] = (
     ),
     Route("GET", "/projects/my/calendar", "calendar", "A"),
     Route("GET", "/projects/my/contexts", "my_contexts", "A"),
+    # WS-46 P7 - the member's date and zone (`user_settings.timezone`). It is
+    # my_work's read, and the tools that guess a day reach it as a composite.
+    Route("GET", "/projects/my/today", "my_work", "A"),
     # WS-39 S6e — the projects I lead, with their open work and mine.
     Route("GET", "/projects/my/led", "my_led_projects", "A"),
     # WS-39 S6b — a member's own categories. The READ is on the surface,
@@ -434,8 +456,8 @@ PLANNED: dict[str, str] = {
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
     # S3 (2026-09-23) shipped the seventeen class C acts (`guarded.py`).
-    # WS-39 S6b (2026-09-23) added the personal-areas read.
-    "my_areas": "S6b",
+    # WS-39 S6b (2026-09-23) added the personal-areas read, and WS-46 P7
+    # (2026-10-06) built it (G17).
     # S4 (2026-09-23) shipped the workflows, the views and the forms. S5
     # (2026-09-23) shipped the rest: views, calendar, contexts, watchers,
     # intake, notifications, grants (`inbox.py`). Every other tool the
@@ -450,7 +472,18 @@ PLANNED: dict[str, str] = {
 #: reaches. ``test_projects_agent_writes.py`` holds every non-GET a tool
 #: issues to its own routes or to these.
 COMPOSITE: dict[str, frozenset[str]] = {
-    "create_task": frozenset({"assign"}),
+    # WS-46 P1 (D91): a repeating task is one act, so the rule is the second
+    # write under the create's one card (`PUT …/recurrence`). WS-46 P6 sends
+    # the custom values in the create itself, which checks them (#679).
+    # WS-46 P7: a weekly rule with no day takes today in the member's zone,
+    # from my_work's `GET /projects/my/today`.
+    "create_task": frozenset({"assign", "set_recurrence", "my_work"}),
+    "set_recurrence": frozenset({"my_work"}),
+    # WS-46 P7: a block time with no offset is read in the member's zone.
+    "set_my_overlay": frozenset({"my_work"}),
+    "bulk_update": frozenset({"my_work"}),
+    # WS-46 P1: the detail prints "Repeats:" from the `recurrence` read.
+    "task_detail": frozenset({"recurrence"}),
     "add_subtasks": frozenset({"create_task"}),
     # The create route's INSERT has no `required` column; the flag is a
     # PATCH under the same card (S2b verifier).
@@ -473,6 +506,15 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "edit_project": frozenset({"update_project"}),
     # S7d — the plan also writes its `blocks` links under the same card.
     "propose_plan": frozenset({"create_project", "create_task", "link_tasks"}),
+    # WS-46 P13 — several new tasks in one project under ONE confirmation
+    # card. Each row is create_task's own write, and its assign PUT after.
+    # Review round 2: the read before the card sends `include_triage` on
+    # list_tasks' route, so F2 holds that claim too.
+    "create_tasks": frozenset({"create_task", "list_tasks"}),
+    # H-273 — several new tags, or several new types, under ONE confirmation
+    # card. Each ticked row is one POST to the single tool's own route.
+    "create_tags": frozenset({"create_tag"}),
+    "create_types": frozenset({"create_type"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
 }
@@ -488,6 +530,745 @@ READ_ONLY_POSTS: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/projects/reports/preview"),
     }
 )
+
+
+# ── WS-46 P4 (D91, fence F2) — every request FIELD, not only every route ─────
+#
+# Spec: ``project-docs/specs/projects_agent_parity.md`` §6.3. D-PM-37 holds
+# each ROUTE to a decision. These three tables hold each FIELD of a mapped
+# route's request to one. ``tests/unit/test_projects_field_parity.py`` reads
+# the fields from FastAPI's own ``route.dependant`` (the body model's fields,
+# the query parameters and the route's own headers), and fails on a field
+# that is in none of the three, or in more than one. So a new field on a
+# Projects route cannot merge until its author decides what the chat does
+# with it. Class X routes have no tool, and their fields are not held here.
+#
+# The wire name is the key: an alias (``from``, ``If-Match``) where the route
+# declares one. A dict body with no model is one field, the parameter name.
+
+#: Headers a route's DEPENDENCY declares. They are the auth seam, and the
+#: client sets each one from the run binding, never from a tool argument
+#: (R11, user_management_contract.md). The fence ignores these four and
+#: fails on any other header a dependency adds.
+IDENTITY_HEADERS: frozenset[str] = frozenset(
+    {"x-user-email", "x-user-role", "authorization", "x-actor-via"}
+)
+
+#: For each mapped route: request field -> the tool that sends it. The value is
+#: ``"tool.argument"`` when an argument sets the field, or ``"tool"`` when the
+#: tool sets it by itself (a fixed page size, ``include_subtree``). One witness
+#: per field is enough. The fence calls each witness through the fake gateway
+#: and asserts that the request carries the field, so a claim the tool does
+#: not honour fails.
+#:
+#: WS-46 P13: a value may also be a TUPLE of witnesses, when a second tool
+#: sends the same field. ``"tool.argument.key"`` names one key of a JSON row
+#: argument, for example ``create_tasks.tasks.due``. The fence checks each
+#: witness of the tuple on the wire.
+SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
+    # ── tasks ────────────────────────────────────────────────────────────
+    ("GET", "/projects/tasks"): {
+        "project_id": "list_tasks.project_id",
+        "include_subtree": "list_tasks.include_subtree",
+        "q": "list_tasks.query",
+        "include_archived": "list_tasks.include_archived",
+        "status_category": "list_tasks.status_category",
+        "assignees": "list_tasks.assignee",
+        "unassigned": "list_tasks.unassigned",
+        "overdue": "list_tasks.overdue",
+        "due_before": "list_tasks.due_before",
+        "tags": "list_tasks.tags",
+        "watching": "list_tasks.watching",
+        "page": "list_tasks.page",
+        "page_size": "list_tasks.page_size",
+        # WS-46 P13 review round 2: the read before a batch's card takes the
+        # triage lane too, so a twin in triage starts unticked.
+        "include_triage": "create_tasks",
+    },
+    # WS-46 P13: create_tasks sends each field from one key of each row.
+    ("POST", "/projects/tasks"): {
+        "project_id": ("create_task.project_id", "create_tasks.project_id"),
+        "parent_task_id": (
+            "create_task.parent_task_id",
+            "create_tasks.tasks.parent_task_id",
+        ),
+        "status_id": ("create_task.status", "create_tasks.tasks.status"),
+        "title": ("create_task.title", "create_tasks.tasks.title"),
+        "description": ("create_task.description", "create_tasks.tasks.description"),
+        "importance": ("create_task.important", "create_tasks.tasks.important"),
+        "leveraged": ("create_task.leveraged", "create_tasks.tasks.leveraged"),
+        "estimate_mins": ("create_task.estimate_mins", "create_tasks.tasks.estimate_mins"),
+        "due_at": ("create_task.due", "create_tasks.tasks.due"),
+        "tags": ("create_task.tags", "create_tasks.tasks.tags"),
+        # WS-46 P6: G5, G6 and G7. The route checks each custom value
+        # through `custom_fields.apply_values` (#679), before the insert.
+        "start_date": ("create_task.start", "create_tasks.tasks.start"),
+        "type_id": ("create_task.type", "create_tasks.tasks.type"),
+        "custom_fields": ("create_task.fields", "create_tasks.tasks.fields"),
+    },
+    ("PATCH", "/projects/tasks/{task_id}"): {
+        "status_id": "update_task.status",
+        "title": "update_task.title",
+        "description": "update_task.description",
+        "importance": "update_task.important",
+        "leveraged": "update_task.leveraged",
+        "estimate_mins": "update_task.estimate_mins",
+        "start_date": "update_task.start",
+        "due_at": "update_task.due",
+        "tags": "update_task.tags",
+        # WS-46 P6: G6, G7 and G9.
+        "type_id": "update_task.type",
+        "custom_fields": "update_task.fields",
+        "include_subtasks": "update_task.include_subtasks",
+    },
+    ("POST", "/projects/tasks/{task_id}/move"): {
+        "parent_task_id": "move_task.parent_task_id",
+        # WS-46 P6 (G8): a move WITH the destination's required fields is
+        # this route, one task at a time, as the app's promote door is.
+        "project_id": "move_task.destination_project_id",
+        "custom_fields": "move_task.fields",
+        "include_subtasks": "move_task.include_subtasks",
+    },
+    ("PUT", "/projects/tasks/{task_id}/assignees"): {
+        "assignees": ("assign.assignees", "create_tasks.tasks.assignees"),
+    },
+    ("POST", "/projects/tasks/{task_id}/links"): {
+        "target_task_id": "link_tasks.other_task_id",
+        "link_type": "link_tasks.link_type",
+    },
+    ("POST", "/projects/tasks/bulk"): {
+        "task_ids": "bulk_update.task_ids",
+        "patch": "bulk_update.status",
+        "assignees_add": "bulk_update.assignees_add",
+        "assignees_remove": "bulk_update.assignees_remove",
+        "tags_add": "bulk_update.tags_add",
+        "tags_remove": "bulk_update.tags_remove",
+        "action": "bulk_update.action",
+        "include_subtasks": "bulk_update.include_subtasks",
+        # WS-46 P7 (G16): the member's own overlay on every task of a selection.
+        "personal": "bulk_update.personal",
+    },
+    ("POST", "/projects/tasks/move/preview"): {
+        "task_ids": "move_task.task_ids",
+        "destination_project_id": "move_task.destination_project_id",
+        "include_subtasks": "move_task.include_subtasks",
+    },
+    ("POST", "/projects/tasks/move"): {
+        "task_ids": "move_task.task_ids",
+        "destination_project_id": "move_task.destination_project_id",
+        "accept_drops": "move_task",
+        "accepted_drops": "move_task",
+        "include_subtasks": "move_task.include_subtasks",
+    },
+    # WS-46 P6 (G9, D-PM-38): the two lifecycle doors read it as a query flag.
+    ("POST", "/projects/tasks/{task_id}/archive"): {
+        "include_subtasks": "archive_task.include_subtasks",
+    },
+    ("POST", "/projects/tasks/{task_id}/complete"): {
+        "include_subtasks": "complete.include_subtasks",
+    },
+    ("POST", "/projects/tasks/{task_id}/merge"): {"sources": "merge_tasks.source_task_ids"},
+    ("GET", "/projects/search"): {"q": "find_tasks.query", "limit": "find_tasks.limit"},
+    # ── activity ─────────────────────────────────────────────────────────
+    ("GET", "/projects/tasks/{task_id}/timeline"): {
+        "kind": "render_timeline.kind",
+        "page": "task_detail",
+        "page_size": "task_detail",
+    },
+    ("POST", "/projects/tasks/{task_id}/comments"): {
+        "body": "comment.body",
+        "parent_id": "comment.reply_to",
+    },
+    ("PATCH", "/projects/comments/{activity_id}"): {"body": "edit_comment.body"},
+    # ── statuses, types, fields, tags ────────────────────────────────────
+    ("POST", "/projects/nodes/{project_id}/statuses"): {
+        "name": "create_status.name",
+        "color": "create_status.color",
+        "position": "create_status",
+        "category": "create_status.category",
+    },
+    ("PATCH", "/projects/statuses/{status_id}"): {
+        "name": "update_status.name",
+        "color": "update_status.color",
+        "position": "update_status.position",
+        "category": "update_status.category",
+    },
+    ("DELETE", "/projects/statuses/{status_id}"): {"move_to": "delete_status.move_to"},
+    ("POST", "/projects/nodes/{project_id}/status-set/preview"): {
+        "mode": "set_status_set.mode",
+        "copy_from": "set_status_set.copy_from",
+    },
+    ("POST", "/projects/nodes/{project_id}/status-set"): {
+        "mode": "set_status_set.mode",
+        "copy_from": "set_status_set.copy_from",
+    },
+    # H-273: create_types sends each field from one key of each row.
+    ("POST", "/projects/nodes/{project_id}/types"): {
+        "name": ("create_type.name", "create_types.types.name"),
+        "icon": ("create_type.icon", "create_types.types.icon"),
+        "color": ("create_type.color", "create_types.types.color"),
+        "is_default": "create_type.is_default",
+        "scope": "create_type.org_wide",
+        "is_epic": ("create_type.is_epic", "create_types.types.is_epic"),
+    },
+    ("PATCH", "/projects/types/{type_id}"): {
+        "name": "update_type.name",
+        "icon": "update_type.icon",
+        "color": "update_type.color",
+        "is_default": "update_type.make_default",
+        "is_epic": "update_type.epic",
+    },
+    ("POST", "/projects/nodes/{project_id}/fields"): {
+        "name": "create_field.name",
+        "description": "create_field.description",
+        "field_type": "create_field.field_type",
+        "options": "create_field.options",
+        "scope": "create_field.org_wide",
+    },
+    ("PATCH", "/projects/fields/{field_id}"): {
+        "name": "update_field.name",
+        "description": "update_field.description",
+        "field_type": "update_field.field_type",
+        "options": "update_field.options",
+        "required": "update_field.required",
+    },
+    # H-273: create_tags sends each field from one key of each row.
+    ("POST", "/projects/nodes/{project_id}/tags"): {
+        "name": ("create_tag.name", "create_tags.tags.name"),
+        "color": ("create_tag.color", "create_tags.tags.color"),
+        "description": ("create_tag.description", "create_tags.tags.description"),
+        "scope": "create_tag.org_wide",
+    },
+    ("PATCH", "/projects/tags/{tag_id}"): {
+        "name": "update_tag.name",
+        "color": "update_tag.color",
+        "description": "update_tag.description",
+    },
+    ("POST", "/projects/tags/{tag_id}/merge"): {"into_tag_id": "merge_tags.into"},
+    # ── the tree and the views ───────────────────────────────────────────
+    ("POST", "/projects/nodes"): {
+        "name": "create_project.name",
+        "description": "create_project.description",
+        "parent_project_id": "create_project.parent_project_id",
+        "kind": "create_project.kind",
+        "lead": "create_project.lead",
+    },
+    ("PATCH", "/projects/nodes/{project_id}"): {
+        "name": "update_project.name",
+        "description": "update_project.description",
+        "status": "update_project.status",
+        "lead": "update_project.lead",
+        # WS-46 P7 (G12): Space Settings and the Lifecycle panel.
+        "icon": "update_project.icon",
+        "icon_slot": "update_project.icon_slot",
+        "archive_after_months": "update_project.archive_after_months",
+        "close_after_months": "update_project.close_after_months",
+        "timezone": "update_project.timezone",
+    },
+    ("POST", "/projects/nodes/{project_id}/move"): {
+        "parent_project_id": "move_project.parent_project_id",
+        # WS-46 P7 (G13): the tree drag's order among the siblings.
+        "position": "move_project.place",
+    },
+    ("POST", "/projects/nodes/{project_id}/views"): {
+        "name": "save_view.name",
+        "view_type": "save_view.view_type",
+        # WS-46 P7 (G14): the filters and the grouping of the view.
+        "config": "save_view.filters",
+    },
+    ("PATCH", "/projects/views/{view_id}"): {
+        "name": "save_view.view_id",
+        "config": "save_view.filters",
+    },
+    # ── the member's own work ────────────────────────────────────────────
+    ("GET", "/projects/assigned-to-me"): {
+        "include_done": "my_work.include_done",
+        "page": "my_work.page",
+        "page_size": "my_work",
+    },
+    ("GET", "/projects/my/inbox"): {
+        "include_done": "my_work.include_done",
+        "page": "my_work.page",
+        "page_size": "my_work",
+        # WS-46 P7 (G18): "what landed on my plate".
+        "untriaged": "my_work.untriaged",
+    },
+    # WS-46 P7 (G17)
+    ("GET", "/projects/my/areas"): {"include_archived": "my_areas.include_archived"},
+    ("POST", "/projects/my/tasks"): {
+        "title": "create_personal_task.title",
+        "next_action": "create_personal_task.next_action",
+        "context": "create_personal_task.context",
+        "due_at": "create_personal_task.due",
+        "notes": "create_personal_task.notes",
+    },
+    ("PATCH", "/projects/tasks/{task_id}/personal"): {
+        "disposition": "set_my_overlay.disposition",
+        "next_action": "set_my_overlay.next_action",
+        "context": "set_my_overlay.context",
+        "energy": "set_my_overlay.energy",
+        "is_two_minute": "set_my_overlay.two_minute",
+        # WS-46 P7 (G15): the block, the actual times, deep work and the chase.
+        "scheduled_start": "set_my_overlay.block_start",
+        "scheduled_end": "set_my_overlay.block_end",
+        "flexible": "set_my_overlay.flexible",
+        "is_hard_date": "set_my_overlay.hard_date",
+        "actual_start": "set_my_overlay.actual_start",
+        "actual_end": "set_my_overlay.actual_end",
+        "deep_work": "set_my_overlay.deep_work",
+        "waiting_on": "set_my_overlay.waiting_on",
+        "delegated_at": "set_my_overlay.waiting_since",
+        "expected_by": "set_my_overlay.expected_by",
+    },
+    ("POST", "/projects/tasks/{task_id}/defer"): {"until": "defer.until"},
+    ("GET", "/projects/my/calendar"): {"start": "calendar.start", "end": "calendar.end"},
+    ("GET", "/projects/calendar"): {
+        "from": "calendar.start",
+        "to": "calendar.end",
+        "project_id": "calendar.project_id",
+        # WS-46 P5: the app's calendar sends it, so the chat's does too.
+        "include_subtree": "calendar.include_subtree",
+    },
+    # ── recurrence ───────────────────────────────────────────────────────
+    ("PUT", "/projects/tasks/{task_id}/recurrence"): {
+        "freq": "set_recurrence.freq",
+        "interval": "set_recurrence.interval",
+        "anchor": "set_recurrence.anchor",
+        "weekdays": "set_recurrence.weekdays",
+        "day_of_month": "set_recurrence.day_of_month",
+        "month_of_year": "set_recurrence.month_of_year",
+        "until_at": "set_recurrence.until",
+        "max_occurrences": "set_recurrence.max_occurrences",
+    },
+    # ── intake and the bell ──────────────────────────────────────────────
+    ("POST", "/projects/intake"): {
+        "project_id": "capture_intake.project_id",
+        "title": "capture_intake.title",
+        "description": "capture_intake.description",
+        "importance": "capture_intake.important",
+        "leveraged": "capture_intake.leveraged",
+        "due_at": "capture_intake.due",
+    },
+    ("GET", "/projects/intake"): {
+        "project_id": "intake_queue.project_id",
+        "page": "intake_queue",
+        "page_size": "intake_queue",
+    },
+    ("POST", "/projects/intake/{task_id}/accept"): {"status_id": "triage_intake.status"},
+    ("POST", "/projects/intake/{task_id}/duplicate"): {
+        "duplicate_of_task_id": "triage_intake.duplicate_of",
+    },
+    ("POST", "/projects/intake/{task_id}/snooze"): {"until": "triage_intake.until"},
+    ("GET", "/projects/notifications"): {
+        "unread_only": "notifications.unread_only",
+        "page": "notifications",
+        "page_size": "notifications",
+    },
+    ("POST", "/projects/notifications/read"): {
+        "ids": "mark_notifications_read.ids",
+        "all": "mark_notifications_read.all_unread",
+    },
+    # ── people, fit and analytics ────────────────────────────────────────
+    ("GET", "/projects/people/names"): {"emails": "people_for.emails"},
+    ("GET", "/projects/assignees"): {"q": "people_for.query", "due": "people_for.due"},
+    ("GET", "/projects/candidates"): {
+        "title": "fit_for_task.title",
+        "tags": "fit_for_task.tags",
+        "due": "fit_for_task.due",
+    },
+    ("GET", "/projects/analytics/stuck"): {
+        "project_id": "analytics_stuck.project_id",
+        "include_subtree": "analytics_stuck",
+    },
+    ("GET", "/projects/analytics/load"): {
+        "project_id": "analytics_load.project_id",
+        "include_subtree": "analytics_load",
+    },
+    ("GET", "/projects/analytics/throughput"): {
+        "project_id": "analytics_throughput.project_id",
+        "include_subtree": "analytics_throughput",
+        "weeks": "analytics_throughput.weeks",
+    },
+    ("GET", "/projects/analytics/finished"): {
+        "project_id": "analytics_finished.project_id",
+        "include_subtree": "analytics_finished",
+        "weeks": "analytics_finished.weeks",
+        "skip_current_week": "analytics_finished.skip_current_week",
+    },
+    ("GET", "/projects/analytics/outlook"): {
+        "project_id": "analytics_outlook.project_id",
+        "include_subtree": "analytics_outlook",
+    },
+    ("GET", "/projects/analytics/capacity"): {
+        "project_id": "team_capacity.project_id",
+        "include_subtree": "team_capacity",
+        "horizon_days": "team_capacity.horizon_days",
+    },
+    ("GET", "/projects/analytics/conflicts"): {
+        "project_id": "find_conflicts.project_id",
+        "include_subtree": "find_conflicts",
+        "horizon_days": "find_conflicts.horizon_days",
+    },
+    ("GET", "/projects/analytics/rebalance"): {
+        "project_id": "rebalance.project_id",
+        "include_subtree": "rebalance",
+        "horizon_days": "rebalance.horizon_days",
+    },
+    # ── plans and reports ────────────────────────────────────────────────
+    ("POST", "/projects/plan/preview"): {"rows": "propose_plan.tasks"},
+    ("POST", "/projects/reports"): {"payload": "report_save.name"},
+    ("PATCH", "/projects/reports/{report_id}"): {"payload": "report_save.report_id"},
+    ("POST", "/projects/reports/preview"): {"payload": "render_report.template"},
+}
+
+_ORDER_REASON = "The order of rows on screen, which a person drags in the app."
+_MAPPING_CARD_REASON = (
+    "The answer on the app's mapping card. Without it the server's own rule maps "
+    "each row, and the preview the chat card shows already counts that rule."
+)
+_READ_FILTER_REASON = (
+    "A filter of the app's list. The chat narrows tasks through list_tasks, "
+    "which prints the facts this filter reads."
+)
+_SCOPE_AT_CREATE_REASON = (
+    "Where a NEW row lands. The PATCH route drops it, because a row keeps its scope."
+)
+_TRIAGE_READ_REASON = "Intake rows. The chat reads them through intake_queue."
+_SETTINGS_AFTER_CREATE_REASON = (
+    "The app sets it after the create, in Space Settings or Lifecycle. "
+    "update_project sets it."
+)
+#: WS-46 P7. The gap table named the prefix, and no screen writes it: Space
+#: Settings sends a name, an icon and a slot, and no route checks a prefix.
+_TASK_PREFIX_REASON = (
+    "No screen sets it. Space Settings writes a name, an icon and a colour "
+    "(page.tsx saveSpaceSettings), and no route checks a prefix."
+)
+
+#: A field the chat does not set, and why. A reason names the tool or the
+#: rule that answers the need, so a reviewer can check the claim.
+FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    ("GET", "/projects/tasks"): {
+        "parent_task_id": "Subtasks are read through task_detail, which lists them.",
+        "status_id": (
+            "One lane by id. list_tasks filters by status_category, and render_board "
+            "groups the tasks by lane."
+        ),
+        "assignee": "The older single form. list_tasks sends assignees.",
+        "sort": "The order of the app's list. The chat orders its own answer.",
+        "direction": "The order of the app's list. The chat orders its own answer.",
+        "archived_only": "The archive view. include_archived reads archived rows with the rest.",
+        "importance_gte": _READ_FILTER_REASON,
+        "tags_all": "Every tag rather than any tag. task_dataset takes tags_all.",
+        "view_id": "The hand-arranged order of a saved view, which only the board reads.",
+        "top_level": "The board's subtask toggle. Each row the chat reads names its parent.",
+    },
+    ("PATCH", "/projects/tasks/{task_id}"): {
+        "If-Match": "The browser's edit guard (D-PM-20). A chat write reads the row first.",
+        "project_id": "The route refuses it: a move goes through move_task.",
+        "parent_task_id": "The route refuses it: a re-parent goes through move_task.",
+        "source": "Where a task came from is a fact of its create. An edit keeps it.",
+    },
+    ("POST", "/projects/tasks/{task_id}/move"): {
+        "assignees": (
+            "Promote-and-assign is the Clarify card's one transaction. The chat "
+            "assigns through assign."
+        ),
+    },
+    ("POST", "/projects/tasks/move/preview"): {
+        "status_map": _MAPPING_CARD_REASON,
+        "field_map": _MAPPING_CARD_REASON,
+        "accept_drops": "A preview writes nothing, so it has nothing to accept.",
+        "accepted_drops": "A preview writes nothing, so it has nothing to accept.",
+    },
+    ("POST", "/projects/tasks/move"): {
+        "status_map": _MAPPING_CARD_REASON,
+        "field_map": _MAPPING_CARD_REASON,
+    },
+    ("GET", "/projects/search"): {
+        "exclude_relatives_of": "The link picker's filter in the app. task_detail reads links.",
+        "include_triage": _TRIAGE_READ_REASON,
+    },
+    ("PATCH", "/projects/comments/{activity_id}"): {
+        "parent_id": "Only POST reads it. An edit cannot re-parent a comment (activities.py).",
+    },
+    ("POST", "/projects/nodes/{project_id}/status-set/preview"): {
+        "mapping": _MAPPING_CARD_REASON,
+    },
+    ("POST", "/projects/nodes/{project_id}/status-set"): {"mapping": _MAPPING_CARD_REASON},
+    ("PATCH", "/projects/types/{type_id}"): {"scope": _SCOPE_AT_CREATE_REASON},
+    ("POST", "/projects/nodes/{project_id}/fields"): {
+        "field_key": "The route makes the key from the name.",
+        "position": _ORDER_REASON,
+        "required": (
+            "The create route stores no required flag. create_field sets it with a "
+            "PATCH under the same card."
+        ),
+    },
+    ("PATCH", "/projects/fields/{field_id}"): {
+        "field_key": "The route refuses it: a key is the identity of every stored value.",
+        "position": _ORDER_REASON,
+        "scope": _SCOPE_AT_CREATE_REASON,
+    },
+    ("PATCH", "/projects/tags/{tag_id}"): {"scope": _SCOPE_AT_CREATE_REASON},
+    ("POST", "/projects/nodes"): {
+        "status": "A new node starts active. update_project sets another status.",
+        # WS-46 P7: the app's create sends a name, a parent and a kind only
+        # (page.tsx `submitProject`). The settings are set after the create.
+        "icon": _SETTINGS_AFTER_CREATE_REASON,
+        "icon_slot": _SETTINGS_AFTER_CREATE_REASON,
+        "archive_after_months": _SETTINGS_AFTER_CREATE_REASON,
+        "close_after_months": _SETTINGS_AFTER_CREATE_REASON,
+        "timezone": _SETTINGS_AFTER_CREATE_REASON,
+        "task_prefix": _TASK_PREFIX_REASON,
+        "position": "A new node takes no position, as the app's create sends none. move_project sets its place.",
+    },
+    ("PATCH", "/projects/nodes/{project_id}"): {
+        "parent_project_id": "The route refuses it: a re-parent goes through move_project.",
+        "kind": "The route refuses it: a node's kind is set at its create.",
+        "source": "Where a node came from is a fact of its create. An edit keeps it.",
+        "task_prefix": _TASK_PREFIX_REASON,
+        "position": (
+            "The order of the tree. move_project sets it through the move route, "
+            "as the app's tree drag does."
+        ),
+    },
+    ("POST", "/projects/nodes/{project_id}/views"): {"position": _ORDER_REASON},
+    ("PATCH", "/projects/views/{view_id}"): {
+        "view_type": "A view keeps its type. The app has no control that changes it.",
+        "position": _ORDER_REASON,
+    },
+    ("GET", "/projects/my/inbox"): {
+        "disposition": "A chip of the lens. my_work prints the disposition of each row.",
+        "context": "A chip of the lens. my_work prints the context of each row.",
+        "include_deferred": (
+            "A deferred task leaves the lens until its date, as in the app. list_tasks reads it."
+        ),
+        "include_archived": "Archived work is read through list_tasks include_archived.",
+    },
+    ("PATCH", "/projects/tasks/{task_id}/personal"): {
+        "time_estimate_mins": (
+            "Retired by D77. The route refuses it by name. update_task sets the estimate."
+        ),
+        "defer_until": "defer writes it, through POST /projects/tasks/{task_id}/defer.",
+        "important": "Retired by D78. The route refuses it by name. update_task sets it.",
+        "leveraged": "Retired by D78. The route refuses it by name. update_task sets it.",
+        "kept_mine": "The member's dismissal of the app's delegate hint. The chat shows no hint.",
+        "sort_key": _ORDER_REASON,
+        "last_nudged_at": "The nudge route writes it, and the nudge stays out of the chat (Q3).",
+    },
+    ("GET", "/projects/my/calendar"): {
+        "include_done": "Done work is read through my_work include_done.",
+    },
+    ("GET", "/projects/calendar"): {
+        "status_id": _READ_FILTER_REASON,
+        "status_category": _READ_FILTER_REASON,
+        "assignee": _READ_FILTER_REASON,
+        "assignees": _READ_FILTER_REASON,
+        "unassigned": _READ_FILTER_REASON,
+        "overdue": _READ_FILTER_REASON,
+        "importance_gte": _READ_FILTER_REASON,
+        "q": _READ_FILTER_REASON,
+        "tags": _READ_FILTER_REASON,
+        "tags_all": _READ_FILTER_REASON,
+        "include_archived": _READ_FILTER_REASON,
+        "archived_only": _READ_FILTER_REASON,
+        "include_links": "The dependency lines on the app's calendar. task_detail reads links.",
+        "include_undated": "A task with no date is not on a calendar. list_tasks reads it.",
+        "include_triage": _TRIAGE_READ_REASON,
+        "watching": _READ_FILTER_REASON,
+        "top_level": _READ_FILTER_REASON,
+    },
+    ("GET", "/projects/analytics/outlook"): {
+        "weeks": "The app sends no horizon either. The tool reads the route's default.",
+    },
+}
+
+#: The open gaps of ``projects_agent_parity.md`` §3.3 that a field waits on,
+#: and the slice of §12 that closes each. The fence reads the spec: a gap id
+#: must be a row of the gap table, and its slice must not be marked built.
+FIELD_GAPS: dict[str, str] = {
+    # G5 to G9 closed in WS-46 P6 (2026-10-06), and G12 to G18 in P7
+    # (2026-10-06). Their rows are in SENDS or FIELD_EXEMPT.
+    "G10": "P9",
+    "G11": "P9",
+}
+
+#: A field that a later slice gives the chat: field -> its gap id. The slice
+#: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
+FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
+    ("POST", "/projects/tasks"): {"source": "G10"},
+    ("POST", "/projects/intake"): {"source": "G11", "source_ref": "G11"},
+    # G10's rule, on a node: the route takes `agent` as a source.
+    ("POST", "/projects/nodes"): {"source": "G10"},
+}
+
+
+# ── WS-46 P5 (D91, fence F3) — every UI client METHOD, not only every field ──
+#
+# Spec: ``project-docs/specs/projects_agent_parity.md`` §6.4. A UI action can
+# be new while its route is old, so F1 and F2 cannot see it. The client method
+# is where a UI action first exists in code. ``tests/unit/test_projects_ui_actions.py``
+# reads each method of the Projects client files as TEXT, reads the verb and
+# the path that the method calls, and holds the method to one of these three
+# tables. A method that is in none of them fails by its name and its file.
+#
+# The key is ``object.method``, for example ``projectsApi.createTask``. A free
+# function that builds a gateway path takes the stem of its file as the
+# object, for example ``export.exportPath``.
+
+#: A UI client method -> the tool that does the same act. The fence asserts
+#: that the tool may reach the route that the method calls (``reaches``), and
+#: that the route is not class X. So a false claim fails.
+UI_ACTIONS: dict[str, str] = {
+    # ── projectsApi: the tree and the roll-ups ───────────────────────────
+    "projectsApi.tree": "projects_tree",
+    "projectsApi.summary": "project_summary",
+    "projectsApi.portfolio": "project_summary",
+    "projectsApi.createProject": "create_project",
+    "projectsApi.patchProject": "update_project",
+    "projectsApi.moveNode": "move_project",
+    "projectsApi.archiveProject": "archive_project",
+    "projectsApi.unarchiveProject": "unarchive_project",
+    "projectsApi.grants": "project_access",
+    # ── projectsApi: analytics and reports ───────────────────────────────
+    "projectsApi.stuck": "analytics_stuck",
+    "projectsApi.load": "analytics_load",
+    "projectsApi.throughput": "analytics_throughput",
+    "projectsApi.finished": "analytics_finished",
+    "projectsApi.outlook": "analytics_outlook",
+    "projectsApi.capacity": "team_capacity",
+    "projectsApi.conflicts": "find_conflicts",
+    "projectsApi.reports": "report_list",
+    "projectsApi.reportTemplates": "render_report",
+    "projectsApi.reportSubjects": "render_report",
+    "projectsApi.createReport": "report_save",
+    "projectsApi.patchReport": "report_save",
+    "projectsApi.renderReport": "report_render",
+    "projectsApi.previewReport": "render_report",
+    "projectsApi.deleteReport": "report_delete",
+    # ── projectsApi: statuses and status sets ────────────────────────────
+    "projectsApi.statuses": "vocabulary",
+    "projectsApi.statusSet": "vocabulary",
+    "projectsApi.previewStatusSet": "set_status_set",
+    "projectsApi.setStatusSet": "set_status_set",
+    "projectsApi.createStatus": "create_status",
+    "projectsApi.patchStatus": "update_status",
+    "projectsApi.deleteStatus": "delete_status",
+    # ── projectsApi: tasks ───────────────────────────────────────────────
+    "projectsApi.tasks": "list_tasks",
+    "projectsApi.calendar": "calendar",
+    "projectsApi.search": "find_tasks",
+    "projectsApi.task": "task_detail",
+    "projectsApi.timeline": "task_detail",
+    "projectsApi.relations": "task_detail",
+    "projectsApi.createTask": "create_task",
+    "projectsApi.patchTask": "update_task",
+    "projectsApi.archiveTask": "archive_task",
+    "projectsApi.unarchiveTask": "unarchive_task",
+    "projectsApi.previewMove": "move_task",
+    "projectsApi.moveTasks": "move_task",
+    "projectsApi.mergeTasks": "merge_tasks",
+    "projectsApi.bulkEdit": "bulk_update",
+    "projectsApi.setAssignees": "assign",
+    "projectsApi.comment": "comment",
+    "projectsApi.createLink": "link_tasks",
+    "projectsApi.deleteLink": "unlink_tasks",
+    "projectsApi.recurrence": "recurrence",
+    "projectsApi.setRecurrence": "set_recurrence",
+    "projectsApi.clearRecurrence": "set_recurrence",
+    # ── projectsApi: people and fit ──────────────────────────────────────
+    "projectsApi.suggestAssignees": "people_for",
+    "projectsApi.personNames": "people_for",
+    "projectsApi.taskCandidates": "fit_for_task",
+    # ── projectsApi: tags, types and fields ──────────────────────────────
+    "projectsApi.tags": "vocabulary",
+    "projectsApi.createTag": "create_tag",
+    "projectsApi.patchTag": "update_tag",
+    "projectsApi.tagImpact": "delete_tag",
+    "projectsApi.mergeTag": "merge_tags",
+    "projectsApi.deleteTag": "delete_tag",
+    "projectsApi.types": "vocabulary",
+    "projectsApi.createType": "create_type",
+    "projectsApi.patchType": "update_type",
+    "projectsApi.deleteType": "delete_type",
+    "projectsApi.fields": "vocabulary",
+    "projectsApi.createField": "create_field",
+    "projectsApi.patchField": "update_field",
+    "projectsApi.deleteField": "delete_field",
+    # ── projectsApi: saved views ─────────────────────────────────────────
+    "projectsApi.views": "project_views",
+    "projectsApi.createView": "save_view",
+    "projectsApi.patchView": "save_view",
+    "projectsApi.deleteView": "delete_view",
+    # ── attachmentsApi ───────────────────────────────────────────────────
+    "attachmentsApi.list": "task_detail",
+    "attachmentsApi.detach": "delete_attachment",
+    # ── notificationsApi ─────────────────────────────────────────────────
+    "notificationsApi.list": "notifications",
+    "notificationsApi.markRead": "mark_notifications_read",
+    "notificationsApi.markAllRead": "mark_notifications_read",
+    # ── watchersApi · projectWatchersApi ─────────────────────────────────
+    "watchersApi.get": "watchers",
+    "watchersApi.watch": "watch",
+    "watchersApi.unwatch": "watch",
+    "projectWatchersApi.get": "watchers",
+    "projectWatchersApi.watch": "watch",
+    "projectWatchersApi.unwatch": "watch",
+    # ── intakeApi ────────────────────────────────────────────────────────
+    "intakeApi.queue": "intake_queue",
+    "intakeApi.capture": "capture_intake",
+    "intakeApi.accept": "triage_intake",
+    "intakeApi.decline": "triage_intake",
+    "intakeApi.duplicate": "triage_intake",
+    "intakeApi.snooze": "triage_intake",
+}
+
+#: A UI client method the chat does not mirror, and why. The fence allows an
+#: exemption only where the route the method calls is class X. Where a tool
+#: reaches the route, the method names the tool in ``UI_ACTIONS``.
+UI_EXEMPT: dict[str, str] = {
+    "projectsApi.deleteProject": _DELETE_REASON,
+    "projectsApi.deleteTask": _DELETE_REASON,
+    "projectsApi.setViewState": (
+        "The member's own overlay on a saved view (WS-27ae). " + _UI_STATE_REASON
+    ),
+    "projectsApi.setPositions": (
+        "The hand-dragged order of cards on a saved view. " + _UI_STATE_REASON
+    ),
+    "projectsApi.vocabulary": (
+        "The shared vocabulary list of Projects settings. The chat reads a "
+        "space's effective tags, fields and types through vocabulary."
+    ),
+    "projectsApi.vocabularyImpact": (
+        "The count shown before an admin deletes or merges a shared entry. "
+        "The chat neither deletes nor merges shared entries."
+    ),
+    "export.exportPath": (
+        "The CSV download of the board's filter. A file download is the app's "
+        "export button, and a chat answer carries text."
+    ),
+    "importApi.upload": _IMPORT_REASON,
+    "importApi.get": _IMPORT_REASON,
+    "importApi.saveMapping": _IMPORT_REASON,
+    "importApi.list": _IMPORT_REASON,
+    "importApi.discard": _IMPORT_REASON,
+    "importApi.apply": _IMPORT_REASON,
+}
+
+#: A UI client method that a later slice gives the chat: method -> its gap id
+#: in the gap table of ``projects_agent_parity.md`` §3.3. The fence reads the
+#: spec, and fails when the slice of that gap is marked built. The slice that
+#: closes the gap moves its rows to ``UI_ACTIONS``, so this table only shrinks.
+UI_PLANNED: dict[str, str] = {
+    # G21 (P10): the chat attaches a file the member gave it in this thread.
+    "attachmentsApi.upload": "G21",
+}
+
+
+def witnesses(value: str | tuple[str, ...]) -> tuple[str, ...]:
+    """The witnesses of one ``SENDS`` value: one string, or a tuple of them."""
+    return (value,) if isinstance(value, str) else tuple(value)
 
 
 def tool_class(name: str) -> str | None:

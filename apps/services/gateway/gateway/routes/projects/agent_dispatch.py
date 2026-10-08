@@ -35,11 +35,33 @@ therefore a WARNING log line (`projects.agent_dispatch_refused`), not a
 timeline row. Fenced by `tests/unit/test_projects_automation.py`'s
 `test_an_event_without_a_tenant_refuses_*` and by
 `tests/unit/test_db_engine_seam.py`, which no longer exempts this file.
+
+**The run gets a dict, and the member gets its reply.** From WS-27f
+(2026-08-06) until 2026-10-04 this sink handed `run_agent` the task text as a
+string. `run_agent` takes a dict payload, so every dispatched run failed with
+`'str' object has no attribute 'keys'` before the agent read a word. Every
+test replaced the run with a fake that accepted any message.
+`run_payload` and `reply_text` are now the two halves of that contract, and
+`tests/unit/test_projects_agent_dispatch_run.py` runs the real sink through
+the real executor on a real Postgres.
+
+**Dark by default: `PROJECTS_AGENT_DISPATCH`.** A dispatched run spends the
+org's AI credits, and §9.12.10 keeps "Assign to AI" parked. With the flag OFF
+the sink starts no run. It writes one `agent_run` row that says the feature
+is not switched on, and logs `projects.agent_dispatch_disabled` at INFO. The
+flip is the owner's (`work_plan.md` §6). Fenced by both suites named above.
+
+**The run is started, never awaited.** `PUT /tasks/{id}/assignees` awaits
+`emit`, which awaits every sink. A sink that awaited the run held the
+member's request open for the whole run. `on_event` therefore writes the
+handoff row, starts one task per agent, and returns.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from collections.abc import Coroutine
 from typing import Any
 
 from acb_common import get_logger
@@ -54,6 +76,7 @@ from acb_common import get_logger
 # module that opens a session without one.
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.projects.core import (
+    _TRUTHY,
     is_runnable_with_ancestors,
     record_activity,
 )
@@ -68,6 +91,42 @@ AGENT_PREFIX = "agent:"
 #: Matches the workflows engine's agent-node budget — the same runtime, so a
 #: different number here would only mean one of the two is lying.
 AGENT_RUN_TIMEOUT_SECONDS = 600.0
+
+#: What `payload.source` says for a run this sink starts. The executor binds it
+#: into the run's context, so the usage and the logs name where a run came from.
+RUN_SOURCE = "projects.agent_dispatch"
+
+#: Ship dark (2026-10-04). A dispatched run spends the org's AI credits, and
+#: `project_management_app.md` §9.12.10 keeps "Assign to AI" parked. The flip
+#: is the owner's (`work_plan.md` §6). Read at call time, like
+#: `PROJECTS_ORG_VOCABULARIES`, so the flip is a restart and not a release.
+DISPATCH_FLAG = "PROJECTS_AGENT_DISPATCH"
+
+#: The one row a member sees when the flag is OFF.
+DISABLED_BODY = (
+    "Assigning work to an AI agent is not switched on for this workspace."
+)
+
+#: The fixed half of a failed row. The exception's text can carry SQL or an
+#: internal URL, so it goes to the WARNING log, and the member reads only the
+#: exception's type and this sentence.
+FAILED_HINT = (
+    "The details are in the gateway log. Assign the task again to retry."
+)
+
+#: The closing row of a run that a restart cancelled.
+INTERRUPTED_DETAIL = "interrupted by a restart"
+
+#: How long a cancelled run may take to write its closing row.
+INTERRUPTED_WRITE_SECONDS = 5.0
+
+#: The longest reply the closing timeline row keeps.
+REPLY_LIMIT = 2000
+
+#: The runs this sink started that have not ended. asyncio holds a task by a
+#: weak reference only, so a run that nothing holds can be collected while it
+#: is still running. Each task leaves this set when it is done.
+_RUNS: set[asyncio.Task[None]] = set()
 
 
 def agent_targets(assignees: Any) -> list[str]:
@@ -106,6 +165,78 @@ def build_message(task: Any) -> str:
         parts.append(description)
     parts.append(f"The task id is {task.id}.")
     return "\n\n".join(parts)
+
+
+def dispatch_enabled() -> bool:
+    """Is a dispatched run released? Default **OFF**, and fail closed.
+
+    Any value outside `_TRUTHY` reads as OFF. OFF means no run starts and
+    nothing is spent. The sink writes one timeline row so that the member
+    knows the assignment did not reach an agent.
+    """
+    import os
+
+    return (os.environ.get(DISPATCH_FLAG) or "").strip().lower() in _TRUTHY
+
+
+def run_payload(message: str) -> dict[str, Any]:
+    """The event payload `run_agent` is handed. A dict, never the bare text.
+
+    The same keys the other batch callers send: the workflows agent node and
+    the sub-agent path in `executor.py`. `message` is what the agent reads.
+    ⚠️ The tenant is NOT a key here. It goes to `run_agent` as the
+    `organization_id` keyword, because the payload is agent-visible and a
+    tenant read from it is a spoofing hole (R5, R11).
+    """
+    return {"message": message, "mode": "sub_task", "source": RUN_SOURCE}
+
+
+def reply_text(result: Any) -> str:
+    """The agent's reply in a `run_agent` result, or ``""``.
+
+    `run_agent` returns a dict that carries the reply under ``result`` and
+    ``answer``. This reads it the way `orchestrator/agents.py` does. The
+    timeline shows a member the reply, never the dict around it.
+    """
+    if not isinstance(result, dict):
+        return str(result or "")
+    reply = result.get("result") or result.get("answer") or ""
+    if isinstance(reply, dict):
+        reply = reply.get("content") or ""
+    return str(reply or "")
+
+
+def _start(run: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+    """Start one run in the background and hold it until it ends."""
+    task = asyncio.get_running_loop().create_task(run)
+    _RUNS.add(task)
+    task.add_done_callback(_RUNS.discard)
+    return task
+
+
+async def stop_runs(timeout: float = INTERRUPTED_WRITE_SECONDS + 1.0) -> None:
+    """Cancel every run this sink started, and wait briefly for each to close.
+
+    The gateway lifespan calls this on shutdown. Each cancelled run writes its
+    "interrupted by a restart" row before it ends, so no task keeps a
+    "started" row that nothing closes. Bounded, so a wedged database cannot
+    hold the shutdown open.
+    """
+    runs = list(_RUNS)
+    for task in runs:
+        task.cancel()
+    if runs:
+        await asyncio.wait(runs, timeout=timeout)
+
+
+async def wait_for_runs() -> None:
+    """Wait until every run this sink started has ended.
+
+    For a caller that must see the outcome rows, such as a test or a
+    shutdown hook. The sink itself never waits.
+    """
+    while _RUNS:
+        await asyncio.gather(*list(_RUNS), return_exceptions=True)
 
 
 def event_tenant(payload: dict[str, Any]) -> str:
@@ -189,6 +320,23 @@ async def on_event(source: str, event_type: str, payload: dict[str, Any]) -> Non
             )
             return
 
+        # Ship dark. OFF: one row the member reads, an INFO line, no run.
+        # Checked after the task and the run state, so a paused project stays
+        # as quiet as it was, and before any `agent_run` "started" row.
+        if not dispatch_enabled():
+            await record_activity(
+                db, activity_type="agent_run",
+                created_by=f"{AGENT_PREFIX}{agents[0]}",
+                task_id=task_id, body=DISABLED_BODY,
+                meta={"agent": agents[0], "agents": agents,
+                      "state": "disabled"},
+            )
+            _log.info(
+                "projects.agent_dispatch_disabled", task_id=task_id,
+                agents=agents, flag=DISPATCH_FLAG,
+            )
+            return
+
         message = build_message(task)
         for name in agents:
             # The timeline entry is written and COMMITTED before the run
@@ -201,8 +349,11 @@ async def on_event(source: str, event_type: str, payload: dict[str, Any]) -> Non
                 meta={"agent": name, "state": "started"},
             )
 
+    # Started, never awaited: `set_assignees` awaits this sink, so awaiting the
+    # run here held the member's request open until the agent finished. One
+    # task per agent, so a second agent does not wait for the first.
     for name in agents:
-        await _run_and_record(name, message, task_id, organization_id)
+        _start(_run_and_record(name, message, task_id, organization_id))
 
 
 async def _run_and_record(
@@ -212,7 +363,8 @@ async def _run_and_record(
 
     A dispatch that fails silently is worse than one that never started: the
     task shows a session that appears to still be running and nobody knows to
-    pick the work back up. So the failure path writes too.
+    pick the work back up. So the failure path writes too, and it logs a
+    WARNING, because a row on a task nobody opens is not a signal to anyone.
 
     ``organization_id`` is threaded down rather than re-read: this coroutine
     outlives the transaction that started it, so there is nothing left to read
@@ -231,38 +383,74 @@ async def _run_and_record(
 
     try:
         result = await asyncio.wait_for(
+            # A dict payload, never the bare text (see `run_payload`).
             # H-201 part 3: the run needs its tenant for its working dir. A
             # shared agent with no tenant is refused. The org is the one the
             # server-side event carries, and the task row was found in it.
-            run_agent(agent, message, organization_id=organization_id),
+            run_agent(
+                agent, run_payload(message), organization_id=organization_id,
+            ),
             timeout=AGENT_RUN_TIMEOUT_SECONDS,
         )
+    except asyncio.CancelledError:
+        # A restart, or `stop_runs`. CancelledError is not an Exception, so
+        # without this clause the "started" row stays open for ever. The write
+        # is shielded and bounded, and the cancellation is re-raised.
+        _log.warning(
+            "projects.agent_dispatch_failed", task_id=task_id, agent=agent,
+            error=INTERRUPTED_DETAIL,
+        )
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await asyncio.wait_for(
+                asyncio.shield(_record_outcome(
+                    task_id, agent, organization_id,
+                    ok=False, detail=INTERRUPTED_DETAIL,
+                )),
+                timeout=INTERRUPTED_WRITE_SECONDS,
+            )
+        raise
     except TimeoutError:
+        _log.warning(
+            "projects.agent_dispatch_failed", task_id=task_id, agent=agent,
+            error="timed out", timeout_s=AGENT_RUN_TIMEOUT_SECONDS,
+        )
         await _record_outcome(
             task_id, agent, organization_id, ok=False, detail="timed out",
         )
         return
     except Exception as exc:
+        kind = type(exc).__name__
+        # The detail is for the operator. The member reads the type only.
+        _log.warning(
+            "projects.agent_dispatch_failed", task_id=task_id, agent=agent,
+            error=(str(exc) or kind)[:300], error_type=kind,
+        )
         await _record_outcome(
-            task_id, agent, organization_id, ok=False, detail=str(exc)[:300],
+            task_id, agent, organization_id, ok=False, detail="",
+            body=f"Agent run failed ({kind}). {FAILED_HINT}",
         )
         return
+    reply = reply_text(result).strip()
     await _record_outcome(
         task_id, agent, organization_id,
-        ok=True, detail=str(result or "")[:2000],
+        ok=True, detail=reply[:REPLY_LIMIT] or "Finished with no reply.",
     )
 
 
 async def _record_outcome(
     task_id: str, agent: str, organization_id: str, *, ok: bool, detail: str,
+    body: str | None = None,
 ) -> None:
+    """Write the closing row. ``body`` replaces the text built from ``detail``."""
+    if body is None:
+        body = detail if ok else f"Agent run failed: {detail}"
     try:
         async with _tenant_session(organization_id) as db:
             await record_activity(
                 db, activity_type="agent_run",
                 created_by=f"{AGENT_PREFIX}{agent}",
                 task_id=task_id,
-                body=detail if ok else f"Agent run failed: {detail}",
+                body=body,
                 meta={"agent": agent, "state": "finished" if ok else "failed"},
             )
     except Exception as exc:  # pragma: no cover — the outcome write is best-effort

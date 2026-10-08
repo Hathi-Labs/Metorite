@@ -32,6 +32,7 @@ import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from gateway.routes.email.automation import runner as m
 
 _ACC = "acc-fail"
@@ -180,3 +181,95 @@ def test_the_learn_gate_reads_the_status_it_just_computed() -> None:
     src = inspect.getsource(m._apply_and_log_match)
     assert 'if (status == "APPLIED"' in src
     assert src.index('status = "FAILED"') < src.index('if (status == "APPLIED"')
+
+
+# ── a rule draft whose file fails (WS-17 EM-T9 item 11) ─────────────────────
+
+
+def _graph_answer(status: int, body: dict) -> SimpleNamespace:
+    return SimpleNamespace(status_code=status, headers={}, json=lambda: body,
+                           raise_for_status=lambda: None)
+
+
+@pytest.mark.parametrize("kind", ["REPLY", "FORWARD"])
+async def test_a_rule_draft_with_a_failed_file_is_deleted(kind: str) -> None:
+    """EM-T9 item 11 (``email_app_master_plan.md`` §10.4.10). REPLY makes its
+    draft with ``createReply`` and FORWARD makes a new one. Before EM-T9 a
+    failed file was dropped, and the rule left a draft with no file. Now the
+    draft is deleted, the action is not done, and ``errors_out`` holds the
+    file name and nothing else, never a URL."""
+    from email_ingestion.providers.outlook import OutlookProvider
+    from gateway.routes.email.automation import actions
+
+    client = AsyncMock()
+
+    async def _post(url: str, **_kw: object) -> SimpleNamespace:
+        if url.endswith("/attachments"):
+            return _graph_answer(500, {"error": {"code": "ErrorInternal"}})
+        return _graph_answer(201, {"id": "rule-draft-1"})
+
+    client.post.side_effect = _post
+    client.patch.return_value = _graph_answer(200, {})
+    client.delete.return_value = _graph_answer(204, {})
+    provider = OutlookProvider({"access_token": "t", "refresh_token": "r"})
+    provider._http = client
+    action = {"type": kind, "content": "Please see the quote.",
+              "to_address": "lead@em-t9.test",
+              "attachments": [{"path": "quote.pdf", "name": "quote.pdf"}]}
+    errors: list[dict] = []
+
+    with patch.object(actions, "_load_action_attachments", return_value=[
+            {"filename": "quote.pdf", "content": b"%PDF-1.7",
+             "mime_type": "application/pdf"}]), \
+         patch.object(actions, "_skip_for_paired_mailbox",
+                      AsyncMock(return_value=False)), \
+         patch.object(actions, "_upsert_local_draft", AsyncMock()) as upsert:
+        done = await actions._apply_rule_actions(
+            _db(), provider, "msg-1", "AAMk-parent", [action],
+            email={"from": "n@x.com", "subject": "Quote"},
+            account_id=_ACC, errors_out=errors)
+
+    assert done == []
+    assert errors == [{"type": kind,
+                       "error": "The file quote.pdf could not be attached."}]
+    client.delete.assert_awaited_once_with("/me/messages/rule-draft-1")
+    upsert.assert_not_awaited()
+
+
+# ── a rule reply with a typed To (WS-17 EM-T10 review round 1) ──────────────
+
+
+@pytest.mark.parametrize(("to_address", "to_patch"), [
+    ("ops@em-t10.test", [{"emailAddress": {"address": "ops@em-t10.test"}}]),
+    (None, None),
+], ids=["typed-to", "default-to"])
+async def test_a_rule_reply_writes_a_typed_to_at_outlook(
+        to_address: str | None, to_patch: list | None) -> None:
+    """A rule REPLY with a To that the member typed must reach Graph. Outlook
+    makes the draft with ``createReply``, which addresses the sender, so the
+    PATCH must carry the typed To. With no typed To, the PATCH carries no To,
+    and ``createReply`` keeps its To, which honours a Reply-To."""
+    from email_ingestion.providers.outlook import OutlookProvider
+    from gateway.routes.email.automation import actions
+
+    client = AsyncMock()
+    client.post.return_value = _graph_answer(201, {"id": "rule-draft-2"})
+    client.patch.return_value = _graph_answer(200, {})
+    provider = OutlookProvider({"access_token": "t", "refresh_token": "r"})
+    provider._http = client
+    action = {"type": "REPLY", "content": "Thanks, we have it."}
+    if to_address:
+        action["to_address"] = to_address
+
+    with patch.object(actions, "_load_action_attachments", return_value=[]), \
+         patch.object(actions, "_skip_for_paired_mailbox",
+                      AsyncMock(return_value=False)), \
+         patch.object(actions, "_upsert_local_draft", AsyncMock()):
+        await actions._apply_rule_actions(
+            _db(), provider, "msg-2", "AAMk-parent-2", [action],
+            email={"from": "ravi@x.com", "subject": "Order"},
+            account_id=_ACC, errors_out=[])
+
+    (patch_call,) = client.patch.await_args_list
+    sent = patch_call.kwargs["json"]
+    assert sent.get("toRecipients") == to_patch

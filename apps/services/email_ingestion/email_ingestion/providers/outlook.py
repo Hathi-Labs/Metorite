@@ -9,7 +9,10 @@ API reference: https://learn.microsoft.com/en-us/graph/api/resources/mail-api-ov
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
+import re
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -22,10 +25,12 @@ from .app_credentials import MICROSOFT_OAUTH_BASE, OAuthApp, token_fields
 from .base import (
     Attachment,
     BaseEmailProvider,
+    DeltaShadowReport,
     EmailAddress,
     EmailFolder,
     EmailMessage,
     EstimateCallback,
+    ProviderAttachmentFailed,
     RefreshingBearer,
     SyncResult,
     canonical_folder,
@@ -70,6 +75,14 @@ _OUTLOOK_HIDDEN_FOLDER_NAMES = frozenset({
 #: The system folders of a full sweep, in the order of the sweep. The user
 #: folders follow them. The import reads the same set (EM-T6b item 2).
 SWEEP_SYSTEM_FOLDERS = ("inbox", "sent", "drafts", "archive", "junk", "trash")
+
+#: The ``$select`` of a message read. The sweep and the delta send the same
+#: one, so the ids of the two reads compare (EM-T4d item 4).
+_MESSAGE_SELECT = ("id,internetMessageId,subject,from,toRecipients,"
+                   "ccRecipients,bccRecipients,receivedDateTime,isRead,"
+                   "hasAttachments,flag,bodyPreview,categories,"
+                   "parentFolderId,conversationId,importance,"
+                   "internetMessageHeaders")
 
 #: The Graph path of each folder key that is not a folder id.
 _WELL_KNOWN_PATHS: dict[str, str] = {
@@ -218,6 +231,157 @@ class _FolderStream:
     pages: int = 0
 
 
+# ── The Graph delta, in shadow (WS-17 EM-T4d) ───────────────────────────────
+#
+# Delta stopped new mail once (2026-06-23), and nobody found the cause. So the
+# full sweep stays the one writer of each poll. In ``shadow`` the poll ALSO
+# reads the delta of each swept folder, compares the NEW mail of the two
+# reads, and stores the links. Spec: email_app_master_plan.md §10.4.6.
+
+#: The version of the delta cursor in ``last_history_id`` (EM-T4d item 5).
+DELTA_CURSOR_VERSION = 1
+
+#: The page size of each delta request. A delta request sends no ``$top``.
+_DELTA_PREFER = "odata.maxpagesize=100"
+
+#: The status of a link that Graph no longer knows. It drops the link of the
+#: folder, so the next poll seeds it again (EM-T4d item 11).
+_DELTA_GONE = 410
+
+#: The status of a stored link that Graph refuses as a request. A stored link
+#: is a fixed request, so each later poll gets the same 400. It drops the link
+#: as a 410 does (EM-T4d item 11, review round 1 F3).
+_DELTA_BAD_REQUEST = 400
+
+#: The start of each link that the delta may call. A stored link and each
+#: link in a Graph answer must start with it. Else the bearer goes to the host
+#: that the link names (EM-T4d review round 1 F1).
+_GRAPH_LINK_PREFIX = f"{GRAPH_API_BASE}/"
+
+
+class _ForeignLink(RuntimeError):
+    """A delta link that does not start with ``_GRAPH_LINK_PREFIX``.
+
+    ``source`` names where the link came from: ``stored`` (the cursor),
+    ``next`` (an ``@odata.nextLink``) or ``delta`` (an ``@odata.deltaLink``).
+    The message holds no URL, so no log line can print the link."""
+
+    def __init__(self, source: str) -> None:
+        super().__init__(f"a {source} delta link is not a Graph link")
+        self.source = source
+
+
+def _graph_link(link: Any, source: str) -> str:
+    """*link* when it is a Graph link, else raise ``_ForeignLink``.
+
+    The delta calls this before it sends a request to a link, and before it
+    stores a link. So no request with the bearer goes to another host
+    (review round 1 F1)."""
+    if not isinstance(link, str) or not link.startswith(_GRAPH_LINK_PREFIX):
+        raise _ForeignLink(source)
+    return link
+
+
+def _from_graph(exc: BaseException) -> bool:
+    """True when the failed request of *exc* went to Graph.
+
+    A refused refresh fails on the token endpoint with a 400 (EM-T4c). That
+    is a fault of the token, not of the link, so it must not drop a link."""
+    try:
+        url = str(exc.response.request.url)  # type: ignore[attr-defined]
+    except (AttributeError, RuntimeError):
+        return False
+    return url.startswith(_GRAPH_LINK_PREFIX)
+
+
+def _drops_link(exc: BaseException) -> bool:
+    """True when a failed round drops the stored link of its folder.
+
+    A refused link, a 410 and a 400 of Graph drop it, so the folder seeds
+    again at the next poll (EM-T4d item 11, review round 1 F1 and F3). Any
+    other failure keeps it: a 401, a 403 or a 404 on a system folder, a 429,
+    a 5xx, a timeout and a transport error. A 403 or a 404 on Archive or a
+    user folder never gets here, because ``_skips_folder`` skips it first."""
+    if isinstance(exc, _ForeignLink):
+        return True
+    status = _status(exc)
+    if status == _DELTA_GONE:
+        return True
+    return status == _DELTA_BAD_REQUEST and _from_graph(exc)
+
+
+def parse_delta_cursor(raw: str | None) -> dict[str, dict[str, str | None]]:
+    """The entries of a stored delta cursor, by folder key (EM-T4d items 5, 6).
+
+    The shape is ``{"v": 1, "folders": {<key>: {"link": <url>, "at": <UTC
+    time>}}}``. NULL, a bare token, text that is not JSON, and JSON with
+    another version or shape are no cursor, so each folder seeds. An entry
+    with no link is dropped. An ``at`` that is not text is None, which means
+    the round of that folder has not ended."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    version = data.get("v")
+    if type(version) is not int or version != DELTA_CURSOR_VERSION:
+        return {}
+    folders = data.get("folders")
+    if not isinstance(folders, dict):
+        return {}
+    out: dict[str, dict[str, str | None]] = {}
+    for key, entry in folders.items():
+        if not isinstance(entry, dict):
+            continue
+        link, at = entry.get("link"), entry.get("at")
+        if isinstance(link, str) and link:
+            out[str(key)] = {"link": link, "at": at if isinstance(at, str) else None}
+    return out
+
+
+def dump_delta_cursor(folders: dict[str, dict[str, str | None]]) -> str:
+    """The text of a delta cursor for ``last_history_id`` (EM-T4d item 5)."""
+    return json.dumps({"v": DELTA_CURSOR_VERSION, "folders": folders},
+                      sort_keys=True, separators=(",", ":"))
+
+
+def _cursor_time(value: str | None) -> datetime | None:
+    """The ``at`` of a cursor entry as an aware time, or None."""
+    if not value:
+        return None
+    try:
+        at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo is not None else at.replace(tzinfo=UTC)
+
+
+def _new_since(received: datetime | None, at: datetime) -> bool:
+    """True when a message received at *received* is NEW: after *at*."""
+    if received is None:
+        return False
+    if received.tzinfo is None:
+        received = received.replace(tzinfo=UTC)
+    return received > at
+
+
+@dataclass
+class _DeltaRound:
+    """The delta of one folder in one poll (EM-T4d).
+
+    ``entry`` is the cursor entry to store. ``ended`` is True when the round
+    reached an ``@odata.deltaLink``. ``new_ids`` holds the ids of the items
+    received after the ``at`` of the last round, and ``removed`` counts the
+    ``@removed`` items."""
+    entry: dict[str, str | None]
+    ended: bool = False
+    new_ids: set[str] = field(default_factory=set)
+    removed: int = 0
+
+
 def _classify_folder_type(folder: dict[str, Any]) -> str:
     """Return 'system' or 'user' for a Graph mailFolder.
 
@@ -230,6 +394,254 @@ def _classify_folder_type(folder: dict[str, Any]) -> str:
     if name in _OUTLOOK_SYSTEM_FOLDER_NAMES:
         return "system"
     return "system" if canonical_folder(name) in _CORE_CANONICAL else "user"
+
+
+# ── A file on a draft (WS-17 EM-T9, email_app_master_plan.md §10.4.10) ──────
+
+#: A file of this size or more goes through an upload session. Graph takes a
+#: file in one POST only under 3 MB (item 2).
+_UPLOAD_SESSION_MIN_BYTES = 3_000_000
+
+#: The size of one PUT of an upload session. Each range must stay under 4 MB,
+#: and the ranges go in order (item 2).
+_UPLOAD_RANGE_BYTES = 2 * 1024 * 1024
+
+#: The code of Graph when a session is refused for a file under its minimum.
+#: "3 MB" can mean 3,000,000 or 3,145,728 bytes, so the code falls back to
+#: one POST on this code (item 3).
+_MIN_SIZE_REFUSAL = "ErrorAttachmentSizeShouldNotBeLessThanMinimumSize"
+
+#: Each absolute URL in a log text. A quote is legal in the path of an
+#: upload URL (``Messages('AAMk…')``), so the class keeps it.
+_URL_IN_TEXT = re.compile(r"https?://[^\s\"<>]+", re.IGNORECASE)
+
+
+def _strip_upload_query(url: str) -> str:
+    """*url* with no query, when the URL is an upload URL (B2).
+
+    An upload URL has ``authtoken`` in its query, or ``AttachmentSessions``
+    in its path. Each other URL comes back the same."""
+    base, sep, query = url.partition("?")
+    if sep and ("authtoken" in query.lower()
+                or "attachmentsessions" in base.lower()):
+        return f"{base}?<redacted>"
+    return url
+
+
+def _redact_upload_urls(value: Any) -> Any:
+    """*value* with the query of each upload URL in it removed."""
+    if isinstance(value, httpx.URL):
+        text = str(value)
+        clean = _URL_IN_TEXT.sub(lambda m: _strip_upload_query(m[0]), text)
+        return value if clean == text else clean
+    if isinstance(value, str):
+        return _URL_IN_TEXT.sub(lambda m: _strip_upload_query(m[0]), value)
+    return value
+
+
+class _UploadUrlFilter(logging.Filter):
+    """Keeps the token of an upload URL out of each ``httpx`` record (B2).
+
+    httpx logs each request at INFO with its full URL, and the gateway logs at
+    INFO. The ``uploadUrl`` of a session is pre-authenticated, with a token in
+    its query, and a holder of that token can write to the draft. So this
+    filter removes the query of an upload URL from the message and from each
+    argument of a record. It never drops a record."""
+
+    #: The mark that :func:`_install_upload_log_filter` looks for. A class
+    #: check would add a second filter after a reload of this module.
+    upload_url_filter = True
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_redact_upload_urls(a) for a in record.args)
+        if isinstance(record.msg, str):
+            record.msg = _redact_upload_urls(record.msg)
+        return True
+
+
+def _install_upload_log_filter() -> None:
+    """Add :class:`_UploadUrlFilter` to the ``httpx`` logger, once."""
+    target = logging.getLogger("httpx")
+    if not any(getattr(f, "upload_url_filter", False) for f in target.filters):
+        target.addFilter(_UploadUrlFilter())
+
+
+_install_upload_log_filter()
+
+
+def _answer_status(resp: Any) -> int | None:
+    """The HTTP status of an answer, or None when it has no int status."""
+    status = getattr(resp, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _is_2xx(status: int | None) -> bool:
+    """True for each 2xx. Graph answers 201 to a POST, so ``== 200`` is wrong."""
+    return status is not None and 200 <= status < 300
+
+
+def _json_or_none(resp: Any) -> Any:
+    """The JSON body of an answer, or None when it has none."""
+    try:
+        return resp.json()
+    except Exception:  # an empty or HTML body has no JSON
+        return None
+
+
+def _error_code(body: Any) -> str | None:
+    """``error.code`` of a Graph error body, or None."""
+    error = body.get("error") if isinstance(body, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
+
+
+def _next_range_start(body: Any) -> int | None:
+    """The first offset of ``nextExpectedRanges`` in a PUT answer, or None.
+
+    The ``uploadUrl`` is an Outlook REST URL, and its answers can spell the
+    key ``NextExpectedRanges``. So the key is read in any case. A range is
+    ``"2097152"`` or ``"2097152-"``."""
+    if not isinstance(body, dict):
+        return None
+    for key, value in body.items():
+        if not (isinstance(key, str) and key.lower() == "nextexpectedranges"):
+            continue
+        if not (isinstance(value, list) and value and isinstance(value[0], str)):
+            return None
+        head = value[0].split("-", 1)[0].strip()
+        return int(head) if head.isdigit() else None
+    return None
+
+
+def _log_attachment_failure(stage: str, reason: str, size: int) -> None:
+    """One log line for a failed file. It names no URL and no file name."""
+    logger.warning("outlook.attachment_failed stage=%s reason=%s size=%d",
+                   stage, reason, size)
+
+
+def _file_name(att: dict[str, Any]) -> str:
+    """The name of a file for an error text."""
+    return att.get("filename") or "attachment"
+
+
+async def _post_file(
+    client: httpx.AsyncClient, draft_id: str, att: dict[str, Any],
+    content: bytes,
+) -> None:
+    """Add one file to a draft in one POST of a ``fileAttachment``.
+
+    The request is the one that ``_attach_files`` sent before EM-T9, byte for
+    byte. Each answer that is not 2xx raises, and so does a transport error
+    (item 1). The raise is outside the ``except`` block, so it chains no
+    error of httpx."""
+    reason: str | None = None
+    try:
+        resp = await client.post(
+            f"/me/messages/{draft_id}/attachments",
+            json={
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": att.get("filename", "attachment"),
+                "contentType": att.get(
+                    "mime_type", "application/octet-stream"),
+                "contentBytes": base64.b64encode(content).decode(),
+            },
+        )
+    except Exception as exc:  # each failure is a failed file
+        reason = type(exc).__name__
+    else:
+        status = _answer_status(resp)
+        if not _is_2xx(status):
+            reason = str(status)
+    if reason is not None:
+        _log_attachment_failure("post", reason, len(content))
+        raise ProviderAttachmentFailed(_file_name(att))
+
+
+async def _put_ranges(upload_url: str, content: bytes) -> str | None:
+    """PUT *content* to an upload URL in ranges of 2 MiB, in order.
+
+    It returns None when the last PUT answers 201, else the reason of the
+    failure (items 4 and 5). The client is made here, with no auth and no
+    ``Authorization`` header, because the URL is pre-authenticated. The Graph
+    client puts the bearer on each request, so it must not send these PUTs.
+
+    * A 200 must name the next offset in ``nextExpectedRanges``.
+    * A 201 before the last range fails, and so does a 200 after it.
+    * A 429, a 5xx or a transport error fails with no retry.
+
+    The reason never holds the URL. The function never calls
+    ``raise_for_status()``, because the text of that error holds the URL."""
+    total = len(content)
+    start = 0
+    async with httpx.AsyncClient(timeout=30.0) as uploader:
+        while start < total:
+            end = min(start + _UPLOAD_RANGE_BYTES, total) - 1
+            chunk = content[start:end + 1]
+            try:
+                resp = await uploader.put(upload_url, content=chunk, headers={
+                    "Content-Range": f"bytes {start}-{end}/{total}",
+                    "Content-Length": str(len(chunk)),
+                    "Content-Type": "application/octet-stream",
+                })
+            except Exception as exc:  # its text can hold the URL
+                return type(exc).__name__
+            status = _answer_status(resp)
+            if end + 1 == total:
+                return None if status == 201 else f"last_{status}"
+            if status != 200:
+                return str(status)
+            if _next_range_start(_json_or_none(resp)) != end + 1:
+                return "range"
+            start = end + 1
+    return None
+
+
+async def _upload_file(
+    client: httpx.AsyncClient, draft_id: str, att: dict[str, Any],
+    content: bytes,
+) -> bool:
+    """Add one file of 3 MB or more to a draft through an upload session.
+
+    It returns True when the file went up, and False when Graph refused the
+    session for the minimum size. The caller then sends one POST (item 3).
+    Each other failure raises :class:`ProviderAttachmentFailed`.
+
+    The POST that opens the session goes through the Graph client with no
+    retry. It never goes through ``_graph_send``, because that wait can reach
+    30 seconds (item 5). The PUTs go through :func:`_put_ranges`."""
+    total = len(content)
+    reason: str | None = None
+    session: Any = None
+    try:
+        resp = await client.post(
+            f"/me/messages/{draft_id}/attachments/createUploadSession",
+            json={"AttachmentItem": {
+                "attachmentType": "file",
+                "name": att.get("filename", "attachment"),
+                "size": total,
+                "contentType": att.get(
+                    "mime_type", "application/octet-stream"),
+            }},
+        )
+    except Exception as exc:  # each failure is a failed file
+        reason = type(exc).__name__
+    else:
+        status = _answer_status(resp)
+        session = _json_or_none(resp)
+        if not _is_2xx(status):
+            if _error_code(session) == _MIN_SIZE_REFUSAL:
+                return False
+            reason = str(status)
+    upload_url = session.get("uploadUrl") if isinstance(session, dict) else None
+    if reason is None and not (isinstance(upload_url, str) and upload_url):
+        reason = "no_upload_url"
+    if reason is None:
+        reason = await _put_ranges(upload_url, content)
+    if reason is not None:
+        _log_attachment_failure("session", reason, total)
+        raise ProviderAttachmentFailed(_file_name(att))
+    return True
 
 
 GRAPH_SCOPES = [
@@ -249,6 +661,10 @@ GRAPH_SCOPES = [
 
 class OutlookProvider(BaseEmailProvider):
     """Microsoft Graph API email provider."""
+
+    #: Graph gives a message a new id when it moves to another folder, so the
+    #: ingest upsert moves its one row to the new id (D-EM-34).
+    REKEYS_MESSAGE_IDS = True
 
     def __init__(
         self, credentials: dict[str, Any], *, app: OAuthApp | None = None,
@@ -270,6 +686,10 @@ class OutlookProvider(BaseEmailProvider):
         # check existence, so this turns the 3-Graph-call apply into 2. None =
         # not yet fetched; a set (possibly empty for MSA/403) = fetched.
         self._master_categories: set[str] | None = None
+        # True when the last ``list_folders`` skipped a failed ``childFolders``
+        # read. The delta then keeps the links of the folders that the list
+        # left out (WS-17 EM-T4d review round 1 F2).
+        self._folder_list_partial = False
 
     def credentials_dirty(self) -> bool:
         return self._creds_dirty
@@ -416,6 +836,7 @@ class OutlookProvider(BaseEmailProvider):
         deeper nesting is followed only when a child reports its own children).
         """
         client = await self._get_client()
+        self._folder_list_partial = False
         # NB: ``wellKnownName`` is intentionally NOT requested — personal/consumer
         # (MSA) accounts reject it in ``$select`` with HTTP 400, which used to fail
         # the whole folder listing. We classify system vs user by name instead
@@ -471,7 +892,10 @@ class OutlookProvider(BaseEmailProvider):
                     for child in children:
                         out.extend(await _descend(child))
                 except Exception:  # noqa: BLE001
-                    pass  # a forbidden subtree shouldn't drop the parent
+                    # A forbidden subtree shouldn't drop the parent. The mark
+                    # tells the delta that the list is short (EM-T4d review
+                    # round 1 F2). The list itself does not change.
+                    self._folder_list_partial = True
             return out
 
         top = await _page("/me/mailFolders", {"$top": 200, "$select": select})
@@ -554,11 +978,7 @@ class OutlookProvider(BaseEmailProvider):
             params: dict[str, Any] = {
                 "$top": min(max_results, page_cap),
                 "$orderby": "receivedDateTime desc",
-                "$select": "id,internetMessageId,subject,from,toRecipients,"
-                           "ccRecipients,bccRecipients,receivedDateTime,isRead,"
-                           "hasAttachments,flag,bodyPreview,categories,"
-                           "parentFolderId,conversationId,importance,"
-                           "internetMessageHeaders",
+                "$select": _MESSAGE_SELECT,
             }
             if query:
                 params["$search"] = f'"{query}"'
@@ -595,6 +1015,22 @@ class OutlookProvider(BaseEmailProvider):
         resp = await client.get(
             f"/me/messages/{provider_message_id}",
             params={"$expand": "attachments"},
+        )
+        resp.raise_for_status()
+        return self._parse_graph_message(resp.json())
+
+    async def get_message_body(self, provider_message_id: str) -> EmailMessage:
+        """The id and the body of a message, and no files (WS-17 EM-S1).
+
+        :meth:`get_message` sends ``$expand=attachments``, and Graph then sends
+        the bytes of each file in base64. The HTML route of the pane needs the
+        body only, so this read selects ``id`` and ``body`` and expands
+        nothing. Fence: ``tests/unit/test_email_html_tier.py``.
+        """
+        client = await self._get_client()
+        resp = await client.get(
+            f"/me/messages/{provider_message_id}",
+            params={"$select": "id,body"},
         )
         resp.raise_for_status()
         return self._parse_graph_message(resp.json())
@@ -674,10 +1110,17 @@ class OutlookProvider(BaseEmailProvider):
         attachments: list[dict[str, Any]] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        *,
+        exact_to: bool = False,
     ) -> str:
         """Create an Outlook draft. For replies, use createReply (keeps threading)
         then set the body; otherwise create a standalone draft message. File
-        attachments are added to the draft via the Graph attachments endpoint."""
+        attachments are added to the draft via the Graph attachments endpoint.
+
+        ``createReply`` sets the To of a reply to the sender (or the Reply-To)
+        only. With ``exact_to``, the PATCH of the reply also writes ``to``, so
+        a reply-all draft keeps each address that the member gave (WS-17
+        EM-T10 item 6, C8). The default keeps the To of ``createReply``."""
         client = await self._get_client()
         body_block = {
             "contentType": "html" if body_html else "text",
@@ -697,11 +1140,16 @@ class OutlookProvider(BaseEmailProvider):
             )
             resp.raise_for_status()
             draft_id = resp.json().get("id", "")
+            self._require_new_draft_id(draft_id, attachments)
+            reply_to: dict[str, Any] = (
+                {"toRecipients": self._recipient_list(to)} if exact_to else {}
+            )
             patch = await client.patch(
-                f"/me/messages/{draft_id}", json={"body": body_block, **recipients}
+                f"/me/messages/{draft_id}",
+                json={"body": body_block, **reply_to, **recipients},
             )
             patch.raise_for_status()
-            await self._attach_files(client, draft_id, attachments)
+            await self._attach_to_new_draft(client, draft_id, attachments)
             return draft_id
         message: dict[str, Any] = {
             "subject": subject,
@@ -712,8 +1160,48 @@ class OutlookProvider(BaseEmailProvider):
         resp = await client.post("/me/messages", json=message)
         resp.raise_for_status()
         draft_id = resp.json().get("id", "")
-        await self._attach_files(client, draft_id, attachments)
+        self._require_new_draft_id(draft_id, attachments)
+        await self._attach_to_new_draft(client, draft_id, attachments)
         return draft_id
+
+    @staticmethod
+    def _require_new_draft_id(
+        draft_id: str, attachments: list[dict[str, Any]] | None,
+    ) -> None:
+        """Raise before any file when Graph gave a new draft no id (EM-T9 item 10).
+
+        With no id, a file has no draft to go to, and no draft to delete. A
+        draft with no file keeps the old behaviour, byte for byte."""
+        if attachments and not draft_id:
+            raise ProviderAttachmentFailed(_file_name(attachments[0]))
+
+    @staticmethod
+    async def _attach_to_new_draft(
+        client: httpx.AsyncClient, draft_id: str,
+        attachments: list[dict[str, Any]] | None,
+    ) -> None:
+        """Add the files to a draft that ``create_draft`` made, or delete it.
+
+        WS-17 EM-T9 item 9 (B3). A failed file deletes the NEW draft before the
+        error raises, so Outlook keeps no draft without the file of the member.
+        Only ``create_draft`` calls this. ``update_draft`` holds a draft that
+        the member already has, so it keeps that draft, and the delete never
+        goes into ``_attach_files``. A failed DELETE is dropped, and the first
+        error raises. The DELETE moves the draft to Deleted Items (known limit
+        EM-T9-f7)."""
+        try:
+            await OutlookProvider._attach_files(client, draft_id, attachments)
+        except ProviderAttachmentFailed:
+            try:
+                gone = await client.delete(f"/me/messages/{draft_id}")
+                status = _answer_status(gone)
+                if not _is_2xx(status):
+                    logger.warning("outlook.new_draft_delete_failed reason=%s",
+                                   status)
+            except Exception as exc:  # the first error raises
+                logger.warning("outlook.new_draft_delete_failed reason=%s",
+                               type(exc).__name__)
+            raise
 
     async def update_draft(
         self,
@@ -772,28 +1260,56 @@ class OutlookProvider(BaseEmailProvider):
         resp.raise_for_status()
         return None
 
+    async def get_draft_recipients(self, draft_id: str) -> dict[str, list[str]]:
+        """The To, Cc and Bcc of a Graph draft, read with one ``$select``.
+
+        WS-17 EM-T13b-1 review round 2. A reply draft holds the To that
+        ``createReply`` set, which is the Reply-To of the mail."""
+        client = await self._get_client()
+        resp = await client.get(
+            f"/me/messages/{draft_id}",
+            params={"$select": "toRecipients,ccRecipients,bccRecipients"},
+        )
+        resp.raise_for_status()
+        raw = resp.json() or {}
+        return {
+            key: [
+                str((r.get("emailAddress") or {}).get("address") or "")
+                for r in (raw.get(f"{key}Recipients") or [])
+                if (r.get("emailAddress") or {}).get("address")
+            ]
+            for key in ("to", "cc", "bcc")
+        }
+
     @staticmethod
     async def _attach_files(
         client: httpx.AsyncClient, draft_id: str,
         attachments: list[dict[str, Any]] | None,
     ) -> None:
-        """Attach files to a Graph draft via POST /messages/{id}/attachments."""
-        import base64 as _b64  # noqa: PLC0415
+        """Add each file to a Graph draft, or raise (WS-17 EM-T9).
+
+        A file under 3,000,000 bytes goes in one POST to the ``attachments``
+        collection, as before (item 1). A larger file goes through an upload
+        session (item 2). A session that Graph refuses for the minimum size
+        falls back to one POST (item 3). A file of 0 bytes goes in one POST,
+        and a file with no bytes raises (item 12).
+
+        Each failure raises :class:`ProviderAttachmentFailed` with the name of
+        the file, so a mail never goes out without a file of the member. Before
+        EM-T9 this dropped each failure with ``continue``, and a file of 3 MB
+        or more was lost with no error.
+
+        This never deletes the draft. ``update_draft`` shares it with a draft
+        that the member already has (B3)."""
         for att in attachments or []:
-            try:
-                content = att.get("content") or b""
-                await client.post(
-                    f"/me/messages/{draft_id}/attachments",
-                    json={
-                        "@odata.type": "#microsoft.graph.fileAttachment",
-                        "name": att.get("filename", "attachment"),
-                        "contentType": att.get(
-                            "mime_type", "application/octet-stream"),
-                        "contentBytes": _b64.b64encode(content).decode(),
-                    },
-                )
-            except Exception:  # noqa: BLE001 — one bad attachment shouldn't fail the draft
+            content = att.get("content")
+            if not isinstance(content, (bytes, bytearray)):
+                raise ProviderAttachmentFailed(_file_name(att))
+            content = bytes(content)
+            if (len(content) >= _UPLOAD_SESSION_MIN_BYTES
+                    and await _upload_file(client, draft_id, att, content)):
                 continue
+            await _post_file(client, draft_id, att, content)
 
     # ── Change-notification subscriptions (push) ─────────────────────────────
 
@@ -1182,6 +1698,11 @@ class OutlookProvider(BaseEmailProvider):
     #: holds one page for each folder, so memory does not bound it. The cap
     #: only guards against a server that never ends a folder.
     IMPORT_MAX_PAGES = 5000
+    #: The delta pages of one folder that one poll reads (EM-T4d item 13). A
+    #: seed round for a mailbox of 6 months can need more than 100 Graph
+    #: calls, and the poll holds the mailbox lock. A folder at the cap stores
+    #: its ``@odata.nextLink`` and goes on at the next poll.
+    DELTA_MAX_PAGES = 20
     #: The import of Outlook reads every swept folder, so the deep sync of a
     #: member act may reconcile deletions from it (EM-T6b fix round 1).
     import_full_snapshot = True
@@ -1255,19 +1776,25 @@ class OutlookProvider(BaseEmailProvider):
                 break
         return out
 
-    async def _user_sweep_folders(self) -> list[tuple[str, str]]:
-        """The user folders of a full sweep: (folder id, canonical name).
+    async def _user_sweep_folder_list(self) -> tuple[list[tuple[str, str]], bool]:
+        """The user folders of a full sweep, and True when the folder list
+        answered.
 
-        Each Outlook message lives in exactly one folder, so storing
-        folder=canonical(displayName) is unambiguous and makes the user's own
-        folders openable in the UI. A folder whose canonical name is a system
-        folder is skipped, because the sweep reads it by its well-known name.
-        A failed folder list gives no user folder.
+        Each item is (folder id, canonical name). Each Outlook message lives
+        in exactly one folder, so storing folder=canonical(displayName) is
+        unambiguous and makes the user's own folders openable in the UI. A
+        folder whose canonical name is a system folder is skipped, because
+        the sweep reads it by its well-known name. A failed folder list
+        gives no user folder and False, so the delta keeps the link of each
+        user folder (EM-T4d item 9). A list that skipped a failed
+        ``childFolders`` read gives the folders it has and False, so the
+        delta keeps the links of the folders it left out (review round 1
+        F2). The sweep reads only the folders, so its result stays the same.
         """
         try:
             folders = await self.list_folders()
         except Exception:
-            return []
+            return [], False
         out: list[tuple[str, str]] = []
         for f in folders:
             if f.type == "system":
@@ -1276,7 +1803,12 @@ class OutlookProvider(BaseEmailProvider):
             if canon in _CORE_CANONICAL:
                 continue
             out.append((f.provider_folder_id, canon))
-        return out
+        return out, not self._folder_list_partial
+
+    async def _user_sweep_folders(self) -> list[tuple[str, str]]:
+        """The user folders of a full sweep: (folder id, canonical name). A
+        failed folder list gives no user folder."""
+        return (await self._user_sweep_folder_list())[0]
 
     async def sync_messages(
         self,
@@ -1285,123 +1817,239 @@ class OutlookProvider(BaseEmailProvider):
         deep: bool = False,
         since: datetime | None = None,
         catch_up: datetime | None = None,
+        *,
+        delta_shadow: bool = False,
     ) -> SyncResult:
+        """The full multi-folder sweep, the one writer of each poll.
+
+        Each poll sweeps the 6 system folders and each user folder, so
+        messages land in the right folder in the UI. A deep sync pages each
+        folder back to the floor. A recurring poll reads only the newest
+        pages, and ``catch_up`` reads past them after a pause (EM-T6b item
+        9). The floor ``since`` binds both (EM-T6a item 5).
+
+        The sweep never reads ``history_id``. Delta stopped new mail once,
+        and nobody found the cause (commits ``55bec57f`` and ``a350b578``,
+        2026-06-23). So with no ``delta_shadow`` the poll makes no delta
+        request and returns ``new_history_id=None``. Phase (d) writes the
+        cursor through ``COALESCE``, so a stored cursor STAYS as it is.
+
+        With ``delta_shadow`` (WS-17 EM-T4d), a shallow poll then runs the
+        Graph delta of each swept folder (``_delta_shadow``). It returns the
+        next cursor as ``new_history_id`` and the record as
+        ``delta_report``. The delta never changes ``messages``,
+        ``full_snapshot``, ``catch_up_incomplete`` or ``catch_up_folders``,
+        and no ``@removed`` item becomes a ``[DELETED]`` marker.
+        """
+        await self._get_client()
+        max_pages = self.DEEP_SYNC_MAX_PAGES if deep else self.RECURRING_SYNC_MAX_PAGES
+        messages: list[EmailMessage] = []
+        incomplete: list[str] = []
+        # The messages of each swept folder, by the key of the sweep. The
+        # delta compares its new mail against them (EM-T4d item 8).
+        swept: dict[str, list[EmailMessage]] = {}
+
+        async def _sweep(folder_key: str, canon: str | None) -> None:
+            try:
+                got = await self._sweep_folder(
+                    folder_key, max_results, canonical_override=canon,
+                    max_pages=max_pages, since=since, catch_up=catch_up,
+                )
+            except CatchUpIncomplete as exc:
+                # Keep what the folder read, and keep the watermark: new
+                # mail still lands this cycle (owner answer Q2, EM-T6b).
+                got = exc.messages
+                incomplete.append(canon or folder_key)
+                logger.warning("sync.catch_up_incomplete folder=%s error=%s",
+                               folder_key, str(exc.__cause__)[:160])
+            except Exception as exc:
+                # One rule with the import (fix round 4): a 403 or a 404
+                # skips only Archive or a user folder. On a folder that
+                # each mailbox has, it fails the cycle, and the error
+                # path writes ``sync_status = 'error'``. Any other failure
+                # leaves the folder unread, so the cycle keeps its
+                # watermark (fix round 3).
+                if _skips_folder(folder_key, canon, exc):
+                    return
+                if _status(exc) in _ABSENT_STATUSES:
+                    raise
+                incomplete.append(canon or folder_key)
+                logger.warning("sync.sweep_folder_failed folder=%s status=%s",
+                               folder_key, _status(exc))
+                return
+            messages.extend(got)
+            swept[folder_key] = got
+
+        for folder_key in SWEEP_SYSTEM_FOLDERS:
+            await _sweep(folder_key, None)
+        user_folders, listed = await self._user_sweep_folder_list()
+        for folder_id, canon in user_folders:
+            await _sweep(folder_id, canon)
+
+        new_history_id: str | None = None
+        report: DeltaShadowReport | None = None
+        if delta_shadow and not deep:
+            keys = [*SWEEP_SYSTEM_FOLDERS, *(f for f, _ in user_folders)]
+            try:
+                new_history_id, report = await self._delta_shadow(
+                    history_id, keys, listed=listed, since=since, swept=swept)
+            except Exception as exc:
+                # A delta failure never changes the sync (EM-T4d item 11).
+                # No new cursor, so phase (d) keeps the stored one.
+                new_history_id = None
+                report = DeltaShadowReport(folders=len(keys), failed=len(keys),
+                                           statuses=[type(exc).__name__])
+
+        return SyncResult(
+            messages_synced=len(messages),
+            messages=messages,
+            new_history_id=new_history_id,
+            # A full multi-folder snapshot → the gateway can reconcile
+            # provider-side deletions (messages gone from every folder).
+            full_snapshot=True,
+            catch_up_incomplete=bool(incomplete),
+            catch_up_folders=incomplete,
+            delta_report=report,
+        )
+
+    async def _delta_shadow(
+        self,
+        raw_cursor: str | None,
+        keys: list[str],
+        *,
+        listed: bool,
+        since: datetime | None,
+        swept: dict[str, list[EmailMessage]],
+    ) -> tuple[str, DeltaShadowReport]:
+        """The Graph delta of each swept folder, after the sweep (EM-T4d).
+
+        It runs AFTER the sweep on purpose. A message that the sweep read
+        arrived before the delta started, so a delta that works returns it.
+        A message that arrives between the two reads can only add to
+        ``delta_only``, never to ``sweep_only``.
+
+        It returns the next cursor and the record. The folder set follows
+        the sweep (item 9): a new user folder seeds, and a folder that the
+        list no longer returns loses its link. A failed or short folder list
+        (``listed`` False) keeps the link of each stored user folder that
+        this poll does not read (review round 1 F2).
+
+        A failed folder never raises (item 11). A refused link, a 410 and a
+        400 of Graph drop its link (``_drops_link``), and any other failure
+        keeps the stored entry. The record counts each failure and names its
+        status. A refused link logs ``email.delta_link_refused`` with the
+        folder and the source, and never the link. A 403 or a 404 on
+        Archive or a user folder skips the folder with no count and no link,
+        by the one rule of the sweep (``_skips_folder``). A mailbox with no
+        Archive then logs no failure on each poll."""
+        stored = parse_delta_cursor(raw_cursor)
+        report = DeltaShadowReport()
+        out: dict[str, dict[str, str | None]] = {}
+        seen = set(keys)
+        if not listed:
+            out.update({k: v for k, v in stored.items()
+                        if k not in SWEEP_SYSTEM_FOLDERS and k not in seen})
+        user = seen - set(SWEEP_SYSTEM_FOLDERS)
+        for key in keys:
+            entry = stored.get(key)
+            after = _cursor_time(entry.get("at")) if entry else None
+            try:
+                got = await self._delta_folder(key, entry, since=since, after=after)
+            except Exception as exc:
+                if _skips_folder(key, key if key in user else None, exc):
+                    continue
+                status = _status(exc)
+                report.folders += 1
+                report.failed += 1
+                if isinstance(exc, _ForeignLink):
+                    logger.warning(
+                        "email.delta_link_refused folder=%s source=%s "
+                        "reason=foreign_host", key, exc.source)
+                    report.statuses.append("link_refused")
+                else:
+                    report.statuses.append(
+                        str(status) if status is not None else type(exc).__name__)
+                if entry is not None and not _drops_link(exc):
+                    out[key] = entry
+                continue
+            report.folders += 1
+            out[key] = got.entry
+            report.removed += got.removed
+            if after is None or not got.ended:
+                # The first round of a folder, or a round that the page cap
+                # cut: it seeds, and adds no count (item 8).
+                report.seeding += 1
+                continue
+            sweep_new = {m.provider_message_id for m in swept.get(key, [])
+                         if _new_since(m.received_at, after)}
+            report.both += len(sweep_new & got.new_ids)
+            report.sweep_only += len(sweep_new - got.new_ids)
+            report.delta_only += len(got.new_ids - sweep_new)
+        return dump_delta_cursor(out), report
+
+    async def _delta_folder(
+        self,
+        key: str,
+        entry: dict[str, str | None] | None,
+        *,
+        since: datetime | None,
+        after: datetime | None,
+    ) -> _DeltaRound:
+        """One round of the Graph delta of the folder *key* (EM-T4d items 3,
+        4 and 13).
+
+        With a stored entry it calls the stored link as it is. With none it
+        starts a seed round at ``/me/mailFolders/{key}/messages/delta``, with
+        the ``$select`` of the sweep and the floor ``since``. Each request
+        sends ``Prefer: odata.maxpagesize=100``, no ``$top`` and no
+        ``IdType`` preference. It follows each ``@odata.nextLink`` to the
+        ``@odata.deltaLink``, for at most ``DELTA_MAX_PAGES`` pages.
+
+        A round that ends stores the delta link and the time it ended as
+        ``at``. A round at the page cap stores its next link and no ``at``,
+        so the next poll goes on, and the folder seeds until a round ends.
+        A failed request raises, and the caller decides.
+
+        Each link that the code did not build must be a Graph link
+        (``_graph_link``, review round 1 F1). That is the stored link, each
+        ``@odata.nextLink`` and the ``@odata.deltaLink``. A link that fails
+        raises ``_ForeignLink`` before any request goes to it. The seed path
+        is relative to the base URL of the client, so it cannot leave
+        Graph."""
         client = await self._get_client()
-
-        # Delta sync is DISABLED: in production the inbox delta token returned 0
-        # changes every cycle even as new mail arrived, silently halting sync.
-        # Force the reliable multi-folder full sweep and return
-        # new_history_id=None — which also auto-clears any stuck token already
-        # persisted on the account (the scheduler writes it back), so a
-        # previously-broken account self-heals on its next cycle. Re-enable delta
-        # only behind a verified implementation.
-        history_id = None
-
-        if history_id:
-            # We persist Graph's @odata.deltaLink (a full URL) as history_id, but
-            # the delta endpoint wants only the bare $deltatoken value — extract
-            # it (handles both a stored deltaLink URL and an already-bare token).
-            token = history_id
-            if "://" in history_id:
-                from urllib.parse import parse_qs, urlparse  # noqa: PLC0415
-                token = parse_qs(urlparse(history_id).query).get(
-                    "$deltatoken", [history_id]
-                )[0]
-            # Delta query for incremental sync
-            resp = await client.get(
-                "/me/mailFolders/inbox/messages/delta",
-                params={"$deltatoken": token, "$top": max_results},
-            )
+        headers = {"Prefer": _DELTA_PREFER}
+        params: dict[str, Any] | None = None
+        if entry is not None:
+            url: str | None = _graph_link(entry["link"], "stored")
+        else:
+            url = f"/me/mailFolders/{_folder_path(key)}/messages/delta"
+            params = {"$select": _MESSAGE_SELECT}
+            if since is not None:
+                params["$filter"] = f"receivedDateTime ge {_graph_time(since)}"
+        out = _DeltaRound(entry={})
+        for _ in range(self.DELTA_MAX_PAGES):
+            resp = await client.get(url, params=params, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-
-            messages: list[EmailMessage] = []
-            removed_count = 0
-            for item in data.get("value", []):
-                if item.get("@removed"):
-                    removed_count += 1
-                    messages.append(EmailMessage(
-                        provider_message_id=item["id"],
-                        folder="TRASH",
-                        labels=["TRASH"],
-                        subject="[DELETED]",
-                    ))
-                else:
-                    msg = self._parse_graph_message(item)
-                    # The delta query runs against the inbox folder.
-                    msg.folder = "inbox"
-                    messages.append(msg)
-
-            return SyncResult(
-                messages_synced=len(data.get("value", [])),
-                messages_skipped=removed_count,
-                messages=messages,
-                new_history_id=data.get("@odata.deltaLink"),
-            )
-        else:
-            # Full multi-folder sweep so messages land in the right folder in the
-            # UI (not just inbox/sent). DEEP sync (first connect / forced) pages
-            # each folder back to the floor via the since-filter. RECURRING
-            # polls read only the newest pages (cheap). The floor binds BOTH
-            # (EM-T6a item 5): without it, the first poll of a quiet user
-            # folder added mail that was years old (D-EM-10). ``catch_up``
-            # reads past the newest pages after a pause (EM-T6b item 9).
-            max_pages = self.DEEP_SYNC_MAX_PAGES if deep else self.RECURRING_SYNC_MAX_PAGES
-            messages = []
-            incomplete: list[str] = []
-
-            async def _sweep(folder_key: str, canon: str | None) -> None:
-                try:
-                    messages.extend(await self._sweep_folder(
-                        folder_key, max_results, canonical_override=canon,
-                        max_pages=max_pages, since=since, catch_up=catch_up,
-                    ))
-                except CatchUpIncomplete as exc:
-                    # Keep what the folder read, and keep the watermark: new
-                    # mail still lands this cycle (owner answer Q2, EM-T6b).
-                    messages.extend(exc.messages)
-                    incomplete.append(canon or folder_key)
-                    logger.warning("sync.catch_up_incomplete folder=%s error=%s",
-                                   folder_key, str(exc.__cause__)[:160])
-                except Exception as exc:
-                    # One rule with the import (fix round 4): a 403 or a 404
-                    # skips only Archive or a user folder. On a folder that
-                    # each mailbox has, it fails the cycle, and the error
-                    # path writes ``sync_status = 'error'``. Any other failure
-                    # leaves the folder unread, so the cycle keeps its
-                    # watermark (fix round 3).
-                    if _skips_folder(folder_key, canon, exc):
-                        return
-                    if _status(exc) in _ABSENT_STATUSES:
-                        raise
-                    incomplete.append(canon or folder_key)
-                    logger.warning("sync.sweep_folder_failed folder=%s status=%s",
-                                   folder_key, _status(exc))
-
-            for folder_key in SWEEP_SYSTEM_FOLDERS:
-                await _sweep(folder_key, None)
-            for folder_id, canon in await self._user_sweep_folders():
-                await _sweep(folder_id, canon)
-
-            # IMPORTANT: keep the account in full-sync mode (new_history_id=None).
-            #
-            # We previously seeded an inbox delta token here (via
-            # _bootstrap_inbox_delta) to detect upstream deletions. In production
-            # that delta token returned 0 changes every cycle even when new mail
-            # had arrived — i.e. it SILENTLY STOPPED syncing new email. The
-            # multi-folder full sweep above is the reliable path (it reliably
-            # picks up new mail), so we stay on it. Deletion-detection needs a
-            # different, verified approach before delta is re-enabled.
-            return SyncResult(
-                messages_synced=len(messages),
-                messages=messages,
-                new_history_id=None,
-                # A full multi-folder snapshot → the gateway can reconcile
-                # provider-side deletions (messages gone from every folder).
-                full_snapshot=True,
-                catch_up_incomplete=bool(incomplete),
-                catch_up_folders=incomplete,
-            )
+            for item in data.get("value") or []:
+                if "@removed" in item:
+                    out.removed += 1
+                    continue
+                received = self._parse_received_datetime(item.get("receivedDateTime"))
+                if after is not None and item.get("id") and _new_since(received, after):
+                    out.new_ids.add(str(item["id"]))
+            ended = data.get("@odata.deltaLink")
+            if ended:
+                out.entry = {"link": _graph_link(ended, "delta"),
+                             "at": datetime.now(UTC).isoformat()}
+                out.ended = True
+                return out
+            url, params = data.get("@odata.nextLink"), None
+            if not url:
+                raise RuntimeError("a delta page with no next link and no delta link")
+            url = _graph_link(url, "next")
+        out.entry = {"link": url, "at": None}
+        return out
 
     async def import_batches(
         self,

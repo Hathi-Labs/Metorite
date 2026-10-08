@@ -124,8 +124,16 @@ async def test_request_confirmation_relay_roundtrip(monkeypatch, answer, expecte
     await answer_task
 
     assert approved is expected
-    assert len(frames) == 1
-    assert "confirmation_requested" in frames[0]
+    # The card, then the event that closes it on the same stream (2026-10-06).
+    assert len(frames) == 2
+    asked = json.loads(frames[0].removeprefix("data: "))
+    closed = json.loads(frames[1].removeprefix("data: "))
+    assert asked["name"] == "confirmation_requested"
+    assert closed["name"] == "confirmation_resolved"
+    assert closed["value"] == {
+        "request_id": asked["value"]["request_id"],
+        "answer": "APPROVE" if expected else "REJECT",
+    }
     assert executor._pending_user_input == {}
 
 

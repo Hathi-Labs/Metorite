@@ -56,6 +56,10 @@ from uuid import UUID
 import httpx
 from acb_common import get_logger, get_settings
 
+# H-236: the four writes carry ``open_world=True``. Per D-CRM-9 an agent write
+# queues for the live Zoho tenant when ``CRM_ZOHO_SYNC`` is on, so it can carry
+# data off the platform. A run that a covered Projects run delegates to does
+# not get them (``acb_skills.egress``). The reads stay.
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -369,7 +373,7 @@ def _row_line(slug: str, row: dict[str, Any]) -> str:
 
 # ── Read tools ───────────────────────────────────────────────────────────────
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def search_crm(
     query: str, entity: str | None = None, limit: int = 10,
 ) -> str:
@@ -404,7 +408,7 @@ async def search_crm(
     return f"Matches for '{query}' ({total}):\n\n" + "\n\n".join(sections)
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def get_pipeline(owner: str | None = None, per_lane: int = 5) -> str:
     """The deal pipeline as a board: every stage in order, how many deals sit in
     it and what they are worth, plus the most recently moved deals in each.
@@ -443,7 +447,7 @@ async def get_pipeline(owner: str | None = None, per_lane: int = 5) -> str:
     return "\n".join(out)
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def get_record(entity: str, record_id: str) -> str:
     """Read one CRM record in full — entity is 'leads', 'deals', 'contacts' or
     'organizations' and record_id is its id (from search_crm or get_pipeline).
@@ -504,7 +508,7 @@ def _email_line(thread: dict[str, Any]) -> str:
     )
 
 
-@_annotate_risk(read_only=True, idempotent=True)
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
 async def get_timeline(entity: str, record_id: str, limit: int = 20) -> str:
     """What has happened to a CRM record, newest first: logged notes, calls,
     meetings and tasks, every status change with how long it sat in the
@@ -688,7 +692,7 @@ def _quoted_names(rows: Any, field: str) -> str:
     return ", ".join(f"'{name}'" for name in _names(rows, field))
 
 
-@_annotate_risk(destructive=True, idempotent=False)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
 async def create_lead(
     lead_name: str,
     email: str | None = None,
@@ -745,7 +749,7 @@ async def create_lead(
     )
 
 
-@_annotate_risk(destructive=True, idempotent=False)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
 async def update_deal_status(
     deal_id: str, stage: str, lost_reason: str | None = None,
 ) -> str:
@@ -822,7 +826,7 @@ async def update_deal_status(
     return f"Moved {title} to {lane}."
 
 
-@_annotate_risk(destructive=True, idempotent=False)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
 async def log_activity(
     entity: str,
     record_id: str,
@@ -888,7 +892,7 @@ async def log_activity(
     )
 
 
-@_annotate_risk(destructive=True, idempotent=False)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
 async def convert_lead(
     lead_id: str,
     deal_name: str | None = None,

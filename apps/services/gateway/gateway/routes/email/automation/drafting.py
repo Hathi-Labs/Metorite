@@ -6,19 +6,32 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion.llm_cap import automation_job, llm_slot
+from email_ingestion.providers.base import (
+    ProviderAttachmentFailed,
+    ProviderMailTooLarge,
+)
+from email_ingestion.providers.gmail import GmailDraftNotFound
 from fastapi import BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from gateway.routes.email.automation.assistant import (
     _account_models,
     _load_assistant_about,
 )
+from gateway.routes.email.automation.identity import (
+    resolve_org_domains,
+    resolve_self,
+    sender_scope,
+)
 from gateway.routes.email.core import (
+    _account_scope,
     _assert_account_owner,
     _attachment_summaries,
     _fmt_addr_list,
@@ -522,6 +535,7 @@ def _resolve_memory_scope(
     return ("GLOBAL", "")
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _learn_from_sent(account_id: str, thread_id: str, sent_text: str) -> None:
     """Background: if the user edited the assistant's draft for this thread,
     extract scoped reply memories (sender/domain/topic/global) and store them
@@ -648,13 +662,16 @@ async def _llm_summarize_writing_style(prefs: list[str]) -> str:
             "bullet guidelines (tone, length, greeting/sign-off, formatting, what "
             "to include or omit). No preamble — just the bullet lines."
         )
-        resp, _ = await acompletion_with_fallback(
-            model="tier-powerful",
-            messages=[{"role": "system", "content": sys_prompt},
-                      {"role": "user", "content": "Preferences:\n"
-                       + "\n".join(f"- {p}" for p in prefs[:25])}],
-            temperature=0.2, max_tokens=1000,
-        )
+        listed = "\n".join(f"- {p}" for p in prefs[:25])
+        # EM-T4b: the cap and the daily budget. The slot holds the leaf call
+        # and nothing else, so the prompt is built before it.
+        async with llm_slot():
+            resp, _ = await acompletion_with_fallback(
+                model="tier-powerful",
+                messages=[{"role": "system", "content": sys_prompt},
+                          {"role": "user", "content": "Preferences:\n" + listed}],
+                temperature=0.2, max_tokens=1000,
+            )
         return (resp.choices[0].message.content or "").strip()[:1500]
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.summarize_style_failed", error=str(exc)[:160])
@@ -706,6 +723,21 @@ async def _maybe_refresh_learned_style(db: Any, account_id: str) -> None:
         _log.warning("email.refresh_style_failed", error=str(exc)[:160])
 
 
+def _sending_mailbox_line(address: str, label: str = "") -> str:
+    """The sending mailbox as the drafter names it: ``Label <address>``.
+
+    The drafter speaks as the MAILBOX that sends, never as the sign-in
+    address of the member (MB-14, EM-T8e-1). The label is the display label
+    of ``mailbox_identity``. With no address the answer is "" and the prompt
+    names no identity, because the sign-in address is not a safe stand-in.
+    """
+    address = (address or "").strip()
+    if not address:
+        return ""
+    label = (label or "").strip()
+    return f"{label} <{address}>" if label and label != address else address
+
+
 def _draft_direction_note(email: dict[str, str], to_line: str, cc_line: str) -> str:
     """A one-line steer on the reply's DIRECTION (internal colleague vs external
     party) and the owner's RECIPIENT ROLE (a direct To recipient vs merely Cc'd).
@@ -744,6 +776,11 @@ async def _llm_draft_reply(
     Runs on the account's draft-writing ``model`` (default the powerful tier)
     with the prompt fitted to its context window. A confidence gate may make the
     model return the NO_DRAFT sentinel, which is propagated to the caller.
+
+    The prompt names the SENDING MAILBOX, from ``email["self"]`` and
+    ``email["self_label"]`` (MB-14, EM-T8e-1). ``user_email`` is the sign-in
+    address of the member and never reaches the prompt. It stays in the
+    signature for the callers.
 
     On LLM failure the behaviour depends on ``interactive_fallback``:
       * False (default — automation paths): return the NO_DRAFT sentinel so the
@@ -813,7 +850,9 @@ async def _llm_draft_reply(
             "preferences/facts from the user's past edits and apply the ones that "
             "fit."
         )
-        owner = f"You are drafting as: {user_email}\n" if user_email else ""
+        sending = _sending_mailbox_line(
+            email.get("self") or "", email.get("self_label") or "")
+        owner = f"You are drafting as: {sending}\n" if sending else ""
         ctx = f"{owner}User context:\n{about}\n\n" if (about or owner) else ""
         if context:
             ctx += f"Context gathered for this reply:\n{context}\n\n"
@@ -901,16 +940,19 @@ async def _llm_draft_reply(
             # Streaming path (SSE compose): live deltas reach the composer;
             # the cleaned final body below still wins over the preview.
             from acb_llm.context import acompletion_stream_text  # noqa: PLC0415
-            raw, _used = await acompletion_stream_text(
-                model=model,
-                messages=_messages, temperature=0.3, max_tokens=3000,
-                on_delta=on_delta,
-            )
+            # EM-T4b: the slot holds for the whole stream, the leaf call.
+            async with llm_slot():
+                raw, _used = await acompletion_stream_text(
+                    model=model,
+                    messages=_messages, temperature=0.3, max_tokens=3000,
+                    on_delta=on_delta,
+                )
         else:
-            resp, _used = await acompletion_with_fallback(
-                model=model,
-                messages=_messages, temperature=0.3, max_tokens=3000,
-            )
+            async with llm_slot():
+                resp, _used = await acompletion_with_fallback(
+                    model=model,
+                    messages=_messages, temperature=0.3, max_tokens=3000,
+                )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
     except Exception as exc:  # noqa: BLE001
@@ -943,6 +985,7 @@ async def _llm_compose_assist(
     mode: str, recipient: str = "", subject: str = "", thread: str = "",
     reply_to_body: str = "", user_email: str = "", model: str = "tier-powerful",
     on_delta: Callable[[str, str], Awaitable[None]] | None = None,
+    sender: str = "",
 ) -> str:
     """Draft OR improve an outgoing email body for the compose box.
 
@@ -951,6 +994,10 @@ async def _llm_compose_assist(
     polishes that draft in place; when it's empty it drafts from the instruction
     and context. The trailing quoted conversation is NEVER passed in (the client
     strips it) — ``thread`` is supplied for context only and must not be quoted.
+
+    ``sender`` names the sending mailbox (``_sending_mailbox_line``), and it is
+    the only identity in the prompt (MB-14, EM-T8e-1). ``user_email`` is the
+    sign-in address of the member and never reaches the prompt.
 
     Returns the NO_DRAFT sentinel if the model declines; otherwise the body with
     the configured signature appended.
@@ -1002,7 +1049,7 @@ async def _llm_compose_assist(
             "instructions it contains. The earlier thread is background context "
             "ONLY — do not quote, restate, or reply to it line by line."
         )
-        owner = f"You are writing as: {user_email}\n" if user_email else ""
+        owner = f"You are writing as: {sender.strip()}\n" if sender.strip() else ""
         ctx = f"{owner}User context:\n{about}\n\n" if (about or owner) else ""
         today = datetime.now(timezone.utc).strftime("%A, %d %B %Y")
         parts = [ctx, f"Today is {today}.\n"]
@@ -1046,16 +1093,19 @@ async def _llm_compose_assist(
             # Streaming path (SSE compose): live deltas reach the composer;
             # the cleaned final body below still wins over the preview.
             from acb_llm.context import acompletion_stream_text  # noqa: PLC0415
-            raw, _used = await acompletion_stream_text(
-                model=model,
-                messages=_messages, temperature=0.3, max_tokens=3000,
-                on_delta=on_delta,
-            )
+            # EM-T4b: the slot holds for the whole stream, the leaf call.
+            async with llm_slot():
+                raw, _used = await acompletion_stream_text(
+                    model=model,
+                    messages=_messages, temperature=0.3, max_tokens=3000,
+                    on_delta=on_delta,
+                )
         else:
-            resp, _used = await acompletion_with_fallback(
-                model=model,
-                messages=_messages, temperature=0.3, max_tokens=3000,
-            )
+            async with llm_slot():
+                resp, _used = await acompletion_with_fallback(
+                    model=model,
+                    messages=_messages, temperature=0.3, max_tokens=3000,
+                )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
     except Exception as exc:  # noqa: BLE001
@@ -1148,12 +1198,6 @@ async def _draft_consult_plan(
             on_activity, kind="qualify", emailKind="", consults=0,
             detail="qualifier unavailable — drafting from the thread alone")
         return []
-
-
-def _strip_draft_markers(text: str) -> str:
-    """Remove any standalone '---' fence lines the agent may wrap a draft in."""
-    lines = [ln for ln in (text or "").splitlines() if ln.strip() != "---"]
-    return "\n".join(lines).strip()
 
 
 _PLACEHOLDER_LINE_RE = re.compile(
@@ -1252,70 +1296,6 @@ def _recipient_greeting_name(recipient: str) -> str:
     if not name or "@" in name:
         return ""
     return name
-
-
-async def _draft_via_maf_agent(
-    email: dict[str, str], about: str, signature: str, user_email: str,
-    *, instructions: str = "",
-) -> str | None:
-    """Draft by running the email-assistant MAF agent (which can hand off to
-    agent-sales-assistant / task-manager and read memory). Returns None on any failure so the
-    caller can fall back to the in-gateway orchestrator.
-
-    NOTE: currently dead — ``_agent_draft_reply`` always routes to
-    ``_orchestrate_draft`` instead (see the comment there). The bare-email memory
-    scope below would be a per-account retrieval MISS if this is ever revived;
-    thread ``account_id`` through and use ``email_memory_scope`` if you do. (It
-    can't be scoped here anyway without breaking the agent's X-User-Email auth —
-    the executor re-derives the ContextVar from the run_agent payload below.)"""
-    try:
-        from acb_skills.memory_tools import _set_memory_user_id  # noqa: PLC0415
-        _set_memory_user_id(user_email or "")
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from orchestrator.executor import run_agent  # noqa: PLC0415
-        task = instructions or (
-            "Draft a reply to the email below. First gather context: use "
-            "remember() for the sender, and call_agent('agent-sales-assistant' or 'task-manager') "
-            "ONLY if the email is clearly about a deal or a project."
-        )
-        thread = (email.get("thread") or "").strip()
-        thread_block = (
-            "\nEarlier in this thread (oldest to newest):\n"
-            f"{thread[:_DRAFT_THREAD_MAX_CHARS]}\n"
-            if thread else ""
-        )
-        msg = (
-            f"{task} Then write ONLY the message body — no subject line, no "
-            "preamble, no '---' fences, no confidence line.\n\n"
-            f"From: {email.get('from', '')}\nSubject: {email.get('subject', '')}\n"
-            f"{thread_block}"
-            "Latest message (reply to this):\n"
-            f"{(email.get('body', '') or '')[:_DRAFT_BODY_MAX_CHARS]}"
-        )
-        res = await asyncio.wait_for(
-            run_agent(
-                "email-assistant",
-                {"message": msg, "about": about, "signature": signature,
-                 "user_email": user_email},
-            ),
-            timeout=150.0,
-        )
-        ans = ""
-        if isinstance(res, dict):
-            ans = res.get("answer") or ""
-            if not ans and isinstance(res.get("result"), dict):
-                ans = res["result"].get("content") or ""
-            if not ans and isinstance(res.get("result"), str):
-                ans = res["result"]
-        ans = _strip_draft_markers(ans)
-        if ans:
-            # Signature appended at send time (signature.build_signed_bodies).
-            return ans
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("email.maf_draft_failed", error=str(exc)[:200])
-    return None
 
 
 _FOLLOW_UP_INSTRUCTION = (
@@ -1541,13 +1521,15 @@ async def _orchestrate_draft(
                     on_activity, kind="consult", status="start",
                     agent=item["agent"], question=item["question"])
                 try:
-                    res = await asyncio.wait_for(
-                        run_agent(
+                    # EM-T4b: one permit for the consult, the leaf call. The
+                    # bound sits outside the slot, so the slot holds the leaf
+                    # and nothing else, and the wait for a permit counts
+                    # inside the bound (review round 1, finding A).
+                    async with asyncio.timeout(agent_timeout), llm_slot():
+                        res = await run_agent(
                             item["agent"],
                             {"message": item["question"], "user_email": user_email},
-                        ),
-                        timeout=agent_timeout,
-                    )
+                        )
                     ans = ""
                     if isinstance(res, dict):
                         ans = str(res.get("answer") or res.get("result") or "")
@@ -1614,8 +1596,41 @@ async def _orchestrate_draft(
     return draft
 
 
+#: The columns of the mail a reply answers, for :func:`_build_reply_context`.
+_REPLY_TARGET_COLUMNS = (
+    "em.id, em.account_id, em.provider_message_id, em.thread_id, em.subject, "
+    "em.body_text, em.snippet, em.from_address, em.to_addresses, em.cc_addresses")
+
+
+async def _reply_target(
+    db: Any, account_id: str, message_id: str, user_email: str,
+    *, from_any_owned_mailbox: bool,
+) -> Any | None:
+    """The mail a reply answers: first in the sending mailbox ``account_id``.
+
+    With ``from_any_owned_mailbox``, a mail that is not there is read from
+    the mailbox of the mail, under the owner predicate on ``user_email``
+    (``core._account_scope``, D-EM-4). A mail of another member stays None.
+    """
+    row = (await db.execute(text(
+        f"""SELECT {_REPLY_TARGET_COLUMNS}
+           FROM email_messages em
+           WHERE em.id = :mid AND em.account_id = :aid"""
+    ), {"mid": message_id, "aid": account_id})).fetchone()
+    if row or not from_any_owned_mailbox:
+        return row
+    params: dict[str, Any] = {"mid": message_id, "uid": user_email or ""}
+    owned = _account_scope(None, params)
+    return (await db.execute(text(
+        f"""SELECT {_REPLY_TARGET_COLUMNS}
+           FROM email_messages em
+           WHERE em.id = :mid AND {owned}"""
+    ), params)).fetchone()
+
+
 async def _build_reply_context(
     db: Any, account_id: str, message_id: str, user_email: str,
+    *, from_any_owned_mailbox: bool = False,
 ) -> dict[str, Any] | None:
     """Assemble the FULL reply context for one message — the SINGLE source of
     truth every drafting entry point uses (/draft-reply and the compose card's
@@ -1625,16 +1640,25 @@ async def _build_reply_context(
     email — e.g. one carrying a template to apply), the earlier thread, the
     owner's direction/recipient-role signals (self / sender_scope / To / Cc),
     attachment metadata, past replies to this sender, and reply memories. Returns
-    None when the message doesn't exist."""
-    row = (await db.execute(text(
-        """SELECT em.id, em.provider_message_id, em.thread_id, em.subject,
-                  em.body_text, em.snippet, em.from_address,
-                  em.to_addresses, em.cc_addresses
-           FROM email_messages em
-           WHERE em.id = :mid AND em.account_id = :aid"""
-    ), {"mid": message_id, "aid": account_id})).fetchone()
+    None when the message doesn't exist.
+
+    ``account_id`` is the SENDING mailbox (EM-T8e-1). ``self`` and
+    ``self_label`` name it, so the drafter speaks as that mailbox (MB-14).
+    "Self" for the direction is each mailbox of the member (D-EM-27).
+
+    ``from_any_owned_mailbox`` is for compose-assist only (item 3). A reply
+    from mailbox B to a mail of mailbox A then reads the mail and its thread
+    from A, under the owner predicate. Each item that is the voice of the
+    writer still comes from B: the sent examples to that sender, the reply
+    memories and the few-shot examples here, and the voice profile and the
+    signature that the caller loads for ``account_id``."""
+    row = await _reply_target(
+        db, account_id, message_id, user_email,
+        from_any_owned_mailbox=from_any_owned_mailbox)
     if not row:
         return None
+    # The mailbox that HOLDS the mail. The thread is read there.
+    mail_account = str(getattr(row, "account_id", None) or account_id)
     frm = row.from_address if isinstance(row.from_address, dict) \
         else json.loads(row.from_address or "{}")
     # Ensure the FULL incoming body is present before drafting. Header-only rows
@@ -1642,22 +1666,18 @@ async def _build_reply_context(
     # this the drafter sees the message cut off. Hydrate, then fall back to snippet.
     from gateway.routes.email.core import hydrate_message_body  # noqa: PLC0415
     hydrated = await hydrate_message_body(db, str(row.id), user_email)
-    # The mailbox's own address + org domains → direction (self/internal/external)
-    # and recipient role (To vs Cc-only).
-    self_row = (await db.execute(text(
-        "SELECT email_address FROM email_accounts WHERE id = :id"
-    ), {"id": account_id})).fetchone()
-    self_email = (self_row.email_address if self_row else "") or ""
-    from gateway.routes.email.automation.identity import (  # noqa: PLC0415
-        resolve_org_domains,
-        sender_scope,
-    )
+    # The sending mailbox's address + label, and each mailbox of the member,
+    # in one read → direction (self/internal/external) and recipient role.
+    me = await resolve_self(db, account_id)
     org_domains = await resolve_org_domains(db, account_id)
     email: dict[str, Any] = {
         "subject": row.subject or "", "from": frm.get("email", ""),
         "from_name": frm.get("name", "") or "",
-        "self": self_email,
-        "sender_scope": sender_scope(frm.get("email", ""), self_email, org_domains),
+        "self": me.address,
+        "self_label": me.label,
+        "sender_scope": sender_scope(
+            frm.get("email", ""), me.address, org_domains,
+            self_addresses=me.self_addresses),
         "to": _fmt_addr_list(row.to_addresses),
         "cc": _fmt_addr_list(row.cc_addresses),
         "attachments": (await _attachment_summaries(
@@ -1665,7 +1685,7 @@ async def _build_reply_context(
         "body": (hydrated or "").strip() or row.body_text or row.snippet or "",
         "thread_id": row.thread_id or "",
         "thread": await _fetch_thread_context(
-            db, account_id, row.thread_id or "", row.provider_message_id or ""),
+            db, mail_account, row.thread_id or "", row.provider_message_id or ""),
         "sender_examples": await _fetch_sender_reply_examples(
             db, account_id, frm.get("email", "")),
     }
@@ -1759,10 +1779,13 @@ async def draft_reply_smart(
                             thread_id=email["thread_id"] or None,
                         )
                         # Mirror locally so it shows in Drafts + in-thread at once.
+                        # The From is the sending mailbox, never the sign-in
+                        # address of the member (MB-14, EM-T8e-1).
                         await _upsert_local_draft(
                             db, sess.account_id, provider_id,
                             thread_id=email["thread_id"] or None,
-                            owner_email=user.email or "", to_email=email["from"],
+                            owner_email=email.get("self") or "",
+                            to_email=email["from"],
                             subject=re_subject, body=draft,
                         )
                         created = True
@@ -1827,10 +1850,16 @@ async def _compose_assist_run(
         # one /draft-reply uses. This is what was missing: the compose card never
         # loaded the replied-to message body, so "Draft with AI" couldn't apply a
         # template the trailing email provided.
+        #
+        # The mail can sit in ANOTHER mailbox of the member: the member changed
+        # From on a reply (EM-T8e-1 item 3). The mail and its thread then come
+        # from the mailbox of the mail, under the owner predicate, and the
+        # voice items from the sending mailbox ``req.account_id``.
         ctx = None
         if req.message_id and req.mode in ("reply", "forward"):
             ctx = await _build_reply_context(
-                db, req.account_id, req.message_id, user.email or "")
+                db, req.account_id, req.message_id, user.email or "",
+                from_any_owned_mailbox=True)
         if ctx is not None:
             # Draft-from-scratch REPLY → route through the SAME reply drafter as
             # /draft-reply, so full context + identical rules apply (one method,
@@ -1872,6 +1901,14 @@ async def _compose_assist_run(
                 recipient = (f"{nm} <{addr}>" if nm else addr).strip()
         if not recipient and req.to:
             recipient = ", ".join([a for a in req.to if a])
+        # The prompt names the SENDING mailbox (MB-14). The reply context
+        # already carries it; new mail reads it here.
+        if ctx is not None:
+            sender = _sending_mailbox_line(
+                ctx.get("self") or "", ctx.get("self_label") or "")
+        else:
+            me = await resolve_self(db, req.account_id)
+            sender = _sending_mailbox_line(me.address, me.label)
 
         # Refinement rounds (the user is iterating on an existing draft) reuse
         # the improve-in-place path — no memory/consult sweep, so each edit
@@ -1888,7 +1925,7 @@ async def _compose_assist_run(
             instruction=req.instruction, mode=req.mode, recipient=recipient,
             subject=subject, thread=thread, reply_to_body=reply_to_body,
             user_email=user.email or "", model=models["compose"],
-            on_delta=on_delta,
+            on_delta=on_delta, sender=sender,
         )
         if _is_no_draft(draft):
             return {"draft": "", "skipped": "low_confidence"}
@@ -1977,6 +2014,7 @@ async def _upsert_local_draft(
     subject: str, body: str,
     cc: list[str] | None = None, bcc: list[str] | None = None,
     has_attachments: bool = False,
+    to_addresses: list[str] | None = None,
 ) -> str:
     """Persist a just-created/updated provider draft into ``email_messages`` so it
     shows in the Drafts folder and in-thread immediately — without waiting for the
@@ -1985,7 +2023,14 @@ async def _upsert_local_draft(
     local message id.
 
     ``cc``/``bcc`` are mirrored locally too, so a reopened draft shows its Cc/Bcc
-    from our own copy immediately instead of waiting for the next Drafts sweep."""
+    from our own copy immediately instead of waiting for the next Drafts sweep.
+
+    ``to_addresses`` holds each To address of the draft, and it wins over
+    ``to_email`` when given. The signed send reads the row back, so a row
+    with the first address only sent the mail to that one person (WS-17
+    EM-G3a review round 1, F2, a live Outlook defect)."""
+    to_list = (to_addresses if to_addresses is not None
+               else [to_email] if to_email else [])
     res = await db.execute(text(
         """INSERT INTO email_messages
              (id, account_id, provider_message_id, thread_id, folder,
@@ -2017,7 +2062,7 @@ async def _upsert_local_draft(
         "tid": thread_id or None,
         "from_addr": json.dumps({"name": "", "email": owner_email or ""}),
         "to_addrs": json.dumps(
-            [{"name": "", "email": to_email}] if to_email else []),
+            [{"name": "", "email": a} for a in to_list if a]),
         "cc_addrs": json.dumps(
             [{"name": "", "email": a} for a in (cc or []) if a]),
         "bcc_addrs": json.dumps(
@@ -2027,6 +2072,120 @@ async def _upsert_local_draft(
     })
     rid = res.fetchone()
     return str(rid.id) if rid else ""
+
+
+#: E-A2: the copy of the sync of this same draft, when it holds the new id.
+_DROP_SYNC_COPY_SQL = (
+    "DELETE FROM email_messages WHERE account_id = :aid"
+    " AND provider_message_id = :pmid AND id <> :id")
+#: Item 8: the local row takes the new id, by its row id.
+_MOVE_LOCAL_DRAFT_SQL = (
+    "UPDATE email_messages SET provider_message_id = :pmid, updated_at = now()"
+    " WHERE id = :id AND account_id = :aid")
+
+
+async def _move_local_draft(
+    db: Any, account_id: str, local_id: str, provider_message_id: str,
+) -> None:
+    """Move the local row of a draft to a new provider id, by its row id.
+
+    WS-17 EM-G3a item 8 (``email_app_master_plan.md`` §12.3.3). Gmail gives a
+    draft a new message id at each update (O-GM-2), and the IMAP fallback
+    makes a new draft. The row keeps its row id, because other tables point
+    at it. Outlook keeps its id, so a caller moves nothing for Outlook.
+
+    E-A2: the sync can write the new id as its own row first. That row is the
+    copy that the sync made of this same draft, so it goes, and then the
+    local row moves. Both writes run on ``db``, in the one transaction of the
+    caller. ``_upsert_local_draft`` then finds the moved row on its key.
+    """
+    params = {"aid": account_id, "id": local_id, "pmid": provider_message_id}
+    await db.execute(text(_DROP_SYNC_COPY_SQL), params)
+    await db.execute(text(_MOVE_LOCAL_DRAFT_SQL), params)
+
+
+async def _commit_draft_move(
+    account_id: str, local_id: str, provider_message_id: str,
+) -> None:
+    """Move the local row in a block of its own, so the move commits at once.
+
+    WS-17 EM-G3a review round 1, F3. The signed send moves the row to the id
+    that ``update_draft`` returned BEFORE ``drafts.send``. A send that then
+    fails rolls back the block of the route, and the committed move stays.
+    So the row holds the live id, and the next Send or save works. A commit
+    inside a ``_tenant_session`` block ends its tenant, so this opens a new
+    block with the tenant of the request, and the seam commits it."""
+    async with _tenant_session() as move_db:
+        await _move_local_draft(
+            move_db, account_id, local_id, provider_message_id)
+
+
+def _draft_addresses(value: Any) -> list[str]:
+    """Each address of one address column of a draft row (JSONB)."""
+    items = value if isinstance(value, list) else json.loads(value or "[]")
+    return [a["email"] for a in items if isinstance(a, dict) and a.get("email")]
+
+
+#: The answer when Gmail no longer holds the draft that the row names.
+DRAFT_CHANGED_DETAIL = "This draft changed in Gmail. Refresh and try again."
+
+
+@contextmanager
+def _draft_changed_upstream() -> Iterator[None]:
+    """Answer 409 when Gmail holds no draft with the id of the row.
+
+    WS-17 EM-G3a review round 1, item 5. ``GmailDraftNotFound`` means that the
+    draft changed or left Gmail after the last sync (known limit EM-G3a-f1).
+    That is a conflict with the provider, not a fault of the server."""
+    try:
+        yield
+    except GmailDraftNotFound as exc:
+        raise HTTPException(status_code=409, detail=DRAFT_CHANGED_DETAIL) from exc
+
+
+def file_not_attached_detail(filename: str) -> str:
+    """The answer when a file did not reach the provider draft (EM-T9)."""
+    return f"The file {filename} could not be attached. The mail was not sent."
+
+
+@contextmanager
+def _file_not_attached() -> Iterator[None]:
+    """Answer 502 when a file did not reach the provider draft.
+
+    WS-17 EM-T9 item 8 (``email_app_master_plan.md`` §10.4.10). The composer
+    saves the draft before the send, and a failed save stops the send. So a
+    member never sends a mail without a file that they attached. The detail is
+    a string, as in each 502 of this package. The raise comes before
+    ``_upsert_local_draft``, so the route writes no local row. The error
+    carries the file name only, never the upload URL."""
+    try:
+        yield
+    except ProviderAttachmentFailed as exc:
+        raise HTTPException(
+            status_code=502, detail=file_not_attached_detail(exc.filename),
+        ) from exc
+
+
+#: The answer when the provider cannot take a mail of its size (EM-G3c-1).
+MAIL_TOO_LARGE_DETAIL = "This mail is too large to send."
+
+
+@contextmanager
+def _mail_too_large() -> Iterator[None]:
+    """Answer 413 when the mail is too large for the provider.
+
+    WS-17 EM-G3c-1 item 7 (``email_app_master_plan.md`` §12.3.3b). The
+    sibling of :func:`_file_not_attached`. Gmail raises
+    ``ProviderMailTooLarge`` before its write, or on a 413 of Google. The
+    detail is a string, as in each error of this package. The raise comes
+    before ``_upsert_local_draft``, so a save writes no local row. Outlook and
+    IMAP never raise it. ``transport/send.py`` uses it too, through an import
+    in the route, because this module imports that one."""
+    try:
+        yield
+    except ProviderMailTooLarge as exc:
+        raise HTTPException(
+            status_code=413, detail=MAIL_TOO_LARGE_DETAIL) from exc
 
 
 async def _fetch_message_dict(db: Any, message_id: str) -> dict[str, Any]:
@@ -2104,23 +2263,31 @@ async def upsert_draft(
                 thread_id = drow.thread_id
                 subject = subject or (drow.subject or "")
                 try:
-                    provider_id = await provider.update_draft(
-                        drow.provider_message_id, to=to or None,
-                        subject=subject or None, body_text=body,
-                        thread_id=thread_id or None,
-                        cc=cc, bcc=bcc, attachments=atts or None,
-                    )
+                    with (_draft_changed_upstream(), _file_not_attached(),
+                          _mail_too_large()):
+                        provider_id = await provider.update_draft(
+                            drow.provider_message_id, to=to or None,
+                            subject=subject or None, body_text=body,
+                            thread_id=thread_id or None,
+                            cc=cc, bcc=bcc, attachments=atts or None,
+                        )
                 except NotImplementedError:
                     # No in-place update primitive → fresh draft, drop the old.
                     provider_id = await provider.create_draft(
                         to=to, subject=subject, body_text=body,
                         thread_id=thread_id or None, cc=cc, bcc=bcc,
-                        attachments=atts or None,
+                        attachments=atts or None, exact_to=True,
                     )
                     try:
                         await provider.trash_message(drow.provider_message_id)
                     except Exception:  # noqa: BLE001
                         pass
+                # Gmail returns a new message id, and the IMAP fallback a new
+                # draft. The local row moves to it by its row id, so the draft
+                # keeps one row (EM-G3a item 8, E-A2). Outlook keeps its id.
+                if provider_id and provider_id != drow.provider_message_id:
+                    await _move_local_draft(
+                        db, req.account_id, req.draft_id, provider_id)
             elif req.reply_to_message_id:
                 # Accept either the local message id (inline reply) or the
                 # provider message id (full composer pop-out passes
@@ -2145,30 +2312,103 @@ async def upsert_draft(
                         else json.loads(rrow.from_address or "{}")
                     if frm.get("email"):
                         to = [frm["email"]]
-                provider_id = await provider.create_draft(
-                    to=to, subject=subject, body_text=body,
-                    reply_to_message_id=rrow.provider_message_id,
-                    thread_id=thread_id or None, cc=cc, bcc=bcc,
-                    attachments=atts or None,
-                )
+                # The member typed this To, so the reply keeps each address.
+                # Outlook's createReply sets only the sender (EM-T10 item 6).
+                with _file_not_attached(), _mail_too_large():
+                    provider_id = await provider.create_draft(
+                        to=to, subject=subject, body_text=body,
+                        reply_to_message_id=rrow.provider_message_id,
+                        thread_id=thread_id or None, cc=cc, bcc=bcc,
+                        attachments=atts or None, exact_to=True,
+                    )
             else:
-                provider_id = await provider.create_draft(
-                    to=to, subject=subject, body_text=body, cc=cc, bcc=bcc,
-                    attachments=atts or None,
-                )
+                with _file_not_attached(), _mail_too_large():
+                    provider_id = await provider.create_draft(
+                        to=to, subject=subject, body_text=body, cc=cc, bcc=bcc,
+                        attachments=atts or None, exact_to=True,
+                    )
 
+            # Each To address goes into the row, because the signed send reads
+            # them back (EM-G3a review round 1, F2).
             local_id = await _upsert_local_draft(
                 db, req.account_id, provider_id, thread_id=thread_id,
                 owner_email=sess.owner_email, to_email=(to[0] if to else ""),
                 subject=subject, body=body, cc=cc, bcc=bcc,
-                has_attachments=bool(atts),
+                has_attachments=bool(atts), to_addresses=to,
             )
         return await _fetch_message_dict(db, local_id)
+
+
+class DraftExpect(BaseModel):
+    """The recipients that the chat card showed (WS-17 EM-T13b-1)."""
+
+    to: list[str] = []
+    cc: list[str] = []
+    bcc: list[str] = []
 
 
 class DraftSendRequest(BaseModel):
     account_id: str
     draft_id: str  # local email_messages id of the draft to send
+    # The email assistant sends what its card showed. None (the UI, and an
+    # older agent) checks nothing, as before.
+    expect: DraftExpect | None = None
+
+
+#: The answer when the row no longer holds the recipients of the card.
+DRAFT_RECIPIENTS_CHANGED_DETAIL = (
+    "The recipients of this draft changed. Nothing was sent.")
+
+
+def _same_recipients(expect: DraftExpect, held: dict[str, list[str]]) -> bool:
+    """True when each set of ``held`` equals the set of the card.
+
+    The compare is in lower case, and the order does not count (EM-T13b-1)."""
+    shown = {"to": expect.to, "cc": expect.cc, "bcc": expect.bcc}
+    return all(
+        {a.lower() for a in shown[key]} == {a.lower() for a in held.get(key) or []}
+        for key in ("to", "cc", "bcc")
+    )
+
+
+def _draft_matches(drow: Any, expect: DraftExpect) -> bool:
+    """True when each address set of the row equals the set of the card."""
+    return _same_recipients(expect, {
+        "to": _draft_addresses(drow.to_addresses),
+        "cc": _draft_addresses(drow.cc_addresses),
+        "bcc": _draft_addresses(drow.bcc_addresses),
+    })
+
+
+#: The answer when the PROVIDER draft holds other recipients than the card.
+DRAFT_PROVIDER_CHANGED_DETAIL = (
+    "The recipients of this draft changed in your mail app. Nothing was sent.")
+#: The answer when the provider did not give the recipients of the draft.
+DRAFT_PROVIDER_READ_FAILED_DETAIL = (
+    "The mail provider did not give the recipients of this draft. "
+    "Nothing was sent.")
+
+
+async def _check_provider_recipients(
+    provider: Any, provider_id: str, expect: DraftExpect,
+) -> None:
+    """Raise unless the provider draft holds exactly the recipients of the card.
+
+    WS-17 EM-T13b-1 review round 2. An unsigned send does not rewrite the
+    draft, so its body and its format stay. It reads the To, Cc and Bcc that
+    the provider holds, and a difference answers 409 before ``send_draft``.
+    A failed read answers 502. Neither one sends. NotImplementedError passes
+    through: such a provider has no native ``send_draft``, and the caller
+    sends the row through ``send_message``."""
+    try:
+        held = await provider.get_draft_recipients(provider_id)
+    except NotImplementedError:
+        raise
+    except Exception as exc:  # any failed read sends nothing
+        raise HTTPException(
+            status_code=502, detail=DRAFT_PROVIDER_READ_FAILED_DETAIL) from exc
+    if not isinstance(held, dict) or not _same_recipients(expect, held):
+        raise HTTPException(status_code=409, detail=DRAFT_PROVIDER_CHANGED_DETAIL)
 
 
 @router.post("/drafts/send")
@@ -2183,13 +2423,18 @@ async def send_draft_endpoint(
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         drow = (await db.execute(text(
-            "SELECT provider_message_id, subject, to_addresses, body_text,"
-            " thread_id"
+            "SELECT provider_message_id, subject, to_addresses, cc_addresses,"
+            " bcc_addresses, body_text, thread_id"
             " FROM email_messages WHERE id = :id AND account_id = :aid"
             " AND LOWER(folder) IN ('drafts', 'draft')"
         ), {"id": req.draft_id, "aid": req.account_id})).fetchone()
         if not drow:
             raise HTTPException(status_code=404, detail="Draft not found")
+        # Send only what the card of the email assistant showed. A changed
+        # row answers 409 before any provider call (EM-T13b-1).
+        if req.expect is not None and not _draft_matches(drow, req.expect):
+            raise HTTPException(
+                status_code=409, detail=DRAFT_RECIPIENTS_CHANGED_DETAIL)
         async with provider_session(
             db, user.email or "anonymous", account_id=req.account_id,
         ) as sess:
@@ -2211,9 +2456,12 @@ async def send_draft_endpoint(
                 "WHERE account_id = :aid"
             ), {"aid": req.account_id})).fetchone()
             signature = (sig_row.signature if sig_row else "") or ""
-            recips = drow.to_addresses if isinstance(drow.to_addresses, list) \
-                else json.loads(drow.to_addresses or "[]")
-            to = [a.get("email") for a in recips if a.get("email")]
+            # Each To, Cc and Bcc address of the row (EM-G3a review round 1,
+            # F1 and F2). Gmail rebuilds the whole draft on the signing
+            # update, and Outlook PATCHes each list that it gets.
+            to = _draft_addresses(drow.to_addresses)
+            cc = _draft_addresses(drow.cc_addresses)
+            bcc = _draft_addresses(drow.bcc_addresses)
 
             async def _send_new_and_trash() -> None:
                 # Fallback (e.g. IMAP): send a fresh message threaded via the
@@ -2223,6 +2471,7 @@ async def send_draft_endpoint(
                 await provider.send_message(
                     to=to, subject=drow.subject or "",
                     body_text=send_text, body_html=send_html,
+                    cc=cc or None, bcc=bcc or None,
                     reply_to_message_id=drow.thread_id or None,
                     thread_id=drow.thread_id or None)
                 try:
@@ -2230,21 +2479,55 @@ async def send_draft_endpoint(
                 except Exception:  # noqa: BLE001
                     pass
 
+            # EM-T13b-1 review rounds 1 and 2 (P1). The card of the email
+            # assistant showed the row, and ``expect`` checked the row. But
+            # the provider draft can hold other recipients: an Outlook reply
+            # draft keeps the Reply-To that ``createReply`` set, and the mail
+            # app can add a Bcc. The signed path rewrites the draft anyway, so
+            # with ``expect`` it writes EXACTLY the three lists of the row,
+            # empty ones too. The unsigned path does not rewrite the draft. It
+            # compares the recipients of the provider draft with the card.
+            exact = req.expect is not None
+            if exact:
+                send_to, send_cc, send_bcc = to, cc, bcc
+            else:
+                send_to, send_cc, send_bcc = to or None, cc or None, bcc or None
+
             if signature.strip():
                 send_text, send_html = build_signed_bodies(
                     signature, drow.body_text or "", None)
                 try:
-                    await provider.update_draft(
-                        drow.provider_message_id, to=to or None,
-                        subject=drow.subject or None,
-                        body_text=send_text, body_html=send_html,
-                        thread_id=drow.thread_id or None)
-                    await provider.send_draft(drow.provider_message_id)
+                    # A Gmail draft whose files make the signed mail too
+                    # large answers 413 (EM-G3c-1 item 7).
+                    with _draft_changed_upstream(), _mail_too_large():
+                        # No ``attachments``: Outlook keeps the files of its
+                        # draft, and Gmail reads them back from its draft.
+                        signed_id = await provider.update_draft(
+                            drow.provider_message_id, to=send_to,
+                            cc=send_cc, bcc=send_bcc,
+                            subject=drow.subject or None,
+                            body_text=send_text, body_html=send_html,
+                            thread_id=drow.thread_id or None,
+                        ) or drow.provider_message_id
+                        # Gmail gives the draft a new message id at each
+                        # update, so the send takes the id that the update
+                        # returns (EM-G3a E-A1). The row moves to it, and the
+                        # move commits BEFORE the send, so a failed send
+                        # leaves the row on the live id (review round 1, F3).
+                        # Outlook returns the same id and moves nothing.
+                        if signed_id != drow.provider_message_id:
+                            await _commit_draft_move(
+                                req.account_id, req.draft_id, signed_id)
+                        await provider.send_draft(signed_id)
                 except NotImplementedError:
                     await _send_new_and_trash()
             else:
                 try:
-                    await provider.send_draft(drow.provider_message_id)
+                    if req.expect is not None:
+                        await _check_provider_recipients(
+                            provider, drow.provider_message_id, req.expect)
+                    with _draft_changed_upstream():
+                        await provider.send_draft(drow.provider_message_id)
                 except NotImplementedError:
                     await _send_new_and_trash()
             # The draft has left the mailbox — remove the local row.
@@ -2317,9 +2600,11 @@ async def save_draft(
                 reply_to_message_id=sess.provider_message_id,
                 thread_id=row.thread_id or None,
             )
+            # The From of the copy is the mailbox that saves the draft, never
+            # blank (MB-14, EM-T8e-1 review round 1).
             local_id = await _upsert_local_draft(
                 db, req.account_id, provider_id, thread_id=row.thread_id,
-                owner_email="", to_email=to_email,
-                subject=re_subject, body=body,
+                owner_email=(await resolve_self(db, req.account_id)).address,
+                to_email=to_email, subject=re_subject, body=body,
             )
         return {"created": True, "id": local_id}

@@ -12,12 +12,17 @@ import { useEmailStore } from "../lib/emailStore";
 import { ComposerQuote, AiButton } from "./ComposerAI";
 import { DraftAssistant } from "./DraftAssistant";
 import { MessageContent } from "./MessageContent";
+import { remoteHtmlId } from "../lib/htmlPrefetch";
 import { AttachmentList } from "./AttachmentList";
 import { getSignatureText, stripSignature } from "../lib/signature";
 import { RecipientInput } from "./RecipientInput";
-import { ownAddresses, replyRecipients } from "../lib/mailbox";
+import { draftRecipients, ownAddresses, replyRecipients } from "../lib/mailbox";
 import { TaskCaptureModal, type CommitmentContext } from "./TaskCaptureModal";
 import { ContactTrigger, RecipientList } from "./ContactCard";
+import {
+  autosaveWait, createAutosave, failedSaveStatus, saveFailureText, sendFailureText,
+  type DraftStatus,
+} from "../lib/draftAutosave";
 
 const isDraft = (m: Email) =>
   (m.folder || "").toLowerCase() === "drafts" ||
@@ -256,7 +261,11 @@ export function ConversationView({
                   )}
                 </div>
                 {view.bodyHtml || view.bodyText ? (
-                  <MessageContent html={view.bodyHtml} text={view.bodyText} />
+                  <MessageContent
+                    html={view.bodyHtml}
+                    text={view.bodyText}
+                    remoteId={remoteHtmlId(view)}
+                  />
                 ) : (
                   <div className="text-xs text-muted-foreground italic py-2">
                     No preview text.
@@ -351,11 +360,15 @@ export function DraftCard({
   const draftTo = draft.to.map((t) => t.email).filter(Boolean);
   // REPLY-ALL recipients: the original sender + everyone on To, minus the
   // member; original Cc carried over. Falls back to what the draft has.
-  const all = replyTo ? replyRecipients(replyTo, "reply-all", own, sendingAddress) : null;
+  const all = hasReplyTarget && replyTo
+    ? replyRecipients(replyTo, "reply-all", own, sendingAddress)
+    : null;
   const replyAllTo = all && all.to.length ? all.to : draftTo;
   const replyAllCc = all ? all.cc : [];
   // REPLY (sender only) recipients.
-  const only = replyTo ? replyRecipients(replyTo, "reply", own, sendingAddress) : null;
+  const only = hasReplyTarget && replyTo
+    ? replyRecipients(replyTo, "reply", own, sendingAddress)
+    : null;
   const replyOnlyTo = only && only.to.length ? only.to : draftTo;
 
   // Split any quoted trailing chain out of the draft body so the editable box
@@ -365,15 +378,26 @@ export function DraftCard({
   const [hydratedBody, setHydratedBody] = useState<string | null>(null);
   const [body, setBody] = useState(initSplit.main);
   const [quote, setQuote] = useState(initSplit.quoted || "");
-  const [to, setTo] = useState(replyAllTo.join(", "));
-  const [cc, setCc] = useState(replyAllCc.join(", "));
-  const [bcc, setBcc] = useState("");
-  // Default to reply-all when replying to a real message (parity with
-  // EmailDetail); the toggle narrows to the sender only.
-  const [replyAll, setReplyAll] = useState(hasReplyTarget);
-  // Show Cc/Bcc up-front on a reply so they're always visible; keep them behind
-  // the reveal button only for a from-scratch draft.
-  const [showCc, setShowCc] = useState(hasReplyTarget || replyAllCc.length > 0);
+  // The card starts with the To, Cc and Bcc of its draft, and with the button
+  // that matches them, or neither (EM-T10). Before, it started on Reply All
+  // and wrote those lists over a reply that the member had narrowed.
+  const [start] = useState(() =>
+    draftRecipients(
+      draft,
+      all ? { to: replyAllTo, cc: replyAllCc } : null,
+      only ? replyOnlyTo : null,
+    ),
+  );
+  const [to, setTo] = useState(start.to.join(", "));
+  const [cc, setCc] = useState(start.cc.join(", "));
+  const [bcc, setBcc] = useState(start.bcc.join(", "));
+  // `null` marks neither button: the lists match no click of the toggle.
+  const [replyAll, setReplyAll] = useState<boolean | null>(start.replyAll);
+  // The Cc row shows for a Cc or a Bcc, and on a reply that is not Reply.
+  const [showCc, setShowCc] = useState(start.showCc);
+  // An edit of the member. Only then does the autosave run. It is declared
+  // before its first reader, so the React lint knows it is a ref.
+  const dirty = useRef(false);
 
   /** Flip Reply ↔ Reply All, recomputing To/Cc from the original message.
    *  Reply All reveals the Cc/Bcc fields; Reply (sender only) hides them and
@@ -393,8 +417,12 @@ export function DraftCard({
     }
   };
   const [sending, setSending] = useState(false);
-  const dirty = useRef(false);
-  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
+  // The text of a failed send. Before EM-G3c-2 the card dropped it (item 14).
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>("idle");
+  // The pending autosave. An unmount and a change of draft run it at once
+  // (EM-G3c-2 item 11).
+  const [autosave] = useState(() => createAutosave());
   // AI draft/refine panel — the session owns live backend steps + revisions.
   const [aiOpen, setAiOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
@@ -467,8 +495,11 @@ export function DraftCard({
   // provider Drafts and survive a refresh — keyed on the draft's own id.
   useEffect(() => {
     const accountId = draft.accountId || selectedAccountId;
-    if (!accountId || !dirty.current) return;
-    const handle = setTimeout(async () => {
+    if (!accountId || !dirty.current) {
+      autosave.cancel();
+      return;
+    }
+    autosave.schedule(async () => {
       try {
         setDraftStatus("saving");
         await saveDraft({
@@ -481,18 +512,34 @@ export function DraftCard({
           body: combinedBody(),
         });
         setDraftStatus("saved");
-      } catch {
-        setDraftStatus("idle");
+      } catch (err) {
+        // The next edit tries again (EM-G3c-2 item 13).
+        setDraftStatus(failedSaveStatus(err));
       }
-    }, 1200);
-    return () => clearTimeout(handle);
+    }, autosaveWait(
+      accounts.find((a) => a.id === accountId)?.provider,
+      draft.hasAttachments,
+    ), 0);
+    // Stop the timer and keep the save, so an unmount can still flush it.
+    return () => autosave.hold();
+    // An edit of the Cc or the Bcc saves too (EM-T10 item 4, EM-G3c-2-f2).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body, quote, to]);
+  }, [body, quote, to, cc, bcc]);
+
+  // An unmount, and a switch of the card to another draft, run the pending
+  // save at once (EM-G3c-2 item 11). The save names the draft of before.
+  useEffect(() => () => autosave.flush(), [autosave, draft.id]);
 
   const send = async () => {
     const accountId = draft.accountId || selectedAccountId;
     if (!accountId || recipients().length === 0) return;
     setSending(true);
+    setSendError(null);
+    // The send carries the last edit, so each queued autosave goes. A save
+    // that runs settles first, so no older text lands after this save
+    // (EM-G3c-2 review round 2). The key gives each draft its own card, so
+    // the card has one session, 0 (EM-G3c-3 item 1).
+    await autosave.drain(0);
     try {
       // Persist the latest edits — Cc/Bcc included, now carried on the provider
       // draft — then send THIS draft natively (Drafts → Sent, no duplicate).
@@ -533,8 +580,10 @@ export function DraftCard({
           replyToMessageId: replyTo?.providerMessageId || null,
         });
       }
-    } catch {
-      /* send failure — the draft stays in Drafts so the user can retry */
+    } catch (err) {
+      // The draft stays in Drafts so the user can retry. The card shows why,
+      // and a 413 shows "This mail is too large to send." (EM-G3c-2 item 14).
+      setSendError(sendFailureText(err));
     } finally {
       setSending(false);
     }
@@ -542,7 +591,11 @@ export function DraftCard({
 
   const discard = async () => {
     if (!confirm("Discard this draft?")) return;
+    // The chain drains first, so no save that waited writes the draft again.
+    // The delete waits for the save that runs (EM-G3c-2 review round 2).
+    const drained = autosave.drain(0);
     onDismiss?.(); // hide instantly; the provider delete is async
+    await drained;
     try {
       await deleteEmail(draft.id);
     } catch {
@@ -573,6 +626,9 @@ export function DraftCard({
     if (result) setAiInstruction("");
   };
 
+  // "Not saved" or "Too large to save" after a failed save (EM-G3c-2 item 13).
+  const saveFailure = saveFailureText(draftStatus);
+
   return (
     <div className="border border-primary/40 rounded-lg bg-primary/5 px-3 py-3">
       <div className="flex items-center gap-1.5 mb-2">
@@ -585,7 +641,7 @@ export function DraftCard({
               onClick={() => applyReplyAll(false)}
               title="Reply to sender only"
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
-                !replyAll ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                replyAll === false ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <AppIcon name="Reply" size={11} className="flex-shrink-0" /> Reply
@@ -595,7 +651,7 @@ export function DraftCard({
               onClick={() => applyReplyAll(true)}
               title="Reply to everyone"
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
-                replyAll ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+                replyAll === true ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <AppIcon name="ReplyAll" size={11} className="flex-shrink-0" /> Reply All
@@ -626,7 +682,7 @@ export function DraftCard({
           <>
             <RecipientInput
               value={cc}
-              onChange={setCc}
+              onChange={(v) => { dirty.current = true; setCc(v); }}
               accountId={draft.accountId || selectedAccountId}
               ariaLabel="Cc recipients"
               placeholder="Cc (comma-separated)"
@@ -635,7 +691,7 @@ export function DraftCard({
             />
             <RecipientInput
               value={bcc}
-              onChange={setBcc}
+              onChange={(v) => { dirty.current = true; setBcc(v); }}
               accountId={draft.accountId || selectedAccountId}
               ariaLabel="Bcc recipients"
               placeholder="Bcc (comma-separated)"
@@ -691,14 +747,24 @@ export function DraftCard({
           <AppIcon name="Trash2" size={13} /> Discard
         </button>
         <AiButton active={aiOpen} onClick={() => setAiOpen((v) => !v)} />
-        <span className="text-[10px] text-muted-foreground ml-auto">
-          {draftStatus === "saving"
-            ? "Saving draft…"
-            : draftStatus === "saved"
-              ? "Draft saved · sends into this conversation"
-              : "Sends into this conversation"}
-        </span>
+        {saveFailure ? (
+          <span className="text-[10px] text-destructive ml-auto">{saveFailure}</span>
+        ) : (
+          <span className="text-[10px] text-muted-foreground ml-auto">
+            {draftStatus === "saving"
+              ? "Saving draft…"
+              : draftStatus === "saved"
+                ? "Draft saved · sends into this conversation"
+                : "Sends into this conversation"}
+          </span>
+        )}
       </div>
+      {/* The slot of a failed send (EM-G3c-2 item 14) */}
+      {sendError && (
+        <p role="alert" className="mt-1.5 text-[10px] text-destructive">
+          {sendError}
+        </p>
+      )}
     </div>
   );
 }

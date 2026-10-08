@@ -6,9 +6,16 @@ import {
   LearnedPattern, RunMessageResult, LearnedRulePattern, LabelInfo,
   RuleGuidance, MessageTimeline,
   VoiceProfile, VoiceProfilePreview, VoiceProfileBuildStatus,
-  ContactCard, SenderStatus,
+  ContactCard, SenderStatus, RuleCopyResult,
+  OlderMailPreview, RemoveOlderResult,
 } from "./types";
-import { mapMailAppInfo, type MailAppInfo } from "./connect";
+import {
+  mapMailAppInfo,
+  mapProviderAvailability,
+  type ConnectProviderId,
+  type MailAppInfo,
+  type ProviderAvailability,
+} from "./connect";
 
 // No NEXT_PUBLIC_GATEWAY_URL here on purpose: every call from this module goes
 // through the Next BFF at /api/**, which is the only path that carries the
@@ -35,8 +42,13 @@ async function gatewayFetch<T>(
     const body = await res.json().catch(() => ({}));
     const err = new Error(body.detail || `Gateway error ${res.status}`) as Error & {
       status?: number;
+      retryAfter?: number;
     };
     err.status = res.status;
+    // The seconds of `Retry-After`, when the answer sends a number. The
+    // prefetch of the pane waits that long after a 503 (WS-17 EM-S2).
+    const wait = Number(res.headers?.get?.("Retry-After"));
+    if (Number.isFinite(wait) && wait > 0) err.retryAfter = wait;
     throw err;
   }
 
@@ -87,6 +99,16 @@ function mapAccount(raw: Record<string, unknown>): EmailAccount {
     importPhase: optionalString(raw.import_phase),
     importCount: optionalCount(raw.import_count),
     importEstimate: optionalCount(raw.import_estimate),
+    // EM-T6c. Null before the first meter run. A limit the gateway does not
+    // send stays absent, and then Email draws no storage UI (EM-T6e).
+    storedBytes: optionalCount(raw.stored_bytes),
+    storageLimitBytes: optionalCount(raw.storage_limit_bytes) ?? undefined,
+    // EM-T8f-1. ISO text with microseconds. The disconnect dialog names the
+    // next default from it (EM-T8f-2).
+    createdAt: optionalString(raw.created_at),
+    // EM-T8g-1. Only an explicit false keeps the mailbox separate. A gateway
+    // before EM-T8g-1 sends no field, and each mailbox stays in All inboxes.
+    inAllInboxes: raw.in_all_inboxes !== false,
   };
 }
 
@@ -133,6 +155,9 @@ function mapEmail(raw: Record<string, unknown>): Email {
     subject: String(raw.subject ?? ""),
     bodyText: String(raw.body_text ?? raw.bodyText ?? ""),
     bodyHtml: (raw.body_html as string) ?? (raw.bodyHtml as string) ?? undefined,
+    // WS-17 EM-S2. Only an explicit true. A gateway with the flag off, or
+    // before EM-S1, sends false or nothing, and the pane behaves as before.
+    htmlRemote: raw.html_remote === true,
     bodyTruncated: Boolean(raw.body_truncated ?? raw.bodyTruncated ?? false),
     snippet: String(raw.snippet ?? ""),
     hasAttachments: Boolean(raw.has_attachments ?? raw.hasAttachments ?? false),
@@ -166,7 +191,15 @@ function mapEmail(raw: Record<string, unknown>): Email {
     // Present only on /email/search results.
     rank: raw.rank != null ? Number(raw.rank) : undefined,
     highlight: raw.highlight != null ? String(raw.highlight) : undefined,
+    // EM-T8g-3. A gateway before EM-T8g-3 sends no field, and the row then
+    // names no other mailbox.
+    alsoIn: idList(raw.also_in),
   };
+}
+
+/** The non-empty strings of a list, or an empty list for any other value. */
+function idList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x !== "") : [];
 }
 
 // ── Email Accounts ───────────────────────────────────────────────────────
@@ -474,7 +507,9 @@ export async function listEmailAccounts(): Promise<EmailAccount[]> {
 }
 
 export interface CreateEmailAccountParams {
-  provider: "imap" | "gmail" | "microsoft";
+  // IMAP only: the gateway refuses gmail and microsoft here with a 403, and
+  // an OAuth mailbox connects through /email/oauth (EM-G7 review round 1).
+  provider: "imap";
   emailAddress: string;
   label?: string;
   credentials: Record<string, unknown>;
@@ -497,13 +532,34 @@ export async function createEmailAccount(
 }
 
 /**
- * The public facts of the Microsoft mail app, for the admin-consent link
- * (EM-T3b). `null` when the deployment has no app or the read fails.
+ * The public facts of a mail app (EM-T3b, EM-G8 item 6). Microsoft builds the
+ * admin-consent link from them, and Google shows the client ID to a
+ * Workspace admin. `null` when the deployment has no app or the read fails.
+ * While `EMAIL_GMAIL_CONNECT` is off, Gmail answers 503, so `null` (D-EM-36).
  */
-export async function getMailAppInfo(): Promise<MailAppInfo | null> {
+export async function getMailAppInfo(
+  provider: ConnectProviderId = "microsoft",
+): Promise<MailAppInfo | null> {
   try {
-    const raw = await gatewayFetch<Record<string, unknown>>("/email/oauth/microsoft/app");
+    const raw = await gatewayFetch<Record<string, unknown>>(`/email/oauth/${provider}/app`);
     return mapMailAppInfo(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The capability read of the connect flow (WS-17 EM-G8, D-EM-35, D-EM-36).
+ *
+ * `GET /email/oauth/providers` answers `{"microsoft": bool, "gmail": bool}`
+ * (EM-G7 item 8). The email catch-all of the BFF proxies it. A failed read
+ * is `null`: a network error, a 404 from a gateway without EM-G7, a 403, or
+ * an answer of another shape. `liveProviders(null)` keeps Microsoft live and
+ * Gmail "Coming soon", so the read fails closed for Gmail.
+ */
+export async function getConnectProviders(): Promise<ProviderAvailability | null> {
+  try {
+    return mapProviderAvailability(await gatewayFetch<unknown>("/email/oauth/providers"));
   } catch {
     return null;
   }
@@ -546,7 +602,7 @@ export async function getSentFrom(emails: string[]): Promise<Record<string, stri
 
 export async function updateEmailAccount(
   id: string,
-  updates: Partial<Pick<EmailAccount, "label" | "syncEnabled" | "onboardingDone" | "colorSlot">>
+  updates: Partial<Pick<EmailAccount, "label" | "syncEnabled" | "onboardingDone" | "colorSlot" | "inAllInboxes">>
 ): Promise<EmailAccount> {
   // Map camelCase → snake_case for the backend PATCH
   const body: Record<string, unknown> = {};
@@ -558,11 +614,78 @@ export async function updateEmailAccount(
   // EM-T6d item 11: true closes the guided setup for good (EM-T6a stores
   // `onboarding_done_at`). The handler keeps its owner predicate.
   if (updates.onboardingDone !== undefined) body.onboarding_done = updates.onboardingDone;
+  // EM-T8g-2: false keeps the mailbox separate, and true puts it back in All
+  // inboxes (D-EM-28). The gateway takes a strict boolean.
+  if (updates.inAllInboxes !== undefined) body.in_all_inboxes = updates.inAllInboxes;
   const raw = await gatewayFetch<Record<string, unknown>>(
     `/email/accounts/${id}`,
     { method: "PATCH", body: JSON.stringify(body) }
   );
   return mapAccount(raw);
+}
+
+/**
+ * "Keep separate" (false) or "Show in All inboxes" (true), through
+ * `PATCH /email/accounts/{id}` (EM-T8g-2, D-EM-28). The store calls this, so
+ * no file outside `api.ts`, `mailbox.ts` and `types.ts` names the flag.
+ */
+export function setMailboxPooled(id: string, pooled: boolean): Promise<EmailAccount> {
+  return updateEmailAccount(id, { inAllInboxes: pooled });
+}
+
+// ── Remove older mail from Metorite (EM-T6e, spec §10.4.7) ───────────────
+
+/**
+ * A count that the answer must carry: a finite number of 0 or more. Any
+ * other value throws (EM-T6e review round 1). The proxy sends `{}` for a 200
+ * body that it cannot read, and a missing count must never read as 0.
+ * A thrown preview is a failed count. A thrown removal has no `status`, so
+ * the dialog starts the D1 follow-up, and that finds the true count.
+ */
+function requiredCount(raw: Record<string, unknown> | undefined, field: string): number {
+  const v = raw?.[field];
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+    throw new Error(`The answer has no count in "${field}".`);
+  }
+  return v;
+}
+
+/**
+ * The count and the bytes of the mail of one mailbox received before
+ * `before` (EM-T6c). It writes nothing. `before` is an ISO instant.
+ *
+ * ⚠️ The value is encoded. The gateway answers `before` as Python ISO text,
+ * `2026-09-04T18:30:00+00:00`, and the D1 follow-up sends that text back.
+ * A bare `+` in a query is a space, so the gateway would answer 400.
+ */
+export async function previewOlderMail(accountId: string, before: string): Promise<OlderMailPreview> {
+  const raw = await gatewayFetch<Record<string, unknown>>(
+    `/email/accounts/${encodeURIComponent(accountId)}/storage/older?before=${encodeURIComponent(before)}`,
+  );
+  return {
+    before: String(raw?.before ?? before),
+    messages: requiredCount(raw, "messages"),
+    bytes: requiredCount(raw, "bytes"),
+  };
+}
+
+/**
+ * Remove the mail of one mailbox received before `before`, from Metorite
+ * only (EM-T6c, D-EM-14). The mailbox at the provider does not change. A
+ * thrown error keeps the `status` of `gatewayFetch`, so the dialog can tell a
+ * 409 from a proxy timeout (D1).
+ */
+export async function removeOlderMail(accountId: string, before: string): Promise<RemoveOlderResult> {
+  const raw = await gatewayFetch<Record<string, unknown>>(
+    `/email/accounts/${encodeURIComponent(accountId)}/storage/remove-older`,
+    { method: "POST", body: JSON.stringify({ before }) },
+  );
+  return {
+    before: String(raw?.before ?? before),
+    removed: requiredCount(raw, "removed"),
+    storedBytes: optionalCount(raw?.stored_bytes) ?? null,
+    storageLimitBytes: requiredCount(raw, "storage_limit_bytes"),
+  };
 }
 
 // ── Folders ──────────────────────────────────────────────────────────────
@@ -838,6 +961,54 @@ export interface FullBodyResponse {
 
 export async function fetchFullBody(id: string): Promise<FullBodyResponse> {
   return gatewayFetch<FullBodyResponse>(`/email/messages/${id}/full-body`);
+}
+
+// ── The HTML that the provider holds (WS-17 EM-S2, §14.4.2) ───────────────
+
+/** Where the HTML came from, as the gateway says it. */
+export type MessageHtmlSource = "stored" | "cache" | "provider" | "none";
+
+export interface MessageHtml {
+  messageId: string;
+  /** The raw HTML. Null for a plain-text message (`source: "none"`). */
+  bodyHtml: string | null;
+  source: MessageHtmlSource;
+}
+
+/**
+ * The cache key of the HTML of one message in `dataCache`. The open of the
+ * pane and the prefetch of the list both use it, so a row that the prefetch
+ * holds paints its HTML at once. The key has no `prefetch` part on purpose:
+ * one message has one HTML.
+ */
+export function messageHtmlKey(id: string): string {
+  return `/email/messages/${encodeURIComponent(id)}/html`;
+}
+
+/**
+ * The HTML of one message, from `GET /email/messages/{id}/html` (EM-S1). The
+ * ONE fetch of that route in the app. The pane calls it with no option, and
+ * the prefetch of the list calls it with `prefetch: true`, which the gateway
+ * may refuse with a 503 and `Retry-After` under load. An error carries
+ * `status`, and `retryAfter` in seconds when the gateway sent one. The caller
+ * renders the HTML through `MessageContent`, never by itself.
+ */
+export async function fetchMessageHtml(
+  id: string,
+  opts: { prefetch?: boolean } = {}
+): Promise<MessageHtml> {
+  const path = messageHtmlKey(id) + (opts.prefetch ? "?prefetch=1" : "");
+  const raw = await gatewayFetch<Record<string, unknown>>(path);
+  const html = typeof raw?.body_html === "string" && raw.body_html ? raw.body_html : null;
+  const source = raw?.source;
+  return {
+    messageId: String(raw?.message_id ?? id),
+    bodyHtml: html,
+    source:
+      source === "stored" || source === "cache" || source === "provider"
+        ? source
+        : "none",
+  };
 }
 
 export async function updateEmail(
@@ -1406,6 +1577,42 @@ export async function installPresetRules(
     `/email/rules/install-presets?account_id=${encodeURIComponent(accountId)}`,
     { method: "POST" }
   );
+}
+
+/**
+ * Copy the enabled rules of one mailbox of the member to another (EM-T8f-1,
+ * D-EM-24). The copy is one transaction on the gateway. A second call copies
+ * each rule again as "(copy)", so the caller guards it (`ruleCopier` in
+ * `lib/mailboxSettings.ts`).
+ */
+export async function copyRules(fromAccountId: string, toAccountId: string): Promise<RuleCopyResult> {
+  const raw = await gatewayFetch<Record<string, unknown>>("/email/rules/copy", {
+    method: "POST",
+    body: JSON.stringify({ from_account_id: fromAccountId, to_account_id: toAccountId }),
+  });
+  return mapRuleCopyResult(raw ?? {});
+}
+
+/** The answer of the copy, snake case to camel case. A field that is not a
+ *  list gives an empty list, and an entry with no name is dropped. */
+function mapRuleCopyResult(raw: Record<string, unknown>): RuleCopyResult {
+  const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+  const text = (v: unknown): string => (typeof v === "string" ? v : "");
+  const entries = (v: unknown) =>
+    list(v).filter((e): e is Record<string, unknown> => !!e && typeof e === "object");
+  return {
+    copied: list(raw.copied).map(text).filter(Boolean),
+    renamed: entries(raw.renamed)
+      .map((e) => ({ name: text(e.name), copiedAs: text(e.copied_as) }))
+      .filter((e) => e.name && e.copiedAs),
+    leftOut: entries(raw.left_out)
+      .map((e) => ({ name: text(e.name), reason: text(e.reason) }))
+      .filter((e) => e.name),
+    // EM-S10 (D-EM-60): each name that the provider makes on first use.
+    willCreate: entries(raw.will_create)
+      .map((e) => ({ rule: text(e.rule), action: text(e.action), name: text(e.name) }))
+      .filter((e) => e.name),
+  };
 }
 
 /**

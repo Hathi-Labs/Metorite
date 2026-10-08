@@ -226,9 +226,28 @@ export function invalidate(match: string | ((key: CacheKey) => boolean)): number
 export function clearAll(): void {
   store.clear();
   inflight.clear();
+  // Memory BESIDE the cache that belongs to the member (the email HTML
+  // prefetch state, WS-17 EM-S2) empties first, so a watcher that re-reads
+  // below meets a clean prefetcher.
+  for (const cb of [...clearWatchers]) cb();
   // Watchers deliberately survive: a mounted component still wants to hear
   // about its key. It is told now, so it re-reads as itself.
   for (const key of [...watchers.keys()]) notify(key);
+}
+
+const clearWatchers = new Set<() => void>();
+
+/**
+ * Run `cb` on each `clearAll`, so on each sign-out and each change of member
+ * too, because `bindIdentity` calls `clearAll`. A module that keeps memory of
+ * one member beside this cache uses it to forget that memory at the same
+ * moment. Returns the unsubscribe.
+ */
+export function onClear(cb: () => void): () => void {
+  clearWatchers.add(cb);
+  return () => {
+    clearWatchers.delete(cb);
+  };
 }
 
 /** Entry count. For the tests and for a debug read-out. */

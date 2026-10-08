@@ -99,6 +99,29 @@ Set at minimum:
 
 Then edit `deploy/hostinger/caddy/Caddyfile` and replace the placeholder hostnames with yours.
 
+### Rotate `GATEWAY_SESSION_SECRET`
+
+A skill folder records its author as an HMAC under this secret (spec
+`maf_coding_engine.md` §16.3). A new secret changes every member id, so each
+skill folder then belongs to no member, and its name stays taken. Clear the
+skills as part of the rotation:
+
+1. Set the new value in `/opt/acb/app/.env`.
+2. Delete `agent-data/skills/*` in EVERY tenant dir, for every shared agent:
+   `<agents_clone_dir>/state/<agent>/o_*/agent-data/skills/*`. Do not stop at
+   the dirs that `MAF_CODING_SCOPE` covers: the gateway write route records an
+   author in any shared agent's tenant dir.
+3. Delete the blob-store rows of the same paths, or the next rehydrate
+   restores them. Do it in `agent_blob` and in `agent_file_history`, with
+   `instance LIKE 'o:%' AND path LIKE 'agent-data/skills/%'`. This is the same
+   set as step 2: every agent, every tenant. Run it as the owner role, after a
+   backup.
+4. Restart `acb-gateway`. Each member makes their skills again.
+
+The secret also signs member proofs and the email connect state. Read risk
+R-1 of `email_app_master_plan.md` §10.4.1 ("The state and the webhook signature
+use `gateway_session_secret`") before a rotation.
+
 ## Memory system (Mem0 + Graphiti)
 
 Metorite has two memory layers that persist across conversations:

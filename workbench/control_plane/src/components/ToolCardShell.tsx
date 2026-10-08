@@ -2,7 +2,15 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
+
+/**
+ * True inside a step of the working trail (`ThinkingContainer`). A read's
+ * card draws there since the placement rule of 2026-10-08
+ * (`lib/chatPlacement.ts`), and the step is the thing a member closes. So a
+ * card in a step draws no dismiss control: its X would hide nothing.
+ */
+export const InStepContext = createContext(false);
 
 /**
  * Shared chrome for an AG-UI tool card: a header row with a collapse toggle, an
@@ -27,6 +35,7 @@ export function ToolCardShell({
   children: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const dismiss = useContext(InStepContext) ? undefined : onDismiss;
   return (
     <div className="rounded-lg border border-border bg-card/40 overflow-hidden">
       <div className="flex items-center gap-1.5 px-2.5 py-1.5">
@@ -38,8 +47,8 @@ export function ToolCardShell({
           {icon}
           <span className="truncate">{title}</span>
         </Button>
-        {onDismiss && (
-          <Button variant="ghost" size="none" radius="keep" layout="" onClick={onDismiss} title="Dismiss" aria-label="Dismiss" className="p-0.5 rounded flex-shrink-0">
+        {dismiss && (
+          <Button variant="ghost" size="none" radius="keep" layout="" onClick={dismiss} title="Dismiss" aria-label="Dismiss" className="p-0.5 rounded flex-shrink-0">
             <Icon name="X" size={12} />
           </Button>
         )}
@@ -62,6 +71,7 @@ export function DismissableCard({
   onDismiss: () => void;
   children: React.ReactNode;
 }) {
+  if (useContext(InStepContext)) return <>{children}</>;
   return (
     <div className="relative group/dismiss">
       <button

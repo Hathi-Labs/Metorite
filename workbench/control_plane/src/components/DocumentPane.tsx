@@ -25,6 +25,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
+import MarkdownImage from "@/components/MarkdownImage";
+import { markdownUrlTransform, rehypeGateRemoteMedia } from "@/lib/markdownMedia";
 import SandboxedHtml from "@/components/SandboxedHtml";
 import SandboxedReact from "@/components/SandboxedReact";
 import { iconsUsedIn } from "@/lib/iconSvg";
@@ -273,7 +275,7 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
               Live preview
             </div>
             {kind === "markdown" ? (
-              <MarkdownBody content={draft} />
+              <DocumentMarkdown content={draft} sessionId={sessionId} mdFilePath={path} />
             ) : kind === "react" ? (
               <SandboxedReact code={draft} iconNames={draftIcons} />
             ) : (
@@ -286,7 +288,7 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
   } else if (kind === "markdown") {
     body = (
       <div className="flex-1 overflow-auto p-4">
-        <MarkdownBody content={content} />
+        <DocumentMarkdown content={content} sessionId={sessionId} mdFilePath={path} />
       </div>
     );
   } else if (kind === "html") {
@@ -333,11 +335,38 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
   );
 }
 
-/** Themed markdown body — same prose styling the app uses elsewhere. */
-function MarkdownBody({ content }: { content: string }) {
+/** Themed markdown body — same prose styling the app uses elsewhere.
+ *  Raw HTML is allowed, so `rehypeGateRemoteMedia` strips the remote fetches
+ *  raw HTML can make, and `MarkdownImage` draws a remote image as a
+ *  click-to-load placeholder (`lib/markdownMedia.ts`). A relative image
+ *  resolves against the file, through the workspace file proxy. */
+export function DocumentMarkdown({
+  content,
+  sessionId,
+  mdFilePath,
+}: {
+  content: string;
+  sessionId?: string;
+  mdFilePath?: string;
+}) {
   return (
     <div className="cc-prose prose prose-sm max-w-none prose-headings:font-semibold prose-a:text-primary">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw, rehypeGateRemoteMedia]}
+        urlTransform={markdownUrlTransform}
+        components={{
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          img: ({ node: _node, ...props }) => (
+            <MarkdownImage
+              {...props}
+              sessionId={sessionId}
+              mdFilePath={mdFilePath}
+              className="max-w-full rounded"
+            />
+          ),
+        }}
+      >
         {content}
       </ReactMarkdown>
     </div>

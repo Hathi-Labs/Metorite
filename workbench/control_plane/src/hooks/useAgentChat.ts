@@ -23,13 +23,15 @@ import {
   releaseStreamOwnership,
 } from "@/lib/chatStore";
 import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
-import { parseAgentError } from "@/lib/parseAgentError";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
 import { agentAuthor } from "@/lib/projectsAgent";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
 import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, type StreamFold } from "@/lib/chatStream";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
+import { settleFailedTurn, type SessionRefusedHandler } from "@/lib/chatTurnFailure";
+import { ChatRunError } from "@/lib/runErrors";
+import { chatModelField } from "@/lib/tierRouting";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -42,6 +44,9 @@ const HITL_CONTROL_EVENTS = new Set([
   "elicitation_requested",
   "user_input_requested",
   "confirmation_requested",
+  // A card the server closed (`lib/confirmationQueue.ts`). It drives the
+  // queue, and is no data to draw.
+  "confirmation_resolved",
   // A dispatched browser action (H-164): a side effect, never a view. Kept
   // off the message so it neither draws a raw-JSON fold nor is saved.
   "frontend_tool",
@@ -106,12 +111,21 @@ interface UseAgentChatOptions {
   agentName: string;
   threadId: string;
   initialMessages?: ChatMessage[];
-  model?: string;
+  /** The model the picker chose. `null` sends NO `model` field: the platform
+   *  picks the tier for a covered agent (WS-45 S3, `lib/tierRouting.ts`). */
+  model?: string | null;
   mode?: "copilot" | "litellm";
   systemContext?: string;
   /** Thinking mode: "auto" | "thinking" | "max" */
   thinkMode?: string;
   onArtifact?: (entry: ArtifactEntry) => void;
+  /**
+   * The server refused this SESSION on send (404, or a 403 "not a
+   * participant"). Return true to take the turn: no error card is drawn, and
+   * the surface opens a new chat. Pass it only for a session restored from
+   * storage (`lib/railSessions.ts`), never for one the member opened.
+   */
+  onSessionRefused?: SessionRefusedHandler;
 }
 
 interface UseAgentChatReturn {
@@ -144,9 +158,12 @@ export function useAgentChat({
   systemContext,
   thinkMode,
   onArtifact,
+  onSessionRefused,
 }: UseAgentChatOptions): UseAgentChatReturn {
   const onArtifactRef = useRef(onArtifact);
   useEffect(() => { onArtifactRef.current = onArtifact; }, [onArtifact]);
+  const onSessionRefusedRef = useRef(onSessionRefused);
+  useEffect(() => { onSessionRefusedRef.current = onSessionRefused; }, [onSessionRefused]);
 
   // Keep latest values in refs so sendMessage always uses current values
   // even if its useCallback closure hasn't been recreated yet.
@@ -233,6 +250,9 @@ export function useAgentChat({
       // Emit run started event for subscribers
       emitAgentEvent("onRunStarted", { runId: assistantId, threadId });
 
+      // The HTTP status of a refused request, so the failure below can tell a
+      // refused SESSION from a failed turn. Null for an error inside a stream.
+      let failedStatus: number | null = null;
       try {
         // Build the history sent to the model from the ACTIVE context window
         // (everything from the most recent compaction checkpoint onward), so a
@@ -259,7 +279,7 @@ export function useAgentChat({
             messages: history,
             threadId,
             mode: modeRef.current,
-            model: modelRef.current ?? "auto",
+            ...chatModelField(modelRef.current),
             context: systemContextRef.current ?? undefined,
             thinkMode: thinkModeRef.current ?? "auto",
             // Pass the assistant message ID so the server-side proxy persists
@@ -296,6 +316,7 @@ export function useAgentChat({
 
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => `status ${res.status}`);
+          failedStatus = res.status;
           throw new Error(text);
         }
 
@@ -329,6 +350,7 @@ export function useAgentChat({
               case "reasoning":
               case "tool_start":
               case "tool_end":
+              case "tool_args":
               case "tool_partial":
                 upd((m) => applyStreamEvent(m, evt, fold));
                 break;
@@ -377,7 +399,8 @@ export function useAgentChat({
                 break;
               }
               case "error":
-                throw new Error(String(evt.content ?? "Stream error"));
+                // The code and the ref ride out of the loop with the raw text.
+                throw new ChatRunError(String(evt.content ?? "Stream error"), evt.code, evt.ref);
             }
         }
 
@@ -424,21 +447,20 @@ export function useAgentChat({
           // Don't clear isLoading — let the polling effect handle recovery.
           return;
         }
-        const rawMsg = rawErr;
-        const parsed = parseAgentError(rawMsg);
-        emitAgentEvent("onError", { error: rawMsg, threadId });
-        setSessionState(threadId, (prev) => ({
-          ...prev,
-          error: rawMsg,
-          messages: prev.messages
-            .filter((m) => m.id !== assistantId)
-            .concat({
-              id: nanoid(),
-              role: "system",
-              content: `__ERROR__${JSON.stringify(parsed)}`,
-              timestamp: Date.now(),
-            }),
-        }));
+        // One seam decides what the failure leaves in the thread: an error
+        // card, or nothing when a surface recovers from a refused session.
+        const outcome = settleFailedTurn({
+          threadId,
+          userMsgId: userMsg.id,
+          assistantId,
+          content: userMsg.content,
+          rawErr,
+          status: failedStatus,
+          code: err instanceof ChatRunError ? err.code : null,
+          ref: err instanceof ChatRunError ? err.ref : null,
+          onSessionRefused: onSessionRefusedRef.current,
+        });
+        if (outcome === "error") emitAgentEvent("onError", { error: rawErr, threadId });
       } finally {
         // If a reconnect/replay loop superseded us mid-stream it now owns the
         // message AND the shared loading/abort state. A superseded loop must NOT
@@ -599,7 +621,7 @@ export function useAgentChat({
               .map((m) => ({ role: m.role, content: m.content })),
             threadId,
             mode: modeRef.current,
-            model: modelRef.current ?? "auto",
+            ...chatModelField(modelRef.current),
             context: systemContextRef.current ?? undefined,
             thinkMode: thinkModeRef.current ?? "auto",
             assistantMessageId: lastId,
@@ -679,6 +701,7 @@ export function useAgentChat({
               case "progress":
               case "tool_start":
               case "tool_end":
+              case "tool_args":
               case "tool_partial":
                 updLast((m) => applyStreamEvent(m, evt, fold));
                 break;

@@ -15,8 +15,10 @@ from gateway.routes.email.automation import (
     drafting,
     engine,
     followups,
+    insights,  # noqa: F401 -- imported only so that its route registers
     learning,
     replyzero,
+    rule_copy,
     rules,
     runner,
     senders,
@@ -24,11 +26,14 @@ from gateway.routes.email.automation import (
 )  # noqa: F401
 
 # `analytics` imports from `senders`, so it is flattened after it — the loop
-# order decides which module wins a name collision.
+# order decides which module wins a name collision. `rule_copy` imports from
+# `rules`, so it comes after `rules` (EM-T8f-1).
 for _mod in (assistant, drafting, engine, replyzero, chat, followups,
-             actions, learning, rules, runner, senders, cleanup, analytics,
-             voice_profile):
+             actions, learning, rules, rule_copy, runner, senders, cleanup,
+             analytics, voice_profile):
     for _k, _v in vars(_mod).items():
         if not _k.startswith("__"):
             globals()[_k] = _v
 del _mod, _k, _v
+
+# `insights` (WS-17 EM-T14c) is not flattened. Its names stay in its module.

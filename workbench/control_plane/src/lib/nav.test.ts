@@ -42,11 +42,16 @@ const LIVE_SET: ReadonlyArray<[string, string]> = [
   // somebody deliberately changing this line AND `launch_surface.md` §2.
   ["personal", "/calendar"],
   ["personal", "/people/me"],
-  ["personal", "/access"],
+  // `["personal", "/access"]` was here until 2026-10-05. The owner moved My
+  // Access out of the sidebar and into the People app as a tab, which took
+  // the live set from ELEVEN back to TEN.
   // Added 2026-10-02 by owner decision of 2026-10-01 (H-21, WS-17 EM-T3b),
-  // taking the live set from TEN to ELEVEN. Email sits after `/access`
+  // taking the live set from TEN to ELEVEN. Email sits after `/people/me`
   // because `/dashboard` between them is still `preview`.
   ["personal", "/email"],
+  // Added 2026-10-08 by owner decision (WS-20 WA-C6), taking the live set from
+  // TEN to ELEVEN. "My WhatsApp" sits after "My Email", in nav order.
+  ["personal", "/whatsapp"],
   ["apps", "/projects"],
   // Added 2026-09-20 by owner decision, taking the live set from NINE to TEN.
   // The directory was held back while it could not load at all (PR #306) and
@@ -102,7 +107,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the eleven panes launch_surface.md §2 names", () => {
+  it("ships exactly the ten panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);
@@ -174,13 +179,14 @@ describe("preview panes are hidden, and the flag restores them (LS-1)", () => {
     // The §3.4 rule, as a test: holding the feature is NOT enough to reveal a
     // preview pane, and lacking it still hides a live one. If these two ever
     // agree, somebody has started hiding apps by revoking grants.
-    // The example is WhatsApp since 2026-10-02: Email went live (EM-T3b).
-    const withWhatsAppGrant = visibleSections(["whatsapp", "chat"], false, false);
-    expect(withWhatsAppGrant.flatMap((s) => s.items.map((p) => p.href))).not.toContain(
-      "/whatsapp",
+    // The example is Notes since 2026-10-08: WhatsApp went live (WA-C6), as
+    // Email did before it (EM-T3b).
+    const withNotesGrant = visibleSections(["notes", "chat"], false, false);
+    expect(withNotesGrant.flatMap((s) => s.items.map((p) => p.href))).not.toContain(
+      "/notes",
     );
 
-    const withoutChat = visibleSections(["whatsapp"], false, false);
+    const withoutChat = visibleSections(["notes"], false, false);
     expect(withoutChat.flatMap((s) => s.items.map((p) => p.href))).not.toContain(
       "/chat",
     );
@@ -208,11 +214,12 @@ describe("an unresolved viewer sees nothing, never everything (LS-4 · §8.1)", 
   });
 
   it("returns no sections for a resolved member who holds nothing", () => {
-    // The ungated live panes are the floor: My Profile, My Access, Appearance.
+    // The ungated live panes are the floor: My Profile and Appearance. My
+    // Access is a People tab since 2026-10-05, and not a pane.
     const shown = visibleSections([], false).flatMap((s) =>
       s.items.map((p) => p.href),
     );
-    expect(shown).toEqual(["/people/me", "/access", "/settings/appearance"]);
+    expect(shown).toEqual(["/people/me", "/settings/appearance"]);
   });
 
   it("hides the admin-only Organisation pane from a non-admin", () => {

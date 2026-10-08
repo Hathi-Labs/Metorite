@@ -41,6 +41,13 @@ a sub-item.
    5. Verification commands — exact pytest/ruff/mypy/build calls.
    6. Single owner — cross-check §4.
    7. Gate labels — AGENT-SAFE or OWNER-GATE per item.
+
+   If the spec is for an APP, also apply **R9** from `work_plan.md` §1. The
+   spec must have a "Shell manifest" section. The section names the team, the
+   purpose, the jobs, the search provider, the "needs you" items, the Home
+   cards and the agent. If the section is missing, the verdict is NO-GO. It is
+   also NO-GO if the spec plans a palette, a bell, an assistant rail or a ⌘K
+   listener of the app's own. Cite D89 and `specs/navigation_shell.md` §5.
 5. **Check §5 residuals** for a remediation item naming this spec. If one exists
    and is unresolved, the spec's "Docs" gate is not cleared.
 6. **Reality-check the status claim** against the code for the two or three

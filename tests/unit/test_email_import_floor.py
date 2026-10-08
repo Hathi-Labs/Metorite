@@ -1028,7 +1028,7 @@ async def test_load_older_writes_nothing_past_the_ceiling_and_stops(
     ])
     written: list[str] = []
 
-    async def _upsert(db, account_id, msg):
+    async def _upsert(db, account_id, msg, *, reclaim=False):
         written.append(msg.provider_message_id)
 
     db = AsyncMock()

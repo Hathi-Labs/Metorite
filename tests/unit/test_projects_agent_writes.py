@@ -40,6 +40,7 @@ from skill_projects import writes as W
 from tests.unit._projects_agent_fakes import (
     SKILL_DIR,
     approve,
+    card_answer,
     deny,
     empty_list,
     fake_gateway,
@@ -330,6 +331,8 @@ def responder(call: dict) -> Any:
             "drops": ["cost"],
             "required_missing": [],
             "crosses_status_set": True,
+            # WS-46 P6: a move into another space, where answers land.
+            "crosses_root": True,
         }
     if path == "/projects/tasks/move":
         return {"moved": 1}
@@ -389,11 +392,24 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             "assignees": "Priya",
             "due": "2026-09-30",
             "tags": "urgent",
-        }
+        },
+        # WS-46 P1: the rule is the second write under the one card.
+        {"project_id": UUID, "title": "Send the timesheet", "repeat": "weekly", "repeat_on": "5"},
+        # WS-46 P6: the start and the type in the POST, the values in a PATCH.
+        {
+            "project_id": UUID,
+            "title": "Weld the frame",
+            "start": "2026-10-05",
+            "type": "bug",
+            "fields": '{"Customer": "SMB"}',
+        },
     ],
     "update_task": [
         {"task_id": UUID, "status": "done", "due": "2026-10-01"},
         {"task_id": UUID, "clear": "due"},
+        # WS-46 P6
+        {"task_id": UUID, "type": "bug", "fields": '{"Customer": "SMB"}'},
+        {"task_id": UUID, "status": "done", "include_subtasks": "yes"},
     ],
     "assign": [{"task_id": UUID, "assignees": "priya@x.io, agent:crm-assistant"}],
     "comment": [{"task_id": UUID, "body": "Waiting on legal."}],
@@ -403,6 +419,14 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "move_task": [
         {"task_ids": UUID, "destination_project_id": OTHER},
         {"task_ids": UUID, "parent_task_id": OTHER},
+        # WS-46 P6: the destination's fields, and the subtasks along.
+        {
+            "task_ids": UUID,
+            "destination_project_id": OTHER,
+            "fields": '{"Customer": "SMB"}',
+            "include_subtasks": "yes",
+        },
+        {"task_ids": UUID, "destination_project_id": OTHER, "include_subtasks": "yes"},
     ],
     "watch": [
         {"target_id": UUID, "kind": "task"},
@@ -410,7 +434,7 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         {"target_id": UUID, "kind": "project"},
         {"target_id": UUID, "kind": "project", "stop": True},
     ],
-    "complete": [{"task_id": UUID}],
+    "complete": [{"task_id": UUID}, {"task_id": UUID, "include_subtasks": "yes"}],
     "defer": [{"task_id": UUID, "until": "2026-10-06"}],
     "unarchive_task": [{"task_id": UUID}],
     "create_project": [{"name": "Q4 launch", "parent_project_id": UUID, "lead": "Priya"}],
@@ -441,11 +465,12 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "archive_project": [{"project_id": UUID}],
     "unarchive_project": [{"project_id": ARCHIVED}],
     "move_project": [{"project_id": UUID, "parent_project_id": SALES}],
-    "archive_task": [{"task_id": LIVE}],
+    "archive_task": [{"task_id": LIVE}, {"task_id": LIVE, "include_subtasks": "yes"}],
     "merge_tasks": [{"target_task_id": UUID, "source_task_ids": OTHER}],
     "bulk_update": [
         {"task_ids": f"{UUID},{OTHER}", "status": "done", "tags_add": "q4"},
         {"task_ids": UUID, "action": "archive"},
+        {"task_ids": UUID, "action": "archive", "include_subtasks": "yes"},
     ],
     "delete_comment": [{"task_id": UUID, "comment_id": LINK}],
     "revert_activity": [{"task_id": UUID, "activity_id": CHANGE}],
@@ -477,6 +502,21 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         {"task_id": UUID, "action": "snooze", "until": "2026-10-06"},
     ],
     "mark_notifications_read": [{"ids": OTHER}, {"all_unread": True}],
+    # WS-46 P13 — several new tasks, one selection card, one confirmation card.
+    "create_tasks": [
+        {
+            "project_id": UUID,
+            "tasks": '[{"title": "Call the vendor", "status": "in progress", '
+            '"assignees": "Priya", "due": "2026-09-30"}, {"title": "Draft the brief"}]',
+        }
+    ],
+    # H-273 — several new tags or types, one confirmation card with rows.
+    "create_tags": [
+        {"project_id": UUID, "tags": '[{"name": "q4", "color": "blue"}, "blocked"]'},
+    ],
+    "create_types": [
+        {"project_id": UUID, "types": '[{"name": "Chore", "icon": "broom"}, {"name": "Spike"}]'},
+    ],
     "propose_plan": [
         {
             "name": "Q4 launch",
@@ -540,6 +580,19 @@ def _forms_answered(monkeypatch) -> None:
     form_stub(monkeypatch, FORM_ANSWERS)
 
 
+@pytest.fixture(autouse=True)
+def _an_open_run() -> Any:
+    """Each tool runs inside a run, as in production. This run may send
+    (``no_egress=False``). H-236 reads a frame with no run as ``no_egress``,
+    and then ``assign`` refuses the ``agent:`` assignee of the cases above.
+    ``test_delegation_no_egress.py`` covers the refusal."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    with artifact_context_scope():
+        bind_artifact_context(agent_name="projects-assistant", no_egress=False)
+        yield
+
+
 @pytest.mark.parametrize("tool", sorted(_WRITES))
 async def test_a_denied_card_writes_nothing(tool: str, monkeypatch) -> None:
     deny(monkeypatch)
@@ -565,9 +618,10 @@ async def test_everything_before_the_card_is_a_read(tool: str, monkeypatch) -> N
 
     calls = fake_gateway(monkeypatch, responder)
 
-    async def marker(**kwargs: Any) -> bool:
+    async def marker(**kwargs: Any) -> Any:
         calls.append({"method": "CARD", "path": "", "headers": {}, "params": {}, "json": kwargs})
-        return True
+        # A card with rows answers with the ticked ids (WS-46 P13 one-card).
+        return card_answer(kwargs, True)
 
     monkeypatch.setattr(ask_tools, "request_confirmation", marker)
     for kwargs in _WRITES[tool]:
@@ -984,7 +1038,7 @@ async def test_set_recurrence_puts_the_rule_and_stop_deletes_it(monkeypatch) -> 
     put = [c for c in writes(calls) if c["method"] == "PUT"]
     assert put[0]["json"] == {"freq": "weekly", "interval": 2, "anchor": "due", "weekdays": [1, 3]}
     assert (
-        "rule: «every week · on Mon · from the due date» → «every 2 weeks · on Mon, Wed"
+        "rule: «every week on Monday, from the due date» → «every 2 weeks on Monday and Wednesday"
         in (asked[0]["context"])
     )
     calls.clear()
@@ -992,10 +1046,68 @@ async def test_set_recurrence_puts_the_rule_and_stop_deletes_it(monkeypatch) -> 
     assert [c["method"] for c in writes(calls)] == ["DELETE"]
 
 
-async def test_a_weekly_rule_without_weekdays_is_refused_before_the_card(monkeypatch) -> None:
+async def test_a_weekly_rule_without_weekdays_takes_todays_day_and_says_so(monkeypatch) -> None:
+    """WS-46 P1 §8.1 item 8 replaced the refusal: ``set_recurrence`` takes the
+    weekly default ``create_task`` takes (Q1). The task has no due date, so
+    the day is today's, and the card names it."""
+    import datetime as dt
+
+    monkeypatch.setattr(W, "_today", lambda: dt.date(2026, 10, 6))  # a Tuesday
+
+    def no_rule_yet(call: dict) -> Any:
+        if call["path"].endswith("/recurrence") and call["method"] == "GET":
+            return {"rule": None}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, no_rule_yet)
+    await skill_projects.set_recurrence(UUID, freq="weekly")
+    put = [c for c in writes(calls) if c["method"] == "PUT"]
+    assert put[0]["json"]["weekdays"] == [2]
+    assert "repeat day: «Tuesday, today's weekday (UTC)" in asked[0]["context"]
+
+
+async def test_a_weekly_rule_that_exists_keeps_its_days(monkeypatch) -> None:
+    """WS-46 P1 review: "make it every 2 weeks" on a task that repeats every
+    Monday keeps Monday. The default is for a task with no weekly rule."""
+    import datetime as dt
+
+    monkeypatch.setattr(W, "_today", lambda: dt.date(2026, 10, 6))  # a Tuesday
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)  # the current rule: weekly on Monday
+    await skill_projects.set_recurrence(UUID, freq="weekly", interval=2)
+    put = [c for c in writes(calls) if c["method"] == "PUT"]
+    assert put[0]["json"]["weekdays"] == [1]
+    assert "repeat day" not in asked[0]["context"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "word"),
+    [
+        ({"freq": "daily", "interval": 0}, "interval is 1 to 365, not 0"),
+        ({"freq": "monthly", "day_of_month": 32}, "day_of_month is 1 to 31"),
+        ({"freq": "yearly", "day_of_month": 1, "month_of_year": 13}, "month_of_year is 1 to 12"),
+        ({"freq": "daily", "max_occurrences": -1}, "max_occurrences is 1 or more"),
+        ({"freq": "daily", "until": "2026-13-01"}, "until is a date, YYYY-MM-DD"),
+        ({"freq": "daily", "until": "2026-10-05"}, "in the past"),
+    ],
+)
+async def test_set_recurrence_refuses_a_number_out_of_range_before_the_card(
+    kwargs: dict, word: str, monkeypatch
+) -> None:
+    import datetime as dt
+
+    monkeypatch.setattr(W, "_today", lambda: dt.date(2026, 10, 6))
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)
-    assert "weekdays" in await skill_projects.set_recurrence(UUID, freq="weekly")
+    assert word in await skill_projects.set_recurrence(UUID, **kwargs)
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_bad_weekday_is_still_refused_before_the_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    assert "weekdays" in await skill_projects.set_recurrence(UUID, freq="weekly", weekdays="9")
     assert asked == [] and writes(calls) == []
 
 
@@ -1631,7 +1743,7 @@ async def test_bulk_refuses_a_clear_beside_a_value_and_names_a_clear(monkeypatch
     )
     assert asked == [] and writes(calls) == []
     await skill_projects.bulk_update(UUID, clear="due")
-    assert "due_at → cleared" in asked[0]["context"]
+    assert "due_at: «cleared»" in asked[0]["context"]
 
 
 async def test_bulk_receipt_prints_rows_for_applied_ids_only(monkeypatch) -> None:
@@ -2204,9 +2316,10 @@ async def test_the_plan_writes_in_rule_8_order_under_exactly_one_card(monkeypatc
     form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
     calls = fake_gateway(monkeypatch, _plan_gateway())
 
-    async def marker(**kwargs: Any) -> bool:
+    async def marker(**kwargs: Any) -> Any:
         calls.append({"method": "CARD", "path": "", "headers": {}, "params": {}, "json": kwargs})
-        return True
+        # A card with rows answers with the ticked ids (WS-46 P13 one-card).
+        return card_answer(kwargs, True)
 
     monkeypatch.setattr(ask_tools, "request_confirmation", marker)
     await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))

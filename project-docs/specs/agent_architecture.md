@@ -488,6 +488,11 @@ no scopes. `customer_console.md` §6A.14 CP-13d is the contract.
 floor. The tool sends no member, because a run's member can come from a
 caller's payload (the R11 finding in §6A.14 CP-13d).
 
+📌 **D90 (decided 2026-10-06) moves the engine of this tool to `tier-fast`.**
+For an agent in `AI_TIER_ROUTING`, the tool runs an MAF agent with no tools,
+in process. It is still not a delegation, and it uses no depth level.
+`ai_tier_routing.md` §6 owns the design.
+
 > **A delegated run executes at the caller's clearance, intersected with the callee's declared
 > scopes. Never wider.**
 
@@ -793,7 +798,7 @@ consequence stated — rather than being a default nobody chose.
 ## 12. Phasing
 
 The phase letters below are the **map**. The dispatchable unit is the lettered ticket in
-§12.2 (`WS-8a`…`WS-8n`); each phase row names which tickets carry it.
+§12.2 (`WS-8a`…`WS-8o`). Each phase row names which tickets carry it.
 
 | Phase | Work | Tickets | Depends on |
 |---|---|---|---|
@@ -971,9 +976,16 @@ session" affordance is enabled only for an agent whose manifest returns
 (i.e. `email-assistant`, `whatsapp-assistant`) is refused, and a test asserts a `shared`
 agent is allowed.
 
+**WS-8o — the own tool scope does nothing for a native MAF agent. AGENT-SAFE.** No migration
+and no flag. `_apply_own_tool_scope` filters `tools` and `_tools`. MAF 1.19 keeps the tools in
+`default_options["tools"]`.
+
+The scope of each agent is its built tools. A narrowing is an owner decision. Scope, fences and
+verification: `email_app_master_plan.md` §10.4.14. ✅ Merged #688 (2026-10-06).
+
 #### B — one builder
 
-**WS-8i — migrate `task-manager` onto `build_declarative_agent`. AGENT-SAFE.** The builder
+**WS-8i — migrate `task-manager` onto `build_declarative_agent`. AGENT-SAFE. ⏸ Parked by D86, 2026-10-03, and ▶ restarted by D92, 2026-10-07** (`maf_coding_engine.md` §16, §17). The builder
 already exists (`orchestrator/declarative.py`) and
 `tests/unit/test_declarative_builder.py` already asserts the 29 callables `skill-task-gtd`
 exports are exactly the 29 tools `agent-task-manager/agents.py` assembles by hand. **Do not

@@ -64,7 +64,9 @@ def test_a_retry_reclassifies_nothing() -> None:
     """It replays the rule already chosen — no matcher, so no model calls and no
     chance of a different decision on a message the user has since read."""
     src = inspect.getsource(m.retry_failed_executions)
-    for matcher in ("_match_email_to_rule", "_match_email_to_rules_multi"):
+    # The split steps of EM-T4a-2 PR-B1 are matchers too.
+    for matcher in ("_match_email_to_rule", "_match_email_to_rules_multi",
+                    "read_rule_match", "ask_rule_match", "read_classification"):
         assert matcher not in src, (
             f"{matcher} would turn a repair into a re-run, which is the thing "
             "the user asked to avoid because it re-enters drafting"

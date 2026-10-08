@@ -11,7 +11,8 @@ addendum, and merges MCP servers from the registry.
 
 Public surface re-exported by ``executor`` (external importers/tests reach these
 as ``orchestrator.executor.<name>``): ``_gate_injected_tool``, ``_tool_name``,
-``_apply_own_tool_scope``, ``_build_registry_block``,
+``_apply_own_tool_scope``, ``_count_agent_tools``,
+``_log_agent_tools_resolved``, ``_build_registry_block``,
 ``_build_injected_tools_addendum``, ``_inject_agent_tools``,
 ``_inject_mcp_servers``.
 """
@@ -48,10 +49,13 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     "ask_questions",                     # HITL clarification
     "run_diagnostics", "get_errors",     # code / file error checking
     "save_note", "recall_notes",         # cross-session working memory
-    # Coding skill (agent_coding_skill.md): every MAF agent can author scripts
+    # Coding skill (agent_coding_skill.md): an agent can author scripts
     # via a bounded Copilot session (code_task) and cheaply re-run the durable
     # scripts it accumulated (run_script). Workspace-jailed + env-scrubbed;
     # list_integrations shows what a script may reach (names, never values).
+    # ⚠️ D85: the floor NAMES the two shell tools, and a SHARED agent still
+    # does not get them. `_withheld_shell_tools` takes every SHELL_TOOLS
+    # member away from a shared agent until the sandbox broker covers it.
     "run_script", "code_task", "list_integrations",
     # Inter-agent delegation (multi_agent_orchestration.md Phase 0.1): the
     # floor previously guaranteed every tool an agent needs to work ALONE and
@@ -69,6 +73,325 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # pays nothing for it (`decide_tools.decide_tool_enabled`).
     "decide",
 })
+
+
+def _sandbox_covers(agent_name: str, organization_id: str) -> bool:
+    """True when the sandbox broker runs this agent's shell TOOLS (D85).
+
+    It answers one question: does the broker run ``code_task``,
+    ``run_script`` and ``install_dependency`` for this agent in this org
+    (``maf_coding_engine.md`` §7.7 condition 2)? Only then may the tool half
+    of D85 lift. It never lifts the host half: see :func:`_host_shell_refused`.
+
+    It asks ``sandbox_broker.lifts_shell_block`` (WS-43d), never ``covers()``
+    alone. ⚠️ The ``projects`` target of D86 is NOT such a cover:
+    ``covers()`` is true there while the three host shell tools stay withheld
+    (§16.3), so ``lifts_shell_block`` answers ``False`` for it. For every
+    other target it is ``covers()``, which is ``False`` until WS-43f. A
+    broker that cannot answer is no cover, so the block stays.
+    """
+    try:
+        from orchestrator import sandbox_broker
+
+        return sandbox_broker.lifts_shell_block(agent_name, organization_id) is True
+    except Exception:  # fail closed: the three tools stay withheld
+        return False
+
+
+def _copilot_cli_in_broker_sandbox(agent_name: str, organization_id: str) -> bool:
+    """True when this agent's Copilot CLI itself runs in a broker sandbox.
+
+    Only that may lift the host half of D85. No such path exists: the
+    container of ``copilot_sandbox.py`` is not the broker's (it holds the
+    model loop, a key and a network, §4.2), and WS-43h moves app-builder off
+    the CLI instead of into it. So this is ``False`` for every agent, and a
+    shared agent's CLI shell is always refused today.
+    """
+    del agent_name, organization_id
+    return False
+
+
+#: Agents that D85 leaves as they are, by name. ``metorite`` is the root dev
+#: agent (repo-root ``agents.py``). It edits platform code and runs the tests
+#: through its Copilot CLI shell, with its own ``approve_all`` (H-211). Its root
+#: ``config.json`` has no ``sharing`` block, so D85 would read it as shared.
+#: The owner decided on 2026-10-03 (``maf_coding_engine.md`` §15.4): only an
+#: admin of the first-party organization may run it, through any path, and it
+#: keeps its terminal for them. ``executor._assert_may_run_agent`` enforces
+#: that at every run boundary, and it is what makes this exemption safe.
+#: Fences: ``test_shared_agent_shell_tools.py`` pins this set to one name, and
+#: ``test_root_agent_first_party.py`` pins it inside the gated set.
+_D85_OWNER_PENDING: frozenset[str] = frozenset({"metorite"})
+
+
+def _d85_leaves_alone(agent_name: str | None, agent_config: dict[str, Any] | None) -> bool:
+    """True for an agent that D85 does not touch, in either half.
+
+    * A ``personal`` agent. The owner left personal agents out of scope
+      (HANDOFF H-225 asks for the same rule there).
+    * A name in :data:`_D85_OWNER_PENDING`: the root dev agent, which only a
+      first-party admin may run (owner, 2026-10-03, §15.4).
+
+    Every other agent is in scope: ``shared`` (the default when the config has
+    no ``sharing`` block), ``team``, a config that does not parse, and
+    ``agent_config=None``. So a caller that forgets the config fails closed.
+    """
+    if agent_name in _D85_OWNER_PENDING:
+        return True
+    try:
+        from acb_skills.manifest import AgentManifest
+        instancing = AgentManifest.from_config(
+            agent_config, name=agent_name,
+        ).sharing.instancing
+    except Exception:  # a config that does not parse is shared
+        instancing = "shared"
+    return instancing == "personal"
+
+
+def _run_org() -> str | None:
+    """The tenant of the run on this frame, from the run binding only (R11)."""
+    try:
+        from orchestrator.executor import _current_run_org
+        return _current_run_org()
+    except Exception:  # no run binding means no cover
+        return None
+
+
+def _withheld_shell_tools(
+    agent_name: str | None, agent_config: dict[str, Any] | None,
+) -> frozenset[str]:
+    """The shell TOOLS this run must not inject (D85, the tool half).
+
+    ``acb_skills.manifest.SHELL_TOOLS`` (``code_task``, ``run_script`` and
+    ``install_dependency``) run code on the HOST today. ``run_script`` has the
+    network and the agent's integration credentials. A SHARED agent serves
+    every member of an organization from one process, so the owner blocked
+    these tools for it on 2026-10-03 until the sandbox covers it.
+
+    It withholds nothing for an agent that :func:`_d85_leaves_alone`, and all
+    three for every other one, unless :func:`_sandbox_covers` says the broker
+    runs them for this agent in the run's org. The org comes from the run
+    binding, never from the request or a tool argument (R11). No org means
+    no cover. The executor binds the answer as ``shell_tools_withheld``.
+    """
+    try:
+        from acb_skills.manifest import SHELL_TOOLS
+    except ImportError:
+        # acb_skills is absent, so _collect_injectable_platform_tools() returns
+        # [] and this run injects no tool at all.
+        return frozenset()
+    if _d85_leaves_alone(agent_name, agent_config):
+        return frozenset()
+    org = _run_org()
+    if agent_name and org and _sandbox_covers(agent_name, org):
+        return frozenset()
+    return frozenset(SHELL_TOOLS)
+
+
+def _host_shell_refused(
+    agent_name: str | None, agent_config: dict[str, Any] | None,
+) -> bool:
+    """True when the Copilot CLI's OWN shell must be refused (D85, host half).
+
+    The CLI runs on the HOST, beside the gateway. ``covers()`` never lifts
+    this: the broker runs the shell TOOLS in a container, and the CLI is not
+    in that container. Only :func:`_copilot_cli_in_broker_sandbox` could lift
+    it, and it is ``False`` for every agent today. So it is ``True`` for every
+    agent in scope, and ``False`` for one that :func:`_d85_leaves_alone`.
+
+    The executor binds the answer as ``host_shell_refused``, and
+    ``permission_policy.guard_shared_agent_shell`` reads it.
+    """
+    if _d85_leaves_alone(agent_name, agent_config):
+        return False
+    org = _run_org()
+    return not (agent_name and org and _copilot_cli_in_broker_sandbox(agent_name, org))
+
+
+class NoEgressRefused(RuntimeError):
+    """H-236 cannot make this run safe, so the run must not start.
+
+    It is a refusal and not a fault, so nothing retries it: the batch path
+    answers it before the self-anneal and the self-mutation clauses.
+    """
+
+
+def _run_covered(agent_name: str, organization_id: str | None = None) -> bool:
+    """True when a run of *agent_name* on this frame is, or may be, covered (H-236).
+
+    It is true when ``covers()`` is true for the agent and the run's org. It is
+    also true when the scope names the ``projects`` target for that agent and
+    org while the broker is not healthy, so a health probe cannot clear the
+    control. The org comes from the run binding, never from input (R5). A
+    broker that answers with an error fails closed. Each run boundary asks it
+    ONCE, at the start, and binds the answer (:func:`_run_no_egress`), so a
+    change of the scope during the run cannot clear the flag of its delegations.
+
+    *organization_id* is the org that the run boundary itself was handed
+    (server-side, never input). A batch run decides its flag before it binds
+    its tenant, so it passes its org here (fix round 2).
+    """
+    if not agent_name:
+        return False
+    org = organization_id or _run_org()
+    if not org:
+        return False
+    try:
+        from orchestrator import sandbox_broker as sb
+    except ImportError:  # no broker in this process, so no run was covered
+        return False
+    try:
+        if sb.covers(agent_name, org):
+            return True
+        return sb.target_for_agent(agent_name) == sb.PROJECTS_TARGET and (
+            sb.maf_coding_scope_allows(sb.PROJECTS_TARGET, org)
+        )
+    except Exception:  # fail closed: a broker bug must not open the control
+        _log.warning("executor.run_cover_check_failed", agent=agent_name)
+        return True
+
+
+def _delegated_no_egress(parent_ctx: Any) -> bool:
+    """True when the PARENT of a run that starts on this frame was no_egress.
+
+    *parent_ctx* is the artifact context of the frame, read BEFORE the new run
+    binds its own. An empty context means no parent. A parent that holds
+    ``no_egress`` passes it on, so a child can never clear it, and a value that
+    is not an explicit ``False`` reads as set. Else the cover of the parent's
+    agent decides, asked again now: that can only ADD the flag, so a parent
+    whose binding predates a scope change, or a parent that bound no flag,
+    still passes it on. No request field and no tool argument reaches this
+    function.
+    """
+    if not parent_ctx:
+        return False
+    if parent_ctx.get("no_egress", False) is not False:
+        return True
+    return _run_covered(str(parent_ctx.get("agent_name") or ""))
+
+
+def _run_no_egress(
+    agent_name: str | None, parent_ctx: Any, organization_id: str | None = None,
+) -> bool:
+    """The ``no_egress`` answer of a run of *agent_name* that starts now (H-236).
+
+    One rule binds a covered run and every run under it. So the answer is set
+    when the parent was ``no_egress`` (:func:`_delegated_no_egress`), or when
+    this run's own agent is covered (:func:`_run_covered`), whatever its parent.
+    Each run boundary computes it once, before anything can fail, and binds it.
+    """
+    return _delegated_no_egress(parent_ctx) or _run_covered(
+        str(agent_name or ""), organization_id,
+    )
+
+
+def _is_egress(tool: Any) -> bool:
+    """The injection seam's test for an egress tool (H-236).
+
+    The rule decides (``acb_skills.egress.is_egress_tool``, which fails
+    closed). The two host web tools of the sandbox
+    (``sandbox_tools.HOST_NETWORK_TOOLS``) are egress tools whatever their
+    annotation says, so a drift in the registry can never give them back to
+    a ``no_egress`` run. It reuses that list.
+    """
+    try:
+        from acb_skills.egress import is_egress_tool
+        from acb_skills.sandbox_tools import HOST_NETWORK_TOOLS
+    except ImportError:  # no acb_skills means no tool was injected at all
+        return False
+    name = tool if isinstance(tool, str) else _tool_name(tool)
+    return name in HOST_NETWORK_TOOLS or is_egress_tool(tool)
+
+
+#: The tool lists an injection knows how to read, by attribute.
+_TOOL_POOLS = ("tools", "_tools")
+
+
+def _inspectable(agent: Any) -> bool:
+    """True when H-236 can see every tool that *agent* can call.
+
+    A MAF ``Agent`` (its tools, its ``mcp_tools`` and its providers, which
+    the guard view covers), a Copilot-shaped agent (``_tools`` and the
+    permission guard) and a plain object with a known tool list. Any other
+    MAF agent, for example a workflow agent, holds tools that this module
+    cannot read, so the run is refused.
+    """
+    try:
+        from agent_framework import Agent, BaseAgent
+    except ImportError:
+        return False
+    if isinstance(agent, Agent) or hasattr(agent, "_permission_handler"):
+        return True
+    if isinstance(agent, BaseAgent):
+        return False
+    _do = getattr(agent, "default_options", None)
+    pools = [_do.get("tools") if isinstance(_do, dict) else None]
+    pools += [getattr(agent, attr, None) for attr in _TOOL_POOLS]
+    return any(isinstance(p, list) for p in pools)
+
+
+def _withhold_egress_from_agent(agent: Any) -> list[str]:
+    """Take every egress tool and MCP server out of ONE per-run agent (H-236).
+
+    The factory built this agent object for this run, as every injection site
+    assumes. The lists are filtered in place, as ``_apply_own_tool_scope``
+    does. Returns the names it took out. The MCP servers of a MAF agent
+    (``mcp_tools``) leave on the guarded view (:func:`_with_egress_guard`).
+    """
+    removed: list[str] = []
+
+    def _filter(pool: Any) -> None:
+        if not isinstance(pool, list):
+            return
+        kept = [t for t in pool if not _is_egress(t)]
+        removed.extend(_tool_name(t) for t in pool if _is_egress(t))
+        pool[:] = kept
+
+    _do = getattr(agent, "default_options", None)
+    if isinstance(_do, dict):
+        _filter(_do.get("tools"))
+    for attr in _TOOL_POOLS:
+        _filter(getattr(agent, attr, None))
+    opts = getattr(agent, "_default_options", None)
+    if isinstance(opts, dict):
+        _filter(opts.get("tools"))
+        if opts.pop("mcp_servers", None):
+            removed.append("mcp_servers")
+    elif opts is not None:
+        _filter(getattr(opts, "tools", None))
+    if getattr(agent, "mcp_tools", None):
+        removed.append("mcp_tools")
+    return removed
+
+
+def _with_egress_guard(agent: Any) -> Any:
+    """A per-run view of a native MAF agent that holds no egress tool (H-236).
+
+    The view carries no MCP server (``mcp_tools``, which MAF expands into
+    tools at run time) and it carries the egress middleware. A Copilot agent
+    gets its refusal from the permission guard instead
+    (``permission_policy.guard_shared_agent_shell``), so it is returned as it
+    is. So is a plain object that is not a MAF agent.
+    """
+    if hasattr(agent, "_permission_handler"):
+        return agent
+    from acb_skills.egress import EgressGuardProvider
+    from agent_framework import Agent
+
+    if not isinstance(agent, Agent):
+        return agent
+    from orchestrator._native_run_context import agent_with_providers
+
+    view = agent_with_providers(agent, [EgressGuardProvider()])
+    view.mcp_tools = []
+    return view
+
+
+def _drop_withheld(tools: list[Any], withheld: frozenset[str]) -> list[Any]:
+    """*tools* without the D85 withheld names. A no-op when none is withheld."""
+    if not withheld:
+        return tools
+    return [fn for fn in tools if getattr(fn, "__name__", "") not in withheld]
 
 
 def _load_disabled_skill_families(agent_name: str | None) -> frozenset[str]:
@@ -161,14 +484,16 @@ def materialize_skill_bodies_for_agent(
     workspace_root: str | None,
     *,
     tool_scope: list[str] | None = None,
+    agent_config: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Lay down this agent's on-demand skill bodies (QM-2) — no-op when OFF.
 
     Called by the executor once per run, AFTER the workspace has been
     rehydrated from the blob store, so a fresh body is never overwritten by a
     stale restore. Resolves the SAME effective scope injection used (declared
-    ``tool_scope`` ∪ core floor, ∩ enabled families) so a body describes
-    exactly the tools the agent actually received.
+    ``tool_scope`` ∪ core floor, ∩ enabled families, minus the D85 withheld
+    shell tools of ``agent_config``) so a body describes exactly the tools
+    the agent actually received.
 
     Returns ``{family: "written"|"unchanged"}``; ``{}`` when the switch is off
     (the default) or on any failure — a missing body file degrades to "the
@@ -183,6 +508,7 @@ def materialize_skill_bodies_for_agent(
         scope = _resolve_injected_scope(
             tool_scope,
             disabled_families=_load_disabled_skill_families(agent_name),
+            withheld=_withheld_shell_tools(agent_name, agent_config),
         )
         return materialize_skill_bodies(
             workspace_root,
@@ -198,12 +524,53 @@ def materialize_skill_bodies_for_agent(
         return {}
 
 
+def _registered_platform_surface() -> set[str]:
+    """Every registered platform tool name, plus the core floor.
+
+    The declared side of an unscoped agent's scope, once something must
+    narrow it (a disabled family, or the D85 withheld shell tools).
+    """
+    try:
+        from acb_skills.skill_families import SKILL_FAMILIES
+    except ImportError:
+        return set(_CORE_STANDARD_TOOL_NAMES)
+    return set(_CORE_STANDARD_TOOL_NAMES) | {
+        name for fam in SKILL_FAMILIES.values() for name in fam["tools"]
+    }
+
+
 def _resolve_injected_scope(
     tool_scope: list[str] | None,
     *,
     disabled_families: frozenset[str] | None = None,
+    withheld: frozenset[str] | None = None,
 ) -> set[str] | None:
     """Resolve which injected tool names an agent should receive.
+
+    The declared scope and the skill toggles resolve first
+    (:func:`_resolve_declared_scope`). ``withheld`` then takes names away,
+    the core floor included. It is the D85 interim block: the shell tools
+    that :func:`_withheld_shell_tools` keeps from a shared agent. An unscoped
+    agent with a withheld tool gets an explicit set, so the addendum, the
+    skill bodies and the injection read ONE scope that lacks the tool. With
+    no withheld names the result is byte-identical to the declared scope.
+    """
+    resolved = _resolve_declared_scope(
+        tool_scope, disabled_families=disabled_families,
+    )
+    if not withheld:
+        return resolved
+    if resolved is None:
+        resolved = _registered_platform_surface()
+    return resolved - set(withheld)
+
+
+def _resolve_declared_scope(
+    tool_scope: list[str] | None,
+    *,
+    disabled_families: frozenset[str] | None = None,
+) -> set[str] | None:
+    """Resolve the declared scope and the skill toggles.
 
     Returns ``None`` when there is no ``tool_scope`` (inject everything), or the
     set of allowed names = the agent's ``tool_scope`` UNIONed with the
@@ -267,9 +634,7 @@ def _resolve_injected_scope(
     if base is None:
         # Unscoped agent: the declared side of the intersection is the whole
         # registered platform surface (∪ CORE) — fail-open, then narrowed.
-        base = set(_CORE_STANDARD_TOOL_NAMES) | {
-            name for fam in SKILL_FAMILIES.values() for name in fam["tools"]
-        }
+        base = _registered_platform_surface()
     return base & enabled_tools
 
 
@@ -356,6 +721,13 @@ def _gate_injected_tool(fn: Any) -> Any:
         from orchestrator.steer import decorate_tool_result  # noqa: PLC0415
         return decorate_tool_result(result)
 
+    # H-236: the gate's wrapper is trusted exactly as far as the tool it wraps.
+    try:
+        from acb_skills.egress import _register_platform_wrapper
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        def _register_platform_wrapper(_original: Any, wrapper: Any) -> Any:
+            return wrapper
+
     if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def _agated(*args: Any, **kwargs: Any) -> Any:
@@ -363,7 +735,7 @@ def _gate_injected_tool(fn: Any) -> Any:
             if not allowed:
                 return f"[blocked by permission policy: {reason}]"
             return _with_steer(await fn(*args, **kwargs))
-        return _agated
+        return _register_platform_wrapper(fn, _agated)
 
     @functools.wraps(fn)
     def _sgated(*args: Any, **kwargs: Any) -> Any:
@@ -371,7 +743,7 @@ def _gate_injected_tool(fn: Any) -> Any:
         if not allowed:
             return f"[blocked by permission policy: {reason}]"
         return _with_steer(fn(*args, **kwargs))
-    return _sgated
+    return _register_platform_wrapper(fn, _sgated)
 
 
 def _gate_own_maf_tools(tools: list[Any]) -> int:
@@ -422,6 +794,7 @@ def _build_injected_tools_addendum(
     *,
     is_sub_agent: bool = False,
     effective_scope: frozenset[str] | None = None,
+    own_risk: frozenset[tuple[str, bool, bool, bool]] = frozenset(),
 ) -> str:
     """Return a system-prompt addendum describing the Metorite-injected tools.
 
@@ -462,11 +835,47 @@ def _build_injected_tools_addendum(
         # acb_skills absent means _collect_injectable_platform_tools() returned
         # [] and nothing was injected — an empty addendum is the truthful text.
         return ""
+    from acb_skills.tool_annotations import risk_summary_block
+
+    # H-236: the risk block is per agent. ``own_risk`` names THIS agent's own
+    # annotated tools (:func:`_own_risk`), and it is part of the
+    # cache key, so each agent keeps a byte-stable prefix of its own.
     return render_injected_tools_addendum(
         is_sub_agent=is_sub_agent,
         effective_scope=effective_scope,
         registry_block=_build_registry_block(),
+        risk_block=risk_summary_block(own=own_risk),
     )
+
+
+def _own_risk(tools: list[Any]) -> frozenset[tuple[str, bool, bool, bool]]:
+    """``(name, read_only, destructive, open_world)`` of each tool in *tools*.
+
+    H-236 (fix round 3). *tools* is ONE agent's tool list after injection:
+    its own tools, plus the app and workflow tools that it was given. Every
+    annotated tool joins, on the line its annotation names, as the shared
+    registry listed it before the block went per agent. A platform name of
+    ``tool_annotations._PLATFORM_STATIC`` is left out, because the block lists
+    those already. A tool with no annotation stays out, as it always did.
+    """
+    try:
+        from acb_skills.egress import _risk_of, tool_name
+        from acb_skills.tool_annotations import _PLATFORM_STATIC
+    except ImportError:
+        return frozenset()
+    out: set[tuple[str, bool, bool, bool]] = set()
+    for item in tools:
+        name = tool_name(item)
+        if not name or name in _PLATFORM_STATIC:
+            continue
+        hints = _risk_of(item, name)
+        if not hints:
+            continue
+        out.add((
+            name, bool(hints.get("read_only")), bool(hints.get("destructive")),
+            hints.get("open_world") is True,
+        ))
+    return frozenset(out)
 
 
 @functools.lru_cache(maxsize=1)
@@ -519,14 +928,17 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
     Must run BEFORE ``_inject_agent_tools`` so platform-injected tools are
     never subject to the agent's own scope.  With no matches the full set is
     kept (fail open + warning), mirroring ``tool_scope`` semantics.
+
+    It reads each pool of :func:`_own_tool_pools` (WS-8o). Until 2026-10-06 it
+    read only ``tools`` and ``_tools``, so it did nothing for a native MAF
+    ``Agent``, which keeps its tools in ``default_options["tools"]``.
     """
     if not own_scope:
         return
     scope_set = set(own_scope)
     for agent in agents:
-        for attr in ("tools", "_tools"):
-            lst = getattr(agent, attr, None)
-            if not isinstance(lst, list) or not lst:
+        for attr, lst in _own_tool_pools(agent):
+            if not lst:
                 continue
             kept = [t for t in lst if _tool_name(t) in scope_set]
             if kept:
@@ -541,7 +953,60 @@ def _apply_own_tool_scope(agents: list[Any], own_scope: list[str] | None) -> Non
                 )
 
 
-def _collect_injectable_platform_tools() -> list[Any]:
+def _own_tool_pools(agent: Any) -> list[tuple[str, list[Any]]]:
+    """The tool lists of ONE agent, each list once, with a label for the log.
+
+    A native MAF ``Agent`` (1.19) keeps its tools in
+    ``default_options["tools"]``. ``RawAgent.__init__`` puts them there, and
+    each run copies that list again, so a change in place holds for the run.
+    This is the idiom of :func:`_withhold_egress_from_agent`. A
+    ``GitHubCopilotAgent`` keeps ``_tools``, and a plain object ``tools``.
+    ``mcp_tools`` and the tools of a context provider are not the agent's own
+    tools, so no pool here holds them.
+    """
+    _do = getattr(agent, "default_options", None)
+    candidates: list[tuple[str, Any]] = [
+        ('default_options["tools"]',
+         _do.get("tools") if isinstance(_do, dict) else None),
+    ]
+    candidates += [(attr, getattr(agent, attr, None)) for attr in _TOOL_POOLS]
+    pools: list[tuple[str, list[Any]]] = []
+    seen: set[int] = set()
+    for label, pool in candidates:
+        if isinstance(pool, list) and id(pool) not in seen:
+            seen.add(id(pool))
+            pools.append((label, pool))
+    return pools
+
+
+def _count_agent_tools(agents: list[Any]) -> int:
+    """How many tools the pools of :func:`_own_tool_pools` hold, for all agents.
+
+    Read once after :func:`_apply_own_tool_scope` (``own``) and once after
+    :func:`_inject_agent_tools` (``total``). It counts tools that an agent
+    holds, not tool calls. ``run_trace.tool_count`` counts calls.
+    """
+    return sum(len(pool) for agent in agents for _, pool in _own_tool_pools(agent))
+
+
+def _log_agent_tools_resolved(
+    agent_name: str | None, agents: list[Any], own: int,
+) -> None:
+    """Log ``executor.agent_tools_resolved`` after the tool injection (WS-8o).
+
+    ``own`` is the count after the own tool scope, and ``total`` the count
+    after the injection. The live check of ``email_app_master_plan.md``
+    §10.4.14 reads ``own=43`` for one email chat.
+    """
+    _log.info(
+        "executor.agent_tools_resolved",
+        agent=agent_name,
+        own=own,
+        total=_count_agent_tools(agents),
+    )
+
+
+def _collect_injectable_platform_tools(agent_name: str | None = None) -> list[Any]:
     """Import + return the statically importable platform tools, in injection order.
 
     Pure collection/introspection — no agent is touched. This is the exact
@@ -552,6 +1017,10 @@ def _collect_injectable_platform_tools() -> list[Any]:
     ``GET /integrations/skills``) so the catalog can never drift from what
     injection actually offers. Per-agent additions (granted Custom-App action
     tools, the workflow trio) are NOT part of this static set.
+
+    *agent_name* picks the ``decide`` engine, and nothing else (WS-45 S1,
+    ``ai_tier_routing.md`` §6.1). With ``AI_TIER_ROUTING`` empty, or with no
+    name, the list is exactly what it was before.
     """
     try:
         from acb_skills.agent_tools import call_agent  # noqa: PLC0415
@@ -579,6 +1048,15 @@ def _collect_injectable_platform_tools() -> list[Any]:
         _all_tools = _all_tools + [
             write_artifact, share_artifact, emit_generative_ui,
         ]
+    except ImportError:
+        pass
+
+    # Chat attachments (H-229) — the text of a file the member attached in
+    # THIS chat, by pure parsing: no subprocess, no code. It is no shell
+    # tool, so D85 does not withhold it (`_withheld_shell_tools`).
+    try:
+        from acb_skills.attachment_tools import read_attachment
+        _all_tools = [*_all_tools, read_attachment]
     except ImportError:
         pass
 
@@ -691,10 +1169,14 @@ def _collect_injectable_platform_tools() -> list[Any]:
     # Injected ONLY while DECIDE_ENABLED is on. `decide_tool_enabled` is the
     # one switch, and `addendum.rendered_parts` asks the same function, so
     # the prompt never advertises a tool that is not here.
+    # WS-45 S1 (D90): an agent that AI_TIER_ROUTING covers gets the System-1
+    # engine of the SAME tool name instead, on our Router's `tier-fast`.
+    # `decide_tool_for` is the one place that picks the engine.
     try:
-        from acb_skills.decide_tools import decide, decide_tool_enabled
-        if decide_tool_enabled():
-            _all_tools = [*_all_tools, decide]
+        from acb_skills.decide_tools import decide_tool_for
+        _decide = decide_tool_for(agent_name)
+        if _decide is not None:
+            _all_tools = [*_all_tools, _decide]
     except ImportError:
         pass
 
@@ -706,14 +1188,40 @@ def _collect_injectable_platform_tools() -> list[Any]:
     except ImportError:
         pass
 
+    # H-236: these ARE the platform's tools. Record each one by identity, so
+    # the egress rule trusts their registry entries and nothing that only
+    # borrows their names (``acb_skills.egress._register_platform_callable``).
+    try:
+        from acb_skills.egress import _register_platform_callable
+    except ImportError:
+        return _all_tools
+    for _fn in _all_tools:
+        _register_platform_callable(_fn)
     return _all_tools
 
 
 def _inject_agent_tools(
     agents: list[Any], *, is_sub_agent: bool = False,
     tool_scope: list[str] | None = None, agent_name: str | None = None,
+    agent_config: dict[str, Any] | None = None,
+    no_egress: bool = False,
 ) -> None:
     """Inject cross-agent delegation tools into every loaded agent.
+
+    ``agent_config`` is the agent's parsed ``config.json``. Its ``sharing``
+    block decides the D85 interim block (:func:`_withheld_shell_tools`): a
+    shared agent gets no ``SHELL_TOOLS`` member until the sandbox broker
+    covers it. ``None`` reads as shared, so a caller that forgets it fails
+    closed. Every executor call site passes it, and
+    ``tests/unit/test_shared_agent_shell_tools.py`` says so.
+
+    ``no_egress`` (H-236) is the answer of :func:`_run_no_egress` for this
+    run, and every executor call passes it by name (the WS43-F24 AST fence).
+    ``True`` takes every egress tool (``acb_skills.egress``) out of the
+    injected set, the scope and the agent's own tools, takes its MCP servers
+    away, and puts a native MAF agent behind the egress middleware, as a
+    per-run view in ``agents``. It raises :class:`NoEgressRefused` for an
+    agent whose tools it cannot read. ``False`` changes nothing.
 
     Adds ``call_agent`` and ``call_agent_background`` from ``acb_skills.agent_tools``
     so that any agent — MAF or GitHub Copilot SDK — can delegate sub-tasks to
@@ -745,8 +1253,10 @@ def _inject_agent_tools(
                                    + appends tool guidance to ``_default_options.system_message``
         Legacy Copilot SDK path  — appends to ``agent._default_options.tools`` (list)
     """
-    _all_tools = _collect_injectable_platform_tools()
+    _all_tools = _collect_injectable_platform_tools(agent_name)
     if not _all_tools:
+        if no_egress:  # H-236 holds even when nothing else is injected
+            _apply_no_egress(agents, agent_name)
         return  # acb_skills not installed in this env — skip silently
 
     # ── Tool scoping: a guaranteed core floor + optional per-agent scope ───
@@ -769,8 +1279,24 @@ def _inject_agent_tools(
             "executor.skill_families_disabled",
             agent=agent_name, families=sorted(_disabled_families),
         )
+    # D85 (the interim block): a shared agent gets no shell tool until the
+    # sandbox broker covers it. The withheld names leave the SCOPE, so the
+    # addendum below never describes a tool this agent does not hold.
+    _withheld = _withheld_shell_tools(agent_name, agent_config)
+    if _withheld:
+        _log.info(
+            "executor.shell_tools_withheld",
+            agent=agent_name, tools=sorted(_withheld),
+        )
+    # H-236: a run that a covered run delegated to gets no egress tool. The
+    # names leave the SCOPE as well, so the addendum never offers one.
+    _egress = (
+        frozenset(fn.__name__ for fn in _all_tools if _is_egress(fn))
+        if no_egress else frozenset()
+    )
     _scope_names = _resolve_injected_scope(
         tool_scope, disabled_families=_disabled_families,
+        withheld=_withheld | _egress,
     )
     if _scope_names is not None:
         # Scope-typo guard (multi_agent_orchestration.md Phase 0.3): an entry
@@ -830,6 +1356,15 @@ def _inject_agent_tools(
             _extra_tools = _extra_tools + load_workflow_tools(agent_name)
         except Exception:  # noqa: BLE001
             _log.warning("executor.workflow_tools_injection_failed", agent=agent_name)
+
+    # D85, the last word: the no-match fallback above restores the WHOLE
+    # chain, shell tools included. So the withheld names leave the final
+    # list too, whatever branch built it.
+    _extra_tools = _drop_withheld(_extra_tools, _withheld)
+    # H-236, the same last word: an app or workflow tool that reaches outside
+    # the platform leaves too, whatever branch added it.
+    if no_egress:
+        _extra_tools = [fn for fn in _extra_tools if not _is_egress(fn)]
 
     # Gate every injected tool with the risk-aware permission policy (B6). This
     # closes the live gap where injected function-tools (web_search, …) executed
@@ -931,6 +1466,8 @@ def _inject_agent_tools(
                             frozenset(_scope_names)
                             if _scope_names is not None else None
                         ),
+                        # H-236: this agent's own risky tools, from its own list.
+                        own_risk=_own_risk(list(agent._tools)),
                     )
                     opts = getattr(agent, "_default_options", None)
                     if isinstance(opts, dict):
@@ -1128,6 +1665,50 @@ def _inject_agent_tools(
                 "executor.tool_injection_no_shape_matched",
                 agent=_agent_label, agent_type=type(agent).__name__,
             )
+
+    # H-236: the agent's OWN egress tools and MCP servers leave as well, and
+    # a native MAF agent gets the call-time refusal, as a per-run view.
+    if no_egress:
+        _apply_no_egress(agents, agent_name, injected=_egress)
+
+
+def _apply_no_egress(
+    agents: list[Any], agent_name: str | None, *, injected: frozenset[str] = frozenset(),
+) -> None:
+    """The H-236 control on every agent of ONE run.
+
+    It replaces each native MAF agent in *agents* with its guarded view, so
+    the caller must read ``agents`` again after injection, as every call
+    site does. *injected* is the platform tools that the run did not get.
+    It fails closed. An agent whose tools it cannot read raises
+    :class:`NoEgressRefused`, and so does a filter that fails, so the run
+    ends before the agent can call an egress tool, and nothing retries it.
+    """
+    removed: set[str] = set(injected)
+    for i, agent in enumerate(agents):
+        if not _inspectable(agent):
+            _log.error(
+                "executor.no_egress_refused", agent=agent_name,
+                agent_type=type(agent).__name__,
+            )
+            raise NoEgressRefused(
+                f"Agent {agent_name!r} cannot run here: it was called during a "
+                "sandboxed turn, and its tools cannot be checked for a send."
+            )
+        try:
+            removed.update(_withhold_egress_from_agent(agent))
+            agents[i] = _with_egress_guard(agent)
+        except Exception as exc:
+            _log.error(
+                "executor.no_egress_failed", agent=agent_name, error=str(exc)[:200],
+            )
+            raise NoEgressRefused(
+                f"Agent {agent_name!r} cannot run here: its tools could not be "
+                "checked for a send."
+            ) from exc
+    _log.info(
+        "executor.egress_tools_withheld", agent=agent_name, tools=sorted(removed),
+    )
 
 
 def merge_mcp_servers(

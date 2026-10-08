@@ -91,8 +91,26 @@ class Settings(BaseSettings):
     # (see `db_statement_cache_size` below), and `SET LOCAL` semantics want
     # re-verifying against it. Session mode is what this deployment is
     # verified against; changing ports is its own decision, not a knob turn.
-    db_pool_size: int = 8
-    db_max_overflow: int = 4
+    #
+    # 🔴 **2026-10-06: the 12 above left out the SECOND engine.** The sync
+    # engine of `acb_graph` (the chat paths: `routes/chat.py`, `rooms.py`,
+    # `routes/agent.py`) had no pool settings, so it took SQLAlchemy's 5 + 10.
+    # One gateway process could ask the pooler for 12 + 15 = 27 clients.
+    # Production logged `EMAXCONNSESSION` 249 times in one hour on 2026-10-05,
+    # and a member of the second organization got the failures.
+    #
+    # The budget now holds BOTH engines of the one process: async 7 + 2 = 9,
+    # sync (`db_sync_*` below) 2 + 1 = 3, so 12 in all. That keeps the 3
+    # slots of headroom above for a migration, a `psql` and the backup job.
+    # Fence: `TestThePoolCeilingFitsThePoolerInFront` in
+    # `tests/unit/test_db_engine_seam.py`.
+    db_pool_size: int = 7
+    db_max_overflow: int = 2
+
+    # The pool of the sync `acb_graph` engine. It counts against the SAME
+    # pooler budget as the async pool above (see the note there).
+    db_sync_pool_size: int = 2
+    db_sync_max_overflow: int = 1
 
     # How long a caller waits for a free connection before giving up.
     #
@@ -316,6 +334,71 @@ class Settings(BaseSettings):
     decide_feature_modes: str = ""
     decide_feature_orgs: str = ""
 
+    # ── AI tier routing (WS-45, D90) ────────────────────────────────────────
+    #
+    # The agents that the platform's tier policy covers. A comma list of agent
+    # names, or `*` for every agent. Empty means OFF, and every agent behaves
+    # as before. S1: a covered agent holds the System-1 `decide`, which runs
+    # on OUR Router's `tier-fast`, in place of the `decide` task's vendor. The
+    # one reader is `acb_skills.tier_policy.tier_routing_on`, and it fails
+    # closed. Spec: ai_tier_routing.md §9.
+    #
+    # 🔴 OWNER-GATE on production: to add an agent changes what a live
+    # organization pays (spec §13.1). Fence: tests/unit/test_tier_policy.py.
+    ai_tier_routing: str = ""
+
+    # ── The data narrowing pipeline (WS-48, D93) ────────────────────────────
+    #
+    # The agents that hold the `narrow_and_read` tool. A comma list of agent
+    # names, or `*` for every agent. Empty means OFF, so no agent holds the
+    # tool and the pipeline ships dark. The one reader is
+    # `acb_skills.narrowing.narrowing_on`, and it fails closed. Spec:
+    # data_narrowing_pipeline.md §9 N1.
+    #
+    # 🔴 OWNER-GATE on production: to add an agent changes what a live
+    # organization pays (spec §11). Fence: tests/unit/test_narrowing_pick.py.
+    narrowing_agents: str = ""
+
+    # ── System 1 on the decision model (WS-48 N3, D93) ──────────────────────
+    #
+    # ON: the System-1 `decide` of a covered agent sends each typed item to
+    # `tier-decide` through `acb_llm.decide`, 16 to a request. A failure falls
+    # back to `tier-fast` and logs `decide_tool.system_one_fallback`. A
+    # `no_egress` run and the turn-kind question stay on `tier-fast`. The
+    # facade still needs `decide_enabled`, so with that switch off every item
+    # falls back. OFF: every item goes to `tier-fast`, as before. The one
+    # reader is `acb_skills.decide_tools._on_decide`, and it fails closed.
+    # Spec: data_narrowing_pipeline.md §9 N3.
+    #
+    # 🔴 OWNER-GATE on production: it sends chat content to the
+    # `tier-decide` vendor, a separate sub-processor (D75.8), and it moves
+    # credit spend (spec §11). Fence: tests/unit/test_system_one_tool.py.
+    system_one_on_decide: bool = False
+
+    # ── The cap and the budget of the email model calls (WS-17 EM-T4b) ─────
+    #
+    # They bind the model calls of the email automation only, the calls
+    # inside `email_ingestion.llm_cap.automation_scope`. A call that a member
+    # drives takes no permit and counts nothing.
+    #
+    # `email_llm_concurrency` is the count of model calls that may run at one
+    # time in this process. 0 means no cap. 0 is the default, so the cap
+    # ships dark.
+    # `email_llm_daily_calls` is the count of model requests for each mailbox
+    # for each UTC day. A value under 1 means no limit. 2000 is a guess
+    # (spec R-6), and the owner sets the real limit at the flip to `enforce`.
+    # `email_llm_budget_mode` is `off`, `log` or `enforce`. `log` counts and
+    # logs, and it never refuses a call. An unknown value reads as `log`.
+    #
+    # 🔴 OWNER-GATE on a box: `EMAIL_LLM_BUDGET_MODE=enforce`. The dev-phase
+    # window of CLAUDE.md §3a does NOT open it, because `enforce` holds back
+    # triage and drafts from a paying mailbox (spec §10.4.6, "Gate").
+    # The one reader is `apps/services/email_ingestion/email_ingestion/llm_cap.py`.
+    # Fence: tests/unit/test_email_llm_cap.py.
+    email_llm_concurrency: int = 0
+    email_llm_daily_calls: int = 2000
+    email_llm_budget_mode: str = "log"
+
     # ── BYOK is OFF for the customer (owner directive, 2026-08-27) ──
     #
     # `customer_console.md` §5.1 already names the destination: the provider,
@@ -398,11 +481,86 @@ class Settings(BaseSettings):
     gmail_default_user: str = ""         # default mailbox to impersonate
     gmail_pubsub_token: str = ""         # bearer token expected on /webhooks/gmail
 
-    # Email OAuth (Gmail + Microsoft) — configured via Integrations → APIs UI
+    # Email OAuth (Gmail + Microsoft). Metorite owns ONE app for each provider
+    # (D-EM-1, D-EM-5 amended). An operator sets these on the box under gate
+    # `env-write`. Since WS-17 EM-G7 the Integrations writes REFUSE them
+    # (O-GM-5), because one organization must not set the mail app of all.
     gmail_oauth_client_id: str = ""
     gmail_oauth_client_secret: str = ""
     msft_oauth_client_id: str = ""
     msft_oauth_client_secret: str = ""
+
+    # ── The Gmail connect, dark (WS-17 EM-G7, orchestrator, 2026-10-05) ──────
+    #
+    # The production box already holds a Google client, so the app alone
+    # cannot keep Gmail hidden. While this is false, `GET /email/oauth/
+    # providers` answers `gmail: false`, and the authorize leg, the callback
+    # leg and `GET /email/oauth/gmail/app` all refuse. Microsoft ignores it.
+    # `email_gmail_connect_members` (below) narrows it to listed members.
+    # The one reader is
+    # `gateway.routes.email.transport.oauth.gmail_connect_enabled`.
+    #
+    # ⚠️ Only the env file of the box sets it (`/opt/acb/app/.env`).
+    # `acb_common.env_guard` (layer B) refuses every `EMAIL_*` name on each
+    # Integrations write, so no tenant route can flip it. systemd loads that
+    # file into the environment at start, and `get_settings()` keeps one
+    # value. A route that clears the settings cache makes the process read
+    # the file again. That read can pick up a name that was absent at start,
+    # but it never replaces a value that the environment loaded at start. So
+    # restart the gateway after each change: the restart is the one moment at
+    # which the flip surely applies (EM-G7 review round 1).
+    #
+    # 🔴 A flip on a box is gate `enforcement-flip`. It waits for EM-G10,
+    # after EM-G2 to EM-G5 and EM-G9 merge (email_app_master_plan.md
+    # §12.3.12). Fence: tests/unit/test_email_gmail_connect.py.
+    email_gmail_connect: bool = False
+
+    # ── The member list of the Gmail connect (WS-17 EM-G7b, 2026-10-05) ─────
+    #
+    # The flag above is one value for the whole box. While the Google app is
+    # in Testing, Google refuses each user that is not a test user. So this
+    # list narrows the flag to the members of the owner's test. It holds
+    # member sign-in addresses, with a comma between addresses, and the match
+    # ignores case and the space around each address. The flag stays the
+    # master switch: off is nobody. On with an empty or blank list is every
+    # member, which is for the time after Google verifies the app. On with a
+    # list is the listed members only, and a value that holds only commas
+    # names nobody. Microsoft ignores it. The one reader is
+    # `gateway.routes.email.transport.oauth.gmail_connect_members`.
+    #
+    # ⚠️ An address, not a member id. The gateway checks `UserContext.email`
+    # of the session, and the signed state binds the same address.
+    # `UserContext.user_id` is an opaque token in two UUID spaces. Only the
+    # env file of the box sets the list, because `env_guard` refuses each
+    # `EMAIL_*` name on each Integrations write. Restart the gateway after
+    # each change, as for the flag.
+    #
+    # 🔴 A change on a box is gate `enforcement-flip`, as for the flag
+    # (email_app_master_plan.md §12.3.9b). Fence:
+    # tests/unit/test_email_gmail_connect.py.
+    email_gmail_connect_members: str = ""
+
+    # ── Email Insights (WS-17 EM-T14a, 2026-10-07) ──────────────────────────
+    #
+    # `email_insights` is the switch of the whole feature. False is the
+    # default, so the feature ships dark. `email_insights_orgs` lists the
+    # organization ids that may run it, with a comma between ids, or `*` for
+    # every organization. An empty list allows no organization, as
+    # `decide_feature_orgs` does. The one reader of both is `insights_enabled()`
+    # in `gateway/routes/email/automation/insights_store.py`. It reads the
+    # organization from `current_tenant()`, never from request input.
+    #
+    # A member also turns Insights on for each mailbox
+    # (`email_assistant_settings.insights_enabled`, D-EM-39). The job sends
+    # mail text to a model only for a mailbox with both (D-EM-44).
+    #
+    # 🔴 OWNER ONLY. The §3a window does NOT open it. The job sends unread
+    # mail to a model provider and costs money, so CLAUDE.md §3a rule 3
+    # binds. Registry: work_plan.md §6, row D4. Spec:
+    # email_app_master_plan.md §13.9, the Flip row. Fence:
+    # tests/unit/test_email_insights_store.py.
+    email_insights: bool = False
+    email_insights_orgs: str = ""
 
     # Dynamic Agent Loader (v2 — ADR-013)
     # Repos are cloned ONCE into agents_clone_dir/repos/ and refreshed with
@@ -521,6 +679,51 @@ class Settings(BaseSettings):
     copilot_sandbox_ready_timeout_seconds: float = 8.0   # spawn+TCP-ready budget before falling back in-process
     copilot_sandbox_idle_ttl_seconds: int = 600          # app-builder sticky-container reap window
     copilot_sandbox_state_dir: str = ""         # "" resolves to {agents_clone_dir}/.copilot-sandbox-state
+
+    # WS-43c — the sandbox broker (orchestrator/sandbox_broker.py, spec
+    # project-docs/specs/maf_coding_engine.md §7.1, D83). It ships DARK.
+    #
+    # MAF_CODING_SCOPE is a comma list of `<target>:<org>` entries. A target is
+    # `code_task` or `app_builder`. An org is one organization id, or `*` for
+    # every organization. Empty (the default) turns every target off, and the
+    # broker then starts no container. To set it on production is the owner
+    # gate WS43-G3. The parser is sandbox_broker.parse_maf_coding_scope, and an
+    # unknown target makes the whole value fail closed.
+    maf_coding_scope: str = ""
+    # The sandbox image, by an immutable reference only: `name@sha256:<digest>`
+    # or a local image id `sha256:<id>`. The broker refuses a tag. Empty (the
+    # default) means no image, so the broker starts nothing. WS-43b builds the
+    # image, and to load it on the box is the owner gate WS43-G2.
+    sandbox_image: str = ""
+    # The container limits of §7.1 rule 6. `sandbox_memory` sets both
+    # `--memory` and `--memory-swap`, so the container gets no swap.
+    sandbox_cpus: str = "1"
+    sandbox_memory: str = "1g"
+    sandbox_pids_limit: int = 256
+    sandbox_tmpfs_mb: int = 256                 # the /tmp tmpfs size
+    # Exec limits of §7.1 rule 9: the longest timeout one exec may ask for, and
+    # the output cap (the first half and the last half are kept).
+    sandbox_exec_max_timeout_seconds: int = 300
+    sandbox_output_cap_bytes: int = 12288
+    # Caps of §7.1 rule 8: the per-organization fair share, and the box cap.
+    sandbox_max_per_org: int = 2
+    sandbox_max_total: int = 4
+    # Disk checks of §7.1 rule 10. The floor is the free space of the file
+    # system that holds state_root(). The owner sizes it at WS43-G3.
+    sandbox_min_free_disk_mb: int = 5120
+    sandbox_workspace_quota_mb: int = 2048
+    # The quota also bounds the count of entries (files, dirs and links) in
+    # the working dir, so a flood of small files cannot use up the inodes of
+    # the host file system. Review of PR #591.
+    sandbox_workspace_max_files: int = 100_000
+    # The reaper of §7.1 rule 12.
+    sandbox_idle_ttl_seconds: int = 600
+    sandbox_max_lifetime_seconds: int = 7200
+    sandbox_reaper_interval_seconds: int = 60
+    # Where the broker keeps its sandbox-dir list and the empty `.git` cover.
+    # It must lie outside every mount root. "" resolves to
+    # {agents_clone_dir}/sandbox-broker, a sibling of state/ and repos/.
+    sandbox_state_dir: str = ""
 
     # Agent dependency installs (packages/acb_skills/acb_skills/loader.py
     # _install_agent_deps) — RCE guard (BO-7 fast pass). Agent repos'
@@ -655,6 +858,45 @@ class Settings(BaseSettings):
     # re-embedding — the model is stored per row so that migration is scriptable.
     email_embedding_model: str = "text-embedding-3-small"
     email_embedding_dim: int = 1536
+
+    # ── The Graph delta of Outlook, in shadow (WS-17 EM-T4d) ────────────────
+    #
+    # `email_outlook_delta` is `off`, `shadow` or `on`. The default is `off`,
+    # and an unknown value resolves to `off`. EM-T4d refuses `on`: it resolves
+    # to `shadow` and logs `email.delta_mode_refused`. In `shadow` a poll runs
+    # the full sweep AND the delta, and writes from the sweep only, so the
+    # mode ADDS Graph calls. `email_outlook_delta_accounts` lists the account
+    # ids that run the mode, with a comma between ids. An empty list runs no
+    # delta. The one reader is `email_ingestion.scheduler.outlook_delta_mode`.
+    #
+    # 🔴 OWNER-GATE on a box (`enforcement-flip`, work_plan.md §6 row D4): any
+    # value other than `off`, and any id in the list. Spec:
+    # email_app_master_plan.md §10.4.6 EM-T4d. Fence:
+    # tests/unit/test_outlook_delta_shadow.py.
+    email_outlook_delta: str = "off"
+    email_outlook_delta_accounts: str = ""
+
+    # The storage limit of ONE mailbox, in MB (WS-17 EM-T6c, D-EM-14, owner
+    # answer Q1). The meter counts the copy that Metorite keeps, never the
+    # mailbox in Outlook. ``email_ingestion.storage`` reads it, and the limit
+    # in bytes is this value times 1,048,576. A change on a box is gate
+    # ``env-write``. Fence: tests/unit/test_email_storage_limit.py.
+    email_mailbox_storage_limit_mb: int = 500
+
+    # ── The HTML hot window (WS-17 EM-S1, D-EM-49) ──────────────────────────
+    #
+    # `email_html_from_provider` opens `GET /email/messages/{id}/html` and the
+    # `html_remote` signal. With it false, the route answers 404 and the signal
+    # stays false. `email_html_hot_only` stops each writer from storing the
+    # `body_html` of a message older than the hot window. It acts only when the
+    # first flag is true too, so a writer never drops HTML that the pane cannot
+    # get again. The one reader of both is `email_ingestion.html_tier`.
+    #
+    # 🔴 The value `true` on a box is gate `enforcement-flip` (work_plan.md §6
+    # row D4). Spec: email_app_master_plan.md §14.6.1. Fence:
+    # tests/unit/test_email_html_tier.py.
+    email_html_from_provider: bool = False
+    email_html_hot_only: bool = False
 
     # Task-manager semantic capability matching (spec §5, Phase 2) — embed each
     # person's capability text (role · skills · résumé) into people

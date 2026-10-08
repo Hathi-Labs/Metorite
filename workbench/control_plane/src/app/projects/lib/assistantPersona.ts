@@ -34,8 +34,13 @@ export interface PersonaInput {
   openTask?: { id: string; title: string; number?: number | null } | null;
   /** Bulk-selected task ids, if any. */
   selectedTaskIds?: readonly string[];
-  /** Whether the member may edit the project's vocabulary. */
-  canManageSettings?: boolean;
+  // ⚠️ No permission field, on purpose (owner directive 2026-10-07,
+  // `projects_agent_parity.md` §16). A `canManageSettings` flag lived here and
+  // read `projects:settings:write` from `access.capabilities`. That list never
+  // carries the slug (`acb_auth.permissions.CAPABILITIES`), so EVERY member,
+  // the org owner too, was told "may NOT edit … say who can: an organization
+  // admin", and the model refused writes the server allows. The server decides
+  // each write when the tool runs. The persona states no permission.
   /** Today, as YYYY-MM-DD, and the member's IANA timezone. */
   today?: string;
   timezone?: string;
@@ -138,14 +143,6 @@ export function buildProjectsAssistantPersona(input: PersonaInput): string {
         ` "These tasks" means that selection.`,
     );
   }
-
-  parts.push(
-    input.canManageSettings
-      ? "They may edit this project's statuses, types, tags and fields."
-      : "They may NOT edit this project's statuses, types, tags or fields " +
-          "(no projects:settings:write). If they ask for that, say who can: " +
-          "an organization admin.",
-  );
 
   return parts.join(" ");
 }

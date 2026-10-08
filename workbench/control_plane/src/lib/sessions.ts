@@ -35,7 +35,368 @@ export interface ChatSession {
   participantCount?: number;
 }
 
-const STORAGE_KEY = "cc-chat-sessions";
+// ---------------------------------------------------------------------------
+// Chat cache namespaces (production bug 2026-10-05, PR #652)
+// ---------------------------------------------------------------------------
+// The session list used to live under one key for the whole browser. A rail
+// restored the newest session of its agent from it, so a second member on one
+// browser reopened the FIRST member's chat, from a different org. The gateway
+// refused every send, which is correct, and the member saw only an error.
+//
+// Now EVERY per-member chat cache lives in one namespace per account, keyed by
+// the scope `<email>|<orgId>`: the session list, each cached transcript
+// (`msgs`, which also holds compaction summaries and browser-only replies),
+// each send queue and the app builder's per-app ids. `chatKey` is the ONE key
+// builder, and `railSessions.test.ts` fails on a raw `cc-` chat key built
+// anywhere else. Design note: `projects_ai_chat.md`, "Chat cache namespaces
+// and multi-account".
+//
+// - A switch of the bound scope deletes nothing. Switching back finds the old
+//   namespace exactly as it was. A future account switcher only changes the
+//   bound scope.
+// - A sign-out clears the namespaces of that account only (`clearSignedOutAccount`).
+// - The caches written before #652 have no owner. They are deleted, never
+//   moved into a namespace (`purgeLegacyChatCaches`).
+// - While no scope is bound, every read is empty and no local write occurs.
+//   The server copy still syncs.
+
+/** The prefix of every namespaced chat key. */
+const NS_PREFIX = "cc-chat::";
+
+/** What a namespaced key holds. */
+export type ChatCacheKind = "sessions" | "msgs" | "queue" | "builder";
+
+/**
+ * Points at the last member scope bound in this browser, so a sign-out that
+ * the page did not see (an expiry, the middleware redirect) still knows whose
+ * namespace to clear. It names an account and holds no chat content.
+ */
+const LAST_SCOPE_KEY = "cc-chat-last-scope";
+
+/** Keys written before #652: one browser-wide list, and per-id caches. */
+const LEGACY_LIST_KEY = "cc-chat-sessions";
+const LEGACY_PREFIXES = ["cc-chat-sessions", "cc-msgs-", "cc-queue-", "cc-app-builder-session-"];
+
+/** The member part of a scope for a browser with no email (dev with auth off). */
+export const NO_EMAIL = "anonymous";
+
+let boundScope: string | null = null;
+/** The last org id seen for an email, so a failed org lookup keeps the scope. */
+let lastIdentity: { email: string; orgId: string } | null = null;
+/**
+ * The last member scope seen in THIS page (fix round 2). Module state, so it
+ * lives exactly as long as the page: a real sign-out is a full navigation,
+ * and it resets. A deploy restart does not navigate, and it answers
+ * `GET /api/auth/me` with a 200 that names nobody.
+ */
+let lastMemberScope: string | null = null;
+
+/**
+ * The scope of one member in one organization, or null when there is no
+ * member to name. The email is case-folded, because the server folds it too.
+ */
+export function chatScope(
+  email: string | null | undefined,
+  organizationId: string | null | undefined,
+): string | null {
+  const who = (email ?? "").trim().toLowerCase();
+  if (!who) return null;
+  return `${who}|${(organizationId ?? "").trim()}`;
+}
+
+/**
+ * THE key builder for every per-member chat cache. Null while no scope is
+ * bound, and a caller then reads nothing and writes nothing.
+ */
+export function chatKey(
+  kind: ChatCacheKind,
+  id?: string,
+  scope: string | null = boundScope,
+): string | null {
+  if (!scope) return null;
+  return `${NS_PREFIX}${scope}::${kind}${id === undefined ? "" : `::${id}`}`;
+}
+
+/** The namespace prefix of one scope, or of every org of one email. */
+function namespacePrefix(scope: string): string {
+  return `${NS_PREFIX}${scope}::`;
+}
+function accountPrefix(email: string): string {
+  return `${NS_PREFIX}${email}|`;
+}
+
+/**
+ * The scope for one answer of `useAccess()`.
+ *
+ * - Loading: null. Nothing restores until the member is known.
+ * - No email, after a member was seen in this page: that member's scope.
+ *   A deploy restart answers 200 with nobody in it, and that is a blip, not a
+ *   sign-out (fix round 2).
+ * - No email on a STALE answer with no member seen: null.
+ * - No email on an authoritative answer with no member seen: the `anonymous`
+ *   scope (dev with auth off, or signed out).
+ * - An email with no org id, after an answer that had one for the SAME email:
+ *   the last org id. `GET /auth/me` answers `organization: {}` when its org
+ *   query fails, and a scope that flipped would move every open rail.
+ */
+export function scopeFromAccess(a: {
+  loading: boolean;
+  stale: boolean;
+  email: string | null | undefined;
+  organizationId: string | null | undefined;
+}): string | null {
+  if (a.loading) return null;
+  const email = (a.email ?? "").trim().toLowerCase();
+  if (!email) {
+    if (lastMemberScope) return lastMemberScope;
+    return a.stale ? null : chatScope(NO_EMAIL, null);
+  }
+  let org = (a.organizationId ?? "").trim();
+  if (!org && lastIdentity?.email === email) org = lastIdentity.orgId;
+  if (org) lastIdentity = { email, orgId: org };
+  const scope = chatScope(email, org);
+  lastMemberScope = scope;
+  return scope;
+}
+
+/**
+ * Bind the scope every chat key is built in. Idempotent, and it touches no
+ * storage, so a caller may run it during render. Returns true when the scope
+ * changed. A change deletes nothing: the old namespace stays as it was.
+ */
+export function bindChatScope(scope: string | null): boolean {
+  if (scope === boundScope) return false;
+  boundScope = scope;
+  return true;
+}
+
+/**
+ * Tests only: end this "page". The module state goes and storage stays, as on
+ * a full navigation.
+ */
+export function __newPageForTests(): void {
+  boundScope = null;
+  lastIdentity = null;
+  lastMemberScope = null;
+}
+
+/** The scope that is bound now, or null. */
+export function boundChatScope(): string | null {
+  return boundScope;
+}
+
+/** The app builder's per-app key, in the bound namespace. Null while unbound. */
+export function builderSessionKey(slug: string): string | null {
+  return chatKey("builder", slug);
+}
+
+/** The builder session id remembered for an app, in the bound namespace. */
+export function getBuilderSessionId(slug: string): string | null {
+  const key = builderSessionKey(slug);
+  if (typeof window === "undefined" || !key) return null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/** Remember the builder session id of an app, in the bound namespace. */
+export function setBuilderSessionId(slug: string, id: string): void {
+  const key = builderSessionKey(slug);
+  if (typeof window === "undefined" || !key) return;
+  try {
+    localStorage.setItem(key, id);
+  } catch {
+    /* storage off: the next visit finds the session by its name */
+  }
+}
+
+/** Every storage key that matches `test`. */
+function keysWhere(test: (k: string) => boolean): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && test(k)) out.push(k);
+  }
+  return out;
+}
+
+function removeKeys(keys: string[]): void {
+  for (const k of keys) localStorage.removeItem(k);
+}
+
+/**
+ * Delete the chat caches written before #652. They have no owner, so nobody
+ * can say whose they are: they are never moved into a namespace.
+ */
+export function purgeLegacyChatCaches(): void {
+  if (typeof window === "undefined") return;
+  try {
+    removeKeys(keysWhere((k) => k === LEGACY_LIST_KEY || LEGACY_PREFIXES.some((p) => k.startsWith(p))));
+  } catch {
+    /* storage unavailable: nothing is stored */
+  }
+}
+
+/**
+ * The storage work for a newly bound scope. Run it from an effect.
+ *
+ * It deletes the caches with no owner, and it records a MEMBER scope as the
+ * last one. It deletes nothing of any namespace: a switch is not a sign-out.
+ * It does nothing for the no-email scope while a member was seen in this page
+ * (the deploy blip, fix round 2).
+ */
+export function tidyChatStorage(scope: string | null): void {
+  if (!scope || typeof window === "undefined") return;
+  const email = scope.slice(0, scope.indexOf("|"));
+  if (email === NO_EMAIL && lastMemberScope) return;
+  purgeLegacyChatCaches();
+  if (email !== NO_EMAIL) {
+    try { localStorage.setItem(LAST_SCOPE_KEY, scope); } catch { /* storage off */ }
+  }
+}
+
+/**
+ * A sign-out of the account of the last bound member scope: clear every
+ * namespace of that EMAIL (all its orgs), and nothing of any other account.
+ * The client cannot always tell which account ended (an expiry, the
+ * middleware redirect), so it clears the last one it bound.
+ */
+export function clearSignedOutAccount(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const last = localStorage.getItem(LAST_SCOPE_KEY);
+    if (last && last.includes("|")) {
+      const prefix = accountPrefix(last.slice(0, last.indexOf("|")));
+      removeKeys(keysWhere((k) => k.startsWith(prefix)));
+    }
+    localStorage.removeItem(LAST_SCOPE_KEY);
+  } catch {
+    /* storage unavailable: nothing is stored */
+  }
+  boundScope = null;
+  lastIdentity = null;
+  lastMemberScope = null;
+}
+
+/**
+ * "Sign out of all accounts" (MT-1k slice A2): clear every namespace of each
+ * of these emails, all their orgs, and the last-scope pointer.
+ *
+ * ⚠️ `clearSignedOutAccount` knows only the LAST bound account, so it would
+ * leave the other accounts' chats behind on a shared computer. The switcher
+ * names every account it held, and this clears them all.
+ */
+export function clearAccountNamespaces(emails: readonly string[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    // Both spellings: a token keeps the case the provider sent, and the scope
+    // takes the email the gateway answered with.
+    for (const email of new Set(emails.flatMap((e) => [e, e.toLowerCase()]))) {
+      const prefix = accountPrefix(email);
+      removeKeys(keysWhere((k) => k.startsWith(prefix)));
+    }
+    localStorage.removeItem(LAST_SCOPE_KEY);
+  } catch {
+    /* storage unavailable: nothing is stored */
+  }
+  boundScope = null;
+  lastIdentity = null;
+  lastMemberScope = null;
+}
+
+/**
+ * True when the browser signed out, by any path: a sign-out button, an
+ * expired session, the middleware redirect, the NextAuth sign-out page.
+ *
+ * Two answers must agree. NextAuth's own session says nobody is signed in,
+ * AND an authoritative access answer names nobody. A deploy restart fails
+ * only the second (the NextAuth session lives in this app, not in the
+ * gateway), so it never clears a namespace. Dev with auth off names a member
+ * in its access answer, so it never clears either.
+ */
+/** How long the sign-out confirm waits before it gives up (and clears nothing). */
+export const SIGN_OUT_CONFIRM_MS = 5_000;
+
+/**
+ * Ask NextAuth once more, with no cache, whether anybody is signed in
+ * (PR #652 round 3). True ONLY when the answer is a 2xx whose session names
+ * no user. A network failure, a non-2xx, a body that does not parse or a
+ * timeout is "not confirmed", and a caller then clears nothing.
+ *
+ * Why: NextAuth's client turns a FAILED session fetch into "unauthenticated"
+ * and keeps it for the life of the page, and `/api/auth/me` answers 200 with
+ * nobody while the gateway restarts. A deploy that restarts both close
+ * together looks exactly like a sign-out. Clearing on that would wipe a
+ * member who is still signed in.
+ */
+export async function confirmSignedOut(
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = SIGN_OUT_CONFIRM_MS,
+): Promise<boolean> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A race as well as the abort: a timeout answers "not confirmed" even when
+  // the request never settles.
+  const timedOut = new Promise<false>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(false);
+    }, timeoutMs);
+  });
+  const asked = (async (): Promise<boolean> => {
+    const res = await fetchImpl("/api/auth/session", {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { user?: unknown } | null;
+    return !body || !body.user;
+  })().catch(() => false);
+  try {
+    return await Promise.race([asked, timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function isSignedOut(a: {
+  sessionStatus: "loading" | "authenticated" | "unauthenticated";
+  accessLoading: boolean;
+  stale: boolean;
+  email: string | null | undefined;
+}): boolean {
+  return (
+    a.sessionStatus === "unauthenticated" &&
+    !a.accessLoading &&
+    !a.stale &&
+    !(a.email ?? "").trim()
+  );
+}
+
+/**
+ * Tests and tooling only: forget every namespaced chat cache in this browser,
+ * for every account, and the module state.
+ */
+export function forgetChatSessions(): void {
+  boundScope = null;
+  lastIdentity = null;
+  lastMemberScope = null;
+  if (typeof window === "undefined") return;
+  try {
+    removeKeys(keysWhere((k) => k.startsWith(NS_PREFIX) || k === LAST_SCOPE_KEY));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** True when the namespace of `scope` holds any key. */
+export function hasNamespace(scope: string): boolean {
+  if (typeof window === "undefined") return false;
+  const prefix = namespacePrefix(scope);
+  return keysWhere((k) => k.startsWith(prefix)).length > 0;
+}
 
 /**
  * Sentinels a session's agentName can carry when its real agent hasn't been
@@ -62,13 +423,25 @@ function safeSetItem(key: string, value: string): void {
   }
 }
 
-export function getSessions(): ChatSession[] {
-  if (typeof window === "undefined") return [];
+function readList(key: string | null): ChatSession[] {
+  if (typeof window === "undefined" || !key) return [];
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as ChatSession[];
+    const parsed = JSON.parse(localStorage.getItem(key) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? (parsed as ChatSession[]) : [];
   } catch (_e) {
     return [];
   }
+}
+
+/** Write the bound member's list. No scope bound, no local write. */
+function writeList(sessions: ChatSession[], key: string | null = chatKey("sessions")): void {
+  if (!key) return;
+  safeSetItem(key, JSON.stringify(sessions));
+}
+
+/** The signed-in member's list in this org. Empty while no scope is bound. */
+export function getSessions(): ChatSession[] {
+  return readList(chatKey("sessions"));
 }
 
 export function upsertSession(session: ChatSession): void {
@@ -79,18 +452,72 @@ export function upsertSession(session: ChatSession): void {
   } else {
     sessions.unshift(session);
   }
-  safeSetItem(STORAGE_KEY, JSON.stringify(sessions));
+  writeList(sessions);
   // Background sync to Postgres — never blocks the UI.
   _syncSessionToDb(session).catch(() => {});
 }
 
 export function deleteSession(id: string): void {
   const sessions = getSessions().filter((s) => s.id !== id);
-  safeSetItem(STORAGE_KEY, JSON.stringify(sessions));
+  writeList(sessions);
   // Also remove the persisted messages for this session.
   deleteMessages(id);
   // Background delete from Postgres.
   fetch(`/api/chat/sessions/${id}`, { method: "DELETE" }).catch(() => {});
+}
+
+/**
+ * Drop a session from THIS browser only. For an id the server refused: it is
+ * not this member's to delete, so no DELETE goes to the server.
+ *
+ * ⚠️ The send queue (`cc-queue-<id>`) STAYS. It holds words the member typed
+ * and has not sent, and a refused chat is no reason to lose them. The rail
+ * carries them into the composer of the new chat (`carriedText`).
+ */
+export function forgetSession(id: string): void {
+  writeList(getSessions().filter((s) => s.id !== id));
+  deleteMessages(id);
+}
+
+/**
+ * True when the server refused a session, not a turn. A 404 means "no such
+ * conversation for you". A 403 counts only with the room rule's own words,
+ * because a viewer's 403 ("cannot send") is a real answer about a real room.
+ */
+export function isSessionRefusal(status: number, body: string): boolean {
+  if (status === 404) return true;
+  return status === 403 && isSessionRefusalText(body);
+}
+
+/** The words of the refusal, for a stream that carries it as an error frame. */
+export function isSessionRefusalText(text: string): boolean {
+  return /not a participant of this conversation/i.test(text);
+}
+
+/**
+ * Ask the server whether this member may read a session. GET /room answers
+ * 404 for a room the caller cannot read (another org, or private and not in
+ * it), and 200 for a room the caller is in or for an id with no row yet. Any
+ * other answer, or no answer, is "unknown", and a caller must not act on it.
+ */
+export async function probeSession(
+  id: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<"ok" | "refused" | "unknown"> {
+  try {
+    const res = await fetchImpl(`/api/chat/sessions/${encodeURIComponent(id)}/room`, {
+      cache: "no-store",
+    });
+    if (res.ok) return "ok";
+    if (res.status === 404) return "refused";
+    if (res.status === 403) {
+      const body = await res.text().catch(() => "");
+      return isSessionRefusal(403, body) ? "refused" : "unknown";
+    }
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 export function createSession(agentName = "orchestrator"): ChatSession {
@@ -127,7 +554,7 @@ export function touchSession(id: string, messageCount?: number): void {
   if (!s) return;
   s.updatedAt = new Date().toISOString();
   if (messageCount !== undefined) s.messageCount = messageCount;
-  safeSetItem(STORAGE_KEY, JSON.stringify(sessions));
+  writeList(sessions);
 }
 
 /** Truncate text at a word boundary, appending an ellipsis when cut. */
@@ -159,7 +586,7 @@ export function enrichSession(
   }
   if (info.messageCount !== undefined) s.messageCount = info.messageCount;
   s.updatedAt = new Date().toISOString();
-  safeSetItem(STORAGE_KEY, JSON.stringify(sessions));
+  writeList(sessions);
   // Sync enriched metadata to Postgres in background.
   _patchSessionInDb(id, {
     title: s.title,
@@ -209,9 +636,14 @@ async function _patchSessionInDb(
  * localStorage wins for ordering (user-local reordering), Postgres wins for content.
  */
 export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
+  // The key is taken BEFORE the await. If the member changes while the request
+  // is out, the answer lands in the list of the member who asked, never in the
+  // list of the member who is bound when it returns.
+  const key = chatKey("sessions");
+  if (!key) return [];
   try {
     const res = await fetch("/api/chat/sessions", { signal: AbortSignal.timeout(5_000) });
-    if (!res.ok) return getSessions();
+    if (!res.ok) return readList(key);
     const remote = (await res.json()) as Array<{
       id: string;
       agentName: string;
@@ -225,7 +657,7 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
       participantCount?: number;
     }>;
 
-    const local = getSessions();
+    const local = readList(key);
     const localIds = new Set(local.map((s) => s.id));
     // Membership is the server's answer, so it is refreshed on every merge
     // rather than only for sessions the browser has never seen. A room you
@@ -272,10 +704,10 @@ export async function fetchAndMergeSessionsFromDb(): Promise<ChatSession[]> {
 
     // Sort by updatedAt descending.
     local.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    safeSetItem(STORAGE_KEY, JSON.stringify(local));
+    writeList(local, key);
     return local;
   } catch (_e) {
-    return getSessions();
+    return readList(key);
   }
 }
 
@@ -315,7 +747,6 @@ export interface PersistedMessage {
   redactedCaps?: string[];
 }
 
-const MESSAGES_PREFIX = "cc-msgs-";
 /** Maximum messages kept per session to avoid storage bloat. */
 const MAX_MESSAGES_PER_SESSION = 200;
 
@@ -323,40 +754,60 @@ const MAX_MESSAGES_PER_SESSION = 200;
 // Queued/steered messages live in an in-memory ref while the component is
 // mounted, but that ref is lost on a page refresh or when the user switches
 // to another agent's session (the queue belongs to a specific session).
-// Persist it per-session so a queued message survives both.
-const QUEUE_PREFIX = "cc-queue-";
+// Persist it per-session, in the member's namespace, so a queued message
+// survives both and no other account ever reads it.
 
-/** Read the persisted send-queue for a session (survives refresh / switch). */
+function strings(xs: unknown): string[] {
+  return Array.isArray(xs) ? xs.filter((x): x is string => typeof x === "string") : [];
+}
+
+/** Read the persisted send-queue of a session, in the bound namespace. */
 export function getQueue(sessionId: string): string[] {
-  if (typeof window === "undefined") return [];
+  const key = chatKey("queue", sessionId);
+  if (typeof window === "undefined" || !key) return [];
   try {
-    const raw = localStorage.getItem(QUEUE_PREFIX + sessionId);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+    const raw = localStorage.getItem(key);
+    return raw ? strings(JSON.parse(raw)) : [];
   } catch (_e) {
     return [];
   }
 }
 
-/** Persist (or clear, when empty) the send-queue for a session. */
+/** Persist (or clear, when empty) the send-queue of a session. */
 export function saveQueue(sessionId: string, queue: string[]): void {
-  if (typeof window === "undefined") return;
+  const key = chatKey("queue", sessionId);
+  if (typeof window === "undefined" || !key) return;
   try {
-    if (queue.length === 0) localStorage.removeItem(QUEUE_PREFIX + sessionId);
-    else localStorage.setItem(QUEUE_PREFIX + sessionId, JSON.stringify(queue));
+    if (queue.length === 0) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(queue));
   } catch (_e) {
     // Storage quota exceeded — best-effort only.
   }
 }
 
-/** Read from localStorage cache (synchronous, instant). */
+/** Read from the localStorage cache (synchronous, instant), in the bound namespace. */
 export function getMessages(sessionId: string): PersistedMessage[] {
-  if (typeof window === "undefined") return [];
+  const key = chatKey("msgs", sessionId);
+  if (typeof window === "undefined" || !key) return [];
   try {
-    const raw = localStorage.getItem(MESSAGES_PREFIX + sessionId);
+    const raw = localStorage.getItem(key);
     return raw ? (JSON.parse(raw) as PersistedMessage[]) : [];
   } catch (_e) {
     return [];
+  }
+}
+
+/**
+ * Write a session's transcript to the local cache, in the bound namespace.
+ * No server write. For a caller that must save synchronously (page unload).
+ */
+export function cacheMessages(sessionId: string, messages: unknown[]): void {
+  const key = chatKey("msgs", sessionId);
+  if (typeof window === "undefined" || !key) return;
+  try {
+    localStorage.setItem(key, JSON.stringify(messages));
+  } catch (_e) {
+    /* quota exceeded */
   }
 }
 
@@ -379,12 +830,8 @@ export function saveMessages(sessionId: string, messages: PersistedMessage[]): v
     .filter((m) => !(m.role === "system" && m.content.startsWith("__ERROR__")))
     .slice(-MAX_MESSAGES_PER_SESSION);
 
-  // 1. Write-through cache (sync, instant)
-  try {
-    localStorage.setItem(MESSAGES_PREFIX + sessionId, JSON.stringify(settled));
-  } catch (_e) {
-    // Storage quota exceeded — continue to Postgres anyway
-  }
+  // 1. Write-through cache (sync, instant), in the bound namespace.
+  cacheMessages(sessionId, settled);
 
   // 2. Persist to Postgres (async, background)
   if (settled.length === 0) return;
@@ -564,11 +1011,7 @@ export async function fetchMessagesFromDb(
       const cached = getMessages(sessionId);
       if (cached.length > 0) return cached;
     }
-    if (!paginated) {
-      try {
-        localStorage.setItem(MESSAGES_PREFIX + sessionId, JSON.stringify(mapped));
-      } catch (_e) { /* quota */ }
-    }
+    if (!paginated) cacheMessages(sessionId, mapped);
     return mapped as unknown as PersistedMessage[];
   } catch (_e) {
     return paginated ? [] : getMessages(sessionId);
@@ -576,7 +1019,8 @@ export async function fetchMessagesFromDb(
 }
 
 export function deleteMessages(sessionId: string): void {
-  if (typeof window === "undefined") return;
-  localStorage.removeItem(MESSAGES_PREFIX + sessionId);
+  const key = chatKey("msgs", sessionId);
+  if (typeof window === "undefined" || !key) return;
+  try { localStorage.removeItem(key); } catch { /* storage off */ }
   // Postgres messages are CASCADE-deleted when the session is deleted via the API.
 }

@@ -19,11 +19,19 @@
 //     opened in its own mailbox keeps the detail view.
 //   * `email-integrations-reconnect-hint`: Reconnect on Integrations sends the
 //     mailbox as `login_hint`, so the member gets no account picker (MB-1).
+//   * `email-draftcard-start` (WS-17 EM-T10): a draft card starts with the
+//     To, Cc and Bcc of its draft, and with the toggle that matches them.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { mailboxOf, ownAddresses, replyRecipients } from "./mailbox";
+import {
+  draftRecipients,
+  mailboxOf,
+  mailboxToOpen,
+  ownAddresses,
+  replyRecipients,
+} from "./mailbox";
 
 const ROOT = join(__dirname, "..");
 const read = (rel: string) =>
@@ -178,21 +186,146 @@ describe("the in-thread draft card leaves out every own address (MB-7)", () => {
   });
 });
 
+describe("email-draftcard-start: a draft card starts with the recipients of its draft (EM-T10)", () => {
+  const own = ownAddresses([{ emailAddress: "dana@fracktal.in" }]);
+  const party = (email: string, name = "") => ({ name, email });
+  /** The lists that a card computes from its reply target, as the card does. */
+  const target = (src: Parameters<typeof replyRecipients>[0]) => {
+    const all = replyRecipients(src, "reply-all", own, "dana@fracktal.in");
+    const only = replyRecipients(src, "reply", own, "dana@fracktal.in");
+    return [all, only.to] as const;
+  };
+  // Ravi wrote to the member and Asha, with Kiran on Cc.
+  const group = target({
+    from: party("ravi@acme.com", "Ravi"),
+    to: [party("dana@fracktal.in"), party("asha@acme.com")],
+    cc: [party("kiran@acme.com")],
+  });
+
+  it("keeps a reply that the member narrowed to the sender, on Reply", () => {
+    const draft = { to: [party("ravi@acme.com", "Ravi")], cc: [], bcc: [] };
+    expect(draftRecipients(draft, ...group)).toEqual({
+      to: ["ravi@acme.com"], cc: [], bcc: [], replyAll: false, showCc: false,
+    });
+  });
+
+  it("keeps the Bcc of a reply, and shows its row", () => {
+    const draft = { to: [party("ravi@acme.com")], bcc: [party("boss@fracktal.in")] };
+    expect(draftRecipients(draft, ...group)).toEqual({
+      to: ["ravi@acme.com"], cc: [], bcc: ["boss@fracktal.in"], replyAll: false, showCc: true,
+    });
+  });
+
+  it("marks neither button for a reply to the sender that also has a Cc", () => {
+    // Reply needs an empty Cc (§10.4.11 item 2). A Cc that the member added to
+    // a narrowed reply is no Reply and no Reply All (EM-T10 review round 1).
+    const draft = { to: [party("ravi@acme.com")], cc: [party("kiran@acme.com")], bcc: [] };
+    expect(draftRecipients(draft, ...group)).toEqual({
+      to: ["ravi@acme.com"], cc: ["kiran@acme.com"], bcc: [], replyAll: null, showCc: true,
+    });
+  });
+
+  it("keeps a draft with only a Bcc, and marks neither button", () => {
+    const draft = { to: [], cc: [], bcc: [party("boss@fracktal.in")] };
+    expect(draftRecipients(draft, ...group)).toEqual({
+      to: [], cc: [], bcc: ["boss@fracktal.in"], replyAll: null, showCc: true,
+    });
+  });
+
+  it("starts a draft with no recipient on the reply-all lists, or empty with no target", () => {
+    const draft = { to: [], cc: [], bcc: [] };
+    expect(draftRecipients(draft, ...group)).toEqual({
+      to: ["ravi@acme.com", "asha@acme.com"], cc: ["kiran@acme.com"], bcc: [],
+      replyAll: true, showCc: true,
+    });
+    expect(draftRecipients(draft, null, null)).toEqual({
+      to: [], cc: [], bcc: [], replyAll: null, showCc: false,
+    });
+  });
+
+  it("keeps the Cc of a new mail, which has no reply target", () => {
+    const draft = { to: [party("asha@acme.com")], cc: [party("kiran@acme.com")] };
+    expect(draftRecipients(draft, null, null)).toEqual({
+      to: ["asha@acme.com"], cc: ["kiran@acme.com"], bcc: [], replyAll: null, showCc: true,
+    });
+  });
+
+  it("opens an AI draft, which addresses the sender only, on Reply", () => {
+    // The gateway saves an AI draft with the sender as the one To (C9).
+    const draft = { to: [party("ravi@acme.com")], cc: null, bcc: null };
+    const start = draftRecipients(draft, ...group);
+    expect(start.to).toEqual(["ravi@acme.com"]);
+    expect(start.replyAll).toBe(false);
+  });
+
+  it("starts a thread of two people on Reply All, as before", () => {
+    const pair = target({ from: party("ravi@acme.com"), to: [party("dana@fracktal.in")] });
+    const draft = { to: [party("ravi@acme.com")] };
+    expect(draftRecipients(draft, ...pair)).toEqual({
+      to: ["ravi@acme.com"], cc: [], bcc: [], replyAll: true, showCc: true,
+    });
+  });
+
+  it("keeps the lists of a draft whose reply target changed, and marks neither", () => {
+    // A newer mail from Dev is the target now. The draft answered Ravi's.
+    const newer = target({ from: party("dev@acme.com"), to: [party("dana@fracktal.in")] });
+    const draft = {
+      to: [party("ravi@acme.com"), party("asha@acme.com")],
+      cc: [party("kiran@acme.com")],
+    };
+    expect(draftRecipients(draft, ...newer)).toEqual({
+      to: ["ravi@acme.com", "asha@acme.com"], cc: ["kiran@acme.com"], bcc: [],
+      replyAll: null, showCc: true,
+    });
+  });
+
+  it("ignores the case, the spaces, the order and the names of the addresses", () => {
+    const draft = {
+      to: [party(" Asha@ACME.com", "Asha"), party("RAVI@acme.com ")],
+      cc: [party("Kiran@Acme.Com", "K")],
+    };
+    const start = draftRecipients(draft, ...group);
+    expect(start.replyAll).toBe(true);
+    // The card shows the addresses as the row holds them.
+    expect(start.to).toEqual(["Asha@ACME.com", "RAVI@acme.com"]);
+    expect(start.cc).toEqual(["Kiran@Acme.Com"]);
+  });
+
+  it("marks neither button for a forward, or for a To that the member edited", () => {
+    const forward = { to: [party("lee@other.org")] };
+    expect(draftRecipients(forward, ...group).replyAll).toBeNull();
+    const edited = { to: [party("ravi@acme.com"), party("lee@other.org")] };
+    const start = draftRecipients(edited, ...group);
+    expect(start.replyAll).toBeNull();
+    // A reply that does not start on Reply shows its Cc row.
+    expect(start.showCc).toBe(true);
+  });
+});
+
 describe("Open in inbox switches to the mailbox of the mail (MB-3)", () => {
   const src = codeOnly(read("lib/emailStore.ts"));
   const body = src.slice(src.indexOf("openEmailById: async"));
   const fn = body.slice(0, body.indexOf("toggleEmailSelected"));
 
+  // EM-T8g-2 moved the rule into `mailboxToOpen`, a pure function in
+  // `lib/mailbox.ts`. These cases test it by behaviour, and the scan proves
+  // that `openEmailById` reads it.
+  const one = { viewAll: false, selectedAccountId: "a", accounts: [{ id: "a" }, { id: "b" }] };
+
   it("selects the mailbox of a mail from another mailbox, then the mail", () => {
-    expect(fn).toContain("email.accountId !== get().selectedAccountId");
-    const select = fn.indexOf("get().selectAccount(email.accountId)");
+    expect(mailboxToOpen(one, "b")).toBe("b");
+    expect(mailboxToOpen(one, "a")).toBeNull();
+    expect(fn).toContain("const target = mailboxToOpen(get(), email.accountId);");
+    const select = fn.indexOf("get().selectAccount(target)");
     const reselect = fn.indexOf("set({ selectedEmailId: id, viewerCommand: null })");
     expect(select).toBeGreaterThan(-1);
     expect(reselect).toBeGreaterThan(select);
   });
 
   it("switches only to a mailbox that the member has", () => {
-    expect(fn).toContain("get().accounts.some((a) => a.id === email.accountId)");
+    expect(mailboxToOpen(one, "gone")).toBeNull();
+    expect(mailboxToOpen(one, null)).toBeNull();
+    expect(mailboxToOpen({ ...one, viewAll: true }, "gone")).toBeNull();
   });
 
   it("drops an opened mail when its mailbox is removed", () => {

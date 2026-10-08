@@ -32,6 +32,7 @@ if TYPE_CHECKING:  # import-cycle-free: the runtime import is function-local
 
 from acb_auth import (
     UserContext,
+    UserRole,
     assert_can_run_agent_in_session,
     get_current_user,
     require_internal_auth,
@@ -957,6 +958,51 @@ def _resolve_room(thread_id: str, email: str, organization_id: str | None):
         return None
 
 
+async def _prepare_if_new_thread(
+    room: Any, thread_id: str | None, organization_id: str | None,
+) -> None:
+    """A run on a thread with no row makes a NEW chat, so prepare the id first.
+
+    H-227, fix round 3 of PR #616. The run's mint inserts the chat row, so
+    the run doors do what ``POST /chat/sessions`` does before a new row
+    (``chat.prepare_new_session``): refuse a run's id, then purge what the
+    id left. A room that exists, or that the lookup could not resolve, is
+    not new.
+    """
+    if (
+        room is None or not thread_id or not getattr(room, "unknown_session", False)
+        or getattr(room, "resolve_failed", False)
+    ):
+        return
+    from gateway.routes.chat import prepare_new_session
+
+    await prepare_new_session(thread_id, organization_id)
+
+
+async def _guard_run_thread(user: UserContext, thread_id: str | None) -> None:
+    """The room check and the new-chat step of the two run doors with no stream.
+
+    H-227, fix round 3 of PR #616. ``POST /agent/run`` and ``/agent/run/async``
+    took a client thread id with no room check, so a member who knew the id
+    of another member's chat ran a shared agent in it and read that thread's
+    folders. They now refuse a caller who may not send in the room, as the
+    stream door does. The internal service principal has no room to check.
+    """
+    import asyncio
+
+    if not thread_id:
+        return
+    if user.role is UserRole.AGENT and user.has_permission("*"):
+        return
+    org = getattr(user, "organization_id", None)
+    room = await asyncio.to_thread(
+        _resolve_room, thread_id, getattr(user, "email", "") or "", org,
+    )
+    if room is not None and not room.can_send:
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("send messages"))
+    await _prepare_if_new_thread(room, thread_id, org)
+
+
 def _room_agents(
     thread_id: str, organization_id: str | None,
 ) -> list[tuple[str, str]]:
@@ -1271,6 +1317,28 @@ def _set_agent_alias(name: str, alias: str) -> str:
     return alias
 
 
+def _stamp_tier_routing(agents: list[dict]) -> None:
+    """Set ``tier_routed`` on each entry (WS-45 S3, ``ai_tier_routing.md`` §9).
+
+    True when ``AI_TIER_ROUTING`` covers the agent. The value comes from
+    ``tier_policy.tier_routing_on``, the ONE reader of the flag, so the chat
+    and the executor cannot disagree. It fails closed: a fault marks every
+    agent False, and the chat then draws its picker as today. The field
+    carries a yes or no only, never a tier or a model.
+    """
+    # Imported here, as the other acb_skills reads of this module are. A
+    # broken import must not arm the UI, so it marks every agent False.
+    try:
+        from acb_skills.tier_policy import tier_routing_on
+    except Exception:
+        tier_routing_on = None
+    for a in agents:
+        try:
+            a["tier_routed"] = bool(tier_routing_on and tier_routing_on(a.get("name")))
+        except Exception:
+            a["tier_routed"] = False
+
+
 @router.get("", summary="List all registered agents")
 async def list_agents(
     user: UserContext = Depends(get_current_user),
@@ -1348,6 +1416,10 @@ async def list_agents(
     aliases = _load_agent_aliases()
     for a in merged:
         a["display_name"] = aliases.get(a["name"], "")
+
+    # WS-45 S3: which agents the tier policy covers, so the chat can drop
+    # its model picker for exactly those, and name none itself.
+    _stamp_tier_routing(merged)
 
     # ── Access filter (org access control, enforcement seam 2) ────────────
     # This list feeds both the chat agent picker and the /agents management
@@ -1911,6 +1983,53 @@ async def _mint_run_row_bounded(
         )
 
 
+async def _extract_run_memory(
+    run_id: str,
+    extract_user: str,
+    history: list[dict[str, str]],
+    message: str,
+    folded: dict[str, Any] | None,
+    *,
+    agent_name: str,
+    thread_id: str,
+) -> bool:
+    """Extract one finished turn into Mem0. Returns True when it extracted.
+
+    Best-effort: it never raises, so it never kills the relay.
+
+    H-236: a covered run's conversation holds member data from a sandboxed
+    turn, and memory is a store that later runs read. So the extraction is
+    skipped for a run that bound ``no_egress``. The run decided that at its
+    own start and recorded it by run id (``executor.run_was_no_egress``).
+    Nothing in the request reaches that answer, and an error skips the
+    extraction too. Fence: ``tests/unit/test_delegation_no_egress.py``.
+    """
+    if not (extract_user and folded):
+        return False
+    try:
+        from orchestrator.executor import run_was_no_egress
+        skip = run_was_no_egress(run_id)
+    except Exception:  # fail closed: no extraction
+        skip = True
+    if skip:
+        _log.info("agent.run_end_memory_extraction_skipped_no_egress",
+                  thread_id=thread_id[:12])
+        return False
+    try:
+        from acb_memory import add_memories_background
+        from gateway.chat_fold import build_extraction_conversation
+
+        conv = build_extraction_conversation(history, message, folded)
+        if not conv:
+            return False
+        await add_memories_background(extract_user, conv, agent_id=agent_name)
+        return True
+    except Exception:  # extraction must never kill the relay
+        _log.warning("agent.run_end_memory_extraction_failed",
+                     thread_id=thread_id[:12])
+        return False
+
+
 @router.post("/run/stream", summary="Stream a named agent run as AG-UI SSE events")
 async def run_agent_stream_endpoint(
     req: AgentRunRequest,
@@ -1945,13 +2064,14 @@ async def run_agent_stream_endpoint(
         _resolve_room, req.thread_id or "", actor_email, _room_org,
     )
     if room is not None and not room.can_send:
-        raise HTTPException(status_code=403, detail=room.denied("send messages"))
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("send messages"))
 
     agent_name = _address_agent(req, room, _room_org)
     # Org access control, enforcement seam 2: the picker is filtered, but the
     # endpoint is the boundary of record — a hand-crafted request naming an
     # agent the member cannot run is refused here, not in the UI.
     await assert_can_run_agent_in_session(user, agent_name, req.thread_id)
+    await _prepare_if_new_thread(room, req.thread_id, _room_org)
 
     # The other people in the room find out what was asked, and by whom, the
     # moment it is asked — the run stream carries only the agent's side.
@@ -2227,24 +2347,10 @@ async def run_agent_stream_endpoint(
         # completed after a browser-gone/reconnect contributed nothing to
         # Mem0. The gateway is now the single extraction owner for this path
         # (route.ts no longer extracts for named agents). Best-effort.
-        if not (_extract_user and folded):
-            return
-        try:
-            from acb_memory import add_memories_background  # noqa: PLC0415
-
-            from gateway.chat_fold import (  # noqa: PLC0415
-                build_extraction_conversation,
-            )
-            conv = build_extraction_conversation(
-                _mem_history, _mem_message, folded,
-            )
-            if conv:
-                await add_memories_background(
-                    _extract_user, conv, agent_id=agent_name,
-                )
-        except Exception:  # noqa: BLE001 — extraction must never kill the relay
-            _log.warning("agent.run_end_memory_extraction_failed",
-                         thread_id=thread_id[:12])
+        await _extract_run_memory(
+            run_id, _extract_user, _mem_history, _mem_message, folded,
+            agent_name=agent_name, thread_id=thread_id,
+        )
 
     _actor = (getattr(user, "email", "") or "").strip()
     await _refuse_if_another_run_is_active(thread_id, _actor)
@@ -2666,6 +2772,9 @@ async def run_agent_sync(
         organization_id=getattr(user, "organization_id", None),
     )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
+    # H-227 fix round 3: the room check of the stream route, and the new-chat
+    # step before the run's first row.
+    await _guard_run_thread(user, req.thread_id)
     # H-201 part 3: the same live-run guard as the stream route. The thread id
     # is client input, and a run on it must not supersede another person's.
     if req.thread_id:
@@ -2695,6 +2804,14 @@ async def run_agent_sync(
             result=final_state.get("result"),
         )
     except AgentRunError as exc:
+        from orchestrator.executor import AgentNotFound
+
+        if isinstance(exc.original, AgentNotFound):
+            # maf_coding_engine.md §15.4: a first-party-admin-only agent,
+            # refused as absent.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=str(exc.original),
+            ) from exc
         return AgentRunResponse(
             run_id=run_id,
             agent=agent,
@@ -2722,6 +2839,9 @@ async def run_agent_async(
         organization_id=getattr(user, "organization_id", None),
     )
     await assert_can_run_agent_in_session(user, agent, req.thread_id)
+    # H-227 fix round 3: the room check of the stream route, and the new-chat
+    # step before the run's first row.
+    await _guard_run_thread(user, req.thread_id)
     # H-201 part 3: the same live-run guard as the stream route. The thread id
     # is client input, and a run on it must not supersede another person's.
     if req.thread_id:

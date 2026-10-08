@@ -10,6 +10,7 @@ DB + engine mocked.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,6 +27,19 @@ def _result(*, fetchone=None, fetchall=None):
     res.fetchone.return_value = fetchone
     res.fetchall.return_value = fetchall if fetchall is not None else []
     return res
+
+
+@contextmanager
+def _asked(ask: AsyncMock):
+    """The rule match of the backfill, in two steps (EM-T4a-2 PR-B1).
+
+    The gap loop reads the match in Block R and asks it with no block open.
+    The read finds no rule, so it touches no row of the fake database, and
+    the ask step is ``ask``. An ask that answers ``[]`` is the old composed
+    match that answered None."""
+    with patch.object(_eng, "_load_rules", AsyncMock(return_value=[])), \
+            patch.object(_eng, "ask_rule_match", ask):
+        yield ask
 
 
 def test_settings_has_follow_up_days_default_off() -> None:
@@ -99,6 +113,8 @@ def test_gate_drops_only_conversation_rules_when_blocked() -> None:
 async def test_project_status_maps_rule_to_status_with_priority() -> None:
     recorded: list[tuple[str, str]] = []
     db = AsyncMock()
+    # An open status asks whether the thread has an outside participant.
+    db.execute.return_value = _has_outsider()
     row = SimpleNamespace(thread_id="t1", id="m1", received_at=None)
 
     def rec(_db, _aid, tid, status, *_a, **_kw):
@@ -181,6 +197,7 @@ async def test_reconcile_thread_labels_keeps_follow_up_while_awaiting() -> None:
 async def test_project_status_respects_system_type_over_name() -> None:
     recorded: list[tuple[str, str]] = []
     db = AsyncMock()
+    db.execute.return_value = _has_outsider()
     row = SimpleNamespace(thread_id="t9", id="m9", received_at=None)
 
     def rec(_d, _a, tid, st, *_rest, **_kw):
@@ -215,10 +232,23 @@ async def test_resolve_passthrough_for_bulk_threads() -> None:
     llm.assert_not_called()
 
 
+#: ``_thread_is_self_only`` (EM-T8e-1 review round 1): the thread has a
+#: participant outside the member's mailboxes, so the status is asked.
+def _has_outsider():
+    return _result(fetchone=SimpleNamespace(n=2, outside=True))
+
+
+#: ``identity.resolve_self``: the one mailbox of the member.
+def _me(address: str = "me@x.com"):
+    return _result(fetchall=[SimpleNamespace(id="acc", address=address,
+                                             label=None)])
+
+
 async def test_resolve_uses_full_thread_status_over_per_message_pick() -> None:
     db = AsyncMock()
     db.execute.side_effect = [
-        _result(fetchone=SimpleNamespace(email_address="me@x.com")),  # acc email
+        _has_outsider(),                                   # self-only check
+        _me(),                                             # resolve_self
         _result(fetchone=None),                            # org_domains (none)
         _result(fetchall=[SimpleNamespace(
             id="m1", from_address={"email": "a@b.com"}, subject="s",
@@ -247,7 +277,8 @@ async def test_resolve_uses_full_thread_status_over_per_message_pick() -> None:
 async def test_resolve_keeps_original_when_no_rule_for_status() -> None:
     db = AsyncMock()
     db.execute.side_effect = [
-        _result(fetchone=SimpleNamespace(email_address="me@x.com")),
+        _has_outsider(),                                   # self-only check
+        _me(),                                             # resolve_self
         _result(fetchone=None),                            # org_domains (none)
         _result(fetchall=[SimpleNamespace(
             id="m1", from_address={"email": "a@b.com"}, subject="s",
@@ -274,7 +305,7 @@ def _backfill_db(latest, existing):
     db.execute.side_effect = [
         _result(fetchall=latest),
         _result(fetchall=existing),
-        _result(fetchone=SimpleNamespace(email_address="me@x.com")),
+        _me(),                   # identity.resolve_self (EM-T8e-1)
         _result(fetchone=None),  # resolve_org_domains (none configured)
         _result(fetchall=[]),    # _attachment_summaries for inbound-gap rows
         # Provider lookup for the label reconcile. None → no provider, so the
@@ -282,6 +313,15 @@ def _backfill_db(latest, existing):
         # STATUS gets recorded; the label collapse has its own coverage in
         # test_email_thread_status_parity.py.
         _result(fetchone=None),
+        # The `SELECT 1` at the end of Block R of the gap row (EM-T4a-2 PR-B1
+        # review round 1). It raises when a reader left the block aborted.
+        _result(),
+        # The `SELECT 1` at the end of Block S, where a gap row whose match
+        # is a conversation rule reads its thread status (EM-T4a-2 PR-B2).
+        _result(),
+        # The projection of an open status asks whether the thread has a
+        # participant outside the member's mailboxes (EM-T8e-1 round 1).
+        _has_outsider(),
     ]
     return db
 
@@ -311,13 +351,13 @@ async def test_backfill_handles_outbound_reply_and_engine_for_inbound() -> None:
             patch.object(_rz, "_load_assistant_about",
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_mark_thread_replied", mark), \
-            patch.object(_rz, "resolve_conversation_status_matches",
-                         AsyncMock(side_effect=lambda _d, _a, _r, ms,
-                                   **_kw: ms)), \
+            patch.object(_rz, "_thread_is_conversation",
+                         AsyncMock(return_value=False)), \
+            patch.object(_rz, "read_job_status",
+                         AsyncMock(return_value=None)), \
             patch.object(_rz, "_upsert_thread_status",
                          AsyncMock(side_effect=rec)), \
-            patch.object(_eng, "_match_email_to_rule",
-                         AsyncMock(return_value=to_reply_match)), \
+            _asked(AsyncMock(return_value=[to_reply_match])), \
             patch.object(_rz, "_reconcile_thread_labels", AsyncMock()):
         await m._maybe_classify_threads("acc-1")
 
@@ -341,7 +381,7 @@ async def test_backfill_leaves_overflow_unwritten_for_retry() -> None:
             patch.object(_rz, "_upsert_thread_status",
                          AsyncMock(side_effect=lambda _d, _a, tid, st, *x, **k:
                                    writes.append((tid, st)))), \
-            patch.object(_eng, "_match_email_to_rule", AsyncMock(return_value=None)):
+            _asked(AsyncMock(return_value=[])):
         await m._maybe_classify_threads("acc-1")
 
     # Newest _REPLY_DETERMINE_CAP sent threads get the full AI determination; the
@@ -365,7 +405,7 @@ async def test_backfill_reprocesses_provisional_auto_thread() -> None:
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_mark_thread_replied", mark), \
             patch.object(_rz, "_upsert_thread_status", AsyncMock()), \
-            patch.object(_eng, "_match_email_to_rule", AsyncMock(return_value=None)):
+            _asked(AsyncMock(return_value=[])):
         await m._maybe_classify_threads("acc-1")
     mark.assert_awaited_once_with("acc-1", "t5")
 
@@ -445,8 +485,7 @@ async def test_backfill_marks_fyi_when_no_conversation_rule_matches() -> None:
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_upsert_thread_status",
                          AsyncMock(side_effect=rec)), \
-            patch.object(_eng, "_match_email_to_rule",
-                         AsyncMock(return_value=None)), \
+            _asked(AsyncMock(return_value=[])), \
             patch.object(_rz, "_thread_is_conversation",
                          AsyncMock(return_value=False)), \
             patch.object(_rz, "_reconcile_thread_labels", AsyncMock()):
@@ -467,7 +506,7 @@ async def test_backfill_skips_unchanged_threads() -> None:
             patch.object(_rz, "_load_assistant_about",
                          AsyncMock(return_value=("", ""))), \
             patch.object(_rz, "_upsert_thread_status", AsyncMock()), \
-            patch.object(_eng, "_match_email_to_rule", match):
+            _asked(match):
         await m._maybe_classify_threads("acc-1")
     match.assert_not_awaited()  # latest message unchanged → no engine cost
 
@@ -581,6 +620,7 @@ async def test_recompute_outbound_writes_and_may_move_done() -> None:
     async def fake_upsert(_db, _aid, tid, status, _mid, _mat, reason, **kw):
         cap.update(status=status, reason=reason,
                    preserve_done=kw.get("preserve_done"))
+        return True  # EM-T4a-2: the upsert answers whether it wrote the row
 
     det = AsyncMock(return_value=("DONE", True))
     with patch.object(_rz, "_llm_determine_thread_status", det), \
@@ -604,6 +644,7 @@ async def test_recompute_inbound_preserves_done_and_flags_fallback() -> None:
 
     async def fake_upsert(_db, _aid, tid, status, _mid, _mat, reason, **kw):
         cap.update(reason=reason, preserve_done=kw.get("preserve_done"))
+        return True  # EM-T4a-2: the upsert answers whether it wrote the row
 
     det = AsyncMock(return_value=("AWAITING_REPLY", False))  # low confidence
     with patch.object(_rz, "_llm_determine_thread_status", det), \

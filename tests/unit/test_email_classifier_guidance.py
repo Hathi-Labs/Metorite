@@ -123,18 +123,26 @@ def test_account_wide_guidance_is_its_own_block() -> None:
 
 def test_both_matchers_pass_guidance_to_the_model() -> None:
     """A loader nothing consults is worse than none — the UI would show the
-    user's corrections while the classifier quietly ignored them."""
+    user's corrections while the classifier quietly ignored them.
+
+    EM-T4a-2 PR-B1: both matchers run ONE read step and ONE ask step. The
+    read step loads the guidance, and the ask step passes it to the model
+    in each mode (`_llm_pick_rule` and `_llm_pick_rules`)."""
     import inspect
     for fn in (e._match_email_to_rule, e._match_email_to_rules_multi):
         src = inspect.getsource(fn)
-        assert "_load_rule_guidance" in src, fn.__name__
-        assert "guidance=guidance" in src, fn.__name__
+        assert "read_rule_match(" in src and "ask_rule_match(" in src, fn.__name__
+    assert "_load_rule_guidance" in inspect.getsource(e.read_rule_match)
+    ask = inspect.getsource(e.ask_rule_match)
+    assert ask.count("guidance=read.guidance") == 2
+    assert "_llm_pick_rule(" in ask and "_llm_pick_rules(" in ask
 
 
 def test_guidance_is_loaded_after_the_pattern_short_circuit() -> None:
     """A pinned sender never reaches the LLM, so building its prompt context
-    would be wasted work on the hot path."""
+    would be wasted work on the hot path. The read step holds both (EM-T4a-2
+    PR-B1)."""
     import inspect
-    src = inspect.getsource(e._match_email_to_rule)
+    src = inspect.getsource(e.read_rule_match)
     assert src.index("_patterns_included_rule") < src.index(
         "_load_rule_guidance")

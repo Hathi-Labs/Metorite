@@ -24,6 +24,8 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon from "@/components/Icon";
+import Readout from "@/components/Readout";
+import { withoutIds } from "@/lib/readout";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ToolEvent } from "@/components/MarkdownMessage";
@@ -39,6 +41,7 @@ import { LabelChip } from "@/app/email/components/LabelChip";
 import { useEmailStore } from "@/app/email/lib/emailStore";
 import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
+import { placementOf } from "@/lib/chatPlacement";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -185,6 +188,9 @@ function hasEmailCard(e: ToolEvent): boolean {
 function renderCard(
   e: ToolEvent, accountId?: string | null, emailId?: string | null,
 ): React.ReactNode {
+  // A result that did not act is never drawn as a done act (EM-T8e-2).
+  const none = noActionOf(e.result);
+  if (none) return <NoActionCard event={e} kind={none} />;
   if (DRAFT_TOOLS.has(e.name)) {
     return <DraftResultCard event={e} accountId={accountId} emailId={emailId} />;
   }
@@ -203,6 +209,43 @@ function renderCard(
       : <ManageInboxCard event={e} />;
   }
   return <ActionResultCard event={e} />;
+}
+
+/** Every tool name this file routes. The placement fence reads it. */
+export const EMAIL_CARD_TOOLS: readonly string[] = [
+  ...DRAFT_TOOLS,
+  ...RULE_TOOLS,
+  ...LIST_TOOLS,
+  READ_TOOL,
+  READ_THREAD_TOOL,
+  SETTINGS_TOOL,
+  GROUPS_TOOL,
+  ...INFO_TOOLS,
+  ...PATTERN_TOOLS,
+  ...Object.keys(ACTION_META),
+];
+const EMAIL_CARD_SET: ReadonlySet<string> = new Set(EMAIL_CARD_TOOLS);
+
+/**
+ * The receipt of an email READ for the trail (`ThinkingContainer`), or null.
+ * Spec `projects_ai_chat.md` §24 rule 2: a read draws under its step, and
+ * never as a card after the answer. Each read draws its own card there: the
+ * merged list and the folded reads were for a flow with no steps to hold
+ * them.
+ */
+export function emailEvidence(e: ToolEvent, accountId?: string | null): React.ReactNode | null {
+  if (e.status !== "done") return null;
+  if (!EMAIL_CARD_SET.has(e.name) || placementOf(e.name) !== "evidence") return null;
+  const none = noActionOf(e.result);
+  if (none) return <NoActionCard event={e} kind={none} />;
+  if (LIST_TOOLS.has(e.name)) return <EmailListCard events={[e]} />;
+  if (e.name === READ_TOOL) return <EmailPreviewCard event={e} />;
+  if (e.name === READ_THREAD_TOOL) return <ThreadCard event={e} accountId={accountId} />;
+  if (PATTERN_TOOLS.has(e.name)) return <PatternListCard event={e} meta={patternMeta(e)} />;
+  if (e.name === "get_rules_and_settings") return <RulesOverviewCard event={e} accountId={accountId} />;
+  if (e.name === "list_labels") return <LabelsCard event={e} />;
+  if (INFO_TOOLS.has(e.name)) return <InfoResultCard event={e} />;
+  return null;
 }
 
 /** Folded "Read N message(s)" card for a run of read_email context calls — one
@@ -265,14 +308,26 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
     let alive = true;
     (async () => {
       try {
+        // A read that refused (a thread id in two mailboxes, say) has no
+        // "Thread:" head. Show its text, and fetch nothing: a fetch with no
+        // mailbox would merge the two mailboxes it refused to merge.
+        if (!emailId && !isThreadRead(event.result)) {
+          // The text view of the error state draws the result as it is.
+          if (alive) setState("error");
+          return;
+        }
         let tid = threadId;
+        let box = acct;
         let single: Email | null = null;
-        if (!tid && emailId) {
+        // The mail wins, as it does in the agent: the thread is read in the
+        // mailbox of the mail, never the mailbox of the chat (EM-T8e-2).
+        if (emailId) {
           single = await getEmail(emailId);
-          tid = single.threadId || "";
+          tid = single.threadId || tid;
+          box = single.accountId || box;
         }
         const list = tid
-          ? await listThread(acct, tid)
+          ? await listThread(box, tid)
           : single
             ? [single]
             : [];
@@ -297,11 +352,13 @@ function ThreadBody({ event, accountId }: { event: ToolEvent; accountId?: string
     );
   }
   // Couldn't fetch the conversation — show the tool's text summary so the user
-  // still gets the content.
+  // still gets the content. The bodies are a sender's text, so they keep
+  // their lines, and only the ids go (`withoutIds`). `Readout` would read a
+  // body line "Done: …" as a machine line and drop it (review round 1).
   if (state === "error" || !msgs) {
     return (
       <div className="text-xs whitespace-pre-wrap break-words text-foreground/90 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        {event.result}
+        {threadText(event.result)}
       </div>
     );
   }
@@ -374,6 +431,8 @@ export default function EmailToolCards({
     }
   };
   for (const e of all) {
+    // A read draws in its step (`emailEvidence`, spec §24), never here.
+    if (placementOf(e.name) === "evidence") continue;
     // Fold consecutive read_email context calls into one group — dropped
     // entirely when a thread card is present (subsumed by the thread).
     if (e.status === "done" && e.name === READ_TOOL) {
@@ -385,6 +444,17 @@ export default function EmailToolCards({
     // shown — both subsume the raw list the lookup produced.
     if ((hasThread || hasGroups) && LIST_TOOLS.has(e.name)) continue;
     flushReads();
+    // A result that did not act is never drawn as a done act, whatever card
+    // its tool has: the info, rule and settings cards too (EM-T8e-2 review).
+    const none = noActionOf(e.result);
+    if (none) {
+      items.push(
+        <DismissableCard key={e.id} onDismiss={() => dismissToolCard(e.id)}>
+          <NoActionCard event={e} kind={none} />
+        </DismissableCard>,
+      );
+      continue;
+    }
     // Merge ALL list-tool results into ONE interactive card at the position of
     // the first list event; the rest are folded in (not rendered separately).
     if (LIST_TOOLS.has(e.name)) {
@@ -1655,9 +1725,11 @@ function PatternListCard({
         icon={<AppIcon name={iconName} size={12} />}
         onDismiss={() => dismissToolCard(e.id)}
       >
-        <div className="text-[11px] text-muted-foreground whitespace-pre-wrap break-words">
-          {(e.result || "").trim() || "Nothing learned yet."}
-        </div>
+        {(e.result || "").trim() ? (
+          <Readout result={(e.result || "").trim()} />
+        ) : (
+          <div className="text-[11px] text-muted-foreground">Nothing learned yet.</div>
+        )}
       </ToolCardShell>
     );
   }
@@ -1980,8 +2052,11 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
       icon={<AppIcon name={iconName} size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div className="text-[11px] whitespace-pre-wrap break-words text-foreground/90 max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        {text || "(no result)"}
+      {/* The read as UI through the one `Readout`: no id, a labelled fact
+          for each `key: value`, a chip for a category (follow-up of #716
+          and #735). It drew the result as it is before. */}
+      <div className="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+        <Readout result={text} />
       </div>
     </ToolCardShell>
   );
@@ -1994,8 +2069,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
   const failed = e.status === "error";
   const iconName = failed ? "X" : meta.icon;
-  const result = (e.result || "").trim();
-  const detail = result.length > 160 ? result.slice(0, 160) + "…" : result;
+  const detail = (e.result || "").trim();
 
   return (
     <div
@@ -2017,15 +2091,79 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-[11px] font-medium text-foreground">{meta.label}</div>
+          {/* Compact, and through `Readout`, so an id never shows. The
+              box holds about three lines, and a longer result scrolls. */}
           {detail && (
-            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-3">
-              {detail}
+            <div className="mt-0.5 max-h-16 overflow-y-auto overflow-x-hidden scrollbar-thin">
+              <Readout result={detail} />
             </div>
           )}
         </div>
       </div>
     </div>
   );
+}
+
+// ── A result that did not act ────────────────────────────────────────────────
+
+/** What a tool result that did NOT act is. It can be a question back to the
+ *  member, a send that the tool refused, or a cancel. The card for it never
+ *  says the act is done. Before EM-T8e-2, "Email sent" stood over a "Not sent."
+ *  answer, which told the member that mail went out. */
+export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled";
+
+export function noActionOf(raw: string | null | undefined): NoAction | null {
+  const t = (raw || "").trimStart();
+  if (/^(Send from which mailbox\?|Which mailbox\?)/.test(t)) return "question";
+  if (/^Not sent\./.test(t)) return "not-sent";
+  if (/^Nothing changed\./.test(t)) return "unchanged";
+  if (/^(Send cancelled|Cancelled)\b/.test(t)) return "cancelled";
+  return null;
+}
+
+const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
+  question: { icon: "CircleHelp", label: "Needs your answer" },
+  "not-sent": { icon: "MailX", label: "Not sent" },
+  unchanged: { icon: "CircleSlash", label: "Nothing changed" },
+  cancelled: { icon: "X", label: "Cancelled" },
+};
+
+function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) {
+  const meta = NO_ACTION_META[kind];
+  const result = (e.result || "").trim();
+  return (
+    <div className="rounded-lg border border-sidebar-border bg-secondary/40 px-2.5 py-2">
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 flex-shrink-0 text-muted-foreground">
+          <AppIcon name={meta.icon} size={13} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-medium text-foreground">{meta.label}</div>
+          {/* No clamp: a question lists each mailbox, and each one matters. */}
+          {result && (
+            <div className="mt-0.5">
+              <Readout result={result} />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A `read_thread` result as a member reads it: each line as sent, with no
+ *  id. Exported for its test. */
+export function threadText(raw: string | null | undefined): string {
+  return (raw || "")
+    .split(/\r?\n/)
+    .map((line) => withoutIds(line))
+    .join("\n")
+    .trim();
+}
+
+/** True when a `read_thread` result read a thread: it starts "Thread:". */
+export function isThreadRead(raw: string | null | undefined): boolean {
+  return /^Thread:/.test((raw || "").trimStart());
 }
 
 /** The first line of a `draft_reply` result: the From mailbox and its id.

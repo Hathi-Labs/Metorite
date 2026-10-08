@@ -279,6 +279,12 @@ def _account_row(i: int, **over: Any) -> SimpleNamespace:
         import_reached_at=None,
         # The colour slot of EM-T8b (migration 227).
         color_slot=i,
+        # EM-T8f-1: each account read returns the time of the connect.
+        created_at=_T0 + timedelta(minutes=i),
+        # EM-T8g-1 (migration 229): each account read returns "Keep separate".
+        in_all_inboxes=True,
+        # EM-T6c: each account read returns the storage meter.
+        stored_bytes=None,
     )
     base.update(over)
     return SimpleNamespace(**base)

@@ -6,14 +6,16 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
 from fastapi import HTTPException
 from gateway import decide_features
 from gateway.routes.email.automation.identity import (
+    own_addresses,
     resolve_org_domains,
+    resolve_self_addresses,
     sender_scope,
 )
 from gateway.routes.email.automation.rules import _load_rules
@@ -48,17 +50,24 @@ def _addr_emails(field: Any) -> set[str]:
             for it in (items or []) if isinstance(it, dict) and it.get("email")}
 
 
-def _recipient_role(self_email: str, to_field: Any, cc_field: Any) -> str:
+def _recipient_role(
+    self_email: str, to_field: Any, cc_field: Any,
+    self_addresses: frozenset[str] | set[str] = frozenset(),
+) -> str:
     """Deterministic role of the mailbox owner on this email — a COMPUTED signal
     so the classifier need not parse address lists to tell a direct recipient
     from a Cc'd one. Returns 'direct' (in To), 'cc' (only in Cc), or '' (neither /
-    unknown: Bcc, a mailing list, or self not resolvable)."""
-    me = (self_email or "").strip().lower()
-    if not me:
+    unknown: Bcc, a mailing list, or self not resolvable).
+
+    The owner is each address in ``self_email`` and ``self_addresses``, so a
+    member who is in To under another of their mailboxes is a direct
+    recipient (D-EM-27, EM-T8e-1)."""
+    mine = own_addresses(self_email, self_addresses)
+    if not mine:
         return ""
-    if me in _addr_emails(to_field):
+    if mine & _addr_emails(to_field):
         return "direct"
-    if me in _addr_emails(cc_field):
+    if mine & _addr_emails(cc_field):
         return "cc"
     return ""
 
@@ -67,6 +76,7 @@ def email_dict_from_row(
     row: Any, self_email: str = "", about: str = "", self_name: str = "",
     extra_domains: frozenset[str] | set[str] = frozenset(),
     attachments: str = "",
+    self_addresses: frozenset[str] | set[str] = frozenset(),
 ) -> dict[str, str]:
     """Build the classifier's email dict from an ``email_messages`` row.
 
@@ -77,7 +87,12 @@ def email_dict_from_row(
 
     Also carries ``sender_scope`` (self / internal / external — see identity.py):
     the provenance signal that stops an OUTBOUND/internal email (e.g. an invoice
-    your org sent a customer) being mislabelled as a RECEIVED category."""
+    your org sent a customer) being mislabelled as a RECEIVED category.
+
+    ``self_addresses`` is the address of each mailbox of the member
+    (``identity.resolve_self_addresses``). Pass it as a KEYWORD, as
+    ``extra_domains``. Mail from another mailbox of the member is then
+    ``self``, not external (D-EM-27). ``self`` stays the current mailbox."""
     raw_from = getattr(row, "from_address", None)
     frm = raw_from if isinstance(raw_from, dict) else json.loads(raw_from or "{}")
     received = getattr(row, "received_at", None)
@@ -94,12 +109,13 @@ def email_dict_from_row(
         "date": received.isoformat() if hasattr(received, "isoformat") else "",
         "thread_id": getattr(row, "thread_id", "") or "",
         "sender_scope": sender_scope(
-            frm.get("email", ""), self_email or "", extra_domains),
+            frm.get("email", ""), self_email or "", extra_domains,
+            self_addresses=self_addresses),
         # Deterministic recipient role (direct/cc/'') — a computed CC-vs-To signal
         # the classifier reads instead of parsing the To/Cc lines itself.
         "recipient_role": _recipient_role(
             self_email or "", getattr(row, "to_addresses", None),
-            getattr(row, "cc_addresses", None)),
+            getattr(row, "cc_addresses", None), self_addresses),
         # "Attachments: file.pdf (…)" line (or "") — see core._attachment_summaries.
         "attachments": attachments or "",
     }
@@ -1248,6 +1264,178 @@ def _patterns_included_rule(
     return bool(p and any(_pattern_hit(pt, email) for pt in p["include"]))
 
 
+# ── The rule match in two steps (WS-17 EM-T4a-2 PR-B1) ──────────────────────
+# Spec: ``email_app_master_plan.md`` §10.4.6, "EM-T4a-2 — the decision core".
+# The READ step takes ``db`` and asks no model. The ASK step takes no ``db``.
+# A job reads in one block, asks with NO block open, and writes in a new
+# block, so no pooled session sits `idle in transaction` across the model.
+
+
+@dataclass(frozen=True)
+class MatchRead:
+    """What the READ step of the rule match saw (WS-17 EM-T4a-2 PR-B1).
+
+    The ask step takes each fact from here, and never reads a row again.
+    ``decided`` holds the matches that the read made with no model: a
+    learned pattern or a static condition. ``ask_rules`` holds the rules
+    that the model is asked about, and with none the ask asks nothing.
+    ``order`` is the id of each gated rule in the order of ``_load_rules``,
+    for the sort of the multi-rule mode. The lists are never changed.
+    """
+
+    account_id: str
+    email: dict[str, str]
+    multi_rule: bool = False
+    message_id: str | None = None
+    decided: list[dict[str, Any]] = field(default_factory=list)
+    ask_rules: list[dict[str, Any]] = field(default_factory=list)
+    order: list[str] = field(default_factory=list)
+    guidance: dict[str, list[str]] | None = None
+    history: list[dict[str, Any]] = field(default_factory=list)
+    member: str | None = None
+
+
+async def read_rule_match(
+    db: Any, account_id: str, email: dict[str, str],
+    *, multi_rule: bool = False, message_id: str | None = None,
+) -> MatchRead:
+    """The READ step of the rule match (WS-17 EM-T4a-2 PR-B1). It takes
+    ``db``, opens no block and asks no model.
+
+    It makes the reads of the one-rule mode or of the multi-rule mode
+    (``multi_rule``), in their order: the enabled rules, the Reply Zero
+    gate, the learned patterns, the guidance, the sender history and the
+    member of a ``decide`` call. A learned pattern or a static condition
+    decides with no model. In the one-rule mode the first such match ends
+    the read, and the guidance loads only after the pattern short-circuit.
+    ``message_id`` reaches the ``decide`` shadow log only.
+    """
+    def _read(**facts: Any) -> MatchRead:
+        return MatchRead(account_id=account_id, email=email,
+                         multi_rule=multi_rule, message_id=message_id, **facts)
+
+    rules = [r for r in await _load_rules(db, account_id) if r["enabled"]]
+    if not rules:
+        return _read()
+
+    # Reply Zero gate (inbox-zero parity): drop the conversation-status rules
+    # (Reply / Awaiting / FYI / Done) for no-reply, mass and broadcast
+    # mail so they can never match "Reply".
+    allowed, _why = await _is_reply_candidate(db, account_id, email)
+    rules = _gate_conversation_rules(rules, allowed)
+    if not rules:
+        return _read()
+
+    # Learned patterns (inbox-zero parity): an EXCLUDE pattern skips a rule
+    # entirely; an INCLUDE pattern is an immediate match (no LLM). The
+    # one-rule mode short-circuits on the first one. The multi-rule mode
+    # keeps each one, de-duped by id.
+    patterns = await _load_rule_patterns(db, account_id)
+    excluded = _patterns_excluded_rules(patterns, email)
+    decided: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rule in rules:
+        rid = str(rule.get("id"))
+        if rid in excluded or rid in seen \
+                or not _patterns_included_rule(rule, patterns, email):
+            continue
+        hit = {"rule": rule, "reason": "Matched a learned pattern.",
+               "source": "pattern"}
+        if not multi_rule:
+            return _read(decided=[hit])
+        seen.add(rid)
+        decided.append({**hit, "is_primary": False})
+    # Corrections that teach the model rather than bypass it. Loaded AFTER the
+    # pattern short-circuit on purpose: a pinned sender never reaches the LLM,
+    # so building its prompt context would be wasted work.
+    guidance = await _load_rule_guidance(db, account_id)
+
+    ask_rules: list[dict[str, Any]] = []
+    for rule in rules:
+        rid = str(rule.get("id"))
+        if rid in excluded or rid in seen:
+            continue
+        sm = _static_match(rule, email)
+        if (rule.get("instructions") or "").strip():
+            # Static (if any) must not contradict; let the LLM decide.
+            if sm is not False:
+                ask_rules.append(rule)
+            continue
+        if sm is True:
+            hit = {"rule": rule, "reason": "Matched static conditions.",
+                   "source": "static"}
+            if not multi_rule:
+                return _read(decided=[hit], guidance=guidance)
+            seen.add(rid)
+            decided.append({**hit, "is_primary": False})
+        # No instructions and static didn't match → this rule doesn't apply.
+
+    history: list[dict[str, Any]] = []
+    member = None
+    if ask_rules:
+        history = await _fetch_sender_history(db, account_id, email.get("from", ""))
+        member = await _decide_member(db, account_id)
+    return _read(decided=decided, ask_rules=ask_rules,
+                 order=[str(r.get("id")) for r in rules], guidance=guidance,
+                 history=history, member=member)
+
+
+async def ask_rule_match(read: MatchRead) -> list[dict[str, Any]]:
+    """The ASK step of the rule match (WS-17 EM-T4a-2 PR-B1). It takes NO
+    ``db``.
+
+    It asks the model about ``read.ask_rules`` through :func:`_llm_pick_rule`
+    or :func:`_llm_pick_rules`, unchanged, and returns the matches. The
+    one-rule mode returns one match at most. The multi-rule mode puts the
+    primary first and the rest in rule order. A read that decided with no
+    model asks nothing. It raises ``LLMUnavailable`` (``DecisionUnavailable``
+    in ``on``) when the model gives no answer, so a job writes nothing and
+    stamps nothing for the email (D-EM-8). The model await stays in its own
+    slot, in ``_llm_json`` or ``_ask_all`` (EM-T4b).
+    """
+    if not read.multi_rule:
+        if read.decided or not read.ask_rules:
+            return list(read.decided)
+        # D-EM-7: no member chooses the rules model. The old call runs on its
+        # fixed tier (`tier-fast`), and `on` asks Jev on `tier-decide`.
+        pick = await _llm_pick_rule(
+            read.email, read.ask_rules, hints=_hints_text(read.history),
+            guidance=read.guidance, account_id=read.account_id,
+            history=read.history, message_id=read.message_id,
+            member=read.member)
+        if not pick:
+            return []
+        return [{"rule": read.ask_rules[pick["index"]],
+                 "reason": pick["reason"] or "Matched by AI.", "source": "ai"}]
+
+    matches = list(read.decided)
+    seen = {str(m["rule"].get("id")) for m in matches}
+    if read.ask_rules:
+        # D-EM-7: no member chooses the rules model (see the one-rule mode).
+        for pick in await _llm_pick_rules(
+            read.email, read.ask_rules, hints=_hints_text(read.history),
+            guidance=read.guidance, account_id=read.account_id,
+            history=read.history, message_id=read.message_id,
+            member=read.member,
+        ):
+            rule = read.ask_rules[pick["index"]]
+            if str(rule.get("id")) in seen:
+                continue
+            seen.add(str(rule.get("id")))
+            matches.append({"rule": rule,
+                            "reason": pick["reason"] or "Matched by AI.",
+                            "source": "ai",
+                            "is_primary": bool(pick.get("primary"))})
+
+    # The LLM-chosen primary (most specific) leads; the rest follow in canonical
+    # system order (rules arrive from _load_rules sorted that way — inbox-zero
+    # parity, not a user priority).
+    order = {rid: i for i, rid in enumerate(read.order)}
+    matches.sort(key=lambda m: (0 if m.get("is_primary") else 1,
+                                order.get(str(m["rule"].get("id")), 1_000)))
+    return matches
+
+
 async def _match_email_to_rule(
     db: Any, account_id: str, email: dict[str, str],
     *, message_id: str | None = None,
@@ -1257,63 +1445,16 @@ async def _match_email_to_rule(
     Evaluation order per rule: static patterns (local) first, then NL
     instructions (one batched LLM call). Static-first keeps it cheap &
     deterministic. ``message_id`` reaches the ``decide`` shadow log only.
+
+    WS-17 EM-T4a-2 PR-B1: the COMPOSED form. It runs :func:`read_rule_match`
+    and :func:`ask_rule_match` on the ONE ``db`` of its caller, so it holds
+    that session across the ask. It stays for the request paths (item 8).
+    The rules job and the Reply Zero backfill run the two steps themselves.
     """
-    rules = [r for r in await _load_rules(db, account_id) if r["enabled"]]
-    if not rules:
-        return None
-
-    # Reply Zero gate (inbox-zero parity): drop the conversation-status rules
-    # (Reply / Awaiting / FYI / Done) for no-reply, mass and broadcast
-    # mail so they can never match "Reply".
-    allowed, _why = await _is_reply_candidate(db, account_id, email)
-    rules = _gate_conversation_rules(rules, allowed)
-    if not rules:
-        return None
-
-    # Learned patterns (inbox-zero parity): an EXCLUDE pattern skips a rule
-    # entirely; an INCLUDE pattern short-circuits to an immediate match (no LLM).
-    patterns = await _load_rule_patterns(db, account_id)
-    excluded = _patterns_excluded_rules(patterns, email)
-    for rule in rules:
-        if str(rule.get("id")) in excluded:
-            continue
-        if _patterns_included_rule(rule, patterns, email):
-            return {"rule": rule, "reason": "Matched a learned pattern.",
-                    "source": "pattern"}
-    # Corrections that teach the model rather than bypass it. Loaded AFTER the
-    # pattern short-circuit on purpose: a pinned sender never reaches the LLM,
-    # so building its prompt context would be wasted work.
-    guidance = await _load_rule_guidance(db, account_id)
-
-    instruction_rules: list[dict[str, Any]] = []
-    for rule in rules:
-        if str(rule.get("id")) in excluded:
-            continue
-        sm = _static_match(rule, email)
-        has_instr = bool((rule.get("instructions") or "").strip())
-        if has_instr:
-            # Static (if any) must not contradict; let the LLM decide.
-            if sm is not False:
-                instruction_rules.append(rule)
-            continue
-        if sm is True:
-            return {"rule": rule, "reason": "Matched static conditions.",
-                    "source": "static"}
-        # No instructions and static didn't match → this rule doesn't apply.
-
-    if instruction_rules:
-        history = await _fetch_sender_history(db, account_id, email.get("from", ""))
-        # D-EM-7: no member chooses the rules model. The old call runs on its
-        # fixed tier (`tier-fast`), and `on` asks Jev on `tier-decide`.
-        pick = await _llm_pick_rule(
-            email, instruction_rules, hints=_hints_text(history),
-            guidance=guidance, account_id=account_id,
-            history=history, message_id=message_id,
-            member=await _decide_member(db, account_id))
-        if pick:
-            return {"rule": instruction_rules[pick["index"]],
-                    "reason": pick["reason"] or "Matched by AI.", "source": "ai"}
-    return None
+    read = await read_rule_match(
+        db, account_id, email, multi_rule=False, message_id=message_id)
+    matches = await ask_rule_match(read)
+    return matches[0] if matches else None
 
 
 async def _match_email_to_rules_multi(
@@ -1327,73 +1468,12 @@ async def _match_email_to_rules_multi(
     instruction rule that applies (via _llm_pick_rules). De-duped by id and
     returned in rule sort order. ``message_id`` reaches the ``decide`` shadow
     log only.
+
+    WS-17 EM-T4a-2 PR-B1: the COMPOSED form, as :func:`_match_email_to_rule`.
     """
-    rules = [r for r in await _load_rules(db, account_id) if r["enabled"]]
-    if not rules:
-        return []
-
-    # Reply Zero gate (inbox-zero parity) — see _match_email_to_rule.
-    allowed, _why = await _is_reply_candidate(db, account_id, email)
-    rules = _gate_conversation_rules(rules, allowed)
-    if not rules:
-        return []
-
-    patterns = await _load_rule_patterns(db, account_id)
-    excluded = _patterns_excluded_rules(patterns, email)
-    guidance = await _load_rule_guidance(db, account_id)
-
-    matches: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    def _add(rule: dict[str, Any], reason: str, source: str,
-             is_primary: bool = False) -> None:
-        rid = str(rule.get("id"))
-        if rid in seen:
-            return
-        seen.add(rid)
-        matches.append({"rule": rule, "reason": reason, "source": source,
-                        "is_primary": is_primary})
-
-    # Learned INCLUDE patterns match immediately (and skip the LLM for that rule).
-    for rule in rules:
-        if str(rule.get("id")) in excluded:
-            continue
-        if _patterns_included_rule(rule, patterns, email):
-            _add(rule, "Matched a learned pattern.", "pattern")
-
-    instruction_rules: list[dict[str, Any]] = []
-    for rule in rules:
-        if str(rule.get("id")) in excluded or str(rule.get("id")) in seen:
-            continue
-        sm = _static_match(rule, email)
-        has_instr = bool((rule.get("instructions") or "").strip())
-        if has_instr:
-            if sm is not False:
-                instruction_rules.append(rule)
-            continue
-        if sm is True:
-            _add(rule, "Matched static conditions.", "static")
-
-    if instruction_rules:
-        history = await _fetch_sender_history(db, account_id, email.get("from", ""))
-        # D-EM-7: no member chooses the rules model (see _match_email_to_rule).
-        for pick in await _llm_pick_rules(
-            email, instruction_rules, hints=_hints_text(history),
-            guidance=guidance, account_id=account_id,
-            history=history, message_id=message_id,
-            member=await _decide_member(db, account_id),
-        ):
-            _add(instruction_rules[pick["index"]],
-                 pick["reason"] or "Matched by AI.", "ai",
-                 is_primary=bool(pick.get("primary")))
-
-    # The LLM-chosen primary (most specific) leads; the rest follow in canonical
-    # system order (rules arrive from _load_rules sorted that way — inbox-zero
-    # parity, not a user priority).
-    order = {str(r.get("id")): i for i, r in enumerate(rules)}
-    matches.sort(key=lambda m: (0 if m.get("is_primary") else 1,
-                                order.get(str(m["rule"].get("id")), 1_000)))
-    return matches
+    read = await read_rule_match(
+        db, account_id, email, multi_rule=True, message_id=message_id)
+    return await ask_rule_match(read)
 
 
 async def classify_matches(
@@ -1452,18 +1532,123 @@ async def classify_matches(
     return resolved or []
 
 
-async def _email_payload_from_id(db: Any, message_id: str, user_email: str) -> dict[str, str]:
+# ── The split form of classify_matches (WS-17 EM-T4a-2 PR-B1) ───────────────
+# The rules job and the Reply Zero backfill call these three, in this order:
+# ``read_classification`` in Block R, ``ask_rule_match`` with NO block open,
+# and ``resolve_classification`` first in Block W. They make the calls of
+# ``classify_matches`` in its order. The composed form above stays for the
+# request paths, which hold one session (EM-T4a-4 owns them).
+
+
+@dataclass(frozen=True)
+class ClassifyRead:
+    """What Block R of a job read for one email (WS-17 EM-T4a-2 PR-B1).
+
+    ``match`` is the read of the rule match. ``first`` is what
+    ``replyzero.status_before_match`` learned in ``on``, or None (a
+    ``replyzero.StatusFirst``, typed ``Any`` because replyzero imports this
+    module). ``resolve`` says whether Block W runs the resolver.
+    ``conversation`` is ``replyzero._thread_is_conversation``, read outside
+    ``on`` only (PR-B2 item 1). The job asks the status when it is True.
+    """
+
+    match: MatchRead
+    first: Any = None
+    resolve: bool = True
+    conversation: bool = False
+
+
+async def read_classification(
+    db: Any, account_id: str, message_row: Any, email: dict[str, str],
+    *, multi_rule: bool = False, resolve: bool = True,
+) -> ClassifyRead:
+    """The READ half of :func:`classify_matches` for a job (WS-17 EM-T4a-2
+    PR-B1). It takes ``db`` and opens no block. A job calls it in Block R.
+
+    It runs the status-first step of fix round 3, then
+    :func:`read_rule_match`. A missing status in ``on`` raises
+    ``DecisionUnavailable`` before the rule match is read or paid. In ``on``
+    of ``email.thread_status`` that step still asks its model here, inside
+    Block R, until PR-B3 (§10.4.6). The rule match asks nothing here.
+
+    PR-B2: outside ``on``, it also reads whether the thread is a
+    conversation, so the job knows in Block R whether it asks the status.
+    """
+    # Lazy: replyzero imports this module (see classify_matches).
+    from gateway.routes.email.automation.replyzero import (
+        _thread_is_conversation,
+        status_before_match,
+    )
+
+    row_id = getattr(message_row, "id", None)
+    thread_id = getattr(message_row, "thread_id", None)
+    first = (await status_before_match(db, account_id, message_row)
+             if resolve else None)
+    match = await read_rule_match(
+        db, account_id, email, multi_rule=multi_rule,
+        message_id=str(row_id) if row_id is not None else None)
+    conversation = bool(
+        resolve and thread_id
+        and decide_features.mode_for("email.thread_status") != "on"
+        and await _thread_is_conversation(db, account_id, thread_id))
+    return ClassifyRead(match=match, first=first, resolve=resolve,
+                        conversation=conversation)
+
+
+async def resolve_classification(
+    db: Any, account_id: str, message_row: Any, read: ClassifyRead,
+    matches: list[dict[str, Any]], *, provider: Any = None,
+    status: Any = None,
+) -> list[dict[str, Any]]:
+    """The resolver half of :func:`classify_matches` for a job (WS-17
+    EM-T4a-2 PR-B1). It takes ``db`` and opens no block. A job calls it
+    first in Block W, with the ``matches`` of :func:`ask_rule_match`.
+
+    Without ``read.resolve`` it returns ``matches`` as they are. Otherwise
+    it runs the conversation resolver with the status-first plan of the
+    read, as :func:`classify_matches` does. A suppressed match keeps its
+    flag. ``DecisionUnavailable`` passes up, so the job skips the email.
+
+    PR-B2: ``status`` is the ``replyzero.JobStatus`` that the job asked
+    with no block open, and the resolver asks no model with it.
+    """
+    if not read.resolve:
+        return matches
+    # Lazy: replyzero imports this module (see classify_matches).
+    from gateway.routes.email.automation.replyzero import (
+        resolve_conversation_status_matches,
+    )
+    resolved = await resolve_conversation_status_matches(
+        db, account_id, message_row, matches, provider=provider,
+        first=read.first, status=status)
+    return resolved or []
+
+
+async def _email_payload_from_id(
+    db: Any, message_id: str, user_email: str, account_id: str | None = None,
+) -> dict[str, str]:
+    """The classifier payload of one stored mail of the member.
+
+    With ``account_id``, the mail must be a mail of that mailbox, or the
+    answer is 404 (D-EM-19, EM-T8e-1). ``POST /email/rules/test`` passes it,
+    so a mail of mailbox B is never tested against the rules of mailbox A.
+    """
+    in_mailbox = " AND em.account_id = :aid" if account_id else ""
+    params: dict[str, Any] = {"mid": message_id, "uid": user_email}
+    if account_id:
+        params["aid"] = account_id
     row = (await db.execute(text(
-        """SELECT em.id, em.account_id, em.subject, em.body_text, em.snippet,
+        f"""SELECT em.id, em.account_id, em.subject, em.body_text, em.snippet,
                   em.from_address, em.to_addresses, em.cc_addresses, em.thread_id,
                   em.received_at, ea.email_address
            FROM email_messages em JOIN email_accounts ea ON em.account_id = ea.id
-           WHERE em.id = :mid AND ea.user_id = :uid"""
-    ), {"mid": message_id, "uid": user_email})).fetchone()
+           WHERE em.id = :mid AND ea.user_id = :uid{in_mailbox}"""
+    ), params)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Message not found")
     org_domains = await resolve_org_domains(db, str(row.account_id))
+    selves = await resolve_self_addresses(db, str(row.account_id))
     attach = (await _attachment_summaries(db, [row.id])).get(str(row.id), "")
     return email_dict_from_row(
         row, getattr(row, "email_address", "") or "",
-        extra_domains=org_domains, attachments=attach)
+        extra_domains=org_domains, attachments=attach, self_addresses=selves)

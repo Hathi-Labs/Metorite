@@ -21,6 +21,51 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+class ProviderRateLimited(Exception):
+    """A provider refused a request for a rate limit, and its tries are spent.
+
+    A typed error of a provider adds this class, as ``GmailRateLimited``
+    does. A sync that gets it fails, and the loop backs off (WS-17 EM-G4a
+    item 9). The scheduler reads it where it degrades other failures, so a
+    rate limit is never degraded (EM-G4b review round 1, F2)."""
+
+
+class ProviderAttachmentFailed(Exception):
+    """A file did not reach a draft at the provider (WS-17 EM-T9).
+
+    It holds the name of the file and nothing else. The upload URL of an
+    Outlook session carries a token in its query, so this class never takes
+    a URL, a response or a status, and it never subclasses
+    ``httpx.HTTPStatusError``, whose text holds the URL. The draft route
+    answers 502 with the name (``email_app_master_plan.md`` §10.4.10)."""
+
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
+        super().__init__(f"The file {filename} could not be attached.")
+
+
+class ProviderMailTooLarge(Exception):
+    """A mail is too large for the provider (WS-17 EM-G3c-1).
+
+    It holds the size of the built mail and the limit, in bytes, and nothing
+    else. It never takes a URL, a request or a response, and it never
+    subclasses ``httpx.HTTPStatusError``, whose text holds the URL. A typed
+    error of a provider adds this class, as ``GmailMailTooLarge`` does. The
+    send and the draft routes answer 413 (``email_app_master_plan.md``
+    §12.3.3b items 6 and 7). Outlook and IMAP never raise it.
+
+    ``limit`` is ``None`` when the provider refused the mail (a 413) under
+    the local limit, so the text never names a limit that did not apply."""
+
+    def __init__(self, size: int, limit: int | None) -> None:
+        self.size = size
+        self.limit = limit
+        super().__init__(
+            f"The mail has {size} bytes, and the limit is {limit} bytes."
+            if limit is not None else
+            f"The provider refused a mail of {size} bytes as too large.")
+
+
 class _RefreshableProvider(Protocol):
     """What :class:`RefreshingBearer` reads from an OAuth provider."""
 
@@ -316,6 +361,11 @@ class EmailMessage:
     unsubscribe_link: str | None = None
     received_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # True only on a ``[DELETED]`` marker that a change feed made (WS-17
+    # EM-G4b E-B2, review round 1 F3). Only the Gmail history sets it. A
+    # marker with it deletes a row in ``drafts``. A real message whose
+    # subject is "[DELETED]" never has it, so the rule cannot meet its row.
+    deletion_marker: bool = False
 
 
 @dataclass
@@ -329,6 +379,27 @@ class EmailFolder:
     # Canonical colour token ('preset0'..'preset24') for user labels, or None
     # when uncoloured. See providers/label_colors.py.
     color: str | None = None
+
+
+@dataclass
+class DeltaShadowReport:
+    """The record of one poll of the Graph delta in shadow (WS-17 EM-T4d).
+
+    It holds counts and statuses only: no subject, no address and no link.
+    ``both``, ``sweep_only`` and ``delta_only`` count the ids of NEW mail: a
+    message received after the end of the last round of its folder. A
+    folder in its first round adds to ``seeding`` and to no other count. An
+    ``@removed`` item adds to ``removed`` only. ``failed`` counts the folders
+    whose delta failed, and ``statuses`` names each failure: the HTTP status,
+    or the class of the error."""
+    folders: int = 0
+    both: int = 0
+    sweep_only: int = 0
+    delta_only: int = 0
+    seeding: int = 0
+    removed: int = 0
+    failed: int = 0
+    statuses: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -351,6 +422,20 @@ class SyncResult:
     # ``catch_up_folders`` names those folders.
     catch_up_incomplete: bool = False
     catch_up_folders: list[str] = field(default_factory=list)
+    # The record of the Graph delta in shadow (WS-17 EM-T4d), or None when no
+    # delta ran. The scheduler logs it. It never changes the fields above.
+    delta_report: DeltaShadowReport | None = None
+    # A fresh cursor that the provider read because its stored cursor was
+    # stale (WS-17 EM-G4b items 5 and 6). Only Gmail sets it. When the sweep
+    # back to the watermark read to the end, ``new_history_id`` holds the
+    # same value. When the sweep stopped short, ``new_history_id`` is None,
+    # so the stale cursor stays and the next cycle sweeps again (E-B1). The
+    # scheduler writes this value only when it abandons that catch-up.
+    reseed_history_id: str | None = None
+    # True when the provider found its cursor stale and swept again (WS-17
+    # EM-G4b review round 1 F6). The scheduler then logs the reset with the
+    # mailbox id. When ``reseed_history_id`` is None too, the seed failed.
+    cursor_reset: bool = False
 
 
 #: The callback that an import calls once, before its first batch, with the
@@ -381,6 +466,21 @@ class BaseEmailProvider(ABC):
     #: messages are a full snapshot of each folder back to the floor. The
     #: deep sync of a member act then reconciles deletions from it (EM-T6b).
     import_full_snapshot: bool = False
+
+    #: True when that reconcile leaves out each row in drafts (WS-17 EM-G5b
+    #: item 9). Gmail gives a draft a new message id at each update, so a
+    #: missing draft id proves no delete. The scheduler reads it with
+    #: ``getattr``, so a fake that does not subclass this class gets False.
+    import_reconcile_skips_drafts: bool = False
+
+    #: True when the provider gives a message a new id when it moves, so the
+    #: ingest upsert may move the one row of a Message-ID to the new id
+    #: (``persist.upsert_message(reclaim=...)``). Only Outlook does that.
+    #: Gmail never changes an id, and two Gmail messages can hold one
+    #: Message-ID, so a reclaim would fold them into one row (D-EM-34, GM-2).
+    #: A caller reads it with ``getattr(provider, "REKEYS_MESSAGE_IDS",
+    #: False)``, because some test fakes do not subclass this class.
+    REKEYS_MESSAGE_IDS: bool = False
 
     def __init__(self, credentials: dict[str, Any]):
         self.credentials = credentials
@@ -429,6 +529,15 @@ class BaseEmailProvider(ABC):
     async def get_message(self, provider_message_id: str) -> EmailMessage:
         """Get full email message including body."""
         ...
+
+    async def get_message_body(self, provider_message_id: str) -> EmailMessage:
+        """The message, for a caller that reads its body only.
+
+        The HTML route of the reading pane calls it (WS-17 EM-S1). The
+        default reads :meth:`get_message`. A provider whose full read costs
+        more, as Outlook's does, reads the body alone.
+        """
+        return await self.get_message(provider_message_id)
 
     @abstractmethod
     async def send_message(
@@ -492,16 +601,30 @@ class BaseEmailProvider(ABC):
     async def move_to_folder(
         self, provider_message_id: str, folder: str
     ) -> str | None:
-        """Move a message to the given canonical folder on the provider.
+        """Move a message to the given folder on the provider.
 
-        ``folder`` is a canonical key (inbox/archive/trash/junk/...).  Default
-        implementation is a no-op; providers override with their semantics
-        (Gmail = label changes, Outlook = /move, IMAP = COPY+EXPUNGE).
+        ``folder`` is a canonical key (inbox/archive/trash/junk/...) or the
+        name of a user folder, in its own case. The default is a no-op, and
+        IMAP keeps it. Gmail changes labels, and Outlook calls ``/move``
+        (WS-17 EM-G3b item 11).
 
         Returns the message's new provider id if the move re-keys it (Outlook
         /move returns a fresh id), otherwise ``None`` (id unchanged).
         """
         return None
+
+    def folder_after_move(self, name: str) -> str | None:
+        """The folder key that a move to ``name`` leaves the message in.
+
+        WS-17 EM-G3b item 4 (``email_app_master_plan.md`` §12.3.4). A caller
+        stores this key in the local row, so the row matches the next parse.
+        It makes no network call. ``None`` means that the provider refuses
+        the move. The base returns ``canonical_folder(name)``. Gmail files a
+        user label as ``archive`` (O-GM-1). Call it through
+        :func:`local_folder_after_move`, because some test fakes do not
+        subclass this class.
+        """
+        return canonical_folder(name)
 
     # Canonical bulk actions, shared by every provider so callers name them once.
     BULK_ACTIONS = ("archive", "trash", "read", "unread", "star", "unstar")
@@ -670,6 +793,8 @@ class BaseEmailProvider(ABC):
         attachments: list[dict[str, Any]] | None = None,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        *,
+        exact_to: bool = False,
     ) -> str:
         """Create a DRAFT message (not sent) on the provider; return its id.
 
@@ -679,6 +804,13 @@ class BaseEmailProvider(ABC):
 
         ``attachments`` (optional): a list of ``{"filename": str, "content":
         bytes, "mime_type": str}`` to attach to the draft.
+
+        ``exact_to`` (keyword only, WS-17 EM-T10 item 6): the To of a reply
+        draft is ``to`` exactly. Only the composers pass it, through
+        ``PUT /email/drafts``, because the member typed that To. Outlook then
+        writes ``toRecipients`` over the To that ``createReply`` set. With the
+        default, a reply keeps the To of the provider, so a Reply-To address
+        stays. Gmail and IMAP build ``to`` into the mail, so they ignore it.
 
         Used by Assistant reply/forward/draft rule actions. Raises
         NotImplementedError if the provider doesn't support drafts so the caller
@@ -728,6 +860,34 @@ class BaseEmailProvider(ABC):
             f"{self.__class__.__name__} does not support sending drafts"
         )
 
+    async def get_draft_recipients(self, draft_id: str) -> dict[str, list[str]]:
+        """The To, Cc and Bcc that the PROVIDER draft holds now.
+
+        Keys ``to``, ``cc`` and ``bcc``, each a list of addresses. WS-17
+        EM-T13b-1 review round 2: an unsigned draft send of the email
+        assistant compares them with the card before ``send_draft``. The
+        provider draft can differ from the local row: ``createReply`` sets a
+        Reply-To, and a member can add a Bcc in the mail app. A read that
+        fails raises, and the caller sends nothing.
+
+        Default raises NotImplementedError. A provider without it (IMAP) has
+        no native ``send_draft`` either, so its caller sends from the row.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not read draft recipients"
+        )
+
+    async def seed_cursor(self) -> str | None:
+        """The cursor of the mailbox at this moment, or None.
+
+        WS-17 EM-G4b (E-B3). ``_sync_cycle`` calls it BEFORE an import when
+        the mailbox has no cursor, and the sweep after the import then reads
+        each change from it. A change made during the import is not lost.
+        A provider with no cursor to seed keeps this default, so Outlook and
+        IMAP see no change. Gmail reads ``users.getProfile``.
+        """
+        return None
+
     @abstractmethod
     async def sync_messages(
         self,
@@ -736,6 +896,8 @@ class BaseEmailProvider(ABC):
         deep: bool = False,
         since: datetime | None = None,
         catch_up: datetime | None = None,
+        *,
+        delta_shadow: bool = False,
     ) -> SyncResult:
         """Incremental sync — fetch new/updated messages since history_id.
 
@@ -749,6 +911,10 @@ class BaseEmailProvider(ABC):
         (WS-17 EM-T6b item 9, D-EM-13). A provider that pages newest first
         reads more pages while its last page holds only mail newer than it.
         A provider with an incremental cursor ignores it.
+
+        ``delta_shadow`` runs the Graph delta of Outlook in shadow after the
+        sweep (WS-17 EM-T4d). The sweep stays the one writer. Gmail and IMAP
+        ignore it.
         """
         ...
 
@@ -771,7 +937,8 @@ class BaseEmailProvider(ABC):
         ``on_estimate`` is awaited at most once, before the first list. This
         default never calls it. It calls ``sync_messages(deep=True,
         since=since)``, drops each message newer than ``until``, sorts and
-        cuts. Gmail and IMAP use it. Outlook merges its folders page by page.
+        cuts. IMAP uses it. Outlook merges its folders page by page, and
+        Gmail pages one list of all mail (WS-17 EM-G5a).
         """
         size = max(size, 1)
         result = await self.sync_messages(deep=True, since=since)
@@ -788,3 +955,18 @@ class BaseEmailProvider(ABC):
     ) -> bytes:
         """Download an attachment's raw bytes."""
         ...
+
+
+def local_folder_after_move(provider: Any, name: str) -> str | None:
+    """The folder key that the local row stores after a move to ``name``.
+
+    WS-17 EM-G3b item 6 (``email_app_master_plan.md`` §12.3.4). The one
+    reader of :meth:`BaseEmailProvider.folder_after_move`. A provider that is
+    no ``BaseEmailProvider`` gets ``canonical_folder(name)``: an ``AsyncMock``
+    fake would return a coroutine, and a plain fake has no such method.
+    ``None`` means that the provider refuses the move, so the caller writes
+    nothing.
+    """
+    if isinstance(provider, BaseEmailProvider):
+        return provider.folder_after_move(name)
+    return canonical_folder(name)

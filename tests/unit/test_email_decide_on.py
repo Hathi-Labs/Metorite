@@ -94,8 +94,12 @@ ACC = "acc-on-1"
 MID = "msg-on-1"
 OWNER = "owner@acme-on.example"
 
-#: Every email feature in `on`, the value the orchestrator sets on the box.
-ALL_ON = ",".join(f"{f}=on" for f in df.FEATURES)
+#: The four triage features. EM-T14b-0 added `email.insights_screen` to the
+#: registry. It is not a triage site, and the owner flips it on its own.
+TRIAGE = tuple(f for f in df.FEATURES if f != "email.insights_screen")
+
+#: Every triage feature in `on`, the value the orchestrator sets on the box.
+ALL_ON = ",".join(f"{f}=on" for f in TRIAGE)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -174,7 +178,8 @@ async def test_the_orchestrator_value_turns_all_four_on(monkeypatch, tenant) -> 
     assert ALL_ON == ("email.cold_check=on,email.sender_pin=on,"
                       "email.thread_status=on,email.rule_match=on")
     _modes(monkeypatch, ALL_ON)
-    assert {f: df.mode_for(f) for f in df.FEATURES} == dict.fromkeys(df.FEATURES, "on")
+    assert {f: df.mode_for(f) for f in TRIAGE} == dict.fromkeys(TRIAGE, "on")
+    assert df.mode_for("email.insights_screen") == "off"
 
 
 @pytest.mark.parametrize("name", ["email.cold_sender", "email.pin", "email.rule_pick"])
@@ -621,18 +626,19 @@ class TestProcessPastOnJev:
 @_DB_GATE
 class TestTheNewMailFloorSql:
     """Item 7, the phase-0 SELECT of the REAL job, as the non-owner role
-    under FORCE RLS. A dry run with `classify_matches` recording each row it
-    gets shows which rows the SELECT returned, newest first."""
+    under FORCE RLS. A dry run with the ask step of the rule match recording
+    each row it gets shows which rows the SELECT returned, newest first
+    (EM-T4a-2 PR-B1: the job asks once for each row)."""
 
     async def _select(self, p, acc: str, *, scheduler: bool) -> list[str]:
         seen: list[str] = []
 
-        async def record(db, account_id, row, email, **kw):
-            seen.append(str(row.id))
+        async def record(read):
+            seen.append(str(read.message_id))
             return []
 
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(runner_mod, "classify_matches", record)
+            mp.setattr(runner_mod, "ask_rule_match", record)
             async with _as_app(p, p.org_b):
                 await runner_mod._run_rules_job(
                     acc, 50, True, "scheduler" if scheduler else "member@decide-on.test")

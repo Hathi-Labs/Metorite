@@ -115,7 +115,7 @@ def _settings_row(**over) -> SimpleNamespace:
         digest_categories=[], digest_day_of_week=1, digest_time_of_day="09:00",
         digest_send_to_email=True, morning_brief_enabled=False,
         multi_rule_execution=False, sensitive_data_protection=True,
-        org_domains=[],
+        org_domains=[], insights_enabled=False,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -211,9 +211,12 @@ async def test_the_get_for_a_new_mailbox_answers_the_shared_fixture() -> None:
     # on ON, so these lines pin the decision itself (D-EM-6).
     assert _FIXTURE["draft_replies"] is False
     assert _FIXTURE["follow_up_auto_draft"] is False
+    # Insights is OFF for a new mailbox (D-EM-39, EM-T14a).
+    assert _FIXTURE["insights_enabled"] is False
     model = AssistantSettingsModel(account_id="a")
     assert body["draft_replies"] is model.draft_replies
     assert body["follow_up_auto_draft"] is model.follow_up_auto_draft
+    assert body["insights_enabled"] is model.insights_enabled
 
 
 @pytest.mark.parametrize(("settings", "drafts", "expected"), [
@@ -252,6 +255,18 @@ async def test_the_put_answer_carries_every_get_key() -> None:
 async def test_the_put_answer_keeps_morning_brief_enabled() -> None:
     res = await _put(_db(), {"morning_brief_enabled": True})
     assert res["morning_brief_enabled"] is True
+
+
+async def test_the_put_stores_and_answers_insights_enabled() -> None:
+    """EM-T14a: the PUT binds the opt-in, and the answer carries it back."""
+    db = _db()
+    res = await _put(db, {"insights_enabled": True})
+    (sql, insert), = _executed(db, "INSERT INTO email_assistant_settings")
+    assert insert["ins"] is True
+    assert "insights_enabled = EXCLUDED.insights_enabled" in sql
+    assert res["insights_enabled"] is True
+    off = await _put(_db(), {})
+    assert off["insights_enabled"] is False
 
 
 # ── generate_writing_style can create the first settings row ────────────────

@@ -174,8 +174,9 @@ class MoveIn(BaseModel):
     #: D-PM-38 decision 4 (S5). Take every descendant of the selection along,
     #: each through the narrow move seam (`tasks.move_task_in`), so each one
     #: is remapped into the destination's set by the rule that seam applies.
-    #: FALSE by default: the chat tool and old callers move what they name.
-    #: The Move dialog sends true, because its box is ticked.
+    #: FALSE by default: old callers move what they name. The Move dialog
+    #: sends true, because its box is ticked, and the Projects chat's
+    #: `move_task` sends it for a member's "yes" (WS-46 P6).
     include_subtasks: bool = False
 
     @field_validator("status_map", "field_map")

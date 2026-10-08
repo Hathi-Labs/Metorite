@@ -8,6 +8,9 @@
  * a mail of mailbox B opened while A was selected went out from A (MB-2, MB-3).
  */
 
+import { accentForSlot, categoricalAccent, type CategoricalAccent } from "@/lib/categorical";
+import { atStorageLimit, storageNoticeKind } from "./storage";
+
 /** The mailbox of a mail. The selection is only the fallback for a mail that
  *  carries no account id (an optimistic row, an old cache). */
 export function mailboxOf(
@@ -87,6 +90,83 @@ export function replyRecipients(
   return { to, cc };
 }
 
+// ── The start of a draft card (EM-T10, §10.4.11) ───────────────────────────
+
+/** The recipients, the toggle and the Cc row of a draft card at its start. */
+export interface DraftStart {
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  /** `true` marks Reply All, `false` marks Reply, and `null` marks neither. */
+  replyAll: boolean | null;
+  /** The Cc and Bcc rows show at the start. */
+  showCc: boolean;
+}
+
+/** Each address of a list of parties, trimmed, with no empty entry. */
+const partyAddresses = (list?: Party[] | null): string[] =>
+  (list || []).map((p) => (p.email || "").trim()).filter(Boolean);
+
+/** The set of an address list: trimmed, lower case, with no display name. */
+const addressSet = (list: ReadonlyArray<string>): Set<string> =>
+  new Set(list.map((a) => a.trim().toLowerCase()).filter(Boolean));
+
+const sameAddresses = (a: ReadonlyArray<string>, b: ReadonlyArray<string>): boolean => {
+  const x = addressSet(a);
+  const y = addressSet(b);
+  return x.size === y.size && [...x].every((k) => y.has(k));
+};
+
+/**
+ * The start of a draft card (WS-17 EM-T10 items 1 to 3, C3 to C6).
+ *
+ * Before EM-T10 the card ignored the recipients of its draft. It started on
+ * Reply All with the lists of its reply target and no Bcc. So a reply that the
+ * member narrowed to the sender went to everyone at the next save, and a Bcc
+ * was lost (EM-G3c-2-f6).
+ *
+ * - A draft that holds a recipient in To, Cc or Bcc starts with its own lists.
+ *   A draft with no recipient starts with the reply-all lists, or empty when
+ *   the card has no reply target (`all` is null).
+ * - The toggle compares sets of trimmed, lower-case addresses. It marks Reply
+ *   when the To is the reply-only To, the Cc is empty, and the reply-all lists
+ *   differ from that To. It marks Reply All when the To and the Cc are the
+ *   reply-all lists, so a thread of two people starts on Reply All. Else it
+ *   marks neither: a forward, an edited To, another reply target, a Reply-To.
+ * - The Cc row shows for a Cc or a Bcc, and on a reply that does not start on
+ *   Reply.
+ *
+ * `all` is the reply-all To and Cc of the reply target, and `onlyTo` is its
+ * reply-only To. A click of the toggle computes them again from that target.
+ */
+export function draftRecipients(
+  draft: { to?: Party[] | null; cc?: Party[] | null; bcc?: Party[] | null },
+  all: { to: string[]; cc: string[] } | null,
+  onlyTo: string[] | null,
+): DraftStart {
+  const held = {
+    to: partyAddresses(draft.to),
+    cc: partyAddresses(draft.cc),
+    bcc: partyAddresses(draft.bcc),
+  };
+  const holdsOne = held.to.length + held.cc.length + held.bcc.length > 0;
+  const start = holdsOne
+    ? held
+    : { to: [...(all?.to ?? [])], cc: [...(all?.cc ?? [])], bcc: [] as string[] };
+  let replyAll: boolean | null = null;
+  if (all) {
+    const only = onlyTo ?? [];
+    const allIsOnly = sameAddresses(all.to, only) && addressSet(all.cc).size === 0;
+    if (!allIsOnly && sameAddresses(start.to, only) && addressSet(start.cc).size === 0) {
+      replyAll = false;
+    } else if (sameAddresses(start.to, all.to) && sameAddresses(start.cc, all.cc)) {
+      replyAll = true;
+    }
+  }
+  const showCc = start.cc.length > 0 || start.bcc.length > 0 || (!!all && replyAll !== false);
+  return { ...start, replyAll, showCc };
+}
+
 // ── The From row (EM-T8c, §11.4 and §11.7.3) ───────────────────────────────
 
 interface MailboxLike {
@@ -101,6 +181,23 @@ interface MailboxLike {
  *  address. The one copy of this rule; the chip and the From row use it. */
 export function mailboxLabel(account: Pick<MailboxLike, "emailAddress" | "displayLabel">): string {
   return (account.displayLabel || "").trim() || account.emailAddress;
+}
+
+/**
+ * The accent of a mailbox (EM-T8b, D-EM-21): its stored slot, else a stable
+ * hash of its id. A row that old code wrote after migration 227 has no slot
+ * yet. The hue comes from the categorical ramp, never from a hex value.
+ *
+ * It lives here, in `lib/`, so a decision in `lib/` can read it with no
+ * import from `components/` (EM-T8f-3 review F8). `components/MailboxChip.tsx`
+ * re-exports it for its callers.
+ */
+export function mailboxAccent(
+  account: { id: string; colorSlot?: number | null },
+): CategoricalAccent {
+  return account.colorSlot && account.colorSlot >= 1 && account.colorSlot <= 12
+    ? accentForSlot(account.colorSlot - 1)
+    : categoricalAccent(account.id);
 }
 
 /**
@@ -205,4 +302,177 @@ export function swapSignature(body: string, oldSig: string, newSig: string): str
   if (!oldSig || !body.includes(oldSig)) return body;
   if (!newSig) return body.replace(oldSig, "").replace(/\s+$/, "");
   return body.replace(oldSig, newSig);
+}
+
+// ── Keep separate (EM-T8g-2, D-EM-28 and D-EM-30) ──────────────────────────
+
+/** A mailbox with the flag of "Keep separate". Absent means "in All inboxes",
+ *  so a gateway before EM-T8g-1 keeps each mailbox in All inboxes. Only this
+ *  file, `api.ts` and `types.ts` name the flag. Each other file takes this
+ *  type and the functions below (review F2). */
+export interface PoolFlag {
+  inAllInboxes?: boolean | null;
+}
+
+/** True when the member keeps this mailbox out of All inboxes (D-EM-28). */
+export function isSeparate(account: PoolFlag): boolean {
+  return account.inAllInboxes === false;
+}
+
+/** A copy of `account` with the flag set: in All inboxes, or separate. */
+export function withPoolFlag<T extends PoolFlag>(account: T, pooled: boolean): T {
+  return { ...account, inAllInboxes: pooled };
+}
+
+/**
+ * The mailboxes in All inboxes: each mailbox that is not separate, in the
+ * order of the list. This is the one rule of the pool (D-EM-30). The All
+ * inboxes row, its unread sum, the header count, the folder sums,
+ * `scopeBusy`, `syncScope`, `pickInitialView` and the chat read it. Do not
+ * count `accounts` for an All-inboxes decision. Fence:
+ * `email-all-skips-separate` in `allInboxes.test.ts`.
+ */
+export function pooledMailboxes<T extends PoolFlag>(accounts: ReadonlyArray<T>): T[] {
+  return accounts.filter((a) => !isSeparate(a));
+}
+
+/** True when All inboxes shows: two or more pooled mailboxes (D-EM-30). */
+export function hasAllInboxes(accounts: ReadonlyArray<PoolFlag>): boolean {
+  return pooledMailboxes(accounts).length > 1;
+}
+
+/**
+ * The mailbox that All inboxes keeps selected out of view: the default when
+ * it is pooled, else the first pooled mailbox, else null. The folder tree,
+ * the label colours and the labels of All inboxes come from it, so it is
+ * never a separate mailbox (EM-T8g-2 review F1 and F5).
+ */
+export function poolHome<T extends { id: string; isDefault?: boolean } & PoolFlag>(
+  accounts: ReadonlyArray<T>,
+): T | null {
+  const pooled = pooledMailboxes(accounts);
+  return pooled.find((a) => a.isDefault) ?? pooled[0] ?? null;
+}
+
+/**
+ * The mailbox that the reconnect banner names: the selected one, or in All
+ * inboxes the first mailbox that needs it. A separate mailbox counts too,
+ * because a failure must never hide (EM-T8d review, EM-T8g-2 item 6).
+ */
+export function attentionMailbox<T extends { id: string; syncStatus?: string }>(state: {
+  viewAll: boolean;
+  selectedAccountId: string | null;
+  accounts: ReadonlyArray<T>;
+  authErrors: Readonly<Record<string, string>>;
+}): T | null {
+  const scope = state.viewAll
+    ? state.accounts
+    : state.accounts.filter((a) => a.id === state.selectedAccountId);
+  return scope.find((a) => a.syncStatus === "error" || !!state.authErrors[a.id]) ?? null;
+}
+
+/**
+ * The mailbox that the storage notice names (EM-T6e, D3), or null.
+ *
+ * - One mailbox in view: that mailbox, when it earns a notice
+ *   (`storageNoticeKind`: at the limit, or the gap of D2). A separate mailbox
+ *   shows its notice here, in its own view.
+ * - All inboxes: the first POOLED mailbox at the limit, in the order of the
+ *   list. A separate mailbox is never named here. The gap line shows in the
+ *   own view of its mailbox only.
+ *
+ * Two surfaces win over the notice, and their mailbox is skipped:
+ * - `attentionId`, the mailbox of the reconnect banner (`attentionMailbox`).
+ *   A failing sync comes first.
+ * - `storageStepId`, the mailbox whose guided setup draws the storage step.
+ *   The step names it already (D6).
+ *
+ * The dialog acts on the id of the mailbox this returns, never on the
+ * selected mailbox or `poolHome` (D3). Fence: `email-storage-mailbox` in
+ * `allInboxes.test.ts`.
+ */
+export function storageMailbox<
+  T extends { id: string } & PoolFlag & Parameters<typeof storageNoticeKind>[0],
+>(state: {
+  viewAll: boolean;
+  selectedAccountId: string | null;
+  accounts: ReadonlyArray<T>;
+  attentionId?: string | null;
+  storageStepId?: string | null;
+}): T | null {
+  const free = (a: T) => a.id !== state.attentionId && a.id !== state.storageStepId;
+  if (!state.viewAll) {
+    const box = state.accounts.find((a) => a.id === state.selectedAccountId);
+    return box && free(box) && storageNoticeKind(box) !== null ? box : null;
+  }
+  return pooledMailboxes(state.accounts).find((a) => free(a) && atStorageLimit(a)) ?? null;
+}
+
+/**
+ * The mailbox of the open removal dialog (EM-T6e), looked up in the list, or
+ * null. A mailbox can leave the list while the dialog is open: another tab
+ * disconnects it, or a re-read drops it. The dialog then draws nothing, and
+ * its `onClose` never runs. So the page shortcuts read this value, never the
+ * raw id, and the page clears an id that names no mailbox (review round 1).
+ * Fence: `email-storage-dialog-leaves` in `allInboxes.test.ts`.
+ */
+export function removalMailbox<T extends { id: string }>(
+  accounts: ReadonlyArray<T>,
+  removingId: string | null,
+): T | null {
+  if (removingId === null) return null;
+  return accounts.find((a) => a.id === removingId) ?? null;
+}
+
+/** The item of the mailbox menu that moves a mailbox in or out of All
+ *  inboxes. `nextPooled` is the value that the `PATCH` sends. */
+export interface SeparateToggle {
+  label: "Keep separate" | "Show in All inboxes";
+  icon: "EyeOff" | "Inbox";
+  nextPooled: boolean;
+}
+
+/**
+ * The menu item of "Keep separate" (EM-T8g-2 item 1). A separate mailbox
+ * offers "Show in All inboxes", and each other mailbox offers "Keep
+ * separate". With one mailbox there is no All inboxes, so the menu offers
+ * neither (§11.0).
+ */
+export function separateToggle(
+  account: PoolFlag,
+  accounts: ReadonlyArray<unknown>,
+): SeparateToggle | null {
+  if (accounts.length < 2) return null;
+  return isSeparate(account)
+    ? { label: "Show in All inboxes", icon: "Inbox", nextPooled: true }
+    : { label: "Keep separate", icon: "EyeOff", nextPooled: false };
+}
+
+/** The word that the switcher row of a separate mailbox shows beside its
+ *  chip, or null. With one mailbox nothing shows (§11.0). */
+export function separateMark(account: PoolFlag, accounts: ReadonlyArray<unknown>): "Separate" | null {
+  return accounts.length > 1 && isSeparate(account) ? "Separate" : null;
+}
+
+/**
+ * The mailbox that "Open in inbox" moves the view to, or null to stay.
+ * - One mailbox in view: a mail of another mailbox opens in its own mailbox
+ *   (EM-T8a, MB-3).
+ * - All inboxes: a mail of a separate mailbox opens in that mailbox, never
+ *   in All inboxes (EM-T8g-2 item 4). A mail of a pooled mailbox stays in
+ *   All inboxes with its chip (EM-T8d).
+ * A mailbox that is not in the list never moves the view.
+ */
+export function mailboxToOpen(
+  state: {
+    viewAll: boolean;
+    selectedAccountId: string | null;
+    accounts: ReadonlyArray<{ id: string } & PoolFlag>;
+  },
+  mailAccountId: string | null | undefined,
+): string | null {
+  const box = mailAccountId ? state.accounts.find((a) => a.id === mailAccountId) : undefined;
+  if (!box) return null;
+  if (state.viewAll) return isSeparate(box) ? box.id : null;
+  return box.id !== state.selectedAccountId ? box.id : null;
 }

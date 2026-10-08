@@ -135,12 +135,13 @@ async def classify_chats(account_id: str) -> None:
     classify_threads hook it deliberately sweeps all chats so a quiet number
     still catches up rather than gating on new inbound.
     """
-    from gateway.routes.whatsapp.core import _get_db
-    # H4: post-sync hook — fired by the Meta webhook / bridge ingest /
-    # bridge reclassify (service identity, no member session), so there is NO
-    # ambient tenant and none may be inherited; H4 threads an explicit one.
-    db = await _get_db()
-    try:
+    from gateway.routes.whatsapp.core import _tenant_session
+    # WS-20 WA-C1: the caller binds the account's tenant. The Meta webhook
+    # binds the org of the account row before it fires this hook. With no
+    # binding, `_tenant_session()` raises `TenantUnbound` and writes nothing.
+    # The bridge routes bind nothing yet (§12.4, out of WA-C1), and
+    # `fire_post_sync_hooks` logs that failure.
+    async with _tenant_session() as db:
         acc = (await db.execute(
             text("SELECT phone_number FROM wa_accounts WHERE id = :aid"),
             {"aid": account_id},
@@ -154,8 +155,5 @@ async def classify_chats(account_id: str) -> None:
             await recompute_chat_status(
                 db, account_id, str(c.id),
                 account_phone=phone, chat_kind=c.kind)
-        await db.commit()
-        _log.info("whatsapp.classify_chats.done",
-                  account_id=account_id, chats=len(chats))
-    finally:
-        await db.close()
+    _log.info("whatsapp.classify_chats.done",
+              account_id=account_id, chats=len(chats))

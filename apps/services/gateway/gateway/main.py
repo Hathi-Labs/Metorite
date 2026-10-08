@@ -9,9 +9,10 @@ from acb_auth import (UserContext, UserRole, get_current_user,
                       identity_read_failed, require_authenticated,
                       require_role)
 from acb_common import configure_logging, get_logger, get_settings
+from acb_common import db_busy
 from acb_common.db import TenantUnbound, clear_tenant, release_tenant
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from gateway.build_info import applied_marker, build_sha
@@ -55,6 +56,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # non-ASCII characters (e.g. zoho_crm.py's pipeline summary headers).
     os.environ.setdefault("PYTHONUTF8", "1")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+    # A stopping gateway must not ride through its OWN restart: its agents
+    # call this process's port, and each wait holds the old process up
+    # (acb_llm.ride_through, review of the 2026-10-08 fix). uvicorn holds its
+    # signal handlers by now, so the hook chains them.
+    try:
+        from acb_llm.ride_through import install_stop_hook
+        install_stop_hook()
+    except Exception:  # noqa: BLE001 - a missing hook is a slower restart only
+        pass
 
     # Expose the gateway's venv to every child process (the Copilot CLI, agent
     # shells, install_dependency).  `uv pip install` needs a target venv; the
@@ -151,6 +162,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             _log.warning("gateway.copilot_sandbox_sweep_failed", error=str(_e))
 
     _asyncio.ensure_future(_sweep_copilot_sandboxes())
+
+    # WS-43c: the sandbox broker's startup sweep (orchestrator/sandbox_broker.py,
+    # maf_coding_engine.md §7.1 rule 13). It ALWAYS runs, whatever
+    # MAF_CODING_SCOPE holds: a restart ends every run, so every container
+    # labelled metorite.sandbox=1 goes, also one an earlier scope left. With no
+    # Docker it logs one line and the gateway starts. The task runs in the
+    # background, and the broker's acquire() waits for it.
+    try:
+        from orchestrator.sandbox_broker import start_sandbox_broker
+
+        start_sandbox_broker()
+    except Exception as exc:
+        _log.warning("gateway.sandbox_broker_start_failed", error=str(exc)[:200])
 
     # Warm-clone every live agent that has a source (GitHub repo or local path)
     # but no clone on disk yet.  Clones are created lazily on first run, so a
@@ -404,6 +428,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    # Stop the sandbox broker's reaper (WS-43c). The next startup sweeps every
+    # labelled container, so shutdown removes none.
+    try:
+        from orchestrator.sandbox_broker import stop_sandbox_broker
+        await stop_sandbox_broker()
+    except Exception:
+        pass
+
     # Stop the WhatsApp enrichment loop
     try:
         from gateway.routes.whatsapp.scheduler import stop_whatsapp_enrichment
@@ -434,6 +466,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         from ingestion.consumer import stop_ingestion_consumer
         await stop_ingestion_consumer()
+    except Exception:
+        pass
+
+    # Cancel the Projects agent runs that are still going. Each one writes an
+    # "interrupted by a restart" row first, so no task keeps a "started" row
+    # that nothing closes. Before the audit drain, so their audit rows flush.
+    try:
+        from gateway.routes.projects.agent_dispatch import stop_runs
+        await stop_runs()
     except Exception:
         pass
 
@@ -702,6 +743,9 @@ async def _tenant_unbound(request: Request, exc: TenantUnbound) -> JSONResponse:
         },
     )
     if unreachable:
+        # `/health` says "db busy" for a moment, so the shell's update notice
+        # can explain this to the member (navigation_shell.md §7.3).
+        db_busy.mark()
         # ⚠️ **503, and it is checked BEFORE `identified`.** This is our
         # fault, it is retryable, and saying so is the entire point: the
         # advice the 403 gives — ask an administrator — could not have fixed
@@ -751,6 +795,42 @@ async def _tenant_unbound(request: Request, exc: TenantUnbound) -> JSONResponse:
             "code": "tenant_unbound",
         },
     )
+
+
+# ── A refused database connection is a 503, not a 500 (2026-10-06) ─────────
+# Measured on the box: about 590 EMAXCONNSESSION refusals from Supabase's
+# pooler in two days, during deploys and at busy moments. Each one reached a
+# member as "The server had an error (500). Nothing was saved." A connection
+# that could not be had is not a defect in the route. It is the service being
+# briefly unavailable, so the answer is 503 with a short Retry-After. The
+# workbench then says "Metorite is busy or updating" (`lib/apiError.ts`), and
+# the shell's notice shows "Metorite is busy" (navigation_shell.md §7.3).
+#
+# ⚠️ Every OTHER exception keeps exactly the old answer: a bare 500, and
+# Starlette's ServerErrorMiddleware still logs the traceback, because it
+# raises the exception again after this handler answers.
+# ⚠️ The driver's message is NOT echoed. It names the pooler host and limits.
+# Fence: tests/unit/test_db_busy.py.
+@app.exception_handler(Exception)
+async def _db_unavailable(request: Request, exc: Exception):
+    if db_busy.is_db_unavailable(exc):
+        db_busy.mark()
+        _log.warning(
+            "db.unavailable",
+            extra={"db_path": request.url.path, "db_error": type(exc).__name__},
+        )
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "3"},
+            content={
+                "detail": (
+                    "Metorite is busy for a moment, often during an update."
+                    " Try again in a moment."
+                ),
+                "code": "db_busy",
+            },
+        )
+    return PlainTextResponse("Internal Server Error", status_code=500)
 
 
 # ── Tenant scope (MT-1c / H2) ── every HTTP request runs inside its own tenant
@@ -953,9 +1033,13 @@ if _HAS_MAF:
                 except Exception as exc:
                     _log.exception("copilot_chat.stream_error")
                     try:
+                        # A code from the run-error vocabulary, which the
+                        # chat maps to words (acb_llm.run_errors). It was the
+                        # class name until 2026-10-08.
+                        from acb_llm.run_errors import classify_run_error
                         yield encoder.encode(_RunErrorEvent(
                             message="Internal error during agent run",
-                            code=type(exc).__name__,
+                            code=classify_run_error(exc),
                         ))
                     except Exception:
                         pass
@@ -1292,6 +1376,17 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # NS-4a — the command bar's "Find" (navigation_shell.md §6.3). One route
+    # that calls each app's OWN search on the member, behind that app's own
+    # feature check. No router-level feature gate: the member's apps decide
+    # which groups come back, and an app they lack is left out, not refused.
+    from gateway.routes.shell import router as _shell_router
+
+    app.include_router(_shell_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     from gateway.routes.settings import router as _settings_router
 
     app.include_router(_settings_router)
@@ -1529,6 +1624,10 @@ except Exception:  # pragma: no cover
 class Health(BaseModel):
     status: str
     env: str
+    #: "busy" when the database refused a connection in the last few
+    #: seconds, from memory: this route never opens a connection, so a probe
+    #: adds no load at the moment there is none to spare (db_busy.py).
+    db: str = "ok"
 
 
 class Version(BaseModel):
@@ -1600,7 +1699,11 @@ def _runtime_checks() -> dict[str, dict]:
 
 @app.get("/health", response_model=Health, tags=["meta"])
 async def health() -> Health:
-    return Health(status="ok", env=get_settings().acb_env)
+    return Health(
+        status="ok",
+        env=get_settings().acb_env,
+        db="busy" if db_busy.recently_busy() else "ok",
+    )
 
 
 @app.get("/version", response_model=Version, tags=["meta"])

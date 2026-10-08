@@ -68,6 +68,10 @@ export function ModeSwitch<Id extends string>({
           size={sheet ? "lg" : "sm"}
           selected={mode === entry.id}
           icon={entry.icon}
+          // The phone drawer's rows read from the left edge, like every other
+          // menu in the drawer (the Spaces tree, the Menu). Button centres its
+          // content by default, which suits a toolbar and not a list.
+          layout={sheet ? "flex w-full items-center justify-start gap-2.5" : undefined}
           onClick={() => onPick(entry.id)}
         >
           {entry.label ?? sentenceCase(entry.id)}

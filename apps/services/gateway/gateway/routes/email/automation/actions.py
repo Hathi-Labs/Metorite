@@ -16,7 +16,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import httpx
+from email_ingestion.llm_cap import llm_slot
+from gateway import outbound_guard
 from gateway.routes.email.automation.drafting import (
     _agent_draft_reply,
     _build_reply_context,
@@ -28,12 +29,17 @@ from gateway.routes.email.automation.drafting import (
     _store_ai_draft,
     _upsert_local_draft,
 )
+from gateway.routes.email.automation.identity import (
+    draft_skip_in_pair,
+    resolve_self,
+)
 from gateway.routes.email.core import (
     RESERVED_INDICATORS,
     _attachment_summaries,
     _log,
     _persist_rotated_creds,
     _provider_for_message,
+    _savepoint,
 )
 from sqlalchemy import text
 
@@ -67,14 +73,12 @@ async def apply_label(
     await mirror_label(db, message_id, lbl)
 
 
-async def push_label(
-    provider: Any, message_id: str, provider_msg_id: str, label: str,
-) -> str | None:
-    """The provider half of ``apply_label``. Touches no database.
+def _writable_label(message_id: str, label: str | None) -> str | None:
+    """The cleaned label that a caller may write, or ``None``.
 
-    Returns the cleaned label that the caller must mirror, or ``None`` when
-    the label is empty or reserved (then nothing is written anywhere). A
-    provider failure raises, so the caller writes no mirror for it.
+    The ONE check of an empty or reserved label. ``push_label`` and the
+    mirror of a rule move both call it (EM-G3b review round 1), so neither
+    writes a label that the other refuses.
     """
     lbl = (label or "").strip()
     if not lbl:
@@ -85,6 +89,21 @@ async def push_label(
         # and writing it (provider or mirror) would make the state permanent.
         _log.warning("email.apply_label_reserved_indicator",
                      message_id=message_id, label=lbl)
+        return None
+    return lbl
+
+
+async def push_label(
+    provider: Any, message_id: str, provider_msg_id: str, label: str,
+) -> str | None:
+    """The provider half of ``apply_label``. Touches no database.
+
+    Returns the cleaned label that the caller must mirror, or ``None`` when
+    the label is empty or reserved (then nothing is written anywhere). A
+    provider failure raises, so the caller writes no mirror for it.
+    """
+    lbl = _writable_label(message_id, label)
+    if lbl is None:
         return None
     if provider is not None and provider_msg_id:
         await provider.set_labels(provider_msg_id, add=[lbl], remove=[])
@@ -297,18 +316,131 @@ async def _render_template(template: str, email: dict[str, str]) -> str:
         )
         # Field-fill is part of rule evaluation → fast tier. Prose output (a
         # filled template), so no JSON mode.
-        resp, _ = await acompletion_with_fallback(
-            model="tier-fast",
-            messages=[{"role": "system", "content": sys_prompt},
-                      {"role": "user",
-                       "content": f"Template:\n{template}\n\nEmail:\n{ctx}"}],
-            temperature=0, max_tokens=1000,
-        )
+        async with llm_slot():  # EM-T4b: the cap and the daily budget
+            resp, _ = await acompletion_with_fallback(
+                model="tier-fast",
+                messages=[{"role": "system", "content": sys_prompt},
+                          {"role": "user",
+                           "content": f"Template:\n{template}\n\nEmail:\n{ctx}"}],
+                temperature=0, max_tokens=1000,
+            )
         out = (resp.choices[0].message.content or "").strip()
         return out or template
     except Exception as exc:
         _log.warning("email.template_render_failed", error=str(exc)[:200])
         return template
+
+
+async def _draft_from_address(
+    db: Any, account_id: str, *payloads: dict[str, Any] | None,
+) -> str:
+    """The From of a local draft copy: the address of the sending mailbox.
+
+    A rule draft goes out from ``account_id``, never from the sign-in address
+    of the member (MB-14, EM-T8e-1). A payload's ``self`` is that address.
+    ``approve_execution`` and ``retry_failed_executions`` build a payload with
+    no ``self``, so the mailbox row answers then."""
+    for payload in payloads:
+        own = ((payload or {}).get("self") or "").strip()
+        if own:
+            return own
+    if not account_id:
+        return ""
+    return (await resolve_self(db, account_id)).address
+
+
+async def _skip_for_paired_mailbox(
+    db: Any, account_id: str, message_id: str,
+) -> bool:
+    """True when the automatic draft of this mail must not start, because of
+    a paired mailbox (WS-17 EM-T8g-3 items 3 and 5, §11.6 edge case 11).
+
+    A paired mailbox holds a copy of this mail whose thread already holds a
+    draft or a sent mail, newer than the copy. Or another run for the same
+    mail holds the try-lock, so two overlapping runs make one draft at most.
+    The caller asks this before its thread check, so a skip trashes nothing.
+    The read is best-effort in a savepoint, like the thread check: a failure
+    drafts as before. The log names no address."""
+    if not account_id:
+        return False
+    skip: str | None = None
+    try:
+        async with _savepoint(db):
+            skip = await draft_skip_in_pair(db, account_id, str(message_id))
+    except Exception as exc:
+        _log.warning("email.draft_dedupe_failed", account_id=account_id,
+                     error=str(exc)[:160])
+    if skip:
+        _log.info("email.draft_skipped_other_mailbox",
+                  account_id=account_id, reason=skip)
+    return bool(skip)
+
+
+#: The canonical keys of the system folders. A move to one is never a user
+#: folder that the provider could not find.
+SYSTEM_FOLDER_KEYS = frozenset(
+    {"inbox", "sent", "drafts", "trash", "junk", "archive"})
+
+
+def _move_can_be_a_noop(provider: Any) -> bool:
+    """True when a move that returns no new id may have moved nothing.
+
+    WS-17 EM-G3b item 11 (E-M11). That is a provider that re-keys its ids
+    (``REKEYS_MESSAGE_IDS``), where a move with no new id found no folder.
+    It is also a provider that keeps the no-op move of the base class. IMAP
+    keeps it, so IMAP still logs. Gmail keeps its ids by design, so a Gmail
+    label move logs nothing."""
+    from email_ingestion.providers.base import BaseEmailProvider
+    if getattr(provider, "REKEYS_MESSAGE_IDS", False) is True:
+        return True
+    move = getattr(type(provider), "move_to_folder", None)
+    return move is BaseEmailProvider.move_to_folder
+
+
+async def _move_folder_action(
+    db: Any, provider: Any, message_id: str, provider_msg_id: str,
+    label: str, account_id: str,
+) -> str:
+    """The MOVE_FOLDER rule action. Returns the provider id of the message
+    after the move, which is a new one when the provider re-keys it.
+
+    WS-17 EM-G3b item 7 (``email_app_master_plan.md`` §12.3.4, E-M12). The
+    provider gets the ORIGINAL-CASE name, so a created folder reads "Cold
+    Email", not "cold email". The row stores the folder that the provider
+    says the move leaves (``local_folder_after_move``). Gmail files a user
+    label as ``archive``, so after a Gmail label move ``mirror_label`` also
+    puts the label into ``categories``. The row then matches the next
+    parse."""
+    from email_ingestion.providers.base import (
+        canonical_folder,
+        local_folder_after_move,
+    )
+    dest = label.strip()
+    canon = canonical_folder(dest)
+    folder = local_folder_after_move(provider, dest)
+    if folder is None:
+        # The provider refuses this move (Gmail: sent, drafts or a system
+        # label), so no provider call and no local write.
+        raise ValueError(f"this mailbox cannot move a message to {dest!r}")
+    # Provider first: if the move raises, the local folder is NOT
+    # rewritten to a destination the message never reached.
+    new_pid = await provider.move_to_folder(provider_msg_id, dest)
+    await db.execute(text("UPDATE email_messages SET folder=:f, updated_at=now() WHERE id=:id"), {"id": message_id, "f": folder})
+    if folder != canon:
+        # The provider filed the name as no folder of that name. A Gmail
+        # user label is a label and never a folder (O-GM-1). The mirror
+        # takes the check of ``push_label``, so a reserved name such as
+        # "Uncategorized" writes no mirror (review round 1).
+        await mirror_label(db, message_id, _writable_label(message_id, dest))
+    if new_pid:
+        # Outlook /move re-keys the message — keep follow-up actions valid.
+        await db.execute(text("UPDATE email_messages SET provider_message_id=:pid WHERE id=:id"), {"id": message_id, "pid": new_pid})
+        return new_pid
+    if canon not in SYSTEM_FOLDER_KEYS and _move_can_be_a_noop(provider):
+        # A user folder that produced no move id usually means the
+        # provider couldn't resolve/create it — surface it.
+        _log.info("email.move_folder_noop", account_id=account_id, folder=canon)
+    return provider_msg_id
 
 
 async def _apply_rule_actions(
@@ -376,24 +508,9 @@ async def _apply_rule_actions(
                 await provider.apply_flags(provider_msg_id, is_starred=True)
                 await db.execute(text("UPDATE email_messages SET is_starred=true, updated_at=now() WHERE id=:id"), {"id": message_id})
             elif t == "MOVE_FOLDER" and a.get("label"):
-                # Store the canonical (lowercased) key locally, but hand the
-                # ORIGINAL-CASE name to the provider so a created folder reads
-                # "Cold Email", not "cold email".
-                from email_ingestion.providers.base import canonical_folder
-                dest = a["label"].strip()
-                canon = canonical_folder(dest)
-                # Provider first: if the move raises, the local folder is NOT
-                # rewritten to a destination the message never reached.
-                new_pid = await provider.move_to_folder(provider_msg_id, dest)
-                await db.execute(text("UPDATE email_messages SET folder=:f, updated_at=now() WHERE id=:id"), {"id": message_id, "f": canon})
-                if new_pid:
-                    # Outlook /move re-keys the message — keep follow-up actions valid.
-                    await db.execute(text("UPDATE email_messages SET provider_message_id=:pid WHERE id=:id"), {"id": message_id, "pid": new_pid})
-                    provider_msg_id = new_pid
-                elif canon not in ("inbox", "sent", "drafts", "trash", "junk", "archive"):
-                    # A user folder that produced no move id usually means the
-                    # provider couldn't resolve/create it — surface it.
-                    _log.info("email.move_folder_noop", account_id=account_id, folder=canon)
+                provider_msg_id = await _move_folder_action(
+                    db, provider, message_id, provider_msg_id, a["label"],
+                    account_id)
             elif t == "LABEL" and a.get("label"):
                 # label_ai: the label is an AI prompt ({{...}}) resolved per-email.
                 lbl = a["label"]
@@ -413,6 +530,12 @@ async def _apply_rule_actions(
                 # fine — the user authored them).
                 if not tmpl and skip_ai_drafts:
                     _log.info("email.draft_skipped_sensitive", account_id=account_id)
+                    continue
+                # The draft dedupe across mailboxes (WS-17 EM-T8g-3 items 3
+                # and 5) runs FIRST. A run that skips changes nothing, so it
+                # never trashes the draft of the thread check below and then
+                # leaves the thread with no draft (review round 1, F1).
+                if await _skip_for_paired_mailbox(db, account_id, message_id):
                     continue
                 # Dedup (inbox-zero handlePreviousDraftDeletion parity): at most
                 # one AI draft per thread — replace an unmodified prior draft,
@@ -484,20 +607,27 @@ async def _apply_rule_actions(
                 to = a.get("to_address") or email.get("from", "")
                 if not to:
                     continue
+                # A To that the member typed into the rule is their choice,
+                # so Outlook writes it over the To of createReply. With none,
+                # createReply keeps its To, which honours a Reply-To (EM-T10
+                # review round 1).
                 draft_pid = await provider.create_draft(
                     to=[to], subject=subj, body_text=body,
                     reply_to_message_id=provider_msg_id,
                     thread_id=email.get("thread_id") or None,
                     attachments=_load_action_attachments(a, user_email) or None,
+                    exact_to=bool(a.get("to_address")),
                 )
                 # Mirror the draft locally so it shows in the Drafts folder and
                 # in-thread immediately (matches the manual draft write-path).
+                # The From is the sending mailbox (MB-14, EM-T8e-1).
                 if draft_pid and account_id:
                     await _upsert_local_draft(
                         db, account_id, draft_pid,
                         thread_id=email.get("thread_id") or None,
-                        owner_email=user_email, to_email=to,
-                        subject=subj, body=body,
+                        owner_email=await _draft_from_address(
+                            db, account_id, None if tmpl else draft_email, email),
+                        to_email=to, subject=subj, body=body,
                     )
                 # AI-written (non-template) drafts: remember for edit-learning.
                 # commit=False: every caller of _apply_rule_actions holds a
@@ -535,17 +665,28 @@ async def _apply_rule_actions(
                 if fwd_pid and account_id:
                     await _upsert_local_draft(
                         db, account_id, fwd_pid, thread_id=None,
-                        owner_email=user_email, to_email=a["to_address"],
+                        owner_email=await _draft_from_address(
+                            db, account_id, email),
+                        to_email=a["to_address"],
                         subject=fwd_subject, body=fwd,
                     )
             elif t == "CALL_WEBHOOK" and a.get("url"):
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    await client.post(a["url"], json={"message_id": message_id})
+                # The one outbound guard (EM-T13b-2): a public host only, the
+                # resolved address pinned, no redirect, and capped in time
+                # and in the bytes of the answer. A refusal raises
+                # OutboundRefused, and the except below records it.
+                await outbound_guard.request(
+                    "POST", a["url"], json={"message_id": message_id})
             else:
                 continue
             done.append(t)
         except Exception as exc:
-            _log.warning("email.rule_action_failed", action=t, error=str(exc)[:120])
+            # A refusal names the host and the reason, and never the path
+            # or the query of the URL (EM-T13b-2).
+            err = (f"webhook refused: {exc}"
+                   if isinstance(exc, outbound_guard.OutboundRefused)
+                   else str(exc))
+            _log.warning("email.rule_action_failed", action=t, error=err[:160])
             if errors_out is not None:
-                errors_out.append({"type": t or "?", "error": str(exc)[:160]})
+                errors_out.append({"type": t or "?", "error": err[:160]})
     return done

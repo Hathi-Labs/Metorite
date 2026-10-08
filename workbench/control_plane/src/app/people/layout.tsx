@@ -17,13 +17,19 @@
  * A second tab bar is exactly the app-local look `AGENTS.md` rule 1 refuses,
  * and the one that drifts is always the one in the app.
  *
- * ⚠️ **The bar is hidden for a member without `feature:people`, and that is
- * load-bearing.** This layout wraps `/people/me` too, which is deliberately
- * UNGATED (D-PC-15) — your own record is not the directory. Drawing Directory
- * and Org chart beside it for somebody who cannot open either would turn the
- * one surface they are entitled to into a wall of refusals. `/people/me` is
- * still the last tab for everybody who CAN see the bar, because "where do I
- * fit" and "who else is here" are one question asked from two ends.
+ * ⚠️ **A member without `feature:people` sees the two PERSONAL tabs only,
+ * and that is load-bearing.** This layout wraps `/people/me` and
+ * `/people/access`, which are deliberately UNGATED (D-PC-15) — your own
+ * record is not the directory. Drawing Directory and Org chart beside them
+ * for somebody who cannot open either would turn the surfaces they are
+ * entitled to into a wall of refusals. The personal tabs come last for
+ * everybody who sees the whole bar, because "where do I fit" and "who else is
+ * here" are one question asked from two ends.
+ *
+ * **My access joined as a tab on 2026-10-05** (owner directive: "remove my
+ * access from the sidebar and fold it into the People's app"). Before that,
+ * a member without `feature:people` saw no bar at all. Now the bar is that
+ * member's door to My access, so it shows the personal tabs to everybody.
  *
  * ⚠️ **Tabs follow the SERVER's permission, read from the resolved access.**
  * Hiding a tab is a courtesy and never a boundary — the gateway's own
@@ -49,7 +55,9 @@ import { hasCapability } from "@/lib/access";
  * `admin:members:read`. Directory, org chart and the working week need only
  * `feature:people`.
  */
-const TABS: ReadonlyArray<TabDef & { hr?: boolean; exact?: boolean }> = [
+const TABS: ReadonlyArray<
+  TabDef & { hr?: boolean; exact?: boolean; personal?: boolean }
+> = [
   { id: "directory", label: "Directory", icon: "Users", href: "/people",
     exact: true, note: "Everybody in the organization" },
   { id: "chart", label: "Org chart", icon: "Network", href: "/people/chart",
@@ -79,8 +87,15 @@ const TABS: ReadonlyArray<TabDef & { hr?: boolean; exact?: boolean }> = [
     note: "Which teams and Centers each person is in" },
   { id: "schedule", label: "Working week", icon: "Clock",
     href: "/people/schedule", note: "The hours the scheduler plans against" },
+  // `personal`: ungated, and shown even to a member without `feature:people`.
+  // Each one is also in `lib/access.ts` ALWAYS_ALLOWED, or the route would
+  // inherit the directory's slug by prefix.
   { id: "me", label: "My profile", icon: "User", href: "/people/me",
-    note: "What the assignment AI reads about you" },
+    personal: true, note: "What the assignment AI reads about you" },
+  // Owner directive, 2026-10-05. It was the sidebar pane `/access`.
+  { id: "access", label: "My access", icon: "ShieldCheck",
+    href: "/people/access", personal: true,
+    note: "What you can reach, and why anything else is hidden" },
 ];
 
 /**
@@ -105,26 +120,43 @@ export function activeTabFor(pathname: string): string {
   return best?.id ?? "";
 }
 
+/**
+ * The tabs one member sees.
+ *
+ * Without `feature:people`, only the `personal` tabs: My profile and My
+ * access, both ungated. With it, every tab, less the `hr` ones the member
+ * cannot open.
+ *
+ * Rebuilt field by field rather than spread-minus-the-extras: `hr`, `exact`
+ * and `personal` are this layout's own bookkeeping and must not reach `Tabs`,
+ * and an explicit list says which keys cross that boundary.
+ */
+export function visibleTabs(directory: boolean, hr: boolean): TabDef[] {
+  return TABS.filter((t) => (directory ? (t.hr ? hr : true) : t.personal === true))
+    .map((t) => ({
+      id: t.id,
+      label: t.label,
+      icon: t.icon,
+      href: t.href,
+      note: t.note,
+    }));
+}
+
 export default function PeopleLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "";
-  const { access } = useAccess();
+  const { access, loading } = useAccess();
 
-  const directory = access.features.includes("people");
-  const hr = hasCapability(access, "admin:members:read");
-  // Rebuilt field by field rather than spread-minus-the-extras: `hr` and
-  // `exact` are this layout's own bookkeeping and must not reach `Tabs`,
-  // and an explicit list says which keys cross that boundary.
-  const visible: TabDef[] = TABS.filter((t) => (t.hr ? hr : true)).map((t) => ({
-    id: t.id,
-    label: t.label,
-    icon: t.icon,
-    href: t.href,
-    note: t.note,
-  }));
+  const visible = visibleTabs(
+    access.features.includes("people"),
+    hasCapability(access, "admin:members:read"),
+  );
 
+  // ⚠️ Not while access resolves. `AccessProvider` starts at NO_ACCESS, which
+  // would draw the two personal tabs and then jump to the full bar, the same
+  // full-then-shrink shape `launch_surface.md` §8.1 forbids for the sidebar.
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {directory && (
+      {!loading && visible.length > 0 && (
         <Tabs
           tabs={visible}
           activeTab={activeTabFor(pathname)}

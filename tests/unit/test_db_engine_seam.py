@@ -371,12 +371,17 @@ H2_CONVERTED_PACKAGES: tuple[str, ...] = (
 #: batch) and background consumers (post-sync hooks, the enrichment loop, the
 #: Action Broker broadcast handler). H4/H6 owns threading an explicit tenant
 #: through each; every site carries the matching `# H4`/`# H4/H6` marker.
+#:
+#: WS-20 WA-C1 (2026-10-06) took the two post-sync hooks off the list:
+#: `intent.py` and `replyzero.py` open `_tenant_session()`, and the Meta
+#: webhook POST binds the account's tenant before it fires them.
+#: `webhook.py` keeps 2: the GET verify fallback (WA-C1b) and the POST's
+#: tenant-DISCOVERY read `_resolve_account`, which reads only through the
+#: SECURITY DEFINER resolver (H2_TENANT_DISCOVERY_SITES below).
 H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
     "apps/services/gateway/gateway/routes/whatsapp/transport/webhook.py": 2,
     "apps/services/gateway/gateway/routes/whatsapp/transport/bridge.py": 5,
     "apps/services/gateway/gateway/routes/whatsapp/scheduler.py": 2,
-    "apps/services/gateway/gateway/routes/whatsapp/automation/intent.py": 1,
-    "apps/services/gateway/gateway/routes/whatsapp/automation/replyzero.py": 1,
     "apps/services/gateway/gateway/routes/whatsapp/automation/transcription.py": 1,
     "apps/services/gateway/gateway/routes/whatsapp/automation/groups.py": 1,
     "apps/services/gateway/gateway/routes/whatsapp/automation/outbound.py": 1,
@@ -441,7 +446,11 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: `_remove_block_filter` and `_process_past_emails_job` (-12). routes/email
 #: keeps only the discovery read of `mailbox_owner`, which
 #: `test_email_request_jobs_tenancy.py` pins.
-H2_BASELINE_ELSEWHERE = 80
+#: 80 → 77: WS-20 WA-C1 (2026-10-06). The two WhatsApp post-sync hooks
+#: `classify_chats` and `process_new_messages` moved to `_tenant_session()`
+#: (-2). The webhook's `_resolve_account` became a tenant-discovery entry
+#: (-1). `test_whatsapp_webhook_under_rls.py` fences the path under FORCE RLS.
+H2_BASELINE_ELSEWHERE = 77
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -687,6 +696,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "bills, so this read decides the tenant. Since EM-T1b-1 the read runs "
         "in `tenant_session()` when a tenant is bound, and this one unbound "
         "site serves only the case with no tenant",
+    ("apps/services/gateway/gateway/routes/whatsapp/transport/webhook.py",
+     "_resolve_account"):
+        "WS-20 WA-C1: which tenant owns the Meta number of a webhook batch. "
+        "The org is the answer, so the read cannot run bound. Unlike the "
+        "entries above it does NOT go blind under FORCE RLS: it reads only "
+        "through the SECURITY DEFINER `wa_account_for_phone_number_id`, "
+        "granted to `acb_app` alone, and the route binds the org it returns",
 }
 
 
@@ -974,7 +990,11 @@ class TestThePoolCeilingFitsThePoolerInFront:
         from acb_common.settings import Settings
 
         s = Settings()
-        ceiling = s.db_pool_size + s.db_max_overflow
+        # BOTH engines of the one process (2026-10-06). This sum used to count
+        # the async pool only, while the sync `acb_graph` engine took
+        # SQLAlchemy's 5 + 10 unseen: 12 + 15 = 27 against a cap of 15.
+        ceiling = (s.db_pool_size + s.db_max_overflow
+                   + s.db_sync_pool_size + s.db_sync_max_overflow)
         assert ceiling <= self.POOLER_SESSION_CAP - self.RESERVED_FOR_OPERATORS, (
             f"a single process may open {ceiling} connections, but the pooler "
             f"in front allows {self.POOLER_SESSION_CAP} for EVERY client and "
@@ -983,6 +1003,30 @@ class TestThePoolCeilingFitsThePoolerInFront:
             "`resolve_identity` cannot read, and the member is told they belong "
             "to no organization."
         )
+
+    def test_the_sync_engine_takes_its_bounded_pool(self):
+        """The sync ``acb_graph`` engine must read the budget, not the defaults.
+
+        A pool setting that nothing reads is a comment. This builds the real
+        engine for a Postgres URL (no connection is opened) and reads its pool.
+        """
+        from types import SimpleNamespace
+
+        from acb_graph.db import _engine_kwargs
+        from sqlalchemy import create_engine
+
+        s = SimpleNamespace(
+            database_url="postgresql+psycopg://u:p@db.invalid:5432/x",
+            db_connect_timeout=5, db_sync_pool_size=2, db_sync_max_overflow=1,
+            db_pool_timeout=10,
+        )
+        engine = create_engine(s.database_url, **_engine_kwargs(s))
+        try:
+            assert engine.pool.size() == 2
+            assert engine.pool._max_overflow == 1
+            assert engine.pool._timeout == 10
+        finally:
+            engine.dispose()
 
     def test_exhaustion_waits_rather_than_hanging_for_thirty_seconds(self):
         """The ceiling is deliberately near the cap, so queueing is ordinary.

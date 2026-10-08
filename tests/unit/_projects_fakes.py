@@ -1088,6 +1088,9 @@ class FakeProjectsDB:
         term = like_to_regex(str(args.get("term") or ""))
         prefix = like_to_regex(str(args.get("prefix") or ""))
         number = args.get("number")
+        where = statement.split("END AS rank", 1)[-1]
+        texted = "t.description ILIKE :term" in where
+        exact = "t.task_number = CAST(:number AS bigint)" in where
         scoped = "pm_project_grants" in statement
         visible = self.visible_project_ids(
             str(args.get("vis_email") or ""), list(args.get("vis_groups") or []),
@@ -1141,7 +1144,11 @@ class FakeProjectsDB:
             title = str(task.get("title") or "")
             body = str(task.get("description") or "")
             numbered = number is not None and task.get("task_number") == number
-            if not (term.match(title) or term.match(body) or numbered):
+            # D-PM-31: the text arm and the exact arm are alternatives, and
+            # each is honoured only when the WHERE carries it. A route that
+            # sent a number query through the text arm goes red here.
+            worded = texted and (term.match(title) or term.match(body))
+            if not (worded or (exact and numbered)):
                 continue
             rank = (
                 0 if numbered

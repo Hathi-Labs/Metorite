@@ -22,6 +22,8 @@ import {
 } from "@/app/email/lib/emailAssistantPersona";
 import { getAssistantSettings } from "@/app/email/lib/api";
 import AgentChat from "@/components/AgentChat";
+import { useChatScope, useRestoredSessionGuard } from "@/hooks/useChatSessions";
+import { carriedText, recoverRefused, recoveredNotice, type RailPick } from "@/lib/railSessions";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
@@ -34,8 +36,20 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
+import { useTierRouted } from "@/hooks/useTierRouted";
+import {
+  CHAT_AGENT,
+  agentPickerShows,
+  chatAgentChoice,
+  governedModelProps,
+  initialChatOpen,
+  newChatAction,
+  readsChatModel,
+  tierRoutingUiOn,
+} from "@/lib/tierRouting";
 import type { AgentEntry } from "@/app/api/agent/list/route";
 import type { IntegrationStatus } from "@/app/api/integrations/status/route";
+import { filterWord, shellBarOn } from "@/lib/shell/registry";
 
 // Agent names that receive the Metorite persona (general-purpose brain).
 // All agents get persistent Mem0 memory — conversations are saved to Mem0
@@ -401,7 +415,9 @@ function SessionList({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search conversations…"
+          placeholder={`${filterWord()} conversations…`}
+          aria-label={shellBarOn() ? "Filter conversations" : undefined}
+          data-page-filter={shellBarOn() ? "conversations" : undefined}
           className="w-full rounded-md border border-border bg-background/60 py-1.5 pl-8 pr-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none tech-transition"
         />
       </div>
@@ -576,6 +592,30 @@ function ChatPageInner() {
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
+  // The member and org the list belongs to (null until known), and the id the
+  // page restored from that list. Only a restored id recovers from a refusal
+  // (production bug, 2026-10-05, `lib/railSessions.ts`).
+  const chatScopeId = useChatScope();
+  const [restoredId, setRestoredId] = useState<string | null>(null);
+  const [recoveredInput, setRecoveredInput] = useState<string | undefined>();
+  // NS-1: the command bar's "Ask the assistant" arrives as `?q=`. The words
+  // land in the message box for the member to check and send. Nothing sends
+  // by itself (§6.4 rule 2). `q` then leaves the address, so a reload does
+  // not type it again.
+  //
+  // ⚠️ Its own state, never `recoveredInput`. The session effect below clears
+  // `recoveredInput` on mount, in the same flush, and the question vanished
+  // (review, 2026-10-08). Gated on the flag, so a flag-off build reads no `q`.
+  const askParam = shellBarOn() ? searchParams?.get("q") ?? null : null;
+  const [askInput, setAskInput] = useState<string | undefined>();
+  useEffect(() => {
+    if (!askParam?.trim()) return;
+    setAskInput(askParam.trim().slice(0, 2000));
+    const url = new URL(window.location.href);
+    url.searchParams.delete("q");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }, [askParam]);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   // Cross-conversation memory (load + 30s poll) — injected into AgentChat for
   // continuity; managed in the full memory manager at /memory, not here.
   const { memories } = useChatMemories(userId);
@@ -618,6 +658,11 @@ function ChatPageInner() {
   // (which the backend would coerce to a different tier). Refined to the
   // account's saved chat_model once the fetch resolves; kept on lookup failure.
   const [emailChatModel, setEmailChatModel] = useState<string | undefined>("tier-powerful");
+  // WS-45 S4 (D90): for a covered email-assistant the platform picks the
+  // tier, so the chat neither reads nor passes `chat_model`. With the UI flag
+  // off it is known and not covered, so the read and the props are as before.
+  const emailTier = useTierRouted("email-assistant");
+  const emailReadsModel = readsChatModel(emailTier);
   // The account's standing configuration, fed into the persona below — same
   // fetch, so the assistant behaves the same here as in the email app.
   const [emailAcctSettings, setEmailAcctSettings] =
@@ -628,7 +673,7 @@ function ChatPageInner() {
     getAssistantSettings(emailChatAccountId)
       .then((s) => {
         if (cancelled) return;
-        setEmailChatModel(s.chat_model || "tier-powerful");
+        if (emailReadsModel) setEmailChatModel(s.chat_model || "tier-powerful");
         setEmailAcctSettings({
           about: s.about,
           personal_instructions: s.personal_instructions,
@@ -638,7 +683,7 @@ function ChatPageInner() {
       })
       .catch(() => { /* keep the tier-powerful default on lookup failure */ });
     return () => { cancelled = true; };
-  }, [activeAgentName, emailChatAccountId]);
+  }, [activeAgentName, emailChatAccountId, emailReadsModel]);
   // Declared after the settings it reads (the persona carries the active
   // account's standing configuration, not just the account list).
   const emailAssistantPersona = useMemo(
@@ -685,12 +730,25 @@ function ChatPageInner() {
 
   // Fetch agents once at page level so AgentChat knows agent_runtime before first render.
   const [agentList, setAgentList] = useState<AgentEntry[]>([]);
+  // True once the list has answered. A fault counts, and reads as not covered.
+  const [agentListKnown, setAgentListKnown] = useState(false);
   useEffect(() => {
     fetch("/api/agent/list")
       .then((r) => r.json())
       .then((data: AgentEntry[]) => { if (Array.isArray(data)) setAgentList(data); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setAgentListKnown(true));
   }, []);
+  // Who picks the agent of a NEW conversation (owner, 2026-10-07). With the
+  // UI flag on and the orchestrator covered, nobody: a new conversation talks
+  // to the orchestrator, which routes to the right agent. UI flag off: the
+  // member, with the picker, as today. An existing conversation always keeps
+  // its own agent (`initialChatOpen`).
+  const agentChoice = chatAgentChoice({
+    uiOn: tierRoutingUiOn(),
+    agentsKnown: agentListKnown,
+    entries: agentList,
+  });
   // canonical name → friendly display name, for the session-list group headers.
   const agentAliasMap = useMemo(
     () => Object.fromEntries(
@@ -701,35 +759,48 @@ function ChatPageInner() {
     [agentList],
   );
 
-  // Load sessions from localStorage on mount.
+  // Load the member's sessions from localStorage once the member is known, and
+  // again when the member or the org changes.
   // If ?agent=<name> is in the URL, immediately open a new session for that agent.
   // If no sessions exist, show the agent picker — never default to any agent.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    const agentParam = searchParams?.get("agent");
-    const existing = getSessions();
-    if (agentParam) {
-      const existing2 = getSessions();
-      const match = existing2.find((s) => s.agentName === agentParam);
-      if (match) {
-        setSessions(getSessions());
-        setActiveSessionId(match.id);
-      } else {
-        const fresh = createSession(agentParam);
-        upsertSession(fresh);
-        setSessions(getSessions());
-        setActiveSessionId(fresh.id);
-      }
-    } else if (existing.length === 0) {
-      // No sessions yet — show the agent picker so the user explicitly
-      // chooses which agent to talk to instead of defaulting blindly.
-      setShowPicker(true);
-    } else {
-      setSessions(existing);
-      setActiveSessionId(existing[0].id);
+    setRecoveryNotice(null);
+    setRecoveredInput(undefined);
+    if (!chatScopeId) {
+      setSessions([]);
+      setActiveSessionId("");
+      setRestoredId(null);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time init
-  }, []);
+    const existing = getSessions();
+    // `?agent=` stays: the /agents page links here for one agent. The latest
+    // conversation opens with ITS agent, so no history moves (2026-10-07).
+    const open = initialChatOpen({
+      sessions: existing,
+      agentParam: searchParams?.get("agent"),
+    });
+    if (open.kind === "open") {
+      setSessions(existing);
+      setActiveSessionId(open.id);
+      setRestoredId(open.id);
+    } else if (open.kind === "create") {
+      const fresh = createSession(open.agent);
+      upsertSession(fresh);
+      setSessions(getSessions());
+      setActiveSessionId(fresh.id);
+      setRestoredId(null);
+    } else {
+      // No sessions yet — ask for the agent picker so the user explicitly
+      // chooses which agent to talk to instead of defaulting blindly. It
+      // draws only when the member chooses (`agentPickerShows`).
+      setSessions([]);
+      setActiveSessionId("");
+      setRestoredId(null);
+      setShowPicker(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per member
+  }, [chatScopeId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // After initial localStorage render, fetch from Postgres and merge any sessions
@@ -737,6 +808,7 @@ function ChatPageInner() {
   // Also poll every 30s so sessions created on other devices appear in the sidebar
   // without requiring a page refresh.
   useEffect(() => {
+    if (!chatScopeId) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
 
@@ -753,11 +825,65 @@ function ChatPageInner() {
     sync();
 
     return () => { cancelled = true; clearTimeout(timer); };
+  }, [chatScopeId]);
+
+  // A restored id the server refuses gives way to a new chat with the same
+  // agent, and no error card. The latest pick is kept in a ref, because the
+  // refusal arrives after an await.
+  const pickRef = useRef<RailPick>({ activeId: "", restoredId: null });
+  useEffect(() => {
+    pickRef.current = { activeId: activeSessionId, restoredId };
+  }, [activeSessionId, restoredId]);
+  const recoverChat = useCallback((refusedId: string, pendingText?: string): boolean => {
+    const agent = getSessions().find((s) => s.id === refusedId)?.agentName;
+    if (!agent || isUnresolvedAgent(agent)) return false;
+    const next = recoverRefused(pickRef.current, refusedId, agent);
+    if (!next) return false;
+    pickRef.current = next;
+    // The refused message and the refused chat's queue go to the composer,
+    // and the note explains the new chat on load and on send alike.
+    const carried = carriedText(refusedId, pendingText);
+    setSessions(getSessions());
+    setActiveSessionId(next.activeId);
+    setRestoredId(null);
+    setRecoveredInput(carried);
+    setRecoveryNotice(recoveredNotice(carried));
+    return true;
+  }, []);
+  const onSessionRefused = useRestoredSessionGuard(activeSessionId, restoredId, recoverChat);
+
+  // A new conversation on the orchestrator, with no picker. It never repairs
+  // the active conversation, because the member named no agent for it.
+  const startOrchestratorChat = useCallback(() => {
+    setShowPicker(false);
+    const s = createSession(CHAT_AGENT);
+    upsertSession(s);
+    setSessions(getSessions());
+    setActiveSessionId(s.id);
+    setRestoredId(null);
+    setRecoveryNotice(null);
   }, []);
 
+  // A press of "+ New conversation" before the agent list answered.
+  const newChatWaitingRef = useRef(false);
   const handleNewSession = useCallback(() => {
+    const action = newChatAction(agentChoice);
+    if (action === "create") {
+      startOrchestratorChat();
+      return;
+    }
+    newChatWaitingRef.current = action === "wait";
     setShowPicker(true);
-  }, []);
+  }, [agentChoice, startOrchestratorChat]);
+
+  // The list answered: a waiting press starts the orchestrator chat, or the
+  // picker that it asked for now draws (`agentPickerShows`).
+  useEffect(() => {
+    if (agentChoice === "pending" || !newChatWaitingRef.current) return;
+    newChatWaitingRef.current = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one press, once
+    if (agentChoice === "orchestrator") startOrchestratorChat();
+  }, [agentChoice, startOrchestratorChat]);
 
   const handleSelectAgent = useCallback(
     (agentName: string) => {
@@ -771,18 +897,30 @@ function ChatPageInner() {
         upsertSession(repaired);
         setSessions(getSessions());
         setActiveSessionId(repaired.id);
+        setRestoredId(null);
         return;
       }
       const s = createSession(agentName);
       upsertSession(s);
       setSessions(getSessions());
       setActiveSessionId(s.id);
+      setRestoredId(null);
+      setRecoveryNotice(null);
     },
     [activeSessionId]
   );
 
   const handleSelectSession = useCallback((id: string) => {
+    // A press of "+ New conversation" that waits for the agent list ends
+    // here: the member chose a conversation instead (review P3). Only a
+    // waiting press closes the request, so the UI flag off is as today.
+    if (newChatWaitingRef.current) {
+      newChatWaitingRef.current = false;
+      setShowPicker(false);
+    }
     setActiveSessionId(id);
+    setRestoredId(null);
+    setRecoveryNotice(null);
   }, []);
 
   const handleDeleteSession = useCallback(
@@ -800,6 +938,7 @@ function ChatPageInner() {
       const remaining = getSessions();
       setSessions(remaining);
       if (id === activeSessionId) {
+        setRestoredId(null);
         if (remaining.length > 0) {
           // Prefer a sibling of the SAME agent so deleting a session doesn't
           // bounce the user into an unrelated agent's conversation (sessions are
@@ -832,6 +971,14 @@ function ChatPageInner() {
   );
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+  // The picker still names the agent of a conversation whose agent is not
+  // known, with any choice, so that conversation keeps the right history.
+  const repairingAgent = !!activeSession && isUnresolvedAgent(activeSession.agentName);
+  const pickerShows = agentPickerShows({
+    requested: showPicker,
+    choice: agentChoice,
+    repairing: repairingAgent,
+  });
 
   // Side panel shows the ACTIVE session's documents only — drop other sessions'
   // tabs when switching so we never render a file from the wrong workspace.
@@ -961,7 +1108,7 @@ function ChatPageInner() {
   return (
     <div className="relative flex h-full overflow-hidden">
       {/* Agent picker modal */}
-      {showPicker && (
+      {pickerShows && (
         <AgentPickerModal
           onSelect={handleSelectAgent}
           onClose={() => setShowPicker(false)}
@@ -1090,17 +1237,26 @@ function ChatPageInner() {
                 onMailboxChange={setEmailMailboxId}
                 // Email-assistant locks to the account chat_model (parity with
                 // the email app); all other agents keep the generic picker.
-                model={
-                  activeSession.agentName === "email-assistant"
-                    ? emailChatModel
-                    : undefined
-                }
-                lockModel={activeSession.agentName === "email-assistant"}
+                // WS-45 S4: a covered email-assistant gets neither prop.
+                {...(activeSession.agentName === "email-assistant"
+                  ? governedModelProps(emailTier.covered, emailChatModel)
+                  : { model: undefined, lockModel: false })}
                 memories={memories.map((m) => m.memory)}
                 memoryUserId={userId}
                 availableAgents={agentList.length > 0 ? agentList : undefined}
                 expectedMessageCount={activeSession.messageCount}
                 onActivity={(info) => handleActivity(activeSession.id, info)}
+                onSessionRefused={onSessionRefused}
+                notice={
+                  recoveryNotice
+                    ? { text: recoveryNotice, onDismiss: () => setRecoveryNotice(null) }
+                    : null
+                }
+                pendingInput={recoveredInput ?? askInput}
+                onPendingInputConsumed={() => {
+                  setRecoveredInput(undefined);
+                  setAskInput(undefined);
+                }}
                 onArtifact={(entry: ArtifactEntry) => {
                   const name = entry.path.split("/").pop() ?? entry.path;
                   setArtifactUpdates((prev) => {
@@ -1130,9 +1286,11 @@ function ChatPageInner() {
               />
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
-              <div className="text-sm">Choose an agent to start chatting</div>
+              <div className="text-sm">
+                {agentChoice === "member" ? "Choose an agent to start chatting" : "Start a new conversation"}
+              </div>
               <Button size="none" layout="" onClick={handleNewSession} className="px-5 py-2.5 text-sm">
-                + New session
+                {agentChoice === "member" ? "+ New session" : "+ New conversation"}
               </Button>
             </div>
           )}

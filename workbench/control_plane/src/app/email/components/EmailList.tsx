@@ -3,14 +3,19 @@
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Email } from "../lib/types";
+import type { Email, EmailAccount } from "../lib/types";
 import { timeLabel } from "../lib/utils";
-import { useEmailStore, isRealFolder, foldersInScope, scopeBusy } from "../lib/emailStore";
+import { useEmailStore, isRealFolder, foldersInScope, scopeBusy, checkedRows } from "../lib/emailStore";
 import { MailboxChip } from "./MailboxChip";
 import { LabelChip, ColorSwatch, LabelColorGrid } from "./LabelChip";
 import { presetForLabel } from "../lib/labelColors";
 import { FixDialog } from "./automation/ai-settings/fixDialog";
 import { useViewMode } from "@/components/ViewModeProvider";
+import {
+  createPrefetchSchedule, prefetchListKey, sharedHtmlPrefetcher, visibleRowIds,
+  type PrefetchRow, type RowBox,
+} from "../lib/htmlPrefetch";
+import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 
 interface EmailListProps {
   emails: Email[];
@@ -55,6 +60,42 @@ function renderHighlight(hl: string): { __html: string } {
     .replace(/&lt;mark&gt;/g, '<mark class="bg-primary/25 text-foreground rounded-sm px-0.5">')
     .replace(/&lt;\/mark&gt;/g, "</mark>");
   return { __html: withMarks };
+}
+
+/**
+ * The mailboxes that a row names after "Also in" (WS-17 EM-T8g-3 item 2,
+ * D-EM-22): each mailbox of `alsoIn` that the member still has, in the order
+ * of the switcher. A member with one mailbox sees none. The mailbox of the
+ * row and a mailbox that left the list are skipped. The gateway already pairs
+ * two mailboxes only when neither one is separate (D-EM-30).
+ */
+export function alsoInMailboxes<T extends { id: string }>(
+  email: Pick<Email, "accountId" | "alsoIn">,
+  accounts: ReadonlyArray<T>,
+): T[] {
+  if (accounts.length < 2 || !email.alsoIn?.length) return [];
+  const want = new Set(email.alsoIn);
+  return accounts.filter((a) => a.id !== email.accountId && want.has(a.id));
+}
+
+/** "Also in" and the chip of each mailbox of `alsoInMailboxes`, or nothing. */
+export function AlsoInLine({
+  email,
+  accounts,
+}: {
+  email: Pick<Email, "accountId" | "alsoIn">;
+  accounts: ReadonlyArray<EmailAccount>;
+}) {
+  const boxes = alsoInMailboxes(email, accounts);
+  if (boxes.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+      <span>Also in</span>
+      {boxes.map((box) => (
+        <MailboxChip key={box.id} account={box} />
+      ))}
+    </div>
+  );
 }
 
 // Snooze-until presets, computed at click time. "Later today" is +3h; the rest
@@ -121,7 +162,7 @@ export function EmailList({
     selectedIds, toggleEmailSelected, setSelectedEmails, clearEmailSelection,
     bulkUpdateSelected, bulkDeleteSelected, captureEmailToTasks,
     runTestOnMessage, testRunningIds, snoozeEmail,
-    viewAll, accounts,
+    viewAll, accounts, searchQuery, searchScope, searchFilters,
   } = useEmailStore();
   // In All inboxes each row names its mailbox (EM-T8d, D-EM-22, §11.4).
   const mailboxOfRow = (accountId: string) =>
@@ -154,9 +195,12 @@ export function EmailList({
   // Held in the store so the desktop unified toolbar shares it; aliased to the
   // local names the rows / select-all / context-menu code below already use.
   const selected = selectedIds;
+  // The checked rows of the list on screen. Each bulk act and each count reads
+  // these, never a check whose row left the list (EM-T8g-2 review round 2).
+  const checked = checkedRows({ emails, selectedIds });
   const toggleOne = toggleEmailSelected;
   const allSelected = emails.length > 0 && emails.every((e) => selected.has(e.id));
-  const someSelected = selected.size > 0 && !allSelected;
+  const someSelected = checked.length > 0 && !allSelected;
   const toggleAll = () =>
     allSelected ? clearEmailSelection() : setSelectedEmails(emails.map((e) => e.id));
   const clearSelection = clearEmailSelection;
@@ -171,13 +215,13 @@ export function EmailList({
     const y = Math.min(py, window.innerHeight - menuH);
     // Right-clicking a row that's part of a multi-selection acts on the whole
     // selection (Windows/Outlook behaviour); otherwise it's a single-email menu.
-    const bulk = selected.has(email.id) && selected.size > 1;
+    const bulk = checked.includes(email.id) && checked.length > 1;
     setCtx({
       x: Math.max(8, x),
       y: Math.max(8, y),
       email,
       bulk,
-      count: bulk ? selected.size : 1,
+      count: bulk ? checked.length : 1,
     });
   };
   const openContext = (e: React.MouseEvent, email: Email) => {
@@ -276,6 +320,44 @@ export function EmailList({
     return () => observer.disconnect();
   }, [handleAutoLoad]);
 
+  // ── The prefetch of old HTML (WS-17 EM-S2, §14.4.2 item 5) ──
+  // When the list stays still for PREFETCH_STILL_MS, ask for the HTML of the
+  // visible rows with `htmlRemote`. `lib/htmlPrefetch.ts` owns each bound.
+  // With the flag off no row is remote, so no timer starts and no request goes.
+  // The state of the prefetch (its slots, its stop, its wait) lives at module
+  // scope in `lib/htmlPrefetch.ts`, so a remount of this list keeps it. On a
+  // phone each open of a message unmounts the list.
+  const listKey = prefetchListKey({
+    viewAll, accountId: selectedAccountId, folder: selectedFolder,
+    label: selectedLabel, query: searchQuery, scope: searchScope, filters: searchFilters,
+  });
+  const anyRemote = emails.some((e) => e.htmlRemote === true);
+  const visibleRows = useCallback((): PrefetchRow[] => {
+    const box = scrollRef.current;
+    if (!box) return [];
+    const view = box.getBoundingClientRect();
+    const boxes: RowBox[] = [];
+    box.querySelectorAll<HTMLElement>("[data-email-row]").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      boxes.push({ id: el.dataset.emailRow ?? "", top: r.top, bottom: r.bottom });
+    });
+    const shown = new Set(visibleRowIds(boxes, view.top, view.bottom));
+    return emails.filter((e) => shown.has(e.id));
+  }, [emails]);
+  const [still] = useState(() => createPrefetchSchedule());
+  const schedulePrefetch = useCallback(
+    () => still.schedule(anyRemote, () => void sharedHtmlPrefetcher().run(visibleRows())),
+    [still, anyRemote, visibleRows]
+  );
+  // Each new array of rows starts the wait of a still list again. Only a new
+  // list key (another mailbox, folder, label or search) clears a stop. A soft
+  // refresh of the same list keeps it.
+  useEffect(() => {
+    sharedHtmlPrefetcher().listLoaded(listKey);
+    schedulePrefetch();
+    return () => still.cancel();
+  }, [emails, listKey, schedulePrefetch, still]);
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Contextual toolbar row — MOBILE ONLY. On desktop the single
@@ -284,10 +366,10 @@ export function EmailList({
           • multi-select   → bulk-action bar
           • one email open → New + per-message actions
           • nothing open   → New + message count */}
-      {isMobile && (selected.size > 0 ? (
+      {isMobile && (checked.length > 0 ? (
         <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-border flex-shrink-0 bg-primary/10 overflow-x-auto scrollbar-hide">
           <span className="text-[10px] font-medium text-foreground px-1">
-            {selected.size} selected
+            {checked.length} selected
           </span>
           <div className="flex-1" />
           <ToolbarBtn icon={themedIcon("MailOpen")} label="Mark read" onClick={() => bulkUpdate({ isRead: true })} />
@@ -366,7 +448,7 @@ export function EmailList({
             <CheckboxSquare checked={allSelected} indeterminate={someSelected} />
           </button>
           <span className="text-[10px] text-muted-foreground select-none">
-            {selected.size > 0 ? `${selected.size} selected` : "Select all"}
+            {checked.length > 0 ? `${checked.length} selected` : "Select all"}
           </span>
         </div>
       )}
@@ -375,6 +457,7 @@ export function EmailList({
       <div
         ref={scrollRef}
         className="flex-1 overflow-y-auto scrollbar-hide"
+        onScroll={schedulePrefetch}
         onTouchStart={onPullStart}
         onTouchMove={onPullMove}
         onTouchEnd={onPullEnd}
@@ -402,6 +485,21 @@ export function EmailList({
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">
             <AppIcon name="MailOpen" size={24} className="opacity-40" />
             <p className="text-xs">No emails to show</p>
+            {/* §6.7 rule 3: a filter that finds nothing offers the one search. */}
+            {shellBarOn() && searchQuery.trim() ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon="Sparkles"
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent(OPEN_COMMAND_BAR, { detail: { query: searchQuery.trim() } }),
+                  )
+                }
+              >
+                Search everywhere for “{searchQuery.trim()}”
+              </Button>
+            ) : null}
           </div>
         ) : (
           <>
@@ -410,6 +508,7 @@ export function EmailList({
               return (
               <div
                 key={email.id}
+                data-email-row={email.id}
                 className={`group flex items-stretch border-b border-border ${
                   isSel ? "bg-primary/5" : ""
                 }`}
@@ -511,6 +610,10 @@ export function EmailList({
                   </div>
                 )}
 
+                {/* "Also in" (EM-T8g-3, D-EM-22): each other mailbox that
+                    holds a copy of this mail, with its chip. */}
+                <AlsoInLine email={email} accounts={accounts} />
+
                 {/* Categories / user labels — click to filter the list.
                     When an email has NO category (rules haven't run or the
                     agent couldn't categorize it), show an "Uncategorized" pill
@@ -602,22 +705,22 @@ export function EmailList({
           appliedCategories={ctx.bulk ? new Set() : new Set(ctx.email.categories)}
           onApplyLabel={(name, add) =>
             ctx.bulk
-              ? applyLabelBulk([...selected], name, add)
+              ? applyLabelBulk(checked, name, add)
               : applyLabel(ctx.email.id, name, add)
           }
           onClearCategories={() =>
-            clearCategories(ctx.bulk ? [...selected] : [ctx.email.id])
+            clearCategories(ctx.bulk ? checked : [ctx.email.id])
           }
           onClose={() => setCtx(null)}
           snoozedView={selectedFolder === "snoozed"}
           onSnooze={(until) =>
-            (ctx.bulk ? [...selected] : [ctx.email.id]).forEach((id) =>
+            (ctx.bulk ? checked : [ctx.email.id]).forEach((id) =>
               snoozeEmail(id, until),
             )
           }
           onReply={(k) => onToolbarAction(k, ctx.email)}
           onAddToTasks={() =>
-            (ctx.bulk ? [...selected] : [ctx.email.id]).forEach((id) =>
+            (ctx.bulk ? checked : [ctx.email.id]).forEach((id) =>
               captureEmailToTasks(id),
             )
           }

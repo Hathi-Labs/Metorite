@@ -13,6 +13,9 @@ Wants=network-online.target
 # A hard `Requires` makes the nightly backup fail on a box that no longer runs
 # a database container, which is a backup lost to a dependency it does not use.
 # The docker path still orders correctly behind `After=`.
+# Since 2026-10-07 the deep verify runs in a container (see ExecStart below),
+# so it needs Docker even on a managed box. It stays `Wants`: without Docker
+# the dump still lands, and the verify fails loudly on its own.
 Wants=docker.service
 
 [Service]
@@ -32,15 +35,56 @@ EnvironmentFile=/opt/acb/app/.env
 # rather than fail the whole unit. `backup_db.sh` skips the second cluster when
 # the variable is absent.
 EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
+# 🔴 **The off-box bucket key (H-123) lives HERE and nowhere else.** A
+# Supabase S3 key is PROJECT-WIDE: it passes Row Level Security and can read
+# or delete every object in every bucket of the project. /opt/acb/app/.env is
+# also the env file of acb-gateway (User=acb) and of the WhatsApp bridge, and
+# the gateway's in-process Copilot CLI inherits that env (H-270). So every
+# BACKUP_S3_* and BACKUP_GPG_* key goes in this root:root 0600 file, which
+# only THIS unit loads. The `-` keeps a box without the off-box copy working.
+# backup_offbox.sh refuses a key file that is not root:root 0600, and refuses
+# a BACKUP_S3_*, BACKUP_GPG_* or BACKUP_OFFBOX_ENV_FILE line in .env.
+# ⚠️ This closes the PASSIVE paths only: the inherited env, /proc/<pid>/environ
+# and env dumps in logs. `acb` is equivalent to root on this box (sudo, the
+# docker group, and it owns the scripts this unit runs), so an ACTIVE
+# compromise of the app can still read this key. That is H-271.
+# `test_only_the_backup_unit_loads_the_offbox_key_file` fences the units.
+EnvironmentFile=-/etc/acb/backup-offbox.env
 # Invoked through bash on purpose — a checkout that loses the executable bit
 # (Windows contributors, archive exports) would otherwise fail with a bare
 # "Permission denied" and backups would silently never run. Same reasoning as
 # acb-health-watchdog.service.
 #
 # `--verify-restore` is the whole point of the unit rather than a bare dump:
-# it restores the fresh dump into a scratch database and counts rows, so a
-# backup that cannot be restored fails LOUDLY every night instead of being
-# discovered during an incident. That is this ticket's own rule — a backup
-# nobody has restored is not a backup.
-ExecStart=/bin/bash /opt/acb/app/scripts/backup_db.sh --verify-restore
+# it restores the `public` schema of the fresh dump and compares its table
+# count with live, so a backup that cannot be restored fails LOUDLY every night
+# instead of being discovered during an incident. That is this ticket's own
+# rule — a backup nobody has restored is not a backup.
+#
+# 🔴 **WHERE it restores changed on 2026-10-07.** It used to `createdb` and
+# `pg_restore` INTO THE PRODUCTION CLUSTER. On the managed cluster that write
+# burst used up the disk I/O budget, and the instance stayed degraded for hours.
+# It now restores into a throwaway `pgvector/pgvector:pg<live major>` container
+# on THIS box: no network, capped at 1g of memory, removed on exit. The cluster
+# gets reads only. So the verify NEEDS Docker on the box (the `Wants=` above).
+# Without Docker the verify fails, and it never falls back to the cluster. The
+# Console dump, the off-box copy and retention still run, and the unit exits 1
+# at the end.
+#
+# 🔴 **The off-box copy (H-123, owner decision 2026-10-08).** `--offbox` is
+# OPT-IN, and THIS line is the only place that passes it. With the keys of
+# /etc/acb/backup-offbox.env, each night also goes to the private Supabase
+# Storage bucket through its S3 endpoint. zstd compresses each item, and gpg
+# encrypts it to the owner's PUBLIC key, so this box can write a backup and
+# cannot read one. rclone reads the key from the environment only. The step
+# runs AFTER local retention, under `timeout`. Its deadline is the time LEFT
+# in this unit: min(BACKUP_S3_TIMEOUT_SECS, TimeoutStartSec - elapsed - 60).
+# With under 120 s left, it is skipped and recorded as a failure. A failed or
+# timed-out upload is an ERROR, and the unit exits 1 at the end.
+# The journal line `off-box copy ok` is the evidence that a night left the box.
+# Restore: scripts/restore_offbox.sh, and project-docs/specs/backup_and_restore.md §4.2.
+ExecStart=/bin/bash /opt/acb/app/scripts/backup_db.sh --verify-restore --offbox
+# ⚠️ ONE value with `unit_timeout_secs` in scripts/backup_db.sh, which cuts
+# the off-box deadline from it. `test_the_unit_budget_is_one_value` fails when
+# the two drift. Change both, or neither.
 TimeoutStartSec=1800

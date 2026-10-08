@@ -9924,6 +9924,8 @@ The tenant gateway reaches the Router for chat only today. A search for
 
 #### CP-13d · The main chat gets a `decide` tool — not a sub-agent — BUILT 2026-09-24
 
+📌 **D90 (decided 2026-10-06) changes the engine of this tool.** The tool keeps its name. For an agent in `AI_TIER_ROUTING`, it runs an MAF agent on `tier-fast` and says `open_world=False`. `ai_tier_routing.md` §6 owns that design.
+
 The owner asked for "one of the sub agents that is called to decision making
 fast by the main chat". **The measured answer is a TOOL with that job, and
 not an agent.**

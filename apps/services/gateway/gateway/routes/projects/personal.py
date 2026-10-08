@@ -15,6 +15,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §3.11-§3.12, §6.1 ·
     POST  /projects/my/tasks/{task_id}/organize  → one clarify decision, atomically
     PATCH /projects/tasks/{task_id}/personal     → set MY overlay on a task
     GET   /projects/my/contexts                  → the contexts I actually use
+    GET   /projects/my/today                     → my date and my zone (WS-46 P7)
 
 **There is no sync here, and that is the whole point.** A task assigned to a
 member is not copied into their inbox — it *is* the row in their inbox. So
@@ -1452,25 +1453,70 @@ DEFERRED_CLAUSE = (
 )
 
 
+def zone_name(tz_name: Any) -> str:
+    """``tz_name`` when it is an IANA zone, else ``"UTC"``, the default
+    `user_settings.timezone` carries. One rule for the date and for the name,
+    so a route never reports a zone that its date was not computed in."""
+    try:
+        ZoneInfo(str(tz_name or "UTC"))
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # OSError: "America" is a directory of the zone database, not a zone.
+        return "UTC"
+    return str(tz_name or "UTC")
+
+
 def local_date(tz_name: Any, at: datetime) -> date:
     """``at`` as a calendar date in the IANA zone ``tz_name``. An unknown or
     empty zone reads as UTC, the default `user_settings.timezone` carries."""
-    try:
-        zone = ZoneInfo(str(tz_name or "UTC"))
-    except (ZoneInfoNotFoundError, ValueError):
-        zone = ZoneInfo("UTC")
-    return at.astimezone(zone).date()
+    return at.astimezone(ZoneInfo(zone_name(tz_name))).date()
+
+
+async def stored_zone(db: Any, email: str) -> str | None:
+    """`user_settings.timezone` for the member as stored, or ``None`` when the
+    member has no settings row. The one read of the member's zone, which
+    :func:`member_today` and ``GET /projects/my/today`` share."""
+    row = (await db.execute(
+        text("SELECT timezone FROM user_settings WHERE user_id = :uid"),
+        {"uid": email},
+    )).fetchone()
+    return None if row is None else getattr(row, "timezone", None)
 
 
 async def member_today(db: Any, email: str, at: datetime | None = None) -> date:
     """The member's own date now (F5): `user_settings.timezone`, the zone the
     client stores for itself (`taskStore.hydrate`, `CalendarView`). A member
     with no row reads as UTC."""
-    row = (await db.execute(
-        text("SELECT timezone FROM user_settings WHERE user_id = :uid"),
-        {"uid": email},
-    )).fetchone()
-    return local_date(getattr(row, "timezone", None), at or datetime.now(UTC))
+    return local_date(await stored_zone(db, email), at or datetime.now(UTC))
+
+
+@router.get("/my/today")
+async def my_today(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+    """My own date, and my zone (WS-46 P7, `projects_agent_parity.md` §8.1
+    item 4).
+
+    The browser knows the member's zone, and a chat tool does not. Before this
+    read, a weekly rule with no day took today's weekday in UTC, which is the
+    wrong day for five and a half hours every evening in India. The zone is
+    `user_settings.timezone`, the one store of it, which the Tasks and the
+    Calendar clients write. This route only reads it.
+
+    ``stored`` is ``false`` when the member has no saved zone, so a caller
+    can say "UTC, because no zone is saved" and not claim that the member
+    chose UTC. ``valid`` is ``false`` when the saved zone is not an IANA
+    name, and the date is then the UTC date. It writes nothing, and it reads
+    only the caller's own row: the address is the authenticated one, never a
+    parameter (R11).
+    """
+    email = actor(user).lower()
+    async with _tenant_session() as db:
+        stored = await stored_zone(db, email)
+    zone = zone_name(stored)
+    return {
+        "today": local_date(zone, datetime.now(UTC)).isoformat(),
+        "timezone": zone,
+        "stored": stored is not None,
+        "valid": stored is None or zone == str(stored),
+    }
 
 
 def not_yet(
@@ -2093,8 +2139,9 @@ async def complete_task(
     D-PM-38 decision 2 (S5). ``?include_subtasks=true`` completes every open
     descendant too, each into the first Done status of its OWN set
     (``cascade.complete_subtree``), in this transaction. The default is
-    false: the owner's prompt defaults to "Only this task", and the chat tool
-    and old callers keep completing one task. The reply then carries
+    false: the owner's prompt defaults to "Only this task", and old callers
+    keep completing one task. The Projects chat's `complete` sends it for a
+    member's "yes", which it asks for first (WS-46 P6). The reply then carries
     ``subtasks_completed`` and ``subtask_changes`` (each child's status before
     and after), which is what the client's Undo puts back.
     """

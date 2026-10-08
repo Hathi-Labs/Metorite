@@ -1,10 +1,11 @@
 "use client";
 
-import { accentForSlot, categoricalAccent, type CategoricalAccent } from "@/lib/categorical";
 import type { EmailAccount } from "../lib/types";
-import { mailboxLabel } from "../lib/mailbox";
+import { mailboxAccent, mailboxLabel } from "../lib/mailbox";
 
-export { mailboxLabel };
+// Both rules live in `lib/mailbox.ts`. The re-export keeps the callers of
+// this file working (EM-T8f-3 review F8).
+export { mailboxAccent, mailboxLabel };
 
 /**
  * The identity of a mailbox on screen — WS-17 EM-T8b, §11.4 of
@@ -18,14 +19,6 @@ export { mailboxLabel };
  */
 
 type MailboxIdentity = Pick<EmailAccount, "id" | "emailAddress" | "colorSlot" | "displayLabel">;
-
-/** The accent of a mailbox: its stored slot, else a stable hash of its id
- *  (a row that old code wrote after migration 227 has no slot yet). */
-export function mailboxAccent(account: Pick<EmailAccount, "id" | "colorSlot">): CategoricalAccent {
-  return account.colorSlot && account.colorSlot >= 1 && account.colorSlot <= 12
-    ? accentForSlot(account.colorSlot - 1)
-    : categoricalAccent(account.id);
-}
 
 /** The first letter of the label, for a round avatar. */
 export function mailboxInitial(account: Pick<EmailAccount, "emailAddress" | "displayLabel">): string {

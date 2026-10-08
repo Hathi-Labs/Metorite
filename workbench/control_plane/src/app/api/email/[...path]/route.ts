@@ -7,41 +7,12 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+// The budget of each POST: 30s, or 120s for the AI/agent endpoints and for
+// "Remove older mail from Metorite" (WS-17 EM-T6e, D1). The rule and its
+// reasons live in that module, with a test beside it.
+import { postTimeoutMs } from "./postTimeout";
 
 export const dynamic = "force-dynamic";
-
-// Most email endpoints answer in well under a second, so a tight 30s abort keeps
-// a genuinely hung upstream from pinning a Next connection. But the AI drafting /
-// agent endpoints legitimately run long: "Draft with AI" on an empty reply body
-// orchestrates memory retrieval + a routing LLM call + a specialist agent (up to
-// ~18s) + a tier-powerful generation, which routinely passes 30s. Aborting those
-// at 30s surfaced to the user as a "502 gateway error" with no draft produced.
-// Give the known LLM/agent-backed POST endpoints the same generous budget the GET
-// handler already uses for large downloads (120s); everything else stays at 30s.
-const AI_SLOW_TIMEOUT_MS = 120_000;
-const DEFAULT_POST_TIMEOUT_MS = 30_000;
-const AI_SLOW_POST_PATHS = new Set([
-  "compose-assist",
-  "draft-reply",
-  "ai/chat",
-  "ai/quick-action",
-  "rules/generate",
-  "rules/test",
-  "rules/test/recent",
-  "rules/run-message",
-  "rules/patterns/review",
-  "assistant/writing-style/generate",
-  "voice-profile/sample",
-  "messages/summaries",
-  "senders/categorize",
-  "follow-ups/scan",
-]);
-
-function postTimeoutMs(path: string[]): number {
-  return AI_SLOW_POST_PATHS.has(path.join("/"))
-    ? AI_SLOW_TIMEOUT_MS
-    : DEFAULT_POST_TIMEOUT_MS;
-}
 
 function buildUpstreamUrl(path: string[], req: NextRequest): string {
   // Path-traversal guard: this [...path] catch-all must only ever hit the
@@ -107,7 +78,13 @@ export async function GET(
       return new NextResponse(res.body, { status: res.status, headers });
     }
     const body = await res.json().catch(() => ({}));
-    return NextResponse.json(body, { status: res.status });
+    // A 503 of the HTML prefetch carries `Retry-After`, and the pane waits
+    // that long (WS-17 EM-S2, §14.4.2 item 2). Pass it on.
+    const retryAfter = res.headers.get("retry-after");
+    return NextResponse.json(body, {
+      status: res.status,
+      ...(retryAfter ? { headers: { "retry-after": retryAfter } } : {}),
+    });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 502 });
   }

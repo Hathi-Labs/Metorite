@@ -342,10 +342,135 @@ async def ask_questions(questions: str) -> str:
     )
 
 
+#: The event that closes a confirmation card. ``answer`` is one of
+#: :data:`CONFIRMATION_ANSWERS`. The client drops the card whose
+#: ``request_id`` it names, live and on a replay. Fence:
+#: ``tests/unit/test_genui_hitl.py`` (the ``confirmation_resolved`` tests).
+CONFIRMATION_RESOLVED = "confirmation_resolved"
+CONFIRMATION_ANSWERS: frozenset[str] = frozenset(
+    {"APPROVE", "REJECT", "TIMEOUT", "CANCELLED"}
+)
+
+
+#: A confirmation card with ROWS (WS-46 P13 one-card). The member ticks the
+#: rows the act covers, and the answer names them:
+#: ``APPROVE {"rows": ["row-1", "row-3"]}``. A card with no rows keeps the
+#: plain ``APPROVE``. The client builds the answer in
+#: ``workbench/control_plane/src/lib/confirmationQueue.ts`` (``approveRows``),
+#: and ``tests/unit/test_confirmation_rows.py`` holds the two in step.
+ROWS_ANSWER_PREFIX = "APPROVE "
+#: The most rows one card may carry. A card nobody reads is not consent.
+MAX_CARD_ROWS = 100
+_ROW_ID_MAX = 64
+#: The longest row label the card draws. A tool whose label is its write
+#: (a task title) refuses a longer one, because a cut card is not consent.
+ROW_LABEL_MAX = 500
+#: A hint carries every fact the row writes, so it is as long as a card body.
+_ROW_HINT_MAX = 4000
+
+
+def clean_card_rows(rows: list[dict] | None) -> list[dict] | None:
+    """The rows of a card, checked and clipped, or ``None`` for a card with none.
+
+    Each row is ``{id, label, hint?, checked?}``. An id is a short string that
+    is unique on the card. A bad row is a programming error of the calling
+    tool, so it raises ``ValueError`` before any card is drawn.
+    """
+    if rows is None:
+        return None
+    if not isinstance(rows, list) or not rows or len(rows) > MAX_CARD_ROWS:
+        raise ValueError(f"rows is a list of 1 to {MAX_CARD_ROWS} rows")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        rid = str((row or {}).get("id") or "").strip() if isinstance(row, dict) else ""
+        if not rid or len(rid) > _ROW_ID_MAX or rid in seen:
+            raise ValueError("each row needs its own short id")
+        seen.add(rid)
+        out.append({
+            "id": rid,
+            "label": str(row.get("label") or rid).strip()[:ROW_LABEL_MAX],
+            "hint": str(row.get("hint") or "").strip()[:_ROW_HINT_MAX],
+            "checked": row.get("checked", True) is not False,
+        })
+    return out
+
+
+#: The longest answer a rows card can honestly send: the prefix, the JSON
+#: frame, and every row id of the largest card, each quoted, with a comma
+#: and a space. A longer answer is refused before the parse.
+MAX_ROWS_ANSWER = len(ROWS_ANSWER_PREFIX) + len('{"rows": []}') + MAX_CARD_ROWS * (
+    _ROW_ID_MAX + 4
+)
+
+
+def ticked_rows(answer: str, offered: frozenset[str]) -> frozenset[str] | None:
+    """The row ids an answer approves, or ``None`` when it approves nothing.
+
+    Only ``APPROVE {"rows": [...]}`` approves a rows card. The ids must be a
+    non-empty subset of the card's own ids. A forged id, a list that is
+    empty, an answer that is not JSON, and a plain ``APPROVE`` each approve
+    NOTHING: the whole answer is refused, never trimmed to the ids that fit.
+
+    The answer is bounded before the parse (PR #691 review): it is at most
+    :data:`MAX_ROWS_ANSWER` characters, and it names no more ids than the
+    card offered.
+    """
+    text = str(answer or "").strip()
+    if not text.upper().startswith(ROWS_ANSWER_PREFIX):
+        return None
+    if len(text) > MAX_ROWS_ANSWER:
+        return None
+    try:
+        body = _json.loads(text[len(ROWS_ANSWER_PREFIX):])
+    except (TypeError, ValueError, RecursionError):
+        return None
+    ids = body.get("rows") if isinstance(body, dict) else None
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
+        return None
+    if len(ids) > len(offered):
+        return None
+    ticked = frozenset(ids)
+    if not ticked <= offered:
+        return None
+    return ticked
+
+
+def _resolved_event(request_id: str, answer: str) -> dict:
+    return {
+        "type": "CUSTOM",
+        "name": CONFIRMATION_RESOLVED,
+        "value": {"request_id": request_id, "answer": answer},
+    }
+
+
+def confirmation_channel_open() -> bool:
+    """True when this run has a channel that can show a card to a member.
+
+    It reads the two channels that :func:`request_confirmation` tries: path A
+    (``_active_run_queue``) and path C (the relay thread). A tool reads it only
+    AFTER a denial, to tell a refusal from a run with no live chat (WS-17
+    EM-T13a). It never decides an action. ``request_confirmation`` stays the
+    one gate, and it fails closed, so a drift here changes a message only.
+    """
+    try:
+        from orchestrator.executor import (
+            _active_run_queue,
+            resolve_relay_thread_id,
+        )
+        if _active_run_queue.get(None) is not None:
+            return True
+        return bool(resolve_relay_thread_id())
+    except Exception:
+        return False
+
+
 async def request_confirmation(
     title: str, detail: str = "", context: str = "",
     non_interactive_default: str = "deny",
-) -> bool:
+    rows: list[dict] | None = None,
+    fenced: bool | None = None,
+) -> bool | frozenset[str]:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
     Renders a ``ConfirmationCard`` inline in the chat with Approve / Reject
@@ -364,38 +489,87 @@ async def request_confirmation(
             without a human (HH-2, OWASP LLM06 excessive agency).  Pass
             ``"approve"`` ONLY for reversible actions where automation must
             proceed unattended.
+        rows: optional ``[{id, label, hint, checked}]``. The card draws one
+            checkbox per row, ticked when ``checked``, and Approve then
+            names the ticked ids (:func:`ticked_rows`). With no rows the
+            card, its event and its answer are exactly as before.
+        fenced: ``True`` when the card's text wraps member values in
+            «guillemets» (``skill_projects.client.data``). The client then
+            draws each fenced value as a token, without the marks. With no
+            flag the client draws the text exactly as sent, so an email body
+            that holds a real « » keeps it. ``None`` leaves the event as it
+            was.
 
     Returns:
-        ``True`` if the user approved, ``False`` if they rejected or did not
-        respond.  When no delivery channel exists, returns ``True`` only if
-        ``non_interactive_default="approve"`` was explicitly passed.
+        With no ``rows``: ``True`` if the user approved, ``False`` if they
+        rejected or did not respond.  When no delivery channel exists,
+        returns ``True`` only if ``non_interactive_default="approve"`` was
+        explicitly passed.
+
+        With ``rows``: the ``frozenset`` of the ticked row ids, each one an
+        id the card offered. It is EMPTY, and so falsy, when the member did
+        not approve, or when the answer named an id the card did not offer.
     """
     _title = str(title or "Confirm action").strip()[:120]
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
+    _rows = clean_card_rows(rows)
+    _offered = frozenset(r["id"] for r in _rows or [])
 
     def _event(request_id: str) -> dict:
-        return {
-            "type": "CUSTOM",
-            "name": "confirmation_requested",
-            "value": {
-                "title": _title,
-                "detail": _detail,
-                "context": _context,
-                "request_id": request_id,
-            },
+        value = {
+            "title": _title,
+            "detail": _detail,
+            "context": _context,
+            "request_id": request_id,
         }
+        if _rows is not None:
+            value["rows"] = _rows
+        if fenced is not None:
+            value["fenced"] = bool(fenced)
+        return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
 
-    async def _block_on(_fut, _rid, _pending) -> bool:
+    def _verdict(result: dict) -> tuple[str, frozenset[str] | None]:
+        """The card's closing answer, and the ticked ids of a rows card."""
+        said = str(result.get("answer", "")).strip()
+        if _rows is None:
+            return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
+        ticked = ticked_rows(said, _offered)
+        return ("APPROVE" if ticked else "REJECT"), ticked
+
+    async def _block_on(_fut, _rid, _pending, _publish) -> bool | frozenset[str]:
+        """Park on the answer, then say on the stream that the card is closed.
+
+        A model can call card-gated tools in parallel, so one stream can carry
+        many ``confirmation_requested`` cards at once, and a replay sends all
+        of them again. With no closing event, the client cannot tell an
+        answered card from a waiting one. It showed the answered card again
+        (2026-10-06). ``_publish`` sends ``confirmation_resolved`` on the
+        stream that carried the card, on every way out: an answer, a timeout
+        and a cancel.
+        """
         import asyncio as _asyncio
+        import contextlib as _contextlib
+        # Any other failure is no approval, so it closes the card as a REJECT.
+        _answer = "REJECT"
+        _ticked: frozenset[str] | None = None
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
             _result = await wait_user_future(_fut, 3600)
-        except _asyncio.TimeoutError:
-            return False
+            _answer, _ticked = _verdict(_result)
+        except _asyncio.CancelledError:
+            _answer = "CANCELLED"
+            raise
+        except TimeoutError:
+            _answer = "TIMEOUT"
         finally:
             _pending.pop(_rid, None)
-        return str(_result.get("answer", "")).strip().upper() == "APPROVE"
+            # Best effort: the run's end clears a blocking card too.
+            with _contextlib.suppress(Exception):
+                await _publish(_resolved_event(_rid, _answer))
+        if _rows is not None:
+            return _ticked or frozenset()
+        return _answer == "APPROVE"
 
     # ── Path A: _active_run_queue (native MAF / Tier 2 blocking) ──────────
     try:
@@ -414,7 +588,7 @@ async def request_confirmation(
         _fut = _asyncio.get_running_loop().create_future()
         _pending_user_input[_rid] = _fut
         await queue.put(_event(_rid))
-        return await _block_on(_fut, _rid, _pending_user_input)
+        return await _block_on(_fut, _rid, _pending_user_input, queue.put)
 
     # ── Path C: Redis relay (blocking on BOTH Copilot-SDK and native MAF) ──
     # resolve_relay_thread_id survives the Copilot SDK thread hop that resets the
@@ -439,10 +613,17 @@ async def request_confirmation(
             _pending_user_input[_rid] = _fut
             _line = f"data: {_json.dumps(_event(_rid))}\n\n"
             await _push_sse_to_stream(_tid, _line)
-            return await _block_on(_fut, _rid, _pending_user_input)
+
+            async def _publish(ev: dict, _t: str = _tid) -> None:
+                await _push_sse_to_stream(_t, f"data: {_json.dumps(ev)}\n\n")
+
+            return await _block_on(_fut, _rid, _pending_user_input, _publish)
     except Exception:  # noqa: BLE001
         pass
 
     # No delivery channel (non-interactive run) — fail CLOSED unless the
     # caller explicitly opted a reversible action into auto-approval.
-    return str(non_interactive_default).strip().lower() == "approve"
+    approved = str(non_interactive_default).strip().lower() == "approve"
+    if _rows is not None:
+        return frozenset(r["id"] for r in _rows if r["checked"]) if approved else frozenset()
+    return approved

@@ -241,6 +241,12 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
 
         opts = runtime_options or {}
         config: dict[str, Any] = {"streaming": streaming}
+        # D85: never load the CLI's file hooks (``.github/hooks/`` in the
+        # working dir). A hook runs a command with no permission request, so
+        # a hook file a tenant can write would bypass the shell guard. The
+        # 2.0 wrapper sets this False on purpose. The SDK sends nothing when
+        # it is unset, and the CLI then decides.
+        config["enable_file_hooks"] = False
 
         model = opts.get("model") or self._default_options.get("model") or self._settings.get("model")
         if model:
@@ -359,6 +365,8 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
             )
 
         config: dict[str, Any] = {"streaming": streaming}
+        # D85: a resumed session loads no file hooks either (see above).
+        config["enable_file_hooks"] = False
 
         model = self._default_options.get("model") or self._settings.get("model")
         if model:

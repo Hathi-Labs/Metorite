@@ -27,6 +27,9 @@ from uuid import uuid4
 
 from sqlalchemy import text
 
+from email_ingestion import html_tier
+from email_ingestion.body_backfill import _html_to_text
+
 # Bound the stored body. Mirrors the gateway read-path caps
 # (``core.MAX_BODY_*_BYTES``): a provider that lists headers-only re-sends an
 # empty body, and the rare oversized body is capped here so the reading pane's
@@ -88,37 +91,78 @@ _INSERT = """INSERT INTO email_messages
 # rules never re-apply. Only a provider that genuinely round-trips labels sets
 # ``categories_authoritative``, and only then does an empty array mean "the user
 # cleared them". See EmailMessage.categories_authoritative.
-_ON_CONFLICT_UPDATE = """
-   ON CONFLICT (account_id, provider_message_id) DO UPDATE SET
-     internet_message_id = COALESCE(EXCLUDED.internet_message_id,
-                                    email_messages.internet_message_id),
-     thread_id = EXCLUDED.thread_id,
-     folder = EXCLUDED.folder,
-     labels = EXCLUDED.labels,
-     categories = CASE WHEN :categories_authoritative
-                       THEN EXCLUDED.categories
-                       ELSE email_messages.categories END,
-     importance = EXCLUDED.importance,
-     from_address = EXCLUDED.from_address,
-     to_addresses = EXCLUDED.to_addresses,
-     cc_addresses = EXCLUDED.cc_addresses,
-     bcc_addresses = EXCLUDED.bcc_addresses,
-     subject = EXCLUDED.subject,
-     body_text = COALESCE(NULLIF(EXCLUDED.body_text, ''),
-                          email_messages.body_text),
-     body_html = COALESCE(NULLIF(EXCLUDED.body_html, ''),
-                          email_messages.body_html),
-     snippet = COALESCE(NULLIF(EXCLUDED.snippet, ''),
-                        email_messages.snippet),
-     has_attachments = EXCLUDED.has_attachments,
-     is_read = EXCLUDED.is_read,
-     is_starred = EXCLUDED.is_starred,
-     is_flagged = EXCLUDED.is_flagged,
-     unsubscribe_link = COALESCE(EXCLUDED.unsubscribe_link,
-                                 email_messages.unsubscribe_link),
-     received_at = EXCLUDED.received_at,
-     updated_at = now()
-"""
+#
+#: The columns a re-sync refreshes, each with the value the SET writes. ONE
+#: list feeds both the SET and the "changed?" guard below, so a column added to
+#: one cannot be left out of the other.
+_SYNCED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("internet_message_id",
+     "COALESCE(EXCLUDED.internet_message_id, email_messages.internet_message_id)"),
+    ("thread_id", "EXCLUDED.thread_id"),
+    ("folder", "EXCLUDED.folder"),
+    ("labels", "EXCLUDED.labels"),
+    ("categories", "CASE WHEN :categories_authoritative "
+                   "THEN EXCLUDED.categories "
+                   "ELSE email_messages.categories END"),
+    ("importance", "EXCLUDED.importance"),
+    ("from_address", "EXCLUDED.from_address"),
+    ("to_addresses", "EXCLUDED.to_addresses"),
+    ("cc_addresses", "EXCLUDED.cc_addresses"),
+    ("bcc_addresses", "EXCLUDED.bcc_addresses"),
+    ("subject", "EXCLUDED.subject"),
+    # A text that `_bodies` made from the HTML (EM-S3) never replaces a stored
+    # text that is not empty. A text that the provider sent replaces it, as
+    # before. The guard compares this same CASE, so it sees no change.
+    ("body_text", "CASE WHEN :body_text_derived "
+                  "THEN COALESCE(NULLIF(email_messages.body_text, ''), "
+                  "NULLIF(EXCLUDED.body_text, ''), email_messages.body_text) "
+                  "ELSE COALESCE(NULLIF(EXCLUDED.body_text, ''), "
+                  "email_messages.body_text) END"),
+    ("body_html", "COALESCE(NULLIF(EXCLUDED.body_html, ''), email_messages.body_html)"),
+    ("snippet", "COALESCE(NULLIF(EXCLUDED.snippet, ''), email_messages.snippet)"),
+    ("has_attachments", "EXCLUDED.has_attachments"),
+    ("is_read", "EXCLUDED.is_read"),
+    ("is_starred", "EXCLUDED.is_starred"),
+    ("is_flagged", "EXCLUDED.is_flagged"),
+    ("unsubscribe_link",
+     "COALESCE(EXCLUDED.unsubscribe_link, email_messages.unsubscribe_link)"),
+    ("received_at", "EXCLUDED.received_at"),
+)
+
+# 🔴 **The "changed?" guard. Measured on production, 2026-10-07.** Without it
+# the sync rewrote EVERY listed message on EVERY pass: 915,108 upserts in one
+# day, 2.92 M updates and 874 autovacuums on `email_messages` for 39.7 k live
+# rows, and 312 MB of a 351 MB database. Each rewrite made a new row version,
+# new index entries, and a new TOAST copy of the body. The WAL from that
+# starved the IO budget of the instance, and then sign-in timed out.
+#
+# So the UPDATE runs only when a value the SET would write differs from the
+# stored one. The guard compares the stored row with the SAME expressions the
+# SET writes, not with raw EXCLUDED values. Outlook lists headers only, so
+# `EXCLUDED.body_text` is '' on each tick, and a raw compare would see a change
+# on every row and guard nothing.
+#
+# ⚠️ `updated_at` is NOT in the guard. The SET always writes now() to it, so
+# with it in the compare every row differs and the guard does nothing. It now
+# moves only when the provider changed the message. Its readers want exactly
+# that: `reconcile.py` skips rows written after a sweep started, and the
+# drafts lens orders by it. Nothing reads it as "last seen". `synced_at` is
+# written on INSERT only, as before.
+#
+# A skipped row is still LOCKED by ON CONFLICT, so it costs a small WAL lock
+# record. It makes no new row version, no dead tuple and no index write.
+#
+# Fence: tests/unit/test_email_upsert_guard.py (R8, `xmin` on a real database).
+_ON_CONFLICT_UPDATE = "".join((
+    "\n   ON CONFLICT (account_id, provider_message_id) DO UPDATE SET\n     ",
+    ",\n     ".join(f"{col} = {expr}" for col, expr in _SYNCED_COLUMNS),
+    ",\n     updated_at = now()",
+    "\n   WHERE (",
+    ", ".join(f"email_messages.{col}" for col, _ in _SYNCED_COLUMNS),
+    ")\n     IS DISTINCT FROM (",
+    ", ".join(expr for _, expr in _SYNCED_COLUMNS),
+    ")\n",
+))
 
 # Insert-only: never touch an existing row (inbound SMTP/webhook — the message is
 # authoritative on first arrival and later reconciled by the sync paths).
@@ -156,11 +200,37 @@ def _canon_categories(cats: Any) -> list:
     ]
 
 
+def _bodies(msg: Any) -> tuple[str | None, str | None, bool]:
+    """``(body_text, body_html, text_derived)`` to bind, each body cut to its cap.
+
+    🔴 **No cold HTML (WS-17 EM-S3, §14.4.3 item 1).** When
+    ``html_tier.drops_html`` is true for the message, the HTML binds as
+    ``None``. The INSERT then stores NULL. The SET keeps a stored value
+    through its ``COALESCE``, so a re-sync never writes HTML back, and the
+    guard of #709 sees no change. This never clears stored HTML. EM-S4 does.
+    Before the HTML goes, an empty text is filled from it, so the AI and
+    search still read the body (D-EM-48). ``text_derived`` is then true, and
+    the SET keeps a stored text that is not empty (fix round 1).
+    """
+    body_text = truncate_body(msg.body_text, MAX_BODY_TEXT_BYTES)
+    body_html = truncate_body(msg.body_html, MAX_BODY_HTML_BYTES)
+    derived = False
+    if body_html and html_tier.drops_html(msg.received_at):
+        if not (body_text or "").strip():
+            body_text = truncate_body(_html_to_text(msg.body_html), MAX_BODY_TEXT_BYTES)
+            derived = True
+        body_html = None
+    return body_text, body_html, derived
+
+
 def _message_params(account_id: str, msg: Any) -> dict[str, Any]:
     """Bind params for one message row. Attribute access is duck-typed so both the
     provider :class:`EmailMessage` dataclass and the gateway's message model work;
     ``getattr`` guards the fields older/inbound messages may omit."""
+    body_text, body_html, text_derived = _bodies(msg)
     return {
+        # Bound for the insert-only path too, as `categories_authoritative` is.
+        "body_text_derived": text_derived,
         "id": str(uuid4()),
         "account_id": account_id,
         "provider_id": msg.provider_message_id,
@@ -189,8 +259,8 @@ def _message_params(account_id: str, msg: Any) -> dict[str, Any]:
             [{"name": a.name, "email": a.email} for a in msg.bcc_addresses]
         ),
         "subject": msg.subject,
-        "body_text": truncate_body(msg.body_text, MAX_BODY_TEXT_BYTES),
-        "body_html": truncate_body(msg.body_html, MAX_BODY_HTML_BYTES),
+        "body_text": body_text,
+        "body_html": body_html,
         "snippet": msg.snippet[:200] if msg.snippet else "",
         "has_attachments": msg.has_attachments,
         "is_read": msg.is_read,
@@ -202,7 +272,8 @@ def _message_params(account_id: str, msg: Any) -> dict[str, Any]:
 
 
 async def upsert_message(
-    db: Any, account_id: str, msg: Any, *, on_conflict: str = "update"
+    db: Any, account_id: str, msg: Any, *, on_conflict: str = "update",
+    reclaim: bool = False,
 ) -> None:
     """Insert or update one normalized provider message + its attachment metadata.
 
@@ -213,6 +284,9 @@ async def upsert_message(
       non-empty stored body / snippet / unsubscribe link.
     * ``on_conflict="nothing"`` inserts brand-new mail only and never touches an
       existing row (inbound SMTP/webhook).
+    * ``reclaim=True`` runs the re-key reclaim below, on the update path only.
+      Pass the ``REKEYS_MESSAGE_IDS`` attribute of the provider. The default
+      is false, so a caller that does not name it never moves a row (D-EM-34).
 
     The caller owns the transaction (``db.commit()``).
     """
@@ -229,8 +303,17 @@ async def upsert_message(
     # UPDATE can never collapse two rows onto the same (account_id, provider id)
     # and trip its unique index. A rare pre-existing multi-ghost (both rows
     # already carrying the id) is left untouched for the one-off merge pass.
+    #
+    # The gate (WS-17 EM-G1, D-EM-34): the reclaim runs only when the caller
+    # passes ``reclaim=True``, which is the ``REKEYS_MESSAGE_IDS`` attribute of
+    # its provider. Only Outlook sets it. Gmail never changes an id, and two
+    # Gmail messages can hold one Message-ID (a list copy and a direct copy of
+    # one mail). Without the gate, the second one would take the row of the
+    # first, and the row would swap its id at each sync (GM-2). Known limit
+    # EM-G1-f1: on Outlook, the Sent copy and the Inbox copy of a mail that a
+    # member sends to their own address hold one Message-ID, so this folds them.
     imid = getattr(msg, "internet_message_id", None)
-    if on_conflict == "update" and imid:
+    if reclaim and on_conflict == "update" and imid:
         await db.execute(text(
             "UPDATE email_messages SET provider_message_id = :new_pmid, "
             "updated_at = now() "

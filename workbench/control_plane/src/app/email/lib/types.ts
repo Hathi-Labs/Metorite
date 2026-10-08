@@ -25,6 +25,13 @@ export interface Email {
   subject: string;
   bodyText: string;
   bodyHtml?: string;
+  /**
+   * True when the provider holds the HTML of this message and Metorite holds
+   * none (WS-17 EM-S2, §14.4.2 item 3). The pane shows `bodyText` at once and
+   * then the HTML of `fetchMessageHtml`. With `EMAIL_HTML_FROM_PROVIDER` off,
+   * the gateway never sends true, and an absent field is false.
+   */
+  htmlRemote?: boolean;
   bodyTruncated: boolean;
   snippet: string;
   hasAttachments: boolean;
@@ -48,6 +55,15 @@ export interface Email {
   rank?: number;
   /** Search-only: highlighted snippet (<mark>…</mark>) showing why it matched. */
   highlight?: string;
+  /**
+   * "Also in" (WS-17 EM-T8g-3, D-EM-22): the id of each other mailbox of the
+   * member that holds a copy of this mail. The list and search send it. The
+   * gateway pairs two mailboxes only when neither one is separate (D-EM-30).
+   * The match is the Message-ID. Outlook and Gmail store it (Gmail since
+   * EM-G2), so a Gmail and an Outlook mailbox pair too (EM-G9). IMAP stores
+   * none, so an IMAP mailbox pairs with nothing. Empty when no copy is known.
+   */
+  alsoIn?: string[];
 }
 
 export interface EmailAccount {
@@ -101,12 +117,68 @@ export interface EmailAccount {
   onboardingDone?: boolean;
   /** The oldest `received_at` the first import wrote so far (EM-T6b). */
   importReachedAt?: string | null;
-  /** `counting`, `importing` or `done` (EM-T6b). */
+  /**
+   * `counting`, `importing` or `done` (EM-T6b), or `limit` (EM-T6c): the
+   * first import stopped at the storage limit, and `initialSyncDone` is true.
+   */
   importPhase?: string | null;
   /** The rows the first import wrote so far (EM-T6b). */
   importCount?: number | null;
   /** The provider's count of the range, or null when it gave none (EM-T6b). */
   importEstimate?: number | null;
+  // ── Storage (EM-T6c meter, EM-T6e UI, spec §10.4.7) ──
+  /**
+   * The bytes of the copy that Metorite keeps of this mailbox (EM-T6c). Null
+   * before the first meter run, and a null meter is not at the limit. Absent
+   * from a gateway before EM-T6c. Read it through `atStorageLimit` in
+   * `lib/storage.ts`, never by hand.
+   */
+  storedBytes?: number | null;
+  /**
+   * The storage limit of each mailbox, in bytes (the setting in MB times
+   * 1,048,576). Absent from a gateway before EM-T6c, and then Email draws no
+   * storage UI.
+   */
+  storageLimitBytes?: number;
+  /**
+   * When the member connected the mailbox, as ISO text with six digits of
+   * microseconds (EM-T8f-1). A disconnect of the default makes the oldest
+   * mailbox that is left the default, and `nextDefaultAfter` in
+   * `lib/mailboxSettings.ts` reads this to name it (EM-T8f-2). Null or absent
+   * sorts last.
+   */
+  createdAt?: string | null;
+  /**
+   * False when the member keeps the mailbox separate (EM-T8g, D-EM-28). A
+   * separate mailbox stays out of All inboxes, its sums and its chat. Absent
+   * means true, so a gateway before EM-T8g-1 keeps each mailbox in All
+   * inboxes. Read it through `isSeparate` and `pooledMailboxes` in
+   * `lib/mailbox.ts`, never by hand.
+   */
+  inAllInboxes?: boolean;
+}
+
+// ── Remove older mail from Metorite (EM-T6c routes, EM-T6e UI) ─────────────
+
+/** The answer of `GET /email/accounts/{id}/storage/older?before=`. It writes
+ *  nothing, and it counts no draft (EM-T6c, G1). */
+export interface OlderMailPreview {
+  /** The cutoff as the gateway parsed it, as ISO text in UTC. */
+  before: string;
+  /** The messages received before the cutoff. */
+  messages: number;
+  /** The bytes of the meter that their removal would free. */
+  bytes: number;
+}
+
+/** The answer of `POST /email/accounts/{id}/storage/remove-older`. */
+export interface RemoveOlderResult {
+  before: string;
+  /** The messages that the removal took out of Metorite. */
+  removed: number;
+  /** The new meter of the mailbox. Null when the meter did not run. */
+  storedBytes: number | null;
+  storageLimitBytes: number;
 }
 
 // ── Contact card (the people card behind a sender's name/avatar) ────────────
@@ -443,6 +515,24 @@ export interface UnsubscribeResult {
 }
 
 // ── Assistant rules ─────────────────────────────────────────────────────────
+
+/**
+ * The answer of `POST /email/rules/copy` (EM-T8f-1). `copied` holds the names
+ * in the target. `renamed` holds each rule whose name the target held.
+ * `leftOut` holds each rule the copy did not take, with the reason the
+ * gateway gives: `disabled`, `forward_to_own_address`, `reply_rule_exists` or
+ * `folder_not_in_target` (EM-S10).
+ *
+ * `willCreate` (EM-S10, D-EM-60) holds each folder or label name that a copied
+ * rule uses and the target does not hold. The provider makes it on first use.
+ * `rule` is the name in the target. A gateway before EM-S10 sends none.
+ */
+export interface RuleCopyResult {
+  copied: string[];
+  renamed: Array<{ name: string; copiedAs: string }>;
+  leftOut: Array<{ name: string; reason: string }>;
+  willCreate?: Array<{ rule: string; action: string; name: string }>;
+}
 
 export type RuleActionType =
   | "ARCHIVE"

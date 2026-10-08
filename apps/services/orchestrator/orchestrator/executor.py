@@ -37,6 +37,7 @@ from typing import Any, AsyncIterator, Callable
 
 from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
+from acb_llm.run_errors import run_error_event
 from acb_skills.ask_tools import is_hitl_blocking_tool as _is_hitl_blocking_tool
 from acb_skills.integrations import build_integrations
 from acb_skills.loader import AgentLoadError, load_agent
@@ -71,7 +72,8 @@ _WATCHDOG = default_watchdog()
 from orchestrator._copilot_session import (
     _apply_copilot_infinite_sessions,
     _copilot_infinite_session_config,
-    _copilot_permission_handler,
+    _copilot_permission_handler,  # noqa: F401 — re-exported for tests
+    _install_copilot_permission_handler,
 )
 
 
@@ -81,13 +83,78 @@ from orchestrator._copilot_session import (
 from orchestrator._tool_injection import (
     _apply_own_tool_scope,
     _build_injected_tools_addendum,
+    _count_agent_tools,
+    _log_agent_tools_resolved,
     _build_registry_block,
     _gate_injected_tool,
+    _host_shell_refused,
     _inject_agent_tools,
     _inject_mcp_servers,
+    NoEgressRefused,
+    _run_no_egress,
     _tool_name,
+    _withheld_shell_tools,
     materialize_skill_bodies_for_agent,
 )
+def _tier2_tool_view(agent: Any, make_shim: Callable[[Any, str], Any]) -> Any:
+    """*agent*, or a per-run copy whose ``default_options`` tools are shimmed.
+
+    The Tier 2 batch path shows a tool row only for a tool it wrapped in
+    ``make_shim``. MAF 1.19 holds a native ``Agent``'s tools in
+    ``default_options["tools"]`` as ``FunctionTool`` objects, which the older
+    ``agent.tools`` and ``@tool`` lookups never reach. Each one is cloned with
+    its ``func`` replaced by the shim, so the name, description, schema and
+    approval mode stay the tool's own. Neither the agent nor a tool object is
+    changed, because another run may hold them. No such tools: *agent* itself.
+    """
+    import copy as _copy
+
+    from acb_skills.egress import _register_platform_wrapper
+
+    opts = getattr(agent, "default_options", None)
+    if not isinstance(opts, dict):
+        return agent
+    tools = opts.get("tools")
+    if not isinstance(tools, (list, tuple)) or not tools:
+        return agent
+    shimmed: list[Any] = []
+    changed = False
+    for item in tools:
+        func = getattr(item, "func", None)
+        name = getattr(item, "name", None) or getattr(func, "__name__", None)
+        if (
+            callable(func)
+            and isinstance(name, str)
+            and name
+            and not getattr(func, "__cc_tier2_shim__", False)
+        ):
+            # The egress rule (H-236) trusts a platform tool by the IDENTITY of
+            # its callable. A new shim is a new callable, so it must inherit
+            # that trust. Without this, a covered run on this path loses every
+            # platform tool (manage_todo_list, write_artifact, run_command, …).
+            # This module is in `orchestrator.*`, so the registry accepts it.
+            shim = _register_platform_wrapper(func, make_shim(func, name))
+            try:
+                shim.__cc_tier2_shim__ = True
+            except (AttributeError, TypeError):
+                pass
+            clone = _copy.copy(item)
+            try:
+                clone.func = shim
+            except (AttributeError, TypeError):
+                shimmed.append(item)
+                continue
+            shimmed.append(clone)
+            changed = True
+        else:
+            shimmed.append(item)
+    if not changed:
+        return agent
+    view = _copy.copy(agent)
+    view.default_options = {**opts, "tools": shimmed}
+    return view
+
+
 def _missing_module_name(exc: BaseException) -> str | None:
     """Best-effort top-level module name from an ImportError/ModuleNotFoundError.
 
@@ -102,6 +169,29 @@ def _missing_module_name(exc: BaseException) -> str | None:
         name = m.group(1) if m else None
     # Install the TOP-LEVEL distribution name (submodule installs never work).
     return name.split(".")[0] if name else None
+
+
+def _missing_dependency_message(tool_name: str, exc: BaseException, module: str | None) -> str:
+    """The tool result when the dependency self-heal could not install *module*.
+
+    It suggests ``install_dependency`` only to a run that holds it. A shared
+    agent does not (D85), so it is told to ask an admin instead, and never
+    to call a tool it was not given.
+    """
+    head = (
+        f"Error: tool '{tool_name}' needs a package that isn't installed "
+        f"({exc}). Auto-install "
+        f"{'failed' if module else 'could not identify the module'}"
+    )
+    try:
+        from acb_skills.write_artifact import artifact_context
+        # The TOOL half of D85: does this run hold install_dependency?
+        withheld = artifact_context().get("shell_tools_withheld", True) is not False
+    except Exception:
+        withheld = True
+    if withheld:
+        return head + "; ask an admin to install the package, then retry."
+    return head + "; call install_dependency('<package>') and retry."
 _TOOL_EXECUTION_TIMEOUT: float = _WATCHDOG.tool_execution
 
 # ── Elicitation bridge: track which tool_call_id maps to a pending
@@ -190,6 +280,33 @@ _RUN_QUEUES: dict[str, "asyncio.Queue[dict[str, Any] | None]"] = {}
 # deleted in its ``finally``. WS-29 MT-1d (H4), slice 2 — DARK: nothing reads it
 # yet (no write is converted this slice).
 _RUN_ORG: dict[str, str] = {}
+
+#: H-236: the run ids of the streamed runs that bound ``no_egress=True``. The
+#: gateway reads it after a run ends, to skip the memory extraction of a
+#: covered conversation (``gateway/routes/agent.py``). It is bounded, and a
+#: read never removes an entry, so a run id that a client reused can only
+#: make one more extraction skip, never let one through. Process-local, as
+#: the run and its end callback share the gateway process.
+_NO_EGRESS_RUNS: dict[str, None] = {}
+_NO_EGRESS_RUNS_MAX = 4096
+
+
+def _remember_no_egress_run(run_id: str | None) -> None:
+    """Record that the streamed run *run_id* bound ``no_egress=True``."""
+    if not run_id:
+        return
+    _NO_EGRESS_RUNS.pop(run_id, None)
+    _NO_EGRESS_RUNS[run_id] = None
+    while len(_NO_EGRESS_RUNS) > _NO_EGRESS_RUNS_MAX:
+        _NO_EGRESS_RUNS.pop(next(iter(_NO_EGRESS_RUNS)))
+
+
+def run_was_no_egress(run_id: str | None) -> bool:
+    """True when the streamed run *run_id* bound ``no_egress=True`` (H-236).
+
+    The server decided it at the run's start. Nothing in a request reaches it.
+    """
+    return bool(run_id) and run_id in _NO_EGRESS_RUNS
 
 
 def _opener_for_org(org: str | None):
@@ -818,6 +935,7 @@ async def _run_sub_agent_streaming(
     # in the finally, so the sub-agent can never change what the parent sees.
     from acb_skills.write_artifact import (
         artifact_context,
+        delegation_target,
         derive_artifact_context,
         enter_artifact_context,
         reset_artifact_context,
@@ -826,6 +944,15 @@ async def _run_sub_agent_streaming(
     # The parent run's acting member, from the parent's bound context and
     # never from the delegated message (H-201 P2-c).
     _parent_member = str(artifact_context().get("member") or "")
+    # The chat that asked: its working dir, store key, agent and session,
+    # from the parent's bound context only (R5). A document this sub-agent
+    # writes goes there, so its card opens in that chat.
+    _deliver_to = delegation_target(artifact_context())
+    # H-236: no egress tool for this sub-run when its parent was no_egress,
+    # or when its own agent is covered. Decided once, from the parent's
+    # binding, and bound at once, so no later path reads the parent's frame.
+    _sub_no_egress = _run_no_egress(agent_name, artifact_context())
+    derive_artifact_context(no_egress=_sub_no_egress)
 
     # ── Redis relay fallback for paths without _active_run_queue ──────
     # Tier 1 (MAF AG-UI) and Tier 1.5 (Copilot SDK) don't set
@@ -874,6 +1001,9 @@ async def _run_sub_agent_streaming(
         pass
 
     try:
+        # §15.4: a first-party-admin-only agent, delegated to by anyone else,
+        # is refused as absent. The member is the PARENT run's (run binding).
+        await _assert_may_run_agent(agent_name)
         with load_agent(agent_name, run_id=run_id, repo_name=_repo_name, local_path=_local_path) as loaded:
             mandatory = loaded.config.get("integrations", [])
             optional = loaded.config.get("optional_integrations", [])
@@ -902,24 +1032,27 @@ async def _run_sub_agent_streaming(
                 loaded.config.get("own_tool_scope") or None
                 if hasattr(loaded, "config") else None,
             )
+            _sub_own_tools = _count_agent_tools(agents)  # WS-8o
             _inject_agent_tools(
                 agents,
                 is_sub_agent=True,
                 tool_scope=_sub_tool_scope,
                 agent_name=agent_name,
+                # D85: a shared sub-agent gets no shell tool until the
+                # sandbox broker covers it.
+                agent_config=getattr(loaded, "config", None),
+                # H-236: and no egress tool when its parent is covered.
+                no_egress=_sub_no_egress,
             )
+            _log_agent_tools_resolved(agent_name, agents, _sub_own_tools)
             if not agents:
                 return f"({agent_name!r} returned empty agent list)"
             agent = agents[0]
 
-            # Apply the risk-aware permission handler for Copilot SDK agents (B6).
-            try:
-                _ph = _copilot_permission_handler()
-                for _a in agents:
-                    if hasattr(_a, "_permission_handler") and _a._permission_handler is None:
-                        _a._permission_handler = _ph
-            except Exception:
-                pass
+            # The permission handler of a Copilot SDK agent (B6), ALWAYS with
+            # the D85 shell guard, whatever handler its factory set.
+            for _a in agents:
+                _install_copilot_permission_handler(_a)
 
             # ── Set working directory for Copilot SDK sub-agents ──────────
             # The Copilot SDK CLI defaults to the gateway process CWD
@@ -973,6 +1106,21 @@ async def _run_sub_agent_streaming(
                 integration_warnings=dict(_sub_warnings),
                 # A sub-agent never inherits the parent's sandbox root.
                 permission_check_root=None,
+                # D85: the SUB-agent's own answers, never its parent's. The
+                # tool half, and the host half the Copilot permission guard
+                # reads for the CLI's own shell.
+                shell_tools_withheld=bool(_withheld_shell_tools(
+                    agent_name, getattr(loaded, "config", None),
+                )),
+                host_shell_refused=_host_shell_refused(
+                    agent_name, getattr(loaded, "config", None),
+                ),
+                # H-236: set from the parent's binding, never cleared here.
+                # The batch run of a MAF sub-agent reads it as its parent.
+                no_egress=_sub_no_egress,
+                # The chat that asked. The batch run of a MAF sub-agent
+                # passes it on (``delegation_target``).
+                deliver_to=_deliver_to,
             )
 
             # Skills-as-an-index bodies (QM-2). A sub-agent gets the COMPACT
@@ -980,6 +1128,7 @@ async def _run_sub_agent_streaming(
             # is read. No-op while SKILLS_INDEX_ONLY is off.
             materialize_skill_bodies_for_agent(
                 agent_name, _sub_agent_dir, tool_scope=_sub_tool_scope,
+                agent_config=getattr(loaded, "config", None),
             )
 
             text_parts: list[str] = []
@@ -1006,6 +1155,24 @@ async def _run_sub_agent_streaming(
                 ) or (
                     loaded.config.get("model_tier") or ""
                 ).strip()
+                # WS-45 S4 (§4.5): a covered sub-agent runs its own policy.
+                # It ignores the parent's tier, and a Copilot SDK agent keeps
+                # the policy's tier for the whole run. None when not covered.
+                _sub_tier = await _tier_policy_for_run(
+                    agent_name, agent,
+                    run_id=run_id, thread_id=None, model=model,
+                    think_mode=artifact_context().get("think_mode"),
+                    event_payload={"message": message_str},
+                    config=loaded.config,
+                    agent_md_model=(
+                        (_agent_md_spec.model or "").strip()
+                        if _agent_md_spec is not None else ""
+                    ),
+                    is_copilot=True, emit=False,
+                )
+                if _sub_tier is not None:
+                    _model = _sub_tier.run_tier()
+                    _sub_tier.announce_run()
                 # BYOK-by-default: normalise bare/empty names to the default
                 # tier and force gateway routing (mirrors the chat path).
                 _model, _is_sub_byok = _byok_default_model(_model, settings)
@@ -1144,6 +1311,8 @@ async def _run_sub_agent_streaming(
         # B6 Phase-5 Tier 0: tear down this sub-agent's scoped integration creds
         # so a delegated agent's secrets don't linger for the parent/next run.
         _release_run_credentials(_integration_env_token)
+        # WS-43d (§16.3): a delegated run's run data ends with it too.
+        await _end_sandbox_run()
         # Give the parent back its own artifact context (H-201, §21.16).
         reset_artifact_context(_artifact_token)
 
@@ -1317,6 +1486,89 @@ class RunWorkspaceRefused(RuntimeError):
     with no tenant must not fall back to it for its writes, so the run is
     refused before the agent starts. It fails closed, and it writes nothing.
     """
+
+
+# ── Agents for the platform's own admins only (owner, 2026-10-03, §15.4) ────
+#: Only an admin of the first-party organization (``organization.first_party``,
+#: migration 157) may run these, through ANY path: chat, the gateway run API,
+#: delegation, workflows, webhooks and cron. ``metorite`` is the root dev agent
+#: (repo-root ``agents.py``). It keeps its Copilot CLI shell for those admins
+#: (``_tool_injection._D85_OWNER_PENDING``), and this gate is what makes that
+#: safe. Fence: ``tests/unit/test_root_agent_first_party.py`` (WS43-F17).
+_FIRST_PARTY_ADMIN_ONLY_AGENTS: frozenset[str] = frozenset({"metorite"})
+
+#: The established gate of an admin act: the nine member-admin routes require
+#: it (``require_permission("admin:members:manage")``), and only the ``owner``
+#: (``*``) and ``admin`` roles hold it (migration 130). ``admin:members:read``
+#: is NOT an admin check, because migration 130 gives it to ``manager`` too.
+_FIRST_PARTY_ADMIN_PERMISSION = "admin:members:manage"
+
+
+class AgentNotFound(AgentLoadError):
+    """The agent is refused to this caller, and the refusal reads as absent.
+
+    An ``AgentLoadError``, so every path answers it as it answers an agent it
+    cannot load: no self-anneal, no self-mutation, and no word that the agent
+    exists. The sync run API maps it to 404.
+    """
+
+
+def _agent_slug(agent_name: str) -> str:
+    """The name a gate compares: lower case, with no ``agent-`` prefix."""
+    name = str(agent_name or "").strip().lower()
+    return name[len("agent-"):] if name.startswith("agent-") else name
+
+
+async def _first_party_admin_runs() -> tuple[bool, str]:
+    """Is the run on this frame a first-party admin's? ``(allowed, why)``.
+
+    The member and the org come from the run binding only, never from the
+    payload (R11). A direct run binds its member at its boundary, and a
+    delegated run keeps its parent's member, because a run that binds no user
+    leaves the parent's ``user`` and ``member_verified`` in place. Every
+    failure answers no.
+    """
+    from acb_common import get_run_context
+
+    ctx = get_run_context()
+    member = str(ctx.get("user") or "").strip()
+    if not member or ctx.get("member_verified") != "1":
+        return False, "no verified member"
+    org = _current_run_org()
+    if not org:
+        return False, "no organization"
+    try:
+        from orchestrator.mutation import _read_first_party
+        if not await _read_first_party(org):
+            return False, "not the first-party organization"
+    except Exception as exc:
+        return False, f"the first-party check failed: {str(exc)[:120]}"
+    try:
+        from acb_auth import resolve_access
+        access = await resolve_access(member)
+    except Exception as exc:
+        return False, f"the access check failed: {str(exc)[:120]}"
+    if not (access.is_active and access.has(_FIRST_PARTY_ADMIN_PERMISSION)):
+        return False, "not an admin of the first-party organization"
+    return True, ""
+
+
+async def _assert_may_run_agent(agent_name: str) -> None:
+    """Refuse a first-party-admin-only agent to everyone else (§15.4).
+
+    Each run boundary calls it once, before it loads the agent:
+    ``run_agent_stream``, ``_run_agent_inner`` and
+    ``_run_sub_agent_streaming``. Every other agent passes untouched. A
+    refusal raises :class:`AgentNotFound`, so the agent's existence does not
+    show. The reason goes to the log only.
+    """
+    if _agent_slug(agent_name) not in _FIRST_PARTY_ADMIN_ONLY_AGENTS:
+        return
+    allowed, why = await _first_party_admin_runs()
+    if allowed:
+        return
+    _log.warning("executor.agent_run_refused", agent=agent_name, reason=why)
+    raise AgentNotFound(f"Agent {agent_name!r} not found.")
 
 
 def _resolve_run_workspace(
@@ -2111,6 +2363,13 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
         return None
 
     try:
+        from acb_auth.access import IdentityUnavailable
+    except ImportError:
+        # The orchestrator does not declare acb_auth. Without it, keep the
+        # prior answer: the broad catch below gave None.
+        return None
+
+    try:
         from acb_auth import (
             integration_use_permission,
             resolve_access,
@@ -2148,10 +2407,19 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
             pass
 
         return lambda service: access.has(integration_use_permission(service))
+    except IdentityUnavailable:
+        # 🔴 A pool or connect timeout (2026-10-07). It is NOT "no member",
+        # so it must not reach the `None` below, which means NO filter and
+        # gives the run every credential. The likely case is a background
+        # email-automation run while the database is starved of IO. Deny
+        # every credential for this run. The next run resolves again.
+        _log.warning("executor.integration_authorizer_unavailable")
+        return lambda _service: False
     except Exception as exc:
-        # resolve_access is documented never to raise, so reaching here is a
-        # bug rather than a misconfiguration. Preserve the prior behaviour
-        # rather than failing every integration on a transient fault.
+        # resolve_access raises only IdentityUnavailable, caught above, so
+        # reaching here is a bug rather than a misconfiguration. Preserve the
+        # prior behaviour rather than failing every integration on a
+        # transient fault.
         _log.warning("executor.integration_authorizer_failed", error=str(exc))
         return None
 
@@ -2311,12 +2579,17 @@ async def run_agent(
         # H-201 (§21.16): the run's artifact context ends with the run, and a
         # nested run gives its parent back the parent's exact context.
         with run_context_scope(), artifact_context_scope():
-            return await _run_agent_inner(
-                agent_name, event_payload,
-                run_id=run_id, thread_id=thread_id, model=model,
-                organization_id=organization_id,
-                session_user=session_user,
-            )
+            try:
+                return await _run_agent_inner(
+                    agent_name, event_payload,
+                    run_id=run_id, thread_id=thread_id, model=model,
+                    organization_id=organization_id,
+                    session_user=session_user,
+                )
+            finally:
+                # WS-43d (§16.3): inside the scope, so the run's own context
+                # still names its run data. A no-op when no sandbox ran.
+                await _end_sandbox_run()
     finally:
         _unbind_run_identity(_identity)
 
@@ -2347,6 +2620,10 @@ async def _run_agent_inner(
     _disable_agent_telemetry_once()
     settings = get_settings()
     run_id = run_id or str(uuid.uuid4())
+    # H-227 (the batch decision, PR #616): the executor mints the thread of a
+    # run with no chat. Only this code knows that, so a client can never claim
+    # it by the shape of an id it sends.
+    _minted_thread = not thread_id
     thread_id = thread_id or f"{agent_name}:{run_id}"
 
     # H-201 P2-c (§21.16): a batch run that starts inside the artifact context
@@ -2356,8 +2633,33 @@ async def _run_agent_inner(
     from acb_skills.write_artifact import (
         artifact_context,
         bind_artifact_context,
+        delegation_target,
+        derive_artifact_context,
     )
     _parent_ctx = artifact_context()
+    # A delegated run delivers its documents to the chat that asked, so the
+    # card opens there. From the parent's bound context only (R5). ``None``
+    # for a run with no parent, and for a sub-run of a batch run.
+    _deliver_to = delegation_target(_parent_ctx)
+    # A run with no chat and no parent run is a BATCH run. Its documents
+    # belong to the organization (write_artifact). A delegated run is not:
+    # its parent's chat may hold a member's data.
+    _batch_thread = _minted_thread and not _parent_ctx.get("session_id")
+    # H-236: decide this run's no_egress once, from the parent's binding and
+    # this agent's own cover, and bind it before anything can fail. A load
+    # error then retries (self-anneal) with this answer, never the parent's.
+    _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
+    derive_artifact_context(no_egress=_no_egress)
+    # WS-45 S4: a covered batch run has its own tier policy (below). Its
+    # effort is the payload's, else the parent run's, from the parent's
+    # bound context (a sub-agent). Both are read for a covered agent only.
+    _batch_covered = _tier_policy_covers(agent_name)
+    _batch_effort = ""
+    if _batch_covered:
+        _batch_effort = str(
+            (event_payload.get("think_mode") if isinstance(event_payload, dict) else "")
+            or _parent_ctx.get("think_mode") or "auto"
+        )
 
     # ── Run correlation for the batch path (usage attribution) ─────────────
     # The streaming path binds the same fields. `run_agent` opened the scope
@@ -2423,9 +2725,11 @@ async def _run_agent_inner(
             agent=agent_name, thread_id=thread_id,
             source=_batch_source or "batch",
         )
-    # TODO(WS-29 slice 6b): inbound webhooks (WhatsApp) + email-automation
-    # chat need a mailbox/account→org resolver over an RLS-scoped table before they
-    # can pass organization_id here (exempt-resolver design). TODO(WS-29 slice 6c):
+    # TODO(WS-29 slice 6b): email-automation chat needs a mailbox→org resolver
+    # over an RLS-scoped table before it can pass organization_id here
+    # (exempt-resolver design). The WhatsApp webhook has its resolver since
+    # WS-20 WA-C1 (`wa_account_for_phone_number_id`). WS-20 WA-C1b binds the
+    # other WhatsApp paths. TODO(WS-29 slice 6c):
     # the workflow cron scheduler / orphan reconciler / schedule sweep resolve the
     # owning record's org and pass it in.
 
@@ -2443,6 +2747,10 @@ async def _run_agent_inner(
         )
     )
 
+    # WS-45 S4: the run's tier policy, for a covered native agent. Set in the
+    # load below. The self-anneal retry takes it too (review P3).
+    _batch_tier = None
+    _is_copilot_agent = False
     try:
         _effective_agent_dir: str | None = None
         # The dir the git helpers, the self-anneal and the self-mutation use.
@@ -2471,6 +2779,9 @@ async def _run_agent_inner(
         except ImportError:
             pass
 
+        # §15.4: refused as absent unless a first-party admin runs it. An
+        # AgentLoadError, so no self-anneal and no self-mutation follow.
+        await _assert_may_run_agent(agent_name)
         with load_agent(
             agent_name,
             run_id=run_id,
@@ -2562,15 +2873,21 @@ async def _run_agent_inner(
 
             agents = loaded.build_agents()
             # Honour .github/agents/<name>.agent.md (instructions override).
-            _apply_agent_md_overrides(agents, loaded.agent_dir, agent_name)
+            _batch_md_spec = _apply_agent_md_overrides(
+                agents, loaded.agent_dir, agent_name,
+            )
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
+            _own_tools = _count_agent_tools(agents)  # WS-8o
             _inject_agent_tools(
                 agents,
                 tool_scope=loaded.config.get("tool_scope") or None,
                 agent_name=agent_name,
+                agent_config=loaded.config,  # D85: the sharing block
+                no_egress=_no_egress,  # H-236: from the parent's binding
             )  # inject call_agent / call_agent_background
+            _log_agent_tools_resolved(agent_name, agents, _own_tools)
 
             # Set write_artifact context + ensure visible workspace dirs exist.
             # H-201 (§21.16): the context is THIS run's own ContextVar value.
@@ -2580,6 +2897,9 @@ async def _run_agent_inner(
                 agent_name=agent_name,
                 run_id=run_id,
                 workspace_root=_effective_agent_dir,
+                # H-227: True only when this executor minted the thread of a
+                # run with no chat and no parent (see `_batch_thread`).
+                batch_thread=_batch_thread,
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration
                 # 136). A shared agent's tenant dir carries o:<org>.
@@ -2599,6 +2919,24 @@ async def _run_agent_inner(
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
                 ),
+                # D85, two halves. ``shell_tools_withheld``: the injected
+                # shell tools are withheld (a cover may lift it).
+                # ``host_shell_refused``: the Copilot CLI's own shell, which
+                # runs on the host, is refused (a cover never lifts it).
+                shell_tools_withheld=bool(_withheld_shell_tools(
+                    agent_name, loaded.config,
+                )),
+                host_shell_refused=_host_shell_refused(
+                    agent_name, loaded.config,
+                ),
+                # H-236: a delegated run of a covered parent sends nothing
+                # off the platform. Its own delegations inherit this.
+                no_egress=_no_egress,
+                # The chat that asked, for a delegated run.
+                **({"deliver_to": _deliver_to} if _deliver_to is not None else {}),
+                # WS-45 S4: the System-1 threshold of a covered run follows
+                # the effort. Absent for every other agent, as before.
+                **({"think_mode": _batch_effort} if _batch_covered else {}),
             )
             try:
                 _ws_root = Path(_effective_agent_dir)
@@ -2636,6 +2974,7 @@ async def _run_agent_inner(
             materialize_skill_bodies_for_agent(
                 agent_name, _effective_agent_dir,
                 tool_scope=loaded.config.get("tool_scope") or None,
+                agent_config=loaded.config,
             )
 
             # ── Set working directory for Copilot SDK agents ────────────
@@ -2662,19 +3001,43 @@ async def _run_agent_inner(
             #  - Native MAF agents: _apply_byok_… is a no-op, so set
             #    default_options["model"] here — the MAF client otherwise keeps
             #    its build-time model and ignores the requested/inherited tier.
+            # WS-45 S4 (D90 §4.5): an agent that AI_TIER_ROUTING covers runs
+            # its OWN policy here. It ignores *model*, the tier its caller
+            # passed or its parent published, and logs ai_route.model_ignored.
+            # None for every other agent, so the block below runs as before.
+            if agents and _batch_covered:
+                _batch_tier = await _tier_policy_for_run(
+                    agent_name, agents[0],
+                    run_id=run_id, thread_id=thread_id, model=model,
+                    think_mode=_batch_effort, event_payload=event_payload,
+                    config=loaded.config,
+                    # The .agent.md model counts for a Copilot SDK default,
+                    # as on the stream and sub-agent paths (review P3).
+                    agent_md_model=(
+                        (getattr(_batch_md_spec, "model", "") or "").strip()
+                    ),
+                    is_copilot=_is_copilot_agent, emit=False,
+                )
             if agents:
                 _agent0 = agents[0]
                 _cfg_tier = (loaded.config.get("model_tier") or "")
+                _batch_model = (
+                    _batch_tier.run_tier() if _batch_tier is not None
+                    else model or ""
+                )
+                if _batch_tier is not None and _is_copilot_agent:
+                    # A Copilot SDK agent keeps one tier for the whole run.
+                    _batch_tier.announce_run()
                 try:
                     # Copilot-SDK agents: pin gateway /v1 (BYOK) + model.
                     _apply_byok_provider_for_copilot_sdk(
-                        _agent0, model or "", settings,
+                        _agent0, _batch_model, settings,
                         agent_model_tier=_cfg_tier,
                     )
                     # Native MAF agents: set default_options["model"] so the
                     # requested/inherited tier is honoured (no-op for Copilot SDK).
                     _apply_model_for_maf_agent(
-                        _agent0, model or "", settings,
+                        _agent0, _batch_model, settings,
                         agent_model_tier=_cfg_tier,
                     )
                 except Exception as _be:
@@ -2691,6 +3054,7 @@ async def _run_agent_inner(
                     "integration_warnings": integration_warnings,
                 },
                 integrations=integrations,
+                tier_policy=None if _is_copilot_agent else _batch_tier,
             )
 
         record(
@@ -2738,6 +3102,21 @@ async def _run_agent_inner(
             "executor.run_workspace_refused", agent=agent_name, run_id=run_id,
             error=str(exc),
         )
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
+    except NoEgressRefused as exc:
+        # H-236: a refusal, never a fault. Before the self-anneal and the
+        # self-mutation clauses, so nothing retries a run the control refused.
+        raise AgentRunError(
+            str(exc), agent_name=agent_name, run_id=run_id, original=exc,
+        ) from exc
+
+    except AgentNotFound as exc:
+        # §15.4: refused as absent. Before the AgentLoadError clause, because
+        # that one starts a self-mutation. The agent is fine, and this caller
+        # may not run it. The gate already logged the reason.
         raise AgentRunError(
             str(exc), agent_name=agent_name, run_id=run_id, original=exc,
         ) from exc
@@ -2798,6 +3177,10 @@ async def _run_agent_inner(
             event_payload=event_payload,
             agent_dir=_git_dir or _effective_agent_dir,
             error=exc,
+            # H-236: every retry injects with THIS run's answer.
+            no_egress=_no_egress,
+            # WS-45 S4: a retry of a covered native run keeps its policy.
+            tier_policy=None if _is_copilot_agent else _batch_tier,
         )
         if recovery is not None:
             return recovery
@@ -2870,6 +3253,90 @@ _sse_seq: int = 0
 # a reconnect with a local cursor can skip the first <threadSeq> Redis entries
 # instead of blindly re-replaying the whole run from 0-0.
 _thread_emit_seq: dict[str, int] = {}
+
+
+#: How much of a Tier 1 failure the fallback log keeps, AFTER redaction.
+#:
+#: 🔴 **Short on purpose, and redacted first.** For a body-level 422, FastAPI
+#: puts the refused value into ``detail[].input``, and for a body the value can
+#: be the whole request, the member's messages included. A 2000-character cut
+#: (#657) could therefore carry member content into the gateway log. The field
+#: names travel in ``rejected_fields`` instead, so the text needs no length.
+_FALLBACK_ERROR_CHARS = 200
+
+#: The ONLY keys of a 422 ``detail`` entry the log may carry. An allowlist,
+#: because ``input`` is the leak and ``ctx`` can echo a value too.
+_DETAIL_KEYS_LOGGED = ("type", "loc", "msg")
+
+#: Where an ``input`` value starts in an error that arrived as TEXT. The text
+#: is cut there, because a value's end cannot be found safely in a repr.
+_INPUT_KEY = re.compile(r"""['"]input['"]\s*:""")
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    """*exc* and each exception it wraps, once each, outermost first."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        chain.append(cur)
+        cur = getattr(cur, "inner_exception", None) or cur.__cause__
+    return chain
+
+
+def _detail_of(exc: BaseException) -> list[Any] | None:
+    """The parsed 422 ``detail`` list on *exc*, or None."""
+    body = getattr(exc, "body", None)
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return detail if isinstance(detail, list) else None
+
+
+def _rejected_request_fields(exc: BaseException) -> list[str]:
+    """The request fields a 422 refused, read from the exception chain.
+
+    The model client wraps the HTTP error (``ChatClientException`` around an
+    ``openai.UnprocessableEntityError``), and the parsed body sits on the
+    inner one. Each ``detail`` entry carries ``loc = ["body", <field>, ...]``.
+    Returns ``[]`` for any other failure. It never raises, because it runs
+    inside an error path.
+    """
+    fields: list[str] = []
+    for cur in _exception_chain(exc):
+        for item in _detail_of(cur) or []:
+            loc = item.get("loc") if isinstance(item, dict) else None
+            if isinstance(loc, list | tuple) and len(loc) >= 2 and loc[0] == "body":
+                name = ".".join(str(part) for part in loc[1:])
+                if name not in fields:
+                    fields.append(name)
+    return fields
+
+
+def _redacted_fallback_error(exc: BaseException) -> str:
+    """The Tier 1 failure as log text, with every ``input`` value removed.
+
+    A parsed 422 is rebuilt from :data:`_DETAIL_KEYS_LOGGED` alone. Any other
+    failure is its own text, cut where an ``input`` key starts. Then the
+    result is cut to :data:`_FALLBACK_ERROR_CHARS`. It never raises.
+    """
+    text: str | None = None
+    for cur in _exception_chain(exc):
+        detail = _detail_of(cur)
+        if detail is None:
+            continue
+        kept = [
+            {k: item[k] for k in _DETAIL_KEYS_LOGGED if k in item}
+            for item in detail if isinstance(item, dict)
+        ]
+        status = getattr(cur, "status_code", None)
+        text = f"{type(cur).__name__} {status}: {json.dumps(kept, default=str)}"
+        break
+    if text is None:
+        text = str(exc)
+    found = _INPUT_KEY.search(text)
+    if found is not None:
+        text = text[: found.start()] + "[input removed]"
+    return text[:_FALLBACK_ERROR_CHARS]
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -2957,6 +3424,11 @@ async def run_agent_stream(
     # WS-43t2 (§15.9.5): the thread id the CALLER named. A run with none
     # neither loads nor saves a native session.
     _caller_thread_id = thread_id
+    # H-227: a thread that this executor mints, for a run with no chat and no
+    # parent run, makes a batch run (see `_run_agent_inner`).
+    from acb_skills.write_artifact import artifact_context as _ctx_now
+
+    _batch_thread = not thread_id and not _ctx_now().get("session_id")
     thread_id = thread_id or f"{agent_name}:{run_id}"
 
     settings = get_settings()
@@ -3051,8 +3523,9 @@ async def run_agent_stream(
     # WS-29 slice 6a: sub-agent runs now inherit the parent's org (via the batch
     # path's organization_id, resolved by _resolve_sub_agent_org), and /copilot/
     # chat threads its org through run_detached. TODO(WS-29 slice 6b): email-
-    # automation chat + inbound webhooks (WhatsApp) need an RLS-scoped
-    # mailbox/account→org resolver. TODO(WS-29 slice 6c): the workflow cron
+    # automation chat needs an RLS-scoped mailbox→org resolver. The WhatsApp
+    # webhook has one since WS-20 WA-C1, and WA-C1b binds the other WhatsApp
+    # paths. TODO(WS-29 slice 6c): the workflow cron
     # scheduler / orphan reconciler / schedule sweep resolve the owning record's
     # org and pass it into the batch path.
 
@@ -3099,9 +3572,20 @@ async def run_agent_stream(
     # delegated run neither loads nor saves a native session.
     _delegated_run = bool(artifact_context().get("run_id"))
     _artifact_token = enter_artifact_context()
+    # H-236: decide this run's no_egress ONCE, before anything can fail, and
+    # bind it. A covered agent's run is a covered run, whatever its parent.
+    from acb_skills.write_artifact import artifact_context as _ctx_now
+    from acb_skills.write_artifact import derive_artifact_context as _derive_ctx
+    _stream_no_egress = _run_no_egress(agent_name, _ctx_now(), organization_id)
+    _derive_ctx(no_egress=_stream_no_egress)
+    if _stream_no_egress:
+        _remember_no_egress_run(run_id)
     # Expose the run's model so sub-agents inherit the parent tier. Seed with the
     # raw requested model now; refined to the fully-resolved tier once known.
     _model_token = _active_run_model.set((model or "").strip() or None)
+    # WS-45 S2: the run's tier policy. Set after the load, for a covered
+    # agent only. None everywhere else.
+    _tier_run: Any = None
     _relay_mark_inactive = None  # type: ignore[assignment]
     _relay_mark_active = None  # type: ignore[assignment]
     with contextlib.suppress(Exception):
@@ -3162,6 +3646,9 @@ async def run_agent_stream(
         # Emit RUN_STARTED immediately so the UI can show ThinkingContainer at once.
         yield _sse({"type": "RUN_STARTED", "runId": run_id, "threadId": thread_id})
 
+        # §15.4: refused as absent unless a first-party admin runs it. The
+        # RUN_ERROR then reads like an agent that cannot load.
+        await _assert_may_run_agent(agent_name)
         with load_agent(
             agent_name,
             run_id=run_id,
@@ -3190,6 +3677,7 @@ async def run_agent_stream(
             _apply_own_tool_scope(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
+            _own_tools = _count_agent_tools(agents)  # WS-8o
             _inject_agent_tools(
                 agents,
                 # .agent.md's VS Code tools widen (never narrow) the scope, so a
@@ -3198,9 +3686,14 @@ async def run_agent_stream(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
                 agent_name=agent_name,
+                agent_config=loaded.config,  # D85: the sharing block
+                no_egress=_stream_no_egress,  # H-236
             )  # inject call_agent / call_agent_background
-            # Inject MCP servers from the registry into every agent at runtime
-            for _a in agents:
+            _log_agent_tools_resolved(agent_name, agents, _own_tools)
+            # Inject MCP servers from the registry into every agent at runtime.
+            # H-236: an MCP server reaches outside the platform, so a
+            # no_egress run gets none.
+            for _a in agents if not _stream_no_egress else []:
                 await _inject_mcp_servers(_a, agent_name)
 
             # Per-session workspace override (Custom Apps builder sessions):
@@ -3251,6 +3744,7 @@ async def run_agent_stream(
                 agent_name=agent_name,
                 run_id=run_id,
                 workspace_root=_effective_ws,
+                batch_thread=_batch_thread,  # H-227
                 # The blob-store partition every write-through must carry —
                 # keeping disk and store on the SAME tenant key (migration
                 # 136). A shared agent's tenant dir carries o:<org>.
@@ -3271,6 +3765,23 @@ async def run_agent_stream(
                     or getattr(settings, "litellm_master_key", "")
                     or "sk-local"
                 ),
+                # D85, two halves. ``shell_tools_withheld``: the injected
+                # shell tools are withheld (a cover may lift it).
+                # ``host_shell_refused``: the Copilot CLI's own shell, which
+                # runs on the host, is refused (a cover never lifts it).
+                shell_tools_withheld=bool(_withheld_shell_tools(
+                    agent_name, loaded.config,
+                )),
+                host_shell_refused=_host_shell_refused(
+                    agent_name, loaded.config,
+                ),
+                # H-236: False for a top-level run. A covered run does not
+                # bind True for itself: its delegations compute it from
+                # covers(), and the sandbox middleware withholds its own.
+                no_egress=_stream_no_egress,
+                # WS-45 S1: the effort mode, so the System-1 `decide` reads
+                # its threshold from the run binding (ai_tier_routing.md §5).
+                think_mode=think_mode or "auto",
             )
             try:
                 # Ensure the three visible workspace directories exist so the
@@ -3310,6 +3821,7 @@ async def run_agent_stream(
                 tool_scope=_merged_tool_scope(
                     loaded.config.get("tool_scope") or None, _agent_md_spec,
                 ),
+                agent_config=loaded.config,
             )
 
             if not agents:
@@ -3352,16 +3864,11 @@ async def run_agent_stream(
                                thread_id=thread_id,
                                copilot_session=_copilot_session_id[:12])
 
-            # Ensure the risk-aware permission handler is set for
-            # GitHubCopilotAgent before ANY execution path — repos often omit it
-            # from default_options (B6).
-            try:
-                _ph = _copilot_permission_handler()
-                for _a in agents:
-                    if hasattr(_a, "_permission_handler") and _a._permission_handler is None:
-                        _a._permission_handler = _ph
-            except Exception:
-                pass
+            # Install the permission handler of each GitHubCopilotAgent before
+            # ANY execution path (B6). It ALWAYS carries the D85 shell guard,
+            # also when the agent's factory set its own handler.
+            for _a in agents:
+                _install_copilot_permission_handler(_a)
 
             # ── BYOK early detection (must happen BEFORE tier selection) ────
             # When a LiteLLM model is requested (contains '/' or starts with
@@ -3374,6 +3881,34 @@ async def run_agent_stream(
             #   1. Request ``model`` parameter (explicit user override)
             #   2. Global ``copilot_chat_model`` setting (env / .env)
             #   3. Agent's ``model_tier`` from config.json (per-agent default)
+            #
+            # WS-45 S2 (D90): an agent that AI_TIER_ROUTING covers takes its
+            # tier from the policy instead, and ignores 1 and 2. None for
+            # every other agent, so this block runs as before.
+            _tier_run = await _tier_policy_for_run(
+                agent_name, agent,
+                run_id=run_id, thread_id=thread_id, model=model,
+                think_mode=think_mode, event_payload=event_payload,
+                config=loaded.config,
+                agent_md_model=(
+                    (_agent_md_spec.model or "").strip()
+                    if _agent_md_spec is not None else ""
+                ),
+                is_copilot=_is_copilot_sdk,
+                # The member's own turn: read the effort from their words.
+                effort_from_text=True,
+            )
+            # Owner, 2026-10-07: a covered chat sends `think_mode` "auto", and
+            # the member's words may raise it to `thinking`. The run then
+            # takes that effort everywhere `think_mode` reaches: the reasoning
+            # effort below, and the bound context that the System-1 threshold
+            # and a sub-agent read. None, or the same effort, changes nothing.
+            if _tier_run is not None:
+                from acb_skills.tier_policy import normalise_effort as _norm_effort
+
+                if _tier_run.effort != _norm_effort(think_mode):
+                    think_mode = _tier_run.effort
+                    _derive_ctx(think_mode=think_mode)
             _requested_model_early = (model or "").strip()
             _configured_model_early = (
                 getattr(settings, "copilot_chat_model", "") or ""
@@ -3395,6 +3930,8 @@ async def run_agent_stream(
                 or _agent_md_model
                 or _agent_model_tier
             )
+            if _tier_run is not None:
+                _final_model_early = _tier_run.run_tier()
             # BYOK-by-default: route every Copilot SDK agent through the LiteLLM
             # gateway and normalise any bare/empty model to the default tier.
             _final_model_early, _is_byok_early = _byok_default_model(
@@ -3402,7 +3939,13 @@ async def run_agent_stream(
             )
             # Refine the run's model ContextVar to the fully-resolved tier so
             # sub-agents spawned during this run inherit it (call_agent etc.).
-            if _final_model_early:
+            # WS-45 S2: a covered run publishes the agent's DEFAULT tier, not
+            # the turn's tier. A sub-agent has no policy of its own until S4,
+            # and a code turn would put every request of a fan-out on
+            # tier-powerful.
+            if _tier_run is not None:
+                _active_run_model.set(_tier_run.default)
+            elif _final_model_early:
                 _active_run_model.set(_final_model_early)
             _byok_provider_early: dict[str, Any] | None = None
             _byok_model_id_early = _final_model_early
@@ -3453,6 +3996,11 @@ async def run_agent_stream(
                     )
                 except Exception:
                     pass
+            # WS-45 S2 (§4.5): a Copilot SDK agent cannot switch per request,
+            # so it keeps the turn's tier for the whole run. Log it and tell
+            # the chat once. A native agent's middleware does it per request.
+            if _tier_run is not None and _is_copilot_sdk:
+                yield _sse(_tier_run.announce_run())
 
             # ── Reasoning depth (chat UI "thinking" toggle) ─────────────
             # Applied at the SAME seam as the model, and to every agent this
@@ -3568,6 +4116,8 @@ async def run_agent_stream(
                 _nq: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
                 _nq_token = _active_run_queue.set(_nq)
                 _n_emitted = False
+                # WS-45 S2: ai.route events of a step with no output yet.
+                _held_routes: list[dict[str, Any]] = []
                 # Canonical translation state (message lifecycle + tool-call
                 # id dedup) — shared mapping with every other stream path.
                 _t_state = _TranslationState(run_id)
@@ -3580,9 +4130,15 @@ async def run_agent_stream(
                     async with contextlib.AsyncExitStack() as _nstack:
                         if hasattr(type(agent), "__aenter__"):
                             await _nstack.enter_async_context(agent)
-                        _agen = _agent_for_run(
-                            agent, _native_ctx,
-                            history=_native_session_history(_session_turn),
+                        # WS-45 S2: a covered run's view also carries the
+                        # tier policy. None leaves the view as it was.
+                        # WS-43t2: the view carries the session history too.
+                        _agen = _with_tier_policy(
+                            _agent_for_run(
+                                agent, _native_ctx,
+                                history=_native_session_history(_session_turn),
+                            ),
+                            _tier_run,
                         ).run(
                             _native_input, stream=True,
                             **_native_session_run_kwargs(_session_turn),
@@ -3675,10 +4231,20 @@ async def run_agent_stream(
                                 except Exception:
                                     _qev = None
                                 while _qev is not None:
-                                    _n_emitted = True
-                                    if _is_hitl_event(_qev):
-                                        _hitl_pending = True
-                                    yield _sse(_qev)
+                                    # WS-45 S2: an ai.route event is not
+                                    # output. Hold it until the step gives
+                                    # output, so a Tier 1 fault before any
+                                    # output still falls back to Tier 2.
+                                    if _is_route_event(_qev) and not _n_emitted:
+                                        _held_routes.append(_qev)
+                                    else:
+                                        for _hr in _held_routes:
+                                            yield _sse(_hr)
+                                        _held_routes.clear()
+                                        _n_emitted = True
+                                        if _is_hitl_event(_qev):
+                                            _hitl_pending = True
+                                        yield _sse(_qev)
                                     _qev = (
                                         _nq.get_nowait()
                                         if not _nq.empty() else None
@@ -3748,20 +4314,27 @@ async def run_agent_stream(
                                     _tc_args.pop(_cid, None)
                                 else:
                                     _n_emitted = True
+                                # WS-45 S2: the step gave output, so the held
+                                # ai.route events describe a real step. They
+                                # go out first.
+                                for _hr in _held_routes:
+                                    yield _sse(_hr)
+                                _held_routes.clear()
                                 yield _sse(_ev)
                             if _loop_tripped:
                                 _log.warning(
                                     "executor.native_maf_tool_loop_detected",
                                     agent=agent_name, repeats=_loop_max,
                                 )
-                                yield _sse({
-                                    "type": "RUN_ERROR", "runId": run_id,
-                                    "message": (
+                                yield _sse(run_error_event(
+                                    run_id=run_id, code="unknown",
+                                    where="native_maf_tool_loop",
+                                    message=(
                                         "Agent stopped: the same tool was "
                                         f"called with identical arguments "
                                         f"{_loop_max} times (loop detected)."
                                     ),
-                                })
+                                ))
                                 # _next_task is None here in the normal flow
                                 # (reset after .result() above); it is only a
                                 # live task if the trip path ever moves before
@@ -3777,12 +4350,24 @@ async def run_agent_stream(
                             # manage_todo_list, …) emitted during this update.
                             while not _nq.empty():
                                 _qev = _nq.get_nowait()
-                                if _qev:
-                                    _n_emitted = True
-                                    if _is_hitl_event(_qev):
-                                        _hitl_pending = True
-                                    yield _sse(_qev)
+                                if not _qev:
+                                    continue
+                                if _is_route_event(_qev) and not _n_emitted:
+                                    _held_routes.append(_qev)
+                                    continue
+                                for _hr in _held_routes:
+                                    yield _sse(_hr)
+                                _held_routes.clear()
+                                _n_emitted = True
+                                if _is_hitl_event(_qev):
+                                    _hitl_pending = True
+                                yield _sse(_qev)
                     # Drain any events that landed as the stream closed.
+                    # The stream ended without a fault, so a held ai.route
+                    # event goes out first.
+                    for _hr in _held_routes:
+                        yield _sse(_hr)
+                    _held_routes.clear()
                     while not _nq.empty():
                         _qev = _nq.get_nowait()
                         if _qev:
@@ -3794,14 +4379,15 @@ async def run_agent_stream(
                             "executor.native_maf_stream_idle_timeout",
                             agent=agent_name, idle_seconds=_native_idle_after,
                         )
-                        yield _sse({
-                            "type": "RUN_ERROR", "runId": run_id,
-                            "message": (
+                        yield _sse(run_error_event(
+                            run_id=run_id, code="timeout",
+                            where="native_maf_idle",
+                            message=(
                                 "Agent produced no output for "
                                 f"{int(_native_idle_after)}s and was stopped "
                                 "(possible stall)."
                             ),
-                        })
+                        ))
                     elif not _loop_tripped:
                         # WS-43t2: only a run that finished saves its
                         # session, and before RUN_FINISHED, so a quick next
@@ -3828,15 +4414,25 @@ async def run_agent_stream(
                         # doesn't hang in "streaming" before the error lands.
                         for _ev in _close_text_message(_t_state):
                             yield _sse(_ev)
-                        yield _sse({
-                            "type": "RUN_ERROR", "runId": run_id,
-                            "message": str(_nexc),
-                        })
+                        yield _sse(run_error_event(
+                            _nexc, run_id=run_id, where="native_maf_stream",
+                        ))
                         return
                     # Nothing emitted yet — fall through to Tier 2 batch.
+                    # WS-45 S2: the held ai.route events go, and the policy
+                    # counts again from the first request, so Tier 2 sends
+                    # the chat one event for each step.
+                    _held_routes.clear()
+                    if _tier_run is not None:
+                        _tier_run.restart()
+                    # `rejected_fields` names what a 422 refused. `error` is
+                    # redacted: a 422's `input` can hold member messages.
                     _log.warning(
                         "executor.native_maf_stream_fallback",
-                        agent=agent_name, error=str(_nexc)[:200],
+                        agent=agent_name,
+                        error_type=type(_nexc).__name__,
+                        error=_redacted_fallback_error(_nexc),
+                        rejected_fields=_rejected_request_fields(_nexc),
                     )
 
             # ── Tier 1.5: GitHubCopilotAgent native streaming ───────────────
@@ -3908,12 +4504,9 @@ async def run_agent_stream(
                 _byok_provider = _byok_provider_early
                 _byok_model_id = _byok_model_id_early
 
-                # Ensure the risk-aware permission handler (B6).
-                try:
-                    if hasattr(agent, "_permission_handler") and agent._permission_handler is None:
-                        agent._permission_handler = _copilot_permission_handler()
-                except Exception:
-                    pass
+                # The permission handler (B6), always with the D85 guard. A
+                # no-op here: the install above already guarded it.
+                _install_copilot_permission_handler(agent)
 
                 _msg_text = event_payload.get("message") or event_payload.get("user_query") or ""
 
@@ -4036,6 +4629,10 @@ async def run_agent_stream(
                 # _create_session() retries without the option if the model
                 # rejects it, so unsupported models degrade gracefully.
                 _think_mode = event_payload.get("think_mode") or "auto"
+                # A covered run takes the policy's effort, which the member's
+                # words may have raised (owner, 2026-10-07).
+                if _tier_run is not None:
+                    _think_mode = _tier_run.effort
                 try:
                     _opts = agent.default_options
                     if isinstance(_opts, dict):
@@ -4355,8 +4952,9 @@ async def run_agent_stream(
                                 "executor.copilot_maf_stream_error",
                                 agent=agent_name,
                             )
-                            yield _sse({"type": "RUN_ERROR", "runId": run_id,
-                                        "message": str(_exc)})
+                            yield _sse(run_error_event(
+                                _exc, run_id=run_id, where="copilot_maf_stream",
+                            ))
                             return
                         # Stale session — clear it and prepare a retry.
                         _log.warning(
@@ -4656,11 +5254,8 @@ async def run_agent_stream(
                         await queue.put({
                             "type": "TOOL_CALL_RESULT",
                             "toolCallId": tool_call_id,
-                            "content": (
-                                f"Error: tool '{tool_name}' needs a package that "
-                                f"isn't installed ({_imp_exc}). Auto-install "
-                                f"{'failed' if _mod else 'could not identify the module'}"
-                                f"; call install_dependency('<package>') and retry."
+                            "content": _missing_dependency_message(
+                                tool_name, _imp_exc, _mod,
                             ),
                             "success": False,
                         })
@@ -4761,6 +5356,17 @@ async def run_agent_stream(
                         except (AttributeError, TypeError):
                             pass
 
+            # MAF 1.19 keeps a native Agent's tools in `default_options["tools"]`,
+            # and the agent has no `.tools` at all, so both loops above shim
+            # nothing for it. A native agent that fell back here from Tier 1 then
+            # streamed no tool row: the trail showed "Thinking…", the todo list
+            # and the artifact cards, and none of its steps (owner report,
+            # 2026-10-05). Shim them on a PER-RUN view, so the agent object that
+            # another run holds never changes. The restore below still reads the
+            # shared object, which the view never wrote.
+            _t2_shared_agent = agent
+            agent = _tier2_tool_view(agent, _make_tool_shim)
+
             # Run the agent in a background task.
             message = _build_event_message(agent_name, run_id, event_payload, integrations)
 
@@ -4783,10 +5389,13 @@ async def run_agent_stream(
                             # SDK 1.0 (H-181): cli_path + cli_args became one
                             # stdio RuntimeConnection, and the client takes
                             # keywords instead of an options dict.
-                            _cli_args = (
-                                ["--deny-tool", "shell"]
-                                if _agent_runtime != "github-copilot" else []
-                            )
+                            # D85 (fix round 1 of PR #598): ALWAYS deny the
+                            # CLI shell on Tier 2. Tier 1.5 returns for every
+                            # Copilot-shaped agent, and a `github-copilot`
+                            # label makes an agent Copilot-shaped, so Tier 2
+                            # never serves that label. Its old "allow shell
+                            # for github-copilot" branch could not run.
+                            _cli_args = ["--deny-tool", "shell"]
                             _cli_path = _agent_settings.get("cli_path")
                             if _cli_path or _cli_args:
                                 _cli_opts["connection"] = _RuntimeConnection.for_stdio(
@@ -4817,12 +5426,15 @@ async def run_agent_stream(
 
                     if hasattr(type(agent), "__aenter__"):
                         await stack.enter_async_context(agent)
-                    # Apply the risk-aware permission handler if needed (B6).
-                    try:
-                        if hasattr(agent, "_permission_handler") and agent._permission_handler is None:
-                            agent._permission_handler = _copilot_permission_handler()
-                    except Exception:
-                        pass
+                    # The permission handler (B6), always with the D85 guard.
+                    # H-201: carry this run's context in, as every Copilot
+                    # path must, or the handler sees no workspace and no
+                    # shell flag. A no-op when Tier 1.5 already carried it.
+                    _install_copilot_permission_handler(agent)
+                    from orchestrator.copilot_agent import (
+                        carry_run_context as _carry_tier2,
+                    )
+                    _carry_tier2(agent)
                     # Pass history as proper MAF Message objects so the model sees
                     # full user/assistant turn structure, not a flat string.
                     #
@@ -4853,9 +5465,12 @@ async def run_agent_stream(
                         native=not _is_copilot_sdk,
                         session_turn=_session_turn,
                     )
-                    response = await _agent_for_run(
-                        agent, _run_ctx,
-                        history=_native_session_history(_session_turn),
+                    response = await _with_tier_policy(
+                        _agent_for_run(
+                            agent, _run_ctx,
+                            history=_native_session_history(_session_turn),
+                        ),
+                        None if _is_copilot_sdk else _tier_run,
                     ).run(
                         _run_input,
                         **_native_session_run_kwargs(_session_turn),
@@ -4885,15 +5500,15 @@ async def run_agent_stream(
             # Restore patched tools (attribute-based)
             for attr, _, original in patched:
                 try:
-                    object.__setattr__(agent, attr, original)
+                    object.__setattr__(_t2_shared_agent, attr, original)
                 except Exception:
                     pass
 
             # Restore shimmed list entries
-            if hasattr(agent, "tools") and isinstance(agent.tools, (list, tuple)):
+            if hasattr(_t2_shared_agent, "tools") and isinstance(_t2_shared_agent.tools, (list, tuple)):
                 for _idx, _orig in _shimmed_list_indices:
                     try:
-                        agent.tools[_idx] = _orig
+                        _t2_shared_agent.tools[_idx] = _orig
                     except Exception:
                         pass
 
@@ -4945,11 +5560,10 @@ async def run_agent_stream(
     except AgentRunError:
         raise
     except Exception as exc:
-        yield _sse({
-            "type": "RUN_ERROR",
-            "message": str(exc),
-            "code": type(exc).__name__,
-        })
+        # The code names the failure for the member's chat, and the ref
+        # finds this log line (owner report, 2026-10-08). Before, `code` was
+        # the class name and the member read the raw repr.
+        yield _sse(run_error_event(exc, run_id=run_id, where="run_agent_stream"))
         return
     finally:
         # ── Live activity feed (E2): agent activation END ────────────────────
@@ -4979,6 +5593,10 @@ async def run_agent_stream(
                 await _pending_push
             except Exception:
                 pass
+        # WS-43d (§16.3): the run data of a sandboxed run ends with the run,
+        # whatever way it ends. Read from the run's own context, so before
+        # that context is reset. A no-op when no sandbox ran.
+        await _end_sandbox_run()
         _stream_relay_thread_id.reset(_relay_token)
         _active_run_model.reset(_model_token)
         # H-201: the run's workspace, tenant key and session end with it.
@@ -5092,8 +5710,16 @@ async def _self_anneal(
     event_payload: dict[str, Any],
     agent_dir: str | None,
     error: Exception,
+    no_egress: bool,
+    tier_policy: Any = None,
 ) -> dict[str, Any] | None:
     """Self-annealing loop.
+
+    *no_egress* is the H-236 answer of the run that failed. Every retry
+    injects with it, so a retry can never hold more tools than the run did.
+
+    *tier_policy* is the failed run's ``RunTierPolicy`` (WS-45 S4), or None.
+    Each retry runs with it, counted from its first request again.
 
     1. Classify the error.
     2. Apply an in-process fix if one exists for this error class.
@@ -5131,7 +5757,11 @@ async def _self_anneal(
                         _apply_agent_md_overrides(
                             agents, loaded.agent_dir, agent_name,
                         )
-                        _inject_agent_tools(agents, agent_name=agent_name)
+                        _inject_agent_tools(
+                            agents, agent_name=agent_name,
+                            agent_config=loaded.config,  # D85
+                            no_egress=no_egress,  # H-236
+                        )
                         result = await _run_with_maf_agent(
                             agents,
                             agent_name=agent_name,
@@ -5142,6 +5772,7 @@ async def _self_anneal(
                                 "integration_warnings": integration_warnings,
                             },
                             integrations=integrations,
+                            tier_policy=_retry_policy(tier_policy),
                         )
                     _log.info("self_anneal.retry_success",
                               agent=agent_name, attempt=attempt + 1)
@@ -5174,7 +5805,11 @@ async def _self_anneal(
                     _apply_agent_md_overrides(
                         agents, loaded.agent_dir, agent_name,
                     )
-                    _inject_agent_tools(agents, agent_name=agent_name)
+                    _inject_agent_tools(
+                        agents, agent_name=agent_name,
+                        agent_config=loaded.config,  # D85
+                        no_egress=no_egress,  # H-236
+                    )
                     result = await _run_with_maf_agent(
                         agents,
                         agent_name=agent_name,
@@ -5185,6 +5820,7 @@ async def _self_anneal(
                             "integration_warnings": integration_warnings,
                         },
                         integrations=integrations,
+                        tier_policy=_retry_policy(tier_policy),
                     )
                 _log.info("self_anneal.retry_success",
                           agent=agent_name, attempt=attempt + 1)
@@ -5339,11 +5975,16 @@ async def _run_with_maf_agent(
     thread_id: str,
     event_payload: dict[str, Any],
     integrations: dict[str, Any],
+    tier_policy: Any = None,
 ) -> dict[str, Any]:
     """Execute the primary agent from *agents* via MAF and return a normalised result dict.
 
     Accepts any MAF ``BaseAgent`` subclass including ``GitHubCopilotAgent``.
     Automatically calls ``start()`` / ``stop()`` if the agent supports it.
+
+    *tier_policy* is the run's ``RunTierPolicy`` (WS-45 S4), for a native
+    agent that ``AI_TIER_ROUTING`` covers. The run then uses a per-run copy
+    of the agent that carries the policy. None changes nothing.
     """
     import contextlib
 
@@ -5356,13 +5997,9 @@ async def _run_with_maf_agent(
     # Agent repos often omit it; patch _permission_handler directly so sessions
     # are created without raising AgentException. B6: use the risk-aware handler
     # (blocks dangerous shell / out-of-workspace writes; logs privileged ops).
-    try:
-        _ph = _copilot_permission_handler()
-        for _a in agents:
-            if hasattr(_a, "_permission_handler") and _a._permission_handler is None:
-                _a._permission_handler = _ph
-    except Exception:
-        pass
+    # D85: ALWAYS with the shell guard, whatever handler the factory set.
+    for _a in agents:
+        _install_copilot_permission_handler(_a)
     # H-201 (§21.16): a Copilot SDK agent runs its tool calls and permission
     # requests with no context of this run. Carry this run's context in.
     from orchestrator.copilot_agent import carry_run_context
@@ -5444,7 +6081,7 @@ async def _run_with_maf_agent(
         # Standard Agent has a no-op __aenter__/__aexit__ — both are safe here.
         if hasattr(type(agent), "__aenter__"):
             await stack.enter_async_context(agent)
-        response = await agent.run(run_input)
+        response = await _with_tier_policy(agent, tier_policy).run(run_input)
 
     text: str = getattr(response, "text", "") or ""
     return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text}
@@ -5836,6 +6473,21 @@ def _native_session_run_kwargs(turn: Any) -> dict[str, Any]:
     return {"session": turn.session}
 
 
+async def _end_sandbox_run() -> None:
+    """Delete the run-data dir of the run on this frame (WS-43d, §16.3).
+
+    ``sandbox_broker.end_sandbox_run`` reads the run's own artifact context,
+    and it never raises. It touches no file when no sandbox ran in this
+    process, so a run of any agent with an empty ``MAF_CODING_SCOPE`` pays
+    one dict check. Fence: ``tests/unit/test_run_data_hygiene.py`` (WS43-F22).
+    """
+    try:
+        from orchestrator.sandbox_broker import end_sandbox_run
+    except ImportError:
+        return
+    await end_sandbox_run()
+
+
 def _agent_for_run(agent: Any, provider: Any, history: Any = None) -> Any:
     """The object a native run calls ``run`` on.
 
@@ -5853,6 +6505,170 @@ def _agent_for_run(agent: Any, provider: Any, history: Any = None) -> Any:
     from orchestrator._native_run_context import agent_for_run
 
     return agent_for_run(agent, provider, history=history)
+
+
+# ── WS-45 S2: the tier policy of a run (ai_tier_routing.md §4, §5, D90) ─────
+#
+# `acb_skills.tier_policy` holds the policy. These helpers only glue it to a
+# run. With `AI_TIER_ROUTING` unset, `_tier_policy_for_run` returns None at
+# once, and no other line of a run changes.
+
+
+def _tier_policy_covers(agent_name: str) -> bool:
+    """True when `AI_TIER_ROUTING` covers *agent_name*. Fails closed."""
+    try:
+        from acb_skills.tier_policy import tier_routing_on
+    except ImportError:
+        return False
+    return tier_routing_on(agent_name)
+
+
+def _agent_default_tier(
+    agent: Any, config: dict[str, Any], agent_md_model: str, *, is_copilot: bool,
+) -> str:
+    """The agent's own default tier (D-AI-4), the Balanced rung of the policy.
+
+    A native agent's default is its build-time client model, so
+    `PROJECTS_AGENT_MODEL` and the other agent env vars keep their meaning
+    (§8). `copilot_chat_model` does not count for a covered agent. A model
+    that is not a gateway id reads as `tier-balanced`.
+    """
+    from acb_skills.tier_policy import DEFAULT_TIER
+
+    if is_copilot:
+        found = agent_md_model or str(config.get("model_tier") or "")
+    else:
+        found = (
+            str(getattr(getattr(agent, "client", None), "model", "") or "")
+            or str(config.get("model_tier") or "")
+        )
+    found = found.strip()
+    return found if _is_gateway_model(found) else DEFAULT_TIER
+
+
+def _agent_tool_names(agent: Any) -> list[str]:
+    """The names of the tools *agent* holds, for the turn-kind question."""
+    from acb_skills.tool_guard import tool_name
+
+    opts = getattr(agent, "default_options", None)
+    tools = (opts.get("tools") if isinstance(opts, dict) else None) or (
+        getattr(agent, "_tools", None) or []
+    )
+    return [n for n in (tool_name(t) for t in tools) if n]
+
+
+def _emit_to_run(thread_id: str | None) -> Any:
+    """A callback that puts one event on the run's own queue, or nowhere."""
+    def _emit(event: dict[str, Any]) -> None:
+        queue = resolve_run_queue(thread_id)
+        if queue is not None:
+            queue.put_nowait(event)
+    return _emit
+
+
+async def _tier_policy_for_run(
+    agent_name: str,
+    agent: Any,
+    *,
+    run_id: str,
+    thread_id: str | None,
+    model: str | None,
+    think_mode: str | None,
+    event_payload: dict[str, Any],
+    config: dict[str, Any],
+    agent_md_model: str,
+    is_copilot: bool,
+    emit: bool = True,
+    effort_from_text: bool = False,
+) -> Any:
+    """The run's `RunTierPolicy`, or None when the flag does not cover the agent.
+
+    A covered run ignores the client's *model* and logs
+    `ai_route.model_ignored` (§8). It asks the turn kind ONCE, here, before
+    the first main request (§4.3), and logs `ai_route.turn_kind` with the
+    latency, so Q8's cost can be read on a box. No line holds tenant text.
+
+    *emit* False sends no `ai.route` event. The batch path and a sub-agent
+    pass it (S4). `resolve_run_queue` reads the PARENT's queue first, so a
+    sub-agent's events would join the parent's answer label.
+
+    *effort_from_text* (owner, 2026-10-07): the member chooses no effort in
+    the chat. The stream path passes it for the member's own turn, so the
+    turn-kind request also asks whether the member's words explicitly ask for
+    deep work. A yes raises an `auto` run to `thinking`, never to `max`, and
+    logs `ai_route.effort_from_text`. The batch path and a sub-agent leave it
+    off: their message is a model's words, and they inherit the parent's
+    effort through `think_mode` in the bound context.
+    """
+    if not _tier_policy_covers(agent_name):
+        return None
+    from acb_skills import tier_policy
+
+    requested = (model or "").strip()
+    if requested:
+        _log.info(
+            "ai_route.model_ignored", agent=agent_name, run_id=run_id,
+            model=requested[:80],
+        )
+    default = _agent_default_tier(
+        agent, config, agent_md_model, is_copilot=is_copilot,
+    )
+    message = ""
+    if isinstance(event_payload, dict):
+        message = str(
+            event_payload.get("message") or event_payload.get("user_query") or ""
+        )
+    turn = await tier_policy.turn_kind(
+        message, _agent_tool_names(agent), think_mode,
+        read_effort=effort_from_text,
+    )
+    _log.info(
+        "ai_route.turn_kind", agent=agent_name, run_id=run_id, kind=turn.kind,
+        source=turn.source, latency_ms=turn.latency_ms,
+    )
+    effort = tier_policy.normalise_effort(think_mode)
+    if effort_from_text and turn.effort and effort == "auto":
+        effort = tier_policy.normalise_effort(turn.effort)
+        _log.info(
+            "ai_route.effort_from_text", agent=agent_name, run_id=run_id,
+            effort=effort, source=turn.effort_source,
+        )
+    return tier_policy.RunTierPolicy(
+        agent=agent_name,
+        run_id=run_id,
+        default=default,
+        kind=turn.kind,
+        effort=effort,
+        emit=None if (is_copilot or not emit) else _emit_to_run(thread_id),
+    )
+
+
+def _is_route_event(event: Any) -> bool:
+    """True for the `ai.route` custom event. It is a label, not output."""
+    from acb_skills.tier_policy import ROUTE_EVENT
+
+    return (
+        isinstance(event, dict)
+        and event.get("type") == "CUSTOM"
+        and event.get("name") == ROUTE_EVENT
+    )
+
+
+def _retry_policy(policy: Any) -> Any:
+    """*policy*, counted from its first request again, for a retry. Or None."""
+    if policy is not None:
+        policy.restart()
+    return policy
+
+
+def _with_tier_policy(view: Any, policy: Any) -> Any:
+    """*view*, or a per-run copy that carries the tier policy's provider."""
+    if policy is None:
+        return view
+    from acb_skills.tier_policy import TierPolicyProvider
+    from orchestrator._native_run_context import agent_with_providers
+
+    return agent_with_providers(view, [TierPolicyProvider(policy)])
 
 
 def _cap_structured_history(
@@ -6201,16 +7017,16 @@ def _copilot_no_text_end(
         )
     return (
         [
-            {
-                "type": "RUN_ERROR",
-                "runId": run_id,
-                "message": (
+            # `model_refused`: the model answered with nothing, which is a
+            # content filter or a provider refusal (owner report 2026-10-08:
+            # the code is a word the chat maps to member-facing text).
+            run_error_event(
+                run_id=run_id, code="model_refused", where="no_output",
+                message=(
                     "The agent produced no output.  The underlying model may "
-                    "have hit a content filter or a provider error.  Check "
-                    "gateway logs for details."
+                    "have hit a content filter or a provider error."
                 ),
-                "code": "NO_OUTPUT",
-            },
+            ),
         ],
         False,
     )

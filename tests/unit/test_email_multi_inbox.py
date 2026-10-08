@@ -22,7 +22,10 @@ R7 fences named here:
   fails, the authorize leg shows the account picker rather than answer 500.
 * ``email-chat-reply-mailbox`` (MB-4): the chat reply sends from the mailbox
   of the original mail, and each send card names the From mailbox. A send
-  from a mailbox the member does not have stops before its card.
+  from a mailbox the member does not have stops before its card. Since
+  EM-T8e-2, a reply that names another mailbox sends nothing and names the
+  mailbox of the mail. ``tests/unit/test_email_chat_binding.py`` holds the
+  rest of that slice.
 
 The UI half is fenced in
 ``workbench/control_plane/src/app/email/lib/mailbox.test.ts``.
@@ -73,6 +76,12 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(s, "gateway_session_secret", SECRET, raising=False)
     monkeypatch.setattr(s, "msft_oauth_client_id", "test-msft-id", raising=False)
     monkeypatch.setattr(s, "gmail_oauth_client_id", "test-gmail-id", raising=False)
+    # The Gmail connect is dark by default since EM-G7. The Gmail picker case
+    # below tests the connect itself, so the flag is on here.
+    monkeypatch.setattr(s, "email_gmail_connect", True, raising=False)
+    # An empty member list lets each member through (EM-G7b), so a list in
+    # the developer's own environment cannot change this case.
+    monkeypatch.setattr(s, "email_gmail_connect_members", "", raising=False)
     monkeypatch.setenv("WORKBENCH_PUBLIC_URL", "https://app.example.test")
 
 
@@ -383,6 +392,10 @@ def chat(monkeypatch):
         if path == "/email/messages/m1":
             return {"account_id": "box-a", "subject": "Hello",
                     "from_address": {"name": "Ravi", "email": "ravi@contoso.test"}}
+        if path == "/email/messages/d1":
+            # EM-T13b-1: ``send_draft`` reads the draft before its card.
+            return {"account_id": "box-b", "folder": "drafts", "subject": "Hi",
+                    "to_addresses": [{"email": "kim@contoso.test"}]}
         return {}
 
     async def fake_post(path, body):
@@ -399,8 +412,17 @@ def chat(monkeypatch):
     return rec
 
 
-async def test_a_chat_reply_goes_out_from_the_mailbox_of_the_mail(chat) -> None:
+async def test_a_chat_reply_that_names_another_mailbox_is_refused(chat) -> None:
+    # EM-T8e-2 replaced the re-bind of EM-T8a: a send cannot be undone, so
+    # a reply that names another mailbox sends nothing and names the right one.
     out = await agents.send_email("box-b", body="Thanks!", reply_to_email_id="m1")
+    assert chat.posts == [] and chat.cards == []
+    assert out.startswith("Not sent.")
+    assert "Fracktal · dana@fracktal.in (account_id box-a)" in out
+
+
+async def test_a_chat_reply_that_names_no_mailbox_goes_out_from_the_mail(chat) -> None:
+    out = await agents.send_email(body="Thanks!", reply_to_email_id="m1")
     [(path, payload)] = chat.posts
     assert path == "/email/send"
     assert payload["account_id"] == "box-a"
@@ -408,7 +430,6 @@ async def test_a_chat_reply_goes_out_from_the_mailbox_of_the_mail(chat) -> None:
     [card] = chat.cards
     assert card["detail"].startswith("From Fracktal · dana@fracktal.in · To ravi@contoso.test")
     assert "from Fracktal · dana@fracktal.in" in out
-    assert "not from the mailbox you named" in out
 
 
 async def test_a_chat_reply_from_the_right_mailbox_says_nothing_more(chat) -> None:
@@ -443,7 +464,9 @@ async def test_the_draft_send_card_names_its_mailbox(chat) -> None:
     await agents.send_draft("box-b", "d1")
     [card] = chat.cards
     assert card["detail"].startswith("From Personal · dana@outlook.com")
-    assert chat.posts == [("/email/drafts/send", {"account_id": "box-b", "draft_id": "d1"})]
+    assert chat.posts == [("/email/drafts/send", {
+        "account_id": "box-b", "draft_id": "d1",
+        "expect": {"to": ["kim@contoso.test"], "cc": [], "bcc": []}})]
 
 
 async def test_a_chat_draft_is_made_in_the_mailbox_of_the_mail(chat) -> None:

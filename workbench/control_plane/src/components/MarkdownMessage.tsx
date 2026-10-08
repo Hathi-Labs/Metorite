@@ -9,9 +9,10 @@
  *  • Terminal blocks with macOS-style chrome (red/yellow/green dots)
  *  • One-click copy button on every code block
  *  • Links: an in-app path opens in this tab, any other URL in a new tab
+ *  • Images: a remote URL loads only on a member's click (`MarkdownImage`)
  *  • Entity pills (opt-in, WS-27bm S9): «names» from the tools as pills
  *  • Collapsible tool-call accordion blocks (mirrors VS Code's "Used tool: …")
- *  • Streaming cursor (blinking ▌) while the response is in-flight
+ *  • Streaming caret at the end of the last line while the response is in-flight
  */
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -19,7 +20,11 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChatEntityPill from "@/components/ChatEntityPill";
+import { FencedName } from "@/components/FencedText";
 import { ControlLink } from "@/components/ControlLink";
+import MarkdownImage from "@/components/MarkdownImage";
+import { markdownUrlTransform } from "@/lib/markdownMedia";
+import rehypeStreamCaret from "@/lib/streamCaret";
 import { isInAppPath } from "@/components/ui/EntityPill";
 import { buildEntityIndex, type EntityIndex } from "@/lib/entityIndex";
 import remarkEntityPills, {
@@ -27,6 +32,7 @@ import remarkEntityPills, {
   PILL_NUMBER_ATTR,
   PILL_TEXT_ATTR,
   spaceBeforeBold,
+  typedBulletsToList,
 } from "@/lib/remarkEntityPills";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { CODE_THEME } from "@/lib/codeTheme";
@@ -87,52 +93,13 @@ interface MarkdownMessageProps {
   /** The index the caller already built (`MessageBubble`). Absent: built
    *  here from `toolEvents`, so the index is made once either way. */
   entityIndex?: EntityIndex;
-}
-
-// ─── Media path resolver (shared with ArtifactViewerModal) ────────────────────
-
-/**
- * Rewrite an image src found inside a markdown message so it routes through the
- * gateway file proxy.
- *
- * Rules (in priority order):
- *  1. Already a full URL (http/https/data:) → pass through unchanged
- *  2. Absolute path starting with /          → treat as workspace-relative and proxy
- *  3. Relative path                          → resolve against the mdFilePath's
- *                                             directory, then proxy
- */
-function resolveMediaSrc(
-  src: string,
-  sessionId: string | undefined,
-  mdFilePath: string | undefined,
-): string {
-  // Full URLs and data URIs pass through unchanged
-  if (/^(https?:|data:)/i.test(src)) return src;
-  // No session context → can't resolve; return as-is
-  if (!sessionId) return src;
-
-  let workspacePath: string;
-  if (src.startsWith("/")) {
-    // Treat absolute paths as workspace-root-relative
-    workspacePath = src.replace(/^\/+/, "");
-  } else if (mdFilePath) {
-    // Relative: resolve against the directory containing the .md file
-    const mdDir = mdFilePath.includes("/")
-      ? mdFilePath.substring(0, mdFilePath.lastIndexOf("/"))
-      : "";
-    const parts = (mdDir ? `${mdDir}/${src}` : src).split("/");
-    const resolved: string[] = [];
-    for (const part of parts) {
-      if (part === "..") resolved.pop();
-      else if (part !== ".") resolved.push(part);
-    }
-    workspacePath = resolved.join("/");
-  } else {
-    // No mdFilePath context — treat as workspace-root-relative
-    workspacePath = src;
-  }
-
-  return `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(workspacePath)}`;
+  /** Draw a «name» as a quiet emphasis when no pill draws it (owner report,
+   *  2026-10-07). The chat turns it on for every agent answer. A document
+   *  does not. */
+  fences?: boolean;
+  /** A read's receipt for its step in the trail (`ThinkingContainer`,
+   *  spec `projects_ai_chat.md` §24 rule 2). `MessageBubble` supplies it. */
+  evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -172,9 +139,9 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
       <div className="flex items-center justify-between px-3 py-1.5 bg-secondary/80 border-b border-border/60">
         {isTerminal ? (
           <div className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
+            <span className="w-2.5 h-2.5 rounded-full bg-destructive/70" />
             <span className="w-2.5 h-2.5 rounded-full bg-cat-12/70" />
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/70" />
+            <span className="w-2.5 h-2.5 rounded-full bg-success/70" />
             <span className="ml-2 text-[11px] text-muted-foreground font-mono">{lang}</span>
           </div>
         ) : (
@@ -260,13 +227,13 @@ function ChoiceBlock({
               }}
               className={`text-left text-xs rounded-lg border px-3 py-2 transition-colors ${
                 isPicked
-                  ? "border-emerald-600/70 bg-emerald-900/40 text-emerald-200"
+                  ? "border-primary/60 bg-primary/10 text-primary"
                   : picked !== null
                   ? "border-border bg-card/40 text-muted-foreground cursor-not-allowed"
-                  : "border-border bg-secondary/70 text-foreground hover:border-emerald-600/60 hover:bg-secondary"
+                  : "border-border bg-secondary/70 text-foreground hover:border-primary/50 hover:bg-secondary"
               }`}
             >
-              {isPicked && <span className="mr-1.5 text-emerald-400">✓</span>}
+              {isPicked && <span className="mr-1.5 text-primary">✓</span>}
               {opt}
             </button>
           );
@@ -320,6 +287,20 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 // every «name» and bare email into a pill, and a missing space before a bold
 // after a full stop is put back. The pills resolve against `entityIndex`, or
 // against the nearest `EntityIndexContext` when no index is passed.
+//
+// `fences` (owner report, 2026-10-07) is the mode of an agent answer with no
+// pills: a «name» draws as a quiet emphasis, and the marks never show. An
+// email stays a mailto link. A document keeps its text as written.
+//
+// `inline` draws ONE line of agent text, for a generative-UI field (a list
+// item, a callout, a table cell). Only inline Markdown survives: bold,
+// italic, strikethrough, inline code and links. Every other element is
+// unwrapped to its text, and an image is dropped, so a field can never load a
+// remote file or draw a block. The link rules are the ones above, and HTML
+// stays text, because this renderer has no `rehype-raw`.
+
+/** The elements an `inline` body keeps. Exported for its test. */
+export const INLINE_ELEMENTS = ["p", "strong", "em", "del", "code", "a", "span", "br"];
 
 export function MarkdownBody({
   content,
@@ -328,6 +309,9 @@ export function MarkdownBody({
   mdFilePath,
   entityPills = false,
   entityIndex,
+  fences = false,
+  inline = false,
+  caret = false,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
@@ -335,24 +319,39 @@ export function MarkdownBody({
   mdFilePath?: string;
   entityPills?: boolean;
   entityIndex?: EntityIndex;
+  fences?: boolean;
+  inline?: boolean;
+  /** Draw the streaming caret at the end of the last line of words
+   *  (`lib/streamCaret.ts`). Never after the body: that is a line of its own. */
+  caret?: boolean;
 }) {
   return (
     <ReactMarkdown
-      remarkPlugins={entityPills ? [remarkGfm, remarkEntityPills] : [remarkGfm]}
+      remarkPlugins={
+        entityPills
+          ? [remarkGfm, remarkEntityPills]
+          : fences
+            ? [remarkGfm, [remarkEntityPills, { emails: false }]]
+            : [remarkGfm]
+      }
+      rehypePlugins={caret ? [rehypeStreamCaret] : []}
+      urlTransform={markdownUrlTransform}
+      allowedElements={inline ? INLINE_ELEMENTS : undefined}
+      unwrapDisallowed={inline}
       components={{
         // ── Entity pills (the plugin's `span[data-entity-pill]`) ──
         // `node` is react-markdown's own prop, and must not reach the DOM.
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         span: ({ node: _node, children, ...rest }) => {
           const attrs = rest as Record<string, unknown>;
-          if (entityPills && attrs[PILL_ATTR] !== undefined) {
+          if ((entityPills || fences) && attrs[PILL_ATTR] !== undefined) {
             const number = attrs[PILL_NUMBER_ATTR];
-            return (
-              <ChatEntityPill
-                text={String(attrs[PILL_TEXT_ATTR] ?? "")}
-                number={typeof number === "string" ? number : undefined}
-                index={entityIndex}
-              />
+            const text = String(attrs[PILL_TEXT_ATTR] ?? "");
+            const n = typeof number === "string" ? number : undefined;
+            return entityPills ? (
+              <ChatEntityPill text={text} number={n} index={entityIndex} />
+            ) : (
+              <FencedName text={text} number={n} />
             );
           }
           return <span {...rest}>{children}</span>;
@@ -381,9 +380,12 @@ export function MarkdownBody({
         ),
 
         // ── Paragraphs & text ──
-        p: ({ children }) => (
-          <p className="mb-3 last:mb-0 text-foreground">{children}</p>
-        ),
+        p: ({ children }) =>
+          inline ? (
+            <span className="block not-first:mt-1">{children}</span>
+          ) : (
+            <p className="mb-3 last:mb-0 text-foreground">{children}</p>
+          ),
         strong: ({ children }) => (
           <strong className="font-semibold text-foreground">{children}</strong>
         ),
@@ -420,22 +422,18 @@ export function MarkdownBody({
         ),
 
         // ── Images ──
-        // Rewrite src to route through the gateway workspace file proxy.
-        // Full URLs (https://…) and data: URIs pass through unchanged.
-        img({ src, alt, ...rest }) {
-          const rawSrc = typeof src === "string" ? src : "";
-          const resolvedSrc = resolveMediaSrc(rawSrc, sessionId, mdFilePath);
-          // eslint-disable-next-line @next/next/no-img-element
-          return (
-            <img
-              src={resolvedSrc}
-              alt={alt ?? ""}
-              {...rest}
-              className="max-w-full max-h-96 rounded-lg my-3 border border-border/50 object-contain"
-              loading="lazy"
-            />
-          );
-        },
+        // A workspace path routes through the gateway file proxy. A remote
+        // URL draws as a click-to-load placeholder and loads only on a
+        // member's click (`lib/markdownMedia.ts` holds the threat).
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        img: ({ node: _node, ...props }) => (
+          <MarkdownImage
+            {...props}
+            sessionId={sessionId}
+            mdFilePath={mdFilePath}
+            className="max-w-full max-h-96 rounded-lg my-3 border border-border/50 object-contain"
+          />
+        ),
 
         // ── Tables (GFM) ──
         // A table keeps its words whole and scrolls when it is wider than its
@@ -497,7 +495,7 @@ export function MarkdownBody({
           // language is specified; a fenced block WITHOUT a language has no
           // class, so also treat any multi-line code as a block — otherwise an
           // unlabeled ``` block renders cramped as inline with literal newlines.
-          if (match || codeString.includes("\n")) {
+          if (!inline && (match || codeString.includes("\n"))) {
             // MCQ choices block — render interactive buttons instead of code.
             if (lang === "choices") {
               return <ChoiceBlock raw={codeString} onChoice={onChoice} />;
@@ -514,7 +512,11 @@ export function MarkdownBody({
         },
       }}
     >
-      {entityPills ? spaceBeforeBold(content) : content}
+      {entityPills
+        ? spaceBeforeBold(typedBulletsToList(content))
+        : fences
+          ? typedBulletsToList(content)
+          : content}
     </ReactMarkdown>
   );
 }
@@ -534,6 +536,8 @@ export default function MarkdownMessage({
   mdFilePath,
   entityPills = false,
   entityIndex: givenIndex,
+  fences = false,
+  evidenceFor,
 }: MarkdownMessageProps) {
   // The names this message's tools printed, for the pills (WS-27bm S9).
   const entityIndex = useMemo(
@@ -586,6 +590,7 @@ export default function MarkdownMessage({
             reasoningBlocks={reasoningBlocks}
             narrationSegments={narrationSegments}
             isActive={!!isThinkingActive}
+            evidenceFor={evidenceFor}
           />
         </div>
       )}
@@ -598,14 +603,12 @@ export default function MarkdownMessage({
         mdFilePath={mdFilePath}
         entityPills={entityPills}
         entityIndex={entityIndex}
+        fences={fences}
+        // The streaming caret, only once text streams. It draws INSIDE the
+        // last line of words. A span here, after the body, drew a lone "|"
+        // on its own line between the answer and the next card (2026-10-07).
+        caret={!!streaming && answerBody.trim().length > 0}
       />
-
-      {/* Streaming cursor — only once text is actually streaming, so it doesn't
-          float with no text during a tool-only phase (the ThinkingContainer
-          shows activity there instead). */}
-      {streaming && answerBody.trim().length > 0 && (
-        <span className="inline-block w-[2px] h-[1em] bg-zinc-300 animate-pulse ml-0.5 align-middle rounded-full" />
-      )}
     </div>
   );
 }

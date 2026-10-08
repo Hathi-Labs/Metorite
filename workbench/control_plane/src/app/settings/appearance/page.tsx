@@ -15,6 +15,10 @@
  *     the moment you click; nothing to save.
  *   • Organisation default — what everyone gets who has not chosen for
  *     themselves. Admin-only, and needs a gateway that stores it.
+ *
+ * The Sidebar choice sits under "Your appearance" and OUTSIDE the
+ * organisation lock. It sets how the rail behaves, not how anything looks,
+ * so a locked look does not lock it (`lib/sidebarFold.ts`).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -28,6 +32,11 @@ import { isSafeColor } from "@/lib/theme/css";
 import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
 import { DENSITY_SCALE } from "@/lib/theme/types";
 import SettingsHeader from "@/components/SettingsHeader";
+import {
+  AUTO_FOLD_EVENT,
+  autoFoldEnabled,
+  setAutoFoldEnabled,
+} from "@/lib/sidebarFold";
 
 const DENSITY_LABELS: Record<Density, string> = {
   compact: "Compact",
@@ -76,7 +85,14 @@ export default function AppearancePage() {
         variant="underline"
       />
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-        {tab === "personal" ? <PersonalSettings /> : <OrganisationSettings />}
+        {tab === "personal" ? (
+          <div className="space-y-8">
+            <PersonalSettings />
+            <SidebarSettings />
+          </div>
+        ) : (
+          <OrganisationSettings />
+        )}
       </div>
     </div>
   );
@@ -92,7 +108,7 @@ function AppearanceHeader() {
     <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
       <SettingsHeader
         title="Appearance"
-        subtitle="Colour mode, density and accent across the Control Plane"
+        subtitle="Colour mode, density, accent and the sidebar"
       />
     </div>
   );
@@ -190,6 +206,48 @@ function PersonalSettings() {
         <CustomAccentInput value={accent} onChange={setAccent} />
       </section>
     </div>
+  );
+}
+
+/**
+ * Whether the sidebar folds when the member starts to work in an app they
+ * opened from it. Per browser, like the rest of this tab.
+ */
+function SidebarSettings() {
+  const [on, setOn] = useState(() =>
+    typeof window === "undefined" ? true : autoFoldEnabled(),
+  );
+  // The tip's "Keep it open" changes the same choice, from the sidebar.
+  useEffect(() => {
+    const sync = () => setOn(autoFoldEnabled());
+    window.addEventListener(AUTO_FOLD_EVENT, sync);
+    return () => window.removeEventListener(AUTO_FOLD_EVENT, sync);
+  }, []);
+  const choose = (next: boolean) => {
+    setAutoFoldEnabled(next);
+    setOn(next);
+  };
+  return (
+    <section>
+      <SectionHeading
+        title="Sidebar"
+        description="Fold the sidebar when you start to work in an app you opened from it. The button at its top opens it again."
+      />
+      <div className="flex flex-wrap gap-2">
+        <OptionPill
+          selected={on}
+          onClick={() => choose(true)}
+          icon="PanelLeftClose"
+          label="Fold while I work"
+        />
+        <OptionPill
+          selected={!on}
+          onClick={() => choose(false)}
+          icon="PanelLeft"
+          label="Keep it open"
+        />
+      </div>
+    </section>
   );
 }
 

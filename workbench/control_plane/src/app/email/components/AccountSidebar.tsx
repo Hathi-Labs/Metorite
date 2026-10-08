@@ -2,11 +2,14 @@
 
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { useState } from "react";
 import { EmailAccount, EmailFolder, AutomationFeature } from "../lib/types";
 import { MailboxAvatar, mailboxLabel } from "./MailboxChip";
-import { foldersInScope } from "../lib/emailStore";
+import { allInboxesFolders } from "../lib/emailStore";
+import { hasAllInboxes, pooledMailboxes, separateMark, separateToggle } from "../lib/mailbox";
+import { storageMark } from "../lib/storage";
 
 interface AccountSidebarProps {
   accounts: EmailAccount[];
@@ -25,8 +28,14 @@ interface AccountSidebarProps {
   onDisconnect?: (account: EmailAccount) => void;
   /** Rename and recolour a mailbox (EM-T8b). The page owns the dialog. */
   onEditMailbox?: (account: EmailAccount) => void;
+  /** "Keep separate" (false) or "Show in All inboxes" (true): the store sends
+   *  the `PATCH` (EM-T8g-2, D-EM-28). Without it the menu offers neither. */
+  onToggleSeparate?: (id: string, pooled: boolean) => void;
   /** All inboxes is the view (EM-T8d, D-EM-22). */
   viewAll?: boolean;
+  /** All inboxes: the count of each well-known folder, summed over each
+   *  mailbox (`allFolderCounts` of the store, EM-T8f-3). Null until it lands. */
+  folderSums?: Readonly<Record<string, number>> | null;
   /** Open All inboxes. Without it, the row is not drawn. */
   onSelectAll?: () => void;
   /** Open one of the Email Automation feature views. */
@@ -39,6 +48,62 @@ interface AccountSidebarProps {
   /** Show the Email Automation app list. Default true.
    *  Set false for the "Inbox" mobile drawer (folders only). */
   showAutomation?: boolean;
+}
+
+/**
+ * The items of the mailbox menu. It holds no hook, so a test calls it and
+ * runs each `onSelect` (EM-T8g-2 fence `email-separate-menu`).
+ */
+export function accountMenuItems(
+  account: EmailAccount,
+  accounts: ReadonlyArray<EmailAccount>,
+  on: {
+    onEditMailbox?: (account: EmailAccount) => void;
+    onSetDefault?: (id: string) => void;
+    onToggleSeparate?: (id: string, pooled: boolean) => void;
+    onDisconnect?: (account: EmailAccount) => void;
+  },
+): CtxItem[] {
+  const { onEditMailbox, onSetDefault, onToggleSeparate, onDisconnect } = on;
+  const items: CtxItem[] = [{ kind: "label", label: account.emailAddress }];
+  if (onEditMailbox) {
+    items.push({
+      kind: "item",
+      label: "Name and colour",
+      icon: themedIcon("Palette"),
+      onSelect: () => onEditMailbox(account),
+    });
+  }
+  if (!account.isDefault && onSetDefault) {
+    items.push({
+      kind: "item",
+      label: "Set as default mailbox",
+      icon: themedIcon("Star"),
+      onSelect: () => onSetDefault(account.id),
+    });
+  }
+  // "Keep separate", or "Show in All inboxes" for a separate mailbox
+  // (EM-T8g-2 item 1). With one mailbox the menu offers neither.
+  const toggle = onToggleSeparate ? separateToggle(account, accounts) : null;
+  if (toggle && onToggleSeparate) {
+    items.push({
+      kind: "item",
+      label: toggle.label,
+      icon: themedIcon(toggle.icon),
+      onSelect: () => onToggleSeparate(account.id, toggle.nextPooled),
+    });
+  }
+  if (onDisconnect) {
+    items.push({ kind: "sep" });
+    items.push({
+      kind: "item",
+      label: "Disconnect mailbox",
+      icon: themedIcon("Unplug"),
+      danger: true,
+      onSelect: () => onDisconnect(account),
+    });
+  }
+  return items;
 }
 
 const AUTOMATION_ITEMS: {
@@ -64,7 +129,9 @@ export function AccountSidebar({
   onSetDefault,
   onDisconnect,
   onEditMailbox,
+  onToggleSeparate,
   viewAll = false,
+  folderSums = null,
   onSelectAll,
   onOpenAutomation,
   activeAutomation,
@@ -72,50 +139,20 @@ export function AccountSidebar({
   showAutomation = true,
 }: AccountSidebarProps) {
   const [accountsExpanded, setAccountsExpanded] = useState(true);
-  // All inboxes shows for two or more mailboxes. Its count is the sum of the
-  // Inbox counts (§11.4), and a selected mailbox row is never also selected.
-  const showAll = !!onSelectAll && accounts.length > 1;
-  const allUnread = accounts.reduce((n, a) => n + (a.unreadCount || 0), 0);
+  // All inboxes shows for two or more pooled mailboxes. Its count is the sum
+  // of their Inbox counts (§11.4), and a selected mailbox row is never also
+  // selected. A separate mailbox adds to neither (EM-T8g-2 item 2).
+  const pooled = pooledMailboxes(accounts);
+  const showAll = !!onSelectAll && hasAllInboxes(accounts);
+  const allUnread = pooled.reduce((n, a) => n + (a.unreadCount || 0), 0);
   const isSelected = (id: string) => !viewAll && selectedAccountId === id;
-  // In All inboxes only the folders that every mailbox has show. A custom
-  // folder belongs to one mailbox, and a count belongs to one mailbox, so the
-  // tree draws none (§11.4 "Folders").
-  const shownFolders = viewAll
-    ? foldersInScope(folders, true).map((f) => ({ ...f, count: 0 }))
-    : folders;
+  // In All inboxes only the folders that every mailbox has show, because a
+  // custom folder belongs to one mailbox. Each well-known folder shows its
+  // sum over each mailbox, and each other folder shows no count (§11.4
+  // "Folders", EM-T8f-3).
+  const shownFolders = viewAll ? allInboxesFolders(folders, folderSums) : folders;
   // The account menu: which account, and where to draw it.
   const [menu, setMenu] = useState<{ account: EmailAccount; x: number; y: number } | null>(null);
-
-  const menuItems = (account: EmailAccount): CtxItem[] => {
-    const items: CtxItem[] = [{ kind: "label", label: account.emailAddress }];
-    if (onEditMailbox) {
-      items.push({
-        kind: "item",
-        label: "Name and colour",
-        icon: themedIcon("Palette"),
-        onSelect: () => onEditMailbox(account),
-      });
-    }
-    if (!account.isDefault && onSetDefault) {
-      items.push({
-        kind: "item",
-        label: "Set as default mailbox",
-        icon: themedIcon("Star"),
-        onSelect: () => onSetDefault(account.id),
-      });
-    }
-    if (onDisconnect) {
-      items.push({ kind: "sep" });
-      items.push({
-        kind: "item",
-        label: "Disconnect mailbox",
-        icon: themedIcon("Unplug"),
-        danger: true,
-        onSelect: () => onDisconnect(account),
-      });
-    }
-    return items;
-  };
 
   return (
     <div className="flex flex-col h-full bg-sidebar text-sidebar-foreground overflow-hidden">
@@ -163,7 +200,7 @@ export function AccountSidebar({
                 <span className="flex-1 min-w-0">
                   <span className="block text-xs font-medium truncate">All inboxes</span>
                   <span className="block text-[10px] text-muted-foreground truncate">
-                    {accounts.length} mailboxes
+                    {pooled.length} mailboxes
                   </span>
                 </span>
                 {viewAll ? (
@@ -192,6 +229,13 @@ export function AccountSidebar({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1">
                       <span className="text-xs font-medium truncate">{mailboxLabel(account)}</span>
+                      {separateMark(account, accounts) && (
+                        // A separate mailbox says so in words, beside its chip:
+                        // All inboxes leaves it out (EM-T8g-2 item 1).
+                        <Badge size="xs" title="Kept out of All inboxes" className="flex-shrink-0">
+                          {separateMark(account, accounts)}
+                        </Badge>
+                      )}
                       {account.syncStatus === "error" && (
                         // A mailbox that stopped syncing shows it in the switcher,
                         // so All inboxes cannot hide it (§11.4, EM-T8d review).
@@ -200,6 +244,18 @@ export function AccountSidebar({
                           className="text-warning flex-shrink-0"
                           aria-label="Needs attention"
                         />
+                      )}
+                      {storageMark(account) && (
+                        // Each mailbox at the storage limit, a separate one
+                        // too, so a full mailbox cannot hide (UC-12, EM-T6e D3).
+                        <span title={storageMark(account) ?? undefined} className="inline-flex flex-shrink-0">
+                          <AppIcon name="HardDrive"
+                            size={10}
+                            className="text-warning"
+                            role="img"
+                            aria-label={storageMark(account) ?? undefined}
+                          />
+                        </span>
                       )}
                       {account.isDefault && (
                         <AppIcon name="Star"
@@ -230,7 +286,7 @@ export function AccountSidebar({
                 {isSelected(account.id) && (
                   <AppIcon name="Check" size={11} className="text-primary flex-shrink-0" />
                 )}
-                {(onDisconnect || onEditMailbox) && (
+                {(onDisconnect || onEditMailbox || onToggleSeparate) && (
                   <Button
                     variant="ghost"
                     size="icon-sm"
@@ -261,7 +317,9 @@ export function AccountSidebar({
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={menuItems(menu.account)}
+          items={accountMenuItems(menu.account, accounts, {
+            onEditMailbox, onSetDefault, onToggleSeparate, onDisconnect,
+          })}
           onClose={() => setMenu(null)}
         />
       )}

@@ -140,10 +140,21 @@ def load_workflow_tools(agent_name: str) -> list[Any]:
         )
         # Not destructive itself: any outward write INSIDE the workflow is
         # already broker-gated / approval-noded — that is the whole point.
+        # H-236: open_world, because a workflow node can call an outside URL
+        # (``http.request``) with the payload the agent passes. A run that a
+        # covered Projects run delegates to does not get it.
         TOOL_ANNOTATIONS.setdefault(
             "run_workflow",
-            {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+            {"read_only": False, "destructive": False, "idempotent": False, "open_world": True},
         )
     except ImportError:
         pass
-    return [list_workflows, run_workflow, get_workflow_run]
+    trio = [list_workflows, run_workflow, get_workflow_run]
+    try:  # H-236: the platform's own tools, trusted by identity
+        from acb_skills.egress import _register_platform_callable
+
+        for fn in trio:
+            _register_platform_callable(fn)
+    except ImportError:
+        pass
+    return trio

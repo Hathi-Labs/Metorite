@@ -253,7 +253,11 @@ export function TaskList({
     // filtered the list that their project was empty; `isFiltered` is the same
     // predicate the toolbar's Clear button reads, so the state and the control
     // that caused it cannot disagree.
-    const copy = emptyStateCopy({ canvas: "list", filtered: isFiltered(filters) });
+    const copy = emptyStateCopy({
+      canvas: "list",
+      filtered: isFiltered(filters),
+      query: filters.q,
+    });
     return (
       <EmptyState
         icon={copy.icon}

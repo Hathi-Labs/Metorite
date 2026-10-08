@@ -100,8 +100,10 @@ def test_surface_shrank_and_merged_names_gone() -> None:
     tools = agents._register_agent_tools()
     # 41 after the consolidation pass, +1 for auto_categorize_inbox (the
     # uncategorized-inbox sweep — categorize_senders only re-projects existing
-    # rule labels and cannot categorize mail the rules never reached).
-    assert len(tools) == 42
+    # rule labels and cannot categorize mail the rules never reached), +1 for
+    # read_email_attachment (WS-17 EM-T11, the text of a file of a mail),
+    # +1 for query_insights (WS-17 EM-T14c, the facts of Insights).
+    assert len(tools) == 44
     for gone in ("search_emails", "get_important_emails", "find_urgent",
                  "find_needs_reply", "get_full_body_email", "update_rule_state",
                  "approve_execution", "reject_execution", "undo_execution",
@@ -118,7 +120,8 @@ def test_surface_shrank_and_merged_names_gone() -> None:
                  "apply_labels", "import_artifact"):
         assert gone not in tools
     for new in ("find_priority", "resolve_execution", "digest", "save_knowledge",
-                "list_patterns", "forget_pattern", "set_sender_status", "run_rules"):
+                "list_patterns", "forget_pattern", "set_sender_status", "run_rules",
+                "read_email_attachment", "query_insights"):
         assert new in tools
     # Quick-action helpers stay importable even though they're unregistered.
     assert callable(agents.search_emails) and callable(agents.find_urgent)
@@ -142,7 +145,8 @@ async def test_install_default_rules_reset(calls) -> None:
 
 
 async def test_manage_inbox_move_uses_patch(calls) -> None:
-    await agents.manage_inbox("archive", ["m1"], account_id="acc")
+    # No account_id: each message acts in its own mailbox (EM-T8e-2).
+    await agents.manage_inbox("archive", ["m1"])
     assert calls["post"][-1][0] == "/email/messages/bulk"
     out = await agents.manage_inbox("move", ["m1", "m2"], folder="Archive")
     # move goes through per-message PATCH, not the bulk endpoint.
@@ -308,9 +312,12 @@ async def test_sync_purge_is_gated_and_fails_closed(calls, monkeypatch) -> None:
 # ── save_knowledge ───────────────────────────────────────────────────────────
 
 async def test_save_knowledge_add_vs_update(calls) -> None:
-    await agents.save_knowledge("acc", "T", "C")  # add → POST
+    # title and content are keyword-only since EM-T8e-2 made account_id
+    # optional, so the tool schema still marks both as required.
+    await agents.save_knowledge("acc", title="T", content="C")  # add → POST
     assert calls["post"][-1][0] == "/email/knowledge"
-    await agents.save_knowledge("acc", "T2", "C2", knowledge_id="k1")  # edit → PATCH
+    await agents.save_knowledge(
+        "acc", title="T2", content="C2", knowledge_id="k1")  # edit → PATCH
     assert calls["patch"][-1][0] == "/email/knowledge/k1"
 
 

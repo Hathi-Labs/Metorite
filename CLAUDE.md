@@ -44,7 +44,7 @@ open a pull request that only lowers the count.
 | # | File | What it owns |
 |---|---|---|
 | 1 | **`project-docs/INDEX.md`** | Which specs are **ACTIVE** (you may build from these), which are deferred/historical (you may not). A spec missing from INDEX is a defect — say so. |
-| 2 | **`project-docs/work_plan.md` §1** | The agent-ready spec contract + standing rules **R1–R8**. Binding on every PR. |
+| 2 | **`project-docs/work_plan.md` §1** | The agent-ready spec contract + standing rules **R1–R9**. Binding on every PR. |
 | 3 | **`project-docs/work_plan.md` §2** | The dispatch board: every workstream, its state, its gates. **This is the only current-state authority.** ⚠️ Start at **§2.0** — the product roadmap (M0 customer zero · **M1 a second org can exist safely** · M2 self-serve and money · M3 operations · M4 the apps we sell) reads the same rows as a product instead of as a build tree. It adds no authority: where §2.0 and a row disagree, **the row wins**. |
 | 4 | **`project-docs/work_plan.md` §6** | The owner-gate registry. Actions you must **refuse by name**. |
 | 5 | **`project-docs/work_plan.md` §3** | Decisions **D1–D39**. Recorded once, never re-litigated. Cite them; do not reopen them. |
@@ -67,8 +67,10 @@ reference tied to code. Do not put product specs in `docs/`.
   `department_centers.md` is now a design record (WS-13/14/15/16 parked).
 - **Apps** are the surfaces, in four sections: **Personal Center** (the
   per-user category, kept by name), **Apps**, **AI Studio**, **Admin**.
-  **Exactly nine panes are live** (eight until 2026-08-24; D54 added Calendar);
-  every other pane is `preview` — routes,
+  **Exactly ten panes are live.** There were eight until 2026-08-24. D54 added
+  Calendar, the owner added People and Email, and on 2026-10-05 the owner moved
+  My Access into the People app.
+  Every other pane is `preview` — routes,
   API and tests intact, nav entry absent. The allowlist of record is
   `specs/launch_surface.md` §2, mirrored in `src/lib/nav.ts`, and `nav.test.ts`
   fails if the two disagree. `preview` is **not** a permission: never revoke a
@@ -115,6 +117,12 @@ reference tied to code. Do not put product specs in `docs/`.
   ⚠️ **ClickUp is gone** — no connector, no sync. A FILE importer reads export files and nothing else
   (D80, 2026-09-26, `specs/project_import.md`, board `WS-41`). Metorite
   is the PM system of record and root `AGENTS.md` constraint 8 is amended to say so.
+- **⚠️ The shell is ONE seam** *(D87–D89, 2026-10-05 — board `WS-44`)*. Every
+  app, built or future, joins it through a manifest on its `NavPane`. No app
+  builds its own ⌘K handler, palette, bell or assistant rail. Home is one page
+  at three altitudes: Personal, a team, and all my teams. A team view is a
+  filter, never a Center (D49 stands). `specs/navigation_shell.md` owns it,
+  and `workbench/control_plane/AGENTS.md` rule 10 carries it to UI work.
 - **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
   (`core`), everything live included. Center packages, add-ons and Complete are
   retired. `specs/launch_surface.md` §4 is the shape of record;
@@ -343,7 +351,7 @@ Rules that make it work:
 
 ## 5. What not to do
 
-- **Do not re-litigate decisions.** **D1–D69** are taken *(this read "D1–D31" until 2026-08-26, and "D1–D54" until 2026-08-31)*. If one looks wrong, say so
+- **Do not re-litigate decisions.** **D1–D93** are taken *(this read "D1–D31" until 2026-08-26, "D1–D54" until 2026-08-31, "D1–D69" until 2026-10-05, and "D1–D89" until 2026-10-07)*. If one looks wrong, say so
   and stop — do not build against your own alternative.
 - **Do not refactor the tree to conform** to R6/R7/R8. Those bind *new and
   changed* work. Existing violations are findings for the board.
@@ -357,6 +365,7 @@ Rules that make it work:
 
 ## 6. Environment notes that will bite you
 
+- Secrets go through `scripts/secrets.sh` and the drop folder (`docs/secrets_drop.md`). Never cat or paste a secret.
 - Windows is the primary dev box: pass `encoding="utf-8"` explicitly when
   reading files in tests and scripts; cp1252 is the default and it crashes.
 - **Two recorded pytest hazards, both narrower than they sound:** the board

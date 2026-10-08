@@ -56,7 +56,10 @@ function QuickCapturePanel() {
 
   const vp = useVisualViewport();
   const [mode, setMode] = useState<"single" | "sweep">(storeMode);
-  const [value, setValue] = useState("");
+  // The coordinator's words, when it opened Capture (NS-4b). Read once, as
+  // the box opens; the member edits them before anything is filed.
+  const [value, setValue] = useState(() => useTaskStore.getState().quickCaptureSeed ?? "");
+  const seedFromAI = useState(() => useTaskStore.getState().quickCaptureSeedFromAI)[0];
   const [added, setAdded] = useState(0);
   const [pendingAtts, setPendingAtts] = useState<TaskAttachment[]>([]);
   // Optional capture-time date: a "remind" tickler (defer_until — hidden until
@@ -249,6 +252,13 @@ function QuickCapturePanel() {
 
         {mode === "single" ? (
           <div className="p-4">
+            {/* §6.4 rule 2: a filled field says who filled it. */}
+            {seedFromAI ? (
+              <p className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <AppIcon name="Sparkles" className="h-3.5 w-3.5 shrink-0 text-primary" />
+                Filled by AI. Check it, then press Enter to add it.
+              </p>
+            ) : null}
             <div className="tech-transition flex items-center gap-3 rounded-xl border border-border bg-background/60 px-4 py-3 focus-within:border-primary/50">
               <AppIcon name="Plus" className="h-5 w-5 shrink-0 text-muted-foreground" />
               <input

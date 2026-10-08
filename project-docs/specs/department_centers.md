@@ -15,6 +15,10 @@
 > - **Parked, not cancelled:** WS-13 · WS-14 · WS-15 · WS-16. Nothing dispatches
 >   from this spec today.
 > - **§5's Center roster (D22) is not repealed.**
+> - **D87 (2026-10-05): D22's three surfaces return as the three altitudes of
+>   Home**, and never as destinations. They are Personal, a team, and all my
+>   teams. `specs/navigation_shell.md` §4 owns them, and its five rules keep a
+>   team view from turning into a Center again.
 > - **Center packages are retired as a pricing object** — see
 >   `specs/launch_surface.md` §4 and §5, which is the authority for all of the
 >   above. Where this spec and that one disagree, that one wins.

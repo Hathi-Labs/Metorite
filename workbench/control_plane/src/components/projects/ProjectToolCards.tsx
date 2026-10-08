@@ -23,11 +23,17 @@
  */
 
 import Button from "@/components/ui/Button";
+import FencedText from "@/components/FencedText";
 import AppIcon from "@/components/Icon";
+import EntityPill from "@/components/ui/EntityPill";
+import Readout from "@/components/Readout";
+import { renderTemplate } from "@/components/genUITemplates";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { ToolCardShell } from "@/components/ToolCardShell";
+import { placementOf } from "@/lib/chatPlacement";
+import { parseDatasetTable } from "@/lib/datasetTable";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { LEGEND, parseTaskRows, taskMetaForPeople, type ProjectTaskRow } from "@/lib/projectToolRows";
 
@@ -82,6 +88,10 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   // S6 — navigation. The page usually opens the row itself; this card keeps
   // the link for a member who is not on the Projects page.
   open_in_app: { icon: "ExternalLink", label: "Open in Projects" },
+  // S7e — the on-the-fly table. It draws as a table (`lib/datasetTable.ts`).
+  task_dataset: { icon: "Table2", label: "Task dataset" },
+  my_led_projects: { icon: "FolderKanban", label: "Projects you lead" },
+  my_areas: { icon: "Layers", label: "Your areas" },
 };
 
 /**
@@ -163,6 +173,13 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   edit_task: { icon: "PenLine", label: "Task updated" },
   edit_project: { icon: "PenLine", label: "Project updated" },
   propose_plan: { icon: "ListTodo", label: "Plan created" },
+  // WS-46 P13 — several new tasks in one project. Its receipt lists every
+  // task it made, so it draws through `BatchReceiptCard`, not one link.
+  create_tasks: { icon: "ListPlus", label: "Tasks created" },
+  // H-273 — several new tags or types. The receipt lists every word it
+  // added, so it draws through `BatchReceiptCard` too.
+  create_tags: { icon: "Tags", label: "Tags added" },
+  create_types: { icon: "Shapes", label: "Types added" },
   // S5 — the rest of the writes
   save_view: { icon: "LayoutList", label: "View saved" },
   capture_intake: { icon: "Inbox", label: "Captured into intake" },
@@ -300,11 +317,28 @@ export const VIEW_TOOLS: ReadonlySet<string> = new Set([
   "status_report",
 ]);
 
+/**
+ * A READ is evidence (`lib/chatPlacement.ts`, spec §24 rule 2): it draws in
+ * the working trail, under its step, and never as a card after the answer.
+ * A Projects tool the map does not name counts as a read here. The fences
+ * keep every exported tool named, so only a tool from a newer server lands
+ * here, and a hidden receipt is the smaller harm than a wall of cards.
+ */
+function isProjectEvidence(e: ToolEvent): boolean {
+  const p = placementOf(e.name);
+  return p === "evidence" || p === undefined;
+}
+
+/** A card in the FLOW: a write's receipt, or a view that failed. */
 function hasProjectCard(e: ToolEvent): boolean {
   if (e.status !== "done" && e.status !== "error") return false;
+  if (!isProjectsTool(e) || isProjectEvidence(e)) return false;
   if (e.status === "done" && VIEW_TOOLS.has(e.name)) return false;
-  return isProjectsTool(e);
+  return true;
 }
+
+/** Every tool name this file routes. The placement fence reads it. */
+export const PROJECT_CARD_TOOLS: readonly string[] = [...PROJECT_TOOLS];
 
 // ── Result-text parser ────────────────────────────────────────────────────────
 
@@ -359,39 +393,114 @@ function TaskRowView({ row }: { row: ProjectTaskRow }) {
   );
 }
 
-function TaskListCard({ event: e }: { event: ToolEvent }) {
-  const result = e.result || "";
-  const rows = parseTaskRows(result);
+/** The words a task-list read is known by: "Search · extruder", "My inbox". */
+function listLabel(e: ToolEvent): string {
   const args = (e.args ?? {}) as Record<string, unknown>;
-  const label =
-    e.name === "find_tasks"
-      ? `Search${args.query ? ` · ${String(args.query)}` : ""}`
-      : e.name === "my_work"
-        ? String(args.view ?? "") === "inbox" ? "My inbox" : "Assigned to me"
-        : e.name === "calendar"
-          ? "Calendar"
-          : e.name === "intake_queue"
-            ? "Intake"
-            : e.name === "notifications"
-              ? "Notifications"
-              : "Tasks";
-  const title = `${label} (${rows.length})`;
-  if (rows.length === 0) {
-    return <InfoCard event={e} icon="ListChecks" label={label} />;
-  }
+  if (e.name === "find_tasks") return `Search${args.query ? ` · ${String(args.query)}` : ""}`;
+  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My inbox" : "Assigned to me";
+  if (e.name === "calendar") return "Calendar";
+  if (e.name === "intake_queue") return "Intake";
+  if (e.name === "notifications") return "Notifications";
+  return "Tasks";
+}
+
+// ── Evidence: a read, drawn inside its step (spec §24 rule 2) ─────────────────
+
+/** The `task_dataset` table: the dataGrid template, a caption, the notes. */
+function DatasetView({ result }: { result: string }) {
+  const table = parseDatasetTable(result);
+  if (!table) return <Readout result={result} legend={LEGEND} />;
   return (
-    <ToolCardShell
-      title={title}
-      icon={<AppIcon name="ListChecks" size={12} />}
-      onDismiss={() => dismissToolCard(e.id)}
-    >
-      <div className="space-y-0.5 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
-        {rows.map((r) => (
-          <TaskRowView key={r.id} row={r} />
-        ))}
-      </div>
-    </ToolCardShell>
+    <div data-dataset-table="" className="min-w-0 space-y-1.5">
+      {renderTemplate("dataGrid", {
+        title: table.title,
+        columns: table.columns,
+        kinds: table.kinds,
+        rows: table.rows,
+      })}
+      {(table.caption || table.notes.length > 0) && (
+        <div className="space-y-0.5 text-[10px] text-muted-foreground">
+          {table.caption && <div>{table.caption}</div>}
+          {table.notes.map((n, i) => (
+            <div key={i}>{n}</div>
+          ))}
+        </div>
+      )}
+    </div>
   );
+}
+
+/**
+ * One Projects read as the member reads it, with no card chrome: the step
+ * row above it already says what it is. Rows open the task, a table draws as
+ * a table, and every other read draws through `Readout`.
+ */
+function ProjectEvidenceBody({ event: e }: { event: ToolEvent }) {
+  const router = useRouter();
+  const result = e.result || "";
+  if (e.status === "error") {
+    return (
+      <div className="text-[11px] whitespace-pre-wrap text-destructive">
+        <FencedText text={forPeopleFenced(result) || "(no result)"} pills={false} />
+      </div>
+    );
+  }
+  if (e.name === "task_dataset") return <DatasetView result={result} />;
+  const rows = parseTaskRows(result);
+  const opens = OPENS_APP[e.name];
+  const body = withoutLegend(result);
+  const link = body.match(/^\s*link:\s*(\/projects\?[\w=&-]+)\s*$/m)?.[1] ?? "";
+  const isList = LIST_TOOLS.has(e.name) || !(e.name in INFO_META);
+  return (
+    <div className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 min-w-0 text-[11px]">
+      <div className="max-h-72 overflow-y-auto overflow-x-hidden scrollbar-thin">
+        {isList && rows.length > 0 ? (
+          <>
+            <div className="mb-1 text-[11px] font-medium text-foreground">
+              {listLabel(e)} <span className="text-muted-foreground">{rows.length}</span>
+            </div>
+            <div className="space-y-0.5">
+              {rows.map((r) => (
+                <TaskRowView key={r.id} row={r} />
+              ))}
+            </div>
+          </>
+        ) : (
+          <Readout result={result} legend={LEGEND} />
+        )}
+      </div>
+      {link && !opens && (
+        <div className="mt-2">
+          <Button variant="secondary" size="sm" icon="ExternalLink" onClick={() => router.push(link)}>
+            Open in Projects
+          </Button>
+        </div>
+      )}
+      {opens && (
+        <div className="mt-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="ExternalLink"
+            onClick={() => router.push(`/projects?app=${opens.app}`)}
+          >
+            {opens.label}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The receipt of a Projects READ for the trail (`ThinkingContainer`), or
+ * null when the event is not one. A finished or failed step only: a running
+ * step has no result yet.
+ */
+export function projectEvidence(e: ToolEvent): React.ReactNode | null {
+  if (e.status !== "done" && e.status !== "error") return null;
+  if (!isProjectsTool(e) || !isProjectEvidence(e)) return null;
+  return <ProjectEvidenceBody event={e} />;
 }
 
 /** Strip the data legend: the model needs it, a person does not. */
@@ -409,8 +518,17 @@ function withoutLegend(result: string): string {
  * lines (`full_id:`, `link:`, `<kind>_id:`, `done:`) the cards parse. None of
  * that is for the member; the other chat apps' cards show plain text
  * (visual review, 2026-09-23). Exported for its test; pure.
+ *
+ * The marks go too. A card draws `forPeopleFenced` through `FencedText`
+ * instead, so a name keeps its boundary as a quiet emphasis (owner report,
+ * 2026-10-07: a stripped receipt read "Created Fix the extruder in Ops").
  */
 export function forPeople(result: string): string {
+  return forPeopleFenced(result).replace(/[«»]/g, "");
+}
+
+/** `forPeople` with the «marks» kept, for `FencedText` to draw. Pure. */
+export function forPeopleFenced(result: string): string {
   return withoutLegend(result)
     .split("\n")
     .filter((l) => !/^\s*(?:[a-z_]+_id|link|done):/.test(l))
@@ -423,7 +541,6 @@ export function forPeople(result: string): string {
         // 2026-09-23): "· project_id <uuid>", "(activity id a1)".
         .replace(/\s*·\s*[a-z_]+_id:? [0-9a-f-]{8,}/gi, "")
         .replace(/\s*\(activity id [^)]*\)/g, "")
-        .replace(/[«»]/g, "")
         .replace(/^- /, ""),
     )
     .join("\n")
@@ -441,7 +558,7 @@ function InfoCard({
 }) {
   const router = useRouter();
   const body = withoutLegend(e.result || "");
-  const shown = forPeople(e.result || "");
+  const shown = forPeopleFenced(e.result || "");
   const failed = e.status === "error";
   const opens = failed ? undefined : OPENS_APP[e.name];
   // `open_in_app` prints `link: /projects?...`. Only an in-app link becomes
@@ -453,12 +570,16 @@ function InfoCard({
       icon={<AppIcon name={failed ? "AlertTriangle" : icon} size={12} />}
       onDismiss={() => dismissToolCard(e.id)}
     >
-      <div
-        className={`text-[11px] whitespace-pre-wrap max-h-80 overflow-y-auto scrollbar-thin ${
-          failed ? "text-destructive" : "text-muted-foreground"
-        }`}
-      >
-        {shown || "(no result)"}
+      {/* A read draws as UI (`Readout`): no id, no `[key]`, a status as its
+          chip. A failure stays one plain message. */}
+      <div className="max-h-80 overflow-y-auto scrollbar-thin">
+        {failed ? (
+          <div className="text-[11px] whitespace-pre-wrap text-destructive">
+            <FencedText text={shown || "(no result)"} pills={false} />
+          </div>
+        ) : (
+          <Readout result={e.result || ""} legend={LEGEND} />
+        )}
       </div>
       {link && !opens && (
         <div className="mt-2">
@@ -506,6 +627,13 @@ const DONE_LINE_TOOLS = new Set(["mark_notifications_read"]);
  */
 export const STOPPED_LINE = /^\s*stopped:\s*\S/im;
 
+/**
+ * A row of a batch whose create may or may not have landed
+ * (`forms.py::_write_batch`, WS-46 P13 review round 2). Something MAY exist,
+ * so the receipt is partial, never a muted "Not done".
+ */
+export const UNKNOWN_LINE = /^\s*unknown:\s*row\s/im;
+
 export function classifyActionResult(
   result: string,
   status: ToolEvent["status"],
@@ -516,7 +644,7 @@ export function classifyActionResult(
   if (text.startsWith(CANCELLED)) return "cancelled";
   // A batch that stopped part way (WS-27bm S7d, §13.6 rule 9): something
   // exists, and the receipt says what did not happen. It is not a success.
-  if (receiptIdOf(text) && STOPPED_LINE.test(text)) return "partial";
+  if ((receiptIdOf(text) || UNKNOWN_LINE.test(text)) && STOPPED_LINE.test(text)) return "partial";
   if (receiptIdOf(text)) return "done";
   return DONE_LINE_TOOLS.has(tool) && /^\s*done:\s*\S/im.test(text) ? "done" : "refused";
 }
@@ -554,7 +682,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
-  const detail = forPeople(result);
+  const detail = forPeopleFenced(result);
   const tone = toneFor(outcome, e.name);
   const icon =
     outcome === "failed"
@@ -586,7 +714,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
           <div className="text-[11px] font-medium text-foreground">{heading}</div>
           {detail && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-4">
-              {detail}
+              <FencedText text={detail} pills={false} />
             </div>
           )}
           {(outcome === "done" || outcome === "partial") && rowId && (
@@ -600,6 +728,173 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
               >
                 Open in Projects
               </Button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** What one batch receipt lists, and its heading when nothing is known to exist. */
+export interface BatchKind {
+  rows: "task" | "tag" | "type";
+  maybe: string;
+}
+
+/**
+ * The write tools whose receipt lists SEVERAL rows, each with its own id
+ * line. `BatchReceiptCard` draws a task as a row that opens the task, a tag
+ * as a tag pill and a type as a pill, with the lines about the rows that
+ * failed under them.
+ */
+export const BATCH_TOOLS: ReadonlyMap<string, BatchKind> = new Map<string, BatchKind>([
+  ["create_tasks", { rows: "task", maybe: "Tasks may have been created" }],
+  // H-273: `forms.py` `_vocab_receipt` prints `- tag «q4» · facts` and then
+  // `  tag_id: <uuid>` for each word it added.
+  ["create_tags", { rows: "tag", maybe: "Tags may have been added" }],
+  ["create_types", { rows: "type", maybe: "Types may have been added" }],
+]);
+
+const NL = "\n";
+
+/** One word a vocabulary batch added: a tag or a task type. */
+export interface VocabRow {
+  kind: "tag" | "type";
+  id: string;
+  name: string;
+  meta: string;
+}
+
+const VOCAB_ROW = /^\s*-\s*(tag|type)\s+«([^»]*)»\s*(?:·\s*(.*))?$/;
+const VOCAB_ID = /^\s*(tag|type)_id:\s*([0-9a-f-]{36})\s*$/i;
+
+/**
+ * Parse `- tag «name» · facts` + `  tag_id: <uuid>` pairs (and the same for
+ * a type) out of a batch receipt. A row whose id line is missing, or names
+ * the other kind, is not a row. Pure, exported for its test.
+ */
+export function parseVocabRows(result: string): VocabRow[] {
+  const rows: VocabRow[] = [];
+  const lines = result.split(NL);
+  for (let k = 1; k < lines.length; k++) {
+    const id = lines[k].match(VOCAB_ID);
+    if (!id) continue;
+    const head = (lines[k - 1] ?? "").match(VOCAB_ROW);
+    if (!head || head[1] !== id[1].toLowerCase()) continue;
+    rows.push({ kind: head[1] as "tag" | "type", id: id[2], name: head[2], meta: (head[3] ?? "").trim() });
+  }
+  return rows;
+}
+
+/**
+ * A batch receipt's lines for a person, without the head line and the task
+ * rows (the card draws those as rows). What stays: each row that failed, a
+ * follow-up that did not land, the stop line and the rows left out. The line
+ * that tells the MODEL not to make the tasks again is not for a person. Pure,
+ * exported for its test.
+ */
+export function batchNotes(result: string): string[] {
+  const lines = withoutLegend(result).split(NL);
+  const kept: string[] = [];
+  for (let k = 1; k < lines.length; k++) {
+    const line = lines[k];
+    const next = lines[k + 1] ?? "";
+    if (/^\s*-\s*#\S+\s*«/.test(line) && /^\s*full_id:/i.test(next)) {
+      k++; // the task row and its id line: drawn as a row
+      continue;
+    }
+    if (VOCAB_ROW.test(line) && VOCAB_ID.test(next)) {
+      k++; // a tag or a type and its id line: drawn as a pill (H-273)
+      continue;
+    }
+    if (/^\s*full_id:/i.test(line) || !line.trim()) continue;
+    if (/listed above exist\. Never create them again/.test(line)) continue;
+    kept.push(line);
+  }
+  return forPeopleFenced(kept.join(NL)).split(NL).filter((l) => l.trim());
+}
+
+/** One word a vocabulary batch added. A tag is the tag pill, a type a plain pill. */
+function VocabRowView({ row }: { row: VocabRow }) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 px-1.5 py-0.5">
+      <span className="inline-flex min-w-0 max-w-full">
+        <EntityPill fit kind={row.kind === "tag" ? "tag" : "unknown"} label={row.name} />
+      </span>
+      {row.meta && (
+        <span className="min-w-0 truncate text-[10px] text-muted-foreground">
+          <FencedText text={row.meta} pills={false} />
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The receipt of a batch (`BATCH_TOOLS`): a heading with the count, one row
+ * per task made (each opens the task in Projects) or one pill per word
+ * added, and the lines about each row that failed. A partial batch wears the
+ * warning tone, as `toneFor` gives it.
+ */
+function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
+  const meta = ACTION_META[e.name] ?? { icon: "ListPlus", label: genericLabel(e.name) };
+  const kind: BatchKind = BATCH_TOOLS.get(e.name) ?? { rows: "task", maybe: "Tasks may have been created" };
+  const result = (e.result || "").trim();
+  const outcome = classifyActionResult(result, e.status, e.name);
+  useEffect(() => {
+    if ((outcome === "done" || outcome === "partial") && isFreshReceipt(e)) announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [outcome, e.id]);
+  const tasks = kind.rows === "task" ? parseTaskRows(result) : [];
+  const words = kind.rows === "task" ? [] : parseVocabRows(result);
+  const rows: readonly unknown[] = kind.rows === "task" ? tasks : words;
+  const head = forPeopleFenced(withoutLegend(result).split(NL)[0] ?? "");
+  const notes = batchNotes(result);
+  const icon =
+    outcome === "failed" ? "X"
+      : outcome === "partial" ? "AlertTriangle"
+        : outcome === "cancelled" ? "Ban"
+          : outcome === "refused" ? "Info"
+            : meta.icon;
+  const heading =
+    outcome === "failed" ? `${meta.label} — failed`
+      : outcome === "partial" && rows.length === 0 ? kind.maybe
+      : outcome === "partial" ? `${meta.label} — stopped part way (${rows.length})`
+        : outcome === "cancelled" ? "Cancelled"
+          : outcome === "refused" ? "Not done"
+            : `${meta.label} (${rows.length})`;
+  return (
+    <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 flex-shrink-0">
+          <AppIcon name={icon} size={13} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-medium text-foreground">{heading}</div>
+          {head && (outcome !== "done" || rows.length === 0) && (
+            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap">
+              <FencedText text={head} pills={false} />
+            </div>
+          )}
+          {rows.length > 0 && (
+            <div className="mt-1 space-y-0.5 max-h-80 overflow-y-auto overflow-x-hidden scrollbar-thin">
+              {tasks.map((r) => (
+                <TaskRowView key={r.id} row={r} />
+              ))}
+              {words.map((r) => (
+                <VocabRowView key={r.id} row={r} />
+              ))}
+            </div>
+          )}
+          {notes.length > 0 && (
+            <div className="mt-1 space-y-0.5">
+              {notes.map((n, i) => (
+                <div key={i} className="text-[10px] text-muted-foreground whitespace-pre-wrap"
+                  style={{ overflowWrap: "anywhere" }}>
+                  <FencedText text={n} pills={false} />
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -623,10 +918,12 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
   );
   if (all.length === 0) return null;
 
+  // Only the FLOW is here: the receipts of writes, and a view that failed.
+  // Every read draws inside its step (`projectEvidence`, spec §24).
   const items: React.ReactNode[] = [];
   for (const e of all) {
-    if (LIST_TOOLS.has(e.name)) {
-      items.push(<TaskListCard key={e.id} event={e} />);
+    if (BATCH_TOOLS.has(e.name)) {
+      items.push(<BatchReceiptCard key={e.id} event={e} />);
       continue;
     }
     const meta = INFO_META[e.name];
@@ -634,18 +931,9 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
       items.push(<InfoCard key={e.id} event={e} icon={meta.icon} label={meta.label} />);
       continue;
     }
-    if (e.name in ACTION_META) {
-      items.push(<ActionResultCard key={e.id} event={e} />);
-      continue;
-    }
-    // A tool the manifest added after this file was written. The generic
-    // card renders it from its name, so shipping the tool never waits on a
-    // card (spec §7.3). If it prints task rows, it gets the list card.
-    if (parseTaskRows(e.result || "").length > 0) {
-      items.push(<TaskListCard key={e.id} event={e} />);
-      continue;
-    }
-    items.push(<InfoCard key={e.id} event={e} icon="Wrench" label={genericLabel(e.name)} />);
+    // A write, known or new. A new one draws the generic receipt from its
+    // name, so shipping the tool never waits on a card (spec §7.3).
+    items.push(<ActionResultCard key={e.id} event={e} />);
   }
 
   return <div className="mt-3 space-y-2 min-w-0 overflow-hidden">{items}</div>;

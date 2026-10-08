@@ -129,6 +129,17 @@ export default function AccessGate({ children }: { children: React.ReactNode }) 
         >
           Back to Chat
         </Link>
+        {/* The one page that explains this refusal. It is ungated, so it opens
+            for exactly the member who is looking at this card. Since
+            2026-10-05 it is a People tab, not a sidebar pane, so this card is
+            its most useful door. */}
+        {!suspended && (
+          <p className="mt-3 text-xs">
+            <Link href="/people/access" className="text-primary hover:underline">
+              See what you can reach, and why
+            </Link>
+          </p>
+        )}
       </div>
     </div>
   );

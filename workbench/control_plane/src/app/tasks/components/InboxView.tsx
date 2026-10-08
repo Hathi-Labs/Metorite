@@ -59,6 +59,7 @@ import type { TaskAttachment } from "../lib/types";
 import { ClarifyModal } from "./ClarifyModal";
 import { openShortcutsSheet } from "./TasksShortcuts";
 import { CaptureProjectChip } from "./CaptureProjectChip";
+import { filterWord, shellBarOn } from "@/lib/shell/registry";
 
 const AGING_MS = 3 * 24 * 3600 * 1000; // GTD: empty regularly — flag stale items
 
@@ -716,8 +717,9 @@ export function InboxView() {
                       <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search the inbox…"
-                        aria-label="Search the inbox"
+                        placeholder={`${filterWord()} the inbox…`}
+                        aria-label={`${filterWord()} the inbox`}
+                        data-page-filter={shellBarOn() ? "the inbox" : undefined}
                         className="min-w-0 flex-1 bg-transparent text-base text-foreground placeholder:text-muted-foreground focus:outline-none sm:text-xs"
                       />
                     </div>

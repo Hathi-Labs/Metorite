@@ -363,6 +363,13 @@ CREATE POLICY email_folders_tenant_isolation ON email_folders
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE email_insights ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_insights FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS email_insights_tenant_isolation ON email_insights;
+CREATE POLICY email_insights_tenant_isolation ON email_insights
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE email_knowledge ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_knowledge FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS email_knowledge_tenant_isolation ON email_knowledge;

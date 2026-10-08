@@ -48,6 +48,7 @@ from gateway.routes.email.core import (
     folder_scope,
     router,
 )
+from gateway.routes.email.transport.messages import _also_in_by_message
 from sqlalchemy import text
 
 # The tsvector expression — MUST stay byte-for-byte identical to the GIN index
@@ -201,13 +202,15 @@ async def search_messages(
     results come back newest-first. ``folder`` scopes the search — a folder key,
     ``all`` (everything but junk/trash), or ``starred``; omit it to span every
     folder. Unless ``account_id`` narrows it, the search spans all the user's
-    accounts."""
+    accounts, except a mailbox that the member keeps separate (EM-T8g-1)."""
     async with _tenant_session() as db:
         uid = user.email or "anonymous"
         text_q = (q or "").strip()
         params: dict[str, Any] = {"uid": uid, "q": text_q}
 
-        where = [_account_scope(account_id, params)]
+        # Search in All inboxes leaves out a separate mailbox. Its own
+        # account_id still searches it (EM-T8g-1, D-EM-30).
+        where = [_account_scope(account_id, params, pooled_only=True)]
         # Filters-only search: no text ⇒ no FTS predicate and nothing to rank.
         if text_q:
             where.append(
@@ -326,14 +329,22 @@ async def search_messages(
                  LIMIT :limit OFFSET :offset"""
         ), params)).fetchall()
 
+        # "Also in" (EM-T8g-3 item 1): one read for the page, as in the list.
+        also_in = await _also_in_by_message(db, [row.id for row in rows], uid)
+
         emails_out = []
         for row in rows:
             m = _row_to_message(row)
+            if light:
+                # The light read selects `NULL AS body_html`, so the row
+                # cannot say where its HTML is (EM-S1 fix round 1).
+                m.html_remote = False
             d = m.model_dump()
             d["rank"] = float(getattr(row, "rank", 0.0) or 0.0)
             d["sim"] = float(getattr(row, "sim", 0.0) or 0.0)
             d["highlight"] = getattr(row, "highlight", "") or ""
             d["thread_count"] = 1
+            d["also_in"] = also_in.get(m.id, [])
             emails_out.append(d)
 
         return {

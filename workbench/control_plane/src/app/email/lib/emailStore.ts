@@ -10,7 +10,18 @@ import {
 } from "./searchFilters";
 import { QUICK_ACTIONS, MOCK_ACCOUNTS, MOCK_EMAILS, MOCK_FOLDERS } from "./mockData";
 import { splitQuotedText } from "./quoting";
-import { disconnectFailureText, type DisconnectOutcome } from "./connect";
+import type { DraftHandOver } from "./draftAutosave";
+import { disconnectFailureText, type DisconnectOutcome, type ProviderAvailability } from "./connect";
+import { nextDefaultAfter } from "./mailboxSettings";
+import {
+  hasAllInboxes,
+  isSeparate,
+  mailboxToOpen,
+  poolHome,
+  pooledMailboxes,
+  withPoolFlag,
+  type PoolFlag,
+} from "./mailbox";
 
 /**
  * Dev-only demo mode. With NEXT_PUBLIC_EMAIL_DEMO=1 (set in .env.local) the
@@ -123,16 +134,27 @@ const GMAIL_SYSTEM_LABELS = new Set([
 
 /**
  * Merge real provider folders with the canonical system folders, and append the
- * provider's *own* user folders/labels so the sidebar mirrors the real mailbox
- * structure (two-way: what you see in Outlook/Gmail, you see here).
+ * provider's *own* user folders so the sidebar mirrors the real mailbox
+ * structure (two-way: what you see in Outlook, you see here).
+ *
+ * ⚠️ A Gmail user label is a LABEL, never a folder (WS-17 EM-G8 item 5,
+ * O-GM-1, D-EM-33). The folder of a Gmail message comes from its system
+ * labels only, and its user labels sit in `categories`, so they show in the
+ * label filter. So for `provider === "gmail"` the tree holds the well-known
+ * folders and Archive only, and only a SYSTEM label feeds their counts: a
+ * user label named "Archive" never takes the place of the folder.
+ * Fence: `gmail-folder-tree-shows-well-known-folders` in `connect.test.ts`.
  */
-function mergeFolders(
+export function mergeFolders(
   providerFolders: EmailFolderRaw[],
   emailCounts: Record<string, number>,
+  provider: EmailAccount["provider"] | undefined,
 ): EmailFolder[] {
+  const gmail = provider === "gmail";
   // Index provider folders by canonical key for system-folder count/labels.
   const canonProvider = new Map<string, EmailFolderRaw>();
   for (const f of providerFolders) {
+    if (gmail && f.type !== "system") continue;
     const key = toCanonical(f.name);
     // Prefer the entry with the most messages if duplicates collapse to one key.
     const existing = canonProvider.get(key);
@@ -150,10 +172,11 @@ function mergeFolders(
     };
   });
 
-  // Append user-created provider folders/labels (anything not a system key).
+  // Append user-created provider folders (anything not a system key). A
+  // Gmail mailbox has none: its user labels are labels (O-GM-1).
   const userFolders: EmailFolder[] = [];
   const seen = new Set<string>();
-  for (const f of providerFolders) {
+  for (const f of gmail ? [] : providerFolders) {
     const key = toCanonical(f.name);
     if (SYSTEM_KEYS.has(key) || key === "starred") continue;
     if (f.type === "system") continue; // skip provider system folders
@@ -236,6 +259,14 @@ interface EmailState {
    * empty state (EM-T3b: no flash of "Connect your email" on a hard load).
    */
   accountsLoaded: boolean;
+  /**
+   * The capability read of the connect flow (WS-17 EM-G8, D-EM-35): which
+   * provider the member can connect. `undefined` until the read settles,
+   * `null` for a failed read. `connectChoices` and `liveProviders` in
+   * `connect.ts` turn it into the choices, and a failed read keeps Microsoft
+   * live and Gmail "Coming soon".
+   */
+  connectProviders: ProviderAvailability | null | undefined;
   emailsLoading: boolean;
   loadingMore: boolean;
   backfilling: boolean;
@@ -260,6 +291,13 @@ interface EmailState {
    * that settings, automation and new mail use, so nothing else breaks.
    */
   viewAll: boolean;
+  /**
+   * All inboxes: the provider count of each well-known folder, summed over
+   * each mailbox (EM-T8f-3 item 1). Null until a round of reads lands. It
+   * goes back to null when the member leaves All inboxes and when a mailbox
+   * leaves (review F4). `folders` stays the tree of ONE mailbox.
+   */
+  allFolderCounts: Record<string, number> | null;
 
   // Selection
   selectedAccountId: string | null;
@@ -304,6 +342,16 @@ interface EmailState {
     to: string;
     subject: string;
     replyToBody?: string;
+    /** A pop-out hands over an edit that the inline reply did not save yet.
+     *  The composer opens dirty, so it saves that edit (EM-G3c-2). */
+    unsavedEdit?: boolean;
+    /** The fields the command bar's AI filled, so Compose says so (NS-4b). */
+    aiFilled?: string[];
+    /** A pop-out hands over the draft that the inline reply saved, and its
+     *  `hasAttachments`. The composer updates that draft (EM-G3c-2). The
+     *  promise settles after the drain of the reply, so the composer opens
+     *  at once (EM-G3c-3 item 6). */
+    handOver?: Promise<DraftHandOver>;
     quote?: string;
     replyToMessageId?: string;
     // The LOCAL message id being replied to, so the popped-out composer's
@@ -344,7 +392,22 @@ interface EmailState {
    * tick. Returns the accounts it read, or null when the read failed.
    */
   refreshAccounts: () => Promise<EmailAccount[] | null>;
+  /**
+   * Read `GET /email/oauth/providers` once into `connectProviders` (EM-G8
+   * item 1). A failed read, or one slower than `PROVIDERS_READ_TIMEOUT_MS`,
+   * stores `null`. It never throws.
+   */
+  fetchConnectProviders: () => Promise<void>;
   fetchFolders: (accountId?: string) => Promise<void>;
+  /**
+   * All inboxes: read the folders of each mailbox and sum the well-known
+   * counts into `allFolderCounts` (EM-T8f-3 item 1). The reads run in
+   * parallel, at most `FOLDER_SUM_CONCURRENCY` at one time. Nothing awaits
+   * them, so the list never waits on them. A mailbox whose read fails, or
+   * takes longer than `FOLDER_SUM_TIMEOUT_MS`, adds nothing. Outside All
+   * inboxes it does nothing.
+   */
+  fetchAllFolderCounts: () => Promise<void>;
   fetchEmails: () => Promise<void>;
   /** Silent background refresh of the current folder's first page (no spinner),
    *  so assistant/upstream changes (labels, drafts, new mail, archives) appear
@@ -386,7 +449,7 @@ interface EmailState {
   setSearchFilters: (filters: SearchFilter[]) => void;
   /** Drop the text AND the pills, returning to the plain folder list. */
   clearSearch: () => void;
-  openCompose: (defaults?: { accountId?: string; fromAccountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
+  openCompose: (defaults?: { accountId?: string; fromAccountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; unsavedEdit?: boolean; aiFilled?: string[]; handOver?: Promise<DraftHandOver>; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
   closeCompose: () => void;
   hydrateEmail: (email: Email) => void;
   /** "Captured to Tasks" toast state (email → My Tasks inbox). */
@@ -454,6 +517,26 @@ interface EmailState {
   /** Put the server's copy of one account in the list, by id (EM-T6d: after the
    *  onboarding PATCH, so a failed re-read cannot bring the setup back). */
   replaceAccount: (account: EmailAccount) => void;
+  /**
+   * "Keep separate" (false) or "Show in All inboxes" (true), through
+   * `PATCH /email/accounts/{id}` (EM-T8g-2, D-EM-28). In All inboxes it reads
+   * the list again, so the rows of a separate mailbox leave at once. Fewer
+   * than two pooled mailboxes end All inboxes for the default mailbox. A
+   * refusal sets `error`, changes nothing and gives back false.
+   */
+  setInAllInboxes: (id: string, pooled: boolean) => Promise<boolean>;
+  /**
+   * The one reconciliation of the pool, after `accounts` changed from
+   * `before` (EM-T8g-2 review F1, F3, F5, F7). A toggle, a disconnect, a
+   * re-read and a quiet re-read all call it. In All inboxes:
+   * - fewer than two pooled mailboxes end All inboxes for the default mailbox
+   * - the rows, the checks and the open mail of a mailbox that left the pool
+   *   go at once, and the list and the sums are read again
+   * - the hidden selected mailbox stays pooled (`poolHome`), and its folders
+   *   and labels are read again
+   * A change of the pool clears the sums in each view.
+   */
+  applyPoolChange: (before: ReadonlyArray<EmailAccount>) => void;
   clearError: () => void;
 }
 
@@ -513,8 +596,25 @@ let _stopTestRun = false;
  *  auto-archived mail) without waiting for the 20s background poll. Module-scoped
  *  so they survive component unmounts / account switches. */
 const _postSyncTimers: Record<string, ReturnType<typeof setTimeout>[]> = {};
+/** The summed folder counts of All inboxes (EM-T8f-3): one round of reads at
+ *  a time. A request while a round is out asks for ONE more round after it. */
+let _folderSumsInFlight = false;
+let _folderSumsAgain = false;
+/** The one pending read of the sums after a Refresh in All inboxes. A second
+ *  Refresh moves it, so one Refresh is one round (EM-T8f-3 review F2). */
+let _folderSumsAfterSync: ReturnType<typeof setTimeout> | undefined;
+/** The order of the list reads (EM-T8g-2 review F4). Each `fetchEmails`
+ *  takes the next number, and only the newest read lands. `softRefresh` and
+ *  `loadMoreEmails` drop their page when a newer read started. */
+let _listGen = 0;
 /** How long the user has to undo a send. */
 const UNDO_SEND_MS = 5000;
+
+/** The set of pooled mailbox ids, as one key. A read that started under
+ *  another pool drops its answer (EM-T8g-2 review F4). */
+function poolKey(accounts: ReadonlyArray<{ id: string } & PoolFlag>): string {
+  return pooledMailboxes(accounts).map((a) => a.id).sort().join(",");
+}
 
 /** localStorage key + URL param that persist the selected mailbox so the right
  *  inbox survives a refresh and is deep-linkable (the inbox-zero pattern, minus
@@ -599,15 +699,17 @@ export const ALL_INBOXES = "all";
 
 /**
  * Choose the initial view from a fetched list (EM-T8d, §11.4).
- * - A still-valid stored mailbox wins.
- * - "all" opens All inboxes, for two or more mailboxes.
- * - With no stored choice, two or more mailboxes open All inboxes.
+ * - A still-valid stored mailbox wins, a separate one too.
+ * - "all" opens All inboxes, for two or more pooled mailboxes.
+ * - With no stored choice, two or more pooled mailboxes open All inboxes.
  * - Else the default mailbox, else the first one.
- * `accountId` is always a real mailbox: All inboxes keeps the default one
- * for settings and new mail.
+ * `accountId` is always a real mailbox. All inboxes keeps `poolHome`, the
+ * default when it is pooled, so its folders and labels belong to the view.
+ * Outside All inboxes it is the default mailbox. A separate mailbox does not
+ * count toward All inboxes (EM-T8g-2, D-EM-30, review F5).
  */
 export function pickInitialView(
-  accounts: ReadonlyArray<Pick<EmailAccount, "id" | "isDefault">>,
+  accounts: ReadonlyArray<Pick<EmailAccount, "id" | "isDefault"> & PoolFlag>,
   preferred: string | null,
 ): { accountId: string | null; viewAll: boolean } {
   if (accounts.length === 0) return { accountId: null, viewAll: false };
@@ -615,13 +717,13 @@ export function pickInitialView(
   if (preferred && accounts.some((a) => a.id === preferred)) {
     return { accountId: preferred, viewAll: false };
   }
-  const several = accounts.length > 1;
+  const home = hasAllInboxes(accounts) ? poolHome(accounts) : null;
   if (preferred === ALL_INBOXES || !preferred) {
-    return { accountId: fallback, viewAll: several };
+    return { accountId: home?.id ?? fallback, viewAll: !!home };
   }
   // A stored mailbox that is gone falls back to All inboxes, or to the only
   // mailbox, with no error (§11.6 case 16).
-  return { accountId: fallback, viewAll: several };
+  return { accountId: home?.id ?? fallback, viewAll: !!home };
 }
 
 /**
@@ -634,18 +736,145 @@ export function foldersInScope<F extends { type?: string }>(folders: ReadonlyArr
   return viewAll ? folders.filter((f) => f.type !== "user") : [...folders];
 }
 
-/** "syncing" or "processing" when a mailbox of the scope is busy: any of them
- *  in All inboxes, else the selected one (EM-T8d review). */
+/**
+ * The well-known folders whose counts All inboxes sums over each mailbox:
+ * Inbox, Drafts, Sent, Archive, Junk and Deleted (§11.4 "Folders", EM-T8f-3
+ * item 1). `trash` is the key of Deleted.
+ */
+export const SUMMED_FOLDERS: readonly string[] = ["inbox", "drafts", "sent", "archive", "junk", "trash"];
+const SUMMED_FOLDER_KEYS = new Set(SUMMED_FOLDERS);
+
+/**
+ * How many folder reads All inboxes runs at one time. Each read is one live
+ * provider call, and Q-MB-1 sets no limit on the mailboxes of a member, so
+ * this number bounds the reads, not the count of mailboxes.
+ */
+export const FOLDER_SUM_CONCURRENCY = 4;
+
+/**
+ * How long one folder read of the sums may take. A read that takes longer
+ * adds 0, the same as a failed read, and the round goes on. The GET itself
+ * aborts only at 120 s, so without this one hung mailbox held every later
+ * request of the sums (EM-T8f-3 review F5).
+ */
+export const FOLDER_SUM_TIMEOUT_MS = 15_000;
+
+/**
+ * How long the store waits for the capability read of the connect flow
+ * (EM-G8). Past it, the read counts as failed: Microsoft live, Gmail
+ * "Coming soon".
+ */
+export const PROVIDERS_READ_TIMEOUT_MS = 8_000;
+
+/**
+ * How long after the last sync of a Refresh the store reads the sums once.
+ * It is the end of the catch-up window of `triggerSync`, so the sums see the
+ * mail that the rules moved (EM-T8f-3 review F2).
+ */
+export const FOLDER_SUMS_AFTER_SYNC_MS = 6_000;
+
+/** `promise`, or a rejection after `ms`. The timer clears when the promise
+ *  settles first. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("timeout")), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * The count of each well-known folder, summed over each mailbox. Each read is
+ * the merged folders of one mailbox, or null when its read failed. A failed
+ * read adds nothing (EM-T8f-3 item 1).
+ */
+export function sumFolderCounts(
+  reads: ReadonlyArray<ReadonlyArray<Pick<EmailFolder, "key" | "count">> | null>,
+): Record<string, number> {
+  const sums: Record<string, number> = {};
+  for (const key of SUMMED_FOLDERS) sums[key] = 0;
+  for (const folders of reads) {
+    if (!folders) continue;
+    for (const f of folders) {
+      if (SUMMED_FOLDER_KEYS.has(f.key)) sums[f.key] += f.count || 0;
+    }
+  }
+  return sums;
+}
+
+/**
+ * The folders that the switcher draws in All inboxes. The folders that each
+ * mailbox has show (`foldersInScope`). A well-known folder takes its sum over
+ * each mailbox. Each other folder takes no count, because its count belongs
+ * to one mailbox. Before the sums land, no folder takes a count, so the count
+ * of one mailbox never reads as the sum (EM-T8f-3 item 1).
+ */
+export function allInboxesFolders<F extends { key: string; type?: string; count: number }>(
+  folders: ReadonlyArray<F>,
+  sums: Readonly<Record<string, number>> | null,
+): F[] {
+  return foldersInScope(folders, true).map((f) => ({
+    ...f,
+    count: sums && SUMMED_FOLDER_KEYS.has(f.key) ? sums[f.key] ?? 0 : 0,
+  }));
+}
+
+/** Run `fn` over `items` with at most `limit` calls out at one time. The
+ *  results keep the order of `items`. `fn` must not reject. */
+async function mapBounded<T, R>(
+  items: ReadonlyArray<T>,
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/** "syncing" or "processing" when a mailbox of the scope is busy: any pooled
+ *  mailbox in All inboxes, else the selected one (EM-T8d review). A separate
+ *  mailbox is not in the scope of All inboxes (EM-T8g-2). */
 export function scopeBusy(state: {
   viewAll: boolean;
   selectedAccountId: string | null;
-  accounts: ReadonlyArray<{ id: string }>;
+  accounts: ReadonlyArray<{ id: string } & PoolFlag>;
   syncStatus: Record<string, string | undefined>;
 }): boolean {
   const ids = state.viewAll
-    ? state.accounts.map((a) => a.id)
+    ? pooledMailboxes(state.accounts).map((a) => a.id)
     : state.selectedAccountId ? [state.selectedAccountId] : [];
   return ids.some((id) => state.syncStatus[id] === "syncing" || state.syncStatus[id] === "processing");
+}
+
+/**
+ * The checked ids that are rows of the list on screen, in the order of the
+ * list. Each bulk act and each "N selected" count reads this, never the raw
+ * `selectedIds`. A check whose row left the list can then never reach a mail,
+ * for example a mail of a mailbox kept separate (EM-T8g-2 review round 2).
+ */
+export function checkedRows(state: {
+  emails: ReadonlyArray<{ id: string }>;
+  selectedIds: ReadonlySet<string>;
+}): string[] {
+  return state.emails.filter((e) => state.selectedIds.has(e.id)).map((e) => e.id);
+}
+
+/** The checks that keep a row in `emails`, or null when each one does. A list
+ *  read that lands calls it, so a check never outlives its row. */
+function prunedChecks(
+  selectedIds: ReadonlySet<string>,
+  emails: ReadonlyArray<{ id: string }>,
+): Set<string> | null {
+  const rows = new Set(emails.map((e) => e.id));
+  const kept = [...selectedIds].filter((id) => rows.has(id));
+  return kept.length === selectedIds.size ? null : new Set(kept);
 }
 
 /** The `account_id` of a list, search or facet read: none in All inboxes. */
@@ -687,6 +916,8 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   syncStatus: {},
   authErrors: {},
   viewAll: false,
+  allFolderCounts: null,
+  connectProviders: undefined,
 
   // Selection
   selectedAccountId: null,
@@ -717,12 +948,16 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   fetchAccounts: async () => {
     set({ accountsLoading: true, error: null });
     try {
-      const before = get().accounts.map((a) => a.id);
+      const beforeAccounts = get().accounts;
+      const before = beforeAccounts.map((a) => a.id);
       let accounts = await api.listEmailAccounts();
       // Demo fallback: no real accounts connected → show the mock set.
       if (accounts.length === 0 && DEMO) accounts = MOCK_ACCOUNTS;
       set({ accounts, accountsLoading: false, accountsLoaded: true });
       const gone = before.filter((id) => !accounts.some((a) => a.id === id));
+      // A mailbox that another tab removed leaves the sums at once. They show
+      // no count until a new round lands (EM-T8f-3 review F4).
+      if (gone.length > 0) set({ allFolderCounts: null });
       // Pick the initial mailbox when none is selected yet: a persisted/URL
       // choice wins, else the user's default account, else the first one — so a
       // refresh or shared ?account= link reopens the right inbox.
@@ -734,35 +969,33 @@ export const useEmailStore = create<EmailState>((set, get) => ({
           persistAccountId(initial.viewAll ? ALL_INBOXES : initial.accountId);
           get().fetchFolders(initial.accountId);
           get().fetchLabels(initial.accountId);
+          void get().fetchAllFolderCounts();
         }
-      } else if (selectedAccountId && accounts.length > 0 &&
+      } else if (!get().viewAll && selectedAccountId && accounts.length > 0 &&
                  !accounts.some((a) => a.id === selectedAccountId)) {
-        // Another tab removed the selected mailbox: pick the view again, so the
-        // list never reads a mailbox that is gone.
-        const again = pickInitialView(accounts, get().viewAll ? ALL_INBOXES : null);
-        set({ selectedAccountId: again.accountId, viewAll: again.viewAll });
+        // Another tab removed the mailbox in view: pick the view again, so the
+        // list never reads a mailbox that is gone. Its open mail and its
+        // checks go with it (EM-T8g-2 review round 2).
+        get().applyPoolChange(beforeAccounts);
+        const again = pickInitialView(accounts, null);
+        set({
+          selectedAccountId: again.accountId, viewAll: again.viewAll,
+          selectedEmailId: null, selectedEmailOverride: null, selectedIds: new Set(),
+        });
         persistAccountId(again.viewAll ? ALL_INBOXES : again.accountId);
         if (again.accountId) {
           get().fetchFolders(again.accountId);
           get().fetchLabels(again.accountId);
         }
         get().fetchEmails();
-      } else if (get().viewAll && accounts.length < 2) {
-        // The second mailbox went: All inboxes ends on the one that is left.
-        set({ viewAll: false });
-        persistAccountId(get().selectedAccountId);
-        get().fetchEmails();
-      } else if (get().viewAll && gone.length > 0) {
-        // Another tab removed a mailbox that is not selected: its rows leave
-        // All inboxes now, not at the next refresh (EM-T8d review F8).
-        const st = get();
-        const open = st.selectedEmailOverride ?? st.emails.find((e) => e.id === st.selectedEmailId);
-        set({
-          emails: st.emails.filter((e) => !gone.includes(e.accountId ?? "")),
-          ...(open && gone.includes(open.accountId ?? "")
-            ? { selectedEmailId: null, selectedEmailOverride: null } : {}),
-        });
-        get().fetchEmails();
+        void get().fetchAllFolderCounts();
+      } else {
+        // Another tab removed a mailbox, kept one separate, or put one back.
+        // Its rows leave All inboxes now, not at the next refresh (EM-T8d
+        // review F8). The one reconciliation decides, also when the hidden
+        // mailbox of All inboxes went (EM-T8g-2 review F7, round 2).
+        get().applyPoolChange(beforeAccounts);
+        if (get().viewAll) persistAccountId(ALL_INBOXES);
       }
     } catch (err: any) {
       // Demo fallback: backend unreachable → seed mock accounts so the UI works.
@@ -781,12 +1014,24 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   refreshAccounts: async () => {
     if (DEMO) return get().accounts;
     try {
+      const before = get().accounts;
       const accounts = await api.listEmailAccounts();
       set({ accounts });
+      // A quiet re-read keeps the pool true too: a rename, the first-sync
+      // poll and a refusal all land here (EM-T8g-2 review F7).
+      get().applyPoolChange(before);
       return accounts;
     } catch {
       return null;
     }
+  },
+
+  fetchConnectProviders: async () => {
+    // `getConnectProviders` already answers null on any failure. The timeout
+    // is for a read that never answers: the connect choices wait on this
+    // read, and a hung gateway must not hold Microsoft back for ever.
+    const read = await withTimeout(api.getConnectProviders(), PROVIDERS_READ_TIMEOUT_MS).catch(() => null);
+    set({ connectProviders: read });
   },
 
   fetchFolders: async (accountId?: string) => {
@@ -801,7 +1046,8 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         const key = e.folder.toLowerCase();
         emailCounts[key] = (emailCounts[key] || 0) + 1;
       }
-      const folders = mergeFolders(rawFolders, emailCounts);
+      const provider = get().accounts.find((a) => a.id === aid)?.provider;
+      const folders = mergeFolders(rawFolders, emailCounts, provider);
       // Live provider call succeeded — clear any prior auth flag for this account.
       const cleared = { ...get().authErrors };
       delete cleared[aid];
@@ -832,8 +1078,42 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     }
   },
 
+  fetchAllFolderCounts: async () => {
+    if (_folderSumsInFlight) {
+      _folderSumsAgain = true;
+      return;
+    }
+    _folderSumsInFlight = true;
+    try {
+      do {
+        _folderSumsAgain = false;
+        const { viewAll, accounts } = get();
+        if (!viewAll || !hasAllInboxes(accounts)) break;
+        // One live provider call for each pooled mailbox. A separate mailbox
+        // adds nothing to the sums (EM-T8g-2, D-EM-30). The counts are the
+        // provider `message_count` only, so the merge gets no list counts.
+        // A failed read, a read that does not merge, or a read past
+        // FOLDER_SUM_TIMEOUT_MS is null and adds 0.
+        const pooled = pooledMailboxes(accounts);
+        const reads = await mapBounded(pooled, FOLDER_SUM_CONCURRENCY, (a) =>
+          withTimeout(api.listEmailFolders(a.id), FOLDER_SUM_TIMEOUT_MS)
+            .then((raw) => mergeFolders(raw, {}, a.provider))
+            .catch(() => null),
+        );
+        // A newer request reads again, and a view that left All inboxes
+        // takes nothing.
+        if (!_folderSumsAgain && get().viewAll) set({ allFolderCounts: sumFolderCounts(reads) });
+      } while (_folderSumsAgain);
+    } finally {
+      _folderSumsInFlight = false;
+    }
+  },
+
   fetchEmails: async () => {
     const { selectedAccountId, selectedFolder, selectedLabel } = get();
+    // Only the newest read lands. A read that started before a toggle must
+    // not bring back the rows of a separate mailbox (EM-T8g-2 review F4).
+    const gen = ++_listGen;
     set({ emailsLoading: true, error: null });
     try {
       // A search (text and/or pills) goes to the dedicated /email/search
@@ -862,6 +1142,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
             page: 1,
             pageSize: PAGE_SIZE,
           });
+      if (gen !== _listGen) return;
       let emails = result.emails;
       let total = result.total;
       // Demo fallback: backend returned nothing → show mock messages.
@@ -881,6 +1162,8 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       // In All inboxes the rows come from each mailbox, and a label belongs to
       // one mailbox, so the rows seed nothing (EM-T8d review F6).
       if (!get().viewAll) for (const e of emails) for (const c of e.categories || []) labelSet.add(c);
+      // A check never outlives its row (EM-T8g-2 review round 2).
+      const checks = prunedChecks(get().selectedIds, emails);
       set({
         emails,
         folders,
@@ -889,8 +1172,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         emailsTotal: total,
         emailsPage: 1,
         searchIsSemantic,
+        ...(checks ? { selectedIds: checks } : {}),
       });
     } catch (err: any) {
+      // A newer read owns the list, its spinner and its error.
+      if (gen !== _listGen) return;
       // Demo fallback: backend unreachable → show mock messages.
       if (DEMO) {
         const emails = demoEmailsFor(selectedAccountId, selectedFolder);
@@ -922,6 +1208,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     // folder list (which would silently swap ranked hits for the raw folder).
     const wasSearch = searchActive(before);
     const viewKey = searchViewKey(before);
+    // A change of the pool, or a newer read, makes this answer stale
+    // (EM-T8g-2 review F4).
+    const pool = poolKey(before.accounts);
+    const gen = _listGen;
     try {
       const result = wasSearch
         ? await api.searchEmails({
@@ -949,7 +1239,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         now.selectedFolder !== selectedFolder ||
         now.selectedLabel !== selectedLabel ||
         searchViewKey(now) !== viewKey ||
-        now.emailsPage > 1
+        now.emailsPage > 1 ||
+        poolKey(now.accounts) !== pool ||
+        _listGen !== gen
       ) {
         return;
       }
@@ -957,10 +1249,13 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       if (result.emails.length === 0 && DEMO) return;
       const labelSet = new Set(now.availableLabels);
       if (!now.viewAll) for (const e of result.emails) for (const c of e.categories || []) labelSet.add(c);
+      // A check never outlives its row (EM-T8g-2 review round 2).
+      const checks = prunedChecks(now.selectedIds, result.emails);
       set({
         emails: result.emails,
         emailsTotal: result.total,
         availableLabels: [...labelSet].sort(),
+        ...(checks ? { selectedIds: checks } : {}),
       });
     } catch {
       /* silent — a failed background refresh shouldn't surface an error */
@@ -975,6 +1270,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     } = state;
     if (loadingMore || emails.length >= emailsTotal) return;
     set({ loadingMore: true });
+    // A newer read or a change of the pool replaced the list this page
+    // extends (EM-T8g-2 review F4).
+    const gen = _listGen;
+    const pool = poolKey(state.accounts);
     try {
       const nextPage = emailsPage + 1;
       // Page 2+ of a search must BE the same search: same endpoint, same scope,
@@ -997,6 +1296,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
             page: nextPage,
             pageSize: PAGE_SIZE,
           });
+      if (_listGen !== gen || poolKey(get().accounts) !== pool) {
+        set({ loadingMore: false });
+        return;
+      }
       // Append, de-duping by id in case a sync shifted the window mid-scroll.
       const seen = new Set(emails.map((e) => e.id));
       const merged = [...emails, ...result.emails.filter((e) => !seen.has(e.id))];
@@ -1078,6 +1381,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     set({
       selectedAccountId: id, viewAll: false, selectedEmailId: null,
       selectedEmailOverride: null, selectedIds: new Set(),
+      // The sums belong to All inboxes. They go when the member leaves it, so
+      // a return never shows sums of a set of mailboxes that has changed
+      // (EM-T8f-3 review F4).
+      allFolderCounts: null,
       // Seed this account's cached label colours so switching accounts doesn't
       // flash the previous account's / hash colours before fetchLabels lands.
       labelColors: readCachedLabelColors(id),
@@ -1091,10 +1398,15 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   },
 
   selectAll: () => {
-    const { selectedFolder, folders } = get();
+    const { selectedFolder, folders, accounts, selectedAccountId } = get();
     // A custom folder belongs to one mailbox, so All inboxes opens the Inbox
     // then. A well-known folder, or "all", "starred" and "snoozed", stays.
     const custom = folders.some((f) => f.key === selectedFolder && f.type === "user");
+    // All inboxes keeps a pooled mailbox selected out of view. From the view
+    // of a separate mailbox it moves to `poolHome`, so the folders and the
+    // labels belong to All inboxes (EM-T8g-2 review F5).
+    const inPool = pooledMailboxes(accounts).some((a) => a.id === selectedAccountId);
+    const home = inPool ? null : poolHome(accounts);
     set({
       viewAll: true,
       selectedEmailId: null,
@@ -1103,15 +1415,35 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       // A label belongs to one mailbox (§11.6 case 21).
       selectedLabel: null,
       ...(custom ? { selectedFolder: "inbox" } : {}),
+      ...(home ? { selectedAccountId: home.id, labelColors: readCachedLabelColors(home.id) } : {}),
     });
     persistAccountId(ALL_INBOXES);
+    if (home) {
+      get().fetchFolders(home.id);
+      get().fetchLabels(home.id);
+    }
     get().fetchEmails();
+    // The summed counts of the folders. Nothing awaits them (EM-T8f-3).
+    void get().fetchAllFolderCounts();
   },
 
   syncScope: () => {
     const { viewAll, accounts, selectedAccountId } = get();
     if (viewAll) {
-      for (const a of accounts) get().triggerSync(a.id);
+      // Each pooled mailbox. A separate mailbox syncs from its own view and
+      // by its own loop (EM-T8g-2).
+      const runs = pooledMailboxes(accounts).map((a) => get().triggerSync(a.id));
+      // One read of the sums for the whole Refresh: after the last sync, at
+      // the end of its catch-up window. A sync never asks for the sums
+      // itself, so N syncs that end apart cost one round, not one round for
+      // each catch-up. A second Refresh moves the read (EM-T8f-3 review F2).
+      void Promise.allSettled(runs).then(() => {
+        clearTimeout(_folderSumsAfterSync);
+        _folderSumsAfterSync = setTimeout(() => {
+          _folderSumsAfterSync = undefined;
+          void get().fetchAllFolderCounts();
+        }, FOLDER_SUMS_AFTER_SYNC_MS);
+      });
     } else if (selectedAccountId) {
       get().triggerSync(selectedAccountId);
     }
@@ -1176,11 +1508,13 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       if (get().selectedEmailId !== id) return;
       // A mail of ANOTHER mailbox (a chat card's "Open in inbox") opens in its
       // own mailbox. The view switches first, so the sidebar, the folders and
-      // every act name the mailbox that holds the mail (EM-T8a, MB-3).
+      // every act name the mailbox that holds the mail (EM-T8a, MB-3). In All
+      // inboxes, a mail of a separate mailbox opens in that mailbox, never in
+      // All inboxes (EM-T8g-2 item 4). `mailboxToOpen` is the rule.
       // `selectAccount` clears the selection, so the mail is set after it.
-      if (!get().viewAll && email.accountId && email.accountId !== get().selectedAccountId &&
-          get().accounts.some((a) => a.id === email.accountId)) {
-        get().selectAccount(email.accountId);
+      const target = mailboxToOpen(get(), email.accountId);
+      if (target) {
+        get().selectAccount(target);
         set({ selectedEmailId: id, viewerCommand: null });
       }
       set({ selectedEmailOverride: email });
@@ -1202,13 +1536,16 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   clearEmailSelection: () => set({ selectedIds: new Set() }),
 
   bulkUpdateSelected: (updates) => {
-    const ids = [...get().selectedIds];
+    // Only the checked rows of the list on screen (EM-T8g-2 review round 2).
+    const ids = checkedRows(get());
     ids.forEach((id) => get().updateEmail(id, updates));
     set({ selectedIds: new Set() });
   },
 
   bulkDeleteSelected: () => {
-    const ids = [...get().selectedIds];
+    // Only the checked rows of the list on screen. A stale check of a mailbox
+    // kept separate must never delete its mail (EM-T8g-2 review round 2).
+    const ids = checkedRows(get());
     ids.forEach((id) => get().deleteEmail(id));
     set({ selectedIds: new Set() });
   },
@@ -1636,6 +1973,8 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         if (!stillProcessing()) return;
         void get().softRefresh();
         void get().fetchFolders();
+        // No read of the sums here: `syncScope` reads them once for the whole
+        // Refresh (EM-T8f-3 review F2).
       };
       const t1 = setTimeout(catchUp, 2500);
       const t2 = setTimeout(() => {
@@ -1659,20 +1998,28 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 
   deleteAccount: async (id) => {
     try {
-      const removed = get().accounts.find((a) => a.id === id);
       await api.deleteEmailAccount(id);
-      let accounts = get().accounts.filter((a) => a.id !== id);
-      // If we deleted the default mailbox, the backend re-elects the earliest
-      // remaining one — mirror that locally so the Star doesn't vanish until the
-      // next refetch (accounts come ordered is_default DESC, created_at).
-      if (removed?.isDefault && accounts.length > 0 && !accounts.some((a) => a.isDefault)) {
-        accounts = accounts.map((a, i) => (i === 0 ? { ...a, isDefault: true } : a));
-      }
+      // The gateway makes the oldest mailbox that is left the default
+      // (`ORDER BY created_at, id`). Mirror it, so the star does not vanish
+      // until the next read. `nextDefaultAfter` is the one rule, and the
+      // dialog named the same mailbox. ⚠️ Never the first row: a default set
+      // in this session moves the flag and not the row (EM-T8f-2).
+      const before = get().accounts;
+      const next = nextDefaultAfter(get().accounts, id);
+      let accounts = before.filter((a) => a.id !== id);
+      if (next) accounts = accounts.map((a) => ({ ...a, isDefault: a.id === next.id }));
       set({ accounts });
-      // All inboxes needs two mailboxes (EM-T8d review).
+      // The one reconciliation of the pool. It clears the sums when the pool
+      // changed (EM-T8f-3 review F4). In All inboxes it reads the pool, not
+      // the count of mailboxes, so a separate mailbox never keeps All inboxes
+      // open, and the hidden mailbox stays pooled (EM-T8g-2 review F1).
       const wasAll = get().viewAll;
-      if (wasAll && accounts.length < 2) set({ viewAll: false });
-      if (get().selectedAccountId === id) {
+      get().applyPoolChange(before);
+      if (wasAll) {
+        // The rows and the open mail of the removed mailbox left with the
+        // reconciliation (EM-T8d review F8). The scope stays stored.
+        persistAccountId(get().viewAll ? ALL_INBOXES : get().selectedAccountId);
+      } else if (get().selectedAccountId === id) {
         const next = accounts.find((a) => a.isDefault)?.id ?? accounts[0]?.id ?? null;
         // A mail of the removed mailbox goes too, and the phone returns to
         // the inbox list (EM-T8a review).
@@ -1687,17 +2034,6 @@ export const useEmailStore = create<EmailState>((set, get) => ({
           // screen behind the empty state.
           set({ emails: [], emailsTotal: 0, folders: [], selectedEmailId: null });
         }
-      } else if (wasAll) {
-        // Another mailbox went: its rows leave the list of All inboxes now, and
-        // a mail of it leaves the reading pane (EM-T8d review F8).
-        const st = get();
-        const open = st.selectedEmailOverride ?? st.emails.find((e) => e.id === st.selectedEmailId);
-        set({
-          emails: st.emails.filter((e) => e.accountId !== id),
-          ...(open?.accountId === id ? { selectedEmailId: null, selectedEmailOverride: null } : {}),
-        });
-        persistAccountId(get().viewAll ? ALL_INBOXES : get().selectedAccountId);
-        get().fetchEmails();
       }
       return { ok: true };
     } catch (err: unknown) {
@@ -1723,8 +2059,96 @@ export const useEmailStore = create<EmailState>((set, get) => ({
     }
   },
 
-  replaceAccount: (account) =>
-    set({ accounts: get().accounts.map((a) => (a.id === account.id ? account : a)) }),
+  replaceAccount: (account) => {
+    const before = get().accounts;
+    set({ accounts: before.map((a) => (a.id === account.id ? account : a)) });
+    // A copy from the server can carry another flag of the pool, so the one
+    // reconciliation runs here too (EM-T8g-2 review round 2).
+    get().applyPoolChange(before);
+  },
+
+  setInAllInboxes: async (id, pooled) => {
+    let saved: EmailAccount;
+    try {
+      saved = await api.setMailboxPooled(id, pooled);
+    } catch (err: unknown) {
+      // A gateway before EM-T8g-1 refuses the field. Nothing moves, and the
+      // list on screen is the server's again.
+      const detail = err instanceof Error && err.message ? err.message : "The mailbox could not be changed.";
+      set({ error: detail });
+      void get().refreshAccounts();
+      return false;
+    }
+    // Only the flag moves: the answer of the PATCH holds no default flag and
+    // no unread count. The server's answer wins over the request.
+    const before = get().accounts;
+    set({ accounts: before.map((a) => (a.id === id ? withPoolFlag(a, !isSeparate(saved)) : a)) });
+    // The one reconciliation: the end of All inboxes below two pooled
+    // mailboxes, the rows that leave at once, and a re-read (item 3).
+    get().applyPoolChange(before);
+    return true;
+  },
+
+  applyPoolChange: (before) => {
+    const st = get();
+    const pooledNow = pooledMailboxes(st.accounts).map((a) => a.id);
+    const pooledBefore = pooledMailboxes(before).map((a) => a.id);
+    // A mailbox leaves the pool when it goes or turns separate. It joins when
+    // it comes back, or when it is new.
+    const out = pooledBefore.filter((id) => !pooledNow.includes(id));
+    const joined = pooledNow.filter((id) => !pooledBefore.includes(id));
+    const changed = out.length > 0 || joined.length > 0;
+    // The sums belong to the pool before. They show no count until a new
+    // round lands (EM-T8f-3 review F4).
+    if (changed) set({ allFolderCounts: null });
+    if (!st.viewAll) return;
+    if (!hasAllInboxes(st.accounts)) {
+      // Fewer than two pooled mailboxes: All inboxes ends for the default
+      // mailbox (EM-T8g-2 item 3, review F1).
+      const home = pickInitialView(st.accounts, ALL_INBOXES).accountId;
+      if (home) {
+        get().selectAccount(home);
+      } else {
+        // No mailbox is left. Nothing of the old list may stay, or act.
+        set({
+          viewAll: false, emails: [], emailsTotal: 0, selectedIds: new Set(),
+          selectedEmailId: null, selectedEmailOverride: null,
+        });
+        persistAccountId(null);
+      }
+      return;
+    }
+    const hiddenPooled = pooledNow.includes(st.selectedAccountId ?? "");
+    if (!changed && hiddenPooled) return;
+    if (out.length > 0) {
+      // The rows, the checks and the open mail of a mailbox that left go at
+      // once. Only a check of a row that stays survives, so a check whose
+      // row left the list before cannot reach a hidden mail either (review
+      // F3, round 2).
+      const emails = st.emails.filter((e) => !out.includes(e.accountId ?? ""));
+      const open = st.selectedEmailOverride ?? st.emails.find((e) => e.id === st.selectedEmailId);
+      set({
+        emails,
+        selectedIds: prunedChecks(st.selectedIds, emails) ?? st.selectedIds,
+        ...(open && out.includes(open.accountId ?? "")
+          ? { selectedEmailId: null, selectedEmailOverride: null } : {}),
+      });
+    }
+    if (!hiddenPooled) {
+      // The hidden mailbox stays pooled, so the folders and the labels of
+      // All inboxes never come from a mailbox out of view (review F5).
+      const home = poolHome(st.accounts);
+      if (home) {
+        set({ selectedAccountId: home.id, labelColors: readCachedLabelColors(home.id) });
+        get().fetchFolders(home.id);
+        get().fetchLabels(home.id);
+      }
+    }
+    if (changed) {
+      get().fetchEmails();
+      void get().fetchAllFolderCounts();
+    }
+  },
 
   setPendingChatPrompt: (prompt) => set({ pendingChatPrompt: prompt }),
 

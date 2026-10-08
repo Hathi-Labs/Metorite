@@ -10,7 +10,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { useState, useRef, useEffect, useCallback, useMemo, useSyncExternalStore } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, useReducer, useSyncExternalStore } from "react";
 import React from "react";
 import Link from "next/link";
 import { useAgentChat } from "@/hooks/useAgentChat";
@@ -24,24 +24,50 @@ import type { FileEntry } from "@/components/ArtifactSidebar";
 import FileUploadButton from "@/components/FileUploadButton";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import SuggestionPills from "@/components/SuggestionPills";
-import ConfirmationCard from "@/components/ConfirmationCard";
+import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
+import AskPin from "@/components/AskPin";
+import { HITL_TARGET, pendingAsk } from "@/lib/askPin";
+import {
+  CONFIRMATION_RESOLVED,
+  EMPTY_CONFIRMATIONS,
+  confirmationReducer,
+  settleAnswer,
+  type PendingConfirmation,
+} from "@/lib/confirmationQueue";
+import { sendRespondInput } from "@/lib/respondInput";
 import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
+import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
+import { canRetry, retryPlan } from "@/lib/chatRetry";
+import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { PresenceRail } from "@/components/room/PresenceRail";
 import { useRoom } from "@/hooks/useRoom";
 import { peopleOf } from "@/lib/rooms";
-import { getMessages, saveMessages, fetchMessagesFromDb, getQueue, saveQueue, type PersistedMessage } from "@/lib/sessions";
+import { getMessages, saveMessages, fetchMessagesFromDb, getQueue, saveQueue, cacheMessages, type PersistedMessage } from "@/lib/sessions";
 import { computeContextUsage, activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { serializeReasoning } from "@/lib/chatStream";
 import { useAgentEvents } from "@/lib/agentEvents";
 import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFrontendTool";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
+import {
+  composerControls,
+  composerModelPlan,
+  forgetModelChoice,
+  getLastModel,
+  getModelUsage,
+  incrementModelUsage,
+  modelMemoryStep,
+  sentThinkMode,
+  setLastModel,
+  tierRoutingUiOn,
+  type ThinkMode,
+} from "@/lib/tierRouting";
 
 // Unified model fallback — shown while /api/models/all is loading.
 // Always includes the tiers (always accessible) and Gemini models (default provider).
@@ -115,35 +141,9 @@ const AGENT_SUGGESTIONS: Record<string, string[]> = {
 };
 
 // ── Per-agent model memory ──────────────────────────────────────────────
-
-const MODEL_PREF_KEY = (agent: string) => `cc-model-${agent}`;
-const MODEL_USAGE_KEY = "cc-model-usage";
-
-function getLastModel(agentName: string): string | null {
-  try {
-    return localStorage.getItem(MODEL_PREF_KEY(agentName));
-  } catch { return null; }
-}
-
-function setLastModel(agentName: string, modelId: string): void {
-  try { localStorage.setItem(MODEL_PREF_KEY(agentName), modelId); } catch { /* noop */ }
-}
-
-function getModelUsage(): Record<string, number> {
-  try {
-    const raw = localStorage.getItem(MODEL_USAGE_KEY);
-    return raw ? JSON.parse(raw) as Record<string, number> : {};
-  } catch { return {}; }
-}
-
-function incrementModelUsage(modelId: string): void {
-  if (modelId === "auto") return; // don't track auto
-  try {
-    const usage = getModelUsage();
-    usage[modelId] = (usage[modelId] ?? 0) + 1;
-    localStorage.setItem(MODEL_USAGE_KEY, JSON.stringify(usage));
-  } catch { /* noop */ }
-}
+// The helpers and the `localStorage` keys live in `lib/tierRouting.ts`
+// (WS-45 S3), so a covered agent reads no stored choice and a test can
+// prove it.
 
 interface AgentChatProps {
   agentName: string;
@@ -193,12 +193,23 @@ interface AgentChatProps {
    * — rather than something inherited silently from whatever the inbox happened
    * to be showing — is what stops "which inbox is it talking about?" from being
    * unanswerable, and the switch is marked in the transcript when it happens.
+   *
+   * `accent` is optional: the class of a colour dot beside the label, from the
+   * categorical ramp (`mailboxAccent(a).dot` in the email app, EM-T8f-3).
+   * Never a hex value or a raw palette class. `/chat` sends none, and then
+   * the picker draws as before.
    */
-  mailboxes?: { id: string; label: string }[];
+  mailboxes?: { id: string; label: string; accent?: string }[];
   /** The mailbox currently in force. Controlled by the parent. */
   activeMailboxId?: string | null;
   /** Raised when the user picks a different mailbox in the composer. */
   onMailboxChange?: (id: string) => void;
+  /**
+   * One note above the composer, with an optional dismiss. The email chat
+   * sends one when the mailbox of its scope leaves (EM-T8f-3, §11.6 case 17).
+   * Optional: every other caller omits it, and nothing draws.
+   */
+  notice?: { text: string; onDismiss?: () => void } | null;
   /**
    * Force the model this chat runs on (e.g. the email app's assistant
    * `chat_model` setting). When set it overrides the per-agent localStorage
@@ -225,6 +236,14 @@ interface AgentChatProps {
    */
   pendingInput?: string;
   onPendingInputConsumed?: () => void;
+  /**
+   * The server refused this SESSION on send (another org, or a room the member
+   * is not in). Return true to take the turn: no error card is drawn, and the
+   * parent opens a new chat. Pass it ONLY for a session restored from storage
+   * (`useAgentSessions` in hooks/useChatSessions.ts). A chat the member opened
+   * on purpose omits it, and its refusal shows as an error.
+   */
+  onSessionRefused?: (pendingText: string) => boolean;
 }
 
 export default function AgentChat({
@@ -243,16 +262,23 @@ export default function AgentChat({
   mailboxes,
   activeMailboxId,
   onMailboxChange,
+  notice,
   model: forcedModel,
   lockModel,
   compact,
   pendingInput,
   onPendingInputConsumed,
+  onSessionRefused,
 }: AgentChatProps) {
   // Active agent / model can change mid-chat (VS Code Copilot style).
   const [currentAgentName, setCurrentAgentName] = useState(agentName);
+  // WS-45 S3: the UI flag. Off, the model picker works as it always did.
+  const tierUi = tierRoutingUiOn();
   const [currentModel, setCurrentModel] = useState(
-    () => forcedModel || getLastModel(agentName) || "auto",
+    // With the UI flag on, the stored choice is read only once the agent is
+    // known to keep its picker (the persist effect below), never for a
+    // covered agent.
+    () => forcedModel || (tierUi ? null : getLastModel(agentName)) || "auto",
   );
   // Conform to an externally-governed model (e.g. the email assistant's
   // `chat_model` setting) and re-sync if it changes.
@@ -269,14 +295,55 @@ export default function AgentChat({
     useState<{ afterId: string; label: string }[]>([]);
   const activeMailbox = mailboxes?.find((m) => m.id === activeMailboxId);
   // ── Thinking mode ──────────────────────────────────────────────────
-  type ThinkMode = "auto" | "thinking" | "max";
   const [thinkMode, setThinkMode] = useState<ThinkMode>("auto");
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [agents, setAgents] = useState<AgentEntry[]>(externalAgents ?? []);
+  // True once the agent list has answered (or the parent passed one). The
+  // UI flag reads coverage from it, so nothing is decided before it lands.
+  const [agentsKnown, setAgentsKnown] = useState(!!externalAgents);
   const [models, setModels] = useState<UnifiedModel[]>(MODELS_FALLBACK);
 
-  // Fetch the unified model list (Copilot SDK + LiteLLM) on mount.
+  // ────────────────────────────────────────────────────────────────────────
+
+  // Resolve the selected model's routing runtime (copilot SDK vs gateway BYOK).
+  const selectedModel = models.find((m) => m.id === currentModel);
+  const currentRuntime = selectedModel?.runtime ?? "copilot";
+
+  // Resolve the active agent's metadata (runtime classification, repo link, etc.)
+  // NOTE: computed here (before useAgentChat) so we can override the routing mode.
+  const currentAgentEntry = agents.find((a) => a.name === currentAgentName);
+  // WS-45 S3 (D90): for an agent that the backend flag covers, the platform
+  // picks the tier. No picker, no models fetch, no stored choice and no
+  // `model` field. The gateway stamps `tier_routed` on the agent list entry,
+  // so nothing here names an agent. UI flag off: every field is as today.
+  // The orchestrator (Metorite) is the one agent with an agent selector.
+  const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "metorite";
+  // Coverage reads the entry of the agent that serves the run. A legacy
+  // "metorite" session runs on the orchestrator, so it reads that entry
+  // (review P3). UI flag off: no plan reads the entry.
+  const coverageEntry = currentAgentEntry
+    ?? (isOrchestrator ? agents.find((a) => a.name === "orchestrator") : undefined);
+  const modelPlan = composerModelPlan({
+    uiOn: tierUi,
+    agentsKnown,
+    entry: coverageEntry,
+  });
+  // The member chooses no effort and no agent for a covered agent (owner,
+  // 2026-10-07, amendment of D90 §5 and §7). UI flag off: both as today.
+  // Computed before the memos below, which read `modelPlan`.
+  const controls = composerControls({
+    uiOn: tierUi,
+    agentsKnown,
+    entry: coverageEntry,
+    isOrchestrator,
+  });
+
+  // Fetch the unified model list (Copilot SDK + LiteLLM) once the picker is
+  // live. UI flag off: on mount, as before.
+  const modelsFetchedRef = useRef(false);
   useEffect(() => {
+    if (!modelPlan.fetchModels || modelsFetchedRef.current) return;
+    modelsFetchedRef.current = true;
     fetch("/api/models/all")
       .then((r) => r.json())
       .then((data: unknown) => {
@@ -286,26 +353,53 @@ export default function AgentChat({
         }
       })
       .catch(() => {}); // Keep fallback list on error
-  }, []);
+  }, [modelPlan.fetchModels]);
 
   // Persist model preference per agent + track usage count.
   // Only count usage on an ACTUAL model change (not on mount or agent switch),
   // otherwise every session open inflates the "Frequently Used" ranking.
   const prevModelRef = useRef<string | null>(null);
+  // UI flag on: the agent whose stored choice this mount already read.
+  const restoredForRef = useRef<string | null>(null);
   useEffect(() => {
     // Don't persist/track an externally-forced model — it's governed by its own
     // setting and would otherwise overwrite the agent's own picker default.
-    if (forcedModel) return;
+    // A covered agent keeps no choice (WS-45 S3, §8). With the UI flag on,
+    // the first live render of an agent restores its choice and writes
+    // nothing over it. `modelMemoryStep` decides which, and says why.
+    const step = modelMemoryStep({
+      forced: !!forcedModel,
+      remember: modelPlan.rememberModel,
+      tierUi,
+      agent: currentAgentName,
+      model: currentModel,
+      restoredFor: restoredForRef.current,
+      readStored: () => getLastModel(currentAgentName),
+    });
+    restoredForRef.current = step.restoredFor;
+    if (step.kind === "skip") return;
+    if (step.kind === "restore") {
+      prevModelRef.current = step.model;
+      setCurrentModel(step.model);
+      return;
+    }
     setLastModel(currentAgentName, currentModel);
     if (prevModelRef.current !== null && prevModelRef.current !== currentModel) {
       incrementModelUsage(currentModel);
     }
     prevModelRef.current = currentModel;
-  }, [currentModel, currentAgentName, forcedModel]);
+  }, [currentModel, currentAgentName, forcedModel, tierUi, modelPlan.rememberModel]);
+
+  // A covered agent's stored choice goes, once per mount (§8).
+  useEffect(() => {
+    if (!modelPlan.covered) return;
+    forgetModelChoice(currentAgentName, agents);
+  }, [modelPlan.covered, currentAgentName, agents]);
 
   // ── Model sorting: frequently used models float to the top ──────────────
   const sortedModels = useMemo(() => {
-    const usage = getModelUsage();
+    // A covered agent reads no stored counts (WS-45 S3). UI flag off: always read.
+    const usage = modelPlan.showPicker ? getModelUsage() : {};
     const topIds = Object.entries(usage)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 4)
@@ -322,16 +416,7 @@ export default function AgentChat({
       ...frequent.map((m) => withGroup(m, "Frequently Used")),
       ...rest,
     ];
-  }, [models]);
-  // ────────────────────────────────────────────────────────────────────────
-
-  // Resolve the selected model's routing runtime (copilot SDK vs gateway BYOK).
-  const selectedModel = models.find((m) => m.id === currentModel);
-  const currentRuntime = selectedModel?.runtime ?? "copilot";
-
-  // Resolve the active agent's metadata (runtime classification, repo link, etc.)
-  // NOTE: computed here (before useAgentChat) so we can override the routing mode.
-  const currentAgentEntry = agents.find((a) => a.name === currentAgentName);
+  }, [models, modelPlan.showPicker]);
   const agentRuntime: string = currentAgentEntry?.agent_runtime ?? "maf";
   // Friendly display name (alias) for UI labels only — dispatch, localStorage
   // and routing keep using the canonical `currentAgentName`.
@@ -345,8 +430,9 @@ export default function AgentChat({
   // its tools + instructions even when using a custom model.
   // The orchestrator (Metorite) still uses model-driven routing for
   // fast stateless chat when LiteLLM models are selected.
-  const isOrchestrator = currentAgentName === "orchestrator" || currentAgentName === "metorite";
-  const effectiveRuntime = isOrchestrator ? currentRuntime : "copilot";
+  // A covered orchestrator takes the executor path too: the direct LiteLLM
+  // path would skip the tier policy (WS-45 S3).
+  const effectiveRuntime = isOrchestrator && !modelPlan.covered ? currentRuntime : "copilot";
 
   // Documents the user currently has open in the side-panel editor — folded
   // into the agent's context so it knows what the user is looking at / editing
@@ -396,11 +482,15 @@ export default function AgentChat({
   const { messages, isLoading, error, sendMessage, stopGeneration, setMessages, recovering, runStatus } = useAgentChat({
     agentName: currentAgentName,
     threadId: sessionId,
-    model: currentModel,
+    // `null` sends no `model` field for a covered agent (WS-45 S3).
+    model: modelPlan.sendModel ? currentModel : null,
     mode: effectiveRuntime,
     systemContext,
-    thinkMode,
+    // A covered agent sends "auto", and the executor reads the effort from
+    // the member's words (`tier_policy.turn_kind`).
+    thinkMode: sentThinkMode(modelPlan.covered, thinkMode),
     onArtifact,
+    onSessionRefused,
     // Load the FULL persisted history into memory so the context sent to the
     // model and the context-usage estimate are both accurate.  We only window
     // the RENDERING (below) for performance — not the data.
@@ -569,13 +659,15 @@ export default function AgentChat({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRunActive]);
 
-  // Current running tool name — shown in the live indicator when a tool is in flight.
+  // The step in flight, in words ("Running a script in the sandbox"), for the
+  // live indicator while a tool runs. `lib/toolSteps.ts` is the one
+  // vocabulary, so this line and the trail above it never disagree.
   const liveToolName = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i];
       if (m.role !== "assistant" || !m.streaming) break;
       const running = m.toolEvents?.find((t) => t.status === "running");
-      if (running) return running.name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      if (running) return describeToolStep(running).label;
     }
     return null;
   }, [messages]);
@@ -631,10 +723,13 @@ export default function AgentChat({
   // Real per-model context window (dynamically loaded from the gateway via
   // /api/models/all).  Falls back to the static estimate when unknown.
   const currentModelContextWindow = selectedModel?.contextWindow;
+  // A covered agent has no chosen model, so the ring estimates on the
+  // default window and names no model (WS-45 S3).
+  const ringModel = modelPlan.covered ? "auto" : currentModel;
   const contextUsage = useMemo(
-    () => computeContextUsage(activeMessages, currentModel, systemContext, currentModelContextWindow),
+    () => computeContextUsage(activeMessages, ringModel, systemContext, currentModelContextWindow),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [settledContentLen, activeMessages.length, currentModel, systemContext, currentModelContextWindow],
+    [settledContentLen, activeMessages.length, ringModel, systemContext, currentModelContextWindow],
   );
   const [compacting, setCompacting] = useState(false);
   // Armed = allowed to auto-compact.  Disarmed after a compaction fires and
@@ -722,15 +817,17 @@ export default function AgentChat({
     void applyCompaction();
   }, [compacting, isLoading, applyCompaction]);
 
-  // ── HITL (Human-in-the-Loop) confirmation state ────────────────────────
-  // When requestId is set the tool is blocking (the agent is parked on a
-  // Future — e.g. confirm-before-send); Approve/Reject POST to
-  // /api/agent/respond-input to resume the SAME stream.  Without requestId the
-  // legacy non-blocking path sends APPROVE/REJECT as a new chat message.
-  const [confirmation, setConfirmation] = useState<{
-    id: string; title: string; detail?: string; context?: string;
-    requestId?: string;
-  } | null>(null);
+  // ── HITL (Human-in-the-Loop) confirmation queue ────────────────────────
+  // A turn can park many gated tools at once, each on its own card, so this
+  // is a QUEUE keyed by request_id (`lib/confirmationQueue.ts`), never one
+  // slot. A blocking card (requestId) answers by POST to
+  // /api/agent/respond-input, which resumes the SAME stream. Without
+  // requestId the legacy non-blocking path sends APPROVE/REJECT as a new
+  // chat message.
+  const [confirmations, dispatchConfirmation] = useReducer(
+    confirmationReducer,
+    EMPTY_CONFIRMATIONS,
+  );
 
   // ── HITL elicitation state (VS Code ask_questions parity) ────────────
   // When requestId is set the tool is blocking (MAF Tier 2 path — the
@@ -760,18 +857,14 @@ export default function AgentChat({
       // other than the one this chat is showing, so a background run on a
       // different agent never injects its question card / HITL state here.
       if (threadId && threadId !== sessionId) return;
-      if (name === "confirmation_requested" && value && typeof value === "object") {
-        const v = value as Record<string, unknown>;
-        const reqId = v.request_id ? String(v.request_id) : undefined;
-        setConfirmation({
-          // Static fallback id — only one confirmation card renders at a time
-          // (state replace), and Date.now() here trips react-hooks/purity.
-          id: String(v.id ?? v.request_id ?? "confirmation"),
-          title: String(v.title ?? "Confirm action"),
-          detail: v.detail ? String(v.detail) : undefined,
-          context: v.context ? String(v.context) : undefined,
-          requestId: reqId,
-        });
+      if (name === "confirmation_requested") {
+        dispatchConfirmation({ type: "requested", value });
+      }
+      // The server closed a card: answered, timed out or cancelled. A replay
+      // carries this too, so an answered card never comes back.
+      if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
+        const rid = (value as Record<string, unknown>).request_id;
+        if (rid) dispatchConfirmation({ type: "resolved", requestId: String(rid) });
       }
       if (name === "elicitation_requested" && value && typeof value === "object") {
         const v = value as Record<string, unknown>;
@@ -836,6 +929,8 @@ export default function AgentChat({
           postRespondInput(
             { request_id: reqId, answer: message, was_freeform: true },
             () => submitText(message),
+            // Any failure sends the answer as a message, so it is never lost.
+            (outcome) => { if (outcome === "drop") submitText(message); },
           );
         } else {
           submitText(message);
@@ -848,7 +943,7 @@ export default function AgentChat({
       // run can never be waiting on input anymore.  Only clear a BLOCKING
       // confirmation (requestId, parked on a Future): a non-blocking one must
       // persist until the user answers (its answer is a new chat message).
-      setConfirmation((prev) => prev && prev.requestId ? null : prev);
+      dispatchConfirmation({ type: "runFinalized" });
       // Only clear elicitation when the agent was BLOCKED on a Future
       // (requestId present, MAF Tier 2 path).  For the Copilot SDK
       // non-blocking path (no requestId), the card must persist until
@@ -877,44 +972,45 @@ export default function AgentChat({
   // filters incoming events by threadId; this handles the card that was
   // ALREADY showing when the user switched.  Reset-during-render (not an
   // effect) — React's "adjusting state when a prop changes" pattern.
+  // The `request_id`s of blocking generative-UI asks the member answered in
+  // this session. The pin above the composer reads it (`lib/askPin.ts`), so
+  // an answered picker stops waiting before the run's next event lands.
+  const [answeredAsks, setAnsweredAsks] = useState<ReadonlySet<string>>(() => new Set());
+
   const [hitlSession, setHitlSession] = useState(sessionId);
   if (hitlSession !== sessionId) {
     setHitlSession(sessionId);
-    setConfirmation(null);
+    dispatchConfirmation({ type: "reset" });
     setElicitation(null);
     setUserInput(null);
+    setAnsweredAsks(new Set());
   }
 
-  // POST a blocking-HITL answer to /api/agent/respond-input.  On failure the
-  // card is RESTORED so the user can retry — the agent is still parked on its
-  // Future server-side, and the old fire-and-forget `.catch(() => {})` left a
-  // blocked run with no card and no error (a dead conversation).
+  // POST a blocking-HITL answer to /api/agent/respond-input.
+  //
+  // A failure that can pass on a retry (a network fault, a 5xx) RESTORES the
+  // card: the agent is still parked on its Future server-side, and the old
+  // fire-and-forget `.catch(() => {})` left a blocked run with no card and no
+  // error (a dead conversation). A 4xx does NOT restore it. A 409 says no
+  // question waits on that id, and a restored card got a 409 on every click
+  // (2026-10-06). `settle` hears "ok" or "drop" (`lib/respondInput.ts`).
   const postRespondInput = useCallback(
     (
       payload: { request_id: string; answer: string; was_freeform: boolean },
       restoreCard: () => void,
+      settle?: (outcome: "ok" | "drop") => void,
     ) => {
       const forSession = sessionIdRef.current;
-      void fetch("/api/agent/respond-input", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // thread_id lets the gateway route a HITL answer to whichever worker
-        // owns the parked run (P1-2 cross-worker control bus).
-        body: JSON.stringify({ ...payload, thread_id: forSession }),
-      })
-        .then(async (r) => {
-          if (!r.ok) {
-            throw new Error(await r.text().catch(() => `status ${r.status}`));
-          }
-        })
-        .catch((err: unknown) => {
-          console.error("respond-input failed — restoring HITL card", err);
-          // Only restore if the user is still on the session that asked.
-          if (sessionIdRef.current === forSession) restoreCard();
-        });
+      void sendRespondInput({ ...payload, thread_id: forSession }).then((outcome) => {
+        // Only touch the cards if the user is still on the session that asked.
+        if (sessionIdRef.current !== forSession) return;
+        if (outcome === "retry") restoreCard();
+        else settle?.(outcome);
+      });
     },
     [],
   );
+
 
   // Reload the persisted send-queue when switching sessions/agents so a message
   // queued on another session doesn't leak in and a queue left on THIS session
@@ -969,10 +1065,8 @@ export default function AgentChat({
           JSON.stringify(payload)
         );
       } catch { /* best-effort */ }
-      // Also save to localStorage synchronously
-      try {
-        localStorage.setItem(`cc-msgs-${sessionId}`, JSON.stringify(toSave));
-      } catch { /* quota exceeded */ }
+      // Also save to the local cache synchronously, in the member's namespace.
+      cacheMessages(sessionId, toSave);
     };
     window.addEventListener("beforeunload", handleUnload);
     window.addEventListener("pagehide", handleUnload);
@@ -1025,22 +1119,13 @@ export default function AgentChat({
     prevLoadingRef.current = isLoading;
   }, [isLoading, sendMessage]);
 
-  // Persist the conversation to Mem0 on unmount (default / Metorite agent).
+  // Persist the DEFAULT agent's turns to Mem0 on unmount (H-236 follow-up).
+  // Each turn names its own agent, so a switch mid-chat changes nothing. The
+  // gateway extracts every named agent's turns at the run's end, and it skips
+  // a covered run. See lib/chatMemorySave.ts.
   useEffect(() => {
     return () => {
-      if (!memoryUserId) return;
-      const payload = messagesRef.current
-        .filter((m) => (m.role === "user" || m.role === "assistant") && m.content.trim())
-        .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
-      if (payload.length === 0) return;
-      fetch("/api/chat/memories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // No userId: the scope is the signed-in member, resolved server-side.
-        // Sending one here would be a claim the route no longer accepts.
-        body: JSON.stringify({ messages: payload }),
-        keepalive: true,
-      }).catch(() => {});
+      saveConversationOnUnmount({ memoryUserId, messages: messagesRef.current });
     };
   }, [memoryUserId]);
 
@@ -1055,11 +1140,13 @@ export default function AgentChat({
 
   // Fetch available agents for the switcher if not provided by parent
   useEffect(() => {
-    if (externalAgents) { setAgents(externalAgents); return; }
+    if (externalAgents) { setAgents(externalAgents); setAgentsKnown(true); return; }
     fetch("/api/agent/list")
       .then((r) => r.json())
       .then((data: unknown) => { if (Array.isArray(data)) setAgents(data as AgentEntry[]); })
-      .catch(() => {});
+      .catch(() => {})
+      // Known on an error too: the static fallback marks no agent covered.
+      .finally(() => setAgentsKnown(true));
   }, [externalAgents]);
 
   // Refresh statuses once a NEW assistant message has SETTLED (credentials may
@@ -1282,9 +1369,15 @@ export default function AgentChat({
    *  back to sending the answer as a normal message so it's never lost. */
   const handleGenUiHitl = useCallback(
     (requestId: string, answer: string) => {
+      setAnsweredAsks((prev) => {
+        const next = new Set(prev);
+        next.add(requestId);
+        return next;
+      });
       postRespondInput(
         { request_id: requestId, answer, was_freeform: true },
         () => submitText(answer),
+        (outcome) => { if (outcome === "drop") submitText(answer); },
       );
     },
     [postRespondInput, submitText]
@@ -1295,16 +1388,15 @@ export default function AgentChat({
   // every message re-ran ReactMarkdown on every streamed token).
   const handleFileOpen = useCallback((entry: FileEntry) => setViewerEntry(entry), []);
   const handleResend = useCallback((content: string) => { submitText(content); }, [submitText]);
+  // The ONE retry path (`lib/chatRetry.ts`): an answer's "Retry" and a failed
+  // turn's error-card "Retry" both land here.
   const handleRetryMessage = useCallback((m: ChatMessage) => {
-    const all = messagesRef.current;
-    const idx = all.findIndex((x) => x.id === m.id);
-    if (idx < 0) return;
-    const prevUser = [...all.slice(0, idx)].reverse().find((x) => x.role === "user");
-    if (!prevUser) return;
-    // Regenerate: drop this assistant turn AND its prompt, then re-send — no
-    // duplicate user+assistant pair on top of the old (rejected) answer.
-    setMessages((prev) => prev.filter((x) => x.id !== m.id && x.id !== prevUser.id));
-    submitText(prevUser.content);
+    const plan = retryPlan(messagesRef.current, m.id);
+    if (!plan) return;
+    // Regenerate: drop this turn AND its prompt, then re-send — no duplicate
+    // user+assistant pair on top of the old (rejected or failed) turn.
+    setMessages((prev) => prev.filter((x) => !plan.drop.includes(x.id)));
+    submitText(plan.resend);
   }, [submitText, setMessages]);
 
   /** Ask the agent to help configure a specific integration. */
@@ -1319,9 +1411,11 @@ export default function AgentChat({
   /** Switch the active agent mid-chat. History is retained and passed as context. */
   const handleSwitchAgent = useCallback((entry: AgentEntry) => {
     setCurrentAgentName(entry.name);
-    setCurrentModel(getLastModel(entry.name) ?? "auto");
+    // UI flag on: the persist effect restores the stored choice, and only
+    // for an agent that keeps its picker (WS-45 S3).
+    setCurrentModel(tierUi ? "auto" : (getLastModel(entry.name) ?? "auto"));
     setShowAgentMenu(false);
-  }, []);
+  }, [tierUi]);
 
   const currentModelLabel =
     sortedModels.find((m) => m.id === currentModel)?.label ?? currentModel;
@@ -1376,38 +1470,30 @@ export default function AgentChat({
   // reference behaviour), not detached at the bottom of the message list. The
   // agent is parked mid-turn, so the card belongs with that turn's bubble.
   // Returns null when nothing is pending.
+  // Answer ONE confirmation card. Only that card leaves the queue.
+  const answerConfirmation = (card: PendingConfirmation, answer: ConfirmationAnswer) => {
+    if (!card.requestId) {
+      dispatchConfirmation({ type: "dismiss", key: card.key });
+      submitText(`${answer}: ${card.key}`);
+      return;
+    }
+    dispatchConfirmation({ type: "answering", key: card.key });
+    postRespondInput(
+      { request_id: card.requestId, answer, was_freeform: false },
+      () => dispatchConfirmation(settleAnswer(card, "retry")),
+      (outcome) => dispatchConfirmation(settleAnswer(card, outcome)),
+    );
+  };
+  const hasConfirmations = confirmations.cards.length > 0;
+
   const renderHitlCards = (): React.ReactNode => {
-    if (!confirmation && !elicitation && !userInput) return null;
+    if (!hasConfirmations && !elicitation && !userInput) return null;
+    // One mark for the group: the pin above the composer scrolls here
+    // while a card waits (`lib/askPin.ts`, spec §24 rule 1).
     return (
-      <>
-        {confirmation && (
-          <ConfirmationCard title={confirmation.title} detail={confirmation.detail} context={confirmation.context}
-            onApprove={() => {
-              const card = confirmation;
-              const reqId = card.requestId;
-              setConfirmation(null);
-              if (reqId) {
-                postRespondInput(
-                  { request_id: reqId, answer: "APPROVE", was_freeform: false },
-                  () => setConfirmation(card),
-                );
-              } else {
-                submitText(`APPROVE: ${card.id}`);
-              }
-            }}
-            onReject={() => {
-              const card = confirmation;
-              const reqId = card.requestId;
-              setConfirmation(null);
-              if (reqId) {
-                postRespondInput(
-                  { request_id: reqId, answer: "REJECT", was_freeform: false },
-                  () => setConfirmation(card),
-                );
-              } else {
-                submitText(`REJECT: ${card.id}`);
-              }
-            }} />
+      <div data-chat-ask={HITL_TARGET} className="space-y-2 outline-none">
+        {hasConfirmations && (
+          <ConfirmationQueue cards={confirmations.cards} onAnswer={answerConfirmation} />
         )}
 
         {elicitation && (
@@ -1489,14 +1575,26 @@ export default function AgentChat({
             }}
           />
         )}
-      </>
+      </div>
     );
   };
+
+  // The element that waits on the member, for the pin above the composer
+  // (spec §24 rule 1). It reads the queue and the question state above, and
+  // keeps none of its own.
+  const waiting = pendingAsk({
+    confirmations: confirmations.cards,
+    elicitation,
+    userInput,
+    messages,
+    runActive: isRunActive,
+    answered: answeredAsks,
+  });
 
   // The assistant turn the HITL card anchors to = the last assistant message
   // (the parked run streams into it). Used to render the card inline there.
   const hitlAnchorId = (() => {
-    if (!confirmation && !elicitation && !userInput) return null;
+    if (!hasConfirmations && !elicitation && !userInput) return null;
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === "assistant") return messages[i].id;
     }
@@ -1669,8 +1767,9 @@ export default function AgentChat({
             const prevMsg = i > 0 ? visibleMessages[i - 1] : null;
             // Find the preceding user message for retry (walk back to the
             // most recent user message before this assistant message).
+            // An error card retries too (owner report, 2026-10-08).
             const prevUserMsg =
-              msg.role === "assistant"
+              canRetry(msg)
                 ? [...visibleMessages.slice(0, i)].reverse().find((m) => m.role === "user")
                 : null;
             const showDateDivider = prevMsg &&
@@ -1755,6 +1854,8 @@ export default function AgentChat({
           }
           return null;
         })()}
+        {/* The element that waits on the member, while it is out of view. */}
+        <AskPin ask={waiting} threadRef={threadRef} />
         {queuedCount > 0 && (
           <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-[11px] text-warning">
             <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse" />
@@ -1772,7 +1873,7 @@ export default function AgentChat({
           <div className="max-w-3xl mx-auto mb-2 flex items-center gap-2 text-[11px] text-muted-foreground chat-fade-in">
             <Icon name="LoaderCircle" className="text-sky-400 animate-spin shrink-0" size={12} strokeWidth={1.5} />
             <span className="italic truncate">
-              {liveToolName ? `Running ${liveToolName}…` : `${liveWorkingMsg}…`}
+              {liveToolName ? `${liveToolName}…` : `${liveWorkingMsg}…`}
             </span>
             <span className="flex items-center gap-0.5 shrink-0" aria-hidden="true">
               <span className="chat-typing-dot" />
@@ -1783,6 +1884,30 @@ export default function AgentChat({
         )}
 
         <div className="max-w-3xl mx-auto">
+          {/* One note from the parent, for example the email chat after the
+              mailbox of its scope left (EM-T8f-3). A status, so a screen
+              reader hears it once. */}
+          {notice && (
+            <div
+              role="status"
+              className="mb-2 flex items-start gap-2 rounded-lg border border-border bg-muted px-3 py-2 text-[11px] text-muted-foreground"
+            >
+              <Icon name="Info" size={12} className="mt-0.5 shrink-0" />
+              <span className="min-w-0 flex-1">{notice.text}</span>
+              {notice.onDismiss && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="X"
+                  onClick={notice.onDismiss}
+                  aria-label="Dismiss note"
+                  title="Dismiss note"
+                  className="shrink-0"
+                />
+              )}
+            </div>
+          )}
           {/* A watcher reads the room and cannot drive its agents. Saying so
               here is the difference between a boundary and a bug: the
               alternative is a 403 after they have typed a paragraph. */}
@@ -1917,7 +2042,7 @@ export default function AgentChat({
             <div className="flex items-center gap-1 px-2 pb-1.5 text-[11px] text-muted-foreground flex-wrap" ref={modelMenuRef}>
               {/* Agent selector — only the orchestrator can switch agents mid-session.
                   Specialised agents lock you into their session for clean history. */}
-              {isOrchestrator && (
+              {controls.showAgentSwitch && (
                 <div className="relative">
                   <button onClick={() => setShowAgentMenu((v) => !v)}
                     className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-secondary hover:text-foreground tech-transition">
@@ -1949,7 +2074,7 @@ export default function AgentChat({
                 </div>
               )}
 
-              {isOrchestrator && <span className="w-px h-3.5 bg-border shrink-0" />}
+              {controls.showAgentSwitch && <span className="w-px h-3.5 bg-border shrink-0" />}
 
               {/* Mailbox picker — the email assistant only. Which inbox the
                   assistant acts on is a per-conversation choice, so it belongs
@@ -1971,7 +2096,16 @@ export default function AgentChat({
                       aria-expanded={showMailboxMenu}
                       className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-secondary hover:text-foreground tech-transition truncate max-w-[120px] sm:max-w-[170px]"
                     >
-                      <Icon name="Mail" size={11} className="shrink-0 text-muted-foreground/70" />
+                      {/* The dot of the mailbox in force, when the parent
+                          sends one (EM-T8f-3). Else the mail glyph. */}
+                      {activeMailbox?.accent ? (
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${activeMailbox.accent}`}
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Icon name="Mail" size={11} className="shrink-0 text-muted-foreground/70" />
+                      )}
                       <span className="truncate">
                         {activeMailbox?.label ?? "Pick mailbox"}
                       </span>
@@ -2013,9 +2147,19 @@ export default function AgentChat({
                                   : "text-muted-foreground hover:bg-secondary"
                               }`}
                             >
-                              <span className="truncate">{mb.label}</span>
+                              <span className="flex min-w-0 items-center gap-1.5">
+                                {/* The dot always sits beside the label, so
+                                    the hue is never the only signal. */}
+                                {mb.accent && (
+                                  <span
+                                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${mb.accent}`}
+                                    aria-hidden="true"
+                                  />
+                                )}
+                                <span className="truncate">{mb.label}</span>
+                              </span>
                               {mb.id === activeMailboxId && (
-                                <span className="text-emerald-400 text-[10px] shrink-0">✓</span>
+                                <span className="text-primary text-[10px] shrink-0">✓</span>
                               )}
                             </button>
                           ))}
@@ -2028,8 +2172,9 @@ export default function AgentChat({
               )}
 
               {/* Model selector — hidden when the model is governed externally
-                  (e.g. the email Assistant's chat_model setting). */}
-              {!lockModel && (
+                  (e.g. the email Assistant's chat_model setting), and for an
+                  agent the tier policy covers (WS-45 S3, D90). */}
+              {!lockModel && modelPlan.showPicker && (
               <div className="relative">
                 <button onClick={() => setShowModelMenu((v) => !v)}
                   className="flex items-center gap-1 px-2 py-1 rounded-md hover:bg-secondary hover:text-foreground tech-transition truncate max-w-[110px] sm:max-w-[150px]">
@@ -2058,9 +2203,13 @@ export default function AgentChat({
               </div>
               )}
 
-              <span className="w-px h-3.5 bg-secondary/60 shrink-0" />
+              {/* The picker's divider goes with it (WS-45 S3). */}
+              {modelPlan.showPicker && <span className="w-px h-3.5 bg-secondary/60 shrink-0" />}
 
-              {/* Thinking mode — compact dropdown (saves space, easier tap on mobile) */}
+              {/* Thinking mode — compact dropdown (saves space, easier tap on mobile).
+                  A covered agent has none: the executor reads the effort from
+                  the member's words (owner, 2026-10-07). */}
+              {controls.showEffort && (
               <div className="relative">
                 <Button variant="ghost" size="none" radius="keep" layout="flex items-center" type="button" onClick={() => setShowThinkMenu((v) => !v)} title={THINK_MODES.find((t) => t.mode === thinkMode)?.title} className="gap-1 px-2 py-1 rounded-md">
                   <span>{THINK_MODES.find((t) => t.mode === thinkMode)?.label ?? "Auto"}</span>
@@ -2083,8 +2232,10 @@ export default function AgentChat({
                   </div>
                 )}
               </div>
+              )}
 
-              <span className="w-px h-3.5 bg-secondary/60 shrink-0" />
+              {/* The effort selector's divider goes with it. */}
+              {controls.showEffort && <span className="w-px h-3.5 bg-secondary/60 shrink-0" />}
 
               {/* Context-window ring — always visible inline */}
               <ContextRing
@@ -2093,7 +2244,7 @@ export default function AgentChat({
                 totalTokens={contextUsage.totalTokens}
                 compacting={compacting}
                 onCompact={handleCompact}
-                modelId={currentModel}
+                modelId={modelPlan.covered ? undefined : currentModel}
                 isLoading={isLoading}
               />
 

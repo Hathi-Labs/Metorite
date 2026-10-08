@@ -587,6 +587,18 @@ ALTER TABLE email_folders ADD CONSTRAINT email_folders_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS email_folders_org_idx ON email_folders (organization_id);
 
+-- email_insights
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM email_insights WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: email_insights still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE email_insights ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE email_insights ADD CONSTRAINT email_insights_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS email_insights_org_idx ON email_insights (organization_id);
+
 -- email_knowledge
 DO $$
 BEGIN

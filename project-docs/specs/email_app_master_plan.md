@@ -11,16 +11,22 @@
 > `sync.scheduler_started accounts=0`. The Microsoft app is installed on the box, and
 > Microsoft sign-in is live with it (§10.2, D-EM-2 interim). ✅ **EM-T3a (#563) and EM-T3b (#564) are MERGED. Email is live in the nav.** ✅ EM-T3c (#566), EM-T2a (#567), EM-T2b (#565) and EM-T2c (#568) are MERGED. ✅ EM-T3d MERGED (#571).
 > ✅ **EM-T4a-1 MERGED (#570). EM-T4a-0 MERGED (#572). EM-T5 MERGED (#569), dark.** Sync phases (e) and (f) hold no session across a provider or model call (§10.4.6).
-> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume.
+> 📝 **EM-T6 is SPECIFIED (2026-10-02).** Guided mailbox onboarding, in five parts (§10.4.7). ✅ **EM-T6a MERGED (#577, 2026-10-02, migration 225).** ✅ **EM-T6b MERGED (#580, 2026-10-03, no migration).** The import runs newest first, in batches, with progress and resume. ✅ **EM-T6c MERGED (#615, 2026-10-04, no migration): a port of `8b4cb4dfc` that closes the gaps G1 to G5 and the findings of review round 1.** ✅ **EM-T6e MERGED (#619, 2026-10-04):** the storage notice, the removal dialog and the storage step, UI and BFF only.
 > ✅ **EM-T4c MERGED (#575, 2026-10-02).** A 401 during a sync refreshes the token once, and the request goes again (§10.4.6).
 > ✅ **EM-T6d, part 1 (range step and progress) MERGED (#579, 2026-10-02).** UI only (§10.4.7).
 > ✅ **EM-T6d, part 2 (rules step, drafting step and Done) MERGED (#581, 2026-10-03).** UI only (§10.4.7).
 > ✅ **EM-T4f parts 1 and 2 MERGED (#578, 2026-10-02).** One sync runs at a time for each mailbox, which fixes the wait of 2 minutes. A disconnect answers 409 after 5 seconds when a sync holds the row, and it removes the Graph subscription (§10.4.6).
 > ✅ **EM-T4e MERGED (#586, 2026-10-03, migration 226).** The rules and the account reads make one read for their child rows. One new index serves the thread reads (§10.4.6).
+> ✅ **EM-T4d MERGED (#614, 2026-10-04, no migration).** The Graph delta of Outlook runs in shadow beside the full sweep, behind `EMAIL_OUTLOOK_DELTA`, which is `off` by default. The sweep stays the one writer (§10.4.6). Review round 1 fixed seven findings, and the first is a host check on each delta link.
+> ✅ **EM-T4b MERGED (#617, 2026-10-04), dark.** One cap and one daily budget bind the email model calls. The cap is 0 and the budget mode is `log` (§10.4.6).
+> ✅ **EM-T4a-2 PR-A MERGED (#621, 2026-10-04).** `_mark_thread_replied` asks the thread status with no session open. A guard voids a status write when a newer inbound message arrived during the ask (§10.4.6).
 > ✅ **EM-T7 MERGED (#574, 2026-10-02, §10.4.9).** Automatic reply drafting is OFF for a new mailbox (D-EM-6).
 > ✅ **EM-T5b-1 and EM-T5b-2 (narrowed) MERGED (#576, 2026-10-02), as ONE PR.** The four triage questions follow the System One conventions. With `email.rule_match=on`, Jev decides the rule match with no LLM path, and the automatic run touches new mail only (§10.4.8). The modes stay `off` in code, and the orchestrator sets them on the box after the deploy. **Production:** `email.rule_match=on` for all organizations since 16:31 UTC on 2026-10-02.
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
-> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit.
+> 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
+> 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
+> 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
+> 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > **Earlier status (history):** live on the VPS for one Outlook account until the RLS cutover of 2026-08-23.
 > **Last status change before §10:** 2026-08-04 — **P0 connect-flow outage CLOSED** (§7 Tier 1 item 1, partial).
 > Nobody but the already-connected owner could add a mailbox from 2026-07-29 to 2026-08-04:
@@ -71,6 +77,7 @@ second, new capability third.**
   several Outlook mailboxes of one member (2026-10-03, D-EM-17).** Provider parity is still not a
   goal: D-EM-5 keeps Outlook the only provider in the connect flow. *(History: the old success
   criterion "Connect 2+ Gmail + 1+ Microsoft accounts" is retired. Gmail and IMAP code stays latent.)*
+  **2026-10-04:** the owner amended D-EM-5. Gmail joins Outlook in the connect flow, and §12 owns that plan.
 - **Inbound SMTP receiving** — dead subsystem, removing (§6 decisions).
 - **Inbox-zero feature-checklist parity as an end in itself** — parity was the scaffolding;
   the roadmap now optimizes for this customer's jobs, not the reference app's feature list.
@@ -372,6 +379,8 @@ click-driven path already covers everyone the user cares about.
 | Unfinished tool merges (M7 `manage_rule`, M8 `manage_knowledge`, M13 `manage_labels`) | **Close the plan at 42 tools** — measured value of further merging is low; delete the fossil card keys instead |
 | `Support`/`Unknown` sender categories, `'user'` category-override reservation | Remove from the API vocabulary or build the manual set-category flow in 3.6 |
 
+**2026-10-04.** The Gmail row above is superseded. The owner amended D-EM-5, and §12 plans the Gmail work beside Outlook. IMAP stays latent.
+
 **Verified 2026-07-22:** every kill-candidate above is *still present in code* — the table records
 recommendations, not executed work. Evidence: `inbound.py` exists unlaunched (only its own
 docstring references its start function); `GET /newsletters` (`senders.py:465`) and
@@ -536,13 +545,13 @@ or API client to create a pattern by hand.
 | **D-EM-2** | **The app lives in a dedicated Metorite Entra directory**, not in `fracktal.in`. The directory of customer zero must not hold the product. ⚠️ **Interim (owner, 2026-10-01):** until that app exists, Metorite uses the publisher-verified Fracktal Works app `3bfeff54-14fb-4cee-8b17-2c8d41cad6a8` ("CommandCenter"), set to any Entra tenant plus personal accounts. The same app also serves Microsoft sign-in. A later move to a Hathi Labs app makes each mailbox reconnect once. |
 | **D-EM-3** | **The app gets Microsoft publisher verification**, so the consent screen shows a verified Metorite. Without it, many company tenants block the app. |
 | **D-EM-4** | **A mailbox is private to the member who connects it.** An org admin sees how many members connected, never their mail. This follows the private-first default of D12. |
-| **D-EM-5** | **Outlook is the only provider in the connect flow.** Google shows "coming soon". IMAP stays hidden until its connect path works. |
+| **D-EM-5** | ~~**Outlook is the only provider in the connect flow.** Google shows "coming soon".~~ **Amended by the owner, 2026-10-04: Gmail and Google Workspace mailboxes join Outlook in the connect flow.** Metorite owns ONE Google OAuth app, and the setup stays one click: Connect, consent, done. §12 owns the plan (D-EM-31 to D-EM-35, slices EM-G1 to EM-G10). IMAP stays hidden until its connect path works. |
 | **D-EM-6** | **Automatic reply drafting is OFF for a new mailbox. A member turns it on in AI settings.** Owner, 2026-10-02: "Turn the default autodraft emails to off." This reverses migration 82 for a new mailbox. A stored choice does not change. EM-T7 builds it (§10.4.9). |
 | **D-EM-7** | **Every email triage decision goes through the `decide` task on `tier-decide`, and no member can change it** (owner, 2026-10-02). The decisions are the rule match (one rule and multi-rule), the thread status, the cold check and the sender pin. Settings and the email agent lose the rules-model choice. Text work stays on the LLM tiers: drafts, compose, the digest brief, the voice profile, template fill, rule generation and chat. |
 | **D-EM-8** | **No fallback model** (owner, 2026-10-02, revised the same day). When `decide` gives no answer, the email stays undecided. No rule applies, `rules_processed_at` stays NULL, and the next cycle asks again. The log line is `decide.unavailable` with the reason. Resilience is a backup step in the Router chain of `tier-decide`, which an operator binds. For email, this replaces adoption rules 2 and 3 of `customer_console.md` §6A.14. |
 | **D-EM-9** | **The owner approves residency for email triage** (owner, 2026-10-02). Tenant mail content may go to TypeSafe and to AI/ML API for the D-EM-7 decisions. This answers H-166 item 3 for email, and for no other app. `DECIDE_ENABLED` stays an owner act (`work_plan.md` §6.1 WS-31 (i)). |
-| **D-EM-10** | **The import never reaches back more than 6 months.** No sync path writes a message older than 6 months. The code counts a month as 30 days, so the ceiling is 180 days. (Owner, 2026-10-02.) |
-| **D-EM-11** | **The member chooses the import range at the first connect.** The choices are 0 to 6 months, and the default is 1 month. A choice of 0 imports no old mail, only the mail that arrives after the connect. (Owner, 2026-10-02.) |
+| **D-EM-10** | **The import never reaches back more than 6 months.** No sync path writes a message older than 6 months. The code counts a month as 30 days, so the ceiling is 180 days. (Owner, 2026-10-02.) **Amended by D-EM-54 and D-EM-55 (2026-10-07).** §14.4.5 holds the window of each mailbox, at most 24 months. |
+| **D-EM-11** | **The member chooses the import range at the first connect.** The choices are 0 to 6 months, and the default is 1 month. A choice of 0 imports no old mail, only the mail that arrives after the connect. (Owner, 2026-10-02.) **Amended by D-EM-54 and D-EM-55 (2026-10-07).** The choices are 1, 3, 6 or 12 months or a custom start date, and the default is 3 (§14.4.5). |
 | **D-EM-12** | **The import goes from the newest mail to the oldest, across all folders.** When the storage limit stops it, the newest mail is present and the gap is at the old end. (Owner, 2026-10-02.) |
 | **D-EM-13** | **A sync after a pause continues from the last sync point.** A pause is sync turned off, a token that failed, or a reconnect. The next sync gets the mail since the last sync point. It does not import the range again. (Owner, 2026-10-02.) |
 | **D-EM-14** | **Each mailbox has a storage limit of 500 MB.** The meter measures the copy that Metorite keeps: message rows, bodies, attachment records and embeddings. At the limit, the import stops going back, and Metorite asks the member to remove older mail from Metorite. A removal deletes the copy in Metorite only. Metorite never deletes or changes mail in the Outlook mailbox of the member. (Owner, 2026-10-02. The answers to three checks follow this table.) |
@@ -597,11 +606,18 @@ check of §10.4.2 passed. To change it is gate `enforcement-flip`.
 | **EM-T3b** | 🟢 AGENT-SAFE · promotion by owner decision (2026-10-01, H-21) | ✅ **MERGED #564 (2026-10-02).** **The connect UI, and Email in the sidebar.** The empty state, the guided page for admin approval (mail and copy link), first-sync progress, reconnect, disconnect inside Email, and the promotion from `preview` to `live`. See §10.4.3. | See §10.4.3. |
 | **EM-T3c** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #566 (2026-10-02).** **The return leg of admin consent.** A public landing page for an IT admin with no Metorite session, and a BFF branch for `admin_consent` and `tenant`. It writes nothing. | A return from the admin-consent endpoint lands on a page that says "Approved". It writes no row. |
 | **EM-T3d** | 🟢 AGENT-SAFE · after EM-T2c | ✅ **MERGED #571 (2026-10-02).** **Pre-approval in Settings, and the connected-member count.** An Email tab in Organisation, with a pre-approve link and seven counts from an admin-only route. See §10.4.3. | See §10.4.3. |
-| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
+| **EM-T4** | 🟢 AGENT-SAFE · 🔴 two flips (`enforcement-flip`) | ✅ **EM-T4a-1 MERGED #570 and EM-T4a-0 MERGED #572 (2026-10-02).** ✅ **EM-T4c MERGED #575 (2026-10-02).** ✅ **EM-T4e MERGED #586 (2026-10-03, migration 226).** ✅ **EM-T4b MERGED (#617, 2026-10-04), dark** (cap 0, budget `log`). **§7 Tier 1 items 2 to 5, and Graph delta.** Nine parts, each one PR: EM-T4a-0 (request jobs bind a tenant, first), EM-T4a-1 to EM-T4a-4 (sessions across I/O), EM-T4b (cap and budget), EM-T4c (401 retry), EM-T4d (delta in shadow) and EM-T4e (§7 item 4). See §10.4.6. | See §10.4.6. |
 | **EM-T5** | 🟢 build · 🔴 real mail | ✅ **MERGED #569, dark (2026-10-02).** **Triage on Jev.** This is CP-13e (`customer_console.md` §6A.14, and §2.1 here). It is built to shadow mode. Real mail waits for the H-166 owner acts. | See §10.4.4. |
-| **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
-| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577.** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
+| **EM-T5b** | AGENT-SAFE build · OWNER "go" for `on` on a box and for the merge of EM-T5b-3 | ✅ **EM-T5b-1 and EM-T5b-2 (narrowed to the rule match) MERGED #576 (2026-10-02).** The owner gave the "go" for `email.rule_match=on` for all organizations (§10.2, decisions (a) to (d)). ⚠️ `email.thread_status=on` waits for PR-B3 of EM-T4a-2 to merge (§10.4.6). 🔨 **EM-T5b-2 in full (the thread status, the cold check and the sender pin in `on`) BUILT, NOT MERGED (`email-t5b2`, 2026-10-03).** **The rules engine and every triage decision on Jev, with no LLM path** (D-EM-7 to D-EM-9). Four parts: EM-T5b-1 (the questions rebuilt, multi-rule in shadow), EM-T5b-2 (`on`, undecided on failure, no rules-model choice), EM-T5b-3 (hardcode, and delete the old path) and EM-T5b-4 (the "not sorted yet" notice). See §10.4.8. | See §10.4.8. |
+| **EM-T6** | 🟢 AGENT-SAFE | **SPECIFIED (2026-10-02). EM-T6a MERGED #577. EM-T6b MERGED #580. EM-T6d parts 1 and 2 MERGED #579 and #581. EM-T6c MERGED #615 (2026-10-04).** ✅ **EM-T6e MERGED #619 (2026-10-04).** **Guided mailbox onboarding.** A range of 0 to 6 months at the first connect, an import newest first in batches with real progress, and a resume after a pause. A limit of 500 MB for each mailbox, with removal from Metorite only. A guided setup that ends at AI rules. Five parts, each one PR: EM-T6a to EM-T6e. See §10.4.7. | See §10.4.7. |
 | **EM-T7** | 🟢 AGENT-SAFE | ✅ **MERGED #574 (2026-10-02).** **Automatic reply drafting is OFF for a new mailbox (D-EM-6).** Migration 224 sets the column default to false. The model, the GET and the presets agree with it. See §10.4.9. | See §10.4.9. |
+| **EM-T9** | 🟢 AGENT-SAFE · full review (data) · 🔴 live check | ✅ **MERGED #643 (2026-10-05).** The live check of the owner is still open.** **A LIVE defect: a file of 3 MB or more on an Outlook draft is lost with no error.** An upload session for a large file, and a failed file stops the send. See §10.4.10. | See §10.4.10. |
+| **EM-T10** | 🟢 AGENT-SAFE · full review · 🔴 live check | ✅ **MERGED #658 (2026-10-05).** The live check (H-248) is open. **A LIVE defect: a reopened draft card loses the recipients of its draft.** A reply narrowed to the sender goes to everyone again, and a Bcc is lost. The build reads the To, Cc and Bcc of the draft, and an Outlook reply draft keeps its To. See §10.4.11. | See §10.4.11. |
+| **EM-T11** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #672 (2026-10-06), with review round 1.** GO-NARROWED by the audit. No migration and no flag. **A chat cannot read the files of a mail.** A text route for an attachment through the shared reader of H-229, and a `read_email_attachment` tool for the email assistant. No `.xlsx` and no HTML (EM-T11b). See §10.4.12. | See §10.4.12. |
+| **EM-T11b** | 🟢 AGENT-SAFE · security review · 🔴 live check | ✅ **MERGED #692 (2026-10-06).** GO-NARROWED by the audit. The shared reader reads `.xlsx` and HTML, with the hardened zip and XML path of a `.docx`. No migration, no flag and no new dependency. See §10.4.13. | See §10.4.13. |
+| **EM-T12** | 🟢 AGENT-SAFE | ✅ **MERGED #688 (2026-10-06).** GO-NARROWED by the audit. Moved to WS-8o (`agent_architecture.md` §12.2). | See §10.4.14. |
+| **EM-T13** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13a MERGED (#690, 2026-10-06).** 📝 **SPECIFIED (2026-10-06).** A rule tool of the email assistant can make a rule that forwards mail or calls a webhook, and it asks the member nothing. The rule tools ask with a card first, as `send_email` does. See §10.4.15. | See §10.4.15. |
+| **EM-T13b** | 🟢 AGENT-SAFE · security review | ✅ **EM-T13b-1 MERGED #698 (2026-10-07).** ✅ **EM-T13b-2 MERGED #701 (2026-10-07).** 📝 **SPECIFIED (2026-10-07), two PRs.** EM-T13b-1: the `unsubscribe_sender` card names the host or the `mailto:` address of the stored link, and the model can no longer pass a link. The `send_draft` card names each To, Cc and Bcc, and the send refuses a changed draft. EM-T13b-2: `CALL_WEBHOOK` refuses a private host after DNS resolution, pins the IP and caps the answer. No migration, no flag. See §10.4.15. | See §10.4.15. |
 | **§10.5** | 🔴 OWNER-GATE | Register the Microsoft app, verify the publisher, and install the credentials (`env-write`). | The client ID is on the box, and one test mailbox connects. |
 
 #### 10.4.1 EM-T1a in full
@@ -1136,6 +1152,7 @@ an admin see that count, and never the mail.
 - No list of members, no address, no account id and no `sync_error` text.
 - No join to `app_user`. A purge deletes the mailbox of a removed member. Until then, it counts.
 - No pre-approval for Gmail or IMAP. Only Microsoft has an admin-consent step (D-EM-5).
+  For Gmail, EM-G8 adds help for a Workspace admin in its place (§12.3.10).
 - No new BFF route, and no copy of `adminConsentUrl` or `getMailAppInfo`.
 
 **Done when.**
@@ -1529,9 +1546,13 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 #### 10.4.6 EM-T4 in full
 
-**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). ✅ EM-T4f MERGED (#578, 2026-10-02). ✅ EM-T4e MERGED (#586, migration 226, 2026-10-03). EM-T4a-2, EM-T4a-3, EM-T4a-4, EM-T4b and EM-T4d are not built. The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+**Status.** ✅ EM-T4a-1 MERGED (#570, 2026-10-02). ✅ EM-T4a-0 MERGED (#572, 2026-10-02). ✅ EM-T4c MERGED (#575, 2026-10-02). ✅ EM-T4f MERGED (#578, 2026-10-02). ✅ EM-T4e MERGED (#586, migration 226, 2026-10-03).
 
-**Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box.
+✅ EM-T4d MERGED (#614, 2026-10-04, no migration, dark: `email_outlook_delta=off`). ✅ EM-T4b MERGED (#617, 2026-10-04, dark: cap 0, budget `log`). ✅ EM-T4a-2 PR-A MERGED (#621, 2026-10-04).
+
+✅ EM-T4a-2 PR-B1 MERGED (#661, 2026-10-06), with review round 1. ✅ EM-T4a-2 PR-B2 MERGED (#685, 2026-10-06). EM-T4a-2 PR-B3, EM-T4a-3 and EM-T4a-4 are not built. The audit of 2026-10-04 narrowed EM-T4a-2 to two PRs, and the audit of 2026-10-05 split PR-B in three (see its section). The audit of 2026-10-02 read each anchor below in the code at `ea9467a9`. EM-T4 has nine parts, and each part is one PR.
+
+**Gate.** 🟢 AGENT-SAFE: the code of each part, with each new setting at its default. 🔴 OWNER-GATE (`enforcement-flip`): `EMAIL_LLM_BUDGET_MODE=enforce` on a box, and any `EMAIL_OUTLOOK_DELTA` value other than `off` on a box. The dev-phase window of CLAUDE.md §3a does NOT open `EMAIL_LLM_BUDGET_MODE=enforce`. `enforce` holds back triage and drafts from a paying mailbox. So it is a product limit, and the owner decides it.
 
 **Order.**
 
@@ -1546,9 +1567,9 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 **Measured state: sessions across external I/O on the sync path.**
 
 - Phase (e) of `_sync_account` holds one `tenant_session(org)` across up to 25 `provider.get_message` calls (`scheduler.py:412-418`, `body_backfill.py:97-99`).
-- Phase (f) holds one session across `litellm.aembedding` (`scheduler.py:423-429`, `email_embeddings.py:73`). It does nothing while `email_semantic_search_enabled` is false, which is its default (`settings.py:630`).
-- `_run_rules_job` opens one block for each row (`runner.py:1648`). The block covers the rule pick, the thread status call, the provider actions, the template call and the draft agent.
-- `_maybe_classify_threads` opens one block for each gap thread (`replyzero.py:1277`). `_mark_thread_replied` holds its first block across the status call (`replyzero.py:918-937`).
+- Phase (f) holds one session across `litellm.aembedding` (`scheduler.py:423-429`, `email_embeddings.py:73`). It does nothing while `email_semantic_search_enabled` is false, which is its default (`settings.py:690`).
+- `_run_rules_job` (`runner.py:1669`) opens one block for each row (`runner.py:1767-1828`). The block covers the rule pick, the thread status call, the provider actions, the template call and the draft agent.
+- `_maybe_classify_threads` (`replyzero.py:2033`) opens one block for each gap thread (`replyzero.py:2195-2219`).
 - `_maybe_send_follow_up_reminders` holds one block for up to 50 threads (`followups.py:92-258`). The block covers `authenticate`, `set_labels`, the body fetch, the draft agent and `create_draft`.
 - `_maybe_send_digest` holds one block across the digest model call and `send_message` (`digest.py:708-772`).
 - `_bulk_reconcile_provider` holds one block across `bulk_apply` and across sleeps of 2 and 8 seconds (`senders.py:460`, `senders.py:493-520`).
@@ -1565,11 +1586,43 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 - 12 sites in jobs that a request starts still call `_get_db()`, for example `runner.py:1409`, `replyzero.py:1382` and `drafting.py:1781`. Each one carries an `# H4` marker.
 - `_get_db()` binds no tenant (`acb_common/db.py:177-187`). Under FORCE RLS such a session reads zero rows. So on the box these jobs most likely read nothing. Nobody has measured this on the box.
 
-**Measured state: the model calls.**
+**Measured state: the model calls (verified at `012483a43`, 2026-10-04).**
 
-- 11 sites call `core._llm_json` (`core.py:644`). 9 sites call a model directly: `actions.py:295`, `assistant.py:615`, `drafting.py:636`, `drafting.py:891`, `drafting.py:1036`, `drafting.py:1279`, `drafting.py:1526`, `voice_profile.py:695` and `email_embeddings.py:73`.
-- Nothing limits these calls across mailboxes. The gateway runs as one uvicorn process (`deploy/hostinger/acb-gateway.service:13`).
-- CP-7 owns credit budgets (`work_plan.md` §4, the Budgets row). The EM-T4 budget counts calls. It stops a loop that runs away, and it never prices anything.
+- 11 sites call `core._llm_json` (`core.py:726`), and its one model await is `core.py:749`. It has no `account_id` parameter (`core.py:726-732`).
+- `decide_features` has no `_ask`. The helper that sends the `decide` requests is `_ask_all` (`decide_features.py:489`).
+- Nothing limits these calls across mailboxes. The gateway runs as one uvicorn process with no `--workers` (`deploy/hostinger/acb-gateway.service:13`).
+- `customer_console.md` CP-7 owns the credit caps for each member (its §4.5). The EM-T4b budget counts model requests. It stops a loop that runs away, and it never prices anything.
+
+The four triage decisions. Each one has an `on` path and an old path. The old path runs in `off` and in `shadow`. On the box only the rule match runs `on`. The other three stay `off` until the owner's go (EM-T5b-2 in full, #593).
+
+| Decision | `on` | The old path |
+|---|---|---|
+| Rule match. `email.rule_match=on` is live for all organizations | `engine.py:761` `ask`, then `_ask_all` (`decide_features.py:526-530`). The Router path. The slot waits | `engine.py:860` and `:946`, `_llm_json` |
+| Thread status | `replyzero.py:606` `ask` | `replyzero.py:721` `_llm_json`, up to two tries |
+| Cold check | `senders.py:1339` `ask` | `senders.py:1353` `_llm_json` |
+| Sender pin. The caller is `runner.py:1246` | `learning.py:161` `ask` | `learning.py:183` `_llm_json` |
+| Shadow, all four | — | `shadow` (`decide_features.py:687`) starts the task at `:728`. The task tries for a slot, or it skips |
+
+The other model calls. "In" means inside the automation scope of EM-T4b item 5.
+
+| Call | The model await | Function | Scope |
+|---|---|---|---|
+| Template fill | `actions.py:320` | `_render_template` (`:292`) | In |
+| Drafter | `drafting.py:932` (stream) and `:938` | `_llm_draft_reply` (`:756`) | In from the rule DRAFT action (`actions.py:521`), the follow-ups (`followups.py:236`) and Process past. Out from `/draft-reply` (`drafting.py:1786`) and the reply mode of `/compose-assist` (`drafting.py:1924`) |
+| Consult plan | `drafting.py:1152` `_llm_json` | `_draft_consult_plan` (`:1108`) | As the drafter |
+| Specialist consults | `drafting.py:1577` `run_agent`, up to 90 s each, one after the other | `_orchestrate_draft` (`:1495`) | As the drafter |
+| MAF drafter | `drafting.py:1330` `run_agent` | `_draft_via_maf_agent` (`:1290`). Nothing calls it | Delete it in the build |
+| `/compose-assist` | `drafting.py:1082` and `:1088` | `_llm_compose_assist` (`:969`) | Out |
+| Reply memories | `drafting.py:484` `_llm_json` | `_llm_extract_reply_memories` (`:455`) | In |
+| Learned style | `drafting.py:657` | `_llm_summarize_writing_style` (`:644`) | In |
+| Digest | `digest.py:525` `_llm_json` | `_digest_brief` (`:488`) | In |
+| Voice profile build | `voice_profile.py:244` and `:281` `_llm_json` | `_llm_observe_batch` (`:215`) and `_llm_synthesize_profile` (`:253`) | In |
+| Voice sample | `voice_profile.py:699` | `sample_voice_profile` (`:673`) | Out |
+| Writing style | `assistant.py:629` | `_llm_writing_style` (`:613`) | Out |
+| Rule generation | `rules.py:619` `_llm_json` | `_llm_generate_rules` (`:588`) | Out |
+| Embeddings | `email_embeddings.py:87` `aembedding` | `_embed_batch` (`:78`), from `scheduler.py:357`. Off by default (`settings.py:690`) | In from the cleanup backfill only. See the follow-ups |
+| Chat | `chat.py:226` `run_agent_stream` | `ai_chat` (`:144`) | Exempt (EM-T4b item 15) |
+| Mem0 | `drafting.py:1528` (`remember`, two calls), `drafting.py:623`, `drafting.py:1628` and `assistant.py:691` (`add_memories_background`) | `_orchestrate_draft`, `_learn_from_sent` and `generate_writing_style` | Out of EM-T4b (its item 20) |
 
 **Measured state: the 401.**
 
@@ -1578,9 +1631,9 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 
 **Measured state: delta.**
 
-- `sync_messages` sets `history_id = None` (`outlook.py:1061`). So each poll sweeps 6 system folders and each user folder (`outlook.py:1104-1160`).
+- `sync_messages` sets `history_id = None` (`outlook.py:1298`). So each poll sweeps 6 system folders and each user folder (`outlook.py:1341-1404`).
 - Commits `55bec57f` and `a350b578` turned delta off on 2026-06-23. A seeded inbox token returned 0 changes in each cycle while new mail arrived. Nobody found the cause.
-- The dead branch (`outlook.py:1063-1103`) has four defects. It keeps only the bare `$deltatoken`, and it sends `$top`. It reads one page with no `@odata.nextLink`, and it moves each `@removed` item to TRASH.
+- The dead branch (`outlook.py:1300-1340`) has four defects. It keeps only the bare `$deltatoken`, and it sends `$top`. It reads one page with no `@odata.nextLink`, and it moves each `@removed` item to TRASH.
 - The cursor column is `last_history_id TEXT` (`17_email_accounts.sql:25`). It can hold a JSON map of links, so delta needs no migration.
 
 **Measured state: §7 item 4.** The row said "items 2 to 5" but named delta in place of item 4. Item 4 is still real:
@@ -1597,7 +1650,9 @@ Option (B), a listener on the seam, stays rejected.
 
 **One fence for every part (R7).**
 
-Add `tests/unit/_io_watch.py`. It counts the open `_tenant_session` blocks, and it gives a watched fake model and a watched fake provider. Each fake fails the test when a block is open during its call. Each part adds its functions to `tests/unit/test_email_no_session_across_io.py`. A companion test proves that the fence fails on a function that holds a block across a fake call.
+The fence is `test_no_session_is_open_during_the_provider_calls` in `tests/unit/test_email_scheduler_tenancy.py:669`. It counts the open `tenant_session` blocks. Its watched fake provider and its watched model call fail the test when a block is open during a call. A part that adds a provider call or a model call to the sync path adds that call to the watched fake.
+
+That fence cannot see a block in `routes/email`. So EM-T4a-2 has its own fence in `tests/unit/test_email_automation_tenancy.py` (see its section). This paragraph named `tests/unit/_io_watch.py` and `tests/unit/test_email_no_session_across_io.py` until 2026-10-04. Neither file exists, so do not cite them.
 
 ##### EM-T4a-0 — the request jobs bind a tenant (first, 2026-10-02)
 
@@ -1713,46 +1768,385 @@ The R8 tests must show PASSED, not SKIPPED.
 
 ##### EM-T4a-2 — the decision core
 
-1. Split each function that reads and then asks a model. The read step takes `db`. The ask step takes no `db`.
-2. The functions are `classify_matches` with its two match helpers (`engine.py:741-920` at `01d760e6`) and `resolve_conversation_status_matches` (`replyzero.py:657`).
-3. The other functions are `recompute_thread_status` (`replyzero.py:894`), `_ai_confirms_sender_pattern` (`learning.py:67`) and `_maybe_block_cold` (`senders.py:1282`). EM-T5b-1 moves these lines again, so read them again at dispatch.
-4. `recompute_thread_status` writes the status in a new block. It writes only when the newest message of the thread is still `ctx.last_message_id`.
-5. The runner loop, the gap loop of `_maybe_classify_threads` and `_mark_thread_replied` use the split.
-6. The EM-T5 shadow helper wraps the ask step only. In `on`, `decide_features.ask` is the ask step.
+**Status (2026-10-06).** ✅ PR-A MERGED #621 (2026-10-04). ✅ PR-B1 MERGED (#661, 2026-10-06), with review round 1. ✅ PR-B2 MERGED (#685, 2026-10-06), with review round 1. PR-B3 is not built. The PR-B1 notes follow the PR-A notes, and the PR-B2 notes follow the PR-B1 notes.
 
-**Non-goals.** No change to a prompt, a model tier or a decision. No change to the action tail, which is EM-T4a-3.
+The audit of 2026-10-04 read each anchor below in the code at `04a64ba4d`. The audit of 2026-10-05 read them again at `c26b67549`, and it split PR-B in three. The part adds no setting, no flag and no migration. The PR-A notes follow the Verify block.
+
+**Gate.** 🟢 AGENT-SAFE for the whole part.
+
+**Four PRs.** PR-A goes first, and then PR-B1, PR-B2 and PR-B3 in that order. The names PR-B1 to PR-B3 are not the "B1" and "B2" of other sections. Each PR stays under about 600 lines. The count is the lines of `git diff --stat` that are not in a test or a document.
+
+- **PR-A.** No session is open across the status ask of `_mark_thread_replied`. `recompute_thread_status` splits into a read step, an ask step and a write step. The write step carries the guard of item 6.
+- **PR-B1. The rule-match ask.** The runner loop of `_run_rules_job` and the gap loop of `_maybe_classify_threads` ask the rule match with no block open.
+  - Done when: the watched model gets each rule-match ask with zero open blocks in both jobs, in `off`, `shadow` and `on` of `email.rule_match`.
+  - Done when: a failed or undecided match ask writes nothing and stamps nothing.
+- **PR-B2. The status ask in `off` and `shadow`.** These are the modes of `email.thread_status` on the box today. The two jobs ask the thread status of the resolver with no block open.
+  - Done when: the watched model gets each status ask of the two jobs with zero open blocks, in `off` and `shadow` of `email.thread_status`.
+- **PR-B3. The status ask in `on`.** The status ask of `status_before_match` (`replyzero.py:1172`) and of `_resolve_on` (`:1219`) runs with no block open. PR-B3 must merge before the owner turns `email.thread_status` on.
+  - Done when: the watched model gets each status ask of the two jobs with zero open blocks in `on`.
+  - Done when: an undecided status writes nothing and stamps nothing (D-EM-8).
+
+**PR-B2 as specified (audit of 2026-10-06, at `8843870a6`).** PR-B2 changes the job path of `off`
+and `shadow` only. `on` and the request paths do not change. The two jobs are `_run_rules_job`
+(`runner.py`) and `_maybe_classify_threads` (`replyzero.py`).
+
+1. `read_classification` reads `_thread_is_conversation` in Block R when `resolve` is True and the
+   mode is not `on`. `ClassifyRead` gets a `conversation` field.
+2. The job asks when the row has a thread, and a match has a conversation key or `conversation` is
+   True. Block S opens only then.
+3. Block S calls one read helper. It loads `about` with `include_kb=False`, calls `resolve_self`, and
+   then calls `read_thread_status`. This helper is part of the one seam.
+4. `StatusRead` gets `move_keys` and `message_id`. The job passes the id of the row. When
+   `message_id` is None, `ask_thread_status` uses `ctx.last_message_id`.
+5. A self-only read gives `("FYI", True)`, and the job asks no model. A read of None means no
+   status.
+6. Block S catches an error of the read, as the resolver does today. Then Block S runs `SELECT 1`.
+   An aborted block raises there and stops the job.
+7. An error of the ask that is not `DecisionUnavailable` keeps the per-message matches. The job logs
+   `email.resolve_conversation_status_failed`. This rule includes `LLMBudgetExhausted`.
+8. Block W gets a status carrier with four states: not asked, no status, undecided and a verdict.
+   `resolve_classification` and `resolve_conversation_status_matches` take it as a keyword.
+9. When the state is "undecided", the resolver raises `DecisionUnavailable` (D-EM-8). The job skips
+   the row.
+10. Block W is the next block after Block R, or after Block S when the job asks. Update the
+    assertion of `test_the_match_ask_runs_with_no_session_open` to say so.
+
+**Done when (PR-B2, added by the audit).** The split read and `_determine_status_of` give the same
+arguments to `_llm_determine_thread_status`. An error of the ask applies and stamps the per-message
+matches. An aborted Block S stamps nothing. R8: a conversation thread gets its status rule in org B,
+and org A reads none of it.
+
+**Fences of PR-B2 (R7).**
+
+- `email-decision-core-no-session-across-the-job-status-ask`:
+  `test_the_job_status_ask_runs_with_no_session_open`, for each job in `off` and `shadow`. The
+  companion is `test_the_job_status_fence_can_fail`.
+- `email-decision-core-status-parity`: `test_the_split_status_asks_what_the_composed_form_asks`,
+  for a normal thread and a self-only thread.
+- `email-decision-core-status-degrades`: `test_a_failed_status_ask_keeps_the_per_message_matches`,
+  `test_an_undecided_status_skips_the_row` and `test_an_aborted_status_block_stops_the_job`.
+- The step fence also reads the new helper in `replyzero.py`.
+- R8: `TestTheSplitJobsWriteTheirOwnTenant` gets `test_the_runner_resolves_a_conversation_in_b`
+  and `test_the_backfill_resolves_a_conversation_in_b`, in `off` and `shadow`.
+
+**Mutations of PR-B2.** Each mutation must turn a fence red.
+
+- The ask runs in Block W.
+- Block S stays open across the ask.
+- An error of the ask passes up.
+- An "undecided" state keeps the matches.
+- Block S has no `SELECT 1`.
+- The job passes `ctx.last_message_id`.
+- The read helper uses `include_kb=True`.
+- A self-only thread asks the model.
+
+**Scope.** The paths are under `routes/email/automation/`, at `c26b67549`.
+
+1. Split each function that reads and then asks a model. The read step takes `db`. The ask step takes no `db`.
+2. The rule match: `classify_matches` (`engine.py:1415`) with its two match helpers, `_match_email_to_rule` (`:1267`) and `_match_email_to_rules_multi` (`:1335`). Their asks are `_decide_rule_match` (`:750`), `_llm_pick_rule` (`:807`) and `_llm_pick_rules` (`:892`).
+3. The thread status of the resolver: `resolve_conversation_status_matches` (`replyzero.py:1280`), with `status_before_match` (`:1172`), `_resolve_on` (`:1219`) and `_determine_status_of` (`:1094`).
+4. The thread status of a reply: `recompute_thread_status` (`replyzero.py:1707`). It asks at `:1751` and writes at `:1754`.
+5. `_mark_thread_replied` (`replyzero.py:1758`, `@automation_job` at `:1757`) is the one path that reaches `recompute_thread_status`. The runner and the gap loop write the status through `project_reply_status_from_matches`, which asks no model. Block A (`:1800-1820`) reads, and since PR-A no block is open across the ask. Block B (`:1846`) is open across `set_labels`, and EM-T4a-3 owns it.
+6. **The guard of the status write** (decided 2026-10-04). The read step records the newest non-NULL `received_at` of the thread in this mailbox. The write step writes the status only when no message of that thread is newer. The test counts only messages outside the `sent` and `drafts` folders.
+   - The folder test is `LOWER(COALESCE(folder,'')) NOT IN ('sent','drafts')`. The sent copy of the member's own reply started the recompute, so it must not void the write. A new inbound message must void it.
+   - A message with a NULL `received_at` never voids the write. A tie (an equal `received_at`) does not void it.
+   - The guard compares with the newest STORED row, never with `ctx.last_message_at`. That value is `now()` for a pending reply (`replyzero.py:1547-1548`). The pattern is `MAX(received_at) > seen.received_at` (`runner.py:1384-1396`).
+   - The guard and the upsert are ONE SQL statement. The upsert carries the `NOT EXISTS`. `_upsert_thread_status` (`replyzero.py:70-129`) upserts on `(account_id, thread_id)`, and PR-A gave it the guard.
+   - A voided write writes no row and reconciles no labels.
+7. The EM-T5 shadow helper wraps the ask step only. In `on`, `decide_features.ask` is the ask step.
+8. The composed forms that take `db` stay for the request paths of EM-T4a-4. These paths are `run_rules_on_message` (`runner.py:1010`), `test_rules` (`:94`), `test_rules_recent` (`:137`) and `_process_past_emails_job` (`:1444`). A test may change a call shape. It never changes an expected value.
+
+**Moved to EM-T4a-3 (2026-10-04).** This part named three more functions until the audit of 2026-10-04. Each one does I/O of the action tail, so EM-T4a-3 owns it:
+
+- `_ai_confirms_sender_pattern` (`learning.py:121`) is the sender pin, and the runner calls it after the rule match (`runner.py:1246`).
+- `_maybe_block_cold` (`senders.py:1400`) is the cold check, and it blocks the sender at the provider.
+- `_restore_conversation_messages` (`replyzero.py:1031`) moves mail at the provider, and `_determined_matches` reaches it.
+
+**One split seam.** The three parts of PR-B use one seam. Do not add a second pair of a read step and an ask step.
+
+- `engine.py` gets one read step and one ask step of the rule match. They come from `_match_email_to_rule` (`:1267`) and `_match_email_to_rules_multi` (`:1335`).
+- `engine.py` gets one split form of `classify_matches` (`:1415`), and both jobs call it. The composed forms keep their signatures for the request paths of item 8.
+- PR-B2 and PR-B3 reuse `read_thread_status` (`replyzero.py:1591`) and `ask_thread_status` (`:1627`) of PR-A. `StatusRead` (`:1561`) gets `move_keys` and the `message_id` of the row.
+- The runner and the gap loop do not call `write_thread_status`. Their writer stays `project_reply_status_from_matches`.
+
+**The block plan.** Each job keeps its blocks in its own body.
+
+1. Block R reads. It holds the status-first plan of fix round 3 and the read step of the rule match.
+2. The rule-match ask runs with no block open.
+3. Block W is ONE block. It holds the resolver with `_determined_matches`, then `_apply_matches`, the projection in its `_savepoint` (`runner.py:1809`), `_reconcile_thread_labels` and the stamp (`runner.py:1827`).
+4. `_determined_matches` calls `_restore_conversation_messages`, and EM-T4a-3 item 10 owns that call. The fence of Block W is `test_a_failed_projection_keeps_the_runner_stamp_in_b` (`test_email_automation_tenancy.py:1009`).
+5. The gap loop writes no stamp and has no `_savepoint`. Its Block W holds the resolver, the projection and the label reconcile.
+6. PR-B2 and PR-B3 add Block S. It reads the thread only when the job will ask the status. The status-first order of fix round 3 stays.
+
+**No guard in PR-B** (decided 2026-10-05). PR-B adds no guard to `project_reply_status_from_matches` (`replyzero.py:350-353`) or to `_stamp_processed_watermark` (`runner.py:1340-1343`). Each block runs READ COMMITTED. So the open block did not stop a concurrent write, and the split widens no race.
+
+The next cycle decides again. The runner selects an unstamped row again (`runner.py:1698`). The gap query selects a thread again when its `last_message_id` is not its newest (`replyzero.py:2108-2110`).
+
+**D-EM-8 in PR-B2 and PR-B3.** `ask_thread_status` swallows `DecisionUnavailable` and returns None. In the resolver, a None verdict must raise `DecisionUnavailable` again, so that the runner skips the row. The resolver must not read None as a thread with no status.
+
+**Non-goals.** No change to a prompt, a model tier or a decision. No change to the action tail, which is EM-T4a-3. No `llm_slot` around a call that is not a leaf (EM-T4b item 7). The model await stays in its slot in `_llm_json` or `_ask_all`.
 
 **Done when.**
 
-- The watched fake model gets each call with zero open sessions in the runner, the gap loop and `_mark_thread_replied`.
-- A thread that gets a newer message during the ask step keeps its status row. The next cycle decides it again.
+- The watched model gets each rule-match and thread-status ask with zero open sessions, in the runner, the gap loop and `_mark_thread_replied`.
+- `_mark_thread_replied` is the one path to `recompute_thread_status`. A thread that gets a newer stored inbound message during the ask keeps its status row, and the job reconciles no labels. The next cycle decides it again.
 - `test_email_classify_matches.py`, `test_email_thread_single_classification.py` and `test_email_rules_engine.py` pass with no changed expected value.
-- R8: the runner and the gap loop write `email_thread_status` and `email_executed_rules` rows in org B. Org A reads none of them.
+- R8: the runner writes `email_executed_rules`, `email_thread_status` and `rules_processed_at` in org B. The gap loop writes `email_thread_status` in org B, and it never writes `email_executed_rules`. Org A reads none of them (check with `_isolated`, `test_email_automation_tenancy.py:508`).
+- The R8 case fakes the model LEAVES, not `classify_matches`. So the read SQL runs as `acb_app_h3rls`.
 
-**Files.** `routes/email/automation/engine.py`, `replyzero.py`, `learning.py`, `senders.py` and `runner.py`, with the fence files.
+**The fence (R7).** The scheduler fence (`test_no_session_is_open_during_the_provider_calls`, `test_email_scheduler_tenancy.py:669`) cannot see a block in `routes/email`. So the fence of this part lives in `tests/unit/test_email_automation_tenancy.py`. It extends `_open_count_session` (`:776`), as `test_the_sweep_holds_no_session_across_set_labels` (`:795`) uses it. It watches the model at two leaves, and it patches each leaf once:
+
+- `acb_llm.decide`. `_ask_all` imports it at call time (`decide_features.py:519`).
+- `acb_llm.context.acompletion_with_fallback`. `_llm_json` imports it at call time (`core.py:770`).
+
+Each module binds `_tenant_session` under its own name. So the fence patches each module that opens a block on the path. A companion test plants an ask inside a block and shows that the fence fails.
+
+**The case of PR-B.** It reuses `_watch_sessions` (`:1127`), `_watch_model` (`:1144`) and `_asks_inside_a_block` (`:1216`). It tags each watched call by its `decide` question id or by its tier. The case sets the cold blocker to `OFF`, uses a rule that only labels, and has no auto-learn history. Until EM-T4a-3, three calls reach the same model leaves inside Block W:
+
+- the sender pin (`runner.py:1246`),
+- the cold check (`runner.py:1320`),
+- `_render_template` (`actions.py:292`).
+
+**The tests that move in PR-B1.** These tests patch a composed name on a job path. Each patch moves to the ask step or to a leaf, and no expected value changes:
+
+- `test_email_automation_tenancy.py:541`, `:692` and `:1026`.
+- `test_email_decide_on.py:635`.
+- `test_email_ai_context.py:711-713`.
+- `test_email_reply_zero.py`: five patches of `_match_email_to_rule` and one of `resolve_conversation_status_matches`.
+
+**The source fences.**
+
+- The blocks stay in the two job bodies, and so do the calls to `project_reply_status_from_matches` and `_reconcile_thread_labels`. Four tests read them: `test_email_thread_status_parity.py:24-63` and `:112-141`, `test_email_cleanup_backfill.py:125-133` and `test_email_process_past_drafting.py:31-38`.
+- `test_email_classifier_guidance.py:124-140` reads the new read step by name.
+- Each new step takes `db`, opens no block and calls no `commit()`. A sibling of `test_email_automation_tenancy.py:164-181` checks it, as `test_email_scheduler_tenancy.py:286` does.
+
+**Files.** `routes/email/automation/replyzero.py` (PR-A), and `engine.py`, `runner.py` and `replyzero.py` (PR-B), with the fence file `tests/unit/test_email_automation_tenancy.py`.
 
 **Verify with.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_email_no_session_across_io.py tests/unit/test_email_classify_matches.py \
+uv run pytest tests/unit/test_email_automation_tenancy.py tests/unit/test_email_classify_matches.py \
   tests/unit/test_email_thread_single_classification.py tests/unit/test_email_rules_engine.py \
   tests/unit/test_email_reply_zero.py tests/unit/test_email_thread_status_parity.py \
   tests/unit/test_email_auto_learn_gate.py tests/unit/test_email_classifier_unavailable.py \
   tests/unit/test_email_apply_and_watermark.py tests/unit/test_email_decide_shadow.py \
-  tests/unit/test_email_automation_tenancy.py -q -rs
-uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
+  tests/unit/test_email_decide_on.py tests/unit/test_email_decide_questions.py \
+  tests/unit/test_email_llm_cap.py tests/unit/test_email_cold_gate_case.py \
+  tests/unit/test_email_ai_context.py tests/unit/test_email_classifier_guidance.py \
+  tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_process_past_drafting.py \
+  tests/unit/test_email_rule_action_failures.py tests/unit/test_db_engine_seam.py -q -rs
 ```
+
+With the database exported, the run shows 0 skips. Run the R8 suites alone, because the `promoted` fixture takes one database name.
+
+Ruff: compare the count of each changed file with the base. At `c26b67549` the counts are `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0. A new test file has 0.
+
+**PR-A as built (2026-10-04).**
+
+- `replyzero.py` has three steps. `read_thread_status(db, ...)` returns a `StatusRead`, or None for a thread with no rows. `ask_thread_status(read)` takes no `db`. `write_thread_status(db, read, verdict)` takes `db` and opens no block.
+- `StatusRead` holds the account, the thread, the trigger, the context, the about text, the corrections and the member. The context holds the self addresses. The ask and the write read none of them again.
+- `ThreadContext.newest_received_at` is the newest non-NULL `received_at` of the stored rows. `StatusRead.seen_at` returns it, and the guard compares with it.
+- `_upsert_thread_status` takes `guard` and `seen_at`, and it returns True when it wrote the row. With `guard`, the statement is `INSERT ... SELECT ... WHERE NOT EXISTS (...) ON CONFLICT ... RETURNING 1`. Without `guard`, the statement is the old one.
+- `_mark_thread_replied` keeps `@automation_job`. Block A reads. A self-only thread writes its FYI row in Block A and asks nothing. The ask runs with no block open. Block W writes the status.
+- A voided write logs `email.thread_status_write_voided` and ends the job. The job then builds no provider and reconciles no labels. Block B does not change, and EM-T4a-3 owns it.
+- The composed `recompute_thread_status(db, ...)` runs the three steps on one `db`. Its write uses the guard too.
+- PR-A adds no `llm_slot`, no setting, no flag and no migration.
+
+**An agent decision (D16).** The read can see no row with a date. Then `seen_at` is NULL, and any dated row outside `sent` and `drafts` voids the write. That follows the order of `build_thread_context` (`ASC NULLS FIRST`). The decision of item 6 did not name this case.
+
+**Fences (R7).** All are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-no-session-across-the-ask`: `test_the_status_ask_runs_with_no_session_open` in `off`, `shadow` and `on`. The companion is `test_the_ask_fence_can_fail`.
+- `email-status-write-guard`: `TestTheStatusWriteGuard` (R8, six cases), `test_the_guard_compares_with_the_newest_stored_row` and `test_a_voided_write_reconciles_no_labels`.
+- Two more cases: `test_a_self_only_thread_writes_in_the_read_block_and_asks_nothing` and `test_a_spent_budget_in_the_ask_writes_nothing`.
+
+Two fakes of `_upsert_thread_status` in `test_email_reply_zero.py` now return True, which is the new call shape. No expected value changed.
+
+**Mutations of PR-A.** Each mutation ran against `test_email_automation_tenancy.py` on a real Postgres. After each one, `replyzero.py` came back to the same SHA-256. A name in brackets is a case of `TestTheStatusWriteGuard`.
+
+| Mutation | Red |
+|---|---|
+| A block open across the ask in `_mark_thread_replied` | `test_the_status_ask_runs_with_no_session_open`, all three modes |
+| The guard removed (`WHERE true`) | `[newer-inbound-in-b]` |
+| The guard voids on a `sent` row | `[newer-sent-in-b]` |
+| The guard voids on a `drafts` row | `[newer-draft-in-b]` |
+| The guard compares with `ctx.last_message_at` | `[newer-inbound-in-b]` and `test_the_guard_compares_with_the_newest_stored_row` |
+| A tie voids (`>=` for `>`) | Five of the six R8 cases, because the stored row ties with itself |
+| The job reconciles the labels after a voided write | `[newer-inbound-in-b]` and `test_a_voided_write_reconciles_no_labels` |
+
+**Verified (2026-10-04).** On a private database, the Verify block gave 563 passed and 0 skipped. The 132 files `tests/unit/test_email_*.py` gave 2564 passed and 0 skipped. The ruff counts did not change: `replyzero.py` 23 and `test_email_automation_tenancy.py` 0.
+
+**PR-B1 as built (2026-10-05).**
+
+- `engine.py` has the two steps of the rule match. `read_rule_match(db, ...)` returns a `MatchRead`. It makes the reads of both modes in their old order. A learned pattern or a static condition decides there, with no model.
+- `ask_rule_match(read)` takes no `db`. It calls `_llm_pick_rule` or `_llm_pick_rules` unchanged, and it puts the matches in the old order.
+- `_match_email_to_rule`, `_match_email_to_rules_multi` and `classify_matches` keep their signatures. The first two run the two steps on one `db`, for the request paths of item 8.
+- The split form of `classify_matches` has three calls. `read_classification(db, ...)` runs the status-first step and the read step. `ask_rule_match` asks. `resolve_classification(db, ...)` runs the resolver with the plan of the read.
+- `_run_rules_job` opens Block R, then asks with no block open, then opens ONE Block W for the writes. The gap loop of `_maybe_classify_threads` has the same shape, with no stamp.
+- An `LLMUnavailable` from Block R, from the ask or from the resolver at the head of Block W skips the row. The row gets no apply and no stamp. The runner logs `email.classify_unavailable_skip` once, through `_classify_unavailable` (`runner.py`).
+- PR-B1 changes no prompt, tier, decision, SQL text, setting, flag or migration. The status asks stay where they were. In `on` of `email.thread_status`, the status-first ask runs in Block R and the ask after the match runs in Block W.
+
+**An agent decision (D16).** One handler covers Block R, the ask and Block W in each job. The old row block caught `LLMUnavailable` around the classify call only. Three handlers took `_run_rules_job` past the `C901` cap of 15.
+
+So an `LLMUnavailable` from the resolver now rolls Block W back, where before the job committed the block. Block W writes nothing before the resolver returns, so the result is the same. If a call in the apply raised `LLMUnavailable`, the row would now roll back and the job would go on. Before, the job stopped there. No call in the apply raises it (measured 2026-10-05).
+
+**A precondition for EM-T4a-3 (review round 1).** The one handler of each job also covers the apply in Block W. Four functions raise `LLMUnavailable` today. Each one is an ask, and it runs before Block W writes:
+
+- `_decide_rule_match` (`engine.py:768`), `_llm_pick_rule` (`:881`) and `_llm_pick_rules` (`:973`).
+- `_decide_thread_status` (`replyzero.py:615`).
+
+The model calls of the apply catch every error. They are `_render_template` (`actions.py:329`), the cold check `_llm_is_cold` (`senders.py:1343` and `:1362`) and the sender pin `_ai_confirms_sender_pattern` (`learning.py:166` and `:203`). EM-T4a-3 must keep this so. A raise after a provider action rolls Block W back and leaves the row unstamped, so the next cycle runs the action again. So EM-T4a-3 catches `LLMUnavailable` before the apply, or it changes the handler first. The fence `email-decision-core-apply-raises-no-unavailable` fails on a raise in the apply.
+
+**A known limit (review round 1).** Between Block R and Block W, a member can move or delete the email. In the same window, a second runner cycle can take the same unstamped row. Either one can cause an apply that is stale. The base had the same race over the same window, because READ COMMITTED took no snapshot and no lock. PR-B adds no guard ("No guard in PR-B" above), and a later ticket owns one if the owner wants it.
+
+**Fences (R7).** All are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-no-session-across-the-match-ask`: `test_the_match_ask_runs_with_no_session_open`. It runs the runner, the runner in the multi-rule mode and the backfill, in `off`, `shadow` and `on` of `email.rule_match`. Each watched call carries a tag. Block W must be the next block after Block R, and it must hold each write. The companion is `test_the_match_fence_can_fail`.
+- `email-decision-core-steps`: `test_each_new_step_takes_db_and_opens_no_block`, with `test_the_step_fence_can_fail`. `test_both_jobs_call_the_split_form` refuses a composed form in a job body.
+- D-EM-8 and #110: `test_a_failed_match_ask_writes_nothing_and_stamps_nothing`, `test_an_undecided_resolver_writes_nothing_and_stamps_nothing` and `test_a_suppressed_match_stays_suppressed`.
+- R8: `TestTheSplitJobsWriteTheirOwnTenant`, six cases. Only the two model leaves are fakes.
+
+**The tests that moved.** Each patch of a composed name on a job path now patches `ask_rule_match`, or the read leaf `_load_rules`. No expected value changed. The patch of `resolve_conversation_status_matches` in `test_email_reply_zero.py` stays, because `resolve_classification` still calls it. PR-B2 moves it.
+
+**Mutations of PR-B1.** Each mutation ran against `test_email_automation_tenancy.py` on a real Postgres. After each one, the file came back to the blob of HEAD. A name in brackets is a case of the test.
+
+| Mutation | Red |
+|---|---|
+| The ask runs inside Block R of the runner | `test_the_match_ask_runs_with_no_session_open` [6 runner cases] and `test_a_suppressed_match_stays_suppressed` [2 runner cases] |
+| The ask runs inside Block R of the backfill | `test_the_match_ask_runs_with_no_session_open` [3 backfill cases] and `test_a_suppressed_match_stays_suppressed` [backfill] |
+| An `LLMUnavailable` from the ask stamps the row | `test_a_failed_match_ask_writes_nothing_and_stamps_nothing` [4 runner cases], and the R8 cases `test_an_undecided_email_is_not_stamped` (`test_email_decide_on.py`) and the two of `TestTheRunnerAtTheBudget` (`test_email_llm_cap.py`) |
+| The stamp moves out of Block W into its own block | `test_the_match_ask_runs_with_no_session_open` [6 runner cases] |
+| The read step opens a block, through an alias of the seam | `test_each_new_step_takes_db_and_opens_no_block` [read_rule_match] and `test_the_match_ask_runs_with_no_session_open` [9 cases] |
+| `resolve_classification` drops the suppressed flag | `test_a_suppressed_match_stays_suppressed` [3 cases] |
+| Block W applies the matches of the ask, not those of the resolver | `test_a_suppressed_match_stays_suppressed` [2 runner cases] |
+
+**A gap that a mutation found.** The first run of "the read step opens a block" stayed green. The plant imported the seam under another name, so the step fence did not see it. The step fence now refuses each `async with` and each import of a session opener in a step. The job fence now needs Block W to be the next block after Block R.
+
+**Verified (2026-10-05).** On the scratch database, the Verify block gave 755 passed and 0 skipped, with each R8 file in a run of its own. The 14 files with no R8 case gave 328. The six R8 files gave 87, 147, 73, 10, 76 and 34. At `c26b67549` the same runs gave 720 passed. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0.
+
+The diff holds 559 lines that are not in a test or a document (362 added and 197 removed). The 134 files `tests/unit/test_email_*.py` in one run gave 2655 passed and 66 errors at setup. Each error is in an R8 file that PR-B1 does not change, where the fixture of one file met the database of another. Run alone, three of those four files passed. `test_email_otp_token.py` still fails at setup when it runs alone, because a table of the scratch database is at the limit of 1600 columns.
+
+**Review round 1 (2026-10-06).** The verifier passed PR-B1, and the reviewer approved it. Both found P2 items only. This round applies five of them, and it rebases the branch onto `093769bef`.
+
+- **An aborted Block R fails closed (reviewer P2-1).** A best-effort reader catches a failed statement with no savepoint, so the transaction stays aborted. The readers after it then fail and return empty values. The seam commits the aborted block with no error, and a probe through asyncpg showed it. So the ask ran on that empty context, and Block W applied and stamped the result. Each job body now ends Block R with `SELECT 1`, which raises on an aborted transaction.
+- **What the member sees.** The error is not `LLMUnavailable`, so the outer handler of the job catches it. The runner logs `email.run_rules_failed`, and the backfill logs `email.classify_threads_failed`. The job stops for this cycle, and the rows after it wait for the next cycle. Nothing stamped the row, so the next cycle selects it again. On the base, the next statement of the same block raised and stopped the job in the same way.
+- **Two fences read the split steps (reviewer P2-2).** `test_the_engine_reads_no_account_models` reads `read_rule_match` and `ask_rule_match` too. `test_a_retry_reclassifies_nothing` also refuses `read_rule_match`, `ask_rule_match` and `read_classification`.
+- **The precondition for EM-T4a-3 (verifier P2-2) and the known limit (verifier P2-3)** are above, after the agent decision.
+- **The rebase.** `work_plan.md` met #658 (EM-T10) on the WS-17 row. The row keeps the line of `main` and adds the PR-B1 phrase. #658 changed `actions.py` and `drafting.py` (`exact_to`). PR-B1 does not touch them, so the code merged with no conflict.
+- `test_email_reply_zero.py`: the backfill fake answers the new `SELECT 1`. No expected value changed.
+
+**Fences (R7) of review round 1.** Both are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-read-fails-closed`: `test_an_aborted_read_block_stops_the_row`, for each job and each of the four readers. A fake transaction refuses each statement after the failed one, until the next block. The R8 case `test_an_aborted_read_block_stops_the_row_in_b` fails one statement in Block R of the runner on a real Postgres.
+- `email-decision-core-apply-raises-no-unavailable`: `test_the_apply_raises_no_llm_unavailable`. It walks the calls of `routes/email` from the four roots of the apply. The walk must see the four raise sites and the three model calls of the apply. The companion is `test_the_apply_fence_can_fail`.
+
+**Mutations of review round 1.** After each one, the file came back to the blob of HEAD.
+
+| Mutation | Red |
+|---|---|
+| No `SELECT 1` in Block R of the runner | `test_an_aborted_read_block_stops_the_row` [8 runner cases], and the R8 case, where the ask ran on the real database |
+| No `SELECT 1` in Block R of the backfill | `test_an_aborted_read_block_stops_the_row` [4 backfill cases] |
+| `read_rule_match` reads `_account_models` | `test_the_engine_reads_no_account_models`. The fence of the base stayed green. |
+| `retry_failed_executions` names `read_rule_match`, `ask_rule_match` or `read_classification` | `test_a_retry_reclassifies_nothing`, for each of the three |
+| `_render_template` raises `LLMUnavailable` in its handler | `test_the_apply_raises_no_llm_unavailable` |
+| `_reconcile_thread_labels` calls `_decide_thread_status` | `test_the_apply_raises_no_llm_unavailable` |
+
+**Verified after review round 1 (2026-10-06).** A private database got the ladder once, and each R8 file ran in a run of its own. The 14 files with no R8 case gave 330 passed, because #658 added two cases. The two fence files of P2-2 gave 20 passed. The six R8 files gave 102, 147, 73, 10, 76 and 34 passed, with 0 skipped. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0.
+
+The diff now holds 563 lines that are not in a test or a document (366 added and 197 removed). The nine other test files that reach the two jobs passed, each in a run of its own.
+
+**PR-B2 as built (2026-10-06).**
+
+- `read_classification` (`engine.py`) reads `_thread_is_conversation` in Block R when `resolve` is True and the mode is not `on`. `ClassifyRead.conversation` holds the answer.
+- `replyzero.py` has the steps of the job status ask. `status_ask_needed` says whether the job asks. `read_job_status(db, ...)` tests self-only first (review round 1). For any other thread, it loads `about` with `include_kb=False`, calls `resolve_self`, and then calls `read_thread_status` with the id of the row. `ask_job_status(read)` takes no `db`.
+- `StatusRead` has `message_id` and `move_keys`. `ask_thread_status` uses `ctx.last_message_id` when `message_id` is None. `_mark_thread_replied` passes neither, so its ask does not change.
+- `JobStatus` is the carrier of item 8. Its four states are `not_asked`, `none`, `undecided` and `verdict`. `resolve_classification` and `resolve_conversation_status_matches` take it as the keyword `status`.
+- With a carrier, the resolver of `off` and `shadow` runs `_resolve_asked`. It asks no model and does not read `_thread_is_conversation` again. With no carrier, the resolver asks as before, for the request paths of item 8 of the scope.
+- Each job body runs Block R and then the rule-match ask. When the job asks the status, Block S reads and the ask runs with no block open. Block W comes last. Block S ends with `SELECT 1`.
+- A failed read or a failed ask logs `email.resolve_conversation_status_failed` and gives "no status", so the per-message matches stand. "Undecided" raises `DecisionUnavailable` at the head of Block W, and the job skips the row.
+- PR-B2 changes no prompt, tier, decision, setting, flag or migration. Agent decisions 3 and 4 below give its new statements. `on`, `status_before_match`, `_resolve_on`, the request paths and the action tail do not change.
+
+**Agent decisions (D16).** Each one is a departure from the letter of the specification, and none changes a decision.
+
+1. `_run_rules_job` was at the `C901` cap of 15, and Block S adds one `if`. So the provider build of Phase 0 moved, with no change, into `_rules_job_provider` (`runner.py`). The helper opens no block, and the ruff count of `runner.py` stays 17.
+2. Item 6 says that Block S catches an error of the read. `read_job_status` catches it, for the same cap. Block S calls the helper, so the catch is inside Block S.
+3. Block R reads `_thread_is_conversation` for each row that the job resolves outside `on`. The old resolver read it only when no match had a conversation key. So each row whose match has a conversation key, and that resolves outside `on`, now runs `_thread_is_conversation`. That is 1 statement, or 4 when the thread has no status row. The reads use the primary key and the thread index (corrected in review round 1, F3).
+4. `read_job_status` tests self-only first, as `_determine_status_of` does (review round 1). For any other thread, `read_thread_status` runs that test once more, so Block S makes one more statement.
+5. `read_job_status` sets the trigger `inbound`. The jobs write through `project_reply_status_from_matches`, so no write reads it.
+
+**A new raise site.** `_resolve_asked` raises `DecisionUnavailable` for "undecided". It runs first in Block W, before any write, so the precondition of PR-B1 holds. The fence `email-decision-core-apply-raises-no-unavailable` does not reach it from the apply.
+
+**Fences (R7).** All are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-no-session-across-the-job-status-ask`: `test_the_job_status_ask_runs_with_no_session_open`, for the runner, the runner in the multi-rule mode and the backfill, in `off` and `shadow`. Block S must follow Block R, and Block W must follow Block S. The companion is `test_the_job_status_fence_can_fail`.
+- `email-decision-core-status-parity`: `test_the_split_status_asks_what_the_composed_form_asks`, for a normal thread and a self-only thread. It also compares the arguments of `build_thread_context`.
+- `email-decision-core-status-degrades`: `test_a_failed_status_ask_keeps_the_per_message_matches`, `test_an_undecided_status_skips_the_row` and `test_an_aborted_status_block_stops_the_job`, for each job.
+- `email-decision-core-steps` reads `read_job_status`, `ask_job_status`, `status_ask_needed` and `_resolve_asked` in `replyzero.py`. `test_both_jobs_call_the_split_form` needs the three steps of PR-B2 in both job bodies.
+- Item 10: `test_the_match_ask_runs_with_no_session_open` accepts Block S between Block R and Block W.
+- R8: `TestTheSplitJobsWriteTheirOwnTenant` gets `test_the_runner_resolves_a_conversation_in_b` and `test_the_backfill_resolves_a_conversation_in_b`, in `off` and `shadow`. A thread with an older reply in `sent` gets DONE from its Done rule in org B. Org A reads none of it.
+
+**The test that moved.** `test_email_reply_zero.py` patched `resolve_conversation_status_matches` in the backfill case. It now patches `_thread_is_conversation` and `read_job_status`, and its fake answers the `SELECT 1` of Block S. No expected value changed.
+
+**Mutations of PR-B2.** Each mutation ran against `test_email_automation_tenancy.py` on a private database. After each one, `git status` was clean.
+
+| Mutation | Red |
+|---|---|
+| The ask runs in Block W, in both jobs | `test_the_job_status_ask_runs_with_no_session_open` [6 cases] and `test_a_failed_status_ask_keeps_the_per_message_matches` [3 cases] |
+| Block S stays open across the ask, in both jobs | `test_the_job_status_ask_runs_with_no_session_open` [6 cases] and `test_a_failed_status_ask_keeps_the_per_message_matches` [3 cases] |
+| An error of the ask passes up (`ask_job_status` catches nothing) | `test_a_failed_status_ask_keeps_the_per_message_matches` [3 cases] |
+| An "undecided" state keeps the matches (`_resolve_asked`) | `test_an_undecided_status_skips_the_row` [3 cases] |
+| Block S has no `SELECT 1`, in both jobs | `test_an_aborted_status_block_stops_the_job` [3 cases] |
+| The job passes `ctx.last_message_id` (`message_id=None` in `read_job_status`) | `test_the_split_status_asks_what_the_composed_form_asks` [normal thread] |
+| The read helper uses `include_kb=True` | `test_the_split_status_asks_what_the_composed_form_asks` [normal thread] |
+| A self-only thread asks the model (`ask_job_status` drops its test) | `test_the_split_status_asks_what_the_composed_form_asks` [self-only thread] |
+
+**Verified (2026-10-06).** A private database got `01_schema.sql` and the ladder (226 files), and each R8 file ran in a run of its own. The 14 files with no R8 case gave 330 passed. The six R8 files gave 128, 147, 73, 10, 76 and 35 passed, with 0 skipped. `test_email_automation_tenancy.py` has 26 new cases. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0.
+
+The diff holds 251 lines that are not in a test or a document (230 added and 21 removed).
+
+**Review round 1 (2026-10-06).** The verifier passed PR-B2, and the reviewer approved it. This round applies one P2 item and five P3 items, and it rebases the branch onto `6731f55c0` (#684).
+
+- **A fence for a conversation match on a new thread (reviewer P2).** The first inbound mail of a new thread can match the rule Reply while `_thread_is_conversation` is False. `main` asks the status there, and so does PR-B2, through the second term of `status_ask_needed`. No case covered that term.
+- **Agent decision 4 is corrected (verifier F1).** The first build read `about` and the self addresses before the self-only test. `_determine_status_of` tests self-only first and reads nothing more. So a failed `about` read on a self-only thread gave FYI on `main` and "no status" on the branch. `read_job_status` now tests self-only first, and its read of such a thread holds no context.
+- **A fence for the conversation read in `on` (verifier F2).** In `on`, `read_classification` must not call `_thread_is_conversation`, because the plan of `status_before_match` owns that read.
+- **The cost of item 1 (F3).** Agent decision 3 above now gives the true cost.
+- **The split line (F5).** In `test_email_reply_zero.py`, two `patch.object` calls shared one line. Each one now has its own line.
+
+**A known limit (review round 1, F4).** The conversation read moved from Block W to Block R, before the rule-match ask. Another job can write a status row during that ask. An example is `_mark_thread_replied`, which writes AWAITING. Block R does not see that row.
+
+This is the same class of race as the known limit of PR-B1, over the same window. The next new message of the thread reads it again. PR-B2 adds no guard.
+
+**Fences (R7) of review round 1.** All are in `tests/unit/test_email_automation_tenancy.py`.
+
+- `email-decision-core-no-session-across-the-job-status-ask`: `test_a_conversation_match_asks_the_status_of_a_new_thread`, for each job in `off` and `shadow`. The match is Reply, and the thread is not a conversation. `read_job_status` must run, the ask must see zero open blocks, and Done must be the live match.
+- `email-decision-core-status-parity`: `test_a_self_only_thread_needs_no_other_read`. The `about` read, the self read and the context read fail. Both forms give FYI, and nothing logs a failure.
+- `test_the_conversation_read_stays_out_of_on`, in `on` and in `off` as the control.
+
+**Mutations of review round 1.** Each mutation ran against `test_email_automation_tenancy.py` on a new private database. After each one, `git status` was clean.
+
+| Mutation | Red |
+|---|---|
+| `status_ask_needed` drops the conversation-key term | `test_a_conversation_match_asks_the_status_of_a_new_thread` [6 cases] |
+| `read_job_status` skips its early self-only test | `test_a_self_only_thread_needs_no_other_read` |
+| `read_classification` drops the `on` term | `test_the_conversation_read_stays_out_of_on` [on] |
+
+**Verified after review round 1 (2026-10-06).** A new private database got `01_schema.sql` and the ladder (226 files), and each R8 file ran in a run of its own. The 14 files with no R8 case gave 330 passed. The six R8 files gave 137, 147, 73, 10, 76 and 35 passed, with 0 skipped. The ruff counts did not change: `engine.py` 7, `replyzero.py` 23, `runner.py` 17 and `test_email_automation_tenancy.py` 0. The diff now holds 258 lines that are not in a test or a document (237 added and 21 removed).
 
 ##### EM-T4a-3 — the action tail on the sync path
 
-1. `_apply_rule_actions` (`actions.py:309`) plans, then pushes, then records. The provider calls, the template call and the draft run with no session.
+1. `_apply_rule_actions` (`actions.py:446`) plans, then pushes, then records. The provider calls, the template call and the draft run with no session.
 2. One block then writes the mirrors, the new ids and the audit row.
-3. `_reconcile_thread_labels` (`replyzero.py:678`) writes the mirror in a block. It calls `set_labels` after the block closes. The mirror stays first.
+3. `_reconcile_thread_labels` (`replyzero.py:1350`) writes the mirror in a block. It calls `set_labels` after the block closes. The mirror stays first.
 4. `_maybe_send_follow_up_reminders` reads in one block. It labels, fetches and drafts with no session. It stamps each thread in its own block.
 5. `_maybe_send_digest` builds the digest in one block and sends with no session. It stamps `last_digest_at` in a new block after the send returns.
 6. `_bulk_reconcile_provider` calls `bulk_apply` and sleeps with no session. It writes the new ids and the reverts in a block after each try.
 7. `_ensure_subscription` reads in one block, calls Graph with no session, and writes in a second block.
+8. `_ai_confirms_sender_pattern` (`learning.py:121`) reads in one block and asks with no session (moved from EM-T4a-2, 2026-10-04).
+9. `_maybe_block_cold` (`senders.py:1400`) asks and blocks the sender at the provider with no session (moved from EM-T4a-2).
+10. `_restore_conversation_messages` (`replyzero.py:1031`) moves mail with no session and writes the new ids in a block (moved from EM-T4a-2).
+
+**A precondition from PR-B1 (review round 1).** The one `except LLMUnavailable` of each PR-B1 job also covers the apply in Block W. No call of the apply raises it today. Keep it so: catch `LLMUnavailable` before the apply, or change the handler first. A raise after a provider action rolls Block W back, and the next cycle runs the action again. The fence `email-decision-core-apply-raises-no-unavailable` fails on such a raise, and EM-T4a-2 lists the four raise sites.
 
 **Non-goals.** No change to which actions run. Automation writes stay provider-first (§2).
 
@@ -1764,7 +2158,7 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 - A digest send that raises leaves `last_digest_at` unchanged.
 - R8: the mirrors, the audit rows and the stamps land in org B. Org A reads none of them.
 
-**Files.** `routes/email/automation/actions.py`, `drafting.py`, `replyzero.py`, `followups.py` and `senders.py`, with `routes/email/digest.py` and `transport/sync.py`.
+**Files.** `routes/email/automation/actions.py`, `drafting.py`, `replyzero.py`, `followups.py`, `senders.py`, `learning.py` and `runner.py`, with `routes/email/digest.py` and `transport/sync.py`.
 
 **Verify with.** The command of EM-T4a-2, plus `test_email_rule_action_failures.py`, `test_email_digest.py`, `test_email_follow_up_scan.py`, `test_email_bulk_apply.py`, `test_email_webhook.py` and `test_email_rulepath_draft_parity.py`.
 
@@ -1774,6 +2168,10 @@ uv run ruff check apps/services/gateway/gateway/routes/email tests/unit
 2. `mailbox_owner` keeps its one discovery read (`scheduler_hooks.py:41`).
 3. Each job gets the split of EM-T4a-2 and EM-T4a-3.
 4. Lower `H2_BASELINE_ELSEWHERE` by the measured count.
+5. The owned fetch of an attachment, `transport/attachments.py::_fetch_owned_attachment` (EM-T11).
+   The download route and the text route hold one session across `authenticate()` and the
+   provider download. Split it as the jobs are split, and keep the commit that stores a rotated
+   token (EM-T4c). §10.4.12 records it as a known limit.
 
 **Non-goals.** No change to what a job does, or to its progress tracker.
 
@@ -1789,24 +2187,71 @@ API, and EM-T4b adds the shared cap and the budget.
 
 ##### EM-T4b — one cap and one daily budget for the model calls
 
-1. Add `apps/services/email_ingestion/email_ingestion/llm_cap.py`. It holds one `asyncio.Semaphore` for the process and one context manager, `llm_slot(account_id)`.
-2. Add three settings to `acb_common/settings.py`. `email_llm_concurrency` defaults to 4. `email_llm_daily_calls` defaults to 2000.
-3. `email_llm_budget_mode` is `off`, `log` or `enforce`. It defaults to `log`.
-4. An automation scope marks the calls that the cap and the budget bind. A ContextVar holds it.
-5. `as_mailbox_owner`, `process_new_mail` and each request job of EM-T4a-4 open the scope.
-6. Outside the scope, `llm_slot` takes no slot and counts nothing. A member who asks for a draft never waits behind the sync loop.
-7. `llm_slot` is re-entrant. A task that holds a slot goes through a nested `llm_slot` with no second permit.
-8. The budget counts calls for each mailbox for each UTC day. The key is `key("email-llm", account_id, <date>)` from `tenant_redis`.
-9. The helper uses `incr` and an `expire` of 2 days. It binds `organization_scope(current_tenant())` for the call.
-10. In `log` mode, a call past the limit runs. It logs `email.llm_budget_exceeded` once a day for each mailbox.
-11. In `enforce` mode, a call past the limit raises `LLMBudgetExhausted`, a new exception in `llm_cap.py`. It makes no model call.
-12. The rule pick turns any model failure into `LLMUnavailable` (`engine.py:334-338`). So the runner leaves the message unstamped, and static and pattern rules still apply.
-13. `_llm_determine_thread_status` raises `LLMBudgetExhausted` again. It does not write its `· auto` fallback for it.
-14. When Redis fails, the budget logs `email.llm_budget_unavailable` and the call runs. The cap still binds.
-15. `core._llm_json` and the 9 direct sites enter `llm_slot`. `run_agent_stream` (`chat.py:217`) is exempt, because a member drives it.
-16. In `shadow`, `decide_features._ask` takes a slot only when one is free. If none is free, it logs `decide.shadow_skipped` with `reason=cap` and makes no call. In `on` (EM-T5b-2), `decide_features.ask` waits for a slot, as `_llm_json` does.
+**Status.** ✅ MERGED #617 (2026-10-04), dark. Review round 1 fixed four findings and recorded three more on 2026-10-04. The audit narrowed it on 2026-10-04 and verified it at 012483a43. The build keeps the defaults (budget `log`, cap 0) and makes no box change. The as-built notes and the review round 1 note follow the Verify block.
 
-**Non-goals.** No credit budget, no price and no token count, because CP-7 owns them. No cap across processes, because the box runs one. No UI. No change to `acompletion_with_fallback`.
+**Order.** EM-T5 merged (#569), so item 2 of the EM-T4 order no longer holds this part. EM-T4a-2 splits functions in `engine.py` and `replyzero.py`, and items 12 and 13 below touch the same files. So EM-T4a-2 must not run in parallel with EM-T4b.
+
+1. Add `apps/services/email_ingestion/email_ingestion/llm_cap.py`. It holds one `asyncio.Semaphore` for the process, the automation scope and one context manager, `llm_slot()`.
+2. Add three settings to `acb_common/settings.py`. `email_llm_concurrency` defaults to 0, and 0 means no cap (item 18). `email_llm_daily_calls` defaults to 2000.
+3. `email_llm_budget_mode` is `off`, `log` or `enforce`. It defaults to `log`.
+4. An automation scope marks the calls that the cap and the budget bind. A ContextVar holds it, and the scope carries the account id of the mailbox. `llm_slot()` reads the account id from the scope. `_llm_json` keeps its signature.
+5. These functions open the scope:
+   - `as_mailbox_owner` (`scheduler_hooks.py:53`). It wraps `process_new_mail` (`:122-123`) and the hooks of the thread status, the digest and the follow-ups (`:307-309`).
+   - `_run_rules_job` (`runner.py:1669`) and `_process_past_emails_job` (`runner.py:1442`).
+   - `_reclassify_reply_zero_job` (`replyzero.py:2282`) and `_mark_thread_replied` (`replyzero.py:1758`).
+   - `_build_voice_profile_job` (`voice_profile.py:338`) and `_learn_from_sent` (`drafting.py:531`).
+   - The cleanup jobs `_sweep_job` (`cleanup.py:703`) and `_backfill_and_clean_job` (`cleanup.py:869`).
+   - `_maybe_classify_threads` (`replyzero.py:1834`), the Reply Zero backfill. Each caller is a background path. On a mailbox with no status row, the Reply Zero list starts it as a `BackgroundTask` (`replyzero.py:2344`). Before review round 1 that task ran outside each scope (finding C).
+
+   These stay outside the scope, because a member drives each one:
+   - `/compose-assist` (`_compose_assist_run`, `drafting.py:1863`) and `/draft-reply` (`draft_reply_smart`, `drafting.py:1765`).
+   - The voice sample (`voice_profile.py:673`), the writing style (`assistant.py:613`) and the rule generation (`rules.py:588`).
+   - The chat (`chat.py:144`).
+6. Outside the scope, `llm_slot` takes no slot and counts nothing. A member who asks for a draft never waits behind the sync loop.
+7. A slot wraps only a leaf, the model await itself. A task started inside a held slot runs under that slot, with no permit and no count of its own. So a nested `llm_slot` takes no second permit, and a cap of 1 cannot deadlock. The AST fence keeps each call that is not a leaf out of a slot (review round 1, finding A). Its one exception is the gather of the `decide` requests in `_ask_all` (item 19).
+8. The budget counts model requests for each mailbox for each UTC day. The key is `key("email-llm", account_id, <date>)` from `tenant_redis`.
+9. The helper uses `incr` and an `expire` of 2 days. It binds `organization_scope(current_tenant())` for the call. A call that reaches no model gives its count back with `decrby` (review round 1, finding B). That covers a refusal in `enforce`, a body that raises and a body that times out.
+10. In `log` mode, each call runs, because `log` never refuses a call. The budget logs `email.llm_budget_count` when a mailbox reaches 50% and then 100% of the limit (R-6). Each line logs once a day for each mailbox. Past the limit, `email.llm_budget_exceeded` logs once a day for each mailbox. Each of these lines logs after a call that succeeded, and never for a count that went back.
+11. In `enforce` mode, a call past the limit raises `LLMBudgetExhausted`, a new exception in `llm_cap.py`. It makes no model call.
+12. The rule match at the budget, in `enforce`, by mode:
+    - With `email.rule_match=on` (live), `ask` makes no Router call. It logs `decide.unavailable` with `decide_reason=budget` and returns None. `_decide_rule_match` then raises `DecisionUnavailable` (`engine.py:767`).
+    - In `off` and `shadow`, `_llm_json` raises `LLMBudgetExhausted` in the `_old` path. Its handler (`engine.py:877-881`, and `:970-973` for multi-rule) turns it into `LLMUnavailable`.
+    - Either way the runner leaves `rules_processed_at` NULL (`runner.py:1777-1785`). So the mail stays undecided (D-EM-8), and a later cycle retries it.
+13. `_llm_determine_thread_status` raises `LLMBudgetExhausted` again (its handler is `replyzero.py:682-684`). It does not write its `· auto` fallback for it.
+14. Each Redis command of the budget waits 0.25 s at most. A failure or a timeout opens a breaker for 60 s, and logs `email.llm_budget_unavailable` once. While the breaker is open, the budget counts nothing and the call runs, also in `enforce`. The cap still binds (review round 1, finding D).
+15. `core._llm_json` (`core.py:749`) and each other model await in the tables above enter `llm_slot`. Two kinds of call are exempt. A member drives `run_agent_stream` (`chat.py:226`), and Mem0 is out of this slice (item 20).
+16. In `shadow`, the `_ask_all` task (`decide_features.py:698`) takes a slot only when one is free. If none is free, it logs `decide.shadow_skipped` with `reason=cap` and makes no call. In `on`, `_ask_all` waits for a slot, as `_llm_json` does.
+17. `llm_slot` wraps only the model await itself, the leaf call. It never wraps an enclosing function. So a parent holds no permit while it awaits a child. Each child task takes its own permit at its own model await. If a parent held its permit at a cap of 1, its children could never get one. That is a deadlock.
+18. The cap has an off position. `EMAIL_LLM_CONCURRENCY=0` means no cap. 0 is the shipped default, so the cap ships dark (CLAUDE.md §4). The cap is one `asyncio.Semaphore` in the process. That is correct, because the gateway runs one uvicorn with no `--workers` (`deploy/hostinger/acb-gateway.service:13`). With the cap set, a call that waits longer than 1 second logs `email.llm_cap_wait` with the wait in ms.
+19. One `_ask_all` call holds one permit, because one bound covers all of its requests (`decide_features.py:512-518`). The slot wait counts inside `ON_BOUND_S` (10 s, `decide_features.py:137`). A wait past the bound leaves the mail undecided (D-EM-8), and a later cycle retries it. The budget counts each request that `_ask_all` sends, because the cost follows the requests.
+    - One call sends one request for each 16 questions (`QUESTION_LIMIT`, `decide_features.py:179`).
+    - The rule match asks one boolean for each candidate that is not a conversation rule, and the choices `conv` and `best` (`engine.py:506-561`). So one request holds up to 14 booleans with both choices. The presets give 8 questions, so one email sends one request.
+    - The thread status, the cold check and the sender pin each send one request with one question.
+20. Mem0 is OUT of this slice. Mem0 runs only with `MEM0_ENABLED`, which defaults to false (`mem0_enabled`, `acb_common/settings.py:676`). Turning it on is an open owner question. So the Mem0 sites of the table take no permit and count nothing.
+
+**Non-goals.** No credit budget, no price and no token count, because CP-7 owns them. No cap across processes, because the box runs one, and no cap for each organization (the known limit below). No UI. No change to `acompletion_with_fallback`, and no Mem0 (item 20).
+
+**Known limit for M1: the noisy neighbour.** The cap is global for the process. It is not a cap for each organization. So the import of one organization can hold every slot, and the mail of each other organization waits. This is a known limit for M1, "a second org can exist safely".
+
+**Owner decisions at the flip to `enforce`.**
+
+1. The go for `enforce`.
+2. The limit. 2000 is a guess (R-6).
+3. Whether "Process past emails" counts. Its ceiling is also 2000 (`runner.py:977`), so one run can spend the budget of a whole day.
+4. Q-MB-1 (§11.8), because the total of an organization is the count of its mailboxes times the limit.
+
+Agent work that must land BEFORE the flip (review round 1, finding G). Neither item binds in `log`, the shipped mode.
+
+5. **The template fill at the budget.** `_render_template` (`actions.py:279-318`) catches `LLMBudgetExhausted` and returns the raw template. In `enforce`, a LABEL then gets a literal `{{...}}` name. A REPLY, DRAFT, FORWARD or SEND gets raw placeholders. A FORWARD note or a SEND subject can reach a third party, and the runner then stamps the row. The fix must decide what a rule with several actions does when one action cannot render.
+6. **One warning a day, not one a cycle.** In `enforce`, a spent mailbox logs WARNING lines on each cycle until UTC midnight. The lines are `decide.unavailable`, `email.classify_unavailable_skip` and `email.mark_thread_replied_failed`. Check the budget once for each job, and log once.
+7. **A timeout gives back spend that the model billed.** On a timeout, `_ask_all` gives back all its requests, also the ones that already answered (`llm_cap.py:303-309`). The drafter consult does the same for a whole agent run. In `enforce`, a mailbox whose calls keep running slow then never reaches its limit. Count the answered requests before the bound cancels them. In `log`, the same rule makes the count a little low for slow calls (re-verify of round 1, P2).
+8. **Shadow traffic shares the budget.** In `shadow`, the decide requests and the old call that acts spend one budget. In `enforce`, a shadow request can take the last unit, and the call that acts is then refused. Decide whether a shadow request counts.
+
+**Follow-ups.**
+
+- Mem0 joins the cap in its own slice when the owner turns it on.
+- Phase (f) runs `_embed_batch` from `_sync_account` (`scheduler.py:1225`), outside each scope of item 5. Only the cleanup backfill reaches it inside a scope. The slice that sets `email_semantic_search_enabled` on a box opens the scope for phase (f).
+- The build deletes `_draft_via_maf_agent` (`drafting.py:1290`), because nothing calls it. Its entry in `_RUN_AGENT_WITHOUT_SESSION_USER` (`test_background_ai_member.py:825-828`) goes with it.
 
 **Done when.**
 
@@ -1821,19 +2266,148 @@ API, and EM-T4b adds the shared cap and the budget.
 - With no free slot, a shadow call makes no `decide` call. The old answer returns with no extra wait.
 - An AST fence finds each model await in `routes/email` and `email_ingestion` inside `llm_slot` or inside `_llm_json`. A companion test proves the fence can fail.
 - `test_tenant_redis.py` passes with no new allowlist entry.
+- **F1.** With `email.rule_match=on`, a call past the limit in `enforce` makes no Router call. `ask` returns None with `decide_reason=budget`, and the runner leaves `rules_processed_at` NULL.
+- **F2.** The same case with the feature `off` takes the `_old` path and gets the same NULL stamp.
+- **F3.** With a cap of 1, a gather of two child model calls never runs two at once. It completes within a test timeout, with no deadlock. A slot wraps only a leaf. A task started inside a held slot runs under that slot. The fence keeps each call that is not a leaf out of a slot.
+- **F4.** With the shipped defaults (`EMAIL_LLM_CONCURRENCY=0`), no call takes a permit.
+- **F5.** One `_ask_all` call takes one permit, and the budget counts the requests that it sends (item 19).
+- **F6.** A call from `/compose-assist`, `/draft-reply`, the voice sample or the chat takes no permit and counts nothing.
+- **F7.** In `log`, the 50% line and the 100% line each fire once for each mailbox for each day.
+- **F8.** The AST fence covers `routes/email/**`, `email_ingestion/**` and `gateway/decide_features.py`. Its callee list is `acompletion_with_fallback`, `acompletion_stream_text`, `aembedding`, `run_agent` and the `decide` facade (`ask`, `shadow` and `_ask_all`). A companion test proves that it can fail.
 
-**Files.** A new `email_ingestion/llm_cap.py`, `acb_common/settings.py`, `routes/email/core.py`, the 9 direct sites, `scheduler_hooks.py` and `gateway/decide_features.py`. The test is a new `tests/unit/test_email_llm_cap.py`.
+**Files.** A new `email_ingestion/llm_cap.py`, `acb_common/settings.py`, `routes/email/core.py` and `gateway/decide_features.py`. The direct sites of the tables above, and the scope functions of item 5 with `scheduler_hooks.py`. `routes/email/automation/engine.py` and `replyzero.py`, for items 12 and 13. The test is a new `tests/unit/test_email_llm_cap.py`, and `test_background_ai_member.py` drops the entry of the deleted MAF drafter.
 
 **Verify with.**
 
 ```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_llm_cap.py tests/unit/test_tenant_redis.py \
   tests/unit/test_email_classifier_unavailable.py tests/unit/test_email_apply_and_watermark.py \
   tests/unit/test_email_reply_zero.py tests/unit/test_email_decide_shadow.py \
+  tests/unit/test_email_decide_on.py tests/unit/test_email_decide_questions.py \
   tests/unit/test_background_ai_member.py tests/unit/test_email_layering.py \
-  tests/unit/test_email_process_past_cost_guard.py -q -rs
+  tests/unit/test_email_process_past_cost_guard.py tests/unit/test_email_rulepath_draft_parity.py \
+  tests/unit/test_email_follow_up_scan.py tests/unit/test_email_digest.py \
+  tests/unit/test_internal_ai_is_routed.py -q -rs
 uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway packages/acb_common tests/unit
 ```
+
+With the database exported, the run must show 0 skips. The baseline at `012483a43` with no database was 480 passed and 31 skipped, over the 14 files that exist today. `test_email_llm_cap.py` is new.
+
+**As built (2026-10-04).** Branch `email-llm-budget`. It ships dark, with the cap at 0 and the budget mode at `log`. It takes no migration.
+
+1. `email_ingestion/llm_cap.py` holds the scope, the cap and the budget. It imports no `gateway` module.
+2. `automation_job` is a decorator. It opens the scope for a job whose first argument is the account id. The signature of the job does not change.
+3. The nine jobs of item 5 carry `automation_job`. `as_mailbox_owner` opens the scope beside `job_member_scope`. Review round 1 added the ninth, `_maybe_classify_threads`.
+4. `llm_slot(requests=1, wait=True, settle=True)` takes the permit first, then counts, then runs the call. A call that finds no free permit counts nothing. The slot yields a `Charge`, which gives the count back and logs the marks.
+5. The re-entrant guard covers this task and each task that a held slot starts. Such a slot takes no second permit and counts nothing. So the guard cannot deadlock.
+6. Each Redis command of the budget waits 0.25 s at most (`BUDGET_REDIS_TIMEOUT_S`). It waited 2 s before review round 1. A failure opens the breaker of item 14 (`BUDGET_BREAKER_S`).
+7. A limit under 1 means no limit. An unknown mode reads as `log`, and `email.llm_budget_mode_refused` logs once.
+8. `_ask_all` holds one slot around the gather of its requests. In `shadow` the slot does not wait. `NoFreeSlot` then logs `decide.shadow_skipped` with `reason=cap`. The gather returns each failure and never raises. So `_ask_all` passes `settle=False`, and it settles the charge after the slot with the count of failed requests.
+9. Item 12 needed no change in `engine.py`. Each `_old` handler already turns each failure into `LLMUnavailable`.
+10. Item 13: `recompute_thread_status` passes `LLMBudgetExhausted` up. So `_mark_thread_replied` logs its failure and writes nothing.
+11. The build deletes `_draft_via_maf_agent` and `_strip_draft_markers`, its one helper. Nothing else called either of them.
+12. `tests/conftest.py` sets `EMAIL_LLM_BUDGET_MODE=off` for the test run. With the `log` default, the unit suites wrote real keys into the Redis of a dev machine. The new suite sets each mode itself, over a fake client under the real `TenantRedis`.
+
+**Anchors that differed from this section.**
+
+- The section says that `test_email_layering.py` forbids a `gateway` import in `llm_cap.py`. That test reads `scheduler.py` only. The fence is `test_the_cap_module_does_not_import_the_gateway` in the new suite.
+- The Files line names `engine.py` for item 12. The build needed no change there (point 9).
+
+**Known behaviour, recorded.**
+
+- In `off` and `shadow`, the thread-status resolver treats a spent budget as each other failure. It keeps the match for each message, and the runner stamps the row. Only the rule match leaves a row undecided at the budget.
+- In `log`, each model call in the scope sends two Redis commands, `incr` and `expire`. A call that gives its count back sends a third, `decrby`.
+- While the breaker is open, `enforce` fails open. Each call runs and counts nothing, as on a Redis error before review round 1. The breaker skips a give-back too, so a call that failed then can stay counted.
+- A refusal in `enforce` gives its count back. So the process keeps a record of the refusal line, and `email.llm_budget_exceeded` logs once a day for each mailbox. A restart can log it once more.
+- With calls at one time, a mark or the exceeded line can go unlogged. This happens when the call that crossed it fails, and a parallel call already passed it.
+
+**Fences.** Each line of "Done when" has a test in `tests/unit/test_email_llm_cap.py`.
+
+| Line | Test |
+|---|---|
+| Done when 1 | `test_a_cap_of_two_never_runs_more_than_two_calls_at_once` |
+| Done when 2 | `test_a_nested_slot_completes_with_a_cap_of_one` |
+| Done when 3 | `test_a_call_outside_the_scope_takes_no_slot_and_counts_nothing` |
+| Done when 4 | `test_enforce_refuses_call_2001_before_the_model` |
+| Done when 5, F1, F2 | `TestTheRunnerAtTheBudget` (R8, three cases) |
+| Done when 6 | `test_log_runs_call_2001_and_logs_exceeded_once` |
+| Done when 7 | `test_the_key_of_one_mailbox_id_differs_between_two_orgs` |
+| Done when 8 | `test_with_redis_down_the_call_runs_and_the_cap_still_binds` |
+| Done when 9 | `test_a_full_cap_skips_the_shadow_with_no_extra_wait` |
+| Done when 10, F8 | `test_each_model_await_sits_inside_llm_slot`, and the four companion tests |
+| Done when 11 | `test_tenant_redis.py`, with no new allowlist entry |
+| F3 | `test_two_children_at_a_cap_of_one_never_overlap_and_never_deadlock` |
+| F4 | `test_with_the_shipped_defaults_no_call_takes_a_permit` |
+| F5 | `test_one_ask_all_takes_one_permit_and_counts_each_request` |
+| F6 | the four tests that end in `takes_no_permit_and_counts_nothing` |
+| F7 | `test_log_counts_at_fifty_and_a_hundred_percent_once_a_day` |
+| Review A, item 7 | `test_the_fence_finds_a_call_in_a_slot_that_is_not_a_leaf` (five shapes) |
+| Review A, item 7 | `test_the_one_exception_is_the_gather_of_decide_in_ask_all` and `test_the_exception_is_narrow` |
+| Review A, item 7 | `test_the_fence_fails_on_the_real_drafter_with_a_slot_around_a_non_leaf` (ITEM1-b and the drafter) |
+| Review B, items 9 and 10 | `test_a_call_that_fails_gives_its_count_back_and_logs_no_mark` and `test_a_call_that_times_out_gives_its_count_back` |
+| Review B, item 11 | `test_enforce_gives_the_refused_count_back_and_logs_once_a_day` |
+| Review B, item 19 | `test_ask_all_counts_only_the_requests_that_got_an_answer` (three cases) |
+| Review C, item 5 | `test_the_cold_start_backfill_of_reply_zero_opens_the_scope` and `test_each_mailbox_job_opens_the_scope` |
+| Review D, item 14 | `test_a_redis_that_hangs_costs_the_bound_once_and_the_breaker_closes_after_60_s` |
+
+**Mutations (R7).** Each row changed one place in the code. The named tests went red, and the file went back to its exact SHA-256 before the next row. 29 rows, 29 red. Review round 1 added the last eight rows.
+
+| Fence | Mutation | Red |
+|---|---|---|
+| Done when 1 | `llm_slot` takes no permit | 1 test |
+| Done when 2 | no re-entrant guard | 1 test, a deadlock past its bound |
+| Done when 3 | the scope is always open | 1 test |
+| Done when 4 | `enforce` never refuses | 1 test |
+| Done when 5, F2 | the `_old` rule path returns None for a failure | 2 tests, one R8 |
+| Done when 5, F1 | `_ask_all` lets `LLMBudgetExhausted` escape | 2 tests, one R8 |
+| Done when 6 | `email.llm_budget_exceeded` logs on each call past the limit | 1 test |
+| Done when 7 | the key drops the account id | 1 test |
+| Done when 8 | a Redis error fails the call | 1 test |
+| Done when 9 | the shadow waits for a slot | 1 test |
+| Done when 10, F8 | `_llm_json` loses its slot | 1 test |
+| F8 | the fence sees no slot | 2 tests |
+| Done when 11 | `llm_cap.py` imports `redis` | `test_no_direct_redis_client_outside_the_wrapper` |
+| F3 | the scope holds one permit for all of its calls | 1 test |
+| F4 | the shipped cap is 4 | 2 tests |
+| F5 | `_ask_all` counts one request | 1 test |
+| F6 | a draft reply opens the scope | 1 test |
+| F7 | the 50% and 100% lines fire on each call | 1 test |
+| Item 13 | the status call writes its `· auto` fallback | 1 test |
+| Item 5 | `_run_rules_job` opens no scope | 3 tests, one R8 |
+| Item 5 | `as_mailbox_owner` opens no scope | 1 test |
+| Review A | ITEM1-b: a slot around the gather of `_orchestrate_draft` | `test_each_model_await_sits_inside_llm_slot` |
+| Review A | a slot around the `_llm_draft_reply` call of `_orchestrate_draft` | `test_each_model_await_sits_inside_llm_slot` |
+| Review B | a body that raises keeps its count | 2 tests |
+| Review B | a refusal in `enforce` keeps its count | 4 tests, two R8 |
+| Review B | `_ask_all` keeps the count of a failed request | 2 tests |
+| Review B | the marks log before the call | 6 tests |
+| Review C | `_maybe_classify_threads` opens no scope | 2 tests |
+| Review D | no breaker, and a bound of 2.0 s | 2 tests |
+
+**Verified (2026-10-04, a private database).** The Verify block gave 565 passed and 0 skipped. All the `test_email_*.py` suites, with the seam and tenancy fences, gave 2603 passed. The 2 skips there are the two `test_tenant_coverage.py` tests that need `DATABASE_URL`, which `scripts/dev_db.sh` does not set on purpose.
+
+**Review round 1 (2026-10-04).** An independent verifier passed the slice with findings, and an adversarial reviewer approved it with findings. The orchestrator recorded a decision for each one. This round built four fixes and recorded the rest. The branch rebased onto `5e268c766` (#614) first, and onto `3d11922c2` (#615) at the end. Only the docs had conflicts.
+
+| Finding | Fix or record | Fence |
+|---|---|---|
+| A. A task started in a held slot skips the cap. ITEM1-b survived the old fence. | The hold stays, because it stops a deadlock at a cap of 1. The fence now refuses each call in a slot that is not a leaf. The one exception is the gather of `_ask_all`. Item 7 and F3 say so. Two slot bodies of `drafting.py` and one of `email_embeddings.py` moved their non-leaf calls out. | `test_the_fence_finds_a_call_in_a_slot_that_is_not_a_leaf`, `test_the_exception_is_narrow`, `test_the_fence_fails_on_the_real_drafter_with_a_slot_around_a_non_leaf` |
+| B. A call that failed still used the budget, so an outage looked like a busy mailbox. | The refusal check and the `incr` stay before the call. A refusal, a raise and a timeout give the count back with `decrby`. `TenantRedis` gained `decrby` beside `incr`. The marks log after a call that succeeded. `_ask_all` gives back each request that got no answer. The R8 case now expects a count of 1. | `test_a_call_that_fails_gives_its_count_back_and_logs_no_mark`, `test_ask_all_counts_only_the_requests_that_got_an_answer`, `TestTheRunnerAtTheBudget` |
+| C. The cold start of the Reply Zero list ran the backfill with no scope. | `_maybe_classify_threads` carries `automation_job`, because each caller is a background path. Item 5 lists it. | `test_the_cold_start_backfill_of_reply_zero_opens_the_scope` |
+| D. A Redis that hung added 2 s to each model call in `log`. | The bound is 0.25 s. A failure opens a breaker for 60 s and logs once. `enforce` fails open while it is open. | `test_a_redis_that_hangs_costs_the_bound_once_and_the_breaker_closes_after_60_s` |
+| E. The gateway `AGENTS.md` put the thread-status raise and the NULL stamp in one sentence. | The rule match leaves the row NULL. In `off` and `shadow` the resolver catches the thread-status raise, and the runner stamps the row. | None, a text fix |
+| F. A status paragraph of this section held 10 sentences. | The rebase took the split of #614, so each status paragraph holds 5 sentences. | `ste-lint.mjs` |
+| G. Two gaps bind in `enforce` only. | Recorded as items 5 and 6 of the owner list above, as agent work before the flip. | None, recorded |
+
+**Verified after review round 1 (2026-10-04, a private database).** The Verify block gave 584 passed and 0 skipped. It gave 584 passed once more with `EMAIL_LLM_BUDGET_MODE=log` and a throwaway Redis index, and that index then held one key with a count of 1. On `3d11922c2`, all the `test_email_*.py` suites, with the seam fences, gave 2651 passed. The 2 skips there are the same two `test_tenant_coverage.py` tests.
+
+**The re-verify of round 1 (2026-10-04): PASS with findings.** No P0 and no P1. With the shipped defaults, the live rule match gave the same decisions and the same `decide.*` lines as `main`, apart from the count. Two P2 items went to the owner list above, as items 7 and 8. This note records the P3 items, and nothing fixes them yet:
+
+- A give-back after a timeout, or a `settle` after a failed request, can add 0.25 s past `ON_BOUND_S`. This happens once in each breaker window (`llm_cap.py:308`, `decide_features.py:557`).
+- The consult's `agent_timeout` now covers the wait for a permit (`drafting.py:1522`). With a cap set, a consult can time out while it waits, and the draft then goes on without it.
+- `DECRBY` on a key that expired leaves a negative key with no TTL (`llm_cap.py:383`). An `expire` that times out after the first `incr` of a day also leaves a key with no TTL. The cost is one stray key.
+- A 50% or 100% line can log twice in a day, when a give-back takes the count under the mark after the line logged.
+- The fence accepts any leaf in the gather of `_ask_all`, not only the decide leaf (`test_email_llm_cap.py:1326`). It also misses a coroutine built before the slot and awaited inside it, and a slot opened through an alias. No live site has these shapes. A later slice can make the fence narrow.
 
 ##### EM-T4c — refresh on a 401 during a sync, and try once more
 
@@ -1944,15 +2518,38 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_4
 
 ##### EM-T4d — Graph delta, in shadow first
 
+**Status (2026-10-04).** ✅ MERGED #614. Review round 1 fixed seven findings. There is no migration. The code ships with `email_outlook_delta=off`, so it changes nothing on a box.
+
+To set `shadow` on a box is a later, separate act (gate `enforcement-flip`). EM-T4d-f3 is settled (#660), so only the loop runs the delta. The fence is `tests/unit/test_outlook_delta_shadow.py`, with R8 in `test_email_scheduler_tenancy.py` on a private database. The As-built notes, the review round 1 note and the mutation table follow the Verify block.
+
 1. Add `email_outlook_delta` to settings: `off`, `shadow` or `on`. The default is `off`.
 2. A value of `on` resolves to `shadow` and logs `email.delta_mode_refused`. Only an edit of this section can lift that.
 3. Delta runs for each swept folder through `/me/mailFolders/{id}/messages/delta`. It follows each `@odata.nextLink` to the `@odata.deltaLink`.
 4. It stores each link whole, and it calls a stored link as it is. It sends `Prefer: odata.maxpagesize=100` and no `$top`.
-5. The cursor in `last_history_id` is a JSON object with a version key and one link for each folder.
+   The delta sends the same `$select` as the sweep and no `IdType` preference, so the ids of the two reads compare.
+5. The cursor in `last_history_id` is `{"v": 1, "folders": {<folder key>: {"link": <url>, "at": <UTC time>}}}`.
+   The folder key is the key of the sweep: a well-known name or a folder id.
 6. A cursor value that does not parse means "no cursor", and the poll does a full sweep.
 7. In `shadow`, each poll runs the full sweep and the delta. It writes from the full sweep only.
-8. It logs `email.delta_shadow` with three counts: in both, only in the sweep, and only in the delta.
+8. It logs `email.delta_shadow`. The record compares NEW mail only.
+   - For each folder, a message is new when its `receivedDateTime` is after `at`, the end of the last round of that folder.
+   - `both`, `sweep_only` and `delta_only` count the ids of the new mail.
+   - A folder in its first round counts as `seeding` and adds no count.
+   - An `@removed` item adds to `removed` only.
 9. A new user folder gets a cursor on its next poll. A folder that is gone loses its cursor.
+   A failed folder list (`_user_sweep_folders` returns `[]` at `outlook.py:1267-1270`) keeps each link.
+10. `email_outlook_delta_accounts` lists the account ids that run the mode, with a comma between ids. An empty list runs no delta.
+11. A delta failure never changes the sync.
+    - A raise, a timeout, a 4xx or a 5xx leaves the four sweep fields unchanged: `messages`, `full_snapshot`, `catch_up_incomplete` and `catch_up_folders`.
+    - A 410 or a 400 of Graph drops that link, and the folder seeds again at the next poll.
+      The reason for the 400 (review round 1, F3): a stored link is a fixed request, so Graph sends the same 400 at each poll.
+    - A 400 of the token endpoint is a refused refresh (EM-T4c), not a bad link, so it keeps the link.
+    - Any other failure keeps the link: a 401, a 429, a 5xx, a timeout or a raise.
+    - A 403 or a 404 on a system folder that each mailbox has also keeps it.
+    - The poll logs `email.delta_shadow_failed` with the folder count and the status.
+12. In `shadow`, no `@removed` item becomes a `[DELETED]` marker. The reconcile reads the sweep alone.
+13. Read at most 20 delta pages per folder in one poll. A folder at that limit stores its `@odata.nextLink` and continues at the next poll.
+    The reason: a seed round for a 6-month mailbox can add more than 100 Graph calls under the mailbox lock.
 
 **Non-goals.** No `on` mode. No delete rule for a tombstone. No change to Gmail, IMAP or the deep first sync. No new column and no migration. Delta keeps the floor of EM-T6a, and a reconnect keeps the cursor (D-EM-13).
 
@@ -1964,23 +2561,189 @@ uv run ruff check apps/services/email_ingestion tests/unit/test_email_provider_4
 - In `shadow`, the rows written equal the rows of the full sweep alone.
 - The `email.delta_shadow` record holds the three counts and the folder count. It holds no subject and no address.
 - A value of `on` resolves to `shadow` and logs `email.delta_mode_refused`.
+- With `off`, the poll sends zero delta requests, and `new_history_id` is `None`.
+- Item 9: a new user folder seeds on its first poll. A folder that the list no longer returns loses its link. A failed folder list keeps each link.
+- Item 10: with `shadow` and an empty account list, no mailbox sends a delta request. Only a listed account sends one.
+- Item 11: a raise, a 410 or a 500 leaves the sweep result unchanged, and the cycle succeeds. A 410 or a 400 drops that link, and a 500 or a 429 keeps it.
+- Item 12: an `@removed` item writes no TRASH row.
+- Item 13: a folder at 20 pages stores its `@odata.nextLink`, and the next poll continues from it.
 
 **Live check before any `on` (gate `enforcement-flip`).** Set `shadow` for one test mailbox. After 7 days, each `email.delta_shadow` line must show 0 "only in the sweep" for new mail. A later part, EM-T4d-2, then proposes `on` and a delete rule.
 
 **Files.** `apps/services/email_ingestion/email_ingestion/providers/outlook.py`, `scheduler.py` and `acb_common/settings.py`. The test is a new `tests/unit/test_outlook_delta_shadow.py`.
 
+**Fences (R7).** `tests/unit/test_outlook_delta_shadow.py` uses the real `OutlookProvider` and a fake Graph on `httpx.MockTransport`.
+
+| Fence | The rule |
+|---|---|
+| `email-delta-off-no-call` | With `off`, no `/messages/delta` request, and `new_history_id=None`. An unknown value resolves to `off`. |
+| `email-delta-on-refused` | `on` resolves to `shadow` and logs `email.delta_mode_refused`. |
+| `email-delta-account-scope` | With `shadow` and an empty account list, no mailbox sends a delta. Only a listed account sends one. |
+| `email-delta-links-whole` | A round of three pages stores the last `@odata.deltaLink` of each folder, byte for byte. The next poll calls it as it is, with `Prefer: odata.maxpagesize=100` and no `$top`. |
+| `email-delta-bad-cursor` | A bare token, text that is not JSON, JSON with another version, and NULL each give a full sweep, a seed round and no error. |
+| `email-delta-sweep-only` | `off` and `shadow` give equal `messages`, `full_snapshot`, `catch_up_incomplete` and `catch_up_folders`. An `@removed` item writes no TRASH row. |
+| `email-delta-failure-isolated` | A raise, a 410 or a 500 leaves the sweep result unchanged, and the cycle succeeds. A 410 or a 400 drops that link, and a 500 or a 429 keeps it. |
+| `email-delta-new-mail-counts` | A new message that the fake delta leaves out gives `sweep_only=1`. A message older than `at` adds no count. The record holds no subject, no address and no link. |
+| `email-delta-folder-set` | A new user folder seeds on its first poll. A folder that the list no longer returns loses its link. A failed or short folder list keeps each link that the poll does not read. |
+| `email-delta-floor` | The first request of a seed round filters `receivedDateTime ge <floor>`. |
+| `email-delta-page-cap` | A folder at 20 pages stores its nextLink and continues at the next poll. |
+| `email-delta-link-host` | Review round 1. A link that does not start with the Graph base URL gets no request and no store. The link drops, and the log names no URL. |
+| `email-delta-sync-log` | Review round 1. A shadow cycle writes NULL into the sync log row. `off` writes what it wrote before. |
+| `email-delta-normal-cycle` | Review round 1. A first import and a deep sync send no delta request. |
+| `email-catch-up-folder-name` | Review round 1. A short user folder goes into `catch_up_folders` by its canonical name. It pins the behaviour of the sweep before EM-T4d. |
+
+Three more checks bind this part.
+
+- Keep `test_email_scheduler_tenancy.py::test_no_session_is_open_during_the_provider_calls` green. If a part adds a provider call outside `sync_messages`, the watched fake must watch it.
+- Keep `test_email_manual_sync_parity.py:73-75` green. Phase (d) keeps `COALESCE`, so `off` keeps a stored cursor.
+- R8 in `test_email_scheduler_tenancy.py`, as the app role for two organizations: a JSON cursor from `shadow` lands in the row of org B only. A later `off` cycle keeps it.
+
 **Verify with.**
 
 ```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_outlook_delta_shadow.py tests/unit/test_email_deep_sync.py \
   tests/unit/test_email_manual_sync_parity.py tests/unit/test_email_scheduler_tenancy.py \
-  tests/unit/test_email_provider_401_retry.py -q -rs
-uv run ruff check apps/services/email_ingestion tests/unit/test_outlook_delta_shadow.py
+  tests/unit/test_email_provider_401_retry.py tests/unit/test_email_import_batches.py \
+  tests/unit/test_email_import_floor.py tests/unit/test_email_sync_one_at_a_time.py \
+  tests/unit/test_email_sync_backoff.py tests/unit/test_outlook_labels_cache_and_429.py \
+  tests/unit/test_outlook_folders_move.py tests/unit/test_db_engine_seam.py -v -rs
+uv run ruff check tests/unit/test_outlook_delta_shadow.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
+
+- The R8 cases must show PASSED, not SKIPPED.
+- A diff of `ruff check` on `outlook.py`, `scheduler.py` and `settings.py` must show no new finding against the 26 that exist on 2026-10-04.
+
+**As built (2026-10-04).**
+
+1. `scheduler.outlook_delta_mode(account_id)` is the one reader of `email_outlook_delta` and `email_outlook_delta_accounts`. It caches the parse of each value, so a refusal logs once for each process. The list compares ids in lower case.
+2. `_sync_cycle` passes `delta_shadow` to `sync_messages` for a `microsoft` row only. It then logs `email.delta_shadow` from `SyncResult.delta_report`, with the account id and counts only.
+3. `delta_shadow` is a keyword-only boolean, so `on` cannot reach the provider. The abstract method in `providers/base.py` declares it. Gmail and IMAP take it and ignore it, as they ignore `catch_up`. That is one signature line in each file, and no change of behaviour.
+4. The delta runs AFTER the full sweep, inside the one `sync_messages` call, so no session is open (R5). A message that arrives between the two reads adds to `delta_only`, never to `sweep_only`.
+5. A round that the page cap cuts stores its next link with `"at": null`. The folder counts as `seeding` until a round ends, because a cut round cannot compare its new mail. Item 13 did not say what `at` holds in that state.
+6. `_user_sweep_folder_list` returns the user folders and whether the folder list answered in full. `_user_sweep_folders` keeps its old answer for the import.
+7. `_MESSAGE_SELECT` holds the `$select` that the sweep and the delta share. The dead branch of `outlook.py:1300-1340` is gone, and so is the false comment at `:1291-1297`.
+8. `email_sync_log.provider_history_id` gets NULL in a shadow poll, as in `off` for Outlook (review round 1, F5). Only `email_accounts.last_history_id` holds the cursor. Nothing reads the column of the log.
+
+**Two rules beyond the items, and two known limits.**
+
+- ⚠️ A 403 or a 404 on Archive or a user folder skips that folder in the delta. It adds no count, no link and no failure. This is the one rule of the sweep, `_skips_folder`. Without it, a mailbox with no Archive logs `email.delta_shadow_failed` on each poll.
+- ⚠️ A failure outside one folder, for example a defect in the compare, gives no new cursor. Phase (d) then keeps the stored cursor, and the record counts each folder as failed.
+- `at` is the clock of the box when the round ends. A box clock that runs behind Exchange by more than one round trip can show a false `sweep_only`.
+- A new message that moves or goes away between the sweep and the delta of its folder can show a false `sweep_only`. Examples are a draft that the member sends, and a rule of the Outlook client. The delta then reports the message as `@removed`, or not at all. So read each `sweep_only` with the `removed` count beside it.
+
+**Review round 1 (2026-10-04).** An independent verifier passed the slice with seven findings. The orchestrator recorded a decision for each, and this round built the fixes. Each item names the finding, the fix and the fence.
+
+- **F1, the host of a link (security).** The delta called a stored link with no host check, so the bearer went to any host in the cursor.
+  - `_graph_link` in `outlook.py` refuses a link that does not start with `GRAPH_API_BASE` and a slash.
+  - It checks the stored link, each `@odata.nextLink` and the `@odata.deltaLink`, before a request or a store.
+  - A refused link drops, and the folder seeds again at the next poll.
+  - The log says `email.delta_link_refused` with the folder and the source, and never the URL.
+  - The seed path is relative to the base URL of the client, so it cannot leave Graph. Fence: `email-delta-link-host`.
+- **F2, a short folder list.** `list_folders` skips a failed `childFolders` read, so the delta dropped the link of a nested folder.
+  - `list_folders` now sets `_folder_list_partial`, and `_user_sweep_folder_list` then returns False.
+  - The delta keeps each stored link that the poll does not read. A folder that the list gives follows the normal rules.
+  - The list is the same as before, so the sweep and `off` do not change. Fence: `email-delta-folder-set`.
+- **F3, a 400 on a stored link.** A 400 kept the link for ever. Now a 400 of Graph drops it as a 410 does (item 11). A 400 of the token endpoint keeps it, because that is a refused refresh. Fence: `email-delta-failure-isolated`.
+- **F4, three gaps of R7.** The mutants MV6, MV7 and MV8 of the verifier survived. New tests fence three rules. Fence: `email-delta-failure-isolated`.
+  - A defect in the compare leaves the sweep result unchanged, and the cycle logs one failure line.
+  - A 403 or a 404 on a user folder skips it, and that is not a failure.
+  - Any failure other than a refused link, a 410 or a 400 keeps the link.
+- **F5, the cursor in the sync log.** Each shadow poll wrote 3 to 17 KB into a new `email_sync_log` row, and nothing read it. Now a shadow cycle writes NULL there, as `off` does for Outlook. A provider with a cursor of its own still writes it. Fence: `email-delta-sync-log`.
+- **F6, a long cycle.** The scheduler ran the delta after a first import and after a deep sync. That can push a manual sync past the 30 seconds of the Control Plane proxy.
+  - `_runs_delta_shadow` in `scheduler.py` now runs it on a normal incremental cycle only.
+  - `deep=True` runs no delta, and no cycle runs it before `initial_sync_done`. Only a cycle of the background loop runs it (EM-T4d-f3). Fence: `email-delta-normal-cycle`.
+- **F7, an old gap.** No test pinned how `catch_up_folders` names a user folder. A new test pins the canonical name in both branches of the sweep. It changes no behaviour. Fence: `email-catch-up-folder-name` in `tests/unit/test_email_import_batches.py`.
+- **The R8 case changed with F5.** `test_a_shadow_cursor_lands_in_org_b_and_off_keeps_it` now expects NULL in the log row. It still proves that org A cannot read the cursor or the log row of org B.
+
+**The fences, as built.** `tests/unit/test_outlook_delta_shadow.py` holds 60 tests after review round 1, and it held 34 before. The R8 case is `test_a_shadow_cursor_lands_in_org_b_and_off_keeps_it`.
+
+| Fence | Tests |
+|---|---|
+| `email-delta-off-no-call` | `test_off_sends_no_delta_request_and_returns_no_cursor`, `test_the_scheduler_with_off_sends_no_delta_and_keeps_the_cursor`, `test_an_unknown_value_resolves_to_off` (5 values) |
+| `email-delta-on-refused` | `test_on_resolves_to_shadow_and_logs_the_refusal` (3 spellings) |
+| `email-delta-account-scope` | `test_shadow_resolves_to_shadow_for_a_listed_account_only`, `test_an_empty_account_list_sends_no_delta_from_any_mailbox` |
+| `email-delta-links-whole` | `test_a_round_of_three_pages_stores_each_delta_link_whole`, `test_the_delta_sends_the_select_of_the_sweep` |
+| `email-delta-bad-cursor` | `test_a_bad_cursor_gives_a_full_sweep_and_a_seed_round` (5 cursors), `test_the_cursor_round_trips_and_refuses_every_other_shape` |
+| `email-delta-sweep-only` | `test_shadow_writes_exactly_what_off_writes`, `test_a_removed_item_writes_no_trash_row` |
+| `email-delta-failure-isolated` | `test_a_failed_delta_leaves_the_sweep_unchanged` (raise, 500, 503, 429, 403 and 404 on the inbox, 410, 400), `test_a_failed_delta_keeps_the_cycle_a_success`, `test_a_mailbox_with_no_archive_logs_no_failure`, `test_a_refused_refresh_on_a_stored_link_keeps_the_link`, `test_a_403_or_404_on_a_user_folder_skips_it` (2), `test_a_defect_in_the_compare_leaves_the_sweep_unchanged` (2 helpers), `test_a_defect_in_the_compare_keeps_the_cycle_a_success_and_logs_once` |
+| `email-delta-new-mail-counts` | `test_the_record_counts_new_mail_only`, `test_the_record_holds_no_subject_no_address_and_no_link` |
+| `email-delta-folder-set` | `test_the_folder_set_follows_the_sweep`, `test_a_failed_child_folder_read_keeps_the_link_of_the_nested_folder` |
+| `email-delta-link-host` | `test_a_stored_link_that_is_not_a_graph_link_sends_no_request` (5 links), `test_a_link_in_a_graph_answer_that_is_not_a_graph_link_is_refused` (next, delta) |
+| `email-delta-sync-log` | `test_a_shadow_cycle_writes_no_cursor_into_the_sync_log`, `test_off_still_writes_the_cursor_of_a_provider_into_the_sync_log`, and the R8 case |
+| `email-delta-normal-cycle` | `test_only_a_normal_cycle_sends_a_delta_request` (7 cycles) |
+| `email-catch-up-folder-name` | `test_email_import_batches.py::test_a_short_user_folder_is_named_by_its_canonical_name` (2 branches) |
+| `email-delta-floor` | `test_a_seed_round_filters_on_the_floor` |
+| `email-delta-page-cap` | `test_a_folder_at_the_page_cap_goes_on_at_the_next_poll` |
+| R5, no session across the delta | `test_the_delta_runs_with_no_session_open`, and `test_no_session_is_open_during_the_provider_calls` stays green |
+| R8 | `test_email_scheduler_tenancy.py::TestTheSyncCoreWritesItsOwnTenant::test_a_shadow_cursor_lands_in_org_b_and_off_keeps_it` |
+
+**Mutations (2026-10-04).** Each mutation changed `outlook.py` or `scheduler.py`, ran the named tests, and put the file back. A SHA-256 check confirmed each file byte for byte. 23 of 23 mutations turned a test red. The control M15p is the mutation of M15 against the static parity fence alone. It stays green, so the R8 case is the fence that catches it.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| M1 | The delta runs with no `delta_shadow` | `email-delta-off-no-call` | red, 2 failed |
+| M2 | An unknown value passes as its own mode | `email-delta-off-no-call` | red, 3 failed |
+| M3 | `on` resolves to `on` | `email-delta-on-refused` | red, 3 failed |
+| M3b | `on` logs no refusal | `email-delta-on-refused` | red, 3 failed |
+| M4 | The account list is not read | `email-delta-account-scope` | red, 2 failed |
+| M4b | The scheduler passes `delta_shadow` for each mailbox | `email-delta-account-scope` | red, 1 failed |
+| M5 | The provider decodes the stored link (`%3D` to `=`) | `email-delta-links-whole` | red, 1 failed |
+| M5b | No `Prefer` header | `email-delta-links-whole` | red, 1 failed |
+| M5c | Each delta request sends `$top` | `email-delta-links-whole` | red, 1 failed |
+| M6 | The version check is gone | `email-delta-bad-cursor` | red, 2 failed |
+| M7 | An `@removed` item becomes a `[DELETED]` marker | `email-delta-sweep-only` | red, 2 failed |
+| M8 | A 410 keeps the link | `email-delta-failure-isolated` | red, 1 failed |
+| M8b | A failed folder raises, and no guard catches it | `email-delta-failure-isolated` | red, 4 failed |
+| M9 | The compare counts all mail, not new mail | `email-delta-new-mail-counts` | red, 2 failed |
+| M9b | The delta runs before the sweep | `email-delta-new-mail-counts` | red, 1 failed |
+| M10 | A failed folder list drops the user links | `email-delta-folder-set` | red, 1 failed |
+| M10b | A folder that is gone keeps its link | `email-delta-folder-set` | red, 1 failed |
+| M11 | A seed round sends no floor | `email-delta-floor` | red, 1 failed |
+| M12 | A cut round stores an `at` | `email-delta-page-cap` | red, 1 failed |
+| M12b | The page cap is 30 | `email-delta-page-cap` | red, 1 failed |
+| M13 | A 404 on Archive is a failure | `email-delta-failure-isolated` | red, 1 failed |
+| M14 | A session is open across `sync_messages` | R5 | red, 2 failed |
+| M15 | Phase (d) writes `COALESCE(:history_id, NULL)` | R8 | red, the R8 case failed |
+| M15p | M15, against `test_email_manual_sync_parity.py` alone | control | green, as expected |
+
+**Mutations of review round 1 (2026-10-04).** The same method, with a SHA-256 check of `outlook.py` and `scheduler.py` after each run. 19 of 19 mutations turned a test red. MV6, MV7 and MV8 are the three mutants of the verifier that survived before this round. This round rebuilt them from the text of the finding.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| F1a | The stored link goes out with no host check | `email-delta-link-host` | red, 5 failed |
+| F1b | A next link goes out with no host check | `email-delta-link-host` | red, 1 failed |
+| F1c | A delta link goes into the cursor with no host check | `email-delta-link-host` | red, 1 failed |
+| F1d | A refused link stays in the cursor | `email-delta-link-host` | red, 5 failed |
+| F2a | A short folder list reads as a full list | `email-delta-folder-set` | red, 1 failed |
+| F2b | `list_folders` sets no mark on a failed `childFolders` read | `email-delta-folder-set` | red, 1 failed |
+| F2c | A short list keeps the link of a folder that it reads | `email-delta-folder-set` | red, 1 failed |
+| F3a | A 400 keeps the link | `email-delta-failure-isolated` | red, 1 failed |
+| F3b | A 400 of the token endpoint drops the link | `email-delta-failure-isolated` | red, 1 failed |
+| MV6 | The outer guard of `sync_messages` catches nothing | `email-delta-failure-isolated` | red, 3 failed |
+| MV7 | A 403 or a 404 on a user folder is a failure | `email-delta-failure-isolated` | red, 2 failed |
+| MV8 | Each 4xx drops the link | `email-delta-failure-isolated` | red, 4 failed |
+| F5a | The sync log gets the shadow cursor | `email-delta-sync-log` | red, 1 failed |
+| F5a-R8 | F5a, against the R8 case | R8 | red, 1 failed |
+| F5b | The sync log gets NULL for each provider | `email-delta-sync-log` | red, 1 failed |
+| F6a | A deep sync runs the delta | `email-delta-normal-cycle` | red, 1 failed (the deep cycle of the loop, since EM-T4d-f3) |
+| F6b | A cycle before `initial_sync_done` runs the delta | `email-delta-normal-cycle` | red, 1 failed (`first-import`, since EM-T4d-f3) |
+| F7a | A catch-up page names a user folder by its id | `email-catch-up-folder-name` | red, 1 failed |
+| F7b | A failed first page names a user folder by its id | `email-catch-up-folder-name` | red, 1 failed |
+
+**Follow-ups (named, not built).**
+
+- **EM-T4d-2**, as above: `on` and a delete rule, after the live check.
+- **EM-T4d-f1.** Count an id that the sweep saw and that the delta reports as `@removed` in the same round apart from `sweep_only`. It would remove the false `sweep_only` of a draft that the member sends. Item 8 says that an `@removed` item adds to `removed` only, so this needs an edit of item 8.
+- **EM-T4d-f2 (review round 1).** The `httpx` logger at INFO can print the URL of each request. A delta URL holds its `$deltatoken`, and a sweep URL is in the log the same way. Decide the level of that logger for the whole service. This round changed no logging.
+- **EM-T4d-f3 (re-verify of round 1). Settle this before anyone sets `shadow` on a box.** A plain "Sync now" by a member sends `deep=None`, so it runs the delta like a loop cycle (`sync.py:264-266`). The webhook, the rerun and the agent tool `sync_account` do the same. A folder with no stored link then seeds, with up to 20 pages, inside the 30-second budget of the proxy. That happens on the first shadow poll, after a Resync, after a dropped link and for a new user folder. The fix is to run the delta only from the loop (`from_loop`), or to accept the cost for the few listed mailboxes. ✅ **Settled (#660, 2026-10-05).** `_runs_delta_shadow` takes `from_loop`, so only a cycle of the background loop runs the delta. The fence `email-delta-normal-cycle` (`test_outlook_delta_shadow.py`) has a case `member-sync-now`, and a gate with no `from_loop` turns it red.
+- **EM-T4d-f4 (re-verify of round 1).** When the `childFolders` read fails on every poll, the delta keeps the link of a deleted top-level user folder. The growth stops at the count of deleted folders.
 
 ##### EM-T4e — §7 item 4, the N+1 reads and the indexes
 
-**Status (2026-10-03).** 🔨 BUILT, not merged. The branch is `email-t4e`, and the migration is 226. The fence is `tests/unit/test_email_n_plus_one.py`, with R8 on a private database.
+**Status (2026-10-03).** ✅ MERGED (#586). The migration is 226. The fence is `tests/unit/test_email_n_plus_one.py`, with R8 on a private database.
 
 1. `_load_rules` reads the actions of all rules of the account in one query. It groups them in Python.
 2. `list_accounts` reads the counts of all accounts in one grouped query, at both sites.
@@ -2139,16 +2902,17 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 **Recorded risks.**
 
-- **R-1.** A split can write a decision that a newer message made stale. EM-T4a-2 checks `last_message_id` before the write.
+- **R-1.** A split can write a stale decision, because a newer message can come in during the ask. EM-T4a-2 guards the write with the newest stored `received_at` that its read saw (its item 6). The guard covers `_mark_thread_replied` only. PR-B adds no guard, and EM-T4a-2 records why.
 - **R-2.** A split can lose atomicity between a provider act and its mirror. The provider acts first, as today. When the mirror write fails, the next sync corrects the row.
 - **R-3.** EM-T4a-4 can turn on jobs that do nothing on the box today. EM-T4b must merge first.
 - **R-4.** The 401 retry sends a request twice. Each body in both providers is JSON or form data, so httpx can send it again.
 - **R-5.** Delta stopped new mail once, and nobody found the cause. So EM-T4d builds shadow only, and the full sweep stays the source of truth.
 - **R-6.** A budget of 2000 calls is a guess for one mailbox. The `log` mode measures the real count before anyone sets `enforce`.
+- **R-7.** A known limit of the EM-T4a-2 guard. A mailbox with no enabled rule can keep a stale status after a voided write. The cause is the new-mail floor of the gap query, which is NULL there. This kind of stale status exists today.
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** SPECIFIED (2026-10-02). EM-T6a is MERGED (#577, 2026-10-02). EM-T6b is MERGED (#580, 2026-10-03). EM-T6c to EM-T6e are not built. The audit read each anchor below in the code at `01d760e6`. The owner decisions are D-EM-10 to D-EM-16 (§10.2). EM-T6 has five parts, and each part is one PR.
+**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e ✅ MERGED (#619, 2026-10-04), with review round 1 closed. Anchors re-verified at `3d11922c2` on 2026-10-04.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
@@ -2164,6 +2928,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 4. EM-T6e waits for EM-T6c and EM-T6d.
 5. EM-T4d waits for EM-T6b, because both change `sync_messages` in `providers/outlook.py`.
 6. EM-T4e and EM-T6a both change `transport/accounts.py`, and each takes a migration number. The second to merge rebases and takes its number again (R1).
+7. EM-T6f waits for EM-T6e. EM-T6f is a path that resumes the import of a mailbox in the phase `limit` under the limit. This spec records it and does not specify it (EM-T6e, open points).
 
 **Owner checks (answered, 2026-10-02).** §10.2 records each answer as a dated line. The reason for each check stays here.
 
@@ -2202,6 +2967,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 - Consequence: the reconcile of the recurring Outlook poll no longer reaches stored mail older than the floor. So a delete in Outlook of such mail stays in Metorite. This follows from item 5.
 - Consequence: stored mail below the floor no longer gets moves or read-state changes from Outlook, because the sweep no longer reads it. Graph gives a moved message a new id, and the provider sends no `ImmutableId` header.
 - F5: a reconnect no longer clears a stale Gmail `last_history_id`. Only a Resync clears it now. The risk is low, because D-EM-5 keeps Gmail out of the connect flow.
+  **2026-10-04:** D-EM-5 changed. EM-G4 reseeds a stale Gmail cursor with no Resync (§12.3.5).
 - Fix round 1 (2026-10-02). "Clean older mail → Everything" sends no date, and the route now passes the ceiling, never `import_since`. "Load older" (`POST /email/accounts/{id}/backfill`) writes no message older than the ceiling, and it stops at the first page that reaches below it. `sync_floor` returns UTC, because Outlook writes the wall time with a `Z`.
 
 **Scope.**
@@ -2277,7 +3043,8 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 **As built.**
 
 - `import_batches` takes the keyword `on_estimate`. Outlook awaits it once, before the first batch. The core then writes the estimate in a block of its own.
-- The default import of the base class does not call `on_estimate`. So Gmail and IMAP show a count and no estimate.
+- The default import of the base class does not call `on_estimate`. So IMAP shows a count and no estimate.
+  EM-G5a gives Gmail its own import with an estimate (built 2026-10-05, not merged, §12.3.6.1).
 - Outlook counts only the folders whose first page opened. A missing folder adds no count and does not make the estimate NULL.
 - A resume writes the count so far plus the new count as the estimate. The import writes the message at the resume point again, and the count and the estimate both include it.
 - Outlook pages each folder by time (fix rounds 1 and 2). Each next page is a new query with `lt` the second after the oldest message of the last page, and the stream drops the ids that it read again. A `$skip` link shifted when a message moved out of a folder, and the import lost the message at the page edge.
@@ -2297,6 +3064,7 @@ The R8 tests must show PASSED, not SKIPPED. After the deploy, read the ledger li
 - Then, with no session open, Outlook looks up each candidate by `internetMessageId`, at most 50 for each folder. A message that Graph still has keeps its row, because the member moved it in the Outlook client. A failed lookup, or a row with no internet message id, keeps its row too. The trash checks `updated_at` again in its own block.
 - EM-T6d part 2 (#581) closed the follow-up of the EM-T6b review. `isFirstSyncPending` and `onboardingStage` check `syncEnabled`, so the panel does not freeze when the member turns sync off during the import.
 - `sync_messages` takes `catch_up`. Gmail and IMAP accept it and ignore it, so `gmail.py` and `imap.py` change by one argument each.
+  EM-G4b (#632) fixed the loss of Gmail mail after a pause. Gmail now stores a history cursor, and a stale cursor sweeps back to the watermark (§12.1 GM-16 to GM-18, §12.3.5.2).
 - A deep sync of a member act writes no progress, also when the first import is not done. The next tick of the loop then runs the first import.
 - The `synced` result and `messages_synced` count the rows of the import and of the recurring sweep together.
 - Phase (c) and each batch of an import use one write, `_write_messages`.
@@ -2356,6 +3124,101 @@ The R8 tests must show PASSED, not SKIPPED.
 
 **Waits for** EM-T6b. The owner answered Q1, Q2 and Q3 on 2026-10-02 (§10.2). The items marked (Q2) and (Q3) carry those answers.
 
+**Narrowed (2026-10-04).** Port `8b4cb4dfc` onto `main`. Do not build it again.
+
+- A dry-run apply onto `main` gives five conflicts: `email_ingestion/scheduler.py`, `transport/accounts.py`, `email_ingestion/AGENTS.md`, this spec and `work_plan.md`. Seven files apply clean.
+- On `main`, `_reconcile_import` takes `provider`. The old commit calls it without `provider`, so the port adds it.
+- The port takes no migration. Migration 225 holds `stored_bytes` and `stored_bytes_at`. A later change that needs a column takes the next free number at build time (R1).
+
+**The gaps G1 to G5 (2026-10-04).** The old commit leaves five gaps. The port closes each one, and these rules bind it.
+
+- **G1. The removal keeps drafts.** The preview and the removal skip the folder `drafts`, so an unsent draft stays. This is an orchestrator decision, and the owner can reverse it.
+- **G2. At the limit, `core.hydrate_message_body` writes no body** (`core.py:365-418`). It returns the body that it loads. The reply drafter and the follow-up path call it.
+- **G3. The removal holds the mailbox lock.** A new public helper in `scheduler.py` takes the lock that each sync takes (`scheduler.py:769-860`). The removal waits 5 seconds for it, then answers 409. Its first block under the lock moves `import_since`, before any delete.
+- **G4. A removal can end the `limit` phase.** The last block writes `import_phase = 'done'` when the phase was `limit` and the new meter is under the limit. Review round 1 adds a third test: no gap is left below `import_reached_at`.
+- **G5. The last block deletes the orphan drafts of the AI.** It deletes the `email_ai_drafts` row of each thread that this removal emptied (review round 1).
+
+**Status.** ✅ MERGED #615 (2026-10-04). Four commits on `5e268c766`: the narrowing, the port of `8b4cb4dfc`, the gaps G1 to G5, and review round 1. It adds no migration. The fence is `tests/unit/test_email_storage_limit.py`: 72 tests, 28 of them R8, and 0 skip.
+
+**As built.**
+
+- `email_ingestion/storage.py` owns the limit, the meter, the preview and the steps of the removal. Each step takes a session, opens none and never commits.
+- The meter is one statement. It sums `pg_column_size` of 16 message columns, 5 attachment columns and 3 embedding columns. An R8 test compares the three lists with `pg_attribute`, so a new column of variable length fails until the meter names it.
+- The meter runs in the block of each import batch and in the block of phase (d). A first import at the limit writes `import_phase = 'limit'`. `_cycle_result` takes a keyword `limit`, and each import at the limit returns `limit: true`.
+- A deep sync that stops at the limit runs no import reconcile, and it logs `sync.import_reconcile_skipped reason=limit`. A page that the import did not read can hold mail of the same second as its last message.
+- Phases (e) and (f) moved into `_backfill_and_embed`. At the limit, neither phase runs, and the cycle logs `sync.storage_limit`. The write of refreshed credentials still runs between the two phases.
+- The two routes live in `transport/storage.py`. The preview answers `before`, `messages` and `bytes`. The removal answers `before`, `removed`, `stored_bytes` and `storage_limit_bytes`. `EmailAccountModel` carries `stored_bytes` and `storage_limit_bytes` for EM-T6e.
+- A `before` that is not an ISO date answers 400. A value with no zone is UTC. The removal keeps a message with no `received_at`.
+- (Q4) At the limit, the open skips its body UPDATE. The attachment rows of the open still land, because the download route needs the stored row id.
+- (G1) `KEPT_FOLDERS_SQL` is the one draft filter. It copies the folder test of `body_backfill.py`, so `drafts`, `Drafts` and `draft` stay, and a NULL folder is not a draft.
+- (G2) `hydrate_message_body` reads the meter in its first SELECT, through a `LEFT JOIN` on `email_accounts`, so the check costs no query.
+- (G3) `scheduler.hold_mailbox` is the new public helper, and `MailboxBusy` is its refusal. The ownership read runs before the lock, so a stranger gets 404 and never learns that a sync runs. The wait is `REMOVAL_LOCK_WAIT_S`, 5 seconds.
+- (G4) `end_limit_phase` writes `done` only under the limit, and its `WHERE` also names `import_phase = 'limit'` and the gap test of review round 1.
+- (G5) `delete_orphan_ai_drafts` runs in the last block. No step calls Mem0.
+- The port changed two tests of `main`. The fake account row of `test_email_n_plus_one.py` gains `stored_bytes`, because each account read now returns it. The `email_ingestion/` entry of `test_email_owner_scope_fence.py` gets a new reason (B6), and it stays the one entry.
+
+**Review round 1 (2026-10-04).** An independent verifier and an adversarial reviewer read the branch. Each finding, its fix and its fence:
+
+- **(P1) The limit binds "Load older".** `transport/folders.py::backfill_folder` reads `stored_bytes` in its owner read. At the limit, it writes no row, builds no provider, and answers `exhausted`. Fence `email-storage-rr1-load-older`: `test_load_older_at_the_limit_writes_nothing_and_calls_no_provider`.
+- **(P1, the UI)** The store writes `backfillExhausted` from that answer, so the list hides the button and shows no error. The reviewer wrote that a scroll calls the route. The scroll observer pages the database only (`handleAutoLoad`), and a click on the button calls the route (`EmailList.tsx:300-303`).
+- **(P2) A removal closes the guided setup of a mailbox from before EM-T6.** `_ADVANCE_IMPORT_SINCE` writes `onboarding_done_at` when the old `import_since` is NULL. A mailbox in its guided setup keeps NULL. Fence `email-storage-rr1-onboarding`: `test_a_removal_closes_the_setup_of_a_mailbox_from_before_em_t6`.
+- **(P2) The `limit` phase ends only with no gap.** `_END_LIMIT_PHASE` also needs `import_reached_at IS NULL OR import_since >= import_reached_at`. Fence `email-storage-rr1-gap`: `test_the_limit_phase_ends_only_when_no_gap_is_left`.
+- **(Noted) The lock key is the canonical UUID.** `scheduler._lock_key` returns `str(uuid.UUID(id))`. An id that is not a UUID keeps its text in lower case, and the key never raises. Both storage routes answer 404 for such an id before a block opens.
+- **(Noted) The fence of the lock key.** Fence `email-storage-rr1-lock-key`: `test_the_lock_key_is_the_canonical_uuid`, `test_an_id_that_is_not_a_uuid_answers_404_before_any_block`, and `test_a_removal_answers_409_while_a_sync_holds_the_mailbox`. In the third test, the sync names the mailbox in upper case with no hyphens.
+- **(Noted, and verifier P2) The orphan deletes take only the threads of this removal.** `remove_older_chunk` returns `RemovedChunk`, with the threads of the deleted mail (`RETURNING thread_id`). The route collects them for the last block. Fence `email-storage-rr1-orphans`: `test_the_orphan_deletes_touch_only_the_threads_of_this_removal`.
+- **(Verifier P2) A draft in a non-English Outlook mailbox.** No code change. The open points below record it.
+- **(Verifier P3)** The base of this section now reads `5e268c766`, the merge of EM-T4d (#614). This round removed the STE errors on the added lines of `email_ingestion/AGENTS.md`, `work_plan.md` and this section.
+
+**Agent decisions of review round 1.** The owner can reverse each one.
+
+- **"Load older" can load again mail that a removal took out.** Its floor stays the ceiling of 180 days, as EM-T6a chose (fix round 1 of EM-T6a). It is an explicit act of the member, and the limit still binds it. The reason: a floor that only a removal sets needs a new column, and so a migration. That column is the path to reverse this decision.
+- **The orphan deletes take only the threads that the removal emptied.** A thread status or a draft of the AI from any other cause stays. A reply from mailbox B to mail of mailbox A stores the pair (B, the thread of A) (`automation/drafting.py:1943-1945`). Before this round, each removal in B deleted that draft.
+- **The fence of the orphan deletes seeds three rows that must stay.** (a) A row of A for a thread that the removal did not touch. (b) A row of mailbox B of the same member for the emptied thread. (c) A row of a colleague's mailbox in the same organization for the emptied thread.
+
+**Open points.**
+
+- During a removal, a loop cycle or a webhook sync skips, and its new mail waits for the next loop cycle. A holder sync whose rerun came while the removal waited loses that rerun, because `_rerun_once` reads a waiter as a sync.
+- R-4 still holds: measure the time of the meter on the box after the deploy.
+- Before merge, the orchestrator reads the meter of each production mailbox (R-8). The read is the SELECT form only.
+- EM-T6e draws the notice and the dialog.
+- **(Review round 1, item 3) Nothing closes the gap of a `limit` phase.** A loop cycle runs no import, because `initial_sync_done` is true. A Resync (`deep=True`) imports from now down to `import_since`, so it can fill the gap up to the limit. It writes no progress column, so the phase stays `limit` and `import_reached_at` does not move. Only a removal with `before` at or after `import_reached_at` ends the phase. EM-T6e must decide a resume path, for example a deep import that ends the phase when it reaches the floor under the limit. **Closed for EM-T6e (2026-10-04):** EM-T6e draws the gap as one line with no action (D2). EM-T6f owns the resume path (Order, item 7).
+- **(Review round 1, item 6) A draft in a non-English Outlook mailbox is not kept.** `email_messages` has no draft flag, and the Outlook provider does not read `isDraft`. `providers/outlook.py:419-422` does not request `wellKnownName`, because a consumer account answers 400 to it. So a Drafts folder with a local name (`Entwürfe`, `Brouillons`) is a user folder, and its rows get `folder = 'entwürfe'`. G1 does not keep them, and `body_backfill.py:120` has the same rule.
+- **(Item 6, the provider follow-up)** Classify the Drafts folder by the alias `/me/mailFolders/drafts`, or store `isDraft` for each message. Then `KEPT_FOLDERS_SQL` reads it. The branch `email-delta-shadow` changes `outlook.py` now, so this round did not.
+- **(Review round 1, item 9) A large removal can take longer than 30 seconds.** The chunk loop runs inside the request, and the Control Plane proxy gives a POST 30 seconds. EM-T6e must plan for a long removal. For example, the dialog reads the meter again after a timeout of the proxy. **Closed by EM-T6e (2026-10-04):** the BFF gives the removal 120 seconds, and the dialog follows a removal that outlives the proxy through the preview (D1).
+- **"Load older" takes no mailbox lock.** A "Load older" that runs during a removal can write a few rows older than `before`.
+- **"Load older" reads the meter of the last sync.** Under the limit, each call writes up to 300 messages, and the meter runs again at the next sync. So a member can go past the limit by the pages of one sync interval.
+- **A removal that fails part way keeps some orphan rows.** Its last block does not run, so the rows of the threads that its chunks emptied stay. A later removal does not see those threads. A disconnect deletes them, because both tables cascade from `email_accounts`.
+
+**Mutation checks (2026-10-04).** For each mutation, the script changed the code, ran the named tests on a private database, and put the file back. A SHA-256 check proved each restore.
+
+| Mutation | What it changes | Tests that went red |
+|---|---|---|
+| G1, chunk | Drop the draft filter from `_CHUNK_IDS` | `test_the_removal_keeps_each_draft`, `test_the_preview_and_the_removal_skip_the_drafts[chunk]` |
+| G1, preview | Drop the draft filter from `_PREVIEW` | `test_the_removal_keeps_each_draft`, `test_the_preview_and_the_removal_skip_the_drafts[preview]` |
+| G2 | Write the body in `hydrate_message_body` at any meter | `test_hydrate_at_the_limit_returns_the_body_and_writes_none[at_limit]` |
+| G3, no lock | `hold_mailbox` acquires nothing | `test_a_removal_answers_409_while_a_sync_holds_the_mailbox`, `test_a_removal_runs_when_the_sync_ends_inside_the_wait` |
+| G3, floor last | Move `advance_import_since` from the first block to the last block | `test_the_first_block_under_the_lock_moves_the_floor`, `test_a_removal_deletes_the_older_mail_of_one_mailbox` |
+| G3, wait in a block | Open a `_tenant_session` in the same `async with` as the lock | `test_the_removal_waits_for_the_lock_with_no_block_open` |
+| G4, no end | Drop the call of `end_limit_phase` | `test_a_removal_under_the_limit_ends_the_limit_phase[under]`, `test_a_removal_in_one_mailbox_leaves_the_other_unchanged` |
+| G4, end at the limit | `end_limit_phase` ends the phase at any meter | `test_a_removal_under_the_limit_ends_the_limit_phase[still_full]` |
+| G5, no delete | Drop the call of `delete_orphan_ai_drafts` | `test_the_removal_deletes_the_orphan_ai_drafts_and_no_memory`, `test_a_removal_in_one_mailbox_leaves_the_other_unchanged` |
+| G5, Mem0 | Call `get_memory_client` at the end of the removal | `test_the_removal_deletes_the_orphan_ai_drafts_and_no_memory` |
+| Multi-inbox | Move `import_since` of each mailbox of the member | `test_a_removal_in_one_mailbox_leaves_the_other_unchanged` |
+| No provider reach | Name `build_provider` inside `hold_mailbox` | `test_no_provider_method_is_reachable_from_a_route` |
+| RR1 item 1 | Replace the limit check of `backfill_folder` with `if False:` | `test_load_older_at_the_limit_writes_nothing_and_calls_no_provider[at_limit]` |
+| RR1 item 2, no CASE | Drop the `onboarding_done_at` line of `_ADVANCE_IMPORT_SINCE` | `test_a_removal_closes_the_setup_of_a_mailbox_from_before_em_t6[before_em_t6]` |
+| RR1 item 2, every row | `WHEN import_since IS NULL` becomes `WHEN true` | `test_a_removal_closes_the_setup_of_a_mailbox_from_before_em_t6[in_setup]` |
+| RR1 item 3 | Drop the gap test from `_END_LIMIT_PHASE` | `test_the_limit_phase_ends_only_when_no_gap_is_left[gap_left]` |
+| RR1 item 4, key | `_lock_key` goes back to the id in lower case | `test_the_lock_key_is_the_canonical_uuid`, `test_a_removal_answers_409_while_a_sync_holds_the_mailbox` |
+| RR1 item 4, route | Drop the `_account_uuid` call of the removal | `test_an_id_that_is_not_a_uuid_answers_404_before_any_block`, all four ids |
+| RR1 item 5, status mailbox | `ts.account_id = :aid` becomes `(ts.account_id = :aid OR true)` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, draft mailbox | `d.account_id = :aid` becomes `(d.account_id = :aid OR true)` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, status threads | Add `OR true` to the thread filter of `_DELETE_EMPTY_THREAD_STATUS` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, draft threads | Add `OR true` to the thread filter of `_DELETE_ORPHAN_AI_DRAFTS` | `test_the_orphan_deletes_touch_only_the_threads_of_this_removal` |
+| RR1 item 5, route | The route stops the collection of the threads | `test_the_first_block_under_the_lock_moves_the_floor`, `test_the_removal_deletes_the_orphan_ai_drafts_and_no_memory` |
+
+Item 6 of review round 1 changed no code, so it has no mutation.
+
 **Scope.**
 
 1. **The setting.** Add `email_mailbox_storage_limit_mb: int = 500` to `acb_common/settings.py`. The limit in bytes is that value times 1,048,576.
@@ -2366,10 +3229,10 @@ The R8 tests must show PASSED, not SKIPPED.
 6. **(Q3) Phases (e) and (f) stop at the limit.** At or over the limit, the body backfill makes no provider call, and the embeddings make no model call. A message that the member opens still loads its body live.
 7. **(Q2) New mail still syncs at the limit.** The recurring sweep writes new mail at any meter value. Only the import of older mail stops.
 8. **The preview route.** `GET /email/accounts/{id}/storage/older?before=<date>` returns the count of messages and the bytes that a removal would free. It writes nothing.
-9. **The removal route.** `POST /email/accounts/{id}/storage/remove-older` with `{"before": "<date>"}` removes the mail of that mailbox received before that date. Both routes carry the owner predicate on `user_id`. A `before` that is not in the past answers 400.
-10. **What the removal deletes.** It works in chunks of 1,000 messages, and each chunk is one `_tenant_session()` block with no `commit()`. It first deletes the `email_executed_rules` rows of those messages, and then the messages. The attachment rows and the embeddings cascade. Last, it deletes each `email_thread_status` row of the mailbox whose thread has no message left.
-11. **What the removal keeps.** The rules, the learned patterns, the rule guidance, the senders and the contacts.
-12. **After the removal.** `import_since` becomes the later of `import_since` and `before`, so a Resync does not import that mail again. The meter runs again. The answer holds the count removed and the new `stored_bytes`.
+9. **The removal route.** `POST /email/accounts/{id}/storage/remove-older` with `{"before": "<date>"}` removes the mail of that mailbox received before that date. Both routes carry the owner predicate on `user_id`. A `before` that is not in the past answers 400. Both routes go in a new module, `transport/storage.py`.
+10. **What the removal deletes.** It works in chunks of 1,000 messages, and each chunk is one `_tenant_session()` block with no `commit()`. It skips the folder `drafts` (G1). It first deletes the `email_executed_rules` rows of those messages, and then the messages. The attachment rows and the embeddings cascade. Last, it deletes the thread status and the AI draft of each emptied thread (G5, review round 1).
+11. **What the removal keeps.** The rules, the learned patterns, the rule guidance, the senders, the contacts and the unsent drafts (G1). The Mem0 memories of the mailbox stay, because no Mem0 key names one mail.
+12. **The import floor and the meter.** The first block under the lock moves `import_since` to the later of `import_since` and `before`, before any delete (G3). So a Resync does not import that mail again, also after a removal that fails part way. The last block runs the meter again, and it ends the `limit` phase under the limit (G4). The answer holds the count removed and the new `stored_bytes`.
 13. **The removal never reaches the provider.** `storage.py` imports nothing from `email_ingestion.providers`. Neither the routes nor `storage.py` calls `provider_session` or `build_provider`.
 14. **The account API.** `EmailAccountModel` gains `stored_bytes` and `storage_limit_bytes`.
 
@@ -2383,8 +3246,7 @@ The R8 tests must show PASSED, not SKIPPED.
 - A Resync at the limit stops in the same way, and its result holds `limit: true`.
 - (Q3) At the limit, phases (e) and (f) make no provider call and no model call.
 - (Q3) At the limit, a member who opens a message with no stored body gets the body.
-- (Q4) At the limit, that open writes no body to the row (`transport/messages.py:624-654`), so the meter
-  does not change. Under the limit, the open stores the body as it does today.
+- (Q4) At the limit, that open writes no body (`transport/messages.py:674-687`). Attachment rows may still land, because the download route needs the row id. Under the limit, the open stores the body as it does today.
 - (Q2) At the limit, the next poll still writes a new message.
 - The preview returns the count and the bytes, and the count of `email_messages` rows does not change.
 - R8: a removal with `before` 30 days back deletes each message of the mailbox older than that date, and no message of another mailbox. It deletes their `email_executed_rules` rows, and it moves `import_since` to `before`.
@@ -2393,23 +3255,37 @@ The R8 tests must show PASSED, not SKIPPED.
 - An AST fence finds no import of `email_ingestion.providers`, `build_provider` or `provider_session` in `storage.py` or in the two handlers. A companion test proves that the fence can fail.
 - An AST fence finds no `.commit()` in `storage.py`.
 - R8, for two organizations: a member who does not own the mailbox gets 404 from both routes.
-- `test_email_owner_scope_fence.py` passes with no new entry.
+- `test_email_owner_scope_fence.py` passes with no new entry. Its `email_ingestion/` entry gets a new reason text only.
+- (G1) The removal keeps each message in the folder `drafts`, and the preview does not count it.
+- (G2) At the limit, `hydrate_message_body` returns the body and writes none.
+- (G3) While a sync holds the mailbox, the removal answers 409. The removal moves `import_since` before its first delete.
+- (G4) R8: a removal that takes the meter under the limit writes `import_phase = 'done'` when no gap is left below `import_reached_at`.
+- (G5) R8: the removal deletes the `email_ai_drafts` row of each thread that it emptied, and no other row. A patched Mem0 client gets no call.
+- R8, multi-inbox: a removal in mailbox A of member M leaves mailbox B of M unchanged.
 
-**Files.** `packages/acb_common/acb_common/settings.py`. Under `apps/services/email_ingestion/email_ingestion/`: a new `storage.py` and `scheduler.py`. Under `routes/email/`: `transport/accounts.py`. The test is a new `tests/unit/test_email_storage_limit.py`.
+**Files.** `packages/acb_common/acb_common/settings.py`. Under `apps/services/email_ingestion/email_ingestion/`: a new `storage.py` and `scheduler.py`. Under `routes/email/`: `core.py`, `transport/accounts.py`, `transport/messages.py`, `transport/__init__.py` and a new `transport/storage.py`. The DOX files `apps/services/email_ingestion/AGENTS.md` and `apps/services/gateway/AGENTS.md`. The test is a new `tests/unit/test_email_storage_limit.py`.
 
 **Verify with.**
 
 ```bash
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_email_storage_limit.py tests/unit/test_email_import_batches.py \
-  tests/unit/test_email_import_floor.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_import_floor.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_sync_one_at_a_time.py \
+  tests/unit/test_email_cleanup_backfill.py tests/unit/test_email_process_past_progress.py \
   tests/unit/test_email_embeddings_hash.py tests/unit/test_email_owner_scope_fence.py \
-  tests/unit/test_email_accounts_initial_sync_rls.py tests/unit/test_org_purge_tenant.py -q -rs
-uv run ruff check apps/services/email_ingestion packages/acb_common \
-  apps/services/gateway/gateway/routes/email/transport tests/unit/test_email_storage_limit.py
+  tests/unit/test_email_accounts_initial_sync_rls.py tests/unit/test_email_keep_separate.py \
+  tests/unit/test_org_purge_tenant.py tests/unit/test_db_engine_seam.py \
+  tests/unit/test_outlook_delta_shadow.py -q -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/storage.py \
+  apps/services/gateway/gateway/routes/email/transport/storage.py \
+  tests/unit/test_email_storage_limit.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
 ```
 
 The R8 tests must show PASSED, not SKIPPED.
+
+Before merge, read the meter (the SELECT form only) for each production mailbox. A mailbox from before EM-T6 can already be over 500 MB (R-8).
 
 ##### EM-T6d — the guided setup: range, progress, AI rules and done (UI)
 
@@ -2417,8 +3293,8 @@ The R8 tests must show PASSED, not SKIPPED.
 
 **Narrowed (orchestrator, 2026-10-02).** The owner wants an Email demo with the import timeline. The owner deferred the rules step and the storage UI. So EM-T6d has two parts.
 
-- **Part 1** builds items 1 to 7, 12 and 13. It is BUILT, not merged. `onboardingStage` returns `importing` or `null` only. Part 2 adds `rules`.
-- **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". It is BUILT, not merged (2026-10-03). `onboardingStage` returns `rules` after the import. `components/OnboardingRulesStep.tsx` draws it, and its decisions are in `lib/onboarding.ts`.
+- **Part 1** builds items 1 to 7, 12 and 13. ✅ MERGED (#579). `onboardingStage` returns `importing` or `null` only. Part 2 adds `rules`.
+- **Part 2** builds items 8 to 11: the rules step, the drafting step and "Done". ✅ MERGED (#581, 2026-10-03). `onboardingStage` returns `rules` after the import. `components/OnboardingRulesStep.tsx` draws it, and its decisions are in `lib/onboarding.ts`.
 - **Part 2 offers "Process past emails" (owner decision (d), #576).** The automatic rule run touches only mail that arrived after the first enabled rule. So, once a rule exists, the step offers "Sort my imported mail". It opens AI Settings with "Process past emails" from the date of `import_since`, and the dialog counts the mail before it spends a model call.
 - **Part 2, the ways out.** "Done", "Skip for now" and the "Skip setup" button send `onboarding_done: true`. The page writes the returned account into the store, so a failed re-read cannot bring the step back (fix round 1).
 - **Part 2, the drafting switch (fix round 1).** It shows the stored `draft_replies`, read on each mount, and stays disabled until the read returns or when it fails. It shows only with an enabled reply rule, the rule of `_is_reply_rule` in `rules.py`. Without one, a line names the "Needs Reply" rule. The client match mirrors the two tuples of `rules.py`, and a test parses them.
@@ -2489,27 +3365,216 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 **Waits for** EM-T6c and EM-T6d.
 
+**Status.** ✅ MERGED #619 (2026-10-04). Four commits on `04a64ba4d`: the narrowing, the build, the status with the visual review, and review round 1. The gateway does not change.
+
+**As built.**
+
+- `lib/storage.ts` holds each decision: the limit, the copy, the MB format, the choices, the kept ids and `removalReducer`. The reducer is the one state machine of the dialog, so a test drives each path with no DOM.
+- `shortDate` moved from `lib/onboarding.ts` to `lib/utils.ts`, and `onboarding.ts` re-exports it. `onboarding.ts` and `mailbox.ts` import `storage.ts`, so `storage.ts` reads the date from `utils.ts` with no cycle.
+- The storage step is its own component, `components/StorageStep.tsx`. `components/StorageNotice.tsx` draws the two kinds of notice: `limit` with the action, and the gap line of D2.
+- The rule of the proxy lives in `src/app/api/email/[...path]/postTimeout.ts`. The set of AI paths moved there with no change, because a Next route file may export only its handlers.
+- The dialog calls both routes from the click, never from an effect. React runs an effect twice in development, and a removal must not go twice. Only the timer of the follow-up is an effect.
+- The confirm sends the `before` that the preview answered, which is Python ISO text with `+00:00`. `previewOlderMail` encodes it, because a bare `+` in a query reads as a space.
+- A 400 or a 404 shows the detail of the gateway. A 500 or a 503 shows "Metorite could not finish the removal. Try again." The dialog then reads the accounts and the preview again, because some chunks can be gone.
+- The page shortcuts stop while the dialog is open. Without that, `#` with focus on a dialog button deleted the open mail behind the dialog.
+- The month choices have no default, because the act removes mail. The member picks one.
+- The dialog names the provider that does not change: Outlook for Microsoft, and Gmail for a Gmail mailbox.
+- The switcher mark shows for one mailbox too, as the error mark does. In All inboxes, the notice names a mailbox at the limit only. The gap line shows in the own view of its mailbox.
+- "Keep it as it is" keeps at most 50 ids, and the oldest id goes first.
+- The scans of `onboarding.test.ts` and `onboardingRules.test.ts` now read `setupStage`, the one stage read of the page. The page still calls `onboardingStage` once.
+
+**Fences.**
+
+- `lib/storage.test.ts`: `email-storage-limit` (A1), `email-storage-copy` (A2, A3), `email-storage-confirm` (A8, A9), `email-storage-follow-up` (A11, A13), `email-storage-meter-store` (A14) and `email-storage-kept` (D6).
+- `lib/removeOlderMailDialog.test.ts`: `email-storage-dialog-name` (A4), `email-storage-dialog-copy` (A10), `email-storage-dialog-busy` (A11) and `email-storage-dialog-ui` (D5).
+- `lib/onboarding.test.ts`: `email-storage-stage` (A7). `lib/allInboxes.test.ts`: `email-storage-mailbox` (A5, A6) and `email-storage-switcher` (UC-12).
+- `src/app/api/email/[...path]/postTimeout.test.ts`: `email-storage-proxy-budget` (A12). It also runs the real POST handler and reads the budget of the gateway call.
+- Review round 1 adds `email-storage-no-zero` and `email-storage-one-guard` in `lib/storage.test.ts`. It adds `email-storage-dialog-leaves` in `lib/allInboxes.test.ts`.
+- Review round 1 also adds four fences in `lib/removeOlderMailDialog.test.ts`: `email-storage-unconfirmed-view`, `email-storage-follow-up-stops`, `email-storage-one-confirm` and `email-storage-no-zero-flow`. It widens `email-storage-dialog-copy`.
+
+**Review round 1 (2026-10-04).** An independent verifier and an adversarial reviewer read the build. Neither found a path to the wrong mailbox, to the wrong date, or to a second POST. This round closes their findings, item by item.
+
+1. **A stale id stopped the page shortcuts.** The guard read `removingId`, and that id stayed set when the mailbox left the list. The dialog then drew nothing, so its `onClose` never ran.
+   - Fix: `removalMailbox` in `lib/mailbox.ts` looks up the mailbox, and the guard reads that value. The page clears an id that names no mailbox.
+   - The clear runs during render, as React documents. An effect would add a new error of the lint rule `set-state-in-effect`.
+   - Fence: `email-storage-dialog-leaves`.
+2. **A missing number read as 0.** The proxy sends `{}` for a 200 body that it cannot read. The mappers read that as 0, so the follow-up said "done", and the result said "removed 0".
+   - Fix: `requiredCount` in `lib/api.ts` throws for a count that is not a finite number of 0 or more. A thrown preview is a failed count.
+   - A thrown removal has no status, so the dialog follows it (D1). `noMessagesLeft` in `lib/storage.ts` is true only for an exact 0, so NaN cannot end the follow-up.
+   - Fences: `email-storage-no-zero` and `email-storage-no-zero-flow`.
+3. **No fence held A13 on the view.** A mutation that drew `STORAGE_COPY.failed` after 3 minutes stayed green. Copy that said "could not finish" stayed green too.
+   - Fix: a render test draws the phase `unconfirmed` and pins its words. It refuses each failure string, and any word like "fail", "error" or "could not".
+   - Fence: `email-storage-unconfirmed-view`.
+4. **The copy scan was too narrow.** It matched `delet*` near "outlook" only. The product verb is "remove", and the copy names Gmail too.
+   - Fix: the scan reads each value of `STORAGE_COPY`, each drawn text, and each `aria-label` and `title`. It matches "remove" or "delete" with Outlook, Gmail, the provider or the mail server, in either order.
+   - `[^.]*` stops at a period, so "This removes mail from Metorite only." and "Your Outlook mailbox does not change." pass. A case proves that the scan can fail.
+   - The test pins `confirm`, `action` and `dialogTitle` as literals. Fence: `email-storage-dialog-copy`.
+5. **No fence held the cleanup of the poll timer.** The body of the effect is now `followUp` in `components/RemoveOlderMailDialog.tsx`, which takes its calls as an argument.
+   - Fix: the cleanup of `followUp` clears the timer. An answer that comes after the cleanup changes nothing.
+   - A test with fake timers stops it, then goes past 5 seconds and 180 seconds. No preview runs, and no state changes. Fence: `email-storage-follow-up-stops`.
+6. **Two guards decided the POST.** The dialog checked the phase and the preview before the POST, and the reducer did the same check again. The two agreed, but nothing bound them.
+   - Fix: `acceptedConfirm` in `lib/storage.ts` asks the reducer. `sendRemoval` sends the POST only for its value, and the confirm button reads the same function.
+   - The first version of `acceptedConfirm` read only the phase after the reducer. A refused confirm in the phase `removing` keeps that phase, so the fence found the error.
+   - Fences: `email-storage-one-guard` and `email-storage-one-confirm`.
+7. **A15.** The visual review below now says where the captures are, and who looked at them.
+8. **The spec text.** The status commit cut the first sentence of the paragraph "Narrowed", and this round puts it back. The status line names the real commits and their base. The six new lint errors of this section are gone.
+9. **The command palette.** The open points record it as a follow-up.
+
+**Mutation checks (2026-10-04).** For each mutation, a script changed the code, ran the named tests and put the file back. A SHA-256 check proved each restore. All 27 mutations of the build went red. All 16 mutations of review round 1, the rows "R1", went red too.
+
+| Mutation | What it changes | Tests that went red |
+|---|---|---|
+| A1 | The limit takes `>` in place of `>=` | `storage.test.ts`, 1 |
+| A2 | The notice drops "Metorite stopped importing older mail." | `storage.test.ts`, 2 |
+| A3, action | The gap line draws the action | `storage.test.ts`, 1 |
+| A3, under | Each mailbox under the limit gets the gap line | `storage.test.ts`, 1 |
+| A4 | The dialog draws no chip | `removeOlderMailDialog.test.ts`, 1 |
+| A5, pool | `storageMailbox` reads a separate mailbox too | `allInboxes.test.ts`, 1 |
+| A5, id | The notice opens the dialog for `selectedAccountId` | `allInboxes.test.ts`, 1 |
+| A6, banner | The reconnect banner no longer wins | `allInboxes.test.ts`, 1 |
+| A6, step | The storage step no longer wins | `allInboxes.test.ts`, 1 |
+| A7, meter | The stage `storage` drops the meter test | `onboarding.test.ts`, 3 |
+| A7, keep | The stage ignores "Keep it as it is" | `onboarding.test.ts`, 1 |
+| A8, late | A late answer for an earlier choice lands | `storage.test.ts`, 1 |
+| A8, zero | The confirm is on at 0 messages | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 2 |
+| A9 | The confirm sends its own key, not the `before` of the answer | `storage.test.ts`, 5 |
+| A10 | The copy says that Metorite deletes mail in Outlook | `removeOlderMailDialog.test.ts`, 3 |
+| A11 | A 409 clears the choice | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 2 |
+| A12, rule | The removal loses its 120 s | `postTimeout.test.ts`, 2 |
+| A12, width | The pattern takes three segments or more | `postTimeout.test.ts`, 1 |
+| A13, 502 | A 502 reads as a failure | `storage.test.ts`, 1 |
+| A13, time | The follow-up runs with no end | `storage.test.ts`, 1 |
+| A13, zero | The follow-up never confirms at 0 messages | `storage.test.ts`, 2 |
+| A14, meter | `withRemovalMeter` keeps the old meter | `storage.test.ts`, 1 |
+| A14, page | The page writes no answer into the store | `storage.test.ts`, 1 |
+| D6 | A refused store throws | `storage.test.ts`, 1 |
+| UC-12 | The switcher draws no mark | `allInboxes.test.ts`, 2 |
+| Shortcuts | The page shortcuts run under the dialog | `allInboxes.test.ts`, 1 |
+| Key | The notice keys on the bare id again | `storage.test.ts`, 1 |
+| R1, 1a | The shortcut guard reads `removingId` again | `allInboxes.test.ts`, 2 |
+| R1, 1b | The page keeps an id that names no mailbox | `allInboxes.test.ts`, 2 |
+| R1, 2a | The preview reads a missing count as 0 | `storage.test.ts`, 1 |
+| R1, 2b | The removal reads a missing count as 0 | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 2 |
+| R1, 2c | The reducer reads NaN as 0 | `storage.test.ts`, 1 |
+| R1, 2d | `noMessagesLeft` reads NaN as 0 | `storage.test.ts`, 3 |
+| R1, 3a | The view after 3 minutes draws the failure words | `removeOlderMailDialog.test.ts`, 1 |
+| R1, 3b | The words after 3 minutes claim a failure | `removeOlderMailDialog.test.ts`, 2 |
+| R1, 4a | The copy says that Metorite also removes the mail in Outlook | `removeOlderMailDialog.test.ts`, 1 |
+| R1, 4b | The confirm reads "Remove from Outlook" | `removeOlderMailDialog.test.ts`, 2 |
+| R1, 5a | The cleanup keeps the timer | `removeOlderMailDialog.test.ts`, 1 |
+| R1, 5b | The effect drops the cleanup of `followUp` | `storage.test.ts`, 1 |
+| R1, 5c | An answer after the cleanup still changes the state | `removeOlderMailDialog.test.ts`, 1 |
+| R1, 6a | The POST goes on the preview alone | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 3 |
+| R1, 6b | The dialog checks the phase and the preview itself again | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 2 |
+| R1, 6c | `acceptedConfirm` skips the reducer | `storage.test.ts` and `removeOlderMailDialog.test.ts`, 3 |
+
+**Verification (2026-10-04, after review round 1).**
+
+- `npx tsc --noEmit` exits 0.
+- The command below with `src/app/email src/app/api/email src/components src/lib/theme src/lib/nav.test.ts` passes 53 files and 1122 tests.
+- The full `npx vitest run` passes 298 of 300 files and 5766 of 5770 tests. The 4 failures are in `layoutBoundary.test.ts` and `reportsLiveOverview.test.ts`.
+- Those two files read `ReportsView.tsx`, which this branch does not change. They pass when that file has LF line ends, so the CRLF checkout on Windows causes them.
+
+**Visual review (A15, 2026-10-04).** The rig of the `visual-review` skill ran on the local Next dev server, with each `/api` call stubbed. No gateway, no database and no mailbox took part, so no call reached the removal route. The captures use dark, light, compact density, a changed accent and mobile width.
+
+- The captures show the notice in All inboxes, the switcher marks and each state of the dialog. They also show the storage step, the state after "Keep it as it is" and the gap line.
+- The captures exist at review time in a private scratch folder, and not in the repo. The `gh` tool cannot attach an image to a PR. So the PR lists what the captures show, and the orchestrator looked at the notice and the dialog in light mode before the merge.
+- The review found a duplicate React key. After "Keep it as it is", the notice and the rules step drew for one mailbox with one key. The keys now carry a prefix, and `storage.test.ts` fences it.
+- At mobile width, the action of the notice squeezed the words into a narrow column. The row now wraps, and the action drops below the words.
+- Review round 1 changes no drawn state, so the captures stay current.
+
+**Narrowed (orchestrator, 2026-10-04).** The spec-auditor cleared this slice as GO-NARROWED at `3d11922c2`. The orchestrator accepts the design decisions D1 to D7 below. EM-T6e changes the UI and the BFF proxy only, and the gateway does not change. The gate stays AGENT-SAFE (Gate, above). An agent must not run the removal route on a production mailbox, and the visual review uses the local stack only.
+
+**The two routes (EM-T6c, `transport/storage.py`).**
+
+- The preview is `GET /email/accounts/{id}/storage/older?before=<ISO>`. It answers `{before, messages, bytes}`, and `before` comes back as ISO text in UTC. It writes nothing, and it counts no draft (G1).
+- The removal is `POST /email/accounts/{id}/storage/remove-older` with `{"before": "<ISO>"}`. It answers `{before, removed, stored_bytes, storage_limit_bytes}`.
+- Both routes answer 400 for a `before` that is not ISO text or not in the past. A value with no zone is UTC. Both answer 404 for an id that is not a UUID, and for a mailbox of another member.
+- The removal answers 409 when a sync holds the mailbox for more than 5 seconds. The detail is "A sync is running for this mailbox. Try again when it ends." (`REMOVAL_BUSY_DETAIL`).
+- `GET /email/accounts` carries `stored_bytes` and `storage_limit_bytes` for each mailbox. `stored_bytes` is null before the first meter run. A null meter is not at the limit, and a meter equal to or over the limit is at the limit. The limit is the setting in MB times 1,048,576.
+
+**Design decisions (orchestrator, 2026-10-04).** The owner can reverse each one.
+
+- **D1. A long removal.** The BFF gives `accounts/<id>/storage/remove-older` a budget of 120 seconds. A pattern match in a small module makes that choice, and the module has its own test. After a 502, a 504 or a network error from the removal, the dialog says "The removal continues". It reads the preview again every 5 seconds, with the same `before`. At 0 messages, it reads the accounts again and shows the new meter.
+- **D1, the end.** After 3 minutes, the dialog says that Metorite cannot confirm the removal. It never reports a failure that it cannot prove. It does not read the meter alone, because the meter does not tell a removal in progress from a removal that stopped. The gateway does not change, and it gets no 202.
+- **D2. The gap.** A mailbox in the phase `limit` under the limit shows one line with no action. For example: "Metorite imported this mailbox back to 14 Sep. It stopped there at the storage limit." EM-T6f owns a path that resumes the import (Order, item 7).
+- **D3, which notice.** With one mailbox in view, Email shows the notice of that mailbox only. In All inboxes, Email shows one notice, for the first pooled mailbox at the limit in the order of the list. `storageMailbox` in `lib/mailbox.ts` decides it, beside `attentionMailbox`. A separate mailbox shows its notice in its own view only.
+- **D3, the switcher.** The switcher marks each mailbox at the limit, a separate one too. EM-T6e owns this mark of UC-12 (§11.5). The mark is a `Badge` or an icon with an `aria-label`, in the `warning` tone.
+- **D3, the name.** With two or more mailboxes, the notice and the dialog draw `MailboxChip` and the address, and the copy names the label. With one mailbox, the copy says "This mailbox". The dialog calls both routes with the id of the mailbox that it names, never the selected mailbox or `poolHome`.
+- **D3, the reconnect banner wins.** Email shows no storage notice for the mailbox that `attentionMailbox` names. It shows none for a mailbox while its stage is `storage`, because the storage step names it.
+- **D4. The copy.** See "The words" below.
+- **D5. The UI contract.** The dialog is `Modal` with `Button`s, as `MailboxEditDialog.tsx` is, because `ConfirmDialog` cannot disable its confirm. The date is `Input type="date"`, with `max` today. The month choices are a radio group of `Button`s, as in `ImportRangeStep.tsx`. The notice uses the `warning` tokens of the reconnect banner, with no raw amber. No file outside `src/components/ui/` imports `@base-ui/react`, and no `fixed inset-0` div draws.
+- **D6. The stage.** See scope item 4.
+- **D7. Load older.** No change.
+
 **Scope.**
 
-1. **The notice.** Email shows a notice when `stored_bytes` is at or over `storage_limit_bytes`, or when `import_phase` is `limit`. An example: "This mailbox uses 512 MB of its 500 MB in Metorite. Metorite stopped importing older mail." The action is "Remove older mail from Metorite".
-2. **The dialog.** The member picks a date. The choices keep the newest 1, 2, 3 or 6 months, or take a date from a picker. The dialog calls the preview route and shows "N messages, about X MB".
-3. **The words of the dialog.** It says: "This removes mail from Metorite only. Your Outlook mailbox does not change." The confirm button calls the removal route with `before`.
-4. **The stage.** `onboardingStage` gains `storage` between `importing` and `rules`. The panel offers the same dialog, and "Keep it as it is".
+1. **The fields.** `EmailAccount` in `lib/types.ts` gains `storedBytes?: number | null` and `storageLimitBytes?: number`. `mapAccount` in `lib/api.ts` maps them with `optionalCount`. When the gateway sends no `storage_limit_bytes`, Email draws no storage UI. The comment of `importPhase` names `limit`.
+2. **The calls.** `lib/api.ts` gains `previewOlderMail(accountId, before)` and `removeOlderMail(accountId, before)`.
+3. **The decisions.** A new pure `lib/storage.ts` holds `atStorageLimit`, the copy, the MB format, `keepNewestBefore(months, now)` and the state of the D1 follow-up. `storageMailbox` goes in `lib/mailbox.ts`.
+4. **The stage (D6).** `onboardingStage(account, { storageKept })` returns `storage` only when four things are true. The phase is `limit`, and the meter is at the limit. `onboardingDone` is false, and the member did not choose "Keep it as it is".
+   - "Keep it as it is" stores the id of the mailbox in `localStorage`. It stores ids only, with a `try` around each read and write. The stage then moves to `rules`, and the notice stays.
+   - After a removal that goes under the limit, the stage moves to `rules`, also with a gap.
+   - `page.tsx` draws the storage step between the import panels and the rules step. The step offers the dialog and "Keep it as it is".
+5. **The notice (D3, D2).** `components/StorageNotice.tsx` draws below the reconnect banner in `page.tsx`.
+6. **The dialog.** `components/RemoveOlderMailDialog.tsx` is built on `Modal`. The member keeps the newest 1, 2, 3 or 6 months, or picks a date. The dialog calls the preview, then the removal, and it shows the 409 detail and the D1 follow-up. On success, it writes the new meter into the store and reads the accounts again.
+7. **The proxy budget (D1).** `src/app/api/email/[...path]/route.ts` reads the budget of a POST from the new module.
+8. **The switcher mark (UC-12).** `components/AccountSidebar.tsx` marks each mailbox at the limit.
 
-**Non-goals.** No backend change. No removal without a preview.
+**The words (D4).**
+
+- The notice: "This mailbox uses 512 MB of its 500 MB in Metorite. Metorite stopped importing older mail." The action: "Remove older mail from Metorite". With two or more mailboxes, the label takes the place of "This mailbox".
+- The dialog: "This removes mail from Metorite only. Your Outlook mailbox does not change." Then: "Your rules, senders and unsent drafts stay."
+- The note: "Load older can import this mail again, until the mailbox is at its limit."
+- The preview: "12,400 messages, about 380 MB". One MB is 1,048,576 bytes.
+- A 409 shows the detail of the gateway as it is.
+- `before` is the ISO instant of local midnight of the chosen day, never a bare date.
+
+**Non-goals.** No gateway change, and no 202. The BFF proxy may change (D1). No removal without a preview. No change to Load older (D7). No resume of the import (EM-T6f).
 
 **Done when.**
 
-- The notice draws for `stored_bytes` at the limit, and for `import_phase = 'limit'`. It does not draw under the limit.
-- The dialog calls the preview before the member can confirm. The confirm sends `before` as the chosen date.
+- The notice draws for `stored_bytes` at the limit, and for `import_phase = 'limit'`. In the phase `limit` under the limit, it draws the gap line of D2 with no action. It does not draw under the limit in any other phase.
+- The dialog calls the preview before the member can confirm. The confirm sends the `before` of that preview, the ISO instant of local midnight of the chosen day.
 - The dialog markup holds the sentence "Your Outlook mailbox does not change."
 - No copy in the notice or the dialog says that Metorite deletes mail in Outlook.
-- `onboardingStage` returns `storage` for `import_phase = 'limit'` when `onboarding_done` is false.
-- Do a visual review with the `visual-review` skill. Use light mode, compact density, a changed accent, mobile width, and a view beside Calendar. The PR carries the screenshots.
+- `onboardingStage` returns `storage` for `import_phase = 'limit'` when `onboarding_done` is false, the meter is at the limit, and the member did not keep it (D6).
+- A1. `atStorageLimit` is false for a null or absent meter, for an absent limit, and under the limit. It is true for a meter equal to or over the limit.
+- A2. For 512 MB of 500 MB, the notice reads "This mailbox uses 512 MB of its 500 MB in Metorite. Metorite stopped importing older mail."
+- A3. Under the limit with the phase `done`, no notice draws. In the phase `limit` under the limit, the gap line draws with no removal action.
+- A4. With two mailboxes, the notice and the dialog draw the chip and the address, and the copy names the label. With one mailbox, the copy says "This mailbox".
+- A5. In All inboxes, `storageMailbox` is the first pooled mailbox at the limit, and never a separate one. The dialog calls both routes with the id of that mailbox, not the id of `poolHome`.
+- A6. No notice draws for the mailbox that `attentionMailbox` names, or for a mailbox in the stage `storage`.
+- A7. The stage table of D6: `storage` in the phase `limit` at the limit. The stage is `rules` under the limit and after "Keep it as it is". It is `null` with `onboardingDone`.
+- A8. The confirm stays disabled until the preview of the current choice answers, and at 0 messages. A late answer for an earlier choice does not enable it.
+- A9. The confirm sends the `before` of the preview that answered.
+- A10. The dialog holds the Metorite-only copy. No text in the notice or the dialog says that Metorite deletes mail in Outlook.
+- A11. A 409 shows the detail of the gateway, and the choice stays.
+- A12. The proxy gives 120,000 ms to `accounts/<id>/storage/remove-older` only. Each other POST keeps its budget.
+- A13. After a 502, a 504 or a network error, the dialog follows the removal (D1). It reads the preview every 5 seconds, confirms at 0 messages, and says that it cannot confirm after 3 minutes. It never reports a failure.
+- A14. After a removal, the store carries the `stored_bytes` of the answer, and the page reads the accounts again.
+- A15. A visual review on the local stack shows the notice, the dialog, the switcher mark and the step. It uses light mode, compact density and a changed accent.
 
-**Files.** Under `workbench/control_plane/src/app/email/`: a new `components/StorageNotice.tsx`, a new `components/RemoveOlderMailDialog.tsx`, `components/OnboardingPanel.tsx`, `lib/onboarding.ts`, `lib/api.ts` and the tests.
+**Files.** Under `workbench/control_plane/src/app/email/`, these change: `lib/types.ts`, `lib/api.ts`, `lib/onboarding.ts`, `lib/onboarding.test.ts`, `lib/mailbox.ts`, `page.tsx` and `components/AccountSidebar.tsx`. These are new: `lib/storage.ts` with its test, `components/StorageNotice.tsx`, `components/RemoveOlderMailDialog.tsx`, and a step component or a variant of the notice. Also `src/app/api/email/[...path]/route.ts`, and a new module for the rule of the proxy, with its test.
 
-**Verify with.** The command of EM-T6d.
+**Verify with.**
+
+```bash
+cd workbench/control_plane
+npx tsc --noEmit
+npx vitest run src/app/email src/app/api/email src/components src/lib/theme src/lib/nav.test.ts
+npx vitest run
+node ../../.claude/hooks/ste-lint.mjs --staged
+```
+
+**Open points.**
+
+- The notice has no close button. The owner can reverse this.
+- **(Visual review) The app shell remounts the page at the mobile width.** A change of the window across that width closes an open dialog. Every dialog of the page does the same, so this belongs to the shell, not to EM-T6e.
+- **(Visual review) The compact switcher cuts a label short.** At compact density, a separate mailbox at the limit shows "Cl…" beside the "Separate" badge and the mark.
+- **(Visual review) No capture beside Calendar.** The done-when of EM-T6d named a view beside Calendar. This review did not capture one.
+- **(Review round 1) Cmd+K opens over a dialog.** The command palette opens above any dialog of the page, and it offers "Delete" for the open mail. This is older than EM-T6e. A follow-up for the page shortcuts owns it.
+- **EM-T6f, a resume path (backend, recorded).** Nothing resumes the import of a mailbox in the phase `limit` under the limit (EM-T6c, review round 1, item 3). The candidate of the auditor: a route sets `initial_sync_done = false` and `import_phase = 'importing'` for such a mailbox, so `_run_import` resumes at `import_reached_at`. It needs R8 and its own audit.
 
 ##### Recorded risks (EM-T6)
 
@@ -2522,7 +3587,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 - **R-7. A member act can import removed mail again.** Process past emails with an explicit date is bound by the ceiling only. The member asked for that mail, and the limit still binds.
 - **R-8. A mailbox from before EM-T6 keeps its old mail.** It can hold mail older than 180 days. EM-T6 imports no new mail older than the ceiling, and it deletes nothing by age.
 - **R-9. Disconnect deletes the data.** A later connect of that mailbox is a first connect, with the range step again.
-- **R-10. An open at the limit (answered, Q4).** The open path stores the body that it loads (`transport/messages.py:624-654`). The owner decided on 2026-10-02 that at the limit an open shows the body and stores nothing. EM-T6c adds that check to the open path. A reopen at the limit loads the body live again.
+- **R-10. An open at the limit (answered, Q4).** The open path stores the body that it loads (`transport/messages.py:674-687`). The owner decided on 2026-10-02 that at the limit an open shows the body and stores nothing. EM-T6c adds that check to the open path. A reopen at the limit loads the body live again.
 
 #### 10.4.8 EM-T5b in full
 
@@ -2600,7 +3665,7 @@ The fences are `tests/unit/test_email_decide_on.py` (R8 for the runner, Process 
 
 The fences are the R8 classes `TestTheThreadStatusOnJev`, `TestTheColdCheckOnJev` and `TestTheSenderPinOnJev`, and the hermetic cases, in `tests/unit/test_email_decide_on.py`.
 
-**To turn the three features on, after the owner's "go".** The orchestrator sets these two values on the box and restarts the gateway:
+**To turn the three features on, after the owner's "go".** ⚠️ First, PR-B3 of EM-T4a-2 must merge (§10.4.6). Until then the status ask of `on` runs inside a block. The orchestrator sets these two values on the box and restarts the gateway:
 
 ```text
 DECIDE_FEATURE_MODES=email.rule_match=on,email.thread_status=on,email.cold_check=on,email.sender_pin=on
@@ -2836,7 +3901,7 @@ It logs no rule name, subject, body, address or `about`.
 - Input is near 3000 to 4000 tokens: about 1000 for the state, and about 300 for each question.
 - The vendor states 70 to 500 ms. The old rule call is one chat completion with up to 800 or 1500 output tokens.
 - The client bound is 10 seconds (`console_resolve.py:2503`). In `on`, a timeout leaves the email undecided.
-- The EM-T4b cap wraps `decide_features.ask` (B8).
+- The EM-T4b cap wraps the `decide` await in `_ask_all` (`decide_features.py:512-518`), with one permit for each call (B8).
 
 ##### EM-T5b-1 — the questions, rebuilt, in shadow
 
@@ -2991,12 +4056,13 @@ The R8 cases must show PASSED, not SKIPPED.
 2. Delete the old LLM body of each site and the four email calls to `shadow`. Delete `_STATUS_MODEL`, `_STATUS_MODEL_ESCALATION` and each prompt helper that nothing reads.
 3. The startup check runs whenever email sync is on.
 4. A pair in `DECIDE_FEATURE_MODES` for an email feature is now unknown, so it logs `decide.mode_refused`.
+5. ⚠️ **Keep `email.insights_screen`** (EM-T14b-0, 2026-10-07, §13.9.2 item 4). It is the Insights screen, not a triage site, and it has no old path. Items 1 and 4 do not apply to it. It keeps its name in `FEATURES` and `ON_FEATURES`, and its mode in `DECIDE_FEATURE_MODES`. The other choice is to hardcode it too. The owner of WS-17 makes that choice in this slice.
 
 **Gate.** The merge waits for the owner's "go". The evidence is 7 days of `on`, with `decide.unavailable` on fewer than 1% of decisions. After this merge, a revert is the only way back.
 
 **Done when.**
 
-- `FEATURES` holds no name that starts with `email.`.
+- `FEATURES` holds none of the four triage features. It keeps `email.insights_screen` (item 5).
 - An AST fence finds no `_llm_json` or `acompletion` call in the four decision functions. A companion test proves that the fence can fail.
 - With `decide_enabled` false, a run decides no email and stamps nothing. The startup check logs at error level.
 - The suites of EM-T5b-2 pass, less the email shadow cases.
@@ -3104,6 +4170,1819 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
 
 The R8 tests must show PASSED, not SKIPPED.
 
+#### 10.4.10 EM-T9 — a file on an Outlook draft (a LIVE defect)
+
+**Status.** ✅ MERGED (#643, 2026-10-05). The live check of the owner is still open. The audit of
+2026-10-05 gave GO-NARROWED (B1 to B7, N1 to N9), and it checked each anchor against the code on
+that day. "As built" below records the build.
+
+**Why it went first.** The audit of EM-G3c found the defect (its C21). Outlook is the live
+provider, so this slice went before the Gmail work that waits for customers.
+
+**Gate.** 🟢 AGENT-SAFE build. No migration, no flag and no change to SQL text, so R8 does not bind
+it. The fix changes the live Outlook path, so it takes the full review loop for data. The live check
+after the merge sends real mail, so it is 🔴 OWNER-GATE (CLAUDE.md §3a rule 3).
+
+**Size.** M.
+
+**The defect (LIVE on Outlook).** `_attach_files` (`outlook.py:944-965`) adds each file in one
+POST of a `fileAttachment`. It never reads the answer, and it drops each error with `continue`.
+Graph takes a file under 3 MB in one POST only. So a larger file fails at Graph, and the draft
+keeps no copy of it.
+
+**Why the member sees nothing.** The composer sends a mail with files through a draft. The save
+before the send adds the files (`drafting.py:2167-2171`), then `drafts/send` sends the draft. So
+a member can send a mail with no file, and nothing tells the member. The three tests of
+`test_email_draft_attachments.py:43-84` reach `_attach_files` with fakes that answer 200, so none
+of them sees a failed file.
+
+**What Microsoft documents (`learn.microsoft.com/graph/outlook-large-attachments`).**
+
+- A file under 3 MB goes in one POST to the `attachments` collection, and Graph answers 201. A file
+  of 3 MB to 150 MB needs an upload session.
+- An upload session refuses a file under 3 MB, with the code
+  `ErrorAttachmentSizeShouldNotBeLessThanMinimumSize`.
+- The `uploadUrl` is pre-authenticated, with a token in its query. Each PUT to it must carry no
+  `Authorization` header.
+- Each PUT carries `Content-Range: bytes {start}-{end}/{total}`, `Content-Length` and
+  `Content-Type: application/octet-stream`. Each range stays under 4 MB, in order.
+- An earlier PUT answers 200 with `nextExpectedRanges`. The last PUT answers 201.
+
+**The callers (B4).** Each caller passes `{filename, content: bytes, mime_type}`, so `len(content)`
+is the true size.
+
+- `PUT /email/drafts` (`upsert_draft`, `drafting.py:2174-2285`): the update branch at
+  `:2216-2240`, and the reply and new branches at `:2265-2275`.
+- The rule actions REPLY and DRAFT_EMAIL (`actions.py:545`) and FORWARD (`actions.py:589`). Their
+  `except Exception` at `actions.py:609-612` records `str(exc)` in `errors_out`.
+- `drafts/send` adds no file (`drafting.py:2361-2369`). The composer awaits the save before the
+  send in one `try` (`ComposePanel.tsx:323-335`, `EmailDetail.tsx:648-660`), and `gatewayFetch`
+  throws on a status that is not 2xx (`api.ts:41-48`). So a failed save stops the send in the
+  composer. `fromRow.test.ts:196-198` already pins that order.
+
+**Scope.**
+
+1. **A small file (B5).** A file under 3,000,000 bytes goes in one POST, as today. The code then
+   reads `status_code`, and each status that is not 2xx raises. Graph answers 201, so a check for
+   `== 200` is wrong.
+2. **A large file.** A file of 3,000,000 bytes or more goes through
+   `POST /me/messages/{id}/attachments/createUploadSession`. The body is
+   `{"AttachmentItem": {"attachmentType": "file", "name", "size", "contentType"}}`. Then PUTs of
+   2 MiB ranges go to the `uploadUrl`, in order, until the last PUT answers 201.
+3. **The minimum size (B6).** "3 MB" can mean 3,000,000 or 3,145,728 bytes. So a session that
+   Graph refuses with `ErrorAttachmentSizeShouldNotBeLessThanMinimumSize` falls back to one POST.
+   The code reads that refusal from `error.code` in the JSON body.
+4. **The upload loop (B6).** The PUTs go through `httpx.AsyncClient(timeout=30.0)`. The code makes
+   that client at the time of the call, inside `async with`. It has no auth and no
+   `Authorization` header. The client of
+   Graph applies its auth to each host (`outlook.py:466`), so it must not send the PUTs.
+5. **The checks of the loop (B6).** A 200 whose `nextExpectedRanges` does not start at the next
+   offset raises. A 201 before the last range raises, and a 200 after it raises. A 429 or a 5xx on
+   a PUT raises, with no retry. The two POSTs of Graph keep `client.post` with no retry. They do
+   not go through `_graph_send`, because its wait can reach 30 seconds.
+6. **The token stays out of each log and error (B2).** httpx logs each request at INFO, with its
+   full URL. The gateway logs at INFO. So a filter on the `httpx` logger
+   removes the query of an upload URL from each record. The code never calls `raise_for_status()`
+   on an upload answer, and it raises `from None`.
+7. **The error.** A failed file raises `ProviderAttachmentFailed`, a new class in `base.py` beside
+   `ProviderRateLimited` (`base.py:24`). It subclasses `Exception` only, never
+   `httpx.HTTPStatusError`, and it carries the name of the file and no URL.
+8. **The route (B1).** `upsert_draft` answers 502 with a string detail, as `assistant.py:671-672`
+   does, through a mapper of the shape of `drafting.py:2129-2139`. The text is "The file <name>
+   could not be attached. The mail was not sent." The route writes no local row.
+9. **A new draft with a failed file (B3).** `create_draft` deletes the new draft before it raises,
+   at the two sites of `outlook.py:873` and `:884` only. The delete never goes in `_attach_files`
+   or `update_draft`, which share the helper with a draft that the member already has. A failed
+   delete is dropped, and the first error raises.
+10. **An empty draft id (B3).** `create_draft` raises before any file when Graph returns no id
+    (`.get("id", "")` at `outlook.py:868` and `:883`).
+11. **A rule action (B4).** A rule draft with a failed file is deleted, and the action records the
+    error in `errors_out`. Before the fix, the rule made a draft with no file.
+12. **A file of 0 bytes (N7).** It goes in one POST, and a refusal raises with its name. A file with
+    `content=None` raises, in place of the `or b""` at `outlook.py:953`.
+
+**Non-goals.** No change to Gmail or IMAP. No change to the composer or to `drafts/send`. No change
+to the cut of 10 MiB in the Next proxy, which EM-G3c owns (§12.3.12 item 3). No change to
+`send_message`.
+
+**Files (N5).** `providers/outlook.py`, `providers/base.py`, `routes/email/automation/drafting.py`,
+`apps/services/gateway/AGENTS.md:63` (the rules of the draft path get the new 502), and the new
+test file. The build also added contract 13 to `apps/services/email_ingestion/AGENTS.md`, because
+the root DOX rule asks for it.
+
+**Known limit EM-T9-f1.** A retry after a failed file adds again each file that the first try
+added. The composer sends the files again at each send (`ComposePanel.tsx:332`,
+`EmailDetail.tsx:657`). A later slice owns the dedupe, with EM-G3c-f2.
+
+**Known limit EM-T9-f2.** A direct send (`POST /email/send`, `send_message` at
+`outlook.py:804-817`) puts its files inline in `sendMail`. Graph limits that request to 4 MB. So
+a direct send with 3 MB of files or more fails, and the error reaches the caller. It is not silent.
+The chat tool `send_email` takes this path (`agents.py:1784`).
+
+**Known limit EM-T9-f3.** The Next proxy cuts a body over 10 MiB. So a file over about 7.4 MiB
+never reaches the gateway, for each provider. EM-G3c-2 adds a pick limit for it.
+
+**Known limit EM-T9-f4.** The proxy stops a draft save after 30 seconds (`route.ts:156`). A slow
+upload of large files can pass that limit. Then the composer sends nothing, and the gateway still
+finishes the save. On the create path, a retry then makes a second draft.
+
+**Known limit EM-T9-f5 (N6).** A failed save of a draft that exists leaves the new text and each
+file added before the failure on the Outlook draft. ConversationView, or the chat tool
+`send_draft` (`agents.py:1815-1834`), can send that draft later.
+
+**Known limit EM-T9-f6 (N6).** One POST of a file near 3 MB can get a 413, because base64 makes
+it about 4 MB. The code raises, so the failure is not silent.
+
+**Known limit EM-T9-f7 (B3).** A deleted new draft goes to Deleted Items, as `trash_message` does
+(`outlook.py:1062`). So the sync shows it in Trash. The slice keeps the normal DELETE, because it
+can be undone.
+
+**Advisory EM-T9-a1 (N8).** A raise inside `provider_session` skips `_persist_rotated_creds`
+(`core.py:332-340`). A token refresh during a failed save then loses the new token. The risk is
+low, because Microsoft keeps the old refresh token valid.
+
+**Fences (R7).** A new `tests/unit/test_outlook_attachments.py`. The auth and log fences reuse
+`wire` (`test_email_provider_401_retry.py:236-255`). The body fences reuse the pattern of
+`test_email_draft_attachments.py:23-40`, and the route fence reuses `_route_patches`
+(`test_gmail_send_and_drafts.py:691-705`).
+
+- `test_a_small_file_goes_in_one_post_and_201_passes`
+- `test_a_large_file_goes_through_an_upload_session_in_ranges`
+- `test_the_upload_puts_carry_no_authorization_header`
+- `test_a_session_refused_for_the_minimum_size_falls_back_to_one_post`
+- `test_a_range_that_graph_did_not_expect_raises`
+- `test_a_failed_file_raises_with_its_name`
+- `test_a_failed_file_on_a_new_draft_deletes_the_draft`
+- `test_a_failed_file_on_an_existing_draft_keeps_the_draft`
+- `test_the_upload_token_never_reaches_a_log_or_a_traceback`. It runs caplog at DEBUG on each
+  logger, and it reads `traceback.format_exception(exc)`.
+- `test_a_failed_save_answers_502_and_writes_no_local_row`
+- `test_the_signed_send_adds_no_file`
+- In `test_email_rule_action_failures.py`: `test_a_rule_draft_with_a_failed_file_is_deleted`
+
+**Mutations.** M1 restores `continue`, and the failed-file test fails. M2 sends each file in one
+POST, and the session test fails. M3 sends the PUTs through the Graph client, and the auth test
+fails. M4 drops the fallback, and the minimum-size test fails.
+
+**More mutations.** M5 puts the URL into the error text, and the token test fails. M6 removes the
+log filter, and the token test fails. M7 moves the delete into `_attach_files`, and the test of
+the existing draft fails. M8 checks `== 200`, and the small-file test fails.
+
+**Verify with (B7).**
+
+```bash
+uv run pytest tests/unit/test_outlook_attachments.py tests/unit/test_email_draft_attachments.py \
+  tests/unit/test_outlook_drafts.py tests/unit/test_outlook_draft_cc.py \
+  tests/unit/test_email_provider_401_retry.py tests/unit/test_email_rule_action_failures.py \
+  tests/unit/test_gmail_send_and_drafts.py -v -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/providers/outlook.py \
+  apps/services/email_ingestion/email_ingestion/providers/base.py \
+  apps/services/gateway/gateway/routes/email/automation/drafting.py \
+  tests/unit/test_outlook_attachments.py
+cd workbench/control_plane && npx vitest run src/app/email/lib/fromRow.test.ts
+```
+
+**The live check after the merge (🔴 OWNER-GATE, N9).** From a connected Outlook mailbox, the owner
+sends three mails to the owner's own address. One has a file of 5 MB, one has a file of 1 MB, and
+one has no file. Each mail must arrive, with its file. An agent must not send real mail
+(CLAUDE.md §3a rule 3).
+
+**As built (2026-10-05).** Branch `email-outlook-t9`. The slice takes no migration, no flag and no
+change to SQL text.
+
+- `base.py` holds `ProviderAttachmentFailed(filename)`. Its text is "The file <name> could not be
+  attached." It subclasses `Exception` only.
+- `outlook.py` holds the path of a file in three module functions: `_post_file`, `_upload_file`
+  and `_put_ranges`. `_attach_files` calls them, and it never deletes a draft.
+- `create_draft` calls `_require_new_draft_id` after each `.get("id", "")`. It calls
+  `_attach_to_new_draft` at its two sites, and only that helper deletes a draft.
+- A draft with no file sends the same requests as before. The POST of a small file keeps its body,
+  byte for byte. The fakes of `test_email_draft_attachments.py` pass with no change.
+- `drafting.py` holds the mapper `_file_not_attached` and the text `file_not_attached_detail`.
+  `upsert_draft` puts the mapper on the update, the reply and the new branch.
+- `actions.py` has no change. Its `except` records the text of the error, and that text holds the
+  file name only.
+- Two new log lines name no URL and no file. `outlook.attachment_failed` gives the stage, the
+  reason and the size. `outlook.new_draft_delete_failed` gives the reason.
+
+**Four readings of the spec.** The spec did not decide these, so the build took the safe side.
+
+1. The PUT answers come from an Outlook REST URL. The page of Microsoft spells their key
+   `NextExpectedRanges`, and Graph spells it `nextExpectedRanges`. The code reads the key in any
+   case. A 200 with no ranges raises.
+2. An empty draft id raises only when the draft has a file. A draft with no file keeps the
+   behaviour of before.
+3. A transport error on any request of a file raises `ProviderAttachmentFailed` too. The code
+   raises it outside the `except` block, so no error of httpx chains to it.
+4. A `content` that is not bytes raises, for `None` and for text. Before, the code sent `None` as
+   an empty file and dropped text with no error.
+
+**A finding outside the plan (B2).** litellm loads in the gateway through `acb_llm`. At load, it
+sets the `httpx` logger to WARNING and adds a filter that writes `?REDACTED` over each query. So
+litellm hides the leak of B2 today. The filter of `outlook.py` does not depend on that, because an
+upgrade of litellm or `LITELLM_DISABLE_REDACT_SECRETS=true` removes it. The token fence keeps
+only the filter of `outlook.py` on the logger, because the filter of litellm first hid M6.
+
+**Mutations (2026-10-05).** A script changed `outlook.py` and ran the named fence and both test
+files. Then it put the file back with `git checkout --`, and `git diff` was empty each time. All 8
+mutations turned the named fence red. The count in brackets is the count of both files.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| M1 | `_attach_files` drops each failure with `continue` | `test_a_failed_file_raises_with_its_name` | red, 9 failed (29) |
+| M2 | Each file goes in one POST, with no session | `test_a_large_file_goes_through_an_upload_session_in_ranges` | red, 4 failed (19) |
+| M3 | The PUTs go through the Graph client | `test_the_upload_puts_carry_no_authorization_header` | red, 1 failed (1) |
+| M4 | No fallback for the minimum size | `test_a_session_refused_for_the_minimum_size_falls_back_to_one_post` | red, 1 failed (1) |
+| M5 | The upload URL goes into the text of the error | `test_the_upload_token_never_reaches_a_log_or_a_traceback` | red, 3 failed (13) |
+| M6 | No log filter at load | `test_the_upload_token_never_reaches_a_log_or_a_traceback` | red, 3 failed (4) |
+| M7 | The delete moves into `_attach_files` | `test_a_failed_file_on_an_existing_draft_keeps_the_draft` | red, 1 failed (4) |
+| M8 | Only a 200 counts as a success | `test_a_small_file_goes_in_one_post_and_201_passes` | red, 2 failed (18) |
+| M9 | The end of a range loses its `- 1` | `test_a_large_file_goes_through_an_upload_session_in_ranges` | red, 8 failed (verifier P2-1) |
+
+**The verification (2026-10-05).** The verifier passed the slice, with no P0 and no P1. It recorded
+each Graph call of `create_draft` and `update_draft` on main and on the branch. It used 18 cases
+with no file or with small files, and all 18 were the same. It also ran the 13 R8 cases on the scratch
+database, and 184 passed. Its P2-1 added the edges of 4 MiB and 4 MiB + 1 byte to the range fence.
+
+**Verified (2026-10-05).** The pytest command of B7 ran 171 passed and 13 skipped. The 13 skips
+are R8 cases of `test_email_provider_401_retry.py` and `test_gmail_send_and_drafts.py`, and R8
+does not bind this slice. The ruff count of the four files of B7 fell from 69 to 67, with no
+finding on an added line. `fromRow.test.ts` ran 32 passed. The run of `test_email_*`,
+`test_outlook_*` and `test_gmail_*` ran 2606 passed and 390 skipped, each skip an R8 case.
+
+#### 10.4.11 EM-T10 — a draft card keeps the recipients of its draft (a LIVE defect)
+
+**Status.** ✅ MERGED (#658, 2026-10-05). The live check of H-248 is open. The audit of
+2026-10-05 found it GO-NARROWED after C1 to C11, and it checked each anchor against the code at
+`c26b67549`. The "As built" notes below record the build.
+
+**Where the defects came from.** The reviews of EM-G3c-2 found the first defects (its known limits
+f6, f2 and f10). The audit found two more, C2 and C8.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. It changes a live composer and the live Outlook
+reply create, so it takes the full review loop and a visual review. The live check is 🔴
+OWNER-GATE.
+
+**Size.** M.
+
+**The defects (LIVE on Outlook).**
+
+- **The card ignores the recipients of its draft.** The `DraftCard`
+  (`workbench/control_plane/src/app/email/components/ConversationView.tsx` ~:355-380) starts To
+  and Cc from the reply-all lists of its reply target, and Bcc empty. In a thread, the reply target
+  is the newest mail that is not a draft (~:80). The draft row holds its own To, Cc and Bcc
+  (`apps/services/gateway/gateway/routes/email/automation/drafting.py` ~:2012-2040, and the sync
+  of each provider, `persist.py` ~:102-105).
+- **So a narrowed reply widens.** A member narrows a reply to the sender with Reply, and it saves.
+  In the thread, the card shows Reply All with the reply-all To and Cc. The first edit or a send
+  writes them over the draft, so the reply goes to everyone. A Bcc is lost the same way.
+- **The standalone card can start with the last mail (C2).** `EmailDetail` stays mounted
+  across a selection, and it resets `detail` only after the first render. In that render the card
+  for draft B mounts with the last mail as its reply target (`EmailDetail.tsx` ~:518-524,
+  ~:1155). So B starts with the recipients of that mail. The `key` of #650 fixed half of this.
+- **A Cc or Bcc edit saves nothing (f2, C1).** The autosave depends on `[body, quote, to]` (~:507),
+  and the Cc and Bcc inputs never set `dirty` (~:664, ~:673).
+- **The inline Send can send twice (f10).** `handleInlineSend` (`EmailDetail.tsx` ~:713) has no
+  sending state. A second click, or Ctrl+Enter (~:1400), sends again.
+- **Outlook drops the To of a reply on create (C8).** The reply path of `create_draft`
+  (`apps/services/email_ingestion/email_ingestion/providers/outlook.py` ~:1114-1126) calls
+  `createReply`, then PATCHes only the body, Cc and Bcc. So a reply-all draft saved once holds only
+  the sender in To at Graph, and the next sync writes that To over the row. Today the card hides
+  this, because it ignores the To of the row. Once the card reads the row (item 1), a reply-all
+  draft would narrow to the sender after a sync. So item 6 ships in the same PR as item 1.
+
+**Scope.**
+
+1. **The start state (C3).** A draft can hold a recipient in To, Cc or Bcc. Then the card starts
+   with the lists of the draft, exactly as the row holds them. A draft with no recipient and a reply target
+   starts with the reply-all lists. A draft with no recipient and no reply target starts empty.
+2. **The toggle (C4).** Compare sets of trimmed, lower-case addresses, and ignore display names.
+   - Start on Reply when the To set of the draft equals the reply-only To set, the Cc of the draft
+     is empty, and the reply-all lists differ from the reply-only To.
+   - Start on Reply All when the To and Cc sets of the draft equal the reply-all sets. A thread of
+     two people matches both, so it starts on Reply All, as today.
+   - Otherwise start with neither button marked (`replyAll: null`). That covers a forward, a To
+     that the member edited, a changed reply target and a Reply-To address.
+   - A click still computes To and Cc again from the reply target of the card.
+3. **The Cc row (C5).** It shows at the start in two cases. One case is a Cc or a Bcc that is not
+   empty. The other is a card with a reply target that does not start on Reply.
+4. **A Cc or Bcc edit saves (f2, C1).** The Cc and Bcc `onChange` set `dirty`, as To does
+   (~:648). The autosave depends on `[body, quote, to, cc, bcc]`.
+5. **The standalone reply target (C2).** `EmailDetail` uses
+   `const view: Email = detail?.id === email.id ? detail : email` (~:518), and the standalone card
+   gets `replyTo={view}` (~:1155). So the first render never uses the last mail.
+6. **The Outlook To of a reply (C8).** `create_draft` takes a keyword `exact_to: bool = False` on
+   the base class and on each provider. On Outlook, the reply path also PATCHes `toRecipients`
+   when `exact_to` is true. `upsert_draft` (the composers) passes `exact_to=True`. The AI drafts
+   (`drafting.py` ~:1774) and the rule actions (`actions.py` ~:610, ~:654) keep the default. So
+   `createReply` keeps a Reply-To address. Gmail and IMAP build the To into the mail already, so
+   they ignore the keyword.
+7. **One send at a time (f10, C7).** One guard at the top of `handleInlineSend` returns while a
+   send runs, so it covers Ctrl+Enter too. The state is set after the early returns and before the
+   drain, and it clears in `finally`. The Send button uses `Button` with `icon="Send"` and
+   `loading={sending}`, and keeps the label "Send". `if (!email) return` stays as it is.
+
+**The helper (C6).** `draftRecipients` goes in `workbench/control_plane/src/app/email/lib/mailbox.ts`,
+beside `replyRecipients` (~:54-91). It takes the draft, the reply-all lists and the reply-only To.
+It returns To, Cc, Bcc, the toggle and the Cc row. Its tests go in `mailbox.test.ts`.
+
+**AI drafts (C9).** An AI draft addresses the sender only (`drafting.py` ~:1774-1790, `actions.py`
+~:620-626). Today the card widens it to reply-all. After the fix it opens on Reply, to the sender,
+as the draft holds it.
+
+**Non-goals.** No Bcc row in ComposePanel. No change to the undo-send reopen. No change to the
+stale thread frame. No change to Discard while a send runs.
+
+**Known limit EM-T10-f1 (corrected by the verifier, P2-3).** An older build saved each Outlook reply
+with the To that `createReply` gives: the sender, or the Reply-To. So a reply-all draft that the old
+code saved only once now opens with that narrowed To, and on Reply when its Cc is empty. The member
+sees the To before a send. The next save writes the To that the card shows.
+
+**Fences (R7).**
+
+- `mailbox.test.ts`: the cases of `draftRecipients`.
+  - A reply narrowed to the sender, a reply with a Bcc, and a draft with only a Bcc.
+  - A draft with no recipient, a new mail with a Cc, and an AI draft.
+  - A thread of two people, a changed reply target and a difference of case.
+- `draftAutosave.test.ts`: source fences. The card uses the helper. Its autosave depends on `cc`
+  and `bcc`, and both `onChange` handlers set `dirty`. The standalone card uses `view`. The inline
+  Send guard is at the top of `handleInlineSend`. Two existing class tests (~:623, ~:633) read
+  `=== false` and `=== true`.
+- `tests/unit/test_outlook_draft_cc.py`: with `exact_to=True`, the reply create PATCHes the To.
+  With the default, it does not.
+
+**Mutations.** M1 makes the helper ignore the To of the draft, and the narrowed-reply case fails. M2
+makes it ignore the Bcc, and the Bcc case fails. M3 drops `cc` from the deps, and the deps fence
+fails. M4 removes the guard of `handleInlineSend`, and its fence fails.
+
+**More mutations.** M5 removes `dirty` from the Cc `onChange`, and its fence fails. M6 puts back
+`detail ?? email`, and the standalone fence fails. M7 makes Outlook PATCH the To with the default
+keyword, and the Outlook test fails.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane && npm install && npx tsc --noEmit && npx vitest run src/app/email src/lib/theme/
+uv run pytest tests/unit/test_outlook_draft_cc.py tests/unit/test_outlook_drafts.py \
+  tests/unit/test_email_draft_attachments.py tests/unit/test_outlook_attachments.py \
+  tests/unit/test_gmail_send_and_drafts.py tests/unit/test_email_rule_action_failures.py -q -rs
+```
+
+Restore `package-lock.json` from `origin/main` before each commit.
+
+**As built (2026-10-05).** Three code commits on `email-draftcard-recipients`: `d1d430f0a` (item 6),
+`c2240a8d2` (items 1 to 5 and 7) and `ca384508c` (the `dirty` ref, departure 1).
+
+- **Item 6.** `create_draft` takes a keyword-only `exact_to: bool = False` on `BaseEmailProvider`
+  and on the Outlook, Gmail and IMAP providers. On Outlook, the reply path adds `toRecipients` to
+  its one PATCH when `exact_to` is true. `upsert_draft` passes `exact_to=True` on each of its three
+  creates.
+- **The other callers of `create_draft` keep the default.** They are the AI draft (`drafting.py`
+  ~:1774), the chat card (`save_draft`, ~:2505) and the two rule actions (`actions.py` ~:610,
+  ~:654). The follow-up nudge (`followups.py` ~:250) and the Notes dispatch (`notes/dispatch.py`
+  ~:339) keep it too. Each test fake takes `**_kw` or is an `AsyncMock`, so each fake takes the
+  keyword.
+- **Items 1 to 3.** `draftRecipients` in `lib/mailbox.ts` gives the start. The card calls it once,
+  in a lazy `useState`, so a later render does not move the start. The card computes the reply
+  lists only when it has a reply target. Before, it computed them from the draft itself when
+  `replyTo` was the draft.
+- **Item 4.** The Cc and the Bcc `onChange` set `dirty`, and the autosave depends on
+  `[body, quote, to, cc, bcc]`.
+- **Item 5.** `view` is `detail?.id === email.id ? detail : email`, and the standalone card gets
+  `replyTo={view}`. The key stays `key={email.id}`.
+- **Item 7.** `sendingRef` is the guard, and the `sending` state draws the button. The guard is the
+  first statement of `handleInlineSend`, and `if (!email) return` stays as it was. The state starts
+  after the last early return. The drain moved inside the `try`, and its `finally` clears the ref
+  and the state. The Send button is `Button` with `icon="Send"` and `loading={sending}`, with the
+  label "Send". Its icon is 14 px now, the size that `Button` draws. It was 12 px.
+
+**Departures from the spec (EM-T10).**
+
+1. The DraftCard declares its `dirty` ref above `applyReplyAll` now. That function read it above
+   its `useRef` line. So the React lint did not see a `useRef` value in `dirty`. Each `onChange`
+   that set it was an error of `react-hooks/immutability`, and item 4 added two of them. After the
+   move, `ConversationView.tsx` has 0 eslint errors, and `origin/main` has 2.
+2. `upsert_draft` passes `exact_to=True` on all three creates, not only on the reply. The update
+   fallback and the new draft set the To already, so the keyword changes no request there. One rule
+   for the whole route is easier to fence.
+3. The Send button calls `() => void handleInlineSend()`, so React gets no promise from the click.
+4. The build added fences that the spec did not name. `test_outlook_draft_cc.py` checks that each
+   provider takes the keyword, and that only `upsert_draft` passes it.
+
+**Known limit EM-T10-f2 (on `main` before it).** The standalone card shows no Reply or Reply All
+toggle. Its reply target is `view`, the draft itself, so the card has no reply target. It still
+starts with the recipients of its own draft. Before the fix of C2, the stale first render was the
+one case that showed a toggle there.
+
+**The fences, as built.** `mailbox.test.ts` holds 10 cases in the fence `email-draftcard-start`.
+`draftAutosave.test.ts` holds 7 cases in the fence `email-draftcard-recipients`.
+`test_outlook_draft_cc.py` holds 8 new cases.
+
+**Mutations, as run (2026-10-05).** For each row, a script put one change into the code, ran the
+fence file, and restored the file with `git checkout`. Each fix was in a commit first. After each row, `git status` was
+clean and the fix was in the file again. Each of the 14 mutations turned its fence red.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | `draftRecipients` ignores the To of the draft | `mailbox.test.ts`, the narrowed reply (7 cases red) |
+| M2 | `draftRecipients` ignores the Bcc of the draft | `mailbox.test.ts`, the reply with a Bcc (2 cases red) |
+| M3 | The autosave deps drop `cc` | `draftAutosave.test.ts`, a Cc or Bcc edit saves |
+| M4 | The guard of `handleInlineSend` goes | `draftAutosave.test.ts`, one inline send at a time |
+| M5 | The Cc `onChange` sets no `dirty` | `draftAutosave.test.ts`, a Cc or Bcc edit saves |
+| M6 | `view` is `detail ?? email` again | `draftAutosave.test.ts`, the standalone card gets `view` |
+| M7 | Outlook PATCHes the To with the default keyword | `test_outlook_draft_cc.py`, the default case |
+| X1 | Outlook never PATCHes the To | `test_outlook_draft_cc.py`, the `exact_to` case |
+| X2 | The composer reply drops `exact_to=True` | `test_outlook_draft_cc.py`, only the composer save |
+| X3 | The Reply button marks on `!replyAll` again | `draftAutosave.test.ts`, null marks neither |
+| X4 | The standalone card gets `replyTarget` again | `draftAutosave.test.ts`, the standalone card gets `view` |
+| X5 | The Bcc `onChange` sets no `dirty` | `draftAutosave.test.ts`, a Cc or Bcc edit saves |
+| X6 | The toggle forgets that reply-all can equal reply | `mailbox.test.ts`, a thread of two people |
+| X7 | The inline Send loses `loading` | `draftAutosave.test.ts`, the Send button loads |
+| R1 | The rule REPLY drops `exact_to` | `test_a_rule_reply_writes_a_typed_to_at_outlook` and the caller fence (2 red) |
+| R2 | Reply no longer needs an empty Cc | `mailbox.test.ts`, a reply to the sender with a Cc |
+
+**Review round 1 (2026-10-05).** The verifier passed EM-T10, and the reviewer approved it. Neither
+found a P0 or a P1. This round closes two P2s and records the rest.
+
+1. A rule REPLY with a To that the member typed now reaches Outlook (reviewer P2-1). It passes
+   `exact_to=bool(a.get("to_address"))`, so a rule with no typed To keeps the Reply-To of
+   `createReply`. A runtime test drives the real `OutlookProvider`.
+2. The toggle rule that Reply needs an empty Cc has its own case (verifier P2-1).
+
+**Known limit EM-T10-f3 (reviewer P2-2, older than EM-T10).** The composer reads From and never
+Reply-To, because `Email` and `replyRecipients` carry no Reply-To. Item 6 writes that To over the
+Reply-To of `createReply` on the first save. Each send from Metorite already used it on `main`. So
+only a draft that Metorite saved once and that the member sends from native Outlook changes. A
+later ticket owns a Reply-To in the composer.
+
+**Known limit EM-T10-f4 (verifier P2-2, older than EM-T10).** An AI draft's row holds the From as
+its To. A send from the card before the next sync writes the From over a Reply-To. `main` wrote the
+wider reply-all lists, so EM-T10 makes this case better.
+
+**Known limit EM-T10-f5 (older than EM-T10).** Reply clears the Bcc (`applyReplyAll(false)`), also
+when Reply is already marked. A rule's Cc and Bcc never reach `create_draft`. The `sendingRef` of
+the inline reply is not per mail, so a slow send of mail A can reset the reply of mail B.
+
+**The visual review (2026-10-05).** A page that the build never committed drew four DraftCards and
+the inline Send, idle and loading. Playwright took each one in dark, light, light compact, and
+light compact with the Rose accent. Reply, Reply All and neither drew as the spec says. A human
+must still look at the card in a real thread, at the neighbouring inline reply, and at the toggle
+on a phone.
+
+**The live check (🔴 OWNER-GATE).** In Outlook, the owner saves a reply narrowed to the sender, opens
+it again, and checks that To still holds only the sender. The owner also saves a reply-all draft,
+waits for one sync, opens it again, and checks that To still holds everyone.
+
+#### 10.4.12 EM-T11 — the assistant reads the text of an attachment
+
+**Status.** ✅ MERGED #672 (2026-10-06), with review round 1, and the owner's live check is H-252.
+The text was verified against code on 2026-10-06. The spec-auditor gave GO-NARROWED on 2026-10-06, and this text
+holds its corrections. The "As built" notes below record the build. The owner reported the gap: a
+chat answered that it could not read the files of a mail.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. It adds one read route and one agent tool. The
+route reads mail of the member, so it takes the full review loop and a security review.
+
+**No flag (orchestrator decision, 2026-10-06).** The route only reads, and the member asks for the
+read. The ownership check is the whole guard, and the download button uses the same check today.
+
+**Size.** M.
+
+**The gap.** The email assistant (`apps/agents/agent-email-assistant/agents.py`) is the one way
+that a chat reads mail. The Projects chat hands email questions to it with `call_agent`. Its tool
+`read_email` (~:471-509) prints the name and the type of each attachment, and no tool reads the
+content. So each chat answers that it cannot read a file.
+
+**What exists already.**
+
+- `GET /email/attachments/{attachment_id}/download`
+  (`apps/services/gateway/gateway/routes/email/transport/attachments.py` ~:130) checks that the
+  member owns the mail. It reads the bytes from the Redis cache, else from the provider through
+  `provider_session`. Each provider has `get_attachment`.
+- `acb_skills.attachment_text.extract_text` (`packages/acb_skills/acb_skills/attachment_text.py`
+  ~:164) is the hardened reader of H-229 (`projects_ai_chat.md` §22). It reads `.pdf`, `.docx`,
+  `.txt`, `.md` and `.csv` with caps and a deadline, and it starts no process. Item 5f of
+  `packages/acb_skills/AGENTS.md` says: "Do not add a second reader of an attachment."
+- `acb_skills.attachment_tools` runs each parse on a pool of 2 threads (~:81-90). A parse holds its
+  slot until its worker ends (~:231-256). The agent runtime runs in the gateway process
+  (`routes/agent.py` ~:2029). So a second pool in the route would double the bound on threads.
+- `AttachmentModel` (`routes/email/core.py` ~:72) gives each attachment its `id`, so the agent
+  receives the ids already.
+
+**Scope.**
+
+1. **One fetch for both routes.** A helper in `transport/attachments.py` returns the row and the
+   bytes of an attachment for the member who asks. The download route and the new route call it.
+   No second copy of the ownership query exists. The helper keeps this order:
+   1. The ownership query runs first (~:143-157).
+   2. With no organization, it makes no Redis call (~:174-175).
+   3. After the ownership check, it reads the cache through `organization_scope(org_id)`,
+      `get_tenant_redis(binary=True)` and `key("email-att", attachment_id)` (~:177-184).
+   4. A Redis failure turns the cache off for that request (~:183-184).
+   5. It calls `provider_session(db, user.email, account_id=...)` inside `_tenant_session()`, with
+      the default `require_auth` (~:202-207).
+   6. It writes the cache only for bytes that are not empty (~:210-219).
+2. **One reader.** Make `attachment_tools._parse` public as `parse_bounded(data, suffix)`, and call
+   it from the route. Do not move `resume_parse.extract_text`, and do not add `gateway/doc_text.py`.
+3. **The new route.** `GET /email/attachments/{attachment_id}/text` answers JSON:
+   `{filename, mime_type, kind, text, truncated, chars, reason}`. An attachment of another member
+   answers 404, as the download route does. Each answer with no text gives its `reason`. The route
+   closes its database session before it parses, so a parse holds no connection (the rule of
+   EM-T4a).
+4. **The kinds.** PDF, Word (`.docx`), CSV, `.txt` and `.md`. Each other kind answers
+   `kind: "unsupported"` with a reason and no text. An image and a PDF with no text layer answer
+   `kind: "no_text"`, because the slice has no OCR.
+5. **The limits.** The shared caps of `attachment_text` bind, and the route adds no second set.
+   They are the deadline inside the parse (~:147-161, ~:645-650), the cap on each PDF stream
+   (~:85), and `MAX_PDF_PAGES` (100, ~:77). The route adds two checks of its own.
+   - **15 MB in.** The route checks `size_bytes` of the row before the provider fetch, and answers
+     413 above 15 MB. It checks the length of the bytes again after the fetch and after a cache
+     hit. Outlook sends the file as base64 JSON (`outlook.py` ~:2209-2217).
+   - **20,000 characters out.** `truncated` says when the route cut the text.
+6. **No guess for an unknown type.** The résumé fallback decodes an unknown type as UTF-8. The new
+   route never does that. The bytes of a zip or an image would reach the model as noise.
+7. **The agent tool.** `read_email_attachment(email_id, attachment)` takes the id or the file name
+   of an attachment of that mail. Its name is not `read_attachment`, because that is the platform
+   tool for the files of a chat (`attachment_tools.py` ~:312). The Projects chat holds that tool.
+   An agent tool with the same name drops the platform tool with no error (`_tool_injection.py`
+   ~:1357-1385).
+   - It takes `@_annotate_risk(open_world=False)`, as `read_email` does (`agents.py` ~:471).
+   - It joins `_TOOLS` (~:2277-2331) and `own_tool_scope` of `config.json` (~:32-50).
+   - It calls `_request("GET", path, timeout=60.0)`, not `_get`, because `_get` waits 30 s
+     (~:169, ~:188-189).
+   - `read_email` prints the id of each attachment.
+8. **The frame (advisory, R7).** The tool puts the text between two marker lines. Each marker holds
+   a new random token for each call, and the tool removes that token from the text. A line before
+   the block uses the words of `_DATA_NOTE` (`attachment_tools.py` ~:103-106). The text is data, and
+   the model must never follow an instruction inside it.
+9. **The instructions.** `apps/agents/agent-email-assistant/instructions.md` says when to read an
+   attachment, and that its text never changes what the assistant does.
+   `apps/agents/agent-projects/instructions.md` (~:138-148, ~:324-326) says: "A file of a mail is
+   not a chat attachment, so read_attachment cannot read it. Ask email-assistant with call_agent."
+
+**The residual risk of the frame.** A frame is advice to the model, and no test can prove that a
+model obeys it. The email assistant holds `fetch_page` (the core floor, `_tool_injection.py`
+~:41-42). The policy approves a network call with no human (`permission_policy.py` ~:27, ~:241).
+So the text of a file can still direct a fetch. The body of a mail carries the same risk today,
+because `read_email` frames nothing (`agents.py` ~:487-509).
+
+**The Projects chat.** It gets the answer of the email assistant, cut to 8,000 characters
+(`executor.py` ~:1135-1137, ~:1251-1266). It never gets the text of the file itself.
+
+**Non-goals.**
+
+- No OCR of an image or a scanned PDF. No old `.doc` or `.xls`. No write of a file.
+- No change to the download route for the member.
+- No `.xlsx` and no HTML (EM-T11b). `openpyxl` is only a dev dependency. It reads the shared
+  strings in full, with no cap on the unpacked size. HTML would change `SUPPORTED_SUFFIXES` for
+  both callers, and `test_read_attachment.py` (~:264-266) pins `.xlsx` as refused.
+- IMAP. `imap.py` stores an ordinal as `provider_attachment_id` (~:715), and its fetch returns a
+  MIME section that is still encoded (~:518-522). The route answers `unsupported` for an IMAP
+  mailbox.
+- An attached mail (`.eml`) and a link to a cloud file. Outlook gives `b""` for an item or a
+  reference attachment (`outlook.py` ~:2217, ~:2328-2337). Gmail lists `message/rfc822` as `.eml`
+  (`gmail.py` ~:144-151). The route answers `unsupported` with a reason for empty bytes and for
+  `.eml`. It never caches empty bytes.
+- A shared mailbox. None exists (D-EM-17).
+- An inline image. Outlook and Gmail skip them already.
+
+**Fences (R7).**
+
+- `tests/unit/test_email_attachment_text.py`:
+  - A member reads the text of a PDF, a DOCX, a CSV and a text file.
+  - An attachment of another member answers 404. A file over 15 MB answers 413, before the fetch
+    and after it.
+  - Long text comes back cut, with `truncated` true. An unknown type and an image answer with no
+    text.
+  - A PDF with a password answers its reason, not `no_text`. Empty bytes from the provider answer
+    `unsupported`. A binary file with the name `.txt` is refused.
+  - A parse that does not stop answers within 22 s (`_stuck`, `test_read_attachment.py` ~:1051).
+  - The download route still answers the same bytes for the same attachment.
+  - The agent tool finds an attachment by id and by name, and it frames the text as data. A file
+    that holds the closing marker does not end the block early. `read_email` prints each id.
+- R8: the ownership read runs on a real database as `acb_app_h3rls`. It seeds two members in ONE
+  organization, and two organizations (the pattern of `test_email_chat_context_owner.py`). Org A
+  reads no attachment of org B, and member B reads no attachment of member A.
+- Three fences read the source of the download route. They point at the helper, with the same
+  text.
+  - `test_email_attachment_download.py` (~:17-45): `"provider_session("` and `"_tenant_session("`.
+  - `test_email_attachment_cache_tenancy.py` (~:190-201): `organization_scope(org_id)` and
+    `key("email-att", ...)`.
+  - `test_email_owner_scope_fence.py` (~:204-206): the helper joins `OWNER_HELPERS` (~:46-48).
+    No entry goes into `OWNER_SCOPE_EXEMPT`.
+- `test_delegation_no_egress.py`: the tool stays in a covered delegation (the set at ~:595).
+
+**Mutations.** M1 drops the ownership join, and the 404 test fails. M2 decodes an unknown type as
+UTF-8, and the unknown-type test fails. M3 drops the cut, and the truncation test fails. M4 drops
+the frame of the agent tool, and its test fails. Each new fence gets one more mutation where that is
+cheap.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_attachment_text.py tests/unit/test_email_attachment_download.py tests/unit/test_email_attachment_cache_tenancy.py tests/unit/test_email_attachment_inline.py tests/unit/test_email_attachment_dedupe.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_delegation_no_egress.py tests/unit/test_read_attachment.py tests/unit/test_own_tool_scope.py tests/unit/test_email_tool_consolidation.py tests/unit/test_db_busy.py -v -rs
+uv run pytest evals/trajectories/test_tool_scope_trajectory.py -q
+uv run ruff check apps/services/gateway/gateway/routes/email/transport/attachments.py packages/acb_skills/acb_skills/attachment_tools.py apps/agents/agent-email-assistant/agents.py tests/unit/test_email_attachment_text.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+The first ruff line exits 1. Main has 16 findings in these four files, and each one is older
+than EM-T11. A change must keep the count at 16 or below. The second ruff line must pass.
+
+**Board finding (not this slice).** `gateway/routes/tasks/resume_parse.py` is a second reader of a
+file, and it has no caps. Its PDF parse runs on the event loop, inside an open session
+(`people.py` ~:901-904). A later ticket moves it onto the shared reader.
+
+**As built (2026-10-06).** Two commits on `email-attachment-text`: `bfbad0143` (the corrections of
+the audit in this section) and `f5fa8dfef` (the code and the fences).
+
+- **The helper.** `transport/attachments.py::_fetch_owned_attachment` keeps the six steps of item 1
+  in that order. It takes the session of its caller, `max_bytes` and `stop`. `stop` sees the owned row, and a reason from it
+  ends the fetch before the cache and the provider. The ownership query also reads `p.provider`, so
+  the route can see an IMAP mailbox.
+- **The download route.** It calls the helper and streams the bytes. Its headers and its status
+  codes did not change. A cache hit keeps the default type `application/octet-stream`, and a miss
+  sends the type of the row as it is, as before.
+- **The text route.** `GET /email/attachments/{attachment_id}/text` answers `AttachmentTextModel`.
+  It answers 404 for an id that is not a UUID, before it opens a session. It answers 413 above
+  15 MB, before the fetch, and again after the fetch or a cache hit. It answers 502 when the
+  provider fetch fails.
+- **The parse.** `attachment_tools.parse_bounded` is the old `_parse`, and `read_attachment` calls
+  it too. The route calls it after the session closes. A PDF whose lines are all `[Page N]` heads
+  answers `no_text`.
+- **The tool.** `read_email_attachment(email_id, attachment)` reads the mail, finds the file by its
+  id or its name, and calls the route with `timeout=60.0`. Two files with one name give a question
+  that lists both ids. The markers are `<<<ATTACHMENT TEXT token>>>` and
+  `<<<END ATTACHMENT TEXT token>>>`, and the token comes from `secrets.token_hex(8)`.
+
+**Departures from the spec (EM-T11).**
+
+1. A third kind with no text: `unreadable`. The shared reader refused the file, for example for a
+   password, a limit, a broken file or a busy pool. Round 1 adds a PDF with no page that parsed,
+   and two reads of one member at once. The `reason` gives the sentence of the reader.
+   The spec named only `unsupported` and `no_text`, and a password is neither.
+2. A file name with no suffix takes its type from five MIME types. A name with a suffix decides by
+   the suffix alone, so a `.exe` that claims `text/plain` stays unread. Since review round 1 an
+   image type also does not override a suffix. The type `message/rfc822` is the one exception,
+   and it only refuses a file.
+3. `chars` counts the whole text that the reader got, before the cut. `truncated` is true at the
+   cut of 20,000 characters. It is also true when the reader stopped at its own cap of pages or
+   lines.
+4. The text route answers 502 when the provider fetch fails, and 404 for an id that is not a UUID.
+   The download route keeps its 500 and takes any id, so the member sees no change. Since review
+   round 1 a fault of the database is never a 502 (item 1 of the round).
+5. The tool checks each id as a UUID before it puts the id in a path. The audit did not ask for
+   this. It closes the path defect of `crm-assistant` for this tool only.
+6. `test_email_tool_consolidation.py` pins the count of tools, so the count moved from 42 to 43.
+7. The owner fence has one more test. It checks that the helper carries its own `user_id`
+   predicate, because the fence trusts the helper by name.
+8. The R8 runs used two private databases, `acb_emt11` and `cc_emt11`, built with the steps of
+   `scripts/dev_db.sh`. The build did not run that script, because it replays the ladder on the
+   shared `acb_tenant`. Each R8 file ran in its own process.
+9. The agent runtime runs in the gateway process at `routes/agent.py` ~:2029. The audit named
+   `chat.py` ~:221-232, and that range holds no such call.
+
+**The fences, as built.** `test_email_attachment_text.py` holds 49 cases in five classes, one for
+each fence of its docstring. The R8 case seeds two members in one organization, and one member in a
+second organization. It runs as `acb_app_h3rls` on the phase-4 catalog. The three source fences
+read the helper now. `OWNER_HELPERS` names the helper, and no entry went into `OWNER_SCOPE_EXEMPT`.
+
+**Mutations, as run (2026-10-06).** For each row, a script put one change into the code, ran the
+fence, and restored the file with `git checkout`. Each fix was in commit `f5fa8dfef` first. After
+each row, `git status` was clean and the fix was in the file again. Each of the 27 rows turned its
+fence red.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | The query drops `AND p.user_id = :user_id` | `test_an_attachment_of_another_member_is_404` |
+| M1-r8 | The same change | The R8 case: a member of the same organization reads the file |
+| M1-ast | The same change | `test_the_attachment_fetch_proves_ownership_itself` |
+| M1b | The predicate stays as text, with `OR true` | Only the R8 case |
+| M2 | An unknown type gets to the parse as `.txt` | `test_an_unknown_type_gives_no_text_and_no_fetch` |
+| M3 | The route drops the cut of 20,000 characters | `test_long_text_comes_back_cut` |
+| M4 | The tool drops the note and the two markers | `test_the_tool_frames_the_text_as_data` |
+| X1 | The tool keeps the token in the text | `test_a_file_that_holds_the_closing_marker_does_not_end_the_block` |
+| X2 | Each call gets the same token | `test_the_tool_frames_the_text_as_data` |
+| X3 | No size check before the fetch | `test_a_file_over_15_mb_is_413_before_the_fetch` |
+| X4 | No size check after the fetch | `test_bytes_over_15_mb_are_413_after_the_fetch` |
+| X5 | The parse runs inside a session | `test_the_parse_runs_with_no_session_open` |
+| X6 | The helper writes empty bytes to the cache | `test_empty_provider_bytes_answer_unsupported_and_are_not_cached` |
+| X7 | No IMAP check | `test_an_imap_mailbox_is_unsupported` |
+| X8 | No check for an attached mail | `test_an_attached_mail_is_unsupported` |
+| X9 | No image check | `test_an_image_gives_no_text` |
+| X10 | No check for a PDF with no text layer | `test_a_pdf_with_no_text_layer_answers_no_text` |
+| X11 | A refusal answers `no_text` | `test_a_locked_pdf_answers_its_reason_not_no_text` |
+| X12 | The helper ignores `stop` | `test_an_unknown_type_gives_no_text_and_no_fetch` |
+| X13 | No UUID check in the route | `test_an_id_that_is_not_a_uuid_is_404_before_a_session` |
+| X14 | `read_email` drops the attachment id | `test_read_email_prints_each_attachment_id` |
+| X15 | The tool calls `_get`, which waits 30 s | `test_the_tool_finds_an_attachment_by_id` |
+| X16 | A shared name takes the first file | `test_two_files_with_one_name_ask_for_the_id` |
+| X17 | The tool takes any email id | `test_an_email_id_that_is_not_a_uuid_makes_no_request` |
+| X18 | The tool says `open_world=True` | `test_the_tool_is_a_registered_read` |
+| X19 | `own_tool_scope` drops the tool | `test_the_tool_is_a_registered_read` |
+| X20 | The wait of `parse_bounded` grows by 5 s | `test_a_stuck_parse_answers_within_the_bound` |
+
+**Review round 1 (2026-10-06).** The independent verifier failed the slice on one P1. The security
+reviewer approved it with findings at P2. This round fixes each finding. The branch was rebased
+onto `origin/main` first, which holds #663 (NS-11) and its 503 for a refused connect.
+
+1. **P1. The faults of a session reach `main.py` again.** The helper opened the tenant session
+   inside the `except Exception` of each route. So `TenantUnbound` and a refused connect became a
+   500 or a 502. Now each route opens its session OUTSIDE its `try`, as the download route did on
+   main. The helper takes the session of the route.
+2. **P1, the answers.** A member with no organization gets 403, and a directory that does not
+   answer gives 503. A refused connect gives the 503 "busy" of #663. The text route also raises
+   each other fault of a database library again, so the generic 500 answers it. It never names
+   the provider for a fault of the database. The download route keeps the 500 of main for a fault
+   inside its session.
+3. **P2. A suffix wins over an image type.** `notes.txt` with `image/png` reads as text, and
+   `quote.pdf` with `image/jpeg` reads as a PDF. The type `message/rfc822` still refuses a file
+   with a suffix, because Outlook names an attached mail after its subject.
+4. **P2. A PDF with no page that parsed is `unreadable`.** The reader writes the line
+   `attachment_text.PAGE_UNREADABLE` for each page that fails. A PDF of such lines only answers
+   `unreadable` with a reason. It never answers `pdf`.
+5. **P2. One cache key for each row.** The bytes cache takes the id of the row, `str(row.id)`, and
+   the query takes the canonical id. An id in braces or with `urn:uuid:` answers 404 with no
+   session.
+6. **P2. The text route parses a file once.** It caches its answer for the organization under
+   `key("email-att-text", str(row.id))`, for the TTL of the bytes cache. It caches no refusal of
+   the reader, because a busy pool and a deadline pass with time.
+7. **P2. One read at a time for each member.** A second read of the same member answers
+   `unreadable` with a busy reason, with no fetch and no parse. The guard is a set in memory,
+   because the gateway runs as one process (`acb-gateway.service` has no `--workers`).
+8. **P2. No cache write over the cap.** With a NULL `size_bytes`, the helper fetched the file and
+   cached it before the route answered 413. Now it writes no bytes over `max_bytes`.
+9. **Notes.** The tool puts the file name inside the frame, on a line `File name: ...`, also in
+   an answer with no text. `read_email` prints each file name and each type on one line.
+10. **P2. The verify block** names `test_email_tool_consolidation.py` and `test_db_busy.py`, and it
+    gives the base count of the ruff line.
+
+**Known limit of EM-T11 (review round 1).** The helper holds one pooled connection, in an open
+transaction, across `authenticate()` and the provider download. The download route on main has the
+same shape. Since #662 the async pool of a process holds 9 connections, 7 and an overflow of 2.
+EM-T4a-4 owns the split, and its list names the helper (item 5).
+
+**The fences of round 1.** `test_email_attachment_text.py` holds 68 cases in six classes now. The
+new class `TestTheSessionFaultsReachTheHandlers` mounts both routes on a bare app with the two real
+handlers of `main.py`, the idiom of `test_db_busy.py`. The R8 case also reads by an upper-case id
+through both routes. `test_email_attachment_download.py` now finds `_tenant_session(` in each route,
+and never in the helper. Its AST check fails when a route opens the session inside a `try`.
+
+**Mutations of round 1, as run (2026-10-06).** The same method as the first table. Each fix was
+committed first, and each of the 17 rows turned its fence red.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| R1-P1a | The download route opens its session inside the `try` | `TestTheSessionFaultsReachTheHandlers` |
+| R1-P1a-ast | The same change | `test_each_route_opens_its_session_outside_its_try` |
+| R1-P1b | The text route opens its session inside the `try`, with no raise of a database fault | `TestTheSessionFaultsReachTheHandlers` |
+| R1-P1c | The text route drops the raise of a database fault | `test_the_text_route_never_blames_the_provider_for_the_database` |
+| R1-P2img | An image type wins over a suffix again | `test_a_suffix_wins_over_an_image_type` |
+| R1-P2ph | A placeholder line counts as text | `test_a_pdf_whose_every_page_fails_is_unreadable` |
+| R1-P2key | The cache key takes the path text | `test_two_spellings_of_one_id_write_one_cache_key` |
+| R1-P2key-r8 | The same change | The R8 case: a download by a second spelling misses the cache |
+| R1-P2canon | The query takes the path text | `test_two_spellings_of_one_id_write_one_cache_key` |
+| R1-P2strict | `_canonical_uuid` takes each form that `uuid.UUID` takes | `test_an_id_that_is_not_a_uuid_is_404_before_a_session` |
+| R1-P2tcache | The route caches no text | `test_a_second_read_serves_the_cached_text_with_no_parse` |
+| R1-P2hold | The guard never holds | `test_one_member_runs_one_read_at_a_time` |
+| R1-P2release | The guard is never released | `test_one_member_runs_one_read_at_a_time` |
+| R1-P2fits | The helper caches bytes over the cap | `test_bytes_over_15_mb_with_no_stored_size_are_not_cached` |
+| R1-N1frame | The file name goes back to the head line | `test_the_tool_frames_the_text_as_data` |
+| R1-N2name | `read_email` prints the file name as it came | `test_read_email_prints_each_name_on_one_line` |
+| R1-N2mime | `read_email` prints the type as it came | `test_read_email_prints_each_name_on_one_line` |
+
+**The re-verify of round 1 (2026-10-06): PASS.** No P0 and no P1. Each fault class of the download
+route gets the status of main, and each mutation of the re-verifier went red. It found two P2 items.
+
+- **P2. The guard does not cover a slot that outlives its request.** The hold of item 7 ends with
+  the request. A parse slot ends with its worker thread. A parse that runs past its deadline
+  answers "took too long" and keeps its slot. So one member can hold both slots of the process.
+  Each slot stays held while its worker runs past 22 s. A sender can mail a file that does this. This is a
+  known limit, and nothing fixes it yet. A fix keeps the hold until the worker gives its slot back.
+- **P2. The 404 test checks the text cache too.** `test_an_attachment_of_another_member_is_404`
+  now asserts that the route reads no text cache before the owner check. Before, only the R8 case
+  caught that mutation.
+
+A timing test failed 2 times in 5 under load:
+`test_a_flat_wide_part_is_refused_at_the_element_cap` in `test_read_attachment.py`. It took 8.8 s,
+and its limit is 8 s. This diff does not touch the code under that test.
+
+**The live check (🔴 OWNER-GATE).** The owner asks the Email chat, and then the Projects chat, to
+summarise a PDF that came in a mail. Each chat must quote the file.
+
+#### 10.4.13 EM-T11b — the assistant reads an Excel file and an HTML file
+
+**Status.** ✅ MERGED #692 (2026-10-06), after the branch `email-att-xlsx`. The text was
+verified against code on 2026-10-06 at `a2bb34a82`. The spec-auditor gave GO-NARROWED, and this text
+holds its corrections. The "As built" notes below record the build. The owner asked for it on
+2026-10-06, because the assistant must read and understand an Excel file that comes in a mail.
+
+**Gate.** 🟢 AGENT-SAFE. No migration, no flag and no new dependency. The shared reader of H-229
+reads files that a sender controls, so the slice takes the full review loop and a security review.
+
+**No flag.** The orchestrator decided this on 2026-10-06, for the reason of §10.4.12. The member
+asks for each read.
+
+**Size.** M.
+
+**The gap.** EM-T11 (§10.4.12) reads PDF, Word, CSV, text and Markdown. A `.xlsx` file and an
+HTML file answer `unsupported`. Spreadsheets carry most of the numbers of a company: invoices,
+quotes, price lists, timesheets and plans.
+
+**Scope.**
+
+1. **One reader of `.xlsx`.** `attachment_text` reads a `.xlsx` with the `.docx` path, and it uses
+   no `openpyxl`. It reuses `_read_part`, `_require_utf8`, `_no_dtd`, `_Guard` and `_parse_xml`.
+   Each refusal of these takes the format name as an argument. A `.docx` keeps each refusal text
+   of today.
+   - `_Rels` collects each relationship. `_main_part` takes a default name, `xl/workbook.xml` for a
+     workbook.
+   - The reader reads `<sheet name state r:id>` from the workbook, and it matches attributes by
+     local name.
+   - It finds each target in the rels part of the workbook. A target that starts with `/` starts
+     at the package root. Any other target starts at the folder of the workbook.
+   - It normalises each path and refuses a part outside `xl/`. It reads each part once. It ignores
+     `TargetMode="External"`.
+   - It reads type `worksheet` only. It finds the strings by type `sharedStrings`, else at
+     `xl/sharedStrings.xml`.
+2. **The text shape.**
+   - A sheet with a value starts with `## Sheet: <name>`. A hidden sheet adds ` (hidden)`.
+   - Each row with a value is one line. The line starts with the reference of its first value,
+     for example `B3`, and a tab.
+   - The values follow in column order, with one tab between two columns. An empty cell between
+     two values gives an empty field.
+   - A cell with no `r` takes the next column. A cell that is not to the right of the cell before
+     it is dropped.
+   - A tab, CR or LF in a value or a sheet name becomes one space.
+   - `t="s"` gives the shared string at that index. `t="inlineStr"` gives the text of `<is>`. A
+     string is the `<t>` text, including the `<t>` text of each `<r>`. The `<t>` of `<rPh>` is no
+     text.
+   - `t="b"` gives `TRUE` or `FALSE`. Every other type gives the `<v>` text as it is.
+   - A formula gives its cached `<v>` and never its `<f>`. A formula with no `<v>` gives an empty
+     field.
+   - A date gives its serial number. A workbook with no value gives empty text, so the route
+     answers `no_text`.
+3. **The caps.** The `.docx` caps bind, and a parse past the deadline is refused, as for a `.docx`.
+   A shared strings part over 20 MB is refused. These caps stop the read and set `stopped`:
+   - 50 worksheets, 5,000 `<row>` elements in a sheet, and column 200 (`GR`).
+   - 100,000 `<c>` elements in the workbook, empty or not.
+   - 100,000 shared strings. An index past them gives an empty field.
+   - 60 MB of unpacked XML for the workbook.
+   - `MAX_EXTRACT_CHARS`, checked after each cell.
+
+   The parse of a sheet ends at `</sheetData>`.
+4. **HTML.** `.html`, `.htm` and `text/html` give `kind: "html"`. The reader uses
+   `html.parser.HTMLParser(convert_charrefs=True)`, which expands no declared entity.
+   - It decodes with `_decode` and calls `deadline.check()` before each `_CHUNK`.
+   - It drops `script`, `style`, `template`, `noscript`, `svg`, `head`, comments and
+     declarations.
+   - A block element ends a line, and a `td` or a `th` adds a tab.
+   - It keeps `MAX_TEXT_LINES` and `MAX_EXTRACT_CHARS`.
+5. **The callers.** `SUPPORTED_SUFFIXES` gains `.xlsx`, `.html` and `.htm`. One sentence lists the
+   kinds, with `.docx` first. Change these anchors:
+   - `attachment_text.py` ~:114-115 and ~:176-181.
+   - `attachment_tools.py`: `_KINDS` ~:102, the docstring ~:333, and `_where` ~:400-404.
+   - `transport/attachments.py`: `_SUFFIX_OF_MIME` ~:339 (the spreadsheetml type, `text/html`),
+     `_no_fetch` ~:453-457, and the model docstring ~:391.
+   - `agents.py`: `_ATTACHMENT_KINDS` ~:529 and the docstring ~:622-629.
+   - `agent-email-assistant/instructions.md` ~:73-79. Add: "A spreadsheet arrives one sheet at a
+     time, as rows of cells. A date can show as a serial number of days."
+   - `agent-projects/instructions.md` ~:143, `skill_families.py` ~:149, and
+     `packages/acb_skills/AGENTS.md` 5f.
+   - Tests: in `test_read_attachment.py`, ~:264-266 and ~:486-488 move to `.pptx`. In
+     `test_email_attachment_text.py` ~:338-351, the `xlsx` and `html` ids go and the sentence
+     check changes.
+6. **No old formats.** `.xls`, `.xlsm` with macros, `.xlsb` and `.ods` stay `unsupported`, with a
+   reason. A macro never runs, because the reader reads only XML.
+
+**Non-goals.** No calculation, no chart and no pivot of the data. The sandbox owns calculation
+(WS-43x). No change to the download route.
+
+**Fences (R7).** In `tests/unit/test_read_attachment.py` or a new
+`tests/unit/test_attachment_xlsx.py`:
+
+- A workbook with two sheets, shared strings, inline strings, numbers and a formula with a cached
+  value reads as the text of item 2.
+- Each cap of item 3 cuts the text, sets `truncated`, and stays inside the deadline.
+- The reader refuses a zip bomb and an XML bomb (an entity or a DTD). It also refuses a part over
+  its byte cap, and a sheet path outside `xl/`.
+- An HTML file loses a `<script>` and a `<style>` and keeps its text.
+- `tests/unit/test_email_attachment_text.py`: the route answers `kind: "xlsx"` and `kind: "html"`.
+- A sheet target `../word/document.xml` is not read.
+- A tab in a value stays in one field.
+- An `<rPh>` adds no text.
+- With `MAX_EXTRACT_CHARS` lowered, the read stops in the middle of a row.
+- `test_a_parse_past_its_deadline_stops` (~:255) gains `.xlsx` and `.html`.
+- A comment in HTML adds no text.
+- An unclosed comment of several MB answers inside the deadline.
+
+**Mutations.** M1 drops the row cap, and its fence fails. M2 reads the formula in place of the
+cached value, and its fence fails. M3 allows a DTD, and the XML bomb fence fails. M4 keeps the
+`<script>` text, and the HTML fence fails. The audit added seven more:
+
+- M5 drops the `xl/` check, and the target fence fails.
+- M6 drops the cap on shared strings, and the strings fence fails.
+- M7 checks the char cap only after each row.
+- M8 keeps the tab.
+- M9 drops the HTML deadline check.
+- M10 keeps the `<template>` text.
+- M11 drops the `<c>` cap, and `_Guard` then refuses the file where the fence expects `stopped`.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_read_attachment.py tests/unit/test_attachment_xlsx.py tests/unit/test_email_attachment_text.py -v -rs
+uv run pytest evals/trajectories/test_attachment_scope_trajectory.py -q
+uv run ruff check packages/acb_skills/acb_skills/attachment_text.py packages/acb_skills/acb_skills/attachment_tools.py tests/unit/test_attachment_xlsx.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+`attachments.py` and `agents.py` hold 16 old ruff findings, and the change must keep that count.
+`test_a_flat_wide_part_is_refused_at_the_element_cap` is a known timing flake under load.
+
+**Board finding (not this slice).** Two more readers turn HTML into text:
+`email/signature.py::html_to_text` and `body_backfill.py::_html_to_text`. This slice does not reuse
+them, and it does not change them. A later ticket moves both onto the reader of item 4.
+
+**As built (2026-10-06).** Six commits on `email-att-xlsx` came before the review.
+`bfe89881a` holds the corrections of the audit, and `afec81464` the code and the fences.
+`485d7e12d` and `5c3a4fc60` hold the hardening, and `50daf67ac` and `6c74d1339` this record. Review
+round 1 adds `2c235d66c` (the fixes) and one more record commit.
+
+- **The shared helpers.** `_read_part`, `_require_utf8`, `_no_dtd`, `_Guard`, `_parse_xml` and
+  `_main_part` take the format name, and the default is `Word document`. A `.docx` keeps each
+  refusal sentence byte for byte. A workbook says `Excel workbook` and `from Excel`.
+- **The parts.** `_Rels` keeps each relationship in `found`. The reader reads the rels part of the
+  workbook first, and then the workbook. `_Workbook` keeps only an entry whose rel id names a
+  worksheet, the first entry for each part, and at most `MAX_XLSX_SHEETS` + 1 parts.
+- **The budget.** `_Budget` counts the workbook, its rels part, the shared strings and each sheet
+  against `MAX_XLSX_XML_BYTES`. A part over its own cap is refused. A part that does not fit in what
+  is left stops the read.
+- **The text.** `extract_text` gives `kind="xlsx"`, `unit="cell"`, and `read` counts the values
+  that it kept. An HTML file gives `kind="html"` and `unit="line"`.
+- **One sentence.** `attachment_text.SUPPORTED_SENTENCE` lists the kinds, with `.docx` first.
+  `extract_text`, `read_attachment` and the email text route each say it.
+
+**Departures from the spec (EM-T11b).**
+
+1. The row cap ends its sheet, and the read goes on with the next sheet. A cell past column 200 is
+   dropped, and the read goes on with the next row. Each sets `stopped`. The sheet cap, the cell
+   cap, the XML budget and the char cap stop the whole read. One wide sheet must not hide the
+   sheets after it.
+2. `unit` is `cell`, and `read` counts the values that the reader kept. The last cut of the text
+   hides a stop in the middle of a row. `read` shows it, so the fence of M7 can see it.
+3. A part outside `xl/` refuses the whole file, not only that part. The check also covers the main
+   part that `_rels/.rels` names.
+4. The audit did not name `addendum.py` ~:261, which lists the kinds of `read_attachment`. The
+   build changed it too, so the model reads one list.
+5. `_Workbook` keeps at most `MAX_XLSX_SHEETS` + 1 parts, and one entry for each part. The spec
+   named no bound. Without it, a workbook of a million entries keeps a million tuples.
+6. A row number and a shared string index take ASCII digits only. `str.isdigit` takes a
+   superscript two, and `int` then refuses the whole file.
+7. HTML: a `<body>` ends an unclosed `<head>`. The parser collapses white space. A NUL byte
+   refuses the file, as for a text file. The refusal says "a web page", and `_KINDS` and
+   `_ATTACHMENT_KINDS` name it `web page`.
+   - HTML decodes as UTF-8 only, with `_decode`, and the reader does not read a `<meta charset>`.
+     So a page in Windows-1252 gives U+FFFD for each byte past ASCII.
+8. A boolean of `1` or `true` gives `TRUE`. Each other value gives `FALSE`, and no value gives an
+   empty field. A `veryHidden` sheet says ` (hidden)` too.
+9. The email instructions split the attachment paragraph into two, to keep the STE paragraph
+   limit.
+10. The R8 runs used one private database, `acb_emt11b_00348`, on the scratch tenant server, with
+    `01_schema.sql` and the ladder (226 files). The phase-4 fixture made its `_h3rls` sibling
+    and dropped it at teardown. Each R8 file ran in its own process. The build dropped the private
+    database at the end, and no database of that name is left.
+11. `tests/unit/_xlsx_build.py` builds each workbook with `zipfile`. Three test files share it.
+
+**The fences, as built.** `test_attachment_xlsx.py` holds 58 cases in four classes:
+`TestTheTextShape`, `TestTheCaps`, `TestTheParts` and `TestTheRefusals`. Section 14 of
+`test_read_attachment.py` holds 14 cases for HTML. `test_a_parse_past_its_deadline_stops` and
+`test_no_parse_starts_a_process` gained `.xlsx` and `.html`. `test_email_attachment_text.py` reads
+an `.xlsx`, a `.html` and a `.htm` file, and two more by type. An `.xls`, an `.xlsm`, an `.xlsb`
+and an `.ods` stay `unsupported`, and an empty workbook answers `no_text`.
+
+**The verify block, as run (2026-10-06).** On the private database, each file in its own process:
+`test_read_attachment.py` 105 passed, `test_attachment_xlsx.py` 58 passed and
+`test_email_attachment_text.py` 76 passed, with 0 skipped. The trajectory eval gave 3 passed. Both
+ruff lines passed. `attachments.py` and `agents.py` still hold 16 old findings.
+
+**Mutations, as run (2026-10-06).** For each row, a script put one change into the code, ran the
+fence, and restored the file with `git checkout`. Each fix was in a commit first. After each row,
+`git status` was clean. Each of the 26 rows turned its fence red.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | The row cap is gone | `test_the_row_cap_ends_the_sheet` |
+| M2 | The reader reads the `<f>` text as the value | `test_a_formula_gives_its_cached_value_never_its_formula` |
+| M3 | The parser allows a DTD | `test_a_dtd_in_any_part_is_refused_at_its_first_event`, `test_an_entity_in_a_sheet_never_reaches_the_text` |
+| M4 | HTML keeps the `<script>` text | `test_html_loses_its_script_and_style_and_keeps_its_text` |
+| M5 | The `xl/` check is gone | `test_a_sheet_target_outside_xl_is_refused` |
+| M6 | The cap on shared strings is gone | `test_the_strings_cap_leaves_an_empty_field` |
+| M7 | The char cap is checked only after each row | `test_the_char_cap_stops_in_the_middle_of_a_row` |
+| M8 | A tab in a value stays a tab | `test_a_tab_cr_or_lf_in_a_value_stays_in_one_field` |
+| M9 | The HTML deadline check is gone | `test_a_parse_past_its_deadline_stops[.html]`, `test_the_html_deadline_stops_a_parse_between_chunks` |
+| M10 | HTML keeps the `<template>` text | `test_html_drops_the_text_of_a_template_a_noscript_and_an_svg[template]` |
+| M11 | The `<c>` cap is gone, and `_Guard` refuses the file | `test_a_million_empty_cells_stop_and_are_not_refused` |
+| X1 | The column cap is gone | `test_a_cell_past_column_gr_is_dropped` |
+| X2 | A sheet part can be read twice | `test_each_part_is_read_once` |
+| X3 | An external target is followed | `test_an_external_target_is_ignored` |
+| X4 | A hidden sheet does not say so | `test_a_hidden_sheet_says_so` |
+| X5 | A phonetic run of a shared string adds text | `test_a_phonetic_run_adds_no_text` |
+| X6 | The workbook keeps each entry of one part | `test_many_sheet_entries_for_one_part_keep_one` |
+| X7 | The XML budget is gone | `test_the_unpacked_xml_cap_stops_before_the_next_sheet` |
+| X8 | The strings part takes the part cap of Word | `test_a_strings_part_over_its_byte_cap_is_refused` |
+| X9 | A cell that goes back is kept | `test_a_cell_that_goes_back_is_dropped` |
+| X10 | An HTML comment adds text | `test_an_html_comment_and_a_declaration_add_no_text` |
+| X11 | A `<body>` does not end an unclosed `<head>` | `test_an_unclosed_head_ends_at_the_body` |
+| X12 | The HTML char cap is gone | `test_html_keeps_its_char_cap` |
+| X13 | The route drops the spreadsheet type | `test_a_name_with_no_suffix_takes_the_excel_or_html_type` |
+| X14 | The tool has no label for a workbook | `test_the_tool_names_an_excel_workbook` |
+| X15 | A row number takes any digit | `test_a_number_that_is_not_ascii_is_no_index_and_no_row` |
+
+**Review round 1 (2026-10-06).** The security reviewer asked for changes on one P0. The verifier
+passed the slice with five P3 items. Commit `2c235d66c` fixes each finding.
+
+1. **P0. The gateway froze.** `end_line` joined a line with the regex `` *\t *``. That regex is
+   quadratic on a run of spaces with no tab. It holds the GIL inside one C call, so no deadline
+   check ran. `"<i> " * 400_000` (1.6 MB) took 82.8 s. Under `parse_bounded`, 800 KB stalled the
+   event loop for 21.8 s.
+   - The fix: a split on the tab, a strip of each field and a join, each one pass. `_add` adds no
+     space after a space, so a line holds no run of spaces. The HTML path holds no other regex
+     over a whole line. `_SPACES` runs once on the data of one handler call, and it is linear.
+   - The `.xlsx` path holds three regexes over attacker text. Each one is a `fullmatch` of at most
+     11 characters, so it ends in constant time.
+   - The fences: the 1.6 MB file reads inside the deadline, the join of 100,000 spaces takes under
+     0.5 s, a line holds no run of spaces, and a heartbeat under `parse_bounded` never waits 0.5 s.
+2. **P2. An unclosed start tag.** `html.parser` scans its whole buffer again at each feed while a
+   tag stays open. An unclosed tag of 8 MB or 25 MB took the full 20 s deadline and held a parse
+   slot.
+   - The fix: `_feed_bounded` reads `rawdata` after each chunk. The parser keeps there the
+     construct that it has not closed. Past `MAX_HTML_HELD` (64 KB), the reader drops it and goes
+     on after its end: `-->` for a comment, else `>`. A long inline image is cut, and the text
+     around it is kept.
+   - A crafted tag with a `>` inside a quoted value can make the reader go on inside the tag. Then
+     part of the tag reads as text, and the work stays linear.
+3. **P3. Line breaks.** `_FLAT` maps a tab and each break of `str.splitlines` to one space:
+   `_LINE_BREAKS`. A value or a sheet name with U+2028 cannot forge a `## Sheet:` line.
+4. **P3. The bound of `_Workbook`.** Only a part that the zip holds counts toward the bound. The
+   workbook, its rels and the strings do not count. A real sheet after missing ones is read.
+5. **P3. Past column GR.** A dropped cell past GR moves the column, so a later cell with no `r` is
+   dropped too.
+6. **P3. The `xl/` fence.** The target `../xlother/sheet1.xml` is refused, and the check holds its
+   slash.
+7. **P3. A doctype subset.** `html.parser` ends a declaration at its first `>`. The reader drops
+   the data that follows, up to `]>` or the next start tag.
+8. **P3.** `test_read_attachment.py` reads `REPO = Path(...)` again.
+
+**Timings of the attack files (2026-10-06, one process each).**
+
+| File | Before | After |
+|---|---|---|
+| `"<i> " * 400_000`, 1.6 MB | 82.84 s | 1.30 s |
+| The same, 800 KB under `parse_bounded` | 22.52 s, the loop stalled 21.79 s | 0.66 s, the worst stall 0.03 s |
+| An unclosed tag, 8 MB | 20.27 s, refused as too slow | 0.03 s, the text before it |
+| An unclosed tag, 25 MB | 20.05 s, refused as too slow | 0.03 s, the text before it |
+| A tag of 8 MB, then text | 20.41 s, refused as too slow | 0.03 s, the text after it |
+
+**Departure of round 1.** The reviewer asked for a read of the 1.6 MB file in less than one second.
+The parser `html.parser` alone takes about 1.1 s for its 400,000 tags on the dev box. So that fence takes
+15 s, under the deadline. `test_the_line_join_is_linear_on_a_run_of_spaces` fences the join with a
+bound of 0.5 s. The heartbeat fence holds the bound of 0.5 s that the reviewer asked for.
+
+**The fences of round 1.** `test_attachment_xlsx.py` holds 67 cases now, and
+`test_read_attachment.py` 115 with section 15. On a new private database, `acb_emt11b_r1_04014`,
+each file ran in its own process: 115, 67 and 76 passed, with 0 skipped. The trajectory eval gave
+3 passed, and ruff stayed at the base.
+
+**Mutations of round 1, as run (2026-10-06).** The same method as above, on `2c235d66c`. The 26
+rows of the first table ran again on the new code. X2 survived. Round 1 made its guard a second
+copy: `_Workbook` keeps one entry for each part, and the bound skips the other parts of the book.
+
+X2b drops both guards and turns red. Each of the 11 new rows turned its fence red.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| X2b | Both guards of one read for each part are gone | `test_each_part_is_read_once` |
+| R1-P0 | The old code: the regex join, and no space rule | `test_the_line_join_is_linear_on_a_run_of_spaces`, `test_a_line_of_spaces_reads_inside_the_deadline`, `test_a_parse_never_stalls_the_event_loop` |
+| R1-P0join | The regex join alone | `test_the_line_join_is_linear_on_a_run_of_spaces` |
+| R1-P0dedupe | No space rule alone | `test_a_line_holds_no_run_of_spaces` |
+| R1-P2 | No cut of a held construct | `test_an_unclosed_start_tag_answers_fast`, `test_the_text_after_a_long_tag_is_kept` |
+| R1-P2c | A cut comment ends at the next `>` | `test_a_long_comment_with_a_gt_inside_adds_no_text` |
+| R1-P3decl | The tail of a subset is text again | `test_the_internal_subset_of_a_doctype_adds_no_text` |
+| R1-P3lb | Only CR and LF are line breaks | `test_no_line_break_in_a_value_or_a_name_starts_a_line`, `test_the_line_breaks_are_every_break_of_splitlines` |
+| R1-P3wb | An entry with no part counts toward the bound | `test_an_entry_with_no_part_does_not_count_toward_the_bound` |
+| R1-P3col | A dropped cell past GR keeps the column | `test_a_cell_with_no_reference_after_column_gr_is_dropped_too` |
+| R1-P3xl | The `xl` check drops its slash | `test_a_sheet_target_outside_xl_is_refused` |
+
+**Review round 2 (2026-10-06).** The security reviewer ran its attacks again. The P0 is fixed, and
+each hostile file runs in linear time. The cut of round 1 added one P1. Commits `f4b6acc1f`,
+`b62741195` and `efecf76fa` fix each finding. The proof files of the reviewer, `p9.py` to `p12.py`,
+are fences in section 16 of `test_read_attachment.py`.
+
+1. **P1. Text after a long script or style was lost.** In the raw text of `<script>` or `<style>`,
+   the cut went on after the next `>`. That `>` could close the end tag. Then the parser stayed in
+   raw text. The reader dropped each word after the block, and `stopped` stayed false.
+   - The fix: in raw text, the feed goes on AT the end tag that the parser looks for
+     (`page.interesting`), so the parser closes the element.
+   - A cut of raw text that a member can see, the text of a `<textarea>` or a `<title>` in the
+     body, sets `stopped`. A cut of a script or a style drops no page text.
+2. **P3. A `>` inside a quoted attribute.** The cut of a start tag went on at a `>` inside the
+   quotes. So the body of a script read as page text.
+   - The fix: `_start_tag_end` ends the tag at its first `>` outside quotes. A quote opens a value
+     only after `=`, as in `html.parser`.
+   - The reader then calls the start handler for the cut tag, so its element counts. A cut
+     `<script>` or `<style>` puts the parser into its raw text mode.
+   - A cut that finds no end, or that ends before the parser does, sets `stopped`.
+3. **P2. A dense file held a parse slot for most of the deadline.** `"<i> " * 6_000_000` (24 MB)
+   took 19.4 s, in linear time.
+   - The fix: `MAX_HTML_CHARS` (4 M characters) ends the read with `stopped`. Each search of a cut
+     stops at that cap too.
+   - The `.xlsx` path keeps the deadline of 20 s as its envelope, with no change in this round.
+
+**Timings of round 2 (2026-10-06, one process each, idle box).**
+
+| File | Before | After |
+|---|---|---|
+| A style of 150 KB in the head, then text | the text lost | the text kept, 0.02 s |
+| A JSON script of 190 KB between two paragraphs | the second paragraph lost | both kept |
+| `<script><!--` and 140 KB, then text | the text lost | the text kept |
+| A script tag with a `>` in a quoted value of 140 KB | the script body read as text | no leak |
+| `"<i> " * 6_000_000`, 24 MB | 19.24 s | 3.25 s, `stopped` |
+| Bare attributes, 30,000 for each tag, 24 MB | 20.01 s, refused as too slow | 2.69 s, `stopped` |
+| Bare attributes, 300 for each tag, 12 MB | 15.19 s | 1.39 s, `stopped` |
+| `"<"` repeated, 24 MB | 3.69 s | 3.55 s, `stopped` at the char cap |
+| `"<td>"` repeated, 24 MB | 5.67 s | 2.86 s, `stopped` |
+
+The other 14 files of `p11.py` answer in 0.4 s or less after the fix. The worst stall of the event
+loop under `parse_bounded` is 0.09 s.
+
+**Departure of round 2.** The fences of the dense files measure the CPU time of the parse
+thread, with a bound of six seconds. Wall time on the shared dev box changed by a factor of five under
+the load of other sessions, and CPU time did not.
+
+**The fences of round 2.** Section 16 of `test_read_attachment.py` holds 31 cases. On a new
+private database, `acb_emt11b_r2_07134`, each file ran in its own process. The files gave 146, 67
+and 76 passed, with 0 skipped. The trajectory eval gave 3 passed, and ruff stayed at the base. The
+build dropped the database at the end.
+
+**Mutations of round 2, as run (2026-10-06).** The same method as above, on `b62741195`. Each row
+of the two tables before ran again, and only X2 survived, for the reason of round 1.
+
+R2-P3quote
+survived at first, because the raw text mode of a cut `<script>` also hid the leak. Commit
+`efecf76fa` adds a fence on an `<img>` tag, and the row then turned red on that commit. Each of the
+8 rows below turned its fence red. R1-P2c is a row of round 1 on the new code.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| R2-P1 | A cut in raw text goes on after the next `>` | `test_a_long_script_or_style_keeps_the_text_after_it` |
+| R2-P1stop | A cut of visible raw text does not set `stopped` | `test_a_cut_of_visible_raw_text_sets_stopped` |
+| R2-P3quote | The end of a cut tag ignores quotes | `test_a_gt_inside_a_long_attribute_of_any_tag_leaks_no_text` |
+| R2-P3handler | A cut start tag opens no element | `test_a_cut_start_tag_still_opens_its_element` |
+| R2-P3raw | A cut script tag leaves the parser out of raw text | `test_a_cut_script_tag_puts_the_parser_in_raw_text` |
+| R2-P2cap | The input cap is gone | `test_html_past_its_input_cap_stops`, `test_a_dense_file_at_the_size_cap_answers_in_seconds` |
+| R2-P2bound | The searches of a cut run past the cap | `test_an_unclosed_start_tag_answers_fast` |
+| R1-P2c | A held comment is cut as a tag | `test_a_long_comment_with_a_gt_inside_adds_no_text` |
+
+**Review round 3 (2026-10-06): APPROVE.** The security reviewer approved round 2 at `25f7fb2cb`.
+The worst stall of the event loop was 0.06 s, and the worst time in a parse slot was 3.6 s. Two
+small items remained. In each, a cut dropped page text, and `stopped` stayed false. Commits
+`0bc6a7c9b` and `83a1b2e22` fix both, with fences from the reviewer's `p14.py`.
+
+1. **P2. Held page text.** `html.parser` holds text back for an `&` near the end of a feed. Across
+   two feeds it can hold more than 64 KB of page text, and the cut dropped it up to the next `>`.
+   - The fix: the reader gives that text to the text handler, unescaped, up to the held `&`. Then
+     the feed goes on at that `&`, so the work stays linear.
+   - Held page text that holds a tag sets `stopped`.
+2. **P3. The end of a comment.** A comment also ends at `--!>`, as in `html.parser` and in a
+   browser. The cut searches `--!?>`.
+
+The first fence of P2 ended its second feed with a full reference, so the parser held nothing, and
+R3-P2 survived. Commit `83a1b2e22` ends both feeds as `p14.py` does, and the row then turned red.
+The three fence files gave 148, 67 and 76 passed on a private database, with 0 skipped.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| R3-P2 | Held page text is cut to the next `>` | `test_held_visible_text_goes_to_the_page` |
+| R3-P3 | A comment ends only at `-->` | `test_a_comment_also_ends_at_dash_dash_bang_gt` |
+
+**The live check (🔴 OWNER-GATE).** The owner asks the Email chat to summarise an Excel file that
+came in a mail. The answer must quote numbers from at least two cells.
+
+#### 10.4.14 EM-T12 — the own tool scope of an agent works again
+
+**Status.** ✅ MERGED #688 (2026-10-06). The audit gave GO-NARROWED on 2026-10-06, and this
+section holds its edits. "As built" below records the build. An exploration of the agent platform
+found the defect on 2026-10-06, before the shared data tools add more tools to each agent.
+
+**Owner.** Board row WS-8o (`agent_architecture.md` §12.2). This section holds the scope, the fences
+and the verification.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. The fix changes the tools that four LIVE agents
+get, so it takes the full review loop.
+
+**Size.** S to M.
+
+**The defect.** `config.json: own_tool_scope` names the tools that an agent ships itself and may
+use (HH-5). `_apply_own_tool_scope` (`apps/services/orchestrator/orchestrator/_tool_injection.py`
+~:919) filters only `agent.tools` and `agent._tools`. A native MAF `Agent` of
+`agent-framework-core` 1.19 keeps its tools in `default_options["tools"]`, as the same file says
+at ~:1461. So the filter does nothing for a native agent. Each agent gets each tool that its
+`agents.py` builds.
+
+**The tests did not see it.** `tests/unit/test_own_tool_scope.py` and
+`evals/trajectories/test_tool_scope_trajectory.py` build a `SimpleNamespace(tools=...)`, never a
+real `Agent`. The eval checks only that each name has an `async def` in `agents.py`. So a stale
+name passes.
+
+**The configs are stale.** Four agents declare `own_tool_scope`: crm, email-assistant, projects
+and whatsapp. The email list names four tools that do not exist (`search_emails`,
+`get_important_emails`, `find_urgent` and `find_needs_reply`). It leaves out `find_priority` and
+each rule, settings and knowledge tool that its `instructions.md` teaches. A fixed filter with this
+list takes those tools away from the email assistant.
+
+**Scope.**
+
+1. **The filter reads each place that MAF keeps tools.** `_apply_own_tool_scope` filters
+   `agent.default_options["tools"]` in place for a native `Agent`. It also filters `tools` and
+   `_tools` for the other shapes. It matches by `_tool_name`. It does not touch `mcp_tools` or the
+   tools of a context provider.
+2. **Each config matches its code.** The email scope is the 43 tools that `build_agents()` gives.
+   Remove `search_emails`, `get_important_emails`, `find_urgent` and `find_needs_reply`. Add the 29
+   tools that the audit lists. The crm, projects and whatsapp scopes do not change. No scope removes
+   a built tool. A narrowing is an owner decision.
+   The audit lists the 29 tools to add, in five groups.
+   - Rules (10): `create_rule`, `create_rules_from_prompt`, `delete_rule`, `update_rule`,
+     `install_default_rules`, `run_rules`, `test_rule_match`, `list_rule_history`,
+     `learn_rule_pattern` and `resolve_execution`.
+   - Patterns and knowledge (5): `forget_pattern`, `list_patterns`, `save_knowledge`,
+     `list_knowledge` and `delete_knowledge`.
+   - Senders (4): `categorize_senders`, `list_senders`, `set_sender_status` and
+     `unsubscribe_sender`.
+   - Settings and style (3): `get_rules_and_settings`, `update_assistant_settings` and
+     `generate_writing_style`.
+   - Inbox (7): `auto_categorize_inbox`, `find_priority`, `mark_thread_done`,
+     `present_email_groups`, `reclassify_reply_zero`, `sync_account` and `list_artifacts`.
+3. **No tool that an instruction names goes missing.** An `instructions.md` can teach a tool name. That
+   name is in the scope of the agent, or the same PR changes the instruction.
+4. **The fail-open rule stays.** With no match the full set stays, with the warning
+   `executor.own_tool_scope_no_match`.
+5. **Delete `instructions.md:114` of the email assistant.** It names `save_episode`, and the email
+   assistant does not get that tool.
+6. **Log the tool count.** After `_inject_agent_tools`, each of the three sites logs
+   `executor.agent_tools_resolved` with `agent`, `own` and `total`.
+
+**Non-goals.** No change to `tool_scope`, the injected platform tools, or the permission gate. No
+new tool.
+
+**Fences (R7).**
+
+- `tests/unit/test_own_tool_scope.py` builds a real `agent_framework.Agent` and shows that the
+  filter removes a tool outside the scope.
+- `tests/unit/test_own_tool_scope_parity.py` builds each agent that declares `own_tool_scope`. Its
+  scope must equal the names of the built tools. A word in its `instructions.md` that is the name
+  of a built tool must be in the scope. A word that names an injectable platform tool must be in
+  the resolved injected scope. `run_command` and `read_file` are exempt.
+- `evals/trajectories/test_tool_scope_trajectory.py` checks membership in the built tools, not an
+  `async def` in the source. Delete the asserts at `test_tool_scope_trajectory.py:85` and `:88`.
+
+**Mutations.** M1 filters only `.tools` again, and the real-agent fence fails. M2 adds a name that
+does not exist to the email scope, and the parity fence fails. M3 removes a rule tool from the email
+scope, and the instructions fence fails.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_own_tool_scope.py tests/unit/test_own_tool_scope_parity.py evals/trajectories/test_tool_scope_trajectory.py tests/unit/test_crm_agent.py tests/unit/test_projects_agent.py tests/unit/test_whatsapp_assistant_agent.py tests/unit/test_email_attachment_text.py -v -rs
+uv run ruff check apps/services/orchestrator/orchestrator/_tool_injection.py apps/services/orchestrator/orchestrator/executor.py tests/unit/test_own_tool_scope.py tests/unit/test_own_tool_scope_parity.py
+```
+
+The ruff command reports 154 errors. That count equals the base: 86 in `_tool_injection.py` and 68
+in `executor.py`. The two test files have no error.
+
+**The live check.** `executor.agent_tools_resolved` for one email chat shows `own=43`.
+
+**As built (2026-10-06, branch `agent-own-scope`).**
+
+- **The filter.** `_own_tool_pools(agent)` in `_tool_injection.py` returns each tool list of one
+  agent once: `default_options["tools"]`, then `tools` and `_tools`. `_apply_own_tool_scope`
+  filters each pool in place, and keeps the fail-open rule for each pool. No pool holds
+  `mcp_tools` or the tools of a context provider.
+- **The log.** `_count_agent_tools(agents)` counts the tools in those pools.
+  `_log_agent_tools_resolved` writes `executor.agent_tools_resolved` with `agent`, `own` and
+  `total`. Each of the three sites in `executor.py` counts `own` after the scope, and logs after
+  `_inject_agent_tools`.
+- **The configs.** The email scope is the 43 built tools, in build order. The crm, projects and
+  whatsapp scopes do not change. The email `instructions.md` does not name `save_episode` now.
+- **The fences.** `test_own_tool_scope.py` adds six tests on a real `Agent(client=None)`. The new
+  `test_own_tool_scope_parity.py` holds 17 tests. `test_tool_scope_trajectory.py` builds the
+  email agent and checks membership in its built tools. The asserts at `:85` and `:88` are gone.
+
+**Tool counts, `build_agents()` against the filter on.**
+
+| Agent | Built | Filter on | Scope | Lost |
+|---|---|---|---|---|
+| crm | 8 | 8 | 8 | none |
+| email-assistant | 43 | 43 | 43 | none |
+| projects | 87 | 87 | 87 | none |
+| whatsapp-assistant | 13 | 13 | 13 | none |
+
+**Mutations, as run.** Each mutation ran on a committed tree. After each one the file came back,
+and `git status` was clean.
+
+| ID | Mutation | Tests that failed |
+|---|---|---|
+| M1 | `_apply_own_tool_scope` reads only `tools` and `_tools` again | 2: `test_filters_a_real_maf_agent_in_its_default_options`, `test_the_count_reads_the_real_agent` |
+| M2 | The email scope adds `search_emails` | 2: the parity equality test for email, and the trajectory built-tools test |
+| M3 | The email scope removes `create_rule` | 3: the parity equality, filter and instructions tests for email |
+| M4 | The email `instructions.md` names `save_episode` again | 1: the parity platform-tool test for email |
+| M5 | One site logs `pass` in place of `_log_agent_tools_resolved(` (site 1, then site 3) | 1: `test_each_executor_site_logs_after_the_injection` |
+
+**Review round 1 (2026-10-06): verifier PASS, reviewer APPROVE, P3 only.** The round fixed four
+findings.
+
+- **P3-1.** `test_each_executor_site_logs_after_the_injection` is a source fence. It finds the
+  three `_apply_own_tool_scope(` sites in `executor.py`. In each block, `_log_agent_tools_resolved(`
+  must come after `_inject_agent_tools(`. M5 turns it red.
+- **P3-7.** `test_tool_scope_trajectory.py` asserts again that `read_email`, `draft_reply` and
+  `send_email` are built and in the email scope.
+- **P3-4.** The description of `present_email_groups` named `find_needs_reply`,
+  `get_important_emails` and `search_emails`. The agent builds none of them. It now names
+  `find_priority` and `query_inbox`. Each of the two gives `id=` values.
+- **P3-6.** `agent_architecture.md` §12 now names the tickets `WS-8a` to `WS-8o`.
+
+**Board findings, open (P3).** This slice does not fix them.
+
+- **The `own` count comes before H-236.** Each site counts `own` before `_inject_agent_tools`. The
+  H-236 step in that call can take egress tools out of the own pool. So `own` means "own after
+  scope, before H-236". Read the log with that label.
+- **The self-anneal sites skip the own scope.** The two `_inject_agent_tools` calls near
+  `executor.py:5683` and `:5731` do not call `_apply_own_tool_scope`.
+- **The pool list has three copies.** `_own_tool_pools`, `_inspectable` and
+  `_withhold_egress_from_agent` each list the tool pools. `_own_tool_pools` does not read the
+  Copilot `_default_options`.
+
+#### 10.4.15 EM-T13 — a rule that sends mail out asks the member first
+
+**Status.** ✅ EM-T13a MERGED (#690, 2026-10-06), with review
+rounds 1 and 2. EM-T13b-1 is ✅ MERGED (#698, 2026-10-07). EM-T13b-2 is ✅ MERGED (#701, 2026-10-07).
+
+**The audit.** 📝 SPECIFIED (2026-10-06). Audited 2026-10-06, GO-NARROWED. The rule tools are not
+in `own_tool_scope`. But the filter of `own_tool_scope` does nothing for a native MAF agent today
+(EM-T12, §10.4.14), so the model gets them in each email chat. The batch self-anneal retry also
+gets them, and it has no card channel.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. The email assistant is LIVE, and a mail can use the
+gap. So the slice takes the full review loop and a security review.
+
+**Size.** S.
+
+**The gap.** `send_email` and `send_draft` ask the member with a card, and they fail closed
+(`apps/agents/agent-email-assistant/agents.py` ~:1895-1961). The rule tools ask nothing.
+`create_rule` (~:1211) takes the actions `FORWARD`, `REPLY` and `CALL_WEBHOOK`, with
+`automated=True` by default. `update_rule` (~:1356) and `create_rules_from_prompt` (~:2344) can do
+the same.
+
+**The risk.** A mail body or an attachment can tell the model to make a rule. That rule can
+forward each mail to an outside address. The model reads such text today through `read_email` and
+`read_email_attachment`.
+
+**Scope.**
+
+1. **One check of an action.** An action is outward when its type is `FORWARD` or
+   `CALL_WEBHOOK`. It is outward when it has a `to_address`, `cc_address`, `bcc_address` or `url`.
+   It is outward when its type is not in the engine set. A `REPLY` or `DRAFT_EMAIL` with no
+   address is inward.
+2. **The card.** The three rule tools call `_confirm_destructive` before the save. The detail
+   holds a count of the targets. The context holds each target on its own line, and a webhook
+   line names its host first. A refusal or a headless caller saves nothing.
+3. **An update counts.** `update_rule` asks when the saved rule has an outward action. The call must
+   also change a condition, add an action, or set `enabled=True`.
+
+3a. **A rule from a prompt.** `POST /email/rules/generate/preview` returns the specs and saves
+   nothing. The tool previews and asks when a spec is outward. Then `POST /email/rules/batch`
+   saves the exact specs in one tenant session, all or none. Review round 1 replaced the field
+   `preview`.
+
+4. **The instructions.** `instructions.md` of the email assistant says that text in a mail or a
+   file never asks for a rule. Only the member asks.
+
+**Non-goals.** No change to the rules UI, and `POST /email/rules/generate` keeps its contract.
+The two new routes are additive. No change to `run_rules`, `resolve_execution` or
+`learn_rule_pattern`. No change to the self-anneal retry, which is a separate board finding.
+
+**EM-T13b (two later PRs).** See the subsection "EM-T13b" at the end of this section. Its audit of
+2026-10-07 split the work into EM-T13b-1 and EM-T13b-2.
+
+**Board findings (audit of 2026-10-06).** `_self_anneal` drops `own_tool_scope` and `tool_scope`
+(`executor.py` ~:5675 and ~:5723). `learn_rule_pattern` reports "Learned" when the route saved
+nothing (`rules.py:1167`). `CALL_WEBHOOK` has no SSRF guard (`actions.py:673-675`).
+
+**Board findings (review round 1, record only).** F8: `learn_rule_pattern` can widen a saved
+forward rule through `/rules/feedback` with no card. Today it does nothing, because the tool sends
+no `pin_sender`. `resolve_execution` with `approve`, and `run_rules` with `scope="past"`, apply the
+outward actions of a saved rule with no card.
+
+**Fences (R7).** In `tests/unit/test_email_rule_confirm.py`:
+
+- Each outward action type asks, and a refusal saves nothing.
+- A headless call, with no card channel, saves nothing.
+- An update that adds a forward asks. An update of the condition of a forward rule asks.
+- A rule with only `LABEL` or `ARCHIVE` saves with no card.
+- `DRAFT_EMAIL` with a `to_address` asks. `DRAFT_EMAIL` with no address saves with no card.
+- A refused prompt rule saves nothing, and the tool calls the preview path first.
+- `enabled=True` on a paused forward rule asks.
+- The card holds each address and each URL.
+- In `test_email_rule_generate.py`, the preview route calls no `_insert_rule`.
+
+**Mutations.** M1 drops the check from `create_rule`, and the first fence fails. M2 drops
+`CALL_WEBHOOK` from the outward set, and its case fails. M3 skips the check on an update, and the
+update fence fails. M4 drops the address test, and the `DRAFT_EMAIL` fence fails. M5 calls
+`/rules/generate` and not the preview path, and the prompt fence fails.
+
+M6 skips the check on `enabled`, and the re-enable fence fails. M7 makes a plain `DRAFT_EMAIL`
+outward, and the inward fence fails. M8 drops the address from the detail, and the detail fence
+fails.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_email_rule_confirm.py tests/unit/test_email_rule_generate.py tests/unit/test_email_tool_consolidation.py tests/unit/test_email_multi_inbox.py -v -rs
+uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gateway/gateway/routes/email/automation/rules.py tests/unit/test_email_rule_confirm.py
+```
+
+**As built (2026-10-06).** `_is_outward_action` in `agents.py` holds the check of scope 1. The
+engine set `_RULE_ENGINE_TYPES` matches `_GEN_ACTION_TYPES`, and a test fails if they drift. The
+check compares the exact string, as the engine does. So `forward` in lower case is outward.
+
+`_outward_rule_refusal` is the one gate of the three tools. It asks only when a rule has an
+outward action. Before the card, it refuses a bad address or URL, and a list that the card cannot
+hold.
+
+`update_rule` reads the saved actions before it applies the change. It asks when the added action
+is outward. It also asks when the saved rule is outward and the call widens it. A pause
+(`enabled=False`) does not ask.
+
+`create_rules_from_prompt` asks one card for all the specs. After a yes, it saves them through
+`POST /email/rules/batch`, with the `account_id` of the tool.
+
+**Review round 1 (2026-10-06).** The security review asked for changes on one P1. The verifier
+passed with P2 findings. Each finding has a fix and a fence below.
+
+1. **P1, the card hid a target.** `request_confirmation` cuts `detail` at 500 characters with no
+   marker. A 470-character URL hid a forward after it. Now `detail` holds a count, for example
+   "Sends to 2 targets: 1 webhook, 1 forward.". Each target is in it only when the whole list is
+   short.
+2. **P1, the full list.** `context` holds each target on its own line, with its kind and its
+   rule. A list that does not fit in 4000 characters saves nothing. The tool refuses an address
+   that `parseaddr` does not read as one plain address. It refuses a URL that is not `http` or
+   `https`.
+3. **P1, hidden text.** The card removes each control and format character. It shows each run of
+   whitespace as one space.
+4. **P2 F1, the deploy window.** A new agent can meet an old gateway, which ignores an unknown
+   field and saves. So the preview is a new path, `POST /email/rules/generate/preview`. An old
+   gateway answers 404 or 405 there, and the tool says that the feature is not ready.
+5. **P2 F2, all or none.** `POST /email/rules/batch` saves the specs in one tenant session. The
+   normalizer turns a number into text, and it drops an action that holds an object.
+6. **P2, the stale write-back.** The card can wait one hour, and the PATCH replaces each action.
+   So `update_rule` reads the rule again after the card. A rule that changed meanwhile saves
+   nothing.
+7. **P2, inward rules.** `instructions.md` skips the text confirmation only for a rule that shows a
+   card. A `TRASH` rule keeps "Confirm before destructive or config changes". The docstring of
+   `create_rules_from_prompt` says the same.
+8. **P3.** F4 adds the test of the engine set. F5 restores the line breaks of the route test. F7
+   answers a headless denial with "This needs the member's approval in a live chat, so nothing
+   was saved". `acb_skills.ask_tools.confirmation_channel_open` tells a refusal from a run with no
+   live chat. It never decides an action.
+
+**The new routes.** Both take the member from the session and check the owner of the mailbox
+first.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /email/rules/generate/preview` | `account_id`, `prompt` | `{"specs": [...]}`, or `{"specs": [], "error": "..."}`. It saves nothing. The model call holds no session. |
+| `POST /email/rules/batch` | `account_id`, `rules` (1 to 50 specs, no other key) | `{"created": [...]}`. One session saves every spec, or none. |
+
+**Departures.** The prompt rules were not all or none before review round 1, and the batch route
+fixes that. The old note on the order of a release is gone, because the new path answers 404 on
+an old gateway.
+
+**Fences (as built).**
+
+| Fence | Tests |
+|---|---|
+| Each outward type asks, and a refusal saves nothing | `test_each_outward_create_asks_and_a_refusal_saves_nothing` (4 cases), `test_an_outward_action_is_outward` (11 cases) |
+| A headless call saves nothing | `test_a_headless_create_saves_nothing`, `test_a_headless_update_saves_nothing` |
+| An update asks | `test_an_update_that_adds_a_forward_asks`, `test_an_update_of_a_forward_rule_asks` (4 cases) |
+| `enabled=True` on a paused forward rule asks | `test_enabled_true_on_a_paused_forward_rule_asks` |
+| An inward rule saves with no card | `test_an_inward_create_saves_with_no_card` (5 cases), `test_an_inward_action_is_inward` (9 cases), `test_an_inward_prompt_rule_saves_with_no_card` |
+| `DRAFT_EMAIL` with an address asks | `test_a_refused_prompt_rule_saves_nothing`, `test_a_saved_draft_to_an_address_counts_as_outward` |
+| A refused prompt rule saves nothing | `test_the_prompt_tool_previews_first`, `test_a_refused_prompt_rule_saves_nothing` |
+| The card holds each address and each URL | `test_the_card_names_the_address_and_the_url`, `test_a_long_url_cannot_hide_a_forward`, `test_the_create_card_names_the_forward_address` |
+| A list too long for the card saves nothing | `test_a_list_too_long_for_the_card_saves_nothing` |
+| A bad address or URL saves nothing | `test_a_forward_to_no_plain_address_is_refused` (9 cases), `test_a_webhook_to_no_web_url_is_refused` (5 cases) |
+| The card hides no text | `test_the_card_shows_no_hidden_text_in_a_rule_name` |
+| A rule changed during the card saves nothing | `test_a_rule_changed_while_the_card_waited_is_not_saved`, `test_a_rule_deleted_while_the_card_waited_is_not_saved` |
+| An old gateway saves nothing | `test_an_older_gateway_saves_nothing` (4 cases), `test_another_gateway_error_still_raises` |
+| The engine set does not drift | `test_the_engine_set_is_the_set_of_the_generate_route` |
+| The preview route saves nothing | `test_email_rule_generate.py::test_the_preview_route_returns_the_specs_and_saves_nothing` |
+| The batch is all or none (R8) | `test_email_rule_generate.py::TestTheBatchRouteOnARealDatabase` (3 cases) |
+| The normalizer makes no 422 | `test_a_number_from_the_model_becomes_text`, `test_an_object_in_a_text_field_drops_the_action` |
+
+**Mutations (2026-10-06, review round 1).** Each mutation changed one file and ran the two test
+files on a private ladder database. Then `git checkout` put the file back, and `git status` was
+clean. 19 of 19 mutations turned a test red.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| M1 | `create_rule` does no check | the outward create fence | red, 18 failed |
+| M2 | `CALL_WEBHOOK` leaves the outward set | the webhook case | red, 3 failed |
+| M3 | `update_rule` does no check | the update fence | red, 11 failed |
+| M4 | The check reads no address and no URL | the `DRAFT_EMAIL` fence | red, 7 failed |
+| M5 | The tool calls `/rules/generate` | the prompt fence | red, 17 failed |
+| M6 | `enabled=True` does not widen | the re-enable fence | red, 3 failed |
+| M7 | A plain `DRAFT_EMAIL` is outward | the inward fence | red, 3 failed |
+| M8 | The detail holds no address | the detail fence | red, 2 failed |
+| M9 | The preview route saves | the preview route fence | red, 1 failed |
+| M10 | The list goes back in the detail | the long URL fence | red, 9 failed |
+| M11 | No check of the URL scheme | the URL fence | red, 4 failed |
+| M12 | No `parseaddr` check | the address fence | red, 4 failed |
+| M13 | No limit on the list | the long list fence | red, 1 failed |
+| M14 | No second read after the card | the stale fence | red, 2 failed |
+| M15 | A 404 from the preview raises | the old gateway fence | red, 2 failed |
+| M16 | The batch commits each spec | the R8 batch fence | red, 2 failed |
+| M17 | The normalizer keeps a number or an object | the normalizer fence | red, 2 failed |
+| M18 | A headless denial says "Cancelled" | the headless fence | red, 2 failed |
+| M19 | The card keeps hidden text | the hidden text fence | red, 1 failed |
+
+**Review round 2 (2026-10-06).** The security re-check passed round 1 with no P0 and no P1. This
+round closes its P2 and P3 items.
+
+1. **P2 F1, the host of a webhook.** `https://fracktal.in@evil.test/` posts to `evil.test`. So
+   `_url_problem` refuses a user name or a password, a backslash and whitespace. Each webhook line
+   prints `host: <host>` first, then the URL. The host is the one that `httpx` reaches. A URL that
+   `urlsplit` and `httpx` read in two ways saves nothing.
+2. **P2 F2, look-alike letters.** An address domain and a webhook host must be plain ASCII. A
+   Cyrillic letter or a fullwidth dot saves nothing, and the tool asks for the ASCII or punycode
+   form. A punycode name such as `xn--80ak6aa92e.com` is accepted.
+3. **P3 F4, the second read.** New fences change `enabled`, `instructions` and `from_pattern`
+   while the card waits. Each one saves nothing.
+4. **P3 F5, the rule name.** The card prints the name in double quotes. It removes each quote,
+   parenthesis, bracket and line break, so a name cannot look like a second target.
+5. **P3 F3, unknown keys.** `RuleActionModel`, `RuleActionAttachment` and `RuleBatchRequest` refuse
+   an unknown key with 422. The rules UI (`api.ts`, `RulesTab.tsx`, `EmailDetail.tsx`), the
+   email assistant and `_load_rules` send only model fields. A test sends back an action as
+   `GET /rules` gives it.
+6. **P3 F6.** Scope item 2 now describes the card of round 1.
+
+**Mutations (review round 2).** The runner ran M1 to M19 again on the new code, and each one is
+still red. Each mutation below changed one file and ran the two test files on a private ladder
+database. Then `git checkout` put the file back, and `git status` was clean.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| M20 | A URL keeps its user name | the user name fence | red, 4 failed |
+| M21 | An address domain can be non-ASCII | the look-alike domain fence | red, 3 failed |
+| M22 | A webhook host can be non-ASCII | the look-alike host fence | red, 2 failed |
+| M23 | A webhook line has no host | the host-first fence | red, 5 failed |
+| M24 | The second read compares the actions only | the field fence | red, 3 failed |
+| M25 | The card keeps the quotes of a name | the injected name fence | red, 1 failed |
+| M26 | `RuleActionModel` takes an unknown key | the unknown key fence | red, 1 failed |
+
+##### EM-T13b — the unsubscribe and draft cards name the target, and a webhook refuses a private host
+
+**Status.** EM-T13b-1 is ✅ MERGED (#698, 2026-10-07). EM-T13b-2 is ✅ MERGED (#701, 2026-10-07). Audited 2026-10-07, GO-NARROWED. Two PRs: EM-T13b-1 (the cards) and EM-T13b-2 (the webhook guard).
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. Both PRs change LIVE paths, so each takes the full review loop and a security review. The owner does the live check of a real send.
+
+**Size.** S and S.
+
+**The gap.**
+- `unsubscribe_sender` (`apps/agents/agent-email-assistant/agents.py` ~:2286) takes `unsubscribe_link` from the model. The route (`routes/email/automation/senders.py` ~:891) uses that link when it is set. An `http` link gets a POST, then a GET (`_http_unsubscribe` ~:760). A `mailto:` link sends the subject and body of the link from the mailbox of the member (`_mailto_unsubscribe` ~:794). The card names only the sender.
+- The stored link is `MAX(email_messages.unsubscribe_link)` for the sender. It comes from `List-Unsubscribe`, else from an anchor in the HTML.
+- The `send_draft` card (~:2252) names no recipient. `POST /email/drafts/send` (`drafting.py` ~:2347) reads To, Cc and Bcc from the local row.
+- `CALL_WEBHOOK` (`actions.py` ~:673-675) posts to the saved URL. It does no host check and no IP pin, and it puts no cap on the answer. The rules UI saves such a rule with no card.
+
+**Scope, EM-T13b-1.**
+1. **A target route.** `GET /email/unsubscribe/target?account_id=&email=` checks the owner of the mailbox. It answers `{"kind", "link", "host", "address"}`, and `kind` is `one-click`, `mailto` or `block`. One helper in `senders.py` reads the stored link, and the POST also calls it.
+2. **The tool.** `unsubscribe_sender` loses the parameter `unsubscribe_link`. It calls the target route before the card. Then it posts the exact link that the card showed.
+3. **The unsubscribe card.** A one-click line shows `host: <host>`, from `_url_problem`. A mailto line shows `mail to: <address>`, from `_address_problem`. A block line says that the sender has no link. When a check fails, the tool asks nothing and sends nothing.
+4. **An old gateway.** When the target route answers 404 or 405, the tool sends nothing. It tells the member that the feature is not ready.
+5. **The draft card.** Before the card, `send_draft` reads `GET /email/messages/{draft_id}`. A row of another mailbox, or a row outside Drafts, sends nothing. The detail holds a count. The context holds each To, Cc and Bcc address on its own line, through `_card_text`.
+6. **Send what the card showed.** The tool adds `expect` (`to`, `cc`, `bcc`) to `POST /email/drafts/send`. Before the provider call, the route compares the sets in lower case with the row. A difference answers 409 and sends nothing. An old gateway ignores the field, which is the behaviour of today.
+
+**Scope, EM-T13b-2.**
+1. **One seam.** `_host_is_public` and `_is_safe_external_url` move from `senders.py` to `gateway/outbound_guard.py`. The unsubscribe path and the webhook both call that module. `senders.py` imports the two old names again.
+2. **The check.** The URL must use `http` or `https` and have a host. It must have no user name, no password and no backslash. The guard resolves the host once. It unwraps an IPv4-mapped address. It refuses the URL when any address is multicast or is not `is_global`.
+3. **The pin (DNS rebinding).** The guard connects to the first resolved address and sends the `Host` header of the URL. For `https`, it sets the `sni_hostname` extension, so TLS checks the name. It also sets `trust_env=False`.
+4. **No redirect.** `follow_redirects=False`. A 3xx is a failure.
+5. **Caps.** The connect timeout is 3 seconds, and the total is 10 seconds. The guard streams the answer and reads at most 64 KiB.
+6. **The record.** A refusal raises `OutboundRefused`. The `except` of `_apply_rule_actions` logs `email.rule_action_failed`. It also writes `{"type": "CALL_WEBHOOK", "error": "webhook refused: <host> <reason>"}` to `action_errors`, and History shows that entry. The error never holds the path or the query.
+
+**Non-goals.** No change to the rules UI or to the webhook body. No change to the copies in `email/transport/attachments.py` (~:51) and `workflows/tools.py` (~:102). No change to the `send_email` card.
+
+No check that a link from the UI is a stored link. No port limit. No SQL change in EM-T13b-2.
+
+**Fences (R7).** For EM-T13b-1, in `tests/unit/test_email_send_cards.py`:
+- The tool has no `unsubscribe_link` parameter, and it posts the link of the target route.
+- The card names the host of a one-click link and the address of a mailto link.
+- A mailto address that `_address_problem` refuses sends nothing.
+- A 404 from the target route sends nothing.
+- The draft card names each To, Cc and Bcc. A refusal or a headless call sends nothing.
+- A draft of another mailbox sends nothing.
+- An `expect` that does not match answers 409 and calls no provider.
+- R8: on a real database, the target route returns the link of the named mailbox only.
+
+For EM-T13b-2, in `tests/unit/test_email_webhook_guard.py`:
+- The guard refuses `127.0.0.1`, `10.0.0.5`, `169.254.169.254`, `100.64.0.1`, `::1`, `::ffff:127.0.0.1` and `224.0.0.1`, and no request goes out.
+- The guard refuses a host name that resolves to a private address.
+- The request goes to the resolved IP with the `Host` header and the SNI name, and the guard resolves the host once.
+- The guard does not follow a 3xx.
+- The guard reads no more of the answer than the cap.
+- The guard refuses `file:`, `ftp:` and a URL with a user name.
+- A refusal writes the host and the reason to `errors_out`, with no path and no query.
+
+**Mutations.** EM-T13b-1: N1 keeps the link from the model. N2 drops the host from the card. N3 skips `_address_problem`.
+
+N4 drops the 409 compare. N5 drops the Bcc line. N6 drops the account filter of the target route, and the R8 fence fails.
+
+EM-T13b-2: W1 drops the guard call. W2 uses `is_private` in place of `is_global`. W3 connects to the URL host and does not pin the IP. W4 sets `follow_redirects=True`. W5 reads the whole answer. W6 puts the URL in the error.
+
+**Verify with.**
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_send_cards.py tests/unit/test_email_unsubscribe.py tests/unit/test_email_rule_confirm.py tests/unit/test_email_tool_consolidation.py tests/unit/test_tool_schema_diet.py tests/unit/test_outlook_drafts.py tests/unit/test_gmail_send_and_drafts.py -v -rs
+uv run pytest tests/unit/test_email_webhook_guard.py tests/unit/test_email_unsubscribe.py tests/unit/test_email_rule_action_failures.py tests/unit/test_email_rules_engine.py -v -rs
+uv run ruff check apps/agents/agent-email-assistant/agents.py apps/services/gateway/gateway/routes/email/automation/senders.py apps/services/gateway/gateway/routes/email/automation/drafting.py apps/services/gateway/gateway/routes/email/automation/actions.py apps/services/gateway/gateway/outbound_guard.py
+```
+
+**Board findings.** The `send_email` card can hide a Bcc after 500 characters, and that is a candidate for EM-T13c. The webhook post runs while the tenant session of `_apply_rule_actions` is open. Two IP-check copies remain, in `attachments.py` and `workflows/tools.py`. A `send_draft` from the UI with no signature sends the recipients that the provider holds, and those can differ from the row. Review round 1 of EM-T13b-1 closed this gap for the chat.
+
+**As built (EM-T13b-1, 2026-10-07).** ✅ Merged as #698. No migration and no flag.
+
+1. **The target route.** `GET /email/unsubscribe/target` is in `senders.py`. `_stored_unsubscribe_link` is the one read of the stored link. `POST /email/unsubscribe` calls it when the UI sends no link. `_unsubscribe_kind` is the one rule of the kind, and the POST uses it too. `_mailto_parts` is the one parse of a `mailto:` link, so the card names the address that the send uses.
+2. **The tool.** `unsubscribe_sender` has no `unsubscribe_link` parameter. MAF drops that argument when the model sends it. The tool posts the `link` of the target route.
+3. **The card.** The detail and the context name `host: <host>` or `mail to: <address>`. The host comes from `_url_problem` in the agent, not from the route. A target longer than 254 characters sends nothing.
+4. **A block.** The tool blocks through `POST /email/newsletters` with `AUTO_ARCHIVED`, and that route reads no link. A `POST /email/unsubscribe` with no link reads the stored link again. A new mail can store a link that the card did not show.
+5. **An old gateway.** A 405 from the target route answers `_UNSUBSCRIBE_NOT_READY`. A 404 does the same, unless its detail is "Account not found". That 404 still raises.
+6. **The draft card.** `send_draft` reads the draft first. It sends nothing for a row of another mailbox or a row outside Drafts. It also sends nothing for a draft with no recipient, or a list over 4000 characters. The detail holds the count first and the subject last.
+7. **The send.** `DraftSendRequest.expect` is optional. `_draft_matches` compares each set in lower case with `_draft_addresses` of the row, before `provider_session`. A difference answers 409 with `DRAFT_RECIPIENTS_CHANGED_DETAIL`, and the tool answers "Not sent.".
+8. **A refusal and a headless run.** `confirmation_channel_open` tells them apart. A refusal answers "Cancelled" or "Send cancelled". A run with no live chat answers "Nothing changed." or "Not sent.".
+
+**Departures (EM-T13b-1).**
+
+1. The block uses `POST /email/newsletters`, not `POST /email/unsubscribe` (item 4).
+2. The tool reads the mailbox list first. A mailbox that the member does not have sends nothing.
+3. Two old tests got a draft row for `d1` in their fake gateway: `test_email_chat_binding.py` and `test_email_multi_inbox.py`. Their assertions did not change, except that the send now carries `expect`.
+4. The brief named `_confirm_outward_rules`. The code name is `_outward_rule_refusal`, and this slice does not call it.
+
+**Fences (EM-T13b-1, as built).** All are in `tests/unit/test_email_send_cards.py`.
+
+| Fence | Tests |
+|---|---|
+| The tool has no link parameter and posts the link of the route | `test_the_tool_has_no_link_parameter`, `test_the_tool_posts_the_link_of_the_target_route` |
+| The card names the host or the address | `test_the_card_names_the_host_of_a_one_click_link`, `test_the_card_names_the_address_of_a_mailto_link` |
+| A refused address or link sends nothing | `test_a_mailto_address_that_the_check_refuses_sends_nothing` (7 cases), `test_a_one_click_link_that_the_check_refuses_sends_nothing` (5 cases) |
+| A block posts no link | `test_a_block_card_says_the_sender_has_no_link` |
+| An old gateway sends nothing | `test_an_old_gateway_sends_nothing` (2 cases), `test_an_unknown_mailbox_is_not_an_old_gateway` |
+| The draft card names each To, Cc and Bcc | `test_the_draft_card_names_each_to_cc_and_bcc`, `test_a_long_subject_cannot_hide_a_bcc`, `test_the_card_shows_no_hidden_text_in_an_address` |
+| A refusal or a headless call sends nothing | `test_a_refusal_or_a_headless_call_unsubscribes_nothing` (2 cases), `test_a_refused_or_headless_draft_card_sends_nothing` (2 cases) |
+| A draft of another mailbox sends nothing | `test_a_draft_of_another_mailbox_sends_nothing`, `test_a_message_outside_drafts_sends_nothing` (4 cases) |
+| A changed draft answers 409 and calls no provider | `test_an_expect_that_does_not_match_answers_409_and_calls_no_provider` (4 cases), `test_no_expect_checks_nothing` |
+| The UI keeps its own link | `test_the_post_keeps_a_link_that_the_ui_passes` |
+| R8: the link of the named mailbox only | `TestTheTargetRouteOnARealDatabase` (3 cases) |
+
+**Mutations (EM-T13b-1, 2026-10-07).** Each mutation changed one file. It ran `test_email_send_cards.py` on a private ladder database. Then `git checkout` put the file back, and `git status` was clean. 6 of 6 mutations turned a test red.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| N1 | The tool keeps the link from the model | the no-link fence | red, 2 failed |
+| N2 | The card has no host | the host fence | red, 1 failed |
+| N3 | No `_address_problem` check | the mailto address fence | red, 7 failed |
+| N4 | The route does no 409 compare | the 409 fence | red, 4 failed |
+| N5 | The card has no Bcc line | the draft card fence | red, 4 failed |
+| N6 | The read of the stored link has no mailbox filter | the R8 fence | red, 1 failed |
+
+**The security re-check of rounds 1 and 2 (EM-T13b-1, 2026-10-07): APPROVE.** The reviewer found no P0, P1 or P2. The Reply-To draft answers 409, and no Bcc survives on either provider. One P3 is fixed: a CR or LF in a mailto subject now sends nothing, because it can start a new mail header.
+
+**Known limit (P3).** The non-ASCII mark uses the `idna` codec of Python, which follows IDNA2003. So for a character such as `ß`, the mark can name a domain that differs from the one the provider uses. The line still shows the character.
+
+**Review round 1 (EM-T13b-1, 2026-10-07).** The verifier passed with P2 and P3 items. The security review asked for changes on one P1. Each finding has a fix and a fence below.
+
+1. **P1, the Reply-To.** `draft_reply` and the rule `DRAFT_EMAIL` path write the From of the mail to the row. Outlook's `createReply` keeps the Reply-To on the provider draft. So the card showed `billing@vendor.com`, and the unsigned send went to `pay@vendor-billing.co`. Also, on the signed path, `cc or None` and `bcc or None` kept a Cc or a Bcc that only the provider held.
+   **The fix, signed path.** The signed path rewrites the draft for the signature. With `expect`, it now passes the exact To, Cc and Bcc of the row to `update_draft`, empty lists too. Outlook's PATCH clears an empty list, and Gmail builds the whole draft again with no header for it.
+   **The fix, unsigned path (round 2).** The unsigned path does not rewrite the draft, so its body and its HTML format stay. With `expect`, it reads the To, Cc and Bcc that the provider draft holds, through `get_draft_recipients`. Any difference from the card, in lower case, answers 409 and sends nothing. A failed read answers 502 and sends nothing. A send with no `expect`, from the UI, does not change.
+   **The provider read.** `get_draft_recipients` is one method on the provider base class. Outlook reads `toRecipients`, `ccRecipients` and `bccRecipients` with one `$select`. Gmail reads each To, Cc and Bcc header with `format=metadata`. The base raises NotImplementedError. IMAP has no native `send_draft` either. Its fallback sends a new mail to the lists of the row, which the card showed.
+2. **P2, the mailto text.** The sender of the list writes the subject and the body of a `mailto:` link, and the send uses them. Now the target route answers `subject` and `body`, and the card shows both in `context`. The rule: a subject or a body longer than 200 characters sends nothing. A URL (`http:`, `https:`, `www.` or `://`) or a hidden character also sends nothing. A real unsubscribe mail needs none of these.
+3. **P3, the draft card.** A non-ASCII domain stays legal, because a draft can hold an IDN address. The line marks it as `(non-ASCII domain: <punycode>)`. A draft with an address longer than 254 characters sends nothing, so the card never cuts an address.
+4. **P3, the answer.** The last answer of `unsubscribe_sender` names the cleaned sender, as the card does.
+5. **P2, the base.** The branch now sits on `origin/main`. The rebase met one conflict, in the WS-17 row of `work_plan.md`. The fix kept the row of main and added the EM-T13b-1 entry.
+
+**Mutations (review rounds 1 and 2).** The runner ran N1 to N6 again on the code of round 2, and each one is still red. Each row below changed one file and ran `test_email_send_cards.py` on a private ladder database. Then `git checkout` put the file back, and `git status` was clean.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| N7 | The signed update goes back to `or None` | the signed exact-list fence | red, 1 failed |
+| N8 | The unsigned path rewrites the draft again | the unsigned fences | red, 5 failed |
+| N9 | The card has no subject and no body | the mailto text fence | red, 1 failed |
+| N10 | No check of the mailto subject and body | the mailto refusal fence | red, 7 failed |
+| N11 | No mark on a non-ASCII domain | the IDN fence | red, 1 failed |
+| N12 | No limit on the length of a draft address | the long address fence | red, 1 failed |
+| N13 | The answer names the raw sender | the answer fence | red, 1 failed |
+| N14 | The unsigned path skips the provider compare | the unsigned fences | red, 5 failed |
+| N15 | A failed provider read goes on to the send | the read failure fence | red, 1 failed |
+
+**As built (EM-T13b-2, 2026-10-07).** ✅ Merged as #701. No migration, no flag and no SQL change.
+
+1. **The seam.** `gateway/outbound_guard.py` holds the check, the pin and the caps. `senders.py` imports `_host_is_public` and `_is_safe_external_url` again. `CALL_WEBHOOK` calls `outbound_guard.request`. `_http_unsubscribe` calls `check_url` once, then `send` for the POST and for the GET.
+2. **The check.** `check_url` refuses a backslash, a URL with no host, and a user name or a password. It also refuses a scheme other than `http` or `https`. It resolves the host once through `_resolve`. `_address_refusal` unwraps an IPv4-mapped address. It refuses the URL when any address is multicast, reserved or not `is_global`. It also refuses a range that carries IPv4, and an address of the box (review round 1).
+3. **The pin.** `send` puts the first resolved address in the URL. It keeps the `Host` header of the URL, with the port. For `https` it sets the `sni_hostname` extension. The client has `trust_env=False` and `follow_redirects=False`.
+4. **A 3xx and the time cap.** A 3xx raises `OutboundRefused` with the reason `redirect <code>`. A run longer than 10 seconds raises it with the reason `timeout`. One `deadline()` covers the lookup and each request of one call (review round 1). The connect timeout is 3 seconds.
+5. **The answer cap.** `_read_capped` reads raw bytes from the wire and stops at 64 KiB. So a compressed answer cannot grow past the cap.
+6. **The record.** For an `OutboundRefused`, the `except` of `_apply_rule_actions` writes `webhook refused: <host> <reason>` to `action_errors`. The log line `email.rule_action_failed` holds the same text. The reasons are `scheme`, `no host`, `user name`, `backslash`, `bad url`, `unresolvable`, `not public`, `redirect <code>` and `timeout`. No reason names an address, a path or a query.
+
+**Departures (EM-T13b-2).**
+
+1. The spec names a refusal for the check. The guard also raises `OutboundRefused` for a 3xx and for the time cap. So the webhook records them the same way. A 3xx on the unsubscribe GET now gives the detail `redirect 302`, not `http-302`.
+2. Three tests in `test_email_unsubscribe.py` patched `_is_safe_external_url` and a fake client with no `send`. They now run over the guard with a fake resolver and `httpx.MockTransport`. Their assertions stay, and two of them also check the pinned address.
+3. A transport fault, for example a refused connection, keeps its `httpx` type. The record keeps `str(exc)`, as before. A 4xx or 5xx answer to a webhook still counts as done, as before.
+4. `http://0177.0.0.1/` never gets to the resolver, because `httpx` refuses a dotted form with a leading zero. Its reason is `bad url`.
+
+**Fences (EM-T13b-2, as built).** All are in `tests/unit/test_email_webhook_guard.py`, 57 tests.
+
+| Fence | Tests |
+|---|---|
+| An address that is not public is refused, and no request goes out | `test_the_guard_refuses_an_address_that_is_not_public` (9 cases), `test_a_webhook_to_an_address_that_is_not_public_sends_nothing` (9 cases), `test_the_address_rule_reads_is_global_and_multicast` |
+| A numeric form and `localhost` are refused | `test_a_numeric_form_or_localhost_is_refused` (6 cases), `test_the_real_resolver_refuses_a_numeric_form_or_localhost` (2 cases) |
+| A host name with a private address is refused | `test_a_host_name_that_resolves_to_a_private_address_is_refused`, `test_one_private_address_among_public_ones_is_refused`, `test_a_mapped_private_address_from_dns_is_refused`, `test_a_host_that_does_not_resolve_is_refused` |
+| The form of the URL is refused before any lookup | `test_the_guard_refuses_the_form_before_any_lookup` (10 cases) |
+| The pin: the resolved address, the `Host` header, the SNI name and one lookup | `test_the_request_goes_to_the_resolved_address_with_the_name`, `test_a_port_stays_in_the_host_header`, `test_an_ipv6_address_is_pinned_in_brackets`, `test_plain_http_sends_the_host_header_and_no_sni`, `test_a_webhook_posts_the_same_body_to_the_pinned_address`, `test_an_unsubscribe_link_goes_through_the_same_pin` |
+| A real TLS handshake checks the name | `test_tls_checks_the_certificate_against_the_name_not_the_address`, `test_tls_refuses_a_certificate_for_another_name` |
+| No proxy and no redirect | `test_the_client_reads_no_proxy_and_follows_no_redirect`, `test_the_guard_does_not_follow_a_3xx`, `test_a_webhook_3xx_is_recorded_as_a_failure` |
+| The caps | `test_the_guard_reads_no_more_of_the_answer_than_the_cap`, `test_the_guard_stops_at_the_total_time` |
+| The record names the host and the reason only | `test_a_refusal_writes_the_host_and_the_reason_and_no_path`, `test_a_refused_form_names_no_path_either` |
+| The old names | `test_the_old_names_answer_through_the_one_seam` |
+
+**Mutations (EM-T13b-2, 2026-10-07).** Each mutation changed one file and ran `test_email_webhook_guard.py`. The slice has no SQL, so the runs used no database. Then `git checkout` put the file back, and `git status` was clean. 6 of 6 mutations turned a test red.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| W1 | The webhook posts with a plain `httpx` client and no guard | the webhook and record fences | red, 13 failed |
+| W2 | `is_private` in place of `is_global` | the `100.64.0.1` cases | red, 4 failed |
+| W3 | `send` connects to the URL host, with no pin | the pin fences | red, 8 failed |
+| W4 | `follow_redirects=True` | the redirect fences | red, 3 failed |
+| W5 | `resp.aread()` reads the whole answer | the cap fence | red, 1 failed |
+| W6 | The error holds the URL | the record fences | red, 12 failed |
+
+One more mutation removed the `sni_hostname` extension. The real TLS test failed with "certificate is not valid for '127.0.0.1'", and 4 tests failed in total.
+
+**Board findings (EM-T13b-2).** The two IP-check copies in `email/transport/attachments.py` and `workflows/tools.py` stay, as the non-goals say. A later ticket can move them onto `outbound_guard`. The reasons `unresolvable` and `not public` tell a member whether a host name resolves on the box. Review round 1 below corrects the IPv6 part of this finding, and names the real classes. The webhook post still runs while the tenant session of `_apply_rule_actions` is open.
+
+**Review round 1 (EM-T13b-2, 2026-10-07).** The verifier passed, and the SSRF review approved. Both found the same P2. The review found a second P2 and three P3 items. Each finding has a fix and a fence below.
+
+1. **P2, reserved IPv6 classes passed.** The rule was "multicast or not `is_global`". The old `_host_is_public` also refused `is_reserved`. So NAT64 (`64:ff9b::/96`), IPv4-compatible (`::/96`), IPv4-translated (`::ffff:0:0:0/96`) and `5f00::1` passed on this branch, and `main` refused them.
+   **The fix.** `_address_refusal` refuses `is_reserved` again. It also refuses four ranges by name, in `_IPV4_CARRIERS`: `64:ff9b::/96`, `64:ff9b:1::/48`, `::/96` and `::ffff:0:0:0/96`. Each range carries an IPv4 address. The names do not depend on the `is_reserved` table of Python.
+   **The fences.** `test_a_reserved_ipv6_literal_is_refused` and `test_a_reserved_ipv6_aaaa_answer_is_refused` (9 addresses each), and `test_a_range_that_carries_ipv4_is_refused_by_name` (4 cases, with `is_reserved` patched off).
+2. **P2, an address of the box passed.** The public address of the box is `is_global`. On the box, a request to it goes over `lo`, and ufw accepts everything on `lo`. So a webhook got to uvicorn on `0.0.0.0:8080`, past ufw and past the `/internal/*` 404 of Caddy.
+   **The fix.** `_is_local_address` binds a UDP socket to the address and closes it at once. Only EADDRNOTAVAIL means "not local". Any other bind failure counts as local, so the check fails closed. A local address gives the reason `local`. `0.0.0.0` and `::` stay refused as `not public`.
+   **The fences.** `test_an_address_of_this_host_is_local` uses the real LAN address of the test host. `test_the_local_check_reads_only_eaddrnotavail_as_not_local` (3 cases) and `test_a_public_address_of_this_host_is_refused_as_local` mock the bind.
+   **The follow-up.** `deploy/hostinger/acb-gateway.service:13` binds uvicorn to `0.0.0.0:8080`, and Caddy proxies to `127.0.0.1:8080`. HANDOFF H-260 holds the change to `127.0.0.1`, as a slice of its own.
+3. **P3, no fence held "check once".** A second `check_url` before the unsubscribe GET kept every test green.
+   **The fence.** `test_the_unsubscribe_post_and_get_share_one_lookup` counts one lookup for the POST and the GET together. The fallback GET test in `test_email_unsubscribe.py` now also checks that both requests go to the pinned address. So departure 2 is true.
+4. **P3, the time budget.** `check_url` had its own 10 seconds before the 10 seconds of `send`. So a webhook could run for about 20 seconds, and an unsubscribe for about 30 seconds.
+   **The fix.** `deadline()` is one `asyncio.timeout(TOTAL_TIMEOUT_S)`. `request()` holds the lookup and the request inside it. `_http_unsubscribe` holds the lookup, the POST and the GET inside it. A run past the budget gives the detail `timeout`.
+   **Known limit.** A lookup that runs past the budget keeps its worker thread until `getaddrinfo` returns, because Python cannot cancel a thread.
+   **The fences.** `test_one_budget_covers_the_lookup_and_the_request` and `test_one_budget_covers_the_whole_unsubscribe`. In each one, every step alone fits the budget, and all of them together do not.
+5. **P3, the text.** The module docstring now names `csv_export.py`, as AGENTS.md 0g does. A refusal cuts the host at 100 characters. The log line now keeps 160 characters, the same as `action_errors`. So a host of 253 characters keeps its reason. The fence is `test_a_long_host_keeps_its_reason_in_the_record`.
+
+**The SSRF re-check of round 1 (EM-T13b-2, 2026-10-07): APPROVE.** The reviewer found no P0, P1 or P2. On the box, its own IPv4 and IPv6 addresses now answer `local`, and the IPv6 forms that carry an IPv4 address answer `not public`. Two P3 items are fixed. Only EAFNOSUPPORT now reads as "not local", so a full descriptor table fails closed. The deprecated site-local range `fec0::/10` is refused.
+
+**Known limits (re-check).** If `ip_nonlocal_bind` is set to 1, each public address reads as `local`, so each webhook fails closed. A subnet-router anycast address of the box is a blind spot of the bind test. It needs IPv6 forwarding, which is off on the box. A move of the gateway into a container needs a new review of this check.
+
+**The board finding, corrected.** The finding above said that the guard does not unwrap a 6to4, Teredo or NAT64 address. That was wrong in two ways. 6to4 (`2002::/16`) and Teredo (`2001::/32`) were already refused, because `is_global` is False for them. NAT64 is refused now, by name, with the IPv4-compatible and IPv4-translated ranges.
+
+**Mutations (review round 1).** Each mutation changed one file and ran `test_email_webhook_guard.py` and `test_email_unsubscribe.py`. Then `git checkout` put the file back, and `git status` was clean. The runner ran W1 to W6 again on the code of round 1, and each one is still red.
+
+| # | Mutation | Fence | Result |
+|---|---|---|---|
+| W1 | The webhook posts with a plain `httpx` client and no guard | the webhook and record fences | red, 25 failed |
+| W2 | `is_private` in place of `is_global` | the `100.64.0.1` cases | red, 4 failed |
+| W3 | `send` connects to the URL host, with no pin | the pin fences | red, 11 failed |
+| W4 | `follow_redirects=True` | the redirect fences | red, 3 failed |
+| W5 | `resp.aread()` reads the whole answer | the cap fence | red, 1 failed |
+| W6 | The error holds the URL | the record fences | red, 24 failed |
+| W7 | The rule of round 0: no `is_reserved` and no named ranges | the reserved IPv6 fences | red, 16 failed |
+| W8 | No `is_reserved` | the `5f00::1` cases | red, 2 failed |
+| W9 | No named ranges | the by-name fence | red, 4 failed |
+| W10 | No local check | the local fence | red, 1 failed |
+| W11 | Every bind failure reads as not local | the EADDRNOTAVAIL fence | red, 1 failed |
+| W12 | The unsubscribe checks the URL again before the GET | the one-lookup fence | red, 1 failed |
+| W13 | `request()` has no `deadline()` | the request budget fence | red, 1 failed |
+| W14 | `_http_unsubscribe` has no `deadline()` | the unsubscribe budget fence | red, 1 failed |
+| W15 | The refusal does not cut the host | the long host fence | red, 1 failed |
+
 ### 10.5 Owner runbook — register the Metorite Microsoft app (D-EM-1 to D-EM-3)
 
 These are one-time owner acts. No customer ever repeats them.
@@ -3145,6 +6024,7 @@ mailbox connected through an earlier app must reconnect once, through the EM-T3 
 > **This section wins over §1** where §1 says "Multi-account / multi-provider parity is not a
 > near-term goal". It does not change D-EM-5: Outlook stays the only provider in the connect flow.
 > The design is the same for Gmail when D-EM-5 changes.
+> **2026-10-04:** D-EM-5 changed. §12 brings Gmail into this design.
 
 ### 11.0 The answer, in five rules
 
@@ -3176,7 +6056,7 @@ the sender lists, the knowledge, the contacts and the drafting memory are per ma
 `GET /email/messages`, `/email/search`, `/senders` and `/analytics/overview` read all the
 mailboxes of the member when the request has no `account_id`. A member can own several rows.
 `is_default` marks one of them (migration 223), and a delete moves the default to the oldest
-mailbox that is left (`transport/accounts.py:481-494`).
+mailbox that is left (`transport/accounts.py:612-628`).
 
 **The UI shows one mailbox at a time.** The selected mailbox is `selectedAccountId` in
 `emailStore.ts:258`, kept in the URL `?account=` and in local storage. The left rail lists the
@@ -3197,7 +6077,7 @@ last column.
 | **MB-8** | **Two Outlook mailboxes look the same.** Each new row gets the label "Outlook" and the colour `#6366f1`. The API cannot change the colour. The UI draws the hex value, which breaks design rule 1. | `core.py:785-787`, `oauth.py:510`, `accounts.py:74-78`, `AccountSidebar.tsx:133-141` | EM-T8b |
 | **MB-9** | **After a second connect, Email shows the old mailbox.** The return URL keeps `?account=<old>`, and the callback page ignores the `account_id` it gets. The setup steps of the new mailbox stay hidden. | `page.tsx:329`, `oauth/callback/page.tsx:187` | EM-T8c |
 | **MB-10** | **A switch of mailbox keeps the "load older" state of the old mailbox.** The backfill cursor is keyed by folder only. | `emailStore.ts:244-246`, `:951-965` | EM-T8c |
-| **MB-11** | **The AI settings never name the mailbox they change.** The mobile automation drawer has no mailbox picker. | `AutomationView.tsx:95-110`, `page.tsx:381-394` | EM-T8f |
+| **MB-11** | **The AI settings never name the mailbox they change.** The mobile automation drawer has no mailbox picker. | `AutomationView.tsx:95-110`, `page.tsx:467-480` | EM-T8f |
 | **MB-12** | **The all-mailbox list merges conversations across mailboxes.** It groups by `thread_id` with no `account_id`. The thread count has no owner predicate. | `messages.py:192-196`, `:283`, `:364-377` | EM-T8d |
 | **MB-13** | **The unread badge of a mailbox counts junk and deleted mail.** | `accounts.py:150-158` | EM-T8d |
 | **MB-14** | **The AI drafts "as" the sign-in address of the member, not as the mailbox.** "Self" covers only the current mailbox, so mail between two mailboxes of one member counts as external. | `drafting.py:816`, `automation/identity.py:64-91` | EM-T8e |
@@ -3224,6 +6104,8 @@ that design. The owner can reverse any of them. Q-MB-1 is the one open owner que
 | **D-EM-26** | **A connect of one more mailbox always asks Microsoft which account to use.** The authorize leg sends `prompt=select_account` and no `login_hint`. A connect that returns an address the member already connected in this organization is a reconnect of that mailbox, and Email says so. After a connect, Email opens the new mailbox and its setup. |
 | **D-EM-27** | **The member identity covers each mailbox of the member.** "Self" means any address of a mailbox of the member in this organization. Mail between two of them is not a cold sender and is not "awaiting reply". Reply-all leaves out each of those addresses. |
 | **D-EM-28** | **A member can keep a mailbox separate.** A separate mailbox stays out of All inboxes, out of search in All inboxes and out of chat in All inboxes. Use it for a mailbox under a confidentiality agreement. It is off by default. |
+| **D-EM-29** | **A copy of rules leaves out a forward to an own address.** Until the loop guard of §11.6 edge case 12 ships, `POST /email/rules/copy` leaves out each WHOLE rule that has a FORWARD action whose recipient is an address of a mailbox of the member. The answer names each rule that it left out. The agent recorded this on 2026-10-03, and the owner can reverse it. The reason for the whole rule is in the As-built notes of EM-T8f-1 (§11.7.6). |
+| **D-EM-30** | **What "separate" covers.** A separate mailbox leaves each read of more than one mailbox: the list, the facets, search, `/senders`, the sums and the chat in All inboxes. It stays in the identity of the member, so D-EM-27 self and the Sent-copy proof still read it. A read that names it still works, by its `account_id`, a mail id, a thread load or a bulk act by ids. "Also in" and the draft dedupe pair two mailboxes only when neither one is separate. All inboxes shows only when two or more mailboxes are not separate. The agent recorded this on 2026-10-03, and the owner can reverse it. |
 
 ### 11.3 How the AI keeps the mailboxes apart
 
@@ -3342,7 +6224,7 @@ opens All inboxes. After that, Email opens the last scope.
 | **UC-9** | Remove one mailbox | The dialog names the mailbox and the counts. The other mailboxes, their rules and their mail stay. If it was the default, the dialog names the new default. |
 | **UC-10** | Keep a client mailbox apart | "Keep separate" in the mailbox menu. It leaves All inboxes and the All inboxes chat. Its own view still works. |
 | **UC-11** | Tell two mailboxes apart at a glance | Each one has its own label and colour. The member can rename and recolour it in the mailbox menu. |
-| **UC-12** | Reach the storage limit in one mailbox | Only that mailbox stops its import. Its chip shows the mark, and its banner names it. |
+| **UC-12** | Reach the storage limit in one mailbox | Only that mailbox stops its import. Its chip shows the mark, and its banner names it. EM-T6e owns the mark and the banner (§10.4.7, D3). |
 
 ### 11.6 Edge cases
 
@@ -3357,26 +6239,29 @@ opens All inboxes. After that, Email opens the last scope.
 | 7 | The member changes From on a saved reply draft | Email saves a new draft in the new mailbox, then deletes the draft in the old one. A provider draft cannot move between mailboxes. | EM-T8c |
 | 8 | The sending mailbox needs a reconnect | The send stops with "Reconnect <label> to send". The draft stays. | EM-T8c |
 | 9 | The sending mailbox is at the storage limit | The send runs. The limit is on the copy in Metorite only (D-EM-14). | — |
-| 10 | The same mail is in two mailboxes, for example a mail sent to both addresses | Two rows, each with its chip, each with "Also in <label>". The match is `internet_message_id` (migration 89). | EM-T8g |
-| 11 | Both mailboxes have automatic drafts on, and the same mail is in both | The second draft does not start when the other mailbox already has a draft or a reply for that `internet_message_id`. | EM-T8g |
-| 12 | A rule forwards mail from A to B, and a rule in B forwards it back | A forward rule does not fire on mail that a Metorite rule forwarded. The forward carries the header `X-Metorite-Forwarded`. | EM-T8g |
+| 10 | The same mail is in two mailboxes, for example a mail sent to both addresses | Two rows, each with its chip, each with "Also in <label>". The match is `internet_message_id` (migration 89). Outlook stores `internet_message_id`, and Gmail does too since EM-G2 (#626). EM-G9 proves a Gmail and Outlook pair. Known limit: IMAP stores none, so an IMAP mailbox pairs with nothing. | EM-T8g-3, EM-G9 |
+| 11 | Both mailboxes have automatic drafts on, and the same mail is in both | The second draft does not start when the other mailbox already has a draft or a reply for that `internet_message_id`. Outlook stores `internet_message_id`, and Gmail does too since EM-G2 (#626). EM-G9 proves the dedupe across a Gmail and Outlook pair. Known limit: IMAP stores none. | EM-T8g-3, EM-G9 |
+| 12 | A rule forwards mail from A to B, and a rule in B forwards it back | A forward rule does not fire on mail that a Metorite rule forwarded. The forward carries the header `X-Metorite-Forwarded`. Today a FORWARD makes a draft, so a loop needs a send by the member at each hop. | deferred (§11.7.7) |
 | 13 | Two Outlook mailboxes return the same conversation id | The conversation key includes `account_id`. A conversation never spans two mailboxes (MB-12). | EM-T8d |
-| 14 | Mail between two mailboxes of the member | Not a cold sender, not "awaiting reply" (D-EM-27) | EM-T8e |
+| 14 | Mail between two mailboxes of the member | Not a cold sender, not "awaiting reply" (D-EM-27). A thread with no participant outside the member's mailboxes is FYI. It is never NEEDS_REPLY and never AWAITING. A mail with no recipient keeps its status. The cold check skips such a mail only when a Sent copy proves the send (edge case 26). | EM-T8e |
 | 15 | Reply-all where the member is on the thread under two addresses | Each address of the member leaves the recipients (MB-7) | EM-T8a |
 | 16 | The URL names a mailbox that was removed | All inboxes, or the only mailbox, with no error | EM-T8d |
-| 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e |
+| 17 | The chat scope is a mailbox that the member removes | The scope goes back to All inboxes, and the chat says so | EM-T8e (the note: EM-T8f) |
 | 18 | The default mailbox is removed | The oldest mailbox that is left becomes the default. The dialog names it before the removal. | EM-T8f |
 | 19 | Two mailboxes import at the same time | Each one has its own sync lock (EM-T4f) and its own progress panel, named | EM-T8f |
 | 20 | The member switches mailbox during "load older" | The backfill state belongs to the mailbox and the folder (MB-10) | EM-T8c |
 | 21 | A label filter in All inboxes | Not shown. A label belongs to one mailbox. | EM-T8d |
 | 22 | The recipient is known only from another mailbox | The composer shows "You usually write to this person from <label>" with a switch | EM-T8c |
-| 23 | Another app sends mail for the member, for example Notes | It uses the default mailbox and names it in its own confirm step | EM-T8f |
+| 23 | Another app sends mail for the member, for example Notes | It uses the default mailbox and names it in its own confirm step | EM-T8f-2 |
 | 24 | A disconnect | The Mem0 drafting memories of the mailbox go too (MB-17) | EM-T8f |
 | 25 | A keyboard reply (`r`) in All inboxes | The mailbox of the focused mail, as for a click | EM-T8a |
+| 26 | An outside sender forges From as another mailbox of the member | The cold check runs. Only a Sent copy that proves the send stops it. The copy has the same Message-ID, and that ID is not empty. It sits in the `sent` folder of another mailbox of the member. It names this mailbox in To, Cc or Bcc, so a replayed Message-ID proves nothing. **Known limit:** IMAP stores no Message-ID, so a pair with an IMAP mailbox gets the cold check, as before EM-T8e-1. Gmail stores it since EM-G2 (#626), and EM-G9 proves the proof from Gmail to Outlook and back. **Accepted risk:** the classifier payload, Reply Zero, the digest and the cleanup still read a forged From as "self". The single address had the same exposure before EM-T8e-1. | EM-T8e-1 |
+
+**Gmail (2026-10-05).** Edge cases 10, 11 and 26 hold for a Gmail and Outlook pair too. EM-G2 (#626) gives Gmail the Message-ID in the form of Graph, and EM-G9 proves each case (§12.3.11). EM-G9-f1 to EM-G9-f3 are the known limits of the pair.
 
 ### 11.7 Slices
 
-Each slice is one PR. Each slice ships behind no flag, because each one is a fix or a view that
+Each slice is one PR, or the pull requests that its section names. Each slice ships behind no flag, because each one is a fix or a view that
 shows only with two or more mailboxes. The order is the order of risk: EM-T8a fixes the live
 wrong-sender defects first.
 
@@ -3385,10 +6270,10 @@ wrong-sender defects first.
 | **EM-T8a** | 🟢 AGENT-SAFE · security review | ✅ **MERGED #587 (2026-10-03).** **Send from the right mailbox.** MB-1 to MB-7. No migration. | §11.7.1 |
 | **EM-T8b** | 🟢 AGENT-SAFE | ✅ **MERGED #588 (2026-10-03, migration 227).** **The mailbox identity.** A migration adds `color_slot`. The default label, the chip, rename and recolour. MB-8. | §11.7.2 |
 | **EM-T8c** | 🟢 AGENT-SAFE | ✅ **MERGED #592 (2026-10-03).** **The From row and the second connect.** The From picker, the warnings, the move of a draft, the block on a broken mailbox, the return to the new mailbox, the Integrations connect leg. MB-9, MB-10, MB-16. | §11.7.3 |
-| **EM-T8d** | 🟢 AGENT-SAFE · R8 | 🔨 **BUILT, not merged (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
-| **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. | §11.7.5 |
+| **EM-T8d** | 🟢 AGENT-SAFE · R8 | ✅ **MERGED #596 (2026-10-03).** **All inboxes.** The scope, the chips on rows, the well-known folders, the counts. MB-12, MB-13. | §11.7.4 |
+| **EM-T8e** | 🟢 AGENT-SAFE · security review | **The AI context.** The fences of D-EM-18, the chat scope, the binding order of §11.3, the drafter identity. MB-14, MB-15. Three pull requests. T8e-1 is self, the drafter and the server checks. T8e-2 is the chat tools. T8e-3 is the chat scope. | §11.7.5 |
 | **EM-T8f** | 🟢 AGENT-SAFE | **Settings for each mailbox.** The AI settings header and picker, the copy of rules, the disconnect dialog, the Mem0 purge. MB-11, MB-17. | §11.7.6 |
-| **EM-T8g** | 🟢 AGENT-SAFE · R8 | **Duplicates and separation.** "Also in", the draft dedupe, the forward loop guard, "Keep separate" (migration). | §11.7.7 |
+| **EM-T8g** | 🟢 AGENT-SAFE · R8 · security review | ✅ **T8g-1 MERGED #608 (2026-10-04, migration 229). T8g-2 MERGED #610 (2026-10-04).** ✅ **T8g-3 MERGED #611 (2026-10-04), with review fix round 1.** **Duplicates and separation.** Three pull requests: T8g-1 "Keep separate" on the server (migration), T8g-2 "Keep separate" in the UI, T8g-3 "Also in" and the draft dedupe. The forward loop guard waits for a later slice. | §11.7.7 |
 
 #### 11.7.1 EM-T8a — send from the right mailbox
 
@@ -3545,7 +6430,7 @@ The theme suite holds the design-system fences, so leave it in.
 
 #### 11.7.4 EM-T8d — All inboxes
 
-**Status.** 🔨 BUILT, not merged (2026-10-03, branch `email-all-inboxes`, no migration).
+**Status.** ✅ MERGED #596 (2026-10-03, no migration).
 
 1. **The store scope** is `"all"` or a mailbox id. The URL holds it (§11.4).
 2. **The list and search** call the backend with no `account_id` in All inboxes. Each row draws
@@ -3633,26 +6518,1684 @@ round 2. Round 2 includes the 3 mutants that survived the verifier.
    sending mailbox. "Self" in `automation/identity.py` covers each mailbox of the member.
 5. **Removed mailbox** (edge case 17): the chat scope falls back to All inboxes.
 
+**What the code does today (measured 2026-10-03, origin/main 3ee0396b).**
+
+- **No background act reads across mailboxes.** Each background loader has `account_id = :aid` in
+  its `WHERE`, or `account_id` in its Mem0 key. The loaders serve the rule match, the thread
+  status, the cold check, the sender pin and the automatic drafts. They also serve learning, the
+  voice profile, Process past emails, the digest, the embeddings and the drafting memory. No R8
+  test proves it with two mailboxes of one member.
+- **"Self" is one address.** `automation/identity.py:64-91` matches the address of the current
+  mailbox only. So mail from another mailbox of the member is external when the domains differ.
+  The cold check, the thread status, the digest and the sender pin then act on it.
+- **The drafter names the sign-in address.** `drafting.py:816` and `drafting.py:1005` say "You
+  are drafting as: <sign-in address>". The local draft copies store the sign-in address as the
+  From (`drafting.py:1765`, `actions.py:499`, `actions.py:538`).
+- **A reply from mailbox B to a mail in A loses the thread.** Compose-assist reads the mail with
+  `em.account_id = :aid` of B (`drafting.py:1634`), finds nothing, and drafts with no thread.
+- **The live chat is the `email-assistant` agent** (`apps/agents/agent-email-assistant/agents.py`),
+  not `automation/chat.py`. The scope reaches the agent only as persona text. Each tool takes
+  `account_id` as an argument from the model.
+- **Three tools do not refuse a wrong mailbox.** `send_email` re-binds a reply to the mailbox of
+  the mail and does not refuse. `manage_inbox` archive, trash, read and star with a wrong
+  `account_id` change 0 rows and report no error. `read_thread` lets the id from the model win
+  over the id of the mail.
+- **Three server writes trust the pair.** `mark_thread_done` writes a status row for a thread
+  that has no mail in the mailbox (`replyzero.py:2076-2091`). `test_rules` tests a mail of B
+  against the rules of A (`engine.py:1460`). `_upsert_rule_pattern` takes a `rule_id` of
+  another mailbox (`rules.py:866-868`).
+- **The chat tags a result with the raw label** (`agents.py:209-213`), often "Outlook", and the
+  picker shows the address only.
+
+**The narrowed slices.** EM-T8e ships as three pull requests.
+
+##### EM-T8e-1 — self, the drafter and the server checks (gateway)
+
+**Status.** ✅ MERGED #604 (2026-10-03). No migration.
+
+**As built.**
+
+- **The helper.** `automation/identity.py` holds `SELF_ADDRESSES_SQL`, a subquery over `:aid`,
+  and `resolve_self`. One read of `resolve_self` gives the address, the label and the set. The
+  label comes from `mailbox_identity.display_labels`. The SQL also compares the organization of
+  each row. Row level security does the same, so the copy guards a session with no bind.
+- **The callers.** The rule match payload, the thread status, the conversation check, the
+  digest, the pin guard, the cleanup scope and the sender categories use the set. The recipient
+  role uses it too, so a member in To under mailbox B is a direct recipient in mailbox A.
+- **The cold check** reads `sender_scope` from the payload. Since review round 1, a value of
+  `self` stops the check only when a Sent copy proves the send.
+- **The drafter.** The prompt names "label <address>" of the sending mailbox. With no address,
+  the prompt names nobody. A rule draft that has no `self` in its payload reads the mailbox row.
+  That applies to approve and to retry.
+- **Only compose-assist reads across mailboxes (item 3).** `/draft-reply` still answers 404 for
+  a mail of another mailbox (D-EM-19).
+- **Not changed.** `cleanup._internal_domains` reads the domain of the current mailbox, as item
+  1 says. `_draft_direction_note` still compares one address for its Cc note, because item 1
+  does not name it. A reply across mailboxes stores the AI draft under the thread id of A. So
+  the learning on send can miss it.
+- **Tests.** Four hermetic fakes answer the new read now: `test_email_digest.py`,
+  `test_email_rule_pattern_guards.py`, `test_email_categorization.py` and
+  `test_email_request_jobs_tenancy.py`. `email-self-each-mailbox` has one more case, as the
+  owner role, for the organization compare.
+- **A false claim, corrected.** The first build said that each fix had a fence that failed
+  without it. That was false for eight sites. Review round 1 below gives the true result.
+
+**Review round 1 (2026-10-03).** An adversarial reviewer and an independent verifier found no
+P0. The self set never reaches another member or another organization. This round fixes the
+other findings.
+
+- **The pair of a Fix (P1).** `POST /email/rules/feedback` answers 404 for a mail or a thread of
+  another mailbox. Before, a LABEL rule of mailbox A put its label on a mail that mailbox B
+  holds. An FYI rule of mailbox A wrote a status row for a thread that only mailbox B holds.
+  `POST /email/rules/guidance` refuses a rule of another mailbox. `core._assert_thread_in_mailbox`
+  holds the one query, and `resolve_thread` uses it too.
+- **The live rule paths (P1).** Five R8 cases drive the real paths. Each case uses a mail in
+  mailbox A that mailbox B sent. Three paths are the automatic run with its cold check, the run
+  of one message and Process past emails. The preview on recent mail and the Reply Zero backfill
+  are the other two.
+- **A forged From (P2).** The cold check skips a mail from another mailbox only with proof. The
+  proof is a mail with the same `internet_message_id` in the `sent` folder of another mailbox of
+  the member (`identity.proven_own_send`). Edge case 26 records the accepted risk. Review
+  round 2 adds one more test: the copy names this mailbox.
+- **Mail between own mailboxes is never open (P2, D-EM-27).** `replyzero._thread_is_self_only`
+  asks whether the thread has a participant outside the member's mailboxes. A participant is the
+  sender of a mail that is not in Sent, and each To and Cc address. Without one, the thread is
+  FYI with the reason "Only your own mailboxes". The status authority, the resolver and the
+  projection each check it, and no model call runs.
+- **Why not `has_external`.** It reads senders only, and a colleague is `internal`. So it would
+  close each thread with a colleague, and each thread that the member sent to an outside party.
+- **Why FYI and not "no row".** With no row, the backfill selects the thread again in each cycle.
+  It then spends a rule match on it. FYI is the "nothing to do" status of the backfill, so the
+  thread stays out of the Reply view and out of the next cycle.
+- **The nudge and the saved draft (P2).** The follow-up nudge names the sending mailbox.
+  `/drafts/save` stores the mailbox address as the From of its local copy.
+- **The pin guard (P2).** This mailbox keeps the substring rule for its address and its domain.
+  For another mailbox of the member, the guard refuses an exact address only. So the guard no
+  longer refuses `gmail.com` in a work mailbox when another mailbox is a Gmail address.
+- **Mutation result.** A mutation run took out each fix of the first build and of this round,
+  one at a time. It killed 42 of 42 mutants, among them the eight sites with no fence before.
+  Review round 2 names each mutant with its test. One more mutant cannot fail, because it
+  changes nothing. `_determine_status_of` can drop the set it passes, and
+  `build_thread_context` then reads the same set itself.
+- **Tests.** Two more hermetic suites answer the new reads: `test_email_reply_zero.py` and
+  `test_email_thread_single_classification.py`.
+
+**Review round 2 (2026-10-03).** The re-verifier passed round 1 with no P0 and no P1. This round
+fixes its five small findings.
+
+- **Rebase.** Main moved: #602 (EM-T8f-3) changed `work_plan.md` and this spec. The WS-17 row
+  keeps the text of main and adds only the EM-T8e-1 entry.
+- **A replayed Message-ID (F1, P2).** An outsider who got a real mail of B can forge `From: B`
+  to A with the same Message-ID. The Sent copy of B named the outsider, and the cold check still
+  stopped. Now the copy must name this mailbox in To, Cc or Bcc.
+- **The provider in the Fix fence (F3).** The 404 rolls back the local rows, so a label write
+  that ran before the check left no local trace. A recording provider now counts the writes.
+  It sees none for the mail of B, and one for the control mail of A.
+- **Bcc and unknown recipients (F4, P3).** The participant rule reads To, Cc and Bcc. A mail with
+  no recipient in any list keeps its status, because its recipients are unknown.
+  `identity.recipient_lists_sql` is the one reader of the three lists, for the proof and the rule.
+- **Four more fences (F5).** They cover an empty Message-ID, a NULL Cc, the DONE row on the
+  self-only path and the folder test of the proof. The folder test matters most. One forged mail
+  to both A and B puts a copy with the same Message-ID in the inbox of mailbox B as well. Only
+  the folder test refuses that copy.
+- **Known limit (F2), closed for Gmail by EM-G2 and EM-G9.** Outlook stores
+  `internet_message_id`, and Gmail does too since EM-G2 (#626, §12.3.2). EM-G9 proves the Sent-copy
+  proof from Gmail to Outlook and back (§12.3.11). IMAP never sets it. So a pair with an IMAP
+  mailbox gets the cold check, which is as safe as before EM-T8e-1.
+- **Mutation result.** The run killed 50 of 50 mutants: 42 from the first build and round 1,
+  and 8 from round 2. Each fence below is in `tests/unit/test_email_ai_context.py`.
+
+| Mutant | What the mutant breaks | The test that kills it |
+|---|---|---|
+| `b_self_set` | the set holds the current mailbox only | `test_the_set_is_the_mailboxes_of_the_member_in_this_org` |
+| `b_org_pred` | the organization compare in the SQL | `test_the_org_predicate_holds_where_rls_does_not_bind` |
+| `b_payload` | the set in the `/rules/test` payload | `test_the_rule_match_payload_reads_another_mailbox_as_self` |
+| `b_recipient_role` | the set in the recipient role | `test_the_rule_match_payload_reads_another_mailbox_as_self` |
+| `b_thread_scopes` | the set in the thread scopes | `test_the_thread_and_the_conversation_read_another_mailbox_as_ours` |
+| `b_conversation` | the set in the conversation check | `test_the_thread_and_the_conversation_read_another_mailbox_as_ours` |
+| `b_digest` | the set in the digest window | `test_the_digest_leaves_another_mailbox_out` |
+| `b_digest_ours` | the set in the digest counterparty | `test_the_digest_leaves_another_mailbox_out` |
+| `b_cleanup` | the set in the cleanup scope | `test_the_cleanup_scope_leaves_another_mailbox_out` |
+| `b_sender_cats` | the set in the sender categories | `test_the_sender_categories_leave_another_mailbox_out` |
+| `b_resolve` | the pair check of `resolve_thread` | `test_resolve_refuses_a_thread_of_another_mailbox` |
+| `b_rule_test` | the mailbox check of `/rules/test` | `test_rule_test_refuses_a_mail_of_another_mailbox` |
+| `b_feedback_rules` | the rule check of `/rules/feedback` | `test_feedback_refuses_a_rule_of_another_mailbox` |
+| `b_drafter` | the sending mailbox in the reply prompt | `test_the_reply_prompt_names_the_sending_mailbox` |
+| `b_rule_copy` | the mailbox From of a rule draft copy | `test_a_rule_draft_copy_stores_the_mailbox_as_from` |
+| `b_reply_copy` | the mailbox From of the `/draft-reply` copy | `test_the_draft_reply_copy_stores_the_mailbox_as_from` |
+| `b_compose` | the sending mailbox in compose-assist | `test_new_mail_in_compose_assist_names_the_sending_mailbox` |
+| `b_thread_box` | the thread read from the mailbox of the mail | `test_it_reads_the_thread_of_a_and_the_voice_of_b` |
+| `b_voice_box` | the sent examples from the sending mailbox | `test_it_reads_the_thread_of_a_and_the_voice_of_b` |
+| `r1_runner_recent` | the set in `test_rules_recent` | `test_the_preview_on_recent_mail` |
+| `r1_runner_one` | the set in `run_rules_on_message` | `test_the_run_of_one_message` |
+| `r1_runner_past` | the set in Process past emails | `test_process_past_emails` |
+| `r1_runner_job` | the set in the automatic run | `test_the_automatic_run_and_its_cold_check` |
+| `r1_backfill` | the set in the Reply Zero backfill | `test_the_reply_zero_backfill` |
+| `r1_proj_scope` | the set in `_PROJ_SCOPE` | `test_the_digest_categories_leave_another_mailbox_out` |
+| `r1_decide_facts` | the set in the decide facts | `test_the_decide_facts_and_the_cc_note_read_the_set` |
+| `r1_cc_note` | the set in the Cc note | `test_the_decide_facts_and_the_cc_note_read_the_set` |
+| `r1_fb_mail` | the mail check of `/rules/feedback` | `test_feedback_refuses_a_mail_of_another_mailbox` |
+| `r1_fb_thread` | the thread check of `/rules/feedback` | `test_feedback_refuses_a_thread_of_another_mailbox` |
+| `r1_guidance` | the rule check of `/rules/guidance` | `test_guidance_refuses_a_rule_of_another_mailbox` |
+| `r1_cold_no_proof` | the proof for a self sender | `test_the_cold_check_skips_only_a_proven_own_send[forged]` |
+| `r1_proof_any_box` | the test "another mailbox" of the proof | `test_the_cold_check_skips_only_a_proven_own_send[own_copy]` |
+| `r1_proof_any_member` | the test "a mailbox of the member" | `test_a_sent_copy_of_another_member_proves_nothing` |
+| `r1_selfonly_recompute` | the self-only check of the status authority | `test_the_status_authority_files_it_as_fyi` |
+| `r1_selfonly_determine` | the self-only check of the resolver | `test_the_resolver_asks_no_model_for_it` |
+| `r1_selfonly_project` | the self-only check of the projection | `test_the_projection_never_opens_it` |
+| `r1_selfonly_no_recipients` | the recipients in the participant rule | `test_the_participant_rule` |
+| `r1_nudge` | the mailbox in the nudge payload | `test_the_follow_up_nudge_names_the_mailbox` |
+| `r1_save_copy` | the mailbox From of the `/drafts/save` copy | `test_a_saved_draft_copy_stores_the_mailbox_as_from` |
+| `r1_pin_wide` | the exact test for another mailbox, with a substring test in its place | `test_the_pin_guard_refuses_own_mailboxes_only[gmail.com]` |
+| `r1_pin_no_exact` | the exact rule for another mailbox | `test_the_pin_guard_refuses_own_mailboxes_only[SELF-B]` |
+| `r1_pin_no_substring` | the substring rule for this mailbox | `test_the_pin_guard_refuses_own_mailboxes_only[fracktal-t8e.test]` |
+| `r2_proof_no_recipient` | the test "names this mailbox" of the proof | `test_the_cold_check_skips_only_a_proven_own_send[replayed]` |
+| `r2_proof_empty_id` | the test "not empty" of the Message-ID | `test_the_cold_check_skips_only_a_proven_own_send[empty_id]` |
+| `r2_proof_no_folder` | the test "`sent` folder" of the proof | `test_the_cold_check_skips_only_a_proven_own_send[inbox_copy]` |
+| `r2_cc_no_case` | the `CASE` around the Cc list | `test_the_participant_rule_reads_bcc_and_unknown_lists[outsider-null-cc]` |
+| `r2_no_bcc` | the Bcc list | `test_the_cold_check_skips_only_a_proven_own_send[proven_bcc]` |
+| `r2_no_empty_rule` | the rule for a mail with no recipient | `test_the_participant_rule_reads_bcc_and_unknown_lists[no-recipients]` |
+| `r2_preserve_done` | `preserve_done` on the self-only path | `test_a_done_row_stays_done` |
+| `r2_feedback_check_late` | the mail check before the label write | `test_feedback_refuses_a_mail_of_another_mailbox` |
+
+**Scope.** `apps/services/gateway/gateway/routes/email/**` and new tests. Not in scope: the
+agent, the UI, `routes/crm/**`, and the three files that EM-T8d edits (`transport/messages.py`,
+`transport/accounts.py`, `mailbox_identity.py`).
+
+1. **Self covers each mailbox of the member (D-EM-27).** One SQL helper in
+   `automation/identity.py` returns the lower-case addresses of each mailbox of the member who
+   owns `:aid`. Row level security binds the organization. `identity.py` takes that set, and an
+   address in the set is `self`. The internal domain stays the domain of the current mailbox.
+   Each caller that compares with one address today uses the set. The callers are the rule match
+   payload, the thread status, the conversation check, the cold check and the digest. The sender
+   pin guard, the cleanup scope and the sender categories are callers too.
+   `sender_scope(from_email, self_email)` keeps working with one address, because
+   `routes/crm/auto_lead.py` calls it that way.
+2. **The drafter speaks as the sending mailbox (MB-14).** The prompt names the address of the
+   sending mailbox and its label. The local draft copies store that address as the From.
+3. **A reply from another mailbox keeps the thread.** Compose-assist can answer a mail that is not
+   in the sending mailbox. It then reads the mail and its thread from the mailbox of the mail,
+   under the owner predicate. Each item that is the voice of the writer comes from the sending
+   mailbox:
+   - the voice profile and the signature
+   - the sent examples to that sender
+   - the reply memories and the few-shot examples
+4. **The server refuses a pair that does not match.**
+   - `POST /email/reply-zero/resolve` (`resolve_thread`, which the chat tool `mark_thread_done`
+     calls) returns 404 when no mail has that `(account_id, thread_id)`. This covers the done, the
+     reopen and the dismiss branches.
+   - `POST /email/rules/test` returns 404 when `email_id` is not a mail of `account_id`.
+   - `POST /email/rules/feedback` returns 404 when `expected`, or a value of
+     `matched_rule_ids`, is not a rule of `account_id`. It also returns 404 when `message_id` is
+     not a mail of `account_id`. It does the same when no mail of `account_id` has `thread_id`
+     (review round 1).
+   - `POST /email/rules/guidance` returns 404 when `rule_id` is not a rule of `account_id`
+     (review round 1).
+5. **The fences of D-EM-18 (item 1).** One R8 suite seeds two mailboxes of one member, each with
+   its own marker. For each background loader, the read for A holds no marker of B. These are the
+   loaders:
+   - the rules, the rule patterns, the rule guidance and the sender history
+   - the thread context, the prior contact of the cold check and the sender pin evidence
+   - the voice samples, the sent few-shot and the assistant context
+   - the Process past emails range, the digest window and the pending embeddings
+
+**Not built in EM-T8e-1.** The display name of the mailbox. `email_accounts` has no column for
+it, so the prompt names the address and the label. A later slice can store the name that the
+provider returns at connect.
+
+**Fences (R7).** A new file, `tests/unit/test_email_ai_context.py`, names its fence ids.
+
+- `email-self-each-mailbox` (R8): a mail from another mailbox of the member is `self`. The same
+  address in a mailbox of a second organization is not. The second case runs as the app role,
+  because the owner role bypasses row level security.
+- `email-drafter-sending-mailbox`: the prompt and the local draft copy name the sending mailbox,
+  never the sign-in address.
+- `email-reply-other-mailbox-thread` (R8): a reply from B to a mail of A reads the thread of A,
+  and the voice items of B.
+- `email-pair-refused` (R8): each route and each input in item 4 returns 404, and writes nothing.
+- `email-ai-context-one-mailbox` (R8): item 5, one case for each loader.
+
+**Verification.**
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_ai_context.py tests/unit/test_email_multi_inbox.py tests/unit/test_email_draft_direction.py tests/unit/test_email_sender_direction.py tests/unit/test_email_draft_context.py tests/unit/test_email_reply_zero.py tests/unit/test_email_thread_resolve.py tests/unit/test_email_digest.py tests/unit/test_email_cold_gate_case.py tests/unit/test_email_fix_feedback.py tests/unit/test_email_rule_pattern_guards.py tests/unit/test_email_recipient_and_pattern_guard.py tests/unit/test_email_rules_engine.py tests/unit/test_email_cleaner_category_scope.py tests/unit/test_email_sender_category_projection.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_automation_tenancy.py tests/unit/test_email_rulepath_draft_parity.py tests/unit/test_email_sent_fewshot.py tests/unit/test_crm_auto_lead.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_ai_context.py --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 cases must show PASSED, not SKIPPED. Point `DATABASE_URL` and
+`TENANT_LADDER_DATABASE_URL` at a private base database.
+
+##### EM-T8e-2 — the chat tools bind to one mailbox (agent)
+
+**Status.** ✅ MERGED #597 (2026-10-03). No migration.
+
+**As built (2026-10-03).**
+
+- **A reply that names another mailbox stops.** `send_email` reads the mail first and sends
+  nothing. The answer names the mailbox of the mail as "label · address (account_id <id>)". The
+  EM-T8a fence is now `test_a_chat_reply_that_names_another_mailbox_is_refused`. A reply that
+  names no mailbox goes out from the mailbox of the mail.
+- **`read_thread` and `manage_inbox` take no `account_id`.** MAF drops an argument that a tool
+  does not declare, so an id from the model cannot reach the request. When two mailboxes hold
+  one `thread_id`, `read_thread` merges nothing and asks for an `email_id` (edge case 13).
+- **New mail.** `send_email` asks `sent-from` for the bare address of the first recipient, in
+  lower case. An answer that names no mailbox of the member counts as no answer.
+- **Item 3.** `account_id` is the first argument, and it is optional. A required argument after
+  it is keyword-only, so the tool schema still marks that argument as required.
+- **A question never holds `id=`.** It lists each mailbox as "label · address (account_id <id>)",
+  because `RULE_ID_RE` in `EmailToolCards.tsx` reads `id=` as the id of a rule.
+- **One more fence.** `email-chat-thread-mailbox` fences the `read_thread` rule of item 1.
+- **Two UI readers changed, outside the stated scope (2026-10-03).** The new answers of the agent
+  made two cards wrong, so this slice fixes them.
+  - A refused send, a question and a cancel get the no-action card ("Not sent", "Needs your
+    answer", "Cancelled"). Before, the generic card said "Email sent" over "Not sent.", which
+    told the member that mail went out. Fence: `email-chat-no-action-card` in
+    `src/components/email/noAction.test.ts`. It reads the lead words from `agents.py`.
+  - The thread card reads the thread in the mailbox of the mail, as `read_thread` now does.
+    Fence: `email-chat-thread-card-mailbox`.
+
+**Review round 1 (2026-10-03).** The verifier and the reviewer found no P0, and the binding held.
+They found live answers that still drew a done card. This round fixes them.
+
+- **One lead for each answer that did not act.** The send, bulk and item 3 tools start such an
+  answer with "Not sent.", "Nothing changed.", a question, or "Cancelled". Before, "No connected
+  mailbox has the id …" drew "Email sent". Fence: `email-chat-no-action-lead`. It reads every
+  `return` of those tools, and it checks that `noActionOf` knows each lead.
+- **The card loop checks first.** `noActionOf` runs before the list, thread, info and rule cards,
+  not only in `renderCard`.
+- **A thread read that refused fetches nothing.** With no `email_id` and no "Thread:" head, the
+  thread card shows the text. A fetch with no mailbox would merge the two mailboxes.
+- **The send card shows each bcc address and each attachment.** A mail body can ask the model
+  to add a hidden recipient or a file, so the member must see both before the send. The card
+  keeps 500 characters, and the sender of a mail sets the subject of a reply. So both come
+  before the subject, and the subject is clipped. Fence: `email-chat-send-card-shows-hidden`.
+- **No mailbox connected.** A send and each item 3 tool change nothing and say so. Fence:
+  `email-chat-no-mailbox`.
+- **`instructions.md`** no longer says that unsubscribe takes the mailbox from the mail.
+
+**Found, and not fixed in this slice.**
+
+- `own_tool_scope` in the `config.json` of the agent holds none of the eight tools of item 3. The
+  executor keeps only the tools that it names, so the live chat cannot call them yet.
+- `RuleResultCard` and `SettingsUpdatedCard` read `args.account_id`. The live chat cannot call
+  their tools yet (the item above), so this has no live effect.
+- `unsubscribe_sender`, `learn_rule_pattern` and `mark_thread_done` act in the mailbox that the
+  model names. None is live. EM-T8e-1 makes the server refuse a thread or rule of another
+  mailbox.
+- `ManageInboxCard` counts the ids that the model sent, not the `affected` count of the answer.
+- Three sentences of the EM-T8e narrowing are too long for STE. All three EM-T8e branches share
+  that text, so the last of them to merge fixes it.
+
+**Scope.** `apps/agents/agent-email-assistant/agents.py`, `instructions.md` and tests. No gateway
+file. No UI file.
+
+1. **An act on a mail takes the mailbox of the mail (§11.3 rule 1).**
+   - `send_email` in reply mode reads the mail first. When the model names another mailbox, the
+     tool refuses, sends nothing, and names the mailbox of the mail as "label · address". This
+     replaces the re-bind of EM-T8a (§11.7.1 item 4) for a send, because a send cannot be undone.
+     It rewrites the EM-T8a fence `test_a_chat_reply_goes_out_from_the_mailbox_of_the_mail`.
+   - `draft_reply` keeps the re-bind of EM-T8a. A draft can be changed and is not sent, its first
+     line names the mailbox, and the server refuses a wrong pair. The EM-T8a fence
+     `test_a_chat_draft_is_made_in_the_mailbox_of_the_mail` stays as it is.
+   - `read_thread` reads with the mailbox of the mail, never the id from the model.
+   - `manage_inbox` sends the mail ids with no `account_id`, so each mail acts in its own mailbox.
+   - `mark_thread_done` has no mail id. It stays as it is and fails closed on the 404 of
+     EM-T8e-1.
+2. **New mail with no mailbox named (rule 3).** `send_email` with no `account_id` uses the only
+   mailbox when there is one. With two or more, it asks `GET /email/contacts/sent-from` for the
+   first recipient, in lower case. It uses the mailbox that the answer names. An empty answer
+   gives the question "Send from which mailbox?" and lists each mailbox as "label · address". It
+   never guesses.
+3. **A rule or a setting (rule 4).** These tools take `account_id` as optional: `create_rule`,
+   `create_rules_from_prompt`, `install_default_rules`, `update_assistant_settings`,
+   `save_knowledge`, `generate_writing_style`, `learn_rule_pattern` and `run_rules`. With no
+   `account_id` and two or more mailboxes, each one asks "Which mailbox?" and lists them. With
+   one mailbox, each uses it. `update_rule`, `delete_rule` and `delete_knowledge` take an object
+   id, and bind through that object.
+4. **"label · address" everywhere (MB-15).** `list_accounts`, the result tags and the From line of
+   each card use `display_label` and the address. `instructions.md` says the same, and its rule
+   3 takes the `sent-from` step.
+
+**The shapes that the UI reads stay.** The row is `id=<id> [<tag>] | …`. The first line of a
+draft is `Draft from <from> (mailbox <id>)`. The fence `email-chat-draft-card-mailbox` depends on
+that line.
+
+**Fences (R7).** A new file, `tests/unit/test_email_chat_binding.py`, names its fence ids. It
+uses fakes of the gateway, so it needs no database.
+
+- `email-chat-reply-refuses-other-mailbox`: a reply with a wrong `account_id` sends nothing and
+  names the right mailbox.
+- `email-chat-new-mail-binding`: one mailbox, a `sent-from` match, and an empty answer that gives
+  the question.
+- `email-chat-rule-asks`: each tool of item 3 asks with two mailboxes and no `account_id`.
+- `email-chat-bulk-no-account`: `manage_inbox` sends no `account_id`.
+- `email-chat-label-address`: each tag and each From line carries "label · address".
+- `email-chat-ui-shapes`: the two shapes above.
+
+**Verification.**
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_chat_binding.py tests/unit/test_email_multi_inbox.py tests/unit/test_email_tool_consolidation.py tests/unit/test_email_present_groups.py tests/unit/test_email_assistant_settings.py tests/unit/test_email_auto_draft_defaults.py tests/unit/test_agent_gateway_identity.py tests/unit/test_agent_manifest.py tests/unit/test_email_from_row.py -v -rs
+uv run ruff check apps/agents/agent-email-assistant tests/unit/test_email_chat_binding.py --select F821,F601,F602,F502,F7,B006
+```
+
+Do not smoke-test `send_email` on production. It sends real mail (CLAUDE.md §3a rule 3).
+
+**Build order.** EM-T8e-1 and EM-T8e-2 touch disjoint source files, and each can merge first.
+Each slice writes its status under its own heading. The slice that merges second rebases and
+merges the shared status lines in place. EM-T8e-3 merges after EM-T8e-2. Its All inboxes persona
+tells the model to leave `account_id` out, and only EM-T8e-2 makes that argument optional.
+
+##### EM-T8e-3 — the chat scope (UI)
+
+**Status.** ✅ MERGED #599 (2026-10-03), after EM-T8e-2 #597. No migration.
+
+**As built (2026-10-03).**
+
+- **The decisions are pure functions.** `lib/chatScope.ts` holds the scope of the chat, the
+  options of the picker and the settings read. Vitest runs in node and cannot render
+  `EmailAssistantChat`, so a source scan checks the wiring.
+- **The picker (item 1).** "All inboxes" comes first, for two or more mailboxes. Each mailbox
+  shows as "label · address". When the label is the address, the address shows once. A pick
+  stays while the page scope stays. When the page scope changes, the chat follows the page.
+- **The persona (item 2).** `chatMailboxName()` makes "label · address" from `mailboxLabel()`.
+  It reads the store shape and the gateway shape, so `chat/page.tsx` gets the MB-15 fix with no
+  change. The list writes each mailbox as "label · address (account_id <id>)" in both scopes.
+  All inboxes ignores `selectedAccountId` and `settings`. An open mail names its mailbox.
+- **The fallback (item 3)** calls `pickInitialView`. The note "the chat says so" is not built.
+- **The page (item 4)** passes the prop `pageScope`, which is `ALL_INBOXES` or a mailbox id. The
+  prop `selectedAccountId` is gone.
+- **Item 5** is a test only. No card file changed.
+
+**Fences.** `src/app/email/lib/chatScope.test.ts` names the five fence ids. A mutation run killed
+13 of 13 mutants. `allInboxes.test.ts` keeps the automation half of
+`email-all-automation-names-mailbox`.
+
+**Review round 1 (2026-10-03).** The verifier found no P0 and no P1. This round fixes its P2
+findings.
+
+- **The settings of the last mailbox clear first (F1).** A switch from A to B clears the
+  settings and the chat model before the read of mailbox B starts. Before, the standing orders of
+  A stood under the name of B while the read was out, and after a failed read.
+- **A read tool that needs one mailbox runs for each mailbox (F4).** The All inboxes persona
+  says so. Without it, the model could answer "what needs a reply?" for one mailbox as if for
+  all.
+- **Three fences got tighter (F2, F3, F1).** The picker mark in All inboxes, the page scope that
+  a pick holds, and the clear before the read. A mutation run killed 5 of 5.
+- **The deferred items have an owner (F5).** The colour dot in the picker and the note "the chat
+  says so" moved to EM-T8f.
+
+**Not checked.** This session had no browser. Nobody looked at the chat in light mode, at compact
+density or under a changed accent.
+
+**Scope.** `workbench/control_plane/src/app/email/` (`EmailAssistantChat.tsx`,
+`lib/emailAssistantPersona.ts` and `page.tsx`) and tests. No agent file and no gateway file. Not
+in scope: `src/components/AgentChat.tsx`, which draws the picker, `src/components/email/
+EmailToolCards.tsx`, and `src/app/chat/page.tsx`, which stays on one mailbox.
+
+1. **The picker.** `EmailAssistantChat` gives the picker an "All inboxes" option when the member
+   has two or more mailboxes. It names each mailbox as "label · address", from `mailboxLabel()`.
+   It starts on the scope of the page. The member can change it, and the change holds only for
+   that chat. A pick calls neither `selectAccount` nor `selectAll`. A colour dot in the picker needs
+   `AgentChat.tsx`, so it is deferred.
+   The chat model in All inboxes is "tier-powerful", the current default with no mailbox.
+2. **The persona** names the scope.
+   - In one mailbox, it gives that `account_id` and the settings of that mailbox: the standing
+     instructions and the writing style.
+   - In All inboxes, it gives no default `account_id`, and it lists each mailbox as
+     "label · address (account_id <id>)". It holds the settings of no mailbox, because each
+     mailbox has its own (D-EM-24). It tells the model to leave `account_id` out of a write act,
+     so the tool binds it or asks (§11.3).
+   - An open mail names its mailbox in the persona, in both scopes.
+3. **Removed mailbox (edge case 17).** A chat scope on a mailbox that is gone falls back to All
+   inboxes, or to the only mailbox. The rule of `pickInitialView` decides it. The note "the chat
+   says so" of edge case 17 moved to EM-T8f.
+4. **The chat keeps All inboxes.** EM-T8d moved the page out of All inboxes when automation or
+   the chat opened. At that time the chat had no All inboxes scope. The chat now has one, so that
+   move skips the chat. Automation still moves. The page passes the scope of the chat to
+   `EmailAssistantChat`, never the hidden `selectedAccountId`. This rewrites the chat half of the
+   EM-T8d fence `email-all-automation-names-mailbox` (`allInboxes.test.ts`), and keeps its
+   automation half.
+5. **No hidden mailbox.** In All inboxes, `emailContext.accountId` is null, and no settings read
+   runs. Each card already reads the mailbox from the tool result or the mail, or fails closed.
+   EM-T8e-2 owns the one card fix, the thread card.
+
+**Fences (R7).** The vitest files name their fence ids.
+
+- `email-chat-scope-picker`: the picker offers All inboxes only with two or more mailboxes, and
+  it starts on the scope of the page. A pick changes the chat, not the page.
+- `email-chat-scope-persona`: a pure test of `buildEmailAssistantPersona` for both scopes. In All
+  inboxes, the text holds no "Active account", no default `account_id` and no settings of a
+  mailbox. It lists each mailbox as "label · address".
+- `email-chat-scope-fallback`: a removed mailbox gives All inboxes, or the only mailbox.
+- `email-chat-keeps-all-inboxes`: the move of EM-T8d skips the chat.
+- `email-chat-scope-no-hidden-mailbox`: in All inboxes, `emailContext.accountId` is null, and no
+  `getAssistantSettings` call runs. An open mail names its mailbox in the persona.
+
+**Verification.** In `workbench/control_plane`, run
+`npx tsc --noEmit && npx vitest run src/app/email src/components src/lib/theme`. Look at the
+chat in light mode, at compact density, and under a changed accent (CLAUDE.md §4).
+
 #### 11.7.6 EM-T8f — settings for each mailbox
 
-1. **The AI settings header** names the mailbox, with a picker, on desktop and mobile (MB-11).
-2. **Copy rules.** `POST /email/rules/copy` with `from_account_id` and `to_account_id`. Both must
-   belong to the member. It copies the enabled rules and their actions. A name already present in
-   the target gets " (copy)". The rules step of a new mailbox offers it.
-3. **The disconnect dialog** names the new default before the removal (edge case 18).
-4. **The Mem0 purge (MB-17).** A disconnect deletes the memories under `#acct:<id>`.
-5. **From EM-T8d (moved 2026-10-03).** All inboxes shows the summed count of each well-known
-   folder. The page shows one import panel for each importing mailbox, each one named (edge case
-   19).
+**Status.** 📝 Narrowed 2026-10-03, verified against the code at a5085fec. Three pull
+requests, T8f-1 to T8f-3. No migration.
+
+**Not in scope.** These acts are OWNER-GATE:
+- a sweep of the `#acct:<id>` memories that earlier disconnects left behind (a production one-off)
+- a test disconnect of a real production mailbox
+- the `MEM0_ENABLED` flip
+"The counts that go" in the disconnect dialog (§11.4) is not built in EM-T8f.
+
+##### EM-T8f-1 — copy rules, the memory purge and `created_at` (backend, R8)
+
+**Status.** ✅ MERGED #605 (2026-10-03). No migration.
+
+**As-built notes.**
+- **The forward rule (D-EM-29).** The copy leaves out the whole rule, and not only its FORWARD.
+  Without the FORWARD, the other actions of the rule stay. An ARCHIVE would then hide mail that
+  the member meant to forward. The answer names the rule. The owner can reverse this.
+- **The address scan.** The guard finds each `x@y` token in the To, Cc and Bcc of a FORWARD. The
+  strict `getaddresses` of Python 3.12 gives no address for a field that it cannot parse. The
+  guard would then let a loop through, so it does not use that parser.
+- **The answer.** `copied` holds the names in the target. `renamed` holds `{name, copied_as}`.
+  `left_out` holds `{name, reason}`. The reason is `disabled`, `forward_to_own_address` or
+  `reply_rule_exists`.
+- **The names.** The compare of names ignores case. The INSERT has
+  `ON CONFLICT (account_id, name) DO NOTHING`, so a name that another writer takes moves the copy
+  to the next name. After 50 tries the route answers 409, and the copy writes nothing.
+- **One reply rule (D-EM-6).** The target keeps one reply rule at most (`rules._is_reply_rule`).
+  The "Auto draft replies" switch edits only the first reply rule. A second one would go on
+  drafting while the switch shows OFF. So a source reply rule is left out as `reply_rule_exists`
+  when the target holds a reply rule, enabled or not. It is also left out when the copy already
+  took a reply rule.
+- **Drafting (D-EM-6).** The copied reply rule keeps DRAFT_EMAIL only when the target drafts. A
+  DRAFT_EMAIL on a rule that is not a reply rule stays, because the switch does not govern it.
+- **The columns.** Three tuples in `rule_copy.py` name each column of `email_rules` and
+  `email_actions`. The fence reads `information_schema` and fails on a column in no tuple.
+- **The purge.** `MemoryClient.delete_scope` reads pages of 100 rows with `show_expired=True`.
+  Unlike `delete`, it raises on a Mem0 error. A page that comes back twice raises, and so do more
+  than 1000 pages. So a fault fails a run and does not hang it. With Mem0 off the count is 0.
+- **The refusals.** `delete_scope` refuses `"*"`, a value that is not a `str` and a blank value,
+  before any read. The pgvector store of mem0ai 2.2.1 turns `"*"` into `payload ? 'user_id'`,
+  which matches each memory of each tenant. The purge also refuses an account id that is not a
+  UUID. Since round 2, `core.email_memory_scope` builds the key from `str(UUID(id))` for each
+  writer and for the purge. Some writers take the id from the request, and Postgres finds the
+  row for an id in capitals.
+- **Two passes.** Three writers fill the key. The third is the precedent of each draft, which a
+  background task adds, and no lock holds it. So the purge runs `delete_scope` twice, 120 seconds
+  apart. An add that lands after the second pass stays.
+- **The log.** A purge logs the account id and the counts `first` and `second`. A failed pass
+  logs the pass and the error class only. No purge log holds an address or the text of a memory.
+- **`created_at`.** Each account read returns ISO text with six digits of microseconds. Two values
+  then sort as text in the order of time.
+- **Findings, not built here.** `MemoryClient.get_all` passes no `top_k`, and mem0ai 2.2.1 then
+  returns 20 rows at most. The memory panel can show only 20. `routes/admin/members.py` deletes
+  the mailboxes of a purged member and starts no Mem0 purge.
+- **Deferred: a durable sweeper.** The purge task lives in one gateway process. A restart during
+  the 120 seconds loses the second pass, and an add after the second pass stays. A durable sweep
+  of `#acct:<id>` keys with no mailbox row closes both. It is not built here. A run of it against
+  production is OWNER-GATE, as the sweep of older disconnects is.
+- **Verification (2026-10-03).** With `DATABASE_URL` unset, the block below gave 278 passed and 2
+  skipped. The two skips are the WS-29 gates of `test_tenant_coverage.py`, which read
+  `DATABASE_URL`. With `DATABASE_URL` set to the base database as well, those two gates failed
+  and the other 278 passed. `test_app_role_cannot_bypass_rls` reuses an engine of a stopped event
+  loop. `test_live_catalog_has_column_force_and_policy` reads a ladder that an earlier suite
+  replayed with no FORCE RLS phase. Both fail the same way on the base tree. Each of 16
+  mutations of the fences went red.
+
+**Review fix round 1 (2026-10-03).** An adversarial reviewer and a verifier checked 41c9c0b4.
+They found no P0, and no leak across members or organizations. The round fixed one P1, four P2s,
+four fence gaps and two doc defects. The agent rebased the branch on `a6b5b3ae` (#602). The
+rebase dropped the two narrowing commits, because #602 carries them.
+
+| Finding | Fix | Mutant | The test that goes red |
+|---|---|---|---|
+| P1: a renamed copy of a reply rule drafts after the switch goes OFF | The target keeps one reply rule (`reply_rule_exists`) | the check off | `TestTheTargetKeepsOneReplyRule` |
+| P1, second half | The copy counts the reply rule that it took | `reply_held` not set | `test_a_second_reply_rule_of_the_source_is_left_out` |
+| P2: a late Mem0 add lands after the purge | A second pass after 120 seconds, logged as `first` and `second` | no second pass | `TestTheSecondPass` |
+| P2: `delete_scope("*")` deletes each memory of each tenant | Refuse `"*"`, a non-`str` and a blank value | each check off | `test_delete_scope_refuses_before_any_read` |
+| P2: the page loop has no cap | 1000 pages, then `RuntimeError` | `while True` | `TestThePageCap` |
+| P2: a path id in capitals misses the Mem0 key | The key holds `str(UUID(id))` | the raw id | `test_a_path_id_in_another_form_purges_the_canonical_key` |
+| M5: no fence for a rule that is not a reply rule | That rule keeps DRAFT_EMAIL | `keep_draft=target_drafts` | `TestDraftingFollowsTheTarget` |
+| M6: no fence for zero microseconds | A seed with a whole second | plain `isoformat()` | `test_each_account_read_returns_created_at` |
+| M7: no fence for the 409 | A copy that cannot land | the 409 path answers a name | `TestACopyThatCannotLand` |
+| M8: no fence for the strong reference | The set holds the running task | no `_PURGES.add` | `TestTheStrongReference` |
+
+- **Docs.** The D-EM-29 row in §11.2 now says that the copy leaves out the whole rule (F1). The
+  docstring of `memory_purge.py` names the three writers (F9).
+- **Mutation check.** 27 mutations went red: the 11 of the table and the 16 of the build, with
+  their round 1 anchors. The script restored each file and checked its hash.
+- **Verification.** With only `TENANT_LADDER_DATABASE_URL` set, the block below gave 307 passed and
+  2 skipped (the two WS-29 gates of `DATABASE_URL`). All 127 email suites, with the memory and
+  seam suites, gave 2291 passed. The ruff gate passed.
+
+**Review fix round 2 (2026-10-03).** The verifier passed round 1 with no code blocker. Round 2
+fixed two P3s and two P4s. The agent rebased the branch on `ceba07cb` (#604, EM-T8e-1). In
+`apps/services/gateway/AGENTS.md` both sides added a bullet after the EM-T4e bullet, and the
+agent kept both.
+
+| Finding | Fix | Mutant | The test that goes red |
+|---|---|---|---|
+| F1 (P3): a writer that takes the id from the request keys Mem0 on capitals | `core.email_memory_scope` builds `str(UUID(id))` when the id parses | the key keeps the request id | `TestTheKeyIsCanonical` and `test_a_writer_given_capitals_writes_the_key_that_the_purge_deletes` |
+| F2 (P3): a writer commits "Needs Reply" between the read and the INSERT | A reply rule is never renamed. When the target holds its name, the copy leaves it out as `reply_rule_exists` | rename allowed, or the check gone | `test_a_reply_rule_that_another_writer_commits_during_the_copy` |
+
+- **F1, the writers.** The writing-style route, the draft routes and the send route take the id
+  from the request. A canonical id does not change, so a key from a database id stays the same.
+- **F2, the residual.** A writer that commits a reply rule under ANOTHER name in the same window
+  still gives two reply rules. Only a lock that "Add defaults" also takes can close it. It is not
+  built here.
+- **Docs.** The docstring of `delete_scope` gives the real reason to refuse a value that is not a
+  `str` (F4). Version 2.2.1 of mem0ai changes such a value with `str()`. The Fences list and scope item 2
+  carry the fences and the log of rounds 1 and 2 (F5).
+- **Mutation check.** The 4 mutants of the table went red. The script restored each file and
+  checked its hash.
+- **Verification.** With only `TENANT_LADDER_DATABASE_URL` set, the block below gave 315 passed and
+  2 skipped (the two WS-29 gates of `DATABASE_URL`). All 128 email suites, with the memory and
+  seam suites, gave 2373 passed. The ruff gate passed.
+
+**Scope.** A new `routes/email/automation/rule_copy.py`, a new `routes/email/memory_purge.py`,
+`automation/__init__.py`, `transport/accounts.py`, `packages/acb_memory/acb_memory/mem0_client.py`
+and tests. It edits neither `automation/rules.py` nor `core.py`, because EM-T8e-1 edits both.
+After EM-T8e-1 merged (#604), review round 2 edits `core.email_memory_scope` only.
+
+1. **Copy rules (item 2).**
+   - `POST /email/rules/copy` takes `from_account_id` and `to_account_id`. Each must be a mailbox
+     of the member, else 404. The same id twice gives 422.
+   - It copies each enabled rule with each column except `id`, `account_id`, `organization_id`
+     and the timestamps. It copies each action of that rule.
+   - It copies no disabled rule, rule pattern, rule guidance, learned pattern, assistant setting,
+     voice profile or knowledge (D-EM-18).
+   - A name that the target holds gets " (copy)", then " (copy 2)". A copy never fails on the
+     unique name.
+   - Each copied rule gets `created_at = now()`, so the new-mail floor of the target never moves
+     back into the imported mail.
+   - A reply rule keeps DRAFT_EMAIL only when the stored `draft_replies` of the target is true
+     (D-EM-6). D-EM-29 governs a FORWARD to an own address.
+   - The answer lists the copied names, the renamed names and the rules that it left out.
+2. **The memory purge (item 4, MB-17).**
+   - After the DELETE of a disconnect commits, a task with a strong reference deletes each Mem0
+     memory under `email_memory_scope(owner, account_id)`. It makes two passes, 120 seconds
+     apart. It logs `email.disconnect.memory_purged` with the counts `first` and `second`.
+   - The helper refuses a scope that has no `#acct:`. A purge of the bare member scope would
+     delete every personal memory of the member.
+   - A 404, a 409 or a failed DELETE makes no purge call.
+   - A failed purge still answers 204 and logs `email.disconnect.memory_purge_failed`. The log
+     never holds the text of a memory.
+   - `mem0_client.py` gains `delete_scope(user_id) -> int`. It pages until the scope is empty.
+3. **`created_at` on the account model.** Each account read returns it, so the UI can name the
+   next default (item 3).
+
+**Fences (R7).**
+- `tests/unit/test_email_rule_copy.py` (R8, the app role):
+  - `email-rule-copy-owner`: a mailbox of another member, or of a second organization, gives
+    404 and writes no row. The same id twice gives 422.
+  - `email-rule-copy-enabled-only`: each column and each action of an enabled rule matches its
+    source. No disabled rule, pattern, guidance or learned pattern arrives.
+  - `email-rule-copy-names`: "X", then "X (copy)", then "X (copy 2)", with no error.
+  - `email-rule-copy-floor`: the new-mail floor of the target is the time of the copy.
+  - `email-rule-copy-drafting`: with `draft_replies` false or absent, no copied reply rule holds
+    DRAFT_EMAIL. With it true, the rule keeps it.
+  - `email-rule-copy-forward-loop`: a FORWARD to an own address is left out and named.
+  - `email-rule-copy-one-reply-rule` (round 1): the target keeps one reply rule. After a copy,
+    the switch OFF stops each reply draft.
+  - `email-rule-copy-reply-race` (round 2): another writer commits "Needs Reply" between the read
+    and the INSERT. The reply rule is left out, and never lands under another name.
+  - `email-rule-copy-409` (round 1): a copy that cannot land answers 409 and writes nothing.
+- `tests/unit/test_email_disconnect_memory_purge.py` (a fake Mem0 client):
+  - `email-disconnect-purges-memory`: a 204 deletes each memory under `<owner>#acct:<id>`, over
+    more than one page. It deletes no memory of the bare scope or of another mailbox.
+  - `email-memory-key-canonical` (round 2): each form of one id gives one key. A writer given an
+    id in capitals writes the key that the purge deletes (R8).
+  - `email-purge-second-pass` (round 1): the second pass deletes an add that lands between the
+    passes.
+  - `email-purge-refuses-bare-scope`: an empty account id, or one that is not a UUID, deletes
+    nothing. `delete_scope` refuses `"*"`, a value that is not a `str` and a blank value.
+  - `email-purge-page-cap` (round 1): a scope that never empties raises after 1000 pages.
+  - `email-purge-strong-reference` (round 1): `_PURGES` holds the task while it runs.
+  - `email-purge-after-delete`: a 404, a 409 or a failed DELETE makes no purge call. A failed
+    purge still gives 204, and its log holds no memory text.
+  - `email-account-created-at`: each account read returns `created_at`.
+
+**Verification.**
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_rule_copy.py tests/unit/test_email_disconnect_memory_purge.py tests/unit/test_email_disconnect_order.py tests/unit/test_email_multi_account.py tests/unit/test_email_presets.py tests/unit/test_email_rules_admin.py tests/unit/test_email_auto_draft_defaults.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_automation_tenancy.py tests/unit/test_email_all_inboxes.py tests/unit/test_email_mailbox_identity.py tests/unit/test_tenant_coverage.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email packages/acb_memory tests/unit/test_email_rule_copy.py tests/unit/test_email_disconnect_memory_purge.py --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 cases must show PASSED, not SKIPPED. Do not run `test_memory_integration.py` or
+`test_memory_e2e.py`.
+
+##### EM-T8f-2 — the settings UI (after EM-T8f-1)
+
+**Status.** ✅ MERGED #606 (2026-10-03), after EM-T8f-1 #605, whose copy route and `created_at` it
+calls. No migration and no backend change.
+
+**As-built notes.**
+
+- **The header (item 1).** `AutomationHeader` in `AutomationView.tsx` is the one header of the four
+  automation views. The page renders one `AutomationView` for desktop and for mobile, so the header
+  shows on both. Its second line names the mailbox as label and address.
+- **The picker.** With two or more mailboxes the header draws the chip and a `SelectButton` of each
+  mailbox. The picker has no All inboxes option. With one mailbox the header shows the name as
+  text, with no chip and no picker (§11.0). §11.4 says "Always", so the name shows for one mailbox.
+- **The pick.** `pickSettingsMailbox` clears the Process past date and calls the `selectAccount` of
+  the store. A pick of the mailbox in view, or of an id that is not a mailbox, does nothing.
+- **The copy (item 2).** For each other mailbox, the rules step shows a "Copy the rules of <label>"
+  button beside the presets. It shows them only before an enabled rule exists, as D-EM-24 says.
+  With two or more mailboxes the step shows the chip and the address of its own mailbox.
+- **No second copy.** `ruleCopier` refuses a start while a copy runs, and a pair that copied
+  before. The check and the mark are one synchronous call, so a double click starts one copy. A
+  failed copy does not count. The step then reads the rules again, and a copy that landed moves the
+  step on.
+- **The answer.** `copyReport` names the copied rules, each new name, and each rule that the copy
+  left out, with its reason in plain words. The test reads the `LEFT_OUT_*` reasons of
+  `rule_copy.py`, and it fails on a reason with no words.
+- **The disconnect (item 3).** `nextDefaultAfter` orders by `createdAt` as text, then by `id`. A
+  missing `createdAt` sorts last, as NULL does in an ascending order of Postgres. The dialog names
+  the mailbox as "label · address". When that mailbox is the default, the dialog names the new
+  default.
+- **The store.** The store marks the same mailbox as the default after the removal. This fixes the
+  STATUS DRIFT of the audit. The dialog holds its names while the disconnect runs. Without the
+  hold, the store drops the mailbox first, and the sentence on the new default disappears during
+  the close.
+- **Notes (item 4).** `notesFromOptions` names each mailbox through `chatMailboxName`, the one rule
+  for "label · address". The From picker is now `SelectButton`. This slice removes the native
+  `<select>` and its `SELECT_DEBT` entry in `conformance.test.ts`.
+
+**Outside the stated scope.**
+
+- `onboardingRules.test.ts`: the fake `RulesStepApi` gets `copyRules`.
+- `src/lib/theme/conformance.test.ts`: this slice removes the `SELECT_DEBT` entry of
+  `FollowupEmailModal.tsx`. The ratchet fails a file that improved until its entry changes.
+- `src/app/notes/lib/types.ts`: the account type of Notes gets the optional `display_label`.
+
+**Narrowed.**
+
+- The automation drawer on mobile keeps `showMailbox={false}`. The header picker is the picker on
+  mobile (MB-11).
+- `FollowupEmailModal.tsx` keeps its own overlay. Only its From picker moved to the house control.
+- Nobody did the look check of CLAUDE.md §4 (light mode, compact density, a changed accent). The
+  agent had no browser. A reviewer must do it.
+
+**Fences.** `src/app/email/lib/mailboxSettings.test.ts` names the four fences of this slice.
+
+**Mutation run.**
+
+- The first run found one gap. The header test read the markup, and the chip holds the address in
+  its `title`, so a header with no visible address passed. The fence now reads the visible text.
+- The final run killed 33 of 33 mutants: 8 for the header, 11 for the copy, 11 for the disconnect
+  and 3 for Notes. Three of them edited `transport/accounts.py`. The script restored each file and
+  checked its hash.
+
+**Verification (2026-10-03).** In `workbench/control_plane`, `npx tsc --noEmit` passed.
+`npx vitest run src/app/email src/app/notes src/components src/lib/theme` gave 49 files and 917
+tests passed. The suites of Integrations, Organization and Chat import `app/email/lib`, and they
+gave 8 files and 92 tests passed.
+
+**Review fix round 1 (2026-10-03).** An independent verifier checked `5d82548a`. It found no P0
+and no P1. This round fixes its four P2 findings. The branch still sits on `7b77980d`.
+
+| Finding | Fix | Mutants | The test that goes red |
+|---|---|---|---|
+| F1: an answer for A that lands after a pick of B shows under "for B". A toggle there then changes A. | `key={accountId}` on the view body. A `guardedLoad` in the loads of `RulesTab`, `DashboardView` and `BulkUnsubscribeView`. | R1 to R8 | `an answer for A that lands after a pick of B is never shown`, `the view body has the key of the mailbox`, `each load of the three views goes through guardedLoad` |
+| F2: no fence on the pick in Notes | `FollowupFromField` holds no hook. `followupSendRequest` makes the body of Send. | N4 to N7 | `a pick in the From field changes the account_id that Send posts` |
+| F3: no fence on the hold of the dialog | `holdNames` decides the names. | D12, D13 | `the names hold while busy, when the list changes under the dialog` |
+| F4: no fence on the end of a copy | `runRuleCopy` gives the answer, the failure and the read of the rules to the step. | C12 to C17 | the four tests of `the end of a copy (review F4)` |
+
+- **The key has a cost.** A pick resets the tab of AI Settings to Rules, and it closes a dialog that
+  is open in the view. The state of the views belongs to one mailbox, so the remount loses nothing
+  else.
+- **The key alone covers two loads.** `loadPatterns` of `RulesTab` and `loadMore` of the Email
+  Cleaner have no guard of their own.
+- **The fences.** The tests call each hook-free component as a function, so the handlers on its
+  elements are the real ones. The links from a container to its own state stay source scans,
+  because vitest here has no DOM.
+- **Found, and not fixed: Integrations.** `integrations/page.tsx:1046-1057` disconnects through a
+  native `confirm("Remove this email account?")`. It names no mailbox and no new default. This is
+  edge case 18 on a second surface. The tab reads its own shape of an account, with no
+  `isDefault`, `displayLabel` or `createdAt`, and `emailRemove.test.ts` pins its `handleDelete`. The
+  fix is more than 30 lines, so it needs a slice of its own.
+- **Mutation run.** The run killed 53 of 53 mutants: the 33 of the build and 20 new ones. D11 has
+  a new anchor, because the hold moved into `holdNames`. N4, D12, C12 and C14 match the four
+  survivors that the verifier named, and the fences now kill all four. The script restored each
+  file and checked its hash.
+- **Verification.** In `workbench/control_plane`, `npx tsc --noEmit` passed. `npx vitest run` over
+  `src/app/email`, `src/app/notes`, `src/components`, `src/lib/theme`, `src/app/integrations`,
+  `src/app/settings/organization` and `src/app/chat` gave 57 files and 1020 tests passed.
+
+**Scope.** `components/automation/AutomationView.tsx`, `page.tsx`, `OnboardingRulesStep.tsx`,
+`lib/onboarding.ts`, `DisconnectDialog.tsx`, `lib/connect.ts`, `lib/emailStore.ts`, `lib/api.ts`,
+`lib/types.ts`, a new `lib/mailboxSettings.ts`, and
+`src/app/notes/components/FollowupEmailModal.tsx`.
+
+1. **The AI settings header (item 1, MB-11)** names the mailbox as label and address. It has a
+   picker on desktop and on mobile. The picker has no All inboxes option. A pick calls
+   `selectAccount`, because `RulesTab` reads the folders of the selected mailbox.
+2. **The copy step (item 2).** The rules step of a new mailbox offers "Copy the rules of
+   <label>" for each other mailbox of the member. The step names its own mailbox when the member
+   has two or more.
+3. **The disconnect dialog (item 3, edge case 18).** One pure function, `nextDefaultAfter`,
+   orders by `createdAt`, then `id`, as `transport/accounts.py:612-628` does. It compares the ISO
+   text, so microseconds count. The dialog shows the label and the address. When the removed
+   mailbox is the default, it names the new default. The store mirror uses the same function.
+4. **Notes (edge case 23).** The From picker of Notes shows "label · address".
+
+**Fences (R7).** `src/app/email/lib/mailboxSettings.test.ts`:
+- `email-settings-header-names-mailbox`: each automation header names the label and the
+  address. The picker has no All option, and a pick calls `selectAccount`.
+- `email-rules-step-copy`: one copy for each other mailbox, and none with one mailbox.
+- `email-disconnect-names-default`: `nextDefaultAfter` orders by `createdAt`, then `id`. The test
+  reads the ORDER BY in `transport/accounts.py` and fails when the two differ.
+- `email-notes-from-label`: the Notes options show "label · address".
+
+##### EM-T8f-3 — the views of each mailbox and the chat picker
+
+**Status.** ✅ MERGED #602 (2026-10-03), with review fix round 1. No migration and no backend
+change.
+
+**As built (2026-10-03).**
+
+- **Summed counts (item 1).** In All inboxes the store reads the folders of each mailbox. It sums
+  the provider `message_count` of the six well-known folders. `sumFolderCounts` and
+  `allInboxesFolders` in `lib/emailStore.ts` hold the rule. A failed read adds 0. A custom folder
+  shows no count. Before the sums land, no folder shows a count, so the count of one mailbox never
+  reads as the sum. The sums go when the member leaves All inboxes and when a mailbox leaves.
+- **The store bounds the reads.** At most 4 reads run at one time (`FOLDER_SUM_CONCURRENCY`),
+  because Q-MB-1 sets no limit on the mailboxes. The store runs one round of reads at a time. A
+  request while a round is out asks for one more round. Each read gives up after 15 s
+  (`FOLDER_SUM_TIMEOUT_MS`) and adds 0. Nothing awaits the reads, and the list never waits on
+  them.
+- **When the store reads the sums.** It reads them when All inboxes opens, and when a mailbox
+  leaves. A Refresh in All inboxes reads them once, 6 s after its last sync ends
+  (`FOLDER_SUMS_AFTER_SYNC_MS`). A second Refresh moves that read. A sync alone reads no sums.
+  `folders` stays the tree of one mailbox.
+- **Import panels (item 2).** `firstSyncPanels` in `lib/onboarding.ts` gives one panel for each
+  mailbox whose first sync runs. The mailbox in view comes first. With two or more mailboxes, each
+  panel draws the chip of its mailbox beside the address. With one mailbox the panel does not
+  change (§11.0).
+- **The chat picker (item 3).** `chatMailboxOptions` gives each mailbox option the dot of
+  `mailboxAccent()`, as a `bg-cat-*` class. All inboxes has none. `AgentChat` takes the dot as an
+  optional `accent` on each option, and draws it beside the label. The trigger shows the dot of
+  the mailbox in force. `/chat` sends no `accent`, so its picker draws no dot.
+- **Two changes reach `/chat` on purpose.** The mark of the option in force is `text-primary`, not
+  `text-emerald-400`, because one look has one token for "on". The label of each option sits in a
+  flex span, beside the place of the dot.
+- **The removed-mailbox note (item 4).** `rememberChatScope` holds the scope of the render before.
+  When the mailbox of that scope leaves, it gives one note. The note names that mailbox and the
+  new scope. `AgentChat` takes the note as an optional `notice` prop, and draws it above the
+  composer with a dismiss button. A pick clears the note. All inboxes that ends because one
+  mailbox is left gives no note.
+
+**Narrowed.**
+
+- One mailbox gets no dot in the chat picker, because the chips show only for two or more
+  mailboxes (§11.0).
+- All, Starred and Snoozed show no count in All inboxes. Item 1 names six folders. The All count
+  of one mailbox also counts its custom folders, so a sum of it would be wrong.
+- A failed read of the sums does not show the reconnect banner. `fetchFolders` marks a 401 for the
+  mailbox in view, and the read of the sums does not.
+
+**Outside the stated scope.**
+
+- `lib/onboarding.ts` holds `firstSyncPanels`, beside `firstSyncSurface`.
+- `src/lib/theme/conformance.test.ts` lowers the `PALETTE_DEBT` of `AgentChat.tsx` from 14 to 13.
+  The ratchet fails a file that got better until its number goes down.
+- Three older fences changed shape. `connect.test.ts`, `onboarding.test.ts` and
+  `onboardingRules.test.ts` read `firstSyncPanels` now, not one `pendingAccount`.
+- `mailboxAccent` moved from `components/MailboxChip.tsx` into `lib/mailbox.ts` (review F8).
+  `MailboxChip.tsx` re-exports it, so its callers did not change.
+
+**Fences.**
+
+- `allInboxes.test.ts` names `email-all-folder-sums` and `email-import-panel-each`.
+- `allInboxesStore.test.ts` holds the store half of `email-all-folder-sums`.
+- `chatScope.test.ts` names `email-chat-picker-dot` and `email-chat-removed-note`. It also holds
+  the scan that keeps `lib/` free of imports from `components/`.
+
+**Mutation runs.**
+
+- The build: the first run killed 34 of 35 mutants. A new case kills the one that survived, a move
+  away from a mailbox that stays connected. The second run killed 3 of 3.
+- Review round 1: the run killed 17 of 17.
+
+**Review round 1 (2026-10-03).** The verifier passed the build with no P0 and no P1. This round
+fixes its eight P2 findings.
+
+- **F1.** Three reads of the sums had no fence: the first load into All inboxes, a removal in
+  another tab, and the read after a sync. Each one now has a store test. The fallback when the
+  selected mailbox is gone has one too.
+- **F2.** A Refresh read O(N²) folders, because each catch-up of each sync asked for a round. A
+  probe gave 216 live folder reads for one Refresh with 12 mailboxes. Now the catch-up asks for
+  none, and `syncScope` asks once. A Refresh of 8 mailboxes whose syncs end 3 s apart reads 1
+  round. The fence allows at most 2.
+- **F3.** The dot in the trigger and the note of `AgentChat` had no fence. `AgentChat` renders to
+  markup in node, so the tests read what it draws. The dismiss handler does not show in markup,
+  so a source scan holds it.
+- **F4.** The sums were never cleared, so an old sum could show for up to 120 seconds after a return.
+  They now go when the member leaves All inboxes and when a mailbox leaves.
+- **F5.** One hung read held every later request of the sums for 120 seconds. Each read now gives up
+  after 15 s, and a fake-timer test proves it.
+- **F6.** The paragraph on the fences had too many sentences, so it is now a list.
+- **F7.** The note on `/chat` said that its picker does not change. Two changes reach it on
+  purpose, and the list above names them.
+- **F8.** `lib/chatScope.ts` imported from a component. `mailboxAccent` now lives in
+  `lib/mailbox.ts`.
+
+**Found, and not fixed in this round.** In All inboxes each catch-up still reads the tree of the
+hidden selected mailbox, so a Refresh of N mailboxes reads that tree 2N times. A sync of one
+mailbox from the reading pane does not read the sums.
+
+**Not checked.** This session had no browser. Nobody looked at the sidebar, the panels or the chat
+picker in light mode, at compact density or under a changed accent.
+
+**Scope.** `components/AccountSidebar.tsx`, `lib/emailStore.ts`, `page.tsx`,
+`OnboardingPanel.tsx`, `FirstSyncBanner.tsx`, `src/components/AgentChat.tsx`,
+`EmailAssistantChat.tsx` and `lib/chatScope.ts`. It needs no backend change.
+
+1. **Summed counts (item 5).** All inboxes sums the provider `message_count` of Inbox, Drafts,
+   Sent, Archive, Junk and Deleted over each mailbox. A mailbox whose read fails adds nothing.
+   A custom folder shows no count.
+2. **Import panels (item 5, edge case 19).** One panel for each importing mailbox, each one
+   named.
+3. **The chat picker (item 6).** Each mailbox option carries the dot of `mailboxAccent()`, never
+   a hex value or a raw palette class. All inboxes carries none. The prop stays optional, because
+   `src/app/chat/page.tsx` also draws the picker.
+4. **The removed-mailbox note (item 6, edge case 17).** When the scope mailbox leaves, the chat
+   shows one note that names it and the new scope.
+
+**Fences (R7).** In `allInboxes.test.ts` and `chatScope.test.ts`:
+- `email-all-folder-sums`: each well-known folder shows the sum, and a failed read adds 0.
+- `email-import-panel-each`: one panel for each importing mailbox, each named.
+- `email-chat-picker-dot`: each mailbox option carries `mailboxAccent()`, and All inboxes none.
+  The picker in `AgentChat.tsx` uses no raw palette class.
+- `email-chat-removed-note`: one note that names the removed mailbox and the new scope.
+
+**Verification for T8f-2 and T8f-3.** In `workbench/control_plane`, run this command:
+
+```
+npx tsc --noEmit && npx vitest run src/app/email src/app/notes src/components src/lib/theme
+```
+
+Then look at the header, the dialog, the sidebar and the chat picker. Look in light mode, at
+compact density and under a changed accent (CLAUDE.md §4).
 
 #### 11.7.7 EM-T8g — duplicates and separation
 
-1. **"Also in".** The list marks a row whose `internet_message_id` is in another mailbox of the
-   member.
-2. **The draft dedupe** (edge case 11).
-3. **The forward loop guard** (edge case 12).
-4. **"Keep separate"** (D-EM-28). A migration adds `in_all_inboxes BOOLEAN NOT NULL DEFAULT true`.
-   The All inboxes list, search and chat leave out a separate mailbox. R8 proves it.
+**Status.** 📝 Narrowed 2026-10-03, verified against the code at 30eebe6c. Three pull requests,
+T8g-1 to T8g-3. T8g-1 adds one migration. Item 3, the forward loop guard, is deferred.
+✅ T8g-1 MERGED #608 (2026-10-04, migration 229). ✅ T8g-2 MERGED #610 (2026-10-04), with review fix rounds 1 and 2.
+✅ T8g-3 MERGED #611 (2026-10-04), with review fix round 1. It adds no migration.
+
+**Order.** T8g-1 merges first. T8g-3 follows it, because both edit `transport/messages.py`,
+`transport/search.py` and `core.py`. T8g-2 follows T8g-1 and EM-T8f-2, because it edits the same
+store and page files.
+
+**Not in scope.**
+- **The forward loop guard (item 3).** A FORWARD action makes a provider draft and never sends
+  (`automation/actions.py:532-563`). So a loop needs a send by the member at each hop. The guard
+  ships with the first rule action that sends with no review. D-EM-29 stays until then.
+- **`internet_message_id` for Gmail and IMAP.** Only `providers/outlook.py:1674` sets it. D-EM-5
+  keeps Outlook the only provider in the connect flow. A fill also turns on the re-key reclaim of
+  `persist.py:232-246` for Gmail and IMAP. That needs its own slice and its own R8 test.
+  **2026-10-04:** D-EM-5 changed. EM-G1 gates the reclaim, then EM-G2 fills the Message-ID for Gmail (§12).
+- **`/analytics/overview`.** It reads each mailbox with no `account_id`, but no caller sends it so.
+- **The contacts reads and the CRM timeline.** D-EM-28 does not name them.
+- **OWNER-GATE.** The build has none. The production migration is agent-safe under the `deploy`
+  grant until 2026-11-30. Confirm the pre-migration backup, then report the ledger line. No
+  production member has two mailboxes (§11.1), so R8 and vitest are the acceptance. Do not
+  connect a real mailbox or send real mail to test it.
+
+##### EM-T8g-1 — "Keep separate", the server half (migration, gateway, agent, R8)
+
+**Status.** ✅ MERGED #608 (2026-10-04). Migration 229. Review fix round 1 (2026-10-04) is below
+the mutation table of the build.
+
+**As-built notes.**
+- **The number (R1).** The build found 229 free. 227 is the last migration on main, and only the
+  parked branch `ws43t2-sessions` holds 228. No open pull request adds a migration. Check it again
+  at merge.
+- **The migration.** `229_email_keep_separate.sql` adds `in_all_inboxes BOOLEAN NOT NULL DEFAULT
+  true` to `email_accounts`. It adds no table, so `infra/postgres/generated/` does not change.
+- **One scope helper.** `core._owned_accounts_sql` gives the ids of the mailboxes of `:uid`, and
+  `core._account_scope` wraps it. Both take the keyword-only flag `pooled_only`. With the flag and
+  no `account_id`, the subquery adds `AND in_all_inboxes`. A named mailbox is never left out. With
+  no flag, the text does not change.
+- **The list and the facets.** `transport/messages._mailbox_clause` holds one rule for both. A
+  named mailbox gives its rows. A thread load with no `account_id` keeps the owner scope only. Any
+  other read adds `ea.in_all_inboxes`.
+- **`/senders`.** The mail, the dispositions that keep archived mail in the list, and the status
+  of each sender read only the mailboxes in All inboxes. So a disposition of a separate mailbox
+  never shows in All inboxes. The three "never list the member" subqueries keep each mailbox,
+  because a separate mailbox is still the member (D-EM-27).
+- **The API.** Each account read returns `in_all_inboxes`, and the create reads it from
+  `RETURNING`. `AccountUpdateModel.in_all_inboxes` is `StrictBool`, so `"yes"`, `"true"`, `0` and
+  `1` answer 422. The `PATCH` does not restart the sync loop.
+- **The chat binding (as review round 1 left it).** `agents._pooled` gives the mailboxes in All
+  inboxes. A row with no `in_all_inboxes` is in All inboxes. Only a member with one mailbox in
+  total binds with no question. `agents._choices` shortens the list of a question to the mailboxes
+  in All inboxes when two or more are there. A tool that names a separate mailbox still acts in
+  it.
+- **Narrowed: the `sent-from` bind is strict.** A `sent-from` answer binds only a mailbox in All
+  inboxes, and only when two or more are there. When each mailbox is separate, the question lists
+  them all, and no answer binds. Item 5 does not say which rule wins in that case, so the build
+  uses the rule that asks.
+- **Not changed.** `_unread_counts` counts each mailbox, because the switcher shows the count of a
+  separate mailbox too. `identity.py`, `/contacts/sent-from`, the contacts reads and the CRM
+  timeline do not change.
+- **Found, not fixed.** `read_thread` with a bare `thread_id` is a thread load. When a separate
+  mailbox holds the same thread id as a mailbox in All inboxes, the answer names both mailboxes.
+  Item 4 keeps the owner scope for a thread load, so this slice does not change it.
+- **Verification (2026-10-04, on the final tree).** Only `TENANT_LADDER_DATABASE_URL` was set, on a private
+  database. The block below gave 514 passed and 2 skipped. The two skips are the WS-29 gates of
+  `test_tenant_coverage.py`, which read `DATABASE_URL`. With `DATABASE_URL` set to the local
+  scratch database, both gates fail. One reads a ladder with no FORCE RLS phase, and the other
+  connects as a superuser. The two tests, the generator and `generated/` are the same as on main,
+  so the base tree fails the same way. Each R8 case of `test_email_keep_separate.py` passed, and
+  none skipped. All 129 email suites with `-k "not calendar"` gave 2329 passed. The ruff gate
+  passed, and full ruff on the changed files shows no new finding.
+- **Mutation check.** 27 of 27 mutants went red. The first run left `g_patch_restarts_sync` alive,
+  because the test cleared the log of restarts before the assert. The fixed test kills it. The
+  script restored each file and checked its hash. One more mutant cannot fail: the create can
+  drop the field, and the model default and the column default are both true.
+
+| Mutant | What the mutant breaks | The test that goes red |
+|---|---|---|
+| `g_core_no_pool` | the `in_all_inboxes` term of `_owned_accounts_sql` | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_core_pool_named` | a named mailbox is left out when it is separate | `test_its_own_account_id_still_reads_it` |
+| `g_core_default_text` | the text of `_account_scope` with no flag | `test_with_no_flag_the_text_does_not_change` |
+| `g_msg_no_pool` | the clause of the list and the facets | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_msg_thread_pooled` | a thread load leaves out a separate mailbox | `test_a_thread_load_a_read_by_id_and_a_bulk_act_reach_it` |
+| `g_facets_skip` | the facets do not leave it out | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_search_no_pool` | search does not leave it out | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_senders_scope` | the mail of `/senders` | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_senders_disposition` | the dispositions that keep archived mail | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_senders_status` | the status of each sender | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `g_senders_self_pooled` | "never list the member" leaves out a separate mailbox | `test_a_separate_mailbox_is_still_self` |
+| `g_bulk_pooled` | the bulk act leaves out a separate mailbox | `test_a_thread_load_a_read_by_id_and_a_bulk_act_reach_it` |
+| `g_patch_no_write` | the `PATCH` does not write the field | `test_each_account_read_returns_the_field` |
+| `g_patch_restarts_sync` | the `PATCH` restarts the sync loop | `test_each_account_read_returns_the_field` |
+| `g_model_not_strict` | `"yes"` turns into a boolean | `TestTheUpdateModel` |
+| `g_list_field` | the list does not return the field | `test_each_account_read_returns_the_field` |
+| `g_default_field` | the default does not return the field | `test_each_account_read_returns_the_field` |
+| `g_update_field` | the `PATCH` does not return the field | `test_each_account_read_returns_the_field` |
+| `g_patch_owner` | the owner predicate of the `PATCH` | `test_a_patch_of_the_mailbox_of_another_member_is_404` |
+| `i_self_pooled` | the self set leaves out a separate mailbox | `test_a_separate_mailbox_is_still_self` |
+| `m_default_false` | the column default is false | `TestTheColumn` |
+| `m_nullable` | the column is nullable | `TestTheColumn` |
+| `a_one_no_pool` | `_one_mailbox` lists a separate mailbox | `test_the_rule_question_leaves_out_a_separate_mailbox` |
+| `a_new_no_pool` | `_new_mail_mailbox` lists a separate mailbox | `test_a_sent_from_answer_that_names_a_separate_mailbox_is_no_answer` |
+| `a_sent_from_lenient` | `sent-from` binds a separate mailbox | `test_with_no_pooled_mailbox_sent_from_still_binds_no_separate_one` |
+| `a_no_fallback` | no list when each mailbox is separate | `test_with_no_pooled_mailbox_the_full_list_stays` |
+| `a_missing_is_separate` | a row with no field counts as separate | `test_a_row_with_no_field_is_in_all_inboxes` |
+
+Review round 1 replaced the agent code of the five `a_` rows. Its own table below holds the agent
+mutants that apply now.
+
+**Review fix round 1 (2026-10-04).** An adversarial reviewer and an independent verifier checked
+73a21890. They found no P0. The SQL scoping, the `PATCH` and migration 229 were clean. The agent
+rebased the branch on origin/main `0711c8b3` (#606, #607 and #598) with no conflict.
+`work_plan.md` is the same as on main.
+
+- **P1: the binding of the chat failed open.** Take a member with Work in All inboxes and a
+  separate NDA mailbox. That member has no All inboxes (D-EM-30), so the chat is always in the
+  scope of one mailbox. In the
+  scope of NDA, the model sends no `account_id`. `_pooled` then gave Work only, and each item 3
+  tool bound Work with no question. `save_knowledge` wrote an NDA fact into Work. The reset card
+  named no mailbox, and then the reset deleted the rules of Work.
+- **The fix.** A tool that gets no `account_id` binds with no question only when the member has
+  one mailbox in total. `agents._choices` only shortens the list of a question, to the mailboxes
+  in All inboxes when two or more are there. `sent-from` binds a mailbox in All inboxes only when
+  two or more are there. Otherwise new mail asks and reads no `sent-from`.
+- **The mailbox in each answer.** The reset card names the mailbox in its title and its detail.
+  An id of no mailbox of the member stops before the card with "Nothing changed.". Each answer of
+  an item 3 tool names its mailbox as "label · address" (`agents._named`, which reads
+  `_mailbox_name`). A tool that names a mailbox now reads the list for that name, and the list
+  never chooses the mailbox.
+- **P2: `list_accounts`.** It marks a separate mailbox "(separate)". Its unread mail is not in the
+  total, and the answer says so. Its own line keeps its own count.
+- **P2 (F7): a bulk act by filter.** With no `account_id`, a bulk act by `sender_email`,
+  `folder`, `older_than_days` or `only_read` leaves out a separate mailbox. A bulk act by ids
+  keeps the owner scope. Item 4 says so.
+- **P2: five fence gaps.** F1 fences the unread count of each mailbox. F2 fences
+  `drafting._reply_target` for a mail of a separate mailbox. F3 fences the folder clause of
+  `/senders` with `include_archived`. F4 fences the label chips of a sender in both mailboxes. F5
+  fences a thread load with an `account_id`, which stays in that mailbox (D-EM-22).
+- **Changed fences.** `test_one_pooled_mailbox_binds_and_never_the_separate_one` is now
+  `test_one_pooled_mailbox_and_a_separate_one_asks`. The new mail test
+  `test_new_mail_with_one_pooled_mailbox_sends_from_it` is now
+  `test_new_mail_with_one_pooled_mailbox_and_a_separate_one_asks`.
+  `test_a_named_mailbox_is_used_with_no_question` no longer refuses a read of the list, because
+  the answer names the mailbox.
+- **Verification (2026-10-04).** Only `TENANT_LADDER_DATABASE_URL` was set, on a private
+  database. The block below gave 528 passed and 2 skipped, the same two WS-29 gates. Each of 21
+  R8 cases of `test_email_keep_separate.py` passed, and none skipped. All 129 email suites with
+  `-k "not calendar"` gave 2343 passed. The ruff gate passed, and full ruff on the changed files
+  shows no new finding.
+- **Mutation check.** 41 of 41 mutants went red. 20 are in the table below. The other 21 are the
+  gateway and migration mutants of the build, run against the changed tests. The script restored each source
+  file and checked its hash.
+
+| Mutant | What the mutant breaks | The test that goes red |
+|---|---|---|
+| `r1_one_binds_pooled` | `_one_mailbox` binds the one pooled mailbox (the P1 probe) | `test_one_pooled_mailbox_and_a_separate_one_asks` |
+| `r1_new_binds_pooled` | new mail binds the one pooled mailbox | `test_new_mail_with_one_pooled_mailbox_and_a_separate_one_asks` |
+| `r1_sent_from_one_pooled` | `sent-from` binds with one pooled mailbox | `test_new_mail_with_one_pooled_mailbox_and_a_separate_one_asks[pooled]` |
+| `r1_sent_from_any` | `sent-from` binds a separate mailbox | `test_a_sent_from_answer_that_names_a_separate_mailbox_is_no_answer` |
+| `r1_choices_shorten_to_one` | the question lists one pooled mailbox only | `test_one_pooled_mailbox_and_a_separate_one_asks` |
+| `r1_results_unnamed` | no answer names its mailbox | `test_each_write_result_names_the_mailbox` |
+| `r1_save_knowledge_unnamed` | `save_knowledge` names no mailbox | `test_each_write_result_names_the_mailbox[save_knowledge]` |
+| `r1_reset_title` | the reset card title names no mailbox | `test_the_reset_card_names_the_mailbox` |
+| `r1_reset_detail` | the reset card detail names no mailbox | `test_the_reset_card_names_the_mailbox` |
+| `r1_reset_unknown_id` | a reset of an id of no mailbox shows its card | `test_a_reset_of_an_id_of_no_mailbox_changes_nothing` |
+| `r1_list_total` | the total counts a separate mailbox | `test_list_accounts_marks_a_separate_mailbox_and_leaves_it_out_of_the_total` |
+| `r1_list_mark` | a separate mailbox has no mark | `test_list_accounts_marks_a_separate_mailbox_and_leaves_it_out_of_the_total` |
+| `r1_missing_is_separate` | a row with no field counts as separate | `test_a_row_with_no_field_is_in_all_inboxes` |
+| `f1_unread_pooled` | the unread count of a separate mailbox is 0 | `test_each_account_read_returns_the_field` |
+| `f2_reply_target_pooled` | compose-assist loses a mail of a separate mailbox | `test_a_separate_mailbox_is_still_self` |
+| `f3_nl_sub_unpooled` | the folder clause of `/senders` reads every disposition | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `f4_tally_unpooled` | the label chips read the separate mailbox | `test_all_inboxes_leaves_out_a_separate_mailbox` |
+| `f5_thread_first` | a thread load with an `account_id` reads each mailbox | `test_a_thread_load_a_read_by_id_and_a_bulk_act_reach_it` |
+| `f7_bulk_filter_unpooled` | a bulk act by filter reaches a separate mailbox | `test_a_bulk_act_by_filter_leaves_out_a_separate_mailbox` |
+| `f7_bulk_ids_pooled` | a bulk act by ids leaves out a separate mailbox | `test_a_thread_load_a_read_by_id_and_a_bulk_act_reach_it` |
+
+**Gate.** 🟢 AGENT-SAFE · R8 · security review, because it changes `core._account_scope` (D-EM-4).
+
+**Scope.** A new migration, `transport/accounts.py`, `core.py`, `transport/messages.py`,
+`transport/search.py`, `automation/senders.py` (`list_senders` only),
+`apps/agents/agent-email-assistant/agents.py` and tests. No UI file.
+
+1. **The migration.** R1 applies: take the next free number at build time, and check it again at
+   merge. The audit found 229 free, because a parked branch holds 228. The migration is
+   `ALTER TABLE email_accounts ADD COLUMN IF NOT EXISTS in_all_inboxes BOOLEAN NOT NULL DEFAULT
+   true`. Its header gives the R6 reason: a constant default fills each row, and no code fills the
+   column. It creates no table, so `infra/postgres/generated/` does not change.
+2. **The API.** Each account read returns `in_all_inboxes`. `AccountUpdateModel` takes
+   `in_all_inboxes: StrictBool | None`. The `PATCH` writes under the owner predicate and does not
+   restart the sync loop.
+3. **The reads of more than one mailbox.** With no `account_id`, these reads leave out a separate
+   mailbox: `GET /email/messages` with no `thread_id`, the facets, `GET /email/search` and
+   `GET /email/senders`. With the `account_id` of a separate mailbox, each read gets its rows.
+   `core._account_scope` takes a keyword-only flag. With no flag, its text does not change.
+4. **The reads that keep the owner scope only.** These still reach a separate mailbox: a thread
+   load, each act by a mail id, and `POST /email/messages/bulk` by ids. The reason is that
+   `manage_inbox` sends mail ids with no `account_id`. Compose-assist and `/contacts/sent-from` do
+   not change. A bulk act by filter with no `account_id` leaves out a separate mailbox, as a read
+   of All inboxes does (review round 1).
+5. **The chat binding.** `_one_mailbox` and `_new_mail_mailbox` list only the mailboxes in All
+   inboxes when two or more are there, else each mailbox. A `sent-from` answer that names a
+   separate mailbox counts as no answer. Only a member with one mailbox in total binds with no
+   question. Take one mailbox in All inboxes and one separate mailbox. A tool with no
+   `account_id` then asks (review round 1).
+6. **Self does not change** (D-EM-27, D-EM-30). `identity.py` keeps each mailbox of the member.
+
+**Fences (R7).** `tests/unit/test_email_keep_separate.py` (R8, the app role):
+- `email-keep-separate-column`: the column is NOT NULL with a default of true, and each old row
+  reads true.
+- `email-keep-separate-api`: each account read returns the field. A `PATCH` by another member
+  answers 404 and writes nothing. `"yes"` answers 422.
+- `email-keep-separate-reads`: with no `account_id`, the four reads of item 3 hold no row of a
+  separate mailbox. With its `account_id`, each one holds its rows.
+- `email-keep-separate-owner-scope`: a thread load, a read by id and a bulk act by ids reach a
+  separate mailbox. A bulk act by filter does not (review round 1).
+- `email-keep-separate-self`: a mail from a separate mailbox is still `self` in another mailbox.
+- `email-chat-binding-skips-separate` (`test_email_chat_binding.py`, fakes): the question and the
+  `sent-from` bind leave out a separate mailbox. One pooled mailbox and a separate one ask.
+- `email-chat-write-names-mailbox` and `email-chat-list-accounts-separate` (review round 1): each
+  answer of an item 3 tool and the reset card name the mailbox. `list_accounts` marks a separate
+  mailbox and leaves it out of the total.
+
+**Verification.**
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_keep_separate.py tests/unit/test_email_all_inboxes.py tests/unit/test_email_conversation_collapse.py tests/unit/test_email_facets.py tests/unit/test_email_search_scope.py tests/unit/test_email_bulk_apply.py tests/unit/test_email_mailbox_identity.py tests/unit/test_email_multi_account.py tests/unit/test_email_n_plus_one.py tests/unit/test_email_from_row.py tests/unit/test_email_ai_context.py tests/unit/test_email_chat_binding.py tests/unit/test_email_multi_inbox.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_rule_copy.py tests/unit/test_crm_email_timeline.py tests/unit/test_email_contact_card.py tests/unit/test_tenant_coverage.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email apps/agents/agent-email-assistant tests/unit/test_email_keep_separate.py --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 cases must show PASSED, not SKIPPED. With `DATABASE_URL` set, the two WS-29 gates of
+`test_tenant_coverage.py` also fail on the base tree, so compare those two with the base tree.
+
+##### EM-T8g-2 — "Keep separate", the UI half (after T8g-1 and EM-T8f-2)
+
+**Status.** ✅ MERGED #610 (2026-10-04), after EM-T8g-1 #608. No migration and no backend change.
+
+**As-built notes.**
+
+- **One rule.** `isSeparate` and `pooledMailboxes` in `lib/mailbox.ts` decide the pool.
+  `hasAllInboxes` is true for two or more pooled mailboxes. A source scan of `src/` fails when a
+  file other than `lib/api.ts`, `lib/mailbox.ts` or `lib/types.ts` names the flag (review F2).
+- **The field.** `mapAccount` reads `in_all_inboxes`. Only an explicit `false` makes a mailbox
+  separate, so a gateway before EM-T8g-1 keeps each mailbox in All inboxes.
+- **The menu (item 1).** `separateToggle` gives "Keep separate" or "Show in All inboxes".
+  `accountMenuItems` is the menu as a function with no hook, so a test runs each pick. The
+  switcher row draws the word "Separate" in the house `Badge`, after the label of the mailbox.
+- **The pool (item 2).** The All inboxes row, its unread sum, the header count, `scopeBusy`,
+  `syncScope`, the folder sums and `pickInitialView` read `pooledMailboxes`.
+- **The toggle (item 3).** `setInAllInboxes` in the store waits for the `PATCH`, then moves only
+  the flag, because the answer holds no default flag. In All inboxes, the rows, the checks and the
+  open mail of a mailbox kept separate leave at once. Then the store reads the list and the sums
+  again. Fewer than two pooled mailboxes end All inboxes for the default mailbox.
+- **Another tab.** `fetchAccounts` and `refreshAccounts` call `applyPoolChange`, the one
+  reconciliation of the pool (review F7). A mailbox that left the pool leaves as a removed
+  mailbox does. A mailbox that joined the pool makes the store read the list and the sums again.
+- **Open in inbox (item 4).** `mailboxToOpen` in `lib/mailbox.ts` holds the rule of MB-3 and of
+  item 4. In All inboxes, a mail of a separate mailbox opens in that mailbox.
+- **The chat (item 5).** `chatMailboxOptions` offers All inboxes for two or more pooled
+  mailboxes, and a separate mailbox stays an option. The All inboxes persona lists only the pooled
+  mailboxes. `chatScope` falls back through `pickInitialView`.
+- **No change (item 6).** The chips, the From row, "In <chip>", the import panels and the
+  reconnect banner still count each mailbox. `attentionMailbox` in `lib/mailbox.ts` names the
+  mailbox of the reconnect banner (review F6). New mail in All inboxes starts on the default
+  mailbox, also when the default is separate.
+
+**Narrowed.**
+
+- With one mailbox, the menu offers neither label and the row shows no word (§11.0).
+- A Refresh in All inboxes does not sync a separate mailbox. Its own view and its own loop sync it.
+- Each end of All inboxes goes to the default mailbox: a toggle, a disconnect and a re-read. Before
+  review round 1, a re-read stayed on the selected mailbox.
+- Nobody did the look check of CLAUDE.md §4: light mode, compact density and a changed accent. The
+  agent had no browser, so a reviewer must do it.
+
+**Outside the stated scope.**
+
+- `lib/mailbox.test.ts`: two cases of `email-open-by-id-switches` read the inline condition that
+  moved into `mailboxToOpen`. They now test the function and scan for its call.
+- `allInboxes.test.ts`: two EM-T8d cases, the header count and "keeps an opened mail", read the
+  new code.
+- `workbench/AGENTS.md`: one line for this slice.
+
+**Fences.**
+
+- `email-all-skips-separate`: `allInboxes.test.ts`, and its store half in `allInboxesStore.test.ts`.
+- `email-separate-menu`: `allInboxes.test.ts`.
+- `email-separate-leaves-at-once`: `allInboxesStore.test.ts`, and its pure half in
+  `allInboxes.test.ts`.
+- `email-chat-separate`: `chatScope.test.ts`.
+
+**Mutation run.**
+
+- The final run killed 46 of 46 mutants. They are 14 for `email-all-skips-separate`, 11 for
+  `email-separate-menu`, 16 for `email-separate-leaves-at-once` and 5 for `email-chat-separate`.
+- The script restored each file and checked its hash.
+- The first run also killed 46 of 46. A failed store case then held a folder read open, so the
+  later cases failed too. An `afterEach` now settles that read, and each kill names its own case.
+
+**Verification (2026-10-04).** In `workbench/control_plane`, `npx tsc --noEmit` passed.
+`npx vitest run src/app/email src/components src/lib/theme src/app/notes src/app/chat` gave 49
+files and 961 tests passed. The suites of Integrations and Organization gave 8 files and 92 tests
+passed.
+
+**Review fix round 1 (2026-10-04).** An independent verifier failed `9c02baed2` on one P1. This
+round fixes the P1 and the P2 findings. The contract with EM-T8g-1 did not change.
+
+| Finding | Fix | The test that goes red |
+|---|---|---|
+| F1 (P1): a disconnect counted the mailboxes, so All inboxes stayed open with one pooled mailbox. | `applyPoolChange` in the store is the one reconciliation of the pool. It reads `hasAllInboxes`, and the hidden mailbox takes `poolHome`. | `F1: a disconnect that leaves one pooled mailbox ends All inboxes`, `F1: a disconnect of the hidden mailbox moves it to a pooled mailbox` |
+| F2: the scan missed a destructure, a bracket read and the other apps. | The scan reads each source file of `src/` for the bare token. The store calls `setMailboxPooled` and `withPoolFlag`. | `is the one rule: no other file names the flag, in any app` |
+| F3: a re-read from another tab kept the checks of a mailbox that left. | `applyPoolChange` drops the checks with the rows and the open mail. | `drops the rows, the checks and the open mail of a mailbox that another tab kept separate` |
+| F4: a list read that started before a toggle could land after it. | `fetchEmails` takes a number, and only the newest read lands. `softRefresh` and `loadMoreEmails` drop an answer after a newer read or a change of the pool. | the five `F4:` cases |
+| F5: the hidden mailbox of All inboxes could be separate. | `poolHome` gives the pooled default, else the first pooled mailbox. `pickInitialView`, `selectAll` and the reconciliation use it. | the two `F5:` cases, `keeps a pooled mailbox selected out of view in All inboxes` |
+| F6: four rules had no fence. | `attentionMailbox` names the mailbox of the reconnect banner. New cases cover the menu of a pair, the server answer and the re-read after a refusal. | `names a separate mailbox in the reconnect banner`, `offers the way back with one pooled and one separate mailbox`, `takes the answer of the server over the request`, `changes nothing on a refusal, says so, and reads the accounts again` |
+| F7: a quiet re-read did not reconcile the pool. | `refreshAccounts` calls `applyPoolChange`. | the two `F7:` cases |
+
+- **Who calls the reconciliation.** A toggle, a disconnect, a re-read and a quiet re-read call
+  `applyPoolChange`. Fewer than two pooled mailboxes end All inboxes for the default mailbox.
+- **F8, a note.** A toggle that ends All inboxes moves the page scope. A chat pick of the
+  separated mailbox was made against All inboxes, so it drops with the page, and no note shows.
+  That is the pick rule of EM-T8e-3. The mailbox is still connected, so §11.6 case 17 does not
+  apply.
+- **A new mailbox joins the pool.** The verifier's M4 made a mailbox that another tab connects
+  count as joined. This round makes that the rule, so its rows and its sums show in All inboxes.
+  The opposite mutant is now killed.
+- **The F1 sweep.** Each other count of `accounts` in `src/app/email/` and
+  `src/components/email/` serves the chips, the From row, the settings picker or an empty list
+  (§11.0, item 6). None of them decides All inboxes.
+- **Also changed.** `loadMoreEmails` drops its page after a newer read, because F4 applies to it
+  too. A disconnect of a separate mailbox in All inboxes reads nothing again, because the pool
+  does not change.
+- **Known limit.** A quiet re-read that started before a toggle can land after it. It then shows
+  the old flag until the next re-read. The list stays correct, because the server leaves the
+  separate rows out.
+- **The EM-T8f-2 fence stays.** `deleteAccount` keeps `nextDefaultAfter(get().accounts, id)`
+  word for word, so the source scan of `email-disconnect-names-default` holds.
+
+**Round 1 mutation run.** The run killed 33 of 33 mutants. The script restored each file and
+checked its hash. V-M1 to V-M9 are the mutants of the verifier, moved to the new anchors. M6 of
+the verifier, the import panels, is not in the list. The EM-T8f-3 case `draws each panel on the
+page, keyed and named by its mailbox` holds its line.
+
+| Mutant | What it breaks | The case that goes red first |
+|---|---|---|
+| V-M1 | a destructured read of the flag in `page.tsx` | `is the one rule: no other file names the flag, in any app` |
+| V-M2 | a bracket read of the flag in `AccountSidebar.tsx` | the same scan |
+| V-M3 | the request wins over the answer of the server | `takes the answer of the server over the request` |
+| V-M4 | a new mailbox does not join the pool (the opposite of M4) | `reads the list and the sums again when another tab connects a mailbox` |
+| V-M5a, V-M5b | the reconnect banner skips a separate mailbox, in the rule and on the page | `names a separate mailbox in the reconnect banner (item 6)` |
+| V-M7, V-M8 | the menu and the word ask for two pooled mailboxes | `offers the way back with one pooled and one separate mailbox (review F6)` |
+| V-M9 | a refusal does not read the accounts again | `changes nothing on a refusal, says so, and reads the accounts again` |
+| F1-a | the end of All inboxes counts the mailboxes | `F1: a disconnect that leaves one pooled mailbox ends All inboxes` |
+| F1-b | a disconnect skips the reconciliation | `re-reads All inboxes when another mailbox goes` (EM-T8d) |
+| F1-c | the hidden mailbox takes the default, pooled or not | `F1: a disconnect of the hidden mailbox moves it to a pooled mailbox` |
+| F3-a, F3-b, F3-c | the checks, the rows or the open mail of a mailbox that left stay | `drops the rows, the checks and the open mail of a mailbox that another tab kept separate` |
+| F4-a | `fetchEmails` lands out of order | `F4: a list read that started before the toggle never lands after it` |
+| F4-b | `softRefresh` misses a change of the pool | `F4: a background read that started under another pool drops its answer` |
+| F4-c | `softRefresh` misses a newer read | `F4: a background read drops its answer when a newer read started` |
+| F4-d | `loadMoreEmails` adds to a list that was read again | `F4: a page of older mail drops when the toggle read the list again` |
+| F4-e | a stale read that fails sets the error | `F4: a stale read that fails leaves the error and the list to the newer read` |
+| F5-a | `pickInitialView` keeps a separate default | `keeps a pooled mailbox selected out of view in All inboxes (review F5)` |
+| F5-b, F5-e | `selectAll` keeps a separate hidden mailbox, or reads no labels | `F5: All inboxes, opened from a separate mailbox, keeps a pooled one` |
+| F5-c, F5-d | the reconciliation keeps a separate hidden mailbox, or reads no labels | `F5: a toggle of the hidden mailbox moves it to the default pooled mailbox` |
+| F5-f | `poolHome` skips the pooled default | `opens All inboxes for two or more mailboxes and no stored choice` (EM-T8d) |
+| F7-a | a quiet re-read skips the reconciliation | `F7: a quiet re-read with one pooled mailbox ends All inboxes` |
+| F7-b | a full re-read skips the reconciliation | `ends All inboxes when a re-read finds one mailbox` (EM-T8d) |
+| R-a | the toggle skips the reconciliation | `ends All inboxes for the default mailbox when fewer than two are pooled` |
+| R-b | the end of All inboxes stays on the hidden mailbox | the same case |
+| R-c | a change of the pool reads no list | `puts a mailbox back: the list and the sums are read again with it` |
+| R-d | a change of the pool keeps the old sums | `F4: a disconnect clears the sums before the new round lands` (EM-T8f-3) |
+| F2-c | a read of the flag in `src/components/email/` | `is the one rule: no other file names the flag, in any app` |
+
+The 46 mutants of the build ran again on the code of this round. 31 found their anchor, and the
+run killed 31 of 31. The other 15 edited code that this round moved into `applyPoolChange`,
+`poolHome` and `setMailboxPooled`, and the round mutants above cover it.
+
+**Round 1 verification (2026-10-04).** In `workbench/control_plane`, `npx tsc --noEmit` passed.
+`npx vitest run src/app/email src/components src/lib/theme src/app/notes src/app/chat
+src/app/integrations src/app/settings/organization` gave 57 files and 1069 tests passed, with no
+unhandled error.
+
+**Review fix round 2 (2026-10-04).** The verifier checked `6deaed077` again. It confirmed F1, F4,
+F5, F6, F7 and M4, and it found no regression in EM-T8d, EM-T8f-2 or EM-T8f-3. It failed F3: a
+bulk delete could still reach a mail of a separate mailbox.
+
+- **F3, the probe.** A member checks c-9 in All inboxes. A refresh in the background takes c-9 out
+  of the list, and its check stays. The member keeps c separate and clicks Delete. Before this round,
+  `deleteEmail` then got `["a-1", "c-9"]`.
+- **F3, the fix of the class.** Three layers close it, and each one has its own fence.
+  - (a) `applyPoolChange` keeps only the checks of the rows that stay in the list.
+  - (b) `checkedRows` in `lib/emailStore.ts` gives the checked ids that are rows of the list on
+    screen. `bulkUpdateSelected`, `bulkDeleteSelected`, each bulk act of `EmailList.tsx` and
+    each "N selected" count read it. No reader of the raw `selectedIds` acts.
+  - (c) `fetchEmails` and `softRefresh` prune the checks to the rows that they land, so a check
+    never outlives its row.
+- **P3, a removed selected mailbox.** In All inboxes, `fetchAccounts` now sends that case to
+  `applyPoolChange`. With one mailbox in view, the branch clears the open mail and the checks.
+  `replaceAccount` calls `applyPoolChange` too.
+- **P3, the three survivors of round 1.** New cases kill each one. V-F5b holds the end of All
+  inboxes on the default mailbox. V-F3c holds the open mail kept as an override. V-ALL0 holds the
+  end with no mailbox left. With no mailbox left, the store now also clears the rows and the
+  checks.
+- **P3, the scan.** `stripComments` in `allInboxes.test.ts` keeps each string and drops only a
+  real comment. A `//` in a string no longer hides a read after it. The case `finds a read after
+  a // in a string, and skips a real comment` holds the stripper.
+- **Outside the stated scope.** `components/EmailToolbar.tsx` and `components/EmailList.tsx`
+  read `checkedRows`, because they hold the bulk acts.
+
+**Round 2 mutation run.** The run killed 17 of 17 mutants. The script restored each file and
+checked its hash. V-M1 to V-M3 are the three survivors of round 1 at the verifier.
+
+| Mutant | What it breaks | The case that goes red first |
+|---|---|---|
+| R2-a | (a): a toggle drops only the checks of the rows that leave now | `F3 (a): a toggle keeps only the checks of the rows that stay` |
+| R2-b1, R2-b2 | (b): a bulk delete or a bulk update reads the raw checks | `F3 (b): a bulk act with a stale check reaches only the rows on screen` |
+| R2-b3 | (b): `checkedRows` gives the raw checks | `acts only on the checked rows of the list on screen` |
+| R2-b4, R2-b5 | (b): the toolbar count, or a bulk label of the list, reads the raw checks | `reads checkedRows for each bulk act and each count, in the store and in both bars` |
+| R2-c1 | (c): `fetchEmails` keeps the check of a row that left | `F3 (c): a list read that drops a checked row drops its check` |
+| R2-c2 | (c): `softRefresh` keeps the check of a row that left | `F3 (c): a background refresh that drops a checked row drops its check` |
+| R2-c3 | `prunedChecks` never prunes | `drops the rows, the checks and the open mail of a mailbox that another tab kept separate` |
+| P3-a | the branch of round 1 for a removed selected mailbox | `P3: a re-read that removes the hidden mailbox and keeps c separate drops the checks` |
+| P3-b | a removed mailbox in view keeps its checks and its open mail | `P3: a re-read that removes the mailbox in view drops its checks and its open mail` |
+| P3-c | `replaceAccount` skips the reconciliation | `P3: replaceAccount reconciles the pool` |
+| V-M1 | All inboxes ends on `poolHome`, not on the default | `V-F5b: a toggle that ends All inboxes goes to the default, also a separate one` |
+| V-M2 | the check of the open mail ignores `selectedEmailOverride` | `V-F3c: the open mail of a mailbox that left goes, also when it is not a row` |
+| V-M3, V-M3b | with no mailbox left, `viewAll` stays true, or the rows and the checks stay | `V-ALL0: with no mailbox left, All inboxes ends and nothing of the list stays` |
+| S-a | a read of the flag after a `//` in a string, on one line | `is the one rule: no other file names the flag, in any app` |
+
+The 33 mutants of round 1 ran again on the code of round 2. 30 found their anchor, and the run
+killed 30 of 30. F3-a and F3-b edited the code that round 2 replaced, and R2-a and R2-c3 cover
+it. F7-b found its line twice, so F7-b2 ran on its own with a unique anchor, and the run killed it.
+
+**Round 2 verification (2026-10-04).** In `workbench/control_plane`, `npx tsc --noEmit` passed.
+`npx vitest run src/app/email src/components src/lib/theme src/app/notes src/app/chat
+src/app/integrations src/app/settings/organization` gave 57 files and 1083 tests passed, with no
+unhandled error.
+
+**Gate.** 🟢 AGENT-SAFE.
+
+**Scope.** `components/AccountSidebar.tsx`, `lib/emailStore.ts`, `lib/mailbox.ts`,
+`lib/chatScope.ts`, `lib/emailAssistantPersona.ts`, `lib/api.ts`, `lib/types.ts`, `page.tsx` and
+tests. No backend file.
+
+1. **The menu.** The mailbox menu offers "Keep separate", or "Show in All inboxes" for a separate
+   mailbox. A pick sends the `PATCH`. The switcher row of a separate mailbox shows the word
+   "Separate" beside its chip.
+2. **One helper.** `pooledMailboxes(accounts)` in `lib/mailbox.ts` gives the mailboxes in All
+   inboxes. The All inboxes row, its unread sum, the header count, the folder sums, `scopeBusy`,
+   `syncScope` and `pickInitialView` read it.
+3. **When All inboxes shows.** It shows for two or more pooled mailboxes. A toggle that leaves
+   fewer ends All inboxes for the default mailbox, as a disconnect does. A toggle in All inboxes
+   reads the list again, so the rows leave at once.
+4. **Open in inbox.** A mail of a separate mailbox opens in that mailbox, never in All inboxes.
+5. **The chat.** The All inboxes option needs two pooled mailboxes. The All inboxes persona lists
+   only pooled mailboxes. The picker still offers a separate mailbox as its own scope.
+6. **What does not change.** The chips, the From row and "In <chip>" count each mailbox (§11.0).
+   New mail in All inboxes starts on the default mailbox (D-EM-20), and the From row names it.
+
+**Fences (R7).**
+- `email-all-skips-separate` (`allInboxes.test.ts`): items 2 and 3, with one separate mailbox
+  among three.
+- `email-separate-menu` (`allInboxes.test.ts`): the two labels, the `PATCH` and the word
+  "Separate".
+- `email-separate-leaves-at-once` (`allInboxesStore.test.ts`): the toggle, the end of the scope,
+  and item 4.
+- `email-chat-separate` (`chatScope.test.ts`): item 5.
+
+**Verification.** In `workbench/control_plane`, run this command:
+
+```
+npx tsc --noEmit && npx vitest run src/app/email src/components src/lib/theme
+```
+
+Then look at the switcher and the menu. Look in light mode, at compact density and under a
+changed accent.
+
+**Follow-ups from the re-verify of EM-T8g-1 (2026-10-04).** All are P3, and none blocked #608.
+
+- **The rule question in a separate chat.** A member with two pooled mailboxes and one separate
+  mailbox opens the chat of the separate one. An item 3 tool with no `account_id` then asks, and
+  the question lists only the two pooled mailboxes. It fails closed, because nothing binds. The
+  better question lists each mailbox and marks the separate one "(separate)".
+- **Two fence gaps.** The bulk scope `pooled_only=not req.message_ids` has a fence for the sender
+  filter only, not for `folder` or `older_than_days`. Four answers of the item 3 tools have no
+  fence for the mailbox name:
+  - `run_rules` with scope "new"
+  - the install without a reset, and "already installed"
+  - the update path of `save_knowledge`
+- **Doc slips.** The T8g-1 notes count 21 R8 cases, but 9 are R8 and 12 are hermetic. The T8g-1
+  Scope line names `list_senders` only, but round 1 also changes `bulk_action`.
+
+##### EM-T8g-3 — "Also in" and the draft dedupe (after T8g-1, R8)
+
+**Status.** ✅ MERGED #611 (2026-10-04), with review fix round 1. It adds no migration and no
+index. The notes of round 1 are below the mutation table of
+the build, and the notes below say what round 1 changed.
+
+**As-built notes.**
+
+- **The pair set (item 4).** `identity.PAIRED_MAILBOX_IDS_SQL` is the self set of `:aid` without
+  `:aid`, and both mailboxes are in All inboxes. `paired_mailbox_ids_sql(anchor)` gives the same
+  rule over a column, for a page of mail. Any anchor that is not a bind name or a column raises.
+  So do `a.` and `o.`, the aliases of the set itself (review round 1). The text of the self set
+  over `:aid` did not change.
+- **The copy.** A copy is a mail of a paired mailbox with the same `internet_message_id`, not
+  empty, and the same sender address (review round 1). It is outside drafts, junk and trash.
+  `core.NOT_A_COPY_FOLDERS` holds the three folders, and "Also in" and the dedupe both read it.
+  A row in those three folders names no copy either (review round 1).
+- **"Also in" (item 1).** `identity.also_in_by_message` reads `also_in` for one page in one
+  statement, `ALSO_IN_SQL`. A LATERAL pair set takes the mailbox of each row. The read binds
+  `:uid` too, so a mail id of another member gives no row. An empty page runs no read.
+- **The lazy import.** The list and search reach the read through
+  `messages._also_in_by_message`. The automation layer imports `transport.send` at load time, so
+  a load-time import from `transport` would be a cycle.
+- **The index (R6).** The agent measured the plans on 40,000 rows after ANALYZE. Migration 89's
+  `idx_email_messages_internet_message_id` serves each lookup of a copy as an index condition on
+  `(account_id, internet_message_id)`. That index is partial (`WHERE internet_message_id IS NOT
+  NULL`), and the equality of the lookup lets the planner use it. `idx_email_messages_thread`
+  (migration 17) serves the thread read of the dedupe. So the slice needs no migration.
+- **The dedupe (items 3 and 5).** `actions._skip_for_paired_mailbox` runs in the REPLY and
+  DRAFT_EMAIL branch, before the thread check and the model call (review round 1). It calls
+  `identity.draft_skip_in_pair`, which runs two statements.
+  - The first takes `pg_try_advisory_xact_lock` on a hash of four parts: the organization, the
+    member, the sender address and the Message-ID. A lock that another run holds gives `busy`.
+  - The second asks if the thread of a copy holds a draft or a sent mail, newer than the copy.
+    A yes gives `answered`. Before round 1, any draft counted.
+- **Why two statements.** READ COMMITTED takes a new snapshot for each statement. So the check
+  after the lock sees each draft that a run committed before it released the lock.
+- **No pair, no lock.** A mail with an empty Message-ID, a member with no paired mailbox and a
+  separate mailbox take no lock. So a pooled run never holds off the draft of a separate mailbox
+  (D-EM-30).
+- **The log.** A skip logs `email.draft_skipped_other_mailbox` with `account_id` and `reason`, and
+  no address. The read runs in a savepoint. A failed read logs `email.draft_dedupe_failed` and
+  drafts as before, as the thread check does.
+- **The callers.** The dedupe is in `_apply_rule_actions`, so the automatic run, the approval and
+  Process past get it. The retry never reaches the branch, because `_RETRY_SKIPPED_ACTIONS` holds
+  REPLY and DRAFT_EMAIL.
+- **The row (item 2).** `alsoInMailboxes` and `AlsoInLine` in `components/EmailList.tsx` draw
+  "Also in" and a `MailboxChip` for each mailbox, in the order of the switcher. A member with one
+  mailbox sees none. The row shows it in each view, not only in All inboxes, because D-EM-22 says
+  "each row".
+- **The API.** `mapEmail` reads `also_in` into `Email.alsoIn`. A gateway before EM-T8g-3 sends no
+  field, and the row then names no other mailbox.
+- **The fence files.** The four server fences are in `tests/unit/test_email_duplicates.py`: 33
+  R8 cases and 20 hermetic cases after round 1 (18 and 16 at the build). `email-also-in-row` is in
+  `workbench/control_plane/src/app/email/lib/alsoIn.test.ts`: 9 cases.
+
+**Narrowed.**
+
+- At the build, only Outlook mailboxes paired, and this slice filled `internet_message_id` for no
+  other provider. Since EM-G2 (#626) Gmail fills it too. EM-G9 proves a Gmail and Outlook pair
+  (§12.3.11).
+- The dedupe runs before the thread check (review round 1). So a run that skips trashes no draft
+  of this mailbox. The build ran the thread check first, and a run that then met the lock left the
+  pair with no draft.
+- In a race, the run that meets the lock makes no draft. The run that holds the lock can then make
+  none, for low confidence or for a 401 or a 429 from the provider. Then the mail has no draft.
+  Item 5 asks for one draft at most, so that is in scope.
+- A copy in trash does not stop a draft, also when its thread holds a draft. The member threw that
+  copy away.
+
+**Outside the stated scope.**
+
+- `tests/unit/test_email_ai_context.py`: `test_a_rule_draft_copy_stores_the_mailbox_as_from` now
+  patches `draft_skip_in_pair`, as it patches the thread check. A bare `AsyncMock` session warns
+  about a coroutine that nothing awaits.
+- `apps/services/gateway/AGENTS.md` and `workbench/AGENTS.md`: one line each for this slice.
+- The §11.7 table row now names T8g-2 MERGED #610 too.
+
+**Not checked.** This session had no browser. Nobody looked at the row in light mode, at compact
+density or under a changed accent (CLAUDE.md §4). The security review is still due.
+
+**Verification (2026-10-04, on the final tree).**
+
+- Only `TENANT_LADDER_DATABASE_URL` was set, on a private database for each run.
+- The block below gave 227 passed and 0 skipped. All 34 cases of `test_email_duplicates.py`
+  passed, and none skipped.
+- All 130 email suites with `-k "not calendar"` gave 2377 passed and 6 deselected.
+- One earlier run on the same tree failed one case:
+  `test_email_otp_token.py::test_an_expired_code_does_not_verify`. That case gives a code one
+  second of margin before `expires > now()`. The suite then passed alone twice, and a full run
+  passed. This slice changes no file on that path.
+- The ruff gate passed. Full ruff on the changed files shows no new finding. The C901 finding of
+  `_apply_rule_actions` was on the base tree, and the slice moves it from 32 to 33.
+- In `workbench/control_plane`, `npx tsc --noEmit` passed. `npx vitest run src/app/email
+  src/components src/lib/theme` gave 47 files and 961 tests passed.
+
+**Mutation check.**
+
+- The final run killed 33 of 33 mutants: 25 on the server and 8 in the UI. The script restored
+  each file and checked its hash.
+- A first run reported each server mutant as killed, but a bare `bash` found WSL, so no test ran.
+  The script now needs a passing run with no mutant. It counts a kill only when pytest names a red
+  case.
+- A rerun with only the R8 cases found two gaps. The "Also in" test took its folders from the
+  constant under test. Only a hermetic case fenced the order of the two statements.
+- The test now names the three folders. `test_the_lock_comes_before_the_check_on_a_real_database`
+  puts the other run in the gap between the two statements. Both mutants now go red on R8 cases.
+
+| Mutant | What the mutant breaks | A case that goes red |
+|---|---|---|
+| `i_pair_this_separate` | a separate `:aid` pairs | `test_b_drafts_when_either_mailbox_is_separate[this]` |
+| `i_pair_other_separate` | a separate mailbox pairs with `:aid` | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `i_pair_self_included` | the pair set holds `:aid` | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `i_org_predicate` | no organization predicate | `test_the_org_predicate_holds_where_rls_does_not_bind` |
+| `i_anchor_any` | any anchor passes | `test_a_column_anchors_it_for_a_page_and_nothing_else_does` |
+| `i_also_folder` | a copy in junk, drafts or trash counts | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `i_also_empty_id` | an empty Message-ID pairs | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `i_also_owner` | the read binds no `:uid` | `test_the_org_predicate_holds_where_rls_does_not_bind` |
+| `c_junk_is_a_copy` | junk holds a copy | `test_a_copy_in_junk_is_no_copy` |
+| `m_read_per_row` | the list reads once for each row | `test_one_page_makes_one_read` |
+| `m_no_field` | the list sends no `also_in` | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `s_no_field` | search sends no `also_in` | `test_each_row_names_each_paired_mailbox_that_holds_a_copy` |
+| `d_no_lock` | the guard takes no lock | `test_two_overlapping_runs_make_one_draft` |
+| `d_session_lock` | the lock outlives the transaction | `test_two_overlapping_runs_make_one_draft` |
+| `d_busy_drafts` | a held lock drafts | `test_two_overlapping_runs_make_one_draft` |
+| `d_check_before_lock` | the check runs before the lock | `test_the_lock_comes_before_the_check_on_a_real_database` |
+| `d_no_lock_pair` | a mail with no pair takes the lock | `test_a_separate_mailbox_is_never_held_off` |
+| `d_no_draft_arm` | a draft in the thread of the copy stops nothing | `test_a_draft_in_the_thread_of_the_copy_stops_the_second_draft` |
+| `d_no_sent_arm` | a sent reply stops nothing | `test_a_newer_sent_mail_in_the_thread_of_the_copy_stops_it` |
+| `d_no_newer` | an older sent mail stops the draft | `test_an_older_sent_mail_does_not_stop_it` |
+| `d_no_copy_folder` | a copy in junk stops the draft | `test_a_copy_in_junk_is_no_copy` |
+| `d_no_pair_check` | any other mailbox stops the draft | `test_b_drafts_when_either_mailbox_is_separate[other]` |
+| `a_no_call` | the rule path skips the dedupe | `test_a_draft_in_the_thread_of_the_copy_stops_the_second_draft` |
+| `a_fail_closed` | a failed read stops the draft | `test_a_failed_read_drafts_as_before` |
+| `a_no_log` | a skip writes no log | `test_a_draft_in_the_thread_of_the_copy_stops_the_second_draft` |
+| `f_one_mailbox` | a member with one mailbox sees a label | `names none for a member with one mailbox` |
+| `f_own_row` | the row names its own mailbox | `skips the mailbox of the row and a mailbox that left the list` |
+| `f_order` | the labels follow the order of `also_in` | `names each mailbox of also_in, in the order of the switcher` |
+| `f_no_row` | the list draws no "Also in" | `is in each row of the list, beside the other mailboxes of the member` |
+| `f_no_chip` | a label with no `MailboxChip` | `draws 'Also in' and the chip of each mailbox` |
+| `f_no_words` | the chips with no words "Also in" | `draws 'Also in' and the chip of each mailbox` |
+| `f_api_no_field` | `mapEmail` drops `also_in` | `maps also_in from the list and from search` |
+| `f_api_no_filter` | `mapEmail` keeps a value that is not an id | `maps also_in from the list and from search` |
+
+**Review fix round 1 (2026-10-04).** An adversarial reviewer and an independent verifier checked
+`2b59abcb9`. Neither found a P0, or a leak across members, organizations or separate mailboxes.
+This round fixes one P1 and five P2 findings. It adds no migration, and the UI does not change.
+
+| Finding | Fix | The case that goes red |
+|---|---|---|
+| P1 (verifier F3): a draft OLDER than the copy stopped B. The member can send a draft from Outlook desktop, and its local row stays, so B never drafted for that thread again. | The draft arm has the time bound of the sent arm: `t.received_at > c.received_at`. `_upsert_local_draft` writes `received_at = now()`, so a new draft is newer. | `test_a_draft_older_than_the_copy_does_not_stop_it` |
+| F1: a race left no draft. B skipped on A's old draft. A's thread check trashed that draft, and then A met B's lock. | The dedupe runs before the thread check. A run that skips changes nothing. | `test_a_run_that_meets_the_lock_trashes_nothing` (the probe of the verifier) |
+| Reviewer: a forged Message-ID paired two different mails. "Also in" showed beside a forged mail, also in junk, and a forged mail could hold off the real draft. | A copy has the same sender address, in "Also in", in the check and in the lock key. A row in junk, drafts or trash names no copy. | `test_a_copy_from_another_sender_does_not_pair`, `test_a_copy_from_another_sender_does_not_stop_it`, `test_the_lock_key_holds_each_part[sender]`, `test_a_row_in_junk_drafts_or_trash_names_no_copy` |
+| F2: six rules had no fence. | New R8 cases, in the mutation table below. | `test_the_lock_key_holds_each_part`, `test_an_empty_message_id_takes_no_lock`, `test_the_thread_read_stays_in_the_mailbox_of_the_copy`, `test_a_copy_only_in_a_mailbox_that_does_not_pair_names_nothing` |
+| F4: `_ANCHOR` took `a.` and `o.`, so `paired_mailbox_ids_sql("a.id")` gave the mailboxes of each member. | The anchor refuses both aliases. | `test_the_aliases_of_the_clause_are_no_anchor` |
+| F5: docs. | The gateway contract names the four parts of the lock key and the partial index. | none |
+
+- **The lock key.** It holds four parts in a JSON array: the organization, the member, the
+  sender address and the Message-ID. The array keeps the parts apart, so no two keys run together.
+  The sender is new in this round. Without it, a forged mail with the same Message-ID could hold
+  off the real draft through the lock.
+- **The accepted risk.** A forged mail from the SAME sender address still pairs, in "Also in" and
+  in the dedupe. The sender sets the Message-ID. Edge case 26 accepts the same risk.
+- **Recorded, not fixed.**
+  - A `busy` skip is final. It stays final also when the run that holds the lock then fails in
+    `create_draft` with a 401 or a 429. The mail then has no draft.
+  - `run_rules_on_message` (Apply on the Test tab) reaches the dedupe. Its answer lists the
+    actions of the rule, so it still names the draft action after a skip.
+- **Outside the stated fix.** The sender address in the lock key. The finding named the lock, and
+  the stated fix named only "Also in" and the check.
+
+**Round 1 verification (2026-10-04, on the final tree).**
+
+- Only `TENANT_LADDER_DATABASE_URL` was set, on a private database for each run.
+- The block below gave 246 passed and 0 skipped. All 53 cases of `test_email_duplicates.py`
+  passed: 33 R8 and 20 hermetic.
+- All 130 email suites with `-k "not calendar"` gave 2396 passed, 6 deselected and 0 skipped.
+- The ruff gate passed. Full ruff on the changed files shows no new finding.
+- In `workbench/control_plane`, `npx tsc --noEmit` passed. `npx vitest run src/app/email
+  src/components src/lib/theme` gave 47 files and 961 tests passed. Round 1 changes no UI file.
+
+**Round 1 mutation run.**
+
+- The run killed 46 of 46 mutants: 38 on the server and 8 in the UI.
+- The script needed a passing run with no mutant first, and it counted a kill only when pytest
+  named a red case. It restored each file and checked its hash.
+- The 38 server mutants are the 25 of the build and the 13 below. The 25 ran on the code of
+  round 1, four of them at a moved anchor.
+- The six `v_` mutants are the survivors that the verifier found, at the new anchors.
+
+| Mutant | What the mutant breaks | The case that goes red |
+|---|---|---|
+| `r1_draft_any_age` | a draft of any age stops B (the P1) | `test_a_draft_older_than_the_copy_does_not_stop_it` |
+| `r1_thread_check_first` | the thread check runs before the dedupe (F1) | `test_a_run_that_meets_the_lock_trashes_nothing` |
+| `r1_also_any_sender` | "Also in" pairs a copy from another sender | `test_a_copy_from_another_sender_does_not_pair` |
+| `r1_answer_any_sender` | a copy from another sender stops the draft | `test_a_copy_from_another_sender_does_not_stop_it` |
+| `r1_also_row_any_folder` | a row in junk, drafts or trash names a copy | `test_a_row_in_junk_drafts_or_trash_names_no_copy` |
+| `r1_lock_no_sender` | the lock key has no sender | `test_the_lock_key_holds_each_part[sender]` |
+| `r1_anchor_aliases` | `a.` and `o.` anchor the pair set (F4) | `test_the_aliases_of_the_clause_are_no_anchor` |
+| `v_lock_no_org` | the lock key has no organization | `test_the_lock_key_holds_each_part[organization]` |
+| `v_lock_no_member` | the lock key has no member | `test_the_lock_key_holds_each_part[member]` |
+| `v_lock_no_msgid` | the lock key has no Message-ID | `test_the_lock_key_holds_each_part[message_id]` |
+| `v_lock_empty_id` | an empty Message-ID takes the lock | `test_an_empty_message_id_takes_no_lock[None]` and `[]` |
+| `v_thread_any_mailbox` | the thread read leaves the mailbox of the copy | `test_the_thread_read_stays_in_the_mailbox_of_the_copy` |
+| `v_also_copy_anywhere` | "Also in" finds a copy outside the paired mailbox | `test_a_copy_only_in_a_mailbox_that_does_not_pair_names_nothing` |
+
+The four moved anchors are `i_anchor_any`, `d_no_draft_arm`, `d_no_sent_arm` and `d_no_newer`.
+`d_no_newer` now removes the one time bound, so the P1 case goes red with it too.
+
+**Gate.** 🟢 AGENT-SAFE · R8 · security review, because both read across the mailboxes of the
+member.
+
+**Scope.** `core.py`, `transport/messages.py`, `transport/search.py`, `automation/actions.py`,
+`automation/identity.py`, `components/EmailList.tsx`, `lib/api.ts`, `lib/types.ts` and tests.
+
+**Known limit.** IMAP stores no `internet_message_id`, so items 1 and 3 never pair an IMAP
+mailbox. Edge case 26 has the same limit. Outlook stores it, and Gmail does too since EM-G2 (#626).
+EM-G9 proves a Gmail and Outlook pair (§12.3.11). A mail with an empty id pairs with nothing.
+
+1. **"Also in" (item 1, edge case 10).** `GET /email/messages` and `GET /email/search` give each
+   row `also_in`, a list of mailbox ids. Each id is a paired mailbox that holds a copy. A copy has
+   the same non-empty `internet_message_id` and the same sender address. It is outside drafts,
+   junk and trash. A row in those three folders has no `also_in` (review round 1). One read serves
+   each page.
+2. **The row.** `EmailList.tsx` shows "Also in <label>" with the chip of each mailbox in
+   `also_in`, when the member has two or more mailboxes.
+3. **The draft dedupe (item 2, edge case 11).** This step is in the REPLY and DRAFT_EMAIL branch,
+   before the thread check (review round 1). The run looks for a copy of the mail in a paired
+   mailbox. When the thread of that copy holds a newer draft or a newer sent mail, the run skips
+   the draft. A skip changes nothing. It logs `email.draft_skipped_other_mailbox` with no address.
+4. **The pair set.** One SQL constant in `identity.py`, beside `SELF_MAILBOX_IDS_SQL`, gives the
+   paired mailboxes. It leaves out each separate mailbox, and it is empty when `:aid` is separate.
+5. **Two runs at once.** Two overlapping runs for one mail make one draft at most. The proposal is
+   a transaction-scoped try-lock on the member and the Message-ID.
+6. **Not in scope.** The drafts that the member starts (`/draft-reply`, `/drafts`, `/drafts/save`,
+   compose-assist) and the nudge drafts (`followups.py`).
+
+**Fences (R7).** `tests/unit/test_email_duplicates.py` (R8, the app role):
+- `email-also-in`: item 1. A copy in junk does not count. A mailbox of another member, of a
+  second organization, or a separate mailbox never counts. A copy from another sender does not
+  count, and a row in junk names no copy (review round 1).
+- `email-also-in-one-read`: one page makes one read for `also_in`.
+- `email-draft-dedupe`: B makes no draft when A holds a newer draft or a newer sent reply in the
+  thread of its copy. B drafts when A holds neither, and when either mailbox is separate.
+- `email-draft-dedupe-race`: two overlapping runs for one mail make one draft. A run that meets
+  the lock trashes nothing, and a run that differs in one part of the lock key drafts (review
+  round 1).
+- `email-also-in-row` (vitest): the row shows each label of `also_in`, and a member with one
+  mailbox sees none.
+
+**Verification.**
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_duplicates.py tests/unit/test_email_keep_separate.py tests/unit/test_email_all_inboxes.py tests/unit/test_email_search_scope.py tests/unit/test_email_n_plus_one.py tests/unit/test_email_rulepath_draft_parity.py tests/unit/test_email_auto_draft_defaults.py tests/unit/test_email_draft_replies_action.py tests/unit/test_email_rules_engine.py tests/unit/test_email_ai_context.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email tests/unit/test_email_duplicates.py --select F821,F601,F602,F502,F7,B006
+```
+
+In `workbench/control_plane`, also run `npx tsc --noEmit` and `npx vitest run src/app/email src/components src/lib/theme`.
+
+##### The forward loop guard (item 3) — deferred
+
+**What the guard must do before D-EM-29 can change.**
+1. Each mail that a rule FORWARD sends carries a mark that the receiving mailbox can read. The
+   proposal is the header `X-Metorite-Forwarded`.
+2. The sync keeps the mark for each provider that can carry it. Today no provider write path
+   takes a header (`providers/base.py:434-446`, `:662-673`), and no column holds one.
+3. A FORWARD never runs on a mail that carries the mark. The other actions of the rule still run.
+4. An R8 fence runs A to B to A for two mailboxes of one member. The second FORWARD does not run.
+
+Then `POST /email/rules/copy` can keep a rule with a FORWARD to an own address, and D-EM-29 can
+change.
 
 ### 11.8 Open owner question
 
@@ -3660,3 +8203,6417 @@ round 2. Round 2 includes the 3 mutants that survived the verifier.
   and up to 500 MB of storage. The proposal is 5 for each member at launch, with an admin view of
   the count. Until the owner answers, the code sets no limit. The limit is a commercial choice, so
   the agent does not make it.
+
+---
+
+## 12. Gmail beside Outlook (2026-10-04)
+
+> **Owner decision, 2026-10-04.** The owner wants to work with Outlook mailboxes and with Gmail or
+> Google Workspace mailboxes together. This reverses D-EM-5, which kept Outlook the only provider
+> in the connect flow. §10.2 records the change on the row of D-EM-5.
+
+> **The setup stays one click for a customer.** Metorite owns ONE Google OAuth app, as D-EM-1 to
+> D-EM-4 say for Microsoft. The flow is Connect, then consent, then done. A member never
+> configures an OAuth client, never pastes a key and never opens Integrations.
+
+> **Status (2026-10-05).** 📝 SPECIFIED by EM-G0. EM-G1 (#625, §12.3.1), EM-G2 (#626,
+> §12.3.2) and EM-G4b (#632, §12.3.5.2) are ✅ MERGED, and EM-G7 is ✅ MERGED
+> (#637, §12.3.9). Each anchor below is
+> verified against the code at `d0627789a` on 2026-10-04. Re-verify each anchor at dispatch,
+> because the code is the fact. This section wins over §1 and §11 where they say that Outlook is
+> the only provider.
+
+> **The split of EM-G4 (2026-10-05).** EM-G4a and EM-G4b take the place of EM-G4 (§12.3.5).
+> EM-G4a is ✅ MERGED (#629, §12.3.5.1). EM-G4b is ✅ MERGED (#632, §12.3.5.2).
+
+> **EM-G3a (2026-10-05).** ✅ MERGED (#634, §12.3.3).
+
+> **EM-G8 (2026-10-05).** ✅ MERGED (#638, §12.3.10), after
+> EM-G7. The connect UI reads the capability read, and Gmail stays "Coming soon" while the read
+> says `gmail: false`.
+
+> **EM-G7b (2026-10-05).** ✅ MERGED (#639, §12.3.9b). A member
+> allowlist narrows the Gmail connect, so the live test of EM-G10 reaches the listed members only.
+
+> **EM-G9 (2026-10-05).** ✅ MERGED (#640, §12.3.11).
+> Tests and docs only, with no SQL change. Four R8 fences prove "Also in", the draft dedupe and
+> the Sent-copy proof for a Gmail and Outlook pair.
+
+> **EM-G3b (2026-10-05).** ✅ MERGED (#645, 2026-10-05)
+> (§12.3.4). A Gmail move to a user label files the message as `archive`, and the Gmail filters
+> show on the rules screen. No migration, no flag and no change to SQL text.
+
+> **D-EM-36 amended (orchestrator, 2026-10-05).** The flag flips for the owner's test after
+> EM-G5a, EM-G9 and EM-G7b merge. EM-G5b, EM-G3b and EM-G3c move to "before customers" (§12.2,
+> §12.3.12).
+
+> **The split of EM-G5 (2026-10-05).** EM-G5a and EM-G5b take the place of EM-G5 (§12.3.6).
+> EM-G5a is ✅ MERGED (#641, 2026-10-05) (§12.3.6.1). EM-G5b is
+> ✅ MERGED (#647, 2026-10-05) (§12.3.6.2). The second audit
+> cleared it as GO-NARROWED.
+
+> **The slice names.** The slices are EM-G1 to EM-G10. §10.4.7 already uses the bare names G1 to
+> G5 for the gaps of EM-T6c, so the prefix keeps the two sets apart (R2).
+
+**Short paths in this section.**
+
+- `providers/` is `apps/services/email_ingestion/email_ingestion/providers/`. `gmail.py`,
+  `outlook.py` and `base.py` live there.
+- `persist.py`, `scheduler.py` and `body_backfill.py` live in
+  `apps/services/email_ingestion/email_ingestion/`.
+- `transport/`, `automation/` and `core.py` live in `apps/services/gateway/gateway/routes/email/`.
+- `lib/`, `components/`, `oauth/callback/page.tsx` and `page.tsx` live in
+  `workbench/control_plane/src/app/email/`.
+
+### 12.0 The answer, in six rules
+
+1. **A Gmail mailbox does what an Outlook mailbox does.** Connect, import, sync in both directions,
+   send, reply and drafts work the same. Each feature of §11 works the same too.
+2. **The setup is one click.** Connect, consent, done. A Google Workspace admin acts only when the
+   company blocks new apps.
+3. **A change goes both ways.** A change in Metorite reaches Gmail at once. A change made in Gmail
+   reaches Metorite at the next sync. That covers an archive, a read mark, a star, a label and a
+   delete.
+4. **A Gmail mailbox sends real mail.** The body has a text part and an HTML part. A reply threads
+   at the recipient. An attachment keeps its type. One draft is one row in Metorite and one draft
+   in Gmail.
+5. **The import rules of §10.2 hold for Gmail.** The import goes newest first, shows an estimate
+   and resumes (D-EM-10 to D-EM-16). A pause loses no mail (D-EM-13).
+6. **Gmail shows only when Metorite can serve it.** The choice is live when the gateway reports the
+   Google app as installed (D-EM-35). Until then it stays "Coming soon".
+
+**What "Gmail works" means.** EM-G10 passes on production. One member connects a Gmail mailbox
+beside an Outlook mailbox, and each check of EM-G10 passes for both.
+
+**What does not change.** A mailbox stays private to its member (D-EM-4). The rules, the settings
+and the AI context stay per mailbox (D-EM-18, D-EM-24). Each triage decision still goes to the
+`decide` task (D-EM-7). The storage limit of 500 MB holds for each Gmail mailbox (D-EM-14).
+
+### 12.1 Measured state (2026-10-04)
+
+**Production.** D-EM-5 hid Gmail from the connect flow since 2026-10-01. EM-T8c removed the Gmail
+leg of Integrations (§11.7.3). No deploy template sets `GMAIL_OAUTH_CLIENT_ID` or
+`GMAIL_OAUTH_CLIENT_SECRET`, and `.env.example:98-99` leaves both empty. So this plan assumes no
+Gmail mailbox in production, and EM-G10 checks it first.
+
+⚠️ **Measured again on 2026-10-05, by name only.** The orchestrator found `GMAIL_OAUTH_CLIENT_ID`
+and `GMAIL_OAUTH_CLIENT_SECRET` in the box `.env`. Nobody in this plan set them (Q-GM-6). So
+`oauth_app("gmail")` is configured in production, and a call to the authorize route by URL could
+connect Gmail. Production holds 0 Gmail mailboxes. D-EM-36 keeps the Gmail connect dark until
+EM-G10.
+
+**The provider exists, and much of it works.** `gmail.py` has 1169 lines. These parts work today:
+
+- Sign-in and refresh, with one refresh on a 401 (`gmail.py:198-249`, `RefreshingBearer` at
+  `base.py:51`).
+- Labels: list, create, colour and read back (`gmail.py:670`, `:779`, `:762`, `:309`, `:837`, and
+  `SUPPORTS_LABEL_READBACK` at `:145`).
+- Archive, trash, read, star, flag and the bulk acts (`gmail.py:645-660`, `:557`, `:564`, `:602`).
+- Filters: create and delete (`gmail.py:791`, `:828`). Attachments: list and download (`:82`,
+  `:1026`).
+- The multi-inbox features that need no Message-ID. These are the sending mailbox, the colour
+  slots, All inboxes, Keep separate and the settings of each mailbox. The account picker for one
+  more mailbox works too (`transport/oauth.py:179-207`).
+
+**The defects.** Each one is real at `d0627789a`. The last column names the slice that fixes it.
+
+| Id | Defect | Evidence | Slice |
+|---|---|---|---|
+| **GM-1** | **No Message-ID.** The parser sets no `internet_message_id`. The header read is case-sensitive, so it misses `Message-Id`. "Also in", the draft dedupe of a pair and the Sent-copy proof never see a Gmail mailbox. | `gmail.py:1093-1123`, `:1135-1143`, `automation/identity.py:173`, `:224`, `:247`, `:328` | EM-G2, proved by EM-G9 |
+| **GM-2** | **A Message-ID would turn on the re-key reclaim for Gmail.** The reclaim moves a row to a new provider id when one row holds the Message-ID. Gmail never re-keys an id. So two Gmail messages with one Message-ID would fold into one row, and that row would swap ids at each sync. | `persist.py:219-246`, `gmail.py:616` | EM-G1 |
+| **GM-3** | **A nested body is empty.** The parser reads the top-level parts only. In `multipart/mixed`, which is any mail with an attachment, the nested `multipart/alternative` stays unread. A single-part HTML mail lands in `body_text`, and `body_html` stays None. The rules, Reply Zero, the drafter and the embeddings then read an empty body. | `gmail.py:1043-1061`, read through `body_backfill.py:141`, `transport/messages.py:691`, `:1026` and `core.py:410` | EM-G2 |
+| **GM-4** | **The address parse splits on each comma.** `"Doe, John" <j@x.com>` becomes two broken addresses. | `gmail.py:1098-1104`, `:1145-1169` | EM-G2 |
+| **GM-5** | **Archived mail files as `inbox`.** The parse files a message with no system label as `inbox`. Each path that keeps the folder of the parse then shows archived mail in the Inbox, and the history branch is one of them. | `gmail.py:38-52` | EM-G2 (D-EM-33) |
+| **GM-6** | **The Archive folder cannot page.** Gmail has no `archive` label. "Load older" in Archive sends `labelIds=["archive"]`, and Gmail refuses it. | `transport/folders.py:375-398`, `gmail.py:282-285` | EM-G2 (D-EM-33) |
+| **GM-7** | **"Load older" in a user-label view moves Inbox mail out of the Inbox.** The page sets the folder of each message to the label name through `canonical_override`, also when the message has `INBOX`. | `transport/folders.py:391-397`, `gmail.py:295-302` | EM-G2 |
+| **GM-8** | **The import misses archived mail with no user label.** The deep sync and the sweep list the user labels and five system labels only. The sweep fetches a message with two user labels twice. | `gmail.py:1884-1923`, `:1925-1984`, `:1967` (moved from `:903-933` and `:986-1018`, checked at `a9a08deb9`) | EM-G5a (the import). EM-G5-f1 records the sweep half |
+| **GM-9** | **The provider fetches each message alone, and a failed fetch leaves no record.** No call handles a 429 or a rate-limit 403. | `gmail.py:296-304`, `:358-366` | EM-G4a (rate limits and the fetch record), EM-G5a (fetch in parallel) |
+| **GM-10** | **The send loses the HTML body.** `MIMEText(body_text, "html" if body_html)` sends the text with an HTML label and drops `body_html`. The HTML signature and the line breaks go. `create_draft` has the same defect. `update_draft` is correct. | `gmail.py:387`, `:398`, `:444`, `:455`, `:491-492` | EM-G3a |
+| **GM-11** | **A reply does not thread at the recipient.** The send sets `threadId` only. It sets no `In-Reply-To` and no `References`. | `gmail.py:399-415`, `:456-466` | EM-G3a |
+| **GM-12** | **Each attachment goes as `application/octet-stream`.** | `gmail.py:389`, `:446`, `:500` | EM-G3a |
+| **GM-13** | **One draft gets two rows, and a draft made in Gmail cannot send.** `create_draft` returns the draft id, and the local row stores it. The sync stores the message id of the same draft as a second row. A draft made in Gmail has only the message id, so `update_draft` and `send_draft` fail with an HTTP error. The fallback catches only `NotImplementedError`, so it never runs. | `gmail.py:470`, `:531-536`, `automation/drafting.py:2126-2153`, `:2191-2196`, `:2265-2279` | EM-G3a |
+| **GM-14** | **A move to a user label does nothing.** `move_to_folder` knows trash, archive, inbox and junk only. Outlook creates the folder and moves the mail. A rule move then logs `email.move_folder_noop`. | `gmail.py:645-660`, `outlook.py:1096-1120`, `automation/actions.py:430-448` | EM-G3b |
+| **GM-15** | **The list of upstream filters is empty.** Gmail has no `list_filters`, so the base returns `[]`. | `base.py:618-629`, `outlook.py:1173`, `automation/rules.py:721` | EM-G3b |
+| **GM-16** | **No history cursor is ever stored.** The first sync and the deep sync return `new_history_id=None`, and nothing calls `getProfile`. The scheduler keeps the NULL. So each poll runs the branch for no cursor: the first page of each user label and of five system labels, with each message fetched alone. | `gmail.py:930-933`, `:1020-1024`, `scheduler.py:1418-1419` (moved from `:1413-1414`, checked at `ba723e0f1`) | EM-G4b |
+| **GM-17** | **The history branch has four defects, and it never runs today.** It reads one page and ignores `nextPageToken`. It asks for the label events and drops them, so an archive, a read mark, a star or a label made in Gmail never syncs. It stores the current id of the mailbox after that one page, so the changes on the later pages are lost. A stale cursor answers 404, and `raise_for_status` fails each cycle until a Resync. | `gmail.py:935-979`, `:940`, `:943`, `:946`, `transport/sync.py:283-325` | EM-G4b |
+| **GM-18** | **A pause loses mail.** The provider ignores `catch_up`, so it never reads the mail past the first page of a label after a pause (against D-EM-13). `email_ingestion/AGENTS.md:40` said that the Gmail cursor reads each change. EM-G0 corrects that line. | `gmail.py:898-900` | EM-G4b |
+| **GM-19** | **The import has no stream, no estimate and no resume point.** Gmail uses the default of the base class, which fetches all, then sorts and cuts. The progress shows a count with no estimate (against D-EM-16). | `base.py:830-858` (moved from `:785-813`, checked at `a9a08deb9`) | EM-G5a |
+| **GM-20** | **No reconcile.** `import_full_snapshot` is False, so Resync and Process past emails trash no row that Gmail deleted. Gmail also has no confirm by its own id. The confirm of Outlook, `message_exists`, asks by the Message-ID, and that key cannot prove a Gmail delete (C1). ✅ EM-G5b fixes it, merged as #647 (2026-10-05). `import_full_snapshot` is True, and `message_gone` confirms by the provider id. | `base.py:432`, `scheduler.py:771`, `:881-883`, `:924-929`, `outlook.py:1361`, `:1850-1864` (moved from `base.py:407`, `scheduler.py:669`, `:780`, `outlook.py:1357` and `:1846`, checked at `a9a08deb9` and again at `3c1a27012`). The fix: `gmail.py:1764`, `:2209`, `scheduler.py:761`, `:959-961` on branch `email-gmail-g5b` | EM-G5b |
+| **GM-21** | **No push.** Gmail has no watch and no stop. `_ensure_subscription` returns early for a provider that is not Microsoft. `/webhooks/gmail` is the Phase-1 receiver. It never finds an `email_accounts` row and never calls `_webhook_sync`. Gmail polls only. | `transport/sync.py:438-508`, `:469`, `apps/services/ingestion/ingestion/sources/gmail/webhook.py:41-149`, `gateway/main.py:597`, `:1200-1205` | EM-G6a, EM-G6b |
+| **GM-22** | **The scope is the widest restricted scope.** The authorize leg asks `https://mail.google.com/`. The callback never reads the granted scope, and Google lets a member clear a scope on the consent page. | `gmail.py:138`, `transport/oauth.py:201-207`, `:273-385` | EM-G7 (D-EM-31) |
+| **GM-23** | **Google errors map to a generic code.** Only `access_denied` maps, to `consent_declined`. | `transport/oauth.py:388-415` | EM-G7 |
+| **GM-24** | **A bounce never names the provider.** `_bounce` adds `error` only, so the callback page takes Microsoft for each failure. | `transport/oauth.py:303-306`, `oauth/callback/page.tsx:191-193` | EM-G7, EM-G8 |
+| **GM-25** | **A member reads an operator instruction.** With no Google app on the box, the authorize leg tells the member to paste a Google client into Integrations. | `transport/oauth.py:84-96`, `:193-194` | EM-G7 (D-EM-35) |
+| **GM-26** | **The UI says "Coming soon" and blocks each Gmail path.** `available` is false, and the retry and the range step refuse a provider that is not live. | `lib/connect.ts:46-53`, `:248-286`, `lib/connect.test.ts:116-122`, `:561-562`, `:722` | EM-G8 |
+| **GM-27** | **The copy names Microsoft only.** The empty state, the decline text, the generic failure and the callback page do so. | `components/ConnectEmptyState.tsx:75`, `lib/connect.ts:441`, `:469`, `oauth/callback/page.tsx:240` | EM-G8 |
+| **GM-28** | **No test reads real Gmail behaviour.** The Gmail cases in `tests/unit` use fakes. None covers the body parse, the history branch, the Message-ID, the HTML send, the two draft ids, a move to a label or a push. `test_gmail_normaliser.py` tests the Phase-1 normaliser, not this provider. | `tests/unit/test_email_*.py` | each slice adds its fence |
+
+### 12.2 Decisions (2026-10-04)
+
+D-EM-5 changed by owner decision, and §10.2 holds the amended row. The orchestrator took D-EM-31 to
+D-EM-35 for this plan, and D-EM-36 on 2026-10-05. Each one is an agent decision, and the owner can
+reverse it.
+
+| Id | Decision |
+|---|---|
+| **D-EM-31** | **The Google scopes are `gmail.modify` and `gmail.settings.basic`.** They replace `https://mail.google.com/`. The pair is the narrowest set that covers read, send, drafts, labels and filters. Both are restricted scopes, but a narrower request makes the review of Google easier. `gmail.modify` covers the profile, the history, the watch, the messages, the drafts and the labels. `gmail.settings.basic` covers the filters. No code path deletes a message for good, so `gmail.modify` loses nothing. The callback reads the granted scope. A grant that lacks either scope saves no mailbox, and the member sees a clear message. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-32** | **Polling first, push later.** EM-G4 makes a poll cheap with the history cursor, so an idle mailbox costs one call. Push (EM-G6a, EM-G6b) ships dark behind `EMAIL_GMAIL_PUSH`, which is `off` by default. Push needs a design for how a push finds its tenant, and that design gets its own audit (O-GM-4). *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-33** | **The folder model of Gmail.** The system labels decide the folder, in this order: `TRASH`, `SPAM`, `DRAFT`, `SENT`, `INBOX`. A Gmail message with no system label is in `archive`. A move to a user label adds that label and removes `INBOX`, `TRASH` and `SPAM`. The audit of EM-G3b added `TRASH` and `SPAM` on 2026-10-05 (E-M5), so a move out of Trash or Spam leaves `archive`. The Archive folder pages with a query, never with `labelIds=["archive"]`. The orchestrator decided O-GM-1 on 2026-10-04: a user label is a label and never a folder. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-34** | **The re-key reclaim runs only for a provider that re-keys its ids.** That is Outlook, whose ids change on a move. Gmail never re-keys an id, so Gmail never folds two rows on one Message-ID. The provider attribute is false by default. IMAP stores no Message-ID today, so IMAP sees no change. *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-35** | **Gmail shows only when the Google app is installed.** The UI reads a capability from the gateway: for each provider, whether its app credentials are set. Gmail is a live choice only when the answer is true. No member ever sees "configure Integrations". *Agent decision (orchestrator, 2026-10-04). The owner can reverse it.* |
+| **D-EM-36** | **The Gmail connect ships dark behind `EMAIL_GMAIL_CONNECT`, which is off by default.** The box in production holds a Google client today (§12.1), so the app alone cannot keep Gmail hidden. While the flag is off, the capability read answers `gmail: false`, and each Gmail leg of EM-G7 refuses. ~~The flag flips at EM-G10 only, after EM-G2 to EM-G5 and EM-G9 merge, under gate `enforcement-flip`.~~ **Amended (orchestrator, 2026-10-05): the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge, under gate `enforcement-flip`.** The flip for the test of the owner also sets `EMAIL_GMAIL_CONNECT_MEMBERS` to the member address of the owner (EM-G7b, §12.3.9b). With the flag on and the list empty, every member sees Gmail, and that state is for the time after Google verifies the app. The text below this table holds the reason. *Agent decision (orchestrator, 2026-10-05). The owner can reverse it.* |
+
+**The amendment of D-EM-36 (orchestrator, 2026-10-05).** The flag flips for the owner's test when
+three slices merge:
+
+- EM-G5a, the import half of EM-G5 (§12.3.6).
+- EM-G9, the parity of a Gmail and Outlook pair (§12.3.11).
+- EM-G7b, a member allowlist beside the flag. Its variable is
+  `EMAIL_GMAIL_CONNECT_MEMBERS` (#639).
+
+Three items move from "before the flip" to "before customers" (§12.3.12):
+
+- EM-G5b, the reconcile half of EM-G5. It needs a confirm by message id (E-G5-9).
+- EM-G3b, a move to a user label, and the filter list (§12.3.4).
+- EM-G3a-f8, the size limit of Google for a plain `drafts.update`, and the autosave of a draft
+  with files (§12.3.3). A new slice, EM-G3c, owns it.
+
+**Why.** The owner's test is one mailbox of one member, in the Testing mode of Google. In that
+mode a refresh token ends after 7 days. The history cursor of EM-G4b already reports each delete
+within a week. So the owner's test needs none of the three items, and each one binds a customer
+mailbox only.
+
+**Open questions for the orchestrator.** Each one blocks the slice in its last column. Each has a
+recommendation, and the slice scope below follows the recommendation. If the orchestrator decides
+otherwise, the scope of that slice changes before dispatch.
+
+| Id | Question | Recommendation | Blocks |
+|---|---|---|---|
+| **O-GM-1** | **Is a Gmail user label also a folder?** Today the sweep files a message under the name of a user label when the message has no system label. The `folder` column holds one value, and a Gmail message can carry many labels. So each path can give a different folder (GM-7). | **No. A user label is a label, as an Outlook category is.** The folder comes from the system labels only, and `archive` when there is none (D-EM-33 as written). The user labels stay in `categories`, where `list_labels` and `set_labels` already put them. The folder tree of a Gmail mailbox shows the well-known folders, and its user labels show in the label filter. The other answer files a message under its first user label by name. Then a message with two labels shows under one only, and a label view misses the labelled mail in the Inbox. | EM-G2, EM-G3b, EM-G8 item 5 |
+| **O-GM-2** | **Which id does the local row of a Gmail draft hold?** Gmail has a draft id and a message id for one draft. It also gives the draft a new message id at each update. | **The message id, which is the id that the sync finds.** `create_draft` and `update_draft` return the message id of the draft. `update_draft` and `send_draft` take a message id and find the draft id through `users.drafts.list`. The save then moves the local row to the new message id. This needs no column and no migration. The other answer stores the draft id. The sync must then read `drafts.list` at each cycle, and a column must hold the second id. | EM-G3a |
+| **O-GM-3** | **Does a disconnect revoke the Google grant?** | **No.** A revoke at Google can end each token that the same Google account gave to the Metorite client. Another member or another organization can hold a copy of the same address (D-EM-17, §11.6 edge cases 3 and 4), and a revoke would break that copy. The disconnect dialog tells the member where to remove access in the Google account. | nothing (EM-G7 lists it as a non-goal) |
+| **O-GM-4** | **How does a Gmail push find its tenant?** A push carries the address and a history id only. One address can be a mailbox in two organizations, and of two members (D-EM-17). | **Candidate (a).** (a) One unbound discovery read, in a `SECURITY DEFINER` function, maps an address to its pairs of organization and mailbox id, and returns nothing else. The route then queues one sync for each pair, inside its own tenant. (b) One Pub/Sub topic for each organization, each with a push subscription whose URL carries a signed `org`, as the Graph webhook does (EM-T1a item 5). (a) adds no cloud resource and no secret, and a push only starts a sync that each mailbox runs with its own token. (b) keeps the signed-org seam, but the box then needs a Pub/Sub admin credential to make a topic for each organization. The audit of EM-G6a decides, with a security review. | EM-G6a, EM-G6b |
+
+**Decided (orchestrator, 2026-10-04).** O-GM-1, O-GM-2 and O-GM-3 follow the recommendation, so the slice scopes stand as written. The EM-G6a audit decides O-GM-4. Candidate (a) is the lean, and the audit checks its cross-tenant read before any build.
+
+| Id | Question | Decision | Slice |
+|---|---|---|---|
+| **O-GM-5** | **May an Integrations write set the key of a mail app?** `PUT /integrations/keys` and `POST /integrations/configure` write `os.environ` and the box `.env`. `oauth_app` reads that environment. So a member of one organization could aim the mail connect of every organization at an OAuth client of their own. | **No.** The configure, put and delete writes refuse each `GMAIL_OAUTH_*`, `MSFT_OAUTH_*` and `AUTH_MICROSOFT_ENTRA_ID_*` key with a 403, and write nothing. The `gmail-oauth` tile leaves Integrations. Metorite owns the mail apps (D-EM-1), and an operator sets them on the box under gate `env-write`. | EM-G7 |
+
+**Decided (orchestrator, 2026-10-05).** O-GM-5 takes the answer in the table, and EM-G7 builds it. The reason is the reach of one write. One member of one organization changes the mail app of every organization on the box, and no connect log shows the change. This answer reverses the EM-G7 non-goal that kept the `gmail-oauth` tile. The wider fix, for every key that is not a mail key, stays owner gate §6 (f).
+
+### 12.3 Slices
+
+Each slice is one PR. Each slice that changes code ships dark: Gmail stays "Coming soon" until
+the capability read answers `gmail: true` (D-EM-35). That needs the Google app on the box and the
+flag `EMAIL_GMAIL_CONNECT` on (D-EM-36, E-D1). A slice that merges updates the status of this
+section and the WS-17 row in the same PR (R4).
+
+| Slice | Gate | Scope | Order | Size | Section |
+|---|---|---|---|---|---|
+| **EM-G1** | 🟢 AGENT-SAFE · R8 | The reclaim gate (D-EM-34, GM-2) | First | S | §12.3.1 |
+| **EM-G2** | 🟢 AGENT-SAFE | The body, the headers, the Message-ID, the addresses and the folder model (GM-1, GM-3 to GM-7) | After EM-G1 and O-GM-1 | M | §12.3.2 |
+| **EM-G3a** | 🟢 AGENT-SAFE · R8 | Send and drafts: the MIME body, threading, attachment types, the draft ids (GM-10 to GM-13) | After EM-G4a and O-GM-2 | M | §12.3.3 |
+| **EM-G3b** | 🟢 AGENT-SAFE | A move to a user label, and the filter list (GM-14, GM-15) | After EM-G2 and O-GM-1 | M | §12.3.4 |
+| **EM-G4a** | 🟢 AGENT-SAFE | The rate-limit helper at the client seam, and the record of a failed fetch (GM-9, items 8 to 10) | After EM-G2 | S | §12.3.5.1 |
+| **EM-G4b** | 🟢 AGENT-SAFE · R8 | The history cursor, the label events, the stale cursor and its recovery (GM-16 to GM-18, items 1 to 7 and 11) | After EM-G4a | L | §12.3.5.2 |
+| **EM-G5a** | 🟢 AGENT-SAFE · R8 | The import, the estimate and the resume (GM-8, GM-19, items 1 to 5) | After EM-G4a and EM-G4b | L | §12.3.6.1 |
+| **EM-G5b** | 🟢 AGENT-SAFE · R8 · ✅ MERGED #647 | The reconcile (GM-20, items 6 to 12, E-G5-9) | After EM-G5a | M | §12.3.6.2 |
+| **EM-G6a** | 🟢 AGENT-SAFE build · security review · R8 · 🔴 flip (`enforcement-flip`) | The push route and its tenant, dark (GM-21) | After EM-G4b and O-GM-4 | M | §12.3.7 |
+| **EM-G6b** | 🟢 AGENT-SAFE build · 🔴 flip (`enforcement-flip`) | The watch, its renewal and its stop, dark (GM-21) | After EM-G6a | M | §12.3.8 |
+| **EM-G7** | 🟢 AGENT-SAFE · security review | The connect backend: scopes, granted scope, errors, bounces, the capability read (GM-22 to GM-25) | Any time. Merges dark | M | §12.3.9 |
+| **EM-G7b** | 🟢 AGENT-SAFE · security review | A member allowlist for the Gmail connect, `EMAIL_GMAIL_CONNECT_MEMBERS` (go-live item A7) | After EM-G7 and EM-G8, before EM-G10. Merges dark | S | §12.3.9b |
+| **EM-G8** | 🟢 AGENT-SAFE · visual review | The connect UI: availability, copy, the Workspace admin help (GM-24, GM-26, GM-27) | After EM-G7 (E-D1). Merges dark | M | §12.3.10 |
+| **EM-G9** | 🟢 AGENT-SAFE · R8 | Parity of a Gmail and Outlook pair, and the known limits | After EM-G2 and EM-G3a | S | §12.3.11 |
+| **EM-G3c** | 🟢 AGENT-SAFE · visual review (EM-G3c-2) | The size of a Gmail mail with files, and the autosave of a draft with files (EM-G3a-f8). Two PRs: EM-G3c-1 and EM-G3c-2 | After EM-G3a and EM-T9 | L | §12.3.3b |
+| **EM-G3c-3** | 🟢 AGENT-SAFE · visual review | ✅ MERGED #682 (2026-10-06). The visual check is H-255. Audited GO-NARROWED. The known limits f3, f5, f7, f8, f9 and f12 of the composer autosave. UI only | After EM-G3c-2 and EM-T10 | M | §12.3.3c |
+| **EM-G10** | 🔴 OWNER-GATE | Live acceptance with a test Gmail user | Last | S | §12.3.12 |
+
+**The order, in one line.** EM-G1, then EM-G2, then EM-G4a. EM-G3a and EM-G4b then go in any
+order, and EM-G3b can go at any time after EM-G2. EM-G5a follows, then EM-G5b after its new
+audit, and EM-G7 can go at any time. EM-G8 and EM-G9 follow, then EM-G10. EM-G6a and EM-G6b wait for O-GM-4, and EM-G10 does not need
+them (D-EM-32).
+
+**Sizes.** S is under 150 changed lines with tests. M is 150 to 500. L is more than 500. Each
+estimate counts code and tests.
+
+**Live tests.** EM-G7 and EM-G8 need the Google app of the owner (§12.4) for a live test. Each one
+can merge dark before that. The box holds a Google client today (§12.1), so the flag of D-EM-36
+keeps Gmail hidden, not the app (E-D1).
+
+#### 12.3.1 EM-G1 — the reclaim gate (D-EM-34)
+
+**Status.** ✅ MERGED #625 (2026-10-05). The as-built notes, the
+mutation table and the known limit EM-G1-f1 are at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE · R8. No migration.
+
+**Order.** First. EM-G2 fills the Message-ID, so EM-G2 must not merge before EM-G1.
+
+**Size.** S. About 30 lines of code and one test file.
+
+**Scope.**
+
+1. `BaseEmailProvider` gains the class attribute `REKEYS_MESSAGE_IDS = False`. `OutlookProvider`
+   sets it to `True`.
+2. `persist.upsert_message` gains the keyword `reclaim: bool = False`. The reclaim block
+   (`persist.py:232-246`) runs only when `reclaim` is true.
+3. `scheduler._write_messages` gains the same keyword. Its two calls pass
+   `provider.REKEYS_MESSAGE_IDS` (`scheduler.py:804`, `:1360`).
+4. `core._upsert_message` gains the same keyword. Its one caller passes the attribute of its
+   provider (`transport/folders.py:404`).
+5. `inbound.py:282` keeps `on_conflict="nothing"`, which never reclaims.
+6. The comment at `persist.py:219-231` names D-EM-34.
+
+**Non-goals.** No change to the SQL of the reclaim. No merge of rows that already share a
+Message-ID. No change to IMAP.
+
+**Fences (R7).** A new `tests/unit/test_email_rekey_reclaim.py` runs on a real Postgres as the app
+role, in the harness of `test_email_duplicates.py`.
+
+- `test_two_gmail_messages_with_one_message_id_keep_two_rows`
+- `test_an_outlook_rekey_still_reclaims_its_row`
+- `test_the_default_is_no_reclaim`
+- `test_each_upsert_caller_names_reclaim`, an AST fence over `apps/services`. Each call of
+  `upsert_message`, `_write_messages` or `_upsert_message` with the update path passes `reclaim=`.
+
+`test_email_persist_upsert.py::test_a_rekeyed_message_reclaims_its_row_instead_of_ghosting` passes
+`reclaim=True`, and a twin case proves `reclaim=False`.
+
+**Mutations.** Each one must turn a named test red.
+
+- M1. Remove the gate. `test_two_gmail_messages_with_one_message_id_keep_two_rows` fails.
+- M2. Make the default `True`. `test_the_default_is_no_reclaim` fails.
+- M3. Set `OutlookProvider.REKEYS_MESSAGE_IDS = False`. `test_an_outlook_rekey_still_reclaims_its_row`
+  fails, because it reads the attribute.
+- M4. Drop `reclaim=` from `scheduler.py:1360`. The AST fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_rekey_reclaim.py tests/unit/test_email_persist_upsert.py \
+  tests/unit/test_email_import_batches.py tests/unit/test_email_deep_sync.py -v -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
+  tests/unit/test_email_rekey_reclaim.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+**As built (2026-10-04, branch `email-gmail-g1`).** The build follows the four rules E1 to E4 of
+the audit. The SQL of the reclaim did not change, and the slice needs no migration.
+
+- **The gate.** `persist.upsert_message` takes the keyword-only `reclaim: bool = False`. The
+  reclaim runs only when `reclaim` is true, on the update path, for a message with a Message-ID.
+  The comment above the reclaim names D-EM-34, GM-2 and EM-G1-f1.
+- **The attribute.** `BaseEmailProvider.REKEYS_MESSAGE_IDS` is false. `OutlookProvider` sets it
+  to true. Gmail and IMAP inherit false.
+- **The callers (E3).** `scheduler._write_messages` and `core._upsert_message` take the same
+  keyword and pass it on. Three calls pass `getattr(provider, "REKEYS_MESSAGE_IDS", False)`.
+  These are the import batch in `_run_import`, the sweep in `_sync_cycle` and "Load older" in
+  `transport/folders.py`. The `getattr` form is deliberate, because five test fakes do not
+  subclass the base.
+- **Inbound.** `inbound.py` keeps `on_conflict="nothing"` and passes no `reclaim`.
+- **The test fakes (E1).** Seven upsert fakes had the fixed signature `(db, account_id, msg)`.
+  Each one now takes `*, reclaim=False`. The fake of `test_email_sync_one_at_a_time.py` passes
+  `reclaim` on to the real upsert. No expected value changed.
+- **The scope of the AST fence (E2).** The fence reads `apps/services/email_ingestion` and
+  `apps/services/gateway/gateway/routes/email` only. `whatsapp_ingestion/persist.py` has an
+  `upsert_message` of its own, with no reclaim.
+- **`test_email_persist_upsert.py`.** The reclaim test passes `reclaim=True`. Its twin
+  `test_a_rekeyed_message_without_reclaim_runs_no_update` proves `reclaim=False` and the default.
+  The two older guards (no Message-ID, the insert-only path) now pass `reclaim=True`, so each
+  one still proves its own condition.
+
+**The fences, as built.** `tests/unit/test_email_rekey_reclaim.py` holds 11 cases. The five R8
+cases run on a real Postgres as `acb_app_h3rls`.
+
+| Test | Kind | What it proves |
+|---|---|---|
+| `test_only_outlook_rekeys_its_ids` | hermetic | The base, Gmail and IMAP read false. Outlook reads true. |
+| `test_each_reclaim_keyword_is_keyword_only_and_false_by_default` (3 cases) | hermetic | Each of the three keywords is keyword-only, with false as its default. |
+| `test_each_upsert_caller_names_reclaim` | hermetic, AST | Each update-path call names `reclaim=`. The scan finds the five known calls and the one insert-only call. |
+| `test_the_caller_fence_can_fail` | hermetic | The fence finds each planted call with no `reclaim=`, also a call through `**kwargs`. |
+| `test_two_gmail_messages_with_one_message_id_keep_two_rows` | R8 | Two Gmail messages with one Message-ID keep two rows. No row swaps its id on a second sync. |
+| `test_an_outlook_rekey_still_reclaims_its_row` | R8 | An Outlook move keeps its one row and its row id. |
+| `test_the_default_is_no_reclaim` | R8 | An upsert with no keyword moves no row. |
+| `test_each_caller_passes_the_attribute_of_its_provider` (2 cases) | R8 (E4) | `_sync_account` (the first import, then the sweep) and "Load older" pass the flag of the provider, for true and for false. |
+
+**Mutations, as run (2026-10-04).** Each mutation ran against `test_email_rekey_reclaim.py` and
+`test_email_persist_upsert.py` on a real Postgres. A script then wrote back the original bytes of
+the file and checked its SHA-256.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M1 | The reclaim ignores the flag (`persist.py`) | `test_two_gmail_messages_with_one_message_id_keep_two_rows`, `test_the_default_is_no_reclaim`, `test_each_caller_passes_the_attribute_of_its_provider[keeps_ids]`, and both cases of the twin in `test_email_persist_upsert.py` |
+| M2 | The base attribute is true (`base.py`) | `test_only_outlook_rekeys_its_ids`, `test_two_gmail_messages_with_one_message_id_keep_two_rows` |
+| M2b | The default of `upsert_message` is true (`persist.py`) | `test_the_default_is_no_reclaim`, `test_each_reclaim_keyword_is_keyword_only_and_false_by_default[persist.upsert_message]`, the twin `[no_keyword]` |
+| M3 | The Outlook attribute is false (`outlook.py`) | `test_only_outlook_rekeys_its_ids`, `test_an_outlook_rekey_still_reclaims_its_row` |
+| M4 | The `_sync_cycle` call drops `reclaim=` (`scheduler.py`) | `test_each_upsert_caller_names_reclaim`, `test_each_caller_passes_the_attribute_of_its_provider[rekeys]` |
+| M5 | The `_sync_cycle` call passes `reclaim=False` (`scheduler.py`) | `test_each_caller_passes_the_attribute_of_its_provider[rekeys]` |
+| M6 | The `_run_import` call reads `"REKEYS_MESSAGE_ID"` (`scheduler.py`) | `test_each_caller_passes_the_attribute_of_its_provider[rekeys]` |
+| M7 | The "Load older" call passes `reclaim=True` (`folders.py`) | `test_each_caller_passes_the_attribute_of_its_provider[keeps_ids]` |
+| M8 | `core._upsert_message` drops the keyword when it calls the upsert (`core.py`) | `test_each_upsert_caller_names_reclaim`, `test_each_caller_passes_the_attribute_of_its_provider[rekeys]` |
+| X2 (review) | The deep path passes `reclaim=... and progress`, so a deep sync gets False (`scheduler.py:808`) | `test_every_outlook_path_passes_reclaim_true` |
+
+M5 is the reason for the value fence (E4). The AST fence stays green for M5, M6 and M7, because
+each of those calls names `reclaim=`. Without the value fence, M5 gives each production Outlook
+mailbox a second row at each folder move.
+
+**Review (2026-10-05).** The verifier passed EM-G1 with four P3 findings. Two were gaps in the value fence: it ran no deep sync, and it patched the factory. The new fence `email-reclaim-every-outlook-path` closes both. The real factory builds each Outlook provider, and the first import, a sweep, a deep sync, a Resync and Load older each send `reclaim=True`. Mutation X2 survived before this fence and is red now.
+
+**Known limit EM-G1-f1 (a follow-up, not fixed here).** The Outlook reclaim folds a mail that a
+member sends to their own address. The Sent Items copy and the Inbox copy have two Graph ids and
+one Message-ID. So each sweep moves the one row between `sent` and `inbox`. EM-G1 keeps this fold,
+because Outlook keeps `REKEYS_MESSAGE_IDS = True`, and no fence treats the fold as correct. The
+follow-up EM-G1-f1 owns the fix, and it needs its own audit before a build.
+
+#### 12.3.2 EM-G2 — the parse and the folder model
+
+**Status.** ✅ MERGED #626 (2026-10-05). The as-built notes and the
+mutation table are at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE. No migration.
+
+**Order.** After EM-G1, which merged as #625. The orchestrator decided O-GM-1 on 2026-10-04 (§12.2):
+a user label is a label. The scope follows that answer.
+
+**Size.** M. About 200 lines in `gmail.py`, with fixtures and tests of about 300 lines.
+
+**Scope.**
+
+1. **The body walk (GM-3).** A recursive walk reads the payload at any depth. It takes the first
+   `text/plain` part and the first `text/html` part that is not an attachment.
+2. **A single-part HTML mail** fills `body_html` and leaves `body_text` empty, as Outlook does
+   (`outlook.py:1955-1956`). `body_backfill._html_to_text` fills the text later.
+3. **The charset.** The walk decodes each part with the `charset` of its `Content-Type`, and
+   UTF-8 when it names none.
+4. **The headers (GM-1).** `_parse_headers` reads each name in any case. `Message-ID` and
+   `Message-Id` both fill `internet_message_id`.
+5. **The form of the Message-ID.** The parse trims the value and keeps its angle brackets, the form in
+   which Graph gives `internetMessageId` (`outlook.py:1971`). One mail in a Gmail and an Outlook
+   mailbox then has one value.
+6. **The addresses (GM-4).** `From`, `To`, `Cc` and `Bcc` parse with `email.utils.getaddresses`.
+   An encoded word decodes.
+7. **The folder (GM-5, D-EM-33).** `TRASH`, `SPAM`, `DRAFT`, `SENT` and `INBOX` decide, in that
+   order, else `archive`. A user label never sets the folder (O-GM-1). The user labels stay in
+   `categories`.
+8. **One rule for the folder (GM-7).** Gmail `list_messages` keeps the folder of the parse and
+   ignores `canonical_override`. A page of any label view then files each message by its labels.
+9. **The Archive folder (GM-6).** `list_messages` maps the folder key `archive` to the query
+   `-in:inbox -in:sent -in:drafts`. It joins the query of the caller, and it sends no `labelIds`.
+   `messages.list` leaves out spam and trash by default.
+10. **A user label named Archive.** `transport/folders.py:380-386` maps the key `archive` to a
+    label whose name is Archive. So the Gmail provider also takes the query when
+    `canonical_override` is `archive`, and such a label never takes the place of the folder.
+11. **Fixtures.** `tests/unit/fixtures/gmail/` holds message JSON in the shape of
+    `users.messages.get` with `format=full`. Build each fixture from a real shape, with no real
+    address and no real content. The set is (a) `multipart/mixed` with a nested
+    `multipart/alternative` and a PDF, (b) single-part HTML, (c) `multipart/related` with an inline
+    image, (d) a lower-case `Message-Id`, (e) a name with a quoted comma, (f) an archived message
+    with a user label, (g) an ISO-8859-1 body, (h) an RFC 2047 display name (E6), and (i) a forward
+    as an inline `message/rfc822` part (review round 1).
+
+**Non-goals.** No send change (EM-G3a). No cursor (EM-G4). No new column and no migration. The
+folder tree of the UI is EM-G8 item 5.
+
+**No backfill of old Gmail rows (R6, E11).** A fetch of a row writes the new parse. But until EM-G4
+and EM-G5 land, the sweep reads only the first page of each label, so an older row keeps its old
+folder. That is acceptable, because production holds no Gmail mailbox (two Microsoft mailboxes
+only, checked 2026-10-04).
+
+**Fences (R7).** A new `tests/unit/test_gmail_parse.py` reads the fixtures.
+
+- `test_a_nested_alternative_gives_text_and_html`
+- `test_single_part_html_fills_body_html`
+- `test_the_charset_of_the_part_decodes_the_body`
+- `test_message_id_reads_in_any_case`
+- `test_message_id_keeps_the_form_of_graph`
+- `test_a_quoted_comma_is_one_address`
+- `test_no_system_label_files_as_archive`
+- `test_a_user_label_never_sets_the_folder`
+- `test_a_label_page_keeps_the_folder_of_the_parse`
+- `test_the_archive_page_sends_a_query_and_no_label`
+- `test_a_user_label_named_archive_does_not_replace_the_query`
+- `test_an_encoded_display_name_decodes` (E6, fixture (h))
+
+`test_message_id_reads_in_any_case` runs on `Message-ID`, `Message-Id` and `message-id` (E7).
+
+One more R8 case in `test_email_rekey_reclaim.py`,
+`test_two_parsed_gmail_fixtures_with_one_message_id_write_two_rows`, runs the real parse through
+`_write_messages`.
+
+**Mutations.** Each one must turn a named test red. E8 added M6 to M9.
+
+| Id | Mutation | The test that fails |
+|---|---|---|
+| M1 | Read the top level only | the nested test |
+| M2 | Make the header read case-sensitive | the `Message-Id` test |
+| M3 | Put back the `inbox` fallback | the archive test |
+| M4 | Honour `canonical_override` | the label-page test |
+| M5 | Send `labelIds=["archive"]` | the archive-page test |
+| M6 | Strip the angle brackets, or lower the case, of the Message-ID | `test_message_id_keeps_the_form_of_graph` |
+| M7 | Split the address list on each comma | `test_a_quoted_comma_is_one_address` |
+| M8 | Decode each part as UTF-8 only | `test_the_charset_of_the_part_decodes_the_body` |
+| M9 | Put single-part HTML into `body_text` | `test_single_part_html_fills_body_html` |
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_parse.py tests/unit/test_email_rekey_reclaim.py \
+  tests/unit/test_email_attachment_inline.py tests/unit/test_email_unsubscribe.py \
+  tests/unit/test_email_folders.py tests/unit/test_email_deep_sync.py -v -rs
+uv run ruff check apps/services/email_ingestion tests/unit/test_gmail_parse.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+**As built (2026-10-05, branch `email-gmail-g2`).** The build follows items 1 to 11 and the rules
+E5 to E12 of the audit. It adds no migration, no flag and no column. Production holds no Gmail
+mailbox, so no live row changes.
+
+- **One walk (items 1 and 2).** `_iter_gmail_parts` is the one walk of the MIME tree.
+  `_collect_gmail_attachments` uses it too, with the same order and the same result.
+  `_gmail_bodies` takes the first `text/plain` part and the first `text/html` part that hold data.
+- **What the body walk skips.** It skips a part with a file name, a part with the disposition
+  `attachment` and a `message/*` part, and each part below them. So the body of an attached mail
+  never becomes the body of the mail that carries it.
+- **The charset (item 3).** `_decode_gmail_part` decodes with the charset of the part. An unknown
+  charset, or a codec that raises `UnicodeError`, falls back to UTF-8 (review round 1). It adds the
+  base64 padding when Gmail sends none.
+- **The headers (items 4 and 5).** `_parse_headers` keys each name in lower case.
+  `_gmail_message_id` trims the value, and it keeps the angle brackets and the case.
+- **The addresses (item 6, E6).** `_split_addresses` runs `getaddresses` with `strict=False` on the
+  raw header, and `_decode_display_name` decodes each name after the split. A name that does not
+  decode stays as it came. An entry with no `@` is left out (review round 1).
+- **The sender.** When the first entry of `From` has no `@`, the old reading holds. The address is
+  the text inside the angle brackets, and the name is the text before them (review round 1).
+- **The folder (items 7 to 10).** `_gmail_folder_from_labels` returns `archive` when no system
+  label matches. `list_messages` no longer writes `msg.folder`. The folder key `archive`, or a
+  `canonical_override` of `archive`, sends `GMAIL_ARCHIVE_QUERY` with the query of the caller and
+  no `labelIds`.
+- **The sweep.** The code of the sweep and the deep sync did not change. Their comments said that
+  the system labels come last to win the upsert. Now they say that the order sets no folder.
+
+**The decisions of the audit, as built.**
+
+- **E5.** `tests/unit/test_email_folders.py` expected `inbox` for a message with no system label.
+  It now expects `archive`, ON PURPOSE. A comment on that assert and a comment in
+  `_gmail_folder_from_labels` say so. Do not change it back.
+- **E9.** From this merge, "Also in", the draft dedupe and the Sent-copy proof compare Gmail rows
+  too, because a Gmail row now holds a Message-ID. Gmail stays hidden (D-EM-35), so this has no
+  live effect. EM-G2 corrected the comments that said only Outlook stores it, and EM-G9 lost its
+  comment item.
+- **E11.** The paragraph "No backfill of old Gmail rows" above records the limit of the sweep.
+- **E12.** From EM-G2 to EM-G8, "Load older" in a Gmail user-label view files each row as `inbox`
+  or `archive`. So that folder view gets no new rows. This is accepted while Gmail stays hidden.
+  EM-G8 item 5 fixes the tree, because the user labels then show in the label filter.
+- **The clock flake.** `test_email_storage_limit.py::test_a_before_that_is_not_a_past_date_answers_400`
+  computed "now + 5 minutes" at collection. On a slow run that date is in the past, and the test
+  fails. A sentinel parameter now names the case, and the body of the test computes the date. No
+  other line of that file changed.
+- **Anchors.** Each anchor of the brief matched at `b0e09c23a`. The Outlook `internetMessageId`
+  is at `outlook.py:1975` and its body at `:1960-1961`, a few lines below `:1971` and `:1955-1956`.
+
+**The fences, as built.** `tests/unit/test_gmail_parse.py` holds 30 cases, and all are hermetic.
+They drive `get_message` or `list_messages` through a fake HTTP client that answers from the
+fixtures. The R8 case runs on a real Postgres as `acb_app_h3rls`.
+
+| Test | Kind | What it proves |
+|---|---|---|
+| `test_a_nested_alternative_gives_text_and_html` (2 cases) | hermetic | Fixtures (a) and (c) give both bodies. (a) keeps its PDF, and (c) lists no inline image. |
+| `test_single_part_html_fills_body_html` | hermetic | Fixture (b) fills `body_html`, and `body_text` is empty. |
+| `test_the_charset_of_the_part_decodes_the_body` | hermetic | Fixture (g) decodes with no U+FFFD. No charset, or an unknown one, decodes as UTF-8. |
+| `test_message_id_reads_in_any_case` (3 cases, E7) | hermetic | `Message-ID`, `Message-Id` and `message-id` each fill `internet_message_id`. |
+| `test_message_id_keeps_the_form_of_graph` | hermetic | The value equals what the Outlook parse gives for the same Graph value. No header gives None. |
+| `test_a_quoted_comma_is_one_address` | hermetic | Fixture (e): `"Doe, John"` and `"Rao, Asha"` stay one address each. |
+| `test_an_encoded_display_name_decodes` (E6) | hermetic | Fixture (h): `Müller, Jürgen` and `Rao, Asha` decode after the split. |
+| `test_an_address_header_with_no_address_gives_no_entry` | hermetic | A group with no member gives no address. |
+| `test_no_system_label_files_as_archive` | hermetic | Fixture (f) files as `archive`. |
+| `test_the_system_labels_decide_in_order` | hermetic | The order of D-EM-33. |
+| `test_a_user_label_never_sets_the_folder` | hermetic | A user label named Archive goes to `categories` only. |
+| `test_a_label_page_keeps_the_folder_of_the_parse` | hermetic | A user-label page files its rows as `inbox` and `archive`. |
+| `test_the_archive_page_sends_a_query_and_no_label` | hermetic | The Archive page sends `GMAIL_ARCHIVE_QUERY` and the query of the caller. |
+| `test_a_user_label_named_archive_does_not_replace_the_query` | hermetic | The arguments of `transport/folders.py` still send the query. |
+| `test_a_codec_that_raises_decodes_as_utf8` (3 cases, round 1) | hermetic | `idna`, `punycode` and `undefined` decode as UTF-8, and `list_messages` keeps the mail. |
+| `test_an_attached_mail_never_becomes_the_body` (round 1) | hermetic | Fixture (i): the inner body of an inline `message/rfc822` part is not the body. |
+| `test_a_text_part_with_attachment_disposition_is_not_the_body` (round 1) | hermetic | A `text/plain` part with the disposition `attachment` is not the text body. |
+| `test_a_bare_comma_in_from_keeps_the_real_sender` (2 cases, round 1) | hermetic | `Doe, John <…>` and `Müller, Jürgen <…>` keep the name and the real address. |
+| `test_a_bare_comma_in_to_keeps_each_real_address` (2 cases, round 1) | hermetic | The same forms in `To` keep each real address and no fragment. |
+| `test_a_loose_address_list_keeps_each_real_address` (3 cases, round 1) | hermetic | A trailing comma, a `;` and an empty element keep both addresses. |
+| `test_each_fixture_is_a_gmail_message_with_no_real_address` | hermetic | Nine fixtures, the shape of `format=full`, and only RFC 2606 domains. |
+| `test_two_parsed_gmail_fixtures_with_one_message_id_write_two_rows` | R8 | Two parses of fixture (a), each with its own Gmail id, keep two rows over two syncs through `_write_messages`. |
+
+**Mutations, as run (2026-10-05).** Each mutation ran against `test_gmail_parse.py`,
+`test_email_folders.py` and the R8 class of `test_email_rekey_reclaim.py`, on a real Postgres with
+0 skips. A script then wrote back the original bytes of `gmail.py` and checked its SHA-256. Each
+mutation turned a named test red.
+
+| Id | Mutation (`gmail.py`) | Red tests |
+|---|---|---|
+| M1 | The body walk reads the top level only | `test_a_nested_alternative_gives_text_and_html`, both cases |
+| M2 | `_parse_headers` keeps the case of each name | the `Message-ID` and `Message-Id` cases of `test_message_id_reads_in_any_case`, `test_message_id_keeps_the_form_of_graph`, the two address tests and the R8 case |
+| M3 | The fallback is `inbox` | `test_no_system_label_files_as_archive`, `test_a_user_label_never_sets_the_folder`, the three page tests and `test_email_folders.py::test_gmail_folder_from_labels_priority` |
+| M4 | `list_messages` writes `canonical_override` into the folder | `test_a_label_page_keeps_the_folder_of_the_parse` |
+| M5 | The Archive branch never runs, so `labelIds` goes out | `test_the_archive_page_sends_a_query_and_no_label`, `test_a_user_label_named_archive_does_not_replace_the_query` |
+| M6a | The Message-ID loses its angle brackets | `test_message_id_keeps_the_form_of_graph`, the three cases of `test_message_id_reads_in_any_case`, the R8 case |
+| M6b | The Message-ID is lower-cased | the same five tests as M6a |
+| M7 | The address list splits on each comma | `test_a_quoted_comma_is_one_address` |
+| M8 | Each part decodes as UTF-8 only | `test_the_charset_of_the_part_decodes_the_body` |
+| M9 | A single-part body goes into `body_text` | `test_single_part_html_fills_body_html` |
+| E6 | The names decode before the split | `test_an_encoded_display_name_decodes` |
+| MX1 | A `message/*` part is not a file | `test_an_attached_mail_never_becomes_the_body` |
+| MX2 | The disposition `attachment` is not a file | `test_a_text_part_with_attachment_disposition_is_not_the_body` |
+| MX3 | `From` takes its first entry with no check for `@` | both cases of `test_a_bare_comma_in_from_keeps_the_real_sender` |
+| R1 | A list keeps an entry with no `@` | both cases of `test_a_bare_comma_in_to_keeps_each_real_address` |
+| R2 | Only `LookupError` falls back to UTF-8 | the three cases of `test_a_codec_that_raises_decodes_as_utf8` |
+| R3 | `getaddresses` is strict | the trailing-comma and `;` cases of `test_a_loose_address_list_keeps_each_real_address` |
+
+Review round 1 ran all 17 rows again on the new code, against 34 tests with 0 skips. Each row was
+red, and each restore matched the SHA-256 of `gmail.py`. M2 then turned 13 tests red, because the
+new address tests read `From`, `To` and `Cc` too.
+
+**Review round 1 (2026-10-05).** The verifier found one P2 regression and three P3 defects. Each fix
+has a fence.
+
+- **P2, a comma outside quotes in `From`.** `From: Doe, John <john@example.org>` gave the sender
+  `Doe` with no address, and main gave the real one. The fix: when the first entry has no `@`,
+  `_parse_from` uses the old reading. A list leaves out each entry with no `@`, so a fragment never
+  becomes a recipient. Fences: `test_a_bare_comma_in_from_keeps_the_real_sender` and
+  `test_a_bare_comma_in_to_keeps_each_real_address`, each in ASCII and in non-ASCII.
+- **P3a, a codec that raises.** `charset=idna`, `punycode` or `undefined` raised `UnicodeError`.
+  The parse failed, and `list_messages` then skipped the mail at each sync, so a sender could hide a
+  mail. The fix: `_decode_gmail_part` falls back to UTF-8 on `UnicodeError` too. Fence:
+  `test_a_codec_that_raises_decodes_as_utf8`.
+- **P3b, a strict address parse.** On Python 3.12.12, `getaddresses` refuses a whole header for one
+  defect, so `a@example.org, b@example.org,` gave no recipient. The fix: `_split_addresses` passes
+  `strict=False`, and it falls back to the plain call on a Python with no such keyword. The lenient
+  parser splits on `;` too. Fence: `test_a_loose_address_list_keeps_each_real_address`.
+- **P3c, three rules with no fence.** The verifier removed the rule for a `message/*` part, the rule
+  for the disposition `attachment` and the `From` fallback, and each mutation survived. Fixture (i)
+  and two new tests now hold them (MX1 to MX3 above).
+
+**Known limit EM-G2-f1 (P3d, on main before EM-G2).** Gmail can send a large text part with
+`body.attachmentId` and no `body.data`. The body walk then reads nothing for that part, and the body
+stays empty. The fix needs a call of `users.messages.attachments.get` for that part. A later slice
+owns it, and it needs its own audit.
+
+#### 12.3.3 EM-G3a — send and drafts
+
+**Status.** ✅ MERGED #634 (2026-10-05), with review rounds 1 and 2. The
+as-built notes, the fences, the mutation table and review round 1 are at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE · R8, because the draft row is SQL. No migration.
+
+**Order.** After EM-G4a, and after the orchestrator answers O-GM-2. The scope follows the
+recommendation of O-GM-2. EM-G4a puts the rate-limit helper on the client, so each new call of
+EM-G3a gets it with no change. The helper never sends `messages.send`, `drafts.create` or
+`drafts.send` twice (§12.3.5.1). It sends a new POST once, unless EM-G3a adds it to the list of
+POST actions that a second try cannot change.
+
+**Size.** M. About 250 lines in `gmail.py` and `drafting.py`, with tests of about 250 lines.
+
+**Scope.**
+
+1. **One MIME builder (GM-10).** One private builder serves `send_message`, `create_draft` and
+   `update_draft`. With `body_html`, it builds `multipart/alternative`, with the text part first.
+2. **Attachments (GM-12).** With attachments, the body part sits inside `multipart/mixed`. Each
+   attachment takes the type that the caller gives, else `mimetypes.guess_type` of its name, else
+   `application/octet-stream`.
+3. **The file name.** The builder writes it with `add_header(..., filename=...)`, so a name with a
+   quote or a letter outside ASCII survives (RFC 2231).
+4. **Threading (GM-11).** For a reply, the provider reads the parent with `format=metadata` and the
+   headers `Message-ID` and `References`. It sets `In-Reply-To` and `References` from them, and it
+   keeps `threadId`.
+5. **The parent of a thread.** Sometimes the caller gives only `thread_id`. Then the parent is the
+   newest message of the thread that is not a draft (`users.threads.get`, `format=metadata`). An
+   update rebuilds the whole draft, so it sets the two headers again.
+6. **The draft ids (GM-13, O-GM-2).** `create_draft` and `update_draft` return the message id of
+   the draft (`message.id` in the answer of Gmail).
+7. **The draft lookup.** `update_draft` and `send_draft` take a message id. They find the draft id
+   through `users.drafts.list`, matched on `message.id`, and cache it for the life of the provider
+   instance. A message id that is no draft raises a clear error, not an HTTP 400.
+8. **The callers.** The save path (`automation/drafting.py:2126-2153`) writes the message id that
+   `update_draft` returns into the same local row, by its local id. The sync then finds that row.
+9. **The fallback.** The `NotImplementedError` fallback (`drafting.py:2144`, `:2274`, `:2279`)
+   stays for IMAP. A draft made in Gmail web syncs as one row, and it now sends.
+
+**The dispatch points (E-A1 to E-A5, 2026-10-05).** The audit said GO after EM-G2 merged, on five
+points. The orchestrator decided E-A2, E-A3 and the trash rule of E-A5. They bind the build. The
+anchors are at `241dddccf`.
+
+- **E-A1, the send path.** Item 8 names the send of a signed draft too (`drafting.py:2264-2280`).
+  The route signs the draft with `update_draft`. Then it gives `send_draft` the id that
+  `update_draft` returns, and never the old id. Gmail gives the draft a new message id at each
+  update, so the old id is no draft after the update. Fence:
+  `test_a_signed_send_sends_the_id_that_the_update_returns` (hermetic).
+- **E-A2, the collision rule (decided).** The sync can write the new message id as its own row
+  before the save moves the local row. So the save makes two writes in ONE transaction. First it
+  deletes the row of the same mailbox that holds the new provider id. That row is the copy that
+  the sync made of this same draft. Then it moves the local row to the new id. The local row keeps
+  its row id, because other tables point at it. Fence:
+  `test_a_sync_copy_of_the_new_id_folds_into_the_local_row` (R8, as the role that owns no table).
+- **E-A3, a failed parent read (decided).** When the read of the parent fails, the mail goes with
+  no `In-Reply-To` and no `References`. The provider then writes one line to the log, with no
+  subject and no address. A failed parent read never fails the send. Fence: `test_a_failed_parent_read_still_sends`.
+- **E-A4, the tests that exist and change.** Each one changes only where this slice changes the
+  behaviour.
+  - `tests/unit/test_email_reply_threading.py:86-103`,
+    `test_gmail_update_draft_keeps_thread_and_html`. It asserts `text/html`, and it gives an answer
+    to `client.put` only. Item 1 makes the body `multipart/alternative`, and item 7 adds a read of
+    `drafts.list`. The case keeps its intent: the thread id and the HTML body survive the update.
+  - `tests/unit/test_email_reply_threading.py:34-83`, the four send cases. They give no answer to
+    `client.get`, so the parent read of item 4 meets an `AsyncMock`. Each case gets an answer for
+    `client.get`, and it keeps its asserts.
+  - `tests/unit/test_gmail_rate_limits.py:337-338`, the `drafts.send` case of
+    `test_a_send_is_not_retried_after_the_request_was_sent`. It sends the draft id `r-draft-1`.
+    Item 7 makes `send_draft` take a message id and read `drafts.list` first. The case gets a
+    `drafts.list` answer, and it passes a message id.
+- **E-A5, three more fences, the R8 harness, the cache and the trash rule.**
+  - Item 5: `test_a_reply_with_only_a_thread_id_reads_the_newest_message_that_is_no_draft`.
+  - Item 7: `test_a_message_id_that_is_no_draft_raises_a_clear_error`, and
+    `test_the_draft_lookup_reads_each_page` for a `drafts.list` of more than one page.
+  - The R8 tests use the harness of `tests/unit/test_email_rekey_reclaim.py` and
+    `tests/unit/test_email_duplicates.py`. That is the two-org catalog of
+    `test_h3_rls_promotion_rehearsal` under FORCE RLS, with the role `acb_app_h3rls` (NOSUPERUSER,
+    NOBYPASSRLS). The admin engine seeds the rows and reads them.
+  - The cache of item 7 lives for one provider instance. `provider_session` builds one provider
+    for each request, so the cache never spans two saves.
+  - **The trash rule (decided).** `trash_message` on a Gmail draft finds the draft id through
+    `drafts.list` and calls `drafts.delete`. That is "Discard draft" in Gmail. The local row is
+    deleted. `drafts.delete` removes the draft for good, as Gmail itself does, and the scope
+    `gmail.modify` of D-EM-31 allows it. Fence: `test_trash_of_a_draft_discards_it`.
+
+**Non-goals.** No schedule-send. No migration. No change to the signature rules. Outlook drafts
+change in one way only, the live fix EM-G3a-F2 of review round 1. A signed send now reaches each To
+address, and it carries the Cc and the Bcc of the row.
+
+**Fences (R7).** A new `tests/unit/test_gmail_send_and_drafts.py`.
+
+- `test_send_has_a_text_part_and_an_html_part`
+- `test_create_draft_has_a_text_part_and_an_html_part`
+- `test_a_reply_sets_in_reply_to_and_references`
+- `test_an_update_sets_in_reply_to_again`
+- `test_an_attachment_keeps_its_mime_type`
+- `test_a_file_name_outside_ascii_survives`
+- `test_update_and_send_resolve_a_message_id_to_its_draft`
+- The fences of E-A1, E-A3 and E-A5 above.
+- R8: `test_a_draft_saved_here_is_one_row_after_the_sync`
+- R8: `test_an_update_moves_the_row_to_the_new_message_id`
+- R8: `test_a_sync_copy_of_the_new_id_folds_into_the_local_row` (E-A2)
+
+`tests/unit/test_email_reply_threading.py` gains a case for the two headers.
+
+**Mutations.** M1 puts back `MIMEText(body_text, "html")`, and the two MIME tests fail. M2 drops
+`In-Reply-To`, and the reply test fails. M3 sends each attachment as `application/octet-stream`,
+and the type test fails. M4 returns the draft id from `create_draft`, and the one-row R8 test
+fails. M5 skips the row move on update, and the second R8 test fails.
+
+The dispatch adds three. M6 makes the signed send pass the old id, and the E-A1 test fails. M7
+makes a failed parent read fail the send, and the E-A3 test fails. M8 makes a collision insert a
+second row, and the E-A2 test fails. Each run restores each file to its SHA-256.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_send_and_drafts.py tests/unit/test_email_reply_threading.py \
+  tests/unit/test_outlook_drafts.py tests/unit/test_email_signature_placement.py \
+  tests/unit/test_email_multi_inbox.py tests/unit/test_email_ai_context.py \
+  tests/unit/test_gmail_parse.py tests/unit/test_gmail_rate_limits.py -v -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
+  tests/unit/test_gmail_send_and_drafts.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 tests must show PASSED, with 0 skips. Run each other test that patches
+`_upsert_local_draft`, or that calls `send_draft`, `update_draft` or `create_draft`, too.
+
+**As built (2026-10-05, branch `email-gmail-g3a`).** The build follows items 1 to 9 and E-A1 to
+E-A5. It adds no migration, no column and no flag. Production holds no Gmail mailbox, so no live
+Gmail mailbox changes. One live Outlook change is in it: EM-G3a-F2 (review round 1). A signed send
+of an Outlook draft now reaches each To address, and it carries the Cc and the Bcc of the row.
+
+- **The builder.** `_build_gmail_raw` in `gmail.py` is the one builder. Each part is UTF-8. A
+  header goes out only when the caller gives its value, so an update with no `Cc` writes no `Cc`.
+- **The type of a file.** `application/octet-stream` counts as no type, because the send route
+  gives it when the browser gives none. Then `mimetypes.guess_type` of the name decides. A type
+  with parameters keeps its main type and its subtype only.
+- **The parent.** `_reply_headers` reads `messages/{id}` or `threads/{id}` with `format=metadata`
+  and the two `metadataHeaders`. The header read has no case, as in EM-G2. A parent with no
+  Message-ID gives no header. `References` is the `References` of the parent, then its Message-ID.
+- **The failed read (E-A3).** Each error of the read gives no header, a rate limit too. The line
+  `gmail.parent_read_failed` names the kind, the id, the class of the error and the status.
+- **The draft ids (O-GM-2).** `_remember_draft` keeps each pair from the answer of `drafts.create`
+  and `drafts.update`, and an update drops the old message id. An answer with no draft id or no
+  message id raises `ValueError`, so no row stores a wrong id. `_draft_id_for` reads
+  `drafts.list` with 500 drafts on a page and 20 pages at most. It stops at the page that holds
+  the id.
+- **The cache.** A miss of `update_draft` or `send_draft` reads the list again. A miss of
+  `trash_message` after one full read answers "no draft", so the trashes of one provider cost one
+  read.
+- **The trash rule (E-A5).** `trash_message` sends a draft to `drafts.delete`, and it adds the
+  message id to `discarded_drafts`. A lookup that fails for a reason other than a rate limit
+  trashes the message as before, and it logs `gmail.draft_lookup_failed`. `move_to_folder` calls
+  `trash_message` for `trash`, so it discards a draft too.
+- **The Discard button.** It calls `DELETE /email/messages/{id}` (`transport/messages.py`). That
+  route deletes the local row of a discarded draft. Each other row goes to the folder `trash`, as
+  before.
+- **The save path (item 8, E-A2).** `_move_local_draft` (`drafting.py`) runs when the id that
+  comes back differs from the id of the row. That is the Gmail update and the IMAP fallback.
+  Outlook returns the same id, so its save sends no statement of the move. `_upsert_local_draft`
+  keeps its key.
+- **The send path (E-A1).** `send_draft_endpoint` sends the id that `update_draft` returns. It
+  sends the old id only when the update returns none.
+- **D-EM-31.** `drafts.delete` removes a draft for good, and D-EM-31 says that no code path
+  deletes a message for good. Gmail itself puts no discarded draft in Trash. The scope
+  `gmail.modify` allows `drafts.delete`.
+- **Anchors at `241dddccf`.** `send_message` was at `gmail.py:712`, `create_draft` at `:767`,
+  `update_draft` at `:816`, `send_draft` at `:875` and `trash_message` at `:901`. The save path
+  was at `drafting.py:2126-2196`, and the send path at `:2264-2280`.
+
+**The tests that changed (E-A4), as built.** The update case of
+`test_email_reply_threading.py` answers `drafts.list` with the draft `r-1`, and it asserts the PUT
+to `/users/me/drafts/r-1`. Its body is `multipart/alternative`, with the HTML part second. The
+four send cases there use one client that answers `client.get` with a parent with no Message-ID.
+The `drafts.send` case of `test_gmail_rate_limits.py` answers `drafts.list`, and it sends the
+message id `m-draft-1`.
+
+**The fences, as built.** `tests/unit/test_gmail_send_and_drafts.py` holds 49 cases after review
+round 2. 40 are hermetic, on a fake Gmail on `httpx.MockTransport` that keeps its state. 9 are R8.
+
+| Test | What it proves |
+|---|---|
+| `test_send_has_a_text_part_and_an_html_part` | The send body is `multipart/alternative`, text first, and each part keeps its own body. |
+| `test_a_body_with_no_html_is_one_text_part` | A body with no HTML stays one `text/plain` part. |
+| `test_create_draft_has_a_text_part_and_an_html_part` | `create_draft` uses the same builder. |
+| `test_an_update_has_a_text_part_and_an_html_part` | `update_draft` uses the same builder. |
+| `test_an_attachment_keeps_its_mime_type` (5 cases) | The given type, the given type over the name, the name over `application/octet-stream`, the name alone, and an unknown name. |
+| `test_a_file_name_outside_ascii_survives` (3 cases) | A quote, an umlaut and CJK letters survive, through RFC 2231. |
+| `test_a_reply_sets_in_reply_to_and_references` (2 cases) | The send and the draft read the parent with `format=metadata`, set both headers and keep `threadId`. |
+| `test_a_reply_with_only_a_thread_id_reads_the_newest_message_that_is_no_draft` | Item 5. A newer draft in the thread is not the parent. |
+| `test_an_update_sets_in_reply_to_again` | An update sets both headers again, from the thread. |
+| `test_a_mail_that_is_no_reply_reads_no_parent` | A new mail makes no parent read and gets no header. |
+| `test_a_failed_parent_read_still_sends` (4 cases) | E-A3: a 500, a 404, a rate limit and a thread 503. One line, with no subject and no address. |
+| `test_create_and_update_return_the_message_id` | Item 6. |
+| `test_update_and_send_resolve_a_message_id_to_its_draft` | Item 7. A draft with only a message id updates and sends, with one `drafts.list`. |
+| `test_a_message_id_that_is_no_draft_raises_a_clear_error` | Item 7. `GmailDraftNotFound`, not an HTTP error, and no write. |
+| `test_the_draft_lookup_reads_each_page` | Item 7. Three pages, and the cache serves the next lookup. |
+| `test_the_lookup_after_an_update_drops_the_old_id` | After an update, the old id is no draft. |
+| `test_trash_of_a_draft_discards_it` | E-A5. `drafts.delete` for a draft, `messages.trash` for a mail, one `drafts.list`. |
+| `test_a_failed_draft_lookup_still_trashes_a_mail` | A failed `drafts.list` still trashes a mail, and logs one line. |
+| `test_a_signed_send_sends_the_id_that_the_update_returns` | E-A1. The route signs, then sends the new message id. |
+| `test_a_signed_send_of_a_provider_that_keeps_its_id_is_unchanged` | Outlook sends the same id as before. |
+| `test_an_update_keeps_the_files_of_the_draft` | Review round 1, F1. An update keeps each file of the draft, and adds the given files. |
+| `test_a_failed_file_read_fails_the_update` | F1. An update that cannot read the files writes nothing. |
+| `test_a_draft_that_changed_in_gmail_answers_409` | Item 5 of review round 1. The send, with and with no signature, and the save answer 409. |
+| `test_an_outlook_signed_send_patches_only_the_lists_the_row_holds` (2 cases) | Review round 2. A row with no Cc and no Bcc sends neither key. A row with both sends both lists. |
+| `test_a_signed_gmail_send_keeps_the_bcc` | Review round 2. The signing `drafts.update` carries the Bcc of the row. |
+| `test_the_imap_fallback_sends_each_to_cc_and_bcc` (2 cases) | Review round 2. The new mail of the IMAP fallback, signed and not signed, goes to each address of the row. |
+| `test_an_attached_mail_stays_one_file_after_an_update` (2 cases) | Review round 2. A forwarded mail, with no name and as a named `.eml` that holds `inner.pdf`, stays one `message/rfc822` part, and no inner file comes to the top. |
+| R8 `test_a_draft_saved_here_is_one_row_after_the_sync` | A saved draft and its sync copy are one row. |
+| R8 `test_an_update_moves_the_row_to_the_new_message_id` | The row keeps its row id, and each request builds its own provider. |
+| R8 `test_a_sync_copy_of_the_new_id_folds_into_the_local_row` | E-A2. A sync copy that commits before the move goes, and one row stays. |
+| R8 `test_an_update_that_keeps_its_id_moves_nothing` | Outlook: no statement of the move reaches Postgres. |
+| R8 `test_a_discarded_gmail_draft_leaves_no_row` | E-A5. The route deletes the row of a discarded draft, and a mail goes to `trash`. |
+| R8 `test_an_outlook_draft_to_two_people_and_a_cc_sends_to_all_three` | F2. The real Outlook provider PATCHes two To addresses and one Cc, and uploads no file again. |
+| R8 `test_a_signed_gmail_send_keeps_the_cc_and_the_file` | F1. The signing `drafts.update` carries the Cc of the row and the file of the draft. |
+| R8 `test_a_failed_send_leaves_the_row_on_the_live_id` | F3. After a failed `drafts.send`, the row holds the live id, and a second Send works. |
+| R8 `test_the_move_never_touches_another_mailbox` | F4. The same new id in another mailbox of the organization and in another organization stays. |
+
+`test_email_reply_threading.py::test_gmail_reply_sets_in_reply_to_and_references` is the case for
+the two headers there.
+
+**Mutations, as run (2026-10-05, review round 2).** A script ran each mutation against
+`test_gmail_send_and_drafts.py`, `test_email_reply_threading.py` and `test_gmail_rate_limits.py`,
+on a real Postgres with 0 skips. It then wrote back the original bytes, and the SHA-256 of
+`gmail.py`, `drafting.py` and `messages.py` matched each time. Each mutation turned a named test
+red. The counts are from the run of review round 2, which ran each row again on the new code.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M1 | The builder puts back `MIMEText(body_text, "html")` | 11, with the three MIME tests and the update case of `test_email_reply_threading.py` |
+| M2 | No `In-Reply-To` | 5, with both cases of the reply test and the new case of `test_email_reply_threading.py` |
+| M3 | Each file goes as `application/octet-stream` | 8, with the 4 cases of the type test that name a type |
+| M4 | `create_draft` returns the draft id | 9, with `test_create_and_update_return_the_message_id` and each R8 test of the Gmail save |
+| M5 | The save skips the move | the R8 move, collision and two-mailbox tests |
+| M6 | The signed send passes the old id | 4, with the E-A1 test, the F1 test and the F3 test |
+| M7 | A failed parent read fails the send | the 4 cases of `test_a_failed_parent_read_still_sends` |
+| M8 | The move keeps the sync copy and gives way to it, so a second row stays | the R8 collision test |
+| M8a | The move keeps the sync copy, so the move meets the unique key | the R8 collision test |
+| M9 | A draft goes to `messages.trash` | 3, with `test_trash_of_a_draft_discards_it` and the R8 discard test |
+| M10 | The delete route keeps the row of a discarded draft | the R8 discard test |
+| M11 | The parent of a thread can be a draft | the thread-only test and the update test |
+| M12 | The lookup reads the first page only | `test_the_draft_lookup_reads_each_page` |
+| R1 | The row stores the first To address only (F2) | the R8 Outlook test |
+| R2a | The signing update drops the Cc (F1) | 3, with the R8 Gmail F1 test and the R8 Outlook test |
+| R2b | The Gmail update drops the files of the draft (F1) | 5, with the R8 Gmail F1 test, `test_an_update_keeps_the_files_of_the_draft` and both cases of the attached-mail test |
+| R3 | The move runs in the block of the route, so a failed send rolls it back (F3) | the R8 F3 test |
+| V2 | `_DROP_SYNC_COPY_SQL` has no account bind (F4) | the R8 two-mailbox test |
+| R5 | `GmailDraftNotFound` is not mapped to 409 | `test_a_draft_that_changed_in_gmail_answers_409` |
+| X1 | An empty Cc goes out as an empty list (P3-1) | the no-Cc case of the Outlook list test |
+| X2 | The signing update drops the Bcc (P3-2) | `test_a_signed_gmail_send_keeps_the_bcc` and the Cc-and-Bcc case of the Outlook list test |
+| X6 | The IMAP fallback drops the Cc and the Bcc (P3-3) | both cases of `test_the_imap_fallback_sends_each_to_cc_and_bcc` |
+| Y1 | The file read walks into an attached mail (P3-4) | both cases of `test_an_attached_mail_stays_one_file_after_an_update` |
+
+**Review round 1 (2026-10-05).** An independent verifier passed the branch with two P1 and two P3
+findings. It also confirmed that the branch does not change how Outlook drafts. Each fix has a
+fence above.
+
+- **F2, P1, a LIVE Outlook defect on main, fixed here.** The save stored the first To address of a
+  draft only. The signed send read the row back and PATCHed `toRecipients` with it. So a draft to
+  two people, sent with a signature, reached the first person only. Now `_upsert_local_draft`
+  takes `to_addresses`, and `PUT /email/drafts` passes each To address. The ON CONFLICT key does
+  not change. This changes live Outlook behaviour, and the change is correct.
+- **F1, P1 for Gmail.** The signing update gave no Cc, no Bcc and no file, and Gmail replaces the
+  whole draft. So the mail went out with no Cc and no file. Now the route passes each To, Cc and
+  Bcc address of the row. Outlook PATCHes the Cc list and the Bcc list only when the row holds an
+  address.
+- **F1, the files.** Metorite keeps no bytes of a draft file. So the Gmail `update_draft` reads the
+  files from the draft in Gmail (`_draft_files`), and it builds them in again. That binds each
+  Gmail update, an autosave too, because each one replaces the whole draft. Outlook gets no file
+  again, because its draft keeps its files.
+- **F3, P3.** A `drafts.send` that failed after the signing update rolled back the route, and the
+  row kept the old message id. Now `_commit_draft_move` moves the row in a block of its own, and
+  that block commits before `drafts.send`. A commit inside the block of the route would end its
+  tenant.
+- **F4, P3, a fence gap.** No test failed when the account bind left `_DROP_SYNC_COPY_SQL`. The
+  two-mailbox R8 test now fails.
+- **Item 5.** `_draft_changed_upstream` answers 409 with "This draft changed in Gmail. Refresh and
+  try again." on the save and on the send, for `GmailDraftNotFound`.
+- **The IMAP fallback.** The fallback of the send now passes the Cc and the Bcc of the row too.
+
+**Review round 2 (2026-10-05).** The re-verify passed review round 1 with six P3 findings and no
+P0, P1 or P2. It confirmed the live Outlook fix: the PATCH carries each To, the Cc and the Bcc. An
+empty list sends no key, so Outlook keeps its own, and nothing goes twice.
+
+- **P3-1, P3-2 and P3-3, three fence gaps.** Three mutations survived round 1. X1 sends an empty
+  Cc as an empty list. X2 drops the Bcc from the signing update. X6 drops the Cc and the Bcc from
+  the IMAP fallback. Each one now turns a fence above red.
+- **P3-4, data loss on the dark Gmail path.** `_draft_files` read `format=full` and walked into an
+  attached mail. Gmail opens a `message/rfc822` part into its parts and gives no bytes for it. So
+  an update lost a forwarded mail, or put its inner files at the top. Now `_draft_files` reads the
+  draft once as a raw mail (`format=raw`), and the standard `iter_attachments` gives each file of
+  the top level. An attached mail stays one file, with its name, else `attached.eml`. The builder
+  puts a `message/*` file in as a mail part (`MIMEMessage`), not as base64.
+- **The cost of the read.** The raw read takes the place of `messages.get` with `format=full` and
+  each `attachments.get`. So an update of a draft with files now makes one read of the draft.
+- **P3-5 and P3-6.** EM-G3a-f8 below records the cost of an autosave. The non-goals, the as-built
+  notes and the WS-17 row name the one live Outlook change.
+
+**Fixed defect EM-G3a-F2 (LIVE on Outlook before this branch).** A signed send of an Outlook draft
+to more than one To address reached the first address only. Review round 1 fixes it, with the R8
+fence `test_an_outlook_draft_to_two_people_and_a_cc_sends_to_all_three`.
+
+**Known limit EM-G3a-f1.** A member edits a draft in Gmail web, then in Metorite before the next
+sync. Gmail gave the draft a new message id, so the local row holds an old id. `update_draft` then
+raises `GmailDraftNotFound`, and the route answers 409 since review round 1.
+
+The sync writes the new id as a second row. The old row stays until the history of EM-G4b reports the delete of
+the old id, and E-B2 deletes the row. No reconcile removes it, because EM-G5b leaves drafts
+out (item 9, the second audit of 2026-10-05).
+
+**Known limit EM-G3a-f2.** A sync can hold its copy of the new id in an open transaction while the
+save moves its row. The move then waits for that transaction, and it fails on the unique key. The
+draft then meets EM-G3a-f1. The window is the time between the answer of Gmail and the move.
+
+**Known limit EM-G3a-f3.** Three paths keep the local row of a discarded Gmail draft in the folder
+`trash`. They are the PATCH of a message to `trash`, the rule action `TRASH` and a bulk trash by
+sender. Gmail holds no such draft, so the row stays in `trash`. The Discard button uses the delete
+route, which deletes the row.
+
+⚠️ **Corrected by the audit of EM-G5 (E-G5-10, 2026-10-05).** This text said that the row stays
+"until a reconcile (EM-G5)". That is false. No reconcile reads a row in `trash`: both reads of
+`reconcile.py` filter on `LOWER(folder) <> 'trash'` (`reconcile.py:45`, `:144`). So no reconcile
+removes this row, and no slice owns it yet.
+
+**Finding EM-G3a-f4 (on main before EM-G3a).** IMAP `create_draft` returns `draft-<folder>`, so
+each IMAP draft that Metorite makes writes onto one shared row. Before EM-G3a, an IMAP save wrote
+over that shared row. Now the move of item 8 deletes it. So the other draft leaves Metorite in both
+cases, and the move adds no loss. A later slice owns the fix of the IMAP id, with its own audit.
+
+**Known limit EM-G3a-f5.** A Gmail draft row from before EM-G3a holds a draft id, so its update and
+its send raise `GmailDraftNotFound`. Production holds no Gmail mailbox, so no such row exists
+there.
+
+**Known limit EM-G3a-f6 (on main before EM-G3a).** The IMAP fallback of the send builds a new mail,
+and it sends no file of the draft.
+
+**Known limit EM-G3a-f7.** Each Gmail update reads each file of the draft and sends it again, and
+an autosave is an update. An inline image (`cid:`) of a draft made in Gmail web is no file in that
+read, so an update drops it.
+
+**Known limit EM-G3a-f8, a precondition of customers.** ~~A precondition of EM-G10 and of the Gmail
+go-live.~~ The amendment of D-EM-36 (§12.2, 2026-10-05) moved it, and EM-G3c owns it.
+
+The re-verify measured one autosave of a Gmail draft with one 5 MB file. It made 4 Gmail calls: `drafts.list`,
+`messages.get` with `format=full`, `attachments.get` and `drafts.update`. It sent 9.44 MB up and
+took 6.99 MB down, and the composer autosaves after each pause of 1.2 seconds. Review round 2 puts
+one `messages.get` with `format=raw` in the place of the second and the third call. The bytes stay
+about the same.
+
+A file read that fails gives a 500, and the `catch` of the autosave hides it from the member.
+Before customers, EM-G3c must check the size limit of Google on a plain `drafts.update`. It must
+also decide how often an autosave of a draft with files may run (§12.3.12).
+
+#### 12.3.3b EM-G3c — the size of a Gmail mail, and the autosave of a draft with files
+
+**Status.** EM-G3c-1 is ✅ MERGED (#649, 2026-10-05). EM-G3c-2 is ✅ MERGED (#651,
+2026-10-05), and review round 2 fixed the P1 of the re-verify. The
+audit of 2026-10-05 gave GO-NARROWED (C1 to C21),
+and it checked each anchor against the code. It split the slice into EM-G3c-1 (the backend) and
+EM-G3c-2 (the UI). The as-built notes, the review rounds and the mutation tables of both halves are
+at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE, both halves. No migration and no new flag. The backend stays dark with
+Gmail (D-EM-36). EM-G3c-2 changes the three composers, so it is LIVE for Outlook members, and it
+takes a visual review. The live measure moved to EM-G10 (§12.3.12), which is 🔴 OWNER-GATE.
+
+**Order.** After EM-G3a (#634) and after EM-T9 (§10.4.10). EM-T9 adds the first provider error of
+the draft routes, and EM-G3c-1 adds its second one beside it. EM-G3c-2 follows EM-G3c-1.
+
+**Size.** L in all (C17). EM-G3c-1 is M, and EM-G3c-2 is M.
+
+**The problem (EM-G3a-f8, §12.3.3).** Three Gmail writes send the whole mail as base64url text in
+the JSON field `raw`, on the plain URI. The reference pages of Google document no size limit for
+that plain request. Each of the three methods also has an upload URI (`/upload/gmail/v1/...`), and
+the upload guide names it as the path for a large mail.
+
+**The cost of an autosave.** A Gmail update reads each file of the draft and sends it again
+(EM-G3a-f7). So one autosave of a draft with one 5 MB file sent 9.44 MB up and took 6.99 MB down.
+
+**The writes today (C3, C4).**
+
+- `send_message` sends `POST /users/me/messages/send` with `{"raw", "threadId"}`
+  (`gmail.py:1120-1130`).
+- `create_draft` sends `POST /users/me/drafts` with `{"message": {"raw", "threadId"}}`
+  (`gmail.py:1164`).
+- `update_draft` sends `PUT /users/me/drafts/{id}` with the same body (`gmail.py:1209-1211`).
+  Before that, it reads `drafts.list`, the draft as `format=raw` and the thread
+  (`gmail.py:1199-1204`).
+- Each write uses `_get_client()` (`gmail.py:886-899`), with `base_url` `GMAIL_API_BASE`, a default
+  `Content-Type: application/json` and `GmailBearer`.
+
+**The callers today (C4, C5, C11).**
+
+- The composer sends files only on the save before a send
+  (`apps/services/gateway/gateway/routes/email/automation/drafting.py:2167-2169`). The send route
+  is `apps/services/gateway/gateway/routes/email/transport/send.py:175`.
+- Three composers autosave 1.2 seconds after each pause: `ComposePanel.tsx:252`,
+  `ConversationView.tsx:487` and `EmailDetail.tsx:312-358`. Each `catch` sets the state to `idle`.
+- No composer saves on close. The close paths drop the pending timer (`ComposePanel.tsx:361`,
+  `:370`, `EmailDetail.tsx:267`, `:1174`, and the unmount at `ConversationView.tsx:488`).
+
+**The cut of the proxy (C13).** Next 16.2.6 cuts a request body over 10,485,760 bytes
+(`experimental.proxyClientMaxBodySize`). `next.config.ts` does not set it, and `src/proxy.ts:124`
+matches `/api/*`. The cut route reads `{}` and answers 422 (`project_import.md:838`). So the
+base64 of all files of one request must stay under the cut, for each provider.
+
+**Scope of EM-G3c-1, the backend.**
+
+1. **One builder, two forms (C6).** `_build_gmail_raw` (`gmail.py:742-790`) splits into a builder
+   of the RFC 5322 bytes and a base64url wrapper. So one builder stays (GM-10).
+2. **The upload URI (C6).** A write goes to its upload URI in two cases. The mail holds a file, or
+   the built mail is over 1 MiB. The test reads the files AFTER the read-back of `update_draft`
+   (`gmail.py:1200`), not the `attachments` argument. A smaller mail with no file keeps the plain
+   URI and `raw`.
+3. **The upload request (C6).** The URI is absolute: `GMAIL_UPLOAD_BASE` +
+   `/users/me/{messages/send | drafts | drafts/{id}}?uploadType=multipart`. The request keeps
+   `_get_client()`, so `GmailBearer` and the EM-G4a seam stay. It sets its own
+   `Content-Type: multipart/related; boundary=<random>`, and it never uses `files=`.
+4. **The parts (C6).** Part 1 is `application/json; charset=UTF-8`. For `messages.send` it holds
+   `{"threadId": T}`. For the two draft writes it holds `{"message": {"threadId": T}}`. Part 2 is `message/rfc822`, with the raw bytes of the mail and no base64url.
+5. **One limit (C8).** `GMAIL_MAIL_MAX_BYTES` is 36,700,160 bytes (35 MiB) of built mail. That is
+   the `maxSize` of the media upload in the Gmail discovery document. The build checks it again
+   with one public GET of that document. A write over the limit raises before its write request.
+   An update still makes its reads first.
+6. **The error (C9).** `ProviderMailTooLarge` is a new class in `base.py`, beside
+   `ProviderRateLimited` and the class of EM-T9. `GmailMailTooLarge` is its subclass. A 413 from
+   Google raises it too, read from the status code only, because Google can answer with HTML.
+7. **The routes (C9).** A sibling of `_draft_changed_upstream` (`drafting.py:2125-2139`) answers
+   413 with a string detail, as `drafting.py:2126` does. It wraps `PUT /email/drafts`
+   (`drafting.py:2216-2234`, `:2265-2275`), the signed send (`drafting.py:2356-2387`) and
+   `POST /email/send` (`send.py:175-185`). The text is "This mail is too large to send."
+8. **One try for a send (C10).** The upload POST of `messages.send` and of `drafts.create` gets one
+   try (`_repeatable`, `gmail.py:334-343`). The PUT of `drafts.update` keeps its retry on a 429.
+9. **The fakes (C7).** Six fences of EM-G3a send a file and read `raw` from a JSON body
+   (`test_gmail_send_and_drafts.py:408`, `:433`, `:779`, `:800`, `:966`, `:1302`). The fake
+   `_Gmail.handle` (`:216-241`) parses an upload into the same `sent` and `saved` record. So the
+   six keep their assertions. `test_gmail_rate_limits.py:87-114` gets the same change.
+
+**Scope of EM-G3c-2, the UI.**
+
+10. **The pick limit (C13).** Each composer refuses a pick that makes the files of one mail pass
+    7,500,000 bytes, with a reason, as `importFlow.ts:39-45` does. The base64 of 7,500,000 bytes
+    stays under the cut of the proxy. The reason is "Files can be 7.5 MB in all, at most."
+11. **The flush (C11).** A pending save runs at once on a close, on a switch to another mail and on
+    an unmount, in each of the three composers.
+12. **The wait (C11).** For a Gmail draft that holds a file, the composer waits 10 seconds after
+    the last edit. Every other draft keeps 1.2 seconds. ConversationView reads
+    `draft.hasAttachments`. ComposePanel and EmailDetail read `hasAttachments` of the row that the
+    last save returned (`drafting.py:2142-2153`, sticky at `:2049-2052`). One pure helper in
+    `src/app/email/lib/` returns the wait, and the three composers call it.
+13. **A failed save shows (C12).** The three status unions (`ComposePanel.tsx:120`,
+    `ConversationView.tsx:397`, `EmailDetail.tsx:137`) get "Not saved", and "Too large to save" on
+    a 413. The text uses `text-destructive`, never `text-red-500` (conformance rule 5). The next
+    edit tries again.
+14. **A failed send shows (C12).** A 413 comes mostly on a send, because the save before a send
+    carries the files. `ConversationView.tsx:536-537` drops each send error, so it gets a slot for
+    a send error. Each composer shows the text of a 413 on a send.
+
+**Non-goals.** No resumable upload. No change to the Outlook or the IMAP write. No change to
+EM-G3a-f7. No change to `actions.py`, which EM-G3b owns: its `except Exception` at
+`actions.py:609` already records the error. No higher cut in `next.config.ts`.
+
+**Known limit EM-G3c-f1 (C20).** The proxy stops `PUT /email/drafts` (`route.ts:156`) and
+`POST /email/drafts/send` (`postTimeout.ts:26`) after 30 seconds. A large signed send reads the
+mail and uploads it twice. When that passes 30 seconds, the member sees a 502, and the gateway
+still sends the mail.
+
+**Known limit EM-G3c-f2 (C21).** A send that a member tries again after a failed `drafts/send`
+adds each file twice. The composer sends the files again (`ComposePanel.tsx:332`,
+`EmailDetail.tsx:657`), and `update_draft` adds them to the files of the draft
+(`gmail.py:1200`). EM-T9-f1 records the same fault on Outlook, and one later slice owns both.
+
+**Fences of EM-G3c-1 (C14).** A new `tests/unit/test_gmail_mail_size.py`.
+
+- `test_a_draft_with_a_file_goes_to_the_upload_uri`
+- `test_a_draft_with_no_file_keeps_the_plain_uri`
+- `test_a_large_mail_with_no_file_goes_to_the_upload_uri`
+- `test_a_send_with_a_file_goes_to_the_upload_uri`
+- `test_an_update_that_reads_back_a_file_goes_to_the_upload_uri`
+- `test_the_metadata_of_each_method_has_its_own_shape`
+- `test_a_reply_draft_with_a_file_keeps_its_thread_after_an_update`
+- `test_a_mail_over_the_limit_raises_before_the_write_request`
+- `test_a_413_from_google_raises_mail_too_large`
+- `test_an_upload_send_gets_one_try_on_a_429`
+- `test_each_route_answers_413_with_the_text` (the draft save, the signed send and the send)
+
+**Fences of EM-G3c-2 (C14).** A `.test.ts` beside the helper of item 12, and a source fence that
+each composer calls the helper and flushes on close. Vitest runs `environment: "node"` with no DOM
+(`vitest.config.ts:17-18`), so the composer fences read the source, as `fromRow.test.ts:42-45`
+does.
+
+**Mutations (C15).** M1 sends a draft with a file to the plain URI, and the first test fails. M2
+moves the limit check after the write, and the limit test fails. M3 maps the 413 to a 500, and the
+route test fails. M4 sets the wait of a draft with a file to 1.2 seconds, and the helper test
+fails.
+
+**More mutations (C15).** M5 routes on `attachments`, and the read-back test fails. M6 makes an
+upload send repeatable, and the one-try test fails. M7 removes the flush, and the flush fence
+fails.
+
+**Verify with (C16).**
+
+```bash
+uv run pytest tests/unit/test_gmail_mail_size.py tests/unit/test_gmail_send_and_drafts.py \
+  tests/unit/test_gmail_rate_limits.py -v -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
+  tests/unit/test_gmail_mail_size.py tests/unit/test_gmail_send_and_drafts.py \
+  tests/unit/test_gmail_rate_limits.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/lib/theme/
+```
+
+**The open questions, answered (C18).** (a) The metadata carries `message.threadId`, and a fence
+pins it. The live proof joins EM-G10. (b) No. The limit is 35 MiB of built mail (item 5). (c) No
+composer saved on close, so item 11 adds the flush.
+
+**As built, EM-G3c-1 (2026-10-05, branch `email-gmail-g3c`).** The build follows items 1 to 9. It
+adds no migration, no flag, no column and no SQL text. Production holds no Gmail mailbox, so no live
+mailbox changes. EM-T9 (#643), EM-G3b (#645) and EM-G5b (#647) merged after the audit, so the build
+found each anchor again in the code.
+
+- **One builder (item 1).** `_build_gmail_mail` gives the RFC 5322 bytes, and `_gmail_raw` wraps
+  them in base64url. `_build_gmail_raw` is gone, because no caller still needs it.
+- **The write (item 2).** `GmailProvider._write_mail` is the one write of the three methods. It
+  checks the limit first, and then it picks the URI. A mail with a file, or a built mail over
+  `GMAIL_PLAIN_MAX_BYTES` (1,048,576 bytes), goes to the upload URI. Each other mail keeps the
+  plain URI and the JSON body of before.
+- **The request (item 3).** The upload goes through `_get_client()`, so the bearer, the refresh and
+  the rate-limit rule stay. It sends `Content-Type: multipart/related` with a random boundary. That
+  header replaces the JSON type of the client. The body is bytes, so a retry of the PUT sends it
+  whole.
+- **The parts (item 4).** Part 1 holds `{"threadId": T}` or `{"message": {"threadId": T}}`. With no
+  thread, part 1 is `{}` or `{"message": {}}`, because the plain JSON body also omits `threadId`. A
+  fence compares the two forms. EM-G10 must prove that Google takes `{}` as metadata.
+- **The limit (item 5).** The build read the public discovery document of Gmail on 2026-10-05, at
+  revision 20260928. `drafts.create`, `drafts.update` and `messages.send` each give `maxSize`
+  36700160 and the `simple` upload path of item 3. `drafts.send` gives the same `maxSize`, and no
+  write here uploads to it.
+- **The error (item 6).** `ProviderMailTooLarge(size, limit)` holds two integers, and
+  `GmailMailTooLarge` is its subclass. The write raises it before the request, and on a 413 of
+  either URI. The text names the two sizes and no URL.
+- **The routes (item 7).** `_mail_too_large` in `drafting.py` answers 413 with "This mail is too
+  large to send.". It wraps the update, reply and new branches of `PUT /email/drafts`, and the
+  signed send. `transport/send.py` imports it inside `send_email`, because `drafting.py` imports
+  `send.py`. The unsigned `drafts.send` uploads no mail, so it stays unwrapped.
+- **One try (item 8).** `_repeatable` did not change. The upload paths of `messages.send` and
+  `drafts.create` end in no action that sets a state, so each gets one try. The PUT of
+  `drafts.update` keeps its retry. A fence pins each case.
+- **The fakes (item 9).** The fake of `test_gmail_send_and_drafts.py` parses an upload with
+  `parse_upload` into the JSON body that it stands for. It answers 400 for any other shape. The six
+  fences of EM-G3a kept their assertions, and the R8 fence ran on the scratch database. The fake of
+  `test_gmail_rate_limits.py` reads an upload path as its API path, so one script answers both URIs.
+
+**Known limit EM-G3c-f3 (found in the build).** Item 7 names three routes. Seven other callers of
+the three writes map no 413: `digest.py`, `followups.py`, `senders.py`, `actions.py`,
+`notes/dispatch.py`, and `/draft-reply` and `/drafts/save` in `drafting.py`. A Gmail mail over the
+limit from one of them raises `GmailMailTooLarge`, and the caller sees an error that it does not
+map. `actions.py` belongs to EM-G3b, and its `except Exception` records the error.
+
+**Known limit EM-G3c-f4 (found in the build, measured in review).** An upload holds two copies of
+the mail in memory: the built mail and the upload body. At the limit, they use about 70 MiB in the
+gateway for one write. The builder of the mail peaks at about five times the mail, as on `main`.
+The plain path of `main` peaked higher for the same mail, at about 140 MiB for 30 MiB, so this
+slice lowers the peak.
+
+**The fences, as built.** `tests/unit/test_gmail_mail_size.py` holds the 11 fences of item 9 and 37
+cases, and all are hermetic. One case builds a mail over the real limit, and it takes about one
+second.
+
+**Mutations, as run (2026-10-05).** A script replaced one anchor for each mutation and ran the fence
+file. Then it restored the file with `git checkout`, and the SHA-256 matched each time. Each
+mutation turned its fence red. The table holds 12 mutations: the five of the spec and seven more
+(X1 to X7), so each fence has one. M4 and M7 belong to EM-G3c-2.
+
+| Id | Mutation | Red cases | Red fences |
+|---|---|---|---|
+| M1 | A draft with a file goes to the plain URI | 12 | the first fence, and the read-back, metadata, thread, 413 and one-try fences |
+| M2 | The limit check moves after the write | 9 | the limit fence and the route fence |
+| M3 | The route maps the 413 to a 500 | 5 | the route fence |
+| M5 | `update_draft` routes on `attachments` | 4 | the read-back fence, and the thread, 413 and one-try fences |
+| M6 | An upload send is repeatable | 2 | the one-try fence |
+| X1 | A send with a file goes to the plain URI | 5 | the send fence, and the metadata, 413 and one-try fences |
+| X2 | A large mail with no file keeps the plain URI | 3 | the large-mail fence |
+| X3 | The upload metadata drops `threadId` | 5 | the metadata fence, the thread fence and the send fence |
+| X4 | The write does not read a 413 | 5 | the 413 fence |
+| X5 | `POST /email/send` loses the mapper | 1 | the route fence |
+| X6 | The upload uses a client with no bearer | 9 | the first fence, the send fence, the 413 fence and the one-try fence |
+| X7 | Each mail goes to the upload URI | 14 | the plain-URI fence, and the large-mail, metadata and 413 fences |
+| V1 | The boundary is never drawn again | 1 | `test_a_boundary_that_occurs_in_the_mail_is_drawn_again` (review round 1) |
+
+**Review round 1 (2026-10-05).** The verifier passed EM-G3c-1, and the reviewer approved it. Neither
+found a P0 or a P1. This round closes the four items below.
+
+1. The rule that draws the boundary again had no fence (verifier P2-1). The new fence pins
+   `secrets.token_hex`, and V1 turns it red.
+2. `_upload_body` joins the three parts once, so it makes no temporary copy (review note 2).
+3. A 413 from Google raises `GmailMailTooLarge(size, None)`. Its text says that the provider
+   refused the size. It names no limit that did not apply (review note 3).
+4. Three facts need a live mailbox, so EM-G10 checks 17 to 19 hold them (review note 1).
+
+**As built, EM-G3c-2 (2026-10-05, branch `email-g3c2-composer`).** The build follows items 10 to
+14. It changes the UI only: no gateway file, no migration, no flag and no SQL text. The build found
+each anchor again in the code, a few lines below the lines of the audit.
+
+- **One module.** `src/app/email/lib/draftAutosave.ts` holds each rule once, and the three
+  composers import it. Vitest runs with no DOM here, so a rule inside a component has no fence.
+- **The pick limit (item 10).** `pickProblem` adds the files that the mail holds to the files of
+  the pick. Over 7,500,000 bytes, it refuses the whole pick with "Files can be 7.5 MB in all, at
+  most.". ComposePanel and EmailDetail ask it before they read a file. The DraftCard has no picker.
+- **The flush (item 11).** `createAutosave` holds one pending save. The cleanup of each autosave
+  effect calls `hold`, which stops the timer and keeps the save. A close, a switch to another mail
+  and an unmount call `flush`, which runs the save at once. Since review round 2, a send, a
+  discard and a pop-out call `drain`.
+- **Where each composer flushes.** ComposePanel flushes on the X, the backdrop and an unmount.
+  EmailDetail flushes on the X, a new reply, a switch to another mail and an unmount. The DraftCard
+  flushes on an unmount and on a change of `draft.id`.
+- **The session guard.** A flushed save can end after the member opened another reply or another
+  mail. ComposePanel and EmailDetail keep a session number, and a save of an old session sets no
+  state.
+- **The wait (item 12).** `autosaveWait` gives 10 seconds to a Gmail draft that holds a file, and
+  1.2 seconds to each other draft. ComposePanel and EmailDetail read `hasAttachments` of the row
+  that the last autosave returned. The save before a send also sets it, when that save updated the
+  draft that the composer keeps. The DraftCard reads `draft.hasAttachments`.
+- **A failed save (item 13).** `failedSaveStatus` reads the status code only. A 413 gives "Too
+  large to save", and each other error gives "Not saved". The text is `text-destructive`, and the
+  next edit tries again.
+- **A failed send (item 14).** `sendFailureText` shows the `detail` of the gateway. So a 413 and
+  the 502 of EM-T9 each show their own text. The DraftCard has a line for the error of a send now,
+  and before this slice it dropped the error.
+
+**Departures from the spec (EM-G3c-2).**
+
+1. The error of the inline reply in EmailDetail takes its own line above the footer. The visual
+   review measured that footer at 1440 px. It holds six controls, and its status slot cut "Too large
+   to save" to "Too large to s…". A refused pick and a failed send use the same line.
+2. The send error of ComposePanel and EmailDetail moved from `text-red-500` to `text-destructive`.
+   So the palette budget of ComposePanel went from 1 to 0, and that of EmailDetail from 3 to 2.
+3. The pick limit counts the files that the member picks, and no workspace artifact. The gateway
+   reads the bytes of an artifact, so they never go through the proxy.
+4. EmailDetail also flushes when the member starts a new reply, because that closes the reply of
+   before. The pop-out does not flush, because that flush and the save of the full composer make two
+   drafts. Review round 1 corrected the rest. The composer of the pop-out opened clean, and it saved
+   nothing until a new edit. Now the pop-out sends `unsavedEdit`, which is true while a save of the reply
+   waits. Then the composer of the pop-out opens dirty, and its own save keeps the edit.
+
+**Known limit EM-G3c-2-f1 (found in the build, on `main` before it, ✅ fixed in review round 1).**
+EmailDetail drew a draft with no thread as one `DraftCard`, and that card had no React `key`. A
+switch from one such draft to another kept the card and its text. A later edit then saved the text
+of the first draft to the second draft. The card now has `key={email.id}`, so each draft gets its
+own card. The unmount of the old card flushes its pending edit to its own draft.
+
+**Known limit EM-G3c-2-f2 (on `main` before it).** The DraftCard autosaves after an edit of the To
+field or the body. An edit of Cc or Bcc does not start a save, so the next edit or the send carries
+it. ✅ EM-T10 item 4 fixes it (§10.4.11, built 2026-10-05, branch `email-draftcard-recipients`).
+
+**Known limit EM-G3c-2-f3.** The composer checks a pick against the files that it holds when the
+pick starts. Two picks in quick order can each fit and pass the limit together. The send then
+meets the cut of the proxy, and the composer shows the text of that error.
+
+**Known limit EM-G3c-2-f4 (verifier P2-3).** A save that a close or a switch flushed can fail, and
+then no "Not saved" shows. The member closed the composer, or the composer shows another reply, so
+the text has no place. `main` never tried that save, so this is no worse than `main`.
+
+**Known limit EM-G3c-2-f5 (re-verify F3, on `519489183` too).** The member changes the From while
+the first save of a draft runs, and then switches to another mail. That save ends in the old
+mailbox after its session ended, so no list holds its draft as stale. The old mailbox keeps that
+draft beside the draft of the new mailbox. Without the switch, the save puts its draft on the stale
+list, and the next save deletes it.
+
+**Known limit EM-G3c-2-f6 (found in review round 2, on `main` before it).** The DraftCard does not
+read the Cc and the Bcc of its draft. It starts with the Cc of a reply-all to the mail that it
+answers, or with no Cc, and with no Bcc. Its next save and its send write those lists over the
+lists of the draft. So a reply that the inline reply saved with a Bcc loses the Bcc in the
+DraftCard. ✅ Fixed: EM-T10 item 1 starts the card with the To, Cc and Bcc of its draft (§10.4.11,
+built 2026-10-05, branch `email-draftcard-recipients`).
+
+**The re-verify of review round 2 (2026-10-05).** It passed the slice, with no P0 and no P1. The
+orchestrator stopped the fix rounds there: two rounds on a live surface, and each P2 below is
+narrow. None of them is worse than `main`. A later slice owns them, with its own review.
+
+**Known limit EM-G3c-2-f7 (re-verify F1).** The drain also drops a waiting save of an ENDED
+session. The member closes reply A while a save of A runs, so the flushed save of A waits. Then
+the member opens a reply and presses Discard, Pop out or Send within that one save. The drain drops
+the save of A, so A's last edit is lost with no signal.
+
+Round 1 kept that save, and `main` lost each close edit. The fix is a drain that drops only the
+saves of its own session.
+
+**Known limit EM-G3c-2-f8 (re-verify F2).** Pop out closes the reply at once and opens the full
+composer after the drain. If the member opens the composer with New inside that gap, the composer
+ignores the hand-over, and an edit that the drain dropped is lost.
+
+**Known limit EM-G3c-2-f9 (re-verify F3).** The last save fails, and the member presses Pop out.
+The drain drops nothing, so the composer opens clean, and a close then saves nothing. `main` lost
+each pending edit at a pop-out.
+
+**Known limit EM-G3c-2-f10 (re-verify F4).** The inline Send shows no state while it drains. A
+second click waits on the same drain and then sends again. The gateway answers 404 for a sent
+draft, so the likely result is an error, not a second mail. ComposePanel and the DraftCard set
+their "Sending" state before the drain. ✅ EM-T10 item 7 fixes it with one guard at the top of
+`handleInlineSend` and a Send button that loads (§10.4.11, built 2026-10-05, branch
+`email-draftcard-recipients`).
+
+**Known limit EM-G3c-2-f11 (re-verify F6).** No client timeout bounds the drain. The proxy stops a
+save after 30 seconds, so a drain waits 30 seconds at most. On a Gmail draft with a file, a Send
+now waits for the autosave upload that runs.
+
+**Known limit EM-G3c-2-f12 (re-verify F7).** The member changes the From and presses Discard
+within one create. The Discard reads the new From, so it does not find the draft of the old
+mailbox, and that draft stays. This is close to f5.
+
+**The fences, as built.** `src/app/email/lib/draftAutosave.test.ts` holds 71 cases in five named
+fences: `email-pick-limit`, `email-autosave-wait`, `email-autosave-flush`,
+`email-save-failed-shows` and `email-send-failed-shows`. The build added 39 cases, and review round
+1 added 16. Review round 2 removed one case and added 17. Two cases drive `saveDraft` over a stub
+of `fetch`, so the contract between `gatewayFetch` and the module has a fence too.
+
+**Mutations, as run (2026-10-05).** A script replaced one anchor for each mutation, ran the fence
+file, and restored the file with `git checkout`. After each run, `git status` was clean. Each of the
+24 mutations turned a fence red. The first run found two fences that let a mutation pass (W3 and
+C1), and the build made both fences stricter. Review round 1 ran 15 more (R1 to R12, and G1 again),
+and each turned its fence red.
+
+Review round 2 ran 19 more (D1 to F2f) from a script. Each turned its fence red, and `git diff` was
+empty after each row.
+
+| Id | Mutation | Red cases | Red fence |
+|---|---|---|---|
+| M4 | The wait of a Gmail draft with a file is 1.2 seconds | 1 | `email-autosave-wait` |
+| M7a | ComposePanel closes with no flush | 1 | `email-autosave-flush` |
+| M7b | EmailDetail moves to another mail with no flush | 1 | `email-autosave-flush` |
+| M7c | The DraftCard unmounts with no flush | 1 | `email-autosave-flush` |
+| M7d | EmailDetail unmounts with no flush | 1 | `email-autosave-flush` |
+| M7e | The flush of the module drops the save | 2 | `email-autosave-flush` |
+| X1 | The cleanup of ComposePanel drops the save | 1 | `email-autosave-flush` |
+| X2 | The hold of the module drops the save | 1 | `email-autosave-flush` |
+| P1 | The limit is 7.5 MiB, not 7,500,000 bytes | 5 | `email-pick-limit` |
+| P2 | EmailDetail takes each pick | 1 | `email-pick-limit` |
+| P3 | The limit leaves out the files that the mail holds | 1 | `email-pick-limit` |
+| W1 | The DraftCard ignores `draft.hasAttachments` | 1 | `email-autosave-wait` |
+| W2 | Each draft with a file waits 10 seconds, Outlook too | 1 | `email-autosave-wait` |
+| W3 | ComposePanel does not read the row of the autosave | 1 | `email-autosave-wait` |
+| W4 | EmailDetail does not read the row of the save before a send | 1 | `email-autosave-wait` |
+| S1 | The 413 branch is gone | 2 | `email-save-failed-shows`, and the `api.ts` contract |
+| S2 | A failed save of the DraftCard goes back to idle | 1 | `email-save-failed-shows` |
+| S3 | The save state reads the text, not the status code | 1 | `email-save-failed-shows` |
+| E1 | The DraftCard drops the error of a send | 1 | `email-send-failed-shows` |
+| E2 | The send text drops the `detail` of the gateway | 3 | `email-send-failed-shows`, and the `api.ts` contract |
+| C1 | A discard of the DraftCard keeps the pending save | 1 | `email-autosave-flush` |
+| G1 | EmailDetail has no session guard | 1, and 2 in review round 1 | `email-autosave-flush` |
+| F1 | The send error of the inline reply goes back into the footer | 1 | `email-send-failed-shows` |
+| T1 | The failure text of the DraftCard is `text-red-500` | 2 | `email-save-failed-shows`, and conformance rule 5 |
+| R1 | The standalone DraftCard has no `key` (item 1) | 1 | `email-autosave-flush` |
+| R2 | A flushed save starts at once, while a save runs (item 2) | 4 | `email-autosave-flush` |
+| R3a | ComposePanel deletes the stale drafts after the guard (item 3) | 1 | `email-autosave-flush` |
+| R3b | EmailDetail deletes the stale drafts after the guard (item 3) | 1 | `email-autosave-flush` |
+| R4 | The pop-out opens ComposePanel clean (item 4) | 1 | `email-autosave-flush` |
+| R5a | ComposePanel guards after it writes the draft id (item 5) | 3 | `email-autosave-flush`, `email-autosave-wait` |
+| R5b | EmailDetail guards after it writes the draft id (item 5) | 3 | `email-autosave-flush`, `email-autosave-wait` |
+| R6 | A send of the inline reply keeps an old send error (item 6) | 1 | `email-send-failed-shows` |
+| R7 | `draftToUpdate` gives an ended save the draft of the new session | 2 | `email-autosave-flush` |
+| R8 | ComposePanel shows "Saving" for an ended session | 1 | `email-autosave-flush` |
+| R9 | The stale list does not empty in place | 1 | `email-autosave-flush` |
+| R10 | An ended save of EmailDetail keeps no record of its draft | 1 | `email-autosave-flush` |
+| R11 | EmailDetail reads `draftIdRef` in the save | 1 | `email-autosave-flush` |
+| R12 | A DraftCard of ConversationView has no `key` | 1 | `email-autosave-flush` |
+| D1 | The drain keeps each save that waits (round 2, item 1) | 2 | `email-autosave-flush`, with the probe |
+| D1b | The drain does not wait for the save that runs | 3 | `email-autosave-flush`, with the probe |
+| D2a | ComposePanel sends with no await of the drain | 3 | `email-autosave-flush`, `email-send-failed-shows` |
+| D2b | EmailDetail sends with no await of the drain | 2 | `email-autosave-flush` |
+| D2c | The DraftCard sends with no await of the drain | 1 | `email-autosave-flush` |
+| D2d | ComposePanel sends after a cancel, as in round 1 | 3 | `email-autosave-flush`, `email-send-failed-shows` |
+| D3a | ComposePanel deletes before the drain settles | 1 | `email-autosave-flush` |
+| D3b | EmailDetail deletes before the drain settles | 1 | `email-autosave-flush` |
+| D3c | The DraftCard deletes before the drain settles | 1 | `email-autosave-flush` |
+| D4 | The discard of ComposePanel reads `draftIdRef`, not `draftToUpdate` | 1 | `email-autosave-flush` |
+| B1 | The inline autosave drops the Bcc (round 2, item 2) | 1 | `email-autosave-flush` |
+| B2 | An edit of the Bcc starts no inline autosave | 1 | `email-autosave-flush` |
+| B3 | The inline autosave drops the Cc | 1 | `email-autosave-flush` |
+| F2a | ComposePanel ignores the draft of a pop-out (round 2, item 3) | 1 | `email-autosave-flush` |
+| F2b | The pop-out hands over a draft with a Bcc | 1 | `email-autosave-flush` |
+| F2c | The pop-out drops the Cc | 1 | `email-autosave-flush` |
+| F2d | The pop-out opens before the drain settles | 2 | `email-autosave-flush` |
+| F2e | `page.tsx` does not pass the draft id | 1 | `email-autosave-flush` |
+| F2f | The draft of a pop-out is not the last save of its session | 1 | `email-autosave-flush` |
+
+**Visual review (2026-10-05).** A Playwright rig stubbed the API and drew each new state in dark,
+light, compact and a violet accent. It drew "Not saved", "Too large to save" and the pick refusal
+in ComposePanel. It also drew the send error and "Too large to save" of the DraftCard, and the
+failure line of the inline reply. The rig is not committed. In light mode, each failure text
+measured rgb(198, 38, 32), and it stayed red under the violet accent.
+
+**Review round 1 (2026-10-05).** The verifier passed EM-G3c-2. The reviewer asked for one change, a
+P1 that was on `main` before this slice. Both found the same P2 items. This round closes the six
+items below, and it records EM-G3c-2-f4.
+
+1. **The key of the DraftCard (P1, EM-G3c-2-f1).** The standalone `DraftCard` of EmailDetail has
+   `key={email.id}`. The `DraftCard` list of ConversationView had its key already, and no other
+   file draws a `DraftCard`.
+2. **One save at a time (P2).** `createAutosave` starts a save that the timer or a flush fires only
+   after the save before it settles. When no save runs, the save starts at once, so a switch still
+   flushes before it clears the draft id. A save reads its draft id when it runs. So a save that
+   waited for the first save of a draft updates that draft. The newer text lands last.
+3. **The stale drafts of an ended session (P2).** Each composer keeps the stale list of the session
+   when it schedules a save. A save that ends after its session ended deletes that list, unless the
+   save wrote one of its drafts. It writes no draft id, no file flag and no state of the new
+   session.
+4. **The pop-out (P2).** The pop-out sends `unsavedEdit: autosave.pending`, and the full composer
+   opens dirty when it is true. Departure 4 above holds the correction.
+5. **The order of the session guard (P2).** The fence now checks the order in the scheduled save of
+   ComposePanel and of EmailDetail. The guard must come before the write of the draft id.
+6. **An old send error (note).** `handleInlineSend` clears `sendErr` when a send starts, as
+   `handleSend` of ComposePanel does. So an old send error does not hide a later "Not saved".
+
+**Departures of review round 1.**
+
+1. A save that waited can run after a switch or a new reply ended its session. If it read
+   `draftIdRef`, it would read the cleared id of the new session and make a second draft. So
+   `draftToUpdate` gives it the draft that its own session saved last, in the same mailbox.
+   `lastSaveRef` in each composer keeps that draft.
+2. A save of an ended session does not set "Saving". With the order of item 2, that state could
+   land on the new reply and stay there.
+3. `unsavedEdit` is true only while a save of the reply waits, not for each pop-out with text. So
+   a pop-out with no new edit makes no second draft. A draft that the reply saved before the pop-out
+   stays in Drafts, as on `main`. An undo-send reopen also carries `replyToBody`, and it stays clean,
+   as on `main`. Review round 2 replaced this rule (its item 3).
+4. A cancel drops only the pending save. A save that started, or that waits for the save before it,
+   still runs. A switch flushes and then cancels in the same render. A cancel that dropped a waiting
+   save would lose that edit.
+
+**Review round 2 (2026-10-05).** An independent re-verify failed round 1 on a P1 that round 1 made.
+The inline reply on Outlook has draft X, and its save S1 of X is slow. The member types and pauses,
+so save S2 fires and waits for S1. The member types again and clicks Send. The cancel dropped only
+the pending save, so S2 ran after the save of the send.
+
+The inline autosave sent no Cc and no Bcc, so S2 wrote older text and empty lists into the draft.
+The send read the row of X, and the mail went out with no Cc and no Bcc. A probe measured the order of the
+calls. It was `[S1, S2, SEND]` at `519489183`, and `[S1, SEND, S2]` with round 1. ComposePanel and
+the DraftCard had the same order. This round closes the P1 and the findings below.
+
+1. **The drain (the P1 and F4).** `createAutosave` has `drain`. It drops the pending save and each
+   save that waits, and its promise settles when the save that runs settles. Each send awaits it
+   before the save of the send, and each discard awaits it before the delete. A close and a switch
+   still call `flush`, so departure 4 of round 1 holds for them. The probe is a case now, and its
+   order is `[S1, SEND]`.
+2. **The Cc and the Bcc of the inline reply.** Each autosave of the inline reply carries the Cc
+   and the Bcc. Before, `api.ts` sent empty lists, and each autosave cleared both on Outlook. That
+   fault was on `main` before this slice. An edit of the Bcc starts a save too.
+3. **The pop-out (F2).** The pop-out drains, and it waits for the save that runs. Then it gives the
+   full composer the draft id, the file flag and the Cc of the reply. The composer updates that
+   draft and makes no second draft. `unsavedEdit` is true when the drain dropped an edit.
+4. **The orphan draft.** A first save that runs at a send, a discard or a pop-out now gives its
+   draft id first. The send then sends that draft, and the discard deletes it. Before, each of the
+   three left an orphan draft, on `519489183` too.
+5. **F3.** This round records it as EM-G3c-2-f5, with no code.
+
+**Departures of review round 2.**
+
+1. The pop-out drains too, and the brief named only the send and the discard. Else a save of the
+   reply could write older text after the pop-out.
+2. The pop-out carries the Cc. The full composer saves the draft with its own Cc. An empty Cc there
+   would clear the Cc of the draft. On `main`, the full composer opened with no Cc.
+3. The full composer has no Bcc row, so its saves send an empty Bcc. So the pop-out of a reply with
+   a Bcc gives no draft id. The full composer then makes its own draft, as in round 1. That case
+   still makes a second draft.
+4. A discard closes the composer at once, and it deletes the draft after the drain settles. The
+   delete asks `draftToUpdate`, so it finds the draft after the discard ended the session.
+5. The pop-out closes the reply at once, and the full composer opens when the save that runs
+   settles. On Outlook, that wait is one draft save.
+6. A drain does not stop a save that an edit schedules after it. So an edit during a send can save
+   newer text into the draft while the send runs. That save carries the Cc and the Bcc now, and
+   `main` had the same race.
+
+#### 12.3.3c EM-G3c-3 — the known limits of the composer autosave
+
+**Status.** ✅ MERGED #682 (2026-10-06), with review round 1. Audited 2026-10-06,
+GO-NARROWED. The audit decided the shape of f8, included f5, and recorded f13. The slice takes
+the known limits that EM-G3c-2 left open (§12.3.3b), apart from f2, f6 and f10. The as-built
+notes, the departures and the mutation table are at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE. UI only. No migration, no flag and no gateway change. The three composers
+are LIVE for each Outlook member, so the slice takes the full review loop and a visual check.
+
+**Size.** M.
+
+**The defects.** Each one loses an edit or leaves a draft, with no signal to the member.
+
+- **f7.** `drain()` (`lib/draftAutosave.ts` ~:241) drops each waiting save, also a save of a
+  session that ended. The member closes reply A while a save of A runs, and then presses Discard,
+  Pop out or Send on a new reply. The last edit of A is lost.
+- **f9.** The last save failed, and the member presses Pop out. The drain drops nothing, so
+  `unsavedEdit` is false (`EmailDetail.tsx` ~:870). The full composer opens clean, and its close
+  saves nothing.
+- **f12.** The member changes the From while the first save of a draft runs, and then presses
+  Discard. The Discard reads the new From (`EmailDetail.tsx` ~:669), so `draftToUpdate` does not
+  find the draft in the old mailbox, and that draft stays.
+- **f3.** The composer checks a pick against the files that it holds when the pick starts
+  (`EmailDetail.tsx` ~:824, `ComposePanel.tsx` ~:250). Two quick picks can each fit and pass the
+  limit together.
+- **f8.** Pop out closes the reply at once, and it opens the full composer after the drain
+  (`EmailDetail.tsx` ~:867-882). If the member opens the composer with New in that gap, the
+  hand-over is lost.
+
+**Scope.**
+
+1. **A drain for one session (f7).** `schedule(run, waitMs, session)` tags each save with its
+   session. `drain(session)` drops the pending save and the waiting saves of that session only. It
+   starts a pending save of another session, as `flush` does. A waiting save of another session
+   still runs. The promise settles when the end of the chain settles. It gives true when it dropped
+   a save of its own session. The DraftCard passes session 0, because its key gives each draft its
+   own card.
+2. **A pop-out always hands over an unsaved edit (f9).** Pop out passes `unsavedEdit: true` in each
+   case. So the first save of the composer writes the text that the member sees into the draft.
+   This costs one save. The pop-out does not read `draftStatus`. The closure of the click cannot
+   see a save that fails during the drain.
+3. **A discard deletes each draft of its session (f12).** Add
+   `draftsToDiscard(session, live, last, stale)` to `lib/draftAutosave.ts`. It gives
+   `live.draftId` when the session is live. It gives `last.id` when `last.session` is the session,
+   in any mailbox. It also gives each stale id, with no duplicate. A discard reads the session and
+   the stale list before its drain. It calls the helper after the drain. ComposePanel and
+   EmailDetail use it.
+4. **A late save deletes the draft of the old mailbox (f5).** Add
+   `supersededDraft(save, last, savedId)`. It gives `last.id` only in one case. `last.session`
+   is the session of the save, `last.from` is another mailbox, and `last.id` is not `savedId`. Else
+   it gives null. The ended-session branch of each composer calls it after a save
+   that succeeds. The call comes before the branch writes `lastSaveRef`. The composer deletes the
+   draft that it gives.
+5. **A pick counts the picks that are being read (f3).** `pickProblem(held, picked, readingBytes)`
+   adds the bytes that are being read. `holdPick(counter, picked)` adds the bytes of the pick and
+   gives a release function. A second call of the release does nothing. Each composer calls the
+   release in a `finally`, after it adds the files. So a failed read releases its bytes. No session
+   resets the counter.
+6. **Pop out opens the composer at once (f8).** `popOutToComposer` calls `openCompose` before its
+   first `await`. It passes the text and a `handOver` promise. The promise settles after the drain,
+   with `draftId` and `draftHasFile`. Add `autosave.after(promise)`, which puts the promise at the
+   head of the chain. So each save, Send and Discard of the composer waits for the hand-over. The
+   composer applies the hand-over only while the session that opened it is live.
+
+**Why the composer opens at once (f8).** Three controls stay live while the drain waits: the New
+button of `EmailToolbar.tsx`, the New button of `EmailList.tsx` and the "c" key (`page.tsx`). The
+open modal covers both buttons, and `composeOpen` stops the key. A pending hand-over in the store
+leaves the gap open, and it needs merge logic.
+
+**Known limit EM-G3c-3-f13 (found in the audit, on `main` before it).** Pop out hands over no
+files. `openCompose` takes no attachments, and no inline save carries files. So a pop-out drops the
+files of the reply with no signal. A later slice owns it.
+
+**Non-goals.** f4 stays. A flushed save that fails after a close shows nothing, and `main` never
+tried that save. f11 stays. The proxy stops a save after 30 seconds, so a drain waits 30 seconds at
+most. Each Send shows its state while it waits. No change to the gateway or to the Gmail upload.
+
+**Fences (R7).** `src/app/email/lib/draftAutosave.test.ts` holds each rule that can live in the
+lib, because vitest has no DOM in this package. A source fence holds each rule that can live only in
+EmailDetail.
+
+- `email-drain-own-session`: a drain of session 2 keeps the waiting save of session 1, and that
+  save runs. The drain gives false.
+- `email-popout-unsaved`: a source fence finds `unsavedEdit: true,` in the defaults of
+  `popOutToComposer`.
+- `email-discard-old-mailbox`: `draftsToDiscard` gives the old-mailbox id and each stale id. It
+  gives no id of another session.
+- `email-switch-old-mailbox`: `supersededDraft` gives the old id for one session with two
+  mailboxes. It gives null for another session.
+- `email-pick-in-flight`: a second pick that fits alone, but not with a pick that is being read, is
+  refused. A release after a failed read frees its bytes once.
+- `email-popout-handover`: a save scheduled after `after(p)` starts only when p settles. A source
+  fence finds `openCompose({` before the first `await` in `popOutToComposer`.
+- A source fence checks that each composer passes a session to `schedule` and `drain`, and calls
+  each helper.
+
+**Mutations.** Each mutation must turn its fence red.
+
+- M1 drops each session in the drain. `email-drain-own-session` fails.
+- M2 hands over the result of the drain. `email-popout-unsaved` fails.
+- M3 compares the From in `draftsToDiscard`. `email-discard-old-mailbox` fails.
+- M4 drops `readingBytes`. `email-pick-in-flight` fails.
+- M5 makes the release run twice. `email-pick-in-flight` fails.
+- M6 awaits the drain before `openCompose`. `email-popout-handover` fails.
+- M7 ignores the session in `supersededDraft`. `email-switch-old-mailbox` fails.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane
+npx tsc --noEmit
+npx vitest run src/app/email/lib/draftAutosave.test.ts src/app/email
+```
+
+**The visual check.** Run the app in light mode, at compact density, with a changed accent. Open a
+reply, type, press Pop out, and check that the composer holds the text. Discard a reply after a
+change of From, and check the Drafts of both mailboxes.
+
+**As built (2026-10-06, branch `email-g3c3-composer`).** The build follows items 1 to 6. It changes
+the UI only: no gateway file, no migration, no flag and no SQL text. Each anchor of the audit held,
+a few lines from the line that the audit gave.
+
+- **The drain (item 1).** `schedule` takes the session as a third argument, and `drain(session)`
+  drops only the saves of that session. A pending save of another session starts, as on a flush.
+  ComposePanel and EmailDetail pass the number of their session, and the DraftCard passes 0.
+- **The pop-out (item 2).** `popOutToComposer` passes `unsavedEdit: true`. It reads no
+  `draftStatus` and no result of the drain.
+- **The discard (item 3).** `draftsToDiscard` gives the live draft, the last save of the session in
+  any mailbox, and each stale id. Each discard reads the session and the stale list before the
+  drain. It empties the list in place when it asks, so it deletes no draft twice.
+- **The late save (item 4).** The ended branch of each composer asks `supersededDraft` before it
+  writes `lastSaveRef`. It deletes the draft that it gets, unless the stale list of the save holds
+  that draft. That list deletes it already.
+- **The pick (item 5).** Each composer keeps `readingRef`. It gives `pickProblem` the bytes that are
+  being read, and it calls `holdPick` after the check. The release runs in a `finally`, after the
+  composer adds the files.
+- **The hand-over (item 6).** `popOutToComposer` is not `async` now. It drains, closes the reply and
+  makes the `handOver` promise from the drain. Then it calls `openCompose` at once. The store and
+  `page.tsx` carry the promise to ComposePanel, in place of `draftId` and `draftHasFile`. The open
+  of ComposePanel calls `autosave.after`, so each save, send and discard waits for the hand-over.
+
+**Departures from the spec (EM-G3c-3).**
+
+1. The hand-over writes `lastSaveRef` for the session that opened it, also after that session
+   ended. The draft id and the file flag go only to the live session, as item 6 says. Without the
+   record, a save that the X flushed before the hand-over settled makes a second draft. No save of
+   a later session can run before the hand-over, so the record hides no newer save.
+2. The member can change the From in the full composer before the hand-over settles. Then the
+   hand-over puts the draft on the stale list, and it does not set the draft id. Else the next save
+   updates a draft of the old mailbox from the new mailbox. The open sets `liveFromRef` to its own
+   From, because the effect that follows `fromId` runs one render later. The spec did not name
+   this case.
+3. `schedule`, `drain` and `pickProblem` take the new argument as an option, with a default of 0. So
+   the 78 cases of before keep their calls. A source fence checks that each composer passes the
+   argument.
+4. The ComposePanel props `draftId` and `draftHasFile` are gone, and `handOver` replaces them. No
+   other caller set them. Eleven cases of before named an old call, such as `drain()` or the old
+   pop-out. The build changed each to the new call, and each case keeps its assertion. One case read
+   the result of the drain as `unsavedEdit`, and item 2 removes that rule. `email-popout-unsaved`
+   holds the rule that replaces it.
+5. M2 of the spec needs an `await`, so it turns `email-popout-handover` red too. M2b reads
+   `draftStatus` with no `await`, and it turns only `email-popout-unsaved` red. `draftsToDiscard`
+   has no From, so M3 puts the old `draftToUpdate` call back in each discard. The fence of the call
+   site turns red. X5 and X6 hold the two branches of the helper.
+6. The build did not run the visual check of the spec. The verifier of the loop owns it.
+
+**Known limit EM-G3c-3-f14 (found in the build).** A pop-out of a reply that the member did not edit
+now makes a draft. The composer opens dirty in each case (item 2), so its first save writes the
+reply. On `main`, that composer saved nothing until an edit. This is the cost that item 2 accepts.
+
+**The Bcc case of f14 (review round 1).** A reply with a Bcc and a saved draft hands over no draft,
+because the full composer has no Bcc row. So the composer that opens dirty makes a second copy at
+once, with no edit. The build keeps this, because the composer must never clear a Bcc.
+
+**The fences, as built.** `src/app/email/lib/draftAutosave.test.ts` holds 103 cases, 25 more than
+the 78 of before. The six new fences are `email-drain-own-session`, `email-popout-unsaved`,
+`email-discard-old-mailbox`, `email-switch-old-mailbox`, `email-pick-in-flight` and
+`email-popout-handover`. The full run of `src/app/email` has 715 cases, and it had 690.
+
+**Mutations, as run (2026-10-06).** A script replaced the anchors of each mutation, ran the fence
+file and restored each file with `git checkout`. After each row, `git status` was clean. Each of the
+20 mutations turned a fence red. The first run found one mutation that passed (X11). The build added
+a fence for it, and the second run turned it red.
+
+| Id | Mutation | Red cases | Red fences |
+|---|---|---|---|
+| M1 | The drain drops each session | 5 | `email-drain-own-session` |
+| M2 | The pop-out hands over the result of the drain, as on `main` | 3 | `email-popout-unsaved`, `email-popout-handover` |
+| M2b | The pop-out reads `draftStatus` | 2 | `email-popout-unsaved` |
+| M3 | The discard of EmailDetail compares the From again | 2 | `email-discard-old-mailbox`, `email-autosave-flush` |
+| M3b | The discard of ComposePanel compares the From again | 2 | `email-discard-old-mailbox`, `email-autosave-flush` |
+| M4 | The pick limit drops `readingBytes` | 1 | `email-pick-in-flight` |
+| M5 | The release runs twice | 1 | `email-pick-in-flight` |
+| M6 | The pop-out awaits the drain before `openCompose` | 2 | `email-popout-handover`, `email-popout-unsaved` |
+| M7 | `supersededDraft` ignores the session | 1 | `email-switch-old-mailbox` |
+| X1 | The drain drops a pending save of another session | 1 | `email-drain-own-session` |
+| X2 | `after` does not wait for the save that runs | 1 | `email-popout-handover` |
+| X3 | ComposePanel applies the hand-over to a later session | 1 | `email-popout-handover` |
+| X4 | ComposePanel reads the stale list after the drain | 1 | `email-discard-old-mailbox` |
+| X5 | `draftsToDiscard` drops the stale list | 2 | `email-discard-old-mailbox` |
+| X6 | `draftsToDiscard` drops the last save | 2 | `email-discard-old-mailbox` |
+| X7 | EmailDetail releases the pick only after a read that works | 1 | `email-pick-in-flight` |
+| X8 | EmailDetail deletes a draft that the stale list deletes too | 1 | `email-switch-old-mailbox` |
+| X9 | ComposePanel ignores a change of From before the hand-over | 1 | `email-popout-handover` |
+| X10 | The DraftCard drains with no session | 2 | `email-drain-own-session`, `email-autosave-flush` |
+| X11 | The pop-out deletes the stale drafts before the drain settles | 1 | `email-autosave-flush` |
+
+**Review round 1 (2026-10-06).** The verifier failed the branch on one fence that was missing, and
+the reviewer asked for changes. Neither found a P0 or a P1. This round closes the six items below.
+
+1. **An older save wrote over the record of the hand-over (reviewer P2).** The apply of the
+   hand-over ran on a `.then` of the promise, outside the order of the chain. So a slow save of an
+   earlier session could settle after it and replace its record. Then the next save of the new
+   session made a second draft. `recordSave` now keeps the record of the newer session, and each
+   write of `lastSaveRef` goes through it.
+2. **The order of the apply (found in this round).** With `recordSave` only, the fault moved to the
+   older session. Its slow first save and its flushed edit then read the record of the new session.
+   So the edit made a second draft. `after(promise, apply)` now runs the apply in the order of the
+   chain. Each save before it settles first, and each save after it starts later.
+3. **Departure 1 had no fence (verifier P2, R7).** A case now checks that the record comes before
+   the guard of the session. MA moves the record after the guard, and the case turns red.
+4. **The f8 fence read only the text `await` (reviewer P3).** A case now counts the braces and the
+   parentheses before `openCompose({`. A call inside a callback of the drain leaves them open, and
+   MT turns the case red.
+5. **A one-render window of departure 2 (verifier P3).** `changeFrom` of ComposePanel sets
+   `liveFromRef` before its first `await`. A save that settles in that wait can put the draft on the
+   stale list. So `changeFrom` adds no id twice.
+6. **The Bcc case of f14 (both).** This section records it above, with no change of behaviour.
+
+**Departure of review round 1.** The request of the round named `recordSave` only. With only
+`recordSave`, the case of item 2 made a second draft, so the build added the ordered apply too. Each
+of the two cases has a fence.
+
+**The fences after review round 1.** The fence file holds 111 cases, 8 more than before. The run of
+`src/app/email` has 723 cases.
+
+**Mutations of review round 1, as run (2026-10-06).** The script ran the 20 rows of before again,
+and 6 new rows. Each of the 26 turned a fence red, and `git status` was clean after each row. X2 and
+X3 now turn more cases red, because the new cases read the same code.
+
+| Id | Mutation | Red cases | Red fences |
+|---|---|---|---|
+| MR | `recordSave` drops the session comparison | 2 | `email-popout-handover` |
+| MA | The hand-over records the draft after the guard of the session | 1 | `email-popout-handover` |
+| MO | `after` runs the apply outside the order of the chain | 2 | `email-popout-handover` |
+| MO2 | ComposePanel applies the hand-over on `handOver.then` | 4 | `email-popout-handover`, `email-autosave-flush` |
+| MT | The pop-out calls `openCompose` in a `.then` of the drain | 1 | `email-popout-handover` |
+| MF | `changeFrom` sets the From of now after the wait | 1 | `email-popout-handover` |
+
+**The re-verify of round 1 (2026-10-06): PASS.** No P0, no P1 and no P2. The re-verifier ran the
+scenario of the reviewer and the case of the implementer through the real code. Each gave one draft
+for each reply. A copy of the chain with `recordSave` alone gave two drafts, so the ordered apply is
+necessary. A rejected hand-over and an apply that throws both free the chain.
+
+- **P3, fixed.** Two saves that settle in the wait of `changeFrom` can give one id. The stale branch
+  of ComposePanel pushed it twice, and the second delete showed "Failed to delete email". The push
+  now skips an id that the list holds. A source fence holds it, and its mutation went red.
+- **Known limit EM-G3c-3-f15.** The member changes the From, and the signature fetch is slow. A save
+  of the old From that settles in that wait goes on the stale list. If the member then closes the
+  composer, no save of the new From runs, so the list is never dropped. One or two copies stay in
+  the old mailbox. Before round 1 the same steps left one draft. The window needs a signature fetch
+  that takes more than 1.2 seconds.
+- **Note.** The MT row counts 1 red case. Another form of the same mutation turns 4 red, so the
+  count depends on the form.
+
+#### 12.3.4 EM-G3b — a move to a user label, and the filter list
+
+**Status.** ✅ MERGED (#645, 2026-10-05). The audit of 2026-10-05
+gave GO-NARROWED. Its corrections are E-M1 to E-M13, E-F1 to E-F5 and E-V1 to E-V3, and the scope
+below holds each one. The audit checked each anchor against the code on 2026-10-05. The as-built
+notes, review round 1 and the mutation table are at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE. No migration, no flag and no change to SQL text.
+
+**Order.** After EM-G2 (#626). The orchestrator decided O-GM-1 on 2026-10-04 (§12.2).
+
+**Size.** M. About 300 lines with tests. The audit changed it from S.
+
+**Scope — the move.**
+
+1. **The name of the target (E-M1, E-M2, E-M3).** `GmailProvider.move_to_folder`
+   (`gmail.py:1506-1521`) resolves the name with `canonical_folder()`. So "Bin", "Deleted Items"
+   and "Junk Email" reach the system branch. The move refuses `sent` and `drafts` with a
+   `ValueError`. It also refuses a name that resolves to a reserved system label or a
+   `CATEGORY_*` label. Without that rule, "Starred" stars the message and archives it.
+2. **A move to a user label (GM-14, D-EM-33, E-M5).** For any other name, the move finds or
+   creates the user label (`_ensure_label_id`, `gmail.py:1583-1621`). One `modify` call adds the
+   label and removes `INBOX`, `TRASH` and `SPAM`. The move returns `None`, because Gmail keeps the
+   id. The name goes to Google unchanged, also with a "/" in it.
+3. **A failed label (E-M4).** When `_ensure_label_id` returns `None`, the move raises. A quiet
+   return lets the caller store `archive` for a move that did not occur. Outlook raises in the
+   same case (`outlook.py:687`).
+4. **The folder after a move (E-M6, E-M7).** `BaseEmailProvider.folder_after_move(name)` returns
+   the folder key that a move to `name` leaves. The base returns `canonical_folder(name)`.
+5. **The Gmail folder after a move.** Gmail returns the key for inbox, archive, trash and junk. It
+   returns `None` for sent and drafts, and `archive` for a user label.
+6. **The helper (E-M6).** A module helper calls `folder_after_move`. It falls back to
+   `canonical_folder(name)` when the provider is no `BaseEmailProvider`, because some fakes do not
+   subclass the base (`base.py:439-440`).
+7. **The rule move (`actions.py:439-440`, E-M12).** It stores the folder from the helper. After a
+   Gmail label move it calls `mirror_label` (`actions.py:100-111`). So `categories` also matches
+   the next parse.
+8. **The PATCH of a message (`messages.py:795-797`, E-M8, E-M9).** The route builds the provider
+   before it writes the folder. `_provider_for_message` makes no network call
+   (`core.py:164-186`). The route stores the folder from the helper. When the helper gives
+   `None`, the route answers 400 and writes nothing. The push stays best-effort.
+9. **The case of a new name (E-M9).** The PATCH sends the name with `.strip()`, not `.lower()`
+   (`messages.py:852`). So a new label or Outlook folder keeps its case, as a rule move does.
+10. **The restore of Reply Zero (`replyzero.py:1063-1067`, E-M10).** It compares the folder of the
+    row with the helper, not with `canonical_folder` of the rule label. So the restore finds a
+    Gmail rule move.
+11. **The no-op log (`actions.py:445-448`, E-M11).** `email.move_folder_noop` fires only for a
+    provider that rekeys its ids (`REKEYS_MESSAGE_IDS`), or that keeps the move of the base. IMAP
+    has the one real no-op left, so it still logs. The docstring at `base.py:557` says that IMAP
+    does COPY and EXPUNGE. That is false, and the slice corrects it.
+
+**Scope — the filter list.**
+
+12. **The read (GM-15, E-F1).** Gmail `list_filters` reads `users.settings.filters.list`. Google
+    answers with the key `filter`, which is singular. It answers `{}` for a mailbox with no filter.
+    Each filter maps to `{id, name, enabled, from_addresses, summary}`, as `outlook.py:1177-1221`
+    does.
+13. **The name and the senders (E-F4).** A Gmail filter is always enabled. The name is
+    `From <from>`, else the query, else the subject. `from_addresses` holds `criteria.from` as
+    one whole string, because it is a Gmail query such as "a OR b".
+14. **The summary (E-F2, E-F3).** The summary is a list of tokens in this order:
+    `subject contains “x”`, `to contains “x”`, `matches “q”`, `has attachment`, `label: <name>`,
+    `skip inbox`, `mark read`, `star`, `forward` and `trash`. A label id maps to its name through
+    `_label_name_id_map()` (`gmail.py:1551-1581`). An unknown id shows as it is. The map ignores
+    each other action.
+15. **The errors (E-F5).** A plain 403 gives `[]`. `GmailRateLimited` passes up, because
+    `rules.py:724-732` already answers `provider_rules_supported: false` for it.
+
+**Non-goals.** No edit of a Gmail filter. No change to `create_filter`. No parent label for a name
+with a "/".
+
+**Known limit EM-G3b-f1.** After a label move, a message in `SENT` or `DRAFT` keeps that folder at
+Gmail, because `SENT` ranks before `INBOX` (`gmail.py:55-61`). The row reads `archive` until the
+next sync files it again.
+
+**Known limit EM-G3b-f2 (E-M13).** The undo of a rule move (`runner.py:611-619`) adds `INBOX`
+again. The user label stays on the Gmail message.
+
+**Known limit EM-G3b-f3 (E-M10).** On Gmail, the restore of Reply Zero cannot tell a rule move
+from a later archive by the member. Both leave the row in `archive`.
+
+**Fences (R7).** A new `tests/unit/test_gmail_move_and_filters.py`.
+
+- `test_a_move_to_a_label_adds_it_and_removes_inbox`
+- `test_a_move_to_a_new_label_creates_it_first`
+- `test_the_folder_after_a_gmail_label_move_is_archive`
+- `test_a_rule_move_stores_the_folder_of_the_provider`
+- `test_list_filters_maps_criteria_and_actions`
+- `test_list_filters_answers_empty_on_a_403`
+- `test_a_gmail_move_to_an_alias_hits_the_system_branch`
+- `test_a_gmail_move_to_sent_or_drafts_is_refused`
+- `test_a_move_to_a_system_label_name_is_refused`
+- `test_a_failed_label_create_raises`
+- `test_a_move_from_trash_to_a_label_removes_trash`
+- `test_a_label_create_409_resolves_by_reread`
+- `test_a_patch_move_stores_the_folder_of_the_provider`
+- `test_a_patch_move_keeps_the_case_of_the_name`
+- `test_the_restore_finds_a_gmail_label_move`
+- `test_the_noop_log_still_fires_for_imap`
+
+**Mutations.** M1 drops `removeLabelIds`, and the move test fails. M2 makes Gmail return the label
+name from `folder_after_move`, and the folder test fails. M3 makes `list_filters` return `[]`, and
+the map test fails. The as-built notes name one mutation for each new fence.
+
+**R8 (E-V1).** The slice changes no SQL text, so R8 does not bind it. An implementer that changes
+SQL text adds a test on a real database.
+
+**Verify with (E-V2).**
+
+```bash
+uv run pytest tests/unit/test_gmail_move_and_filters.py tests/unit/test_email_unsubscribe.py \
+  tests/unit/test_email_provider_rules_listing.py tests/unit/test_email_labels_upstream.py \
+  tests/unit/test_email_two_way_sync.py tests/unit/test_email_thread_single_classification.py \
+  tests/unit/test_email_rule_action_failures.py tests/unit/test_email_rules_engine.py \
+  tests/unit/test_email_rekey_reclaim.py tests/unit/test_gmail_send_and_drafts.py -v -rs
+uv run ruff check apps/services/email_ingestion apps/services/gateway/gateway/routes/email \
+  tests/unit/test_gmail_move_and_filters.py
+```
+
+**As built (2026-10-05, branch `email-gmail-g3b`).** The build follows items 1 to 15 and the
+corrections of the audit. It adds no migration, no flag, no column and no SQL text. Production
+holds no Gmail mailbox, so no live mailbox changes.
+
+- **The move.** `GmailProvider.move_to_folder` reads the name with `canonical_folder`. Sent and
+  drafts raise `ValueError` before any request. Each other name that is no system folder goes to
+  `_user_label_id_for_move`.
+- **The system labels (E-M2, E-M3).** `_is_system_label_name` refuses a name in `_GMAIL_RESERVED`
+  and a name that starts with `CATEGORY_`, before any request. After `_ensure_label_id`, the move
+  also checks the id against the user labels. So a system label that Google adds later raises too.
+- **A failed label (E-M4).** When `_ensure_label_id` gives no id, the move raises `ValueError`.
+  `create_folder` raises the same class for the same case.
+- **The folder after a move.** Gmail also gives `None` for a system label name, because the move
+  refuses it. Item 5 names only sent and drafts, so this note makes item 5 complete.
+- **The helper (E-M6).** `local_folder_after_move` sits at the end of `base.py`. It calls the
+  method only on a `BaseEmailProvider`, so an `AsyncMock` fake makes no coroutine.
+- **The rule move (E-M12).** `_move_folder_action` in `actions.py` now holds the `MOVE_FOLDER`
+  branch. It asks the helper before the move, and a `None` answer raises before any provider call.
+  It calls `mirror_label` when the folder of the provider differs from `canonical_folder` of the
+  name. Only a Gmail user label does that. The complexity of `_apply_rule_actions` falls from 33
+  to 31.
+- **The PATCH (E-M8, E-M9).** `_folder_for_move` in `messages.py` builds the provider, asks the
+  helper and answers 400 for `None`. A provider that fails to build gives `canonical_folder(name)`.
+  The push then builds it again and logs the failure, as before. The push reuses the provider of
+  the folder step, and the complexity of `update_message` stays at 18.
+- **The no-op log (E-M11).** `_move_can_be_a_noop` is true when `REKEYS_MESSAGE_IDS` is `True`,
+  or when the class of the provider keeps `BaseEmailProvider.move_to_folder`. A test fake logs
+  nothing now.
+- **The filter list.** `list_filters` reads the labels only when a filter adds a user label. A
+  label id that is a system label name is no user label. The label token joins the names with
+  ", ", as Outlook does.
+- **The SQL (E-V1).** No statement changes its text. Only the values of `:f` and `:folder`
+  change.
+
+**Review round 1 (2026-10-05).** The verifier passed the slice, and the reviewer approved it. Both
+found P2 items, and this round closes five of them. No SQL text changes.
+
+1. **A blank name (reviewer P2-2, verifier P2-1).** `_move_target` in `messages.py` strips the
+   name once. A name that is empty after the strip answers 400 before any read or write, for each
+   provider. The helper and the provider get the same stripped string.
+2. **Archive and Junk from Trash (reviewer P2-3).** A Gmail move to Archive removes `INBOX`,
+   `TRASH` and `SPAM` (`_LABEL_MOVE_REMOVES`). A move to Junk adds `SPAM` and removes `INBOX` and
+   `TRASH` (`_JUNK_MOVE_REMOVES`). Gmail ranks `TRASH` first, so the old request left the message
+   in Trash. The Inbox and Trash moves do not change. The `ARCHIVE` and `MARK_SPAM` rule actions
+   and the cold sender archive now match their rows at Gmail. The batch archive of `bulk_apply`
+   (`_BULK_LABEL_OPS`) still removes `INBOX` only, and this round does not change it.
+3. **The reserved guard of the mirror (verifier P2-2).** `_writable_label` in `actions.py` is the
+   one check of an empty or reserved label. `push_label` and the mirror of a rule move both call
+   it. So a rule move to "Uncategorized" writes no mirror.
+4. **Known limit EM-G3b-f7 (reviewer P2-1)** is new, below. §12.3.12 lists it.
+5. **The mutation table (verifier P2-3).** The commit of the build said 24 mutations, and the
+   table held 23 rows. The table now states its count, with the rows of this round.
+
+**The fences, as built.** `tests/unit/test_gmail_move_and_filters.py` holds 21 fences and 51
+cases, and all are hermetic. Review round 1 added five fences and nine cases. A fake Gmail on
+`httpx.MockTransport` keeps the labels of the mailbox and of each message.
+
+| Test | What it proves |
+|---|---|
+| `test_a_move_to_a_label_adds_it_and_removes_inbox` | One `modify` adds the user label and removes `INBOX`, `TRASH` and `SPAM`. The parse then files the message as `archive`. |
+| `test_a_move_to_a_new_label_creates_it_first` | A new name becomes a label before the `modify`, with its case and its "/". |
+| `test_the_folder_after_a_gmail_label_move_is_archive` (14 cases) | Gmail, the base and the helper give the folder of each name. The helper calls nothing on an `AsyncMock` fake or on a plain fake. |
+| `test_a_rule_move_stores_the_folder_of_the_provider` | The rule move stores `archive` and mirrors the label. A fake keeps the canonical key. A refused move makes no call and no write. |
+| `test_list_filters_maps_criteria_and_actions` | Three filters map to their name, their senders and their tokens, in order. An unknown label id shows as it is. A mailbox with no filter gives `[]` with no label read. |
+| `test_list_filters_answers_empty_on_a_403` | A plain 403 gives `[]` after one try. A 429 past the tries raises `GmailRateLimited`. |
+| `test_a_gmail_move_to_an_alias_hits_the_system_branch` (6 cases) | Each alias sends the request of its system folder and reads no label. |
+| `test_a_gmail_move_to_sent_or_drafts_is_refused` (4 cases) | Each name raises `ValueError` before any request. |
+| `test_a_move_to_a_system_label_name_is_refused` (6 cases) | A reserved name raises before any request. A system label outside the reserved set raises with no create and no `modify`. |
+| `test_a_failed_label_create_raises` | A create that Gmail refuses raises, and no `modify` goes out. |
+| `test_a_move_from_trash_to_a_label_removes_trash` | A message in Trash or Spam leaves for `archive`. |
+| `test_a_label_create_409_resolves_by_reread` | A 409 reads the labels again, and the move uses that label. |
+| `test_a_patch_move_stores_the_folder_of_the_provider` | The route builds the provider after the ownership read only, and stores `archive`. "Sent" answers 400 with no write and no request. A provider that fails to build stores the canonical key. |
+| `test_a_patch_move_keeps_the_case_of_the_name` | The provider gets "Cold Email", and a new Gmail label keeps that case. |
+| `test_the_restore_finds_a_gmail_label_move` | The restore moves the `archive` row of a rule label back to the Inbox. A refused rule label matches no row. |
+| `test_the_noop_log_still_fires_for_imap` | IMAP and a provider that re-keys log the no-op. A Gmail label move logs nothing. |
+| `test_a_patch_move_to_a_blank_name_is_refused` (4 cases) | Round 1. For an Outlook provider and for Gmail, `""` and `"   "` answer 400. No statement runs, and the provider gets no call. |
+| `test_a_patch_with_no_folder_is_no_move` | Round 1. A PATCH with `is_read` only writes the flag and no folder, and calls no move. |
+| `test_a_gmail_move_from_trash_to_archive_removes_trash` | Round 1. Archive removes `INBOX`, `TRASH` and `SPAM`, and a message from Trash or Spam reaches `archive`. |
+| `test_a_gmail_move_from_trash_to_junk_removes_trash` | Round 1. Junk removes `INBOX` and `TRASH`, and a message from Trash reaches `junk`. The Inbox move keeps its request. |
+| `test_a_gmail_rule_move_to_a_reserved_name_writes_no_mirror` (2 cases) | Round 1. A Gmail rule move to "Uncategorized" stores `archive` and writes no mirror. |
+
+**Mutations, as run (2026-10-05).** A script replaced one anchor for each mutation and ran the
+fence file. Then it restored the file with `git checkout`. Each time `git diff` was clean and the
+SHA-256 matched. Each mutation turned its fence red. The table holds 29 mutations: 23 of the build
+(M1 to M17) and 6 of review round 1 (M18 to M21).
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M1 | The label move drops `removeLabelIds` | 5 tests, with the label move test |
+| M2 | Gmail gives the label name from `folder_after_move` | 5 cases, with the folder test |
+| M3 | `list_filters` returns `[]` | the map test |
+| M4 | The move sends a new label name in lower case | 3 tests, with the new label test |
+| M5 | The rule move stores `canonical_folder` of the name again | the rule move test |
+| M5b | The rule move writes no mirror | the rule move test |
+| M6 | A plain 403 raises | the 403 test |
+| M6b | `list_filters` swallows `GmailRateLimited` | the 403 test |
+| M7 | The move reads the name with `.lower()` | 5 cases, with the alias test |
+| M8 | The move does not refuse sent and drafts | 2 cases of the sent and drafts test |
+| M9 | The move skips the check of a system label name | the 6 cases of the system label test |
+| M9b | The move skips the check against the user labels | the 6 cases of the system label test |
+| M10 | A failed label create returns with no error | the failed create test |
+| M11 | The label move removes `INBOX` only | 5 tests, with the Trash test |
+| M12 | A failed create reads no labels again | the 409 test |
+| M13 | The PATCH stores the name of the request | 2 tests, with the PATCH folder test |
+| M13b | The PATCH does not refuse a refused move | the PATCH folder test |
+| M13c | A provider that fails to build fails the PATCH | the PATCH folder test |
+| M14 | The PATCH sends the name with `.lower()` | the case test |
+| M15 | The restore compares with `canonical_folder` of the rule label | the restore test |
+| M16 | The no-op log fires only for a provider that re-keys | the IMAP test |
+| M16b | The no-op log fires for each provider, Gmail too | the IMAP test |
+| M17 | The helper calls `folder_after_move` on any provider | 17 cases, with the folder test |
+| M18 | `_move_target` lets a blank name through | the 4 cases of the blank name test |
+| M18b | `_move_target` reads no `folder` as a blank name | the test of a PATCH with no folder |
+| M18c | The push sends the name of the request, not the stripped name | the case test |
+| M19 | The Archive move removes `INBOX` only | the Archive test, and the Archive case of the alias test |
+| M20 | The Junk move removes `INBOX` only | the Junk test, and 2 cases of the alias test |
+| M21 | The mirror of a rule move skips `_writable_label` | the 2 cases of the reserved name test |
+
+**Known limit EM-G3b-f4 (found in the build).** A PATCH move to a Gmail user label puts the label
+on the message in Gmail, and the row stores `archive`. The PATCH writes no mirror into
+`categories`, so the chip shows after the next sync. Item 8 does not ask for the mirror.
+
+**Known limit EM-G3b-f5.** The mirror of a rule move writes the name of the rule. When Gmail holds
+that label in another case, the next parse writes the name that Gmail holds.
+
+**Known limit EM-G3b-f6.** `canonical_folder` reads an empty name as `inbox`, so a Gmail move with
+an empty name now goes to the Inbox. Before the slice, Gmail did nothing for it. Since review round
+1, the PATCH refuses a blank name with a 400. A rule action with a label of spaces still reads it
+as `inbox`, because `_apply_rule_actions` checks only that the label is not empty.
+
+**Known limit EM-G3b-f7 (review round 1, reviewer P2-1).** `DAMAGED_CONVERSATION_THREADS_SQL`
+(`replyzero.py:211-212`) still compares `LOWER(TRIM(ea.label))` with the folder of the row. The
+live restore now asks the helper (`replyzero.py:1068`). A Gmail rule move to a custom label leaves
+the row in `archive`, so the SQL finds no match for it. So for a Gmail mailbox with a custom
+`MOVE_FOLDER` rule on a `NEEDS_REPLY` thread, the health metric counts 0. And
+`scripts/repair_conversation_threads.py` skips the thread.
+
+Only a custom Gmail rule hits it, because each Gmail preset uses `LABEL`
+(`rules.py::_actions_for_preset`). The repair changes SQL text, so it needs an R8 test on a real
+database. A later slice owns it, before Gmail goes live. §12.3.12 lists it under "Before
+customers".
+
+#### 12.3.5 EM-G4 — the history cursor, in two slices
+
+**The split (E-B4, 2026-10-05).** The audit of EM-G4 found it too large for one PR, and the
+orchestrator accepted its split. EM-G4a is the rate-limit helper and the record of a failed fetch,
+items 8 to 10. EM-G4b is the cursor and its recovery after a 404, items 1 to 7 and 11. The recovery
+stays with the cursor. Each item keeps its number, so "EM-G4 item 4" still names one item.
+
+**The order.** EM-G4a goes first. It puts the helper at the client seam, so EM-G3a and EM-G4b get
+it with no change. EM-G3a and EM-G4b then go in any order.
+
+##### 12.3.5.1 EM-G4a — the rate limits and the fetch record
+
+**Status.** ✅ MERGED #629 (2026-10-05). The as-built notes and
+the mutation table are at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE. No SQL, no migration, no column and no flag. Gmail stays dark. Production
+holds no Gmail mailbox, and D-EM-35 keeps the Gmail connect hidden on a box with no Google app.
+
+**Order.** After EM-G2, which merged as #626. Before EM-G3a and EM-G4b.
+
+**Size.** S. About 120 lines in `gmail.py`, with tests of about 300 lines.
+
+**Scope.**
+
+8. **Rate limits (GM-9).** One helper wraps each Gmail call. A 429, or a 403 with the reason
+   `rateLimitExceeded` or `userRateLimitExceeded`, waits for `Retry-After` or a back-off.
+9. **The limit of tries.** The helper tries 3 times, then raises a typed error. The scheduler
+   counts that error as a failed sync, backs off, and keeps the cursor.
+10. **No silent skip.** A fetch that still fails logs `gmail.fetch_failed` with the message id. It
+    goes into `SyncResult.errors` on the history path.
+
+**The rules of the helper (the dispatch of 2026-10-05).**
+
+- **One seam.** The helper sits at the client seam, `_get_client` in `gmail.py`, beside
+  `RefreshingBearer`. Each call through the client gets it, and no call site changes.
+- **A 401 still refreshes once.** The helper wraps the flow of `RefreshingBearer`. A rate limit and
+  a 401 in one call cost one refresh.
+- **A plain 403 is a refusal.** A 403 with any other reason, or with no reason, goes back to the
+  caller at once. A second try cannot help a missing scope or a policy.
+- **A 5xx is not a rate limit.** Items 8 to 10 name only the 429 and the two reasons of a 403. So a
+  5xx goes back to the caller, as it does today.
+- **No send goes out twice.** Each answer of Google proves that the request reached Google. So the
+  helper sends a request again only when a second try cannot change the mailbox. That is a GET, a
+  PUT or a DELETE, or a POST to `modify`, `batchModify`, `trash` or `untrash`. Each other POST goes
+  once, and that includes `messages.send`, `drafts.create` and `drafts.send`.
+- **The wait has a bound.** One wait is 30 seconds at most. A `Retry-After` that asks more ends the
+  tries at once, because a shorter wait gets one more refusal. The waits of one client add up to 60
+  seconds at most. One provider serves one sync cycle, so a cycle waits 60 seconds at most for rate
+  limits.
+- **A rate limit is not a skipped fetch.** A fetch whose tries are spent raises, and the sync fails.
+  So the history path never moves the cursor past a message that it did not read.
+- **The record names no content.** `gmail.fetch_failed` names the message id, the class of the
+  error and the HTTP status. It never names a subject or an address.
+- **Two calls use their own client.** The `authenticate` probe and the token post do not go
+  through `_get_client`, so the helper does not wrap them. A probe that Google refuses for a rate
+  limit fails the cycle, and the loop backs off.
+
+**Non-goals.** No cursor (EM-G4b). No fetch in parallel (EM-G5). No change to Outlook or IMAP.
+
+**Fences (R7).** A new `tests/unit/test_gmail_rate_limits.py`, with an `httpx.MockTransport` that
+answers as Gmail does. Each test drives the real `_get_client`, and no test sleeps.
+
+- `test_get_client_puts_the_helper_on_each_call`
+- `test_a_429_waits_for_retry_after_and_succeeds`
+- `test_a_403_with_a_rate_limit_reason_retries`
+- `test_a_plain_403_is_not_retried`
+- `test_a_5xx_is_not_retried`
+- `test_the_tries_are_bounded_and_end_in_a_typed_error`
+- `test_a_retry_after_past_the_cap_ends_the_tries`
+- `test_the_total_wait_of_a_client_is_bounded`
+- `test_a_send_is_not_retried_after_the_request_was_sent`
+- `test_a_post_that_sets_a_state_retries`
+- `test_the_401_refresh_still_runs_once`
+- `test_a_failed_fetch_is_recorded_and_the_other_messages_parse`
+- `test_a_failed_fetch_on_the_history_path_goes_into_errors`
+- `test_the_sweep_puts_the_fetch_records_of_its_call_into_errors`
+- `test_a_rate_limited_fetch_fails_the_page`
+- `test_a_rate_limit_past_the_tries_fails_the_sync`
+
+The fences of EM-G4 named `test_a_429_backs_off_and_keeps_the_cursor` and
+`test_a_failed_fetch_leaves_a_record`. The tests above take their place. The cursor stays because
+the sync raises, so phase (d) never runs. The R8 test of EM-G4b proves the cursor write.
+
+**Mutations.** Each one must turn a named test red. M5 comes from the list of EM-G4, and the
+dispatch added M8. M9 to M17 cover the rules above. EM-G4b keeps M1 to M4, M6 and M7.
+
+| Id | Mutation | The test that fails |
+|---|---|---|
+| M5 | Remove the back-off, so a 429 goes back at once | the 429 test |
+| M8 | Retry a plain 403 | the plain-403 test |
+| M9 | Remove the limit of tries | the tries test |
+| M10 | Remove the wait budget of the client | the total-wait test |
+| M11 | Send each POST again | the send test |
+| M12 | Put back the silent skip | the fetch-record test |
+| M13 | Record and skip a fetch whose tries are spent | the rate-limited fetch test |
+| M14 | Swallow a rate limit in the label loop of the sweep | the failed-sync test |
+| M15 | `_get_client` uses the plain `RefreshingBearer` | the seam test |
+| M16 | Ignore `Retry-After` | the 429 test |
+| M17 | Wait for a `Retry-After` past the cap | the cap test |
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_rate_limits.py tests/unit/test_gmail_parse.py \
+  tests/unit/test_email_provider_401_retry.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_email_import_batches.py tests/unit/test_email_folders.py -v -rs
+uv run ruff check apps/services/email_ingestion tests/unit/test_gmail_rate_limits.py
+```
+
+The run must show 0 skips. `test_email_provider_401_retry.py` holds R8 cases, so the database
+must be up.
+
+**As built (2026-10-05, branch `email-gmail-g4a`).** The build follows items 8 to 10 and the rules
+above. It adds no migration, no flag, no column and no SQL. Production holds no Gmail mailbox, so
+no live mailbox changes.
+
+- **The seam.** `GmailBearer` is a subclass of `RefreshingBearer`, and `_get_client` sets it. So
+  the fence of EM-T4c, `isinstance(client.auth, RefreshingBearer)`, still holds. Each try runs the
+  flow of the parent class, so its one refresh on a 401 does not change.
+- **What is a rate limit.** `_is_rate_limit` is true for a 429. It is true for a 403 when one
+  `error.errors[].reason` is one of the two names. It reads the body of a 403 only.
+- **What goes again.** `_repeatable` is true for GET, HEAD, PUT and DELETE. It is true for a POST
+  whose path ends in `/modify`, `/batchModify`, `/trash` or `/untrash`. Each other POST goes once.
+- **The wait.** `Retry-After` sets the wait, in seconds or as an HTTP date. With no value, the
+  back-off is 1 second, then 2 seconds, and each gets up to 1 second more at random.
+- **The bounds.** `GMAIL_MAX_TRIES` is 3, `GMAIL_MAX_WAIT_SECS` is 30 and
+  `GMAIL_WAIT_BUDGET_SECS` is 60. A wait past either bound ends the tries at once. So one request
+  waits 60 seconds at most, and one client waits 60 seconds at most in all.
+- **The typed error.** `GmailRateLimited` is an `httpx.HTTPStatusError`, so each caller that
+  handles an HTTP failure handles it too. Its message names the method and the path, and no query.
+- **The logs.** `gmail.rate_limited` logs each wait, and `gmail.rate_limit_gave_up` logs the end of
+  the tries. Both name the method, the path and the status only.
+- **The fetch record.** `_record_fetch_failure` logs `gmail.fetch_failed` with the message id, the
+  class of the error and the status. It adds the record to `fetch_failures` on the provider. The
+  history path puts the record into `SyncResult.errors`, as item 10 says. The sweep with no cursor
+  and the deep sync put the records of their own call there too.
+- **A rate limit fails the sync.** `list_messages` raises a `GmailRateLimited` again. Each loop of
+  `sync_messages` that skips a failed label calls `_raise_rate_limit` first. One named helper keeps
+  the complexity of `sync_messages` at 25, the value on main.
+- **The size.** The build is larger than its estimate of S. It changes 240 lines of `gmail.py`,
+  and most of them are comments. The new test file has 582 lines.
+- **Anchors.** At `ba723e0f1`, `_get_client` is at `gmail.py:326-337`, not at `:185-196`, because
+  EM-G2 moved it. `RefreshingBearer` is at `base.py:51`.
+
+**The fences, as built.** `tests/unit/test_gmail_rate_limits.py` holds 36 cases, and all are
+hermetic. A fake Gmail on `httpx.MockTransport` answers the client, the `authenticate` probe and
+the token post.
+
+| Test | What it proves |
+|---|---|
+| `test_get_client_puts_the_helper_on_each_call` | The client of `_get_client` uses `GmailBearer`, which is still a `RefreshingBearer` of the provider. |
+| `test_a_429_waits_for_retry_after_and_succeeds` (2 cases) | `Retry-After` in seconds and as an HTTP date sets the one wait, and the second try succeeds. |
+| `test_a_403_with_a_rate_limit_reason_retries` (2 cases) | Each of the two reasons gets a back-off from 1 to 2 seconds and a second try. |
+| `test_a_plain_403_is_not_retried` (5 cases) | A scope, a daily limit, a policy, no reason and a body that is not JSON each go back after one try. |
+| `test_a_5xx_is_not_retried` (2 cases) | A 500 and a 503 go back after one try, with no wait. |
+| `test_the_tries_are_bounded_and_end_in_a_typed_error` | 3 tries and 2 waits, then `GmailRateLimited` with no query in its message. |
+| `test_a_retry_after_past_the_cap_ends_the_tries` | A `Retry-After` of 31 seconds ends the tries after one try. |
+| `test_the_total_wait_of_a_client_is_bounded` | Four calls wait 50 seconds in all. Each call past the budget stops at its first refusal. |
+| `test_a_send_is_not_retried_after_the_request_was_sent` (3 cases) | `messages.send`, `drafts.create` and `drafts.send` each go once. |
+| `test_a_post_that_sets_a_state_retries` (3 cases) | `modify`, `trash` and `batchModify` get a second try. |
+| `test_the_401_refresh_still_runs_once` (2 cases) | A 429 and a 401 in either order cost one refresh. |
+| `test_a_failed_fetch_is_recorded_and_the_other_messages_parse` (3 cases) | A 500, a 404 and a failed parse each leave one record and one log line, with no subject and no address. |
+| `test_a_failed_fetch_on_the_history_path_goes_into_errors` | The history path puts the record into `SyncResult.errors`. |
+| `test_the_sweep_puts_the_fetch_records_of_its_call_into_errors` | The sweep returns the records of its own call, and a later call starts empty. |
+| `test_a_rate_limited_fetch_fails_the_page` | A fetch whose tries are spent raises, and it leaves no record. |
+| `test_a_rate_limit_past_the_tries_fails_the_sync` (7 cases) | Each loop of `sync_messages` raises the rate limit: the label list, a user label and a system label of the sweep and of the deep sync, and the history fetch. |
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against
+`test_gmail_rate_limits.py`. It then wrote back the original bytes of `gmail.py`, and the SHA-256
+matched each time. Each mutation turned a named test red.
+
+| Id | Mutation (`gmail.py`) | Red tests |
+|---|---|---|
+| M5 | A 429 is no rate limit | 18 tests, with both cases of the 429 test |
+| M8 | Each 403 is a rate limit | the 5 cases of `test_a_plain_403_is_not_retried` |
+| M9 | No limit of tries | `test_the_tries_are_bounded_and_end_in_a_typed_error`, the page test and the 7 cases of the failed-sync test |
+| M10 | No wait budget | `test_the_total_wait_of_a_client_is_bounded` |
+| M11 | Each POST goes again | the 3 cases of `test_a_send_is_not_retried_after_the_request_was_sent` |
+| M12 | `list_messages` skips a failed fetch with no record | the 3 cases of the fetch-record test, and the sweep-record test |
+| M12b | The history path drops the record | `test_a_failed_fetch_on_the_history_path_goes_into_errors` |
+| M12c | The sweep returns no record | `test_the_sweep_puts_the_fetch_records_of_its_call_into_errors` |
+| M13 | `list_messages` records and skips a fetch whose tries are spent | `test_a_rate_limited_fetch_fails_the_page` |
+| M14a to M14g | One loop of `sync_messages` swallows the rate limit, for each of the 7 loops | the matching case of `test_a_rate_limit_past_the_tries_fails_the_sync`, one for each |
+| M15 | `_get_client` uses the plain `RefreshingBearer` | 21 tests, with `test_get_client_puts_the_helper_on_each_call` |
+| M16 | `_next_wait` ignores `Retry-After` | 10 tests, with both cases of the 429 test |
+| M17 | A wait past the cap goes ahead | `test_a_retry_after_past_the_cap_ends_the_tries` |
+
+Under M9, httpx stopped the loop itself after 20 requests with `TooManyRedirects`. So the tests
+went red on the missing typed error, not on a hang.
+
+**Known limit EM-G4a-f1.** When a `batchModify` stops on a rate limit, `bulk_apply` falls back to
+one `modify` for each message, as it did before EM-G4a. With the budget spent, each `modify` stops
+at its first refusal. So a large bulk act can send many quick requests to a mailbox that Gmail
+limits. EM-G5 does not own the fix (E-G5-8, 2026-10-05). A later slice owns it, with its own
+audit, and §12.4 lists it before customers.
+
+**Known limit EM-G4a-f2.** On the history path, a fetch that fails with a 5xx leaves a record, and
+the cursor still moves past that message. Only a rate limit holds the cursor. EM-G4b decides
+whether a 5xx holds the cursor too. EM-G4b decided it: a 5xx holds the cursor for 3 cycles at
+most (§12.3.5.2).
+
+##### 12.3.5.2 EM-G4b — the history cursor and its recovery
+
+**Status.** ✅ MERGED #632 (2026-10-05). The as-built notes and
+the mutation table are at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE · R8, because the cursor write is SQL. No migration:
+`email_accounts.last_history_id` holds the cursor.
+
+**Order.** After EM-G4a, so each call of the cursor gets the rate-limit helper. A label event uses
+the folder rule of EM-G2. EM-G4b and EM-G3a go in any order.
+
+**Size.** L. About 250 lines in `gmail.py`, with tests of about 300 lines.
+
+**Scope.**
+
+1. **The seed (GM-16).** With no cursor, the sweep reads `users.getProfile` FIRST and keeps its
+   `historyId`. It then runs the sweep and returns that id as `new_history_id`. The next history
+   call reads each change made during the sweep.
+2. **Every page (GM-17).** The history call follows `nextPageToken` to the last page. The new
+   cursor is the `historyId` of the last answer.
+3. **The label events (GM-17).** `labelsAdded` and `labelsRemoved` add the message id to the fetch
+   set. The provider fetches such a message in full, as it fetches an added message. A fetch costs
+   the same quota in each format, and a full fetch keeps `has_attachments` right.
+4. **A deleted message.** `messagesDeleted` keeps the `[DELETED]` marker, which moves the row to
+   trash (`scheduler.py:522-526`). E-B2 below changes this for a row in `drafts`.
+5. **A stale cursor (GM-17).** A 404 from `history.list` is no failure. The provider seeds a new
+   cursor from `getProfile`, then sweeps all mail back to the catch-up watermark.
+6. **The sweep after a 404.** It lists with `q=after:<epoch seconds>` and `includeSpamTrash=true`,
+   and no `labelIds`. With no watermark, it uses the floor. It logs `gmail.history_reset` with the
+   mailbox id.
+7. **The catch-up (GM-18, D-EM-13).** With a cursor, `catch_up` stays unused, because the history
+   reads each change since the cursor. Gmail keeps its history for about one week, often longer.
+   Item 5 is the catch-up for a longer pause. The docstring at `gmail.py:898-900` says so.
+11. **Resync** still clears the cursor (`transport/sync.py:283-325`), and item 1 seeds a new one.
+
+**The rules of the audit (E-B1 to E-B3, 2026-10-05).**
+
+- **E-B1, a short sweep after a 404 keeps the stale cursor.** The sweep of item 6 reads at most
+  `DEEP_SYNC_MAX_PAGES` pages, the ceiling that `_sweep_label` has today. That is 50 pages of 100,
+  so 5,000 messages. When the sweep stops at that cap, or a page fails, it returns no new cursor.
+  The stale id then stays, and the next cycle gets the 404 and sweeps again.
+- **Open for the audit of EM-G4b.** A gap of more than 5,000 messages never completes, so each
+  cycle sweeps the same newest pages. The recommendation is the abandon rule of the Outlook sweep.
+  After `CATCH_UP_MAX_MISSES` (6) short cycles, the seed moves on, and the log names the gap.
+  The orchestrator took the recommendation on 2026-10-05. The as-built notes below record it.
+- **E-B2, a deleted draft. EM-G4b fixes it.** Each edit of a draft in Gmail web gives the draft a
+  new message id and deletes the old one. `messagesDeleted` then moves the old row to Trash through
+  `_TRASH_DELETED`, so each edit leaves one ghost in Trash. With the fix, a `[DELETED]` marker for
+  a row in `drafts` deletes that row and moves nothing to Trash. The audit of EM-G4b checks the
+  effect on IMAP, which sends the marker too.
+- **E-B3, the seed point of the first import.** `_sync_cycle` reads the seed BEFORE
+  `_import_in_batches`, when the mailbox has no cursor. A seed after the import loses each change
+  made in Gmail during the import, such as a read mark, an archive or a delete. The sweep of that
+  cycle then reads the history from that seed. A provider with no cursor gives no seed, so Outlook
+  and IMAP see no change.
+
+**Non-goals.** No push (EM-G6a, EM-G6b). No import change beyond the seed point of E-B3 (EM-G5).
+No change to Outlook or IMAP, except the E-B2 rule for a deleted draft.
+
+**Fences (R7).** A new `tests/unit/test_gmail_history_cursor.py`, with an `httpx.MockTransport`
+that answers as Gmail does.
+
+- `test_a_sweep_with_no_cursor_seeds_from_get_profile_first`
+- `test_history_reads_every_page`
+- `test_the_new_cursor_is_the_id_of_the_last_answer`
+- `test_inbox_removed_in_gmail_files_the_row_as_archive`
+- `test_unread_removed_in_gmail_marks_the_row_read`
+- `test_a_user_label_added_in_gmail_reaches_categories`
+- `test_a_stale_cursor_reseeds_and_sweeps_back_to_the_watermark`
+- `test_a_short_reset_sweep_keeps_the_stale_cursor` (E-B1)
+- `test_a_deleted_draft_leaves_no_row_in_trash` (E-B2)
+- `test_the_first_import_seeds_before_it_imports` (E-B3)
+- R8: `test_the_cursor_reaches_last_history_id_and_the_next_cycle_reads_it`. It drives
+  `_sync_cycle` twice with a Gmail fake, in the harness of `test_email_scheduler_tenancy.py`.
+
+**Mutations.** Each one must turn the named test red. M5 moved to EM-G4a, and EM-G4a uses M8 to
+M17. So a new mutation of EM-G4b takes M18 or a later id.
+
+- M1 removes the seed, and the seed test fails.
+- M2 reads one page, and the page test fails.
+- M3 drops the label events, and both label tests fail.
+- M4 raises on a 404, and the stale test fails.
+- M6 keeps the id of the first page, and the last-answer test fails.
+- M7 returns the seed after a reset sweep that stopped short, and the short-sweep test fails.
+- M18 moves a deleted draft to Trash, and the draft test fails.
+- M19 seeds after the import, and the seed-point test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_history_cursor.py tests/unit/test_email_scheduler_tenancy.py \
+  tests/unit/test_email_deep_sync.py tests/unit/test_email_provider_401_retry.py -v -rs
+uv run ruff check tests/unit/test_gmail_history_cursor.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 tests must show PASSED, with 0 skips. `ruff check apps/services/email_ingestion` exits 1 on
+old findings in other files, so the block above leaves it out (review round 1 F8). The counts of
+`gmail.py` and `scheduler.py` must stay at or below the counts on main.
+
+**As built (2026-10-05, branch `email-gmail-g4b`).** The build follows items 1 to 7 and 11, the
+rules E-B1 to E-B3, and the decisions of the orchestrator of 2026-10-05. It adds no migration, no
+column, no table and no flag. Production holds no Gmail mailbox, so no live mailbox changes.
+
+- **The seed (item 1, E-B3).** `GmailProvider.seed_cursor` reads `users.getProfile` through the
+  client seam. `BaseEmailProvider.seed_cursor` returns None, so Outlook and IMAP get no seed.
+  `scheduler._seed_before_import` calls it before `_import_in_batches` when the mailbox has no
+  cursor. The sweep of that cycle then reads the history from the seed.
+- **A failed seed.** A failed seed never stops new mail (owner answer Q2). The scheduler logs
+  `sync.seed_failed`, and the import and the sweep still run. The sweep then seeds on its own. A
+  second failure gives no cursor, and the next cycle seeds again. A spent rate limit on any seed
+  fails the sync, as each rate limit does. `ProviderRateLimited` in `base.py` marks it, and
+  `GmailRateLimited` adds that class (review round 1 F2).
+- **Every page (item 2).** `_read_history` follows `nextPageToken` to the last page. The new cursor
+  is the `historyId` of the last answer. One read has no page cap (known limit EM-G4b-f1).
+- **The events (items 3 and 4).** `messagesAdded`, `labelsAdded` and `labelsRemoved` put the
+  message id into one fetch set, so two events of one message cost one fetch. Each fetch is
+  `format=full`. `messagesDeleted` gives a `[DELETED]` marker, and the provider does not fetch a
+  deleted message.
+- **A defect that never ran.** The old marker set no `thread_id`, and `EmailMessage` needs it. So
+  the first delete on the old history path raised. The history path never ran, so production
+  never met it. The new fence found it.
+- **A stale cursor (items 5 and 6).** A 404 on any history page seeds again, then sweeps all
+  mail. The list sends `q=after:<epoch seconds>`, `includeSpamTrash=true` and no `labelIds`. It
+  reads back to the later of the catch-up watermark and the floor, because the floor binds each
+  sync (EM-T6a). With neither, it sends no `after:`.
+- **E-B1, a short sweep.** The sweep reads `DEEP_SYNC_MAX_PAGES` (50) pages at most. The page
+  cap, a page that fails, a fetch that a later cycle can fix or a failed seed makes it short. A
+  short sweep returns no new cursor. It sets `catch_up_incomplete` with the name `all mail`.
+  Phase (d) then keeps the stale cursor and the watermark, and the next cycle sweeps again.
+- **The abandon (the open point, decided).** The count of short sweeps is the count of the
+  Outlook catch-up: `_catch_up_misses` in `scheduler.py`, through `_watermark_outcome`. So one
+  policy and one constant serve both providers. The count lives in the process, only a loop cycle
+  adds to it, and a restart clears it. No column holds it.
+- **The write at the abandon.** After `CATCH_UP_MAX_MISSES` (6) short loop cycles,
+  `scheduler._next_cursor` writes `SyncResult.reseed_history_id`. That is the seed that the sweep
+  of the same cycle read first. The scheduler logs `email.gmail_history_gap_abandoned` with the
+  mailbox id and the count. A Resync recovers the older gap.
+- **The reset log.** `SyncResult.cursor_reset` marks each reset. The scheduler then logs
+  `gmail.history_reset` with the mailbox id, and says whether the sweep read to the end and
+  whether the seed worked. The provider does not know the mailbox id.
+- **A failed reseed (review round 1 F6).** The scheduler also logs `gmail.reseed_failed`, and the
+  cycle backs off, because the stale cursor stays. Before this rule, a sticky abandon swept all
+  mail at each interval while `getProfile` failed.
+- **A failed fetch (EM-G4a-f2, decided).** A fetch on the history path that fails with a 5xx or a
+  transport error keeps the OLD position. A later cycle cannot fix a 404, another 4xx or a parse
+  error, so they do not hold the cursor. The fetch record goes into `SyncResult.errors` each time.
+- **Where that count lives.** The stored cursor holds it. The cursor is a plain history id, or
+  JSON while a fetch holds it: `{"held_cycles": <n>, "history_id": "<id>", "v": 1}`. The count
+  belongs to the cursor, not to a message (review round 1 F1). The cursor holds no message id, so
+  its size never grows (F7). This form is the narrowest, with no migration and no second store,
+  and a restart keeps it.
+- **A history id.** A history id is ASCII digits only (F5). Text that is neither form is no
+  cursor, and a JSON object with no `history_id` is none either (F4). The sync then seeds again.
+- **The pass.** On the cycle that reaches `GMAIL_FETCH_HOLD_CYCLES` (3) held cycles, the cursor
+  moves to the last answer. Each message that still fails gets the log `gmail.fetch_abandoned` and
+  a record in `SyncResult.errors`, with its id only. A cycle with no failed fetch moves the cursor
+  and clears the count. So one bad message, or a new failure on each cycle, holds the cursor for
+  3 cycles at most. No line names a subject or an address.
+- **The sync log (F7).** `email_sync_log.provider_history_id` keeps a plain history id, and NULL
+  for a held JSON cursor (`scheduler._log_cursor`). The Outlook delta keeps its JSON out of the
+  log for the same reason (EM-T4d review round 1 F5).
+- **A rate limit.** A `GmailRateLimited` on a history page or on a fetch fails the cycle, as
+  EM-G4a says. The loop backs off, and the cursor does not move.
+- **E-B2, a deleted draft.** For a marker with `EmailMessage.deletion_marker`, `_write_messages`
+  runs `_DELETE_DELETED_DRAFT` before `_TRASH_DELETED`. Only the Gmail history sets that flag, so
+  a real subject cannot trigger the rule (review round 1 F3). A row in `drafts` or `draft`, in any
+  case, goes. Any other row moves to TRASH. Each table that points at a message row cascades or
+  sets NULL (the files 17, 19, 73 and 87 of `infra/postgres/`).
+- **No change to IMAP or Outlook.** Only `gmail.py` sets `deletion_marker`, so the E-B2 rule never
+  meets an IMAP or an Outlook row. Both keep the `seed_cursor` of the base class, so
+  `_seed_before_import` passes their stored value on as it is. ⚠️ A real message with the subject
+  "[DELETED]" still moves to TRASH, as on main. That defect of main stays out of this slice. ⚠️
+  The docstring of `reconcile.py` says that IMAP sends the marker. The code does not.
+- **Items 7 and 11.** The docstring of `sync_messages` says that a cursor makes `catch_up`
+  unnecessary. It also says that the sweep of item 6 is the catch-up after a long pause. A Resync
+  clears the cursor in phase (a), and the seed before the import gives the new one.
+- **The size.** `sync_messages` now calls `_deep_sweep`, `_history_sync` and `_first_sweep`, so
+  ruff finds no C901 in it. Ruff finds 18 issues in `gmail.py`, against 21 on main. The change to
+  `gmail.py` has about 550 lines, and the new test file has 1,235 lines.
+
+**Review round 1 (2026-10-05).** The verifier passed the branch with eight findings. The verifier
+also found the Outlook and IMAP sync the same as main in 10 cases. The build fixed each finding,
+and the bullets above give the rules that apply now.
+
+- **F1 (P2).** A count for each message let a new failure on each cycle hold the cursor with no
+  end. The count now belongs to the cursor.
+- **F2.** `_seed_before_import` degraded a spent rate limit. It now raises a
+  `ProviderRateLimited`, so the cycle fails before the import sends a request.
+- **F3.** The draft rule keyed on the subject "[DELETED]", so a real Outlook or IMAP draft with
+  that subject lost its row. It now keys on `deletion_marker`.
+- **F4 and F5.** A JSON object with no `history_id`, and a history id of other digits, now have
+  fences. A history id is ASCII digits only.
+- **F6.** The scheduler now logs a reset and a failed reseed with the mailbox id. A failed reseed
+  backs the loop off.
+- **F7.** The sync log keeps no held JSON, and the held cursor holds no message id.
+- **F8.** The "Verify with" block leaves out the ruff command that exits 1 on old findings.
+
+**Known limit EM-G4b-f1.** The cursor moves only at the end of a read. A backlog that one cycle
+cannot finish can fail on a rate limit before its end, such as a bulk label on 50,000 messages.
+The next cycle then starts again at the old cursor. A later slice can move the cursor at each
+history record.
+
+**The fences, as built.** `tests/unit/test_gmail_history_cursor.py` holds 49 cases. A fake Gmail
+on `httpx.MockTransport` answers the client. The provider sends no `authenticate` request, so the
+fake sees the calls of the sync in order.
+
+| Test | What it proves |
+|---|---|
+| `test_a_sweep_with_no_cursor_seeds_from_get_profile_first` | The first request is `getProfile`, and the sweep returns its id (item 1). |
+| `test_a_failed_seed_still_sweeps_and_returns_no_cursor` | A failed seed lands the mail and returns no cursor. |
+| `test_a_rate_limited_seed_fails_the_sync` | A rate limit on the seed raises. |
+| `test_text_that_is_no_cursor_seeds_again` (8 cases) | Text that is no cursor seeds again, and sends nothing to `history.list`. JSON with no `history_id` and other digits are no cursor (F4, F5). |
+| `test_history_reads_every_page` | Three pages, one fetch set, and no `messages.list` with a cursor (items 2 and 7). |
+| `test_the_new_cursor_is_the_id_of_the_last_answer` | The cursor is the id of the last page. |
+| `test_inbox_removed_in_gmail_files_the_row_as_archive` | A removed INBOX files the message as `archive`. |
+| `test_unread_removed_in_gmail_marks_the_row_read` | A read mark and a star reach the message, with one full fetch. |
+| `test_a_user_label_added_in_gmail_reaches_categories` | A user label reaches `categories`. |
+| `test_a_deleted_message_is_a_marker_and_is_not_fetched` | A deleted message is a marker, with no fetch (item 4). |
+| `test_a_rate_limit_on_a_later_history_page_fails_the_sync` | A rate limit on page 2 raises. |
+| `test_a_stale_cursor_reseeds_and_sweeps_back_to_the_watermark` | A 404 seeds, then lists all mail after the watermark (items 5 and 6). |
+| `test_the_reset_sweep_reads_back_to_the_later_of_watermark_and_floor` (3 cases) | The floor binds an older watermark, and with none the sweep sends no `after:`. |
+| `test_a_short_reset_sweep_keeps_the_stale_cursor` | At the page cap the sweep returns no cursor (E-B1). |
+| `test_a_reset_sweep_with_a_failure_is_short` (3 cases) | A failed page, fetch or seed makes the sweep short. |
+| `test_a_5xx_fetch_keeps_the_old_cursor` | A 5xx keeps the old position, and the record goes into `errors`. |
+| `test_a_transport_error_holds_the_cursor` | A transport error holds the cursor too. |
+| `test_a_held_cursor_holds_no_message_id` | 150 failed fetches leave a held cursor with three keys (F7). |
+| `test_a_failure_that_stays_does_not_hold_the_cursor` (3 cases) | A 404, a 400 and a failed parse move the cursor on. |
+| `test_a_message_that_fails_three_cycles_is_passed_and_recorded` | The third failure passes the message and records it. |
+| `test_a_new_failure_each_cycle_cannot_hold_the_cursor_longer` | With a new failure on each cycle, the cursor moves at cycle 3 and records both messages (F1). |
+| `test_a_message_that_recovers_drops_out_of_the_count` | A message that succeeds leaves the count. |
+| `test_the_first_import_seeds_before_it_imports` | The seed comes before the import, and an archive during the import lands (E-B3). |
+| `test_a_failed_seed_before_the_import_still_imports` | A failed seed before the import stops nothing. |
+| `test_a_resync_clears_the_cursor_and_seeds_a_new_one` | A Resync reads the history from the new seed (item 11). |
+| `test_a_provider_with_no_cursor_gets_no_seed` (2 cases) | Outlook and IMAP get no seed, and their value goes on as it is. |
+| `test_a_complete_reset_sweep_writes_the_seed` | Phase (d) writes the seed of a complete reset. |
+| `test_six_short_loop_cycles_abandon_the_gap_and_write_the_fresh_seed` | Five short loop cycles keep the cursor, and the sixth writes the seed. |
+| `test_a_short_cycle_of_a_member_act_does_not_count` | Six manual syncs abandon nothing. |
+| `test_a_spent_rate_limit_on_the_seed_fails_the_cycle_before_the_import` | Three 429 answers to the seed fail the cycle, and the import sends nothing (F2). |
+| `test_a_failed_reseed_logs_the_mailbox_and_backs_the_loop_off` | A sticky abandon with a failed reseed logs the mailbox and backs off (F6). |
+| `test_the_sync_log_keeps_no_held_cursor` | The sync log gets NULL for a held cursor, then the plain id (F7). |
+| R8 `test_the_cursor_reaches_last_history_id_and_the_next_cycle_reads_it` | Five cycles on Postgres: the seed, two pages, a held 5xx, a rate limit, then the move. The sync log holds no JSON. |
+| R8 `test_a_deleted_draft_leaves_no_row_in_trash` | A deleted draft row goes, and a deleted inbox row moves to TRASH (E-B2). |
+| R8 `test_a_real_subject_of_deleted_keeps_its_draft_row` | An Outlook draft and an IMAP draft with the subject "[DELETED]" keep their rows and attachments, as on main (F3). |
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against its named tests, with the
+database up. It then wrote back the original bytes. The SHA-256 of `gmail.py` and `scheduler.py`
+matched each time. Each mutation turned its named tests red. Review round 1 ran the whole table
+again, with M23 to M30 added.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M1 | `_first_sweep` reads no seed | `test_a_sweep_with_no_cursor_seeds_from_get_profile_first` |
+| M2 | The history read stops after one page | `test_history_reads_every_page` |
+| M3 | The label events leave the fetch set | the 3 label tests |
+| M4 | A 404 of `history.list` raises | `test_a_stale_cursor_reseeds_and_sweeps_back_to_the_watermark` |
+| M6 | The cursor keeps the id of the first page | `test_the_new_cursor_is_the_id_of_the_last_answer` |
+| M7 | A short reset sweep returns the seed | `test_a_short_reset_sweep_keeps_the_stale_cursor` |
+| M18 | A deleted draft moves to Trash (`scheduler.py`) | R8 `test_a_deleted_draft_leaves_no_row_in_trash` |
+| M19 | The seed comes after the import (`scheduler.py`) | `test_the_first_import_seeds_before_it_imports` |
+| M20 | The abandon rule never fires (`scheduler.py`) | `test_six_short_loop_cycles_abandon_the_gap_and_write_the_fresh_seed` |
+| M21 | A 5xx moves the cursor at once | `test_a_5xx_fetch_keeps_the_old_cursor` |
+| M22 | A failed fetch never moves the cursor | `test_a_message_that_fails_three_cycles_is_passed_and_recorded` |
+| M23 | F1: a count for each message again | `test_a_new_failure_each_cycle_cannot_hold_the_cursor_longer` |
+| M24 | F7: the held cursor stores the failed ids | `test_a_held_cursor_holds_no_message_id` |
+| M25 | F2: the seed degrades a spent rate limit (`scheduler.py`) | `test_a_spent_rate_limit_on_the_seed_fails_the_cycle_before_the_import` |
+| M26 | F6: a failed reseed does not back off (`scheduler.py`) | `test_a_failed_reseed_logs_the_mailbox_and_backs_the_loop_off` |
+| M27 | F7: the sync log keeps the held JSON (`scheduler.py`) | `test_the_sync_log_keeps_no_held_cursor` and the R8 cursor test |
+| M28 | F3: the draft rule keys on the subject again (`scheduler.py`) | R8 `test_a_real_subject_of_deleted_keeps_its_draft_row` |
+| M29 | F4: `KeyError` leaves the `except` of `_parse_cursor` | 2 cases of `test_text_that_is_no_cursor_seeds_again` |
+| M30 | F5: a history id takes any digit | 2 cases of `test_text_that_is_no_cursor_seeds_again` |
+
+#### 12.3.6 EM-G5 — the import and the reconcile, in two slices
+
+**The split (the audit of 2026-10-05).** The audit of EM-G5 cleared the import and stopped the
+reconcile. The confirm of the old item 6 can trash a live row, so the reconcile waits for a new
+confirm. EM-G5a is the import, items 1 to 5. EM-G5b is the reconcile, items 6 to 12, with the rule
+E-G5-9. Each item keeps its number, so "EM-G5 item 4" still names one item.
+
+**The rules of the audit (E-G5-1 to E-G5-10).** E-G5-3 to E-G5-8 bind the build of EM-G5a, and
+§12.3.6.1 holds them. E-G5-9 binds EM-G5b, and §12.3.6.2 holds it. The other three rules correct
+this document.
+
+- **E-G5-1, the anchors.** GM-8, GM-19, GM-20 and item 7 name the lines at `a9a08deb9` (§12.1).
+- **E-G5-2, the verify block.** The ruff line names files only. The pytest line adds the four
+  files that the import touches (§12.3.6.1).
+- **E-G5-10, EM-G3a-f3.** No reconcile reads a row in `trash` (`reconcile.py:45`). So the text of
+  EM-G3a-f3 was false, and §12.3.3 corrects it. No slice owns that row yet.
+
+##### 12.3.6.1 EM-G5a — the import
+
+**Status.** ✅ MERGED (#641, 2026-10-05). The audit of 2026-10-05
+cleared it after E-G5-1 to E-G5-8 landed. The as-built notes and the mutation table follow the
+verify block.
+
+**Gate.** 🟢 AGENT-SAFE · R8. No migration, no column and no flag. Gmail stays dark (D-EM-36).
+
+**Order.** After EM-G4a and EM-G4b. The import uses the rate-limit helper of EM-G4a. The seed
+before the import (EM-G4b E-B3) stays as it is: `_sync_cycle` seeds at `scheduler.py:1421`,
+before `_import_in_batches` at `:1426`.
+
+**Size.** L. About 250 lines in `gmail.py`, with tests of about 300 lines.
+
+**Scope.**
+
+1. **One list for all mail (GM-8, GM-19).** Gmail overrides `import_batches`. It pages one
+   `messages.list` with `q=after:<since> before:<until>` in epoch seconds, `includeSpamTrash=true`
+   and no `labelIds`.
+2. **The order.** Gmail lists the newest mail first, so each page is one batch. Each batch is
+   sorted again by `received_key`, and a message newer than `until` drops, as in the base.
+3. **The resume.** A resume passes `before:` the point that the import reached (EM-T6b, D-EM-13).
+4. **The fetch.** The import fetches each page of ids in parallel, with at most 10 calls at once,
+   through the rate-limit helper. It fetches a message with several labels once.
+5. **The estimate (D-EM-16).** The import awaits `on_estimate` once, with the
+   `resultSizeEstimate` of the first answer.
+
+**The rules of the build (E-G5-3 to E-G5-8).**
+
+- **E-G5-3, the resume bound.** `before:` is the whole second of `until`, plus 1 second, as in
+  `outlook.py:118-133`. So a resume reads the second that it reached again. The upsert makes the
+  overlap harmless. Fence: `test_a_resume_reads_the_second_it_reached_again`.
+- **E-G5-4, a failed fetch.** A failure that a later cycle can fix, a 5xx or a transport error,
+  fails the import. The resume then reads that message again. A failure that stays, a 404 or a
+  parse error, keeps its record (EM-G4a item 10), and the batch goes on. Fence:
+  `test_a_transient_fetch_failure_fails_the_import`.
+- **E-G5-5, no fetch in flight at a yield.** Each page gathers all of its fetches before it
+  yields. A rate limit cancels the other fetches of the page and raises. The import stops after
+  the batch that reaches the storage limit (`scheduler.py:919-923`), and `aclosing` closes it.
+  Fence: the storage limit stops the import with no fetch in flight.
+- **E-G5-6, the page cap.** The import reads a set number of pages at most, far above the 50
+  pages of the deep sweep. At the cap it ends and logs `gmail.import_capped`. The model is
+  `IMPORT_MAX_PAGES` of Outlook (`outlook.py:1353`).
+- **E-G5-7, the sweep half of GM-8.** EM-G5a fixes the import only. Known limit EM-G5-f1 below
+  records the sweep, and the comment at `gmail.py:1967` must say so.
+- **E-G5-8, the deep sweep stays.** `_deep_sweep` keeps its fences: M14 of
+  `test_gmail_rate_limits.py`, and `test_email_deep_sync.py`. A new fence proves that
+  `import_batches` never calls `sync_messages(deep=True)`. EM-G4a-f1 is not part of EM-G5, and
+  §12.4 lists it before customers.
+
+**Non-goals.** No `message_exists`, no change to `import_full_snapshot`, no change to
+`reconcile.py` and no change to `_confirm_gone` (EM-G5b). No change to the default of the base
+class, so IMAP keeps it. No change to the progress UI. No change to the storage limit.
+
+**Fences (R7).** A new `tests/unit/test_gmail_import.py`.
+
+- `test_the_import_lists_all_mail_once_newest_first`
+- `test_the_import_reads_archived_mail_with_no_label`
+- `test_a_message_with_two_labels_is_fetched_once`
+- `test_the_estimate_comes_from_result_size_estimate`
+- `test_a_resume_passes_before`
+- `test_no_message_older_than_the_floor`
+- The fences of E-G5-3 to E-G5-6 and E-G5-8.
+- R8, in `TestTheImportOnARealDatabase` of `tests/unit/test_email_import_batches.py`: a Gmail
+  first import through `_sync_cycle` writes the estimate, then resumes below
+  `import_reached_at`.
+
+**Mutations.** Each one must turn a named test red. M3 and M4 move to EM-G5b.
+
+| Id | Mutation | The test that fails |
+|---|---|---|
+| M1 | Put back `labelIds` | the archived-mail test |
+| M2 | Drop the estimate | the estimate test |
+| M5 | Drop the 1 second of E-G5-3 | `test_a_resume_reads_the_second_it_reached_again` |
+| M6 | Skip a fetch failure that a later cycle can fix | `test_a_transient_fetch_failure_fails_the_import` |
+| M7 | Yield with a fetch task open | the storage-limit fence of E-G5-5 |
+| M8 | Remove `includeSpamTrash` | the all-mail test |
+
+**Verify with (E-G5-2).**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_import.py tests/unit/test_email_import_batches.py \
+  tests/unit/test_email_storage_limit.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_gmail_history_cursor.py tests/unit/test_gmail_rate_limits.py \
+  tests/unit/test_email_rekey_reclaim.py tests/unit/test_email_scheduler_tenancy.py -v -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/providers/gmail.py \
+  tests/unit/test_gmail_import.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 tests must show PASSED, with 0 skips. The count of `gmail.py` must stay at or below the
+count on main.
+
+**As built (2026-10-05, branch `email-gmail-g5a`).** The build follows items 1 to 5 and the rules
+E-G5-3 to E-G5-8. It adds no migration, no column, no table and no flag. Production holds no Gmail
+mailbox, and D-EM-36 keeps the Gmail connect dark.
+
+- **The list.** `GmailProvider.import_batches` sends `includeSpamTrash=true`, no `labelIds`, the
+  batch size as `maxResults` (500 at most), and `q=after:<floor> before:<bound>`. With no floor
+  and no bound, it sends no `q`.
+- **The window.** `_in_import_window` drops a message newer than `until` and a message older than
+  the floor. A message with no date stays, as in the base, and the core decides on it (EM-T6a).
+- **One fetch for each id.** `_fresh_ids` keeps the ids of the whole import in one set. So an id
+  that the list gives again at a page edge gets one fetch and one row.
+- **The fetch.** `_fetch_page` starts one task for each id, and a semaphore lets 10 run at once.
+  It gathers each task before it returns. When one task raises, it cancels the others and waits
+  for them. Each fetch goes through `get_message`, so the parse of EM-G2 and the rate limits of
+  EM-G4a apply.
+- **A failed fetch.** `_import_fetch` raises a spent rate limit at once. Each other failure leaves
+  its record through `_record_fetch_failure`. A 5xx or a transport error then raises
+  (`_transient`), and any other failure gives None.
+- **The estimate.** `_estimate_of` reads `resultSizeEstimate` as a whole number, or gives None.
+  The import awaits `on_estimate` after the first list answer and before the first fetch.
+- **The cap.** `IMPORT_MAX_PAGES` is 5000, 100 times the 50 pages of the deep sweep. At the cap
+  the import ends and logs `gmail.import_capped` with the pages and the count of messages.
+- **The label names.** The import loads the label names once, before the first fetch. So the
+  fetches of a page do not each read the label list.
+- **E-G5-7 and E-G5-8.** The comment of `_first_sweep` names known limit EM-G5-f1. The
+  docstrings of `sync_messages` and `_deep_sweep` say that the import does not call the deep sync.
+  The docstring of the default import in `base.py` says that only IMAP uses it.
+- **Two test fakes changed.** Two hermetic tests and two R8 tests of EM-G4b imported through the
+  label lists of the default import. `_by_label` in `test_gmail_history_cursor.py` now answers the
+  list of all mail with each id once, as Gmail does. The default-import test of
+  `test_email_import_batches.py` now uses IMAP, because Gmail does not use the default.
+- **The size.** The change to `gmail.py` has about 190 lines, and most of them are docstrings.
+  The new test file has 609 lines. Ruff finds 7 issues in `gmail.py`, the count on main.
+
+**The fences, as built.** `tests/unit/test_gmail_import.py` holds 21 cases. A fake Gmail on
+`httpx.MockTransport` answers the real `_get_client`. Its list honours `labelIds`,
+`includeSpamTrash`, `after:` and `before:`, so a mutation of the query changes what it gives.
+
+| Test | What it proves |
+|---|---|
+| `test_the_import_lists_all_mail_once_newest_first` (2 cases) | Eight messages of six kinds come once each and newest first, also when a page comes oldest first. Each list sends `includeSpamTrash=true` and no `labelIds`. |
+| `test_the_import_reads_archived_mail_with_no_label` | A message with no label comes, with the folder `archive` (GM-8). |
+| `test_a_message_with_two_labels_is_fetched_once` | A message with two user labels comes once, with one fetch. |
+| `test_an_id_listed_again_at_a_page_edge_is_fetched_once` | An id that the list gives again comes once, with one fetch. |
+| `test_the_import_fetches_in_parallel_at_most_ten_at_once` | A page of 30 ids runs 10 fetches at once, never more. |
+| `test_the_estimate_comes_from_result_size_estimate` (2 cases) | One call before the first fetch, with the value of the first answer, or None. |
+| `test_a_resume_passes_before` | The list sends `before:` the second after `until`. A message of that second that is newer than `until` drops. |
+| `test_a_resume_reads_the_second_it_reached_again` | A message 400 ms older than `until`, in the same second, comes (E-G5-3). |
+| `test_no_message_older_than_the_floor` | The list sends `after:` the floor. An older message drops, also when the list gives it. |
+| `test_a_transient_fetch_failure_fails_the_import` (2 cases) | A 503 and a transport error fail the import before the page yields (E-G5-4). |
+| `test_a_fetch_failure_that_stays_is_recorded_and_the_batch_goes_on` (3 cases) | The batch goes on after a 404, a 400 or a parse error, and each one leaves a record (E-G5-4). |
+| `test_a_rate_limit_cancels_the_other_fetches_and_raises` | A spent rate limit cancels the 4 other fetches and raises, with no fetch in flight (E-G5-5). |
+| `test_the_storage_limit_stops_the_import_with_no_fetch_in_flight` | `_run_import` writes the first batch with no fetch in flight, stops at the limit and reads no next page (E-G5-5). |
+| `test_the_import_cap_is_far_above_the_deep_sweep` | The cap is at least 25 times the 50 pages of the deep sweep (E-G5-6). |
+| `test_the_import_stops_at_the_page_cap_and_logs_it` | A list that never ends stops at the cap and logs `gmail.import_capped` (E-G5-6). |
+| `test_the_import_never_calls_the_deep_sync` | The import runs while `sync_messages` and `_deep_sweep` refuse each call (E-G5-8). |
+| R8 `test_a_gmail_first_import_writes_the_estimate_and_resumes_below_it` | On Postgres, through `_sync_account`, the estimate is 250. A 503 on page 3 fails the import at 200 rows. The resume sends `before:` the second after `import_reached_at`, and it ends `done` with 250 rows, a count of 251 and an estimate of 251. |
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against its named tests, with the
+database up. It then wrote back the original bytes of `gmail.py`, and the SHA-256 matched each
+time. Each mutation turned its named tests red. M9 to M12 are extra.
+
+| Id | Mutation (`gmail.py`) | Red tests |
+|---|---|---|
+| M1 | The list sends `labelIds` of `INBOX` | `test_the_import_reads_archived_mail_with_no_label` |
+| M2 | No call of `on_estimate` | both cases of the estimate test, and the R8 test |
+| M5 | `before:` with no 1 second | `test_a_resume_reads_the_second_it_reached_again`, and the R8 test |
+| M6 | A 5xx or a transport error gives None | both cases of `test_a_transient_fetch_failure_fails_the_import` |
+| M7 | `_fetch_page` returns at the first fetch that ends, and the others stay open | `test_the_storage_limit_stops_the_import_with_no_fetch_in_flight` |
+| M8 | The list sends no `includeSpamTrash` | both cases of `test_the_import_lists_all_mail_once_newest_first` |
+| M9 | A raise does not cancel the other fetches | `test_a_rate_limit_cancels_the_other_fetches_and_raises` |
+| M10 | No bound on the fetches at once | `test_the_import_fetches_in_parallel_at_most_ten_at_once` |
+| M11 | Gmail falls back to the default import | `test_the_import_never_calls_the_deep_sync` |
+| M12 | `IMPORT_MAX_PAGES` is 50 | `test_the_import_cap_is_far_above_the_deep_sweep` |
+
+M7 survived the first run. Each fetch of the fake took the same time, so all ten ended in one turn
+of the loop. The fake now gives each message its own time, as Gmail does, and M7 is red.
+
+**Verification (2026-10-05, a private database).** The pytest block above gave 317 passed and 0
+skipped. Each file whose name starts with `test_email_`, `test_gmail_` or `test_outlook_`, 145
+files, gave 2914 passed and 0 skipped. The first ruff line finds the 7 findings of `gmail.py`
+that main has, and none in the new test file. The second line of ruff passes.
+
+**Known limit EM-G5-f1 (E-G5-7).** `_first_sweep` still misses archived mail with no user label.
+It reads the user labels and five system labels, and no label reaches that mail. It runs only when
+no cursor exists after a failed seed. The import of EM-G5a reads that mail, and the history cursor
+of EM-G4b reads each later change.
+
+##### 12.3.6.2 EM-G5b — the reconcile
+
+**Status.** ✅ MERGED (#647, 2026-10-05). The second audit of
+2026-10-05 cleared it as GO-NARROWED. The first audit stopped the confirm of the old item 6, and
+E-G5-9 replaced it. The second audit found three more paths that can trash a row: the key of the
+confirm, a stale draft row and a bare 404. C1 to C9 close them, and the scope below holds each
+one.
+
+The as-built notes and the mutation table follow the build-PR note.
+
+**Gate.** 🟢 AGENT-SAFE · R8, because the reconcile trashes rows. No migration and no flag. The
+slice changes shared code of the live Outlook reconcile. So it takes the full review loop for data
+(C9).
+
+**Order.** After EM-G5a (#641), because the reconcile reads the snapshot of the import.
+
+**Size.** M.
+
+**The candidates today (the second audit).** A candidate is a row of the account in a folder that
+the snapshot holds. The row is not in `trash`, and its `received_at` is at or after the oldest
+written message of that folder. Its id is not in the snapshot. Its `updated_at` is set and older
+than `db_now`. A folder with more than max(50, 2%) candidates is skipped, and a folder sends at
+most 50 lookups (`reconcile.py:40-47`, `:78-103`).
+
+**Scope.**
+
+6. **The confirm (GM-20, E-G5-9, C1).** Gmail confirms each candidate by its provider id, with
+   `GET messages/{id}?format=minimal`. A new method of the provider holds that read, with its own
+   name. Outlook keeps `message_exists(internet_message_id)`, and its behaviour does not change.
+   - `import_reconcile_candidates` returns `(row id, provider_message_id, internet_message_id)`
+     (`reconcile.py:101-102`).
+   - `_confirm_gone` (`scheduler.py:761-786`) picks the key for each provider.
+   - A Gmail message keeps its id. A draft does not (O-GM-2), and item 9 covers drafts.
+7. **`import_full_snapshot = True`.** The import reads all mail back to the floor. So a deep sync
+   that a member starts reconciles the deletions (`scheduler.py:924-929`). Three member acts start
+   it: Resync (`sync.py:323-324`), "Clean older mail" (`cleanup.py:923-924`) and "Process past
+   emails" (`runner.py:1431`). The first import collects no snapshot (`scheduler.py:881-883`).
+8. **The recurring reconcile** of `reconcile_full_snapshot` stays for Outlook only. It has no
+   confirm (`reconcile.py:115-160`). The Gmail history reports each delete (EM-G4b item 4). No
+   Gmail sync result sets `full_snapshot`, and a fence now pins that.
+9. **Drafts stay out (C3).** The Gmail reconcile leaves out each row in drafts. It uses the filter
+   of `storage.py:88`: `LOWER(COALESCE(folder,'')) NOT IN ('drafts','draft')`. Gmail gives a draft
+   a new message id at each update, so a missing draft id proves no delete. The history of EM-G4b
+   removes an old draft row through E-B2 (`scheduler.py:343-347`).
+10. **The 404 rule (C2).** "Gone" means a 404 whose body gives the reason `notFound`. Each other
+    answer raises, and that includes a bare 404. A raise keeps the row. A 200 keeps the row, also
+    for a message in `TRASH` or `SPAM`, because the import read both. The confirm goes through
+    `_get_client()`, so the rules of EM-G4a apply. It sends `format=minimal` only.
+11. **A rate limit stops the confirm (C4).** `_confirm_gone` stops at the first
+    `ProviderRateLimited`. Each row that it did not confirm keeps its folder
+    (`scheduler.py:797-801`). Outlook raises no `ProviderRateLimited`, so no live path changes.
+12. **A capped import runs no reconcile (C5).** Gmail records when its import reaches
+    `IMPORT_MAX_PAGES` (`gmail.py:2167`). `_run_import` then skips the reconcile, as it does
+    at the storage limit (`scheduler.py:956-961`). It logs `sync.import_reconcile_skipped` with
+    `reason=capped`, the event of the storage-limit skip. The audit text named
+    `email.import.reconcile_skipped`, and no code logs that name.
+
+**Non-goals (C8).** No recurring reconcile for Gmail. No delete path for a draft row. No change to
+rows in `trash` (E-G5-10). No change to the `[DELETED]` rule of `scheduler.py:539-549`. No flag.
+
+**Fences (R7, C6).**
+
+- R8, in `tests/unit/test_email_import_batches.py`, with a real `GmailProvider` on the fake of
+  `tests/unit/test_gmail_import.py`:
+  - `test_a_gmail_resync_trashes_a_row_that_gmail_deleted`
+  - `test_a_row_that_the_import_missed_and_gmail_holds_keeps_its_row`. Its row has a Message-ID
+    that differs from its id, and the fake answers 404 to each id that it does not hold.
+  - `test_a_stale_gmail_draft_row_stays_in_drafts_with_no_lookup`
+  - `test_a_capped_gmail_import_runs_no_reconcile`
+- Hermetic, in `tests/unit/test_gmail_import.py`:
+  - `test_the_gmail_confirm_reads_by_the_provider_id`. A 404 with `notFound` gives gone. A 200 for
+    `INBOX`, `TRASH` and `SPAM` keeps the row. A bare 404, a 400, a 403, a spent 429, a 500 and a
+    transport error each raise. The path holds the provider id.
+  - `test_a_spent_rate_limit_stops_the_confirm`
+  - `test_no_gmail_sync_result_sets_full_snapshot` (item 8)
+- The four Outlook R8 fences of `test_email_import_batches.py` and its hermetic fence of the
+  Outlook confirm stay green.
+
+**Mutations (C7).** M3 sets `import_full_snapshot = False`, and the resync test fails. M4 makes the
+confirm keep each row, and the resync test fails. M9 trashes each candidate with no confirm, and
+the negative fence fails.
+
+**The mutations of the second audit.** M10 sends the Message-ID to the confirm, and the negative
+fence fails. M11 counts a bare 404 as gone, and the confirm fence fails. M12 keeps drafts in the
+candidates, and the draft fence fails. M13 lets the confirm go on after a rate limit, and the rate-limit fence fails.
+M14 runs the reconcile after a capped import, and the cap fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_import.py tests/unit/test_email_import_batches.py \
+  tests/unit/test_email_storage_limit.py tests/unit/test_email_deep_sync.py \
+  tests/unit/test_gmail_history_cursor.py tests/unit/test_gmail_rate_limits.py \
+  tests/unit/test_email_rekey_reclaim.py tests/unit/test_email_scheduler_tenancy.py -v -rs
+uv run ruff check apps/services/email_ingestion/email_ingestion/providers/gmail.py \
+  apps/services/email_ingestion/email_ingestion/reconcile.py \
+  apps/services/email_ingestion/email_ingestion/scheduler.py tests/unit/test_gmail_import.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+The R8 tests must show PASSED, with 0 skips. The ruff count of each file must stay at or below its
+count on `main`.
+
+**In the build PR (R4, C10).** Correct GM-20 (§12.1) and the status of this section. Correct
+`AGENTS.md:283-284` and `:421-432`, and the docstrings at `scheduler.py:764-770`, `:873-880` and
+`reconcile.py:61-77`.
+
+**As built (2026-10-05, branch `email-gmail-g5b`).** The build follows items 6 to 12. It adds no
+migration, no column, no table and no flag. Production holds no Gmail mailbox, and D-EM-36 keeps
+the Gmail connect dark.
+
+The same branch holds the C10 corrections. They are GM-20, the status lines and the three
+docstrings. In `email_ingestion/AGENTS.md`, they are contracts 12 and 13 and the paragraph of the
+three guards.
+
+- **The key (item 6, C1).** Each candidate is a triple: the row id, `provider_message_id` and
+  `internet_message_id` (`reconcile.py:67-123`). The confirm, `_confirm_gone`
+  (`scheduler.py:761`), asks `message_gone` by the provider id when the provider has that method.
+  Else it asks `message_exists` by the Message-ID, as before.
+- **The confirm (item 10, C2).** The new method `GmailProvider.message_gone` (`gmail.py:2209`)
+  reads `messages/{id}` with `format=minimal` through `_get_client`. Only a 404 whose body gives
+  the reason `notFound` gives True (`_says_not_found`). A 2xx gives False, and each other answer
+  raises.
+- **The reason, not the status.** A 404 that gives only the status `NOT_FOUND` raises. Google
+  sends the reason and the status together for a deleted message. So the narrower test loses no
+  delete, and a changed body of Google keeps the row.
+- **An id guard (an addition to the scope).** The method `message_gone` refuses an id that holds
+  a character other than a letter, a digit, `-` or `_` (`_GMAIL_MESSAGE_ID`). It refuses before
+  any request. A stored id with a `/`, a `?` or a `#` could send the read to another resource.
+  The refusal raises, so the row stays.
+- **Item 7.** The attribute `GmailProvider.import_full_snapshot` is True (`gmail.py:1764`).
+- **Item 9 (C3), for Gmail only.** Gmail sets `import_reconcile_skips_drafts`, a new attribute of
+  the base class that is False by default (`base.py:438`). The scheduler then passes
+  `skip_drafts=True` in `_reconcile_import`, and the query adds the filter of
+  `storage.KEPT_FOLDERS_SQL`. The statement of Outlook keeps the text of main.
+- **Why the filter binds Gmail only.** The Outlook sweep reads `drafts` (`outlook.py:74`). Its
+  parse keeps the `internetMessageId` of Graph for each message (`outlook.py:1975`). So an Outlook
+  draft row can be a candidate today, and a filter for both providers would change Outlook.
+- **Item 11 (C4).** The confirm stops at the first `ProviderRateLimited`. It logs
+  `sync.import_reconcile_rate_limited` with the mailbox, the rows gone and the rows not confirmed.
+  The rows that it confirmed before the stop go to trash. Another failure lets the confirm go on.
+- **Item 12 (C5).** The import sets `import_capped` at the cap, and clears it when an import
+  starts. Then `_run_import` logs `sync.import_reconcile_skipped account=<id> reason=capped` and
+  runs no reconcile.
+- **Item 8.** No line of `gmail.py` sets `full_snapshot`. A fence reads the source and each sync
+  path.
+- **One Outlook fence changed, and it is stronger.** The fake of
+  `test_a_resync_reconciles_once_against_its_whole_import` takes the place of
+  `import_reconcile_candidates`. It now takes `skip_drafts`, and it fails when the Outlook resync
+  passes True. The four Outlook R8 fences did not change, and they pass.
+- **The test fake.** The fake of `test_gmail_import.py` gives the body of Google to an id that it
+  does not hold. That body is a 404 with the reason `notFound` and the status `NOT_FOUND`. A path
+  that the fake does not know still gets a bare 404. The fake records each `format=minimal` read in
+  `confirms`. The set `unlisted` holds a message that the list leaves out, and the flag
+  `stale_history` makes the history answer 404.
+
+**The fences, as built.** The R8 cases run as `acb_app_h3rls` and call `_assert_non_priv`.
+
+| Test | What it proves |
+|---|---|
+| R8 `test_a_gmail_resync_trashes_a_row_that_gmail_deleted` | Through `_sync_account(deep=True)`, a row that Gmail deleted goes to trash in org B. The one confirm sends its provider id with `format=minimal`. The 30 imported rows stay in the Inbox. Org A reads no trash row. |
+| R8 `test_a_row_that_the_import_missed_and_gmail_holds_keeps_its_row` | The list leaves out a message that Gmail holds, and its Message-ID differs from its id. The confirm asks by the provider id. Gmail answers 200, and the row stays. |
+| R8 `test_a_stale_gmail_draft_row_stays_in_drafts_with_no_lookup` | Two drafts came in the import. An old draft row gets no lookup and stays in drafts. A deleted Inbox row of the same Resync goes to trash. |
+| R8 `test_a_capped_gmail_import_runs_no_reconcile` | The cap is 2 pages. A deleted row inside the pages that the import read gets no lookup and stays. The log says `reason=capped`. |
+| R8 `test_only_the_gmail_reconcile_leaves_out_drafts` (extra) | On real SQL, each candidate is the triple of C1. With `skip_drafts`, a draft row is no candidate. Without it, as for Outlook, the same row is a candidate. |
+| `test_the_gmail_confirm_reads_by_the_provider_id` (12 cases) | A 404 with `notFound` is gone. A 200 for `INBOX`, `TRASH` and `SPAM` keeps the row. A bare 404, an empty 404, a 404 with the status only, a 400, a 403, a spent 429, a 500 and a transport error raise. Each try is one `format=minimal` read of the provider id. |
+| `test_the_gmail_confirm_refuses_an_id_that_is_not_a_gmail_id` (8 cases, extra) | An empty id, a `/`, a `../`, a `?`, a `#`, a `%`, a Message-ID and a space each raise. No request goes out. |
+| `test_a_spent_rate_limit_stops_the_confirm` | A 500 lets the confirm go on, and a spent 429 stops it. The row that it confirmed before stays confirmed. The two rows after the stop get no lookup. |
+| `test_no_gmail_sync_result_sets_full_snapshot` | No cursor, the history, a stale cursor and the deep sweep each return `full_snapshot` False. No line of `gmail.py` sets the field. |
+| `test_the_import_stops_at_the_page_cap_and_logs_it` (EM-G5a, extended) | The provider records the cap. The next import that ends clears the record. |
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against the ten fences above, with
+the database up. It then ran `git checkout --` on the file, and `git diff` was empty each time.
+Each mutation turned its named fence red. M12b and M15 to M17 are extra.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M3 | `GmailProvider.import_full_snapshot = False` | the resync fence, and the negative, draft and cap fences |
+| M4 | `message_gone` gives False for a 404 with `notFound` | the resync fence, and the draft, confirm and rate-limit fences |
+| M9 | `_confirm_gone` gives each candidate with no lookup | the negative fence, and the resync, draft and rate-limit fences |
+| M10 | The Gmail confirm sends the Message-ID | the negative fence, and the resync, draft and rate-limit fences |
+| M11 | A 404 with no `notFound` is gone | the confirm fence: the bare, empty and status-only 404 |
+| M12 | The query has no filter for drafts | the draft fence, and `test_only_the_gmail_reconcile_leaves_out_drafts` |
+| M12b | Gmail sets `import_reconcile_skips_drafts = False` | the draft fence |
+| M13 | The confirm goes on after a spent rate limit | the rate-limit fence |
+| M14 | The reconcile runs after a capped import | the cap fence |
+| M15 | `message_gone` has no id guard | the id-guard fence, 8 cases |
+| M16 | The import never sets `import_capped` | the cap fence, and the cap test of EM-G5a |
+| M17 | The first sweep sets `full_snapshot=True` | `test_no_gmail_sync_result_sets_full_snapshot` |
+
+Under M10 the id guard refuses the Message-ID, so no read goes out. The negative fence fails on
+its check of the confirm read, and the resync fence keeps a deleted row. Without the guard, the
+fake answers `notFound` to the Message-ID, and the reconcile trashes the live row of the negative
+fence.
+
+**Verification (2026-10-05, the shared scratch database).** The pytest block above gave 344
+passed and 0 skipped. The 140 files whose names start with `test_email_` or `test_gmail_` gave
+2899 passed and 0 skipped, with the memory and calendar tests left out. The first ruff line finds
+16 findings: the 7 of `gmail.py` and the 9 of `scheduler.py` that main has. It finds none in
+`reconcile.py` or in the test file. The second line of ruff passes.
+
+The shared database gave `AdminShutdown` to some runs, while a second session used it. The build
+ran each of those runs again, and each count above comes from a clean run.
+
+#### 12.3.7 EM-G6a — the push route and its tenant (dark)
+
+**Gate.** 🟢 AGENT-SAFE build · security review · R8. `EMAIL_GMAIL_PUSH` stays `off`. To change it
+on a box is gate `enforcement-flip`.
+
+**Order.** After EM-G4b, and after the orchestrator answers O-GM-4. The audit of EM-G6a reads the
+chosen design first. The scope follows candidate (a) of O-GM-4.
+
+**Size.** M. About 200 lines with tests.
+
+**Scope.**
+
+1. **The route.** A public route `POST /email/webhook/gmail`. It is the one Gmail entry in
+   `PUBLIC_ROUTES` (`gateway/main.py:558`). It joins the exemption from the feature gate in
+   `core.py:58-62`, as `/email/webhook/microsoft` does. The Phase-1 `/webhooks/gmail` stays.
+2. **The OIDC check.** The route verifies the Pub/Sub token. It checks the signature against the
+   Google keys, the issuer and the audience `GMAIL_PUSH_AUDIENCE`. It checks the `email` claim
+   against `GMAIL_PUSH_SERVICE_ACCOUNT`, with `email_verified`. A failure answers 401 and queues
+   nothing.
+3. **The flag.** With `EMAIL_GMAIL_PUSH=off`, the route answers 204 after the check and queues
+   nothing.
+4. **The tenant (O-GM-4).** The route decodes `message.data` to `emailAddress` and `historyId`. One
+   discovery read gives the pairs of organization and mailbox id for that address, and nothing else.
+5. **The queue.** For each pair, the route queues `_webhook_sync(account_id, organization_id)`,
+   which binds that tenant. An address with no match queues nothing.
+6. **The answer.** The route answers 2xx fast, so Pub/Sub does not send again. A push for a mailbox
+   that syncs already joins the next rerun (EM-T4f).
+7. **Settings.** `GMAIL_PUSH_AUDIENCE` and `GMAIL_PUSH_SERVICE_ACCOUNT` go into `settings.py` and
+   `.env.example`, empty by default. An empty value refuses each push.
+
+**Non-goals.** No watch (EM-G6b). No change to the Phase-1 receiver.
+
+**Fences (R7).** A new `tests/unit/test_email_gmail_push.py`.
+
+- `test_a_push_with_no_token_queues_nothing`
+- `test_a_token_with_the_wrong_audience_queues_nothing`
+- `test_the_flag_off_queues_nothing`
+- `test_an_unknown_address_queues_nothing`
+- R8: `test_a_push_queues_one_sync_for_each_mailbox_in_its_own_tenant`, with one address in two
+  organizations
+- `tests/unit/test_org_access_enforcement.py` names the new public route, and no other Gmail route.
+
+**Mutations.** M1 skips the audience check, and the audience test fails. M2 ignores the flag, and
+the flag test fails. M3 queues with no tenant bound, and the R8 test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_gmail_push.py tests/unit/test_email_webhook.py \
+  tests/unit/test_org_access_enforcement.py tests/unit/test_email_tenant_bind_rls.py -v -rs
+uv run ruff check apps/services/gateway/gateway tests/unit/test_email_gmail_push.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.8 EM-G6b — the watch (dark)
+
+**Gate.** 🟢 AGENT-SAFE build. To set `EMAIL_GMAIL_PUSH` on a box is gate `enforcement-flip`.
+
+**Order.** After EM-G6a.
+
+**Size.** M. About 150 lines with tests.
+
+**Scope.**
+
+1. **The watch.** With the flag on, `_ensure_subscription` (`transport/sync.py:438-508`) handles a
+   Gmail row. It calls `users.watch` with `topicName` set to `GMAIL_PUSH_TOPIC`, and no label
+   filter.
+2. **The row.** It writes `webhook_subscription_id = 'gmail-watch'`, because a Gmail watch has no
+   id. It writes `webhook_expires_at` from the `expiration` of the answer.
+3. **The renewal.** Google asks for a watch call at least once in 7 days, and advises one each day.
+   The loop renews a Gmail watch when less than 6 days remain.
+4. **The stop.** A disconnect calls `users.stop`, best effort, where it drops the Graph
+   subscription (`transport/accounts.py:695`, `:773-800`). It does so for each row that holds a
+   watch, with the flag on or off.
+5. **The flag off.** No Gmail row makes a watch call.
+6. **The register.** `work_plan.md` §6.0 D4 lists `EMAIL_GMAIL_PUSH` with the dark flags, gate
+   `enforcement-flip`. `GMAIL_PUSH_TOPIC` goes into `settings.py` and `.env.example`, empty.
+
+**Non-goals.** No Pub/Sub setup from code. The owner makes the topic (§12.4 step 16).
+
+**Fences (R7).** A new `tests/unit/test_gmail_watch.py`.
+
+- `test_the_flag_on_watches_a_gmail_mailbox`
+- `test_the_flag_off_makes_no_watch_call`
+- `test_a_watch_renews_when_six_days_remain`
+- `test_a_disconnect_stops_the_watch`
+- R8: `test_a_gmail_watch_writes_its_own_row_only`
+
+**Mutations.** M1 ignores the flag, and the flag test fails. M2 renews at 1 day, and the renewal
+test fails. M3 drops the stop, and the disconnect test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_gmail_watch.py tests/unit/test_email_disconnect_order.py \
+  tests/unit/test_email_webhook.py -v -rs
+uv run ruff check apps/services tests/unit/test_gmail_watch.py
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+#### 12.3.9 EM-G7 — the connect backend
+
+**Status.** ✅ MERGED #637 (2026-10-05). The as-built notes and
+the mutation table are at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE · security review. It merges dark. With no Google app on the box, a member
+sees no change.
+
+**Order.** Any time. It needs no other EM-G slice. A live test waits for §12.4 and EM-G10.
+
+**Size.** M. About 150 lines of code, with tests of about 250 lines.
+
+**Scope.**
+
+1. **The scopes (D-EM-31, GM-22).** `GMAIL_SCOPES` (`gmail.py:138`) holds `gmail.modify` and
+   `gmail.settings.basic`. The authorize leg keeps `access_type=offline` and `prompt=consent`.
+2. **The granted scope.** The callback reads `scope` in the token answer of Google. When either
+   scope is absent, it saves no mailbox and bounces `scope_missing`.
+3. **The refresh token.** A Google token answer with no `refresh_token` saves nothing and bounces
+   `token_exchange_failed`.
+4. **The Google errors (GM-23).** For Gmail, `access_denied` maps to `consent_declined`, and
+   `admin_policy_enforced` maps to `workspace_admin_blocked`. Each other plain code passes through
+   `_provider_error_reason`.
+5. **Errors that never return.** Google shows some errors on its own page, for example
+   `org_internal`. So EM-G8 adds the help for a Workspace admin before the click.
+6. **The provider on each bounce (GM-24).** `_bounce` adds `provider` from the path, so each
+   failure names its provider.
+7. **No operator text for a member (GM-25, D-EM-35).** Both entries of `_NOT_CONFIGURED` say only
+   that the provider is not available yet. Neither names Integrations or a client ID.
+8. **The capability read (D-EM-35).** A new gated route `GET /email/oauth/providers` answers one
+   boolean for each provider, keyed by its id: `{"microsoft": bool, "gmail": bool}`. A value is
+   true when that app is configured (`oauth_app(provider).configured`). Gmail also needs the flag
+   of D-EM-36. The answer holds booleans only, never a client ID, a secret or a URL. EM-G8 reads
+   this shape (review round 1).
+9. **The app facts for a Workspace admin.** `GET /email/oauth/gmail/app` returns the client ID and
+   the redirect URI, as it does for Microsoft (`transport/oauth.py:238-270`). An admin needs the
+   client ID to trust the app. Google shows both values in each authorize URL.
+
+**Non-goals.**
+
+- No PKCE. EM-T1a signs the state, and the Microsoft leg has none.
+- No `include_granted_scopes`. No `openid` scope, because `users/me/profile` gives the address.
+- No revoke on disconnect (O-GM-3).
+- ~~The Integrations entry `gmail-oauth` (`routes/integrations.py:276-295`) stays, as
+  `microsoft-oauth` does.~~ O-GM-5 reversed this (orchestrator, 2026-10-05). The entry is gone,
+  and the Integrations writes refuse the keys of the mail apps.
+- No UI (EM-G8).
+- A mailbox connected with `https://mail.google.com/` works until its next reconnect.
+
+**Fences (R7).** A new `tests/unit/test_email_gmail_connect.py`. `test_email_connect_backend.py`,
+`test_email_oauth_authorize_wiring.py`, `test_email_oauth_app_info.py` and
+`test_email_oauth_state.py` change where they assert the old behaviour.
+
+- `test_gmail_asks_the_two_scopes_of_d_em_31`
+- `test_a_grant_without_settings_basic_saves_nothing`
+- `test_a_token_without_refresh_token_saves_nothing`
+- `test_each_bounce_names_the_provider`
+- `test_google_errors_map_to_their_reasons`
+- `test_not_configured_names_no_integrations`
+- `test_the_providers_route_answers_booleans_only`
+- `test_gmail_app_info_returns_the_client_id`
+
+**Mutations.** M1 accepts a partial grant, and the scope test fails. M2 bounces with no provider,
+and the bounce test fails. M3 adds the client ID to the providers route, and its test fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_gmail_connect.py tests/unit/test_email_connect_backend.py \
+  tests/unit/test_email_oauth_authorize_wiring.py tests/unit/test_email_oauth_app_info.py \
+  tests/unit/test_email_oauth_state.py tests/unit/test_email_owner_scope_fence.py \
+  tests/unit/test_integrations_mail_app_keys.py tests/unit/test_integrations_env_hardening.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email/transport/oauth.py \
+  apps/services/gateway/gateway/routes/email/transport/accounts.py \
+  tests/unit/test_email_gmail_connect.py tests/unit/test_integrations_mail_app_keys.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/api/email
+```
+
+The ruff line names the files of this slice, and it exits clean. A ruff check of the whole package
+`routes/email` finds 278 errors that are older than this slice (review round 1, P3-2).
+
+**As built (2026-10-05, branch `email-gmail-g7`).** The build covers items 1 to 4 and 6 to 9, the
+BFF bounces (E-C1), the capability read (E-C2), O-GM-5 and D-EM-36. Item 5 is copy for EM-G8.
+The slice adds no migration and changes no SQL.
+
+- **The scopes and the grant (items 1 to 3).** `GMAIL_SCOPES` holds the two scopes of D-EM-31.
+  The callback checks the token answer of Google before the profile read. `_gmail_grant_refusal`
+  answers `scope_missing` when a scope is absent, and `token_exchange_failed` with no refresh
+  token. A `scope` that is absent, or that is not a string, is a missing scope. The Microsoft leg
+  does not read these rules.
+- **The Google errors (item 4).** `_refusal_reason` sends a Gmail error through
+  `_google_error_reason`, which never reads `error_description`. A Microsoft error still goes
+  through `_consent_error_reason`. So `admin_policy_enforced` on Microsoft stays a plain code.
+- **The provider on each bounce (item 6, E-C1).** The gateway `_bounce` adds `provider` only for
+  `gmail` or `microsoft` (`CONNECT_PROVIDERS`). The two BFF routes build each failure with
+  `bounceQuery` in `src/app/api/email/oauth/bounce.ts`. Each `failed()` call passes the path
+  segment, and the one allowlist decides. No route echoes another segment.
+- **No operator text (item 7).** `_NOT_CONFIGURED` says "Gmail is not available yet." and
+  "Microsoft 365 / Outlook is not available yet." The BFF still hands that `detail` to the
+  callback page as the error.
+- **The capability read (item 8, E-C2).** `GET /email/oauth/providers` answers
+  `{"microsoft": bool, "gmail": bool}`: one entry for each provider, keyed by its id, as the
+  dispatch asked. The model `OAuthProviders` sets `extra="forbid"`. A provider is true when its app
+  holds a client ID and a secret, and Gmail also needs the flag. A caller with no organization or
+  no member gets 403.
+- **The capability read, its fences.** The route has an `OWNER_SCOPE_EXEMPT` entry, because it
+  reads no mailbox. The email catch-all of the BFF proxies it, so it needs no new BFF route.
+- **The app facts (item 9).** `GET /email/oauth/gmail/app` returns the client ID and the redirect
+  URI. Another provider is still a 404. While the flag is off, Gmail answers 503, as a box with no
+  Google app does. That rule is an agent call on D-EM-36, so the dark state is one state.
+- **The dark flag (D-EM-36).** `email_gmail_connect` in `acb_common/settings.py` is false by
+  default, and `gmail_connect_enabled()` is its one reader. While it is off, the authorize leg
+  refuses Gmail before it signs a state or reads a mailbox. The callback bounces each Gmail return
+  with `provider_unavailable` before the token exchange, so it writes no row. It also refuses a
+  reconnect of a Gmail mailbox, and production holds none. Only the env file of the box sets the
+  flag, because layer B of `env_guard` refuses each `EMAIL_*` name on each Integrations write.
+  Restart the gateway after each change. A cache clear can read the file again, but it never
+  replaces a value that the process loaded at start (review round 1).
+- **The Integrations refusal (O-GM-5).** Since the rebase on #633, layer B of
+  `acb_common.env_guard` is the one refusal. It answers 403 for each `GMAIL_OAUTH_*`,
+  `MSFT_OAUTH_*` and `AUTH_MICROSOFT_ENTRA_ID_*` key on configure, put and delete, in any case. It
+  writes no store row, no env var and no file line, and a mixed request fails whole. The helper
+  `_refuse_mail_app_keys` and its second list `is_mail_app_env` are gone (review round 1). The
+  write of each other key does not change.
+- **The tiles.** The `gmail-oauth` entry left `_SETUP_GUIDES` and `_GUIDE_CATEGORIES`, and
+  `MAIL_APP_SERVICE_IDS` keeps the id reserved. The `microsoft-oauth` tile stays for its status.
+  Since round 1 it has no setup step, no link and no form field. The status lists its three keys
+  read-only. The banner names Outlook only, as plain text with no link. The palette debt of
+  `integrations/page.tsx` drops from 83 to 73.
+- **The manual route (review round 1).** `POST /email/accounts` answers 403 for `gmail` and
+  `microsoft` before it encrypts, writes or starts a sync. It took tokens from the body, so it
+  could write a Gmail row while the connect was dark. No caller sends either provider, so the route
+  now adds an IMAP mailbox only.
+- **The startup load (review round 1).** The `INTEGRATION_ENV_MAP` of `key_store` has no
+  `gmail-oauth` and no `microsoft-oauth` entry. Layer B already skipped each of their rows, so the
+  two entries were dead. A stored row under either id never reaches `os.environ`.
+
+**The fences, as built.** `tests/unit/test_email_gmail_connect.py` holds 60 cases. They cover
+the eight of the spec, the dark flag, its one reader, the mail-app names of `env_guard` and the
+manual route. `tests/unit/test_integrations_mail_app_keys.py` holds 20 cases for O-GM-5, the tiles,
+the banner and the startup load. `bounce.test.ts` and
+the two `route.test.ts` files beside the BFF routes run each bounce for both providers. These
+older suites changed:
+
+- `test_email_oauth_app_info.py`: Gmail left the list of the 404 (item 9).
+- `test_email_connect_backend.py`: the two consent-error cases expect `provider=microsoft` (item
+  6), and its fixture turns the flag on.
+- `test_email_multi_inbox.py`: its fixture turns the flag on, for the Gmail picker case.
+- `test_email_owner_scope_fence.py`: one entry for `oauth_providers`, and the reason of
+  `oauth_app_info` names Gmail.
+- `test_email_oauth_state.py` and `test_email_oauth_authorize_wiring.py` did not change. They read
+  `error` only, or a source shape that stays.
+- `conformance.test.ts`: the palette debt of the Integrations page, 83 to 73.
+
+**Mutations, as run (2026-10-05).** Each mutation ran against its named test and turned it red.
+Each file then went back to its exact SHA-256.
+
+| Id | Mutation | Red tests |
+|---|---|---|
+| M1 | The callback accepts a partial grant (`oauth.py`) | `test_a_grant_without_settings_basic_saves_nothing`, 6 of 6 |
+| M2 | The gateway `_bounce` drops `provider` | `test_each_bounce_names_the_provider`, 12 of 12 |
+| M3 | `OAuthProviders` gets a `client_id` field | `test_the_providers_route_answers_booleans_only` |
+| M4 | The callback accepts a token with no `refresh_token` | `test_a_token_without_refresh_token_saves_nothing`, 3 of 3 |
+| M5 | `admin_policy_enforced` maps to `provider_error` | `test_google_errors_map_to_their_reasons`, 2 of 7 |
+| M6 | `bounceQuery` drops `provider` (`bounce.ts`) | 20 of the 58 vitest cases in `src/app/api/email/oauth` |
+| M7 | `bounceQuery` echoes each provider value | 5 of the 58 vitest cases |
+| M8 | Round 1: `PUT /integrations/keys` skips layer B for a mail-app key | `test_put_refuses_a_mail_app_key`, 2 of 2 |
+| M9 | Round 1: `POST /integrations/configure` skips layer B for `AUTH_MICROSOFT_ENTRA_ID_SECRET` | `test_configure_refuses_each_mail_app_key[AUTH_MICROSOFT_ENTRA_ID_SECRET]` |
+| M10 | The capability read returns the client IDs in a dict | `test_the_providers_route_answers_booleans_only` |
+| M11 | The capability read ignores the flag | `test_flag_off_the_capability_says_gmail_false` |
+| M12 | The authorize leg ignores the flag | `test_flag_off_the_authorize_leg_refuses_and_signs_nothing`, 2 of 2 |
+| M13 | The callback ignores the flag | `test_flag_off_the_callback_refuses_and_writes_nothing`, 2 of 2 |
+| M14 | Round 1: `POST /email/accounts` takes `gmail` and `microsoft` again | `test_the_manual_route_refuses_each_oauth_provider`, 4 of 6 |
+| M14b | Round 1: `POST /email/accounts` drops only its 403 | `test_the_manual_route_refuses_each_oauth_provider`, 4 of 6 |
+| M15 | Round 1: the startup map maps `gmail-oauth` again | `test_the_startup_map_names_no_mail_app_key` |
+
+Round 1 ran M8, M9 and M11 to M15 again on the rebased code, and each one was red. Under M9,
+layer C still answers 422, so the test reads the 403 of layer B alone.
+
+**Known limits of EM-G7 (follow-ups, not fixed here).**
+
+- Round 1 closed the two limits that stood here: the startup map and the Microsoft tile.
+- The read-only probe `GET /integrations/test?service=gmail-oauth` stays. It returns a status, not
+  a key.
+
+**Review round 1 (2026-10-05).** The review failed EM-G7 on two P1s. The security fix #633 closed
+both on main: a newline in a value, and a configure write of `EMAIL_GMAIL_CONNECT`. The branch is
+rebased on #633, and these findings are closed:
+
+- **One source for the refused names.** Layer B of `env_guard` refuses the mail-app keys. The
+  second list in `app_credentials.py` and the helper in `integrations.py` are gone.
+  `test_every_name_that_oauth_app_reads_is_a_platform_name` holds the two together.
+- **P2, the tiles and the banner.** No setup step, no link and no form field for a mail app.
+  Fences: `test_the_microsoft_tile_offers_no_field_and_no_setup_step` and
+  `test_the_banner_gives_no_setup_step_and_no_link`.
+- **P2 and P3-1, the manual route.** `POST /email/accounts` refuses both OAuth providers (M14).
+- **P3, the startup map.** The two dead entries are gone (M15).
+- **P3-2, the verify command.** It names the files of the slice.
+- **The restart.** The settings comment, the as-built notes and §12.4 give the reason.
+- **The M8 cases.** Each case reaches layer B. `test_the_gmail_oauth_service_is_gone` holds the
+  400 of the removed service on its own.
+- **The docstring of `oauth_app`.** It names the env file of the box, not Integrations.
+
+#### 12.3.9b EM-G7b — a member allowlist for the Gmail connect
+
+**Status.** ✅ MERGED #639 (2026-10-05). The as-built notes and
+the mutation table are at the end of this section.
+
+**Why (go-live item A7, orchestrator decision, 2026-10-05).** `EMAIL_GMAIL_CONNECT` (D-EM-36) is
+one value for the whole box (`transport/oauth.py:119-132`). When it is on, each member of each
+organization sees a live Gmail choice. While the Google app is in Testing, Google refuses each
+user that is not a test user (§12.4 step 5). That member then reads the `consent_declined` copy.
+So the live test of the owner (EM-G10) must reach the listed members only.
+
+**Gate.** 🟢 AGENT-SAFE · security review. It merges dark. While the flag is off, no member sees
+a change.
+
+**Order.** After EM-G7 and EM-G8. Before EM-G10. It needs no other EM-G slice.
+
+**Size.** S. About 40 lines of code, with tests of about 250 lines.
+
+**Scope.**
+
+1. **The setting.** `EMAIL_GMAIL_CONNECT_MEMBERS` (`email_gmail_connect_members` in
+   `acb_common/settings.py`) holds member addresses, with a comma between addresses. The default
+   is empty. It follows the pattern of `EMAIL_OUTLOOK_DELTA_ACCOUNTS` (EM-T4d).
+2. **The list holds addresses, not member ids.** The gateway reads `UserContext.email` from the
+   session, and the signed state of EM-T1a binds the same address. `UserContext.user_id` is an
+   opaque token in two UUID spaces, and it is empty until the platform provisions the member
+   (`acb_auth/roles.py`). Each entry is the sign-in address of a Metorite member. That address
+   is not always the Gmail address that the member connects.
+3. **The flag stays the master switch.** With the flag off, no member may connect Gmail. With the
+   flag on and the list empty, every member may. "Every member" is for the time after Google
+   verifies the app (§12.4 step 15). With the flag on and the list set, only a listed member may.
+4. **The match.** The match ignores case. It removes the space around each entry and around the
+   address of the session. It compares whole addresses, never a part of one.
+5. **A value with no address.** An empty or blank value adds no limit. A value that holds only
+   commas and spaces names no member, so no member passes. *Agent decision (EM-G7b, 2026-10-05):
+   a value that an operator wrote fails closed.*
+6. **One reader for each setting, and one check.** `gmail_connect_enabled()` stays the one reader
+   of the flag. A new `gmail_connect_members()` is the one reader of the list. A new
+   `gmail_connect_allowed(user)` takes the `UserContext` of the session and answers "may this
+   member connect Gmail". It never reads a query, a body, a header or the state.
+7. **Each Gmail gate calls the check.** The capability read, the authorize leg, the callback and
+   the app facts call `gmail_connect_allowed(user)`. A listed member gets `gmail: true`, a 302 to
+   Google and a saved mailbox.
+8. **Each other member gets the dark answer of today.** The capability read says `gmail: false`.
+   The authorize leg answers 400 before it signs a state. The callback bounces
+   `provider_unavailable` before the token exchange. The app facts answer 503, because the dark
+   state is one state (§12.3.9).
+9. **A platform setting.** `env_guard.is_platform_env("EMAIL_GMAIL_CONNECT_MEMBERS")` is true,
+   because of the prefix `EMAIL_`. So no Integrations write can set it. Only the env file of the
+   box sets it. A change needs a restart of the gateway, as for the flag.
+
+**Non-goals.**
+
+- No UI change. EM-G8 reads the capability read already. A listed member sees Gmail, and each
+  other member sees "Coming soon".
+- No Microsoft change. No Microsoft leg reads the list.
+- No list for each organization. The list is one value for the box, as the flag is.
+- No address in a log line. A refusal logs `email.oauth_gmail_dark` with its leg, as today.
+- No migration and no SQL change.
+
+**Fences (R7).** `tests/unit/test_email_gmail_connect.py` gets these cases.
+
+- `test_a_listed_member_connects_gmail`: the capability read says `gmail: true`, the authorize leg
+  answers 302 to Google, and the callback saves the mailbox.
+- `test_an_unlisted_member_reads_gmail_false`: the capability read says `gmail: false`.
+- `test_an_unlisted_member_is_refused_at_authorize`: a 400, and the leg signs no state.
+- `test_an_unlisted_member_is_refused_at_the_callback`: `provider_unavailable` before the token
+  exchange, and no `email_accounts` row.
+- `test_an_unlisted_member_gets_no_app_facts`: a 503.
+- `test_the_list_ignores_case_and_space` and `test_the_list_matches_whole_addresses_only`.
+- `test_an_empty_list_lets_every_member_through` and `test_a_list_of_only_commas_lets_nobody_through`.
+- `test_the_flag_off_overrides_the_list`.
+- `test_a_request_input_cannot_widen_the_list`: a `login_hint` or a signed state that names a
+  listed member does not let an unlisted session through.
+- `test_every_gmail_gate_asks_the_member_of_the_session`: each call of the check passes the
+  `user` of `Depends(get_current_user)`, and only the check reads the flag.
+- `test_gmail_connect_members_is_the_one_reader_of_the_list`.
+- `test_the_member_list_is_a_platform_name`.
+- `test_the_member_list_does_not_touch_microsoft`.
+
+**Mutations.** Each one must turn its test red. Then the file goes back to its exact SHA-256.
+
+- M1: the capability read ignores the list.
+- M2: the authorize leg ignores the list.
+- M3: the callback ignores the list.
+- M4: the match is case-sensitive.
+- M5: the check drops the flag-off override.
+
+**Verify with.**
+
+```bash
+uv run pytest tests/unit/test_email_gmail_connect.py tests/unit/test_email_connect_backend.py \
+  tests/unit/test_email_oauth_state.py tests/unit/test_email_oauth_app_info.py \
+  tests/unit/test_email_owner_scope_fence.py tests/unit/test_integrations_env_hardening.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email/transport/oauth.py \
+  tests/unit/test_email_gmail_connect.py
+uv run ruff check . --select F821,F601,F602,F502,F7,B006
+```
+
+`test_integrations_env_hardening.py` holds one R8 case. Run it against a private database, with
+`TENANT_LADDER_DATABASE_URL` set, so that no case skips.
+
+**As built (2026-10-05, branch `email-gmail-g7b`).** The build covers items 1 to 9. It adds no
+migration and changes no SQL.
+
+- **The setting.** `email_gmail_connect_members: str = ""` sits under `email_gmail_connect` in
+  `acb_common/settings.py`. Its comment names the one reader, the gate and the fence.
+- **The readers and the check** (`transport/oauth.py`). `_connect_members` parses the raw value
+  and caches it, as `scheduler._delta_accounts` does. It answers `None` for an empty or blank
+  value, and a set for each other value. `gmail_connect_members()` is the one reader of the field.
+  `gmail_connect_allowed(user)` asks the flag first, and then the list.
+- **The gates.** `provider_available` takes the `user` of the capability read. The authorize leg,
+  the callback and the app facts call the check with the `user` of `Depends(get_current_user)`.
+  `gmail_connect_enabled()` now has one caller, the check.
+- **The form.** The list holds sign-in addresses (item 2), because the gateway can check
+  `UserContext.email` from the session with no request input.
+- **No UI change and no Microsoft change.** The log line `email.oauth_gmail_dark` does not change,
+  and it carries no address.
+
+**The fences, as built.** `tests/unit/test_email_gmail_connect.py` grows from 60 to 96 cases. The
+36 new cases come from 16 tests: the 15 of the list above and `test_the_member_list_defaults_empty`.
+The fixture of the file sets the list to empty, so the cases of EM-G7 run as before. No other
+suite changed.
+
+**Mutations, as run (2026-10-05).** Each mutation ran against its named test and turned it red.
+`oauth.py` then went back to its exact SHA-256 (`7d66fb25`).
+
+| Id | Mutation | Red in the named test | Red in the whole file |
+|---|---|---|---|
+| M1 | The capability read ignores the list | `test_an_unlisted_member_reads_gmail_false`, 2 of 2 | 8 |
+| M2 | The authorize leg ignores the list | `test_an_unlisted_member_is_refused_at_authorize`, 2 of 2 | 7 |
+| M3 | The callback ignores the list | `test_an_unlisted_member_is_refused_at_the_callback`, 2 of 2 | 4 |
+| M4 | The match is case-sensitive | `test_the_list_ignores_case_and_space`, 3 of 5 | 4 |
+| M5 | The check drops the flag-off override | `test_the_flag_off_overrides_the_list`, 3 of 3 | 10 |
+| M6 | The app facts ignore the list | `test_an_unlisted_member_gets_no_app_facts`, 1 of 1 | 2 |
+| M7 | A list of only commas lifts the limit | `test_a_list_of_only_commas_lets_nobody_through`, 3 of 3 | 3 |
+| M8 | The match takes a part of an address | `test_the_list_matches_whole_addresses_only`, 5 of 6 | 5 |
+| M9 | The parse keeps the space around an entry | `test_the_list_ignores_case_and_space`, 2 of 5 | 5 |
+
+**Verify, as run.** The six suites of the verify command give 623 passed and 0 skipped, with
+`TENANT_LADDER_DATABASE_URL` on a private database. The three ruff checks exit clean.
+
+**Known limits (follow-ups, not fixed here).**
+
+- `work_plan.md` §6 row D4 does not name the list yet. The EM-G9 branch adds both Gmail names
+  there, so this branch leaves the row alone.
+- The order line of §12.3.12 (EM-G10) does not name EM-G7b yet.
+
+#### 12.3.10 EM-G8 — the connect UI
+
+**Status.** ✅ MERGED #638 (2026-10-05), after EM-G7. The
+as-built notes, the fences and the mutation table are at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE · visual review. It merges dark.
+
+**The guard is the flag (E-D1, orchestrator, 2026-10-05).** The guard is `EMAIL_GMAIL_CONNECT`
+(D-EM-36), not a box with no Google app. The box holds `GMAIL_OAUTH_*` today (§12.1, measured on
+2026-10-05, by name only). The UI offers Gmail only when the capability read answers
+`gmail: true`. That answer needs the Google app on the box and the flag on. The flag flips at
+EM-G10 only, under gate `enforcement-flip`, after the slices that D-EM-36 names.
+
+**Order.** EM-G8 merges after EM-G7 (E-D1). EM-G7 adds the capability read, the flag and the
+`provider` of each bounce. While the flag is off, Gmail stays "Coming soon". So EM-G8 can merge
+before EM-G3b and EM-G5, and a provider that is half built never goes live.
+
+**#633 closes O-GM-5 (E-D2).** #633 merged on 2026-10-05. Each Integrations and Settings write now
+refuses a platform name with a 403 (`acb_common/env_guard.py`). `PLATFORM_ENV_PREFIXES` holds
+`GMAIL_OAUTH_`, `MSFT_OAUTH_`, `AUTH_MICROSOFT_ENTRA_ID_` and `EMAIL_`. So no tenant can set the
+key of a mail app, or `EMAIL_GMAIL_CONNECT`. Fence: `tests/unit/test_integrations_env_hardening.py`,
+which names `EMAIL_GMAIL_CONNECT` and the mail-app keys.
+
+**The check before the merge (E-D2).** The orchestrator does this check after EM-G7 deploys. The
+box must answer `GET /email/oauth/providers` with `gmail: false`. If it answers `gmail: true`,
+EM-G8 does not merge.
+
+**Size.** M. About 200 lines of UI, with tests of about 200 lines.
+
+**Scope.**
+
+1. **Availability (D-EM-35, GM-26).** `CONNECT_PROVIDERS` no longer fixes `available`. The page
+   reads `GET /email/oauth/providers` through `gatewayFetch`, as `lib/api.ts:524` reads the app
+   facts. The answer is `{"microsoft": bool, "gmail": bool}` (EM-G7 item 8), and the store keeps
+   it.
+2. **A failed read** keeps Microsoft live and Gmail "Coming soon". A network error is a failed
+   read. So are a 403, a 404 before EM-G7 deploys and an answer of another shape. `retryTarget` and
+   `rangeStepProviderFrom` (`lib/connect.ts:248-286`) take the live set from the read.
+   - **A provider that the read refuses (E-D4).** When the read answers `microsoft: false`, for
+     example on a dev box with no Microsoft app, Microsoft also shows as not available. Its note
+     is `Not available yet`, the words of `_NOT_CONFIGURED` in EM-G7. The UI never offers a
+     provider whose app is missing.
+3. **The copy (GM-27, E-D3).** The empty state names each provider that the read offers, because
+   no try exists yet. With Microsoft only, it reads as today. The decline text, the generic
+   failure and the callback page name the provider of the try. The callback page reads `provider`
+   from its URL (EM-G7 item 6).
+4. **The new reasons.** `scope_missing` says that Metorite needs both permissions, with a retry.
+   `workspace_admin_blocked` shows the help of item 6.
+5. **The folder tree of a Gmail mailbox** shows the well-known folders and Archive. Its user labels
+   show in the label filter (O-GM-1). `mergeFolders` (`lib/emailStore.ts:139`) takes the provider
+   of the mailbox.
+6. **The help for a Workspace admin.** Under the Gmail choice, one line says that a company admin
+   can trust Metorite once. It opens a short help with the client ID from
+   `GET /email/oauth/gmail/app`. The help also gives the Admin console path of §12.4.
+7. **The reconnect banner** already handles Gmail (`page.tsx:1085-1101`). Its copy stays, and the
+   table below names the test that holds it (E-D3).
+8. **Visual review.** Use the `visual-review` skill on the connect choices, the range step and the
+   callback page for each reason. Look in light mode, at compact density, with a changed accent
+   and at 390 px.
+
+**The words, and the test that holds each (E-D3).** `{Name}` is `Microsoft` or `Google`, from the
+provider of the try.
+
+| Item | Where | The words | Test |
+|---|---|---|---|
+| 2 | The note of Gmail, not live | `Coming soon` | `gmail-coming-soon-when-the-read-fails` |
+| 2 | The note of Microsoft, not live | `Not available yet` | `microsoft-unavailable-when-the-read-says-no` |
+| 3 | The empty state, Microsoft only | `You sign in with Microsoft. Metorite never sees your password.` | `empty-state-names-each-live-provider` |
+| 3 | The empty state, both | `You sign in with Microsoft or Google.` and the same second sentence | `empty-state-names-each-live-provider` |
+| 3 | The decline text | `{Name} did not give Metorite access to your mailbox, so nothing was connected.` | `callback-copy-names-google` |
+| 3 | The generic failure | `{Name} or Metorite stopped the connection.` | `callback-copy-names-google` |
+| 3 | A mailbox that the member connected before | `To add a different mailbox, choose another account at {Name}.` | `callback-copy-names-google` |
+| 4 | The title of `scope_missing` | `Metorite needs both permissions` | `scope-missing-copy` |
+| 4 | The title of `workspace_admin_blocked` | `Your Google Workspace admin needs to trust Metorite` | `workspace-admin-help-shows-the-client-id` |
+| 6 | The line under the Gmail choice | `Company Google account? Your admin can trust Metorite once for everyone.` | `workspace-admin-help-shows-the-client-id` |
+| 6 | The Admin console path | `Security → Access and data control → API controls`, then `Manage third-party app access`, `Configure new app` and `Trusted` | `workspace-admin-help-shows-the-client-id` |
+| 7 | The reconnect button | `Reconnect Outlook` and `Reconnect Gmail` | `reconnect-banner-names-the-provider` |
+
+**Non-goals.** No change to the Microsoft paths beyond copy that names the provider. No change to
+Integrations.
+
+**Fences (R7).** `src/app/email/lib/connect.test.ts` inverts the cases at `:116-122`, `:561-562`
+and `:722`. New cases carry these names:
+
+- `gmail-available-from-capability`
+- `gmail-coming-soon-when-the-read-fails`
+- `microsoft-unavailable-when-the-read-says-no` (E-D4)
+- `empty-state-names-each-live-provider` (E-D3)
+- `callback-copy-names-google`
+- `scope-missing-copy`
+- `workspace-admin-help-shows-the-client-id`
+- `gmail-folder-tree-shows-well-known-folders`
+- `reconnect-banner-names-the-provider` (E-D3)
+
+**Mutations (E-D4).** Each mutation must turn its named case red. Then the file goes back to its
+exact SHA-256.
+
+| Id | Mutation | The case that fails |
+|---|---|---|
+| M1 | The choices always offer Gmail as available | `gmail-coming-soon-when-the-read-fails` |
+| M2 | `rangeStepProviderFrom` ignores the read | `gmail-available-from-capability` |
+| M3 | The callback page ignores `provider` | `callback-copy-names-google` |
+| M4 | `mergeFolders` keeps the Gmail user labels as folders | `gmail-folder-tree-shows-well-known-folders` |
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/app/api/email src/lib/theme
+cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
+```
+
+The theme suite holds the design-system fences, so keep it in the run.
+`test_email_oauth_authorize_wiring.py` reads `email/page.tsx` and holds `handleConnect` (E-D4).
+
+**As built (2026-10-05, branch `email-gmail-g8`).** The build covers items 1 to 8 and E-D1 to
+E-D4. It changes UI files only, and `handleConnect` does not change.
+
+- **The read (items 1 and 2).** `getConnectProviders` in `lib/api.ts` reads
+  `GET /email/oauth/providers` through the email catch-all of the BFF. `mapProviderAvailability`
+  takes an object with a boolean for each provider. Any other answer is a failed read.
+- **The store.** `connectProviders` is `undefined` until the read settles, and `null` for a failed
+  read. A read slower than `PROVIDERS_READ_TIMEOUT_MS` (8 seconds) is a failed read.
+  `liveProviders` and `connectChoices` in `lib/connect.ts` turn the read into the live set and the
+  choices.
+- **No guess before the read.** Until the read settles, `ConnectChoices` draws two `Skeleton` rows
+  and the sign-in line names no provider. The list mounts after the read. So a retry URL for Gmail
+  opens the range step only when the read offers Gmail.
+- **The retry (item 2).** `retryTarget` and `rangeStepProviderFrom` take the live set. The email
+  page reads its query once into `rangeStepQuery`. The callback page reads the capability for its
+  retry target only, and until that read settles, the live set is Microsoft only.
+- **E-D4.** `UNAVAILABLE_NOTE` holds `Not available yet` for Microsoft and `Coming soon` for Gmail.
+- **The copy (items 3 and 4).** `callbackView` now requires `provider`, and `callbackProvider`
+  reads it from the URL. `alreadyConnectedCopy`, `offersTryAgain`, `offersConnectAgain` and
+  `showsWorkspaceAdminHelp` move four decisions of the callback page into `lib/connect.ts`.
+  `scope_missing` and `workspace_admin_blocked` are two new kinds of `callbackView`.
+- **The folder tree (item 5).** `lib/emailStore.ts` now exports `mergeFolders`, and it takes the
+  provider. For Gmail it adds no user label, and only a system label feeds the counts of the
+  well-known folders. `fetchFolders`
+  and `fetchAllFolderCounts` pass the provider of the mailbox.
+- **The Workspace help (item 6).** `components/WorkspaceAdminHelp.tsx` holds
+  `WorkspaceAdminSteps`, which only draws, and `WorkspaceAdminHelp`, which reads
+  `getMailAppInfo("gmail")`. The line under a live Gmail choice opens it in place. The client ID
+  read runs only when the help opens. The callback page shows the help for
+  `workspace_admin_blocked`.
+- **The reconnect banner (item 7).** `RECONNECT_LABEL` holds both labels, and the page reads it.
+  The rest of the banner names no provider.
+- **The visual review (item 8, 2026-10-05).** A rig that the build did not keep stubbed each `/api`
+  call. It captured the empty state with the flag off, with both providers live, with the help
+  open and with no app on the box. It also captured the range step for Gmail, and the callback
+  page for four Gmail reasons. Each capture is in dark, light, compact, a violet accent and
+  390 px. No capture showed a console or page error. At 390 px the mobile shell mounts the page
+  again, so an open help closes, and that is the rig.
+
+**The fences, as built.** `connect.test.ts` holds the nine named cases of the list above, with 31
+new cases in all. The build inverts the cases at `:116-122`, `:561-562` and `:722`. The run of
+`src/app/email`, `src/app/api/email` and `src/lib/theme` gives 850 passed, and main gave 819.
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against its named case. Each file
+then went back to its exact SHA-256.
+
+| Id | Mutation | Red cases |
+|---|---|---|
+| M1 | `connectChoices` offers Gmail as available for each read (`lib/connect.ts`) | `gmail-coming-soon-when-the-read-fails`, 4 of 8 |
+| M2 | `rangeStepProviderFrom` takes `liveProviders(null)` in place of the read | `gmail-available-from-capability`, 1 of 4 |
+| M3 | The callback page sets `provider` to `"microsoft"` (`oauth/callback/page.tsx`) | `callback-copy-names-google`, 1 of 4 |
+| M4 | `mergeFolders` adds the user labels of a Gmail mailbox (`lib/emailStore.ts`) | `gmail-folder-tree-shows-well-known-folders`, 2 of 3 |
+
+**Known limits of EM-G8 (follow-ups, not fixed here).**
+
+- The folder suggestions of the rule editor (`MoveFolderField` in `RulesTab.tsx`) read the folder
+  tree. For a Gmail mailbox they no longer list the user labels. A member can still type a label
+  name. EM-G3b, which makes a move to a user label work, can take the suggestions from the labels.
+- The reconnect banner does not read the capability read. While the flag is off, the reconnect of a
+  Gmail mailbox bounces `provider_unavailable` (EM-G7), and production holds no Gmail mailbox.
+- `provider_unavailable` shows the generic failure, with its code as the reference.
+
+#### 12.3.11 EM-G9 — parity of a Gmail and Outlook pair
+
+**Status.** ✅ MERGED #640 (2026-10-05). The as-built notes, the
+mutation table and the known limits EM-G9-f1 to EM-G9-f3 are at the end of this section.
+
+**Gate.** 🟢 AGENT-SAFE · R8. No migration.
+
+**Order.** After EM-G2 and EM-G3a.
+
+**Size.** S. Tests and docs, about 150 lines.
+
+**Scope.** The EM-G9 build checked the anchors below at `a9a08deb9`.
+
+1. **"Also in".** One member has a Gmail and an Outlook mailbox. A mail sent to both shows "Also
+   in" on each row (`ALSO_IN_SQL`, `automation/identity.py:174`).
+2. **The draft dedupe.** The second mailbox makes no draft when the first holds one
+   (`_DRAFT_LOCK_SQL` at `automation/identity.py:225`, `_ANSWERED_IN_PAIR_SQL` at `:248`).
+3. **The Sent-copy proof.** The proof holds from Gmail to Outlook and back (`_PROVEN_OWN_SEND_SQL`
+   at `:330`). Mail between the two is not cold and not awaiting (D-EM-27).
+4. **The known limits.** Update §11.6 edge cases 10, 11 and 26. Update the F2 note of EM-T8e-1
+   (§11.7.5) and the note of EM-T8g-3 on `internet_message_id` (§11.7.7).
+
+**Non-goals.** No change to the SQL of the four statements or to their callers. No change to
+IMAP. No change to the cold check. No migration.
+
+**The comments moved to EM-G2 (E9).** EM-G2 corrected each comment that said only Outlook stores
+the Message-ID. They sit above `ALSO_IN_SQL` and `_PROVEN_OWN_SEND_SQL` in `automation/identity.py`,
+in two lines of `apps/services/gateway/AGENTS.md`, and in the docstrings of
+`test_email_duplicates.py` and `test_email_ai_context.py`. EM-G2 missed one comment. The doc
+comment of `alsoIn` in `workbench/control_plane/src/app/email/lib/types.ts` still said that only
+two Outlook mailboxes pair. EM-G9 corrects it.
+
+**Fences (R7).** New R8 cases in `tests/unit/test_email_duplicates.py` and
+`tests/unit/test_email_ai_context.py`. The Gmail rows come from the real parse of an EM-G2
+fixture, not from a row built by hand.
+
+- `test_also_in_pairs_a_gmail_and_an_outlook_copy`
+- `test_draft_dedupe_spans_gmail_and_outlook`
+- `test_the_sent_proof_holds_from_gmail_to_outlook`
+- `test_the_sent_proof_holds_from_outlook_to_gmail`
+
+**Mutations.** M1 drops the Message-ID in the Gmail parse, and each R8 case fails. M2 strips the
+angle brackets in the Gmail parse only, and each R8 case fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_duplicates.py tests/unit/test_email_ai_context.py \
+  tests/unit/test_gmail_parse.py -v -rs
+```
+
+The R8 tests must show PASSED, with 0 skips.
+
+**As built (2026-10-05, branch `email-gmail-g9`).** No SQL and no provider code changed.
+
+- **The two reads.** `tests/unit/_email_pair_rows.py` gives each row from the real read of its
+  provider. A Gmail row comes from `GmailProvider.get_message` over an EM-G2 fixture. An Outlook
+  row comes from `OutlookProvider.list_messages` over one Graph message. `httpx.MockTransport`
+  answers each request.
+- **The Graph form is a literal.** The Outlook message carries the Message-ID as Graph gives it,
+  with its angle brackets and its case. The test writes that value as a literal. A value taken
+  from the Gmail parse would agree with each defect of that parse.
+- **The write.** Each row goes through `persist.upsert_message`, with the `REKEYS_MESSAGE_IDS`
+  flag of its provider (D-EM-34). Each read runs as `acb_app_h3rls`.
+- **Fixture (d)** holds a Message-ID in mixed case. So a parse that changes the case also breaks
+  the pair.
+
+**The fences, as built.** 8 new R8 cases. The run of the three files gives 165 passed, with 0
+skipped.
+
+| Test | File | What it proves |
+|---|---|---|
+| `test_also_in_pairs_a_gmail_and_an_outlook_copy` (2 cases) | `test_email_duplicates.py` | Each copy names the other mailbox, in the list, in one mailbox and in search. Both rows hold the Graph form. |
+| `test_draft_dedupe_spans_gmail_and_outlook` (3 cases) | `test_email_duplicates.py` | Gmail drafts first, or Outlook drafts first, or the member made the draft in Gmail web. The other mailbox makes no draft, and the skip reason is `answered`. The Gmail label `DRAFT` gives the folder `drafts`. |
+| `test_the_try_lock_spans_gmail_and_outlook` | `test_email_duplicates.py` | The Outlook run meets the lock of the Gmail run, and the skip reason is `busy`. |
+| `test_the_sent_proof_holds_from_gmail_to_outlook` | `test_email_ai_context.py` | Before the Gmail Sent copy syncs, the cold check runs (EM-G9-f1). After the sync, the proof holds and the check skips. The thread is self-only, so it is never awaiting. |
+| `test_the_sent_proof_holds_from_outlook_to_gmail` | `test_email_ai_context.py` | The same, from an Outlook Sent copy to a Gmail Inbox copy. |
+
+**Mutations, as run (2026-10-05).** A script ran each mutation against the 8 cases on a real
+Postgres. Each file then went back to its exact SHA-256.
+
+| Id | Mutation | Red cases |
+|---|---|---|
+| M1 | The Gmail parse sets no Message-ID (`gmail.py`) | 8 of 8 |
+| M2 | The Gmail parse strips the angle brackets (`_gmail_message_id`) | 8 of 8 |
+| M3 | The Outlook parse strips the angle brackets (`outlook.py`) | 8 of 8 |
+
+Each red case failed on its behaviour: an empty "Also in", a second draft, or no proof.
+
+**Known limit EM-G9-f1, the order of the syncs.** Gmail polls, and Outlook gets a push. So a mail
+from Gmail to Outlook can meet the Outlook cold check before the Gmail Sent copy syncs. The check
+then has no proof, and it runs as for any mail with no proof. This fails safe.
+`test_the_sent_proof_holds_from_gmail_to_outlook` shows it.
+
+**Known limit EM-G9-f2, the forms of a Gmail address.** Gmail can deliver mail to other forms of
+one address: other dots, a `+tag`, or the domain `googlemail.com`. Each compare reads
+`email_address` exactly. So a Sent copy to such a form proves nothing, and the self set does not
+hold that form. The cold check then runs. This fails safe.
+
+**Known limit EM-G9-f3, the raw Message-ID.** The fences prove that the two parses keep one value.
+No test can prove that Gmail and Graph give the same raw value for one mail. EM-G10 check 6 tests
+it live.
+
+#### 12.3.12 EM-G10 — live acceptance (owner)
+
+**Gate.** 🔴 OWNER-GATE. The owner registers the Google app (§12.4 steps 1 to 8), names the test
+user (Q-GM-3) and gives the go. An agent writes the env under gate `env-write` and runs the checks.
+
+**Order.** Last. ~~After EM-G1 to EM-G5, EM-G7, EM-G8 and EM-G9.~~ **Amended (D-EM-36,
+orchestrator, 2026-10-05):** the owner's test runs after EM-G5a, EM-G9 and EM-G7b merge. The
+other slices that it needs merged before: EM-G1, EM-G2, EM-G3a, EM-G4a, EM-G4b, EM-G7 and EM-G8.
+EM-G6a and EM-G6b are not needed (D-EM-32). The list "Before customers" below holds what moved.
+
+**Size.** S. A run of the checks, and a report.
+
+**The checks,** on production, for one member with a Gmail mailbox and an Outlook mailbox.
+
+1. Before the connect, count the `gmail` rows in `email_accounts`. Record the count, not the rows.
+2. Open Email. The Gmail choice is live, and "Coming soon" is gone.
+3. Connect Gmail. Google shows the two scopes of D-EM-31, and the callback opens the range step.
+4. Clear one scope on the consent page in a second try. The callback shows `scope_missing` and
+   saves no row.
+5. Import 1 month. The progress shows a count and an estimate, newest first, and ends.
+6. Send one mail to both addresses. Each row shows "Also in".
+7. In Gmail web, archive, read, star and label one mail. Each change shows in Metorite within one
+   poll.
+8. Do the same acts in Metorite. Each change shows in Gmail at once.
+9. Reply from Metorite with the HTML signature. The reply threads in Gmail and at an Outlook
+   recipient.
+10. Save a draft in Metorite. Gmail shows one draft. Send a draft made in Gmail web from Metorite.
+11. Turn sync off for one hour, send mail, and turn it on. No mail is lost.
+12. Disconnect Gmail. The copy in Metorite goes, and the mail stays in Gmail.
+13. Read one mail with an RFC 2047 sender name through `format=full` (EM-G2 review round 1). Record
+    whether Gmail sends the encoded word raw or decoded. A decoded name with a comma and no quotes,
+    such as `Müller, Jürgen`, still splits in a `To` list.
+14. Open the Archive folder and "Load older". Record that Gmail search takes `GMAIL_ARCHIVE_QUERY`
+    (`-in:inbox -in:sent -in:drafts`) and gives the archived mail.
+15. Read one mail with an ISO-8859-1 body. Record that `body.data` keeps the charset of its part,
+    so the body shows with no U+FFFD.
+16. Save a reply draft with a file of 6 MB, then edit it in Metorite. Record that Gmail keeps
+    the draft in its thread, and keeps the file (EM-G3c C2, C18).
+17. Send a NEW mail with a file of 1 MB, which is not a reply. Its upload sends the empty
+    metadata `{}`. Record that Gmail takes it (EM-G3c-1 review note 1).
+18. Save a new draft with a file. Its upload sends `{"message": {}}`. Record that Gmail shows one
+    draft with the file.
+19. Send a mail with a file of about 20 MB. Record the time of the save and of the send. The proxy
+    stops a request after 30 seconds (EM-G3c-f1).
+
+**Evidence.** The log lines of each step, the row counts and the screenshots. Report each
+production act in the same message (CLAUDE.md §3a rule 2).
+
+**Non-goals.** Google verification and CASA (§12.4 steps 10 to 15). They come before customers,
+not before this check.
+
+**Before customers.** The amendment of D-EM-36 (§12.2) moves the first three items past the
+owner's test. The other items are known limits of merged slices. Each item must close before a
+customer connects Gmail, and no item has an owner yet.
+
+1. **EM-G5b**, the reconcile half of EM-G5 (§12.3.6). It needs a confirm by message id (E-G5-9).
+   🔨 Built, not merged (2026-10-05): the confirm asks Gmail by the provider id (§12.3.6.2).
+2. **EM-G3b**, a move to a user label, and the filter list (§12.3.4).
+3. **EM-G3c**, the size of a Gmail mail with files, and the autosave of a draft with files
+   (§12.3.3b). It owns EM-G3a-f8 (§12.3.3). ✅ EM-G3c-1 merged as #649 (2026-10-05). A Gmail
+   write with a file goes to the upload URI, and a mail over the limit answers 413. ✅ EM-G3c-2 is
+   merged as #651 (2026-10-05). The composers flush a pending save, and a Gmail draft with a
+   file waits 10 seconds. A failed save or send shows its reason.
+4. **EM-G4b-f1.** The cursor moves only at the end of a read. So a large backlog can start again at
+   the old cursor (§12.3.5.2).
+5. **EM-G2-f1.** A large text part that Gmail sends by `attachmentId` gives an empty body
+   (§12.3.2).
+6. **EM-G3a-f7.** An update of a draft made in Gmail web drops its inline images (§12.3.3).
+7. **EM-G4a-f1.** A `batchModify` that stops on a rate limit falls back to one `modify` for each
+   message (§12.3.5.1).
+8. **The known limits of EM-G8** (§12.3.10). The rule editor suggests no Gmail user label. The
+   reconnect banner does not read the capability read. `provider_unavailable` shows the generic
+   failure.
+9. **EM-G3b-f7.** The health metric and the repair script miss a Gmail thread that a custom
+   `MOVE_FOLDER` rule moved. `DAMAGED_CONVERSATION_THREADS_SQL` compares the rule label with the
+   folder. The fix changes SQL text and needs an R8 test (§12.3.4).
+
+### 12.4 Owner runbook — register the Metorite Google mail app (D-EM-5 amended, D-EM-31)
+
+These are one-time owner acts. No customer ever repeats them. An agent cannot do them, because
+each one needs a Google account that Metorite owns (`work_plan.md` §6.0 B).
+
+**Now, for EM-G10 (Testing mode).**
+
+1. Create a Google Cloud project for mail only, under a Google account or organization that
+   Metorite owns. Do not use the project of the Google sign-in client (`AUTH_GOOGLE_ID`,
+   `GOOGLE_SSO_CLIENT_ID`). A restricted-scope review of the mail app then cannot stop sign-in.
+2. In **APIs & Services → Library**, enable the **Gmail API**. Enable the **Cloud Pub/Sub API**
+   only when EM-G6a is next.
+3. In **Google Auth Platform → Branding**, set the name `Metorite`, the logo and a support email.
+   Set the home page, the privacy URL and the terms URL on `metorite.com`.
+4. Add `metorite.com` as an authorized domain. Verify `metorite.com` in Google Search Console with
+   an account that owns the project.
+5. In **Audience**, set the user type to **External** and the status to **Testing**. Add each test
+   Gmail address as a test user. Google allows 100 at most.
+6. In **Data Access**, add `https://www.googleapis.com/auth/gmail.modify` and
+   `https://www.googleapis.com/auth/gmail.settings.basic` (D-EM-31). Both are restricted scopes.
+7. In **Clients**, create a client of the type **Web application**. Add the redirect URI
+   `https://app.metorite.com/api/email/oauth/gmail/callback`. For local tests, also add
+   `http://localhost:3001/api/email/oauth/gmail/callback`.
+8. Give the client ID and the secret to an agent session through a one-time channel. You can also
+   write them on the box yourself. Do not paste the secret into a chat (H-207 shows the cost).
+9. The agent writes `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` to the box under gate
+   `env-write`. It confirms `WORKBENCH_PUBLIC_URL`, `GATEWAY_PUBLIC_URL` and
+   `GATEWAY_SESSION_SECRET`, which Outlook uses already.
+
+**The dark flag (D-EM-36).** The box holds a Google client today, and nobody in this plan set it
+(Q-GM-6). So `EMAIL_GMAIL_CONNECT` keeps the Gmail connect dark until EM-G10. Set it to `true`
+only for the owner's test, under gate `enforcement-flip`. That test waits for EM-G5a, EM-G9 and
+EM-G7b to merge (D-EM-36, amended 2026-10-05).
+
+**The member list (EM-G7b, gate `enforcement-flip`).** While the app is in Testing, set
+`EMAIL_GMAIL_CONNECT_MEMBERS` with the flag. It holds the Metorite sign-in address of each test
+member, with a comma between addresses. Only a listed member then sees Gmail, and each other
+member still sees "Coming soon". Each test member also needs a Gmail address on the test-user
+list of step 5. Leave the list empty only after Google verifies the app (step 15).
+
+**How to flip it.** Set both names in the env file of the box, because no Integrations write can
+set an `EMAIL_*` name. Then restart the gateway. A later read of the file never replaces a value that
+the process loaded at start.
+
+**The limits of Testing.** Read these before EM-G10.
+
+- Google issues a refresh token that ends after 7 days for an External app in Testing. So each
+  test mailbox reconnects once a week, through the reconnect banner.
+- Google shows "Google hasn't verified this app" to each test user. Expect that screen.
+- **Optional, for a Workspace domain.** A Workspace admin can trust the app by its client ID. The
+  path is Admin console → Security → Access and data control → API controls.
+- Then open Manage third-party app access → Configure new app, and choose **Trusted**. Members of
+  that domain can then connect, also when the domain blocks apps that Google did not verify.
+- Trust does not remove the limit of 7 days.
+
+**Before customers (Production).**
+
+10. Submit the app for verification: the brand, and the restricted scopes. Give a reason for each
+    scope, and say why a narrower scope does not serve. Record a demo video of the OAuth flow and
+    of each feature that uses the scopes.
+11. Update `site/privacy.html` and the terms. Today they name Google for sign-in only
+    (`site/privacy.html:107`, `:149`).
+12. The privacy text says how Metorite reads, uses, stores and shares Gmail data. It states that
+    Metorite meets the Limited Use rules of the Google API Services User Data Policy.
+13. The privacy text names the AI sub-processors of D-EM-9 (TypeSafe, AI/ML API). It states that
+    no Gmail data trains a general AI model. Q-GM-5 asks the owner to confirm this.
+14. Pass the CASA security assessment with a lab that Google authorizes, once each year. It costs
+    a fee and takes weeks. 🔴 Money and a third party: an owner act only (CLAUDE.md §3a rule 3).
+15. Publish the app (**Audience → Publish app**) only when verification passes. An app that Google
+    did not verify shows the warning, and Google caps it at 100 new users.
+
+**Engineering before customers.** These are not owner acts. An agent slice closes each one before
+the app moves to Production.
+
+- **Known limit EM-G4a-f1** (§12.3.5.1). A bulk act that falls back to one `modify` for each
+  message can send many quick requests to a mailbox that Gmail limits. EM-G5 does not own it
+  (E-G5-8). A later slice fixes it, with its own audit.
+
+**For push (EM-G6a and EM-G6b), when push is next.**
+
+16. In Pub/Sub, create a topic for Gmail. Grant `gmail-api-push@system.gserviceaccount.com` the
+    role **Pub/Sub Publisher** on it.
+17. Create a push subscription to `<GATEWAY_PUBLIC_URL>/email/webhook/gmail`, with
+    authentication on. Choose a service account and an audience. The base is the base of the
+    Graph webhook.
+18. Give the topic name, the service account and the audience to an agent. It writes
+    `GMAIL_PUSH_TOPIC`, `GMAIL_PUSH_SERVICE_ACCOUNT` and `GMAIL_PUSH_AUDIENCE` under gate
+    `env-write`. To set `EMAIL_GMAIL_PUSH` is gate `enforcement-flip`.
+
+**Effect on mailboxes connected today.** No member has connected a Gmail mailbox (§12.1). A test
+mailbox that connects in Testing must reconnect once after the app moves to Production. Its
+refresh token from Testing still ends after 7 days.
+
+### 12.5 Owner questions
+
+- **Q-GM-1. Which Google account or organization owns the Google Cloud project of the mail app?**
+  The proposal is an organization that Metorite owns, apart from the project of Google sign-in.
+- **Q-GM-2. Start Google verification now, or after EM-G10 in Testing?** The proposal is to verify
+  the domain and the brand now, because that costs nothing and the review takes weeks. Start the
+  restricted-scope review and CASA after EM-G10, because the demo video needs the finished flow.
+- **Q-GM-3. Which Gmail account is the test user of EM-G10?** The proposal is one personal
+  `@gmail.com` account that Metorite owns, and one Workspace mailbox if Q-GM-4 names a domain.
+- **Q-GM-4. Which Google Workspace domain, if any, tests the app as Trusted?** A Workspace mailbox
+  shows the admin paths of EM-G8 that a personal account cannot show.
+- **Q-GM-5. Does D-EM-9 cover Gmail content?** Google's Limited Use rules bind each transfer of
+  Gmail data, also to TypeSafe and AI/ML API, and the privacy text must name them. The proposal is
+  yes, on the same terms as Outlook, with the text of §12.4 steps 12 and 13. This is a legal and
+  third-party call, so the agent does not make it.
+- **Q-GM-6. Whose Google client does the box hold today?** The box `.env` holds
+  `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET` (measured by name, 2026-10-05). Nobody in
+  this plan set them. Name its Google Cloud project, its redirect URIs and the scopes it allows. If
+  it is not the mail app of §12.4, replace it at step 9 before EM-G10 (D-EM-36).
+
+---
+
+## 13. Insights — facts from mail, for the member (2026-10-07)
+
+> **Owner request, 2026-10-06, in chat.** The owner asked for two things. Both are quoted as
+> given.
+
+```text
+In the email app, we should enable analysis of attachments and of content
+within email chats. The analysis should appear in a UI/UX dashboard and cover
+project management, finance, sales, and other company-related areas, all
+accessible through the email assistant.
+```
+
+```text
+the systems that we create to ensure that we properly can handle large amounts
+of data, large Excel files, etc., without hallucinating.
+```
+
+> **Status.** 📝 SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable
+> dark. EM-T14e and EM-T14f wait for the flip. EM-T14g is not specified. The audit text is in
+> each slice below.
+
+> **Build state (2026-10-07).** EM-T14a merged as #700 (§13.9.1). EM-T14b-0 merged as #702.
+> EM-T14b-1 merged as #706 (§13.9.2). EM-T14c merged as #704 (§13.9.3). Both deployed on
+> 2026-10-07, dark.
+
+> **The owner answers (2026-10-07).** The owner answered Q-IN-1 to Q-IN-4 (§13.12). D-EM-43 to
+> D-EM-46 record them. Q-IN-1 made the job two stages: a cheap screen on `decide`, then the
+> extraction. The flip stays an act of the owner.
+
+> **Anchors.** The orchestrator recommended this design to the owner on 2026-10-06. It verified
+> each anchor against the code at `d60ab0b19`. A second pass on 2026-10-07 checked the anchors of
+> the audit and of the screen at `a0c20121c`. Re-verify each anchor at dispatch, because the code
+> is the fact.
+
+> **Why a section of its own.** §11 and §12 set the pattern. A feature with its own decisions and
+> several slices gets a top-level section. §10.4 holds single fixes and the tenancy work. The
+> slices here are EM-T14a to EM-T14g.
+
+**Short paths in this section.**
+
+- `automation/`, `transport/`, `core.py`, `digest.py` and `scheduler_hooks.py` live in
+  `apps/services/gateway/gateway/routes/email/`.
+- `llm_cap.py`, `post_sync.py` and `scheduler.py` live in
+  `apps/services/email_ingestion/email_ingestion/`.
+- `components/automation/`, `components/` and `lib/` live in
+  `workbench/control_plane/src/app/email/`.
+- `agents.py`, `config.json` and `instructions.md` live in `apps/agents/agent-email-assistant/`.
+
+### 13.0 The answer, in six rules
+
+1. **Extract once, in the background, in two stages.** A job reads new mail and its files. A
+   cheap `decide` screen picks the mail that holds a fact. Only that mail gets an extraction call
+   (D-EM-43). The job writes typed facts to ONE new table, `email_insights`. A view and a tool
+   read that table, and never the inbox.
+2. **A number comes from the text, never from the arithmetic of a model.** The model copies a
+   short quote. Code finds the quote in the source, and code parses the amount and the date from
+   it. A fact whose quote is not in the source is not written.
+3. **A sum comes from SQL.** The view and the assistant read each total from the route, one total
+   for each currency. Nothing adds two currencies.
+4. **A fact is as private as its mail.** Only the member who owns the mailbox sees its facts
+   (D-EM-4). No view for the company is planned (D-EM-46).
+5. **Insights suggests, and never acts.** A card can open the task capture of today. The member
+   confirms each write there. The job writes its own table and nothing else.
+6. **It ships dark and opt-in.** `EMAIL_INSIGHTS` is off by default. A member turns Insights on for
+   each mailbox. Only an opted-in mailbox sends its text to a model (D-EM-44).
+
+**What does not change.** The rules, the triage on `decide` and the digest keep their behaviour
+(D-EM-7). The import range binds (D-EM-10, D-EM-11). The storage limit binds (D-EM-14). A mailbox
+stays the boundary of the AI context (D-EM-18).
+
+### 13.1 Measured state (2026-10-07, at `d60ab0b19`)
+
+- **No fact store exists.** The digest and the Dashboard count mail, threads and labels. No table
+  holds an amount, a due date or a counterpart from a mail.
+- **The Dashboard.** `components/automation/DashboardView.tsx` (621 lines) is the view of the
+  feature key `digest`. The sidebar names it "Dashboard" (`AccountSidebar.tsx` ~:109-119). It
+  shows stat tiles, "Needs your reply", "Waiting on them", "Commitments", "By category" and the
+  noisy senders. It reads `GET /email/digest` (`digest.py` ~:652).
+- **The Analytics view.** `components/automation/AnalyticsView.tsx` (954 lines) reads
+  `GET /email/analytics/overview` (`automation/analytics.py` ~:51). It shows counts over a range
+  of 7 days to 1 year.
+- **No feature key is named "Insights".** `AutomationFeature` (`lib/types.ts` ~:243-248) holds
+  `chat`, `ai-settings`, `digest`, `unsubscribe` and `analytics`. The one "See insights" link
+  opens `analytics` (`OnboardingRulesStep.tsx` ~:405).
+- **The shared reader.** `acb_skills.attachment_text.extract_text` reads `.docx`, `.xlsx`, `.pdf`,
+  `.html`, `.htm`, `.txt`, `.md` and `.csv` (`SUPPORTED_SUFFIXES` ~:162). EM-T11b merged as #692.
+  The text route of EM-T11 cuts its answer at 20,000 characters (`MAX_TEXT_OUTPUT_CHARS`,
+  `transport/attachments.py` ~:339). It parses through `parse_bounded`, a shared pool that
+  answers "busy" when each slot is in use.
+- **Files are not stored.** `email_attachments` holds the name, the type, the size and the
+  provider id. `_fetch_owned_attachment` (`transport/attachments.py` ~:170) gets the bytes from
+  the provider, with a cache of one hour in tenant Redis. It takes a `UserContext`, so a job
+  cannot call it as it is.
+- **The cap and the budget (EM-T4b).** `llm_cap.llm_slot()` binds a call only inside
+  `automation_scope`. One counter holds the calls of a mailbox for each UTC day. It has no label
+  for each caller. `EMAIL_LLM_DAILY_CALLS` is 2000. `EMAIL_LLM_BUDGET_MODE` is `log` in
+  production, so the budget counts and stops nothing. `email_llm_concurrency` is 0 by default, so
+  no cap holds the count of calls at one time.
+- **The filters that cost no model call.** `email_messages.categories` holds the labels of the
+  rules. `CLEANUP_CATEGORIES` (`core.py` ~:567) names `Newsletter`, `Marketing`, `Receipt`,
+  `Calendar`, `Notification` and `Cold Email`. `email_cold_senders` holds a cold verdict for each
+  sender. `email_newsletters` and `email_messages.unsubscribe_link` mark bulk mail.
+- **The hooks.** `scheduler_hooks.process_new_mail` runs after a sync that wrote mail.
+  `register_email_post_sync_hooks` (~:278) adds the hooks that run each cycle, such as
+  `classify_threads`. `as_mailbox_owner` opens the member scope and `automation_scope` together.
+- **Visibility.** RLS on each `email_*` table binds the organization, and nothing more. The member
+  check is in the gateway. `_account_scope` (`core.py` ~:491) and `_assert_account_owner` (~:662)
+  read `email_accounts.user_id`.
+- **The owner-scope fence.** `test_email_owner_scope_fence.py` keeps two lists.
+  - List 1: the fence makes each handler in `routes/email` show an owner proof. It does not check
+    that the proof scopes `email_insights`. The R8 tests of EM-T14c and EM-T14d give that proof.
+  - List 2: the fence treats each `CREATE TABLE email_*` as a child table. A module outside
+    `routes/email` that names one in SQL needs an entry in `OUTSIDE_EMAIL_READERS`.
+  - The `email_` prefix matters for List 2 only.
+- **Tasks from mail exist.** `routes/tasks/capture_email.py` drafts a task from a mail
+  (`POST /tasks/capture/from-email/preview`, ~:752). It writes only on `/create`. It also finds a
+  commitment in a sent reply, and the member confirms it in a popup. Each such task keeps
+  `origin.kind = 'email'`.
+- **The CRM already writes leads from mail.** `CRM_AUTO_LEAD`, off by default, makes a lead from an
+  unknown sender (`routes/crm/auto_lead.py`). CRM is a `preview` pane, and not on the launch
+  surface (`launch_surface.md` §2).
+- **The `decide` seam of email triage.** `apps/services/gateway/gateway/decide_features.py` holds
+  the four email features, such as `email.rule_match`. `ask()` (~:605) sends each request through
+  `acb_llm.decide` to the `decide` task on `tier-decide`, which Jev serves (D75).
+  - A question is a `choice`, a `score` or a `boolean`. One request holds 16 questions or fewer
+    (`QUESTION_LIMIT`). So a new feature needs no Router or Console change.
+  - A feature has a mode, `off`, `shadow` or `on`, from `DECIDE_FEATURE_MODES`. It runs only for an
+    organization in `DECIDE_FEATURE_ORGS` (`mode_for`, ~:328). `on` needs the name in
+    `ON_FEATURES`.
+  - `_ask_all` holds one `llm_slot` for its requests. So each request counts 1 against the daily
+    budget of the mailbox.
+  - Jev costs USD 0.042 for each million input tokens, and output is free (`customer_console.md`
+    §6A.14).
+  - D90 Q1 keeps the email features on `tier-decide`. The System-1 agent of D90 on `tier-fast` is
+    the `decide` tool of the chat, which is a different seam.
+- **The data toolkit is not on `main`.** `maf_coding_engine.md` §7.10 (WS-43y) is on the local
+  branch `data-toolkit` only. WS-43y1a is built, not merged. Its six tools run inside a chat run,
+  through the broker, as the member of the run. A background job has no such run.
+- **The migrations.** The highest file on `main` is `230_wa_accounts_cloud_number_owner.sql`
+  (#695, measured at `a0c20121c`). The branch `ws43t2-sessions` holds 228. So 231 is the first
+  free number today. Take the number again at build time, and check it again at merge (R1).
+
+### 13.2 Decisions (2026-10-07)
+
+The orchestrator proposed D-EM-37 to D-EM-42 on 2026-10-06. D-EM-37 to D-EM-39 are defaults, and
+the owner may change each one. D-EM-40 to D-EM-42 are agent decisions, and the owner can reverse
+each one. D-EM-43 to D-EM-46 record the answers of the owner to Q-IN-1 to Q-IN-4.
+
+| Id | Decision |
+|---|---|
+| **D-EM-37** | **Finance first, then Projects, then Sales.** EM-T14b extracts finance facts only. Projects (EM-T14e) and Sales (EM-T14f) follow. "Other company" (hiring, vendors, legal) waits for EM-T14g. *Default, owner may change.* |
+| **D-EM-38** | **Only the last 90 days of mail.** The job reads a message only when its `received_at` is less than 90 days old. The import range still binds (D-EM-10, D-EM-11). So a member who imported 1 month gets facts for 1 month. *Default, owner may change.* **Amended by D-EM-50 (2026-10-07).** The job reads each stored message at or after the sync floor of the mailbox, newest first. The bound of 90 days goes. EM-T14b-2 builds the sync window, not 90 days. |
+| **D-EM-39** | **Opt-in for each mailbox.** A new column, `email_assistant_settings.insights_enabled`, is false by default. A missing settings row reads as false. The member turns it on in the Dashboard or in AI settings. *Default, owner may change.* |
+| **D-EM-40** | **The job skips the figures of a spreadsheet until the data toolkit can run with no chat.** A `.xlsx` or `.csv` file gives no fact. The member can still ask the assistant, which reads the file with `read_email_attachment`. The other choice was a fact with a lower confidence. It still shows on a card and still adds to a sum, and a wrong total is worse than a missing one. *Agent decision (orchestrator, 2026-10-07). The owner can reverse it.* |
+| **D-EM-41** | **The quote rule.** Each fact carries a quote of at most 200 characters from its source. Code checks that the quote is in the source text. Code parses the amount, the currency and the date from the quote. The number that the model gives is never stored. *Agent decision (orchestrator, 2026-10-07). The owner can reverse it.* |
+| **D-EM-42** | **Suggest, never write.** The job writes `email_insights` and two progress columns of `email_messages`, and nothing else. A task comes only from a member act, through the capture path of today. No CRM act exists (D-EM-45). *Agent decision (orchestrator, 2026-10-06). The owner can reverse it.* |
+| **D-EM-43** | **Two stages: a screen on `decide`, then the extraction** (owner, 2026-10-07, the answer to Q-IN-1: "Can't we use a decision tier?"). Stage 1 asks `decide` one closed question for each candidate mail, through the seam of email triage (§13.1). It adds no second classifier. Stage 2, the extraction on `tier-fast` under the quote rule (D-EM-41), runs only on a mail that the screen passes. An undecided or failed screen is a skip, and the job logs it, because "undecided" is never a yes (D-EM-8). The platform absorbs the cost for now. The owner revisits it when AI credit metering lands. §13.6 holds the estimate. |
+| **D-EM-44** | **The job may send the text of mail that the member never opened, and of its files, to the model provider** (owner, 2026-10-07, the answer to Q-IN-2). It may do so only for a mailbox whose owner turned Insights on (D-EM-39). The provider and the residency are the same as for triage (D-EM-9). Stage 1 goes to `tier-decide`, the providers of D-EM-9. Stage 2 goes to the provider of `tier-fast`, which the digest brief uses today. Q-IN-5 asks the owner to confirm that this covers stage 2. |
+| **D-EM-45** | **No CRM act on a Sales card** (owner, 2026-10-07, the answer to Q-IN-3). The owner revisits it when CRM goes live. |
+| **D-EM-46** | **Each member sees only their own Insights** (owner, 2026-10-07, the answer to Q-IN-4). D-EM-4 stands. No view for the company is planned. |
+
+### 13.3 The fact table
+
+**ONE new table, `email_insights`.** The name starts with `email_` on purpose. List 2 of the
+owner-scope fence then covers each reader outside `routes/email` (§13.1).
+
+| Column | Type | What it holds |
+|---|---|---|
+| `id` | `uuid PRIMARY KEY DEFAULT gen_random_uuid()` | The fact |
+| `organization_id` | `uuid NOT NULL`, references `organization (id)` on delete cascade | The tenant. FORCE RLS binds it (R5). `write_facts` writes it from `current_tenant()` |
+| `account_id` | `uuid NOT NULL`, references `email_accounts (id)` on delete cascade | The mailbox. The owner scope reads it |
+| `message_id` | `uuid NOT NULL`, references `email_messages (id)` on delete cascade | The source mail |
+| `attachment_id` | `uuid NULL`, references `email_attachments (id)` on delete cascade | The source file. NULL means the body |
+| `domain` | `text NOT NULL`, a CHECK on `finance`, `projects`, `sales`, `company` | The tab |
+| `fact_type` | `text NOT NULL` | One type of §13.4. The write path refuses any other. No CHECK holds the list, so a new type needs no migration |
+| `direction` | `text NULL`, a CHECK on `payable`, `receivable` | Finance only. Payable: the member's company owes. Receivable: the company is owed |
+| `title` | `text NOT NULL` | At most 120 characters |
+| `counterpart` | `text NULL` | The company or the person, at most 120 characters |
+| `counterpart_email` | `text NULL` | The sender address in lower case. It comes from the message row, never from the model |
+| `ref` | `text NULL` | An invoice, PO or quote number, at most 64 characters |
+| `amount` | `numeric(18,2) NULL` | Parsed by code from `quote` (D-EM-41) |
+| `currency` | `char(3) NULL` | An ISO 4217 code, parsed by code. NULL when the quote names no currency |
+| `due_on` | `date NULL` | Parsed by code from `quote` |
+| `quote` | `text NOT NULL` | The source span, at most 200 characters |
+| `confidence` | `real NOT NULL`, a CHECK from 0 to 1 | Set by code (§13.5 item 7), never by the model |
+| `extractor_version` | `text NOT NULL` | For example `fin-1` |
+| `dedupe_key` | `text NOT NULL` | §13.5 item 6 |
+| `state` | `text NOT NULL DEFAULT 'open'`, a CHECK on `open`, `done`, `dismissed` | The mark of the member. A new extraction keeps it |
+| `created_at`, `updated_at` | `timestamptz NOT NULL DEFAULT now()` | |
+
+**Indexes.** `UNIQUE (account_id, dedupe_key)`. `(account_id, domain, state, due_on)` for the
+tabs. `(message_id)` for the cascade and the rewrite.
+
+**Two progress columns on `email_messages`.** `insights_at timestamptz NULL` records that the job
+read the message, with facts or with none. `insights_tries smallint NOT NULL DEFAULT 0` counts the
+failures. A partial index, `(account_id, received_at DESC) WHERE insights_at IS NULL`, serves the
+batch read.
+
+**One opt-in column.** `email_assistant_settings.insights_enabled boolean NOT NULL DEFAULT false`
+(D-EM-39). It follows migration 224.
+
+**Deletes.** A disconnect deletes the mailbox, and the cascade deletes its facts. "Remove older
+mail from Metorite" (EM-T6c) deletes messages, and the cascade deletes their facts. A mailbox kept
+separate (D-EM-28) stays out of each read of All inboxes, because each read uses `_account_scope`.
+
+### 13.4 The fact types
+
+Each type has a fixed set of fields. The prompt names them, and the write path drops each other
+field.
+
+| Domain | Type | Fields |
+|---|---|---|
+| finance (EM-T14b) | `invoice` | `direction`, `counterpart`, `ref`, `amount`, `currency`, `due_on` |
+| finance | `payment_request` | A reminder or a demand to pay. `direction`, `counterpart`, `ref`, `amount`, `currency`, `due_on` |
+| finance | `purchase_order` | A PO. `direction`, `counterpart`, `ref`, `amount`, `currency`, `due_on` |
+| finance | `payment_confirmation` | A payment that was made or received. `direction`, `counterpart`, `ref`, `amount`, `currency` |
+| finance | `credit_note` | A credit or a refund. `direction`, `counterpart`, `ref`, `amount`, `currency` |
+| projects (EM-T14e) | `deadline`, `request`, `blocker`, `delivery` | `counterpart`, `ref`, `due_on` |
+| sales (EM-T14f) | `lead`, `quote`, `order`, `deal_signal` | `counterpart`, `ref`, `amount`, `currency`, `due_on` |
+| company (EM-T14g) | `hiring`, `vendor`, `legal` | `counterpart`, `ref`, `due_on` |
+
+Each type also has `title` and `quote`. EM-T14e and EM-T14f fix the meaning of their types in the
+eval set before the build.
+
+### 13.5 The extraction job, and how it stays correct on large input
+
+1. **Where it runs.** A new post-sync hook, `extract_insights`, joins `register_email_post_sync_hooks`.
+   It runs each cycle, as `classify_threads` does, so a quiet mailbox drains its backlog.
+   - `extract_insights` is an outer function. It reads `insights_enabled()` and returns before it
+     calls `as_mailbox_owner`, because `mailbox_owner` opens a session (`scheduler_hooks.py`
+     ~:38). With the flag off, the hook opens no session.
+   - The account id comes from the loop. The loop reads it from `email_accounts`, never from mail.
+2. **The batch.** The job selects at most 10 messages of the mailbox, newest first. Each one has
+   `insights_at IS NULL`, `insights_tries < 3` and a `received_at` at or after the sync floor of
+   the mailbox. The floor is `import_window.sync_floor` with
+   `max_days = window_policy.window_max_days(row)` (§14.4.5 item 1). *Amended by D-EM-50,
+   2026-10-07.* D-EM-38 read "inside 90 days".
+   - Each one also has `rules_processed_at IS NOT NULL`, so its labels and its cold verdict exist.
+   - It reads in one tenant session. It calls the model with no session open. It writes in a
+     second session (the rule of EM-T4a).
+3. **The free filters.** A message that matches one filter is marked read with no model call:
+   - Its folder is not `inbox` or `archive`. Finance reads inbound mail only.
+   - Its sender is an address of the member (D-EM-27, `identity.SELF_ADDRESSES_SQL`).
+   - It has the label `Newsletter`, `Marketing`, `Notification`, `Calendar` or `Cold Email`.
+     `Receipt` stays in, because a receipt is a finance fact.
+   - Its sender has `AI_LABELED_COLD` in `email_cold_senders`, or a row in `email_newsletters`.
+   - It has an `unsubscribe_link` and no file.
+   - It has no stored body and no supported file. The job never fetches a body live, so the
+     storage limit holds (D-EM-14, Q3).
+
+3a. **Stage 1, the screen (D-EM-43).** Each mail that passes the free filters gets ONE `decide`
+   request, through `decide_features.ask` with the feature `email.insights_screen`.
+   - The state is an object with named fields: `email.subject`, `email.sender`, `email.date`,
+     `email.body` (cut at 8,000 characters), and `email.files`. Each file entry holds the name and
+     the first 2,000 characters of its text, at most 3 files.
+   - The request holds one `boolean` question for each enabled domain, because one mail can hold
+     facts of two domains. EM-T14b asks the `finance` question only (D-EM-37).
+   - A domain passes when its probability is 0.3 or more. A false yes costs one extraction call,
+     and a false no loses a fact, so the bar leans to yes. EM-T14b-2 tunes it on the eval set.
+   - A mail with no domain that passes is marked read with no facts. The log counts it.
+   - An undecided or failed screen is a skip (D-EM-8). The job leaves `insights_at` NULL, adds 1
+     to `insights_tries`, and logs the reason.
+   - In mode `off`, `ask` is not called, and the job extracts nothing. The screen is never
+     bypassed.
+4. **Stage 2, the extraction.** It runs only for the domains that passed the screen. One call
+   reads the subject, the sender, the date and the body, cut at 8,000 characters. One more call
+   reads each supported file, at most 3 files for each mail.
+   - The file text comes from `extract_text` through `parse_bounded`, cut at 20,000 characters,
+     as the text route does. A "busy" answer leaves the message for the next cycle.
+   - The bytes come from a new helper, `fetch_attachment_for_account(db, attachment_id,
+     account_id)`. It shares the cache and the caps with `_fetch_owned_attachment` through one
+     inner function. It answers None for a file of another mailbox.
+   - Each call goes through `_llm_json` (`core.py` ~:742), so `llm_slot` binds it. The model is
+     `email_insights_model`, an environment setting and not a column. The default is `tier-fast`.
+     EM-T14b measures two tiers on the eval set, and records the choice.
+   - The prompt gives the closed list of types and fields. It puts the mail between two marker
+     lines with a random token, as data. It says: "Copy each figure exactly as the text shows it."
+5. **The checks in code.** These run on each answer before any write. EM-T14b-1 (§13.9.2) holds
+   the exact rules of the answer check, `parse_amount` and `parse_due`.
+   - Code drops a field outside its type. An unknown type drops the fact.
+   - The quote, with its white space folded, must be in the source text. Else code drops the fact.
+   - `parse_amount` reads the amount and the currency from the quote. `parse_due` reads the date
+     from the quote. A relative date, such as "next Friday", gives no date.
+   - Code cuts each text field to its cap, and removes each control and format character.
+6. **The dedupe key.** The key is `type|ref|amount|currency|counterpart domain`, in lower case. A
+   fact with no `ref` and no amount uses `type|message id|quote hash`. So a reply that quotes an
+   invoice again gives no second card.
+   - **Amended (orchestrator decision, 2026-10-07, EM-T14a review round 1).** With no `ref`, the
+     last part is the FULL sender address. Two people at one free mail domain who each send an
+     invoice of INR 5000 then stay two cards. With a `ref`, the last part stays the domain. So one
+     vendor that bills from `billing@` and `ar@` with one invoice number stays one card.
+7. **Confidence, set by code.**
+   - 0.9: the quote is in the source, and each field of the type that the quote holds parses.
+   - 0.6: the quote is in the source, and one of those fields does not parse.
+   - 0.3: the reader cut the source text (`stopped`, or past the cut of item 4).
+   - Two caps at 0.6: an amount with no currency, and a quote that the source holds twice.
+   - The view marks 0.3 as "Check this". The model gives no confidence.
+8. **A failure.** `LLMBudgetExhausted` ends the batch, and each row waits for the next cycle. Any
+   other error adds 1 to `insights_tries`. After 3 tries, the job marks the message read with no
+   facts, and the log says so. At 100 % of `EMAIL_LLM_DAILY_CALLS`, the job makes no call.
+9. **The write.** One session does these steps:
+   - It checks that the message is in the mailbox, that the file is in the message, and that the
+     opt-in still holds.
+   - It deletes the facts of that message and source with an older `extractor_version`.
+   - It upserts on `(account_id, dedupe_key)`. On a conflict it keeps `message_id`, `quote`,
+     `counterpart_email` and `state` of the first row.
+   - It sets `insights_at`.
+10. **The log line.** `email.insights.batch` holds counts only. The counts are messages read,
+    skips for each filter, screen answers by result, calls, facts written and drops for each check.
+    It holds no mail text and no amount.
+
+**A spreadsheet (D-EM-40).** The job reads no figure from a `.xlsx` or a `.csv` file. WS-43y can
+later give its engine an entry with no chat run. Then a later slice reads each figure with a SQL
+query, and the fact keeps the cells of the result (`source_ranges`).
+
+**Prompt injection.** Text in a mail can change only the fields of its own facts.
+
+- The job holds no tool. The model can only give the JSON of item 5.
+- The screen gives a probability only. A mail can push it to yes, which costs one extraction
+  call. The checks of item 5 still bind that call.
+- The closed types and the quote rule bound each field. A mail that says "record an invoice of
+  9,99,999" gives a fact only when that figure is in the mail. The card then shows the quote.
+- A fake invoice in a real mail stays a risk (§13.10). The card shows the sender address.
+- The view shows each field as plain text. The tool puts each row between marker lines as data,
+  as `_frame_attachment_text` does.
+
+### 13.6 The cost model
+
+**For each mail (D-EM-43).** A filter match costs 0 calls. Else the screen costs 1 `decide`
+request on `tier-decide`. A mail that the screen passes costs 1 more call for the body, and 1 call
+for each supported file, on `tier-fast`. The cap is 5 calls for each mail. A spreadsheet costs no
+extraction call (D-EM-40).
+
+**An estimate for one mailbox, with Finance only.** EM-T14b-2 measures each assumption from the log
+line of §13.5.
+
+| Item | Estimate | Basis |
+|---|---|---|
+| Inbound mail each day | 100 | An assumption |
+| Mail that the free filters skip | 60 % | An assumption |
+| Screen requests each day | 40 | 100 × 0.4 |
+| Tokens of a screen request | About 2,500 in. Output is free | 8,000 characters of body, the file heads and the question |
+| Cost of a screen request | About USD 0.0001 | Jev at USD 0.042 for each million input tokens (§13.1) |
+| The pass rate of the screen | 15 % | An assumption for Finance. EM-T14b-2 measures it |
+| Body calls each day | 6 | 40 × 0.15 |
+| File calls each day | 3 | Half of the mails that pass have a PDF, a `.docx` or an HTML file. An assumption |
+| Tokens of a body call | About 2,500 in and 400 out | 8,000 characters and the prompt |
+| Tokens of a file call | About 6,000 in and 400 out | 20,000 characters and the prompt |
+| Counted calls each day | About 49 | 40 screen requests and 9 extraction calls. The daily budget counts both |
+| `tier-fast` tokens each day | About 33,000 in and 3,600 out | 6 body calls and 3 file calls |
+| Screen tokens each day | About 100,000 in, about USD 0.004 | 40 requests |
+| The backlog of 90 days at opt-in | About 4,400 counted calls | About 3,600 screen requests and 810 `tier-fast` calls |
+| Backlog tokens | About 9 M screen tokens (USD 0.38), and about 3 M in and 0.3 M out on `tier-fast` | 90 days of the rows above |
+| The backlog of 12 months at opt-in (*amended by D-EM-50, 2026-10-07*) | About 17,600 counted calls | 4 times the row of 90 days. The backlog is now the whole sync window |
+
+**What the screen saves.** Without it, the same mailbox makes about 50 `tier-fast` calls each day,
+with about 160,000 tokens in and 20,000 out. With it, `tier-fast` gets about 80 % fewer tokens.
+The screen tokens cost a few cents for each month. The count of calls stays about the same,
+because the budget counts each screen request too.
+
+**With all three domains.** Projects and Sales raise the pass rate. At an assumed 35 %, stage 2
+makes about 21 calls each day. EM-T14e and EM-T14f measure it again.
+
+**The backlog throttle.** The job reads the backlog only while the count of the mailbox for the day
+is under 50 % of `EMAIL_LLM_DAILY_CALLS`. Mail of the last 24 hours always goes first. At 1,000
+calls a day, a backlog of 90 days takes about 5 days. *Amended by D-EM-50, 2026-10-07:* the
+backlog is the whole sync window, so a window of 12 months takes about 20 days.
+
+- EM-T14b-2 adds one read to `llm_cap.py`, `calls_today(account_id)`. It adds no second counter.
+- When `calls_today` is None, or the budget mode is `off`, the job reads no backlog.
+- `EMAIL_LLM_BUDGET_MODE` is `log` in production. So this throttle is the bound that holds, and
+  the budget is not.
+
+**Who pays (D-EM-43).** The platform absorbs the cost for now. The owner revisits it when AI credit
+metering lands. The hook runs as the owner of the mailbox (H-152), so each call keeps its member
+attribution for that later meter.
+
+### 13.7 The view
+
+**No second dashboard.** The Dashboard (feature key `digest`, `DashboardView.tsx`) gains a tab
+row: Today, Finance, Projects and Sales. Today is the view of now, with no change. A domain tab
+shows only after its slice merges.
+
+- **The Finance tab.** The totals come first, one for each currency and each direction, from the
+  route. Three groups follow: Overdue, Due in 7 days, and Later or no date.
+- **A card.** It shows the counterpart, the amount and the currency, the due date, the `ref` and the
+  quote. "Open the mail" opens the source message. A first-time sender gets a mark.
+- **The acts of a card.** Done and Dismiss set `state`. "Add a task" opens
+  `components/TaskCaptureModal.tsx`, the capture popup of today, with the message. The member
+  saves the task there. A Sales card has no CRM act (D-EM-45).
+- **One tile on Today.** "Invoices due in 7 days" shows the count and the sum in each currency.
+- **The digest.** `_generate_digest` gains the same line. It reads the same helper as the tile, as
+  the comment on the digest asks of each section (`digest.py` ~:33-40).
+- **The states.** With the flag off, the tab row does not show. While the flag is off, the toggle
+  in AI settings does not show. With the mailbox not opted in, the tab says that Insights is off,
+  and one button sets `insights_enabled`.
+- **The look.** Follow `workbench/control_plane/DESIGN_SYSTEM.md` and the ten rules of its
+  `AGENTS.md`. No colour literal. Each control comes from `src/components/ui/`. The status hues
+  come from `src/lib/statusAccent.ts`. Each read goes through `useCachedResource`.
+- **Analytics does not change.** It counts mail over a range. Insights lists open items. A third
+  view of the same counts would be a second dashboard.
+
+### 13.8 The assistant tool and the routes
+
+**`query_insights`.** A new tool of the email assistant, so that "what invoices are due this
+week?" reads the facts and not the inbox.
+
+- Its arguments are `domain`, `fact_type=None`, `window="open"`, `counterpart=None`, `limit=20`
+  and `account_id: str | None = None`. `window` takes `overdue`, `next_7_days`, `next_30_days`,
+  `open` or `all`.
+- It calls `GET /email/insights` through `_get`, in the scope of the chat: one mailbox or All
+  inboxes (D-EM-23).
+- Its answer holds the rows, `total_count`, `truncated` and the totals from SQL. Each row holds
+  its message id and its quote. The rows sit between marker lines with a random token.
+- It carries `@_annotate_risk(open_world=False, destructive=False)`. It joins `_TOOLS` in
+  `agents.py` and `own_tool_scope` in `config.json`, so both lists go from 43 to 44 names.
+- With the flag off, or the mailbox not opted in, it says so and suggests a search.
+
+**The text of `instructions.md`.** For a question about invoices, payments, deadlines or deals,
+call `query_insights` first. Take each sum from its totals. Never add amounts yourself, and never
+add two currencies. Name the source mail of each item.
+
+**The routes.** Both live in a new module, `automation/insights.py`, beside `analytics.py`.
+
+| Route | Input | Answer |
+|---|---|---|
+| `GET /email/insights` | `account_id` (optional), `domain`, `fact_type`, `window`, `counterpart`, `state` (default `open`), `limit` (at most 50), `offset` | `{available, enabled, rows, total_count, truncated, totals: [{currency, direction, amount, count}]}`. `available` is the flag, and `enabled` is the opt-in |
+| `PATCH /email/insights/{id}` | `state` | The row |
+
+- The list reads through `_account_scope(account_id, params, pooled_only=True)`, with
+  `email_insights` aliased as `em`. So a mailbox kept separate stays out of All inboxes.
+- The totals leave out rows with a NULL currency.
+- The PATCH is one UPDATE with `account_id IN (SELECT id FROM email_accounts WHERE user_id =
+  :uid)`. A fact of another member answers 404.
+- In All inboxes, two rows with the same `dedupe_key` in two mailboxes of the member fold into
+  one row. Each sum counts it once.
+- The window is computed in UTC dates. A time zone of the member is a later change.
+
+### 13.9 Slices
+
+Each slice is one PR of about 600 lines or fewer. A slice that grows past that splits, and its
+section names the split. Fixture data does not count toward the 600 lines. Each slice ships dark
+behind `EMAIL_INSIGHTS`. The flip is an act of the owner only (the Flip row).
+
+| Slice | Gate | Scope | Done when |
+|---|---|---|---|
+| **EM-T14a** | 🟢 AGENT-SAFE · R8 · security review | ✅ **MERGED #700 (2026-10-07). Migration 231.** **The table, the migration and the write path.** `email_insights`, the two progress columns, the opt-in column, the flag and `insights_store.py`. | §13.9.1 |
+| **EM-T14b** | 🟢 AGENT-SAFE · R8 · security review | ✅ **EM-T14b-0 MERGED #702 (2026-10-07).** ✅ **EM-T14b-1 MERGED #706 (2026-10-07).** 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The finance job.** The screen, the hook, the free filters, the checks in code, the throttle and an eval set of synthetic mails. Three PRs: EM-T14b-0 (the screen), EM-T14b-1 (the checks and the eval set) and EM-T14b-2 (the job). | §13.9.2 |
+| **EM-T14c** | 🟢 AGENT-SAFE · R8 · security review | ✅ **MERGED #704 (2026-10-07). Dark.** **`query_insights`, and `GET /email/insights`.** | §13.9.3 |
+| **EM-T14d** | 🟢 AGENT-SAFE · R8 · visual review | 📝 **SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.** **The view.** Two PRs: EM-T14d-1 (the PATCH, the shared helper, the tile and the digest line) and EM-T14d-2 (the UI). | §13.9.4 |
+| **EM-T14e** | 🟢 AGENT-SAFE · R8 · after the flip | 📝 **SPECIFIED (2026-10-07). It waits for the flip.** **Projects.** The four project types, the Projects tab, and the commitments of today beside them. | §13.9.5 |
+| **EM-T14f** | 🟢 AGENT-SAFE · R8 · after the flip | 📝 **SPECIFIED (2026-10-07). It waits for the flip.** **Sales.** The four sales types and the Sales tab, with no CRM act (D-EM-45). | §13.9.6 |
+| **EM-T14g** | Not scheduled | **Not specified.** **Other company.** Hiring, vendors and legal. It waits for the owner (D-EM-37). | — |
+| **Flip** | 🔴 OWNER ONLY | Owner only. It waits for the owner's go. The job sends unread mail to a model provider and costs money, so CLAUDE.md §3a rule 3 binds. No grant covers it. Q-IN-1 and Q-IN-2 are answered (D-EM-43, D-EM-44), so two preconditions are met. Q-IN-5 is still open. The flip sets `EMAIL_INSIGHTS=true`, `EMAIL_INSIGHTS_ORGS` to the first organization, and `email.insights_screen=on` in `DECIDE_FEATURE_MODES`. It comes after EM-T14a to EM-T14d merge. | The live check of §13.9.4 passes |
+
+**The order.** EM-T14a, EM-T14b-0 and EM-T14b-1 in any order, then EM-T14b-2. Then EM-T14c,
+EM-T14d-1 and EM-T14d-2. EM-T14e and EM-T14f come after the flip, so the cost model is measured
+first.
+
+**The R8 idiom of each slice.** Each R8 test runs as `acb_app_h3rls`, a role with no `BYPASSRLS`.
+It imports `_DB_GATE`, `app_engine` and `promoted` from `test_h3_rls_promotion_rehearsal.py`, as
+`test_email_tenant_bind_rls.py` does. A run with 0 skipped is the proof. A green run with skips
+proves nothing (R8).
+
+#### 13.9.1 EM-T14a — the table, the migration and the write path
+
+**Status.** ✅ MERGED #700 (2026-10-07). Dark. The audit was GO-NARROWED. It
+ships dark: no job, no route that reads facts, no UI and no tool.
+
+**Gate.** 🟢 AGENT-SAFE. A migration and a new tenant table, so the slice takes the full review
+loop and a security review.
+
+**Size.** M.
+
+**Scope.**
+
+1. **One migration, `<N>_email_insights.sql`.** Take `<N>` at build time (R1). Today it is 231.
+   - It creates `email_insights` (§13.3) with the RLS block of `219_pm_import_runs.sql`: ENABLE,
+     FORCE, and the policy `email_insights_tenant_isolation` on `app.tenant_id`.
+   - It adds `insights_at` and `insights_tries` to `email_messages`, and their partial index.
+   - It adds `insights_enabled` to `email_assistant_settings`.
+   - It is expand-only (R6). Each statement is idempotent. The header holds What, Why and Depends
+     on, as `infra/postgres/README.md` asks.
+2. **The generated phases.** Run `scripts/gen_tenant_migration.py`, and keep the blocks of the new
+   table only. Take the generated blocks as the commit of migration 219 did (#497).
+   `test_tenant_coverage.py` fails without them.
+3. **The flag.** `email_insights: bool = False` (`EMAIL_INSIGHTS`) in
+   `packages/acb_common/acb_common/settings.py`. `email_insights_orgs: str = ""`
+   (`EMAIL_INSIGHTS_ORGS`) lists the organization ids, or `*`. An empty list allows no
+   organization, as `decide_feature_orgs` does. Their one reader is `insights_enabled()` in
+   `automation/insights_store.py`. It reads the organization from `current_tenant()`.
+4. **The write path.** `automation/insights_store.py` holds `write_facts(db, account_id,
+   message_id, attachment_id, version, facts)`. It does the steps of §13.5 item 9, and the dedupe
+   key of item 6. It takes checked facts only, so it trusts no field from a model.
+   - `write_facts` checks that the message is in the mailbox, and that the file is in the message.
+   - On a conflict, the upsert keeps `message_id`, `quote`, `counterpart_email` and `state` of
+     the first row.
+   - It writes `organization_id` from `current_tenant()`.
+5. **The opt-in.** The assistant settings model, GET and PATCH gain `insights_enabled`. A missing
+   row reads as false. Add `insights_enabled: false` to
+   `tests/fixtures/email_new_mailbox_settings.json`.
+6. **The board.** The D4 row of `work_plan.md` §6 gains `EMAIL_INSIGHTS` and
+   `EMAIL_INSIGHTS_ORGS`, as owner-only flags.
+
+**Non-goals.** No job, no route that reads facts, no UI and no model call.
+
+**Fences (R7).** In a new `tests/unit/test_email_insights_store.py`:
+
+- R8: org A writes a fact, and org B reads 0 rows. An insert with no tenant bound fails.
+- R8: two writes with one dedupe key keep one row. The row keeps `message_id`, `quote`,
+  `counterpart_email` and `state` of the first write.
+- R8: a write that names a message of another mailbox, or a file of another message, writes
+  nothing.
+- `insights_enabled()` is false with the flag off, with an empty org list, and for an organization
+  that the list does not name.
+- R8: a write with a newer `extractor_version` deletes the older facts of that message and source.
+- R8: a delete of the message deletes its facts. A delete of the mailbox deletes its facts.
+- R8: a missing settings row reads `insights_enabled` as false.
+- `test_email_owner_scope_fence.py` passes with no new entry.
+- `test_tenant_coverage.py` and `test_migration_prefixes.py` pass.
+
+**Mutations.** M1 drops FORCE from the migration, and the org B fence fails. M2 keys the upsert on
+`message_id`, and the dedupe fence fails. M3 resets `state` on an upsert, and the state fence
+fails.
+
+M4 drops the cascade on `message_id`, and the delete fence fails. M5 drops the generated block,
+and `test_tenant_coverage.py` fails. M6 drops the message check of `write_facts`, and the
+other-mailbox fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_insights_store.py -v -rs
+uv run pytest tests/unit/test_email_owner_scope_fence.py tests/unit/test_tenant_coverage.py tests/unit/test_migration_prefixes.py tests/unit/test_email_auto_draft_defaults.py -q
+uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights_store.py tests/unit/test_email_insights_store.py
+```
+
+**As built (EM-T14a, 2026-10-07).**
+
+- **The migration** is `infra/postgres/231_email_insights.sql`. R1: the highest file on `main` was
+  230 at `229d22a09`. No remote branch, local branch or open PR held 231.
+- It creates `email_insights` with the RLS block of 219, the three indexes of §13.3, an index on
+  `attachment_id` and four CHECKs. It adds `insights_at`, `insights_tries` and their partial index to `email_messages`. It
+  adds `insights_enabled` to `email_assistant_settings`.
+- **The generated phases.** The four files in `infra/postgres/generated/` get the `email_insights`
+  blocks and nothing else. A full run of the generator also renames and moves other blocks. So the
+  agent copied the blocks by hand, as #497 did.
+- **The flag** is `email_insights` and `email_insights_orgs` in `acb_common/settings.py`. Both are
+  off by default.
+- **The write path** is `routes/email/automation/insights_store.py`. It holds
+  `insights_enabled()`, `FACT_FIELDS`, `clean_text`, `dedupe_key` and `write_facts`.
+- **The opt-in.** `AssistantSettingsModel` and the GET and the PUT of `/email/assistant/settings`
+  have `insights_enabled`. The fixture holds `insights_enabled: false`.
+- **The board.** Row D4 of `work_plan.md` §6 names the two flags as owner-only.
+
+**Departures.**
+
+1. **PUT, not PATCH.** The settings route has no PATCH. The opt-in uses the PUT of
+   `/email/assistant/settings`, as each other setting does.
+2. **"Older" means the same extractor and a lower number.** A version must be `<name>-<n>`, for
+   example `fin-1`. When `fin-2` writes, a `prj-1` fact of the same message stays. One message can
+   hold facts of two domains, and a delete of each other version removes the other domain.
+3. **The delete keeps a key that the new write sends again.** The upsert then keeps the `state` of
+   the member (§13.3). Without this, each new version resets each mark of the member.
+4. **The conflict arm also keeps `attachment_id`.** It keeps `message_id`, so the source of the
+   row stays one pair.
+5. **A fact has no `domain` field.** `write_facts` reads the domain from the type, so the two
+   cannot disagree.
+6. **`write_facts` returns a `WriteResult`.** It holds `written`, `deleted`, `dropped`, `kept`
+   and `refused`. `kept` counts the facts whose key a row of another source holds. `refused` names
+   the check that stopped the write. With no tenant, it raises `TenantUnbound`. For a bad version,
+   it raises `ValueError`.
+7. **`write_facts` reads no flag.** It checks the opt-in only, as §13.5 item 9 says. The job of
+   EM-T14b-2 reads `insights_enabled()` before it opens a session.
+8. **The FORCE fence runs the migration again.** The promoted catalog also gets FORCE from
+   `generated/04_policies.sql`. FORCE binds only the owner of a table, and `acb_app_h3rls` is not
+   the owner. So the test removes FORCE, runs the migration body, and makes `acb_app_h3rls` the
+   owner. Then it reads as org B.
+9. **M2 changes the key, not the conflict target.** No unique index exists on `message_id`. So
+   `ON CONFLICT (message_id)` stops every write with an error, and that proves nothing about the
+   dedupe. M2 puts the message id into the dedupe key.
+10. **The slice is larger than the guide of §13.9.** It holds about 640 lines of code and SQL,
+    and a test file of more than 700 lines. The guide is about 600 lines for each PR.
+
+**A raw INSERT and the foreign keys (review round 1, F2).** The check of a foreign key bypasses
+row level security. So a raw INSERT bound to org A can name a message, a mailbox or a file of org
+B, and the check accepts it. The policy still stamps the row as org A.
+
+`write_facts` closes this path. Its message check reads `email_messages` under RLS, with the mailbox in the predicate. So a
+message of another organization, or of another mailbox, writes nothing. No other code writes the
+table.
+
+**Two findings for later slices.**
+
+- `write_facts` sets `insights_at` at each call. So EM-T14b-2 must write the body of a message
+  last. If not, a failed file leaves the message marked as read. §13.9.2 item 5 records this rule.
+- EM-T14b-1 imports `FACT_FIELDS` and `clean_text` from `insights_store.py`. It must not keep a
+  copy.
+
+**Mutations (2026-10-07).** Each one ran against the real database, and the agent restored the
+file after each run. The results below are of the run after review round 1.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | Remove FORCE from the migration | `test_the_migration_alone_binds_the_table_owner`: the owner, bound to org B, read 1 row of org A. Also `test_it_forces_rls_with_a_check` |
+| M2 | Put the message id into the dedupe key | `test_two_writes_with_one_key_keep_the_first_row`, `test_one_vendor_with_two_addresses_and_one_ref_is_one_card`, `test_two_freemail_senders_with_no_ref_stay_two_cards` and two key tests |
+| M3 | Set `state = 'open'` in the conflict arm | `test_the_same_source_refines_its_own_fact` and `test_a_newer_version_deletes_the_older_facts_of_its_source` |
+| M4 | Remove the cascade on `message_id` | `test_a_delete_of_the_message_deletes_its_facts` |
+| M5 | Remove the `email_insights` block from `generated/04_policies.sql` | `test_tenant_coverage.py::test_the_generated_set_on_disk_matches_the_tables_that_exist` |
+| M6 | Remove the mailbox predicate from the message check | `test_a_message_of_another_mailbox_writes_nothing` |
+
+**Review round 1 (2026-10-07).** The verifier passed the slice with P3 findings only. The reviewer
+asked for one P1 and three P2 changes, and found the tenancy sound.
+
+| Finding | The fix | The fence |
+|---|---|---|
+| P1: a fact of another message with the same key rewrote `title`, `direction`, `due_on`, `counterpart` and `confidence` of the first row | The conflict arm has `WHERE email_insights.message_id = EXCLUDED.message_id AND email_insights.attachment_id IS NOT DISTINCT FROM EXCLUDED.attachment_id`. A conflict from another source changes nothing, and counts in `kept` | `test_two_writes_with_one_key_keep_the_first_row` (no field changes), `test_the_same_source_refines_its_own_fact` |
+| P2: two free mail senders with no `ref` and one amount got one key | The orchestrator amended §13.5 item 6. With no `ref`, the key holds the full sender address | `test_no_ref_uses_the_full_sender_address`, `test_two_freemail_senders_with_no_ref_stay_two_cards`, `test_one_vendor_with_two_addresses_and_one_ref_is_one_card` |
+| P2: `clean_text` kept a lone surrogate, which raised after the DELETE | `clean_text` removes the categories `Cs`, `Co` and `Cn` too. `write_facts` cleans each fact before any SQL. The sender has a cap of 320 characters | `test_clean_text_keeps_only_text_that_encodes`, `test_every_text_field_of_a_clean_row_encodes`, `test_every_fact_is_cleaned_before_any_sql`, `test_a_lone_surrogate_from_a_model_writes_clean_text` |
+| P2: the cascade on `attachment_id` had no index | Migration 231 adds `idx_email_insights_attachment`, partial on `attachment_id IS NOT NULL`. The generator writes only the index on `organization_id`, so `generated/` does not change | `test_the_cascading_file_key_has_an_index`, `test_a_delete_of_a_file_deletes_its_facts_through_an_index` |
+| F3: the header named the wrong lock | The header says that the `ADD COLUMN` holds ACCESS EXCLUSIVE until COMMIT, so reads wait during the index build | — |
+| F2 and F4 | The note above on a raw INSERT, and departure 10 | — |
+| H-249 and the partial index | §13.9.2 item 5 records three rules for EM-T14b-2 | — |
+
+| Id | Mutation of round 1 | The fence that failed |
+|---|---|---|
+| R1-M1 | Remove the WHERE of the conflict arm | `test_two_writes_with_one_key_keep_the_first_row` |
+| R1-M2 | Use the domain also when `ref` is NULL | `test_no_ref_uses_the_full_sender_address`, `test_two_freemail_senders_with_no_ref_stay_two_cards` |
+| R1-M3 | Keep `Cs` in `clean_text` | three cases of `test_clean_text_keeps_only_text_that_encodes`, `test_every_text_field_of_a_clean_row_encodes`, `test_a_lone_surrogate_from_a_model_writes_clean_text` |
+| R1-M4 | Remove `idx_email_insights_attachment` | `test_the_cascading_file_key_has_an_index`, `test_a_delete_of_a_file_deletes_its_facts_through_an_index` |
+| R1-M5 | Clean the facts after the checks, as before round 1 | `test_every_fact_is_cleaned_before_any_sql` |
+
+**Review round 1 re-check (2026-10-07): APPROVE.** The reviewer approved round 1 with P3 findings
+only. The agent fixed P3-a and recorded P3-b, P3-c and P3-d in §13.10 and in §13.9.2 item 6.
+
+- **P3-a, values that raised after the DELETE.** A Python `$` also matches before a final
+  newline. So `"INR\n"` reached the `char(3)` column, and `"fin-2\n"` passed the version check.
+  A confidence of `1e-50` underflows the REAL column.
+- **The fix.** `_CURRENCY` and `_VERSION` go through `fullmatch`, and no other regex is in the
+  module. Code rounds a confidence to two places. The comment of step 0 names what makes each
+  value fit its column.
+- **A limit of the R8 fence.** asyncpg encodes a REAL parameter on the client, so `1e-50` reaches
+  Postgres as 0. Postgres raises "value out of range: underflow" for the same value as text. So
+  the hermetic fence is the fence for the rounding.
+
+| Id | Mutation of the re-check | The fence that failed |
+|---|---|---|
+| R1b-M1 | Go back to `match` with `^...$` | `test_a_currency_that_is_not_exactly_three_letters_is_dropped[INR\n]`, `test_a_version_with_a_newline_raises[fin-2\n]`, `test_values_that_raised_in_the_database_now_write` |
+| R1b-M2 | Remove the rounding of the confidence | four cases of `test_a_confidence_is_rounded_to_two_places` |
+
+#### 13.9.2 EM-T14b — the finance job, in three PRs
+
+**Status.** 📝 SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark. The audit cleared
+EM-T14b-1 and EM-T14b-2. The orchestrator added EM-T14b-0 after the owner answered Q-IN-1. Its
+first audit happens at dispatch.
+
+**Build state.** EM-T14b-1 is ✅ MERGED #706 (2026-10-07), squash commit `444c36893`, deployed
+2026-10-07.
+
+**Gate.** 🟢 AGENT-SAFE. The job sends mail text to a model in the background. So the slice takes
+the full review loop and a security review.
+
+**Size.** L, split in three.
+
+**EM-T14b-0 — the screen (stage 1, no database).** It builds stage 1 of D-EM-43.
+
+**Status of EM-T14b-0.** ✅ MERGED #702 (2026-10-07). It ships
+dark. "As built (EM-T14b-0)" below holds the departures and the mutation table.
+
+1. **No Router and no Console change.** The `decide` task takes any `boolean`, `choice` or `score`
+   question, 16 or fewer for each request (`customer_console.md` §6A.14). So the screen needs no
+   new task type, no new tier and no operator act. `tier-decide` and `DECIDE_ENABLED` are live in
+   production since 2026-10-02 (§10.2 (a)).
+2. **One new feature.** `email.insights_screen` joins `FEATURES` and `ON_FEATURES` in
+   `decide_features.py`. Its default mode is `off`. No other feature changes.
+3. **The builder.** `automation/insights_screen.py` holds `screen()`. Its arguments are
+   `account_id`, `message_id`, `state` and `domains`. It calls `decide_features.ask` with the state and the questions of §13.5 item 3a.
+   It returns the set of domains that passed, or None.
+   - The questions follow the "Question conventions" of §6A.14. Each one asks about one domain,
+     and its criteria hold the rubric. The state holds facts only, with no command.
+   - It never calls `shadow`, because the screen has no old answer to compare.
+4. **The dependency on EM-T5b-3.** EM-T5b-3 plans to hardcode the email features and to remove
+   them from `FEATURES`. That slice must keep the mode of `email.insights_screen`, or hardcode it
+   too. The owner of EM-T5b-3 is WS-17.
+
+**Fences (R7) of EM-T14b-0.** In a new `tests/unit/test_email_insights_screen.py`:
+
+- `mode_for("email.insights_screen")` is `off` by default. `on` resolves, because the name is in
+  `ON_FEATURES`.
+- In `off`, `screen` returns None and calls no `decide`.
+- A probability of 0.3 passes its domain, and 0.29 does not.
+- A failed or undecided `ask` returns None.
+- The request holds one `boolean` question for each enabled domain, and 16 or fewer in all.
+- The state holds no instruction text, only the named fields.
+- `test_email_decide_shadow.py` and `test_email_decide_questions.py` still pass.
+
+**Mutations of EM-T14b-0.** B0-M1 leaves the name out of `ON_FEATURES`, and the `on` fence fails.
+B0-M2 treats None as a pass, and the undecided fence fails. B0-M3 asks one `choice` for all
+domains, and the question fence fails.
+
+**As built (EM-T14b-0, 2026-10-07).**
+
+- `decide_features.py`: `email.insights_screen` joins `FEATURES` and `ON_FEATURES`. Its default
+  mode is `off`. No other feature changes.
+- `automation/insights_screen.py` holds `screen()` and `screen_state()`. It imports no database
+  module, and nothing calls it yet.
+- `screen_state()` builds the state of §13.5 item 3a. It cuts the body at 8,000 characters. It
+  keeps 3 files or fewer, and it cuts each file at 2,000 characters. Each cut goes through
+  `decide_features.clip_fact`, as the rule match does.
+- `screen()` sends one request through `decide_features.ask`. The request holds one `boolean`
+  question `d_<domain>` for each enabled domain. Only `finance` has a question (D-EM-37).
+- A domain passes at `PASS_THRESHOLD`, 0.3 or more. A probability that is not a finite number
+  gives no decision.
+- The screen returns None for a mode other than `on`, for no known domain, and for no decision
+  from `ask`. Each case logs `email.insights.screen_skip` with a reason and no mail text.
+- **Prompt injection.** The mail text goes into the state as data, as in the rule match. The
+  instructions and the criteria are constant text, and they name a field by its path.
+  `_named_state` copies the named fields and drops each other key.
+- **Fences.** `tests/unit/test_email_insights_screen.py` holds 44 tests. Three registry fences
+  in `test_email_decide_shadow.py`, `test_email_decide_questions.py` and
+  `test_email_decide_on.py` now name the screen.
+
+**Departures of EM-T14b-0.**
+
+1. **`screen()` also takes `member`, as a keyword.** The spec names four arguments. `ask` takes
+   the mailbox owner as a proven member, so EM-T14b-2 can send it. None keeps the member of the
+   run context.
+2. **`shadow` asks nothing.** The spec names `off` only. The screen has no old answer to
+   compare, so it reads `shadow` as `off`. It logs the reason `mode_shadow`.
+3. **The screen does not ask a domain with no question.** It logs
+   `email.insights.screen_unknown_domain` with a count. With no known domain, it asks nothing
+   and returns None.
+4. **`screen_state()` is new.** The spec names the fields of the state, and not the function
+   that builds them. EM-T14b-2 builds the state with it.
+5. **Three triage fences changed.** Three tests said that `FEATURES` holds the four triage
+   features only. Each one now names the screen too. `ALL_ON` in `test_email_decide_on.py`
+   keeps the four triage features, because that is the value on the box.
+6. **The fence for "no database access" is an AST check.** It refuses an import of
+   `sqlalchemy`, `gateway.db`, `acb_common.db`, the email `core`, `redis` or `email_ingestion`.
+   It also refuses a `db` argument.
+
+**Mutations of EM-T14b-0, as run (2026-10-07).** Each mutation ran against
+`tests/unit/test_email_insights_screen.py`. After each one, the script restored the file,
+and `git status` was clean.
+
+| Id | Mutation | Result |
+|---|---|---|
+| B0-M1 | Leave the name out of `ON_FEATURES` | 17 failed, the `on` fence among them |
+| B0-M2 | Treat None from `ask` as a pass | 8 failed, the undecided fences among them |
+| B0-M3 | Ask one `choice` for all domains | 9 failed, the question fence among them |
+| M4 | A probability that is not a number counts as yes | 2 failed, `nan` and `inf` |
+| M5 | The bar goes from 0.3 to 0.0 | 4 failed, the 0.29 case among them |
+| M6 | The state goes out as the caller gave it | 1 failed, the named-fields fence |
+| M7 | `shadow` asks | 1 failed, the `shadow` case |
+
+**Review (2026-10-07): APPROVE.** The reviewer approved the slice at `3ec351518`, with P3
+findings only. Fix round 1 made these changes:
+
+1. **Bad `domains`.** None, a bare `str` and a value that is not a set of names ask nothing.
+   The screen logs `email.insights.screen_bad_domains` at warning level, with the type name,
+   and returns None. Before the fix, None raised `TypeError`. A bare `"finance"` became a set of
+   letters, so the screen skipped each mail with no word. The screen refuses a `str`, and it
+   does not read it as one domain.
+2. **Files.** `_named_state` accepts each sequence that is not text, a list or a tuple. It
+   drops a value of another type, and each entry that is not an object. A drop logs
+   `email.insights.screen_files_dropped` at warning level, with a count.
+3. **The log.** `decide.decided` holds each probability unrounded, and `threshold` beside it.
+   Before the fix, 0.2999999 logged as 0.3 with `passed=[]`.
+4. **The sender.** The data guidance names `email.sender` too, because an outside sender sets
+   its own display name.
+5. **The docstring** of `decide_features.py` now says five email features.
+6. **EM-T14b-2 item 5** now holds the member rule, with its fence.
+
+**Mutations of fix round 1, as run (2026-10-07).** The implementer committed the fix before the mutations.
+
+| Id | Mutation | Result |
+|---|---|---|
+| R1 | A bare `str` reads as a set of letters | 2 failed, `str` and `bytes` |
+| R2 | The check for None goes, and the `try` stays | 0 failed. The `try` also catches None, so this mutant does the same thing |
+| R2c | The check for None and the `try` go | 3 failed: None, 42 and a list of lists |
+| R3 | The screen accepts only a `list` of files | 1 failed, the tuple case |
+| R4 | An entry that is not an object drops with no log | 1 failed |
+| R5 | The log rounds the probability to 4 places | 1 failed |
+| R6 | The data guidance leaves out `email.sender` | 1 failed |
+
+**EM-T14b-1 — the checks and the eval set (no database).**
+
+1. `automation/insights_extract.py` holds the closed types of §13.4 for finance, the prompt, and
+   the checks of §13.5 item 5.
+2. `parse_amount` and `parse_due` live in the same module. Their cases live in
+   `tests/fixtures/amount_cases.json`. WS-43y1a parses numbers in its engine too, so a later slice
+   points both parsers at that one file.
+   - **`parse_amount`.** An amount is a number next to a currency mark. The marks are `₹`, `Rs.`,
+     `INR`, `US$`, a `$` with no letter before it, `USD`, `€` and `EUR`. A bare number gives no
+     amount. One marked number gives an amount. Zero or two give none.
+   - A comma before exactly two final digits, with no other separator, is a decimal comma. Any
+     other mixed pattern gives no amount. Parentheses or a minus sign give no amount in `fin-1`.
+   - Three more patterns give no amount (review round 1). A scale word after the number, as in
+     `₹5 lakh` or `$2.5M`, gives none. Code never multiplies. A number that white space splits,
+     as in `₹5 000`, gives none. A mark with a number on each side, as in `2041 USD 5,000`,
+     gives none.
+   - Review round 2 widened the scale words and narrowed the split. A plural, a hyphen and the
+     words from `hundred` to `tsd` give no amount, and so does an apostrophe as in `₹5'000`. A
+     split needs a plain run of 1 to 3 digits or a trailing comma, then runs of exactly 3 digits.
+     So `Amount ₹5,000 2 days late` gives 5000.00.
+   - Review round 3 replaced the split with one join rule, `_joins`, for both sides of a number.
+     A plain integer joins a gap and a run of 2 digits or more. A last comma group of 2 digits
+     joins any run. A last comma group of 3 digits joins a run of exactly 3 digits. So
+     `₹ 1 23 456`, `₹5,000 000` and `₹ 98450 12345` give none.
+   - **The choice of round 3.** A full comma group never joins a run of 2 digits. So
+     `₹ 45,000 12 Oct 2026` keeps its amount. This rule needs no month list and no date form. A
+     plain integer joins any run of 2 digits or more, not only after 1 to 5 digits.
+   - With no currency, `amount` stays NULL and confidence is 0.6.
+   - **`parse_due`.** A date needs a day, a month and a year. A numeric date with both parts at 12
+     or less gives no date. Do not use `dateutil` fuzzy parsing, because it fills the missing parts
+     from today.
+   - A full date beside a second date signal gives no date (review round 1). The signal is an
+     ambiguous numeric date or a relative date. In "Invoice Date: 01 Oct 2026. Net 30" the full
+     date is the date of the invoice.
+   - Review round 2 removed two signals, a day and a month with no year, and a numeric pair. They
+     refused honest dates beside a ref, such as `PO 4/12` or `1 May Road`. The claim check of
+     departure 1 stops the case they were for.
+   - Code refuses a `due_on` claim longer than a quote before it parses it (review round 2).
+   - A day and a month with no year beside the full date keep the date, at 0.6 (review round 3).
+     `DueParse.doubt` carries this to the check.
+   - **The answer check.** The answer must be an object with a `facts` list. Code keeps at most 10
+     facts for each call. `ref` and `counterpart` must each be in the folded source, or code drops
+     them.
+   - Code writes `title` from the type, the counterpart and `ref`. Folding collapses white space
+     and never deletes it. A quote found twice in the source caps confidence at 0.6.
+3. **The eval set,** `evals/email_insights/`, in the shape of `evals/projects_ops/`. It holds 40
+   synthetic mails or more. Each mail looks real, and each one is invented. The set holds:
+   - Invoices in INR with lakh commas, in USD, and in EUR with a decimal comma.
+   - A PO, a payment reminder, a payment confirmation and a credit note.
+   - A forwarded thread with two invoices, and a reply that quotes an invoice again.
+   - A PDF invoice and a `.docx` invoice as files, and a `.xlsx` file that gives no fact.
+   - A newsletter with prices, which gives no fact.
+   - A mail that tells the model to record an invoice that is not in the text.
+   - A mail with a relative due date, which gives no date.
+   - Each mail also carries the expected answer of the screen, for EM-T14b-2.
+4. **The scoring.** `checkers.py` compares each fact with its expected fields. The tier of record
+   must pass three bars:
+   - On 95 % of the facts or more, the stored amount equals the expected amount.
+   - The job finds 80 % of the expected facts or more.
+   - No fact has a quote that is not in its source.
+5. **Two modes.** `run.py` runs the sweep through the Router on a local stack. `--scripted` replays
+   recorded answers, so the unit job can run it with no model.
+6. **Size.** Fixture data does not count toward the 600 lines.
+
+**Status of EM-T14b-1.** ✅ MERGED #706 (2026-10-07), squash commit `444c36893`, deployed 2026-10-07. The agent fixed each finding of review rounds 1 to 3. It
+adds no job, no hook, no model call and no SQL.
+
+**As built (EM-T14b-1, 2026-10-07).**
+
+- **The module** is `routes/email/automation/insights_extract.py`. It imports `FACT_FIELDS`,
+  `CAPS`, `Fact` and `clean_text` from `insights_store.py`, and keeps no copy.
+- **The source.** `body_source` and `file_source` make the one text of a call. The prompt frames
+  that text, and the checks read the same text.
+- **The prompt.** `build_prompt` lists the finance types with their keys from `FACT_FIELDS`. It
+  puts the source between two marker lines with a random token, and removes the token from the
+  text first.
+- **The checks.** `check_answer` returns the checked facts and a count of drops for each check.
+  The job of EM-T14b-2 writes those counts to the log line of §13.5 item 10.
+- **The parsers.** `parse_amount` and `parse_due` each name a reason when they give no value. 112
+  amount cases live in `tests/fixtures/amount_cases.json`, and 43 date cases live in the test.
+  Six more cases send an invoice date through `check_answer` with the claim of a model.
+- **The speed of `parse_due`.** The weekday search reads a window of 20 characters, and a mask of
+  one byte for each character checks the overlap of two dates. A text of 100k characters with
+  9000 dates took 4.2 s, and now takes about 0.06 s.
+- **The speed of `parse_amount`** (review round 3). The split check reads a window of 40
+  characters before a number. `"100 " * 25000 + "x 100 INR"` took 18.5 s, and now takes about
+  0.055 s on the dev box. Each timing test of a 100k-character input has a limit of 0.5 s, so
+  a slow CI runner does not fail it. A quadratic search takes 18 to 40 s.
+- **The eval set** is `evals/email_insights/`: 43 mails, 31 expected facts and a `--scripted` run.
+  The run finds 31 facts of 31. Each amount and each due date is correct.
+- **The fence** is `tests/unit/test_email_insights_extract.py`, with 235 tests.
+
+**Departures (EM-T14b-1).**
+
+1. **The claim of the model gates the due date.** A quote can hold the date of the invoice. So
+   code stores a date only when the model gives `due_on`. The value still comes from the quote.
+   Code also parses the claim, and keeps the date only when the claim gives the same date. Code
+   only compares the claim, and never stores it (review round 1).
+   **A known limit (review round 2).** In "Invoice Date: 01 Oct 2026. Due: Nov 15", a model can
+   claim "01 Oct 2026" as the due date. Code then stores the invoice date at 0.6, and never at
+   0.9 (review round 3). The card shows the quote with both dates.
+   `test_a_claim_of_the_invoice_date_itself_is_a_known_limit` records it.
+2. **The claim of the model marks a missing amount.** When the model gives an amount and the quote
+   gives none, the confidence is 0.6. Code never reads the claim as a value.
+3. **Code drops a quote of more than 200 characters, and never cuts it.** A cut can split a
+   number.
+4. **A match needs a whole token.** `ref`, `counterpart` and the quote must not continue a word or
+   a figure of the source. So `INV-204` is not in `INV-2041`, and `₹5,000` is not in `₹5,000,000`.
+5. **The fold also removes each control and format character**, as `clean_text` does. It turns
+   each white space character into a space first, so it never deletes white space.
+6. **Two dates give no date**, as two amounts give no amount. A short year, such as `15/11/26`,
+   gives no date.
+7. **Parentheses around a marked number give no amount**, also when they hold an aside, such as
+   `(USD 980)`.
+8. **The eval adds a fourth bar, `no_fact`.** A mail that expects no fact gives no fact. Without
+   it, the injection mail could give a fact and the run would still pass.
+9. **An agent wrote the scripted answers by hand**, because no model ran. Some hold a mistake of a
+   model on purpose. EM-T14b-2 records real answers.
+10. **The scripted run uses the expected screen answer of each mail.** The screen of EM-T14b-0
+    (#702) asks `decide`, and a scripted run calls no model. Without `--scripted`, `run.py` exits
+    with code 2. EM-T14b-2 adds the real screen and the model sweep.
+11. **The date cases live in the test.** `amount_cases.json` holds amounts only, so WS-43y1a can
+    share it as item 2 says.
+12. **The eval fences live in `test_email_insights_extract.py`.** `test_email_insights_job.py`
+    comes with EM-T14b-2.
+13. **The slice is larger than the guide of §13.9.** The module holds 678 lines. 188 of them are
+    comments, and 104 are blank. The eval code holds 354 lines, and the test file holds 684 lines.
+    The fixture data does not count.
+14. **A scripted run is exact** (review round 1). Its `amount` bar needs no wrong amount, and a
+    fifth bar, `due`, needs each found fact to have its expected due date. The 95 % bar is for the
+    model sweep only.
+15. **The runner checks two honest quotes with the screen open** (review round 1). The newsletter
+    then gives an invoice of INR 39999.00 at 0.6. The injection mail gives an invoice `VX-1` with
+    no amount and no date at 0.6. The quote rule cannot stop an honest quote. The screen and the
+    card stop it (§13.5, §13.10). No bar reads this result.
+
+**Mutations (EM-T14b-1, 2026-10-07).** The agent committed the code first. Then it ran each
+mutation and restored the file after each run. `git status` was clean after each restore.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | Skip the quote check | `test_a_quote_not_in_the_source_drops_the_fact`, `test_the_injection_mail_gives_no_fact_in_scripted_mode`, `test_the_scripted_sweep_passes_every_bar` and three more. The `--scripted` run exits with 1 |
+| M2 | Parse the amount of the model, and not the quote | `test_the_model_number_is_never_stored`, `test_a_model_amount_given_as_a_number_is_not_stored`, `test_the_scripted_sweep_passes_every_bar` and three more. The `--scripted` run exits with 1 |
+| E1 | Fold with no space step, so a lone `\r` goes | `test_folding_collapses_white_space_and_never_deletes_it` |
+| E2 | Remove the cap for a quote found twice | `test_a_quote_found_twice_caps_confidence_at_0_6` |
+| E3 | Keep each fact of an answer | `test_code_keeps_at_most_ten_facts` |
+| E4 | Accept a numeric date with both parts at 12 or less | two cases of `test_each_due_case`, and `test_a_due_date_that_does_not_parse_names_its_reason` |
+| E5 | Remove the source check of `ref` and `counterpart` | `test_ref_and_counterpart_must_be_in_the_folded_source` |
+| E6 | Read a comma before three digits as a decimal comma | ten tests, with `test_each_amount_case_parses_to_its_amount_and_currency` and `test_the_scripted_sweep_passes_every_bar` |
+| E7 | Send a spreadsheet to the model | `test_a_spreadsheet_is_never_sent_to_a_model`, `test_the_spreadsheet_and_the_newsletter_give_no_fact`, `test_the_scripted_sweep_passes_every_bar` and one more |
+| E8 | Take the title of the model | `test_code_writes_the_title` |
+| E9 | Make the `no_fact` bar pass each run | `test_each_bar_fails_a_wrong_run` |
+| F1 | The tail of a number lets the regex back off | 1 amount case, `Total ₹5.5x` |
+| F2 | Remove the scale check | 17 amount cases |
+| F3 | Remove the split check after a number. Round 2 ran it again | 10 amount cases |
+| F3b | Remove the split check before a number. Round 2 ran it again | 5 amount cases |
+| F4 | Remove the check for a number after the mark | 3 amount cases |
+| F4b | Remove the check for a number before the mark | 1 amount case, `Ref No.2041 USD 5,000` |
+| F5 | Remove the check for a second date signal. Round 2 ran it again, with two signals left | 6 tests, with `test_the_date_of_the_invoice_is_not_the_due_date` and 4 date cases |
+| F6 | Remove the comparison with the claimed date | 5 tests, with `test_the_model_number_is_never_stored` |
+| F7 | The scripted `amount` bar falls back to 95 % | `test_each_bar_fails_a_wrong_run` |
+| F8 | The `due` bar passes each run | `test_each_bar_fails_a_wrong_run` |
+| F9 | A weekday next to a date counts as a second date | 1 date case, `Friday, 13 March 2026` |
+| G1 | Remove the plural `s` of the scale words | 5 amount cases |
+| G1c | A single scale letter takes a plural | 1 amount case, `Pay $500 Ms. Rao` |
+| G2 | No hyphen between the number and the scale word | 3 amount cases |
+| G3 | Remove the scale words from `mil` to `tsd` | 5 amount cases |
+| G4 | No apostrophe in the end of a number | 2 amount cases |
+| G5 | The broad split rule of round 1 | 6 amount cases |
+| G6 | No cap on the claim | `test_a_claim_longer_than_a_quote_stores_no_date` |
+| G7 | No weekday window | 2 cases of `test_parse_due_is_linear_on_a_long_text`. The run took 33 s |
+| G8 | The overlap check scans the span list, as in round 1 | 1 case of `test_parse_due_is_linear_on_a_long_text` |
+| G9 | A day and a month with no year count as a second date again | 1 date case, `Due 15 Oct 2026, 1 May Road` |
+
+In round 2, the first run let three mutants survive. Two of them removed a plural rule. Each
+scale word had two plural rules, so removing one changed nothing. The agent kept one rule, and a
+single letter now takes no plural.
+
+G6 survived because the timing test passed with no cap. Now
+`test_a_claim_longer_than_a_quote_stores_no_date` proves the cap. G1 and G6 then failed.
+
+Review round 3 added these rows. F3, F3b and G5 tested the split rule of round 2. `_joins`
+replaced that rule, and H6 and H8 now cover it.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| H1 | No cap at 0.6 for a day and a month beside the date | 4 tests, with `test_a_claim_of_the_invoice_date_itself_is_a_known_limit` |
+| H2 | A plain integer joins only a run of 3 digits | 3 amount cases, with `₹ 1 23 456` |
+| H3 | A last comma group of 2 digits joins nothing | 2 amount cases, `₹1,23 456` and `₹5,00\n0` |
+| H4 | A full comma group joins a run of 2 digits | 2 amount cases, with `Amount: ₹ 45,000 12 Oct 2026` |
+| H6 | No join check before a number | 6 amount cases, with `1,234 567 INR` |
+| H7 | No window before a number | `test_parse_amount_is_linear_on_a_long_text[one_long_comma_run]`. The run took 42 s |
+| H8 | No join check after a number | 16 amount cases |
+
+In round 3, the first run let two mutants survive. H5 removed a guard for a decimal point, and
+no test failed. The guard was dead code, because a token with decimals after a point never ends
+in a comma group. The agent removed it.
+
+H7 survived because the regex of round 3 stays linear on the first timing input. One long comma
+run takes about 40 s with no window, so it is now a second timing case. H7 then failed.
+
+**EM-T14b-2 — the job.**
+
+1. `extract_insights` joins `register_email_post_sync_hooks`. It does items 1 to 4, 8 and 10 of
+   §13.5. At item 3a it calls the screen of EM-T14b-0.
+   - Register `extract_insights` as an outer function. It reads `insights_enabled()` and returns
+     before it calls `as_mailbox_owner`, because `mailbox_owner` opens a session
+     (`scheduler_hooks.py` :38).
+   - `PostSyncHooks` in `post_sync.py` gains the field, because an unknown name raises.
+   - The loop in `scheduler.py` (~:1717-1731) calls it each cycle, as it calls `classify_threads`.
+   - The batch selects only rows with `rules_processed_at IS NOT NULL`.
+2. `fetch_attachment_for_account` joins `transport/attachments.py` (§13.5 item 4).
+   - It has its own SQL with `em.account_id = :account_id`, and it takes the organization from
+     `current_tenant()`.
+   - The owner SQL stays in `_fetch_owned_attachment`.
+3. `calls_today(account_id)` joins `llm_cap.py`, and the throttle of §13.6 reads it.
+   - When `calls_today` is None, or the mode is `off`, the job reads no backlog.
+   - At 100 % of `EMAIL_LLM_DAILY_CALLS` it makes no call.
+4. `email_insights_model` (default `tier-fast`) joins the settings. `email_insights_model` is an
+   environment setting, not a column.
+5. **Three rules from EM-T14a review round 1 (2026-10-07).**
+   - Do not catch an error of `write_facts` inside a session and then commit that session
+     (H-249). A failed statement aborts the transaction. Open a new session for the next message.
+   - Write the body of a message LAST. `write_facts` sets `insights_at` at each call, so a file
+     that fails after the body leaves the message marked as read.
+   - The partial index `idx_email_messages_insights_pending` holds each row with `insights_at`
+     NULL. While no mailbox opts in, that is every row of `email_messages`, and each insert of
+     mail writes to it. Measure its size at the flip, and record the result here.
+6. **Two more rules from the round 1 re-check (2026-10-07).**
+   - **Key squatting (P3-b).** With a `ref`, the key holds the sender domain. The backlog read takes
+     the newest mail first. So a later mail of the same domain, `ref`, amount and currency can own
+     the key, and the real invoice then gets no card. The effect is a missing card, never a changed
+     field (§13.10). Read the backlog oldest first, or let a refine of the older mail take the key.
+   - **A kept fact is lost (P3-d).** `write_facts` stores no fact that it counts in `kept`. If the
+     row that owns the key goes later, nothing writes that fact again. A later pass that reads such
+     messages again must clear `insights_at` for them.
+7. 🔴 **The job MUST send the proven mailbox owner to the screen** (review of EM-T14b-0,
+   2026-10-07). It calls `screen(..., member=owner)`. It reads `owner` with
+   `engine._decide_member(db, account_id, insights_screen.FEATURE)`, in its read session.
+   - **Why.** A deployment Router key refuses a `decide` call with no proven member. It answers
+     403 (`customer_console/auth.py` ~:698-705).
+   - That 403 starts `REFUSAL_COOLDOWN_S`, 15 minutes, for the whole organization. For that time
+     the triage rule match also leaves each mail undecided.
+   - **Fence.** In `tests/unit/test_email_insights_job.py`, the screen call of the job names the
+     owner as a proven member.
+
+**Non-goals.** No route, no UI and no tool. No sent mail. No spreadsheet figure (D-EM-40).
+
+**Fences (R7).** In `tests/unit/test_email_insights_extract.py` and
+`tests/unit/test_email_insights_job.py`:
+
+- A quote that is not in the source drops its fact.
+- Each case of `amount_cases.json` parses to its expected amount and currency.
+- A relative date gives no `due_on`.
+- An unknown type and an unknown field are dropped.
+- The injection mail of the eval set gives no fact in `--scripted` mode.
+- R8: the batch read returns only rows at or after the sync floor with `insights_at IS NULL`,
+  newest first. *Amended by D-EM-50, 2026-10-07.* D-EM-38 read "inside 90 days".
+- R8: each free filter marks its message read, and makes no model call.
+- With the flag off, the hook opens no session.
+- With the mailbox not opted in, the job makes no model call.
+- A mail that the screen does not pass gets no extraction call. An undecided screen leaves
+  `insights_at` NULL and adds 1 to `insights_tries`.
+- R8: the batch leaves out a row with `rules_processed_at IS NULL`.
+- When `calls_today` is None, or the mode is `off`, the job reads no backlog. At 100 % it makes no
+  call.
+- `LLMBudgetExhausted` leaves each row with `insights_at IS NULL`.
+- Above 50 % of the daily calls, the job reads mail of the last 24 hours only.
+- A file of another mailbox answers None from `fetch_attachment_for_account`.
+- No session is open during a model call. The idiom is
+  `test_the_sweep_holds_no_session_across_set_labels` in `test_email_cleanup_sweep.py`.
+
+**Mutations.** M1 skips the quote check, and the quote fence fails. M2 stores the number of the
+model, and the amount fence fails. M3 drops the `Cold Email` filter, and the filter fence fails.
+
+M4 reads the flag inside the hook, and the no-session fence fails. M5 drops the throttle, and the
+throttle fence fails. M6 drops the account check of the fetch, and the other-mailbox fence fails.
+
+M7 reads the flag inside `as_mailbox_owner`, and the no-session fence fails. M8 calls the
+extraction on a mail that the screen did not pass, and the screen fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_insights_screen.py tests/unit/test_email_insights_extract.py tests/unit/test_email_insights_job.py tests/unit/test_email_insights_store.py -v -rs
+uv run pytest tests/unit/test_email_decide_shadow.py tests/unit/test_email_decide_questions.py -q
+uv run pytest tests/unit/test_email_llm_cap.py tests/unit/test_background_ai_member.py -q
+uv run python -m evals.email_insights.run --scripted
+uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights_extract.py
+```
+
+**The eval with a model.** `uv run python -m evals.email_insights.run` on a local stack, with both
+stages. Record the tier, the scores and the counts of the log line in the As-built notes.
+
+- The screen must pass 95 % or more of the mails that hold an expected fact.
+- Record the pass rate of the screen on the mails that hold no fact. §13.6 uses it.
+
+#### 13.9.3 EM-T14c — `query_insights` and the list route
+
+**Status.** ✅ MERGED #704 (2026-10-07), squash commit `2aafad958`, deployed 2026-10-07. Dark. The
+audit was GO-NARROWED.
+
+**Gate.** 🟢 AGENT-SAFE. A new route reads a private table. So the slice takes the full review loop
+and a security review.
+
+**Size.** M.
+
+**Scope.**
+
+1. `GET /email/insights` in `automation/insights.py` (§13.8). The totals come from one SQL query,
+   grouped by currency and direction.
+   - Read through `_account_scope(account_id, params, pooled_only=True)`, with `email_insights`
+     aliased as `em`.
+   - The totals leave out rows with a NULL currency.
+   - The answer holds `available` (the flag) and `enabled` (the opt-in).
+2. `query_insights` in `agents.py` (§13.8), in `_TOOLS` and in `own_tool_scope`. The tool takes
+   `account_id: str | None = None`.
+3. The text of §13.8 joins `instructions.md`.
+4. Change the count in `test_email_tool_consolidation.py` to 44.
+
+**Fences (R7).**
+
+- R8: member A and member B in one organization each own a mailbox. A reads no fact of B, in one
+  mailbox or in All inboxes.
+- R8: a mailbox kept separate stays out of All inboxes.
+- R8: the totals hold one row for each currency and direction. INR and USD never add. A row with
+  a NULL currency adds to no total.
+- R8: two rows with one `dedupe_key` in two mailboxes of the member count once in All inboxes.
+- `test_email_owner_scope_fence.py` passes, because the route reads through `_account_scope`.
+- The tool frames its rows with a random token, and annotates `open_world=False`.
+- The tool lists of `agents.py` and `config.json` agree, with 44 names.
+
+**Mutations.** M1 reads without `_account_scope`, and the owner fence fails. M2 sums across
+currencies, and the totals fence fails. M3 drops the fold, and the All inboxes fence fails. M4
+leaves the tool out of `own_tool_scope`, and the list fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_insights_route.py tests/unit/test_email_owner_scope_fence.py tests/unit/test_email_tool_consolidation.py tests/unit/test_own_tool_scope_parity.py -v -rs
+uv run ruff check apps/services/gateway/gateway/routes/email/automation/insights.py apps/agents/agent-email-assistant/agents.py
+```
+
+**As built (EM-T14c, MERGED #704, 2026-10-07).**
+
+- **The route** is `GET /email/insights` in `routes/email/automation/insights.py`. The package
+  `automation/__init__.py` imports the module so that its route registers, and does not flatten
+  its names.
+- **The owner scope.** Each read goes through `_account_scope(account_id or None, params,
+  pooled_only=True)`, with `email_insights` aliased as `em`. The member comes from
+  `get_current_user`, and the organization comes from the bound tenant.
+- **The fold.** One CTE selects `DISTINCT ON (em.dedupe_key)`, and the oldest row of a key wins.
+  The count, the page and the totals read that CTE, so each sum counts a key once.
+- **The totals** are ONE query, grouped by currency and direction. It leaves out each row with a
+  NULL currency or a NULL amount, and each dismissed fact (review round 1).
+- **Dark.** While `insights_enabled()` is false, the route opens no session. It answers
+  `available: false`, `enabled: false` and no rows.
+- **The tool** is `query_insights` in `agents.py`, with `@_annotate_risk(open_world=False,
+  destructive=False)`. It joins `_TOOLS` and `own_tool_scope`, so both lists hold 44 names. It
+  prints the totals of the route as they come. The rows sit between two marker lines that hold a
+  random token, and each field of a row loses each copy of the token.
+- **`instructions.md`** holds the text of §13.8, in a section of its own.
+- **The fences.** `tests/unit/test_email_insights_route.py` holds 42 tests after review round 1,
+  and 8 of them are R8.
+  `test_email_owner_scope_fence.py` passes with no new entry. `test_email_tool_consolidation.py`
+  counts 44.
+
+**Departures.**
+
+1. **`window` bounds only the due date.** `open` and `all` put no bound on it. The route keeps
+   `state` as its own input, as §13.8 lists it. The tool sends `state=all` with `window=all`, so
+   the window `all` of the tool also lists done and dismissed facts.
+2. **`state` takes a fourth value, `all`.** It lists each mark of the member.
+3. **The totals also leave out a row with a NULL amount.** Such a row adds nothing to a sum. It
+   would make the `count` of a total larger than the rows that the sum holds.
+4. **`domain` is optional on the route.** With none, the route reads each domain. The tool still
+   needs it, as §13.8 says.
+5. **`enabled` in All inboxes.** It is true when one mailbox in the scope is opted in. §13.8 does
+   not say what it means for more than one mailbox.
+6. **Each amount is a decimal string**, for example `"350.50"`. A JSON float can change the cents.
+7. **An `account_id` that is not a UUID answers 422.** An `account_id` of another member answers
+   no rows and `enabled: false`, not 404. That answer tells the caller nothing about the mailbox.
+8. **The tool marks a fact under 0.5 "check this".** §13.5 item 7 makes the view mark 0.3.
+9. **Four more mutations.** The orchestrator asked for M5 and M6. M7 and M8 cost a line each.
+
+**A finding for EM-T14d.** The filters run before the fold. So when the member dismisses a fact
+in one mailbox, the same key in a second mailbox still shows while it is open there. The PATCH of
+EM-T14d can mark each row of the key, or the fold can read the state of each row.
+
+**Mutations (2026-10-07).** Each one ran against a private ladder database, as the role
+`acb_app_h3rls`. The agent restored the file after each run, and `git status` was clean each time.
+
+| Id | Mutation | The fence that failed |
+|---|---|---|
+| M1 | Read without `_account_scope`, with a scope by `account_id` alone | `test_every_handler_has_a_proof_or_an_exemption` of the owner-scope fence, `test_the_handler_reads_through_the_owner_scope`, `test_another_member_of_the_org_reads_no_fact` and `test_a_separate_mailbox_stays_out_of_all_inboxes` |
+| M2 | Sum across currencies: group by direction only | `test_one_total_for_each_currency_and_direction` |
+| M3 | Remove the fold (`DISTINCT ON`) | `test_one_key_in_two_mailboxes_counts_once` |
+| M4 | Leave the tool out of `own_tool_scope` | Three tests of `test_own_tool_scope_parity.py`, and `test_the_two_tool_lists_agree_with_44_names` |
+| M5 | Remove the owner check: call `_account_scope`, and leave its fragment out of the WHERE | The owner-scope fence PASSES, because it does not follow data. `test_another_member_of_the_org_reads_no_fact` and `test_a_separate_mailbox_stays_out_of_all_inboxes` fail |
+| M6 | Count the rows with a NULL currency in the totals | `test_one_total_for_each_currency_and_direction` |
+| M7 | Remove `pooled_only` | `test_the_handler_reads_through_the_owner_scope` and `test_a_separate_mailbox_stays_out_of_all_inboxes` |
+| M8 | Keep the token in a field of a row of the tool | `test_a_row_cannot_close_the_frame` |
+
+**Review round 1 (2026-10-07).** The verifier passed the slice and the reviewer approved it, with
+one P2 and five P3 findings. The agent first rebased the branch onto #702 (EM-T14b-0).
+
+| Finding | The fix | The fence |
+|---|---|---|
+| P2: with the flag off, the instructions and the tool named a feature that no member can see, and each finance question cost one more tool call | With `available: false`, the tool says only that it has no data, and that the model must use `query_inbox` and not call it again. `instructions.md` calls `query_insights` first "when it is available" | `test_the_flag_off_names_no_dark_feature`: the text holds no "insights" |
+| P3: with `window=all`, a dismissed fake invoice added to the payable total | The totals query of the route leaves out each row with `state = 'dismissed'`. The rows still list it. This is simpler than a total for each state | `test_a_dismissed_fact_is_listed_and_adds_to_no_total` (R8) |
+| P3: in All inboxes, `enabled: false` said "this mailbox", and it hid the rows of the route | In All inboxes the text says "No mailbox in All inboxes has Insights on". A row that the route returns always shows | `test_all_inboxes_with_no_opt_in_does_not_say_this_mailbox`, `test_rows_that_the_route_returned_still_show` |
+| P3 (verifier): no fence held the winner of the fold | Eight keys, each in two mailboxes. The older row goes in second. The test checks its `id`, `account_id` and `message_id` | `test_the_oldest_row_of_a_key_wins_the_fold` (R8) |
+| P3 (verifier): the tool did not check `fact_type`, and a `limit` that is not a number raised | The tool checks the type against the types of the domain, and answers with the list. A `limit` that is not a number reads as 20. The agent keeps the list of types, because it cannot import the gateway | `test_a_fact_type_outside_the_domain_asks`, `test_a_limit_that_is_not_a_number_is_20`, `test_the_types_of_the_tool_are_the_types_of_the_store` (the list equals `FACT_FIELDS`) |
+| Note: the tool families at the top of `instructions.md` did not name the tool | A line "Facts from mail" names `query_insights` | `test_own_tool_scope_parity.py` |
+
+| Id | Mutation of round 1 | The fence that failed |
+|---|---|---|
+| R1-M1 | Name Insights in the answer of the flag off | `test_the_flag_off_names_no_dark_feature` |
+| R1-M2 | Remove `state <> 'dismissed'` from the totals | `test_a_dismissed_fact_is_listed_and_adds_to_no_total` |
+| R1-M3 | Order the fold by `random()` | `test_the_oldest_row_of_a_key_wins_the_fold` |
+| R1-M4 | Treat All inboxes as one mailbox in the text | `test_all_inboxes_with_no_opt_in_does_not_say_this_mailbox`, `test_rows_that_the_route_returned_still_show` |
+| R1-M5 | Hide the rows when `enabled` is false | `test_rows_that_the_route_returned_still_show` |
+| R1-M6 | Remove the check of `fact_type` | three cases of `test_a_fact_type_outside_the_domain_asks` |
+| R1-M7 | Go back to `int(limit or 20)` | `test_a_limit_that_is_not_a_number_is_20[abc-20]` and `[0-1]` |
+| R1-M8 | Remove `credit_note` from the list of the tool | `test_the_types_of_the_tool_are_the_types_of_the_store` |
+
+#### 13.9.4 EM-T14d — the view, in two PRs
+
+**Status.** 📝 SPECIFIED, GO-NARROWED (2026-10-07). Dispatchable dark.
+
+**Gate.** 🟢 AGENT-SAFE. UI, one PATCH route and one digest line. The visual review of the skill
+`visual-review` is part of the gate.
+
+**Size.** M.
+
+**Scope.** §13.7, and `PATCH /email/insights/{id}` (§13.8). The opt-in button and a toggle in AI
+settings set `insights_enabled`.
+
+- EM-T14d-1 holds the PATCH, the shared helper, the tile and the digest line. EM-T14d-2 holds the
+  UI.
+- The PATCH is one UPDATE with `account_id IN (SELECT id FROM email_accounts WHERE user_id =
+  :uid)`.
+- While the flag is off, the toggle in AI settings does not show.
+- "Add a task" opens `components/TaskCaptureModal.tsx`.
+
+**Fences (R7).**
+
+- A new `lib/insights.test.ts` and a test of the tab: with the flag off, no tab row shows, and no
+  toggle shows in AI settings. Today renders as it does now.
+- The Finance tab groups by the due date, and shows the totals of the route as they come.
+- "Open the mail" opens the source message. "Add a task" opens `TaskCaptureModal.tsx`, and writes
+  nothing by itself.
+- R8: the PATCH of a fact of another member answers 404.
+- R8: the digest line and the tile read the same helper, and give the same count.
+- The design conformance suite passes, with no colour literal.
+
+**Mutations.** M1 sums the rows in the browser, and the totals fence fails. M2 drops the owner
+check of the PATCH, and the 404 fence fails. M3 writes a task on "Add a task", and the no-write
+fence fails.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_insights_route.py tests/unit/test_email_digest.py -v -rs
+```
+
+**The visual review.** Look at the Dashboard in light mode, at compact density and under a changed
+accent. Look at its neighbour, Analytics, too.
+
+**The live check (🔴 after the flip).** The owner opts in one mailbox. Within one day, the Finance
+tab shows a real invoice with its quote. The owner asks the chat "what invoices are due this
+week?", and the answer names the same rows and the same sum.
+
+#### 13.9.5 EM-T14e — Projects
+
+**Status.** 📝 SPECIFIED (2026-10-07). It waits for the flip.
+
+**Scope.**
+
+1. The four project types of §13.4 join the prompt and the checks, with version `prj-1`.
+2. The Projects tab lists them. Beside them it lists the open commitments of today, which
+   `_digest_commitments` (`digest.py` ~:243) already reads from the task seam. The job does not
+   extract a commitment from a sent reply again, because `capture_email.py` already does it.
+   - The Projects tab hides a fact when an open task of the seam has an `origin.email_id` equal
+     to the `message_id` of the fact.
+3. The screen of EM-T14b-0 gains the `projects` question.
+4. The eval set gains 15 project mails or more.
+
+**Fences (R7).** The fences of EM-T14b for the new types. A fact whose `message_id` is the
+`origin.email_id` of an open task does not show. `query_insights` with `domain="projects"` returns the new types.
+
+**Verify with.** The commands of §13.9.2 and §13.9.4, with the new eval cases.
+
+#### 13.9.6 EM-T14f — Sales
+
+**Status.** 📝 SPECIFIED (2026-10-07). It waits for the flip.
+
+**Scope.**
+
+1. The four sales types of §13.4 join the prompt and the checks, with version `sal-1`.
+2. The Sales tab lists them.
+3. The screen of EM-T14b-0 gains the `sales` question. The eval set gains 15 sales mails or more.
+4. No CRM act on a card (D-EM-45). The slice never writes a CRM record (D-EM-42), and it never runs
+   beside `CRM_AUTO_LEAD` as a second lead writer.
+
+**Fences (R7).** The fences of EM-T14b for the new types. No code path of the slice writes a
+`crm_*` table.
+
+**Verify with.** The commands of §13.9.2 and §13.9.4, with the new eval cases.
+
+### 13.10 Recorded risks
+
+- **A fake invoice.** A phishing mail can carry a real-looking invoice. The quote rule proves only
+  that the text is in the mail. The card shows the sender address, and a first-time sender gets a
+  mark. The cold filter removes a cold sender.
+- **A scanned PDF.** A PDF of images has no text, so it gives no fact. The reader does no OCR.
+- **A relative date.** "Due in 30 days" gives no date. The fact still shows, with confidence 0.6.
+- **A false no of the screen.** A mail that the screen does not pass gives no fact, and nothing
+  asks again. The bar of 0.3 and the recall bar of 95 % on the eval set bound this risk.
+- **A second copy of a number parser.** WS-43y1a holds one in its engine. One fixture file of
+  cases binds both (§13.9.2).
+- **Key squatting (EM-T14a re-check, P3-b).** A later mail can have the same domain, `ref`,
+  amount and currency as a real invoice. The job reads the newest mail of the backlog first, so
+  the later mail can own the key. The real invoice then gets no card. No field of a card changes. During live sync the
+  real invoice arrives first and owns the key. §13.9.2 item 5 holds the rule for EM-T14b-2.
+- **An old quote with a new date (P3-c).** A refine of the same source takes a new `due_on` and
+  keeps the old `quote`. So the quote of a card can miss its date. The audit text of EM-T14a binds
+  the upsert to keep the first quote. A refresh of `quote` on a refine of the same source needs a
+  spec change, and is a later decision.
+- **A kept fact is lost (P3-d).** A fact that a conflict keeps out is never stored. If the row that
+  owns the key goes, nothing brings the fact back (§13.9.2 item 5).
+
+### 13.11 Board findings (not this plan)
+
+- **`get_account_overview` reads an old shape.** `agents.py` ~:794-818 reads `totals` and
+  `top_senders` from `/email/analytics/overview`. The route returns neither key now. So the tool
+  always reports 0 messages and no senders.
+- **The embeddings of phase (f) run outside the cap.** `email_embeddings.py` ~:90-93 calls
+  `llm_slot`, but `scheduler._sync_account` opens no `automation_scope`. So the cap and the budget
+  do not bind those calls.
+
+### 13.12 Owner questions
+
+The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07. Q-IN-5 is open.
+
+- **Q-IN-1. Who pays for the model calls of the job?** ✅ **Answered (owner, 2026-10-07): "Can't
+  we use a decision tier?"** Yes. The job became two stages, with a cheap screen on `decide`
+  first (D-EM-43, §13.6). The platform absorbs the cost for now, and the owner revisits it when
+  AI credit metering lands.
+- **Q-IN-2. May the job send the text of mail and files that the member never opened to the model
+  provider?** ✅ **Answered (owner, 2026-10-07): yes, opt-in for each mailbox.** It applies only to
+  a mailbox whose owner turned Insights on. The provider and the residency are the same as for
+  triage (D-EM-9). D-EM-44 records it.
+- **Q-IN-3. Sales and the CRM.** ✅ **Answered (owner, 2026-10-07): no.** A Sales card has no CRM
+  act for now. The owner revisits it when CRM goes live. D-EM-45 records it.
+- **Q-IN-4. A view for the company.** ✅ **Answered (owner, 2026-10-07): no.** Each member sees only
+  their own Insights. D-EM-4 stands, and no view for the company is planned. D-EM-46 records it.
+- **Q-IN-5. Does the answer to Q-IN-2 cover stage 2?** Stage 1 goes to `tier-decide`, which the
+  providers of D-EM-9 serve. Stage 2 goes to the provider of `tier-fast`, which the digest brief
+  already uses. The proposal: yes, because the owner named the provider of triage, and stage 2
+  sends mail text to a tier that already reads mail text. This is a residency call, so the flip
+  waits for the answer.
+
+## 14. Tiered email storage and the inbox onboarding flow (2026-10-07)
+
+> **Owner request, 2026-10-07, in chat.** The coordinator relayed the decisions of the owner in two
+> parts. Part 1 makes the stored mail light, and keeps the speed of the AI and the time to the
+> first insight. Part 2 lets the member choose a longer sync window when the mailbox connects. The
+> owner let the coordinator set the HTML window at 90 days.
+
+> **Status.** 📝 SPECIFIED (2026-10-07). ✅ EM-S1 is MERGED #719 (2026-10-07). ✅ EM-S9 is MERGED
+> #717 (2026-10-07). ✅ EM-S10 is MERGED #721 (2026-10-07). ✅ EM-S2 is MERGED #724
+> (2026-10-08). EM-S3 is 🔨 BUILT, not merged (2026-10-08). The other slices are not built.
+> Audited twice, GO-NARROWED for EM-S1 to EM-S3,
+> EM-S9 and EM-S10 (2026-10-07). The other slices wait for their own audit at dispatch. Each
+> slice ships dark where §14.6 says so.
+
+> **Anchors.** The orchestrator checked each anchor against the code at `444c36893` on 2026-10-07.
+> Re-verify each anchor at dispatch, because the code is the fact. Two anchors of the request
+> moved. The caps of `core.py` are now at `:80` and `:83`. The caps of `body_backfill.py` are now
+> at `:70` and `:71`.
+
+> **Why a section of its own.** §11, §12 and §13 set the pattern. A feature with its own decisions
+> and several slices gets a top-level section. The slices here are EM-S1 to EM-S10.
+
+**Short paths in this section.**
+
+- `persist.py`, `body_backfill.py`, `import_window.py`, `scheduler.py` and `storage.py` live in
+  `apps/services/email_ingestion/email_ingestion/`.
+- `core.py`, `transport/`, `automation/` and `scheduler_hooks.py` live in
+  `apps/services/gateway/gateway/routes/email/`.
+- `components/` and `lib/` live in `workbench/control_plane/src/app/email/`.
+- `outlook.py` and `gmail.py` live in `apps/services/email_ingestion/email_ingestion/providers/`.
+
+### 14.0 The answer, in eight rules
+
+1. **Metorite is not a mailbox.** Outlook and Gmail hold the record copy of each mail (D-EM-47).
+2. **Two windows, and they never mix.** The member chooses the **sync window**. It sets how far
+   back Metorite fetches mail, keeps `body_text`, and runs summaries and Insights. The **HTML hot
+   window** is internal and fixed at 90 days. It sets which messages keep `body_html` (D-EM-53).
+3. **The text stays.** Metorite keeps the `body_text` of each message that it stores. The AI and
+   search read local data only, and never wait on a provider (D-EM-48).
+4. **Old HTML lives at the provider.** A message older than 90 days keeps no `body_html`. On the
+   first open, the reading pane gets it from the provider and caches it. The pane also prefetches
+   the visible list (D-EM-49, D-EM-52).
+5. **No writer stores old HTML.** The sync, the body backfill and the open store no `body_html`
+   for a message older than 90 days. So the clear job never fights the sync.
+6. **The clear job is gentle.** It clears old HTML in small batches, at night, and it stops when
+   the database is under load (§14.4.4).
+7. **The member chooses the window with a number in front of them.** The choices are 1, 3, 6 or 12
+   months, or a custom start date. The default is 3 months. The step shows the count of mail from
+   the provider and the AI calls that it implies (D-EM-54 to D-EM-57).
+8. **Storage safety lands first.** The writers stop storing old HTML before a member can choose a
+   window over 6 months. Else a sync of 12 months stores 12 months of HTML (§14.6, the order).
+
+### 14.1 Measured baseline (production, 2026-10-07)
+
+The coordinator measured these numbers on production on 2026-10-07.
+
+| Item | Value |
+|---|---|
+| Rows in `email_messages` | 39,814 |
+| Total size of `email_messages` | 314 MB |
+| Stored bytes of `body_html` | 124 MB, which is 62 % of the row bytes |
+| Stored bytes of `body_text` | 27 MB, which is 13 % of the row bytes |
+| Messages older than 90 days | 20,516, which is 52 % |
+| The oldest message | 2021-12-23 |
+| `idx_email_messages_fts_body` | 26 MB |
+| The unique key `(account_id, provider_message_id)` | 12 MB |
+| `idx_email_messages_fts` | 9.9 MB |
+
+**The caps in code.** Code caps `body_text` at 500 KB and `body_html` at 2 MB, in three places:
+
+- `persist.py:34-35`
+- `core.py:80` and `core.py:83`
+- `body_backfill.py:70-71`
+
+**The target scale.** The target is 20 to 30 members in 2 organizations, with about 50,000 messages
+each. The coordinator estimates about 12 GB at the shape of today, and about 3 to 4 GB with this
+section. Supabase Pro includes 8 GB.
+
+**The arithmetic, and what it does not prove.** The row bytes are about 200 MB, so a message holds
+about 5 KB of row bytes today. Without HTML a message holds about 1.9 KB. So 1.25 million messages
+hold about 2.4 GB of row bytes with no old HTML. The indexes and the free space add the rest.
+EM-S4 measures the real figure on its dry run, and again one month after the flip.
+
+**The disk does not shrink at once.** A cleared value frees its TOAST space for reuse, and new mail
+fills that space first. The files on disk do not get smaller. Only `VACUUM FULL` or `pg_repack`
+gives the space back, and each one is an owner act that this section does not plan. So the clear
+job stops the growth, and the size falls only after a rewrite.
+
+### 14.2 What exists today (the audit, at `444c36893`)
+
+**Storage.**
+
+- **One upsert writes each message.** `persist.upsert_message` (`persist.py:238`) serves the
+  sync, the scheduler, the history backfill and the inbound handler. Its params cut each body to
+  its cap (`persist.py:226-227`).
+- **The "changed?" guard (#709).** A re-sync writes a row only when a value of the SET differs
+  (`persist.py:122-155`). The SET keeps a stored body when the provider sends an empty one
+  (`persist.py:110-111`).
+- **Outlook lists no body.** `_MESSAGE_SELECT` has no `body` (`outlook.py:81-85`). The body
+  backfill and the open fetch it later.
+- **Gmail fetches each message in full.** `get_message` reads `format=full` (`gmail.py:1179`), and
+  the sync fetches each id through it (`gmail.py:2136`). So a Gmail re-sync of an old message
+  carries its HTML.
+- **The body backfill** fills an empty `body_text`, newest first, 25 messages each tick
+  (`body_backfill.py:66`, `:115-124`). It writes `body_html` too (`body_backfill.py:180-189`).
+- **The open of a message.** `GET /email/messages/{id}` (`transport/messages.py:638`) fetches a
+  body only when both bodies are empty (`:686`). It writes both bodies (`:698-712`). It holds the
+  tenant session across the provider call (`:644`).
+- **`hydrate_message_body`** (`core.py:366`) fills an empty text for the drafter, and writes
+  `body_html` too (`core.py:410-423`).
+- **The full body.** `GET /email/messages/{id}/full-body` (`transport/messages.py:1057`) reads
+  the provider live and stores nothing. The tool `read_email(full=True)` reads it
+  (`apps/agents/agent-email-assistant/agents.py:497-503`).
+- **The owned fetch of a file** (`transport/attachments.py:170-285`) is the pattern to copy. It
+  proves ownership first, then reads tenant Redis, then calls the provider, then writes the cache
+  for 1 hour (`ATTACHMENT_CACHE_TTL_SECS`, `core.py:86`).
+- **Search reads text only.** `idx_email_messages_fts_body` indexes `subject`, `body_text` and the
+  sender (`infra/postgres/72_email_search_fts.sql:28-37`). `idx_email_messages_fts` indexes the
+  `snippet` (`infra/postgres/17_email_accounts.sql:80-89`). No index reads `body_html`.
+- **The meter** counts `body_html` in the stored bytes of a mailbox (`storage.py:98`).
+
+**The reply and the forward.**
+
+- The client quotes the plain text of the mail: `email.bodyText || email.snippet`
+  (`app/email/page.tsx:628`, `:643`, `:660`, and `components/EmailDetail.tsx:586`).
+- An Outlook reply draft uses `createReply`, so Outlook adds the quoted original
+  (`outlook.py:1100-1104`).
+- So **a reply to an old message needs no stored HTML.** The quote comes from `body_text`, which
+  stays. No slice of this section changes the reply.
+
+**The sync window and the connect flow.**
+
+- **`import_window.py` is the one owner of the window rules.** `MAX_IMPORT_MONTHS = 6`,
+  `DEFAULT_IMPORT_MONTHS = 1` and `CEILING_DAYS = 180` (`import_window.py:47`, `:51`, `:54`).
+  The ceiling binds each floor (`import_window.py:98-116`).
+- **The range step comes before the sign-in** (`components/ImportRangeStep.tsx:4-9`). The range
+  rides the signed OAuth state (`transport/signing.py:119-143`). The callback writes
+  `import_since` (`transport/oauth.py:776`).
+- **The client mirrors the range.** `DEFAULT_IMPORT_MONTHS = 1` (`lib/connect.ts:176`), the
+  choices (`lib/connect.ts:189-202`) and the stored choice `/^[0-6]$/` (`lib/connect.ts:240`).
+- **The import goes newest first, in batches, with an estimate** (EM-T6b). Outlook sums `$count`
+  over the folders of the import (`outlook.py:2196-2224`). Gmail reads `resultSizeEstimate`
+  (`gmail.py:581-584`). Migration 225 holds `import_phase`, `import_count` and `import_estimate`
+  (`infra/postgres/225_email_import_onboarding.sql:39-41`).
+
+**The sync progress.**
+
+- **The progress is on the account row.** `GET /email/accounts` (`transport/accounts.py:291`)
+  returns `import_phase`, `import_count` and `import_estimate`. The page polls it every
+  5 seconds while a first sync runs (`lib/connect.ts:391`, `app/email/page.tsx:358-374`).
+- **Two surfaces draw it.** `OnboardingPanel` draws a `ProgressBar` from `src/components/ui/`.
+  `FirstSyncBanner` draws a line with no count. `firstSyncPanels` gives one panel for each
+  pending mailbox, the mailbox in view first (`lib/onboarding.ts:119-129`).
+- **They draw for a FIRST sync only.** `isFirstSyncPending` needs `initialSyncDone === false`. A
+  later import, such as a Resync, draws nothing.
+- **`email_sync_log` is a log of each tick** (`infra/postgres/17_email_accounts.sql:124-134`). It
+  holds `messages_synced` for one run, not a total. So the progress must come from the account
+  row, and not from `email_sync_log`.
+
+**The rules step.**
+
+- **The rules step exists** (EM-T6d part 2). `onboardingStage` gives `rules` after the import ends,
+  until the member closes the setup (`lib/onboarding.ts:66-80`). It needs `importSince`, so it
+  shows on an EM-T6 connect only.
+- **It offers the presets and a copy.** "Copy the rules of <label>" shows for each other mailbox
+  (`components/OnboardingRulesStep.tsx:33-36`, D-EM-24).
+- **The automatic run touches new mail only** (owner, 2026-10-02, §10.2 (d)).
+  `NEW_MAIL_FLOOR_SQL` (`automation/rules.py:126`) keeps the run off the imported mail. Only
+  "Process past emails" sorts it.
+- **Process past emails has an estimate and two caps.** `GET /email/rules/process-past/estimate`
+  (`automation/runner.py:857`) counts the local mail. A run covers 366 days at most
+  (`runner.py:827`) and 2000 messages at most (`runner.py:907`).
+- **The rules step shows no estimate.** "Sort my imported mail" starts the run with no number.
+
+**The rule copy.**
+
+- **Rules are per mailbox.** `email_rules.account_id` references `email_accounts`
+  (`infra/postgres/19_email_automation.sql:27`).
+- **The copy is one route.** `POST /email/rules/copy` (`automation/rule_copy.py:276`) checks that
+  the member owns both mailboxes (`rule_copy.py:296-297`). It takes no `organization_id`, so the
+  tenant default fills it. It leaves out a forward to an own address (D-EM-29).
+- **The copy takes a folder or a label name as text.** It copies the `label` column of each action
+  (`rule_copy.py:92-96`). It does not check the folders of the target.
+- **The provider makes a missing folder or label on first use.** Outlook makes a missing folder
+  (`outlook.py:1439`) and a missing category (`outlook.py:1655`). Gmail makes a missing label
+  (`gmail.py:1807-1832`). Gmail refuses a move to a system label (`automation/actions.py:419-424`).
+- **The target's folders are known.** `email_folders` holds them
+  (`infra/postgres/17_email_accounts.sql:108-118`).
+
+**WhatsApp.**
+
+- `wa_embeddings.py` embeds each message, body and transcript, when
+  `whatsapp_semantic_search_enabled` is on
+  (`apps/services/whatsapp_ingestion/whatsapp_ingestion/wa_embeddings.py:1-12`). The table is
+  `wa_message_embeddings` (`infra/postgres/111_whatsapp_embeddings.sql:23`).
+
+**The load guards.**
+
+- `db_busy.recently_busy()` says that a connect failed in the last 15 seconds, with no database
+  call (`packages/acb_common/acb_common/db_busy.py:162-170`).
+- The pool of a process is 7 connections, plus an overflow of 2
+  (`packages/acb_common/acb_common/settings.py:107-108`, `db.py:153-154`).
+- The nightly backup starts at 02:30 UTC (`deploy/hostinger/acb-backup.timer`). The incident of
+  2026-10-07 started at about 02:55 UTC, when the project used up its disk I/O budget (H-262).
+
+### 14.3 Decisions (2026-10-07)
+
+D-EM-47 to D-EM-53 record Part 1 of the request. D-EM-54 to D-EM-60 record Part 2. Each one is the
+owner's, except where a row says "agent decision".
+
+| Id | Decision |
+|---|---|
+| **D-EM-47** | **Metorite is not a mailbox.** Outlook and Gmail hold the record copy of each mail. Metorite keeps what the AI and search need, and gets the rest from the provider. (Owner, 2026-10-07.) |
+| **D-EM-48** | **Keep the `body_text` of each stored message, for as long as Metorite stores the message.** The AI and search read local data only, and never the provider. So the AI keeps its speed. (Owner, 2026-10-07.) |
+| **D-EM-49** | **Keep `body_html` only for a message received in the last 90 days, the HTML hot window.** A job clears `body_html` of an older message. The reading pane then gets the HTML from the provider on the first open, caches it, and prefetches the visible list. It reuses the pattern of the owned file fetch (`transport/attachments.py:170-285`). (Owner, 2026-10-07. The coordinator set 90 days.) |
+| **D-EM-50** | **Summaries and Insights facts cover the whole sync window.** The job reads newest first, so the first insights come within minutes. This amends D-EM-38, which read only the last 90 days. (Owner, 2026-10-07.) |
+| **D-EM-51** | **WhatsApp keeps all of its text.** The provider cannot send old messages again. The size risk there is the embeddings. Embed summaries, not each message, and only when the embeddings are on. `whatsapp_message_manager.md` (WS-20) owns the build. (Owner, 2026-10-07.) |
+| **D-EM-52** | **The provider is the record for HTML older than 90 days.** When Metorite cannot reach the provider for a mailbox, the pane cannot show its old HTML. The text stays. This is a known effect, and not a defect. (Owner, 2026-10-07.) |
+| **D-EM-53** | **Two windows, kept apart.** The **sync window** is the choice of the member. It sets how far back Metorite fetches mail, keeps `body_text`, and runs summaries and Insights. The **HTML hot window** is internal and fixed at 90 days. It covers `body_html` only. So a sync of 12 months gives the AI 12 months of local text at full speed. (Owner, 2026-10-07.) |
+| **D-EM-54** | **The sync-window choices are 1, 3, 6 or 12 months, or a custom start date.** This amends D-EM-10 and D-EM-11. The ceiling of 6 months becomes the window of the mailbox. A mailbox with no choice, which connected before EM-T6, keeps the ceiling of 180 days. (Owner, 2026-10-07.) |
+| **D-EM-55** | **The default is 3 months.** Three reasons. A window of 3 months (90 days, because the code counts a month as 30 days) equals the HTML hot window, so a default connect stores no HTML that the clear job must remove later. The first insight does not wait on the window, because the import and Insights read newest first. Insights reads the 90-day backlog in about 5 days at the throttle of §13.6. *Agent decision (orchestrator, 2026-10-07), from the code. The owner can change it.* |
+| **D-EM-56** | **A custom window is a start date, and its end is always now.** New mail always syncs (D-EM-13, Q2 of D-EM-14), so an end date in the past has no meaning. The start date is at most 24 months back. A custom window, and each window over 12 months, shows a warning that a longer window can cost more AI compute. *The bound of 24 months is an agent decision (orchestrator, 2026-10-07). The owner can change it.* §14.4.5 gives the reason. |
+| **D-EM-57** | **Before the member confirms, the step shows an estimate.** It shows the count of mail in the window from the provider, and the AI calls that the count implies. It shows a figure in credits only after AI credit metering lands (D-EM-43). So the range step moves after the sign-in, because the count needs the token of the mailbox. (Owner, 2026-10-07. The order is an agent decision.) |
+| **D-EM-58** | **A banner in the header of the email app shows each mailbox that syncs.** It names the mailbox, shows the progress as a count or a percent, and says that the sync still runs. It goes away when the sync ends. It shows for each import, not only the first one. It uses the one design system. (Owner, 2026-10-07.) EM-S9 builds it for the first import. EM-S9b makes a Resync write progress, so the same banner shows during a Resync. |
+| **D-EM-59** | **After the first import, the setup invites the member to set up AI rules, when the mailbox has none.** It happens on the first connect of a mailbox only. A sort of the imported mail costs AI compute, so it stays opt-in, and the step shows its estimate first. (Owner, 2026-10-07.) |
+| **D-EM-60** | **A second mailbox goes through the same flow, plus one choice.** The member copies the rules of a mailbox that they pick, or sets up new rules. The copy keeps each folder and label name. The answer names each name that the new mailbox does not hold, and the provider makes it on first use. (Owner, 2026-10-07. The rule for a missing name is an agent decision.) |
+
+### 14.4 The design
+
+#### 14.4.1 The hot window, in one place
+
+- **One new module, `email_ingestion/html_tier.py`.** It is the one owner of the HTML hot window.
+  The gateway imports down into it, as it does for `persist.py`.
+  - `HTML_HOT_DAYS = 90`.
+  - `hot_cutoff(now=None)` gives `now - 90 days`, in UTC.
+  - `is_cold(received_at, now=None)` is true when `received_at` is older than the cutoff. A
+    message with no `received_at` is never cold, so it keeps its HTML.
+  - `from_provider()` reads the flag `EMAIL_HTML_FROM_PROVIDER`.
+  - `hot_only()` is true only when `EMAIL_HTML_FROM_PROVIDER` and `EMAIL_HTML_HOT_ONLY` are both
+    true. So a writer never drops HTML that the pane cannot get again.
+- **The two windows stay in two modules.** `import_window.py` owns the sync window.
+  `html_tier.py` owns the HTML window. Neither one imports the other.
+
+#### 14.4.2 The reading pane gets old HTML from the provider
+
+1. **A new route, `GET /email/messages/{id}/html`.** It keeps the order of the owned file fetch:
+   - It reads the row with `ea.user_id = :uid` in the predicate. A message of another member
+     answers 404, before any cache read.
+   - It reads tenant Redis with `key("email-html", <row id>)` inside `organization_scope`, as
+     `transport/attachments.py:244-256` does.
+   - On a miss it opens no session across the provider call. Block A reads the row and the
+     credentials with the owner predicate, then closes. The provider authenticates and fetches
+     with no session open. When `credentials_dirty()` is true, Block B runs
+     `_persist_rotated_creds` in a short session. Block B runs in a `finally`, so a failed
+     fetch keeps a rotated token too.
+   - The fetch is `provider.get_message_body`, which reads the body only. Outlook selects `id`
+     and `body` and expands nothing. The route cuts the HTML at `MAX_BODY_HTML_BYTES`.
+   - It writes the cache for 1 hour. It writes no HTML to `email_messages`.
+   - Its answer is `{message_id, body_html, source}`. `source` is `stored`, `cache`, `provider` or
+     `none`. A plain-text message gives `none`, and the cache keeps that answer too.
+2. **A refusal under load.** With `?prefetch=1`, the route answers 503 with `Retry-After: 30` when
+   `db_busy.recently_busy()` is true. The open of one message is never refused this way.
+3. **The message and the list say where the HTML is.** `EmailMessageModel` gains `html_remote:
+   bool`. A list row gains the same field. It is true when `body_html IS NULL` and the message is
+   cold. The test `body_html IS NULL` reads no TOAST value.
+4. **The pane.** A message with `html_remote` shows its `body_text` at once. Then it calls the
+   route, and shows the HTML when it arrives. The member never sees an empty pane.
+5. **The prefetch.** The list stays still for 500 milliseconds. Then the client calls the route with
+   `prefetch=1` for each visible row with `html_remote`. It asks for 6 rows at most, and 2 at
+   one time. It stops at the first 503, and it skips a row that it already holds.
+6. **No pooled connection across the provider call.** The route holds no connection while the
+   provider answers (item 1). EM-T4a-4 (H-261) keeps only the owned file fetch
+   (`transport/attachments.py:205-208`), which still holds one. The prefetch bounds of item 5
+   still bound the calls of each member to the provider.
+
+#### 14.4.3 No writer stores old HTML
+
+Each writer reads `html_tier.hot_only()` and `html_tier.is_cold()`. With `hot_only()` false, each
+writer behaves as today.
+
+1. **The upsert** (`persist.py:193-235`). For a cold message, `_message_params` binds
+   `body_html = None`. If `body_text` is empty and the provider sent HTML, it fills `body_text` from
+   that HTML first, with `body_backfill._html_to_text`. It adds no third copy of that function
+   (§10.4.13 already names the move to the shared reader).
+   - The SET keeps `COALESCE(NULLIF(EXCLUDED.body_html, ''), email_messages.body_html)`. So a cold
+     row that still holds HTML keeps it until the clear job runs. A cleared row stays NULL.
+   - The guard compares the same expressions (`persist.py:146-155`). So a re-sync of a cleared
+     message writes no row. This is the rule that stops the sync from fighting the clear job.
+   - The INSERT and the inbound path take the same params, so a new cold message stores no HTML.
+   - *Fix round 1 (2026-10-08).* A text made from the HTML never replaces a stored text that is
+     not empty. `_message_params` binds `body_text_derived`, and the SET and the guard read it. A
+     text that the provider sent replaces the stored text, as before.
+2. **The body backfill** (`body_backfill.py:152-155`). A cold message gets its text, and keeps
+   the HTML that the row holds. A row with no HTML keeps NULL. *As built, 2026-10-08.* This text
+   said `body_html = None`. The code keeps a stored value, which is the safer rule, because EM-S4
+   owns each clear.
+3. **The open** (`transport/messages.py:698-712`). A cold message stores its text only. The open
+   still returns the HTML that it fetched, and writes it to the cache of §14.4.2.
+4. **`hydrate_message_body`** (`core.py:410-423`). A cold message stores its text only.
+5. **The text of an HTML-only message** *(fix round 1, 2026-10-08)*. The open and
+   `hydrate_message_body` fill an empty text from the HTML, with `body_backfill._html_to_text`, as
+   the upsert does. Without the fill, a cold Outlook message stores no body. Then each open fetches
+   it again, and the AI reads no text. `_html_to_text` stops at 2 MiB of input and runs in linear
+   time, because the sync calls it inside its transaction.
+6. **The meter.** No change. `storage.py:98` measures what is stored, so it falls after a clear.
+
+#### 14.4.4 The clear job
+
+**What it does.** It sets `body_html = NULL` on each cold row that has a text. One statement for
+each batch:
+
+```sql
+UPDATE email_messages
+   SET body_html = NULL
+ WHERE id = ANY(:ids)
+   AND body_html IS NOT NULL
+   AND received_at < :cutoff
+   AND btrim(coalesce(body_text, '')) <> ''
+```
+
+- **It does not write `updated_at`.** Since #709, `updated_at` moves only when the provider changed
+  the message. `reconcile.py` and the drafts lens read it (`persist.py:135-140`).
+- **It skips a row with no text.** A cold row with HTML and an empty text keeps its HTML. The body
+  backfill fills the text first, and a later night clears the row.
+- **It adds no index.** The UPDATE changes no indexed column, so Postgres can make a HOT update when
+  the page has room. A partial index on `body_html IS NOT NULL` would stop each HOT update.
+
+**The batch and the timing.** The incident of 2026-10-07 came from bursts of I/O on a small
+compute. So each number below is small on purpose. *Agent decision (orchestrator, 2026-10-07).*
+
+| Setting | Default | Why |
+|---|---|---|
+| `EMAIL_HTML_CLEAR` | `off` | `off`, `dry_run` or `on` |
+| Rows in one batch | 100 | One short transaction. At today's mean of about 3 KB of HTML, a batch frees about 300 KB |
+| The pause after a batch | 5 s | Lets the checkpoint and autovacuum keep up |
+| The pause after a slow batch | 30 s | A batch over 2 s doubles the pause up to this bound |
+| Rows each night, for the box | 5,000 | So the backlog of 20,516 rows takes about 5 nights |
+| Index rows READ each night, for the box | 20,000 | 100 batches of 200 reads. A walk over cleared rows stops here |
+| `statement_timeout` of a batch | 5 s | Set with `SET LOCAL` |
+| `EMAIL_HTML_CLEAR_WINDOW_UTC` | `20:30-23:30` | 02:00 to 05:00 in India, where the members are. It ends 3 hours before the backup at 02:30 UTC |
+
+**It stops for the night when one of these is true.**
+
+- `db_busy.recently_busy()` is true.
+- `get_engine().pool.checkedout()` is at or over half of `db_pool_size`.
+- A batch fails, or times out.
+- Two batches in one night take more than 2 s each.
+- The clock leaves the window.
+- The count for the night reaches 5,000.
+- Redis fails, so the job cannot read or write the count for the night.
+
+**How it walks.** A loop in the gateway wakes every 15 minutes, and acts only inside the window.
+It starts and stops in `main.py` as `projects/import_sweep.py` does. That sweep wakes every 12
+hours (`import_sweep.py:31`), so the clear job keeps its own interval.
+
+1. It reads the organizations with `scheduler._list_organizations()` (`scheduler.py:396`).
+2. It opens `tenant_session(org)` for each read and each batch. It binds no tenant from input.
+3. It walks one mailbox at a time, newest cold row first, with a keyset cursor on
+   `(received_at, id)`. It uses the index on `(account_id, received_at DESC)`
+   (`infra/postgres/17_email_accounts.sql:73`).
+4. **Each batch READS 200 index rows at most**, and clears the rows of those that qualify, 100
+   at most. So a run of cleared rows costs one bounded read, and never a long scan.
+5. It commits each batch, then pauses.
+
+**The cursor of each mailbox (agent decision, orchestrator, 2026-10-07).** One tenant Redis key
+for each mailbox, `key("email-html-clear", <account id>)`, holds these values:
+
+- `backlog_done`: false while a backlog walk runs.
+- `oldest_done`: the oldest `received_at` that the backlog walk reached.
+- `backlog_floor`: where the backlog walk stops. NULL means "at the oldest row".
+- `backlog_top`: the cutoff when the backlog walk started.
+- `band_done_through`: the cutoff of the last night that finished its walk.
+- `night_done`: the UTC date of the last night that this mailbox finished.
+
+**The walk, night by night.**
+
+1. **No key.** The walk starts a backlog walk: `oldest_done` and `backlog_top` are the cutoff,
+   and `backlog_floor` is NULL.
+2. **While `backlog_done` is false,** the walk resumes below `oldest_done`, and stops at
+   `backlog_floor`. When it reaches it, the walk sets `backlog_done` to true and
+   `band_done_through` to `backlog_top`.
+3. **After the backlog clears,** each night walks the band `[band_done_through, cutoff)`,
+   newest first. When the band finishes, `band_done_through` becomes the cutoff of the night.
+   So two or more missed nights leave no row behind.
+4. **A band that does not finish in one night** turns into a backlog walk. A stop condition or
+   the read cap of the night can stop it. The walk then sets `backlog_done` to false,
+   `oldest_done` to the point it reached, `backlog_floor` to `band_done_through`, and
+   `backlog_top` to the cutoff. Item 2 then finishes the band on later nights.
+5. **A finished mailbox** gets `night_done` for the date, and the loop skips it until the next
+   night.
+6. **A lost key costs a walk, not a fault.** Item 1 then runs again, and the read caps bound
+   each batch and each night.
+
+**The count for the night survives a restart (agent decision, orchestrator, 2026-10-07).** The
+count lives in tenant Redis, one key for each organization and UTC date,
+`key("email-html-clear-night", <date>)`, with a time to live of 48 hours. A loop that starts
+sums the key of each organization, and adds each batch to the key of its own organization. So a
+restart reads the same count, and the bound of 5,000 for the box holds.
+
+- This keeps each key inside the tenant wrapper (R5 (c)), so it needs no unscoped key and no
+  one-row table outside RLS.
+- With 2 organizations, the sum costs 2 reads for each loop.
+- When Redis fails, the job stops for the night. It never runs with a count that it cannot read.
+- The count of reads for the night lives beside it, in the same key, with the same rules.
+
+**The dry run.** In `dry_run`, the job walks as `on` does, and writes no row.
+
+- It keeps the same cursor rules in its own key, `key("email-html-clear-dry", <account id>)`.
+  So a dry run never moves the cursor of `on`.
+- Each batch reads 200 index rows at most, under the same `statement_timeout` of 5 s. It counts
+  the rows that the UPDATE would clear, and `sum(pg_column_size(body_html))` of those rows.
+  `pg_column_size` reads the size from the TOAST pointer, so it reads no HTML.
+- The would-clear count adds to the count for the night, so the cap of 5,000 binds the dry run
+  too. Each stop condition and the read cap of the night bind it.
+- A finished mailbox gets `night_done`. When its backlog walk ends, the log gives the totals of
+  the mailbox.
+
+**The log line.** `email.html_clear.batch` holds counts only: the organization, the mailbox, the
+rows cleared, the bytes freed, the time of the batch, and the reason it stopped. It holds no mail
+text.
+
+#### 14.4.5 The sync window and the connect flow
+
+1. **The window rules stay in `import_window.py`.** It gains the choices `1, 3, 6, 12`, a custom
+   start date, `DEFAULT_IMPORT_MONTHS = 3`, and two named constants: `CEILING_DAYS = 180` and
+   `MAX_WINDOW_DAYS = 730`. `CEILING_DAYS` no longer comes from `MAX_IMPORT_MONTHS`.
+   - `sync_floor` gains an argument, `max_days`. The floor is the later of `since` (or
+     `import_since`) and `now - max_days`. So the floor still rolls, as it does today.
+   - `import_window.py` does not import `html_tier.py`, and `html_tier.py` does not import
+     `import_window.py` (§14.4.1).
+   - The choice "Only new mail" leaves the list, because the owner named the choices. A custom
+     start date of today gives the same result.
+
+   **ONE function owns `max_days` (coordinator decision, 2026-10-07).** A new small module,
+   `email_ingestion/window_policy.py`, holds `window_max_days(row)`. It imports
+   `import_window` and `html_tier`, so neither of those two imports the other.
+
+   - **With a row**, it gives the `max_days` of that mailbox:
+     - `CEILING_DAYS` when the row has `window_chosen_at` NULL, or when `html_tier.hot_only()`
+       is false.
+     - Else `min(MAX_WINDOW_DAYS, max(CEILING_DAYS, <the days of the chosen window>))`. The
+       chosen days are `window_chosen_at - import_since`, rounded up to whole days.
+   - **With no row**, it gives the bound of a NEW choice: `MAX_WINDOW_DAYS` when `hot_only()` is
+     true, else `CEILING_DAYS`.
+   - **Its callers.** The scheduler, for each sync and each member act. The confirm and the
+     estimate, for the bound of a new choice. The Insights batch, for its floor (§13.5 item 2).
+     No other code picks `max_days`.
+   - **A member act stays inside its own window.** Process past emails passes a `since`. The
+     floor is then the later of that `since` and `now - window_max_days(row)`. So a member act
+     never reaches past the window of its mailbox, and never below 180 days. Departure 2 holds.
+   - **Which mailboxes keep 180 days (D8).** Each mailbox with `window_chosen_at` NULL. That is
+     each mailbox that connected before Flip C, and each one with `import_since` NULL
+     (D-EM-54). Their floor is `max(import_since, now - 180 days)`, as today.
+2. **The range step moves after the sign-in.** The callback writes
+   `import_phase = 'awaiting_range'` and `import_since = now()`. `import_phase` is text with no
+   CHECK, so the phase needs no migration (`225_email_import_onboarding.sql:24`).
+   - **The scheduler skips the first import in `awaiting_range`.** Today `scheduler.py:1455`
+     starts the first import whenever `initial_sync_done` is false. At the end it writes
+     `import_phase = 'done'` (`_IMPORT_DONE`, `scheduler.py:290-294`), which would overwrite
+     `awaiting_range`. So the Python test at `scheduler.py:1455` also needs
+     `getattr(row, "import_phase", None) != "awaiting_range"`. A NULL phase passes.
+   - The recurring sweep still runs, so new mail syncs (Q2 of D-EM-14).
+   - **A member who never confirms.** The mailbox stays in `awaiting_range`, and syncs new mail
+     only. The setup shows the range step until the member confirms or closes the setup.
+   - "Skip setup" confirms `{since: <the stored import_since>}`. That window holds no old mail,
+     so the import ends at once with `import_phase = 'done'`. No second path exists.
+3. **The estimate.** `GET /email/accounts/{id}/import/estimate` answers for each choice:
+   - `messages`: the count from the provider. Outlook sums `$count` over the folders of the
+     import: `SWEEP_SYSTEM_FOLDERS` plus `_user_sweep_folders()` (`outlook.py:2068-2069`). Each
+     request holds `$top=1`, `$select=id`, a `receivedDateTime ge` filter and
+     `ConsistencyLevel: eventual` (`outlook.py:2196-2224`). Gmail reads `resultSizeEstimate` of
+     `users.messages.list` with `q=after:<epoch>` and `maxResults=1` (`gmail.py:581-584`).
+   - `rules_calls`: one `decide` request for each message, when the member sorts the import.
+   - `insights_calls`: the screen and the extraction of §13.6, only when Insights is on for the
+     mailbox.
+   - `exact: false` for Gmail, because `resultSizeEstimate` is rough. The step then says "about".
+   - The estimate makes one provider call for each folder and each choice. Outlook reads the
+     folder list once, then `4 x (6 + U)` counts for the four presets, where U is the count of
+     user folders. A mailbox with 20 user folders makes about 105 calls. Gmail makes 4 calls.
+   - A custom date adds one more set of counts. The answer stays in tenant Redis for 10 minutes.
+   - **No session across a provider call (the EM-T4a-1 pattern).** The route reads the account
+     and its credentials in one `tenant_session`, and closes it. Then it calls the provider. It
+     runs the counts 4 at a time, under a total timeout of 20 s. A count that does not answer in
+     time gives `messages: null` for its choice. A second short session then writes a rotated
+     token, as `_persist_rotated_creds` does.
+   - **While `hot_only()` is false, the answer leaves out each choice over 6 months**, and the
+     step does not show it. A custom date older than 180 days is then refused too.
+4. **The confirm.** `POST /email/accounts/{id}/import/range` takes `{months}` or `{since}`. It
+   checks the owner, the choice and the bound. A window longer than `window_max_days(None)`
+   answers 409. So a window over 180 days answers 409 while `html_tier.hot_only()` is false. It accepts a mailbox in `awaiting_range` only, else 409. It
+   writes these columns in one UPDATE, and no other:
+   - `import_since` = the chosen start
+   - `window_chosen_at` = `now()`
+   - `import_phase` = NULL
+   - `initial_sync_done` = false
+
+   The next scheduler tick then starts the first import of today (EM-T6b), newest first.
+5. **Why 24 months, and not more.** Three bounds already hold, and 24 months stays inside each:
+   - The meter of 500 MB for each mailbox stops the import at the old end (D-EM-14). Without old
+     HTML, 500 MB holds about 100,000 messages.
+   - Process past emails covers 366 days for each run (`runner.py:827`). A window of 24 months is
+     two runs.
+   - The Insights throttle reads the backlog at 50 % of the daily budget (§13.6). At about 1,000
+     calls each day, 24 months of a busy mailbox takes weeks, not months.
+
+#### 14.4.6 The sync banner
+
+- **One helper decides.** `lib/onboarding.ts` gains `syncBanners(accounts)`. It returns each
+  mailbox with an import that writes progress, in view or not, with sync on and no error.
+  - The first import: `initial_sync_done` is false, and `import_phase` is `counting` or
+    `importing` (EM-S9).
+  - The start of the first import: `initial_sync_done` is false, and `import_phase` is NULL.
+    The row reads "Starting sync", with no bar and no count. D-EM-58 says that a banner shows
+    while each sync runs, and the scheduler writes no phase for its first few seconds.
+  - A Resync: `import_phase` is `resyncing` (EM-S9b).
+  - No row for `awaiting_range` (EM-S6), a sync error or sync off.
+- **Today a Resync writes no progress** (`scheduler.py:891-898`, `:1467`). EM-S9b adds it, so the
+  same row shows during a Resync, as D-EM-58 asks.
+- **The progress.** With `import_estimate`, it shows a percent from `import_count /
+  import_estimate`, capped at 99 % until the phase ends. With no estimate, it shows the count.
+- **The surface.** One row under the header of the email page. It draws `ProgressBar` and
+  `MailboxChip`, and it holds `role="status"`. It uses no colour literal, and each control comes
+  from `src/components/ui/` (`workbench/control_plane/DESIGN_SYSTEM.md`).
+- **One surface, not two.** For the mailbox in view, `OnboardingPanel` keeps the detail of the
+  first import. The header row leaves that mailbox out while the panel shows. `FirstSyncBanner`
+  goes, because the header row covers it.
+- **The poll.** It reuses the poll of the first sync (`app/email/page.tsx:358-374`). EM-S9b widens
+  its condition to "a row shows", so it also runs during a Resync.
+
+#### 14.4.7 The rules step, and a second mailbox
+
+- **The invitation exists.** EM-S10 adds the estimate. "Sort my imported mail" first reads
+  `GET /email/rules/process-past/estimate` for the import window. It shows `will_process` as AI
+  calls. When `capped` is true, it says how many messages one run sorts, and offers the next run.
+  It reads that number from `limit` in the estimate answer. Today the number is 1,000, because the
+  dialog sends no `limit` (`RuleProcessPastRequest.limit`). The route clamps `limit` at 2,000.
+- **The cost.** Each sorted message costs one `decide` request on `tier-decide` (D-EM-7). That is
+  about 2,500 tokens in, about USD 0.0001 at the rate of §13.1.
+- **A second mailbox.** It goes through the range step and the estimate as the first mailbox does.
+  The rules step already offers "Copy the rules of <label>" for each other mailbox (D-EM-24).
+- **The copy and a missing name.** `RuleCopyResult` gains `will_create: list[{rule, action,
+  name}]`. It lists each `MOVE_FOLDER` or `LABEL` name that `email_folders` of the target does not
+  hold, compared without case. The copy still copies the rule. The step lists the names under the
+  copy report.
+  - An AI label (`label_ai`) is a prompt, so the list leaves it out.
+  - From Outlook to Gmail, a `MOVE_FOLDER` to a system folder that Gmail refuses goes into
+    `left_out` with the reason `folder_not_in_target`.
+  - An IMAP target makes no folder and adds no label. A rule with a `MOVE_FOLDER` or a `LABEL`
+    goes into `left_out` with the reason `not_supported_by_target`, and `will_create` is empty
+    (EM-S10 fix round 1).
+- **Tenancy and ownership.** The copy keeps both owner checks (`rule_copy.py:296-297`). The
+  folder read uses the target `account_id` that the route already proved. No field comes from
+  input that the route did not check (R5 (e), D-EM-4, D-EM-46).
+
+#### 14.4.8 WhatsApp
+
+D-EM-51 binds WS-20. `wa_embeddings.py` embeds each message today. The change is a WhatsApp slice,
+owned by `whatsapp_message_manager.md`. §14.8 records it as a board finding. No slice of this
+section touches WhatsApp.
+
+### 14.5 Departures from earlier decisions and code
+
+| # | Earlier decision or code | What changes |
+|---|---|---|
+| 1 | **D-EM-38** (line 12163): Insights reads the last 90 days only | D-EM-50: Insights reads the whole sync window, newest first. §13.5 item 2 and the backlog row of §13.6 bind EM-T14b-2 to the new window. The throttle of §13.6 stays |
+| 2 | **D-EM-10** (line 553): no path writes mail older than 6 months | D-EM-54: the window of the mailbox binds, at most 24 months. A mailbox with no choice keeps 180 days |
+| 3 | **D-EM-11** (line 554): 0 to 6 months, default 1 | D-EM-54 and D-EM-55: 1, 3, 6 or 12 months or a custom date. The default is 3. "Only new mail" goes |
+| 4 | **EM-T6d item 2** (`components/ImportRangeStep.tsx:4-9`): the range step comes before the sign-in | D-EM-57: it comes after the sign-in, so the provider can count |
+| 5 | **The non-goals of EM-T6a and EM-T6c** (lines 2994 and 3239): "No retention" and "No retention by age" | The clear job is a retention by age, for `body_html` only. No message, text or file goes |
+| 6 | **The sync upsert** (`persist.py:111`): a re-sync writes the HTML that the provider sends | A cold message binds `body_html = None`. With the guard of #709, a re-sync of a cleared message writes nothing |
+| 7 | **The body backfill** (`body_backfill.py:155`, `:180-189`) writes `body_html` | A cold message gets its text only |
+| 8 | **The open** (`transport/messages.py:686-712`) fetches only when both bodies are empty, and stores the HTML | A cold message stores no HTML. A new route gets old HTML (§14.4.2) |
+| 9 | **`hydrate_message_body`** (`core.py:410-423`) writes `body_html` | A cold message stores its text only |
+| 10 | **The rule copy** (`rule_copy.py:92-96`) takes a folder name with no check | The answer names each name that the target lacks (D-EM-60) |
+| 11 | **The first-sync surfaces** (`lib/onboarding.ts:119-129`) draw in the mail pane for a first import only, and `FirstSyncBanner` shows no count | One header row shows each import with its progress, in view or not (D-EM-58). EM-S9 covers the first import, and EM-S9b adds the Resync |
+| 12 | **The client mirror of the range** (`lib/connect.ts:176`, `:240`) and the check of the OAuth state (`transport/signing.py:127-134`) | They follow `import_window.py`. The OAuth state keeps reading `import_months` from an old state |
+| 13 | **WhatsApp W10** (`wa_embeddings.py:1-12`) embeds each message | D-EM-51: embed summaries. WS-20 owns it |
+| 14 | **The ceiling of the floor is 180 days for each mailbox** (`import_window.py:98-116`) | `window_policy.window_max_days(row)` sets it: the chosen window, at least 180 and at most 730 days. The floor still rolls. Each mailbox with `window_chosen_at` NULL keeps 180 days (§14.4.5 item 1) |
+| 15 | **The first import starts whenever `initial_sync_done` is false** (`scheduler.py:1455`) | The Python test also needs a phase other than `awaiting_range` (§14.4.5 item 2) |
+| 16 | **A Resync writes no progress** (`scheduler.py:891-898`, `:1467`) | EM-S9b writes `import_phase = 'resyncing'`, `import_count` and `import_estimate`, so the banner shows |
+| 17 | **§14.4.2 item 1 as first written:** the HTML route calls `provider.get_message` through `provider_session` | EM-S1 fix round 1. The route holds no session across the provider call (item 1, item 6). It calls the new `get_message_body` of the provider base, whose default reads `get_message`. Outlook overrides it with `$select=id,body` and no `$expand`, because `get_message` (`outlook.py:1013-1020`) sends `$expand=attachments` and Graph then sends the bytes of each file. The open keeps `get_message`, because it needs `has_attachments` |
+
+**What does not change.**
+
+- **Search.** It reads `body_text`, `subject`, `snippet` and the sender. It never reads
+  `body_html`.
+- **EM-T14b Insights** reads `body_text` and the files. Its free filter "no stored body" (§13.5
+  item 3) reads the text. Only its window changes (departure 1).
+- **The reply and the forward** quote `body_text` (§14.2).
+- **`read_email(full=True)`** reads the provider through `/full-body`.
+- **The storage limit** (D-EM-14) binds as today. The clear lowers the meter, and changes nothing
+  else about the limit.
+
+### 14.6 Slices
+
+Each slice is one PR of about 600 lines or fewer. A slice that grows past that splits, and its
+section names the split. EM-S6 takes one migration, which adds
+`email_accounts.window_chosen_at timestamptz NULL`. It is expand-only (R6). The slice takes the
+number at build time (R1). 232 is the first free number at `444c36893`. No other slice needs a
+migration.
+
+| Slice | Gate | Dark | Scope | Done when |
+|---|---|---|---|---|
+| **EM-S1** | 🟢 AGENT-SAFE · R8 · security review | Yes, `EMAIL_HTML_FROM_PROVIDER` | ✅ **MERGED #719 (2026-10-07).** `html_tier.py`, the HTML route, the cache, and `html_remote` | §14.6.1 |
+| **EM-S2** | 🟢 AGENT-SAFE · visual review | Yes, the same flag | ✅ **MERGED #724 (2026-10-08).** The pane shows text, then HTML. The prefetch | §14.6.2 |
+| **EM-S3** | 🟢 AGENT-SAFE · R8 | Yes, `EMAIL_HTML_HOT_ONLY` | 🔨 **BUILT, not merged (2026-10-08).** The four writers store no cold HTML | §14.6.3 |
+| **EM-S4** | 🟢 AGENT-SAFE · R8 · security review | Yes, `EMAIL_HTML_CLEAR` | The clear job, with its dry run | §14.6.4 |
+| **EM-S5** | 🟢 AGENT-SAFE, the read-only measure only · not scheduled | — | Quote stripping, measured first | §14.6.5 |
+| **EM-S6** | 🟢 AGENT-SAFE · R8 · after EM-S3 merges | Yes, `EMAIL_SYNC_WINDOW_CHOICE` | The window rules, `awaiting_range`, the scheduler skip, the migration and the confirm route | §14.6.6 |
+| **EM-S7** | 🟢 AGENT-SAFE · R8 | Yes, the same flag | The estimate route | §14.6.7 |
+| **EM-S8** | 🟢 AGENT-SAFE · visual review | Yes, the same flag | The range step after the sign-in, with the estimate and the warning | §14.6.8 |
+| **EM-S9** | 🟢 AGENT-SAFE · visual review | No | The sync banner in the header, for the first import | §14.6.9 · ✅ MERGED #717 (2026-10-07) |
+| **EM-S9b** | 🟢 AGENT-SAFE · R8 | No | A Resync writes progress, so the banner shows during a Resync | §14.6.9b |
+| **EM-S10** | 🟢 AGENT-SAFE · R8 · visual review · ✅ MERGED #721 (2026-10-07) | No | The estimate in the rules step, and `will_create` in the copy | §14.6.10 |
+| **Flip A** | 🟡 GRANT `enforcement-flip` | — | `EMAIL_HTML_FROM_PROVIDER=true`, then `EMAIL_HTML_HOT_ONLY=true` | The live check of §14.6.3 |
+| **Flip B** | 🔴 OWNER ONLY | — | `EMAIL_HTML_CLEAR=on` | The live check of §14.6.4 |
+| **Flip C** | 🔴 OWNER ONLY | — | `EMAIL_SYNC_WINDOW_CHOICE=true` | The live check of §14.6.8 |
+
+**The order.** Storage safety comes before the bigger windows.
+
+1. EM-S1, then EM-S2, then EM-S3. Then Flip A.
+2. EM-S4. Its `dry_run` may run after Flip A. Flip B comes after the dry run.
+3. **EM-S6 dispatches only after EM-S3 merges.** Then EM-S7 and EM-S8.
+4. Flip C needs Flip A first. The callers of `sync_floor`, the confirm and the estimate hold
+   that order in code. Each one allows a window over 180 days only when `html_tier.hot_only()`
+   is true (§14.4.5).
+5. EM-S9 and EM-S10 at any time. EM-S9 helps most before Flip C, because a longer import runs
+   longer. EM-S9b comes after EM-S9.
+
+**Why EM-S9 and EM-S10 ship with no flag.** Each one changes a surface that is live today and
+adds no new write.
+
+- EM-S9 is UI only. It moves the first-sync row into the header, and adds a count.
+- EM-S10 adds a read before a sort, and one read-only field to the copy answer.
+- EM-S9b writes only the three progress columns, which the setup UI reads for display. §14.6.9b
+  names each reader and what it sees, and why none of them changes behaviour.
+- The precedent: EM-T6d parts 1 and 2 (#579, #581) and EM-T6e (#619) shipped UI of the setup
+  with no flag. EM-T8f-1 (#605) shipped the copy route with no flag.
+
+**Why the flips have two gates.**
+
+- **Flip A** reads the provider with the member's own token, and writes less. The §3a window
+  covers it. Report the flag, the box and the evidence in the same message (§3a rule 2).
+- **Flip B** removes stored HTML in each organization, and it is one-way. For a mailbox that
+  Metorite cannot reach, the old HTML is gone for good (D-EM-52). So it waits for the owner, with
+  a backup that completed the night before (§3a rule 1).
+- **Flip C** lets a member start a longer import, which costs more AI compute. Money stops the
+  agent (§3a rule 3).
+
+**The R8 idiom.** Each R8 test runs as `acb_app_h3rls`, a role with no `BYPASSRLS`. It imports
+`_DB_GATE`, `app_engine` and `promoted` from `test_h3_rls_promotion_rehearsal.py`. A run with 0
+skipped is the proof. A green run with skips proves nothing (R8).
+
+#### 14.6.1 EM-S1 — the hot window and the HTML route
+
+**Status.** ✅ MERGED #719 (2026-10-07), dark. Branch `email-s1-html-route`.
+
+**Scope.**
+
+1. `email_ingestion/html_tier.py` as §14.4.1 says.
+2. `email_html_from_provider: bool = False` (`EMAIL_HTML_FROM_PROVIDER`) and
+   `email_html_hot_only: bool = False` (`EMAIL_HTML_HOT_ONLY`) in
+   `packages/acb_common/acb_common/settings.py`. `html_tier.py` is their one reader.
+3. `GET /email/messages/{id}/html` in `transport/messages.py`, as §14.4.2 items 1 and 2 say.
+   With the flag off, it answers 404.
+   - **The 429.** When the provider answers 429, the route answers 503 with `Retry-After`, and
+     logs `email.html.provider_429` with the mailbox id and no mail text.
+4. `html_remote` on `EmailMessageModel` and on each list row. With the flag off, it is false.
+5. The row D4 of `work_plan.md` §6 already names the two flags, with the gate
+   `enforcement-flip`. The doc PR of §14 added them. Keep the row true if a name changes.
+
+**Non-goals.** No UI. No writer changes. No job.
+
+**Acceptance.**
+
+- A message of another member answers 404, and the route reads no cache key for it.
+- A cache hit makes no provider call.
+- A cache entry of org A is not read by org B for the same row id.
+- A plain-text message answers `source: none`, and a second call makes no provider call.
+- `prefetch=1` answers 503 while `recently_busy()` is true. A call with no `prefetch` does not.
+- A provider 429 answers 503 with `Retry-After`, and gives one `email.html.provider_429` line.
+- No path of the route writes `email_messages`.
+
+**Fences (R7).** In a new `tests/unit/test_email_html_tier.py`:
+
+- `is_cold` and `hot_cutoff` at the edge of 90 days, with a naive and an aware time.
+- A pytest case: a fake provider that raises a 429 gives a 503 with `Retry-After`, and the log
+  line holds no mail text.
+- `hot_only()` is false when only one of the two flags is true.
+- R8: org B gets 404 for a message of org A. A member gets 404 for a message of another member of
+  the same org.
+- The cache key holds the row id and passes through `get_tenant_redis` (R5 (c)).
+- A structural fence: no module outside `html_tier.py` holds the number 90 next to
+  `received_at`, and no module outside it reads the two flags.
+- No session is open across the provider call. The fake provider fails if a session is open
+  while it authenticates or fetches.
+- A fetch with no token rotation opens exactly one session
+  (`test_a_fetch_with_no_rotation_opens_one_session`).
+
+**Mutations.** S1-M1 reads the cache before the owner check, and the 404 fence fails. S1-M2 keys
+the cache by the path text, and the spelling fence fails. S1-M3 makes `hot_only()` read one flag,
+and the flag fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_html_tier.py -v -rs
+uv run pytest tests/unit/test_email_owner_scope_fence.py tests/unit/test_tenant_coverage.py -q
+uv run ruff check apps/services/email_ingestion/email_ingestion/html_tier.py apps/services/gateway/gateway/routes/email/transport/messages.py
+```
+
+**R5.** No new table. The Redis key goes through the tenant wrapper. The organization comes from
+`user.organization_id`, never from input.
+
+#### 14.6.2 EM-S2 — the pane and the prefetch
+
+**Status.** ✅ MERGED #724 (2026-10-08). Branch `email-s2-reading-pane`.
+
+**Scope.**
+
+1. `lib/api.ts` gains `fetchMessageHtml(id, {prefetch})`, and `htmlRemote` on the message type.
+2. `EmailDetail.tsx`, `ConversationView.tsx` and `EmailPreviewModal.tsx` show `body_text` at once
+   for a message with `htmlRemote`. Then they show the HTML when it arrives.
+3. A prefetch helper in `lib/` with the bounds of §14.4.2 item 5.
+4. With the flag off, `htmlRemote` is false, and nothing changes.
+5. **The 429.** EM-S1 turns a provider 429 into a 503 with a log line. The prefetch stops on it,
+   as it stops on each 503.
+6. **The 401.** A dead token gives 401, so the prefetch also stops on the first 401.
+
+**Acceptance.**
+
+- An old message shows its text in the first paint, then its HTML.
+- The prefetch asks for 6 rows at most, and 2 at one time.
+- The first 503 stops the prefetch until its `Retry-After` ends, on the same list or another. A list
+  change never lifts it sooner. A 401 stops it until the list changes. *Amended 2026-10-08
+  (coordinator decision).*
+- A failed fetch leaves the text in place, with no error state.
+- The fetched HTML goes through the one render path of stored HTML: `sanitizeEmailHtml`, then the
+  sandboxed iframe (`components/MessageContent.tsx:37`, `:110`). No second render path exists.
+- A provider 429 gives one `email.html.provider_429` line, and the prefetch stops.
+
+**Fences (R7).** `lib/htmlPrefetch.test.ts`: the bound of 6, the bound of 2, the stop at 503, and
+no fetch for a row with `htmlRemote` false. A test renders a fetched body through
+`MessageContent`, and checks that a `<script>` in it does not reach the frame. The design-system
+conformance suite passes.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+Look at an old message and a new one, in light mode, at compact density, and under a changed
+accent (CLAUDE.md §4).
+
+#### 14.6.3 EM-S3 — no writer stores old HTML
+
+**Status.** 🔨 BUILT, not merged (2026-10-08). Branch `email-s3-hot-only-writers`.
+
+**Scope.** The four writers of §14.4.3. Each one reads `html_tier.hot_only()` and
+`html_tier.is_cold()`.
+
+**Non-goals.** No clear of a stored value. No change to the guard of #709.
+
+**Acceptance.**
+
+- With `hot_only()` true, an INSERT of a cold message stores `body_html` NULL.
+- A cold HTML-only message stores a `body_text` made from its HTML. This applies to the upsert, the
+  open and `hydrate_message_body` (fix round 1). After one open or one hydrate, a second one makes
+  no provider call and writes no row.
+- A text made from the HTML never replaces a stored text that is not empty, and that re-sync
+  writes no row (fix round 1).
+- A re-sync of a cleared cold message that carries HTML writes no row: `xmin` does not move.
+- A re-sync of a cold row that still holds HTML keeps it, and writes no row.
+- A hot message stores its HTML as today.
+- With `hot_only()` false, each writer stores HTML as today.
+
+**Fences (R7).** In a new `tests/unit/test_email_html_hot_only.py`, and in the existing
+`tests/unit/test_email_upsert_guard.py`:
+
+- R8: the `xmin` of a cleared cold row does not move after an upsert that carries HTML.
+- R8: an INSERT of a cold message stores NULL HTML and a non-empty text.
+- R8: `write_bodies` of a cold message stores NULL HTML.
+- The open and `hydrate_message_body` store NULL HTML for a cold message. The open still returns
+  the HTML.
+
+**Mutations.** S3-M1 binds the HTML of a cold message, and the `xmin` fence fails. S3-M2 skips the
+text fill, and the HTML-only fence fails. Fix round 1 adds one mutation for each fill of the open
+and the hydrate, one that lets a made text replace a stored text, and one that puts back the old
+`<[^>]+>` pass.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_html_hot_only.py tests/unit/test_email_upsert_guard.py -v -rs
+uv run pytest tests/unit/test_email_scheduler_tenancy.py tests/unit/test_email_import_floor.py -q
+```
+
+**The live check of Flip A.** Two checks. Each one must read 0 for 24 hours after the flip.
+`updated_at` is not a fit for either one. The open of a message moves it
+(`transport/messages.py:671-677`), and so does each provider change, while the cold HTML stays.
+
+1. **No new INSERT stores cold HTML.** The upsert writes `synced_at` on INSERT only (`persist.py:139-140`).
+
+   ```sql
+   SELECT count(*) FROM email_messages
+    WHERE synced_at > :flip_time
+      AND received_at < synced_at - interval '90 days'
+      AND body_html IS NOT NULL;
+   ```
+
+   The test compares `received_at` with `synced_at`, not with `now()`. So a row that was hot at
+   its INSERT, and turned cold later, does not count.
+
+2. **No cold row without HTML gains HTML.** At the flip, save the ids of the cohort to a file on
+   the box. After 24 hours, count the ids of that file that now hold HTML.
+
+   ```sql
+   -- At the flip: the cohort.
+   SELECT id FROM email_messages
+    WHERE body_html IS NULL
+      AND received_at < now() - interval '90 days';
+   -- After 24 hours:
+   SELECT count(*) FROM email_messages
+    WHERE id = ANY(:cohort_ids)
+      AND body_html IS NOT NULL;
+   ```
+
+#### 14.6.4 EM-S4 — the clear job
+
+**Scope.**
+
+1. A module `automation/html_clear.py`, started and stopped in `main.py` beside the import sweep.
+2. The settings of §14.4.4, in `acb_common/settings.py`.
+3. The dry run, and `on`. `on` runs only when `html_tier.hot_only()` is true. With it false, the
+   job logs one refusal and does nothing.
+4. The row D4 of `work_plan.md` §6 already names `EMAIL_HTML_CLEAR` as owner-only for `on`, and as
+   `enforcement-flip` for `dry_run`. The doc PR of §14 added it.
+5. The cursor of each mailbox, the band, and the counts for the night in tenant Redis (§14.4.4).
+6. The dry run with its own cursor (§14.4.4).
+
+**Non-goals.** No `VACUUM FULL`, no `pg_repack`, no shrink of the files. No clear of `body_text`,
+of a file, or of a message.
+
+**Acceptance.**
+
+- A batch clears 100 rows at most, and reads 200 index rows at most, in one transaction.
+- The job does nothing outside the window.
+- After two batches of more than 2 s each, the job stops for the night.
+- After the backlog of a mailbox clears, a night walks only `[band_done_through, cutoff)`.
+- After three missed nights, the next band still covers each row that turned cold.
+- A band that the read cap stops turns into a backlog walk that ends at `band_done_through`.
+- The dry run reads 200 rows at most for each batch, under the timeout of 5 s, and moves only
+  its own cursor.
+- A restart in the window reads the count for the night again, and does not reset it.
+- The job stops on each stop condition of §14.4.4.
+- A cold row with an empty text keeps its HTML.
+- A hot row keeps its HTML.
+- `updated_at` does not move.
+- `dry_run` writes nothing, and logs a count and a byte sum for each mailbox.
+- Each batch runs inside `tenant_session(org)` for its own organization.
+
+**Fences (R7).** In a new `tests/unit/test_email_html_clear.py`:
+
+- R8: org A's job clears no row of org B.
+- R8: the four row cases above: hot, cold with text, cold with no text, and cleared.
+- R8: `updated_at` of a cleared row does not move.
+- `recently_busy()` true stops the run before its first batch. A pool at half stops it too.
+- The window `20:30-23:30` does not overlap `OnCalendar` of `deploy/hostinger/acb-backup.timer`.
+  The test reads the timer file, so a later move of the backup fails it.
+- `dry_run` makes no UPDATE.
+- Two slow batches stop the run, and one slow batch does not.
+- A second start of the loop on the same date reads the count that the first one wrote.
+- With `backlog_done` true, the batch read names no row older than `band_done_through`.
+- R8: a cold row inside the band of three missed nights is cleared on the next night.
+- R8: a band larger than the read cap of a night sets `backlog_done` to false, with
+  `backlog_floor` equal to `band_done_through`, and the next night finishes it.
+- `dry_run` reads 200 rows at most for each batch, sets `statement_timeout` to 5 s, sets
+  `night_done`, and never writes the key of `on`.
+- A batch reads 200 rows at most, also when no row of the 200 qualifies.
+
+**Mutations.** S4-M1 drops the text predicate, and the no-text fence fails. S4-M2 writes
+`updated_at = now()`, and its fence fails. S4-M3 ignores `recently_busy()`, and the stop fence
+fails.
+
+S4-M4 resets the slow-batch count after each batch, and the slow-batch fence fails. S4-M5 keeps
+the count in memory only, and the restart fence fails. S4-M6 drops the read cap, and the read
+fence fails.
+
+S4-M7 walks the band as `[cutoff - 2 days, cutoff)`, and the missed-nights fence fails. S4-M8
+makes the dry run one `count(*)` with no read cap, and the dry-run fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_html_clear.py -v -rs
+uv run pytest tests/unit/test_email_owner_scope_fence.py -q
+```
+
+**The live check of Flip B.** The owner flips `on` after a dry run, and after a backup that
+completed the night before. After the first night:
+
+- The log shows `email.html_clear.batch` lines, each with 100 rows or fewer.
+- No checkpoint warning and no statement timeout falls inside the window.
+- The count of cold rows with HTML fell by the count that the log reports.
+
+#### 14.6.5 EM-S5 — quote stripping (measured first, not scheduled)
+
+A reply holds the earlier thread as a quote. Each message of a thread then stores the same text
+again. `quoting.split_quoted_text` already finds the boundary.
+
+**Scope of the measure only.** One read-only query on a copy of production. The copy is the
+off-box restore of #707: `scripts/backup_db.sh --verify-restore` restores the nightly dump into a
+throwaway container on the box. Never restore into the Supabase cluster. That restore was the
+load of the incident of 2026-10-07. The query counts the bytes of
+`body_text` that `split_quoted_text` marks as quoted. If the quoted share is under 30 %, the slice
+stops there. Else a later spec decides where the quote goes, because the Insights quote rule
+(D-EM-41) reads the source text.
+
+#### 14.6.6 EM-S6 — the window rules and the confirm
+
+**Scope.**
+
+1. `import_window.py` gains the rules of §14.4.5 item 1, and `sync_floor` gains `max_days`. It
+   stays the one owner of the window, and imports nothing from `html_tier.py`.
+2. `email_sync_window_choice: bool = False` (`EMAIL_SYNC_WINDOW_CHOICE`) in `settings.py`. With it
+   off, each rule of today holds.
+3. With the flag on, the callback (`transport/oauth.py:776`) writes `awaiting_range`.
+4. **`scheduler.py`.** The Python test `first_import` (`scheduler.py:1455`) also needs a phase
+   other than `awaiting_range`. The recurring sweep still runs. The scheduler passes
+   `max_days = window_policy.window_max_days(row)` to `sync_floor`.
+5. **`email_ingestion/window_policy.py`** with `window_max_days(row)`, as §14.4.5 item 1 says.
+6. `POST /email/accounts/{id}/import/range`, with the writes of §14.4.5 item 4.
+7. One migration: `email_accounts.window_chosen_at timestamptz NULL`. Expand-only (R6), with
+   the number taken at build time (R1).
+8. The OAuth state keeps reading `import_months` from a state that the gateway signed before.
+
+**Acceptance.**
+
+- With the flag off, a connect behaves as today.
+- With the flag on, a connect imports no old mail until the confirm.
+- New mail syncs while the range waits.
+- A scheduler tick in `awaiting_range` writes no import progress: `import_phase`,
+  `import_count`, `import_estimate` and `initial_sync_done` keep their values.
+- The confirm writes `import_since`, `window_chosen_at`, `import_phase = NULL` and
+  `initial_sync_done = false`, and no other column. The next tick starts the import.
+- A confirm of a mailbox that is not in `awaiting_range` answers 409.
+- "Skip setup" ends the import at once, with `import_phase = 'done'`.
+- A start date more than 730 days back answers 422.
+- With `hot_only()` false, a 12-month confirm answers 409, and a custom date older than 180
+  days answers 409.
+- A member who does not own the mailbox gets 404.
+- A mailbox with `window_chosen_at` NULL keeps the rolling floor of 180 days.
+- A 1-month mailbox gets a floor of 180 days, also for Process past emails with a 12-month
+  `since`.
+
+**Fences (R7).**
+
+- `tests/unit/test_email_import_floor.py` gains these cases: the new choices, the bound, the custom
+  date and the rolling floor of a mailbox with `window_chosen_at` NULL.
+- `sync_floor` with `max_days=CEILING_DAYS` clamps a 12-month `import_since` to 180 days.
+- `window_max_days` gives `CEILING_DAYS` while `hot_only()` is false, and for a row with
+  `window_chosen_at` NULL. With a row of 12 months and `hot_only()` true, it gives 360.
+- `window_max_days(None)` gives `MAX_WINDOW_DAYS` with `hot_only()` true, else `CEILING_DAYS`.
+- R8: the process-past sync of a 1-month mailbox with a 12-month `since` gets a floor of
+  `now - CEILING_DAYS`, and writes no older row.
+- A structural fence: no call of `sync_floor` and no `max_days=` in the tree passes a literal 180
+  or 730. Only `window_policy.py` picks the value. The fences import `CEILING_DAYS` and
+  `MAX_WINDOW_DAYS` from `import_window`, and hold no literal of their own.
+- R8: a scheduler tick in `awaiting_range` writes no import progress.
+- R8: a 12-month confirm with `hot_only()` false answers 409, and writes nothing.
+- R8: a custom date older than 180 days with `hot_only()` false answers 409.
+- R8: the confirm of org A cannot write a mailbox of org B.
+- A structural fence: `import_window.py` does not import `html_tier.py`, and the reverse.
+- A mirror test fails when `lib/connect.ts` and `import_window.py` name another default, or a
+  bound other than `MAX_WINDOW_DAYS = 730`.
+
+**Mutations.** S6-M1 drops the `awaiting_range` test from `first_import`, and the tick fence
+fails. S6-M2 passes `MAX_WINDOW_DAYS` with `hot_only()` false, and the clamp fence fails. S6-M3
+lets a `since` pass with no `max_days`, and the process-past fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_import_floor.py tests/unit/test_email_scheduler_tenancy.py -v -rs
+```
+
+#### 14.6.7 EM-S7 — the estimate
+
+**Scope.**
+
+1. A provider method `estimate_window(since)` on the base class. Outlook and Gmail fill it from
+   the code of today (`outlook.py:2196-2224`, `gmail.py:581-584`). The import calls the same
+   method, so one count serves both.
+2. `GET /email/accounts/{id}/import/estimate`, as §14.4.5 item 3 says. It caches its answer for
+   10 minutes in tenant Redis.
+   - It reads the account in one `tenant_session`, closes it, and only then calls the provider
+     (the EM-T4a-1 pattern).
+   - It runs the counts 4 at a time, under a total timeout of 20 s.
+   - It bounds the choices with `window_policy.window_max_days(None)`.
+3. The AI calls come from one function that reads the numbers of §13.6. It keeps no copy of a
+   price.
+
+**Acceptance.**
+
+- The answer holds each choice, with `messages`, `rules_calls`, `insights_calls` and `exact`.
+- A provider failure gives `messages: null` for that choice, and the step still shows the choice.
+- A count that runs past the total timeout gives `messages: null` for its choice.
+- No database session is open while a provider call runs.
+- A second call within 10 minutes makes no provider call.
+- `insights_calls` is 0 when Insights is off for the mailbox.
+- While `hot_only()` is false, the answer holds no choice over 6 months.
+- The Outlook count covers `SWEEP_SYSTEM_FOLDERS` and `_user_sweep_folders()`.
+
+**Fences (R7).** In a new `tests/unit/test_email_import_estimate.py`: the Graph request holds
+`$count=true`, `$top=1` and `ConsistencyLevel: eventual`. The Gmail request holds `maxResults=1`.
+The cache key goes through the tenant wrapper. R8: a member of org B gets 404. The Outlook count
+reads each user folder. With `hot_only()` false, no choice over 6 months is in the answer.
+A fake session records when it is open, and a fake provider fails if it runs while a session is
+open. A slow fake count gives `messages: null`, and the counts run 4 at a time at most.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_import_estimate.py -v -rs
+```
+
+#### 14.6.8 EM-S8 — the range step after the sign-in
+
+**Scope.**
+
+1. `ImportRangeStep.tsx` moves after the sign-in. The setup shows it when `import_phase` is
+   `awaiting_range`. The step before the sign-in goes, behind the flag.
+2. The choices: 1, 3, 6 and 12 months, and "Custom" with a date input. The default is 3 months.
+3. Each choice shows its count and its AI calls from EM-S7. A choice with `exact: false` says
+   "about".
+4. "Custom", and each window over 12 months, shows the warning: "A longer window can cost more AI
+   compute." The step uses the `Badge` or the text styles of the design system, and no local
+   colour.
+5. "Start import" calls the confirm of EM-S6.
+6. `isFirstSyncPending` (`lib/connect.ts:412-418`) and the `first_sync_pending` count
+   (`transport/accounts.py:224`) leave out a mailbox in `awaiting_range`.
+
+**Acceptance.**
+
+- A connect with the flag on shows the step after the sign-in, with counts.
+- The default is 3 months.
+- The member cannot confirm a custom date older than `today - MAX_WINDOW_DAYS` (730 days).
+- `isFirstSyncPending` (`lib/connect.ts:412-418`) is false for `importPhase === 'awaiting_range'`.
+  So the page does not poll every 5 s while the range waits.
+- The `first_sync_pending` count of `transport/accounts.py:224` leaves out a mailbox in
+  `awaiting_range`, by the same rule.
+- `onboardingStage` gives the range step for `awaiting_range`, before its `importing` arm.
+- The warning shows for "Custom", and for no preset.
+- The step shows only the choices that the estimate returns. While `hot_only()` is false, it
+  shows no choice over 6 months, and the custom date stops at 180 days.
+- A second mailbox shows the same step.
+
+**Fences (R7).** `lib/connect.test.ts` and `lib/onboarding.test.ts`: the default, the bound of
+730 days, the warning rule, and the stage `awaiting_range`.
+
+- `lib/connect.test.ts`: `isFirstSyncPending` is false for `awaiting_range`.
+- A pytest case: the `first_sync_pending` count leaves out a mailbox in `awaiting_range`.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+**The live check of Flip C.** The owner connects a test mailbox, sees the counts, chooses 12
+months, and sees the import run newest first. Then both checks of Flip A (§14.6.3) read 0 for
+24 hours, with `:flip_time` set to the time of Flip C and a new cohort taken at that time.
+Check 1 compares `received_at` with `synced_at`, as in §14.6.3.
+
+#### 14.6.9 EM-S9 — the sync banner in the header
+
+**Status.** ✅ MERGED #717 (2026-10-07). `components/SyncBanner.tsx` draws the rows, and
+`syncBanners` in `lib/onboarding.ts` decides them. The fence is `email-sync-banner` in
+`lib/onboarding.test.ts`.
+
+**Scope.** `syncBanners` and the header row of §14.4.6, for the first import. `FirstSyncBanner.tsx`
+goes. The poll of the first sync stays as it is. `syncBanners` already reads `resyncing`. EM-S9b
+still widens the poll (§14.6.9b item 5), because `isFirstSyncPending` does not see a Resync. Until
+then the fence `email-sync-banner-polls` marks the `resyncing` case as a known failure.
+
+**Acceptance.**
+
+- A mailbox that imports shows one row, with its chip, and a percent or a count.
+- A first import with a NULL `import_phase` shows the row "Starting sync", with no bar and no
+  count, because D-EM-58 asks for a banner while each sync runs. `awaiting_range` shows no row.
+- A mailbox out of view still shows its row.
+- The row goes away when the phase ends.
+- The row holds no colour literal, and each control comes from `src/components/ui/`.
+
+**Fences (R7).** `lib/onboarding.test.ts`: each phase case of `syncBanners`, the cap at 99 %, and
+the mailbox out of view. The design-system conformance suite passes.
+
+**Verify with.**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+Look at the row with one mailbox and with two, in light mode, at compact density, under a changed
+accent, and at mobile width.
+
+#### 14.6.9b EM-S9b — a Resync writes progress
+
+**Why.** D-EM-58 asks for the banner during each import. Today only the first import writes
+progress (`scheduler.py:891-898`). The deep sync of a Resync passes `progress=first_import`, which
+is false (`scheduler.py:1467`). So a Resync shows nothing.
+
+**Scope.**
+
+1. `POST /email/accounts/{id}/resync` (`transport/sync.py:283`) asks the sync for progress. No
+   other member act asks for it.
+2. `_import_in_batches` gains a third mode, `resync`. At the start it writes
+   `import_phase = 'resyncing'`, `import_count = 0` and `import_estimate = NULL`. It writes the
+   estimate, and `import_count` after each batch.
+3. At the end it writes `import_phase = 'done'`, or `'limit'` when the storage limit stopped it.
+   It never writes `initial_sync_done` or `import_reached_at`. A Resync starts from now, so it
+   needs no resume point.
+4. A mailbox in `awaiting_range`, or with `initial_sync_done` false, gets no Resync progress. The
+   first import owns those columns then.
+5. The poll of the page widens to "a row shows" (§14.4.6).
+
+**Why no flag.** It writes only the three progress columns. Each reader of them sees this:
+
+- `onboardingStage` (`lib/onboarding.ts:66-80`) needs `initial_sync_done` false for `importing`.
+  A Resync keeps it true, so the stage does not change. The storage arm reads `limit` as today.
+- `processPastFrom` (`lib/onboarding.ts:301-313`) reads `import_count`. After a Resync it is
+  the count of the Resync, which is greater than 0 when the Resync wrote mail. The action shows
+  as it does after a first import.
+- `firstSyncPanels` needs `initial_sync_done` false, so it shows nothing for a Resync.
+
+**Acceptance.**
+
+- A Resync writes `resyncing`, then counts, then `done` or `limit`.
+- A Resync never writes `initial_sync_done` or `import_reached_at`.
+- A Resync of a mailbox in `awaiting_range` writes no progress.
+- The header row shows during a Resync, and goes away at its end.
+- Process past emails writes no progress.
+
+**Fences (R7).** In the existing `tests/unit/test_email_import_batches.py`:
+
+- R8: a Resync tick writes the three columns, and leaves `initial_sync_done` and
+  `import_reached_at` as they were.
+- R8: a Resync of a mailbox in `awaiting_range` writes nothing to the progress columns.
+- R8: a deep sync of Process past emails writes no progress.
+- `lib/onboarding.test.ts`: `syncBanners` gives a row for `resyncing`.
+
+**Mutations.** S9b-M1 writes `initial_sync_done = true` at the end, and the awaiting fence fails.
+S9b-M2 gives progress to each deep sync, and the Process past fence fails.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_import_batches.py tests/unit/test_email_scheduler_tenancy.py -v -rs
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+#### 14.6.10 EM-S10 — the estimate in the rules step, and the copy of a missing name
+
+**Status.** ✅ MERGED #721 (2026-10-07). It adds no migration and no flag. The as-built notes follow the Verify block.
+
+**Scope.**
+
+1. "Sort my imported mail" reads `process-past/estimate` first, and shows the calls. When
+   `capped` is true, the step offers the next run.
+2. `RuleCopyResult` gains `will_create`, as §14.4.7 says. A system folder that Gmail refuses goes
+   into `left_out` with `folder_not_in_target`.
+3. The rules step lists `will_create` under the copy report.
+
+**Acceptance.**
+
+- The member sees the count of calls before any sort starts.
+- A copy to a mailbox that lacks the folder "Cold Email" lists it in `will_create`, and copies the
+  rule.
+- An AI label is not in `will_create`.
+- A copy still checks that the member owns both mailboxes.
+
+**Fences (R7).** `tests/unit/test_email_rule_copy.py` gains: R8, `will_create` from the
+`email_folders` of the target only. R8, a target of another member answers 404. The case test of
+the name compare. `lib/onboardingRules.test.ts` gains the estimate line.
+
+**Verify with.**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_email_rule_copy.py -v -rs
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+**As built (2026-10-07).**
+
+- **The estimate.** `lib/onboarding.ts::sortEstimateView` gives the words. `readSortState` reads `GET /email/rules/process-past/status` first, then `GET /email/rules/process-past/estimate` from the start of the import. The step reads both again each time it mounts.
+- **A run that is still going** (fix round 1, G2). While the status is `running`, the step shows "Sorting…" and offers nothing. It reads the status again every `SORT_POLL_MS` (5 seconds). When the run is no longer `running`, it reads the estimate again, so a capped run offers the next run.
+- **A range wider than one run** (fix round 1, G4). When the import range is longer than `PROCESS_PAST_MAX_SPAN_DAYS` (366, a mirror of `runner.py` that a test parses), the step says so and reads no count. Its action opens the dialog to choose a shorter range.
+- **The size of a run comes from the answer.** The step shows `limit` from the estimate, not "2,000". The route clamps `limit` at 2000. The dialog sends no `limit`, so a run sorts 1,000 (`RuleProcessPastRequest.limit`).
+- **A sort never starts without a count shown** (owner requirement for AI cost, fix round 1, G1). The action of the step is enabled only when a count shows. It stays disabled while the read runs and after a failed read, and a failed read offers "Count again". The Process button of the dialog (`RulesTab.tsx`, `ProcessPastEmailsDialog`) is disabled while `estimate` is null or `estimating` is true. A failed count in the dialog offers "Count again" too.
+- **`will_create`.** `rule_copy.will_create` lists each name for each copied rule, by its name in the target. A MOVE_FOLDER to a system folder (Inbox, Archive, Trash) is not in the list.
+- **The refused move.** `rule_copy.move_refuser` asks the provider's own rule (`local_folder_after_move`) through a probe. The probe holds no member credential. The deployment OAuth app config is loaded, and no network call is made. The rule is left out whole, as the forward-loop rule is.
+- **An IMAP target** (fix round 1, F2). It answers no `will_create`, and each rule with a MOVE_FOLDER or a LABEL is left out as `not_supported_by_target`.
+- ⚠️ **`email_folders` holds few rows.** Its one writer is `POST /email/accounts/{id}/folders` (`transport/folders.py:178`). The folder list reads the provider and writes nothing. So `will_create` can name a folder that the provider already holds. The step says "Metorite has no record of", and never "does not exist". Its second sentence starts "If the mailbox does not have it", so it promises no new folder.
+- ⚠️ **A nested Outlook folder can get a second copy.** This defect is older than EM-S10. `OutlookProvider._get_or_create_folder_id` (`outlook.py:920-925`) searches `/me/mailFolders` by name, and that lists the top-level folders only. So a rule that names "Receipts", which sits under the Inbox, makes a second "Receipts" at the top level. HANDOFF H-267 holds it.
+- **Fences.** `tests/unit/test_email_rule_copy.py` (65 tests, 29 of them R8, 0 skip on a private database). `lib/onboardingRules.test.ts` holds the estimate line, the count gate of the step and of the dialog, the run status, the span cap and the next run. `lib/mailboxSettings.test.ts` holds the copy report.
+
+### 14.7 Recorded risks
+
+- **A broken connection hides old HTML.** A revoked consent or an expired token stops the fetch.
+  The pane then shows the text (D-EM-52). A disconnect is not this case, because it deletes the
+  mailbox and its mail (§13.3).
+- **The provider can change old HTML.** Outlook and Gmail can rewrite a link or an image of an old
+  mail. The pane shows what the provider sends today.
+- **The prefetch costs provider quota.** Gmail and Graph limit calls for each mailbox. The bound
+  of 6 rows and the cache of 1 hour keep the cost small. EM-S2 logs each 429.
+- **The disk does not shrink** without a rewrite (§14.1).
+- **A Redis restart that keeps no data resets the night count** and the cursors. The cap of
+  5,000 then binds from 0 again for that night, so one night can clear up to 10,000 rows. The
+  walk restarts at the cutoff, and the read caps bound it.
+- **A night of clears leaves dead TOAST rows.** Each cleared value leaves its TOAST chunks dead.
+  Autovacuum of the TOAST table of `email_messages` then runs after the window, and writes I/O
+  of its own. The cap of 5,000 rows each night bounds that work. EM-S4 reads `n_dead_tup` and
+  `last_autovacuum` of that TOAST table in `pg_stat_all_tables` after the first night.
+- **Gmail counts are rough.** `resultSizeEstimate` can be far from the real count. The step says
+  "about".
+- **A long window raises the Insights backlog.** The throttle of §13.6 bounds the calls each day.
+  It does not bound the days.
+
+### 14.8 Board findings (not this plan)
+
+- **WhatsApp embeds each message.** D-EM-51 asks for embeddings of summaries. WS-20 owns the
+  change (`wa_embeddings.py`, migration 111).
+- **The open holds a session across a provider call** (`transport/messages.py:644-712`). EM-T4a-4
+  (H-261) owns the split of the request jobs.
+- **Process past emails sorts oldest first, and caps a run at 2,000 messages** (`runner.py:907`).
+  A window of 12 months can need several runs.
+- **For WS-37 (advisory).** The clear job is a retention by age of `body_html`. A retention
+  policy of WS-37 must list it. Nothing in this section binds WS-37.
+
+### 14.9 Owner questions
+
+- **Q-ST-1. The credits figure.** The estimate shows AI calls. A figure in credits needs the price
+  of each tier in the gateway, and `tier_rate_card` lives in the Customer Console. The proposal:
+  show calls until AI credit metering lands (D-EM-43), then read the price from the console.
+- **Q-ST-2. The bound of 24 months** (D-EM-56). The proposal holds 24 months because the meter,
+  Process past emails and the Insights throttle each bound a longer window first.

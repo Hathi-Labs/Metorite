@@ -870,6 +870,18 @@ chokepoint on exactly the same terms as the owner's own — auto-applying while
 D-PM-9's Cost paragraph before building this: it names what that does and does not
 guarantee.
 
+> **Dark by default, 2026-10-04 (PR #622).** The run is behind
+> `PROJECTS_AGENT_DISPATCH`, default OFF. With it OFF, the sink starts no run.
+> It writes one `agent_run` row, "Assigning work to an AI agent is not
+> switched on for this workspace.", and logs `projects.agent_dispatch_disabled`.
+> The flip is the owner's, because a run spends credits (`work_plan.md` §6.1).
+>
+> ⚠️ The run has no acting member yet. The event carries no assigner, so the
+> agent can reply on the timeline and cannot edit the task. H-240 owns that gap.
+>
+> Fences: `tests/unit/test_projects_agent_dispatch_run.py` (the real sink and
+> the real executor, on the R8 database) and `tests/unit/test_projects_automation.py`.
+
 ### 6.5 Email / WhatsApp / Notes
 Bind at the activity spine: email-to-task capture (`capture_email.py`) gains a `pm_tasks`
 target beside `gtd_items`; Notes' action-item HITL (`actions.py`) gains "create as project
@@ -1642,6 +1654,23 @@ Raising it to 3 makes every accepted search index-served. The cost is stated rat
 buried: typing two characters now returns `{"rows": []}` rather than a slow result, on both
 `/projects/search` and the list endpoint's `?q=` (WS-27be moved `MIN_QUERY` to `filters.py` so
 one constant governs both — that is what makes this a one-line change rather than two).
+
+**Implemented 2026-10-06, with the owner's task-number exception (exact lookup by number).**
+Owner ruling, 2026-10-06. The ruling keeps D-PM-31 and adds one exception.
+
+- `MIN_QUERY` is 3 in `filters.py`, in the chat tool (`skill_projects/reads.py`) and in the
+  browser (`app/projects/lib/search.ts`).
+- A query that is only a task number (`#7`, `7`, `#123`) passes at any length. Both endpoints
+  treat it as an exact lookup on `task_number`, and never as a text scan. The lookup keeps the
+  tenant and visibility clauses, and an index serves it.
+- `/projects/search` answers 422 for 1 or 2 characters of text, and the message says what to
+  type. The palette and the pickers check the same rule before they call. The list endpoint
+  still answers an empty list. For that case the board and the list show "Type at least 3
+  characters to search", not "No tasks match your filters".
+- A query that is only digits no longer matches titles that contain those digits.
+- `tests/unit/test_projects_search_minimum_lockstep.py` holds the three copies equal (R7). It and
+  `search.test.ts` check one case table, `app/projects/lib/searchMinimumCases.json`.
+  `tests/unit/test_projects_search_r8.py` runs the route on a real database (R8).
 
 ---
 
@@ -4612,6 +4641,10 @@ session. It is recorded here unplanned, so it is not lost and not half-designed.
 `agent_dispatch.py` exists, and §6.4 already records that assignment is
 dispatch. The seam is there. The product shape is not.
 
+The seam is dark. `PROJECTS_AGENT_DISPATCH` is OFF by default, and the flip
+is the owner's (§6.4, `work_plan.md` §6.1). The flip waits on this section and
+on H-240.
+
 #### 9.12.11 The order, and why
 
 | Wave | Items | Why here |
@@ -5258,6 +5291,13 @@ feature rather than a formality:
 * **`true` is not the number 1.** `isinstance(True, int)` is True in Python, so a number
   branch reached before the boolean one accepts both, in both directions. The coercers are
   one-per-type in a dispatch dict specifically so that ordering cannot be undone by accident.
+
+**A create checks a value as a PATCH does** (2026-10-06). The WS-46 P6 build (PR #677) found
+that `POST /projects/tasks` stored `custom_fields` with no check. Now the create calls
+`apply_values` against the definitions of the task's root. The call runs in the transaction
+of the insert, and a bad value gets the 422 of the PATCH. The create does not check a required
+field, because migration 192 makes that field a gate on the move. The fence is
+`tests/unit/test_projects_create_custom_values.py`.
 
 **The deliberate departure from Paca: deleting a definition strips its values.** Paca's
 research notes record "deleting a definition does not clean task data" as an accepted cost

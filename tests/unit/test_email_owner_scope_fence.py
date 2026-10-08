@@ -42,9 +42,14 @@ _MIGRATIONS = _ROOT / "infra/postgres"
 #: Where a module outside ``routes/email`` can read an email table.
 _OUTSIDE_ROOTS = (_ROOT / "apps", _ROOT / "packages")
 
-#: The three owner helpers of ``routes/email/core.py``.
+#: The owner helpers: three of ``routes/email/core.py``, and the one owned
+#: attachment fetch of ``transport/attachments.py`` (WS-17 EM-T11), which the
+#: download route and the text route call. That helper carries its own SQL
+#: owner predicate, and ``test_the_attachment_fetch_proves_ownership_itself``
+#: checks it, because this fence does not read the helpers that it trusts.
 OWNER_HELPERS = frozenset({
     "_account_scope", "_assert_account_owner", "provider_session",
+    "_fetch_owned_attachment",
 })
 #: A SQL owner predicate on ``user_id``: ``user_id = :uid``, ``ea.user_id =
 #: :user_id``, ``LOWER(user_id) = LOWER(:uid)``.
@@ -55,8 +60,8 @@ _OWNER_PREDICATE = re.compile(
 
 #: Each handler in ``routes/email`` with no owner proof in its own body, and
 #: why that is safe. The first 13 entries are the measurement of 2026-10-02.
-#: EM-T3d added the fourteenth. A new entry needs a reason that a reviewer can
-#: check against the code.
+#: EM-T3d added the fourteenth, and EM-G7 added ``oauth_providers``. A new
+#: entry needs a reason that a reviewer can check against the code.
 OWNER_SCOPE_EXEMPT: dict[str, str] = {
     "ai_chat": (
         "Delegates to _build_chat_context, which keeps account_id only when "
@@ -98,8 +103,14 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "own member and organization, and reads no mailbox."
     ),
     "oauth_app_info": (
-        "Returns the client ID and redirect URI of the Microsoft app, never "
-        "the secret. It reads no mailbox."
+        "Returns the client ID and redirect URI of the Microsoft or the Gmail "
+        "app (EM-G7 item 9), never the secret. It reads no mailbox."
+    ),
+    "oauth_providers": (
+        "EM-G7 item 8, D-EM-35. The capability read: one boolean per mail "
+        "provider, true when its app is configured (and, for Gmail, when "
+        "EMAIL_GMAIL_CONNECT is on). No client ID, no secret, no URL, and it "
+        "reads no mailbox and no table. Fence: test_email_gmail_connect.py."
     ),
     "oauth_callback": (
         "Writes the caller's OWN mailbox row. It checks that the session's "
@@ -153,8 +164,9 @@ OUTSIDE_EMAIL_READERS: dict[str, str] = {
     ),
     "apps/services/email_ingestion/email_ingestion/": (
         "The sync engine. It reads and writes the mailbox it syncs, by "
-        "account id, with no member request. A member never reaches it with "
-        "an id of their choice."
+        "account id, with no member request. Since EM-T6c one route passes a "
+        "member's mailbox id into storage.py: transport/storage.py, after its "
+        "own owner check (user_id = :uid, or _assert_account_owner)."
     ),
 }
 
@@ -345,6 +357,25 @@ class TestEveryEmailHandlerProvesOwnership:
 
     def test_every_exemption_has_a_reason(self):
         assert not reasonless(OWNER_SCOPE_EXEMPT)
+
+    def test_the_attachment_fetch_proves_ownership_itself(self):
+        """EM-T11. The fence trusts ``_fetch_owned_attachment`` by name, so
+        that helper must carry the SQL owner predicate in its own body. The
+        download route and the text route lean on it, and neither carries a
+        proof of its own."""
+        path = _EMAIL / "transport" / "attachments.py"
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        [helper] = [fn for fn in ast.walk(tree)
+                    if isinstance(fn, ast.AsyncFunctionDef)
+                    and fn.name == "_fetch_owned_attachment"]
+        assert any(_OWNER_PREDICATE.search(s) for s in _strings(helper)), (
+            "_fetch_owned_attachment lost its user_id predicate, and two "
+            "routes trust it as an owner proof"
+        )
+        routes = {name: proof for name, proof in handlers_of(
+            path.read_text(encoding="utf-8-sig"))}
+        assert routes.get("download_attachment") is True
+        assert routes.get("attachment_text") is True
 
 
 class TestTheHandlerScanCanFail:

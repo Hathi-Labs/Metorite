@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from email_ingestion.llm_cap import automation_job
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.engine import (
@@ -17,8 +18,11 @@ from gateway.routes.email.automation.engine import (
     _is_conversation_status_rule,
     _match_email_to_rule,
     _match_email_to_rules_multi,
+    ask_rule_match,
     classify_matches,
     email_dict_from_row,
+    read_classification,
+    resolve_classification,
 )
 # Re-exported action machinery (2.3 split): the lazy importers (cleaner sweep,
 # senders, rules) and the tests address these through the runner seam, and the
@@ -36,7 +40,10 @@ from gateway.routes.email.automation.actions import (  # noqa: F401
     push_label,
     remove_label,
 )
-from gateway.routes.email.automation.identity import resolve_org_domains
+from gateway.routes.email.automation.identity import (
+    resolve_org_domains,
+    resolve_self_addresses,
+)
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.automation.learning import (
     _ai_confirms_sender_pattern,
@@ -91,11 +98,17 @@ async def test_rules(
     req: RuleTestRequest,
     user: UserContext = Depends(get_current_user),
 ):
-    """Test the rules against one email (selected message or a pasted sample)."""
+    """Test the rules against one email (selected message or a pasted sample).
+
+    A selected message must be a mail of ``account_id``, or the answer is
+    404 (D-EM-19, EM-T8e-1): the rules of one mailbox never judge the mail
+    of another."""
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous")
         if req.email_id:
-            email = await _email_payload_from_id(db, req.email_id, user.email or "anonymous")
+            email = await _email_payload_from_id(
+                db, req.email_id, user.email or "anonymous",
+                account_id=req.account_id)
         else:
             email = {"subject": req.subject or "", "from": req.from_email or "",
                      "body": req.body or "", "to": ""}
@@ -145,6 +158,7 @@ async def test_rules_recent(
                ORDER BY received_at DESC LIMIT :limit"""
         ), {"aid": req.account_id, "limit": min(req.limit, 15)})).fetchall()
         org_domains = await resolve_org_domains(db, req.account_id)
+        selves = await resolve_self_addresses(db, req.account_id)
         attach = await _attachment_summaries(db, [r.id for r in rows])
         results = []
         for r in rows:
@@ -152,7 +166,7 @@ async def test_rules_recent(
                 else json.loads(r.from_address or "{}")
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=org_domains,
-                attachments=attach.get(str(r.id), ""))
+                attachments=attach.get(str(r.id), ""), self_addresses=selves)
             try:
                 match = await _match_email_to_rule(
                     db, req.account_id, email, message_id=str(r.id))
@@ -1025,7 +1039,8 @@ async def run_rules_on_message(
         attach = (await _attachment_summaries(db, [row.id])).get(str(row.id), "")
         email = email_dict_from_row(
             row, await _account_self_email(db, req.account_id), about,
-            extra_domains=org_domains, attachments=attach)
+            extra_domains=org_domains, attachments=attach,
+            self_addresses=await resolve_self_addresses(db, req.account_id))
         try:
             match = await _match_email_to_rule(
                 db, req.account_id, email, message_id=str(row.id))
@@ -1428,6 +1443,7 @@ async def _download_past_range(
     return failure
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _process_past_emails_job(
     account_id: str, start: datetime | None, end: datetime | None,
     limit: int, dry_run: bool, user_email: str, only_unread: bool = False,
@@ -1524,6 +1540,7 @@ async def _process_past_emails_job(
             multi_rule = bool(
                 mr_row and getattr(mr_row, "multi_rule_execution", None))
             org_domains = await resolve_org_domains(db, account_id)
+            selves = await resolve_self_addresses(db, account_id)
             attach = await _attachment_summaries(db, [r.id for r in rows])
             acc = None
             if not dry_run:
@@ -1560,7 +1577,7 @@ async def _process_past_emails_job(
                 else json.loads(r.from_address or "{}")
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=org_domains,
-                attachments=attach.get(str(r.id), ""))
+                attachments=attach.get(str(r.id), ""), self_addresses=selves)
             # One block per row. It lands where the per-row commit used to
             # land. EM-T4a-4 owns the model and provider I/O inside it.
             async with _tenant_session() as db:
@@ -1638,6 +1655,35 @@ async def _process_past_emails_job(
                              account_id=account_id, error=type(exc).__name__)
 
 
+def _classify_unavailable(account_id: str, r: Any, exc: Exception) -> None:
+    """Log a row of the rules job that the classifier could not decide.
+
+    The classifier was down — this is NOT "no rule matched". The row gets no
+    apply and no stamp, so the next cycle retries it, instead of burning it
+    as processed forever (D-EM-8)."""
+    _log.warning("email.classify_unavailable_skip",
+                 account_id=account_id, message_id=str(r.id),
+                 error=str(exc)[:160])
+
+
+async def _rules_job_provider(acc: Any) -> tuple[Any, Any]:
+    """The provider and the key store of the rules job, or ``(None, None)``
+    with no account row. The provider authenticates here, with no session
+    open, and it is None when that fails (the store stays).
+
+    WS-17 EM-T4a-2 PR-B2 moved this out of ``_run_rules_job`` unchanged, so
+    Block S fits under the ``C901`` cap of 15."""
+    if not acc:
+        return None, None
+    from acb_llm.key_store import get_key_store
+    store = get_key_store()
+    creds = json.loads(store.decrypt(acc.credentials_encrypted))
+    provider = _instantiate_provider(acc.provider, creds)
+    if not await provider.authenticate():
+        provider = None
+    return provider, store
+
+
 #: The caller name of the automatic run (`scheduler_hooks.auto_run_rules_for_account`).
 _SCHEDULER = "scheduler"
 
@@ -1651,6 +1697,7 @@ _NEW_MAIL_ONLY = f"""
        AND em.received_at >= {NEW_MAIL_FLOOR_SQL}"""
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _run_rules_job(
     account_id: str, limit: int, dry_run: bool, user_email: str
 ) -> None:
@@ -1670,6 +1717,9 @@ async def _run_rules_job(
     session, and the broad handler logs it.
     """
     try:
+        # Lazy, as the projection import in Block W: replyzero owns the status ask.
+        from gateway.routes.email.automation import replyzero as rz
+
         # Phase 0: every read the loop needs.
         # The floor is one of two fixed texts, never a value from a request.
         new_mail_only = _NEW_MAIL_ONLY if user_email == _SCHEDULER else ""
@@ -1711,6 +1761,9 @@ async def _run_rules_job(
             # the test/process-past paths and NOT on this one — the path that
             # actually processes new mail.
             org_domains = await resolve_org_domains(db, account_id)
+            # Each mailbox of the member is "self" (D-EM-27): its mail is not
+            # external, and the cold check never flags it.
+            selves = await resolve_self_addresses(db, account_id)
             acc = None
             if not dry_run:
                 acc = (await db.execute(text(
@@ -1720,15 +1773,7 @@ async def _run_rules_job(
             attach = await _attachment_summaries(db, [r.id for r in rows])
 
         # The provider authenticates with NO session open.
-        provider = None
-        store = None
-        if acc:
-            from acb_llm.key_store import get_key_store
-            store = get_key_store()
-            creds = json.loads(store.decrypt(acc.credentials_encrypted))
-            provider = _instantiate_provider(acc.provider, creds)
-            if not await provider.authenticate():
-                provider = None
+        provider, store = await _rules_job_provider(acc)
 
         # Reply Zero (unified): project each thread's reply status from the rule
         # the engine matched. Rows are newest-first, so the first message seen per
@@ -1743,71 +1788,87 @@ async def _run_rules_job(
             # self_name and silently drops the configured org domains.
             email = email_dict_from_row(
                 r, self_email, about, extra_domains=org_domains,
-                attachments=attach.get(str(r.id), ""))
-            # One block per row. It lands where the per-row commit used to
-            # land. EM-T4 owns the model and provider I/O that stays inside.
-            async with _tenant_session() as db:
-                # Match + conversation-resolve, through the ONE shared
-                # enforcement point (engine.classify_matches). Multi-rule
-                # applies every match; otherwise the single best. resolve is
-                # live-runs-only — the dry-run preview stays per-message and
-                # spends no thread-status model call. The resolver re-evaluates
-                # the whole thread so a conversation keeps its ONE status
-                # (#110), even when the message matched no rule.
-                try:
-                    matches = await classify_matches(
+                attachments=attach.get(str(r.id), ""), self_addresses=selves)
+            # Match + conversation-resolve, through the ONE shared split form
+            # of engine.classify_matches (EM-T4a-2 PR-B1, §10.4.6). Block R
+            # reads, the rule-match ask runs with NO block open, and Block W
+            # writes. resolve is live-runs-only — the dry-run preview stays
+            # per-message and spends no thread-status model call.
+            try:
+                async with _tenant_session() as db:
+                    plan = await read_classification(
                         db, account_id, r, email,
-                        multi_rule=multi_rule, resolve=not dry_run,
-                        provider=provider)
-                except LLMUnavailable as exc:
-                    # The classifier was down — this is NOT "no rule matched".
-                    # Leave the message unstamped (skip the watermark below)
-                    # so the next cycle retries it, instead of burning it as
-                    # processed forever.
-                    _log.warning("email.classify_unavailable_skip",
-                                 account_id=account_id, message_id=str(r.id),
-                                 error=str(exc)[:160])
-                    continue
-                apply = (not dry_run) and provider is not None
-                await _apply_matches(
-                    db, provider, r, frm, email, matches,
-                    apply=apply, dry_run=dry_run, about=about,
-                    signature=signature, account_user=account_user,
-                    account_id=account_id, cold_blocker=cold_blocker,
-                )
-                # Reply Zero: project this thread's status from the matched
-                # rule (latest message per thread only). Read-only of the
-                # mailbox — runs even when the provider failed to authenticate.
-                if not dry_run and r.thread_id \
-                        and r.thread_id not in projected_threads:
-                    projected_threads.add(r.thread_id)
-                    # The savepoint keeps a failed projection from aborting the
-                    # row block, so the watermark stamp below still lands.
-                    try:
-                        from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
-                            _reconcile_thread_labels,
-                            project_reply_status_from_matches,
-                        )
-                        async with _savepoint(db):
-                            keep_label = await project_reply_status_from_matches(
-                                db, account_id, r, matches)
-                            # Collapse the thread to that one conversation
-                            # label, clearing any stale Reply / Awaiting / FYI /
-                            # Follow-up left on earlier messages (inbox-zero
-                            # mutually-exclusive labels).
-                            if keep_label and provider is not None:
-                                await _reconcile_thread_labels(
-                                    db, provider, account_id, r.thread_id,
-                                    keep_label)
-                    except Exception as exc:  # noqa: BLE001
-                        _log.warning("email.project_reply_status_failed",
-                                     account_id=account_id,
-                                     error=str(exc)[:160])
-                # Stamp the watermark LAST — after Reply Zero projection — and
-                # only when the run could actually act (guarded inside the
-                # helper).
-                await _stamp_processed_watermark(
-                    db, r.id, provider=provider, dry_run=dry_run)
+                        multi_rule=multi_rule, resolve=not dry_run)
+                    # Fail closed: this raises when a reader swallowed a failed statement.
+                    await db.execute(text("SELECT 1"))
+                # Multi-rule applies every match; otherwise the single best.
+                asked = await ask_rule_match(plan.match)
+                # Block S (EM-T4a-2 PR-B2): only when the job asks the
+                # thread status. The ask runs with NO block open after it.
+                status = rz.NOT_ASKED
+                if rz.status_ask_needed(plan, r, asked):
+                    async with _tenant_session() as db:
+                        seen = await rz.read_job_status(db, account_id, r)
+                        # Fail closed, as at the end of Block R.
+                        await db.execute(text("SELECT 1"))
+                    status = await rz.ask_job_status(seen)
+                # Block W: ONE block, where the per-row commit used to land.
+                # The apply, the projection and the stamp commit together.
+                # EM-T4 owns the model and provider I/O that stays inside.
+                async with _tenant_session() as db:
+                    # The resolver re-evaluates the whole thread so a
+                    # conversation keeps its ONE status (#110), even when the
+                    # message matched no rule.
+                    matches = await resolve_classification(
+                        db, account_id, r, plan, asked, provider=provider,
+                        status=status)
+                    apply = (not dry_run) and provider is not None
+                    await _apply_matches(
+                        db, provider, r, frm, email, matches,
+                        apply=apply, dry_run=dry_run, about=about,
+                        signature=signature, account_user=account_user,
+                        account_id=account_id, cold_blocker=cold_blocker,
+                    )
+                    # Reply Zero: project this thread's status from the matched
+                    # rule (latest message per thread only). Read-only of the
+                    # mailbox — runs even when the provider failed to
+                    # authenticate.
+                    if not dry_run and r.thread_id \
+                            and r.thread_id not in projected_threads:
+                        projected_threads.add(r.thread_id)
+                        # The savepoint keeps a failed projection from aborting
+                        # the row block, so the watermark stamp below still
+                        # lands.
+                        try:
+                            from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
+                                _reconcile_thread_labels,
+                                project_reply_status_from_matches,
+                            )
+                            async with _savepoint(db):
+                                keep_label = await project_reply_status_from_matches(
+                                    db, account_id, r, matches)
+                                # Collapse the thread to that one conversation
+                                # label, clearing any stale Reply / Awaiting /
+                                # FYI / Follow-up left on earlier messages
+                                # (inbox-zero mutually-exclusive labels).
+                                if keep_label and provider is not None:
+                                    await _reconcile_thread_labels(
+                                        db, provider, account_id, r.thread_id,
+                                        keep_label)
+                        except Exception as exc:  # noqa: BLE001
+                            _log.warning("email.project_reply_status_failed",
+                                         account_id=account_id,
+                                         error=str(exc)[:160])
+                    # Stamp the watermark LAST — after Reply Zero projection —
+                    # and only when the run could actually act (guarded inside
+                    # the helper).
+                    await _stamp_processed_watermark(
+                        db, r.id, provider=provider, dry_run=dry_run)
+            except LLMUnavailable as exc:
+                # From Block R, from the ask, or from the resolver at the head
+                # of Block W, before any write. The block rolls back, so the
+                # row is neither applied nor stamped (D-EM-8).
+                _classify_unavailable(account_id, r, exc)
 
         if not dry_run and provider is None:
             _log.warning("email.run_rules_no_provider", account_id=account_id,

@@ -170,12 +170,27 @@ def attributed_openai(
     OpenAI SDK sets its own timeout and connection limits on the client it
     builds for itself. A bare client would silently replace them with
     httpx's defaults, which time out a long completion after five seconds.
+
+    ⚠️ **The transport rides through a Router restart** (owner report,
+    2026-10-08). :class:`acb_llm.ride_through.RideThroughTransport` retries a
+    REFUSED connection only, and that module says why nothing can run twice.
+
+    ⚠️ **It WRAPS the client's own transport, after the client is built.**
+    Passing ``transport=`` instead would make httpx drop the SDK's connection
+    limits and its proxy settings, and it would collide with every test that
+    hands the factory a mock transport. ``_transport`` is private to httpx,
+    so ``test_router_ride_through.py`` asserts the wrap is in place: a
+    renamed attribute fails that test instead of silently losing the retry.
     """
     import openai
 
+    from acb_llm.ride_through import RideThroughTransport
+
+    http_client = openai.DefaultAsyncHttpxClient(event_hooks={"request": [_stamp]})
+    http_client._transport = RideThroughTransport(http_client._transport)
     return openai.AsyncOpenAI(
         base_url=base_url,
         api_key=api_key,
         default_headers=default_headers,
-        http_client=openai.DefaultAsyncHttpxClient(event_hooks={"request": [_stamp]}),
+        http_client=http_client,
     )

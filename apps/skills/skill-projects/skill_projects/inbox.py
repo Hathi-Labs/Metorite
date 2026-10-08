@@ -14,6 +14,7 @@ the bell refills).
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from typing import Any
 
@@ -32,6 +33,7 @@ from skill_projects.writes import (
     _fields_block,
     _node,
     _priority_card,
+    _resolve_assignee,
     _resolve_status,
     _split,
     _task,
@@ -49,13 +51,36 @@ except Exception:  # pragma: no cover — platform package absent in isolation
 
 
 VIEW_TYPES = ("list", "board")
+#: What a view may group by, and how it draws a subtask: the server's
+#: ``filters.GROUP_BY`` and ``filters.SUBTASK_MODES``. The skill cannot import
+#: gateway code, so ``tests/unit/test_projects_project_fields.py`` holds these
+#: copies equal to the route's (WS-46 P7).
+GROUP_BY = ("status", "category", "assignee", "project", "importance", "tag", "none")
+SUBTASK_MODES = ("nested", "separate", "hidden")
+#: The status categories a view may filter on: the route's
+#: ``filters.STATUS_CATEGORIES``, held equal by the same test.
+STATUS_CATEGORIES = ("backlog", "todo", "in_progress", "done", "cancelled", "triage")
+#: A view filter, in ``list_tasks``'s words -> the key the app stores. The
+#: keys are the app's own (``grouping.ts`` ``toConfig``), so the app opens
+#: a view the chat saved with every filter on.
+VIEW_FILTERS = {
+    "query": "q",
+    "status_category": "status_category",
+    "assignee": "assignee",
+    "unassigned": "unassigned",
+    "overdue": "overdue",
+    "watching": "watching",
+    "archived": "archived_only",
+    "tags": "tags",
+}
+_VIEW_FLAGS = ("unassigned", "overdue", "watching", "archived")
 INTAKE_ACTIONS = ("accept", "decline", "duplicate", "snooze")
 
 
 # ── Reads ────────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def project_access(project_id: str) -> str:
     """Who may see a project: its grants, each a member address or a
     `group:<slug>`. Reading only; a grant write is not on the chat surface
@@ -72,7 +97,28 @@ async def project_access(project_id: str) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def my_areas(include_archived: bool = False) -> str:
+    """The member's own areas: the categories of their private tasks in My
+    Tasks, such as Home or Finance, with how much open work each holds and
+    its project_id. Read this before you file a private task under an area.
+    include_archived=true lists archived areas too. Nobody else sees them,
+    and the chat does not create, rename or delete an area."""
+    params = {"include_archived": True} if include_archived else None
+    rows = ((await get("/projects/my/areas", params)) or {}).get("rows") or []
+    if not rows:
+        return "You have no areas yet. A person makes one in My Tasks."
+    out = [legend(), f"My areas ({len(rows)}):"]
+    for row in rows:
+        tail = " · archived" if row.get("archived") else ""
+        out.append(
+            f"- {data(row.get('name'))} · {int(row.get('open_tasks') or 0)} open{tail}"
+            f" · project_id {row.get('id')}"
+        )
+    return "\n".join(out)
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def project_views(project_id: str) -> str:
     """A project's saved views: name, type (list or board) and id. save_view
     adds or renames one; delete_view removes one."""
@@ -84,12 +130,20 @@ async def project_views(project_id: str) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
-async def calendar(start: str, end: str, project_id: str = "", mine: bool = False) -> str:
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def calendar(
+    start: str,
+    end: str,
+    project_id: str = "",
+    mine: bool = False,
+    include_subtree: bool = True,
+) -> str:
     """Tasks on the calendar between two dates (YYYY-MM-DD). mine=true reads
     the member's own scheduled blocks (the Calendar app's read); otherwise
     every visible task whose schedule overlaps the window, narrowed by
-    project_id. Dates are the server's."""
+    project_id. A project_id reads that node with its subprojects, as the
+    app's calendar does. include_subtree=false reads the node alone. Dates
+    are the server's."""
     frm, to = str(start or "").strip()[:10], str(end or "").strip()[:10]
     try:
         first, last = date.fromisoformat(frm), date.fromisoformat(to)
@@ -106,6 +160,11 @@ async def calendar(start: str, end: str, project_id: str = "", mine: bool = Fals
         params: dict[str, Any] = {"from": frm, "to": to}
         if project_id.strip():
             params["project_id"] = uuid_of(project_id, "project_id")
+            # WS-46 P5. The route reads the named node ALONE by default, so a
+            # space's calendar showed no subproject work. The app's calendar
+            # sends include_subtree=true (page.tsx loadMonth), and so does
+            # this read, unless the member asks for the node alone.
+            params["include_subtree"] = bool(include_subtree)
         payload = await get("/projects/calendar", params)
         title = f"Calendar {frm} to {to}"
     rows = (payload or {}).get("rows") or []
@@ -125,7 +184,7 @@ async def calendar(start: str, end: str, project_id: str = "", mine: bool = Fals
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_contexts() -> str:
     """The GTD contexts the member uses on their own overlay (@office,
     @calls), with how many open tasks carry each."""
@@ -136,7 +195,7 @@ async def my_contexts() -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_led_projects() -> str:
     """The projects the member LEADS, with how much open work each holds and
     the member's own open tasks in it first (WS-39 S6e). A project with no
@@ -156,7 +215,7 @@ async def my_led_projects() -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def watchers(target_id: str, kind: str = "task") -> str:
     """Who watches a task or a project, and whether the member does. For a
     project, `inherited` means an ancestor's watch already covers it."""
@@ -191,7 +250,7 @@ def _intake_facts(row: dict[str, Any]) -> str:
     return " · ".join(facts)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def intake_queue(project_id: str = "") -> str:
     """The intake queue: captured tasks waiting for a decision (accept,
     decline, duplicate, snooze). project_id narrows it. triage_intake
@@ -209,7 +268,7 @@ async def intake_queue(project_id: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def notifications(unread_only: bool = True) -> str:
     """The member's notifications, newest first: mentions, assignments,
     comments on watched tasks. The bell counts are the server's.
@@ -241,46 +300,188 @@ async def notifications(unread_only: bool = True) -> str:
 # ── Writes (class B) ─────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
-async def save_view(project_id: str, name: str, view_type: str = "list", view_id: str = "") -> str:
-    """Save a view on a project (name and type: list or board), or rename
-    one (pass view_id). The card names the project. delete_view is the
-    guarded undo."""
+async def _view_filters(raw: str) -> dict[str, Any] | str:
+    """*raw*, a JSON object in ``list_tasks``'s words, as the filters the app
+    stores, or the refusal. A person is resolved by name, as on every card."""
+    try:
+        given = json.loads(raw)
+    except ValueError:
+        given = None
+    if not isinstance(given, dict):
+        return (
+            'filters is a JSON object, for example {"overdue": true, "assignee": "Priya"}. '
+            f"Its keys are {', '.join(VIEW_FILTERS)}."
+        )
+    unknown = sorted(set(given) - set(VIEW_FILTERS))
+    if unknown:
+        return f"A view filters on {', '.join(VIEW_FILTERS)}, not {', '.join(unknown)}."
+    out: dict[str, Any] = {}
+    for key, value in given.items():
+        if key in _VIEW_FLAGS:
+            if not isinstance(value, bool):
+                return f"{key} is true or false."
+            if value:
+                out[VIEW_FILTERS[key]] = True
+            continue
+        text = ", ".join(value) if isinstance(value, list) else str(value or "").strip()
+        if text:
+            out[VIEW_FILTERS[key]] = await _filter_value(key, text)
+    return out
+
+
+async def _filter_value(key: str, text: str) -> str:
+    """One text filter, as the app stores it. Raises the refusal."""
+    if key == "status_category" and text not in STATUS_CATEGORIES:
+        raise GatewayRefusal(
+            f"status_category is one of {', '.join(STATUS_CATEGORIES)}, for one view."
+        )
+    if key == "assignee":
+        if "," in text:
+            raise GatewayRefusal("A view filters on one assignee. Save one view for each person.")
+        return await _resolve_assignee(text, dispatch=False)
+    if key == "query" and len(text) < 3 and not text.lstrip("#").isdigit():
+        raise GatewayRefusal("query needs 3 characters, or a task number such as #7.")
+    if key == "tags":
+        return ",".join(_split(text))
+    return text
+
+
+def _view_config(
+    filters: dict[str, Any] | None, group_by: str, subtasks: str, current: dict[str, Any]
+) -> dict[str, Any] | str:
+    """The view's ``config``: the saved one with the member's change on it,
+    or the refusal. The route REPLACES ``config`` on a PATCH, so a change of
+    one part keeps the rest (``views.py`` ``patch_view``)."""
+    config = dict(current or {})
+    config.setdefault("filters", {})
+    config.setdefault("group_by", "status")
+    if filters is not None:
+        config["filters"] = filters
+    axis = str(group_by or "").strip().lower()
+    if axis:
+        if axis not in GROUP_BY:
+            return f"group_by is one of {', '.join(GROUP_BY)}."
+        config["group_by"] = axis
+        if config.get("sub_group_by") == axis:
+            config.pop("sub_group_by")
+    mode = str(subtasks or "").strip().lower()
+    if mode:
+        if mode not in SUBTASK_MODES:
+            return f"subtasks is one of {', '.join(SUBTASK_MODES)}."
+        config["subtasks"] = mode
+    return config
+
+
+def _config_card(config: dict[str, Any]) -> dict[str, Any]:
+    """The view's settings as the card lines a member reads."""
+    shown = config.get("filters") or {}
+    lines: dict[str, Any] = {
+        "filters": ", ".join(f"{k} {v}" for k, v in shown.items()) or "none (every task)",
+        "group by": config.get("group_by") or "status",
+    }
+    if config.get("subtasks"):
+        lines["subtasks"] = config["subtasks"]
+    return lines
+
+
+async def _change_view(
+    pid: str,
+    node: dict[str, Any],
+    vid: str,
+    label: str,
+    change: tuple[dict[str, Any] | None, str, str] | None,
+) -> str:
+    """``save_view`` with a view_id: a new name, new settings, or both. The
+    card shows each before and after."""
+    pid = uuid_of(pid, "project_id")
+    vid = uuid_of(vid, "view_id")
+    rows = ((await get(f"/projects/nodes/{pid}/views")) or {}).get("rows") or []
+    row = next((r for r in rows if str(r.get("id")) == vid), None)
+    if row is None:
+        return f"{data(node.get('name'))} has no view with that id. views lists them."
+    if not label and change is None:
+        return "Nothing to change. Pass a new name, filters, group_by or subtasks."
+    body: dict[str, Any] = {}
+    card: dict[str, Any] = {"project": data(node.get("name"))}
+    before: dict[str, Any] = {}
+    if label:
+        body["name"] = card["name"] = label
+        before["name"] = row.get("name")
+    if change is not None:
+        config = _view_config(*change, row.get("config") or {})
+        if isinstance(config, str):
+            return config
+        body["config"] = config
+        card.update(_config_card(config))
+        before.update(_config_card(row.get("config") or {}))
+    if not await _confirm(
+        title="Change this view?" if change is not None else "Rename this view?",
+        detail=f"{data(row.get('name'))} in {data(node.get('name'))}",
+        context=_fields_block(card, before=before),
+    ):
+        return CANCELLED
+    await patch(f"/projects/views/{vid}", body)
+    return f"Saved view {data(label or row.get('name'))}.\n  view_id: {vid}"
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+async def save_view(
+    project_id: str,
+    name: str = "",
+    view_type: str = "list",
+    view_id: str = "",
+    filters: str = "",
+    group_by: str = "",
+    subtasks: str = "",
+) -> str:
+    """Save a view on a project (name and type: list or board), or change
+    one (pass view_id, and a new name or new settings). filters is a JSON
+    object in list_tasks's words: query, status_category (one), assignee
+    (one person), unassigned, overdue, watching, archived (true or false) and
+    tags (comma-separated), for example {"overdue": true, "assignee": "Priya"}.
+    A changed view takes the new filters as a whole. group_by is status,
+    category, assignee, project, importance, tag or none. subtasks is
+    nested, separate or hidden. The app opens the view with the same filters.
+    The card names the project. delete_view is the guarded undo."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
-    if not label:
-        return "A view needs a name."
     kind = str(view_type or "list").strip().lower()
     if kind not in VIEW_TYPES:
         return f"view_type is {' or '.join(VIEW_TYPES)}."
+    wanted: dict[str, Any] | None = None
+    if str(filters or "").strip():
+        found = await _view_filters(filters)
+        if isinstance(found, str):
+            return found
+        wanted = found
+    configured = wanted is not None or bool(str(group_by or "").strip()) or bool(
+        str(subtasks or "").strip()
+    )
     if view_id.strip():
-        vid = uuid_of(view_id, "view_id")
-        rows = ((await get(f"/projects/nodes/{pid}/views")) or {}).get("rows") or []
-        row = next((r for r in rows if str(r.get("id")) == vid), None)
-        if row is None:
-            return f"{data(node.get('name'))} has no view with that id. views lists them."
-        if not await _confirm(
-            title="Rename this view?",
-            detail=f"{data(row.get('name'))} → {data(label)} in {data(node.get('name'))}",
-            context=_fields_block(
-                {"name": label, "project": data(node.get("name"))}, before={"name": row.get("name")}
-            ),
-        ):
-            return CANCELLED
-        await patch(f"/projects/views/{vid}", {"name": label})
-        return f"Renamed view to {data(label)}.\n  view_id: {vid}"
+        change = (wanted, group_by, subtasks) if configured else None
+        return await _change_view(pid, node, uuid_of(view_id, "view_id"), label, change)
+    if not label:
+        return "A view needs a name."
     payload: dict[str, Any] = {"name": label, "view_type": kind}
+    if configured:
+        config = _view_config(wanted, group_by, subtasks, {})
+        if isinstance(config, str):
+            return config
+        payload["config"] = config
+    shown = {k: v for k, v in payload.items() if k != "config"}
+    if configured:
+        shown.update(_config_card(payload["config"]))
     if not await _confirm(
         title="Save this view?",
         detail=f"{data(label)} [{kind}] in {data(node.get('name'))}",
-        context=_fields_block({**payload, "project": data(node.get("name"))}),
+        context=_fields_block({**shown, "project": data(node.get("name"))}),
     ):
         return CANCELLED
     row = await post(f"/projects/nodes/{pid}/views", payload)
     return f"Saved view {data(row.get('name') or label)} [{kind}] in {data(node.get('name'))}.\n  view_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 @takes_priority
 async def capture_intake(
     title: str,
@@ -352,7 +553,7 @@ async def capture_intake(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def triage_intake(
     task_id: str, action: str, status: str = "", duplicate_of: str = "", until: str = ""
 ) -> str:
@@ -382,7 +583,7 @@ async def triage_intake(
         oid, other = await _task(duplicate_of)
         body["duplicate_of_task_id"] = oid
         card["duplicate of"] = f"#{other.get('task_number')} {data(other.get('title'))}"
-        card["note"] = "marking a duplicate archives this task; unarchive_task restores it"
+        card["note"] = "marking a duplicate archives this task. Restore it from the archive to undo"
     elif verb == "snooze":
         when = str(until or "").strip()[:10]
         if len(when) != 10:
@@ -390,7 +591,7 @@ async def triage_intake(
         body["until"] = when
         card["until"] = when
     else:
-        card["note"] = "declining archives the task; unarchive_task restores it"
+        card["note"] = "declining archives the task. Restore it from the archive to undo"
     titles = {
         "accept": "Accept this task onto the board?",
         "decline": "Decline this task?",
@@ -412,7 +613,7 @@ async def triage_intake(
     return "\n".join([f"Intake: {verb}.", *_task_line(merged)])
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
 async def mark_notifications_read(ids: str = "", all_unread: bool = False) -> str:
     """Clear the bell: mark the listed notification ids read
     (comma-separated, from notifications), or every unread one with

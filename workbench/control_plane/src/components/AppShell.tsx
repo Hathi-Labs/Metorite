@@ -27,6 +27,7 @@ import {
   type ReactNode,
 } from "react";
 import { useSession, signOut } from "next-auth/react";
+import { useChatScope, useChatSignOutClear } from "@/hooks/useChatSessions";
 import Sidebar from "@/components/Sidebar";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useActiveSessions } from "@/hooks/useActiveSessions";
@@ -37,6 +38,10 @@ import AccountStateBanner from "@/components/AccountStateBanner";
 import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
+import { DrawerAccountSection } from "@/components/AccountSwitcher";
+import { useAccountTabSync } from "@/lib/accountSwitch";
+import { ShellFrame } from "@/lib/shell/ShellBar";
+import { OPEN_COMMAND_BAR, shellBarOn } from "@/lib/shell/registry";
 // The task manager's Focus Mode session (room + minimizable timer dock). Lives
 // in the SHELL so the running timer stays visible across every app in the
 // control plane; renders nothing when no focus session is active.
@@ -99,6 +104,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     bindIdentity(signedInAs);
   }, [signedInAs]);
+  // ⚠️ A switch (or a sign-in as someone else) in ANOTHER tab changes the
+  // cookie under this one. This reloads the tab, so it never writes as an
+  // account it does not show (`lib/accountSwitch.ts`).
+  useAccountTabSync(signedInAs);
+  // The chat caches follow the same rule (PR #652): one namespace per account.
+  // `useChatScope` binds the member's namespace, and a switch deletes nothing.
+  // `useChatSignOutClear` clears the namespace of an account that signed out,
+  // by any path, never on a sign-out button alone.
+  useChatScope();
+  useChatSignOutClear();
 
   const openDrawer = useCallback((content: ReactNode) => {
     setDrawerContent(content);
@@ -160,10 +175,24 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             so it scrolls away rather than eating vertical space on every
             screen. It renders nothing for an `active` org, which is the
             overwhelmingly common case. */}
-        <main className="flex-1 min-w-0 overflow-auto">
-          <AccountStateBanner />
-          <AccessGate>{children}</AccessGate>
-        </main>
+        {/* NS-1: with the shell bar on, one row across the top holds the
+            app's name, the command bar and the app's tools. Off, the page
+            column is exactly as it was. */}
+        {shellBarOn() ? (
+          <div className="flex min-w-0 flex-1 flex-col">
+            <ShellFrame>
+              <main className="min-h-0 min-w-0 flex-1 overflow-auto">
+                <AccountStateBanner />
+                <AccessGate>{children}</AccessGate>
+              </main>
+            </ShellFrame>
+          </div>
+        ) : (
+          <main className="flex-1 min-w-0 overflow-auto">
+            <AccountStateBanner />
+            <AccessGate>{children}</AccessGate>
+          </main>
+        )}
         <WelcomeDialog />
         <FocusSession />
         {/* D-PM-38 (S5) — the store's subtask question. Global, like the
@@ -197,10 +226,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex flex-col overflow-hidden bg-background pt-safe" style={{ height: "100dvh" }}>
         {/* Page content — pb-nav reserves the fixed bottom bar's FULL height
             (content + safe-area inset), so nothing hides under it */}
-        <main className="flex-1 min-h-0 overflow-y-auto pb-nav">
-          <AccountStateBanner />
-          <AccessGate>{children}</AccessGate>
-        </main>
+        {shellBarOn() ? (
+          // The same command bar, and its keys, with no row on the phone.
+          <ShellFrame bar={false}>
+            <main className="flex-1 min-h-0 overflow-y-auto pb-nav">
+              <AccountStateBanner />
+              <AccessGate>{children}</AccessGate>
+            </main>
+          </ShellFrame>
+        ) : (
+          <main className="flex-1 min-h-0 overflow-y-auto pb-nav">
+            <AccountStateBanner />
+            <AccessGate>{children}</AccessGate>
+          </main>
+        )}
         <WelcomeDialog />
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
@@ -280,6 +319,22 @@ function MobileBottomNavInner({
           <AppIcon name="X" size={16} />
         </button>
       </div>
+      {/* NS-1 on the phone: the first thing in the menu is the one search. */}
+      {shellBarOn() ? (
+        <div className="border-b border-border px-3 py-2">
+          <button
+            type="button"
+            onClick={() => {
+              close();
+              window.dispatchEvent(new CustomEvent(OPEN_COMMAND_BAR, { detail: { query: "" } }));
+            }}
+            className="flex h-10 w-full items-center gap-2 rounded-lg border border-border bg-background px-3 text-left text-sm text-muted-foreground"
+          >
+            <AppIcon name="Sparkles" size={16} className="shrink-0 text-primary" />
+            Search or ask anything
+          </button>
+        </div>
+      ) : null}
       <nav className="flex flex-col overflow-y-auto">
         {/* Same rule as the desktop rail (§8.1): an unresolved viewer gets
             placeholders, never the full list. The drawer opens on tap, so a
@@ -336,19 +391,25 @@ function MobileBottomNavInner({
           <AppIcon name="Monitor" size={16} className="shrink-0" />
           Desktop view
         </Button>
-        {session?.user && (
-          <Button variant="ghost" size="none" layout="flex items-center" onClick={() => signOut({ callbackUrl: "/signin" })} className="w-full gap-3 px-3 py-2.5 text-sm">
-            <AppIcon name="LogOut" size={16} className="shrink-0" />
-            Sign out
-          </Button>
-        )}
-        {session?.user && (
-          <div className="px-3 pt-1">
-            <div className="truncate text-[11px] font-medium text-muted-foreground">
-              {session.user.name ?? session.user.email}
-            </div>
-          </div>
-        )}
+        {/* The account switcher (MT-1k A2). While its flag is off, it draws
+            the Sign out row and the name, as before. */}
+        <DrawerAccountSection
+          fallback={
+            session?.user && (
+              <>
+                <Button variant="ghost" size="none" layout="flex items-center" onClick={() => signOut({ callbackUrl: "/signin" })} className="w-full gap-3 px-3 py-2.5 text-sm">
+                  <AppIcon name="LogOut" size={16} className="shrink-0" />
+                  Sign out
+                </Button>
+                <div className="px-3 pt-1">
+                  <div className="truncate text-[11px] font-medium text-muted-foreground">
+                    {session.user.name ?? session.user.email}
+                  </div>
+                </div>
+              </>
+            )
+          }
+        />
       </div>
     </>
   );

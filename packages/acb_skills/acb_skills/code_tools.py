@@ -127,6 +127,68 @@ def _cap(text: str) -> str:
     )
 
 
+#: The walk of one sweep stops after this many entries, so a tree of a
+#: million files cannot hold a worker thread for minutes.
+_SWEEP_WALK_LIMIT = 20_000
+
+
+def _collect_changed(
+    root: Path, since: float, subdirs: tuple[str, ...],
+) -> list[tuple[str, bytes]]:
+    """``[(rel, bytes)]`` of the files under *subdirs* changed after *since*.
+
+    Every walk and every read goes through the safe opener
+    (``maf_coding_engine.md`` §7.5 rule B): no link is followed at any depth,
+    also one that a container or a script swaps in during the sweep. So a
+    session that drops ``agent-data/x -> /`` can never smuggle a host file
+    (a service-account key, another agent's credentials) into this agent's
+    durable, downloadable blob store.
+    """
+    from acb_skills import safe_open
+
+    cutoff = since - _SWEEP_MTIME_SLACK
+    out: list[tuple[str, bytes]] = []
+    for sub in subdirs:
+        try:
+            entries = safe_open.walk_files(root, sub, max_files=_SWEEP_WALK_LIMIT)
+        except (safe_open.UnsafePath, OSError):
+            continue
+        for rel, size, mtime in entries:
+            if len(out) >= _SWEEP_MAX_FILES:
+                return out
+            if mtime < cutoff or size > _SWEEP_MAX_BYTES:
+                continue
+            try:
+                data = safe_open.read_bytes(root, rel, limit=_SWEEP_MAX_BYTES)
+            except (safe_open.UnsafePath, OSError):
+                continue
+            if data is not None:
+                out.append((rel, data))
+    return out
+
+
+async def sweep_changed_files(
+    root: Path, *, since: float, subdirs: tuple[str, ...] = ("agent-data", "outputs"),
+) -> list[tuple[str, bytes]]:
+    """Mirror the files changed after *since* under *subdirs* into the blob store.
+
+    Returns ``[(rel, bytes)]`` of each file it mirrored. The walk and the reads
+    run OFF the event loop, so a large sweep cannot stall every concurrent run.
+    The sandbox tools call this inside ``broker.host_files()``.
+    """
+    import asyncio
+
+    collected = await asyncio.to_thread(_collect_changed, Path(root), since, subdirs)
+    mirrored: list[tuple[str, bytes]] = []
+    for rel, data in collected:
+        try:
+            await mirror_to_blob_store(rel, data, actor="agent")
+        except Exception:
+            continue
+        mirrored.append((rel, data))
+    return mirrored
+
+
 async def _sweep_to_blob_store(
     root: Path, *, since: float, subdirs: tuple[str, ...] = ("agent-data", "outputs"),
 ) -> int:
@@ -135,61 +197,13 @@ async def _sweep_to_blob_store(
     Closes the durability gap for files written by NATIVE tools (the Copilot
     CLI, or a script's own writes), which bypass the write_artifact mirror.
     Best-effort: any failure leaves the on-disk file intact and is skipped.
-    Returns the number of files mirrored.
-
-    Containment: a swept file's REAL (symlink-resolved) path must stay inside
-    *root*. ``rglob`` follows symlinked DIRECTORIES on Python < 3.13, so without
-    this a ``code_task`` session (or script) that drops ``agent-data/x -> /``
-    could smuggle host files — service-account keys, another agent's creds —
-    into this agent's durable, downloadable blob store. The leaf ``is_symlink``
-    check alone misses files reached through a symlinked parent.
-
-    The tree walk + file reads (up to ``_SWEEP_MAX_FILES`` × ``_SWEEP_MAX_BYTES``)
-    run OFF the event loop so a large sweep can't stall every concurrent run.
+    Returns the number of files mirrored. :func:`sweep_changed_files` does
+    the work, with the safe opener.
     """
-    import asyncio
-
-    cutoff = since - _SWEEP_MTIME_SLACK
-
-    def _collect() -> list[tuple[str, bytes]]:
-        root_r = root.resolve()
-        out: list[tuple[str, bytes]] = []
-        for sub in subdirs:
-            base = root / sub
-            if not base.is_dir():
-                continue
-            for p in sorted(base.rglob("*")):
-                if len(out) >= _SWEEP_MAX_FILES:
-                    return out
-                try:
-                    if p.is_symlink() or not p.is_file():
-                        continue
-                    # Real path must remain inside the workspace (blocks a
-                    # symlinked-directory escape rglob would otherwise follow).
-                    try:
-                        p.resolve().relative_to(root_r)
-                    except ValueError:
-                        continue
-                    st = p.stat()
-                    if st.st_mtime < cutoff or st.st_size > _SWEEP_MAX_BYTES:
-                        continue
-                    out.append((p.relative_to(root).as_posix(), p.read_bytes()))
-                except Exception:
-                    continue
-        return out
-
     try:
-        collected = await asyncio.to_thread(_collect)
+        return len(await sweep_changed_files(root, since=since, subdirs=subdirs))
     except Exception:
         return 0
-    mirrored = 0
-    for rel, data in collected:
-        try:
-            await mirror_to_blob_store(rel, data, actor="agent")
-            mirrored += 1
-        except Exception:
-            continue
-    return mirrored
 
 
 async def run_script(path: str, args: str = "") -> str:

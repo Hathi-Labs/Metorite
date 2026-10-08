@@ -10,10 +10,20 @@
  *   • Vertical connecting line with Lucide line-art icons per step
  *     (Brain, BookOpen, Terminal, Search, SquarePen, GitBranch, Wrench)
  *   • Git-tree style sub-timeline for sub-agent tool calls
- *   • Action badges (Read, Edit, Search, Run, etc.)
- *   • Color-coded left borders for different action types
- *   • Timing info, diff-style change badges
+ *   • Timing info
  *   • Auto-expand during active streaming, auto-collapse on completion
+ *
+ * Every chat surface draws its trail here: `/chat`, and the Projects, Tasks
+ * and email rails, which all mount the shared `AgentChat`. A step's words come
+ * from `lib/toolSteps.ts` ("Ran a script in the sandbox", "Created a task"),
+ * the one place a tool name becomes a sentence. Fence: `toolSteps.test.ts`.
+ *
+ * A READ's receipt draws HERE, under the step that made it, and nowhere
+ * after the answer (spec `projects_ai_chat.md` §24 rule 2, owner
+ * 2026-10-08). The caller hands each step's receipt in through
+ * `evidenceFor`, and `lib/chatPlacement.ts` decides which tools are reads.
+ * A step with a receipt is closed by default, and it shows its chevron, so a
+ * member can see there is something to open.
  *
  * Patterns sourced from VS Code Copilot Chat UI study —
  * see project-docs/spec_chat_ux.md.
@@ -25,6 +35,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ToolEvent } from "@/components/MarkdownMessage";
+import MarkdownImage from "@/components/MarkdownImage";
+import { InStepContext } from "@/components/ToolCardShell";
+import { markdownUrlTransform } from "@/lib/markdownMedia";
+import rehypeStreamCaret from "@/lib/streamCaret";
+import { TRAIL_AXIS, TRAIL_ICON_CELL, trailBodySize } from "@/lib/trailLayout";
+import {
+  COMMAND_CAP,
+  capOutput,
+  commandOf,
+  describeToolStep,
+  type StepKind,
+  type StepStatus,
+} from "@/lib/toolSteps";
 
 interface ThinkingContainerProps {
   toolEvents: ToolEvent[];
@@ -36,11 +59,15 @@ interface ThinkingContainerProps {
    *  segmentCutoff. Empty for id-less runtimes (which use the reasoning fold). */
   narrationSegments?: string[];
   isActive: boolean;
+  /**
+   * The receipt of a read, drawn inside its step when the step is open
+   * (§24 rule 2). Null for a step with none. `MessageBubble` supplies it
+   * from the card files, so this component names no tool.
+   */
+  evidenceFor?: (event: ToolEvent) => React.ReactNode | null;
 }
 
-// ─── Tool classification ────────────────────────────────────────────────────
-
-type ActionKind = "read" | "edit" | "search" | "run" | "delegate" | "think" | "other";
+// ─── Step kinds ─────────────────────────────────────────────────────────────
 
 /** Icon key used to look up the Lucide component from the icon map. */
 type IconKey = "brain" | "book" | "search" | "edit" | "terminal" | "branch" | "wrench";
@@ -56,25 +83,24 @@ const ICON_MAP: Record<IconKey, ThemedIcon> = {
   wrench: themedIcon("Wrench"),
 };
 
-function classifyTool(name: string): {
-  kind: ActionKind; iconKey: IconKey; label: string;
-  borderClass: string; iconClass: string;
-} {
-  const n = name.toLowerCase();
-  if (/search|grep|find|list|semantic|codebase|query|retrieve|lookup/.test(n))
-    return { kind: "search", iconKey: "search", label: "Search", borderClass: "border-cat-12/30", iconClass: "text-cat-12" };
-  if (/read|get_file|problems|fetch|load|open|view|analyzing|generating/.test(n))
-    return { kind: "read", iconKey: "book", label: "Read", borderClass: "border-sky-700/50", iconClass: "text-sky-400" };
-  if (/edit|create|write|replace|patch|insert|update|append|fix/.test(n))
-    return { kind: "edit", iconKey: "edit", label: "Edit", borderClass: "border-emerald-700/50", iconClass: "text-emerald-400" };
-  if (/terminal|bash|shell|exec|run|command/.test(n))
-    return { kind: "run", iconKey: "terminal", label: "Code", borderClass: "border-violet-700/50", iconClass: "text-violet-400" };
-  if (/delegate|spawn|agent|call_agent/.test(n))
-    return { kind: "delegate", iconKey: "branch", label: "Delegate", borderClass: "border-rose-700/50", iconClass: "text-rose-400" };
-  if (/think|reason|reflect|plan|analyze|consider/.test(n))
-    return { kind: "think", iconKey: "brain", label: "Think", borderClass: "border-purple-700/50", iconClass: "text-purple-400" };
-  return { kind: "other", iconKey: "wrench", label: "Tool", borderClass: "border-border/50", iconClass: "text-muted-foreground" };
-}
+/** The icon on the axis says WHAT a step does. Its colour says WHERE it is
+ *  (see {@link STATUS_INK}), so a kind carries no hue of its own. */
+const KIND_ICON: Record<StepKind, IconKey> = {
+  read: "book",
+  edit: "edit",
+  search: "search",
+  run: "terminal",
+  delegate: "branch",
+  think: "brain",
+  other: "wrench",
+};
+
+/** A step's status, as ink. Semantic tokens: a status is information. */
+const STATUS_INK: Record<StepStatus, string> = {
+  running: "text-info",
+  done: "text-muted-foreground",
+  failed: "text-destructive",
+};
 
 /** Render a Lucide icon for a given icon key, sized for the timeline axis. */
 function TimelineIcon({ iconKey, className }: { iconKey: IconKey; className?: string }) {
@@ -104,13 +130,19 @@ const PROSE_MD_COMPONENTS = {
   strong: ({ children }: { children?: React.ReactNode }) => <strong className="text-foreground font-semibold">{children}</strong>,
   em: ({ children }: { children?: React.ReactNode }) => <em className="italic">{children}</em>,
   blockquote: ({ children }: { children?: React.ReactNode }) => <blockquote className="border-l-2 border-border pl-2 my-1 text-muted-foreground">{children}</blockquote>,
-  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => <a href={href} className="text-sky-400 underline" target="_blank" rel="noopener">{children}</a>,
+  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => <a href={href} className="text-primary underline" target="_blank" rel="noopener">{children}</a>,
   h1: ({ children }: { children?: React.ReactNode }) => <h1 className="text-[13px] font-bold text-foreground mt-2 mb-1">{children}</h1>,
   h2: ({ children }: { children?: React.ReactNode }) => <h2 className="text-[12px] font-semibold text-foreground mt-1.5 mb-1">{children}</h2>,
+  // Reasoning is agent text too: a remote image loads only on a click.
+  // The container has no session, so a workspace-relative path stays as it
+  // is and does not resolve through the file proxy (as before the gate).
+  img: ({ src, alt, title }: { src?: unknown; alt?: unknown; title?: unknown }) => (
+    <MarkdownImage src={src} alt={alt} title={title} className="my-1 max-h-48 max-w-full rounded border border-border/50 object-contain" />
+  ),
 };
 
 /** One prose entry (reasoning or narration) on the timeline axis. */
-function ProseTimelineEntry({
+export function ProseTimelineEntry({
   text, live, icon: Icon, iconClass,
 }: {
   text: string;
@@ -119,50 +151,25 @@ function ProseTimelineEntry({
   iconClass: string;
 }) {
   return (
-    <div className="relative">
-      <div className="absolute left-[6px] top-[5px] z-10">
-        <Icon className={iconClass} size={13} strokeWidth={1.5} />
-      </div>
-      <div className="ml-8 mr-3 text-[11.5px] text-muted-foreground leading-relaxed">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={PROSE_MD_COMPONENTS}>
+    <div className="relative flex min-w-0">
+      {/* The trail's one icon column (`lib/trailLayout.ts`). */}
+      <span data-trail-icon="" className={`${TRAIL_ICON_CELL} relative z-10 mt-[0.3rem]`}>
+        <Icon className={iconClass} size={14} strokeWidth={1.5} />
+      </span>
+      <div className="flex-1 min-w-0 mr-3 text-[11.5px] text-muted-foreground leading-relaxed">
+        {/* The caret goes inside the last line of words (`lib/streamCaret.ts`).
+            A span after the Markdown started a line of its own: a lone "|". */}
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={live ? [rehypeStreamCaret] : []}
+          urlTransform={markdownUrlTransform}
+          components={PROSE_MD_COMPONENTS}
+        >
           {text}
         </ReactMarkdown>
-        {live && <span className="inline-block w-[2px] h-[1em] bg-muted-foreground/50 animate-pulse ml-0.5 align-middle rounded-full" />}
       </div>
     </div>
   );
-}
-
-function formatToolName(name: string): string {
-  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-/** Past/present-tense verbs per action kind (VS Code: "Ran", "Read", …). */
-const KIND_VERBS: Record<ActionKind, { done: string; running: string }> = {
-  run: { done: "Ran", running: "Running" },
-  read: { done: "Read", running: "Reading" },
-  search: { done: "Searched", running: "Searching" },
-  edit: { done: "Edited", running: "Editing" },
-  delegate: { done: "Delegated to", running: "Delegating to" },
-  think: { done: "Thought", running: "Thinking" },
-  other: { done: "Used", running: "Using" },
-};
-
-/** One-line headline for a tool row — the command, path, query or name. */
-function toolHeadline(event: ToolEvent, kind: ActionKind): string {
-  const args = event.args ?? {};
-  if (kind === "run") return extractCommand(args, event.name);
-  if (kind === "delegate") {
-    const target = event.subAgentName ?? args.agent_name ?? args.agent ?? args.name;
-    if (typeof target === "string" && target) return target;
-  }
-  if (kind === "search") {
-    const q = args.query ?? args.q ?? args.pattern ?? args.search;
-    if (typeof q === "string" && q) return q.slice(0, 120);
-  }
-  const path = formatArgsLikePath(args);
-  if (path) return path;
-  return formatToolName(event.name);
 }
 
 // ─── Interleaved timeline (VS Code chatThinkingContentPart parity) ─────────
@@ -219,32 +226,6 @@ function buildTimeline(
   return items;
 }
 
-function formatArgsLikePath(args: Record<string, unknown>): string | null {
-  const path = args.path ?? args.filePath ?? args.file ?? args.file_path
-    ?? args.target ?? args.destination ?? args.url ?? args.repo;
-  if (typeof path === "string" && path.length > 0) {
-    const parts = path.includes("/") ? path.split("/") : path.split("\\");
-    const short = parts.slice(-2).join("/");
-    return short.length < path.length ? `…/${short}` : short;
-  }
-  return null;
-}
-
-/** Pull a displayable command string from tool arguments. */
-function extractCommand(args: Record<string, unknown>, toolName: string): string {
-  // Direct command field (bash/shell tools)
-  const cmd = args.command ?? args.cmd ?? args.fullCommandText
-    ?? args.full_command_text ?? args.script ?? args.code;
-  if (typeof cmd === "string" && cmd.length > 0) return cmd;
-  // Reconstruct from argv-style array
-  const argv = args.argv ?? args.args ?? args.arguments;
-  if (Array.isArray(argv) && argv.length > 0) return argv.join(" ");
-  // Last resort: show the first arg value
-  const firstVal = Object.values(args).find((v) => typeof v === "string" && v.length > 0);
-  if (firstVal) return String(firstVal).slice(0, 120);
-  return formatToolName(toolName);
-}
-
 // ─── Shell syntax highlighting (VS Code terminal colours) ──────────────────
 
 const POWERSHELL_KEYWORDS = new Set([
@@ -288,31 +269,262 @@ function tokenizeSegment(segment: string, isFirst: boolean): React.ReactNode[] {
   });
 }
 
-// ─── Rotating working messages (mirrors VS Code's working-message pool) ──────
+// ─── One step on the trail ──────────────────────────────────────────────────
 
-const WORKING_MESSAGES = [
-  "Working on it",
-  "Thinking it through",
-  "Processing",
-  "Crunching the details",
-  "Pulling the data",
-  "Putting it together",
-];
+/** The word a screen reader hears, and the word a failed step shows. */
+const STATUS_WORD: Record<StepStatus, string> = {
+  running: "running",
+  done: "done",
+  failed: "failed",
+};
 
-const FUN_MESSAGES = [
-  "Bribing the hamster",
-  "Reticulating splines",
-  "Untangling the spaghetti",
-  "Summoning Clippy",
-  "Mining diamonds",
-];
+/** "Output cut at 4,000 characters" under a long output, so a cut is visible. */
+function CutNote({ cut }: { cut: number }) {
+  if (cut <= 0) return null;
+  return (
+    <div className="mt-1 text-[10px] text-term-muted">
+      {cut.toLocaleString()} more characters not shown
+    </div>
+  );
+}
 
-function pickWorkingMessage(): string {
-  // ~1-in-12 chance of an easter-egg message (VS Code uses 1-in-100).
-  if (Math.floor(Math.random() * 12) === 0) {
-    return FUN_MESSAGES[Math.floor(Math.random() * FUN_MESSAGES.length)];
-  }
-  return WORKING_MESSAGES[Math.floor(Math.random() * WORKING_MESSAGES.length)];
+/** The terminal a script step expands into: the command, then its output. */
+function RunDetail({ event, running, dur }: { event: ToolEvent; running: boolean; dur?: number }) {
+  const out = event.result ? capOutput(String(event.result)) : null;
+  // A running row opens by itself, so a long script body must not draw whole.
+  const cmd = capOutput(commandOf(event.args, event.name), COMMAND_CAP);
+  return (
+    <div className="rounded-md bg-term-bg border border-term-fg/10 overflow-hidden">
+      <div className="px-2.5 pt-1.5 pb-2.5 font-mono text-[11px] leading-relaxed">
+        <div className="flex items-baseline gap-2 mb-1.5">
+          <span className="text-term-prompt shrink-0 select-none font-medium">$</span>
+          <div
+            data-step-command=""
+            className="flex-1 min-w-0 text-term-fg break-all font-mono text-[11px] leading-relaxed max-h-40 overflow-y-auto"
+          >
+            {highlightCommand(cmd.text)}
+            <CutNote cut={cmd.cut} />
+          </div>
+          {running && (
+            <span className="text-[10px] text-term-running animate-pulse font-mono shrink-0">running</span>
+          )}
+          {dur !== undefined && !running && (
+            <span className="text-[10px] text-term-muted font-mono shrink-0">{dur}ms</span>
+          )}
+        </div>
+        {out ? (
+          <div
+            data-step-output=""
+            className="text-term-output whitespace-pre-wrap break-all max-h-64 overflow-y-auto leading-snug"
+          >
+            {out.text}
+            {running && (
+              <span className="inline-block w-[6px] h-[14px] bg-term-output animate-pulse ml-0.5 align-middle" />
+            )}
+            <CutNote cut={out.cut} />
+          </div>
+        ) : running ? (
+          <div className="flex gap-2">
+            <span className="text-term-prompt shrink-0 select-none">$</span>
+            <span className="inline-block w-[6px] h-[14px] bg-term-output animate-pulse align-middle" />
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** Any other step expands into its arguments and its result. */
+function ArgsDetail({ event, dur }: { event: ToolEvent; dur?: number }) {
+  const out = event.result ? capOutput(String(event.result), 2000) : null;
+  return (
+    <div className="rounded-md border-l-2 border-border bg-card/40 px-2.5 py-1.5 min-w-0">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-[10px] text-muted-foreground font-mono truncate">{event.name}</span>
+        {dur !== undefined && <span className="text-[10px] text-muted-foreground tabular-nums ml-auto shrink-0">{dur}ms</span>}
+      </div>
+      {event.args && Object.keys(event.args).length > 0 && (
+        <div className="text-[10px] text-muted-foreground font-mono mt-1 break-all">
+          {Object.entries(event.args).map(([k, v]) => (
+            <span key={k} className="inline-block mr-2">
+              <span className="text-muted-foreground/70">{k}:</span>{" "}
+              <span className="text-muted-foreground">
+                {(typeof v === "string" ? v : JSON.stringify(v) ?? "").slice(0, 80)}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+      {out && (
+        <pre
+          data-step-output=""
+          className="text-[10px] text-muted-foreground font-mono mt-1 whitespace-pre-wrap break-all max-h-48 overflow-y-auto"
+        >
+          {out.text}
+          <CutNote cut={out.cut} />
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/** A hand-off's own steps, as a branch under the step that asked. */
+function SubAgentSteps({ event }: { event: ToolEvent }) {
+  return (
+    <div className="mt-1.5 ml-3 relative">
+      <div className="absolute left-[-12px] top-0 bottom-0 w-px bg-border" />
+      <div className="absolute left-[-12px] top-3 w-[12px] h-px bg-border" />
+      <div className="flex items-center gap-1.5 text-[10px] mb-1 min-w-0">
+        <AppIcon name="GitBranch" className="text-muted-foreground shrink-0" size={12} strokeWidth={1.5} />
+        <span className="text-foreground font-medium truncate">{event.subAgentName}</span>
+        {event.subAgentActive && (
+          <span className="text-[10px] text-info animate-pulse shrink-0">working</span>
+        )}
+      </div>
+      {event.subAgentText && (
+        <pre className="text-muted-foreground whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed mb-1.5 max-h-24 overflow-y-auto bg-secondary/40 rounded px-2 py-1 border border-border/40">
+          {capOutput(event.subAgentText, 2000).text}
+        </pre>
+      )}
+      {event.subAgentTools && event.subAgentTools.length > 0 && (
+        <div className="relative ml-2">
+          <div className="absolute left-[6px] top-1 bottom-1 w-px bg-border/70" aria-hidden="true" />
+          <ul className="space-y-1">
+          {event.subAgentTools.map((st) => {
+            const step = describeToolStep(st);
+            return (
+              <li key={st.id} className="relative flex items-start gap-2 min-w-0" data-step-status={step.status}>
+                <div className="absolute left-[6px] top-[8px] w-[8px] h-px bg-border/70" aria-hidden="true" />
+                <span className={`shrink-0 mt-0.5 ml-[14px] ${STATUS_INK[step.status]}`}>
+                  <TimelineIcon iconKey={KIND_ICON[step.kind]} />
+                </span>
+                <span className={`text-[11px] min-w-0 truncate ${step.status === "failed" ? "text-destructive" : step.status === "running" ? "chat-shimmer-text" : "text-foreground"}`}>
+                  {step.label}
+                </span>
+                <span className="sr-only">{STATUS_WORD[step.status]}</span>
+                {step.status === "failed" && (
+                  <span className="text-[10px] text-destructive shrink-0">failed</span>
+                )}
+                {st.result && step.status !== "running" && (
+                  <span className="text-[10px] text-muted-foreground font-mono truncate min-w-0">
+                    {String(st.result).slice(0, 60)}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One tool call on the trail: a one-line row that says what the step did
+ * ("Ran a script in the sandbox", "Asked email-assistant", "Created a task"),
+ * with its status, and a detail that opens below it.
+ *
+ * Controlled: the container owns `open`, so a test can render either state.
+ * Exported for `toolSteps.test.ts`.
+ */
+export function ToolStepRow({
+  event,
+  open,
+  onToggle,
+  evidence,
+}: {
+  event: ToolEvent;
+  open: boolean;
+  onToggle?: () => void;
+  /** The read's receipt (§24 rule 2). It replaces the raw arguments and
+   *  output in the detail. */
+  evidence?: React.ReactNode | null;
+}) {
+  const step = describeToolStep(event);
+  const running = step.status === "running";
+  const failed = step.status === "failed";
+  const dur = event.endedAt && event.startedAt ? event.endedAt - event.startedAt : undefined;
+  const hasSubAgent = !!(event.subAgentName && (event.subAgentTools?.length || event.subAgentText));
+  const hasEvidence = evidence != null && !running;
+  // A receipt can hold state the member made (a deleted pattern, an archived
+  // mail). Once opened, it stays mounted and only hides, so closing the step
+  // does not undo what the member did (review round 1).
+  const [kept, setKept] = useState(open);
+  if (open && !kept) setKept(true);
+  return (
+    <div
+      className="relative flex min-w-0"
+      data-step-status={step.status}
+      data-step-kind={step.kind}
+      {...(hasEvidence ? { "data-step-has-evidence": "" } : {})}
+    >
+      {/* The icon on the axis: what the step does, inked by where it is. It
+          sits in the trail's one icon column, the same cell as the header's
+          (`lib/trailLayout.ts`), so the two cannot drift apart. */}
+      <span data-trail-icon="" className={`${TRAIL_ICON_CELL} relative z-10 mt-[0.3rem]`}>
+        <TimelineIcon
+          iconKey={KIND_ICON[step.kind]}
+          className={running ? `${STATUS_INK.running} drop-shadow-[0_0_4px_currentColor]` : STATUS_INK[step.status]}
+        />
+      </span>
+
+      <div className="flex-1 mr-3 min-w-0">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          className="w-full flex items-baseline gap-1.5 text-left group/tool min-w-0"
+        >
+          {/* The words keep their width and the target gives way: in a
+              narrow rail "Ran a script in …" said less than the command. */}
+          <span
+            className={`text-[11.5px] truncate ${step.target ? "flex-none max-w-[75%]" : "min-w-0"} ${
+              running ? "chat-shimmer-text" : failed ? "text-destructive" : "text-foreground"
+            }`}
+          >
+            {step.label}
+          </span>
+          {step.target && (
+            <span className="text-[11px] font-mono truncate min-w-0 px-1 py-px rounded bg-secondary/60 border border-border/40 text-muted-foreground">
+              {step.target}
+            </span>
+          )}
+          <span className="sr-only">{STATUS_WORD[step.status]}</span>
+          {failed && <span className="text-destructive text-[10px] shrink-0">failed</span>}
+          {dur !== undefined && dur > 1000 && (
+            <span data-step-duration="" className="text-[10px] text-muted-foreground tabular-nums shrink-0">{(dur / 1000).toFixed(1)}s</span>
+          )}
+          {/* A step that holds a receipt shows its chevron at rest: the
+              member needs to see that it opens. */}
+          <span
+            className={`ml-auto shrink-0 text-muted-foreground text-[10px] transition-opacity ${
+              hasEvidence ? "opacity-70 group-hover/tool:opacity-100" : "opacity-0 group-hover/tool:opacity-100"
+            }`}
+          >
+            {open ? "▴" : "▾"}
+          </span>
+        </button>
+
+        {hasEvidence && (open || kept) && (
+          <div data-step-evidence="" hidden={!open} className="mt-1 min-w-0">
+            <InStepContext.Provider value={true}>{evidence}</InStepContext.Provider>
+          </div>
+        )}
+        {open && !hasEvidence && (
+          <div className="mt-1 min-w-0">
+            {step.kind === "run" ? (
+              <RunDetail event={event} running={running} dur={dur} />
+            ) : (
+              <ArgsDetail event={event} dur={dur} />
+            )}
+            {hasSubAgent && <SubAgentSteps event={event} />}
+          </div>
+        )}
+        {open && hasEvidence && hasSubAgent && <SubAgentSteps event={event} />}
+      </div>
+    </div>
+  );
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -323,19 +535,28 @@ export default function ThinkingContainer({
   reasoningBlocks,
   narrationSegments,
   isActive,
+  evidenceFor,
 }: ThinkingContainerProps) {
-  const [expanded, setExpanded] = useState(false);
+  const hasReasoning = !!(reasoningBlocks && reasoningBlocks.length > 0);
+  const hasNarration = !!(narrationSegments && narrationSegments.length > 0);
+  const hasTools = toolEvents.length > 0;
+  const hasContent = hasTools || hasReasoning || hasNarration;
+
+  // Open from the first render when the turn is already working. A surface
+  // that mounts mid-run (a rail re-opened beside the board, a reconnect) then
+  // shows the trail at once, instead of a closed "Thinking…" until the next
+  // step lands.
+  const [expanded, setExpanded] = useState(() => isActive && hasContent);
   const userToggledRef = useRef(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   // Per-tool expansion override (user click).  Without an override, a tool
   // row is open while running (live output) and collapsed when done —
   // matching VS Code's chat tool invocation parts.
   const [toolOverrides, setToolOverrides] = useState<Record<string, boolean>>({});
-
-  const hasReasoning = !!(reasoningBlocks && reasoningBlocks.length > 0);
-  const hasNarration = !!(narrationSegments && narrationSegments.length > 0);
-  const hasTools = toolEvents.length > 0;
-  const hasContent = hasTools || hasReasoning || hasNarration;
+  // Once the body has been open, it stays mounted and only hides, so a
+  // receipt in a step keeps what the member did in it (review round 1).
+  const [bodyKept, setBodyKept] = useState(false);
+  if (expanded && hasContent && !bodyKept) setBodyKept(true);
 
   // Chronologically interleaved narration + reasoning + tool timeline
   // (VS Code style; narration segments are Phase 3b message-id ground truth).
@@ -373,55 +594,55 @@ export default function ThinkingContainer({
     return () => clearTimeout(t);
   }, [isActive]);
 
-  // Derive the current/last tool label for the title.
+  // The newest step, in words, for the header while the turn works.
   const lastLabel = useMemo(() => {
     if (toolEvents.length > 0) {
-      return formatToolName(toolEvents[toolEvents.length - 1].name);
+      return describeToolStep(toolEvents[toolEvents.length - 1]).label;
     }
     if (progressLines.length > 0) {
       const last = progressLines[progressLines.length - 1];
       // Live answer/progress snippets are marked with a leading "↳" so the
       // delta loop can replace them — but that marker reads like an "enter"
       // symbol in the minimized header.  Strip it and show the raw process
-      // text as-is (no tool-name title-casing for prose snippets).
+      // text as-is.
       if (last.startsWith("↳ ")) return last.slice(2).trim();
-      return formatToolName(last);
+      return describeToolStep({ name: last, status: "running" }).label;
     }
     return null;
   }, [toolEvents, progressLines]);
 
-  // Final summary title once complete — verb-based, VS Code style
-  // ("Ran 3 commands, read 2 files").
+  // Final summary title once complete — VS Code style ("Ran 3 commands,
+  // read 2 files"), counted by step kind.
   const summaryTitle = useMemo(() => {
     if (toolEvents.length === 0) {
       return (hasReasoning || hasNarration)
         ? "Thought through the approach"
         : "Finished thinking";
     }
-    const counts = new Map<ActionKind, number>();
+    if (toolEvents.length === 1) return describeToolStep(toolEvents[0]).label;
+    const counts = new Map<StepKind, number>();
     for (const t of toolEvents) {
-      const k = classifyTool(t.name).kind;
+      const k = describeToolStep(t).kind;
       counts.set(k, (counts.get(k) ?? 0) + 1);
     }
-    const NOUNS: Record<ActionKind, [string, string]> = {
-      run: ["command", "commands"],
-      read: ["file", "files"],
-      search: ["search", "searches"],
-      edit: ["edit", "edits"],
-      delegate: ["agent", "agents"],
-      think: ["reflection", "reflections"],
-      other: ["tool", "tools"],
+    const PHRASE: Record<StepKind, [string, string]> = {
+      run: ["ran 1 script", "ran {n} scripts"],
+      read: ["read 1 item", "read {n} items"],
+      search: ["ran 1 search", "ran {n} searches"],
+      edit: ["made 1 change", "made {n} changes"],
+      delegate: ["asked 1 agent", "asked {n} agents"],
+      think: ["made 1 plan step", "made {n} plan steps"],
+      other: ["used 1 tool", "used {n} tools"],
     };
     const parts = Array.from(counts.entries()).map(([k, n], i) => {
-      const verb = k === "delegate" ? "called" : KIND_VERBS[k].done.toLowerCase();
-      const noun = NOUNS[k][n === 1 ? 0 : 1];
-      const text = k === "edit" ? `made ${n} ${noun}` : `${verb} ${n} ${noun}`;
+      const text = (n === 1 ? PHRASE[k][0] : PHRASE[k][1]).replace("{n}", String(n));
       return i === 0 ? text.charAt(0).toUpperCase() + text.slice(1) : text;
     });
     return parts.slice(0, 3).join(", ");
-  }, [toolEvents, hasReasoning]);
+  }, [toolEvents, hasReasoning, hasNarration]);
 
   const hasError = toolEvents.some((t) => t.status === "error");
+  const failedCount = toolEvents.filter((t) => t.status === "error").length;
 
   // Live tail of the model's chain-of-thought — shown in the header while
   // active so the user sees the "stream of consciousness" even collapsed
@@ -437,13 +658,14 @@ export default function ThinkingContainer({
     return last.length > 90 ? `…${last.slice(-90)}` : last;
   }, [isActive, reasoningBlocks, narrationSegments]);
 
-  // Title shown in the header.  A currently-running tool takes priority;
-  // otherwise show the live reasoning tail, then the last known label.
+  // Title shown in the header.  A currently-running step takes priority;
+  // otherwise show the live reasoning tail, then the last known step.
   const hasRunningTool = toolEvents.some((t) => t.status === "running");
   const title = isActive
-    ? (hasRunningTool && lastLabel ? `Working: ${lastLabel}` : null)
+    ? (hasRunningTool && lastLabel ? lastLabel : null)
       ?? liveReasoningTail
-      ?? (lastLabel ? `Working: ${lastLabel}` : "Thinking…")
+      ?? lastLabel
+      ?? "Thinking…"
     : summaryTitle;
 
   const totalMs = useMemo(() => {
@@ -459,37 +681,43 @@ export default function ThinkingContainer({
   }, [isActive, toolEvents]);
 
   return (
-    <div className="my-2 rounded-lg border border-border/40 bg-card/30 overflow-hidden">
+    <div className="my-2 rounded-lg border border-border/40 bg-card/30 overflow-hidden" data-trail="">
       {/* ── Header ─────────────────────────────────────────────────── */}
       <button
+        type="button"
         onClick={() => { userToggledRef.current = true; setExpanded((o) => !o); }}
         disabled={!hasContent}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-secondary/40 transition-colors disabled:cursor-default"
+        aria-expanded={hasContent ? expanded : undefined}
+        data-trail-head=""
+        className="w-full flex items-center pr-3 py-2 text-left hover:bg-secondary/40 transition-colors disabled:cursor-default min-w-0"
       >
-        <span className="shrink-0 flex items-center justify-center w-4">
-          {isActive ? (
-            hasError ? <AppIcon name="X" className="text-red-400" size={14} strokeWidth={2} /> : <AppIcon name="Brain" className="text-sky-400" size={14} strokeWidth={1.5} />
-          ) : hasError ? (
-            <AppIcon name="X" className="text-red-400" size={14} strokeWidth={2} />
+        {/* The trail's one icon column: the same cell as every step's, so
+            the header icon sits on the axis (`lib/trailLayout.ts`). */}
+        <span data-trail-icon="" className={TRAIL_ICON_CELL}>
+          {hasError ? (
+            <AppIcon name="X" className="text-destructive" size={14} strokeWidth={2} />
+          ) : isActive ? (
+            <AppIcon name="Brain" className="text-info" size={14} strokeWidth={1.5} />
           ) : (
-            <AppIcon name="Check" className="text-emerald-500" size={14} strokeWidth={2} />
+            <AppIcon name="Check" className="text-success" size={14} strokeWidth={2} />
           )}
         </span>
-        <span className={`text-xs font-medium min-w-0 truncate ${isActive ? "chat-shimmer-text" : "text-muted-foreground"}`}>
+        <span className="flex flex-1 items-center gap-2 min-w-0">
+        <span title={title} className={`text-xs font-medium min-w-0 truncate ${isActive ? "chat-shimmer-text" : "text-muted-foreground"}`}>
           {title}
         </span>
-        {totalMs !== null && (
-          <span className="shrink-0 text-[10px] text-muted-foreground font-mono">{totalMs}ms</span>
+        {!isActive && failedCount > 0 && (
+          <span className="shrink-0 text-[10px] text-destructive">
+            {failedCount} failed
+          </span>
         )}
-        {/* Action kind badges in header */}
-        {!isActive && toolEvents.length > 0 && (
-          <span className="shrink-0 flex items-center gap-1 ml-1">
-            {Array.from(new Set(toolEvents.map((t) => classifyTool(t.name).kind))).map((k) => (
-              <span key={k} className="text-[9px] px-1 py-0.5 rounded border border-border text-muted-foreground font-mono uppercase">{k}</span>
-            ))}
+        {totalMs !== null && (
+          <span data-step-duration="" className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
+            {totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`}
           </span>
         )}
         {hasContent && <span className="ml-auto shrink-0 text-muted-foreground text-[10px]">{expanded ? "▲" : "▼"}</span>}
+        </span>
       </button>
 
       {/* ── Pre-content working indicator ──────────────────────────────
@@ -498,23 +726,23 @@ export default function ThinkingContainer({
           rather than a message inside the container. */}
 
       {/* ── Body: vertical timeline ────────────────────────────────── */}
-      {expanded && hasContent && (
+      {(expanded || bodyKept) && hasContent && (
         <div
           ref={bodyRef}
+          hidden={!expanded}
+          data-trail-body=""
           className={`border-t border-border/40 chat-fade-in overflow-y-auto ${
-            // While streaming, use a FIXED-height window (not max-height) so the
-            // live "consciousness" stream scrolls INTERNALLY (auto-followed to the
-            // newest line) instead of growing and pushing the whole chat down.
-            // When the user manually expands a finished turn to review, allow it
-            // to grow up to a larger cap.
-            isActive ? "h-56" : "max-h-[32rem]"
+            // A cap, never a height (`lib/trailLayout.ts`). A fixed `h-56`
+            // here drew ~10rem of empty border under two steps for the whole
+            // run. Over the cap, the trail scrolls inside itself, and the
+            // effect above follows it to the newest step.
+            trailBodySize(isActive)
           }`}
         >
-          {/* Container with NO left padding — all items position relative to this.
-              Content is indented via ml-8.  Line and dots share the same x=12px axis. */}
+          {/* NO left padding: every row starts with the icon column, and the
+              line runs down the centre of it (`lib/trailLayout.ts`). */}
           <div className="relative py-2.5">
-            {/* Vertical line at x=12px */}
-            <div className="absolute left-[12px] top-2 bottom-2 w-px bg-secondary/60" />
+            <div className={`absolute ${TRAIL_AXIS} top-2 bottom-2 w-px bg-secondary/60`} aria-hidden="true" />
 
             <div className="space-y-1.5">
               {/* Chronologically interleaved reasoning + tool timeline
@@ -531,7 +759,7 @@ export default function ThinkingContainer({
                       text={item.text}
                       live={live}
                       icon={themedIcon("Brain")}
-                      iconClass={live ? "text-purple-400" : "text-muted-foreground/50"}
+                      iconClass={live ? "text-info" : "text-muted-foreground/50"}
                     />
                   );
                 }
@@ -540,8 +768,8 @@ export default function ThinkingContainer({
                   if (!item.text.trim()) return null;
                   // Narration segments are the model's real prose before the
                   // answer — a distinct book icon separates them from the
-                  // purple-brain chain-of-thought.  The last narration segment
-                  // is live only while streaming.
+                  // chain-of-thought.  The last narration segment is live
+                  // only while streaming.
                   const isLastNarration =
                     item.blockIndex === (narrationSegments?.length ?? 0) - 1;
                   const live = isActive && isLastNarration;
@@ -551,183 +779,24 @@ export default function ThinkingContainer({
                       text={item.text}
                       live={live}
                       icon={themedIcon("BookOpen")}
-                      iconClass={live ? "text-sky-400" : "text-muted-foreground/50"}
+                      iconClass={live ? "text-info" : "text-muted-foreground/50"}
                     />
                   );
                 }
 
                 const event = item.event;
-                const style = classifyTool(event.name);
-                const isRunning = event.status === "running";
-                const isError = event.status === "error";
-                const headline = toolHeadline(event, style.kind);
-                const verb = isRunning ? KIND_VERBS[style.kind].running : KIND_VERBS[style.kind].done;
-                const dur = event.endedAt && event.startedAt ? event.endedAt - event.startedAt : undefined;
-                const open = toolOverrides[event.id] ?? isRunning;
-                const toggle = () =>
-                  setToolOverrides((prev) => ({ ...prev, [event.id]: !open }));
-
-                const hasSubAgent = !!(event.subAgentName && (event.subAgentTools?.length || event.subAgentText));
+                const open = toolOverrides[event.id] ?? event.status === "running";
                 return (
-                  <div key={event.id} className="relative">
-                    {/* Lucide icon on the timeline axis */}
-                    <div className="absolute left-[5px] top-[5px] z-10">
-                      <TimelineIcon
-                        iconKey={style.iconKey}
-                        className={isRunning ? `${style.iconClass} drop-shadow-[0_0_4px_currentColor]` : isError ? "text-red-500" : style.iconClass}
-                      />
-                    </div>
-
-                    <div className="ml-8 mr-3 min-w-0">
-                      {/* Compact one-line header — "Ran <cmd>", "Read <file>"… */}
-                      <button
-                        onClick={toggle}
-                        className="w-full flex items-baseline gap-1.5 text-left group/tool min-w-0"
-                      >
-                        <span className={`text-[11.5px] shrink-0 ${isRunning ? "chat-shimmer-text" : "text-muted-foreground"}`}>
-                          {verb}
-                        </span>
-                        <span className={`text-[11px] font-mono truncate min-w-0 px-1 py-px rounded bg-secondary/60 border border-border/40 ${isError ? "text-red-400" : "text-foreground"}`}>
-                          {headline}
-                        </span>
-                        {isError && <span className="text-red-400 text-[10px] shrink-0">✗</span>}
-                        {dur !== undefined && dur > 1000 && (
-                          <span className="text-[9px] text-muted-foreground font-mono shrink-0">{(dur / 1000).toFixed(1)}s</span>
-                        )}
-                        <span className="ml-auto shrink-0 text-muted-foreground text-[9px] opacity-0 group-hover/tool:opacity-100 transition-opacity">
-                          {open ? "▴" : "▾"}
-                        </span>
-                      </button>
-
-                      {/* Expanded detail */}
-                      {open && (
-                        <div className="mt-1">
-                          {style.kind === "run" && (event.args || event.result) ? (
-                            <div className="rounded-md bg-term-bg border border-term-fg/10 overflow-hidden">
-                              {/* Terminal body — no title bar (no Mac circles), just the prompt */}
-                              <div className="px-2.5 pt-1.5 pb-2.5 font-mono text-[11px] leading-relaxed">
-                                {event.args && (
-                                  <div className="flex items-baseline gap-2 mb-1.5">
-                                    <span className="text-term-prompt shrink-0 select-none font-medium">$</span>
-                                    <span className="flex-1 text-term-fg break-all font-mono text-[11px] leading-relaxed">
-                                      {highlightCommand(extractCommand(event.args, event.name))}
-                                    </span>
-                                    {isRunning && (
-                                      <span className="text-[9px] text-term-running animate-pulse font-mono shrink-0">running</span>
-                                    )}
-                                    {dur !== undefined && !isRunning && (
-                                      <span className="text-[9px] text-term-muted font-mono shrink-0">{dur}ms</span>
-                                    )}
-                                  </div>
-                                )}
-                                {event.result && (
-                                  <div className="text-term-output whitespace-pre-wrap break-all max-h-64 overflow-y-auto leading-snug">
-                                    {String(event.result)}
-                                    {isRunning && (
-                                      <span className="inline-block w-[6px] h-[14px] bg-term-output animate-pulse ml-0.5 align-middle" />
-                                    )}
-                                  </div>
-                                )}
-                                {!event.result && isRunning && (
-                                  <div className="flex gap-2">
-                                    <span className="text-term-prompt shrink-0 select-none">$</span>
-                                    <span className="inline-block w-[6px] h-[14px] bg-term-output animate-pulse align-middle" />
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          ) : (
-                            <div className={`rounded-md border-l-2 ${style.borderClass} bg-card/40 px-2.5 py-1.5`}>
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <TimelineIcon iconKey={style.iconKey} className={style.iconClass} />
-                                <span className="text-[10px] text-muted-foreground font-mono truncate">{formatToolName(event.name)}</span>
-                                {dur !== undefined && <span className="text-[9px] text-muted-foreground font-mono ml-auto shrink-0">{dur}ms</span>}
-                              </div>
-                              {event.args && Object.keys(event.args).length > 0 && (
-                                <div className="text-[10px] text-muted-foreground font-mono mt-1">
-                                  {Object.entries(event.args).map(([k, v]) => (
-                                    <span key={k} className="inline-block mr-2">
-                                      <span className="text-muted-foreground">{k}:</span>{" "}
-                                      <span className="text-muted-foreground">{String(v).slice(0, 80)}</span>
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                              {event.result && (
-                                <pre className="text-[10px] text-muted-foreground font-mono mt-1 whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
-                                  {String(event.result).slice(0, 2000)}
-                                </pre>
-                              )}
-                            </div>
-                          )}
-
-                          {/* ── Git-tree style sub-agent sub-timeline ── */}
-                          {hasSubAgent && (
-                            <div className="mt-1.5 ml-3 relative">
-                              {/* Branch connector: horizontal line from parent line to sub-tree */}
-                              <div className="absolute left-[-12px] top-0 bottom-0 w-px bg-rose-700/40" />
-                              <div className="absolute left-[-12px] top-3 w-[12px] h-px bg-rose-700/40" />
-
-                              {/* Sub-agent header */}
-                              <div className="flex items-center gap-1.5 text-[10px] mb-1">
-                                <AppIcon name="GitBranch" className="text-rose-400" size={12} strokeWidth={1.5} />
-                                <span className="text-rose-400 font-medium">{event.subAgentName}</span>
-                                {event.subAgentActive && (
-                                  <span className="text-[9px] text-rose-400 animate-pulse">● running</span>
-                                )}
-                              </div>
-
-                              {/* Sub-agent output text */}
-                              {event.subAgentText && (
-                                <pre className="text-muted-foreground whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed mb-1.5 max-h-24 overflow-y-auto bg-zinc-950/50 rounded px-2 py-1 border border-border/40">
-                                  {event.subAgentText}
-                                </pre>
-                              )}
-
-                              {/* Sub-agent's own tool calls as child nodes */}
-                              {event.subAgentTools && event.subAgentTools.length > 0 && (
-                                <div className="relative ml-2">
-                                  {/* Sub-tree vertical line */}
-                                  <div className="absolute left-[6px] top-1 bottom-1 w-px bg-rose-700/30" />
-                                  <div className="space-y-1">
-                                    {event.subAgentTools.map((st, si) => {
-                                      const isLast = si === event.subAgentTools!.length - 1;
-                                      const stRunning = st.status === "running";
-                                      const stError = st.status === "error";
-                                      const stStyle = classifyTool(st.name);
-                                      return (
-                                        <div key={st.id} className="relative flex items-start gap-2">
-                                          {/* Sub-node connector */}
-                                          <div className="absolute left-[6px] top-[8px] w-[8px] h-px bg-rose-700/30" />
-                                          {/* Sub-node icon */}
-                                          <span className={`shrink-0 mt-0.5 ml-[14px] ${stRunning ? `${stStyle.iconClass} drop-shadow-[0_0_3px_currentColor]` : stError ? "text-red-500" : stStyle.iconClass}`}>
-                                            <TimelineIcon iconKey={stStyle.iconKey} />
-                                          </span>
-                                          <span className={`text-[10px] font-mono truncate px-1 py-px rounded bg-secondary/50 border border-border/30 ${stError ? "text-red-400" : "text-foreground"}`}>
-                                            {formatToolName(st.name)}
-                                          </span>
-                                          {st.result && (
-                                            <span className="text-[9px] text-muted-foreground font-mono truncate max-w-[200px]">
-                                              {String(st.result).slice(0, 60)}
-                                            </span>
-                                          )}
-                                          {stRunning && (
-                                            <span className="text-[9px] text-rose-400 animate-pulse shrink-0">…</span>
-                                          )}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  <ToolStepRow
+                    key={event.id}
+                    event={event}
+                    open={open}
+                    evidence={evidenceFor?.(event) ?? null}
+                    onToggle={() =>
+                      setToolOverrides((prev) => ({ ...prev, [event.id]: !open }))
+                    }
+                  />
                 );
-
               })}
 
               {/* Working indicator removed from here — it now lives as a

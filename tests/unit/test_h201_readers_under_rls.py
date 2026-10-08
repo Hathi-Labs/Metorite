@@ -161,10 +161,13 @@ def test_the_workspace_patch_writes_in_the_members_tenant(graph_as_app, roots): 
     a = graph_as_app.org_a
     sid = _seed_session(graph_as_app, a, _ALICE, None)
 
-    # No tenant: the room lookup fails closed first, so the answer is 403.
+    # No tenant: the room lookup fails closed first. A failed lookup is an
+    # outage, not a refusal, so the answer is 503 with the retry wording
+    # (PR #652 fix round 1, RoomAccess.refusal_status). Nothing is written.
     with pytest.raises(HTTPException) as err:
         _patch(sid, _user(_ALICE, None), str(roots.app_a))
-    assert err.value.status_code == 403
+    assert err.value.status_code == 503
+    assert "try again" in str(err.value.detail).lower()
     assert _stored(graph_as_app, sid) is None
     # The path check itself refuses with no tenant too.
     from gateway.routes.workspace import _allowed_workspace
@@ -312,19 +315,25 @@ def test_every_workspace_route_checks_the_room(graph_as_app, roots, workspace_cl
 
     for who in (_user(_BOB, a), _user(_CAROL, b), _user(_ALICE, None)):
         c = workspace_client(who)
+        # With no tenant the room lookup fails closed. That is an outage, not
+        # a refusal, so it answers 503 (PR #652 fix round 1,
+        # RoomAccess.refusal_status). Bob and Carol are refused: 404 and 403.
+        outage = who.organization_id is None
+        read_no = 503 if outage else 404
+        write_no = 503 if outage else 403
         tree = c.get(base)
         assert tree.status_code == 200 and tree.json()["files"] == [], who.email
-        assert c.get(f"{base}/file", params={"path": "outputs/note.md"}).status_code == 404
+        assert c.get(f"{base}/file", params={"path": "outputs/note.md"}).status_code == read_no
         assert c.get(f"{base}/history", params={"path": "outputs/note.md"}).json() == {"history": []}
-        assert c.get(f"{base}/events").status_code == 404
+        assert c.get(f"{base}/events").status_code == read_no
         assert c.put(f"{base}/file", params={"path": "outputs/x.md"},
-                     json={"content": "forged"}).status_code == 403
-        assert c.delete(f"{base}/file", params={"path": "outputs/note.md"}).status_code == 403
-        assert c.post(f"{base}/upload", files={"files": ("f.txt", b"x")}).status_code == 403
-        assert c.post(f"{base}/promote", json={"path": "inputs/spec.txt"}).status_code == 403
-        assert c.patch(base, json={"workspace_path": str(roots.app_a)}).status_code == 403
+                     json={"content": "forged"}).status_code == write_no
+        assert c.delete(f"{base}/file", params={"path": "outputs/note.md"}).status_code == write_no
+        assert c.post(f"{base}/upload", files={"files": ("f.txt", b"x")}).status_code == write_no
+        assert c.post(f"{base}/promote", json={"path": "inputs/spec.txt"}).status_code == write_no
+        assert c.patch(base, json={"workspace_path": str(roots.app_a)}).status_code == write_no
         assert c.post(f"{base}/events", json={"name": "artifact_created",
-                                              "path": "outputs/x.md"}).status_code == 403
+                                              "path": "outputs/x.md"}).status_code == write_no
     assert (roots.app_a / "outputs" / "note.md").is_file()
     assert not (roots.app_a / "outputs" / "x.md").exists()
 
@@ -501,9 +510,14 @@ def test_a_bad_agent_name_in_a_row_never_becomes_a_root(graph_as_app, clone_root
     assert _get_workspace_path(sid, _ALICE, a) == tenant
     got = client.get(f"/workspace/{sid}/file", params={"path": "outputs/ok.md"})
     assert got.status_code == 404 and "# ok" not in got.text
-    (tenant / "outputs").mkdir()
-    (tenant / "outputs" / "ok.md").write_text("# tenant ok", encoding="utf-8")
-    got = client.get(f"/workspace/{sid}/file", params={"path": "outputs/ok.md"})
+    # H-227: a file of the session's own thread folder. A loose file in the
+    # flat outputs/ opens only for the session that the history names.
+    from acb_skills.agent_paths import thread_outputs_rel
+
+    own = thread_outputs_rel(sid)
+    (tenant / own).mkdir(parents=True)
+    (tenant / own / "ok.md").write_text("# tenant ok", encoding="utf-8")
+    got = client.get(f"/workspace/{sid}/file", params={"path": f"{own}/ok.md"})
     assert got.status_code == 200 and "# tenant ok" in got.text
 
 

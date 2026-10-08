@@ -31,6 +31,7 @@ import { apiPatchItem, apiAgentPlanToday } from "@/app/tasks/lib/api";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
+import { placementOf } from "@/lib/chatPlacement";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -491,22 +492,44 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
  * Render rich, interactive cards for the task-manager tool calls in a message.
  * Returns null when there are none (inert for non-task agents).
  */
+/** The event under its current name. A stored old name maps to its new name. */
+function current(e: ToolEvent): ToolEvent {
+  const name = currentToolName(e.name);
+  return name === e.name ? e : { ...e, name };
+}
+
+/** Every tool name this file routes. The placement fence reads it. */
+export const TASK_CARD_TOOLS: readonly string[] = [
+  LIST_TOOL,
+  SCHEDULE_TOOL,
+  ...Object.keys(PLAN_META),
+  ...INFO_TOOLS,
+  ...Object.keys(ACTION_META),
+];
+
+/**
+ * The receipt of a Tasks READ for the trail (`ThinkingContainer`), or null.
+ * Spec `projects_ai_chat.md` §24 rule 2: a read draws under its step.
+ */
+export function taskEvidence(raw: ToolEvent): React.ReactNode | null {
+  const e = current(raw);
+  if (e.status !== "done" && e.status !== "error") return null;
+  if (!isTaskCardTool(e.name) || placementOf(e.name) !== "evidence") return null;
+  if (e.name === LIST_TOOL || e.name === SCHEDULE_TOOL) return <TaskListCard event={e} />;
+  if (INFO_TOOLS.has(e.name)) return <InfoResultCard event={e} />;
+  return null;
+}
+
 export default function TaskToolCards({ toolEvents }: { toolEvents?: ToolEvent[] }) {
   const dismissed = useDismissedToolCards();
   const all = (toolEvents ?? [])
-    .map((e) => {
-      const name = currentToolName(e.name);
-      return name === e.name ? e : { ...e, name };
-    })
-    .filter((e) => !dismissed.has(e.id) && hasTaskCard(e));
+    .map(current)
+    // A read draws in its step (`taskEvidence`), never after the answer.
+    .filter((e) => !dismissed.has(e.id) && hasTaskCard(e) && placementOf(e.name) !== "evidence");
   if (all.length === 0) return null;
 
   const items: React.ReactNode[] = [];
   for (const e of all) {
-    if (e.name === LIST_TOOL || e.name === SCHEDULE_TOOL) {
-      items.push(<TaskListCard key={e.id} event={e} />);
-      continue;
-    }
     if (e.name in PLAN_META) {
       items.push(<PlanResultCard key={e.id} event={e} />);
       continue;

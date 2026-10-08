@@ -239,6 +239,12 @@ class AssistantSettingsModel(BaseModel):
     # whose mail also counts as outbound/internal for direction-aware
     # classification. Read-only ``own_domain`` is returned by GET for display.
     org_domains: list[str] = Field(default_factory=list)
+    # Insights for this mailbox (WS-17 EM-T14a, D-EM-39, migration 231). OFF
+    # for a new mailbox and for a mailbox with no settings row. Only an
+    # opted-in mailbox sends its mail text to a model for Insights (D-EM-44).
+    # The feature flag EMAIL_INSIGHTS is a second switch, and its one reader is
+    # automation/insights_store.insights_enabled.
+    insights_enabled: bool = False
 
 
 @router.get("/assistant/settings")
@@ -260,7 +266,7 @@ async def get_assistant_settings(
                       digest_time_of_day, digest_send_to_email,
                       morning_brief_enabled,
                       multi_rule_execution, sensitive_data_protection,
-                      org_domains
+                      org_domains, insights_enabled
                FROM email_assistant_settings WHERE account_id = :aid"""
         ), {"aid": account_id})).fetchone()
         # The account's own email domain is ALWAYS treated as internal; surface
@@ -372,6 +378,12 @@ async def get_assistant_settings(
             "org_domains": (
                 list(getattr(row, "org_domains", None) or []) if row else []
             ),
+            # A missing row reads as false (D-EM-39), as the model default.
+            "insights_enabled": (
+                bool(row.insights_enabled)
+                if row and getattr(row, "insights_enabled", None) is not None
+                else False
+            ),
             # Read-only: the account's own domain, always treated as internal.
             "own_domain": own_domain,
         }
@@ -405,12 +417,13 @@ async def put_assistant_settings(
                   follow_up_auto_draft, digest_categories, digest_day_of_week,
                   digest_time_of_day, digest_send_to_email, morning_brief_enabled,
                   multi_rule_execution, sensitive_data_protection, org_domains,
-                  updated_at)
+                  insights_enabled, updated_at)
                VALUES (:aid, :about, :sig, :auto, :cold,
                        :draft_model, :compose_model, :chat_model,
                        :digest,
                        :pi, :ws, :dr, :fu, :dc, :fua, :funr, :fuad, :dcat,
-                       :ddow, :dtod, :dste, :mbe, :mre, :sdp, :orgd, now())
+                       :ddow, :dtod, :dste, :mbe, :mre, :sdp, :orgd, :ins,
+                       now())
                ON CONFLICT (account_id) DO UPDATE SET
                  about = EXCLUDED.about,
                  signature = EXCLUDED.signature,
@@ -436,6 +449,7 @@ async def put_assistant_settings(
                  multi_rule_execution = EXCLUDED.multi_rule_execution,
                  sensitive_data_protection = EXCLUDED.sensitive_data_protection,
                  org_domains = EXCLUDED.org_domains,
+                 insights_enabled = EXCLUDED.insights_enabled,
                  updated_at = now()
                RETURNING learned_writing_style"""
         ), {"aid": req.account_id, "about": req.about, "sig": req.signature,
@@ -456,7 +470,8 @@ async def put_assistant_settings(
             "mbe": req.morning_brief_enabled,
             "mre": req.multi_rule_execution,
             "sdp": req.sensitive_data_protection,
-            "orgd": org_domains})).fetchone()
+            "orgd": org_domains,
+            "ins": req.insights_enabled})).fetchone()
         # inbox-zero parity: the "Auto draft replies" toggle adds/removes the
         # DRAFT_EMAIL action on the "Reply" rule (like inbox-zero's
         # enableDraftRepliesAction), so to-reply mail is auto-drafted when on.
@@ -509,6 +524,7 @@ async def put_assistant_settings(
             "multi_rule_execution": req.multi_rule_execution,
             "sensitive_data_protection": req.sensitive_data_protection,
             "org_domains": org_domains,
+            "insights_enabled": req.insights_enabled,
             "own_domain": own_domain,
         }
 
@@ -617,6 +633,7 @@ async def _llm_writing_style(samples: list[str]) -> str:
     model's context window (acompletion_with_fallback handles keys + fitting)."""
     try:
         from acb_llm.context import acompletion_with_fallback  # noqa: PLC0415
+        from email_ingestion.llm_cap import llm_slot
         joined = "\n\n---\n\n".join(samples)
         sys_prompt = (
             "Analyze the user's sent emails and describe their writing style as a "
@@ -626,12 +643,14 @@ async def _llm_writing_style(samples: list[str]) -> str:
             "could follow, e.g. 'Keep replies to 2-3 short sentences.' Output ONLY "
             "the guide."
         )
-        resp, _ = await acompletion_with_fallback(
-            model="tier-powerful",
-            messages=[{"role": "system", "content": sys_prompt},
-                      {"role": "user", "content": joined[:8000]}],
-            temperature=0, max_tokens=1000,
-        )
+        # A member drives the writing style, so the slot binds nothing (EM-T4b).
+        async with llm_slot():
+            resp, _ = await acompletion_with_fallback(
+                model="tier-powerful",
+                messages=[{"role": "system", "content": sys_prompt},
+                          {"role": "user", "content": joined[:8000]}],
+                temperature=0, max_tokens=1000,
+            )
         return (resp.choices[0].message.content or "").strip()
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.writing_style_failed", error=str(exc)[:200])

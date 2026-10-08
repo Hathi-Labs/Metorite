@@ -112,7 +112,7 @@ export default function Home() {
           <p className="mt-2 text-sm text-muted-foreground">
             An organization admin grants access from Organisation → Members &amp;
             roles.{" "}
-            <Link href="/access" className="text-primary hover:underline">
+            <Link href="/people/access" className="text-primary hover:underline">
               See exactly what you can reach, and why
             </Link>
             .

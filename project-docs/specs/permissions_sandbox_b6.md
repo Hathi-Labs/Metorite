@@ -97,6 +97,13 @@ file-write-scope check (the same plain-dict context the tools already use).
 > discrepancy: the code's *default* is the enforcing mode, but **prod is pinned
 > to `audit`** (see the 2026-07-03 production-verification entry below), so
 > reading this section's "default" as the live posture is wrong.
+>
+> ⚠️ **Corrected 2026-10-03: production runs `enforce`, not `audit`.** The
+> PR #598 reviewer read the box. `/opt/acb/app/.env` has no
+> `AGENT_PERMISSION_MODE` line, so `_mode()` falls back to `enforce`. All 70
+> `permission.decision` lines of the 14 days to 2026-10-03 read
+> `mode=enforce`. So the B6 refusals are live on production today. A switch to
+> another mode is still the owner's act (`work_plan.md` §6).
 
 ## Wiring
 Replace `_PH.approve_all` at all five executor sites with our handler (guarded:
@@ -159,6 +166,9 @@ shell/file/network requests surface.
   ~9s) and set `LOG_FORMAT=json` on the VPS (logs are now JSON, run-correlated).
   Prod is in `AGENT_PERMISSION_MODE=audit` (log-only) pending review of the
   decision stream before flipping to `enforce`.
+  ⚠️ **Corrected 2026-10-03:** production runs `enforce`. The box's `.env`
+  sets no mode, and the 70 decision lines of the 14 days to that date read
+  `mode=enforce` (the PR #598 reviewer).
 
 ---
 
@@ -594,7 +604,9 @@ objection). Layer intent-level authorization over allow-everything.
 >
 > The one piece of P5-d that is separable is the **near-term handler's mode**,
 > which already exists: prod runs `AGENT_PERMISSION_MODE` in `audit` and moving
-> it to enforcement is **OWNER-GATE** (`work_plan.md` §6). That flip does not
+> it to enforcement is **OWNER-GATE** (`work_plan.md` §6). ⚠️ **Corrected
+> 2026-10-03:** production already runs `enforce`, because the box's `.env`
+> sets no mode (the PR #598 reviewer). That flip does not
 > need P5-c and does not need this section — it needs someone to read the
 > decision stream. Everything else here (intent-level authorization over a
 > default-deny surface) stays parked with P5-c and gets **no acceptance**.

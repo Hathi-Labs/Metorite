@@ -21,6 +21,7 @@ import { deleteEmailAccount } from "@/app/email/lib/api";
 import { disconnectFailureText } from "@/app/email/lib/connect";
 import Tabs from "@/components/Tabs";
 import type { TabDef } from "@/components/Tabs";
+import OperatorEnvVars from "./OperatorEnvVars";
 
 // ---------------------------------------------------------------------------
 // Tab navigation
@@ -196,7 +197,11 @@ function ApiTile({ api, selected, onClick }: { api: ApiEntry; selected: boolean;
 }
 
 function CredentialForm({ api, onSaved }: {
-  api: { env_vars: { key: string; label: string; sensitive: boolean }[] };
+  api: {
+    env_vars: { key: string; label: string; sensitive: boolean }[];
+    // Read-only: the operator sets these on the server (security fix, 2026-10-05).
+    operator_env_vars?: { key: string; label: string }[];
+  };
   onSaved: () => void;
 }) {
   const [values, setValues] = useState<Record<string, string>>(
@@ -244,6 +249,7 @@ function CredentialForm({ api, onSaved }: {
           <div className="text-[9px] text-muted mt-0.5 font-mono">{v.key}</div>
         </div>
       ))}
+      <OperatorEnvVars api={api} />
       {err && <p className="text-xs text-destructive bg-destructive/10 rounded-lg px-3 py-2">{err}</p>}
       <Button size="none" layout="flex items-center justify-center" onClick={() => void save()} disabled={saving} className="w-full py-2.5 text-sm gap-2">
         {saving ? <Icon name="Loader2" className="w-3.5 h-3.5 animate-spin" /> : done ? <Icon name="Check" className="w-3.5 h-3.5" /> : null}
@@ -995,10 +1001,12 @@ function EmailTab() {
   }, [fetchAccounts]);
 
   const [oauthStatus, setOauthStatus] = useState<{
-    gmail: boolean; microsoft: boolean;
-  }>({ gmail: false, microsoft: false });
+    microsoft: boolean;
+  }>({ microsoft: false });
 
-  // Check OAuth configuration status for Gmail + Microsoft
+  // Check OAuth configuration status for Microsoft. Gmail has no row here
+  // since WS-17 EM-G7 (O-GM-5): Metorite owns the Google app, and the Email
+  // app reads its availability from GET /email/oauth/providers (D-EM-35).
   useEffect(() => {
     const check = async () => {
       try {
@@ -1006,7 +1014,6 @@ function EmailTab() {
         if (!res.ok) return;
         const data: Array<{ service: string; configured: boolean }> = await res.json();
         setOauthStatus({
-          gmail: data.find((i: any) => i.service === "gmail-oauth")?.configured ?? false,
           microsoft: data.find((i: any) => i.service === "microsoft-oauth")?.configured ?? false,
         });
       } catch { /* non-fatal */ }
@@ -1096,38 +1103,22 @@ function EmailTab() {
         </div>
       </div>
 
-      {/* OAuth status banner — shows which providers are ready */}
-      {(!oauthStatus.gmail || !oauthStatus.microsoft) && (
-        <div className="mx-4 mt-3 p-3 rounded-xl bg-warning/8 border border-warning/20">
+      {/* Mail app banner (WS-17 EM-G7 review round 1). It states a fact and
+          gives no setup step and no link: Metorite owns the mail apps
+          (D-EM-1), and an operator sets them on the server. Fence:
+          tests/unit/test_integrations_mail_app_keys.py. */}
+      {!oauthStatus.microsoft && (
+        <div data-testid="mail-app-banner" className="mx-4 mt-3 p-3 rounded-xl bg-warning/8 border border-warning/20">
           <div className="flex items-start gap-2.5">
             <Icon name="AlertCircle" className="w-4 h-4 text-warning mt-0.5 shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-xs font-medium text-warning mb-1">
-                OAuth sign-in not fully configured
+                Outlook connect is not available yet
               </p>
-              <p className="text-[11px] text-muted-foreground leading-relaxed mb-2">
-                To connect Gmail or Outlook accounts via OAuth, you need to
-                register Metorite as an app with Google and Microsoft first.
-                This is a one-time setup.
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                Metorite sets up the Microsoft mail app on the server. Nothing on
+                this page changes it.
               </p>
-              <div className="flex flex-wrap gap-1.5">
-                {!oauthStatus.gmail && (
-                  <a href="/integrations?tab=apis&search=Gmail+OAuth"
-                    className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors">
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-                    Gmail OAuth — not set up
-                    <Icon name="ExternalLink" className="w-2.5 h-2.5" />
-                  </a>
-                )}
-                {!oauthStatus.microsoft && (
-                  <a href="/integrations?tab=apis&search=Microsoft+OAuth"
-                    className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors">
-                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                    Microsoft OAuth — not set up
-                    <Icon name="ExternalLink" className="w-2.5 h-2.5" />
-                  </a>
-                )}
-              </div>
             </div>
           </div>
         </div>

@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user, require_permission
+from email_ingestion.storage import storage_limit_bytes
 from fastapi import Depends, HTTPException, status
 from gateway.routes.email.core import (
     _account_scope,
@@ -31,7 +32,8 @@ from gateway.routes.email.mailbox_identity import (
     valid_slot,
     work_domain,
 )
-from pydantic import BaseModel, StrictInt
+from gateway.routes.email.memory_purge import schedule_mailbox_memory_purge
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 from sqlalchemy import text
 
 #: The bound on the best-effort Graph call of a disconnect (EM-T4f). A slow or
@@ -80,10 +82,10 @@ class EmailAccountModel(BaseModel):
     #: True when the member closed the guided setup (EM-T6a item 11).
     onboarding_done: bool = False
     #: The progress of the first import (EM-T6b item 11). The phase is
-    #: ``counting``, ``importing`` or ``done``, and ``None`` before the first
-    #: import or for a mailbox from before EM-T6. ``import_reached_at`` is the
-    #: oldest mail written so far, as ISO text. ``import_estimate`` is
-    #: ``None`` when the provider gives no count.
+    #: ``counting``, ``importing``, ``done`` or ``limit`` (EM-T6c), and
+    #: ``None`` before the first import or for a mailbox from before EM-T6.
+    #: ``import_reached_at`` is the oldest mail written so far, as ISO text.
+    #: ``import_estimate`` is ``None`` when the provider gives no count.
     import_phase: str | None = None
     import_count: int | None = None
     import_estimate: int | None = None
@@ -105,6 +107,20 @@ class EmailAccountModel(BaseModel):
     #: mailbox cannot send until the member reconnects it. Any other sync
     #: error leaves it False: a send does not read the sync status (EM-T8c).
     needs_reconnect: bool = False
+    #: When the member connected the mailbox, as ISO text with six digits of
+    #: microseconds, so two values sort as text in the order of time. A
+    #: disconnect makes the oldest mailbox that is left the default
+    #: (``ORDER BY created_at, id`` in ``delete_account``). The UI names that
+    #: mailbox before the removal (EM-T8f-1 item 3). ``None`` for a NULL.
+    created_at: str | None = None
+    #: False when the member keeps the mailbox separate (EM-T8g-1, D-EM-28).
+    #: A read of more than one mailbox then leaves it out. Migration 229 gives
+    #: each row true, so the model default is true too.
+    in_all_inboxes: bool = True
+    #: The storage meter of the mailbox in bytes, and its limit (EM-T6c item
+    #: 14). ``stored_bytes`` is ``None`` before the first meter run.
+    stored_bytes: int | None = None
+    storage_limit_bytes: int = Field(default_factory=storage_limit_bytes)
 
 
 #: The longest label a member can give a mailbox (EM-T8b).
@@ -112,16 +128,18 @@ MAX_LABEL_LEN = 40
 
 #: The account columns that every account read returns, after the base ones.
 _PROGRESS_COLUMNS = (
-    "import_phase, import_count, import_estimate, import_reached_at")
+    "import_phase, import_count, import_estimate, import_reached_at, "
+    "stored_bytes")
 
 
 def _progress(row: Any) -> dict[str, Any]:
-    """The import progress of an account row, for ``EmailAccountModel``."""
+    """The import progress and the meter of an account row."""
     return {
         "import_phase": row.import_phase,
         "import_count": row.import_count,
         "import_estimate": row.import_estimate,
         "import_reached_at": _iso(row.import_reached_at),
+        "stored_bytes": row.stored_bytes,
     }
 
 
@@ -134,15 +152,38 @@ class AccountUpdateModel(BaseModel):
     #: The slot of the mailbox chip, 1 to 12 (EM-T8b). Strict, so JSON
     #: ``true`` or ``"3"`` answers 422 instead of turning into a slot.
     color_slot: StrictInt | None = None
+    #: False keeps the mailbox separate, and true puts it back in All inboxes
+    #: (EM-T8g-1, D-EM-28). Strict, so ``"yes"``, ``"false"`` or ``0`` answers
+    #: 422 instead of turning into a choice the member did not make.
+    in_all_inboxes: StrictBool | None = None
 
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if value else None
 
 
+def _iso_us(value: Any) -> str | None:
+    """ISO text that always holds microseconds (EM-T8f-1).
+
+    ``isoformat()`` drops the fraction when it is zero, so two values would
+    not compare as text. The fixed form keeps the order of time.
+    """
+    return value.isoformat(timespec="microseconds") if value else None
+
+
+#: The providers that connect through the OAuth flow only (WS-17 EM-G7 review
+#: round 1). ``POST /email/accounts`` refuses each one with 403. Fence:
+#: ``tests/unit/test_email_gmail_connect.py``.
+_OAUTH_ONLY_PROVIDERS: frozenset[str] = frozenset({"gmail", "microsoft"})
+_OAUTH_ONLY_DETAIL = (
+    "Gmail and Microsoft 365 mailboxes connect through the sign-in flow only. "
+    "This route adds an IMAP mailbox."
+)
+
+
 class CreateAccountRequest(BaseModel):
-    """Manual account creation (IMAP/SMTP or other manual config)."""
-    provider: str  # 'imap' | 'gmail' | 'microsoft'
+    """Manual account creation (IMAP/SMTP). Gmail and Microsoft are refused."""
+    provider: str  # 'imap' only. 'gmail' and 'microsoft' answer 403.
     email_address: str
     label: str = ""
     credentials: dict[str, Any]  # Provider-specific credential dict
@@ -263,7 +304,8 @@ async def list_accounts(
                 f"""SELECT id, provider, email_address, label, avatar_color,
                           sync_enabled, sync_status, sync_error, last_synced_at,
                           is_default, initial_sync_done, import_since,
-                          onboarding_done_at, color_slot, {_PROGRESS_COLUMNS}
+                          onboarding_done_at, color_slot, created_at,
+                          in_all_inboxes, {_PROGRESS_COLUMNS}
                    FROM email_accounts
                    WHERE user_id = :user_id
                    ORDER BY is_default DESC, created_at"""
@@ -299,6 +341,8 @@ async def list_accounts(
                 default_label=defaults.get(str(row.id), row.email_address),
                 work_domain=work_domain(row.email_address),
                 needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
+                created_at=_iso_us(row.created_at),
+                in_all_inboxes=bool(row.in_all_inboxes),
                 **_progress(row),
             ))
         return accounts
@@ -346,10 +390,14 @@ async def create_account(
     req: CreateAccountRequest,
     user: UserContext = Depends(get_current_user),
 ):
-    """Add a new email account manually (IMAP/SMTP or pre-configured OAuth creds).
+    """Add a new IMAP/SMTP account manually.
 
-    For OAuth-based providers (gmail, microsoft), use the /oauth/{provider}/authorize
-    flow instead — it handles token exchange automatically.
+    Gmail and Microsoft connect through the OAuth flow only
+    (``/oauth/{provider}/authorize``). This route answers 403 for either one,
+    before it reads, encrypts or writes anything (WS-17 EM-G7 review round 1).
+    A body with tokens would skip each check of the flow: the signed state,
+    the member of the session, the scopes of D-EM-31, the refresh token and
+    ``EMAIL_GMAIL_CONNECT``. No caller sends either provider here.
 
     The organization and the member come from the session and from nowhere
     else (``user_management_contract.md`` R11). With either one missing, the
@@ -362,11 +410,15 @@ async def create_account(
         )
     org = str(user.organization_id)
 
+    if req.provider in _OAUTH_ONLY_PROVIDERS:
+        _log.info("email.manual_oauth_account_refused", provider=req.provider)
+        raise HTTPException(status_code=403, detail=_OAUTH_ONLY_DETAIL)
+
     # Validate provider
-    if req.provider not in ("gmail", "microsoft", "imap"):
+    if req.provider != "imap":
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown provider: {req.provider}. Supported: gmail, microsoft, imap",
+            detail=f"Unknown provider: {req.provider}. Supported: imap",
         )
 
     # For IMAP, validate required credential fields
@@ -427,7 +479,8 @@ async def create_account(
                                        WHERE user_id = :user_id
                                          AND organization_id = CAST(:org AS uuid)),
                            CAST(:org AS uuid), {NEXT_SLOT_SQL})
-                   RETURNING is_default, color_slot"""
+                   RETURNING is_default, color_slot, created_at,
+                             in_all_inboxes"""
             ),
             {
                 "id": account_id,
@@ -470,6 +523,8 @@ async def create_account(
         display_label=labels.get(account_id, req.email_address),
         default_label=defaults.get(account_id, req.email_address),
         work_domain=work_domain(req.email_address),
+        created_at=_iso_us(created.created_at),
+        in_all_inboxes=bool(created.in_all_inboxes),
     )
 
 
@@ -511,7 +566,7 @@ async def set_default_account(
                              sync_enabled, sync_status, sync_error,
                              last_synced_at, is_default, initial_sync_done,
                              import_since, onboarding_done_at, color_slot,
-                             {_PROGRESS_COLUMNS}"""
+                             created_at, in_all_inboxes, {_PROGRESS_COLUMNS}"""
             ),
             {"id": account_id, "uid": owner},
         )
@@ -541,6 +596,8 @@ async def set_default_account(
             default_label=defaults.get(str(row.id), row.email_address),
             work_domain=work_domain(row.email_address),
             needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
+            created_at=_iso_us(row.created_at),
+            in_all_inboxes=bool(row.in_all_inboxes),
             **_progress(row),
         )
 
@@ -574,6 +631,12 @@ async def delete_account(
     ``commit()`` (mechanism (A) of §10.4.2). EM-T4f part 2 makes one sync
     run at a time for each mailbox (``email_ingestion.scheduler``). The fence
     is ``tests/unit/test_email_disconnect_order.py``.
+
+    EM-T8f-1 (MB-17): after the block of step 3 commits, a task deletes the
+    Mem0 drafting memory of the mailbox (``memory_purge.py``). A 404, a 409 or
+    a failed ``DELETE`` raises first, so it starts no purge. The route does
+    not wait for the task. The fence is
+    ``tests/unit/test_email_disconnect_memory_purge.py``.
     """
     owner = user.email or "anonymous"
 
@@ -641,7 +704,12 @@ async def delete_account(
                 status_code=409, detail=DISCONNECT_BUSY_DETAIL) from None
         raise
 
-    # ── 4. the Graph subscription, best effort, with no session open ────────
+    # ── 4. the Mem0 memory of the mailbox, in a task, after the commit ──────
+    # The owner predicate of the DELETE matched, so the row's user_id is
+    # ``owner``. The writers key the memory on that member (EM-T8f-1).
+    schedule_mailbox_memory_purge(owner, account_id)
+
+    # ── 5. the Graph subscription, best effort, with no session open ────────
     await _drop_graph_subscription(account_id, deleted)
 
 
@@ -780,6 +848,11 @@ async def update_account(
     label again. A label longer than ``MAX_LABEL_LEN`` answers 400.
     ``color_slot`` must be 1 to 12, or the route answers 400. Neither field
     restarts the sync loop.
+
+    EM-T8g-1: ``in_all_inboxes`` false keeps the mailbox separate, and true
+    puts it back in All inboxes (D-EM-28). The owner predicate binds it, so
+    the mailbox of another member answers 404 and changes nothing. It does
+    not restart the sync loop, because the loop does not read it.
     """
     if updates.color_slot is not None and not valid_slot(updates.color_slot):
         raise HTTPException(status_code=400, detail="color_slot is a whole number from 1 to 12.")
@@ -814,6 +887,9 @@ async def update_account(
             set_clauses.append(
                 "onboarding_done_at = now()" if updates.onboarding_done
                 else "onboarding_done_at = NULL")
+        if updates.in_all_inboxes is not None:
+            set_clauses.append("in_all_inboxes = :in_all_inboxes")
+            params["in_all_inboxes"] = updates.in_all_inboxes
 
         if not set_clauses:
             raise HTTPException(status_code=400, detail="No fields to update")
@@ -828,7 +904,8 @@ async def update_account(
                     RETURNING id, provider, email_address, label, avatar_color,
                               sync_enabled, sync_status, sync_error, last_synced_at,
                               initial_sync_done, import_since,
-                              onboarding_done_at, color_slot, {_PROGRESS_COLUMNS}"""
+                              onboarding_done_at, color_slot, created_at,
+                              in_all_inboxes, {_PROGRESS_COLUMNS}"""
             ),
             params,
         )
@@ -856,11 +933,13 @@ async def update_account(
         default_label=defaults.get(str(row.id), row.email_address),
         work_domain=work_domain(row.email_address),
         needs_reconnect=needs_reconnect(row.sync_status, row.sync_error),
+        created_at=_iso_us(row.created_at),
+        in_all_inboxes=bool(row.in_all_inboxes),
         **_progress(row),
     )
     # Only the sync toggle changes what the sync loop reads. A restart cancels
-    # a sync in flight, so a rename, a colour or the guided setup does not
-    # restart it (EM-T8b; before, a rename did).
+    # a sync in flight, so a rename, a colour, the guided setup or "Keep
+    # separate" does not restart it (EM-T8b, EM-T8g-1; before, a rename did).
     if updates.sync_enabled is None:
         return model
 

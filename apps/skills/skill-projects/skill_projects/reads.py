@@ -19,7 +19,8 @@ Output conventions the cards read (``ProjectToolCards.tsx``):
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import re
+from datetime import UTC, date, datetime
 from typing import Any
 
 from skill_projects.client import GatewayRefusal, data, get, uuid_of
@@ -54,8 +55,15 @@ def legend() -> str:
     now = datetime.now(UTC)
     return f"{DATA_LEGEND} Today is {now:%A} {now:%Y-%m-%d} (UTC)."
 
-#: The largest page a list tool asks for. The route caps at 50 anyway.
+#: The largest page a list tool asks for. ``/projects/search`` caps at 50
+#: (``search.MAX_HITS``). The list routes cap at 100 (``core.MAX_PAGE_SIZE``),
+#: so 50 is this tool's own choice there, not the route's limit.
 MAX_PAGE = 50
+#: The shortest TEXT query the routes run (``filters.MIN_QUERY``, D-PM-31).
+#: The skill cannot import gateway code, so this is a copy, and
+#: ``tests/unit/test_projects_search_minimum_lockstep.py`` holds it equal to
+#: the route and to the browser. A task number passes at any length.
+MIN_QUERY = 3
 #: How many timeline rows a detail read carries.
 TIMELINE_ROWS = 12
 
@@ -151,7 +159,7 @@ async def _status_names(root_ids: set[str]) -> dict[str, str]:
 # ── The tree and the summaries ───────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def projects_tree(include_archived: bool = False) -> str:
     """The spaces, folders, projects and subprojects the member can see, nested.
     Start here for "what is in this space?" or to find a project's id before
@@ -182,7 +190,7 @@ async def projects_tree(include_archived: bool = False) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def project_summary(project_id: str = "") -> str:
     """How a space, folder or project is doing: task totals by status category,
     what is overdue, and one line per child. Pass a project_id from
@@ -233,14 +241,53 @@ async def project_summary(project_id: str = "") -> str:
 # ── Finding and listing tasks ────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+_EDGE_SPACE = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+
+
+def _clean(raw: str) -> str:
+    """Edge whitespace and U+FEFF removed: the route's ``filters.clean_query``."""
+    return _EDGE_SPACE.sub("", raw or "")
+
+
+def _task_number(raw: str) -> int | None:
+    """``#7`` or ``7`` → 7, else ``None``. The same rule as the route's
+    ``filters.task_number``, and the lockstep test holds the two equal."""
+    stripped = _clean(_clean(raw).lstrip("#"))
+    if not (stripped.isascii() and stripped.isdigit()) or len(stripped) > 18:
+        return None
+    return int(stripped)
+
+
+def _short_text(term: str) -> bool:
+    """True for text too short to search. A task number is never short."""
+    return bool(term) and len(term) < MIN_QUERY and _task_number(term) is None
+
+
+def _short_query(term: str) -> str:
+    """The answer for a text query the routes will not run (D-PM-31).
+
+    The search route answers 422 and the list route answers EMPTY. A tool
+    that relayed the empty list would say "no task matches", which is false.
+    """
+    if not term:
+        return f"Give at least {MIN_QUERY} characters to search, or a task number such as #7."
+    return (
+        f"Give at least {MIN_QUERY} characters to search"
+        f" ({data(term)} is {len(term)}). A task number works at any length: #7."
+    )
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def find_tasks(query: str, limit: int = 10) -> str:
     """Search tasks by words in the title, or by task number, across every
-    project the member can see. At least 3 characters. Returns ranked hits
-    with the project and status, each with a `full_id` for task_detail."""
-    term = (query or "").strip()
-    if len(term) < 3:
-        return "Give at least 3 characters to search."
+    project the member can see. Words need at least 3 characters. A task
+    number works at any length: "#7" finds task 7 exactly. A query of only
+    digits finds that task number and no titles, so add a word to find a
+    title that holds a number. Returns ranked hits with the project and
+    status, each with a `full_id` for task_detail."""
+    term = _clean(query or "")
+    if not term or _short_text(term):
+        return _short_query(term)
     cap = max(1, min(int(limit or 10), MAX_PAGE))
     payload = await get("/projects/search", {"q": term, "limit": cap})
     rows = (payload or {}).get("rows") or []
@@ -254,7 +301,7 @@ async def find_tasks(query: str, limit: int = 10) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def list_tasks(
     project_id: str = "",
     include_subtree: bool = True,
@@ -275,7 +322,8 @@ async def list_tasks(
     project the member can see. status_category is one of todo, in_progress,
     done, cancelled (comma-separated for several). assignee is an email.
     tags is comma-separated. watching=true lists only tasks the member
-    watches. The total is the server's count, and page_size caps at 50."""
+    watches. query needs 3 characters, or a task number such as #7. The
+    total is the server's count, and page_size caps at 50."""
     params: dict[str, Any] = {
         "page": max(1, int(page or 1)),
         "page_size": max(1, min(int(page_size or 25), MAX_PAGE)),
@@ -299,8 +347,13 @@ async def list_tasks(
         params["watching"] = True
     if include_archived:
         params["include_archived"] = True
-    if query:
-        params["q"] = query
+    term = _clean(query or "")
+    if term:
+        # The list route matches NOTHING for short text (filters.py), so a
+        # 2-character query would read as "no task matches those filters".
+        if _short_text(term):
+            return _short_query(term)
+        params["q"] = term
 
     payload = await get("/projects/tasks", params)
     rows = (payload or {}).get("rows") or []
@@ -380,7 +433,7 @@ async def _timeline_block(task_id: str) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def task_detail(task_id: str) -> str:
     """Everything about one task: fields, assignees, subtasks, links and
     blockers, attachments, and the latest timeline entries. Read this before
@@ -422,6 +475,16 @@ async def task_detail(task_id: str) -> str:
         out.append("  fields: " + ", ".join(f"{k}={data(v)}" for k, v in fields.items()))
     if task.get("description"):
         out.append(f"  description: {data(str(task['description'])[:1200])}")
+    # WS-46 P1 (G2): the rule is not on the task row, so it is one more GET.
+    # A task that repeats says so here, and the model needs no second read.
+    # A failed read says so. It never reads as "does not repeat".
+    try:
+        rule = await _rule_of(tid)
+    except GatewayRefusal:
+        out.append("  Repeats: unknown, the rule could not be read. Use recurrence.")
+    else:
+        if rule:
+            out.append(f"  Repeats: {_rule_text(rule)}")
 
     out.extend(await _relations_block(tid))
     out.extend(await _attachments_block(tid))
@@ -432,21 +495,77 @@ async def task_detail(task_id: str) -> str:
 # ── The member's own work ────────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
-async def my_work(view: str = "assigned", include_done: bool = False, page: int = 1) -> str:
+def clock_of(row: Any) -> tuple[date | None, str, str]:
+    """``(today, zone, label)`` from ``GET /projects/my/today``, or
+    ``(None, "", "")`` for an answer that carries neither (WS-46 P7).
+    ``zone`` is the IANA name a time is read in. ``label`` is what a card
+    prints, and it is never given to ``ZoneInfo`` (review round 1). The one parser of the
+    member's date: ``my_work`` prints it, and the write tools that guess a
+    day take it (``writes._member_clock``).
+
+    The Tasks and the Calendar apps save the browser's zone when they open.
+    A member who never opened them has no saved zone, so the route answers
+    UTC with ``stored: false``. The zone then reads "UTC, no zone saved", so
+    no card claims that the member chose UTC.
+    """
+    if not isinstance(row, dict):
+        return None, "", ""
+    raw = str(row.get("today") or "").strip()
+    try:
+        day = date.fromisoformat(raw) if len(raw) == 10 else None
+    except ValueError:
+        day = None
+    zone = str(row.get("timezone") or "").strip()
+    if day is None or not zone:
+        return None, "", ""
+    if not row.get("stored", True):
+        label = f"{zone}, no zone saved"
+    elif not row.get("valid", True):
+        label = f"{zone}, no valid zone saved"
+    else:
+        label = zone
+    return day, zone, label
+
+
+async def _clock_line() -> str:
+    """"Your date: Tuesday 2026-10-06 (Asia/Kolkata)." for the member's own
+    lists. ``legend`` states the UTC date, and the member's evening can be
+    the next day. An empty line when the read has no answer."""
+    try:
+        day, _zone, label = clock_of(await get("/projects/my/today"))
+    except GatewayRefusal:
+        return ""
+    if day is None:
+        return ""
+    return f"Your date: {WEEKDAYS[day.isoweekday() - 1]} {day.isoformat()} ({label})."
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def my_work(
+    view: str = "assigned", include_done: bool = False, page: int = 1, untriaged: bool = False
+) -> str:
     """The member's own work. view="assigned" lists tasks assigned to them
     across every project. view="inbox" lists their personal lens with the
-    per-member overlay (disposition, context, defer). Use this for "what is
-    mine?" and for triage. Never for another person's work — use list_tasks
-    with assignee for that."""
-    which = (view or "assigned").strip().lower()
+    per-member overlay (disposition, context, defer). untriaged=true reads
+    the inbox rows the member has never triaged, with who assigned each one:
+    "what landed on my plate". The first line is the member's own date and
+    zone. Use this for "what is mine?" and for triage. Never for another
+    person's work — use list_tasks with assignee for that."""
+    which = "inbox" if untriaged else (view or "assigned").strip().lower()
     params: dict[str, Any] = {"page": max(1, int(page or 1)), "page_size": MAX_PAGE}
     home: list[str] = []
+    clock = await _clock_line()
+    if clock:
+        home.append(clock)
     if which == "inbox":
         if include_done:
             params["include_done"] = True
+        if untriaged:
+            # WS-46 P7 (G18): the route narrows to rows with no overlay of
+            # mine, and adds `assigned_by` (personal.py `my_inbox`).
+            params["untriaged"] = True
         payload = await get("/projects/my/inbox", params)
-        title = "My inbox"
+        title = "Landed on my plate, not triaged yet" if untriaged else "My inbox"
         # The personal project is where a private task lives (D53). Named
         # here so "add this to my own list" has an id to land on later.
         # 404 until the member captures their first private task. That is
@@ -475,7 +594,7 @@ async def my_work(view: str = "assigned", include_done: bool = False, page: int 
     for row in rows:
         head, ident = _task_line(row, names.get(str(row.get("status_id")), ""))
         overlay: list[str] = []
-        for key in ("disposition", "context", "energy", "deferred_until"):
+        for key in ("disposition", "context", "energy", "deferred_until", "assigned_by"):
             if row.get(key):
                 overlay.append(f"{key} {data(row[key])}")
         if overlay:
@@ -488,14 +607,22 @@ async def my_work(view: str = "assigned", include_done: bool = False, page: int 
 # ── People and vocabulary ────────────────────────────────────────────────────
 
 
-WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+#: ISO weekdays: 1 is Monday. The full name, because the card names a day
+#: the tool may have guessed (WS-46 P1, spec §8.1 item 4).
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def _and(words: list[str]) -> str:
+    """``Monday``, ``Monday and Friday``, ``Monday, Wednesday and Friday``."""
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
 
 
 def _rule_text(rule: dict[str, Any] | None) -> str:
-    """``every 2 weeks on Mon, Wed · from the due date · until 2026-12-31``.
+    """``every 2 weeks on Monday and Wednesday, from the due date, until 2026-12-31``.
 
     One renderer for the read, the card and the receipt, so the three cannot
-    describe one rule three ways.
+    describe one rule three ways. It is one sentence, so a receipt reads
+    "It repeats every week on Friday" (WS-46 P1, spec §8.1 item 2).
     """
     if not rule:
         return "does not repeat"
@@ -503,14 +630,14 @@ def _rule_text(rule: dict[str, Any] | None) -> str:
     every = int(rule.get("interval") or 1)
     unit = {"daily": "day", "weekly": "week", "monthly": "month", "yearly": "year"}.get(freq, freq)
     head = f"every {unit}" if every == 1 else f"every {every} {unit}s"
-    parts = [head]
     days = [int(d) for d in rule.get("weekdays") or [] if 1 <= int(d) <= 7]
     if days:
-        parts.append("on " + ", ".join(WEEKDAYS[d - 1] for d in days))
+        head += " on " + _and([WEEKDAYS[d - 1] for d in days])
     if rule.get("day_of_month"):
-        parts.append(f"on day {rule['day_of_month']}")
+        head += f" on day {rule['day_of_month']}"
     if rule.get("month_of_year"):
-        parts.append(f"in month {rule['month_of_year']}")
+        head += f" in month {rule['month_of_year']}"
+    parts = [head]
     anchor = str(rule.get("anchor") or "due")
     parts.append("from the due date" if anchor == "due" else "from the last completion")
     if rule.get("until_at"):
@@ -520,17 +647,23 @@ def _rule_text(rule: dict[str, Any] | None) -> str:
     made = rule.get("occurrences_made")
     if made:
         parts.append(f"{made} made so far")
-    return " · ".join(parts)
+    return ", ".join(parts)
 
 
-@_annotate(read_only=True, idempotent=True)
+async def _rule_of(task_id: str) -> dict[str, Any] | None:
+    """The task's repeat rule, or ``None``. The one GET ``recurrence`` reads,
+    which ``task_detail`` reaches through ``manifest.COMPOSITE``."""
+    tid = uuid_of(task_id, "task_id")
+    return ((await get(f"/projects/tasks/{tid}/recurrence")) or {}).get("rule")
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def recurrence(task_id: str) -> str:
     """Whether a task repeats, and its rule: frequency, interval, weekdays,
     anchor (from the due date or from the last completion), end date or
     count, and how many occurrences exist. set_recurrence changes it."""
     tid = uuid_of(task_id, "task_id")
-    rule = ((await get(f"/projects/tasks/{tid}/recurrence")) or {}).get("rule")
-    return f"Repeats: {_rule_text(rule)}\n  full_id: {tid}"
+    return f"Repeats: {_rule_text(await _rule_of(tid))}\n  full_id: {tid}"
 
 
 OVERLAY_FACTS = (
@@ -544,7 +677,7 @@ OVERLAY_FACTS = (
 )
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def my_task(task_id: str) -> str:
     """One task as the member's own lens sees it: the shared fields plus
     THEIR overlay (disposition, context, energy, next action, deferred
@@ -589,7 +722,7 @@ def _person_line(p: dict[str, Any]) -> str:
     return f"- {data(p.get('name'))} · " + " · ".join(facts)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     """Who could take a task: people and agents matching the query, with
     their role, current load and any warning (away, engagement ending). Pass
@@ -632,7 +765,7 @@ async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def vocabulary(project_id: str) -> str:
     """The words a project uses: its statuses (with category), task types,
     tags (with counts) and custom fields. Read this before you set a status,
@@ -644,10 +777,24 @@ async def vocabulary(project_id: str) -> str:
     status_set = (await get(f"/projects/nodes/{pid}/status-set")) or {}
     if status_set.get("owner_name"):
         owner = "this project" if status_set.get("owns") else data(status_set.get("owner_name"))
-        out.append(
-            f"Status set owned by {owner}"
-            + (" · you may edit it" if status_set.get("may_edit") else " · you may not edit it")
+        # `may_edit` is the server's answer (`core.can_manage_settings`, the
+        # status write's own predicate). Only an explicit False is a "no",
+        # and then the server's own words follow (owner directive 2026-10-07).
+        may = status_set.get("may_edit")
+        verdict = (
+            " · the server says you may edit it" if may is True
+            else " · the server says you may not edit it" if may is False
+            else ""
         )
+        out.append(f"Status set owned by {owner}{verdict}")
+        if may is False and status_set.get("edit_refusal"):
+            out.append(f"  Gateway said: {data(status_set.get('edit_refusal'))}")
+    # The server checks a type, tag or field write when the tool runs. No
+    # read answers it before, so this read claims nothing either way.
+    out.append(
+        "Types, tags and fields: the server checks each change when you call "
+        "the tool. Call it when the member asks."
+    )
     statuses = ((await get(f"/projects/nodes/{pid}/statuses")) or {}).get("rows") or []
     out.append(f"Statuses ({len(statuses)}):")
     for s in statuses:
@@ -693,7 +840,7 @@ def _scope_title(payload: dict[str, Any]) -> str:
     )
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_stuck(project_id: str = "") -> str:
     """Where work is stuck: open tasks banded by how long they have sat in
     their status, tasks blocked by unfinished work, and overdue counts by
@@ -718,7 +865,7 @@ async def analytics_stuck(project_id: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_load(project_id: str = "") -> str:
     """Who is overloaded: open tasks per assignee split into overdue, due in
     the next 7 days, and later. Unassigned is a row of its own, and it is
@@ -748,7 +895,7 @@ async def analytics_load(project_id: str = "") -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_throughput(project_id: str = "", weeks: int = 8) -> str:
     """Are we getting faster: tasks finished per week and the cycle time from
     first in-progress to done, read from the activity spine. The current
@@ -774,7 +921,7 @@ async def analytics_throughput(project_id: str = "", weeks: int = 8) -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_finished(
     project_id: str = "", weeks: int = 4, skip_current_week: bool = False
 ) -> str:
@@ -800,7 +947,7 @@ async def analytics_finished(
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def analytics_outlook(project_id: str = "") -> str:
     """Will this land, and when: a velocity forecast (the team's real rate
     minus the rate work arrives), a capacity forecast (estimated hours left
@@ -915,7 +1062,7 @@ def _capacity_lines(row: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def team_capacity(project_id: str = "", horizon_days: int = 14) -> str:
     """Who holds the open work in a scope, and whether they have the hours.
     One row per person with open work here, plus Unassigned. For a member
@@ -995,7 +1142,7 @@ def _candidate_lines(c: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def fit_for_task(task_id: str = "", title: str = "", tags: str = "", due: str = "") -> str:
     """Who fits one task best, ranked by skill, spare hours and availability:
     at most three people, each with the skills that matched, the spare hours
@@ -1058,7 +1205,7 @@ def _pickup_lines(person: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def rebalance(project_id: str = "", horizon_days: int = 14) -> str:
     """Who could help whom in a scope: the at-risk tasks with up to three
     helpers who fit each one, and the idle people with the unassigned tasks
@@ -1140,7 +1287,7 @@ def _conflict_lines(row: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def find_conflicts(project_id: str = "", horizon_days: int = 14) -> str:
     """Where the plan interferes with itself in a scope, as one list. Seven
     kinds: dependency_order (a task starts or is due before a task that
@@ -1349,7 +1496,7 @@ def _dataset_rows(payload: dict[str, Any]) -> list[str]:
     return out
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def task_dataset(
     project_id: str = "",
     state: str = "open",
@@ -1414,7 +1561,7 @@ async def task_dataset(
 # ── Reports ──────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def report_list() -> str:
     """The saved report definitions in this organization. A report stores the
     question (scope, period, sections), never the answer. Use report_render
@@ -1431,7 +1578,7 @@ async def report_list() -> str:
     return "\n".join(out)
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def report_render(report_id: str) -> str:
     """Render one saved report now, from the same numbers that the Overview
     of the Reports app shows. The member's own visibility applies. This never sends anything;

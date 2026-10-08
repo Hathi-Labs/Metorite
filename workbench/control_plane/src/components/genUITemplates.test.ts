@@ -170,3 +170,40 @@ describe("the board card draws THE priority chip (D78, H-173)", () => {
     expect(html).not.toContain("!1");
   });
 });
+
+describe("the form card's checkbox (WS-46 P13, the batch of new tasks)", () => {
+  const form = () =>
+    renderToStaticMarkup(
+      createElement(() =>
+        TEMPLATE_REGISTRY.formCard({
+          title: "Add 2 tasks to Ops",
+          submitLabel: "Review tasks",
+          fields: [
+            { name: "row_1", label: "Book the caterer", type: "checkbox", value: true,
+              hint: "Priya · due Fri 9 Oct 2026 · To do" },
+            { name: "row_2", label: "Print the badges", type: "checkbox", value: false },
+          ],
+        }),
+      ),
+    );
+
+  it("draws one house checkbox per row, with its start state", () => {
+    const html = form();
+    expect(html.match(/type="checkbox"/g)).toHaveLength(2);
+    expect(html.match(/checked=""/g)).toHaveLength(1);
+    expect(html).toContain("cc-checkbox");
+  });
+
+  it("names the row and gives its facts as words", () => {
+    const html = form();
+    expect(html).toContain("Book the caterer");
+    expect(html).toContain("Priya · due Fri 9 Oct 2026 · To do");
+    expect(html).toContain("Review tasks");
+  });
+
+  it("lists the type in the catalog the model reads", () => {
+    const entry = TEMPLATE_CATALOG.find((t) => t.name === "formCard");
+    expect(entry?.data).toContain("'checkbox'");
+    expect(entry?.data).toContain("hint?");
+  });
+});

@@ -67,7 +67,7 @@ describe("the floor leaks: canSeePath alone can NEVER catch an org-less member",
     // the floor — which breaks "My Access" for exactly the person it exists
     // for. The fix for org-less lives in AccessGate's ordering, never here.
     const orgless = anAccess({ organization: {} });
-    for (const path of ["/", "/people/me", "/access", "/settings/appearance"]) {
+    for (const path of ["/", "/people/me", "/people/access", "/access", "/settings/appearance"]) {
       expect(canSeePath(orgless, path), path).toBe(true);
     }
     expect(isOrgless(orgless)).toBe(true);

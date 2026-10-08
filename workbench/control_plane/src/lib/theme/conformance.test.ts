@@ -424,9 +424,10 @@ describe("no raw Tailwind palette colours", () => {
     "app/agents/page.tsx": 6,
     "app/artifacts/page.tsx": 13,
     "app/chat/page.tsx": 5,
-    "app/email/components/ComposePanel.tsx": 1,
+    // ComposePanel left, and EmailDetail went from 3 to 2, in WS-17 EM-G3c-2:
+    // the error of a send is `text-destructive`.
     "app/email/components/EmailAssistantChat.tsx": 1,
-    "app/email/components/EmailDetail.tsx": 3,
+    "app/email/components/EmailDetail.tsx": 2,
     "app/email/components/EmailList.tsx": 3,
     "app/email/components/MessageTimelineModal.tsx": 1,
     "app/email/components/automation/AISettingsView.tsx": 1,
@@ -439,7 +440,9 @@ describe("no raw Tailwind palette colours", () => {
     "app/email/components/automation/ai-settings/actionFormat.tsx": 50,
     "app/email/components/automation/ai-settings/common.tsx": 6,
     "app/email/components/automation/ai-settings/fixDialog.tsx": 6,
-    "app/integrations/page.tsx": 83,
+    // 73 since WS-17 EM-G7: both OAuth chips left the banner (O-GM-5, and
+    // review round 1: the banner gives no setup link).
+    "app/integrations/page.tsx": 73,
     "app/notes/components/BotIdentitySection.tsx": 4,
     "app/notes/components/LiveDock.tsx": 2,
     "app/observability/page.tsx": 26,
@@ -448,7 +451,8 @@ describe("no raw Tailwind palette colours", () => {
     // PriorityChip. 16 since H-193 took the amber out of the Weight toggle and
     // the schedule suggestion. What is left is the other toggles and delegate.
     "app/tasks/components/PriorityControls.tsx": 16,
-    "app/whatsapp/connect/page.tsx": 10,
+    // 8 since WS-20 WA-C2: the Embedded Signup error is `text-destructive`.
+    "app/whatsapp/connect/page.tsx": 5,
     "app/whatsapp/numbers/page.tsx": 4,
     "app/whatsapp/page.tsx": 4,
     "app/whatsapp/settings/categories/page.tsx": 2,
@@ -457,18 +461,15 @@ describe("no raw Tailwind palette colours", () => {
     "app/workflows/components/ModuleStudio.tsx": 1,
     "app/workflows/lib/types.ts": 50,
     "components/AddAgentWizard.tsx": 15,
-    "components/AgentChat.tsx": 14,
+    // 13 since WS-17 EM-T8f-3: the mark of the mailbox picker is text-primary.
+    "components/AgentChat.tsx": 13,
     "components/AgentStatusBar.tsx": 4,
     "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,
     "components/ArtifactViewerModal.tsx": 5,
-    "components/ChatErrorCard.tsx": 5,
-    "components/ConfirmationCard.tsx": 1,
     "components/FileUploadButton.tsx": 8,
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
-    "components/MarkdownMessage.tsx": 8, // S9: the link lost its palette blue
-    "components/ThinkingContainer.tsx": 31,
     "components/TodoPanel.tsx": 1,
     "lib/providers.ts": 30,
   };
@@ -863,7 +864,6 @@ describe("selects and file pickers go through the primitives", () => {
     "app/email/components/automation/ai-settings/RulesTab.tsx": 3,
     "app/email/components/automation/ai-settings/SettingsTab.tsx": 3,
     "app/email/components/automation/ai-settings/VoiceProfileDialog.tsx": 1,
-    "app/notes/components/FollowupEmailModal.tsx": 1,
     "app/notes/components/MeetingPrep.tsx": 1,
     "app/notes/components/NotesSettingsModal.tsx": 1,
     "app/notes/meeting/[id]/page.tsx": 1,

@@ -42,12 +42,16 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion import import_window
+from email_ingestion.llm_cap import automation_job
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from gateway.routes.email.automation.engine import (
     _load_rule_patterns,
     _pattern_hit,
 )
-from gateway.routes.email.automation.identity import resolve_org_domains
+from gateway.routes.email.automation.identity import (
+    SELF_ADDRESSES_SQL,
+    resolve_org_domains,
+)
 from gateway.routes.email.automation.jobs import JobTracker
 from gateway.routes.email.automation.senders import (
     _KNOWN_LABELS_LOWER,
@@ -349,9 +353,10 @@ _CLEANUP_SCOPE = f"""
     em.account_id = :aid AND {_NOT_DISPOSED}
     AND LOWER(COALESCE(em.folder,'')) <> 'sent'
     AND COALESCE(em.from_address->>'email','') <> ''
-    -- Belt and braces: self-addressed mail can sit outside Sent.
-    AND LOWER(em.from_address->>'email') NOT IN (
-          SELECT LOWER(email_address) FROM email_accounts WHERE id = :aid)
+    -- Belt and braces: self-addressed mail can sit outside Sent. "Self" is
+    -- each mailbox of the member (D-EM-27, EM-T8e-1), so mail from another
+    -- mailbox of the member is never cleanup material.
+    AND LOWER(em.from_address->>'email') NOT IN ({SELF_ADDRESSES_SQL})
     AND (split_part(LOWER(em.from_address->>'email'), '@', 2) <> ALL(:internal)
          OR em.unsubscribe_link IS NOT NULL)
     AND NOT EXISTS (
@@ -696,6 +701,7 @@ def _sweep_tick(account_id: str, applied: int, scanned: int = 0,
             job["scanned"] = scanned
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _sweep_job(
     account_id: str, limit: int, owner: str, token: int | None = None,
 ) -> None:
@@ -862,6 +868,7 @@ async def _mark_history_held_back(
     return int(getattr(res, "rowcount", 0) or 0)
 
 
+@automation_job  # EM-T4b: the cap and the daily budget bind its model calls
 async def _backfill_and_clean_job(
     account_id: str, since: datetime | None, owner: str,
     token: int | None = None,

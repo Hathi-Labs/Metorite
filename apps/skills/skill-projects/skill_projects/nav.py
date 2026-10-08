@@ -52,7 +52,7 @@ async def _dispatch(name: str, args: dict[str, Any]) -> bool:
     return bool(result.get("ok"))
 
 
-@_annotate(read_only=True, idempotent=True)
+@_annotate(read_only=True, idempotent=True, open_world=False)
 async def open_in_app(target: str, target_id: str = "") -> str:
     """Open something in the member's Projects page: target is task (a
     task's full_id), project (a node's full_id) or app (reports, as

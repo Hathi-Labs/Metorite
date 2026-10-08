@@ -27,13 +27,16 @@
 #     copy the index Digest into BOTH FROM lines.
 #   - Node: take the linux-x64.tar.gz line of
 #     https://nodejs.org/dist/v<version>/SHASUMS256.txt for a 22.x release.
-#   - Python: run this from the repo root. The names are the first set of §7.2,
-#     and every other line of the file is a dependency of one of them.
-#       printf '%s\n' pandas numpy openpyxl matplotlib pypdf fpdf2 markdown \
-#           tabulate pyyaml python-dateutil requests \
-#         | uv pip compile - --generate-hashes --python-version 3.12 \
+#   - Python: sandbox/requirements.in is the list of names (§7.2), and
+#     requirements.txt is its lock. Every line of the lock that is not a name
+#     of the list is a dependency of one of them. Run this from the repo root:
+#       uv pip compile apps/services/orchestrator/sandbox/requirements.in \
+#           --generate-hashes --python-version 3.12 \
 #           --python-platform x86_64-manylinux_2_28 --no-config \
 #           -o apps/services/orchestrator/sandbox/requirements.txt
+#     A new name needs a reviewed PR and an entry in _SANDBOX_MODULES of
+#     tests/unit/test_coding_sandbox_packages.py (WS43-F25). The container has
+#     no network, so nothing installs at run time.
 
 # ---- node: download Node.js and check it against the pinned SHA-256 ----------
 FROM python:3.12-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3 AS node
@@ -76,6 +79,9 @@ COPY --from=node /opt/node/lib/node_modules/npm /usr/local/lib/node_modules/npm
 COPY sandbox/requirements.txt /opt/sandbox/requirements.txt
 
 # --only-binary: wheels only, so no package runs a build script at install time.
+# The `find` deletes the test suites that the wheels ship (pandas, scipy, numpy
+# and others, about 100 MB). No import reads them. The base image deletes the
+# test suite of CPython in the same way.
 # The last two commands prove that Node and npm start on the build platform.
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
@@ -83,8 +89,15 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
         --root-user-action=ignore \
         --require-hashes --only-binary=:all: \
         -r /opt/sandbox/requirements.txt \
+    && find /usr/local/lib/python3.12/site-packages -depth -type d -name tests \
+        -exec rm -rf '{}' + \
     && node --version \
     && npm --version
+
+# The fixed data engine of §7.10 (WS-43y1a). The broker runs it as
+# `python3 -I /opt/sandbox/data_engine.py <verb> <request id>`. Root owns it,
+# and no uid can change it. It comes after pip, so an edit keeps the pip layer.
+COPY --chmod=0444 sandbox/data_engine.py /opt/sandbox/data_engine.py
 
 # A uid with no /etc/passwd entry gets HOME=/, which --read-only makes
 # unwritable. /tmp is the broker's tmpfs, so matplotlib, pip and npm write there.

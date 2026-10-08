@@ -12,6 +12,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.routes import email as m
+from gateway.routes.email.automation.identity import SELF_ADDRESSES_SQL
+
+
+def _is_owner_read(sql: str) -> bool:
+    """The digest's read of the mailbox owner. Since EM-T8e-1 each windowed
+    aggregate ALSO names ``email_accounts``, in its self subquery, so a fake
+    that dispatched on ``"FROM email_accounts" in sql`` answered the
+    aggregates with the owner row. Match the owner read by its start."""
+    return sql.lstrip().startswith("SELECT user_id FROM email_accounts")
+
+
+def _is_member_read(sql: str) -> bool:
+    """``identity.resolve_self``: the rows of each mailbox of the member."""
+    return sql.lstrip().startswith("SELECT o.id::text")
 
 
 def _fake_db(captured: list[tuple[str, dict]]):
@@ -19,8 +33,11 @@ def _fake_db(captured: list[tuple[str, dict]]):
         sql = str(stmt)
         captured.append((sql, params or {}))
         r = MagicMock()
-        if "FROM email_accounts" in sql:
-            r.fetchone.return_value = SimpleNamespace(self="me@fracktal.in")
+        if _is_owner_read(sql):
+            r.fetchone.return_value = SimpleNamespace(user_id="me@fracktal.in")
+        elif _is_member_read(sql):
+            r.fetchall.return_value = [SimpleNamespace(
+                id="acc-1", address="me@fracktal.in", label=None)]
         elif "COUNT(*) AS total" in sql:
             r.fetchone.return_value = SimpleNamespace(
                 total=10, unread=3, inbox=8, attachments=2)
@@ -87,8 +104,11 @@ def _fake_db_with_totals(captured: list[tuple[str, dict]]):
         sql = str(stmt)
         captured.append((sql, params or {}))
         r = MagicMock()
-        if "FROM email_accounts" in sql:
-            r.fetchone.return_value = SimpleNamespace(self="me@fracktal.in")
+        if _is_owner_read(sql):
+            r.fetchone.return_value = SimpleNamespace(user_id="me@fracktal.in")
+        elif _is_member_read(sql):
+            r.fetchall.return_value = [SimpleNamespace(
+                id="acc-1", address="me@fracktal.in", label=None)]
         elif "COUNT(*) AS inbox" in sql:
             r.fetchone.return_value = SimpleNamespace(
                 inbox=8, unread=3, attachments=2)
@@ -109,7 +129,9 @@ def _fake_db_with_totals(captured: list[tuple[str, dict]]):
 async def test_every_aggregate_excludes_the_accounts_own_mail() -> None:
     # The digest email itself lands in the inbox from the account; counting it
     # (or self-notes / BCC-to-self) would inflate the next digest. Every windowed
-    # aggregate excludes self and binds :self.
+    # aggregate excludes self. Since EM-T8e-1 "self" is EACH mailbox of the
+    # member (D-EM-27), through the one subquery over :aid, so mail from a
+    # second mailbox of the member is not new inbound mail either.
     captured: list[tuple[str, dict]] = []
     await m.digest._generate_digest(_fake_db_with_totals(captured), "acc-1", 7)
     # The WINDOWED inbox aggregates bind :days (the digest window). The backlog-
@@ -119,8 +141,10 @@ async def test_every_aggregate_excludes_the_accounts_own_mail() -> None:
                 if "email_messages em" in s and "days" in p]
     assert windowed, "expected the windowed inbox aggregates"
     for sql, params in windowed:
-        assert "from_address->>'email') <> :self" in sql, sql[:120]
-        assert params.get("self") == "me@fracktal.in"
+        assert f"from_address->>'email') NOT IN ({SELF_ADDRESSES_SQL})" in sql, \
+            sql[:200]
+        assert params.get("aid") == "acc-1"
+        assert ":self" not in sql, "the one-address bind is gone"
 
 
 async def test_generate_digest_returns_totals_and_both_bodies() -> None:
@@ -179,12 +203,17 @@ def _thread_row(**over):
 
 
 def _thread_list_db(rows: list):
-    """First execute returns the thread rows; the account-self lookup that
-    follows gets a fetchone."""
+    """First execute returns the thread rows; the read of each mailbox of the
+    member that follows (``identity.resolve_self``, EM-T8e-1) gets the one
+    mailbox ``me@x.com``."""
+    async def fake_execute(stmt, params=None):
+        if _is_member_read(str(stmt)):
+            return MagicMock(fetchall=MagicMock(return_value=[SimpleNamespace(
+                id="acc-1", address="me@x.com", label=None)]))
+        return MagicMock(fetchall=MagicMock(return_value=rows))
+
     db = AsyncMock()
-    db.execute.return_value = MagicMock(
-        fetchall=MagicMock(return_value=rows),
-        fetchone=MagicMock(return_value=SimpleNamespace(self="me@x.com")))
+    db.execute.side_effect = fake_execute
     return db
 
 

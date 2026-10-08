@@ -36,6 +36,11 @@ ALL_STATIC_FAMILY_TOOLS = {
     n for fam in sf.SKILL_FAMILIES.values() for n in fam["tools"]
 }
 
+#: D85: an agent with no config reads as SHARED and loses the shell tools.
+#: These tests pin the S2 rules over the WHOLE floor, so the fake agent is
+#: personal. The block itself is ``test_shared_agent_shell_tools.py``.
+_PERSONAL = {"sharing": {"instancing": "personal"}}
+
 
 # ── _resolve_injected_scope: the intersection rule ─────────────────────────
 
@@ -211,7 +216,8 @@ def test_regression_no_rows_injects_byte_identical_set(
         ti, "_load_disabled_skill_families", lambda name: frozenset()
     )
     agent = _FakeMafAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf",
+                           agent_config=_PERSONAL)
     expected = ti._collect_injectable_platform_tools() + _injection_env
     assert [id(t) for t in agent.tools] == [id(fn) for fn in expected], (
         "with no settings rows the injected set must be byte-identical to "
@@ -228,7 +234,8 @@ def test_disabling_memory_removes_its_tools_from_injection(
         lambda name: frozenset({"memory"}),
     )
     agent = _FakeMafAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf",
+                           agent_config=_PERSONAL)
     names = set(_injected_names(agent))
     assert not (names & MEMORY_TOOLS)
     assert ti._CORE_STANDARD_TOOL_NAMES <= names  # core survives (rule 2)
@@ -246,7 +253,8 @@ def test_disabling_workflows_removes_the_trio(
         lambda name: frozenset({"workflows"}),
     )
     agent = _FakeMafAgent()
-    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf")
+    ti._inject_agent_tools([agent], tool_scope=None, agent_name="fake-maf",
+                           agent_config=_PERSONAL)
     names = set(_injected_names(agent))
     assert not (
         names & {"list_workflows", "run_workflow", "get_workflow_run"}
@@ -269,6 +277,7 @@ def test_scoped_agent_with_disable_keeps_core_and_declared(
         [agent],
         tool_scope=["query_history", "remember", "install_dependency"],
         agent_name="fake-maf",
+        agent_config=_PERSONAL,
     )
     names = set(_injected_names(agent))
     assert "query_history" in names          # declared + enabled family

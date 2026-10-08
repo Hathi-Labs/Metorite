@@ -58,24 +58,52 @@ has always honoured it.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import re
 from pathlib import Path
 
 __all__ = [
     "AGENT_NAME_RE",
+    "RUN_DATA_DIR",
+    "SKILLS_REL",
+    "SKILL_AUTHOR_MARKER",
+    "SKILL_AUTHOR_PURPOSE",
+    "SKILL_FOREIGN",
+    "SKILL_MINE",
+    "SKILL_NAME_RULE",
+    "SKILL_UNCLAIMED",
     "TENANT_INSTANCE_PREFIX",
+    "THREAD_HEADS",
     "InvalidAgentName",
+    "SkillNameRefused",
+    "SkillOwnedElsewhere",
     "agent_code_dir",
     "agent_state_dir",
+    "claim_skill",
     "clone_root",
     "ensure_state_dir",
     "instance_slug",
+    "is_loose_rel",
+    "is_other_thread_rel",
     "is_tenant_instance",
+    "is_thread_slug",
     "is_valid_agent_name",
+    "own_skill_names",
+    "refused_write",
     "require_agent_name",
+    "run_data_rel",
+    "skill_author_id",
+    "skill_owner",
+    "skill_top_rel",
     "state_root",
     "tenant_instance",
+    "thread_inputs_rel",
+    "thread_outputs_rel",
+    "thread_scoped_rel",
+    "thread_slug",
+    "upload_dir_rel",
     "workspace_blob_key",
 ]
 
@@ -191,6 +219,414 @@ def is_tenant_instance(instance: object) -> bool:
         and instance.startswith(TENANT_INSTANCE_PREFIX)
         and len(instance) > len(TENANT_INSTANCE_PREFIX)
     )
+
+
+# ── The thread's own folders and run data (D86, maf_coding_engine §16.3, H-227) ──
+
+#: A thread slug: the readable part and the 8 hex digits of :func:`instance_slug`.
+_THREAD_SLUG_RE = re.compile(
+    r"(?P<readable>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)-(?P<digest>[0-9a-f]{8})"
+)
+
+#: The dir under :func:`state_root` that holds the run data of every thread.
+#: Its name starts with a dot, so it can never be an agent name
+#: (:data:`AGENT_NAME_RE`), and no workspace route can ever serve it.
+RUN_DATA_DIR = ".run-data"
+
+
+def is_thread_slug(name: object) -> bool:
+    """True when *name* is the :func:`instance_slug` of a plain thread id.
+
+    A plain id (a UUID, as the chat sends) is its own readable part, so the
+    digest of that part must match. A folder name that only looks like a
+    slug fails the digest, so a member's own ``outputs/q3-20240101`` folder
+    is never taken for a thread's.
+    """
+    if not isinstance(name, str):
+        return False
+    m = _THREAD_SLUG_RE.fullmatch(name)
+    if m is None:
+        return False
+    digest = hashlib.sha256(m["readable"].encode("utf-8")).hexdigest()[:8]
+    return digest == m["digest"]
+
+
+def thread_slug(thread_id: object) -> str:
+    """The folder name of a thread's own outputs: :func:`instance_slug` of its id.
+
+    Raises ``ValueError`` for an id that :func:`is_thread_slug` cannot
+    recognise again. That id gets no sandbox, so every thread folder on disk
+    is one that the session routes can tell apart from any other folder.
+    """
+    raw = str(thread_id or "").strip()
+    slug = instance_slug(raw) if raw else ""
+    if not slug or not is_thread_slug(slug):
+        raise ValueError(f"not a plain thread id: {raw[:80]!r}")
+    return slug
+
+
+#: The kept folders that hold one folder per thread in a shared agent's
+#: tenant dir (§16.3 and H-227): the uploads and the outputs of each chat.
+THREAD_HEADS = ("inputs", "outputs")
+
+
+def _rel_parts(rel: object) -> list[str]:
+    return [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+
+
+def thread_outputs_rel(thread_id: object) -> str:
+    """``outputs/<thread slug>``, relative to the working dir."""
+    return f"outputs/{thread_slug(thread_id)}"
+
+
+def thread_inputs_rel(thread_id: object) -> str:
+    """``inputs/<thread slug>``, relative to the working dir (H-227).
+
+    The uploads of one chat in a shared agent's tenant dir. The broker mounts
+    it at ``/workspace/inputs``, and ``TenantFileStore`` maps ``inputs/`` to it.
+    """
+    return f"inputs/{thread_slug(thread_id)}"
+
+
+def upload_dir_rel(instance: object, thread_id: object) -> str:
+    """Where a chat upload lands, relative to the workspace root (H-229).
+
+    THE one rule. The upload route writes there, and ``read_attachment``
+    reads there, so the two cannot disagree. It takes the thread folder from
+    :func:`thread_slug`, the same slug as :func:`thread_outputs_rel`.
+
+    * A shared agent's tenant dir (``o:<org>``) is one folder for every member
+      of the organization. So an upload lands in ``inputs/<thread slug>/``,
+      and ``read_attachment`` reads it only in a run of that thread (D12).
+      Since H-227 the session routes, the file store and the container keep
+      to that folder too.
+    * Any other workspace keeps ``inputs/``. A personal agent's dir holds only
+      its member's files.
+
+    A tenant dir with an id that is not a plain thread id raises
+    ``ValueError``, so the caller fails closed.
+    """
+    if is_tenant_instance(instance):
+        return thread_inputs_rel(thread_id)
+    return "inputs"
+
+
+def thread_scoped_rel(rel: str, thread_id: object) -> str:
+    """*rel* moved into the thread's own folder, for a shared agent's tenant dir (H-227).
+
+    ``outputs/report.md`` gives ``outputs/<thread slug>/report.md``, and
+    ``inputs/x`` gives ``inputs/<thread slug>/x``. A bare ``outputs`` gives
+    the thread's folder itself. A path that is already in a thread folder
+    stays as it is, so the caller still refuses the folder of another thread
+    (:func:`refused_write`, :func:`is_other_thread_rel`). Any other path
+    stays as it is.
+
+    The caller checks containment first, so *rel* holds no ``..``. Raises
+    ``ValueError`` for a thread id that names no folder, so the caller fails
+    closed.
+    """
+    parts = _rel_parts(rel)
+    if not parts or parts[0] not in THREAD_HEADS:
+        return "/".join(parts)
+    if len(parts) >= 2 and is_thread_slug(parts[1]):
+        return "/".join(parts)
+    return "/".join([parts[0], thread_slug(thread_id), *parts[1:]])
+
+
+def run_data_rel(organization_id: object, thread_id: object) -> str:
+    """``.run-data/<org slug>/<thread slug>``, relative to :func:`state_root`."""
+    org = str(organization_id or "").strip()
+    if not org:
+        raise ValueError("run data needs an organization id")
+    return f"{RUN_DATA_DIR}/{instance_slug(org)}/{thread_slug(thread_id)}"
+
+
+def is_other_thread_rel(rel: str, own_slug: str | None) -> bool:
+    """True when *rel* lies in the folder of a thread that is not *own_slug*.
+
+    The ONE rule for "another chat's folder": its output folder (§16.3) and,
+    since H-227, its upload folder, ``inputs/<thread slug>/``. The session
+    routes, ``write_artifact``, ``share_artifact`` and ``save_note`` all ask it.
+    """
+    parts = _rel_parts(rel)
+    return (
+        len(parts) >= 2 and parts[0] in THREAD_HEADS
+        and is_thread_slug(parts[1]) and parts[1] != own_slug
+    )
+
+
+def is_loose_rel(rel: str) -> bool:
+    """True when *rel* lies in ``inputs/`` or ``outputs/`` but in no thread folder (H-227).
+
+    In a shared agent's tenant dir, such a file comes from before the thread
+    folders: an S8 document in the flat ``outputs/``, or an upload in the
+    flat ``inputs/``. The session routes serve it only to a session that the
+    blob history shows wrote those bytes.
+    """
+    parts = _rel_parts(rel)
+    return len(parts) >= 2 and parts[0] in THREAD_HEADS and not is_thread_slug(parts[1])
+
+
+# ── The author of a skill (review P1, fix round 1; the member id, WS-43v) ────
+
+#: The skills of a working dir, relative to it.
+SKILLS_REL = "agent-data/skills"
+#: A skill folder records the member who made it, in this file. A sandboxed
+#: run loads, and runs the scripts of, only the skills of its OWN member, so
+#: no member's skill text or code reaches another member's run. Every writer
+#: of a working dir refuses to write this name, so only a host writer can make
+#: it, and only for the member who first writes into the folder.
+SKILL_AUTHOR_MARKER = ".metorite-author"
+
+#: The marker holds an OPAQUE member id, never the address (WS-43v, the
+#: WS43-E16 hygiene rule). The id is an HMAC of the lower-cased address under
+#: ``gateway_session_secret``, and this purpose string starts the MAC input,
+#: so no other value that the secret signs can pass as an author id.
+#:
+#: Why not a member UUID: ``UserContext.user_id`` is ``app_user.id`` with
+#: IDENTITY_CUTOVER off and ``user_identity.id`` with it on, two UUID spaces,
+#: so a marker keyed on it would orphan every skill on the flag flip. The run
+#: binding carries only the address, from the session (R5).
+#:
+#: A new secret orphans every skill: no member then owns it. That fails
+#: closed, and the author makes the skill again.
+SKILL_AUTHOR_PURPOSE = "metorite-skill-author:v1"
+_AUTHOR_ID_PREFIX = "m1."
+_AUTHOR_ID_RE = re.compile(r"m1\.[A-Za-z0-9_-]{43}")
+_MARKER_LIMIT = 1024
+
+#: What a skill folder is to one member: no marker, the member's own, or not
+#: the member's. An unreadable, empty or unknown marker is FOREIGN.
+SKILL_UNCLAIMED = "unclaimed"
+SKILL_MINE = "mine"
+SKILL_FOREIGN = "foreign"
+
+
+def skill_top_rel(rel: str) -> str | None:
+    """``agent-data/skills/<top>`` for a path inside a skill folder, else ``None``."""
+    parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    if len(parts) >= 4 and parts[0] == "agent-data" and parts[1] == "skills":
+        return f"{SKILLS_REL}/{parts[2]}"
+    return None
+
+
+def _member_address(member: str | None) -> str:
+    return str(member or "").strip().lower()
+
+
+def _author_secret() -> str | None:
+    """``gateway_session_secret``, or ``None`` when it is empty or public.
+
+    A public secret is no secret (``acb_auth.member_proof``): an HMAC under it
+    is a hash that anyone can compute, so no member id comes from it.
+    """
+    try:
+        from acb_auth.member_proof import PUBLIC_DEFAULT_SECRETS
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "gateway_session_secret", "") or "").strip()
+    except Exception:  # no settings means no id, never a crash
+        return None
+    if not raw or raw in PUBLIC_DEFAULT_SECRETS:
+        return None
+    return raw
+
+
+def skill_author_id(member: str | None) -> str | None:
+    """The opaque id that a skill marker holds for *member*, or ``None``.
+
+    ``None`` when there is no member, or when the server has no usable
+    secret. Then no skill is the member's, and no skill folder can be claimed.
+    """
+    who = _member_address(member)
+    secret = _author_secret()
+    if not who or secret is None:
+        return None
+    mac = hmac.new(
+        secret.encode("utf-8"), f"{SKILL_AUTHOR_PURPOSE}\n{who}".encode(), hashlib.sha256,
+    ).digest()
+    return _AUTHOR_ID_PREFIX + base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
+
+
+def skill_owner(
+    workspace: Path, top_rel: str, member: str | None, *,
+    upgraded: list[tuple[str, bytes]] | None = None,
+) -> str:
+    """What the skill folder *top_rel* is to *member*: one of the ``SKILL_*`` values.
+
+    The marker is read with the safe opener. No marker is UNCLAIMED. The
+    member's own id is MINE. Each other case is FOREIGN, and that includes a
+    link, a read error, an empty marker, an unknown value and the id of
+    another member, so the rule fails closed.
+
+    A marker from before WS-43v holds an address. It is MINE only when it is
+    THIS member's address, and it is FOREIGN for every other member. With a
+    list in *upgraded*, the marker is rewritten to the member's id, and
+    ``(marker rel, bytes)`` goes in the list, so the caller can mirror it to
+    the blob store. Without a list, the marker does not change.
+    """
+    from acb_skills import safe_open
+
+    marker = f"{top_rel}/{SKILL_AUTHOR_MARKER}"
+    try:
+        raw = safe_open.read_bytes(Path(workspace), marker, limit=_MARKER_LIMIT)
+    except (safe_open.UnsafePath, OSError):
+        return SKILL_FOREIGN
+    if raw is None:
+        return SKILL_UNCLAIMED
+    try:
+        value = raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return SKILL_FOREIGN
+    mine = skill_author_id(member)
+    if not value or mine is None:
+        return SKILL_FOREIGN
+    if _AUTHOR_ID_RE.fullmatch(value):
+        return SKILL_MINE if hmac.compare_digest(value, mine) else SKILL_FOREIGN
+    if "@" not in value or value.lower() != _member_address(member):
+        return SKILL_FOREIGN
+    if upgraded is not None:
+        data = mine.encode("ascii")
+        try:
+            # A temp file and a rename, so a reader sees the old marker or the
+            # new one, and a failed write leaves the old marker as it was.
+            safe_open.replace_bytes(Path(workspace), marker, data)
+        except safe_open.UnsafePath:
+            return SKILL_FOREIGN
+        except OSError:
+            return SKILL_MINE  # this read proved the author; the next one tries again
+        upgraded.append((marker, data))
+    return SKILL_MINE
+
+
+#: A skill folder name that can be a mount target as it is: no dot first, no
+#: separator, and no character that a ``--mount`` spec cannot hold.
+_SKILL_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
+#: Why a skill folder name is refused. The model reads it, so it says the rule.
+SKILL_NAME_RULE = (
+    "a skill folder name may hold only ASCII letters, digits, '.', '_' and '-', "
+    "must not start with '.' or '-', and must be at most 128 characters"
+)
+
+
+def own_skill_names(workspace: Path, member: str | None) -> tuple[str, ...]:
+    """The skill folders of *workspace* that are *member*'s own, sorted.
+
+    The sandbox mounts exactly these (``sandbox_broker.projects_mounts``), so
+    a container sees no skill of another member. A folder whose name cannot
+    be a mount target is left out. A link at ``agent-data``, at
+    ``agent-data/skills`` or at a folder gives nothing for that path.
+    """
+    from acb_skills import safe_open
+
+    if skill_author_id(member) is None:
+        return ()
+    try:
+        entries = safe_open.list_dir(Path(workspace), SKILLS_REL)
+    except (safe_open.UnsafePath, OSError):
+        return ()
+    names = []
+    for name, kind in entries or ():
+        if kind != "dir" or not _SKILL_NAME_RE.fullmatch(name):
+            continue
+        if skill_owner(workspace, f"{SKILLS_REL}/{name}", member) == SKILL_MINE:
+            names.append(name)
+    return tuple(sorted(names))
+
+
+class SkillOwnedElsewhere(PermissionError):
+    """Another member made this skill folder, or claimed it first (a race)."""
+
+
+class SkillNameRefused(ValueError):
+    """A new skill folder has a name that the sandbox cannot mount.
+
+    Its text is the refusal that the model reads: ``Refused: <the rule>.``
+    """
+
+    def __init__(self) -> None:
+        super().__init__(f"Refused: {SKILL_NAME_RULE}.")
+
+
+def refused_write(
+    workspace: Path, rel: str, *, member: str | None, thread_id: str | None = None,
+    own_slug: str | None = None,
+) -> str | None:
+    """Why a host writer may not write *rel* in a working dir, or ``None``.
+
+    1. The author marker itself is reserved.
+    2. The output or upload folder of another thread is not this run's (§16.3,
+       H-227). The own folder is *own_slug*, else the slug of *thread_id*.
+    3. A skill folder that is not this member's is refused: another member's,
+       and one with a marker that cannot be read (:func:`skill_owner`).
+
+    The name rule of a NEW skill folder is :func:`claim_skill`'s, so a folder
+    made before the rule still changes and deletes.
+    """
+    parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    if parts and parts[-1] == SKILL_AUTHOR_MARKER:
+        return "that file name is reserved"
+    own = own_slug or (instance_slug(str(thread_id)) if thread_id else None)
+    if is_other_thread_rel(rel, own):
+        return "that folder belongs to another chat"
+    top = skill_top_rel(rel)
+    if top is not None and skill_owner(workspace, top, member) == SKILL_FOREIGN:
+        return "that skill belongs to another member"
+    return None
+
+
+def claim_skill(workspace: Path, rel: str, member: str | None) -> tuple[str, bytes] | None:
+    """Record *member* as the author of the skill folder of *rel*, when none is.
+
+    Returns ``(marker rel, bytes)`` when it wrote the marker, so the caller can
+    mirror it to the blob store, else ``None``. It also writes the marker when
+    it upgrades this member's own address marker to the member id.
+
+    Raises ``ValueError`` when there is no member id (no member, or no usable
+    secret), because a skill with no author never loads. Raises
+    :class:`SkillOwnedElsewhere` when the folder is not this member's,
+    also when another member claimed it between the check and the write. So
+    ``None`` always means "this member's folder", and the caller may write.
+    """
+    top = skill_top_rel(rel)
+    if top is None:
+        return None
+    upgraded: list[tuple[str, bytes]] = []
+    owner = skill_owner(workspace, top, member, upgraded=upgraded)
+    if owner == SKILL_FOREIGN:
+        raise SkillOwnedElsewhere("that skill belongs to another member")
+    if owner == SKILL_MINE:
+        return upgraded[0] if upgraded else None
+    # A new skill folder must have a name that the sandbox can mount, so no
+    # skill lists in the prompt that cannot run (:data:`SKILL_NAME_RULE`).
+    if not _SKILL_NAME_RE.fullmatch(top.rsplit("/", 1)[-1]):
+        raise SkillNameRefused
+    who = skill_author_id(member)
+    if who is None:
+        raise ValueError("a skill needs a member who makes it")
+    from acb_skills import safe_open
+
+    # A folder that already holds files and no marker came from a writer that
+    # records no author, or from before PR #603. The routes hide it from every
+    # member, so no member may take it and read what is in it.
+    try:
+        held = safe_open.list_dir(Path(workspace), top)
+    except (safe_open.UnsafePath, OSError):
+        raise SkillOwnedElsewhere("that skill folder cannot be read") from None
+    names = {name for name, _kind in held or ()}
+    if names and SKILL_AUTHOR_MARKER not in names:
+        raise SkillOwnedElsewhere("that skill folder has no author, so no member can take it")
+    marker = f"{top}/{SKILL_AUTHOR_MARKER}"
+    data = who.encode("ascii")
+    try:
+        safe_open.write_bytes(Path(workspace), marker, data, exclusive=True)
+    except FileExistsError:
+        # Another writer made the marker after the check. It is this member's
+        # only when it holds this member's id.
+        if skill_owner(workspace, top, member) == SKILL_MINE:
+            return None
+        raise SkillOwnedElsewhere("that skill belongs to another member") from None
+    return marker, data
 
 
 def agent_code_dir(agent_name: str) -> Path:

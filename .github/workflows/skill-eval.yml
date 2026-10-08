@@ -17,6 +17,16 @@ on:
       - "apps/services/gateway/gateway/routes/workflows/**"
       - "packages/acb_skills/**"
       - "packages/acb_llm/**"
+      # WS-46 P3: the Projects operations eval replays its sequences through
+      # these tools and this agent, so a change to either re-runs it.
+      - "apps/skills/skill-projects/**"
+      - "apps/agents/agent-projects/**"
+      # WS-48 N2: the email narrowing eval runs this agent's tools.
+      - "apps/agents/agent-email-assistant/**"
+      # WS-48 N4: the WhatsApp narrowing eval runs this agent's tools, and the
+      # stub reads the signatures of the WhatsApp routes.
+      - "apps/agents/agent-whatsapp-assistant/**"
+      - "apps/services/gateway/gateway/routes/whatsapp/transport/**"
       - ".github/workflows/skill-eval.yml"
   workflow_dispatch:
 
@@ -45,6 +55,27 @@ jobs:
 
       - name: Run trajectory evals
         run: uv run python -m pytest evals/trajectories/ -x -v
+
+      # WS-46 P3 (projects_agent_parity.md §11.3): the seven Projects
+      # operations tasks, scripted, through the real executor. No model.
+      # Both covers: uncovered, then covered (MAF_CODING_SCOPE in-process).
+      - name: Projects operations eval (scripted, both covers)
+        run: |
+          uv run python -m evals.projects_ops.run --scripted --out "$RUNNER_TEMP/po-uncovered"
+          uv run python -m evals.projects_ops.run --scripted --covered --out "$RUNNER_TEMP/po-covered"
+
+      # WS-48 N2 (data_narrowing_pipeline.md §7.2): five questions of
+      # email-assistant, today's path and narrow_and_read, on a synthetic
+      # mailbox. Recall 100% and cost <= 40%. No model, no Router.
+      - name: Email narrowing eval (scripted)
+        run: uv run python -m evals.email_narrowing.run --scripted --out "$RUNNER_TEMP/email-narrowing"
+
+      # WS-48 N4 (data_narrowing_pipeline.md §9 N4): five questions of
+      # whatsapp-assistant, today's path and narrow_and_read, on synthetic
+      # chats. Recall 100% and cost <= today's path (NOT the email bar of
+      # 40%; the run prints both). No model, no Router.
+      - name: WhatsApp narrowing eval (scripted)
+        run: uv run python -m evals.whatsapp_narrowing.run --scripted --out "$RUNNER_TEMP/whatsapp-narrowing"
 
   inspect:
     name: "Inspect AI scenario harness (smoke)"

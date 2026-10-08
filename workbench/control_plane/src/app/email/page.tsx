@@ -9,6 +9,8 @@ import { AccountSidebar } from "./components/AccountSidebar";
 import { EmailList } from "./components/EmailList";
 import { EmailToolbar } from "./components/EmailToolbar";
 import { QuickFilters } from "./components/QuickFilters";
+import { ShellJob } from "@/lib/shell/doJob";
+import { shellBarOn } from "@/lib/shell/registry";
 import { SearchBar } from "./components/SearchBar";
 import { MailboxActions } from "./components/MailboxActions";
 import { EmailDetail } from "./components/EmailDetail";
@@ -23,30 +25,43 @@ import { DisconnectDialog } from "./components/DisconnectDialog";
 import { MailboxAvatar, MailboxChip } from "./components/MailboxChip";
 import { MailboxEditDialog, type MailboxEdit } from "./components/MailboxEditDialog";
 import { updateEmailAccount } from "./lib/api";
-import { FirstSyncBanner } from "./components/FirstSyncBanner";
 import { OnboardingPanel } from "./components/OnboardingPanel";
 import { OnboardingRulesStep } from "./components/OnboardingRulesStep";
+import { RemoveOlderMailDialog } from "./components/RemoveOlderMailDialog";
+import { StorageNotice } from "./components/StorageNotice";
+import { StorageStep } from "./components/StorageStep";
+import { SyncBanner } from "./components/SyncBanner";
 import Modal from "@/components/ui/Modal";
 import {
-  useEmailStore, isRealFolder, backfillKey, foldersInScope, scopeBusy,
+  useEmailStore, isRealFolder, backfillKey, foldersInScope, scopeBusy, ALL_INBOXES,
 } from "./lib/emailStore";
 import { Email, EmailAccount, AutomationFeature } from "./lib/types";
 import {
   connectQuery,
   emailSurface,
+  liveProviders,
   rangeStepProviderFrom,
+  RECONNECT_LABEL,
   wantsConnectChoices,
   firstSyncTick,
   FIRST_SYNC_POLL_MS,
-  isFirstSyncPending,
   reconnectProvider,
   rememberMailboxesBeforeConnect,
   shouldPollFirstSync,
   type ConnectProviderId,
 } from "./lib/connect";
-import { firstSyncSurface, importProgress, onboardingStage } from "./lib/onboarding";
+import { importPanelShows, importProgress, onboardingStage, syncBanners } from "./lib/onboarding";
+import { pickSettingsMailbox } from "./lib/mailboxSettings";
 import { folderLabel } from "./lib/utils";
-import { ownAddresses, replyRecipients } from "./lib/mailbox";
+import {
+  attentionMailbox,
+  ownAddresses,
+  pooledMailboxes,
+  removalMailbox,
+  replyRecipients,
+  storageMailbox,
+} from "./lib/mailbox";
+import { keepStorage, readStorageKept, withRemovalMeter } from "./lib/storage";
 import { isSearchActive } from "./lib/searchFilters";
 
 export default function EmailPage() {
@@ -61,6 +76,15 @@ export default function EmailPage() {
   const [disconnecting, setDisconnecting] = useState<EmailAccount | null>(null);
   // The mailbox whose name and colour the member edits (EM-T8b).
   const [editingMailbox, setEditingMailbox] = useState<EmailAccount | null>(null);
+  // The id of the mailbox that "Remove older mail from Metorite" acts on
+  // (EM-T6e). The notice or the step that names a mailbox sets it, never the
+  // selection (D3). `null` closes the dialog.
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  // The mailboxes that the member keeps at the storage limit ("Keep it as it
+  // is", D6). Ids only, from `localStorage`. Read once on the client: the
+  // step draws only after the first account read, so no server render
+  // shows it.
+  const [storageKept, setStorageKept] = useState<string[]>(() => readStorageKept());
 
   // Mobile-specific state
   const [mobileView, setMobileView] = useState<"inbox" | "detail">("inbox");
@@ -127,6 +151,10 @@ export default function EmailPage() {
     replaceAccount,
     viewAll,
     selectAll,
+    allFolderCounts,
+    setInAllInboxes,
+    connectProviders,
+    fetchConnectProviders,
   } = useEmailStore();
   // The mailbox that the composer sends from: the mailbox of the mail a
   // reply answers, else the selected one (EM-T8a, D-EM-20). New mail in All
@@ -136,12 +164,13 @@ export default function EmailPage() {
     composeDefaults?.accountId ||
     (viewAll ? defaultAccountId || selectedAccountId : selectedAccountId);
 
-  // Automation and the chat act on one mailbox, and All inboxes names none. So
-  // opening one leaves All inboxes for the mailbox of the open mail, else the
-  // default, and the switcher names it. The open mail stays open (EM-T8d
-  // review F4, F5). EM-T8e-3 gives the chat its own All inboxes scope.
+  // Automation acts on one mailbox, and All inboxes names none. So opening it
+  // leaves All inboxes for the mailbox of the open mail, else the default, and
+  // the switcher names it. The open mail stays open (EM-T8d review F4, F5).
+  // The chat has its own All inboxes scope (EM-T8e-3), so it keeps the page in
+  // All inboxes and gets `ALL_INBOXES` as its scope, never the hidden mailbox.
   useEffect(() => {
-    if (!automationFeature || !viewAll) return;
+    if (!automationFeature || automationFeature === "chat" || !viewAll) return;
     const st = useEmailStore.getState();
     const open = st.selectedEmailOverride ?? st.emails.find((e) => e.id === st.selectedEmailId);
     const target = open?.accountId || defaultAccountId || st.selectedAccountId;
@@ -151,10 +180,14 @@ export default function EmailPage() {
     if (open?.accountId === target) useEmailStore.setState(keep);
   }, [automationFeature, viewAll, defaultAccountId]);
 
-  // Fetch on mount
+  // Fetch on mount. The capability read of the connect flow runs beside the
+  // account read (WS-17 EM-G8): the connect choices wait on it.
   useEffect(() => {
     fetchAccounts();
   }, [fetchAccounts]);
+  useEffect(() => {
+    void fetchConnectProviders();
+  }, [fetchConnectProviders]);
 
   // /email?connect=1 opens the connect choices (the callback page's "Try
   // again" for a provider that is not live). With no mailbox, the empty state
@@ -163,10 +196,16 @@ export default function EmailPage() {
   // /email?connect=1&provider=microsoft opens the range step of that
   // provider at once. The callback page's "Try again" sends it, because that
   // retry is a first connect and must carry the range (EM-T6d fix round 1).
-  // Read once on the client. The connect choices mount only after the first
-  // account read, so no server render shows them.
-  const [rangeStepProvider, setRangeStepProvider] = useState<ConnectProviderId | null>(() =>
-    typeof window === "undefined" ? null : rangeStepProviderFrom(window.location.search)
+  // The query is read once on the client. The provider counts only when the
+  // capability read makes it live (EM-G8 item 2), and the connect choices
+  // mount only after that read and the first account read settle, so no
+  // server render shows them.
+  const [rangeStepQuery, setRangeStepQuery] = useState<string>(() =>
+    typeof window === "undefined" ? "" : window.location.search
+  );
+  const rangeStepProvider: ConnectProviderId | null = rangeStepProviderFrom(
+    rangeStepQuery,
+    liveProviders(connectProviders),
   );
   useEffect(() => {
     if (connectParamRef.current || accounts.length === 0) return;
@@ -220,12 +259,38 @@ export default function EmailPage() {
 
   // Derived data
   const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null;
+  // The count of the header in All inboxes. A separate mailbox is not in All
+  // inboxes, so it does not count (EM-T8g-2 item 2).
+  const pooledCount = pooledMailboxes(accounts).length;
   // The mailbox that the reconnect banner names: the selected one, or in All
   // inboxes the first mailbox that needs it, so a second mailbox cannot fail
-  // out of sight (EM-T8d review).
-  const attentionAccount =
-    (viewAll ? accounts : selectedAccount ? [selectedAccount] : [])
-      .find((a) => a.syncStatus === "error" || authErrors[a.id]) ?? null;
+  // out of sight (EM-T8d review). A separate mailbox counts too (EM-T8g-2).
+  const attentionAccount = attentionMailbox({ viewAll, selectedAccountId, accounts, authErrors });
+  // The guided setup of the mailbox in view, read ONCE for the storage step
+  // and the rules step (EM-T6d, EM-T6e D6).
+  const setupStage = selectedAccount
+    ? onboardingStage(selectedAccount, { storageKept: storageKept.includes(selectedAccount.id) })
+    : null;
+  // The mailbox that the storage notice names (EM-T6e, D3): the one in view,
+  // or in All inboxes the first pooled mailbox at the limit. The reconnect
+  // banner wins, and so does the storage step of the setup.
+  const storageAccount = storageMailbox({
+    viewAll,
+    selectedAccountId,
+    accounts,
+    attentionId: attentionAccount?.id ?? null,
+    storageStepId: setupStage === "storage" ? selectedAccountId : null,
+  });
+  // The live store copy of the mailbox of the removal dialog. A disconnect
+  // that takes the mailbox away closes the dialog. The page shortcuts read
+  // this value, never `removingId` (review round 1).
+  const removingAccount = removalMailbox(accounts, removingId);
+  // The dialog of a mailbox that left the list draws nothing, so its
+  // `onClose` never runs. Clear the id here, or a re-read that brings the
+  // mailbox back would open the dialog again. This is the adjustment of
+  // state during render that React documents. An effect would draw one
+  // stale frame first, and the lint rule `set-state-in-effect` refuses it.
+  if (removingId !== null && removingAccount === null) setRemovingId(null);
   // Prefer the loaded-list message; fall back to an out-of-list message opened
   // by id from a chat card (so "Open in inbox" works from any folder/view).
   const selectedEmail =
@@ -289,10 +354,12 @@ export default function EmailPage() {
   // request, and the poll ticks once when the tab comes back. The interval
   // stops when the page unmounts.
   const firstSyncPending = shouldPollFirstSync(accounts);
-  const pendingAccount =
-    (selectedAccount && isFirstSyncPending(selectedAccount) ? selectedAccount : null) ??
-    accounts.find(isFirstSyncPending) ??
-    null;
+  // The mailbox in view draws the import panel, with the detail of its first
+  // import. Each other import draws one row of the sync banner, in view or
+  // not (EM-S9, §14.4.6). The banner leaves out the mailbox of the panel.
+  const importPanelAccount =
+    !viewAll && selectedAccount && importPanelShows(selectedAccount) ? selectedAccount : null;
+  const syncRows = syncBanners(accounts, importPanelAccount?.id ?? null);
   useEffect(() => {
     if (!firstSyncPending) return;
     let cancelled = false;
@@ -420,6 +487,15 @@ export default function EmailPage() {
     [refreshAccounts]
   );
 
+  // "Keep separate" and "Show in All inboxes" (EM-T8g-2 item 1). The store
+  // sends the PATCH, and in All inboxes it reads the list again.
+  const toggleSeparate = useCallback(
+    (id: string, pooled: boolean) => {
+      void setInAllInboxes(id, pooled);
+    },
+    [setInAllInboxes]
+  );
+
   const handleAddAccount = useCallback(() => {
     setShowAddModal(true);
   }, []);
@@ -457,7 +533,9 @@ export default function EmailPage() {
       onSetDefault={setDefaultAccount}
       onDisconnect={handleDisconnectRequest}
       onEditMailbox={handleEditMailbox}
+      onToggleSeparate={toggleSeparate}
       viewAll={viewAll}
+      folderSums={allFolderCounts}
       onSelectAll={handleSelectAll}
       showAutomation={false}
     />
@@ -632,7 +710,7 @@ export default function EmailPage() {
           t.tagName === "TEXTAREA" ||
           t.isContentEditable);
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || paletteOpen) return;
+      if (composeOpen || showAddModal || noAccounts || disconnecting || editingMailbox || removingAccount || paletteOpen) return;
       // An automation scene (Assistant / Chat / Email Cleaner / …) replaces the
       // inbox panes and owns its own shortcuts — don't act on the background
       // selectedEmail while one is open.
@@ -681,7 +759,7 @@ export default function EmailPage() {
   }, [
     selectedEmail, navigateList, openCompose, handleToolbarAction,
     updateEmail, deleteEmail, composeOpen, showAddModal, noAccounts,
-    disconnecting, editingMailbox, paletteOpen, automationFeature,
+    disconnecting, editingMailbox, removingAccount, paletteOpen, automationFeature,
   ]);
 
   // Command palette entries (Cmd/Ctrl+K).
@@ -725,6 +803,7 @@ export default function EmailPage() {
       <ConnectEmptyState
         onConnect={(provider, importMonths) => handleConnect(provider, undefined, importMonths)}
         initialProvider={rangeStepProvider}
+        availability={connectProviders}
         loadError={error}
         onRetry={() => void fetchAccounts()}
       />
@@ -733,6 +812,20 @@ export default function EmailPage() {
 
   return (
     <div className="flex h-full w-full bg-background overflow-hidden select-none">
+      {/* NS-1: the command bar's "Write an email" opens a new message, once
+          the mailboxes it sends from have loaded. A filled job (NS-4b) brings
+          its fields; the member checks them and sends. */}
+      <ShellJob
+        id="compose"
+        ready={accounts.length > 0}
+        onOpen={(f) =>
+          openCompose({
+            to: f.to ?? "",
+            subject: f.subject ?? "",
+            aiFilled: ["to", "subject"].filter((k) => !!f[k]),
+          })
+        }
+      />
       {/* Loading overlay */}
       {surface === "loading" && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80">
@@ -775,7 +868,9 @@ export default function EmailPage() {
               onSetDefault={setDefaultAccount}
               onDisconnect={handleDisconnectRequest}
               onEditMailbox={handleEditMailbox}
+              onToggleSeparate={toggleSeparate}
               viewAll={viewAll}
+              folderSums={allFolderCounts}
               onSelectAll={handleSelectAll}
               onOpenAutomation={handleOpenAutomation}
               activeAutomation={automationFeature}
@@ -789,7 +884,7 @@ export default function EmailPage() {
         // Chat is a full scene (like Assistant / Reply Zero), not a side rail.
         <div className="flex-1 min-w-0 overflow-hidden">
           <EmailAssistantChat
-            selectedAccountId={selectedAccountId}
+            pageScope={viewAll ? ALL_INBOXES : selectedAccountId}
             selectedEmailId={selectedEmailId}
             onClose={() => setAutomationFeature(null)}
           />
@@ -799,6 +894,19 @@ export default function EmailPage() {
           <AutomationView
             feature={automationFeature}
             accountId={selectedAccountId}
+            accounts={accounts}
+            onPickMailbox={(id) => {
+              // The header picker (EM-T8f-2, MB-11). It selects through the
+              // store, because RulesTab reads the folders of the selected
+              // mailbox. The Process past date belongs to the mailbox of the
+              // setup, so a pick clears it.
+              pickSettingsMailbox(id, {
+                accounts,
+                current: selectedAccountId,
+                selectAccount,
+                clearProcessPastFrom: () => setProcessPastFrom(null),
+              });
+            }}
             selectedEmailId={selectedEmailId}
             onClose={() => setAutomationFeature(null)}
             onArchived={fetchEmails}
@@ -891,7 +999,7 @@ export default function EmailPage() {
                 {/* The scope of the list, for two or more mailboxes (§11.4). */}
                 {accounts.length > 1 && (viewAll ? (
                   <span className="text-[11px] text-muted-foreground truncate flex-shrink-0">
-                    All inboxes · {accounts.length} mailboxes
+                    All inboxes · {pooledCount} mailboxes
                   </span>
                 ) : selectedAccount ? (
                   <>
@@ -915,12 +1023,18 @@ export default function EmailPage() {
 
             <div className="flex items-center gap-1 flex-1 basis-0 justify-end min-w-fit">
               <MailboxActions selectedEmail={selectedEmail} />
-              <div className="w-px h-4 bg-border" />
-              <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl/Cmd+K)" className="gap-1 px-2 py-1 rounded">
-                <span className="text-[10px] border border-border rounded px-1 leading-tight">
-                  ⌘K
-                </span>
-              </Button>
+              {/* With the shell bar on, ⌘K is the command bar's, and this
+                  button would open a second palette (§6.7 rule 1). */}
+              {shellBarOn() ? null : (
+                <>
+                  <div className="w-px h-4 bg-border" />
+                  <Button variant="ghost" size="none" radius="keep" layout="flex items-center" onClick={() => setPaletteOpen(true)} title="Command palette (Ctrl/Cmd+K)" className="gap-1 px-2 py-1 rounded">
+                    <span className="text-[10px] border border-border rounded px-1 leading-tight">
+                      ⌘K
+                    </span>
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -965,7 +1079,7 @@ export default function EmailPage() {
                   {folderLabel(selectedFolder)}
                 </div>
                 <div className="text-[10px] text-muted-foreground truncate">
-                  {viewAll ? `All inboxes · ${accounts.length} mailboxes` : selectedAccount?.emailAddress ?? ""}
+                  {viewAll ? `All inboxes · ${pooledCount} mailboxes` : selectedAccount?.emailAddress ?? ""}
                 </div>
               </div>
             </button>
@@ -1023,30 +1137,62 @@ export default function EmailPage() {
                   className="flex-shrink-0"
                   onClick={() => handleConnect(provider, attentionAccount.emailAddress)}
                 >
-                  {provider === "microsoft" ? "Reconnect Outlook" : "Reconnect Gmail"}
+                  {RECONNECT_LABEL[provider]}
                 </Button>
               );
             })()}
           </div>
         )}
 
-        {/* ── First sync of a new mailbox ──
-            The import panel draws only when the gateway reports progress
-            (`import_phase`, EM-T6b). Every other pending mailbox keeps the
-            banner: one from before EM-T6, or a gateway before EM-T6b. */}
-        {pendingAccount &&
-          (firstSyncSurface(pendingAccount) === "progress" ? (
-            <OnboardingPanel
-              address={pendingAccount.emailAddress}
-              progress={importProgress(pendingAccount, { now: new Date() })}
-            />
-          ) : (
-            <FirstSyncBanner address={pendingAccount.emailAddress} />
-          ))}
+        {/* ── The sync banner (EM-S9, §14.4.6, D-EM-58) ──
+            One row for each mailbox whose import runs, with its chip and a
+            percent or a count. A row goes away when its phase ends. */}
+        <SyncBanner rows={syncRows} />
+
+        {/* ── Storage notice (EM-T6e, D2 and D3) ──
+            Below the reconnect banner, which wins for its own mailbox. The
+            action opens the dialog for the mailbox that the notice NAMES. */}
+        {storageAccount && (
+          <StorageNotice
+            // A prefix: the rules step beside it keys on the bare id, and
+            // after "Keep it as it is" both draw for one mailbox.
+            key={`storage-notice-${storageAccount.id}`}
+            account={storageAccount}
+            named={accounts.length > 1}
+            onRemove={() => setRemovingId(storageAccount.id)}
+          />
+        )}
+
+        {/* ── The first import of the mailbox in view ──
+            The panel draws only when the gateway reports progress
+            (`import_phase`, EM-T6b). The sync banner names each other
+            import. */}
+        {importPanelAccount && (
+          <OnboardingPanel
+            key={importPanelAccount.id}
+            address={importPanelAccount.emailAddress}
+            mailbox={accounts.length > 1 ? importPanelAccount : undefined}
+            progress={importProgress(importPanelAccount, { now: new Date() })}
+          />
+        )}
+
+        {/* ── The storage step of the guided setup (EM-T6e, D6) ──
+            For the mailbox in view, when its import stopped at the limit and
+            the meter is still at it. "Keep it as it is" moves it on to the
+            rules step. Not a modal. */}
+        {selectedAccount && setupStage === "storage" && (
+          <StorageStep
+            key={`storage-step-${selectedAccount.id}`}
+            account={selectedAccount}
+            named={accounts.length > 1}
+            onRemove={() => setRemovingId(selectedAccount.id)}
+            onKeep={() => setStorageKept(keepStorage(selectedAccount.id))}
+          />
+        )}
 
         {/* ── The rules step of the guided setup (EM-T6d items 8 to 11) ──
             For the mailbox in view, once its import ended. Not a modal. */}
-        {selectedAccount && onboardingStage(selectedAccount) === "rules" && (
+        {selectedAccount && setupStage === "rules" && (
           <OnboardingRulesStep
             key={selectedAccount.id}
             account={selectedAccount}
@@ -1057,6 +1203,7 @@ export default function EmailPage() {
               replaceAccount(updated);
               void refreshAccounts();
             }}
+            mailboxes={accounts}
           />
         )}
 
@@ -1237,6 +1384,9 @@ export default function EmailPage() {
         defaultSubject={composeDefaults?.subject}
         defaultCc={composeDefaults?.cc}
         replyToBody={composeDefaults?.replyToBody}
+        unsavedEdit={composeDefaults?.unsavedEdit}
+        aiFilled={composeDefaults?.aiFilled}
+        handOver={composeDefaults?.handOver}
         quote={composeDefaults?.quote}
         replyToMessageId={composeDefaults?.replyToMessageId}
         messageId={composeDefaults?.messageId}
@@ -1250,7 +1400,7 @@ export default function EmailPage() {
         onClose={() => {
           setShowAddModal(false);
           // The next "Add account" opens the list, not the retry's step.
-          setRangeStepProvider(null);
+          setRangeStepQuery("");
         }}
         title="Connect a mailbox"
         icon="Mail"
@@ -1263,6 +1413,7 @@ export default function EmailPage() {
               setShowAddModal(false);
               handleConnect(provider, undefined, importMonths);
             }}
+            availability={connectProviders}
           />
         </div>
       </Modal>
@@ -1273,8 +1424,26 @@ export default function EmailPage() {
         onClose={() => setEditingMailbox(null)}
       />
 
+      {/* "Remove older mail from Metorite" (EM-T6e). Both routes take the id
+          of the mailbox that the notice or the step named (D3). */}
+      <RemoveOlderMailDialog
+        account={removingAccount}
+        named={accounts.length > 1}
+        onClose={() => setRemovingId(null)}
+        onRemoved={(id, result) => {
+          // The meter of the answer first, so a failed re-read still shows
+          // it (A14). The store is read at call time, because a removal can
+          // run for two minutes and the list can change meanwhile.
+          const current = useEmailStore.getState().accounts.find((a) => a.id === id);
+          if (current) replaceAccount(withRemovalMeter(current, result));
+          void refreshAccounts();
+        }}
+        onRefresh={async (id) => (await refreshAccounts())?.find((a) => a.id === id) ?? null}
+      />
+
       <DisconnectDialog
         account={disconnecting}
+        accounts={accounts}
         onDisconnect={deleteAccount}
         onClose={() => setDisconnecting(null)}
       />

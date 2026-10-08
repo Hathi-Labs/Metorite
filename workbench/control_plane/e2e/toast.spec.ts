@@ -101,6 +101,16 @@ const json = (route: Route, status: number, body: unknown) =>
 test.beforeEach(async ({ page }) => {
   markRead = { status: 200, body: { marked: 2 }, delayMs: 300 };
 
+  // The shell's update notice (navigation_shell.md §7.3) reads a 5xx from
+  // `/api/*` as a possible outage and asks `/api/health`. CI runs no gateway,
+  // so the real probe would answer "down" and add a second toast, "Metorite
+  // is updating", beside the one under test. Here the product is healthy and
+  // only the stubbed route fails, which is exactly the case where the notice
+  // must stay silent.
+  await page.route("**/api/health", (route) =>
+    json(route, 200, { gateway: "up", build: "e2e" }),
+  );
+
   await page.route("**/api/projects/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/notifications/read")) {

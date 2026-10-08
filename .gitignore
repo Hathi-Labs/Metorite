@@ -24,6 +24,11 @@ infra/litellm/tier_overrides.yaml  # Settings UI tier changes — survives deplo
 *.pem
 *.key
 secrets/
+# The secrets-drop manifest holds names and paths only, never a value. Only
+# that one file is tracked. Every other file in deploy/secrets/ stays ignored.
+!deploy/secrets/
+deploy/secrets/*
+!deploy/secrets/manifest.json
 
 # Local reference checkouts (e.g. upstream inbox-zero for parity work)
 reference/
@@ -150,3 +155,8 @@ skill-observations/
 
 # Redis snapshot from a locally-run redis-server (dev/verification only)
 dump.rdb
+
+# WS-43v: the results and the state dirs of the coding eval (evals/coding_engine/run.py)
+evals/coding_engine/results/
+# WS-46 P3: the results of the Projects operations eval (evals/projects_ops/run.py)
+evals/projects_ops/results/

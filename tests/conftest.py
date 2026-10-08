@@ -42,6 +42,13 @@ os.environ.setdefault("CUSTOMER_CONSOLE_STARTER_CREDITS", "0")
 # No daily cap under test either: suites provision many orgs in a run, and a
 # cap would make grant assertions depend on test order. The cap test sets it.
 os.environ.setdefault("CUSTOMER_CONSOLE_STARTER_DAILY_CAP", "0")
+# The email model budget is OFF under test (WS-17 EM-T4b). The shipped
+# default is `log`, which counts each model call of a mailbox job in tenant
+# Redis. Under test that wrote real keys into whatever Redis a dev machine
+# runs, and each count then carried over to the next run. The budget suite
+# (`tests/unit/test_email_llm_cap.py`) sets each mode it tests, over a fake
+# Redis client.
+os.environ.setdefault("EMAIL_LLM_BUDGET_MODE", "off")
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +77,38 @@ def _isolate_write_artifact_context():
         yield
     finally:
         reset_artifact_context(token)
+
+
+@pytest.fixture(autouse=True)
+def _no_docker_daemon_outside_the_sandbox_docker_marker(request, monkeypatch):
+    """A unit test never reaches the Docker daemon through the sandbox broker.
+
+    WS-43c, PR #591 review round 3. Every test that runs the real gateway
+    lifespan (``TestClient(app)`` in ``test_smoke.py`` and others) starts the
+    broker's startup sweep. On a dev box that sweep removed EVERY container
+    labelled ``metorite.sandbox=1`` on the daemon, other sessions' included.
+    So outside the ``sandbox_docker`` marker, ``DockerCLI._binary`` raises
+    ``SandboxUnavailable``. The sweep then logs one line and removes nothing.
+    A test that patches ``_binary`` on an instance (to run python) still works.
+    Fence: ``tests/unit/test_sandbox_broker_seam.py``
+    (``test_the_unit_suite_never_reaches_the_docker_daemon``).
+    """
+    if request.node.get_closest_marker("sandbox_docker") is not None:
+        yield
+        return
+    try:
+        from orchestrator import sandbox_broker
+    except ImportError:  # the orchestrator is not on the path
+        yield
+        return
+
+    def _refuse(_self):
+        raise sandbox_broker.SandboxUnavailable(
+            "Unit tests never reach the Docker daemon. Mark the test sandbox_docker."
+        )
+
+    monkeypatch.setattr(sandbox_broker.DockerCLI, "_binary", _refuse)
+    yield
 
 
 # ── R8: say out loud when the database-gated suites did not run ─────────────

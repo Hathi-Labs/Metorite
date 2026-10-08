@@ -167,6 +167,78 @@ def test_a_failed_lookup_says_retry_rather_than_not_a_participant(
     assert "not a participant" not in message.lower()
 
 
+def _get_room_status(monkeypatch, loaded) -> tuple[int, str]:
+    """GET /room through the real handler, with ``_load_room`` stubbed."""
+    from acb_auth import UserContext, get_current_user
+    from acb_auth.roles import UserRole
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from gateway import rooms
+    from gateway.routes.rooms import get_room
+
+    def _load(session_id: str, email: str, organization_id: str | None):
+        if isinstance(loaded, Exception):
+            raise loaded
+        return loaded
+
+    monkeypatch.setattr(rooms, "_load_room", _load)
+    app = FastAPI()
+    app.get("/r/{session_id}")(get_room)
+    user = UserContext(email=_BOB, role=UserRole.EMPLOYEE, organization_id=_ORG)
+    app.dependency_overrides[get_current_user] = lambda: user
+    res = TestClient(app).get("/r/some-real-session")
+    return res.status_code, res.text
+
+
+def test_get_room_answers_503_not_404_when_the_lookup_fails(monkeypatch) -> None:
+    """An outage and a refusal never share an answer (PR #652 fix round 1).
+
+    A client that restored a chat id drops it on a 404. On 2026-09-20 the pool
+    ran out (EMAXCONNSESSION) 11 times in 6 hours. Each of those, answered 404,
+    would have dropped a member's OWN chat and opened a new one.
+    """
+    status, body = _get_room_status(monkeypatch, RuntimeError("EMAXCONNSESSION"))
+    assert status == 503
+    assert "try again" in body.lower()
+
+
+def test_get_room_still_answers_404_for_a_room_of_another_tenant(monkeypatch) -> None:
+    from gateway import rooms
+
+    status, body = _get_room_status(monkeypatch, rooms._ELSEWHERE)
+    assert status == 404
+    assert "not found" in body.lower()
+
+
+def test_a_send_refusal_is_503_in_an_outage_and_403_otherwise(monkeypatch) -> None:
+    from gateway import rooms
+
+    def _boom(*_a):
+        raise RuntimeError("pool")
+
+    monkeypatch.setattr(rooms, "_load_room", _boom)
+    assert rooms.resolve_room_access("s", _BOB, organization_id=_ORG).refusal_status == 503
+    monkeypatch.setattr(rooms, "_load_room", lambda *_a: rooms._ELSEWHERE)
+    assert rooms.resolve_room_access("s", _BOB, organization_id=_ORG).refusal_status == 403
+
+
+def test_no_chat_refusal_site_pins_403_on_a_room_answer() -> None:
+    """Every send, save and file refusal takes its status from the room."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[2] / "apps/services/gateway/gateway/routes"
+    for name in ("agent.py", "chat.py", "workspace.py"):
+        src = (root / name).read_text(encoding="utf-8")
+        pinned = re.findall(
+            r"status_code=(?:403|status\.HTTP_403_FORBIDDEN),\s*detail=room\.denied", src,
+        )
+        assert pinned == [], name
+    rooms_src = (root / "rooms.py").read_text(encoding="utf-8")
+    assert 'status_code=404, detail="Conversation not found")' in rooms_src
+    assert rooms_src.count("_refuse_unreadable(access)") == 9
+
+
 def test_a_session_with_no_row_is_still_the_callers_own(monkeypatch) -> None:
     """The case that must NOT be swept up by the fail-closed change.
 

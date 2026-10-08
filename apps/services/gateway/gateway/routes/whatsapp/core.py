@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from acb_auth import require_feature_router
 from acb_common import get_logger
 from fastapi import APIRouter, HTTPException
 
@@ -27,15 +28,18 @@ from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 # `TenantUnbound` rather than defaulting: fail closed, never "the usual org".
 #
 # ⚠️ NOT every site in this package uses it. This surface is ingestion-heavy:
-# the Meta webhook, the whatsmeow bridge's five push routes, the post-sync
-# hooks and the enrichment scheduler all run with NO ambient tenant (Meta and
-# the Go bridge authenticate with their own secrets, not a member session;
-# `system:internal` binds nothing). Those stay on `_get_db` with an H4/H6
-# marker at each site until an explicit tenant is threaded through — deriving
-# it ambiently there is exactly what the H2 runbook forbids.
+# the whatsmeow bridge's five push routes, the GET verify fallback and the
+# enrichment scheduler run with NO ambient tenant (the Go bridge authenticates
+# with its own secret, not a member session; `system:internal` binds
+# nothing). Those stay on `_get_db` with an H4/H6 marker at each site until an
+# explicit tenant is threaded through — deriving it ambiently there is exactly
+# what the H2 runbook forbids.
+#
+# WS-20 WA-C1: the Meta webhook POST binds the tenant of the account row that
+# owns the number, read through a SECURITY DEFINER resolver. The two post-sync
+# hooks then open `_tenant_session()` under that binding.
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 from pydantic import BaseModel
-from acb_auth import require_feature_router
 
 _log = get_logger("gateway.whatsapp")
 
@@ -95,6 +99,17 @@ class WhatsAppAccountModel(BaseModel):
     # 'cloud' (Meta Cloud API) or 'whatsmeow' (the QR-paired personal bridge).
     # The dialer needs it: voice calling only exists on the bridge transport.
     provider: str = "cloud"
+    # WS-20 WA-C3 (spec §12.4.1 P11). The coexistence history import. The
+    # state is None for an account that is not coexistence. The deadline is
+    # `created_at` plus 24 hours, the window that Meta gives for the sync.
+    history_sync_state: str | None = None
+    history_sync_error: str | None = None
+    history_import_progress: int | None = None
+    history_sync_deadline: str | None = None
+    # The value of `WHATSAPP_HISTORY_SYNC` on this server (fix round P2-1).
+    # While it is false, the UI offers no start and no reconnect advice,
+    # because the retry route answers 400 and a reconnect imports nothing.
+    history_sync_available: bool = False
 
 
 class WhatsAppChatModel(BaseModel):
@@ -131,6 +146,10 @@ class WhatsAppMessageModel(BaseModel):
     intent: str | None = None
     send_regime: str | None = None
     sent_at: str | None = None
+    # WS-48 N4: the chat's name and kind ('dm' | 'group' | 'broadcast'). Only
+    # ``GET /search`` and the ``around`` read of the thread fill them.
+    chat_name: str | None = None
+    chat_kind: str | None = None
 
 
 # ── DB (the one shared gateway engine — gateway/db.py, BO-10) ────────────────

@@ -87,7 +87,7 @@ async def run_copilot_code_session(
     scope flag never turns a spawn failure into a hard error.
     """
     from orchestrator.copilot_agent import MetoriteCopilotAgent
-    from orchestrator.executor import _copilot_permission_handler
+    from orchestrator.executor import _install_copilot_permission_handler
 
     settings = get_settings()
     gw_base = (
@@ -127,11 +127,7 @@ async def run_copilot_code_session(
     )
     if sandbox_handle is not None:
         agent._sandbox_cli_url = sandbox_handle.cli_url
-    try:
-        if getattr(agent, "_permission_handler", None) is None:
-            agent._permission_handler = _copilot_permission_handler()
-    except Exception:
-        pass
+    _install_copilot_permission_handler(agent)
 
     _log.info(
         "code_session.start", workspace=workspace, model=model,
