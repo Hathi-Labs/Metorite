@@ -628,7 +628,8 @@ def test_install_dependency_skips_what_the_venv_holds(site: SimpleNamespace) -> 
 
 
 def _fake_dist(site_dir: Path, name: str, version: str, files: dict[str, str]) -> None:
-    info = site_dir / f"{name}-{version}.dist-info"
+    # A wheel names the dir with "_" for "-" (PEP 427), as importlib expects.
+    info = site_dir / f"{name.replace('-', '_')}-{version}.dist-info"
     info.mkdir(parents=True)
     (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n\n",
                                    encoding="utf-8")
@@ -658,7 +659,7 @@ def test_prune_removes_a_venv_copy_by_its_record(site: SimpleNamespace) -> None:
     assert not (s / "idna").exists()
     assert not (s / "idna-0.0.1.dist-info").exists()
     assert (s / "bh7_only_here" / "__init__.py").is_file()
-    assert (s / "bh7-only-here-1.0.dist-info").is_dir()
+    assert (s / "bh7_only_here-1.0.dist-info").is_dir()
     assert sorted(p.name for p in (s / "nsx").iterdir()) == ["from_agent.py"]
 
 
