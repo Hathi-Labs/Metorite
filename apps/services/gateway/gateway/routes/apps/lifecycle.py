@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_auth import UserContext
+from acb_common.child_env import child_env
 from fastapi import Depends, HTTPException
 from gateway.routes.apps._common import (
     _log,
@@ -171,6 +172,7 @@ def _git_init(workspace: Path) -> None:
             subprocess.run(
                 args, cwd=str(workspace), capture_output=True,
                 timeout=30, check=False,
+                env=child_env(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
             _log.warning(

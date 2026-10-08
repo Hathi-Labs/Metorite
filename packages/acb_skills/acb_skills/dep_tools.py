@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from acb_common import get_logger
+from acb_common.child_env import child_env
 
 _log = get_logger("acb_skills.dep_tools")
 
@@ -85,6 +86,7 @@ async def install_dependency(packages: str) -> str:
         try:
             r = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=600,
+                env=child_env(),
             )
             return r.returncode, (r.stderr or r.stdout or "")
         except Exception as exc:  # noqa: BLE001
