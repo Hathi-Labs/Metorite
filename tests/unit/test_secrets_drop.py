@@ -450,6 +450,17 @@ def test_the_public_key_validator_rejects_a_private_key() -> None:
         assert res["rc"] != 0, content
         assert "fails the check gpg_public_key_only" in res["err"], content
         assert _box(res, "/opt/acb/backup-public-key.asc") is None
+    # The text check stands alone: a public block AND a private block, with a
+    # gpg that reports only the public key, is still refused.
+    res = _run(
+        "SD init >/dev/null\n"
+        f"printf -- '{_PUBLIC_BLOCK}{private}' > \"$D/backup-gpg-public.asc\"\n"
+        "gpg() { rec gpg \"$@\"; echo 'pub:u:255:22:AAAA:::::::'; }; export -f gpg\n"
+        "SD push backup-gpg-public --yes\n"
+    )
+    assert res["rc"] != 0
+    assert "fails the check gpg_public_key_only" in res["err"]
+    assert _box(res, "/opt/acb/backup-public-key.asc") is None
     res = _run(
         "SD init >/dev/null\n"
         f"printf -- '{_PUBLIC_BLOCK}' > \"$D/backup-gpg-public.asc\"\n"
