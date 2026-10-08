@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 import pytest
+from fastapi import BackgroundTasks
 
 ROOT = Path(__file__).resolve().parents[2]
 UNIT = ROOT / "deploy/hostinger/acb-gateway.service"
@@ -37,6 +38,14 @@ MAIN = ROOT / "apps/services/gateway/gateway/main.py"
 #: "Uvicorn running", on 2026-10-08 (09:33:05 to 09:33:21). Python imports
 #: take nearly all of it; `uv run` takes 0.09 s.
 WORST_START_S = 16
+
+#: The lifespan shutdown on a clean restart, from "Waiting for application
+#: shutdown" to "Finished server process". It read under 1 s on every restart
+#: of 2026-10-08. ⚠️ It is longer only when the stop step gave up at its bound
+#: with work still live. Then `stop_runs` (6 s) and the audit drain (5 s) can
+#: add up to 11 s. That case is rare, and it still ends far sooner than the
+#: 90 s SIGKILL it replaces.
+CLEAN_LIFESPAN_S = 1
 
 
 def _unit() -> dict[str, list[str]]:
@@ -75,7 +84,7 @@ class TestTheRestartGapFitsTheHolds:
     def test_the_drain_plus_the_start_fits_the_workbench_retry(self) -> None:
         # The workbench calls the gateway on localhost, so Caddy's hold does not
         # cover it. Its own retry does, and it is the shorter of the two.
-        gap = _drain_bound_s() + WORST_START_S
+        gap = _drain_bound_s() + CLEAN_LIFESPAN_S + WORST_START_S
         assert gap < _retry_deadline_s(), (
             f"a restart can be down {gap}s, and the workbench retries only "
             f"{_retry_deadline_s()}s, so members see 'Metorite is updating'"
@@ -239,6 +248,15 @@ class TestTheDrainScript:
         out, took = _run_script(url, wait_s=30)
         assert out.returncode == 0 and took < 10
 
+    def test_one_missed_read_mid_wait_does_not_end_the_wait(self) -> None:
+        fake = _Counts([_runs(2), (500, "{}"), _runs(1), _runs(0)])
+        try:
+            out, _ = _run_script(fake.url, wait_s=30)
+        finally:
+            fake.close()
+        assert out.returncode == 0 and fake.calls == 4
+        assert "every run ended" in out.stdout
+
     def test_a_count_that_stops_answering_mid_wait_stops_the_wait(self) -> None:
         fake = _Counts([_runs(3), (500, "{}")])
         try:
@@ -260,15 +278,56 @@ class _Task:
         return self._done
 
 
+AUTH = {"Authorization": "Bearer tok-123"}
+
+
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch):
+def idle(monkeypatch: pytest.MonkeyPatch):
+    """No chat run, no Projects run, no parked question."""
+    from gateway.routes.projects import agent_dispatch
+    from orchestrator import executor, stream_relay
+
+    monkeypatch.setattr(stream_relay, "_DETACHED_TASKS", {})
+    monkeypatch.setattr(agent_dispatch, "_RUNS", set())
+    monkeypatch.setattr(executor, "_pending_user_input", executor._PendingUserInput())
+
+
+@pytest.fixture
+def app(monkeypatch: pytest.MonkeyPatch, idle):
     from fastapi import FastAPI
-    from fastapi.testclient import TestClient
+    from fastapi.responses import StreamingResponse
     from gateway.routes import drain
 
     monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "tok-123")
     app = FastAPI()
     app.include_router(drain.router)
+    app.add_middleware(drain.AfterResponseCounter)
+    app.state.seen = []
+
+    @app.post("/send")
+    async def send(background: BackgroundTasks) -> dict[str, bool]:
+        async def close_thread() -> None:
+            app.state.seen.append(await drain.drain())
+
+        background.add_task(close_thread)
+        return {"sent": True}
+
+    @app.get("/stream")
+    async def stream() -> StreamingResponse:
+        async def body():
+            yield "data: one\n\n"
+            app.state.seen.append(await drain.drain())
+            yield "data: two\n\n"
+
+        return StreamingResponse(body(), media_type="text/event-stream")
+
+    return app
+
+
+@pytest.fixture
+def client(app):
+    from fastapi.testclient import TestClient
+
     return TestClient(app)
 
 
@@ -288,18 +347,48 @@ class TestTheDrainRoute:
             "t1": _Task(False), "t2": _Task(False), "t3": _Task(True),
         })
         monkeypatch.setattr(agent_dispatch, "_RUNS", {_Task(False), _Task(True)})
-        r = client.get("/internal/drain", headers={"Authorization": "Bearer tok-123"})
+        r = client.get("/internal/drain", headers=AUTH)
         assert r.status_code == 200
-        assert r.json() == {"runs": 3, "chat": 2, "projects": 1}
+        assert r.json() == {
+            "runs": 3, "chat": 2, "projects": 1,
+            "after_response": 0, "waiting_on_a_person": 0,
+        }
 
-    def test_an_idle_gateway_reads_zero(self, client, monkeypatch: pytest.MonkeyPatch) -> None:
-        from gateway.routes.projects import agent_dispatch
-        from orchestrator import stream_relay
+    def test_a_run_waiting_on_a_person_is_not_waited_for(
+        self, client, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # An ask_user card can wait an hour. Counting it would make every
+        # restart in that hour wait the full bound, and then end it anyway.
+        from orchestrator import executor, stream_relay
 
-        monkeypatch.setattr(stream_relay, "_DETACHED_TASKS", {})
-        monkeypatch.setattr(agent_dispatch, "_RUNS", set())
-        r = client.get("/internal/drain", headers={"Authorization": "Bearer tok-123"})
-        assert r.json()["runs"] == 0
+        monkeypatch.setattr(stream_relay, "_DETACHED_TASKS", {
+            "asks": _Task(False), "works": _Task(False),
+        })
+        parked = executor._PendingUserInput()
+        parked.park("req-1", _Task(False), "asks")
+        parked.park("req-2", _Task(True), "works")  # answered already
+        monkeypatch.setattr(executor, "_pending_user_input", parked)
+        body = client.get("/internal/drain", headers=AUTH).json()
+        assert body["chat"] == 1 and body["waiting_on_a_person"] == 1
+        assert body["runs"] == 1
+
+    def test_an_idle_gateway_reads_zero(self, client) -> None:
+        assert client.get("/internal/drain", headers=AUTH).json()["runs"] == 0
+
+    def test_work_after_the_response_is_counted_while_it_runs(self, app, client) -> None:
+        # The email send closes the thread in a BackgroundTask. The bounded
+        # drain would cut it, so the stop step must wait for it.
+        assert client.post("/send").json() == {"sent": True}
+        (during,) = app.state.seen
+        assert during["after_response"] == 1 and during["runs"] == 1
+        assert client.get("/internal/drain", headers=AUTH).json()["after_response"] == 0
+
+    def test_an_open_stream_is_never_counted(self, app, client) -> None:
+        # A stream ends only when its client goes. Counting it would make every
+        # restart wait the full bound.
+        assert "two" in client.get("/stream").text
+        (during,) = app.state.seen
+        assert during["after_response"] == 0 and during["runs"] == 0
 
     def test_the_gateway_mounts_the_route_outside_a_try(self) -> None:
         # A mount inside `try: ... except: pass` fails silently, and the stop
@@ -309,3 +398,4 @@ class TestTheDrainRoute:
         line_start = src.rindex("\n", 0, i) + 1
         assert src[line_start:i] == "", "the drain import is indented, so it sits in a block"
         assert "app.include_router(_drain_router)\n" in src
+        assert "\napp.add_middleware(AfterResponseCounter)\n" in src

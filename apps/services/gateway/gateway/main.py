@@ -1405,9 +1405,11 @@ except Exception:  # pragma: no cover
 
 # The restart drain (routes/drain.py). The unit's ExecStop= reads it before
 # the stop signal. Not in a try: a gateway without it restarts with no wait.
+from gateway.routes.drain import AfterResponseCounter  # noqa: E402
 from gateway.routes.drain import router as _drain_router  # noqa: E402
 
 app.include_router(_drain_router)
+app.add_middleware(AfterResponseCounter)
 
 try:
     # BO-1 / A2 — Action Broker approval inbox over the pending_actions queue.

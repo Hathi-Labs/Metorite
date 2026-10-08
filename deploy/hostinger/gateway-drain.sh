@@ -49,15 +49,26 @@ if [ "$runs" -eq 0 ]; then
 fi
 echo "gateway-drain: $runs run(s) still going, waiting up to ${wait_s}s"
 
+misses=0
 while :; do
   sleep "$poll_s"
   runs="$(runs_now)"
   waited_ms=$(( $(now_ms) - start ))
   waited=$(( waited_ms / 1000 ))
   if [ -z "$runs" ]; then
-    echo "gateway-drain: the count stopped answering after ${waited}s, so the stop goes ahead"
-    exit 0
+    # One slow read under load is not a dead gateway. Three in a row is.
+    misses=$(( misses + 1 ))
+    if [ "$misses" -ge 3 ]; then
+      echo "gateway-drain: the count stopped answering after ${waited}s, so the stop goes ahead"
+      exit 0
+    fi
+    if [ "$waited_ms" -ge $(( wait_s * 1000 )) ]; then
+      echo "gateway-drain: no count at the ${wait_s}s bound, so the stop goes ahead"
+      exit 0
+    fi
+    continue
   fi
+  misses=0
   if [ "$runs" -eq 0 ]; then
     echo "gateway-drain: every run ended after ${waited}s"
     exit 0
