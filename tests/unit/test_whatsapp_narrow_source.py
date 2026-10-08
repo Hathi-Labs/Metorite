@@ -263,6 +263,16 @@ def _tool(monkeypatch: pytest.MonkeyPatch, gateway: Gateway) -> Callable[..., An
     return tool
 
 
+def _force_pick(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make PICK run on these short test messages (H-276).
+
+    WhatsApp messages are short, so the cost check skips PICK on them. A test
+    of the PICK wire, or of the count line after PICK, turns the check off. A
+    margin of 0 never skips, because a READ costs more than nothing.
+    """
+    monkeypatch.setattr(narrowing, "PICK_MARGIN", 0.0)
+
+
 def _built(monkeypatch: pytest.MonkeyPatch) -> Any:
     return agents.build_agents()[0]
 
@@ -426,6 +436,7 @@ async def test_a_voice_note_uses_its_transcript(
     monkeypatch: pytest.MonkeyPatch, door: Door,
 ) -> None:
     """§9 N4: a voice note has an empty body. PICK sees its transcript."""
+    _force_pick(monkeypatch)
     voice = _row(1, kind="voice", body_text="", transcript_text="kal pump ka rate bhejo")
     photo = _row(2, kind="image", body_text="")
     gateway = Gateway([voice, photo])
@@ -530,6 +541,7 @@ async def test_a_failed_read_is_counted_not_hidden(
 ) -> None:
     """A chat of another member is a 404 on the thread route. The item is
     counted, and its id reaches the model."""
+    _force_pick(monkeypatch)
     gateway = Gateway([_row(n) for n in range(1, 4)])
     gateway.fail_read = {mid(2)}
     out = await _tool(monkeypatch, gateway)(QUERY)
@@ -860,6 +872,7 @@ async def test_a_no_egress_run_sends_no_decide_request(
     monkeypatch: pytest.MonkeyPatch, door: Door,
 ) -> None:
     """Q4: a covered run asks System 1 only, never the decide door."""
+    _force_pick(monkeypatch)
     asked: list[int] = []
 
     async def fast(_context: str, items: list[Any], **_k: Any) -> list[Any]:

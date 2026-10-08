@@ -23,8 +23,8 @@ The rules of the real gateway hold here too:
   filter widens a search in silence.
 * Every route is a read. A request with any other method is recorded and
   refused, and the runner fails the run on it: READ must change no state.
-* ``GET /chats/{id}/messages`` with no ``around`` gives the OLDEST ``limit``
-  messages, as the route's ``ORDER BY sent_at ASC ... LIMIT`` does.
+* ``GET /chats/{id}/messages`` with no ``around`` gives the NEWEST ``limit``
+  messages, oldest first, as the route does since H-277.
 
 ⚠️ **The full-text match is an approximation** of ``to_tsvector('simple')``:
 lower-case whole words, no stems, no stop words. The ``websearch`` grammar is
@@ -223,7 +223,8 @@ class ChatStub:
         around = _one(p, "around")
         if around is None:
             limit = min(int(_one(p, "limit") or 100), 500)
-            return 200, [self._row(m, with_chat=False) for m in rows[:limit]]
+            newest = rows[-limit:] if limit > 0 else []  # H-277: the newest, in order
+            return 200, [self._row(m, with_chat=False) for m in newest]
         at = next((i for i, m in enumerate(rows) if m["id"] == around), None)
         if at is None:
             return 404, {"detail": "Message not found"}

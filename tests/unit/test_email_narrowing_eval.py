@@ -18,6 +18,10 @@ and the eval must fail on it:
   ``test_recall_fails_when_pick_drops_an_answer``; the keep rule drops a low
   ``no`` -> ``test_recall_fails_when_the_keep_rule_drops_a_low_no``; the READ
   cap leaves an answer unread -> ``test_recall_fails_when_read_leaves_an_answer``;
+* the rule of H-276: a question that costs more than today's path ->
+  ``test_never_more_fails_when_a_question_costs_more``; the rule itself
+  passes a question over today's path, or a total over it ->
+  ``test_never_costs_more_on_its_own``;
 * a leak of another member's mail -> ``test_a_leak_of_another_members_mail_fails``;
 * a full body on the PICK wire -> ``test_the_wire_rule_finds_a_body``;
 * the fixture drifts from its generator, or a search word enters the neutral
@@ -266,3 +270,55 @@ def test_the_compare_tap_records_each_decide_request() -> None:
     seen, table = asyncio.run(main())
     assert seen == ["rq-1"]
     assert table["tier-decide"]["requests"] == 1
+
+
+# ── The rule of H-276: never more than today's path ─────────────────────────
+
+
+def test_never_more_holds_and_keeps_pick_on_mail(raw: run.Raw) -> None:
+    """An email body is long, so the cost check keeps PICK on every question,
+    and the eval reads as it did before H-276."""
+    summary = run.judge(raw)
+    rule = summary.rules[run.NEVER_MORE]
+    assert rule == {"pass": True, "detail": [], "accepted": []}
+    assert all(q["ratio"] <= 1 for q in summary.questions if q["gated"])
+    for q in summary.questions:
+        assert q["after"]["count_line"].startswith("Checked "), q["after"]["count_line"]
+    lines = "\n".join(run.summary_lines(summary))
+    assert "NEVER MORE (H-276): the narrowing path costs no more than today's path: holds" in lines
+
+
+def test_never_more_fails_when_a_question_costs_more(raw: run.Raw) -> None:
+    """A card where ``tier-decide`` costs 60 times the eval card puts PICK
+    over today's path. The rule names each question that costs more."""
+    card = stub_api.load_card()
+    scaled = {tier: ({k: str(Decimal(v) * 60) for k, v in rate.items()}
+                     if tier == "tier-decide" else rate)
+              for tier, rate in card.items()}
+    broken = run.judge(raw, scaled)
+    rule = broken.rules[run.NEVER_MORE]
+    assert rule["pass"] is False and broken.passed is False
+    assert any(d.startswith("Q1 x") for d in rule["detail"]), rule
+    assert any(d.startswith("the gated questions together") for d in rule["detail"]), rule
+    assert any(line.startswith("  RULE FAILED: never_costs_more_than_today")
+               for line in run.summary_lines(broken))
+
+
+def test_never_costs_more_on_its_own() -> None:
+    d = Decimal
+    ok = run.never_costs_more([("Q1", d("2"), d("1")), ("Q2", d("1"), d("1"))])
+    assert ok["pass"] is True and ok["detail"] == []
+    over = run.never_costs_more([("Q1", d("2"), d("1")), ("Q2", d("1"), d("1.01"))])
+    assert over["pass"] is False and over["detail"] == ["Q2 x1.01"]
+    # A known question passes up to its gate, and fails past it.
+    known = {"Q2": (d("1.45"), "H-0")}
+    held = run.never_costs_more([("Q1", d("10"), d("1")), ("Q2", d("1"), d("1.45"))], known)
+    assert held["pass"] is True and held["accepted"] == ["Q2 x1.45 (known, H-0, gate x1.45)"]
+    grew = run.never_costs_more([("Q1", d("10"), d("1")), ("Q2", d("1"), d("1.46"))], known)
+    assert grew["pass"] is False and grew["detail"] == ["Q2 x1.46"]
+    # The questions together: a known breach that outweighs the rest fails.
+    total = run.never_costs_more([("Q1", d("1"), d("0.9")), ("Q2", d("1"), d("1.4"))], known)
+    assert total["pass"] is False
+    assert total["detail"] == ["the gated questions together x1.15"]
+    # No cost today, and a cost after: that costs more.
+    assert run.never_costs_more([("Q1", d("0"), d("1"))])["pass"] is False
