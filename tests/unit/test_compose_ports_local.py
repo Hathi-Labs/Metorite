@@ -368,7 +368,9 @@ def test_vps_apply_installs_every_repo_unit() -> None:
 def _unit_sync_block() -> str:
     text = _read(_APPLY)
     start = text.index('echo "==> Syncing systemd units')
-    end = text.index('echo "==> Running infra health probe"')
+    # Stop before the BH-7 restart step: it calls a helper defined earlier in
+    # the script, and test_unit_hardening.py runs that step on its own.
+    end = text.index('echo "==> WS-49 BH-7: one restart for a unit')
     return text[start:end]
 
 
