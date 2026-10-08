@@ -186,6 +186,12 @@ export function SearchPalette({
           placeholder={context ? "Search tasks, or type a command…" : "Search tasks…"}
           aria-label={context ? "Search tasks and commands" : "Search tasks"}
           className="border-0 focus:border-0"
+          // ⚠️ The field fills its header row, and `.cc-control`'s focus ring
+          // sits 2px OUTSIDE it, so the dialog's edge cut the ring off at the
+          // top and sides (owner report, phone, 2026-10-08). Drawn 2px INSIDE
+          // instead, it stays whole, and keyboard focus stays visible. Inline,
+          // because the ring rule is unlayered and beats a utility class.
+          style={{ outlineOffset: "-2px" }}
           onKeyDown={(e) => {
             const action = paletteKey(e);
             if (!action) return;
