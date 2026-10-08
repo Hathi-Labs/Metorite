@@ -202,6 +202,17 @@ echo "$STUB_CANARY on stdout"
 echo "$STUB_CANARY on stderr" >&2
 case "$STUB_RUN_MODE" in
   fail) exit 1 ;;
+  hang) exec sleep 30 ;;
+  runtime-max)
+    echo "Finished with result: timeout" >&2
+    exit 1 ;;
+  allpass-skip-t2)
+    for n in $STUB_PASS_NAMES; do
+      if [ "$n" = p5-touch-t2-vendor-fails ]; then echo "SKIP $n"; else echo "PASS $n"; fi
+    done
+    echo "SKIP p1-sudo-n-true-fails"
+    echo "BH2-PROBE-END"
+    exit 0 ;;
   allpass)
     for n in $STUB_PASS_NAMES; do echo "PASS $n"; done
     echo "PASS $STUB_LOWER_CANARY"
@@ -269,15 +280,19 @@ def _stub_env(tmp_path: Path, props: dict[str, str], mode: str,
 
 
 def _probe(tmp_path: Path, props: dict[str, str], mode: str,
+           env_extra: dict[str, str] | None = None,
            **override: str) -> subprocess.CompletedProcess:
     env = _stub_env(tmp_path, props, mode, **override)
+    env.update(env_extra or {})
     return subprocess.run(
         [_bash(), PROBE.as_posix(), "acb-gateway"], env=env, capture_output=True,
         text=True, encoding="utf-8", timeout=60, stdin=subprocess.DEVNULL,
     )
 
 
-_LINE = re.compile(r"^(PASS|FAIL) [A-Za-z0-9_-]+$|^SUMMARY acb-gateway: \d+ PASS, \d+ FAIL$")
+_LINE = re.compile(
+    r"^(PASS|FAIL|SKIP) [A-Za-z0-9_-]+$|^SUMMARY acb-gateway: \d+ PASS, \d+ SKIP, \d+ FAIL$"
+)
 
 
 def _assert_no_value(r: subprocess.CompletedProcess) -> None:
@@ -326,9 +341,76 @@ def test_the_probe_passes_a_hardened_box_and_drops_unknown_lines(tmp_path: Path)
     _assert_no_value(r)
     assert r.returncode == 0, r.stdout
     assert not re.search(r"^FAIL ", r.stdout, re.M), r.stdout
-    assert r.stdout.rstrip().endswith(" PASS, 0 FAIL"), r.stdout
+    assert r.stdout.rstrip().endswith(" PASS, 0 SKIP, 0 FAIL"), r.stdout
     for name in INNER_CHECKS:
         assert f"PASS {name}" in r.stdout
+
+
+@needs_bash
+def test_only_the_t2_vendor_check_may_skip(tmp_path: Path) -> None:
+    """Before BH-7, /opt/acb/t2-vendor does not exist, so its check SKIPs. A
+    SKIP is not a FAIL. A SKIP for any other check is dropped, and then the
+    transient unit has not answered every probe."""
+    r = _probe(tmp_path, dict(GOOD_PROPS), "allpass-skip-t2")
+    _assert_no_value(r)
+    assert "SKIP p5-touch-t2-vendor-fails" in r.stdout
+    assert "SKIP p1-sudo-n-true-fails" not in r.stdout
+    assert "PASS p1-sudo-n-true-fails" in r.stdout
+    assert r.returncode == 0, r.stdout
+    assert r.stdout.rstrip().endswith(" PASS, 1 SKIP, 0 FAIL"), r.stdout
+
+
+@needs_bash
+def test_the_real_inner_script_skips_a_missing_t2_vendor_dir(tmp_path: Path) -> None:
+    if Path("/opt/acb/t2-vendor").exists():
+        pytest.skip("this host has /opt/acb/t2-vendor")
+    r = _probe(tmp_path, dict(GOOD_PROPS), "run")
+    assert "SKIP p5-touch-t2-vendor-fails" in r.stdout, r.stdout
+
+
+HANG = "#!/usr/bin/env bash\nexec sleep 30\n"
+
+
+@needs_bash
+def test_a_hanging_docker_is_a_timeout_fail(tmp_path: Path) -> None:
+    """Review fix round 1, P2. `docker ps` that never returns must not hang
+    the probe, and must not read as "docker ps fails" (a PASS)."""
+    r = _probe(tmp_path, dict(GOOD_PROPS), "run", {"BH2_PROBE_STEP_TIMEOUT": "1"},
+               docker=HANG, crontab=HANG)
+    _assert_no_value(r)
+    assert r.returncode == 1, r.stdout
+    assert "FAIL p2-docker-ps-fails" in r.stdout, r.stdout
+    assert "FAIL setgid-crontab-l-fails" in r.stdout, r.stdout
+    # Two steps timed out, and the probe says so once.
+    assert r.stdout.count("FAIL probe-timeout") == 1, r.stdout
+    assert "transient-unit-ran-every-probe" not in r.stdout
+
+
+@needs_bash
+@pytest.mark.parametrize("tool", ["sudo", "crontab"])
+def test_a_hanging_sudo_or_crontab_is_a_timeout_fail(tmp_path: Path, tool: str) -> None:
+    r = _probe(tmp_path, dict(GOOD_PROPS), "run", {"BH2_PROBE_STEP_TIMEOUT": "1"},
+               **{tool: HANG})
+    _assert_no_value(r)
+    assert r.returncode == 1, r.stdout
+    assert "FAIL probe-timeout" in r.stdout, r.stdout
+
+
+@needs_bash
+def test_a_hanging_transient_unit_is_a_timeout_fail(tmp_path: Path) -> None:
+    r = _probe(tmp_path, dict(GOOD_PROPS), "hang", {"BH2_PROBE_RUN_TIMEOUT": "2"})
+    _assert_no_value(r)
+    assert r.returncode == 1, r.stdout
+    assert "FAIL probe-timeout" in r.stdout, r.stdout
+    assert "FAIL transient-unit-ran-every-probe" in r.stdout
+
+
+@needs_bash
+def test_runtime_max_sec_ending_the_unit_is_a_timeout_fail(tmp_path: Path) -> None:
+    r = _probe(tmp_path, dict(GOOD_PROPS), "runtime-max")
+    _assert_no_value(r)
+    assert r.returncode == 1, r.stdout
+    assert "FAIL probe-timeout" in r.stdout, r.stdout
 
 
 @needs_bash
@@ -337,8 +419,12 @@ def test_the_transient_unit_gets_the_unit_sandbox_and_user(tmp_path: Path) -> No
     argv = (tmp_path / "run_argv").read_text(encoding="utf-8").splitlines()
     assert "--uid=acb" in argv
     assert "--wait" in argv and "--pipe" in argv
+    assert argv[argv.index("--") + 1:argv.index("--") + 3] == ["/bin/bash", "-c"]
+    # The stub logs one argv item per line, so the script's first line stands alone.
+    assert argv[argv.index("--") + 3] == "STEP_T=10"
     pairs = {argv[i + 1] for i, a in enumerate(argv) if a == "-p"}
-    for want in ("NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectHome=read-only",
+    for want in ("RuntimeMaxSec=60", "NoNewPrivileges=yes", "ProtectSystem=strict",
+                 "ProtectHome=read-only",
                  "RestrictSUIDSGID=yes", "CapabilityBoundingSet=",
                  "InaccessiblePaths=" + GOOD_PROPS["InaccessiblePaths"]):
         assert want in pairs, (want, pairs)

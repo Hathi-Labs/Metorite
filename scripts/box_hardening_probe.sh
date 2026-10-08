@@ -10,13 +10,16 @@
 # (`systemd-run --wait --pipe --uid=<the unit's User>`). In it, it runs each
 # probe of acceptance 2. These are the paths P1 to P5 of spec §0.
 #
-# Output: one line per check, `PASS <name>` or `FAIL <name>`, then a summary.
+# Output: one line per check, `PASS <name>`, `FAIL <name>` or `SKIP <name>`,
+# then a summary. Only p5-touch-t2-vendor-fails can SKIP, when its dir is not
+# there yet (before BH-7). A step that times out gives `FAIL probe-timeout`.
 # The script prints NO value that it reads: no property value, no path list,
 # no command output. Only fixed names that this file holds. It drops each
 # line from the transient unit that is not of that form.
 # tests/unit/test_unit_hardening.py proves it with a canary.
 #
-# Exit 0 on a full PASS. Exit 1 on any FAIL. Exit 2 on a usage or root fault.
+# Exit 0 when nothing FAILs (a SKIP is not a FAIL). Exit 1 on any FAIL.
+# Exit 2 on a usage or root fault.
 # Before the BH-2 50-hardening.conf is on the box, FAILs are the baseline.
 #
 # Each write probe that succeeds removes its own file at once, so a run leaves
@@ -38,12 +41,29 @@ if [ "$(id -u)" != "0" ]; then
   exit 2
 fi
 
+# Bounds, so the probe cannot hang (review fix round 1, P2). A step inside the
+# transient unit gets STEP_TIMEOUT s, the unit RuntimeMaxSec=60, and the whole
+# systemd-run RUN_TIMEOUT s. Any timeout is `FAIL probe-timeout`. The two
+# variables exist for the tests, and take digits only.
+STEP_TIMEOUT="${BH2_PROBE_STEP_TIMEOUT:-10}"
+RUN_TIMEOUT="${BH2_PROBE_RUN_TIMEOUT:-90}"
+[[ "$STEP_TIMEOUT" =~ ^[0-9]{1,3}$ ]] || STEP_TIMEOUT=10
+[[ "$RUN_TIMEOUT" =~ ^[0-9]{1,3}$ ]] || RUN_TIMEOUT=90
+
 FAILS=0
+SKIPS=0
 TOTAL=0
+TIMED_OUT=0
 pass() { echo "PASS $1"; TOTAL=$((TOTAL + 1)); }
 fail() { echo "FAIL $1"; TOTAL=$((TOTAL + 1)); FAILS=$((FAILS + 1)); }
+skip() { echo "SKIP $1"; TOTAL=$((TOTAL + 1)); SKIPS=$((SKIPS + 1)); }
+timed_out() {  # one `FAIL probe-timeout` line, however many steps timed out
+  [ "$TIMED_OUT" = 1 ] && return 0
+  TIMED_OUT=1
+  fail probe-timeout
+}
 
-prop() { systemctl show "$UNIT" -p "$1" --value 2>/dev/null || true; }
+prop() { timeout 10 systemctl show "$UNIT" -p "$1" --value 2>/dev/null || true; }
 
 # ── Part 1: the unit's properties ─────────────────────────────────────────
 
@@ -109,7 +129,7 @@ ProtectControlGroups ProtectClock ProtectHostname RestrictRealtime Supplementary
 # An empty value is meaningful for these two: it means "no capability".
 EMPTY_OK=" CapabilityBoundingSet AmbientCapabilities "
 
-RUN_ARGS=(--wait --pipe --quiet --collect "--uid=$RUN_USER")
+RUN_ARGS=(--wait --pipe --collect "--uid=$RUN_USER" -p RuntimeMaxSec=60)
 for name in $COPY_PROPS; do
   value="$(prop "$name")"
   if [ -z "$value" ] && [ "${EMPTY_OK#* "$name" }" = "$EMPTY_OK" ]; then
@@ -126,9 +146,20 @@ ok() { echo "PASS $1"; }
 no() { echo "FAIL $1"; }
 APP=/opt/acb/app
 TAG=".bh2-probe-$$"
+# Each step that talks to a daemon or a socket runs under timeout. Exit 124
+# is a timeout: the check FAILs, and so does probe-timeout.
+T() { timeout "$STEP_T" "$@"; }
+fails_ok() {  # $1 = check name, $2 = exit code of a probe that must fail
+  case "$2" in
+    0) no "$1" ;;
+    124) no "$1"; no probe-timeout ;;
+    *) ok "$1" ;;
+  esac
+}
 
 # P1: sudo with no password.
-if sudo -n true >/dev/null 2>&1; then no p1-sudo-n-true-fails; else ok p1-sudo-n-true-fails; fi
+T sudo -n true >/dev/null 2>&1
+fails_ok p1-sudo-n-true-fails $?
 
 # P3 and P5 (variant 3): the checkout is read-only. The spec wants EROFS.
 erofs() {  # $1 = check name, $2 = dir
@@ -145,7 +176,12 @@ cannot_write() {  # $1 = check name, $2 = dir
 }
 cannot_write p5-touch-git-hooks-fails "$APP/.git/hooks"
 cannot_write p5-touch-venv-fails "$APP/.venv"
-cannot_write p5-touch-t2-vendor-fails /opt/acb/t2-vendor
+# Before BH-7 the dir does not exist, and a failed touch proves nothing.
+if [ -d /opt/acb/t2-vendor ]; then
+  cannot_write p5-touch-t2-vendor-fails /opt/acb/t2-vendor
+else
+  echo "SKIP p5-touch-t2-vendor-fails"
+fi
 
 # The gateway still writes its own .env.
 if test -w "$APP/.env"; then ok env-still-writable; else no env-still-writable; fi
@@ -156,12 +192,14 @@ if ls "/run/user/$(id -u)" >/dev/null 2>&1; then no p4-ls-run-user-uid-fails; el
 if ls /run/user >/dev/null 2>&1; then no p4-run-user-hidden; else ok p4-run-user-hidden; fi
 
 # P2: the docker socket.
-if docker ps >/dev/null 2>&1; then no p2-docker-ps-fails; else ok p2-docker-ps-fails; fi
+T docker ps >/dev/null 2>&1
+fails_ok p2-docker-ps-fails $?
 
 # Setgid is refused, so crontab cannot read the spool. "no crontab for"
 # means it COULD read the spool, so that answer is a FAIL too.
-err="$(crontab -l 2>&1 >/dev/null)"; rc=$?
+err="$(T crontab -l 2>&1 >/dev/null)"; rc=$?
 case "$rc:$err" in
+  124:*) no setgid-crontab-l-fails; no probe-timeout ;;
   0:*|*"no crontab for"*) no setgid-crontab-l-fails ;;
   *) ok setgid-crontab-l-fails ;;
 esac
@@ -180,22 +218,45 @@ INNER_NAMES+=" env-still-writable p4-ls-run-user-uid-fails p4-run-user-hidden"
 INNER_NAMES+=" p2-docker-ps-fails setgid-crontab-l-fails etc-acb-hidden "
 INNER_CHECKS=12
 
-OUT="$(systemd-run "${RUN_ARGS[@]}" -- /bin/bash -c "$INNER" 2>/dev/null)"
+# The transient unit's stderr goes to a file that is grepped, never printed.
+# systemd-run runs without --quiet, so --wait writes "Finished with result:"
+# there.
+ERRF="$(mktemp)"
+trap 'rm -f "$ERRF"' EXIT
+OUT="$(timeout "$RUN_TIMEOUT" systemd-run "${RUN_ARGS[@]}" -- \
+       /bin/bash -c "STEP_T=$STEP_TIMEOUT
+$INNER" 2>"$ERRF")"
 RUN_RC=$?
+# 124: timeout(1) ended systemd-run. "result: timeout": RuntimeMaxSec ended it.
+if [ "$RUN_RC" = 124 ] || grep -q "result: timeout" "$ERRF" 2>/dev/null; then
+  timed_out
+fi
 
 SEEN=0
 END=0
 DONE_NAMES=" "
 while IFS= read -r line; do
-  if [[ "$line" =~ ^(PASS|FAIL)\ ([a-z0-9-]+)$ ]]; then
+  if [[ "$line" =~ ^(PASS|FAIL|SKIP)\ ([a-z0-9-]+)$ ]]; then
     verdict="${BASH_REMATCH[1]}"
     check="${BASH_REMATCH[2]}"
+    if [ "$check" = "probe-timeout" ] && [ "$verdict" = "FAIL" ]; then
+      timed_out
+      continue
+    fi
     # Known, and not seen before. Anything else is dropped.
     [[ "$INNER_NAMES" == *" $check "* ]] || continue
     [[ "$DONE_NAMES" == *" $check "* ]] && continue
+    # Only the t2-vendor check may SKIP: its dir comes with BH-7.
+    if [ "$verdict" = "SKIP" ] && [ "$check" != "p5-touch-t2-vendor-fails" ]; then
+      continue
+    fi
     DONE_NAMES+="$check "
     SEEN=$((SEEN + 1))
-    if [ "$verdict" = "PASS" ]; then pass "$check"; else fail "$check"; fi
+    case "$verdict" in
+      PASS) pass "$check" ;;
+      SKIP) skip "$check" ;;
+      *) fail "$check" ;;
+    esac
   elif [ "$line" = "BH2-PROBE-END" ]; then
     END=1
   fi
@@ -206,5 +267,5 @@ if [ "$RUN_RC" != 0 ] || [ "$END" != 1 ] || [ "$SEEN" != "$INNER_CHECKS" ]; then
   fail transient-unit-ran-every-probe
 fi
 
-echo "SUMMARY $UNIT: $((TOTAL - FAILS)) PASS, $FAILS FAIL"
+echo "SUMMARY $UNIT: $((TOTAL - FAILS - SKIPS)) PASS, $SKIPS SKIP, $FAILS FAIL"
 [ "$FAILS" = 0 ]
