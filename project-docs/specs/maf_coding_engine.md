@@ -4123,7 +4123,7 @@ An agent refuses each of these by name:
 | WS43-G9 | Merge a Copilot removal slice: WS-43p, WS-43q, WS-43r or WS-43s. The migration of WS-43s is one-way |
 | WS43-G10 | Set the `mutation:*` or `metorite:*` target on production. WS43-G3 covers the setting, and this row names the targets. `metorite:*` and `app_builder` wait on the soak of WS43-G13 (§15.9.8) |
 | WS43-G11 | Change a repo outside this one, such as `FracktalWorks/agent-sales-assistant` |
-| WS43-G12 | Edit `scripts/vps_apply.sh`. It lies outside `deploy/`, so no plan-guard rule matches it, and this text gates it |
+| WS43-G12 | Edit `scripts/vps_apply.sh`. It lies outside `deploy/`, so no plan-guard rule matches it, and this text gates it. 2026-10-08: the owner approved `vps_apply.sh` edits for WS-49 (`box_hardening.md`) and #729 |
 | WS43-G13 | Set `MAF_NATIVE_SESSIONS` on production. The one-week soak of §15.9.8 starts then, and WS-8i, the confirm-turn scopes and WS-43q wait on its end |
 
 **The data toolkit adds no gate (2026-10-06).** The image with DuckDB on the

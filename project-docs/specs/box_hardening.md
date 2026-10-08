@@ -25,6 +25,12 @@ the box `srv1914284` on 2026-10-08 between 16:15 and 16:55 UTC, with
 read-only commands. Every file path and line in this spec was read at that
 commit. Re-verify each anchor at dispatch, because the code is the fact.
 
+**WS43-G12 approved by the owner 2026-10-08 for WS-49.** The owner answered
+the flag of fix round 1: "Yes, for WS-49 and the #729 change." So the edits of
+`scripts/vps_apply.sh` in BH-2, BH-6, BH-7 and BH-8 need no further owner
+gate. #729 (the off-box rclone install in `vps_apply.sh`) merged before that
+answer. The owner approved it after the fact.
+
 **R1 and R6 do not apply.** No slice adds a migration to the ladder. BH-4
 writes policies on `storage.objects` and a cron job through the Supabase
 MCP, which are outside the ladder. R8 applies to that SQL, and the BH-4
@@ -676,6 +682,9 @@ changes.
 `--restart=no` at 16:38 UTC on 2026-10-08. The coordinator also removed
 `--profile memory` from the live `acb.service`. §2.6 records the exposure.
 
+**Built** on branch `sec-bh8-local-binds` at `fe2a9f933` (2026-10-08). This
+section records the slice as built.
+
 **Scope.**
 
 - Hard-code each published port of `infra/docker-compose.yml` to
@@ -689,10 +698,27 @@ changes.
 - Bring `acb.service` into `deploy/hostinger/acb.service`, with
   `--profile core` and no `--profile memory` (fix E7). It matches the unit
   that the coordinator left on the box. BH-6 later changes its paths.
-- `vps_apply.sh` installs it through its unit loop (`vps_apply.sh:1560-1571`).
-  That loop already installs every `deploy/hostinger/*.service`.
+- `vps_apply.sh` needed no change. Its unit loop (`vps_apply.sh:1560-1571`)
+  already installs every `deploy/hostinger/*.service`.
+- **The Neo4j password has no default.** The compose file sets
+  `NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-}`. An entrypoint guard exits 64 when
+  the password is empty, `neo4j` or `neo4j_dev_change_me`.
+  - The `${NEO4J_PASSWORD:?}` form was rejected. Compose interpolates the
+    whole file before it reads the profiles, so `--profile core` failed on a
+    box with no Neo4j password.
 - Neo4j stays stopped. It comes back only with a new password from
   `scripts/secrets.sh` AND this binding. No slice here turns it on.
+- **Later, in the slice that turns Neo4j on.** The production
+  `NEO4J_PASSWORD` goes through `scripts/secrets.sh`. That needs
+  `NEO4J_PASSWORD` in the `allowed_keys` of the `app-env` entry of
+  `deploy/secrets/manifest.json`. BH-8 does not add it.
+
+**A finding, not fixed here.** `vps_apply.sh:544` runs `docker compose -f
+infra/docker-compose.yml --profile core up` with no `--env-file`. So the
+local `postgres` service falls back to the compose default
+`acb_dev_change_me` (`docker-compose.yml:25`). Production uses managed
+Postgres, so the local container holds no production data. BH-6 gives every
+compose call one `--env-file /etc/acb/root.env`, which closes this.
 
 **Acceptance.**
 
@@ -716,9 +742,10 @@ ssh metorite 'sudo systemctl restart acb.service; sudo ss -ltnp | grep docker-pr
 ssh metorite 'diff <(systemctl cat acb.service | grep -v "^#") <(grep -v "^#" /opt/acb/app/deploy/hostinger/acb.service) && echo SAME'
 ```
 
-**Fences.** BH-F5 is `tests/unit/test_compose_ports_local.py`. Every
-`ports:` entry of every service in `infra/docker-compose.yml` starts with the
-literal `127.0.0.1:`. An entry with `${` fails, so no name can set a bind.
+**Fences.** BH-F5 is `tests/unit/test_compose_ports_local.py`, as built.
+Every `ports:` entry of every service in `infra/docker-compose.yml` starts
+with the literal `127.0.0.1:`. An entry with `${` fails, so no name can set a
+bind.
 BH-F3 asserts that `deploy/hostinger/acb.service` exists and holds no
 `--profile memory`.
 
@@ -734,7 +761,8 @@ BH-F3 asserts that `deploy/hostinger/acb.service` exists and holds no
 **Rollback.** Revert the PR, then `sudo systemctl restart acb.service`. Do not
 start Neo4j.
 
-**The gate.** AGENT-SAFE. The deploy is §3a `deploy`.
+**The gate.** AGENT-SAFE. The deploy is §3a `deploy`. WS43-G12 approved by
+the owner 2026-10-08 for WS-49.
 
 ### BH-7 — Agent installs leave the shared venv, and the T2 vendor install runs no scripts
 
@@ -796,7 +824,8 @@ write list.
 
 **Rollback.** Revert the PR. The agent-site dir stays and does no harm.
 
-**The gate.** AGENT-SAFE. The deploy is §3a `deploy`.
+**The gate.** AGENT-SAFE. The deploy is §3a `deploy`. WS43-G12 approved by
+the owner 2026-10-08 for WS-49.
 
 ### BH-2 — The systemd sandbox for the gateway, and NoNewPrivileges for the rest
 
@@ -979,10 +1008,8 @@ It needs no edit on the box. The next deploy passes, because of the marker.
 After the fix, run `sudo bash /opt/acb/app/scripts/bh2_rollback.sh off`.
 
 **The gate.** AGENT-SAFE to build. The staging on the box, the deploy and the
-drop-ins are §3a `deploy` and `deploy-write`. ⚠️ `maf_coding_engine.md`
-WS43-G12 names edits of `scripts/vps_apply.sh` as an owner gate inside WS-43.
-BH-2, BH-6, BH-7 and BH-8 edit that file under the §3a dev-phase window. The
-coordinator confirms that at dispatch.
+drop-ins are §3a `deploy` and `deploy-write`. WS43-G12 approved by the owner
+2026-10-08 for WS-49.
 
 ### BH-6 — Root units run only root-owned files
 
@@ -1085,7 +1112,8 @@ checkout again. Leave `/usr/local/lib/acb` and `/etc/acb/root.env` in place.
 They do no harm.
 
 **The gate.** AGENT-SAFE to build. The deploy is §3a `deploy`. The new
-`/etc/acb/root.env` is §3a `env-write`.
+`/etc/acb/root.env` is §3a `env-write`. WS43-G12 approved by the owner
+2026-10-08 for WS-49.
 
 ### BH-3 — The sandbox broker gets its own unit and user
 
