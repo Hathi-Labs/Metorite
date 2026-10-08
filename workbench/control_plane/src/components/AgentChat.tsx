@@ -42,6 +42,7 @@ import ContextRing from "@/components/ContextRing";
 import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import { saveConversationOnUnmount } from "@/lib/chatMemorySave";
 import MessageBubble from "@/components/MessageBubble";
+import { canRetry, retryPlan } from "@/lib/chatRetry";
 import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { PresenceRail } from "@/components/room/PresenceRail";
@@ -1387,16 +1388,15 @@ export default function AgentChat({
   // every message re-ran ReactMarkdown on every streamed token).
   const handleFileOpen = useCallback((entry: FileEntry) => setViewerEntry(entry), []);
   const handleResend = useCallback((content: string) => { submitText(content); }, [submitText]);
+  // The ONE retry path (`lib/chatRetry.ts`): an answer's "Retry" and a failed
+  // turn's error-card "Retry" both land here.
   const handleRetryMessage = useCallback((m: ChatMessage) => {
-    const all = messagesRef.current;
-    const idx = all.findIndex((x) => x.id === m.id);
-    if (idx < 0) return;
-    const prevUser = [...all.slice(0, idx)].reverse().find((x) => x.role === "user");
-    if (!prevUser) return;
-    // Regenerate: drop this assistant turn AND its prompt, then re-send — no
-    // duplicate user+assistant pair on top of the old (rejected) answer.
-    setMessages((prev) => prev.filter((x) => x.id !== m.id && x.id !== prevUser.id));
-    submitText(prevUser.content);
+    const plan = retryPlan(messagesRef.current, m.id);
+    if (!plan) return;
+    // Regenerate: drop this turn AND its prompt, then re-send — no duplicate
+    // user+assistant pair on top of the old (rejected or failed) turn.
+    setMessages((prev) => prev.filter((x) => !plan.drop.includes(x.id)));
+    submitText(plan.resend);
   }, [submitText, setMessages]);
 
   /** Ask the agent to help configure a specific integration. */
@@ -1767,8 +1767,9 @@ export default function AgentChat({
             const prevMsg = i > 0 ? visibleMessages[i - 1] : null;
             // Find the preceding user message for retry (walk back to the
             // most recent user message before this assistant message).
+            // An error card retries too (owner report, 2026-10-08).
             const prevUserMsg =
-              msg.role === "assistant"
+              canRetry(msg)
                 ? [...visibleMessages.slice(0, i)].reverse().find((m) => m.role === "user")
                 : null;
             const showDateDivider = prevMsg &&
