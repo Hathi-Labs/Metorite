@@ -33,6 +33,7 @@ import re
 from collections.abc import Mapping
 
 __all__ = [
+    "AGENT_PATH_VALUES",
     "BASE_NAMES",
     "BASE_PREFIXES",
     "COPILOT_NAMES",
@@ -108,6 +109,14 @@ COPILOT_NAMES: tuple[str, ...] = (
     "AGENTS_CLONE_DIR",
     "CUSTOM_APPS_T2_VENDOR_DIR",
 )
+
+#: Fixed path values for the children that run agent code: the Copilot CLI
+#: (``copilot_env()``) and ``run_script`` (``code_tools._script_env``). This is
+#: the ONE place to add one. A value here wins over the gateway's own value of
+#: that name. It is empty today. WS-49 BH-7 adds ``PYTHONPATH`` (the agent-site
+#: dir) and ``CUSTOM_APPS_T2_VENDOR_DIR`` here, and no call site changes.
+#: Never put a secret here.
+AGENT_PATH_VALUES: dict[str, str] = {}
 
 #: The names that tell the ``docker`` CLI where the daemon is and how to
 #: reach it. ``DOCKER_CERT_PATH`` is a dir, not a key.
@@ -191,7 +200,7 @@ def copilot_env() -> dict[str, str]:
     Pass it as ``CopilotClient(env=copilot_env(), github_token=...)``. The SDK
     copies this mapping and then sets ``COPILOT_SDK_AUTH_TOKEN`` itself.
     """
-    env = child_env(extra=env_values(*COPILOT_NAMES))
+    env = child_env(extra={**env_values(*COPILOT_NAMES), **AGENT_PATH_VALUES})
     for name in _COPILOT_TOKEN_NAMES:
         env.pop(name, None)
     return env

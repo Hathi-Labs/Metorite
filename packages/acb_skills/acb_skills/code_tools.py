@@ -36,7 +36,7 @@ import sys
 import time
 from pathlib import Path
 
-from acb_common.child_env import child_env
+from acb_common.child_env import AGENT_PATH_VALUES, child_env
 
 from acb_skills.write_artifact import (
     artifact_context,
@@ -92,7 +92,8 @@ def _script_env() -> dict[str, str]:
     concurrent run cannot widen *which names* are looked up. A true per-run
     boundary for the process itself is the Tier-2 container env (MT-0c).
     """
-    extra: dict[str, str | None] = {}
+    # WS-49 BH-7 adds its fixed paths in AGENT_PATH_VALUES, not here.
+    extra: dict[str, str | None] = dict(AGENT_PATH_VALUES)
     declared = _declared_integrations()
     if declared:
         try:

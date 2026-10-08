@@ -691,3 +691,19 @@ def test_docker_env_adds_the_daemon_names_only(canaries: None) -> None:
     env = seam.docker_env()
     _no_canary(env, "DOCKER_HOST")
     assert env["DOCKER_HOST"] == "unix:///canary.sock"
+
+
+def test_agent_path_values_reach_both_agent_children(
+    canaries: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BH-7 adds its fixed paths in ONE place, and both children get them:
+    the Copilot CLI and run_script. A fixed value wins over the gateway's."""
+    from acb_skills import code_tools
+
+    monkeypatch.setitem(seam.AGENT_PATH_VALUES, "PYTHONPATH", "/var/lib/acb-gateway/agent-site")
+    monkeypatch.setitem(seam.AGENT_PATH_VALUES, "CUSTOM_APPS_T2_VENDOR_DIR", "/opt/acb/t2-vendor")
+    for env in (seam.copilot_env(), code_tools._script_env()):
+        assert env["PYTHONPATH"] == "/var/lib/acb-gateway/agent-site"
+        assert env["CUSTOM_APPS_T2_VENDOR_DIR"] == "/opt/acb/t2-vendor"
+        _no_canary(env)
+    assert seam.child_env()["PYTHONPATH"] == "/srv/py"
