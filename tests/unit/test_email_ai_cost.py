@@ -611,6 +611,13 @@ UNCHANGED = [
     "Hi Sam,\n\nThanks\n\nI got the parts. Two issues:\n1. The bracket is bent.\n"
     "2. Call me at +91 98450 12345 about it.\nSee https://drive.example/p/1",
     "Stock count:\nBolts | 400\n--\nNuts | 250\n--\nWashers | 900",
+    # A footer-like paragraph with the member's words AFTER it.
+    "Hi,\n\nThis message contains confidential pricing that is intended only for "
+    "the Acme buyers, so please do not disclose it to anyone outside the team.\n\n"
+    "The price is 4.10 for each bracket.",
+    # A sentence under a closing line is not a name.
+    "Got it.\n\nThanks\nCall Ravi at the site office today, he has the keys.\n"
+    "+91 98450 12345",
     "FYI, see below. Can you check the tolerance on the bore?\n\n"
     "---------- Forwarded message ---------\nFrom: QA <qa@plant.example>\n"
     "Date: Wed, 7 Oct 2026\nSubject: NCR 2231\n\nMeasured bore 12.08 mm.",
