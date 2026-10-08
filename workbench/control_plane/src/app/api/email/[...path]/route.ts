@@ -11,6 +11,7 @@ import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/li
 // "Remove older mail from Metorite" (WS-17 EM-T6e, D1). The rule and its
 // reasons live in that module, with a test beside it.
 import { postTimeoutMs } from "./postTimeout";
+import { unsafeGatewayPath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -22,16 +23,8 @@ function buildUpstreamUrl(path: string[], req: NextRequest): string {
   // internal Bearer token, so that would hand a workbench user agent-level
   // access to internal-only endpoints. Reject anything that isn't a plain
   // segment, then confirm the resolved URL is still under /email/.
-  for (const seg of path) {
-    if (
-      !seg ||
-      seg === "." ||
-      seg === ".." ||
-      seg.includes("/") ||
-      seg.includes("\\")
-    ) {
-      throw new Error("Invalid email proxy path");
-    }
+  if (unsafeGatewayPath(path) !== null) {
+    throw new Error("Invalid email proxy path");
   }
   const base = `${GATEWAY_URL}/email/${path.join("/")}`;
   const resolved = new URL(base);

@@ -8,6 +8,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { unsafeGatewayPath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 
@@ -15,16 +16,8 @@ function buildUpstreamUrl(path: string[], req: NextRequest): string {
   // Same guard as the email proxy: this catch-all attaches the internal token,
   // so a ".." segment must never let the resolved URL escape /whatsapp/ into a
   // sibling gateway route (e.g. /v1/*, /actions/*).
-  for (const seg of path) {
-    if (
-      !seg ||
-      seg === "." ||
-      seg === ".." ||
-      seg.includes("/") ||
-      seg.includes("\\")
-    ) {
-      throw new Error("Invalid whatsapp proxy path");
-    }
+  if (unsafeGatewayPath(path) !== null) {
+    throw new Error("Invalid whatsapp proxy path");
   }
   const base = `${GATEWAY_URL}/whatsapp/${path.join("/")}`;
   const resolved = new URL(base);
