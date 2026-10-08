@@ -206,6 +206,10 @@ case "$STUB_RUN_MODE" in
     echo "FAIL $STUB_LOWER_CANARY"
     echo "BH2-PROBE-END"
     exit 0 ;;
+  allpass-rc1)
+    for n in $STUB_PASS_NAMES; do echo "PASS $n"; done
+    echo "BH2-PROBE-END"
+    exit 1 ;;
 esac
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
 shift
@@ -365,6 +369,16 @@ def test_the_probe_fails_when_the_transient_unit_does_not_run(tmp_path: Path) ->
     r = _probe(tmp_path, dict(GOOD_PROPS), "fail")
     _assert_no_value(r)
     assert r.returncode == 1
+    assert "FAIL transient-unit-ran-every-probe" in r.stdout
+
+
+@needs_bash
+def test_the_probe_fails_when_the_transient_unit_exits_non_zero(tmp_path: Path) -> None:
+    """Every probe answered PASS, but systemd-run itself failed. The run is
+    not proof, so the probe does not give a full PASS."""
+    r = _probe(tmp_path, dict(GOOD_PROPS), "allpass-rc1")
+    _assert_no_value(r)
+    assert r.returncode == 1, r.stdout
     assert "FAIL transient-unit-ran-every-probe" in r.stdout
 
 
