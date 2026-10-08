@@ -334,7 +334,7 @@ describe("H-273: the receipt of a batch of new tags or types", () => {
   // holds the Python side to these same lines.
   const partial = [
     "Added 2 of 3 tags to «Ops» and every project under it. 1 was not created.",
-    "- tag «q4» · colour blue",
+    "- tag «q4» · colour «blue»",
     `  tag_id: ${ID}`,
     "- tag «blocked»",
     `  tag_id: ${OTHER}`,
@@ -352,7 +352,7 @@ describe("H-273: the receipt of a batch of new tags or types", () => {
 
   it("reads each tag and its id, as a tag row, and no task row", () => {
     expect(parseVocabRows(partial)).toEqual([
-      { kind: "tag", id: ID, name: "q4", meta: "colour blue" },
+      { kind: "tag", id: ID, name: "q4", meta: "colour «blue»" },
       { kind: "tag", id: OTHER, name: "blocked", meta: "" },
     ]);
     expect(parseTaskRows(partial)).toEqual([]);
@@ -373,10 +373,10 @@ describe("H-273: the receipt of a batch of new tags or types", () => {
   });
 
   it("is done when every ticked row landed", () => {
-    const clean = ["Added 1 type to «Ops» and every project under it:", "- type «Chore» · icon broom",
+    const clean = ["Added 1 type to «Ops» and every project under it:", "- type «Chore» · icon «broom»",
       `  type_id: ${ID}`].join("\n");
     expect(classifyActionResult(clean, "done", "create_types")).toBe("done");
-    expect(parseVocabRows(clean)).toEqual([{ kind: "type", id: ID, name: "Chore", meta: "icon broom" }]);
+    expect(parseVocabRows(clean)).toEqual([{ kind: "type", id: ID, name: "Chore", meta: "icon «broom»" }]);
   });
 
   it("is not done when the server refused every row", () => {

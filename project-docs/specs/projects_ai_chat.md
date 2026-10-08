@@ -5330,9 +5330,9 @@ a checkbox for each word.
   `name`, `icon`, `color` and `is_epic`, as `create_type` does. A plain name
   is a row too. An organization-wide word, and the default type, stay with the
   single tool, one call each.
-- **Before the card.** A duplicate name in the batch, an unknown key, more than
-  `MAX_BATCH` rows, or a card that `_fits_on_card` refuses stops the batch, and
-  nothing is drawn. A name that the project has already starts unticked, and
+- **Before the card.** Four faults stop the batch, and nothing is drawn: a
+  duplicate name in the batch, an unknown key, more than `MAX_BATCH` rows, and
+  a card that `_fits_on_card` refuses. A name that the project has already starts unticked, and
   its hint gives the reason. An organization-wide match says that a tick adds a
   copy for this tree (D-PM-16).
 - **After the card.** The tool writes exactly the ticked rows, in the card's
@@ -5342,9 +5342,10 @@ a checkbox for each word.
   no permission and decides none. A refusal of the route, a 403 or a 409, is
   quoted in the receipt for its row. A row that fails does not stop the next
   row, and nothing raises after the first write.
-- **The receipt.** It prints `- tag «name» · facts` and then `  tag_id: <uuid>`
-  for each word made, then a `failed:` or `unknown:` line for each row that
-  failed, a `stopped:` line and the rows left out. `BatchReceiptCard` draws a
+- **The receipt.** For each word made, it prints `- tag «name» · facts` and
+  then `  tag_id: <uuid>`. Each fact is fenced with `data()`. Then it prints a
+  `failed:` or `unknown:` line for each row that failed, a `stopped:` line and
+  the rows left out. `BatchReceiptCard` draws a
   tag as the tag pill and a type as a plain pill.
 
 **Statuses are not built.** The status route inserts a second lane with the

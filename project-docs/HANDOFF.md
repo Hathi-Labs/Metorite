@@ -112,8 +112,8 @@ line — never reclaim a number by deleting the other entry.
   turn").
 - **What to build.** A `_VocabKind` for statuses, with the keys `name`,
   `category` and `color`. Decide rule 1 first: refuse an existing name
-  before the card, or add a 409 to the route. The fences are the ones H-273
-  touched (the PR body lists them).
+  before the card, or add a 409 to the route. The fences are the ones that
+  H-273 touched. Its commit message lists them (`git log --grep H-273`).
 - **Authority:** `project-docs/specs/projects_ai_chat.md` §24.5
 - **Added:** 2026-10-08 · H-273, branch `projects-vocab-batch`
 

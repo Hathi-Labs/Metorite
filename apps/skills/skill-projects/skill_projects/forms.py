@@ -1898,8 +1898,14 @@ class _VocabRow:
         self.exists = ""
 
     def facts(self) -> str:
-        """The row's values in words. The name is the label, so it is not here."""
-        out = [f"{_VOCAB_WORDS[k]} {v}" for k, v in self.payload.items() if k in _VOCAB_WORDS]
+        """The row's values in words. The name is the label, so it is not here.
+
+        Each value is member text, so it is fenced with ``data()``: the receipt
+        is read line by line, and a description with a line break could forge
+        a ``tag_id:`` or a ``stopped:`` line (review round 1). The card's hint
+        takes the marks off again (``_unfenced``)."""
+        out = [f"{_VOCAB_WORDS[k]} {data(v)}" for k, v in self.payload.items()
+               if k in _VOCAB_WORDS]
         if self.payload.get("is_epic"):
             out.append("a top level (epic)")
         return " · ".join(out)

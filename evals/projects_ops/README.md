@@ -6,7 +6,7 @@ owning spec is `project-docs/specs/projects_agent_parity.md`, §11 and slice P3
 of §12. D91 is the decision.
 
 **Status.** Built on 2026-10-06. On the same day P6 added PO-8, P7 added
-PO-9 and P13 added PO-10. H-273 added PO-11 on 2026-10-08. The scripted
+PO-9 and P13 added PO-10, and on 2026-10-08 H-273 added PO-11. The scripted
 run passes ten tasks in ten, uncovered and covered. PO-3 is `xfail` until P8 and P9 ship. Nobody has run
 the model sweep yet.
 
