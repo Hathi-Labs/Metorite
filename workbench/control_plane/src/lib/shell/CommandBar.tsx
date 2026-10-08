@@ -13,8 +13,11 @@
  *     rows below them move down, and the highlight follows its row (§6.3).
  *   • **In this page** — "Show all in your Inbox", which hands the words to the
  *     page's own filter (§6.7 rule 3). Only when the page has a filter.
- *   • **Ask** — "Ask the assistant", which opens the assistant with the words
- *     already typed. NS-4b makes this row answer in place.
+ *   • **Ask** — the coordinator first (NS-4b, `POST /api/shell/intent`): after
+ *     a pause on a sentence, one row names the job the words ask for, with the
+ *     fields it filled ("Write an email · to Priya · March invoice"). Then
+ *     "Ask the assistant", which opens the assistant with the words typed.
+ *     Out of credits, the coordinator's row says so in one line (§6.5).
  *
  * The "in Email" token (§6.4 rule 3) ranks the app the member is in first.
  * `Backspace` on empty words takes it off.
@@ -46,6 +49,22 @@ interface FindGroup {
 }
 
 const FIND_ICONS: Record<string, string> = { task: "CircleCheck", email: "Mail", person: "User" };
+/** Tier 2 waits for a real pause on a sentence (§6.3: two words, 900 ms). */
+const INTENT_PAUSE_MS = 900;
+
+type Intent =
+  | { kind: "job"; job: string; label: string; href: string; filled: Record<string, string> }
+  | { kind: "handoff"; href: string }
+  | { kind: "paused"; message: string }
+  | { kind: "off" | "none" | "unavailable" };
+
+/** "Write an email · to Priya · March invoice": the job, then what was filled. */
+export function intentLabel(label: string, filled: Record<string, string>): string {
+  const parts = [label];
+  if (filled.to) parts.push(`to ${filled.to}`);
+  for (const [k, v] of Object.entries(filled)) if (k !== "to" && v) parts.push(v);
+  return parts.join(" · ");
+}
 /** Wait this long after the last key before asking the apps. */
 const FIND_DEBOUNCE_MS = 220;
 
@@ -102,6 +121,7 @@ export function CommandBar({
   const [filterName, setFilterName] = useState<string | null>(null);
   const [found, setFound] = useState<{ query: string; groups: FindGroup[] }>({ query: "", groups: [] });
   const [finding, setFinding] = useState(false);
+  const [intent, setIntent] = useState<{ query: string; answer: Intent } | null>(null);
 
   // A fresh start on every open: the words it was opened with, and the token
   // of the app the member is in.
@@ -148,6 +168,34 @@ export function CommandBar({
         if (!ctrl.signal.aborted) setFinding(false);
       }
     }, FIND_DEBOUNCE_MS);
+    return () => {
+      ctrl.abort();
+      clearTimeout(timer);
+    };
+  }, [open, query, scope]);
+
+  // Tier 2, the coordinator: only on a sentence, only after a real pause.
+  useEffect(() => {
+    const words = query.trim();
+    if (!open || words.split(/\s+/).length < 2) {
+      setIntent(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/shell/intent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ q: words, scope: scope || null }),
+          signal: ctrl.signal,
+        });
+        const answer = (res.ok ? await res.json() : { kind: "unavailable" }) as Intent;
+        if (!ctrl.signal.aborted) setIntent({ query: words, answer });
+      } catch {
+        /* aborted, or away: the other groups still answer */
+      }
+    }, INTENT_PAUSE_MS);
     return () => {
       ctrl.abort();
       clearTimeout(timer);
@@ -212,6 +260,36 @@ export function CommandBar({
         },
       });
     }
+    const coordinator = intent?.query === words ? intent.answer : null;
+    if (coordinator?.kind === "job") {
+      out.push({
+        key: `intent:${coordinator.job}`,
+        group: "Ask",
+        label: intentLabel(coordinator.label, coordinator.filled),
+        hint: Object.keys(coordinator.filled).length
+          ? "Suggested by AI. The form opens filled in, and you check it before anything is saved or sent."
+          : "Suggested by AI. It opens the form for you.",
+        icon: "Sparkles",
+        run: () => {
+          onClose();
+          const url = new URL(coordinator.href, window.location.origin);
+          if (url.pathname === window.location.pathname) {
+            window.history.pushState(null, "", `${url.pathname}${url.search}`);
+          } else {
+            router.push(coordinator.href);
+          }
+        },
+      });
+    } else if (coordinator?.kind === "paused") {
+      out.push({
+        key: "intent:paused",
+        group: "Ask",
+        label: coordinator.message,
+        hint: "Search and the other results keep working.",
+        icon: "CirclePause",
+        run: () => undefined,
+      });
+    }
     if (worthAsking(words)) {
       out.push({
         key: "ask",
@@ -226,7 +304,7 @@ export function CommandBar({
       });
     }
     return out;
-  }, [items, query, token, recent, filterName, here, email, onClose, router, found]);
+  }, [items, query, token, recent, filterName, here, email, onClose, router, found, intent]);
 
   // The highlight: the held row while it exists, else the first row.
   const held = activeKey ? rows.findIndex((r) => r.key === activeKey) : -1;
