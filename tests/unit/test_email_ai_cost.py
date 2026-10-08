@@ -483,6 +483,16 @@ class TestTheBriefCache:
         assert out == "Reply to Priya first (2)."
         assert len(brief_env.calls) == 2
 
+    async def test_a_new_prompt_refreshes_the_brief(
+        self, brief_env, tenant, monkeypatch,
+    ) -> None:
+        """Review round 1: a deploy that changes the prompt does not serve
+        the brief of the old prompt."""
+        await digest_mod._digest_brief(_brief_db(), ACC, BACKLOG, [])
+        monkeypatch.setattr(digest_mod, "_BRIEF_SYSTEM", "Write one sentence.")
+        await digest_mod._digest_brief(_brief_db(), ACC, BACKLOG, [])
+        assert len(brief_env.calls) == 2
+
     async def test_the_key_is_the_tenant_mailbox_and_day(self, brief_env, tenant) -> None:
         await digest_mod._digest_brief(_brief_db(), ACC, BACKLOG, [])
         (stored,) = brief_env.redis.store
