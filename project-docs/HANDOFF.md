@@ -179,6 +179,8 @@ line — never reclaim a number by deleting the other entry.
 - **A cheap partial fix.** `NoNewPrivileges=true` on `acb-gateway.service`
   stops path 1 for the Copilot CLI (H-270) only. It does nothing for paths 2
   and 3. Do not build it in the off-box PR.
+- **Spec:** `specs/box_hardening.md` (WS-49) owns the fixes. The audit found
+  two more paths to root. Read its §0 before you build.
 - **Authority:** `project-docs/specs/backup_and_restore.md` §4.2, the trade-offs ·
   H-123 · H-270
 - **Added:** 2026-10-08 · off-box backup, security review of fix round 2
@@ -206,6 +208,7 @@ line — never reclaim a number by deleting the other entry.
 - **Not in the off-box PR, on purpose.** This is its own change. H-123 moved the backup
   key out of `.env` for this reason. WS-43 (D84) removes the Copilot SDK. Until that
   ships, this stays open.
+- **Spec:** `specs/box_hardening.md` (WS-49), slice BH-1, owns the fix.
 - **Authority:** `apps/services/orchestrator/orchestrator/copilot_agent.py` ·
   `copilot/client.py` in the SDK · H-123
 - **Added:** 2026-10-08 · off-box backup, security review of fix round 1
