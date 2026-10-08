@@ -470,7 +470,6 @@ describe("no raw Tailwind palette colours", () => {
     "components/FileUploadButton.tsx": 8,
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
-    "components/MarkdownMessage.tsx": 7, // S9: the link lost its palette blue. 2026-10-07: the caret lost bg-zinc-300
     "components/TodoPanel.tsx": 1,
     "lib/providers.ts": 30,
   };

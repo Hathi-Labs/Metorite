@@ -146,6 +146,10 @@ class WhatsAppMessageModel(BaseModel):
     intent: str | None = None
     send_regime: str | None = None
     sent_at: str | None = None
+    # WS-48 N4: the chat's name and kind ('dm' | 'group' | 'broadcast'). Only
+    # ``GET /search`` and the ``around`` read of the thread fill them.
+    chat_name: str | None = None
+    chat_kind: str | None = None
 
 
 # ── DB (the one shared gateway engine — gateway/db.py, BO-10) ────────────────

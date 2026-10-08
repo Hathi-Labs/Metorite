@@ -26,7 +26,7 @@ import Button from "@/components/ui/Button";
 import FencedText from "@/components/FencedText";
 import AppIcon from "@/components/Icon";
 import EntityPill from "@/components/ui/EntityPill";
-import Readout from "@/components/projects/Readout";
+import Readout from "@/components/Readout";
 import { renderTemplate } from "@/components/genUITemplates";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
@@ -415,6 +415,7 @@ function DatasetView({ result }: { result: string }) {
       {renderTemplate("dataGrid", {
         title: table.title,
         columns: table.columns,
+        kinds: table.kinds,
         rows: table.rows,
       })}
       {(table.caption || table.notes.length > 0) && (
