@@ -7,6 +7,7 @@ import os
 from collections.abc import AsyncIterable
 from typing import Any
 
+from acb_common.child_env import copilot_env
 from acb_llm import compress_tool_output
 from acb_llm.attribution import attribution_headers
 from agent_framework import AgentResponseUpdate, Content
@@ -163,6 +164,156 @@ def carry_run_context(agent: Any) -> None:
         logger.warning("carry_run_context: could not wrap agent %r", agent)
 
 
+# ── WS-49 BH-1: the ONE builder of a spawning CopilotClient for an agent ────
+#
+# The upstream ``GitHubCopilotAgent.start`` (``_agent.py`` line 772) builds
+# ``CopilotClient(**client_kwargs)`` with no ``env``, and the SDK then hands the
+# CLI the whole gateway env, every secret of ``.env`` included. The CLI has a
+# shell tool, so a prompt injection can read them (H-270).
+#
+# The choice (fix round 1): bind the guard on the CLASS, once, at the most
+# shared point. ``install_child_env_guard`` replaces ``GitHubCopilotAgent.start``
+# for every instance in the process, so every entry path is covered: the batch
+# run (``_run_with_maf_agent``), the sub-agent block, the self-anneal retries,
+# workflows, and any path a later change adds. Importing the ``orchestrator``
+# package installs it (``orchestrator/__init__.py``). An agent repo builds a
+# plain ``GitHubCopilotAgent``, and it never has to know.
+
+
+def copilot_token() -> str:
+    """The Copilot token: COPILOT_GITHUB_TOKEN, GITHUB_COPILOT_TOKEN, GITHUB_TOKEN.
+
+    GITHUB_TOKEN is the canonical secret that the connect UI, the settings
+    store and the DB hydration populate. The CLI env holds none of the three
+    names (``copilot_env``), so a client must pass the token as
+    ``github_token``, or a headless CLI answers "Authorization error, run
+    /login".
+    """
+    return (
+        os.environ.get("COPILOT_GITHUB_TOKEN")
+        or os.environ.get("GITHUB_COPILOT_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+        or ""
+    ).strip()
+
+
+def child_env_client(settings: Any = None) -> CopilotClient:
+    """A CopilotClient whose CLI child gets ``copilot_env()`` and nothing else.
+
+    It reads the same settings as the upstream start: ``cli_path``,
+    ``log_level``, ``base_directory`` and ``telemetry``. With a token it passes
+    ``github_token``, and the SDK sets ``COPILOT_SDK_AUTH_TOKEN`` itself. With
+    no token it passes none, so the SDK keeps ``use_logged_in_user`` and a dev
+    box's logged-in CLI still works (BH-D3).
+    """
+    opts: dict[str, Any] = dict(settings or {})
+    kwargs: dict[str, Any] = {}
+    if opts.get("cli_path"):
+        kwargs["connection"] = RuntimeConnection.for_stdio(path=opts["cli_path"])
+    for key in ("log_level", "base_directory"):
+        if opts.get(key):
+            kwargs[key] = opts[key]
+    telemetry = opts.get("telemetry")
+    if isinstance(telemetry, str):
+        from agent_framework_github_copilot._agent import (
+            _parse_telemetry_config,
+        )
+
+        telemetry = _parse_telemetry_config(telemetry)
+    if telemetry:
+        kwargs["telemetry"] = telemetry
+    token = copilot_token()
+    if token:
+        kwargs["github_token"] = token
+    return CopilotClient(**kwargs, env=copilot_env())
+
+
+_GUARD_FLAG = "_ws49_bh1_child_env_guard"
+
+#: The versions of ``agent-framework-github-copilot`` that the BH-1 tests
+#: cover. The guard knows how 2.0.0 builds its client: in ``start``, and only
+#: when none is set. The loader installs an agent's ``requirements.txt`` into
+#: the shared venv (until WS-49 BH-7), so an agent repo can change this
+#: version. A version off this list may build the client by another path, so
+#: the guard refuses every Copilot start under it. Add a version only after
+#: the stub CLI tests pass on it (``tests/unit/test_copilot_child_env.py``).
+GUARDED_WRAPPER_VERSIONS: frozenset[str] = frozenset({"2.0.0"})
+
+
+def _wrapper_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("agent-framework-github-copilot")
+    except PackageNotFoundError:
+        return ""
+
+
+def guard_problem(upstream: Any, wrapper_version: str) -> str | None:
+    """Why the guard cannot work on *upstream*, or None when it can.
+
+    Two checks. The upstream start must build the client itself (its code
+    names ``CopilotClient``), so that a client set before it is the one it
+    uses. And the wrapper version must be one the tests cover.
+    """
+    code = getattr(upstream, "__code__", None)
+    if code is None or "CopilotClient" not in code.co_names:
+        return (
+            "GitHubCopilotAgent.start no longer builds the CopilotClient, so the "
+            "WS-49 BH-1 guard cannot give its CLI copilot_env()"
+        )
+    if wrapper_version not in GUARDED_WRAPPER_VERSIONS:
+        return (
+            f"agent-framework-github-copilot {wrapper_version or '(missing)'} is not "
+            f"one of {sorted(GUARDED_WRAPPER_VERSIONS)}, which the WS-49 BH-1 "
+            "guard is tested on"
+        )
+    return None
+
+
+def install_child_env_guard(cls: Any = None, wrapper_version: str | None = None) -> None:
+    """Make every ``GitHubCopilotAgent.start`` build its client here. Idempotent.
+
+    A client that a caller set before the start (the sandbox URI, the Tier 2
+    client, a test) is kept. Only the upstream fallback, which has no env, is
+    replaced.
+
+    When the guard cannot work (``guard_problem``), every Copilot start
+    REFUSES with ``AgentException``, and the import logs one error. It does
+    not raise at import: the import of the ``orchestrator`` package serves
+    every agent run, and a native MAF agent needs no Copilot CLI. A gateway
+    that cannot guard the CLI env starts no Copilot agent. ``cls`` and
+    ``wrapper_version`` exist for the tests.
+    """
+    cls = cls or GitHubCopilotAgent
+    if getattr(cls.start, _GUARD_FLAG, False):
+        return
+    upstream = cls.start
+    problem = guard_problem(
+        upstream, _wrapper_version() if wrapper_version is None else wrapper_version
+    )
+
+    if problem:
+        logger.error("Copilot agents are refused: %s", problem)
+
+        async def start(self: Any) -> None:
+            raise AgentException(f"Copilot agent start refused: {problem}.")
+
+    else:
+
+        async def start(self: Any) -> None:
+            if self._client is None and not self._started:
+                self._client = child_env_client(self._settings)
+            await upstream(self)
+
+    setattr(start, _GUARD_FLAG, True)
+    start.__doc__ = upstream.__doc__
+    cls.start = start
+
+
+install_child_env_guard()
+
+
 class MetoriteCopilotAgent(GitHubCopilotAgent):
     """GitHubCopilotAgent with BYOK provider forwarding and rich event streaming.
 
@@ -180,10 +331,10 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
         """Start the Copilot client with explicit token auth when available.
 
         The upstream GitHubCopilotAgent.start() relies on the CLI's
-        logged-in user, which does not exist on headless servers.  When
-        COPILOT_GITHUB_TOKEN (preferred) or GITHUB_COPILOT_TOKEN is set,
-        construct the client with ``github_token`` so the SDK forwards it
-        as COPILOT_SDK_AUTH_TOKEN to the CLI subprocess.
+        logged-in user, which does not exist on headless servers. So the
+        client comes from ``child_env_client``, with the token that
+        ``copilot_token`` finds, and the SDK forwards it as
+        COPILOT_SDK_AUTH_TOKEN to the CLI subprocess.
 
         BO-7 phase 2: when ``self._sandbox_cli_url`` is set (by
         ``code_session.py`` / ``executor.py`` after spawning a
@@ -205,29 +356,11 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
             await GitHubCopilotAgent.start(self)
             return
 
-        token = (
-            os.environ.get("COPILOT_GITHUB_TOKEN")
-            or os.environ.get("GITHUB_COPILOT_TOKEN")
-            # GITHUB_TOKEN is the canonical secret the connect UI / settings
-            # store / DB hydration populate; COPILOT_GITHUB_TOKEN is rarely set
-            # in practice, so fall back to it to match the models + mutation
-            # paths (else headless runs hit "Authorization error, run /login").
-            or os.environ.get("GITHUB_TOKEN")
-            or ""
-        ).strip()
-        if self._client is None and token:
-            client_options: dict[str, Any] = {"github_token": token}
-            cli_path = self._settings.get("cli_path")
-            if cli_path:
-                client_options["connection"] = RuntimeConnection.for_stdio(path=cli_path)
-            log_level = self._settings.get("log_level")
-            if log_level:
-                client_options["log_level"] = log_level
-            self._client = CopilotClient(**client_options)
-            logger.info("Copilot client using explicit token auth")
-        # Explicit base call (not super()): this method is monkey-patched
-        # onto plain GitHubCopilotAgent instances, where zero-arg super()
-        # raises "obj must be an instance or subtype of type".
+        # WS-49 BH-1: build the client through the ONE seam, so the CLI gets
+        # copilot_env() and no gateway secret. With no token, the client has
+        # no github_token, and the CLI uses its logged-in user (BH-D3).
+        if self._client is None and not self._started:
+            self._client = child_env_client(self._settings)
         await GitHubCopilotAgent.start(self)
 
     async def _create_session(

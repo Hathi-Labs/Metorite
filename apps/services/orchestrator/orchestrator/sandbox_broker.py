@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_logger, get_settings
+from acb_common.child_env import docker_env
 
 _log = get_logger("orchestrator.sandbox_broker")
 
@@ -896,6 +897,7 @@ class DockerCLI:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=docker_env(),
         )
 
     @staticmethod

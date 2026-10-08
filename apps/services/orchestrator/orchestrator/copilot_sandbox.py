@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_logger
+from acb_common.child_env import docker_env
 
 _log = get_logger("orchestrator.copilot_sandbox")
 
@@ -93,6 +94,7 @@ async def _run(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
             *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=docker_env(),
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return (

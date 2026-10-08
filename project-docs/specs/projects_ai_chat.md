@@ -1924,8 +1924,8 @@ The audit of 2026-09-24 read these facts from the code.
    with no bound tenant shares one key. A render
    waits at most 2 seconds for a slot, with an `await` that holds no
    thread, and then gets 503 (fix round 3). A cancelled request kills its
-   child. The child inherits only `CHILD_ENV_KEYS`, never the gateway's
-   keys.
+   child. The child gets only the `acb_common.child_env` allowlist, never
+   the gateway's keys (WS-49 BH-1).
 7. **Two bounds apply before layout.** The sanitizer refuses nesting deeper
    than 64 elements. A run of more than 2,000 characters that MuPDF cannot
    break is also refused. Both get 422, and both bind Markdown too. The

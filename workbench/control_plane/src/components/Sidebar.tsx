@@ -24,6 +24,8 @@ import Button from "@/components/ui/Button";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SidebarAccountFooter, useAccounts } from "@/components/AccountSwitcher";
+import AppLauncher from "@/lib/shell/AppLauncher";
+import { HOME_PANE, accountLinks, isActive, launcherGroups, shellNavOn, shellSidebar } from "@/lib/shell/shellNav";
 
 /** Mirrors gateway/routes/apps/pins.py's PinnedApp — GET /api/apps/pins. */
 type PinnedApp = { slug: string; name: string; icon?: string };
@@ -88,6 +90,11 @@ export default function Sidebar() {
     accessLoading ? null : access.features,
     access.is_admin,
   );
+  // The shell nav (NS-2, `lib/shell/shellNav.ts`). Read once: the flag is
+  // build-time, and the dev override must not flip mid-session.
+  const [shellNav] = useState(() => shellNavOn());
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const railSections = shellNav ? shellSidebar(sections) : sections;
   /**
    * ONE predicate for "is there a workspace behind this person yet", used by
    * the two polls below AND by the `return null` further down.
@@ -118,13 +125,15 @@ export default function Sidebar() {
   useEffect(() => {
     if (!pathname) return;
     setFoldedSections((prev) => {
-      const owner = NAV_SECTIONS.find((s) =>
-        s.items.some((p) => pathname.startsWith(p.href)),
-      );
+      // The shape on screen. The shell nav groups by team, so its ids differ.
+      // The FIRST owner only, as before: on /people/me the "Apps" group (it
+      // holds /people) keeps the fold its member chose.
+      const shape = shellNav ? shellSidebar(NAV_SECTIONS) : NAV_SECTIONS;
+      const owner = shape.find((s) => s.items.some((p) => pathname.startsWith(p.href)));
       if (!owner || !prev[owner.id]) return prev;
       return persistFolds({ ...prev, [owner.id]: false });
     });
-  }, [pathname]);
+  }, [pathname, shellNav]);
 
   // Poll agent list for behind_by counts — shows "N updates" badge on Agents
   useEffect(() => {
@@ -338,7 +347,14 @@ export default function Sidebar() {
         {accessLoading ? (
           <NavSkeleton collapsed={collapsed} />
         ) : (
-          sections.map((section) => (
+          <>
+          {shellNav && (
+            // The same column as a group's items, so Home lines up with them.
+            <div className={collapsed ? "flex flex-col gap-1 p-2 pb-0" : "flex flex-col gap-0.5 px-2 pt-2"}>
+              <NavLink pane={HOME_PANE} pathname={pathname} collapsed={collapsed} onNavigate={armFold} shellNav />
+            </div>
+          )}
+          {railSections.map((section) => (
             <NavSectionBlock
               key={section.id}
               section={section}
@@ -349,14 +365,48 @@ export default function Sidebar() {
               onNavigate={armFold}
               agentUpdateCount={agentUpdateCount}
               pinnedApps={pinnedApps}
+              shellNav={shellNav}
             />
-          ))
+          ))}
+          </>
         )}
       </nav>
 
+      {/* All apps (NS-2): every app the member holds, each with its purpose. */}
+      {shellNav && !accessLoading && launcherGroups(sections).length > 0 && (
+        <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2" : "px-2 py-2"}`}>
+          <button
+            type="button"
+            onClick={() => setLauncherOpen(true)}
+            title={collapsed ? "All apps" : undefined}
+            aria-label="All apps"
+            aria-haspopup="dialog"
+            className={`flex items-center gap-2.5 rounded-lg text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground tech-transition ${
+              collapsed ? "justify-center p-2.5" : "w-full px-3 py-2 text-[13px] font-medium"
+            }`}
+          >
+            <Icon name="LayoutGrid" size={collapsed ? 18 : 16} />
+            {!collapsed && <span>All apps</span>}
+          </button>
+        </div>
+      )}
+      {shellNav && (
+        <AppLauncher
+          open={launcherOpen}
+          onClose={() => setLauncherOpen(false)}
+          sections={sections}
+          pathname={pathname}
+        />
+      )}
+
       {/* User / sign-out footer */}
-      <SidebarAccountFooter collapsed={collapsed} accounts={accounts} reload={reloadAccounts} />
-      {!accounts.enabled && !collapsed && (
+      <SidebarAccountFooter
+        collapsed={collapsed}
+        accounts={accounts}
+        reload={reloadAccounts}
+        you={shellNav ? accountLinks(sections) : undefined}
+      />
+      {!shellNav && !accounts.enabled && !collapsed && (
         <div className="border-t border-sidebar-border px-4 py-3">
           {session?.user ? (
             <div className="flex items-center justify-between">
@@ -455,6 +505,7 @@ function NavSectionBlock({
   onNavigate,
   agentUpdateCount = 0,
   pinnedApps = [],
+  shellNav = false,
 }: {
   section: NavSection;
   pathname: string | null;
@@ -465,6 +516,8 @@ function NavSectionBlock({
   onNavigate: (e: MouseEvent) => void;
   agentUpdateCount?: number;
   pinnedApps?: PinnedApp[];
+  /** The shell nav's line under each item: the manifest's purpose. */
+  shellNav?: boolean;
 }) {
   if (collapsed) {
     return (
@@ -478,6 +531,7 @@ function NavSectionBlock({
               collapsed
               onNavigate={onNavigate}
               badge={p.href === "/agents" && agentUpdateCount > 0 ? agentUpdateCount : undefined}
+              shellNav={shellNav}
             />
           ))}
         </div>
@@ -525,6 +579,7 @@ function NavSectionBlock({
               onNavigate={onNavigate}
               badge={p.href === "/agents" && agentUpdateCount > 0 ? agentUpdateCount : undefined}
               pinnedApps={p.href === "/build/apps" ? pinnedApps : undefined}
+              shellNav={shellNav}
             />
           ))}
         </div>
@@ -544,6 +599,7 @@ function NavLink({
   onNavigate,
   badge,
   pinnedApps,
+  shellNav = false,
 }: {
   pane: NavPane;
   pathname: string | null;
@@ -551,15 +607,24 @@ function NavLink({
   onNavigate: (e: MouseEvent) => void;
   badge?: number;
   pinnedApps?: PinnedApp[];
+  shellNav?: boolean;
 }) {
-  const active = pathname?.startsWith(pane.href);
+  // The shell nav matches by segment, so Home ("/") is active on Home only.
+  const active = shellNav ? isActive(pathname, pane.href) : pathname?.startsWith(pane.href);
+  // ⚠️ The shell nav draws ONE line per item, and the purpose is the hover
+  // text. Measured on 2026-10-09: a second line under every item made the
+  // sidebar taller than a 900px screen. A member who opens it every day reads
+  // that line once and then scrolls past it for ever. The purpose matters when
+  // a member is finding out what an app is, and All apps prints it there.
+  // Off, the older operator line, as before.
+  const purpose = pane.blurb ?? pane.note;
 
   if (collapsed) {
     return (
       <Link
         key={pane.href}
         href={pane.href}
-        title={pane.label}
+        title={shellNav ? `${pane.label}: ${purpose}` : pane.label}
         onClick={onNavigate}
         className={`rounded-lg tech-transition flex items-center justify-center p-2.5 relative ${
           active
@@ -583,6 +648,7 @@ function NavLink({
         key={pane.href}
         href={pane.href}
         onClick={onNavigate}
+        title={shellNav ? purpose : undefined}
         className={`rounded-lg tech-transition px-3 py-2 text-sm ${
           active
             ? "bg-primary/15 text-primary"
@@ -598,7 +664,9 @@ function NavLink({
             </span>
           )}
         </div>
-        <div className="ml-[26px] text-[11px] text-muted-foreground/60 leading-tight mt-0.5">{pane.note}</div>
+        {!shellNav && (
+          <div className="ml-[26px] text-[11px] text-muted-foreground/60 leading-tight mt-0.5">{pane.note}</div>
+        )}
       </Link>
       {pinnedApps && pinnedApps.length > 0 && (
         <div className="flex flex-col gap-0.5 ml-[26px] mt-0.5 mb-1">

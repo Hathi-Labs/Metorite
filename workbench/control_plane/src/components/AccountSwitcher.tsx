@@ -14,6 +14,7 @@
  * `enabled: false`, and the callers keep the footer they had.
  */
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import Icon from "@/components/Icon";
@@ -32,6 +33,7 @@ import {
   type Accounts,
   type OtherAccount,
 } from "@/lib/accountSwitch";
+import type { AccountLink } from "@/lib/shell/shellNav";
 
 export function useAccounts() {
   const [accounts, setAccounts] = useState<Accounts>(NO_ACCOUNTS);
@@ -85,11 +87,20 @@ function AccountMenu({
   accounts,
   onChanged,
   showActive = true,
+  you,
+  onNavigate,
 }: {
   accounts: Accounts;
   onChanged: () => void;
   /** False in the phone drawer, whose row above already shows it. */
   showActive?: boolean;
+  /**
+   * The shell nav's account rows (NS-2): My Profile, My access, Appearance,
+   * and Organisation for an admin. Absent, the menu is the switcher alone.
+   */
+  you?: readonly AccountLink[];
+  /** Called when a row opens a page, so the menu or the drawer can close. */
+  onNavigate?: () => void;
 }) {
   const { access } = useAccess();
   const orgName = access.organization?.display_name || access.organization?.slug || null;
@@ -127,8 +138,24 @@ function AccountMenu({
       </div>
       )}
 
+      {you && you.length > 0 && (
+        <nav aria-label="Your account" className={`${showActive ? "border-t border-border" : ""} p-1`}>
+          {you.map((l) => (
+            <Link
+              key={l.href}
+              href={l.href}
+              onClick={onNavigate}
+              className="flex items-center gap-3 rounded-md px-3 py-2 text-[13px] text-foreground hover:bg-secondary tech-transition"
+            >
+              <Icon name={l.icon} size={15} className="shrink-0 text-muted-foreground" />
+              {l.label}
+            </Link>
+          ))}
+        </nav>
+      )}
+
       {accounts.others.length > 0 && (
-        <div className={`${showActive ? "border-t border-border" : ""} py-1`} role="list" aria-label="Other accounts">
+        <div className={`${showActive || you?.length ? "border-t border-border" : ""} py-1`} role="list" aria-label="Other accounts">
           {accounts.others.map((o) => (
             <div key={o.slot} role="listitem" className="group flex items-center gap-1 px-1">
               <button
@@ -168,16 +195,19 @@ function AccountMenu({
       {error && <p className="px-3 pb-2 text-xs text-destructive">{error}</p>}
 
       <div className="border-t border-border p-1">
-        <Button
-          variant="ghost"
-          size="none"
-          layout="flex items-center"
-          icon="UserPlus"
-          onClick={() => void addAccount()}
-          className="w-full gap-3 px-3 py-2 text-[13px]"
-        >
-          Add another account
-        </Button>
+        {/* Only with the switcher on: off, there is no second slot to add. */}
+        {accounts.enabled && (
+          <Button
+            variant="ghost"
+            size="none"
+            layout="flex items-center"
+            icon="UserPlus"
+            onClick={() => void addAccount()}
+            className="w-full gap-3 px-3 py-2 text-[13px]"
+          >
+            Add another account
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="none"
@@ -192,6 +222,18 @@ function AccountMenu({
       {switching && <SwitchingCover email={switching} />}
     </div>
   );
+}
+
+/**
+ * With the switcher off, the shell nav still needs the active account for its
+ * foot. It comes from the session then, with no other accounts.
+ */
+function withSessionFallback(
+  accounts: Accounts,
+  session: { user?: { email?: string | null; name?: string | null } } | null | undefined,
+): Accounts {
+  if (accounts.active || !session?.user?.email) return accounts;
+  return { ...accounts, active: { email: session.user.email, name: session.user.name ?? null } };
 }
 
 /** Close on a click outside `root`, or on Escape. */
@@ -219,13 +261,18 @@ function useDismiss(open: boolean, close: () => void, root: React.RefObject<HTML
  */
 export function SidebarAccountFooter({
   collapsed,
-  accounts,
+  accounts: switcher,
   reload,
+  you,
 }: {
   collapsed: boolean;
   accounts: Accounts;
   reload: (withOrgs: boolean) => Promise<void>;
+  /** The shell nav's account rows (NS-2). With them, the foot always shows. */
+  you?: readonly AccountLink[];
 }) {
+  const { data: session } = useSession();
+  const accounts = withSessionFallback(switcher, you ? session : null);
   const [open, setOpen] = useState(false);
   // Where the menu sits: its BOTTOM edge just above the button, its left edge
   // on the button's. ⚠️ Not AnchoredPanel, which places a flipped panel by
@@ -236,7 +283,7 @@ export function SidebarAccountFooter({
   const close = useCallback(() => setOpen(false), []);
   useDismiss(open, close, rootRef);
   const active = accounts.active;
-  if (!accounts.enabled || !active) return null;
+  if (!active || (!accounts.enabled && !you)) return null;
 
   const toggle = () => {
     if (!open) {
@@ -292,7 +339,7 @@ export function SidebarAccountFooter({
             style={{ left: box.left, bottom: box.bottom }}
             className="fixed z-[60] max-h-[calc(100vh-1rem)] w-72 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-md border border-border bg-card py-1 shadow-md"
           >
-            <AccountMenu accounts={accounts} onChanged={() => void reload(true)} />
+            <AccountMenu accounts={accounts} onChanged={() => void reload(true)} you={you} onNavigate={close} />
           </div>
         )}
       </div>
@@ -304,15 +351,25 @@ export function SidebarAccountFooter({
  * The phone drawer's foot: the active account as a row, and the menu unfolded
  * under it. While the switcher is off, `fallback`: the Sign out row it had.
  */
-export function DrawerAccountSection({ fallback }: { fallback: React.ReactNode }) {
+export function DrawerAccountSection({
+  fallback,
+  you,
+  onNavigate,
+}: {
+  fallback: React.ReactNode;
+  /** The shell nav's account rows (NS-2). With them, the section always shows. */
+  you?: readonly AccountLink[];
+  onNavigate?: () => void;
+}) {
   // ⚠️ Its own hook, never props. The drawer captures its content once, when
   // it opens (`useMobileDrawer().open(node)`), so props from the shell would
   // stay as they were at that moment.
-  const { accounts, reload } = useAccounts();
+  const { accounts: switcher, reload } = useAccounts();
   const { data: session } = useSession();
+  const accounts = withSessionFallback(switcher, you ? session : null);
   const [open, setOpen] = useState(false);
   const active = accounts.active;
-  if (!accounts.enabled || !active || !session?.user) return <>{fallback}</>;
+  if ((!accounts.enabled && !you) || !active || !session?.user) return <>{fallback}</>;
   const count = accounts.others.length;
 
   return (
@@ -341,7 +398,13 @@ export function DrawerAccountSection({ fallback }: { fallback: React.ReactNode }
       </button>
       {open && (
         <div id="drawer-accounts" className="border-t border-border">
-          <AccountMenu accounts={accounts} onChanged={() => void reload(true)} showActive={false} />
+          <AccountMenu
+            accounts={accounts}
+            onChanged={() => void reload(true)}
+            showActive={false}
+            you={you}
+            onNavigate={onNavigate}
+          />
         </div>
       )}
     </div>
