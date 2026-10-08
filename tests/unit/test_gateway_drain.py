@@ -179,10 +179,51 @@ def _run_script(url: str, wait_s: int = 5) -> tuple[subprocess.CompletedProcess[
         "GATEWAY_INTERNAL_TOKEN": "tok-123",
     }
     t0 = time.monotonic()
-    out = subprocess.run(
-        [BASH, str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60,
+    proc = subprocess.Popen(
+        [BASH, str(SCRIPT)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, start_new_session=os.name != "nt",
     )
+    try:
+        stdout, stderr = proc.communicate(timeout=40)
+    except subprocess.TimeoutExpired:
+        # Kill the whole tree. On Windows a plain kill stops only Git Bash's
+        # launcher, and its MSYS child keeps the pipe open, so the test hangs
+        # instead of failing (verifier, 2026-10-08).
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            os.killpg(proc.pid, 9)
+        proc.communicate(timeout=10)
+        pytest.fail("the drain script ran past 40 s, so its bound does not hold")
+    out = subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
     return out, time.monotonic() - t0
+
+
+class TestTheTokenStaysOffTheCommandLine:
+    """Any user on the box can read a command line with `ps`. The service
+    token grants everything, so it goes to curl on stdin only."""
+
+    def _code(self) -> list[str]:
+        return [
+            ln for ln in SCRIPT.read_text(encoding="utf-8").splitlines()
+            if not ln.lstrip().startswith("#")
+        ]
+
+    def test_the_token_is_used_once_and_through_stdin(self) -> None:
+        uses = [
+            i for i, ln in enumerate(self._code())
+            if re.search(r"\$\{?token\b", ln)
+        ]
+        assert len(uses) == 1, "the token is used in more than one place"
+        line = self._code()[uses[0]]
+        follow = self._code()[uses[0] + 1]
+        assert line.lstrip().startswith('body="$(printf ') and line.rstrip().endswith("\\")
+        assert "curl" in follow and "-K -" in follow
+
+    def test_no_header_flag_carries_anything(self) -> None:
+        code = "\n".join(self._code())
+        assert not re.search(r"(^|\s)(-H|--header)(\s|=)", code)
+        assert code.count("Authorization") == 1
 
 
 @needs_bash
