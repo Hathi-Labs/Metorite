@@ -421,6 +421,17 @@ async def run_maf_code_session(
             raise CodeSessionRefused(
                 "MAF_CODING_SCOPE does not name code_task for this agent and organization."
             )
+        from acb_skills.agent_paths import is_tenant_instance
+
+        if is_tenant_instance(binding.instance):
+            # A shared agent's tenant dir holds every thread's inputs and
+            # outputs and every member's skills. The `code_task` container
+            # mounts it whole and read-write, so it may not start there until
+            # this target gets the thread and skill covers of `projects`
+            # (review, WS-43f). D85 keeps code_task from such a run today.
+            raise CodeSessionRefused(
+                "code_task runs in the sandbox only for a personal working dir."
+            )
         try:
             same_dir = Path(workspace).resolve() == binding.workspace
         except (OSError, RuntimeError):

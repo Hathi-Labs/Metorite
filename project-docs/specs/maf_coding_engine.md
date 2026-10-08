@@ -2444,7 +2444,11 @@ gave GO-NARROWED. These facts change or add to the text above:
   until `covers()` is true, and `covers()` stays false for this target until
   WS-43f. So today the MAF path reaches a personal agent only. A run with no
   store key, such as the root `metorite` agent, gets the clear error of
-  done-when 3.
+  done-when 3. The session also refuses a tenant dir (`o:<org>`) by itself.
+  The `code_task` container mounts its dir whole and read-write, and a tenant
+  dir holds every thread's files and every member's skills. WS-43f must give
+  this target the thread and skill covers of `projects` before it lifts that
+  refusal.
 - **The container comes first.** `run_maf_code_session` acquires the
   container before the first model call, and holds its lease to the end. So
   a broker refusal costs no model call, and no eviction stops a session

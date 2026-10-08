@@ -70,7 +70,11 @@ def _host_git_ok(agent_dir: str | None) -> bool:
     """
     from orchestrator.sandbox_broker import host_git_allowed
 
-    return host_git_allowed(agent_dir)
+    try:
+        return host_git_allowed(agent_dir)
+    except Exception as exc:  # fail closed, and never raise into a run
+        _log.warning("mutation.host_git_check_failed", error=str(exc)[:300])
+        return False
 
 
 def _router_headers() -> dict[str, str]:

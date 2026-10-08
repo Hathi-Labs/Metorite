@@ -1753,7 +1753,7 @@ def _git_dir_for(agent_dir: Path, effective_dir: str, store_instance: str) -> st
 
     WS-43e (§7.5 rule A): it returns ``""`` when that dir is a sandbox dir, a
     dir that a container mounts now or mounted. The helpers then skip the run,
-    and the self-anneal and the self-mutation get no dir (:func:`_host_git_dir`).
+    and the self-anneal and the self-mutation get no dir (:func:`_repair_dir`).
     """
     from acb_skills.agent_paths import is_tenant_instance
 
@@ -1784,7 +1784,11 @@ def _host_git_ok(path: str | os.PathLike[str] | None) -> bool:
         return False
     from orchestrator.sandbox_broker import host_git_allowed
 
-    return host_git_allowed(path)
+    try:
+        return host_git_allowed(path)
+    except Exception as exc:  # a run must never fail, or hide its own error, here
+        _log.warning("executor.host_git_check_failed", error=str(exc)[:300])
+        return False
 
 
 async def _maybe_sandbox_session_workspace(

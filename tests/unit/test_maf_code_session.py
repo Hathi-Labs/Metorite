@@ -478,17 +478,16 @@ def test_two_orgs_get_two_containers_on_their_own_dirs(
     maf: Sandbox, gateway: FakeGateway, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     """Tenant isolation: the same agent and the same thread id in two orgs
-    give two containers, each with its own org label and its own mount.
-
-    It uses tenant keys (``o:<org>``) to prove the broker's rule. D85 keeps
-    ``code_task`` from a shared agent today, so a live run is personal."""
+    give two containers, each with its own org label and its own mount."""
     maf.set_scope(monkeypatch, f"code_task:{ORG_A},code_task:{ORG_B}")
     thread = new_thread()
     gateway.say([("run_command", {"command": "echo A"})], "REPORT A",
                 [("run_command", {"command": "echo B"})], "REPORT B")
-    with bound_run(ORG_A, agent=AGENT, thread=thread, instance=f"o:{ORG_A}") as ws_a:
+    with bound_run(ORG_A, agent=AGENT, thread=thread, instance="u:a@org-a.example",
+                   member="a@org-a.example") as ws_a:
         out_a = asyncio.run(_code_tools().code_task("a"))
-    with bound_run(ORG_B, agent=AGENT, thread=thread, instance=f"o:{ORG_B}") as ws_b:
+    with bound_run(ORG_B, agent=AGENT, thread=thread, instance="u:b@org-b.example",
+                   member="b@org-b.example") as ws_b:
         out_b = asyncio.run(_code_tools().code_task("b"))
     assert out_a.startswith("REPORT A") and out_b.startswith("REPORT B")
     runs = maf.docker.runs()
@@ -501,6 +500,63 @@ def test_two_orgs_get_two_containers_on_their_own_dirs(
     execs = maf.docker.command_execs()
     assert [e[e.index("exec") + 3] for e in execs] == names
     assert [e[-1] for e in execs] == ["echo A", "echo B"]
+
+
+def test_a_shared_agents_tenant_dir_is_refused(
+    maf: Sandbox, gateway: FakeGateway,  # noqa: F811
+) -> None:
+    """The ``code_task`` container mounts its dir whole and read-write. A
+    tenant dir holds every thread's files and every member's skills, so the
+    session refuses it until this target gets the covers of ``projects``."""
+    gateway.say("REPORT")
+    out = _code_task(ORG_A, instance=f"o:{ORG_A}")
+    assert out.startswith("code_task failed:") and "personal working dir" in out, out
+    assert maf.docker.runs() == [] and gateway.requests == []
+
+
+def test_the_lease_is_released_on_an_error_and_a_timeout(
+    maf: Sandbox, gateway: FakeGateway, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+) -> None:
+    """A failed or timed-out session gives its container back, so it never
+    holds a slot of the caps for ever."""
+    from orchestrator import code_session
+
+    def boom(request: Any) -> Any:
+        raise RuntimeError("the gateway fell over")
+
+    monkeypatch.setattr(gateway, "handler", boom)
+    out = _code_task(ORG_A)
+    assert out.startswith("code_task failed:"), out
+    assert maf.broker._live and all(h.leases == 0 for h in maf.broker._live.values())
+
+    async def hang(agent: Any, task: str) -> str:
+        await asyncio.sleep(30)
+        return "never"
+
+    monkeypatch.setattr(code_session, "run_with_empty_retry", hang)
+    with bound_run(ORG_A, agent=AGENT, instance=PERSONAL), pytest.raises(TimeoutError):
+        asyncio.run(code_session.run_maf_code_session(
+            task="t", workspace=str(code_session_ws()), timeout=0.2,
+        ))
+    assert all(h.leases == 0 for h in maf.broker._live.values())
+
+
+def code_session_ws() -> Path:
+    from acb_skills.write_artifact import artifact_context
+
+    return Path(str(artifact_context()["workspace_root"]))
+
+
+def test_the_three_repair_sites_use_repair_dir() -> None:
+    """Review P3 (b): the self-anneal and the two self-mutation sites call
+    ``_repair_dir``, and the old fallback that gave them the sandbox dir is gone."""
+    import inspect
+
+    from orchestrator import executor
+
+    text = inspect.getsource(executor)
+    assert "_git_dir or _effective_agent_dir" not in text
+    assert text.count("agent_dir=_repair_dir(_git_dir, _effective_agent_dir)") == 3
 
 
 def test_a_run_bound_to_one_org_cannot_mount_another_orgs_dir(

@@ -365,7 +365,10 @@ def _host_git_ok(root: Path) -> bool:
         from orchestrator.sandbox_broker import host_git_allowed
     except ImportError:
         return True
-    return host_git_allowed(root)
+    try:
+        return host_git_allowed(root)
+    except Exception:  # fail closed
+        return False
 
 
 def _maf_engine() -> bool:
