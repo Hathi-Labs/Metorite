@@ -345,6 +345,8 @@ interface EmailState {
     /** A pop-out hands over an edit that the inline reply did not save yet.
      *  The composer opens dirty, so it saves that edit (EM-G3c-2). */
     unsavedEdit?: boolean;
+    /** The fields the command bar's AI filled, so Compose says so (NS-4b). */
+    aiFilled?: string[];
     /** A pop-out hands over the draft that the inline reply saved, and its
      *  `hasAttachments`. The composer updates that draft (EM-G3c-2). The
      *  promise settles after the drain of the reply, so the composer opens
@@ -447,7 +449,7 @@ interface EmailState {
   setSearchFilters: (filters: SearchFilter[]) => void;
   /** Drop the text AND the pills, returning to the plain folder list. */
   clearSearch: () => void;
-  openCompose: (defaults?: { accountId?: string; fromAccountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; unsavedEdit?: boolean; handOver?: Promise<DraftHandOver>; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
+  openCompose: (defaults?: { accountId?: string; fromAccountId?: string; to: string; cc?: string; subject: string; replyToBody?: string; unsavedEdit?: boolean; aiFilled?: string[]; handOver?: Promise<DraftHandOver>; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
   closeCompose: () => void;
   hydrateEmail: (email: Email) => void;
   /** "Captured to Tasks" toast state (email → My Tasks inbox). */

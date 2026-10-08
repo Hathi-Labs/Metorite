@@ -55,6 +55,8 @@ interface ComposePanelProps {
   /** A pop-out hands over an edit that the inline reply did not save. The
    *  composer opens dirty, so its own save keeps it (EM-G3c-2 review round 1). */
   unsavedEdit?: boolean;
+  /** Fields the command bar's AI filled. Compose names them (§6.4 rule 2). */
+  aiFilled?: string[];
   /** The draft that the inline reply saved, in the mailbox of `defaultFromId`
    *  or `accountId`, when the drain of the reply settles. The composer updates
    *  it, and makes no second draft (EM-G3c-2 review round 2). The pop-out
@@ -84,6 +86,7 @@ export function ComposePanel({
   defaultCc = "",
   replyToBody,
   unsavedEdit,
+  aiFilled,
   handOver,
   quote,
   replyToMessageId,
@@ -533,6 +536,14 @@ export function ComposePanel({
             <Icon name="X" size={16} />
           </Button>
         </div>
+
+        {/* §6.4 rule 2: a field the AI filled says so, until the member sends. */}
+        {aiFilled && aiFilled.length ? (
+          <p className="shrink-0 flex items-center gap-1.5 border-b border-border px-4 py-2 text-xs text-muted-foreground">
+            <Icon name="Sparkles" size={13} className="shrink-0 text-primary" />
+            Filled by AI: {aiFilled.map((k) => (k === "to" ? "To" : k === "subject" ? "Subject" : k)).join(", ")}. Check them before you send.
+          </p>
+        ) : null}
 
         {/* Fields — the scrolling region when the window hits its max height */}
         <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">

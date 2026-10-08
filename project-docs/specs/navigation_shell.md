@@ -1,6 +1,9 @@
 # The shell — how a member finds an app, a job or an answer
 
-**Status:** Specified 2026-10-05. Nothing is built. Board row **WS-44**.
+**Status:** Specified 2026-10-05. Built so far: NS-1 slice 1, NS-4a, NS-4b, NS-10,
+NS-10b and NS-11. The shell bar is ON in production since 2026-10-08. Board
+row **WS-44**.
+
 Decisions **D87**, **D88** and **D89** (`work_plan.md` §3).
 **Verified against code on 2026-10-05** at `origin/main` `10ef419d6`.
 **Owner:** vjvarada.
@@ -313,11 +316,15 @@ registry.
 values the form reads, so tier 2 may fill them (§6.6). A job never writes when
 it opens.
 
-**Jobs live in one JSON file**, `src/lib/shell/jobs.json`. `nav.ts` imports it,
-and the gateway reads the same file. Each job names the feature it needs, so
-the gateway filters jobs by the member's own features. The gateway never
-trusts a job list from the client (R5e). A test reads the file from both
-sides, so no mirror can drift.
+**Jobs live in two lists that a test holds as one.** The bar reads `JOBS` in
+`src/lib/shell/registry.ts`. The gateway reads its own `JOBS` in
+`gateway/routes/shell/intent.py`, because the gateway cannot import the
+workbench. Each job names the feature it needs, so the gateway filters jobs by
+the member's own features. The gateway never trusts a job list from the
+client (R5e).
+
+`test_shell_intent.py::TestOneJobList` reads both files and fails if an id, a
+label, a link or a gate drifts. NS-2 moves the jobs into each app's manifest.
 
 ### 5.2 The rules for every app, built or future
 
@@ -442,7 +449,10 @@ words the member changed stops at once.
 **Tier 2 runs only when one of these is true:**
 
 - the query holds two words or more, and the member paused for 900 ms
-- the member pressed `Enter` and no tier 0 or tier 1 result was selected
+
+`Enter` always has a row to run, because the bar always offers "Ask the
+assistant" for a sentence. So `Enter` never starts tier 2 by itself. A member
+who presses it before the pause gets the hand-off to the assistant.
 
 ### 6.4 Six rules
 
@@ -895,7 +905,56 @@ Done when:
    never returns.
 4. The route ran against a real Postgres (R8).
 
-### NS-4b · Tier 2, filled jobs and the hand-off — AGENT-SAFE (build), OWNER-GATE (turn on)
+### NS-4b · Tier 2, filled jobs and the hand-off — AGENT-SAFE (build), OWNER-GATE (turn on) · BUILT 2026-10-08, dark
+
+**Built.** `gateway/routes/shell/intent.py` serves `POST /shell/intent`. The
+owner's words, 2026-10-07: *"a high-level coordination AI that enables us to
+quickly go to the appropriate app and workflow depending on our query."*
+
+1. **Pick.** The route makes one typed choice through `acb_llm.decide`, among
+   `held_jobs(user)` and "ask". The Console Router serves it and bills it.
+2. **Fill.** One completion through `completion_on_router` reads the job's own
+   fields. An email has `to` and `subject`, and a task has `title`. It
+   runs ONLY when `routing_is_on()` (H-69). Off, the job opens with an empty
+   form.
+3. **The answer** is one of these:
+   - `job`, with `fill.<field>` parameters for the job door (`doJob.tsx`)
+   - `handoff`, which opens `/chat?q=` with the words typed in
+   - `paused`, which shows the §6.5 line
+   - `off`, `none` or `unavailable`
+4. **Cache.** The route keeps each answer for five minutes. The key holds the
+   member, the scope and the words, through `acb_common.tenant_redis`.
+
+⚠️ **The job list is two files kept as one.** The server reads its own list,
+not a `jobs.json`, because the gateway cannot import the workbench.
+`test_shell_intent.py::TestOneJobList` fails if the ids, the links or the gates
+drift from `lib/shell/registry.ts`.
+
+The server limits the pick and the fill to three seconds each. Uvicorn does not cancel
+a handler when the browser goes, so the limit must live on the server. A fill
+that fails or runs out of time is no fill. The job opens empty, and the answer
+is cached, so the pick is never billed twice. A caller with no address,
+such as the internal service, is no member and is never billed.
+
+The bar shows the pick as the first row of Ask: "New task · call the vendor",
+marked "Suggested by AI". Compose and Capture then say "Filled by AI" beside
+what the AI wrote (§6.4 rule 2). It waits for two words and a pause of 900 ms. Capture
+and Compose open with the filled words. The member checks them, and nothing is
+saved or sent until the member does so.
+
+**Not built: a limit per member.** Only the organization's credit cap stops a
+script that sends a new sentence on every call. Chat has the same exposure.
+
+**Two switches, both the owner's:** `COMMAND_BAR_AI` on the gateway turns the
+route on. `DECIDE_ENABLED`, which the email rules already use, serves the pick.
+The fill also needs `ROUTER_SERVING_ENABLED` (H-69).
+
+Fences: `tests/unit/test_shell_intent.py` (done-when 2 to 5), the
+`DELEGATED_ROUTERS` entry, and three e2e cases.
+
+**Done-when 3, read against the build.** A billed call writes its usage row
+in the Console, not in the gateway. So the test asserts the call, not the row:
+one `decide` call for a new intent, and none for a repeat.
 
 Flag `COMMAND_BAR_AI` on the gateway, default off. Files:
 `gateway/routes/shell/intent.py`.
@@ -904,7 +963,7 @@ Done when:
 
 1. `POST /shell/intent` returns `job` or `handoff` (§6.6) through the Router.
 2. The prompt holds only the jobs the member can open. The server filters
-   `jobs.json` by the member's own features. One test asserts that a job
+   its job list by the member's own features. One test asserts that a job
    behind a missing feature is absent. A second test asserts that the server
    ignores a job list from the client.
 3. Each call writes one usage row, and a test asserts it.

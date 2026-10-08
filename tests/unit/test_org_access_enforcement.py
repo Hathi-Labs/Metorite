@@ -278,6 +278,12 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "search, and a member without the app gets no group "
             "(`test_shell_search.py::TestTheFeatureGate`)."
         ),
+        "/shell/intent": (
+            "NS-4b. The coordinator offers the model only `held_jobs(user)`, each "
+            "job gated on its app's feature, and never returns a job outside that "
+            "list (`test_shell_intent.py::TestTheModelSeesOnlyWhatTheMemberCanOpen`). "
+            "It reads no app data: a job is a link to a form the member then fills."
+        ),
     },
 }
 
