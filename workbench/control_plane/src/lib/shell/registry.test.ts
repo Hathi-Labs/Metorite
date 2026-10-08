@@ -22,6 +22,7 @@ const pane = (href: string, label: string, note = ""): NavPane => ({
   note,
   icon: "Box",
   launch: "live",
+  team: "personal",
 });
 
 const HELD = [

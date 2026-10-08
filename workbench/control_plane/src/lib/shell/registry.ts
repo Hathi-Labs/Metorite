@@ -156,11 +156,13 @@ export function buildItems(panes: readonly NavPane[]): BarItem[] {
     key: `go:${p.href}`,
     group: "go",
     label: `Open ${p.label}`,
-    hint: p.note,
+    // The manifest's purpose, in job words (§5.1). `note` was written for
+    // operators ("Action Broker · outward writes awaiting review").
+    hint: p.blurb ?? p.note,
     icon: p.icon,
     href: p.href,
     app: p.href,
-    words: [p.label, ...p.note.split(/[^A-Za-z]+/)].filter(Boolean),
+    words: [p.label, ...`${p.blurb ?? ""} ${p.note}`.split(/[^A-Za-z]+/)].filter(Boolean),
   }));
   return [...jobs, ...apps];
 }
