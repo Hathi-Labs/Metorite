@@ -6,9 +6,8 @@ data of the beta customers arrives. This spec owns H-270 and H-271 in
 `HANDOFF.md`.
 
 **BH-2 narrowed part BUILT 2026-10-08 on `sec-bh2a-probe-rollback`:** probe,
-rollback script and conf, BH-F3 part 1, the other-unit drop-ins (inert until
-the BH-7 installer installs them). `50-hardening.conf`, the staging and the
-strict check wait.
+rollback script and conf, BH-F3 part 1. The other-unit drop-ins land with
+BH-7. `50-hardening.conf`, the staging and the strict check wait.
 
 **Fix round 1, 2026-10-08.** The spec audit at `dc1e80bc5` returned
 GO-NARROWED. This round applies its fixes E1 to E7 and re-specifies BH-2.
@@ -938,9 +937,8 @@ the owner 2026-10-08 for WS-49.
 GO-NARROWED. This version applies W1 to W3 and S1 to S4.
 
 **BH-2 narrowed part BUILT 2026-10-08 on `sec-bh2a-probe-rollback`:** probe,
-rollback script and conf, BH-F3 part 1, the other-unit drop-ins (inert until
-the BH-7 installer installs them). `50-hardening.conf`, the staging and the
-strict check wait.
+rollback script and conf, BH-F3 part 1. The other-unit drop-ins land with
+BH-7. `50-hardening.conf`, the staging and the strict check wait.
 
 **The GO-NARROWED split.**
 
@@ -1152,15 +1150,16 @@ parts (B2-5).
 
 **Part 1, in the narrowed PR:**
 
-- Every `User=acb` unit in `deploy/hostinger/`, except `acb-pull.service`,
-  has `NoNewPrivileges=yes` in the unit or in its drop-in.
 - `acb-gateway-90-bh2-off.conf` holds the six reset lines:
   `ReadWritePaths=`, `InaccessiblePaths=`, `ProtectSystem=no`,
   `ProtectHome=no`, `NoNewPrivileges=no` and `PrivateTmp=no`.
 - `scripts/box_hardening_probe.sh` exists, and it runs each probe of
   acceptance 2.
 - The drop-ins of the other units merge only after the BH-7 installer
-  merges, because nothing installs a drop-in before it.
+  merges, because nothing installs a drop-in before it. So they land with
+  BH-7, with this check of part 1: every `User=acb` unit in
+  `deploy/hostinger/`, except `acb-pull.service`, has `NoNewPrivileges=yes`
+  in the unit or in its drop-in.
 
 **Part 2, in the full slice:**
 
@@ -1213,6 +1212,15 @@ the fix, run `sudo bash /opt/acb/app/scripts/bh2_rollback.sh off`.
   list as "all", and `systemd-analyze verify` (systemd 255) accepts it. No
   `systemctl show` on the box has confirmed the value. Run
   `systemctl show acb-gateway -p CapabilityBoundingSet` after the first `on`.
+
+**Two probe checks can pass on a box with no sandbox.** The overall verdict
+stays right, because the property checks of part 1 of the probe fail there.
+
+- `etc-acb-hidden` passes when `/etc/acb` is absent, or when its mode is
+  0700. Only `hidden-etc-acb`, a property check, proves the sandbox.
+- `p5-touch-t2-vendor-fails` reports SKIP when `/opt/acb/t2-vendor` is
+  absent, which is the case before BH-7. Until BH-7, the vendor dir is
+  `~/.acb/agents/vendor/t2-react`, and the probe does not check that path.
 
 **The gate.** AGENT-SAFE to build. The staging on the box, the deploy and the
 drop-ins are §3a `deploy` and `deploy-write`. WS43-G12 approved by the owner
