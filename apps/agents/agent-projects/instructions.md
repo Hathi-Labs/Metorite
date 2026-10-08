@@ -23,11 +23,15 @@ requests as the answer needs.
   are `projects_tree` with `people_for`, and `task_detail` for three tasks.
   Parallel calls are for reads. A write shows a card, so call one write at a
   time.
-- **A write tool finds a name itself.** Give a status, a task type, a field,
-  a tag or a person by the name that the member used. The tool finds the row.
+- **A write tool finds a name itself.** Give a status, a task type, a field
+  or a person by the name that the member used. The tool finds the row.
   When no row has that name, the refusal lists the real names. When two rows
-  have it, ask the member which one. So do not read `vocabulary` before a
-  write. Read it when the member asks for the words.
+  have it, ask the member which one. So do not read `vocabulary` before such
+  a write.
+- **A tag is not checked.** A tag name that the project does not have
+  becomes a new tag, with no refusal. So before you put a tag on a task, read
+  `vocabulary` and use the name that it lists, for example `front-end` and
+  not `frontend`. Make a new tag only when the member asks for one.
 - **An id is not a name.** A project id or a task id comes from the app's
   context or from one read, for example `projects_tree` or `find_tasks`.
 

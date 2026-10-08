@@ -269,7 +269,20 @@ def test_a_registry_line_is_one_short_line() -> None:
             "a node's summary and " + "much more " * 40 + ".")
     line = ti._registry_line("projects-assistant", long)
     assert "\n" not in line
-    assert line == "  - 'projects-assistant': Projects Assistant — the AI chat inside the Projects app."
+    # A first sentence that only names the agent takes the next one, capped.
+    assert line.startswith(
+        "  - 'projects-assistant': Projects Assistant — the AI chat inside the "
+        "Projects app. Reads the tree,"
+    ), line
+    assert line.endswith("…")
+    short = ti._registry_line(
+        "crm", "CRM Assistant — works the native CRM and reads the deal pipeline "
+        "by stage with its counts. It can also create a lead.",
+    )
+    assert short == (
+        "  - 'crm': CRM Assistant — works the native CRM and reads the deal "
+        "pipeline by stage with its counts."
+    )
     one_sentence = "word " * 80
     capped = ti._registry_line("x", one_sentence)
     assert len(capped) <= len("  - 'x': ") + ti._REGISTRY_SUMMARY_MAX + 1

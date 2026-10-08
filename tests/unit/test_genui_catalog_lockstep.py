@@ -247,3 +247,9 @@ def test_a_code_mode_with_no_code_returns_its_rules() -> None:
         assert res["guide"] == wa.GENUI_MODE_GUIDES[kind], kind
     assert "export default" in wa.GENUI_MODE_GUIDES["react"]
     assert "data-cc-submit" in wa.GENUI_MODE_GUIDES["html"]
+
+
+def test_an_html_node_with_its_markup_in_props_html_still_draws() -> None:
+    """The renderer reads ``props.code ?? props.html``. Review round 1."""
+    res = _emit('{"type":"html","props":{"html":"<div>hi</div>"}}')
+    assert res == {"ok": False, "error": "no active run stream to render into"}

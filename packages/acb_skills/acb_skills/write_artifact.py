@@ -1449,7 +1449,12 @@ def genui_guide(spec: dict) -> dict | None:
             }
         return None
     # A list or an object is unhashable, and genui_refusal answers it.
-    if isinstance(kind, str) and kind in GENUI_MODE_GUIDES and _empty(props.get("code")):
+    # The renderer draws ``props.code``, or ``props.html`` for an html node
+    # (``GenerativeUINode.tsx``), so either one is code.
+    code = props.get("code")
+    if code is None and kind == "html":
+        code = props.get("html")
+    if isinstance(kind, str) and kind in GENUI_MODE_GUIDES and _empty(code):
         return {
             "ok": False,
             "drawn": False,

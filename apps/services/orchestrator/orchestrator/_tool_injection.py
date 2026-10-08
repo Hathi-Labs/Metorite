@@ -984,17 +984,24 @@ def _build_registry_block() -> str:
 
 #: The longest summary a registry line carries, in characters.
 _REGISTRY_SUMMARY_MAX = 160
+#: A first sentence shorter than this takes the next sentence too.
+_REGISTRY_SUMMARY_MIN = 80
 
 
 def _registry_line(name: str, description: Any) -> str:
-    """One registry line: ``  - 'name': <first sentence>``.
+    """One registry line: ``  - 'name': <summary>``.
 
-    The first sentence of *description*, on one line, cut at a word to
+    The first sentence of *description*, on one line. A first sentence
+    shorter than :data:`_REGISTRY_SUMMARY_MIN` characters (often only the
+    agent's name, as "Projects Assistant — the AI chat.") says too little to
+    route on, so the next sentence joins it. The line is cut at a word to
     :data:`_REGISTRY_SUMMARY_MAX` characters. :func:`_registry_block_for`
     finds the agent's own line by this prefix, so both read one format.
     """
     text = " ".join(str(description or "").split())
     cut = text.find(". ")
+    while cut != -1 and cut + 1 < _REGISTRY_SUMMARY_MIN:
+        cut = text.find(". ", cut + 2)
     if cut != -1:
         text = text[: cut + 1]
     if len(text) > _REGISTRY_SUMMARY_MAX:

@@ -5439,7 +5439,8 @@ needs a real layout. The visual review looked at it.
 
 **Status.** Built 2026-10-09, branch `agent-prefix-slim`. It changes what the
 Projects and email agents hold, and it adds no flag. Each agent loses only
-tools that it did not call in 14 days, and text that said a thing twice.
+tools that it called once or never in 14 days, and text that said a thing
+twice.
 
 ### 25.1 The cost
 
@@ -5454,8 +5455,8 @@ and counts with tiktoken `o200k_base`. The registry is the static one.
 
 | Agent and run | Before: prompt, tools, total, count | After: prompt, tools, total, count | Saved per request | Saved per turn |
 |---|---|---|---|---|
-| projects-assistant, direct | 8,544, 31,671, 40,215, 116 | 6,399, 25,656, 32,055, 104 | 8,160 | about 46,500 (× 5.7) |
-| email-assistant, direct | 4,449, 23,387, 27,836, 70 | 3,613, 16,937, 20,550, 57 | 7,286 | about 51,000 (× 7.0) |
+| projects-assistant, direct | 8,544, 31,671, 40,215, 116 | 6,507, 25,688, 32,195, 104 | 8,020 | about 45,700 (× 5.7) |
+| email-assistant, direct | 4,449, 23,387, 27,836, 70 | 3,677, 16,937, 20,614, 57 | 7,222 | about 50,600 (× 7.0) |
 | email-assistant, delegated, no egress | 3,354, 14,648, 18,002, 46 | 3,149, 9,081, 12,230, 36 | 5,772 | about 40,400 (× 7.0) |
 
 ### 25.2 What changed
@@ -5468,7 +5469,9 @@ and counts with tiktoken `o200k_base`. The registry is the static one.
    the model asks. A template with no `data` gets its shape. An empty or
    unknown name gets every shape. A code mode with no `code` gets its rules.
    The tool draws nothing for a request. The schema went from 3,691 to 791
-   tokens, for every agent and not only these two.
+   tokens in o200k, for every agent and not only these two. The ratchet of
+   `test_tool_schema_diet.py` counts with the run-context tokenizer, which
+   reads it as 641.
 2. **An agent opts out of floor tools.** `config.json: floor_opt_out` names
    the floor tools and the workflow tools that the agent does not want
    (`_tool_injection._floor_opt_out`). The names leave the scope and the
@@ -5477,8 +5480,10 @@ and counts with tiktoken `o200k_base`. The registry is the static one.
    ignores a name outside the allowed set, and logs a warning.
 3. **The registry block lists each agent but the reader, on one line.**
    `_registry_block_for` drops the agent's own entry. `_registry_line` keeps
-   the first sentence of a description, cut at 160 characters. The block of
-   Projects went from 708 to 245 tokens.
+   the first sentence of a description. A first sentence shorter than 80
+   characters takes the next one, because it often names only the agent.
+   The line stops at 160 characters. The block of Projects went from 708 to
+   285 tokens.
 4. **The instructions lost the text that the tools already say.** "What you
    can see" became "Reading", which keeps only the rules that no tool says.
    The tool lists of "What you can draw" and "What you can change" left. The
@@ -5486,9 +5491,11 @@ and counts with tiktoken `o200k_base`. The registry is the static one.
    `load_design_system` only for an agent that holds it.
 5. **Fewer rounds for Projects.** The section "Fewer rounds" tells the model
    to send independent reads as parallel calls in one request. It says that
-   a write tool finds a status, a type, a field, a tag or a person by name,
-   so no read of `vocabulary` comes first. W1 reads the space and the people
-   in one request.
+   a write tool finds a status, a type, a field or a person by name, so no
+   read of `vocabulary` comes first. A tag is the exception: a tag name that
+   the project lacks becomes a new tag, so the model reads `vocabulary`
+   before it puts a tag on a task. W1 reads the space and the people in one
+   request.
 
 ### 25.3 The tools that left
 
@@ -5522,12 +5529,19 @@ pins both lists.
 | Status | `writes._resolve_status` and `_one_named`, or the bulk route per task | `create_task`, `create_tasks`, `update_task`, `triage_intake`, `update_status`, `delete_status`, `bulk_update` |
 | Task type | `writes._resolve_type` | `create_task`, `create_tasks`, `update_task`, `update_type`, `delete_type` |
 | Field | `writes.field_values` and `_field_of` | `create_task`, `create_tasks`, `update_task`, `move_task`, `update_field`, `delete_field` |
-| Tag | `_one_named`, or a new tag registers itself | `update_tag`, `delete_tag`, `merge_tags`, and the `tags` of a task |
+| Tag, to change or delete | `_one_named` | `update_tag`, `delete_tag`, `merge_tags` |
 | Person | `writes._resolve_assignee_name`, through the picker | `create_task`, `create_tasks`, `assign`, `bulk_update`, `create_project`, `update_project`, `propose_plan`, `save_view`, `set_my_overlay` |
 
 A name that matches no row gets a refusal that lists the real names. Two
 matches get a question for the member. A project id and a task id are not
 names. They come from the app's context or from one read.
+
+⚠️ **The `tags` of a task are not checked.** `create_task`, `create_tasks`,
+`update_task` and `bulk_update` send them as text, and the gateway
+(`routes/projects/tags.py` `apply_task_tags`) registers a name that the
+project lacks. So "frontend" beside "front-end" makes a second tag, with
+no refusal. The instructions keep a read of `vocabulary` before a tag, and
+the `vocabulary` docstring says the same (review round 1).
 
 ### 25.5 Fences (R7)
 
@@ -5552,6 +5566,10 @@ sweep can measure the requests of a turn.
   `own_tool_scope` is an owner decision (`email_app_master_plan.md`
   §10.4.14), so this change does not make it.
 - **Three agents still carry the placement section** (§24.4).
+- **Projects keeps `save_note` and lost `recall_notes`.** The audit showed no
+  call of `recall_notes`, so the agent can write a note and never read it
+  back. Take `save_note` out too, or give `recall_notes` back, when its use
+  is known.
 - **The Copilot addendum still names two opted-out tools.** Its sections with
   no gate name `load_design_system` and `load_artifact_kit`, and the static
   risk block names each platform tool. Only a Copilot agent reads them, and
