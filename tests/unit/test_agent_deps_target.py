@@ -505,7 +505,7 @@ def test_the_strip_and_the_installer_run_before_any_restart() -> None:
     assert strip < install < first_restart <= gateway
     # The BO-23 loop stays AFTER the gateway restart, on purpose (B7-2).
     assert gateway < _first(lines, 'echo "==> Syncing systemd units (BO-23)"')
-    stale = next(i for i, ln in code if ln.strip() == "restart_stale_dropin_units")
+    stale = next(i for i, ln in code if ln.strip() == 'restart_stale_dropin_units "$APP_DIR/deploy/hostinger"')
     assert _first(lines, 'echo "==> Syncing systemd units (BO-23)"') < stale
     assert stale < _first(lines, 'record_applied_sha "$(git')
 

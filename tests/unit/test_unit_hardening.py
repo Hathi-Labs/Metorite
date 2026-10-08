@@ -691,33 +691,53 @@ def test_the_installer_writes_repo_names_and_keeps_a_rollback(tmp_path: Path) ->
     assert "installed" not in r.stdout
 
 
+def _installed(tmp_path: Path, unit: str, stamp: str) -> None:
+    """A drop-in on the stub box, with its mtime at `stamp` (UTC)."""
+    d = tmp_path / "etc" / f"{unit}.d"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "50-hardening.conf"
+    f.write_text("[Service]\n", encoding="utf-8")
+    epoch = int(subprocess.run(["date", "-u", "-d", stamp, "+%s"], capture_output=True,
+                               text=True, check=True).stdout.strip())
+    os.utime(f, (epoch, epoch))
+
+
 @needs_bash
 def test_each_stale_unit_restarts_once_and_only_then(tmp_path: Path) -> None:
-    """acb-a: active, started BEFORE the install, so one restart. acb-b:
-    restarted after the install by a step of the apply, so none. acb-c: not
-    active (a oneshot), so none."""
+    """acb-a: active, started BEFORE its drop-in went in, so one restart.
+    acb-b: a step of the apply restarted it after the install, so none.
+    acb-c: not active (a oneshot), so none. acb-d: no drop-in on the box."""
     env = _installer_env(tmp_path)
-    (tmp_path / "active").write_text("acb-a.service\nacb-b.service\n", encoding="utf-8", newline="\n")
+    repo = tmp_path / "repo"
+    for u in ("acb-a", "acb-b", "acb-c", "acb-d"):
+        (repo / f"{u}.service.d").mkdir(parents=True)
+    for u in ("acb-a", "acb-b", "acb-c"):
+        _installed(tmp_path, f"{u}.service", "2026-10-09 10:00:00 UTC")
+    (tmp_path / "active").write_text("acb-a.service\nacb-b.service\nacb-d.service\n",
+                                     encoding="utf-8", newline="\n")
     (tmp_path / "since").write_text(
-        "acb-a.service=Thu 2026-10-08 10:00:00 UTC\nacb-b.service=Fri 2026-10-09 10:00:05 UTC\n",
+        "acb-a.service=Thu 2026-10-08 10:00:00 UTC\nacb-b.service=Fri 2026-10-09 10:00:05 UTC\n"
+        "acb-d.service=Thu 2026-10-08 10:00:00 UTC\n",
         encoding="utf-8", newline="\n",
     )
-    body = (
-        'DROPIN_CHANGED_UNITS="acb-a.service acb-b.service acb-c.service"; '
-        'DROPIN_INSTALLED_AT="$(date -u -d "Fri 2026-10-09 10:00:00 UTC" +%s)"; '
-        "restart_stale_dropin_units"
-    )
-    r = _run_helpers(tmp_path, env, body)
+    r = _run_helpers(tmp_path, env, f'restart_stale_dropin_units "{repo.as_posix()}"')
     assert r.returncode == 0, r.stderr
     restarts = [ln for ln in (tmp_path / "log").read_text(encoding="utf-8").splitlines()
                 if ln.startswith("restart ")]
     assert restarts == ["restart acb-a.service"]
     assert "acb-c.service is not active" in r.stdout
+    assert "acb-b.service started after its newest drop-in" in r.stdout
 
 
 @needs_bash
-def test_no_changed_unit_means_no_restart(tmp_path: Path) -> None:
+def test_a_current_box_means_no_restart(tmp_path: Path) -> None:
     env = _installer_env(tmp_path)
-    r = _run_helpers(tmp_path, env, 'DROPIN_CHANGED_UNITS=""; restart_stale_dropin_units')
+    repo = tmp_path / "repo"
+    (repo / "acb-a.service.d").mkdir(parents=True)
+    _installed(tmp_path, "acb-a.service", "2026-10-08 09:00:00 UTC")
+    (tmp_path / "active").write_text("acb-a.service\n", encoding="utf-8", newline="\n")
+    (tmp_path / "since").write_text("acb-a.service=Thu 2026-10-08 10:00:00 UTC\n",
+                                    encoding="utf-8", newline="\n")
+    r = _run_helpers(tmp_path, env, f'restart_stale_dropin_units "{repo.as_posix()}"')
     assert r.returncode == 0, r.stderr
-    assert (tmp_path / "log").read_text(encoding="utf-8") == ""
+    assert "restart " not in (tmp_path / "log").read_text(encoding="utf-8")

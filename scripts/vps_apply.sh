@@ -826,15 +826,17 @@ fi
 #    runs daemon-reload. It writes only the names that the repo holds, and it
 #    deletes nothing. It never writes a 90-* name: that is the BH-2 rollback
 #    (scripts/bh2_rollback.sh), and a deploy must keep a rollback in place.
-# 3. restart_stale_dropin_units (near the end) restarts ONCE each unit whose
-#    drop-in changed, if it is active and no step of this apply restarted it.
+# 3. restart_stale_dropin_units (near the end) restarts ONCE each active unit
+#    that started before its newest installed drop-in. A unit that a step of
+#    this apply restarted after the install is current, and gets no second
+#    restart. The test reads the box, not this apply, so an apply that died
+#    after the install is repaired by the next one.
 #
 # tests/unit/test_agent_deps_target.py and tests/unit/test_unit_hardening.py
 # source the block between the two marker lines below. Keep it free of side
 # effects: definitions and defaults only.
 # >>> bh7 helpers
 SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
-DROPIN_INSTALLED_AT=""
 DROPIN_CHANGED_UNITS=""
 
 strip_t2_vendor_env_line() {  # <env file>
@@ -874,21 +876,30 @@ install_dropins() {  # <dir that holds the *.service.d dirs>
       esac
     done
   done
-  DROPIN_INSTALLED_AT="$(date -u +%s)"
   sudo systemctl daemon-reload
 }
 
-restart_stale_dropin_units() {
-  local unit since started
-  for unit in $DROPIN_CHANGED_UNITS; do
+restart_stale_dropin_units() {  # <dir that holds the *.service.d dirs>
+  local src="$1" d unit_d unit f m newest since started
+  for d in "$src"/*.service.d; do
+    [ -d "$d" ] || continue
+    unit_d="$(basename "$d")"
+    unit="${unit_d%.d}"
+    newest=0
+    for f in "$SYSTEMD_UNIT_DIR/$unit_d"/*.conf; do
+      [ -f "$f" ] || continue
+      m="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+      if [ "$m" -gt "$newest" ]; then newest="$m"; fi
+    done
+    [ "$newest" -gt 0 ] || continue
     if ! systemctl is-active --quiet "$unit"; then
-      echo "    $unit is not active: its new drop-in applies at its next start"
+      echo "    $unit is not active: its drop-ins apply at its next start"
       continue
     fi
     since="$(systemctl show "$unit" -p ActiveEnterTimestamp --value 2>/dev/null || true)"
     started="$(date -u -d "$since" +%s 2>/dev/null || echo 0)"
-    if [ "$started" -ge "${DROPIN_INSTALLED_AT:-0}" ]; then
-      echo "    $unit restarted after its drop-in went in: no second restart"
+    if [ "$started" -ge "$newest" ]; then
+      echo "    $unit started after its newest drop-in: no restart"
       continue
     fi
     echo "    restarting $unit once, so that its new drop-in applies"
@@ -1703,10 +1714,10 @@ systemctl list-timers --no-pager 'acb-*' 2>/dev/null | head -5 || true
 echo "==> WS-49 BH-7: one restart for a unit whose drop-in changed"
 # The BH-7 step installed the drop-ins before every restart of this apply. A
 # unit that this apply restarted after that already runs with them. A unit
-# that is active and was NOT restarted (the WhatsApp bridge when its build is
-# off, for one) gets ONE restart here. A unit that is not active (the oneshot
-# acb-smoke-chat) gets none: its next start applies the drop-in.
-restart_stale_dropin_units
+# that is active and started BEFORE its newest drop-in (the WhatsApp bridge
+# when its build is off, for one) gets ONE restart here. A unit that is not
+# active (the oneshot acb-smoke-chat) gets none: its next start applies them.
+restart_stale_dropin_units "$APP_DIR/deploy/hostinger"
 
 echo "==> Running infra health probe"
 cd "$APP_DIR"
